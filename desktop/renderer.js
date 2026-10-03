@@ -208,7 +208,11 @@ function renderUpdate(){
   $('update-notes').hidden=!value.notes;$('update-notes').textContent=value.notes||'';
   $('update-progress').hidden=value.state!=='downloading';
   $('update-progress').value=value.total?100*value.received/value.total:0;
-  const result=snapshot.updateResult;
+  let result=snapshot.updateResult;
+  // A successful record describes the app that was installed at that time.
+  // Manual app replacement preserves this data file, so an old success cannot
+  // claim that the newly deployed binary is still that older release.
+  if(result?.state==='updated'&&result.version!==value.current)result=null;
   $('update-result').hidden=!result;
   $('update-result').textContent=result?(result.state==='updated'?t('已更新到 ')+result.version:result.recovered?t('上次更新未完成，已恢复原版本。')+' '+t(result.message):t('更新恢复未完成，请查看数据目录中的 desktop-update.log。')):'';
   if(busy){

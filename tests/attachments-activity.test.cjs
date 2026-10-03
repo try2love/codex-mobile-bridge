@@ -27,14 +27,14 @@ test('temporarily missing turn history does not resurrect a read completion',()=
  a.update([status('a','local','idle')]);assert.equal(a.indicator('local|a'),null);
 });
 function fixture(){
- let count=0,upload=async(key,id,file)=>({id,name:file.name,size:file.size,image:null});
- const calls=[],saved=storage();
- const node=tag=>({tag,children:[],dataset:{},append(...values){this.children.push(...values);},replaceChildren(){this.children=[];},setAttribute(){}});
- const root=node('div'),button=node('button'),input=node('input');
- const ctx=vm.createContext({document:{createElement:node},sessionStorage:saved,root,button,input,uuid:()=>String(++count),BridgeI18n:{t:v=>v},upload:(...args)=>{calls.push(args);return upload(...args);}});
+ let count=0,thumbCalls=[],upload=async(key,id,file)=>({id,name:file.name,size:file.size,image:null});
+ const calls=[],saved=storage(),events=new Map();
+ const node=tag=>({tag,children:[],dataset:{},append(...values){this.children.push(...values);},replaceChildren(){this.children=[];},setAttribute(){},addEventListener(type,handler){(events.get(type)||events.set(type,new Set()).get(type)).add(handler);}});
+ const root=node('div'),button=node('button'),input=node('input'),paste=node('textarea'),drop=node('form');
+ const ctx=vm.createContext({document:{createElement:node},sessionStorage:saved,root,button,input,paste,drop,uuid:()=>String(++count),BridgeI18n:{t:v=>v},preview:(key,id)=>key+'/preview/'+id,thumbnail:async(key,id,f)=>{thumbCalls.push([key,id,f.name]);return {id,thumb:'image/webp',thumbWidth:6,thumbHeight:6};},upload:(...args)=>{calls.push(args);return upload(...args);}});
  vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/attachments.js'),'utf8'),ctx);
- const panel=vm.runInContext('new ChatAttachments({root,button,input,upload})',ctx);panel.open('local|one');
- return {panel,calls,saved,root,button,input,setUpload:f=>upload=f};
+ const panel=vm.runInContext('new ChatAttachments({root,button,input,upload,paste,drop,preview,thumbnail})',ctx);panel.open('local|one');
+ return {panel,calls,saved,root,button,input,events,thumbCalls,setUpload:f=>upload=f};
 }
 const tick=()=>new Promise(setImmediate),file=(name,size=12)=>({name,size});
 test('multi-select uploads independently and switching chats preserves host-scoped drafts',async()=>{
@@ -62,4 +62,19 @@ test('limits reject the selection before upload, and send lock prevents changing
  ui.panel.add(Array.from({length:11},(_,i)=>file(String(i))));assert.equal(ui.calls.length,0);
  ui.panel.add([file('ok')]);await tick();ui.panel.setLocked(true);ui.panel.add([file('other')]);assert.equal(ui.calls.length,1);assert.equal(ui.button.disabled,true);
  ui.panel.clear('local|one',ui.panel.ids());assert.equal(ui.panel.rows.length,0);
+});
+
+test('pasted and dropped images upload, preview through authenticated endpoint, and are removable',async()=>{
+ const ui=fixture();
+ ui.setUpload(async(key,id,f)=>({id,name:f.name,size:f.size,image:'image/png'}));
+ const paste={clipboardData:{files:[file('pasted.png')]},preventDefault(){this.prevented=true}};
+ ui.events.get('paste').forEach(handler=>handler(paste));
+ await tick();
+ assert.equal(paste.prevented,true);assert.equal(ui.calls.length,1);assert.equal(ui.thumbCalls.length,1);
+ let card=ui.root.children[0];assert.equal(card.children.find(n=>n.tag==='img').src,'local|one/preview/'+ui.panel.ids()[0]);
+ const drop={dataTransfer:{files:[file('dropped.png')]},preventDefault(){this.prevented=true}};
+ ui.events.get('drop').forEach(handler=>handler(drop));await tick();
+ assert.equal(drop.prevented,true);assert.equal(ui.calls.length,2);assert.equal(ui.panel.ids().length,2);
+ const remove=ui.root.children[0].children.at(-1);remove.onclick();
+ assert.equal(ui.panel.ids().length,1);assert.equal(ui.root.children[0].children.some(n=>n.tag==='img'),true);
 });

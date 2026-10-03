@@ -425,9 +425,12 @@ class NotificationTests(unittest.TestCase):
     def test_real_http_payload_and_authorization(self):
         captured = []
         class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = 'HTTP/1.1'
             def do_POST(self):
                 captured.append((json.loads(self.rfile.read(int(self.headers['Content-Length']))), self.headers.get('Authorization')))
-                self.send_response(200);self.end_headers();self.wfile.write(b'{}')
+                self.send_response(200)
+                self.send_header('Content-Length', '2')
+                self.end_headers();self.wfile.write(b'{}')
             def log_message(self, *args): pass
         server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()

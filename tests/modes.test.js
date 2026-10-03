@@ -31,6 +31,7 @@ async function runModeTests(){
     select.value='goal';select.onchange();$('message').value='Goal fixture';
     await $('composer').onsubmit({preventDefault(){}});
     check(writes[2].body.workMode==='goal'&&select.value==='default','Goal reaches send API and next message returns to ordinary mode');
+    check(writes[2].body.uiLocale==='zh-CN','Goal sends retain the active UI locale');
     renderState({...meta,status:'active',host:'remote:fixture'});$('send-mode').value='steer';$('send-mode').onchange();$('message').value='Additional context';
     await $('composer').onsubmit({preventDefault(){}});
     check(writes[3].body.workMode===null&&writes[3].body.mode==='steer','Steering never silently changes the active mode');
@@ -61,7 +62,16 @@ async function runModeTests(){
     check($('goal-toggle').title==='Goal progress','Hidden-goal restore action translates to English');
     $('goal-toggle').click();
     check(!$('goal-state').hidden&&$('goal-toggle').hidden&&writes.length===writesBeforeHide,'Restoring shows the original goal without sending a message');
-    check($('goal-state').textContent.includes('Goal active')&&$('work-mode').options[1].textContent==='Plan mode','Mode and native goal controls translate to English');
+    check($('send-mode').value==='auto'&&$('send-mode').options[0].textContent==='默认'&&$('send-mode').options[1].textContent==='引导','Mode selectors use compact centered labels');
+    renderState({...meta,status:'active'});$('message').value='Queue fixture';
+    await $('composer').onsubmit({preventDefault(){}});
+    check(writes.at(-1).body.mode==='queue'&&writes.at(-1).body.workMode==='default','Default mode queues when a task is active');
+    check(writes.at(-1).body.uiLocale==='en-US','Queued messages retain the active UI locale');
+    renderState({...meta,status:'idle'});$('message').value='Send fixture';
+    await $('composer').onsubmit({preventDefault(){}});
+    check(writes.at(-1).body.mode==='send'&&writes.at(-1).body.workMode==='default','Default mode sends immediately when idle');
+    BridgeI18n.setLanguage('zh');BridgeI18n.apply();
+    check($('goal-state').textContent.includes('Goal active')&&$('work-mode').options[1].textContent==='计划','Mode and native goal controls translate to localized labels');
     return {passed:checks.length,checks};
   }finally{chatTimeline?.dispose();chatTimeline=null;window.fetch=original;}
 }
