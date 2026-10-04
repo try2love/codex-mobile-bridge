@@ -126,6 +126,7 @@ class IntegrationTests(unittest.TestCase):
         db.execute('INSERT INTO threads VALUES(?,?,?,?,?,?,?,?)', (THREAD, 'Desktop test', '/workspace', 1, 0, 'Codex Desktop', 'vscode', 'unused'))
         db.commit()
         db.close()
+        db.close()
         self.bridge = Bridge(self.root, self.root / 'data')
         self.bridge.ipc.path = self.fixture.path
 

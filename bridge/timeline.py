@@ -30,11 +30,14 @@ class Timeline:
     def update(self, view):
         if self.sequence == view['sequence']:
             return
+        activation_ids = set(view.get('goalActivationIds') or ())
         rows, details = [], {}
         for turn in view['turns']:
             occurrences = {}
             first_user = next((m for m in turn['messages'] if m['role'] == 'user'), None)
             for message in turn['messages']:
+                if message.get('requestId') and message['requestId'] in activation_ids:
+                    continue
                 identity = [turn['id'], message.get('id'), message.get('kind')]
                 base = hashlib.sha256(encoded(identity)).hexdigest()[:24]
                 ordinal = occurrences.get(base, 0)
@@ -45,7 +48,7 @@ class Timeline:
                     text += '\n\n' + message['output']
                 activity = message['role'] == 'activity'
                 version = hashlib.sha256(text.encode()).hexdigest()[:24]
-                row = {k: message[k] for k in ('role', 'kind', 'status', 'title', 'phase') if k in message}
+                row = {k: message[k] for k in ('role', 'kind', 'status', 'title', 'phase', 'requestId') if k in message}
                 row.update(key=key, turnId=turn['id'], order=len(rows), version=version,
                            text=text[:180 if activity else TEXT_PREVIEW],
                            truncated=activity or len(text) > TEXT_PREVIEW, turnStatus=turn.get('status'),
@@ -70,7 +73,10 @@ class Timeline:
         self.rows, self.details = rows, details
         self.positions = {row['key']: i for i, row in enumerate(rows)}
         self.meta = {k: v for k, v in view.items() if k != 'turns'}
-        self.meta['latestUserTurnId'] = next((t['id'] for t in reversed(view['turns']) if any(m['role'] == 'user' for m in t['messages'])), None)
+        self.meta['latestUserTurnId'] = next((t['id'] for t in reversed(view['turns'])
+                                              if any(m['role'] == 'user'
+                                                     and (not m.get('requestId') or m['requestId'] not in activation_ids)
+                                                     for m in t['messages'])), None)
         self.versions[self.sequence] = {row['key']: hashlib.sha256(encoded(row)).digest() for row in rows}
         while len(self.versions) > 16:
             self.versions.popitem(last=False)

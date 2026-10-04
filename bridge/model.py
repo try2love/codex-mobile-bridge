@@ -4,6 +4,7 @@ import json
 import re
 
 
+
 def apply_patches(state, patches):
     for patch in patches:
         path = patch.get("path", [])
@@ -73,13 +74,34 @@ def items_array(items):
     return []
 
 
+def request_id(item):
+    """Return the bridge submission id attached to a desktop user message."""
+    return item.get("clientId") or item.get("clientUserMessageId") or item.get("client_id")
+
+
+def user_display_text(text):
+    """Hide desktop attachment plumbing from the phone-visible request."""
+    if not isinstance(text, str) or "# Files mentioned by the user:" not in text:
+        return text
+    marker = "\n## My request:\n"
+    header = text.find("# Files mentioned by the user:")
+    boundary = text.rfind(marker)
+    if header < 0 or boundary <= header:
+        return text
+    request = text[boundary + len(marker):].strip("\r\n")
+    return request or text
+
+
 def normalize_item(item):
     kind = item.get("type", "unknown")
     row = {"id": item.get("id"), "kind": kind, "status": item.get("status")}
     if kind in ("userMessage", "steeringUserMessage"):
         if kind == "steeringUserMessage":
             item = {**item, "content": item.get("input", [])}
-        text = text_content(item.get("content", []))
+        submission_request_id = request_id(item)
+        if request_id:
+            row["requestId"] = str(submission_request_id)
+        text = user_display_text(text_content(item.get("content", [])))
         replies = question_replies(text)
         if replies:
             text = "\n\n".join(str(r.get("question", "")) + "\n" + str(r.get("answer", "")) for r in replies)

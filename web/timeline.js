@@ -146,7 +146,26 @@ class ChatTimeline {
       const actions=document.createElement('div');actions.className='message-actions';
       const copy=document.createElement('button');copy.type='button';copy.className='plain message-copy';copy.textContent=timelineText('复制');copy.onclick=()=>window.BridgeClipboard?.copy(()=>this.fullText(row),copy);actions.append(copy);node.append(actions);
     }
-    if(row.attachments?.length){const attachment=document.createElement('small');attachment.className='muted';attachment.textContent=timelineText('附件：')+row.attachments.map(a=>a.name||a.path||a.type).join('、');node.append(attachment);}
+    if(row.attachments?.length){
+      const attachments=document.createElement('div');attachments.className='timeline-attachments';
+      for(const item of row.attachments){
+        if((item.type==='localImage'||item.type==='image')&&(item.uploadId||item.desktopId)){
+          const source=item.uploadId
+            ?this.url('uploads/'+encodeURIComponent(item.uploadId)+'/preview')
+            :this.url('desktop-images/'+encodeURIComponent(item.desktopId));
+          const original=item.uploadId
+            ?source+'&variant=original'
+            :source;
+          const link=document.createElement('a');link.href=original;link.target='_blank';link.rel='noopener';
+          const image=document.createElement('img');image.className='attachment-image';image.alt=item.name||timelineText('图片附件');
+          image.loading='lazy';image.decoding='async';image.src=source;
+          image.onerror=()=>link.remove();link.append(image);attachments.append(link);
+        }
+      }
+      const attachment=document.createElement('small');attachment.className='muted';
+      attachment.textContent=timelineText('附件：')+row.attachments.map(a=>a.name||a.type).join('、');
+      attachments.append(attachment);node.append(attachments);
+    }
     if(activity){node.open=!!open;node.ontoggle=()=>{if(node.open&&!this.details.has(row.key))load();};}
     return node;
   }
@@ -184,8 +203,8 @@ class ChatTimeline {
       if(heading)heading.textContent=row.role==='activity'?(row.title||row.kind)+(row.status==='inProgress'?timelineText(' · 进行中'):''):row.role==='user'?timelineText('你'):row.role==='error'?timelineText('执行错误'):'CODEX';
       const more=node.querySelector('.detail-more');
       if(more&&!more.disabled)more.textContent=timelineText(this.details.has(key)?'继续加载正文':'展开完整内容');
-      const attachment=node.querySelector('small.muted');
-      if(attachment)attachment.textContent=timelineText('附件：')+row.attachments.map(a=>a.name||a.path||a.type).join('、');
+      const attachment=node.querySelector('.timeline-attachments small.muted');
+      if(attachment)attachment.textContent=timelineText('附件：')+row.attachments.map(a=>a.name||a.type).join('、');
     }
     this.newer.textContent=timelineText(this.pendingRequests?'有待确认请求 ↓':'有新内容 ↓');
   }

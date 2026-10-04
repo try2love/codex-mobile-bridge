@@ -11,9 +11,11 @@ async function fixture(){
   const html=fs.readFileSync(path.join(__dirname,'../web/index.html'),'utf8');
   for(const match of html.matchAll(/\bid="([^"]+)"/g))nodes.set(match[1],node());
   const storage=()=>({getItem(){return null;},setItem(){},removeItem(){}});
+  const archiveToggles=[];
+  const archiveFilter={classList:{toggle:(name,enabled)=>archiveToggles.push([name,enabled])}};
   let nextPost;
   const response=(data,status=200)=>({ok:status===200,status,json:async()=>data});
-  const context=vm.createContext({document:{addEventListener(){},documentElement:{},getElementById:id=>nodes.get(id),querySelectorAll:()=>[],createElement:node},
+  const context=vm.createContext({document:{addEventListener(){},documentElement:{},getElementById:id=>nodes.get(id),querySelector:selector=>selector==='.archive-filter'?archiveFilter:{disabled:false},querySelectorAll:()=>[],createElement:node},
     window:{addEventListener(){}},localStorage:storage(),sessionStorage:storage(),
     location:{hash:'',pathname:'/',search:''},history:{replaceState(){}},setTimeout(){},clearTimeout(){},setInterval(){},
     ChatTimeline:class{constructor(){this.abort=new AbortController();}async start(){}dispose(){this.abort.abort();}relabel(){}},
@@ -42,13 +44,22 @@ async function fixture(){
   for(const file of ['web/i18n.js','web/account.js','web/modes.js','web/attachments.js','web/activity.js','web/fast-mode.js','web/message-actions.js','web/app.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
   await new Promise(setImmediate);
   const run=code=>vm.runInContext(code,context);
-  return {nodes,writes,saved,run,html,response,setPost:handle=>{nextPost=handle;},
+  return {nodes,writes,saved,run,html,response,archiveToggles,setPost:handle=>{nextPost=handle;},
     async open(id='11111111-1111-4111-8111-111111111111',host='local'){
       await run(`openChat(${JSON.stringify(id)},${JSON.stringify(host)})`);await new Promise(setImmediate);
     },
     save:()=>nodes.get('notify-form').onsubmit({preventDefault(){}}),
     settings:()=>nodes.get('notify-button').onclick()};
 }
+
+test('archive filter icon tracks the selected filter state',async()=>{
+  const ui=await fixture();
+  assert.deepEqual(ui.archiveToggles,[['archived',false]]);
+  ui.nodes.get('archived').value='true';ui.nodes.get('archived').onchange();
+  assert.deepEqual(ui.archiveToggles,[['archived',false],['archived',true]]);
+  ui.nodes.get('archived').value='false';ui.nodes.get('archived').onchange();
+  assert.deepEqual(ui.archiveToggles,[['archived',false],['archived',true],['archived',false]]);
+});
 
 test('chat can opt into completion and retain its choice after reopening',async()=>{
   const ui=await fixture();await ui.open();ui.settings();

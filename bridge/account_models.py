@@ -25,7 +25,7 @@ def model_ids(base_url, key):
         if len(payload) > 1024*1024:
             raise ValueError('上游模型列表过大，请手动填写模型 ID')
         value = json.loads(payload)
-        rows = value.get('data') if isinstance(value, dict) else None
+        rows = value.get('data') if isinstance(value, dict) else (value if isinstance(value, list) else None)
         if not isinstance(rows, list):
             raise ValueError('上游未返回兼容的模型列表，请手动填写模型 ID')
         result = sorted({row['id'] for row in rows if isinstance(row, dict)

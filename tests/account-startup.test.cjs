@@ -15,7 +15,7 @@ async function fixture(read,kind='chatgpt',catalog=null){
   }
   const storage=()=>({getItem(){return null;},setItem(){},clear(){}});
   const response=(data,status=200)=>({ok:status===200,status,json:async()=>data});
-  const context=vm.createContext({Date,Option:function(text,value){return {...node('option'),textContent:text,value};},document:{addEventListener(){},documentElement:{},getElementById:id=>nodes.get(id),querySelectorAll:()=>[],createElement:node},
+  const context=vm.createContext({Date,Option:function(text,value){return {...node('option'),textContent:text,value};},document:{addEventListener(){},documentElement:{},getElementById:id=>nodes.get(id),querySelector:()=>({classList:{toggle(){}}}),querySelectorAll:()=>[],createElement:node},
     window:{addEventListener:(name,fn)=>events[name]=fn},localStorage:storage(),sessionStorage:storage(),
     location:{hash:'',pathname:'/',search:''},history:{replaceState(){}},
     setTimeout(fn,delay){timers.set(++timerId,{fn,delay});return timerId;},clearTimeout(id){timers.delete(id);},setInterval(fn,delay){intervals.push({fn,delay});},

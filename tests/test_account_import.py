@@ -1,6 +1,8 @@
 import base64
 import json
 import os
+import time
+import socket
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -106,10 +108,22 @@ class ModelHTTPTests(unittest.TestCase):
                 owner.requests.append((self.path,self.headers.get('Authorization')))
                 self.send_response(owner.status)
                 if owner.status==302:self.send_header('Location','/credential-leak')
-                self.end_headers();self.wfile.write(json.dumps(owner.body).encode())
+                body=json.dumps(owner.body).encode()
+                self.send_header('Content-Type','application/json')
+                self.send_header('Content-Length',str(len(body)))
+                self.send_header('Connection','close')
+                self.end_headers();self.wfile.write(body)
             def log_message(self,*args):pass
         self.server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
         self.thread=threading.Thread(target=self.server.serve_forever,daemon=True);self.thread.start()
+        time.sleep(.05)
+        deadline=time.monotonic()+2
+        while time.monotonic()<deadline:
+            try:
+                with socket.create_connection(('127.0.0.1',self.server.server_port),timeout=.1):break
+            except OSError:
+                if time.monotonic()>=deadline:raise
+                time.sleep(.02)
         self.url='http://127.0.0.1:'+str(self.server.server_port)+'/v1'
 
     def tearDown(self):
@@ -128,6 +142,7 @@ class ModelHTTPTests(unittest.TestCase):
         self.assertNotIn('fixture-key',str(error.exception))
 
     def test_empty_and_incompatible_lists_remain_manual_entry_cases(self):
+        self.status=200
         for body in ({'data':[]},{'models':[]},[]):
             self.body=body
             with self.assertRaisesRegex(ValueError,'手动填写'):model_ids(self.url,'fixture-key')

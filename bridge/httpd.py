@@ -52,6 +52,11 @@ STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/icon.png": ("icon.png", "image/png")}
 THREAD_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})(?:/(events|send|stop|history|respond|reconnect|queue|catalog|settings|poll|timeline|changes|detail|notifications|uploads|message-action|rename))?$")
 FONT_ROUTE = re.compile(r"^/vendor/katex/fonts/(KaTeX_[A-Za-z0-9_-]+\.(woff2|woff|ttf))$")
+UPLOAD_PREVIEW_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})/uploads/([0-9a-f-]{36})/preview$")
+UPLOAD_THUMB_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})/uploads/([0-9a-f-]{36})/thumb$")
+DESKTOP_IMAGE_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})/desktop-images/([0-9a-f]{64})$")
+GOAL_CANCEL_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})/goal/cancel$")
+GOAL_STATUS_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})/goal/status$")
 
 
 class GatewayServer(ThreadingHTTPServer):
@@ -117,8 +122,8 @@ class Handler(BaseHTTPRequestHandler):
         # Request bodies, cookies, query strings and conversation IDs are private.
         pass
 
-    def headers_common(self):
-        self.send_header("Cache-Control", "no-store")
+    def headers_common(self, cache_control="no-store"):
+        self.send_header("Cache-Control", cache_control)
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Frame-Options", "DENY")
@@ -126,7 +131,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'")
         self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 
-    def output(self, status, data, content_type="application/json; charset=utf-8", cookie=None):
+    def output(self, status, data, content_type="application/json; charset=utf-8", cookie=None, content_disposition=None):
         body = json.dumps(data, ensure_ascii=False).encode() if not isinstance(data, bytes) else data
         accepts_gzip = re.search(r'(?:^|,)\s*gzip\s*(?:;\s*q=([01](?:\.\d+)?))?\s*(?:,|$)',
                                  self.headers.get('Accept-Encoding', ''), re.IGNORECASE)
@@ -143,6 +148,8 @@ class Handler(BaseHTTPRequestHandler):
         if compressed:
             self.send_header('Content-Encoding', 'gzip')
         self.send_header("Content-Length", str(len(body)))
+        if content_disposition:
+            self.send_header("Content-Disposition", content_disposition)
         if cookie:
             self.send_header("Set-Cookie", cookie)
         self.end_headers()
@@ -331,6 +338,33 @@ class Handler(BaseHTTPRequestHandler):
             file_match = re.fullmatch(r"/api/sessions/([0-9a-f-]{36})/files/([a-f0-9]{64})", path)
             if not write and file_match:
                 return self.download(bridge, *file_match.groups())
+            preview_match = UPLOAD_PREVIEW_ROUTE.fullmatch(path)
+            if not write and preview_match:
+                return self.upload_preview(bridge, *preview_match.groups(), variant=query.get('variant', ['thumb'])[0])
+            desktop_image_match = DESKTOP_IMAGE_ROUTE.fullmatch(path)
+            if not write and desktop_image_match:
+                return self.desktop_image_preview(bridge, *desktop_image_match.groups())
+            thumb_match = UPLOAD_THUMB_ROUTE.fullmatch(path)
+            if write and thumb_match:
+                sizes = self.headers.get_all('Content-Length', [])
+                if self.headers.get('Transfer-Encoding') or len(sizes) != 1 or not sizes[0].isdigit() or not 0 < int(sizes[0]) <= 1024 * 1024:
+                    raise ValueError('缩略图需为 1 字节至 1 MB')
+                data = self.rfile.read(int(sizes[0]))
+                if len(data) != int(sizes[0]):
+                    raise ValueError('缩略图上传中断，请重试')
+                try:
+                    width, height = int(query.get('width', ['0'])[0]), int(query.get('height', ['0'])[0])
+                except ValueError:
+                    raise ValueError('缩略图尺寸无效') from None
+                return self.output(200, bridge.upload_thumb(thumb_match[1], thumb_match[2], data, width, height))
+            goal_match = GOAL_CANCEL_ROUTE.fullmatch(path)
+            if write and goal_match:
+                return self.output(200, bridge.cancel_goal(goal_match[1], self.read_json().get("id", "")))
+            goal_status_match = GOAL_STATUS_ROUTE.fullmatch(path)
+            if write and goal_status_match:
+                body = self.read_json()
+                return self.output(200, bridge.set_goal_status(goal_status_match[1], body.get("status"),
+                                                              body.get("id", ""), body.get("uiLocale")))
             match = THREAD_ROUTE.fullmatch(path)
             if not match:
                 return self.output(404, {"error": "页面不存在"})
@@ -371,7 +405,9 @@ class Handler(BaseHTTPRequestHandler):
             if action == "message-action":
                 result = bridge.message_action(thread_id, body)
             elif action == "send":
-                result = bridge.send(thread_id, body.get("text"), body.get("id", ""), body.get("mode", "send"), body.get("skills", []), work_mode=body.get("workMode"), attachments=body.get('attachments'))
+                result = bridge.send(thread_id, body.get("text"), body.get("id", ""), body.get("mode", "send"),
+                                     body.get("skills", []), work_mode=body.get("workMode"),
+                                     attachments=body.get('attachments'), ui_locale=body.get("uiLocale"))
             elif action == "rename":
                 result = bridge.rename(thread_id, body.get("title"))
             elif action == "settings":
@@ -429,7 +465,50 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", mime or "application/octet-stream")
         self.send_header("Content-Length", str(len(data)))
         disposition = "inline" if artifact["image"] else "attachment"
-        self.send_header("Content-Disposition", disposition + "; filename*=UTF-8''" + quote(artifact["name"]))
+        self.send_header("Content-Disposition", disposition + "; filename*=UTF-8''" + quote(artifact["name"], safe=""))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def upload_preview(self, bridge, thread_id, upload_id, variant='thumb'):
+        artifact, served_variant = bridge.upload_preview(thread_id, upload_id, variant)
+        data = Path(artifact["previewPath"]).read_bytes()
+        etag = '"' + artifact["previewSha256"] + '"'
+        cache_control = 'private, no-store' if served_variant == 'fallback-original' else 'private, max-age=31536000, immutable'
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.headers_common(cache_control)
+            self.send_header("ETag", etag)
+            self.send_header("X-Preview-Variant", served_variant)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.headers_common(cache_control)
+        self.send_header("Content-Type", artifact["previewMime"])
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("ETag", etag)
+        self.send_header("X-Preview-Variant", served_variant)
+        self.send_header("Content-Disposition", "inline; filename*=UTF-8''" + quote(artifact["name"], safe=""))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def desktop_image_preview(self, bridge, thread_id, image_id):
+        artifact, served_variant = bridge.desktop_image_preview(thread_id, image_id)
+        data = Path(artifact["previewPath"]).read_bytes()
+        etag = '"' + artifact["previewSha256"] + '"'
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.headers_common("private, max-age=31536000, immutable")
+            self.send_header("ETag", etag)
+            self.send_header("X-Preview-Variant", served_variant)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.headers_common("private, max-age=31536000, immutable")
+        self.send_header("Content-Type", artifact["previewMime"])
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("ETag", etag)
+        self.send_header("X-Preview-Variant", served_variant)
+        self.send_header("Content-Disposition", "inline; filename*=UTF-8''" + quote(artifact["name"], safe=""))
         self.end_headers()
         self.wfile.write(data)
 
