@@ -7,7 +7,7 @@ class Workbench {
     this.scrollPositions = new WeakMap();
     this.strip = this.node('nav', 'workbench-tabs'); this.strip.setAttribute('aria-label', '工作台标签');
     this.tabs = this.node('div', 'wb-tabs'); this.tabs.setAttribute('role', 'tablist');
-    const add = this.button('＋', () => this.files(), '新标签页：项目文件'); add.className = 'wb-add';
+    const add = this.button('＋', () => this.newTab(), '新标签页'); add.className = 'wb-add';
     this.strip.append(this.tabs, add);
     this.panel = this.node('section', 'workbench-panel'); this.panel.hidden = true;
     chat.querySelector('.chat-head').after(this.strip, this.panel);
@@ -89,7 +89,7 @@ class Workbench {
     if (!this.sessions.has(key)) this.sessions.set(key, {id, host, key, active: 'chat', files: [], directory: '', search: '', hidden: false, scroll: 0});
     this.current = this.sessions.get(key); this.paint();
   }
-  reset() { this.stopThumbnails(); this.uploadController?.abort(); this.sessions.clear(); this.current = null; this.chat.classList.remove('workbench-active'); this.panel.replaceChildren(); this.panel.hidden = true; this.tabs.replaceChildren(); }
+  reset() { this.stopThumbnails(); this.uploadController?.abort(); for (const session of this.sessions.values()) for (const tab of session.files) { tab.controller?.abort(); tab.git?.dispose(); } this.sessions.clear(); this.current = null; this.chat.classList.remove('workbench-active'); this.panel.replaceChildren(); this.panel.hidden = true; this.tabs.replaceChildren(); }
   get isFileVisible() { return !!this.current && this.current.active !== 'chat'; }
   url(session, operation = '', path = '') { return '/api/sessions/' + session.id + '/workspace' + (operation ? '/' + operation : '') + '?host=' + encodeURIComponent(session.host) + '&path=' + encodeURIComponent(path); }
   rememberScroll() { if (this.current?.active === 'chat') this.current.scroll = this.chat.querySelector('.timeline').scrollTop; }
@@ -100,7 +100,7 @@ class Workbench {
   }
   paint() {
     const session = this.current; if (!session) return;
-    for (const node of this.panel.querySelectorAll('.wb-file-list,.wb-preview-content')) this.scrollPositions.set(node, node.scrollTop);
+    for (const node of this.panel.querySelectorAll('.wb-file-list,.wb-preview-content,.wb-git-list,.wb-git-diff')) this.scrollPositions.set(node, node.scrollTop);
     this.tabs.replaceChildren();
     for (const tab of [{id: 'chat', name: '聊天'}, ...session.files]) {
       const group = this.node('div', 'wb-tab'); group.classList.toggle('selected', session.active === tab.id);
@@ -114,14 +114,14 @@ class Workbench {
     const active = session.files.find(t => t.id === session.active);
     if (active) {
       this.panel.append(active.body);
-      for (const node of active.body.querySelectorAll('.wb-file-list,.wb-preview-content')) node.scrollTop = this.scrollPositions.get(node) || 0;
+      for (const node of active.body.querySelectorAll('.wb-file-list,.wb-preview-content,.wb-git-list,.wb-git-diff')) node.scrollTop = this.scrollPositions.get(node) || 0;
     }
     this.refreshThumbnails();
   }
   back() { if (!this.isFileVisible) return false; this.select('chat'); return true; }
   close(id) {
     const session = this.current, index = session.files.findIndex(t => t.id === id);
-    if (index < 0) return; session.files[index].controller?.abort(); session.files.splice(index, 1);
+    if (index < 0) return; session.files[index].controller?.abort(); session.files[index].git?.dispose(); session.files.splice(index, 1);
     if (session.active === id) this.select(session.files.find(t => t.id === 'files') ? 'files' : 'chat'); else this.paint();
   }
   files() {
@@ -131,6 +131,25 @@ class Workbench {
       this.directory(session, tab, session.directory);
     }
     this.select('files');
+  }
+  newTab() {
+    if (!this.current) return;
+    const dialog = this.node('dialog', 'picker wb-new-tab'), head = this.node('div', 'picker-head');
+    head.append(this.node('h2', '', '新标签页'), this.button('×', () => dialog.close(), '关闭'));
+    const choices = this.node('div', 'wb-tab-choices');
+    for (const [name, description, action] of [['文件', '浏览项目文件、上传与下载', () => this.files()], ['Git', '查看分支、变更与代码差异', () => this.git()]]) {
+      const button = this.button('', () => { dialog.close(); action(); }, name);
+      button.append(this.node('strong', '', name), this.node('span', '', description)); choices.append(button);
+    }
+    dialog.append(head, choices); dialog.addEventListener('close', () => dialog.remove()); document.body.append(dialog); dialog.showModal();
+  }
+  git() {
+    const session = this.current; if (!session) return;
+    if (!session.files.some(tab => tab.id === 'git')) {
+      const tab = {id: 'git', name: 'Git', body: this.node('div', 'wb-git')};
+      session.files.push(tab); tab.git = new GitPanel(this, session, tab); tab.git.load();
+    }
+    this.select('git');
   }
   async directory(session, tab, path, append = false) {
     tab.controller?.abort(); const controller = tab.controller = new AbortController();
@@ -172,7 +191,7 @@ class Workbench {
     if (session !== this.current) return;
     const id = 'file:' + entry.path;
     if (session.files.some(t => t.id === id)) { this.select(id); return; }
-    if (session.files.filter(t => t.id !== 'files').length >= 8) { this.notify('最多同时打开 8 个文件，请先关闭一个标签'); return; }
+    if (session.files.filter(t => t.id.startsWith('file:')).length >= 8) { this.notify('最多同时打开 8 个文件，请先关闭一个标签'); return; }
     const tab = {id, name: entry.name, body: this.node('div', 'wb-preview'), controller: new AbortController()}; session.files.push(tab);
     tab.body.append(this.node('p', 'wb-status', '正在读取文件…')); this.select(id);
     try {

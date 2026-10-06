@@ -31,7 +31,8 @@ from .create import CreationError
 from .account import AccountError
 
 LOG = logging.getLogger(__name__)
-STATIC = {"/workbench.js": ("workbench.js", "text/javascript; charset=utf-8"),
+STATIC = {"/git-panel.js": ("git-panel.js", "text/javascript; charset=utf-8"),
+          "/workbench.js": ("workbench.js", "text/javascript; charset=utf-8"),
           "/image-viewer.js": ("image-viewer.js", "text/javascript; charset=utf-8"),
           "/workbench.css": ("workbench.css", "text/css; charset=utf-8"),
           "/": ("index.html", "text/html; charset=utf-8"),
@@ -382,7 +383,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.output(200, {'pushplusEnabled': config['pushplusEnabled'],
                                              'hasPushplusToken': bool(config['pushplusToken'])})
             bridge = self.server.bridge.for_host(query.get("host", ["local"])[0])
-            workspace_match = re.fullmatch(r"/api/sessions/([0-9a-f-]{36})/workspace(?:/(preview|download|upload))?", path)
+            workspace_match = re.fullmatch(r"/api/sessions/([0-9a-f-]{36})/workspace(?:/(preview|download|upload|git-status|git-diff))?", path)
             if workspace_match:
                 thread_id, operation = workspace_match.groups()
                 relative = query.get('path', [''])[0]
@@ -395,6 +396,9 @@ class Handler(BaseHTTPRequestHandler):
                     if len(content) != int(sizes[0]): raise ValueError('上传中断，请重试')
                     return self.output(200, bridge.workspace(thread_id, 'upload', {'path': relative, 'encoded': base64.b64encode(content).decode()}))
                 if operation == 'upload': return self.output(405, {'error': '请使用上传操作'})
+                if operation == 'git-status': return self.output(200, bridge.workspace(thread_id, operation, {}))
+                if operation == 'git-diff':
+                    return self.output(200, bridge.workspace(thread_id, operation, {'path': relative, 'section': query.get('section', ['unstaged'])[0]}))
                 if operation is None:
                     return self.output(200, bridge.workspace(thread_id, 'list', {'path': relative, 'hidden': query.get('hidden') == ['true'],
                         'search': query.get('search', [''])[0], 'offset': int(query.get('offset', ['0'])[0])}))
