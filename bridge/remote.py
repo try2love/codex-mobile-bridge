@@ -66,6 +66,12 @@ class RemoteStore:
     def history(self, thread_id, turn_limit=None):
         return self.call('history', {'thread_id': thread_id, 'turn_limit': turn_limit})
 
+    def subagents(self, thread_id):
+        return self.call('subagents', {'thread_id': thread_id})
+
+    def subagent_history(self, thread_id, agent_id):
+        return self.call('subagent_history', {'thread_id': thread_id, 'agent_id': agent_id})
+
     def recencies(self, identifiers):
         return self.call('recencies', {'identifiers': identifiers})
 

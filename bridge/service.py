@@ -4,6 +4,7 @@ import hashlib
 from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
+import os
 import re
 import subprocess
 import threading
@@ -12,6 +13,7 @@ import uuid
 import unicodedata
 from pathlib import Path
 
+from .terminal import TerminalManager
 from .ipc import DesktopIPC, IPCError
 from .transport import ipc_endpoint
 from .model import apply_patches, computer_use_approval, items_array, normalize_state, normalize_request, ordered_turns, pending_requests, async_requests, request_id, user_display_text
@@ -104,6 +106,7 @@ class Bridge:
         self.notification_event = threading.Event()
         self.store = RemoteStore(alias) if alias else SessionStore(codex_home)
         self.catalog_reader = RemoteCatalog(alias) if alias else Catalog(codex_home, codex_bin)
+        self.terminals = TerminalManager()
         self.uploads = Uploads(data_dir, (lambda *args: upload_file(alias, *args)) if alias else None)
         self.account = Account(codex_home, data_dir, codex_bin) if host == 'local' else None
         self.accounts = Accounts(self) if host == "local" else None
@@ -1105,6 +1108,32 @@ class Bridge:
         if 'error' in result: raise ValueError(result['error'])
         return result['value']
 
+    def subagents(self, thread_id, agent_id=None):
+        uuid.UUID(thread_id)
+        if not agent_id: return self.store.subagents(thread_id)
+        uuid.UUID(agent_id)
+        state = self.store.subagent_history(thread_id, agent_id)
+        view = normalize_state(state, False)
+        # Saved logs are evidence of the last recorded state, not a live heartbeat.
+        return {'id': agent_id, 'title': view['title'], 'turns': view['turns'],
+                'historyComplete': view['historyComplete'], 'saved': True}
+
+    def terminal(self, thread_id, owner, action, params):
+        uuid.UUID(thread_id)
+        root = self.store.get(thread_id).get('cwd')
+        if action == 'info':
+            return {'cwd': root, 'host': self.host, 'shell': 'sh' if self.host != 'local' or os.name != 'nt' else 'cmd'}
+        identifier = params.get('id', '')
+        if action == 'start':
+            return self.terminals.start(owner, thread_id, identifier, root, params.get('command'),
+                                        self.store.alias if isinstance(self.store, RemoteStore) else None)
+        job = self.terminals.get(owner, thread_id, identifier)
+        if action == 'stop': job.stop()
+        elif action != 'read': raise ValueError('未知终端操作')
+        after = params.get('after', 0)
+        if not isinstance(after, int) or not 0 <= after <= 10**12: raise ValueError('无效输出游标')
+        return job.read(after)
+
     def artifact(self, thread_id, artifact_id):
         session = self.session(thread_id, attach=False)
         with session.condition:
@@ -1766,6 +1795,7 @@ class Bridge:
         return self._call(session, mapping[method], payload)
 
     def close(self):
+        self.terminals.close()
         self.closed.set()
         if self.host == "local" and self.accounts:
             self.accounts.login_cancel.set()

@@ -37,11 +37,12 @@ window.addEventListener('focus',()=>{if(!$('app').hidden)accountsPanel?.refresh(
 function chatKey(id=currentId,host=currentHost){return host+'|'+id;}
 function sessionUrl(id,action='',host=currentHost){return '/api/sessions/'+id+(action?'/'+action:'')+'?host='+encodeURIComponent(host);}
 function hostUrl(path,host=currentHost){return /^\/api\/sessions\/[0-9a-f-]{36}/.test(path)&&!/[?&]host=/.test(path)?path+(path.includes('?')?'&':'?')+'host='+encodeURIComponent(host):path;}
+let listLoading=0;
 let catalogData={models:null,skills:null};let catalogResults={models:null,skills:null};let catalogTasks={models:null,skills:null};let selectedSkills=new Set(),invalidSkills=new Set(),skillIndex=new Map(),skillTotal=0,skillPages=[],skillQuery={q:'',offset:0,limit:200},skillSearchTimer,skillRequest=0;
 function el(tag,cls,text){const node=document.createElement(tag);if(cls)node.className=cls;if(text!==undefined)node.textContent=text;return node;}
 function toast(text){text=t(text);$('toast').textContent=text;$('toast').hidden=false;clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('toast').hidden=true,4200);}
-async function api(path,body,signal){const options={signal,credentials:'same-origin',cache:'no-store',headers:{}};if(body!==undefined){options.method='POST';options.headers={'Content-Type':'application/json','X-CSRF-Token':csrf};options.body=JSON.stringify(body);}const response=await fetch(hostUrl(path),options);const data=await response.json();if(!response.ok){if(response.status===401)showLogin();throw Object.assign(Error(data.error||t('请求失败')),{loginStatus:data.loginStatus});}return data;}
-const workbench=window.BridgeWorkbench=new Workbench({chat:$('chat'),request:api,csrf:()=>csrf,notify:toast,onUnauthorized:()=>showLogin()});
+async function api(path,body,signal){const options={signal,credentials:'same-origin',cache:'no-store',headers:{}};if(body!==undefined){options.method='POST';options.headers={'Content-Type':'application/json','X-CSRF-Token':csrf};options.body=JSON.stringify(body);}const response=await fetch(hostUrl(path),options);const data=await response.json();if(!response.ok){if(response.status===401)showLogin();throw Object.assign(Error(data.error||t('请求失败')),{loginStatus:data.loginStatus,status:response.status});}return data;}
+const workbench=window.BridgeWorkbench=new Workbench({chat:$('chat'),request:api,csrf:()=>csrf,notify:toast,onUnauthorized:()=>showLogin(),openChat});
 async function uploadAttachment(key,id,file){const separator=key.indexOf('|'),host=key.slice(0,separator),thread=key.slice(separator+1);const response=await fetch(sessionUrl(thread,'uploads',host)+'&id='+encodeURIComponent(id)+'&name='+encodeURIComponent(file.name),{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/octet-stream','X-CSRF-Token':csrf},body:file});const result=await response.json();if(!response.ok){if(response.status===401)showLogin();const error=Error(result.error||t('附件上传失败，请重试'));error.retryable=response.status>=500||response.status===429;throw error;}return result;}
 async function uploadAttachmentWithRetry(key,id,file){let last;for(let attempt=0;attempt<3;attempt++){try{return await uploadAttachment(key,id,file);}catch(error){last=error;if(error.name==='AbortError'||error.retryable===false||attempt===2)throw error;await new Promise(resolve=>setTimeout(resolve,400*(attempt+1)));}}if(last instanceof TypeError)last.message=t('附件上传中断，请重试');throw last;}
 const attachments=new ChatAttachments({root:$('attachment-list'),button:$('attach-button'),input:$('attachment-input'),paste:$('message'),drop:$('composer'),preview:(key,id)=>{const at=key.indexOf('|'),host=key.slice(0,at),thread=key.slice(at+1);return hostUrl(sessionUrl(thread,'uploads/'+encodeURIComponent(id)+'/preview',host));},onChange:()=>{if(currentId)$('send').disabled=sending||!attachments.ready()||!state||state.loadingHistory||state.activating;},thumbnail:async(key,id,file)=>{
@@ -112,20 +113,22 @@ function renderList(){
   if(!listRows.length)$('sessions').append(el('p','muted',t('没有找到聊天。')));renderActivity();
 }
 async function loadList(reset=false){
-  const generation=++listGeneration;
-  if(reset){listOffset=0;listRows=[];}
+  const generation=++listGeneration,offset=reset?0:listOffset;
   listQuery=$('search').value;
-  const result=await api('/api/sessions?q='+encodeURIComponent(listQuery)+'&offset='+listOffset+'&archived='+$('archived').checked);
+  let result;listLoading++;
+  try{result=await api('/api/sessions?q='+encodeURIComponent(listQuery)+'&offset='+offset+'&archived='+$('archived').checked);}
+  finally{listLoading--;}
   if(generation!==listGeneration)return;
-  const rows=new Map(listRows.map(row=>[chatKey(row.id,row.host),row]));
+  const rows=new Map((reset?[]:listRows).map(row=>[chatKey(row.id,row.host),row]));
   for(const row of result.sessions){const key=chatKey(row.id,row.host);row.recency=Math.max(row.recency,recentInteractions.get(key)||0);rows.set(key,row);}
   listRows=[...rows.values()];listRows.sort((a,b)=>b.recency-a.recency);
-  listOffset+=result.sessions.length;$('more').hidden=result.sessions.length<100;
+  listOffset=offset+result.sessions.length;$('more').hidden=result.sessions.length<100;
   $('host-errors').textContent=(result.unavailableHosts||[]).map(h=>h.label+'：'+h.error).join('\n');
   $('host-errors').hidden=!(result.unavailableHosts||[]).length;renderList();refreshActivity();
 }
 $('search').oninput=()=>{clearTimeout(loadList.timer);loadList.timer=setTimeout(()=>loadList(true).catch(e=>toast(e.message)),300);};$('refresh').onclick=()=>loadList(true).catch(e=>toast(e.message));$('more').onclick=()=>loadList().catch(e=>toast(e.message));
 $('archived').onchange=()=>loadList(true).catch(e=>toast(e.message));
+const listSync=window.BridgeListSync=new ListSync({root:$('sessions'),status:$('list-sync'),refresh:()=>loadList(true),visible:()=>!$('app').hidden&&$('sidebar').getBoundingClientRect().width>0,ready:()=>!listLoading&&document.activeElement!==$('search')});
 let newChatProjects=[],creatingChat=false,approvalBusy=0;
 $('new-chat-title').value=t('新聊天');
 $('new-chat-title').oninput=()=>{$('new-chat-title').dataset.edited='true';};

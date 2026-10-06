@@ -3,12 +3,12 @@ const timelineText=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(s
 
 // History and live changes share stable keys, but never share a request queue.
 class ChatTimeline {
-  constructor({url, request, renderMeta, renderText, status, onAction}) {
-    Object.assign(this,{url,request,renderMeta,renderText,status,onAction});
-    this.viewport=document.getElementById('timeline');
-    this.container=document.getElementById('messages');
-    this.older=document.getElementById('older');
-    this.newer=document.getElementById('newer');
+  constructor({url, request, renderMeta, renderText, status, onAction, elements = {}, active = () => true}) {
+    Object.assign(this,{url,request,renderMeta,renderText,status,onAction,active});
+    this.viewport=elements.viewport||document.getElementById('timeline');
+    this.container=elements.container||document.getElementById('messages');
+    this.older=elements.older||document.getElementById('older');
+    this.newer=elements.newer||document.getElementById('newer');
     this.abort=new AbortController();this.rows=new Map();this.nodes=new Map();this.details=new Map();
     this.files=new Map();this.sequence=-1;this.epoch='';this.before=null;this.hasMore=false;
     this.busy=false;this.generation=0;this.windowRevision=0;this.following=true;this.lastTop=0;this.retryCount=0;
@@ -212,6 +212,7 @@ class ChatTimeline {
   }
   async updates(){
     while(!this.abort.signal.aborted){
+      if(!this.active()){await this.pause(1000);continue;}
       try{
         const generation=this.generation,windowRevision=this.windowRevision;
         const page=await this.read('changes',{after:this.sequence,epoch:this.epoch,start:this.before||''});

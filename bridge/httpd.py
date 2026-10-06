@@ -31,7 +31,11 @@ from .create import CreationError
 from .account import AccountError
 
 LOG = logging.getLogger(__name__)
-STATIC = {"/floating-panel.js": ("floating-panel.js", "text/javascript; charset=utf-8"),
+STATIC = {"/list-sync.js": ("list-sync.js", "text/javascript; charset=utf-8"),
+          "/agents-panel.js": ("agents-panel.js", "text/javascript; charset=utf-8"),
+          "/side-chat.js": ("side-chat.js", "text/javascript; charset=utf-8"),
+          "/terminal-panel.js": ("terminal-panel.js", "text/javascript; charset=utf-8"),
+          "/floating-panel.js": ("floating-panel.js", "text/javascript; charset=utf-8"),
           "/git-panel.js": ("git-panel.js", "text/javascript; charset=utf-8"),
           "/workbench.js": ("workbench.js", "text/javascript; charset=utf-8"),
           "/image-viewer.js": ("image-viewer.js", "text/javascript; charset=utf-8"),
@@ -384,6 +388,23 @@ class Handler(BaseHTTPRequestHandler):
                     return self.output(200, {'pushplusEnabled': config['pushplusEnabled'],
                                              'hasPushplusToken': bool(config['pushplusToken'])})
             bridge = self.server.bridge.for_host(query.get("host", ["local"])[0])
+            agent_match = re.fullmatch(r"/api/sessions/([0-9a-f-]{36})/subagents", path)
+            if agent_match:
+                if write: return self.output(405, {'error': '子智能体面板仅查看现有任务'})
+                return self.output(200, bridge.subagents(agent_match[1], query.get('id', [None])[0]))
+            terminal_match = re.fullmatch(r"/api/sessions/([0-9a-f-]{36})/terminal", path)
+            if terminal_match:
+                if self.server.auth.config.get('mode') == 'none':
+                    raise PermissionError('终端需要启用网关密码保护')
+                owner = self.server.auth.key(self.token())
+                if write:
+                    body = self.read_json()
+                    if set(body) - {'action', 'id', 'command'} or body.get('action') not in ('start', 'stop'):
+                        raise ValueError('无效终端操作')
+                    return self.output(200, bridge.terminal(terminal_match[1], owner, body['action'], body))
+                identifier = query.get('id', [''])[0]
+                return self.output(200, bridge.terminal(terminal_match[1], owner, 'read' if identifier else 'info',
+                                   {'id': identifier, 'after': int(query.get('after', ['0'])[0])}))
             workspace_match = re.fullmatch(r"/api/sessions/([0-9a-f-]{36})/workspace(?:/(preview|download|upload|git-status|git-diff|git-history|git-commit|git-history-diff|git-branches|git-action))?", path)
             if workspace_match:
                 thread_id, operation = workspace_match.groups()

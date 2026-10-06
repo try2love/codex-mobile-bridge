@@ -148,7 +148,54 @@ class SessionStore:
             return b''.join(reversed(parts)), True
 
     def history(self, thread_id, turn_limit=None):
-        meta = self.get(thread_id)
+        return self._history(thread_id, self.get(thread_id), turn_limit)
+
+    @staticmethod
+    def _agent_source(meta):
+        try:
+            source = json.loads(meta.get('source') or '{}')
+            spawn = source.get('subagent', {}).get('thread_spawn', {})
+            return spawn if isinstance(spawn, dict) else {}
+        except (ValueError, AttributeError):
+            return {}
+
+    def subagents(self, thread_id):
+        self.get(thread_id)  # Only a desktop parent can authorize this subtree.
+        result, pending, seen = [], [thread_id], {thread_id}
+        with self._connect() as conn:
+            while pending and len(result) < 128:
+                parent = pending.pop(0)
+                rows = conn.execute("SELECT * FROM threads WHERE source LIKE ? ORDER BY updated_at DESC LIMIT 129", ('%' + parent + '%',))
+                for row in rows:
+                    meta = dict(row); spawn = self._agent_source(meta)
+                    if spawn.get('parent_thread_id') != parent or meta['id'] in seen: continue
+                    seen.add(meta['id']); pending.append(meta['id'])
+                    result.append({'id': meta['id'], 'parentId': parent,
+                                   'title': meta.get('name') or meta.get('title') or '子智能体',
+                                   'nickname': meta.get('agent_nickname') or spawn.get('agent_nickname'),
+                                   'role': meta.get('agent_role') or spawn.get('agent_role'),
+                                   'path': meta.get('agent_path') or spawn.get('agent_path'),
+                                   'updated': meta.get('updated_at'), 'archived': bool(meta.get('archived'))})
+                    if len(result) >= 128: break
+        return {'agents': result, 'limited': len(result) >= 128}
+
+    def subagent_history(self, thread_id, agent_id):
+        self.get(thread_id)
+        with self._connect() as conn:
+            current = agent_id; seen = set(); target = None
+            while current != thread_id:
+                if current in seen or len(seen) >= 32: raise KeyError('子智能体不属于此聊天')
+                seen.add(current)
+                row = conn.execute('SELECT * FROM threads WHERE id = ?', (current,)).fetchone()
+                if not row: raise KeyError('子智能体不存在')
+                meta = dict(row)
+                if target is None: target = meta
+                current = self._agent_source(meta).get('parent_thread_id')
+                if not current: raise KeyError('子智能体不属于此聊天')
+        if target is None: raise KeyError('请选择子智能体')
+        return self._history(agent_id, target, 10)
+
+    def _history(self, thread_id, meta, turn_limit=None):
         path = Path(meta["rollout_path"])
         # The file path must be an actual rollout in this user's Codex home.
         resolved = path.resolve()

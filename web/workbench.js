@@ -1,8 +1,8 @@
 'use strict';
 
 class Workbench {
-  constructor({chat, request, csrf, notify, onUnauthorized}) {
-    Object.assign(this, {chat, request, csrf, notify, onUnauthorized});
+  constructor({chat, request, csrf, notify, onUnauthorized, openChat}) {
+    Object.assign(this, {chat, request, csrf, notify, onUnauthorized, openChat});
     this.sessions = new Map();
     this.scrollPositions = new WeakMap();
     this.strip = this.node('nav', 'workbench-tabs'); this.strip.setAttribute('aria-label', '工作台标签');
@@ -11,6 +11,11 @@ class Workbench {
     this.strip.append(this.tabs, add);
     this.panel = this.node('section', 'workbench-panel'); this.panel.hidden = true;
     chat.querySelector('.chat-head').after(this.strip, this.panel);
+    this.sideHost=this.node('div','wb-side-host');chat.append(this.sideHost);
+    this.sideResize=new ResizeObserver(()=>{
+      const top=this.strip.getBoundingClientRect().bottom-chat.getBoundingClientRect().top;
+      this.sideHost.style.top=Math.max(0,top)+'px';
+    });this.sideResize.observe(chat);this.sideResize.observe(this.strip);
   }
   node(tag, cls = '', text) { const n = document.createElement(tag); n.className = cls; if (text !== undefined) n.textContent = text; return n; }
   button(text, action, title = text) { const b = this.node('button', '', text); b.type = 'button'; b.title = title; b.setAttribute('aria-label', title); b.onclick = action; return b; }
@@ -89,7 +94,7 @@ class Workbench {
     if (!this.sessions.has(key)) this.sessions.set(key, {id, host, key, active: 'chat', files: [], directory: '', search: '', hidden: false, scroll: 0});
     this.current = this.sessions.get(key); this.paint();
   }
-  reset() { this.stopThumbnails(); this.uploadController?.abort(); for (const session of this.sessions.values()) for (const tab of session.files) { tab.controller?.abort(); tab.git?.dispose(); } this.sessions.clear(); this.current = null; this.chat.classList.remove('workbench-active'); this.panel.replaceChildren(); this.panel.hidden = true; this.tabs.replaceChildren(); }
+  reset() { for(const s of this.sessions.values())s.sideChat?.dispose(); this.stopThumbnails(); this.uploadController?.abort(); for (const session of this.sessions.values()) for (const tab of session.files) { tab.controller?.abort(); tab.git?.dispose(); tab.terminal?.dispose(); tab.agents?.dispose(); } this.sessions.clear(); this.current = null; this.chat.classList.remove('workbench-active'); this.panel.replaceChildren(); this.panel.hidden = true; this.tabs.replaceChildren(); }
   get isFileVisible() { return !!this.current && this.current.active !== 'chat'; }
   url(session, operation = '', path = '') { return '/api/sessions/' + session.id + '/workspace' + (operation ? '/' + operation : '') + '?host=' + encodeURIComponent(session.host) + '&path=' + encodeURIComponent(path); }
   rememberScroll() { if (this.current?.active === 'chat') this.current.scroll = this.chat.querySelector('.timeline').scrollTop; }
@@ -116,12 +121,13 @@ class Workbench {
       this.panel.append(active.body);
       for (const node of active.body.querySelectorAll('.wb-file-list,.wb-preview-content,.wb-git-list,.wb-git-diff,.wb-branch-list')) node.scrollTop = this.scrollPositions.get(node) || 0;
     }
+    this.sideHost.replaceChildren(); if(session.sideChat)this.sideHost.append(session.sideChat.window.element);
     this.refreshThumbnails();
   }
-  back() { if (!this.isFileVisible) return false; this.select('chat'); return true; }
+  back() { const floating=this.sideHost.querySelector('.wb-float')||this.panel.querySelector('.wb-float'); if(floating){floating.querySelector('[aria-label="关闭详情"]').click();return true;} if (!this.isFileVisible) return false; this.select('chat'); return true; }
   close(id) {
     const session = this.current, index = session.files.findIndex(t => t.id === id);
-    if (index < 0) return; session.files[index].controller?.abort(); session.files[index].git?.dispose(); session.files.splice(index, 1);
+    if (index < 0) return; session.files[index].controller?.abort(); session.files[index].git?.dispose(); session.files[index].terminal?.dispose(); session.files[index].agents?.dispose(); session.files.splice(index, 1);
     if (session.active === id) this.select(session.files.find(t => t.id === 'files') ? 'files' : 'chat'); else this.paint();
   }
   files() {
@@ -137,7 +143,7 @@ class Workbench {
     const dialog = this.node('dialog', 'picker wb-new-tab'), head = this.node('div', 'picker-head');
     head.append(this.node('h2', '', '新标签页'), this.button('×', () => dialog.close(), '关闭'));
     const choices = this.node('div', 'wb-tab-choices');
-    for (const [name, description, action] of [['文件', '浏览项目文件、上传与下载', () => this.files()], ['Git', '查看分支、变更与代码差异', () => this.git()]]) {
+    for (const [name, description, action] of [['文件', '浏览项目文件、上传与下载', () => this.files()], ['Git', '历史、暂存、提交与分支管理', () => this.git()], ['终端', '运行项目命令、构建与查看输出', () => this.terminal()], ['侧边聊天', '在当前工作台旁继续另一条聊天', () => this.sideChat()], ['子智能体', '查看派生任务关系与执行记录', () => this.agents()]]) {
       const button = this.button('', () => { dialog.close(); action(); }, name);
       button.append(this.node('strong', '', name), this.node('span', '', description)); choices.append(button);
     }
@@ -150,6 +156,23 @@ class Workbench {
       session.files.push(tab); tab.git = new GitPanel(this, session, tab); tab.git.load();
     }
     this.select('git');
+  }
+  agents() {
+    const session=this.current;if(!session)return;
+    if(!session.files.some(tab=>tab.id==='agents')) {
+      const tab={id:'agents',name:'子智能体',body:this.node('div','wb-agents')};
+      session.files.push(tab);tab.agents=new AgentsPanel(this,session,tab);
+    }
+    this.select('agents');
+  }
+  sideChat() { if(this.current) SideChatPanel.pick(this, this.current); }
+  terminal() {
+    const session=this.current;if(!session)return;
+    if(!session.files.some(tab=>tab.id==='terminal')) {
+      const tab={id:'terminal',name:'终端',body:this.node('div','wb-terminal')};
+      session.files.push(tab);tab.terminal=new TerminalPanel(this,session,tab);
+    }
+    this.select('terminal');
   }
   async directory(session, tab, path, append = false) {
     tab.controller?.abort(); const controller = tab.controller = new AbortController();
