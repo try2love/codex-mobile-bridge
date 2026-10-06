@@ -2,11 +2,11 @@
 
 class GitPanel {
   constructor(workbench, session, tab) {
-    this.workbench = workbench; this.session = session; this.tab = tab; this.mode = 'changes'; this.historyLimit = 40;
+    this.workbench = workbench; this.session = session; this.tab = tab; this.mode = 'changes'; this.historyLimit = 40; this.windowStates = {};
     this.node = (...args) => workbench.node(...args);
     this.button = (...args) => workbench.button(...args);
   }
-  dispose() { this.tab.controller?.abort(); this.diffController?.abort(); this.historyDiffController?.abort(); }
+  dispose() { this.floating?.destroy(); this.floating = null; this.tab.controller?.abort(); this.diffController?.abort(); this.historyDiffController?.abort(); }
   async load() {
     this.dispose(); const controller = this.tab.controller = new AbortController();
     const head = this.node('div', 'wb-git-head'), title = this.node('div', 'wb-git-heading');
@@ -48,8 +48,8 @@ class GitPanel {
       if (result.operation === 'merge') actions.append(this.button('中止合并', () => this.confirm('中止本次合并', '将恢复合并前的状态，本次合并中的冲突处理也会被撤销。', {action:'abort-merge'}, '中止合并')));
       this.tab.body.append(actions);
       const layout = this.node('div', 'wb-git-layout'); this.list = this.node('div', 'wb-git-list'); this.list.setAttribute('aria-label', 'Git 变更文件');
-      this.detail = this.node('div', 'wb-git-detail'); this.detail.append(this.node('p', 'wb-empty', '选择文件查看差异'));
-      layout.append(this.list, this.detail); this.tab.body.append(layout);
+      this.layoutHost = layout; layout.classList.add('wb-float-host');
+      layout.append(this.list); this.tab.body.append(layout);
       const groups = [['conflict', '冲突', e => e.conflict], ['unstaged', '未暂存', e => !e.conflict && !e.untracked && e.worktree !== '.'], ['staged', '已暂存', e => !e.conflict && !e.untracked && e.index !== '.'], ['untracked', '未跟踪', e => e.untracked]];
       let restored;
       for (const [section, name, filter] of groups) {
@@ -75,10 +75,22 @@ class GitPanel {
       } else if (restored) this.show(...restored);
     } catch (error) { if (!controller.signal.aborted) { status.hidden = false; status.textContent = error.message; status.classList.add('error'); } }
   }
+  openDetail(title) {
+    this.floating?.destroy();
+    this.detail = this.node('div', 'wb-git-detail');
+    this.floating = new FloatingPanel({host:this.tab.body, content:this.detail, title,
+      state:this.windowStates[this.mode] ||= {}, node:this.node, button:this.button,
+      close:() => {
+        this.diffController?.abort(); this.historyDiffController?.abort();
+        this.selected = this.selectedCommit = null; this.floating = null;
+        for (const row of this.layoutHost.querySelectorAll('.selected')) { row.classList.remove('selected'); row.setAttribute('aria-pressed', 'false'); }
+      }});
+  }
   async show(entry, section, row) {
     this.diffController?.abort(); const controller = this.diffController = new AbortController();
     this.selected = section + ':' + entry.path;
     for (const button of this.list.querySelectorAll('.wb-git-file')) { button.classList.toggle('selected', button === row); button.setAttribute('aria-pressed', String(button === row)); }
+    this.openDetail(entry.path);
     const header = this.node('div', 'wb-git-diff-head');
     const labels = {staged: '已暂存 · HEAD → 暂存区', unstaged: '未暂存 · 暂存区 → 工作区', untracked: '未跟踪 · 新文件', conflict: '冲突 · 当前工作区内容'};
     header.append(this.node('strong', '', entry.path), this.node('small', '', labels[section]));
@@ -176,8 +188,7 @@ class GitPanel {
     scope.value = this.historyRef || 'all'; scope.onchange = () => { this.historyRef = scope.value; this.historyLimit = 40; this.load(); };
     toolbar.append(scope, this.node('span', 'muted', '本地提交记录'));
     const layout = this.historyLayout = this.node('div', 'wb-git-layout wb-history-layout'), list = this.node('div', 'wb-git-list wb-history-list');
-    this.collapseHistory = this.button('收起详情', () => { this.selectedCommit = null; layout.classList.remove('wb-history-selected'); this.collapseHistory.hidden = true; }); this.collapseHistory.hidden = true; toolbar.append(this.collapseHistory);
-    this.detail = this.node('div', 'wb-git-detail'); this.detail.append(this.node('p', 'wb-empty', '选择提交查看说明和文件差异')); layout.append(list, this.detail);
+    this.layoutHost = layout; layout.classList.add('wb-float-host'); layout.append(list);
     list.append(this.node('p', 'wb-status', '正在读取历史…')); this.tab.body.append(toolbar, layout);
     const result = await this.workbench.request(this.workbench.url(this.session, 'git-history') + '&limit=' + this.historyLimit + '&ref=' + scope.value, undefined, controller.signal);
     if (controller.signal.aborted) return;
@@ -195,7 +206,7 @@ class GitPanel {
   }
   async showCommit(commit) {
     this.diffController?.abort(); this.historyDiffController?.abort(); const controller = this.diffController = new AbortController();
-    this.selectedCommit = commit.id; this.historyLayout.classList.add('wb-history-selected'); this.collapseHistory.hidden = false;
+    this.selectedCommit = commit.id; this.openDetail('提交 · ' + commit.id.slice(0, 8));
     for (const row of this.tab.body.querySelectorAll('.wb-history-row')) { row.classList.toggle('selected', row.dataset.commit === commit.id); row.setAttribute('aria-pressed', String(row.dataset.commit === commit.id)); }
     this.detail.replaceChildren(this.node('p', 'wb-status', '正在读取提交…'));
     try {

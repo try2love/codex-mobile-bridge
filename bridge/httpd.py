@@ -31,7 +31,8 @@ from .create import CreationError
 from .account import AccountError
 
 LOG = logging.getLogger(__name__)
-STATIC = {"/git-panel.js": ("git-panel.js", "text/javascript; charset=utf-8"),
+STATIC = {"/floating-panel.js": ("floating-panel.js", "text/javascript; charset=utf-8"),
+          "/git-panel.js": ("git-panel.js", "text/javascript; charset=utf-8"),
           "/workbench.js": ("workbench.js", "text/javascript; charset=utf-8"),
           "/image-viewer.js": ("image-viewer.js", "text/javascript; charset=utf-8"),
           "/workbench.css": ("workbench.css", "text/css; charset=utf-8"),
