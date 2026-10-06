@@ -23,6 +23,7 @@ function setLanguage(value,persist=false){
   for(const item of attributes)item.node.setAttribute(item.name,item[language]);
   languageButtons.forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.language===language)));
   document.querySelectorAll('[data-doc-link]').forEach(link=>link.href=language==='en'?repo+'/blob/main/README_EN.md':repo);
+  document.querySelectorAll('[data-setup-link]').forEach(link=>{const url=new URL(link.href);url.searchParams.set('lang',language);link.href=url;});
   const title=language==='en'?'Codex Mobile Bridge | Continue your Codex work in a browser':'Codex Mobile Bridge｜用浏览器继续你的 Codex 工作';
   const description=language==='en'?'Continue Codex App chats from a phone, tablet or computer browser with your existing ChatGPT login, API or custom provider. Explore the walkthrough, features and downloads.':'从手机、平板或电脑浏览器继续 Codex App 会话，沿用官方登录、API 或自定义模型配置。查看真实界面演示、完整功能与下载。';
   document.title=title;document.querySelector('meta[name=description]').content=description;document.querySelector('meta[property="og:title"]').content=title;document.querySelector('meta[property="og:description"]').content=description;
@@ -48,3 +49,6 @@ if(!['zh','en'].includes(initial)){try{initial=localStorage.getItem('cmb-site-la
 setLanguage(initial);
 video.addEventListener('loadedmetadata',setTracks);
 fetch('./assets/tour-chapters.json?v=1.3.0').then(response=>{if(!response.ok)throw Error('Chapters unavailable');return response.json();}).then(value=>{chapters=value;renderChapters();}).catch(()=>{});
+
+function openCloudflareGuide(){if(location.hash==='#cloudflare-guide'){selectRoute('cloudflare');document.getElementById('cloudflare-guide').scrollIntoView();}}
+window.addEventListener('hashchange',openCloudflareGuide);openCloudflareGuide();

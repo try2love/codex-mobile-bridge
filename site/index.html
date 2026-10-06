@@ -9,7 +9,7 @@
 <link rel="icon" href="./assets/icon.png"><link rel="canonical" href="https://try2love.github.io/codex-mobile-bridge/">
 <link rel="alternate" hreflang="zh-Hans" href="https://try2love.github.io/codex-mobile-bridge/?lang=zh">
 <link rel="alternate" hreflang="en" href="https://try2love.github.io/codex-mobile-bridge/?lang=en">
-<link rel="stylesheet" href="./site.css?v=1.3.0"><script defer src="./site.js?v=1.3.0"></script></head><body>
+<link rel="stylesheet" href="./site.css?v=20261006-setup"><script defer src="./site.js?v=20261006-setup"></script></head><body>
 <svg class="svg-defs" aria-hidden="true"><defs>
 <symbol id="i-phone" viewBox="0 0 32 32"><rect x="9" y="2" width="14" height="28" rx="3"/><path d="M13 6h6M14 26h4"/></symbol>
 <symbol id="i-network" viewBox="0 0 32 32"><circle cx="16" cy="16" r="12"/><ellipse cx="16" cy="16" rx="5" ry="12"/><path d="M4 16h24M7 9h18M7 23h18"/></symbol>
@@ -20,6 +20,7 @@
 <header><div class="bar"><a class="brand" href="#top"><img src="./assets/icon.png" width="31" height="31" alt=""><span>CODEX MOBILE BRIDGE<small data-en="Desktop power. Browser freedom." >电脑运行 · 跨设备接力</small></span></a><nav aria-label="介绍导航" data-en-aria-label="Product navigation">
 <a data-en="Demo" href="#demo" class="">演示</a>
 <a data-en="Features" href="#features" class="">功能</a>
+<a data-en="Setup guide" data-setup-link href="./setup.html#server">配置教程</a>
 <a data-en="Download ↗" href="#download" class="">下载 ↗</a>
 </nav><div class="languages" role="group" aria-label="语言 / Language"><button type="button" data-language="zh" aria-pressed="true">中文</button><button type="button" data-language="en" aria-pressed="false">English</button></div></div></header><main id="top">
 <section class="hero"><div class="hero-grid"><div>
@@ -272,9 +273,11 @@
 </div></section>
 <section id="connect">
 <div class="section-head"><div><p data-en="05 / CONNECTIONS" class="eyebrow">05 / CONNECTIONS</p><h2 data-en="Choose a connection that fits." >选一条适合你的连接方式。</h2></div><p data-en="Multiple connections can stay enabled and reach the same gateway." >多个入口可以同时启用，连接同一个电脑网关。</p></div>
+<p class="mini-note" data-en="Setup guide preview: named-tunnel controls, bundled cloudflared and staged SSH controls described below belong to the unreleased local preview. Public app downloads have not changed.">配置教程预览：下文的固定隧道入口、内置 cloudflared 与分步 SSH 操作对应尚未发布的本地预览版；目前公开下载的 App 版本未更新。</p>
 <div class="connection"><div class="tabs" role="tablist" aria-label="连接方式" data-en-aria-label="Connection options">
 <button data-en="LAN" role="tab" id="tab-lan" data-route="lan" aria-selected="true" aria-controls="panel-lan" tabindex="0">局域网</button>
 <button data-en="Temporary HTTPS" role="tab" id="tab-quick" data-route="quick" aria-selected="false" aria-controls="panel-quick" tabindex="-1">临时 HTTPS</button>
+<button data-en="Fixed Cloudflare domain" role="tab" id="tab-cloudflare" data-route="cloudflare" aria-selected="false" aria-controls="panel-cloudflare" tabindex="-1">Cloudflare 固定域名</button>
 <button data-en="Own server" role="tab" id="tab-server" data-route="server" aria-selected="false" aria-controls="panel-server" tabindex="-1">自有服务器</button>
 <button data-en="NAS / Docker" role="tab" id="tab-nas" data-route="nas" aria-selected="false" aria-controls="panel-nas" tabindex="-1">NAS / Docker</button>
 </div>
@@ -301,7 +304,7 @@
 </div><div class="route-caption">
 <strong data-en="Your devices share a reachable local network." >手机与电脑在同一可互访网络。</strong>
 <p data-en="Enable LAN access and use the address shown in the App. No domain required." >启动局域网访问，使用 App 显示的地址即可开始，无需额外域名。</p>
-</div></div>
+</div><p class="actions"><a class="button primary" data-en="LAN setup walkthrough" data-setup-link href="./setup.html#lan">局域网配置图解 →</a></p></div>
 <div id="panel-quick" role="tabpanel" aria-labelledby="tab-quick" hidden><div class="route">
 <div class="node">
 <strong data-en="Browser" >浏览器</strong>
@@ -324,8 +327,9 @@
 </div>
 </div><div class="route-caption">
 <strong data-en="You need temporary access outside your LAN." >没有固定域名，需要临时外网访问。</strong>
-<p data-en="Install or select cloudflared in the App, then enable the tunnel. Its address may change and traffic passes through the tunnel provider." >在 App 安装或选择 cloudflared 后启用。地址可能变化，流量经过隧道服务商。</p>
-</div></div>
+<p data-en="The local preview bundles cloudflared. Earlier packages may require installing or selecting it first. Enable a temporary connection and start the gateway; its address may change.">本地预览版已内置 cloudflared；较早的安装包可能需要先安装或选择该组件。启用临时连接并启动网关即可，地址可能变化。</p>
+</div><p class="actions"><a class="button primary" data-en="Temporary HTTPS walkthrough" data-setup-link href="./setup.html#quick">临时 HTTPS 配置图解 →</a></p></div>
+<div id="panel-cloudflare" role="tabpanel" aria-labelledby="tab-cloudflare" hidden><div class="route"><div class="node"><strong data-en="Phone browser">手机浏览器</strong><small data-en="Your fixed hostname">自己的固定域名</small></div><span class="arrow" aria-hidden="true">→</span><div class="node"><strong data-en="Cloudflare">Cloudflare</strong><small data-en="Fixed tunnel · HTTPS">固定隧道 · HTTPS</small></div><span class="arrow" aria-hidden="true">→</span><div class="node"><strong data-en="Host gateway">电脑网关</strong><small data-en="Bundled cloudflared">内置 cloudflared</small></div><span class="arrow" aria-hidden="true">→</span><div class="node"><strong data-en="Original Codex App">原 Codex App</strong><small data-en="Keep the computer online">电脑保持在线</small></div></div><div class="route-caption"><strong data-en="Use a fixed HTTPS address with your domain, without a public server.">只有域名，没有公网服务器，也能使用固定 HTTPS 地址。</strong><p data-en="Keep your registrar and use Cloudflare DNS. Keep the computer, Codex and gateway online. The domain try2love.com and URL https://codex.try2love.com are configuration examples, not a live demo site. Replace them with your own domain.">域名在原注册商续费，DNS 托管到 Cloudflare；电脑、Codex 和网关需要保持在线。try2love.com 和 https://codex.try2love.com 仅用于配置演示，不代表可访问的演示站点，请替换成自己的域名。</p></div><details id="cloudflare-guide" class="connection-guide" open><summary data-en="First-time setup: from domain to phone">首次配置：从域名到手机访问</summary><ol class="steps"><li><span class="number">1</span><h3 data-en="Add your domain">添加自己的域名</h3><p data-en="Add try2love.com to Cloudflare and copy its two assigned nameservers (NS). Review and preserve DNS records for existing websites and email.">在 Cloudflare 添加 try2love.com，复制分配的两条名称服务器（NS）。已有网站和邮箱时，先核对并保留原 DNS 记录。</p></li><li><span class="number">2</span><h3 data-en="Change the domain nameservers">修改域名的 DNS 服务器</h3><p data-en="At your registrar, replace the domain nameservers with these two NS addresses and wait for Active status. Keep renewing with your registrar; manage DNS records in Cloudflare.">在阿里云等注册商的域名管理中，把 DNS 服务器改为这两条 NS，等待 Cloudflare 显示 Active。域名仍在原注册商续费；后续解析在 Cloudflare 管理。</p></li><li><span class="number">3</span><h3 data-en="Create a tunnel and get its token">创建隧道，取得 Token</h3><p data-en="Create a Cloudflared tunnel under Tunnels. Copy the Tunnel Token from the connector installation command. The app bundles the connector: copy only the token, not the command or an API key.">在 Cloudflare 的 Tunnels 中创建 Cloudflared 隧道，从连接器安装命令中复制 Tunnel Token。App 已内置程序，无需再执行安装命令；只复制 Token，不是整条命令或 API Key。</p></li><li><span class="number">4</span><h3 data-en="Configure the app and start">填写 App 并启动网关</h3><p data-en="Add Fixed domain · Cloudflare Tunnel, enter https://codex.try2love.com and the token, enable and save it, then start the gateway. Confirm the connector is connected in Cloudflare.">添加“固定域名 · Cloudflare Tunnel”，填写 https://codex.try2love.com 和 Token，启用、保存并启动网关。回到 Cloudflare 确认连接器已连接。</p></li><li><span class="number">5</span><h3 data-en="Route the hostname to your gateway">把域名指向电脑网关</h3><p data-en="Under tunnel Routes, add a Published application / Public Hostname: subdomain codex, domain try2love.com, no path. Select HTTP and enter localhost:8787, matching the app port. Saving creates the DNS record.">在隧道 Routes 中添加 Published application / 公开主机名：子域名 codex，域名 try2love.com，路径留空。服务类型选 HTTP，地址填 localhost:8787（端口与 App 一致）；保存后自动创建 DNS 记录。</p></li><li><span class="number">6</span><h3 data-en="Redirect HTTP to HTTPS">开启 HTTP → HTTPS 跳转</h3><p data-en="Create a redirect rule for your gateway hostname in Cloudflare. Opening an HTTP address must upgrade to HTTPS before sign-in; follow the complete guide below for exact settings.">在 Cloudflare 为网关子域名添加 HTTPS 重定向规则。打开 HTTP 地址应先跳到 HTTPS 再登录；具体字段见下方完整图解。</p></li><li><span class="number">7</span><h3 data-en="Verify from your phone">用手机完成最后验证</h3><p data-en="Select Check fixed entry, then open the domain in a computer browser and over phone mobile data. Verify sign-in, chat loading and sending. Healthy means the tunnel is connected; test the actual page too.">点击 App 的“检测固定入口”，再用电脑浏览器和手机蜂窝网络分别访问域名，验证登录、读取聊天和发送消息。Healthy 只代表隧道已连接，网页还需要实际验证。</p></li></ol><p class="mini-note" data-en="Domain not found: check NS, Active status and DNS caches. Error 1033: check the tunnel and token. Error 502: check the local gateway, HTTP type and port. No computer IP record or SSH password is needed.">找不到域名：检查 NS、Active 状态与 DNS 缓存。1033：检查隧道和 Token。502：检查本机网关、HTTP 服务类型和端口。无需把域名指向电脑 IP，也不需要 SSH 密码。</p></details><p class="actions"><a class="button primary" data-en="Complete named-tunnel walkthrough" data-setup-link href="./setup.html#cloudflare">固定隧道完整配置图解 →</a></p></div>
 <div id="panel-server" role="tabpanel" aria-labelledby="tab-server" hidden><div class="route">
 <div class="node">
 <strong data-en="Browser" >浏览器</strong>
@@ -348,8 +352,8 @@
 </div>
 </div><div class="route-caption">
 <strong data-en="You have a public server and domain, with your host behind NAT." >有公网服务器和域名，电脑位于 NAT 后。</strong>
-<p data-en="The computer creates an outbound SSH tunnel; the server provides a fixed HTTPS entry. Set up DNS, TLS and a reverse proxy using an exported deployment bundle." >电脑主动建立 SSH 回程，服务器提供固定 HTTPS 入口。首次需配置 DNS、证书与反向代理，可从 App 导出部署包。</p>
-</div></div>
+<p data-en="First, manually configure DNS, HTTPS and SSH forwarding permissions. Then save a regular SSH account in the app and check sign-in. Finally, start the connection and check the fixed entry. The app does not accept sudo passwords or install server software.">① 手动配置 DNS、HTTPS 与 SSH 转发权限；② 在 App 保存普通用户 SSH 配置并检查登录；③ 启动连接、检测固定入口。App 不接收 sudo 密码，不安装服务器软件。</p>
+</div><p class="actions"><a class="button primary" data-en="Prepare your server: step-by-step scenarios" data-setup-link href="./setup.html#server">服务器从零准备：分场景图解 →</a></p></div>
 <div id="panel-nas" role="tabpanel" aria-labelledby="tab-nas" hidden><div class="route">
 <div class="node">
 <strong data-en="Browser" >浏览器</strong>
@@ -373,7 +377,7 @@
 </div><div class="route-caption">
 <strong data-en="Your NAS already serves HTTPS and can reach the host." >NAS 已有 HTTPS，并且能访问电脑。</strong>
 <p data-en="Reuse the domain and reverse proxy, optionally with a Docker entry. The NAS provides access; work still runs on the original computer or SSH host." >复用现有域名和反向代理，可选 Docker 中间入口。NAS 提供访问路径，任务仍在原电脑或 SSH 主机执行。</p>
-</div></div>
+</div><p class="actions"><a class="button primary" data-en="NAS and Docker walkthrough" data-setup-link href="./setup.html#nas">NAS 与 Docker 配置图解 →</a></p></div>
 </div>
 <p data-en="QR sign-in does not establish network reachability. Fixed HTTPS and NAS require initial setup. Keep the host awake and the original Codex App and gateway running." class="mini-note">扫码登录不会自动打通网络。固定 HTTPS 和 NAS 需要完成首次网络配置；使用期间保持电脑唤醒、原 Codex App 与网关运行。</p>
 </section>

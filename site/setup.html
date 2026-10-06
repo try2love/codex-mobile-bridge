@@ -1,0 +1,1059 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="Codex Mobile Bridge 连接配置指南：局域网、Cloudflare 临时与固定隧道、自有服务器 SSH、NAS 反向代理的图解步骤与排查。">
+<title>连接配置指南 · Codex Mobile Bridge</title>
+<link rel="icon" href="./assets/icon.png">
+<link rel="stylesheet" href="./site.css?v=20261006-setup">
+<link rel="stylesheet" href="./setup.css?v=20261006">
+<script defer src="./setup.js?v=20261006">
+</script>
+</head>
+<body class="setup-page">
+<header>
+<div class="bar">
+<a class="brand" href="./">
+<img src="./assets/icon.png" width="31" height="31" alt="">
+<span>CODEX MOBILE BRIDGE<small>CONNECTION GUIDE</small>
+</span>
+</a>
+<a data-en="Back to overview" href="./#connect">返回产品介绍</a>
+<div class="languages" aria-label="Language">
+<button type="button" data-language="zh" aria-pressed="true">中文</button>
+<button type="button" data-language="en" aria-pressed="false">EN</button>
+</div>
+</div>
+</header>
+<main>
+<div class="setup-intro">
+<p data-en="SETUP / CONNECTIONS" class="eyebrow">SETUP / 连接配置</p>
+<h1 data-en="Connect every step." >把每一步，连起来。</h1>
+<p data-en="Choose how to connect, then follow the diagrams and steps. Each step explains where to work, the permissions needed and how to check success." class="lead">选好访问方式，照着图示和步骤配置。每一步都说明在哪操作、需要什么权限，以及看到什么才算成功。</p>
+<p data-en="Before starting: open Codex App and the gateway on your work computer and confirm local sign-in works. Named-tunnel controls, bundled cloudflared and staged SSH setup described here are in the local preview and are not yet released. Check which controls your installed version provides; the public download has not changed." class="example-note">准备开始：先在工作电脑打开 Codex App 和网关，确认本机或局域网可以登录。文中的固定隧道入口、内置 cloudflared 与分步 SSH 设置属于尚未发布的本地预览版；请先确认已安装版本具备对应选项。目前公开下载的版本未更新。</p>
+</div>
+<nav class="method-picker" aria-label="连接方式 / Connection methods">
+<a href="#lan" data-method="lan">
+<strong data-en="LAN" >局域网</strong>
+<span data-en="On the same network" >只在同一网络使用</span>
+</a>
+<a href="#quick" data-method="quick">
+<strong data-en="Temporary HTTPS" >临时 HTTPS</strong>
+<span data-en="No server or domain" >没有服务器，也没有域名</span>
+</a>
+<a href="#cloudflare" data-method="cloudflare">
+<strong data-en="Named Cloudflare Tunnel" >Cloudflare 固定域名</strong>
+<span data-en="Domain, without server maintenance" >有域名，希望少管服务器</span>
+</a>
+<a href="#server" data-method="server">
+<strong data-en="Own server + SSH" >自有服务器 + SSH</strong>
+<span data-en="Public server and domain" >有公网服务器和域名</span>
+</a>
+<a href="#nas" data-method="nas">
+<strong data-en="NAS / Docker" >NAS / Docker</strong>
+<span data-en="Existing NAS / HTTPS proxy" >已有 NAS / HTTPS 反代</span>
+</a>
+</nav>
+<p data-en="You or your administrator manually install server software and configure SSH and firewalls. The app does not accept sudo passwords. Copy buttons only copy text; they never execute commands." class="boundary-note">安装软件、调整 SSH 和防火墙等管理员操作由你或管理员在服务器手动执行。App 不接收 sudo 密码；网页上的“复制”只复制文本，不会执行命令。</p>
+<section class="setup-panel" id="lan" data-setup-panel="lan" aria-labelledby="lan-title">
+<h2 data-en="LAN: start with the shortest path" id="lan-title">局域网：先跑通最短的一条链路</h2>
+<p data-en="For a phone and work computer on the same reachable network." class="panel-intro">适合手机和工作电脑处于同一可互访网络。</p>
+<figure class="network-map">
+<div class="map-flow">
+<div class="map-node">
+<span class="map-index">1</span>
+<strong data-en="Phone / browser" >手机／浏览器</strong>
+<small data-en="Same network as computer" >与电脑同一网络</small>
+</div>
+<span class="map-arrow" aria-hidden="true">→</span>
+<div class="map-node">
+<span class="map-index">2</span>
+<strong data-en="Local network" >局域网</strong>
+<small data-en="Computer LAN IP" >电脑的局域网 IP</small>
+</div>
+<span class="map-arrow" aria-hidden="true">→</span>
+<div class="map-node">
+<span class="map-index">3</span>
+<strong data-en="Work computer" >工作电脑</strong>
+<small data-en="Gateway 8787 → Codex" >网关 8787 → Codex</small>
+</div>
+</div>
+<figcaption data-en="No domain or server needed. This address is normally unavailable outside this network." >不需要域名或服务器。离开这个网络后，此地址通常不可达。</figcaption>
+</figure>
+<article class="guide-step" id="lan-start">
+<div class="step-head">
+<span class="step-number">01</span>
+<div>
+<span data-en="Work computer · App" class="actor">工作电脑 · App</span>
+<h3 data-en="Start on your work computer" >在工作电脑启动网关</h3>
+</div>
+</div>
+<div class="step-body">
+<p data-en="Open Codex App. Enable LAN access in Network &amp; sign-in, select the network interface you use, save and start the gateway." >先打开 Codex App。在网关的“网络与登录”启用局域网访问，选择实际使用的网卡，保存并启动网关。</p>
+<p data-en="Check: The app shows a LAN address such as http://192.168.1.10:8787." class="checkpoint">确认结果：App 显示类似 http://192.168.1.10:8787 的局域网地址。</p>
+</div>
+</article>
+<article class="guide-step" id="lan-phone">
+<div class="step-head">
+<span class="step-number">02</span>
+<div>
+<span data-en="Phone · Browser" class="actor">手机 · 浏览器</span>
+<h3 data-en="Join the same reachable network" >手机连接同一个可互访网络</h3>
+</div>
+</div>
+<div class="step-body">
+<p data-en="Open the address shown by the app or scan its sign-in QR code. Do not use localhost or 127.0.0.1 on your phone: those refer to the phone. Guest Wi-Fi, AP isolation and workplace network policies may block device-to-device access." >用手机打开 App 显示的地址或扫码登录。不要在手机输入 localhost 或 127.0.0.1，那表示手机自己。访客 Wi-Fi、AP 隔离和单位网络策略可能阻止设备互访。</p>
+<p data-en="Check: Sign in, load chats, and send a message in your own test chat to verify replies." class="checkpoint">确认结果：能登录、读取聊天；在自己的测试聊天中发送一条消息并收到回复。</p>
+</div>
+</article>
+</section>
+<section class="setup-panel" id="quick" data-setup-panel="quick" aria-labelledby="quick-title">
+<h2 data-en="Temporary HTTPS: no server setup" id="quick-title">临时 HTTPS：不用准备服务器</h2>
+<p data-en="For trying remote access when a changing URL is acceptable." class="panel-intro">适合先体验外网访问，可以接受地址变化。</p>
+<figure class="network-map">
+<div class="map-flow">
+<div class="map-node">
+<span class="map-index">1</span>
+<strong data-en="Phone away from home" >外地手机</strong>
+<small data-en="Temporary HTTPS address" >HTTPS 临时地址</small>
+</div>
+<span class="map-arrow" aria-hidden="true">→</span>
+<div class="map-node">
+<span class="map-index">2</span>
+<strong data-en="Cloudflare" >Cloudflare</strong>
+<small data-en="Public tunnel entry" >公网隧道入口</small>
+</div>
+<span class="map-arrow" aria-hidden="true">→</span>
+<div class="map-node">
+<span class="map-index">3</span>
+<strong data-en="Work computer" >工作电脑</strong>
+<small data-en="Connector → gateway → Codex" >内置连接器 → 网关 → Codex</small>
+</div>
+</div>
+<figcaption data-en="Your computer connects out to Cloudflare; no public computer IP is needed. The temporary URL may change after a restart." >电脑主动连接 Cloudflare，不需要电脑公网 IP。临时地址可能在重启后变化。</figcaption>
+</figure>
+<article class="guide-step" id="quick-start">
+<div class="step-head">
+<span class="step-number">01</span>
+<div>
+<span data-en="Work computer · App" class="actor">工作电脑 · App</span>
+<h3 data-en="Add a temporary connection" >添加临时连接</h3>
+</div>
+</div>
+<div class="step-body">
+<p data-en="Open Codex App, add Temporary HTTPS · Cloudflare, enable it, save and start the gateway. Packages with bundled cloudflared need no extra connector installation. If an older package reports it missing, install it from Runtime settings first." >打开 Codex App，在网关添加“临时 HTTPS · Cloudflare”，勾选启用，保存后启动网关。带内置 cloudflared 的安装包无需另装连接器；较早的安装包若提示缺少组件，先在“运行配置”完成安装。</p>
+<p data-en="Check: The app shows an HTTPS address under .trycloudflare.com." class="checkpoint">确认结果：App 显示以 https:// 开头、以 .trycloudflare.com 为域名后缀的地址。</p>
+</div>
+</article>
+<article class="guide-step" id="quick-check">
+<div class="step-head">
+<span class="step-number">02</span>
+<div>
+<span data-en="Phone · Browser" class="actor">手机 · 浏览器</span>
+<h3 data-en="Verify over mobile data" >用蜂窝网络验证</h3>
+</div>
+</div>
+<div class="step-body">
+<p data-en="Turn off Wi-Fi and open the current URL from the app. Use gateway credentials or a valid sign-in QR code. Address notifications help you find the new URL after it changes." >关闭 Wi-Fi，打开 App 刚显示的地址，使用网关账号密码或有效的登录二维码。地址通知可帮助你在地址变化后找回新入口。</p>
+<p data-en="Check: Sign-in, reading and sending all work. The entry is unavailable when the gateway stops or the computer sleeps." class="checkpoint">确认结果：登录、读取和发送均成功。停止网关或电脑休眠后，入口不可用。</p>
+</div>
+</article>
+<p data-en="For a stable address, use a named Cloudflare Tunnel or your own server, rather than repeatedly redirecting a domain to temporary URLs." class="callout">需要长期固定地址时，使用 Cloudflare 固定隧道或自有服务器方案；不要靠域名反复重定向到临时地址。</p>
+</section>
+<section class="setup-panel" id="cloudflare" data-setup-panel="cloudflare" aria-labelledby="cloudflare-title">
+<h2 data-en="Named Cloudflare Tunnel: a domain is enough" id="cloudflare-title">Cloudflare 固定域名：只有域名也能配置</h2>
+<p class="example-note" data-en="App controls below refer to the unreleased local preview. Server and DNS preparation also apply independently of the app version.">以下 App 操作对应尚未发布的本地预览版；服务器与 DNS 的准备方法不依赖这些新按钮。</p>
+<p data-en="Requires your own domain, a Cloudflare account and an online work computer." class="panel-intro">需要自己的域名、Cloudflare 账号，以及保持在线的工作电脑。</p>
+<figure class="network-map">
+<div class="map-flow">
+<div class="map-node">
+<span class="map-index">1</span>
+<strong data-en="Phone browser" >手机浏览器</strong>
+<small data-en="https://codex.try2love.com" >https://codex.try2love.com</small>
+</div>
+<span class="map-arrow" aria-hidden="true">→</span>
+<div class="map-node">
+<span class="map-index">2</span>
+<strong data-en="Cloudflare" >Cloudflare</strong>
+<small data-en="Named tunnel + HTTPS" >固定隧道 + HTTPS</small>
+</div>
+<span class="map-arrow" aria-hidden="true">→</span>
+<div class="map-node">
+<span class="map-index">3</span>
+<strong data-en="Work computer" >工作电脑</strong>
+<small data-en="localhost:8787 → Codex" >localhost:8787 → Codex</small>
+</div>
+</div>
+<figcaption data-en="localhost refers to the computer running the connector. Public requests reach it through the tunnel; the phone need not share the LAN." >localhost 是连接器所在电脑的地址。公网请求经隧道到达它，不要求手机在同一局域网。</figcaption>
+</figure>
+<p data-en="All domains, IPs and usernames are examples. Replace them with your own values; try2love.com is not a hosted demo." class="example-note">所有域名、IP、账号都是演示值。请替换为自己的信息；try2love.com 不是本教程提供的可访问演示服务。</p>
+<article class="guide-step" id="cloudflare-dns">
+<div class="step-head">
+<span class="step-number">01</span>
+<div>
+<span data-en="Cloudflare and registrar websites" class="actor">Cloudflare 与域名注册商网页</span>
+<h3 data-en="Connect your domain to Cloudflare DNS" >把域名接入 Cloudflare DNS</h3>
+</div>
+</div>
+<div class="step-body">
+<p data-en="Add your domain to Cloudflare, choose a suitable plan and review existing website and mail DNS records. Copy the two assigned nameservers. At your domain registrar, replace the domain nameservers with these two addresses." >在 Cloudflare 添加自己的域名，选择适合的套餐，核对已有网站、邮箱等 DNS 记录。复制 Cloudflare 分配的两条名称服务器（NS）。在购买域名的注册商处，将域名的 DNS 服务器改为这两条地址。</p>
+<p data-en="Change the domain nameservers, not two ordinary A records. Renew the domain at your registrar; manage DNS records in Cloudflare once active." >这是修改域名的名称服务器，不是添加两条普通 A 记录。域名仍在原注册商续费；生效后解析记录在 Cloudflare 管理。</p>
+<p data-en="Check: Cloudflare shows Active. If it remains Pending, check nameserver spelling and any previous DNSSEC setup against the official migration guide." class="checkpoint">确认结果：Cloudflare 中域名状态为 Active。若长期 Pending，核对 NS 拼写及原 DNSSEC 配置，按官方迁移说明处理。</p>
+<a data-en="Official: domain and nameserver setup ↗" href="https://developers.cloudflare.com/dns/zone-setups/full-setup/setup/">官方：接入域名与名称服务器 ↗</a>
+</div>
+</article>
+<article class="guide-step" id="cloudflare-token">
+<div class="step-head">
+<span class="step-number">02</span>
+<div>
+<span data-en="Cloudflare website" class="actor">Cloudflare 网页</span>
+<h3 data-en="Create a named tunnel and copy its token" >创建固定隧道，取出 Tunnel Token</h3>
+</div>
+</div>
+<div class="step-body">
+<p data-en="Open Tunnels, create a Cloudflared tunnel, name it and inspect the connector installation command. Copy only the Tunnel Token, usually the long value after --token. It is not an API key or the whole command. Do not include it in public pages or screenshots." >进入 Tunnels，创建 Cloudflared 类型的隧道，命名后查看连接器安装命令。只复制其中的 Tunnel Token，通常是 --token 后的一长串内容；不是 API Key，也不是整条命令。不要将 Token 发到公开页面或截图中。</p>
+<p data-en="The app with its bundled connector runs the tunnel; you do not need to execute that installation command." >带内置连接器的 App 会负责运行隧道，无需再手动执行安装命令。</p>
+<p data-en="Check: You have the token for this tunnel, ready to save in the app." class="checkpoint">确认结果：已取得这条隧道的 Token；接下来在 App 保存。</p>
+</div>
+</article>
+<article class="guide-step" id="cloudflare-app">
+<div class="step-head">
+<span class="step-number">03</span>
+<div>
+<span data-en="Work computer · App" class="actor">工作电脑 · App</span>
+<h3 data-en="Save the address and token in the app" >把固定地址和 Token 填进 App</h3>
+</div>
+</div>
+<div class="step-body">
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th data-en="App field" scope="col">App 字段</th>
+<th data-en="Value" scope="col">填写内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td data-en="Connection" >连接方式</td>
+<td data-en="Fixed domain · Cloudflare Tunnel" >固定域名 · Cloudflare Tunnel</td>
+</tr>
+<tr>
+<td data-en="Phone URL" >手机访问地址</td>
+<td data-en="https://codex.try2love.com" >https://codex.try2love.com</td>
+</tr>
+<tr>
+<td data-en="Tunnel Token" >Tunnel Token</td>
+<td data-en="Token from the previous step" >上一步的 Token</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p data-en="Enable the connection, save and start the gateway. If settings are locked, stop the gateway before saving, then start it again." >启用连接、保存配置，然后启动网关。配置被锁定时先停止网关，保存后再启动。</p>
+<p data-en="Check: Cloudflare shows Connected / Healthy. The public route still needs configuring." class="checkpoint">确认结果：Cloudflare 中连接器显示 Connected / Healthy。此时仍需配置公开路由。</p>
+</div>
+</article>
+<article class="guide-step" id="cloudflare-route">
+<div class="step-head">
+<span class="step-number">04</span>
+<div>
+<span data-en="Cloudflare · Tunnel routes" class="actor">Cloudflare · 隧道路由</span>
+<h3 data-en="Route the hostname to the local gateway" >把公开主机名路由到本机端口</h3>
+</div>
+</div>
+<div class="step-body">
+<p data-en="Add a published application in this tunnel’s Routes / Published application / Public Hostname page. Labels vary between dashboard versions; create a hostname-to-service route." >在该隧道的 Routes / Published application / Public Hostname 页面添加公开应用。不同控制台版本名称可能不同，目标是创建一个主机名到服务的路由。</p>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th data-en="Route field" scope="col">路由字段</th>
+<th data-en="Example" scope="col">示例</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td data-en="Subdomain" >子域名 / Subdomain</td>
+<td data-en="codex" >codex</td>
+</tr>
+<tr>
+<td data-en="Domain" >域名 / Domain</td>
+<td data-en="try2love.com" >try2love.com</td>
+</tr>
+<tr>
+<td data-en="Path" >路径 / Path</td>
+<td data-en="Leave empty" >留空</td>
+</tr>
+<tr>
+<td data-en="Service type" >服务类型 / Type</td>
+<td data-en="HTTP" >HTTP</td>
+</tr>
+<tr>
+<td data-en="Service URL" >服务地址 / URL</td>
+<td data-en="localhost:8787" >localhost:8787</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p data-en="If there is one service URL box, enter http://localhost:8787. Match the gateway’s listening port. Do not enter the phone’s HTTPS URL or point an A record to the computer’s LAN IP." >若只有一个服务地址输入框，填 http://localhost:8787。端口须与 App 的监听端口一致。不要填手机的 HTTPS 地址，也不要把 A 记录指向电脑局域网 IP。</p>
+<p data-en="Check: Saving creates a DNS record for the tunnel. Inspect conflicting records before changing them; do not overwrite another site." class="checkpoint">确认结果：保存后产生指向该隧道的 DNS 记录；同名记录冲突时先核对用途，不覆盖其他网站。</p>
+</div>
+</article>
+<article class="guide-step" id="cloudflare-https">
+<div class="step-head">
+<span class="step-number">05</span>
+<div>
+<span data-en="Cloudflare · Rules" class="actor">Cloudflare · 规则</span>
+<h3 data-en="Redirect HTTP to HTTPS" >让 HTTP 自动跳转到 HTTPS</h3>
+</div>
+</div>
+<div class="step-body">
+<p data-en="Open the domain’s Rules → Overview → Create rule → Redirect Rule and choose a custom filter expression. This matches only the gateway hostname; replace the example domain." >进入域名的“规则 → 概述 → 创建规则 → 重定向规则”，选择自定义筛选表达式。下面仅匹配网关子域名；请替换示例域名。</p>
+<div class="code-block">
+<button data-en="Copy" type="button" data-copy>复制</button>
+<pre>
+<code data-code-kind="text">(http.request.full_uri wildcard r&quot;http://codex.try2love.com/*&quot;)</code>
+</pre>
+</div>
+<p data-en="Choose a dynamic URL redirect with the expression below, status 301 and Preserve query string. Deploy after validation succeeds." >URL 重定向类型选“动态”，目标表达式如下；状态码选 301，勾选“保留查询字符串”，校验通过后部署。</p>
+<div class="code-block">
+<button data-en="Copy" type="button" data-copy>复制</button>
+<pre>
+<code data-code-kind="text">concat(&quot;https://codex.try2love.com&quot;, http.request.uri.path)</code>
+</pre>
+</div>
+<p data-en="Check: Opening http://codex.try2love.com upgrades to HTTPS before showing sign-in. Reopen any old HTTP sign-in page." class="checkpoint">确认结果：打开 http://codex.try2love.com 会自动变为 HTTPS，再显示登录页。已经打开的 HTTP 登录页需重新打开。</p>
+</div>
+</article>
+<article class="guide-step" id="cloudflare-verify">
+<div class="step-head">
+<span class="step-number">06</span>
+<div>
+<span data-en="Work computer and phone" class="actor">工作电脑与手机</span>
+<h3 data-en="Verify the gateway and phone access" >验证固定入口与手机访问</h3>
+</div>
+</div>
+<div class="step-body">
+<p data-en="Select Check fixed entry in the app. Turn off phone Wi-Fi and open the domain over mobile data. Sign in with gateway credentials, not your Cloudflare or SSH password." >App 点击“检测固定入口”，然后手机关闭 Wi-Fi，用蜂窝网络打开域名。使用网关账号密码登录，不是 Cloudflare 密码或服务器 SSH 密码。</p>
+<p data-en="Check: The entry check passes and the phone can sign in, read chats, send and receive replies." class="checkpoint">确认结果：入口检测通过，手机可登录、读取聊天、发送并收到回复。</p>
+</div>
+</article>
+<a data-en="Official: create a remotely managed tunnel ↗" href="https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel/">官方：创建远程管理隧道 ↗</a>
+</section>
+<section class="setup-panel" id="server" data-setup-panel="server" aria-labelledby="server-title">
+<h2 data-en="Own server + SSH: prepare the server step by step" id="server-title">自有服务器 + SSH：把服务器准备清楚</h2>
+<p class="example-note" data-en="App controls below refer to the unreleased local preview. Server and DNS preparation also apply independently of the app version.">以下 App 操作对应尚未发布的本地预览版；服务器与 DNS 的准备方法不依赖这些新按钮。</p>
+<p data-en="The public server provides HTTPS; your work computer initiates the return tunnel." class="panel-intro">公网服务器提供固定 HTTPS 入口，工作电脑主动建立回程隧道。</p>
+<figure class="network-map">
+<div class="map-flow">
+<div class="map-node">
+<span class="map-index">1</span>
+<strong data-en="Phone away from home" >外地手机</strong>
+<small data-en="Fixed HTTPS hostname" >固定 HTTPS 域名</small>
+</div>
+<span class="map-arrow" aria-hidden="true">→</span>
+<div class="map-node">
+<span class="map-index">2</span>
+<strong data-en="Public server" >公网服务器</strong>
+<small data-en="443 → 127.0.0.1:18787" >443 → 127.0.0.1:18787</small>
+</div>
+<span class="map-arrow" aria-hidden="true">→</span>
+<div class="map-node">
+<span class="map-index">3</span>
+<strong data-en="Work computer" >工作电脑</strong>
+<small data-en="SSH tunnel → 8787 → Codex" >SSH 隧道 → 8787 → Codex</small>
+</div>
+</div>
+<figcaption data-en="Arrows show the request path. The work computer initiates SSH to the server; the work computer needs no public IP." >图中箭头表示访问请求。SSH 连接由工作电脑主动发起到服务器，工作电脑无需公网 IP。</figcaption>
+</figure>
+<p data-en="The server handles HTTPS and forwarding. Codex and the gateway run on your work computer. Prepare the server once, then start the computer gateway for everyday use." class="callout">服务器负责 HTTPS 入口和转发；Codex 和网关运行在工作电脑。先完成一次服务器配置，之后日常只需启动电脑网关。</p>
+<p data-en="All domains, IPs and usernames are examples. Replace them with your own values; try2love.com is not a hosted demo." class="example-note">所有域名、IP、账号都是演示值。请替换为自己的信息；try2love.com 不是本教程提供的可访问演示服务。</p>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th data-en="Record these values" scope="col">先记下这些信息</th>
+<th data-en="Example" scope="col">本文演示值</th>
+<th data-en="Used for" scope="col">用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td data-en="Server public IPv4" >服务器公网 IPv4</td>
+<td data-en="203.0.113.10" >203.0.113.10</td>
+<td data-en="DNS and SSH; this is a documentation-only IP" >DNS 与 SSH；此 IP 是文档示例</td>
+</tr>
+<tr>
+<td data-en="Fixed URL" >固定访问地址</td>
+<td data-en="https://codex.try2love.com" >https://codex.try2love.com</td>
+<td data-en="Phone browser and app" >手机浏览器与 App</td>
+</tr>
+<tr>
+<td data-en="Regular SSH user" >普通 SSH 用户</td>
+<td data-en="try2love" >try2love</td>
+<td data-en="Daily tunnel, no sudo required" >日常隧道，不需要 sudo</td>
+</tr>
+<tr>
+<td data-en="SSH port" >SSH 端口</td>
+<td data-en="22 (use the actual configured port)" >22（以服务器实际设置为准）</td>
+<td data-en="Computer connects to server" >电脑连接服务器</td>
+</tr>
+<tr>
+<td data-en="Server loopback port" >服务器回环端口</td>
+<td data-en="18787" >18787</td>
+<td data-en="Proxy upstream and tunnel must match" >HTTPS 反代与隧道两端配置须一致</td>
+</tr>
+<tr>
+<td data-en="Computer gateway port" >电脑网关端口</td>
+<td data-en="8787" >8787</td>
+<td data-en="App listening port" >App 监听端口</td>
+</tr>
+</tbody>
+</table>
+</div>
+<article class="guide-step" id="server-inspect">
+<div class="step-head">
+<span class="step-number">01</span>
+<div>
+<span data-en="Server terminal · Read-only checks" class="actor">服务器终端 · 只读检查</span>
+<h3 data-en="Identify your server situation" >先判断你的服务器是哪种情况</h3>
+</div>
+</div>
+<div class="step-body">
+<p data-en="Sign in using your existing SSH method or cloud console. These commands inspect the OS and listening ports without changing services." >先通过已有的 SSH 方式或云厂商控制台登录服务器。下面的命令只查询系统和监听端口，不安装或修改服务。</p>
+<div class="code-block">
+<button data-en="Copy" type="button" data-copy>复制</button>
+<pre>
+<code data-code-kind="sh">cat /etc/os-release
+id
+ss -ltn
+command -v caddy
+command -v nginx</code>
+</pre>
+</div>
+<p data-en="Use the apt path below on Ubuntu / Debian. If :80 or :443 is listening, or you use a panel, Nginx or Caddy, choose the existing-site path and do not start a second web server. An empty command result may mean the program is absent; mark permission-limited checks as unverified." >Ubuntu / Debian 可用下文 apt 安装路径。看到 :80、:443 已监听，或知道自己使用了宝塔、1Panel、Nginx、Caddy，就选择“已有网站或面板”，不要再启动第二套 Web 服务。命令无输出可能只是未安装该程序；无权限查看的项目标为未确认。</p>
+<details class="scenario">
+<summary data-en="Server is not publicly reachable, or I am unsure" >服务器不是公网可达，或我不确定</summary>
+<p data-en="Check the public address and inbound rules in your cloud console. A private server reachable only through campus networking or a VPN is not automatically a public phone entry just because SSH works. Ask for a public HTTPS entry or use a named Cloudflare Tunnel." >在云控制台核对公网地址及入站规则。只有私网地址、必须连校园网或 VPN 才能访问的服务器，不能仅靠“SSH 登录成功”成为手机公网入口。需要管理员提供公网 HTTPS 入口，或改用 Cloudflare 固定隧道。</p>
+<a data-en="Open the named Cloudflare Tunnel guide" href="#cloudflare">查看 Cloudflare 固定域名方案</a>
+</details>
+<p data-en="Check: You know the OS, whether a web server exists, and who can perform administrative steps." class="checkpoint">确认结果：已确定系统、是否有现成网站，以及谁能执行管理员操作。</p>
+</div>
+</article>
+<article class="guide-step" id="server-dns">
+<div class="step-head">
+<span class="step-number">02</span>
+<div>
+<span data-en="DNS dashboard · Website" class="actor">DNS 控制台 · 网页</span>
+<h3 data-en="Point a dedicated hostname to the server" >将独立子域名解析到服务器</h3>
+</div>
+</div>
+<div class="step-body">
+<p data-en="Add the record where DNS is actually hosted. If nameservers moved to Cloudflare, edit Cloudflare DNS rather than the registrar’s old DNS zone." >在实际托管 DNS 的平台添加记录。如果名称服务器已迁移到 Cloudflare，就在 Cloudflare 添加，不能继续在原注册商的旧解析区修改。</p>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th data-en="Field" scope="col">字段</th>
+<th data-en="Value" scope="col">填写</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td data-en="Type" >类型</td>
+<td data-en="A" >A</td>
+</tr>
+<tr>
+<td data-en="Name" >主机记录</td>
+<td data-en="codex" >codex</td>
+</tr>
+<tr>
+<td data-en="Value" >记录值</td>
+<td data-en="Your server public IPv4" >你的服务器公网 IPv4</td>
+</tr>
+<tr>
+<td data-en="TTL" >TTL</td>
+<td data-en="Default / Auto" >默认 / 自动</td>
+</tr>
+<tr>
+<td data-en="Cloudflare proxy (initial verification)" >Cloudflare 代理状态（首次验证）</td>
+<td data-en="DNS only, gray cloud" >仅 DNS，灰云</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p data-en="Add AAAA only if the server has working public IPv6. If this hostname already serves a Cloudflare Tunnel, test the server setup on a new hostname first. Do not point DNS to 127.0.0.1 or the computer’s 192.168.x.x address." >只有服务器具备可用公网 IPv6 时才添加 AAAA。若该子域名已用于 Cloudflare Tunnel，不要覆盖它；先用新的子域名测试服务器方案。不要把域名解析到 127.0.0.1 或电脑的 192.168.x.x 地址。</p>
+<div class="code-block">
+<button data-en="Copy" type="button" data-copy>复制</button>
+<pre>
+<code data-code-kind="sh">nslookup codex.try2love.com</code>
+</pre>
+</div>
+<p data-en="Check: Run nslookup on the work computer; it should return the server public IP. Cached DNS results may take time to update." class="checkpoint">确认结果：在工作电脑运行 nslookup，结果是服务器公网 IP。DNS 生效可能需要等待缓存更新。</p>
+</div>
+</article>
+<article class="guide-step" id="server-firewall">
+<div class="step-head">
+<span class="step-number">03</span>
+<div>
+<span data-en="Cloud console and server · Administrator" class="actor">云控制台与服务器 · 管理员</span>
+<h3 data-en="Allow the public entry, keep internal ports private" >开放公网入口，保留内部端口</h3>
+</div>
+</div>
+<div class="step-body">
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th data-en="Port" scope="col">端口</th>
+<th data-en="Where" scope="col">在哪开放</th>
+<th data-en="Access" scope="col">访问范围</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td data-en="Actual SSH port" >实际 SSH 端口</td>
+<td data-en="Cloud security group + host firewall" >云安全组 + 服务器防火墙</td>
+<td data-en="Allow the work computer; preserve existing admin access" >允许工作电脑来源，保留现有管理入口</td>
+</tr>
+<tr>
+<td data-en="TCP 80 / 443" >TCP 80 / 443</td>
+<td data-en="Cloud security group + host firewall" >云安全组 + 服务器防火墙</td>
+<td data-en="Public; HTTPS and certificate validation" >公网；用于 HTTPS 与证书验证</td>
+</tr>
+<tr>
+<td data-en="18787" >18787</td>
+<td data-en="Do not open publicly" >不添加公网放行规则</td>
+<td data-en="Server loopback only" >仅服务器 127.0.0.1</td>
+</tr>
+<tr>
+<td data-en="Computer port 8787" >电脑 8787</td>
+<td data-en="No public port forwarding" >不做公网端口映射</td>
+<td data-en="Local computer gateway" >电脑本地网关</td>
+</tr>
+</tbody>
+</table>
+</div>
+<details class="scenario">
+<summary data-en="What if Ubuntu uses UFW?" >Ubuntu 使用 UFW 时怎么做？</summary>
+<p data-en="Have the administrator inspect status first. Add web-port rules only when UFW is already enabled. Do not enable/reset the firewall or remove SSH access for this guide. Cloud security groups are configured separately." >由管理员先查看状态。仅在 UFW 已启用时添加 Web 端口规则；不要为本教程启用、重置防火墙或关闭现有 SSH 入口。云安全组还需要单独配置。</p>
+<div class="code-block">
+<button data-en="Copy" type="button" data-copy>复制</button>
+<pre>
+<code data-code-kind="sh">sudo ufw status verbose</code>
+</pre>
+</div>
+<div class="code-block">
+<button data-en="Copy" type="button" data-copy>复制</button>
+<pre>
+<code data-code-kind="sh">sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp</code>
+</pre>
+</div>
+</details>
+<p data-en="For firewalld, cloud firewalls or panel firewalls, ask the administrator to add equivalent rules using the existing system. If a managed server cannot expose public 80/443, request another provisioned HTTPS entry." >使用 firewalld、云防火墙或面板防火墙时，由管理员在现有系统中添加同等规则。单位服务器若不能开放公网 80/443，需要管理员提供其他已配置好的 HTTPS 入口。</p>
+<p data-en="Check: Both cloud and host firewall rules are checked. You still need a running HTTPS service and an external test." class="checkpoint">确认结果：已核对云安全组和主机防火墙两层规则；接下来还要启动 HTTPS 服务并做外网验证。</p>
+</div>
+</article>
+<article class="guide-step" id="server-user">
+<div class="step-head">
+<span class="step-number">04</span>
+<div>
+<span data-en="Work computer + server administrator" class="actor">工作电脑 + 服务器管理员</span>
+<h3 data-en="Prepare a regular SSH user" >准备能登录的普通 SSH 用户</h3>
+</div>
+</div>
+<div class="step-body">
+<p data-en="Reuse an existing regular account that can sign in. A dedicated account or sudo access is not required. Verify sign-in from the work computer terminal, then exit and configure the app. Check the first host fingerprint against the server console or administrator’s value." >已有可登录的普通用户就直接使用，不必创建专用账号，也不必授予 sudo。先在工作电脑终端验证登录，退出后再填 App。首次连接的主机指纹应与服务器控制台或管理员提供的结果核对。</p>
+<div class="code-block">
+<button data-en="Copy" type="button" data-copy>复制</button>
+<pre>
+<code data-code-kind="sh">ssh -p 22 try2love@203.0.113.10</code>
+</pre>
+</div>
+<details class="scenario">
+<summary data-en="Only root is available: how do I prepare a regular user?" >只有 root 账号，怎样准备普通用户？</summary>
+<p data-en="An Ubuntu / Debian administrator can create the account below and follow the password prompts. This does not grant sudo access. Do not globally enable SSH password authentication just to make setup easier." >Ubuntu / Debian 管理员可执行下面命令创建账号。按提示设置账号密码；这不会自动给新用户 sudo 权限。不要为方便登录而全局启用 SSH 密码认证。</p>
+<div class="code-block">
+<button data-en="Copy" type="button" data-copy>复制</button>
+<pre>
+<code data-code-kind="sh">sudo adduser try2love</code>
+</pre>
+</div>
+<p data-en="If password sign-in is already allowed, verify this regular account. For key-only servers, install a public key as described next. On other systems, use the OS-specific account management process." >服务器已允许密码登录时，先验证该普通用户能正常登录。服务器仅允许密钥时，按下一项安装公钥。其他系统请由管理员使用该系统的用户管理方式创建账号。</p>
+</details>
+<details class="scenario">
+<summary data-en="The server requires an SSH key" >服务器只允许密钥登录</summary>
+<p data-en="Reuse a working key if you have one. To create a key, run ssh-keygen on the work computer and choose a new filename so you do not overwrite an existing key. A passphrase is recommended." >已有可用私钥就直接使用。需要新建时，在工作电脑运行 ssh-keygen，按提示保存到一个新的文件名，避免覆盖已有密钥；建议设置私钥口令。</p>
+<div class="code-block">
+<button data-en="Copy" type="button" data-copy>复制</button>
+<pre>
+<code data-code-kind="sh">ssh-keygen -t ed25519</code>
+</pre>
+</div>
+<p data-en="Give the generated .pub public key to the administrator to append to the user’s ~/.ssh/authorized_keys. Keep the private key on the work computer. The example below assumes the default /home/try2love home on Ubuntu / Debian; append to existing files, do not overwrite." >将生成的 .pub 公钥交给管理员追加到该用户的 ~/.ssh/authorized_keys。私钥保留在工作电脑。以下是 Ubuntu / Debian 默认 /home/try2love 家目录的示例；已有文件只追加，不覆盖。</p>
+<div class="code-block">
+<button data-en="Copy" type="button" data-copy>复制</button>
+<pre>
+<code data-code-kind="sh">sudo install -d -m 700 -o try2love -g try2love /home/try2love/.ssh
+sudoedit /home/try2love/.ssh/authorized_keys
+sudo chown try2love:try2love /home/try2love/.ssh/authorized_keys
+sudo chmod 600 /home/try2love/.ssh/authorized_keys</code>
+</pre>
+</div>
+<p data-en="In the app, choose Local private key and select the file without the .pub suffix. Enter its passphrase if set. Keep private keys and passwords out of public configuration and screenshots." >在 App 选择“本地私钥”，选没有 .pub 后缀的私钥文件；设置过口令时同时填写口令。不要把私钥或密码放到公开配置和截图中。</p>
+</details>
+<p data-en="Check: The work computer can sign in as the regular user. The server SSH password and phone gateway password are separate credentials." class="checkpoint">确认结果：工作电脑能以普通用户登录服务器。服务器 SSH 密码与手机网关登录密码是两套凭据。</p>
+</div>
+</article>
+<article class="guide-step" id="server-forwarding">
+<div class="step-head">
+<span class="step-number">05</span>
+<div>
+<span data-en="Server · Administrator checks and configuration" class="actor">服务器 · 管理员检查与配置</span>
+<h3 data-en="Allow this user to create the reverse tunnel" >允许这个用户建立反向隧道</h3>
+</div>
+</div>
+<div class="step-body">
+<p data-en="Reuse existing forwarding permissions if suitable. If changes are needed, have the administrator review sshd_config, included files, Match conditions and public-key restrictions, then add or adjust the target user’s rules below. Do not replace the entire SSH configuration." >已允许转发时可以沿用现有配置。需要调整时，让管理员检查现有 sshd_config、Include 文件、Match 条件及公钥限制，再为目标用户添加或调整以下规则；不要覆盖整个 SSH 配置。</p>
+<div class="code-block">
+<button data-en="Copy" type="button" data-copy>复制</button>
+<pre>
+<code data-code-kind="sshd">Match User try2love
+    AllowTcpForwarding remote
+    GatewayPorts no
+    PermitListen 127.0.0.1:18787
+Match all</code>
+</pre>
+</div>
+<p data-en="AllowTcpForwarding remote permits reverse forwarding, PermitListen limits listening addresses, and GatewayPorts no keeps the listener on loopback. DisableForwarding yes, earlier matching rules or restrict / no-port-forwarding in authorized_keys may still block forwarding." >AllowTcpForwarding remote 允许反向转发；PermitListen 限制监听地址；GatewayPorts no 保持回环监听。已有 DisableForwarding yes、较早匹配的规则或 authorized_keys 的 restrict / no-port-forwarding 仍可能阻止转发。</p>
+<div class="code-block">
+<button data-en="Copy" type="button" data-copy>复制</button>
+<pre>
+<code data-code-kind="sh">sudo sshd -t</code>
+</pre>
+</div>
+<p data-en="Continue only when syntax validation exits with code 0 and no output. Ubuntu / Debian normally use the ssh service below; check the service name on other systems. Keep the existing SSH terminal open and verify a new sign-in from another terminal." >语法检查无输出且退出码为 0 才继续。Ubuntu / Debian 通常使用下面的 ssh 服务；其他系统先确认实际服务名。保留当前 SSH 终端，并在新终端再次验证登录。</p>
+<div class="code-block">
+<button data-en="Copy" type="button" data-copy>复制</button>
+<pre>
+<code data-code-kind="sh">sudo systemctl reload ssh</code>
+</pre>
+</div>
+<p data-en="Check: A new terminal can sign in. Actual forwarding is checked after starting the app tunnel in step 7." class="checkpoint">确认结果：新终端登录正常。真正的转发权限还需在第 7 步启动 App 隧道后验证。</p>
+<a data-en="Official: OpenSSH forwarding permissions ↗" href="https://man.openbsd.org/sshd_config#AllowTcpForwarding">官方：OpenSSH 转发权限 ↗</a>
+</div>
+</article>
+<article class="guide-step" id="server-https">
+<div class="step-head">
+<span class="step-number">06</span>
+<div>
+<span data-en="Server or control panel · Administrator" class="actor">服务器或管理面板 · 管理员</span>
+<h3 data-en="Configure HTTPS: choose your situation" >配置 HTTPS 入口：选择你的情况</h3>
+</div>
+</div>
+<div class="step-body">
+<p data-en="Choose one path. The upstream is always http://127.0.0.1:18787 on the SSH server itself, not the work computer’s LAN IP." >四种路径选一种即可。上游始终是 SSH 服务器自身的 http://127.0.0.1:18787；不是工作电脑的局域网 IP。</p>
+<details class="scenario">
+<summary data-en="A · Fresh Ubuntu / Debian, no existing website" >A · 全新 Ubuntu / Debian，没有网站</summary>
+<p data-en="Confirm ports 80/443 are not used by another service and Caddy is not installed. The administrator installs from the official repository. Run one command at a time and resolve errors before proceeding. The package creates and starts a system service." >确认 80/443 未被现有服务占用，且未安装 Caddy，再由管理员按官方软件源安装。一次运行一条命令，失败时先处理错误。安装 Caddy 后会创建并启动系统服务。</p>
+<div class="code-block">
+<button data-en="Copy" type="button" data-copy>复制</button>
+<pre>
+<code data-code-kind="sh">sudo apt update
+sudo apt install --yes debian-keyring debian-archive-keyring apt-transport-https curl gnupg
+curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+sudo chmod o+r /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+sudo chmod o+r /etc/apt/sources.list.d/caddy-stable.list
+sudo apt update
+sudo apt install caddy</code>
+</pre>
+</div>
+<p data-en="Back up and edit the Caddyfile. Replace the example domain. On a fresh installation, replace the sample :80 site with the block below. If real sites already exist, use path B." >先备份再编辑 Caddyfile。把演示域名改为自己的域名；新安装文件中的示例 :80 站点可替换为下面的站点块。若文件已有真实网站，转到路径 B。</p>
+<div class="code-block">
+<button data-en="Copy" type="button" data-copy>复制</button>
+<pre>
+<code data-code-kind="sh">sudo cp -a /etc/caddy/Caddyfile /etc/caddy/Caddyfile.before-codex-$(date +%Y%m%d%H%M%S)
+sudoedit /etc/caddy/Caddyfile</code>
+</pre>
+</div>
+<div class="code-block">
+<button data-en="Copy" type="button" data-copy>复制</button>
+<pre>
+<code data-code-kind="caddy">codex.try2love.com {
+    reverse_proxy 127.0.0.1:18787 {
+        header_up Host {http.request.host}
+        flush_interval -1
+    }
+}</code>
+</pre>
+</div>
+<div class="code-block">
+<button data-en="Copy" type="button" data-copy>复制</button>
+<pre>
+<code data-code-kind="sh">sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+sudo systemctl reload caddy
+systemctl is-active caddy</code>
+</pre>
+</div>
+<p data-en="Reload only after validation succeeds; the last command should show active. Caddy obtains and renews certificates and redirects HTTP to HTTPS." >只有 validate 成功后才 reload；最后应显示 active。Caddy 自动申请和续期证书，并处理 HTTP → HTTPS。</p>
+<a data-en="Official installation instructions ↗" href="https://caddyserver.com/docs/install">官方安装步骤 ↗</a>
+</details>
+<details class="scenario">
+<summary data-en="B · Existing Caddy or Nginx websites" >B · 已有 Caddy 或 Nginx 网站</summary>
+<p data-en="Back up configuration and add a dedicated hostname for the gateway. Do not overwrite existing sites or stop the web server." >先备份配置，为网关使用一个独立域名站点，不覆盖原站点，也不停止现有 Web 服务。</p>
+<h3 data-en="Existing Caddy" >已有 Caddy</h3>
+<p data-en="Add this block to the active Caddyfile or an imported site file. Preserve other sites and avoid duplicate definitions for the same hostname." >在实际使用的 Caddyfile 或已被 import 的站点文件中添加以下站点块。原有站点保持不变，确认未为同一域名重复定义站点。</p>
+<div class="code-block">
+<button data-en="Copy" type="button" data-copy>复制</button>
+<pre>
+<code data-code-kind="caddy">codex.try2love.com {
+    reverse_proxy 127.0.0.1:18787 {
+        header_up Host {http.request.host}
+        flush_interval -1
+    }
+}</code>
+</pre>
+</div>
+<div class="code-block">
+<button data-en="Copy" type="button" data-copy>复制</button>
+<pre>
+<code data-code-kind="sh">sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+sudo systemctl reload caddy</code>
+</pre>
+</div>
+<h3 data-en="Existing Nginx" >已有 Nginx</h3>
+<p data-en="First provision a valid certificate and HTTP-to-HTTPS redirect for the gateway hostname using your existing certificate tool or panel. Put this location inside that hostname’s HTTPS server block. If location / exists, edit that site’s block rather than duplicating it. This does not issue certificates and is not a complete Nginx configuration file." >先用现有证书工具或面板为网关域名配置有效 HTTPS 证书与 HTTP → HTTPS 跳转。将以下 location 放入该域名的 HTTPS server 块；如果已经有 location /，只调整该站点，不重复添加。这里不包含证书签发步骤，不能直接当成完整 Nginx 配置文件。</p>
+<div class="code-block">
+<button data-en="Copy" type="button" data-copy>复制</button>
+<pre>
+<code data-code-kind="nginx">location / {
+    proxy_pass http://127.0.0.1:18787;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_buffering off;
+    proxy_cache off;
+    proxy_read_timeout 3600s;
+}</code>
+</pre>
+</div>
+<div class="code-block">
+<button data-en="Copy" type="button" data-copy>复制</button>
+<pre>
+<code data-code-kind="sh">sudo nginx -t
+sudo systemctl reload nginx</code>
+</pre>
+</div>
+<p data-en="Reload only after nginx -t succeeds. If a panel or container manages the proxy, use its existing configuration and reload controls rather than creating another systemd service." >仅在 nginx -t 成功后重新加载。Caddy/Nginx 若由面板或容器管理，应使用其现有配置和重载方式，不另建 systemd 服务。</p>
+</details>
+<details class="scenario">
+<summary data-en="C · A website control panel" >C · 宝塔、1Panel 或其他网站面板</summary>
+<p data-en="Create a dedicated hostname site or reverse-proxy entry in the existing panel and preserve other sites. Menu labels vary by panel version; map the fields below." >在现有面板中新建独立域名站点或反向代理条目，保留其他站点。不同版本菜单名称不同，逐项对应下面的字段即可。</p>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th data-en="Panel setting" scope="col">面板设置</th>
+<th data-en="Value" scope="col">内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td data-en="Hostname" >域名</td>
+<td data-en="codex.try2love.com" >codex.try2love.com</td>
+</tr>
+<tr>
+<td data-en="Upstream protocol and address" >上游协议与地址</td>
+<td data-en="HTTP · 127.0.0.1:18787" >HTTP · 127.0.0.1:18787</td>
+</tr>
+<tr>
+<td data-en="Upstream Host header" >发送给上游的 Host</td>
+<td data-en="Original public hostname codex.try2love.com" >原始访问域名 codex.try2love.com</td>
+</tr>
+<tr>
+<td data-en="SSL / HTTPS" >SSL / HTTPS</td>
+<td data-en="Issue a valid certificate for this hostname; redirect HTTP" >为此域名申请有效证书，启用 HTTP 跳转</td>
+</tr>
+<tr>
+<td data-en="Caching and streaming" >缓存与流式响应</td>
+<td data-en="Disable proxy caching and response buffering" >关闭代理缓存、关闭响应缓冲</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p data-en="If the panel proxy runs in a container, 127.0.0.1 refers to that container, not necessarily the SSH host. Have the administrator verify network namespaces and a safely reachable upstream; do not expose port 18787 publicly." >如果面板反代运行在容器中，127.0.0.1 指向容器自己，可能不是 SSH 服务器。让管理员确认网络命名空间与安全可达的上游，不要为了连通而把 18787 暴露到公网。</p>
+</details>
+<details class="scenario">
+<summary data-en="D · Other OS, Docker, or no administrator access" >D · 其他系统、Docker，或没有管理员权限</summary>
+<p data-en="For other Linux systems, choose the matching package manager in the official Caddy guide; hostname, upstream and verification remain the same. Do not copy apt commands onto Rocky / AlmaLinux. Windows servers require administrator-provided equivalent SSH and HTTPS services; these Linux commands do not apply." >其他 Linux 系统按 Caddy 官方安装页选择对应包管理器，后续域名、上游和验收步骤相同。不要在 Rocky / AlmaLinux 等系统照抄 apt 命令。Windows 服务器不在这份 Linux 命令教程范围内，请由管理员提供等效的 SSH 与 HTTPS 服务。</p>
+<p data-en="With existing Linux Docker Engine, the app’s exported manual reference includes an optional Caddy Compose setup. Start it only when 80/443 are free, and retain certificate volumes. It uses host networking on the same Linux host as SSH. Docker does not bypass administrator permissions." >已有 Linux Docker Engine 时，可使用 App“导出手动配置参考”中的 Caddy Compose 方案。仅在 80/443 空闲时启动，保留证书卷；该方案使用 host 网络，必须与 SSH 服务在同一 Linux 主机。Docker 不是绕过管理员权限的方法。</p>
+<p data-en="Without administrator access, give steps 2–6 to the administrator. You only need a regular SSH account and permitted forwarding port, not sudo. The app’s Copy server inspection prompt lets a server-side agent inspect read-only; it does not grant administrative permission." >没有管理员权限时，将第 2—6 步交给管理员完成。你只需普通 SSH 用户和允许的转发端口，不需要申请 sudo 权限。App 的“复制服务器检查 Prompt”可先让服务器内的 Agent 只读检查，不能代替管理员授权。</p>
+<a data-en="Choose Caddy installation instructions for your OS ↗" href="https://caddyserver.com/docs/install">按系统选择 Caddy 安装方法 ↗</a>
+</details>
+<p data-en="Check: The HTTPS certificate is valid and HTTP redirects to HTTPS. A 502 may be expected before the tunnel starts; fix certificate errors or an unrelated site before proceeding." class="checkpoint">确认结果：HTTPS 证书正常、HTTP 会跳到 HTTPS。隧道尚未启动时显示 502 可能是预期状态；看到默认证书错误或其他网站则先修正此步。</p>
+</div>
+</article>
+<article class="guide-step" id="server-app">
+<div class="step-head">
+<span class="step-number">07</span>
+<div>
+<span data-en="Work computer · App" class="actor">工作电脑 · App</span>
+<h3 data-en="Configure and start SSH on the work computer" >回到工作电脑，填写并启动 SSH 连接</h3>
+</div>
+</div>
+<div class="step-body">
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th data-en="App field" scope="col">App 字段</th>
+<th data-en="Example" scope="col">示例</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td data-en="Connection" >连接方式</td>
+<td data-en="Fixed domain · Own server + SSH" >固定域名 · 自有服务器 + SSH</td>
+</tr>
+<tr>
+<td data-en="Phone URL" >手机访问地址</td>
+<td data-en="https://codex.try2love.com" >https://codex.try2love.com</td>
+</tr>
+<tr>
+<td data-en="Server address" >服务器地址</td>
+<td data-en="203.0.113.10" >203.0.113.10</td>
+</tr>
+<tr>
+<td data-en="SSH port" >SSH 端口</td>
+<td data-en="22 (actual port)" >22（实际端口）</td>
+</tr>
+<tr>
+<td data-en="SSH username" >SSH 用户名</td>
+<td data-en="try2love" >try2love</td>
+</tr>
+<tr>
+<td data-en="Authentication" >认证方式</td>
+<td data-en="Use the verified password, key, agent or SSH alias" >沿用已验证的密码、私钥、Agent 或 SSH 别名</td>
+</tr>
+<tr>
+<td data-en="Server loopback port" >服务器回环端口</td>
+<td data-en="18787; matches the proxy upstream" >18787；与反代上游一致</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p data-en="Save settings, verify the first host fingerprint, and select Check SSH sign-in. Then enable and save the connection and select Start SSH connection. A disabled profile can be checked but will not start forwarding." >保存配置，核对首次主机指纹，再点击“检查 SSH 登录”。登录通过后启用该连接并保存，点击“启动 SSH 连接”。若服务器配置被禁用，检查可以执行，但不会建立转发。</p>
+<p data-en="Check SSH sign-in only proves authentication. It does not prove certificates, forwarding permissions or phone access. The app does not run sudo or install server software." >“检查 SSH 登录”只证明认证成功。不要把它当作证书、转发权限或手机公网访问已经通过。App 不会执行 sudo，也不会自动安装服务器软件。</p>
+<p data-en="Check: SSH status shows forwarding established. On the server, ss -ltn shows 127.0.0.1:18787, not 0.0.0.0:18787." class="checkpoint">确认结果：SSH 状态显示转发已建立。服务器上 ss -ltn 可以看到 127.0.0.1:18787；不应是 0.0.0.0:18787。</p>
+</div>
+</article>
+<article class="guide-step" id="server-verify">
+<div class="step-head">
+<span class="step-number">08</span>
+<div>
+<span data-en="Server → work computer → phone" class="actor">服务器 → 工作电脑 → 手机</span>
+<h3 data-en="Verify each layer in order" >按顺序验收，不跳步</h3>
+</div>
+</div>
+<div class="step-body">
+<p data-en="First verify that the server’s reverse tunnel reaches the computer gateway. Use the public hostname saved in the app as Host. This request contains no password." >先在服务器确认反向隧道能到达电脑网关。Host 必须使用已经在 App 保存的访问域名。此请求不包含密码。</p>
+<div class="code-block">
+<button data-en="Copy" type="button" data-copy>复制</button>
+<pre>
+<code data-code-kind="sh">curl --max-time 10 -H &#x27;Host: codex.try2love.com&#x27; http://127.0.0.1:18787/api/auth</code>
+</pre>
+</div>
+<p data-en="Expect JSON containing authenticated and other fields. Then select Check fixed entry in the app to compare the public HTTPS instance with the local gateway. Finally verify sign-in, chat loading and sending over phone mobile data." >应返回包含 authenticated 等字段的 JSON。然后在 App 点击“检测固定入口”，比较固定 HTTPS 地址与本机网关实例。最后用手机蜂窝网络验证登录、聊天读取和发送。</p>
+<p data-en="Check: All three layers pass. Daily operation needs no sudo. Keep the computer awake and online; the gateway maintains and retries the SSH connection." class="checkpoint">确认结果：三层都通过。之后无需日常 sudo 操作，电脑保持开机、联网且不休眠，网关会维持并重试 SSH 连接。</p>
+</div>
+</article>
+</section>
+<section class="setup-panel" id="nas" data-setup-panel="nas" aria-labelledby="nas-title">
+<h2 data-en="NAS / existing proxy: reuse a reachable network" id="nas-title">NAS / 已有反代：复用已连通的网络</h2>
+<p data-en="Requires a public HTTPS entry and NAS reachability to the work computer gateway." class="panel-intro">需要已有公网 HTTPS 入口，并且 NAS 能访问工作电脑网关。</p>
+<figure class="network-map">
+<div class="map-flow">
+<div class="map-node">
+<span class="map-index">1</span>
+<strong data-en="Phone away from home" >外地手机</strong>
+<small data-en="Fixed HTTPS hostname" >HTTPS 固定域名</small>
+</div>
+<span class="map-arrow" aria-hidden="true">→</span>
+<div class="map-node">
+<span class="map-index">2</span>
+<strong data-en="NAS / existing proxy" >NAS／已有反代</strong>
+<small data-en="443 → computer LAN address" >443 → 电脑局域网地址</small>
+</div>
+<span class="map-arrow" aria-hidden="true">→</span>
+<div class="map-node">
+<span class="map-index">3</span>
+<strong data-en="Work computer" >工作电脑</strong>
+<small data-en="192.168.1.10:8787 → Codex" >192.168.1.10:8787 → Codex</small>
+</div>
+</div>
+<figcaption data-en="The NAS must be able to reach the work computer. A domain alone cannot connect a home NAS to a computer on another network." >NAS 必须能访问工作电脑；它在家、电脑在公司时，不能仅凭一个域名打通两个网络。</figcaption>
+</figure>
+<p data-en="All domains, IPs and usernames are examples. Replace them with your own values; try2love.com is not a hosted demo." class="example-note">所有域名、IP、账号都是演示值。请替换为自己的信息；try2love.com 不是本教程提供的可访问演示服务。</p>
+<article class="guide-step" id="nas-network">
+<div class="step-head">
+<span class="step-number">01</span>
+<div>
+<span data-en="Work computer + NAS terminal" class="actor">工作电脑 + NAS 终端</span>
+<h3 data-en="Verify NAS-to-computer reachability first" >先验证 NAS 到电脑的网络</h3>
+</div>
+</div>
+<div class="step-body">
+<p data-en="Enable LAN access and start the gateway. From the NAS terminal or an existing diagnostic tool, access the computer’s LAN address. A DHCP reservation helps keep the upstream stable." >在电脑 App 启用局域网访问，启动网关。从 NAS 的终端或已有诊断工具访问电脑的局域网地址。建议为电脑保留固定 DHCP 地址，避免上游变化。</p>
+<div class="code-block">
+<button data-en="Copy" type="button" data-copy>复制</button>
+<pre>
+<code data-code-kind="sh">curl --max-time 10 http://192.168.1.10:8787/api/auth</code>
+</pre>
+</div>
+<p data-en="Check: Gateway JSON is returned. Resolve routing, interface or firewall issues before proceeding. For separate networks, use own-server SSH or Cloudflare." class="checkpoint">确认结果：返回网关 JSON。若超时，先解决路由、网卡或防火墙；两地网络不通时改用自有服务器 SSH 或 Cloudflare。</p>
+</div>
+</article>
+<article class="guide-step" id="nas-public">
+<div class="step-head">
+<span class="step-number">02</span>
+<div>
+<span data-en="DNS, router and NAS dashboards" class="actor">DNS、路由器与 NAS 管理页面</span>
+<h3 data-en="Prepare the NAS public HTTPS entry" >准备 NAS 的公网 HTTPS 入口</h3>
+</div>
+</div>
+<div class="step-body">
+<p data-en="Use a dedicated hostname with a valid matching certificate and HTTP-to-HTTPS redirect. Reuse an existing public entry. Otherwise first check public IP availability, ISP inbound restrictions and router forwarding requirements." >使用独立子域名，配置与之匹配的有效证书和 HTTP → HTTPS 跳转。已有公网入口可复用；没有时，必须先确认公网 IP、运营商入站限制及路由器转发条件。</p>
+<p data-en="If exposing the NAS entry yourself, forward only the required HTTPS port to its proxy; prepare port 80 if your certificate validation method requires HTTP. Do not expose computer port 8787 or internal relay port 18787. Router forwarding alone usually cannot overcome CGNAT or a campus private network." >自行暴露 NAS 入口时，只把必要的 HTTPS 端口转给 NAS 反代；证书方式若要求 HTTP 验证，再准备 80 端口。不要映射电脑 8787 或 NAS 内部中转 18787。CGNAT 或校园内网通常不能靠路由器端口映射解决公网访问。</p>
+<p data-en="Check: A phone on mobile data can reach the NAS HTTPS hostname with a valid certificate." class="checkpoint">确认结果：手机蜂窝网络能连接 NAS 的 HTTPS 域名，证书可信。</p>
+</div>
+</article>
+<article class="guide-step" id="nas-proxy">
+<div class="step-head">
+<span class="step-number">03</span>
+<div>
+<span data-en="NAS dashboard + computer app" class="actor">NAS 管理页面 + 工作电脑 App</span>
+<h3 data-en="Configure the proxy and app" >填写反向代理和 App</h3>
+</div>
+</div>
+<div class="step-body">
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th data-en="Location" scope="col">位置</th>
+<th data-en="Field" scope="col">字段</th>
+<th data-en="Example" scope="col">示例</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td data-en="NAS proxy" >NAS 反代</td>
+<td data-en="Source" >来源</td>
+<td data-en="HTTPS · codex.try2love.com · 443" >HTTPS · codex.try2love.com · 443</td>
+</tr>
+<tr>
+<td data-en="NAS proxy" >NAS 反代</td>
+<td data-en="Target" >目标</td>
+<td data-en="HTTP · 192.168.1.10 · 8787" >HTTP · 192.168.1.10 · 8787</td>
+</tr>
+<tr>
+<td data-en="NAS proxy" >NAS 反代</td>
+<td data-en="Host / buffering" >Host / 缓冲</td>
+<td data-en="Preserve public Host; disable cache and buffering" >保留公网 Host，关闭缓存和响应缓冲</td>
+</tr>
+<tr>
+<td data-en="Computer app" >电脑 App</td>
+<td data-en="Connection" >连接方式</td>
+<td data-en="Fixed domain · NAS / existing proxy / Docker" >固定域名 · NAS / 已有反代 / Docker</td>
+</tr>
+<tr>
+<td data-en="Computer app" >电脑 App</td>
+<td data-en="Phone URL" >手机访问地址</td>
+<td data-en="https://codex.try2love.com" >https://codex.try2love.com</td>
+</tr>
+<tr>
+<td data-en="Computer app" >电脑 App</td>
+<td data-en="Computer URL reachable from NAS" >NAS 可访问的电脑地址</td>
+<td data-en="http://192.168.1.10:8787" >http://192.168.1.10:8787</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p data-en="Save and enable the connection, restart the gateway and check the fixed entry. Use the hostname root, not a subpath such as /codex/." >保存并启用连接，重新启动网关，再检测固定入口。使用域名根路径，不要配置为 /codex/ 等子路径。</p>
+<p data-en="Check: The app check passes and the phone can sign in and exchange messages over mobile data." class="checkpoint">确认结果：App 检测通过，手机蜂窝网络可以登录并收发消息。</p>
+</div>
+</article>
+<details class="scenario">
+<summary data-en="When is a Docker relay needed?" >什么时候需要 Docker 中转？</summary>
+<p data-en="If the NAS can proxy directly to the computer, no Docker relay is needed. Use the exported NAS bundle only when an intermediate HTTP relay is actually required." >NAS 已能直接反代到电脑时，不需要再加 Docker。只有确实需要中间 HTTP 转发时，才使用 App 导出的 NAS 部署包。</p>
+<p data-en="The container is an HTTP relay; it does not replace NAS certificates or public HTTPS. A host-level proxy can use http://127.0.0.1:18787. If the outer proxy is containerized, 127.0.0.1 refers to that container; configure a reachable NAS address with restricted access as described in the bundle." >该包的容器提供 HTTP 中转，不能独立代替 NAS 的证书和公网 HTTPS。若外层反代运行在宿主机，上游可用 http://127.0.0.1:18787；若它也在容器中，127.0.0.1 指向该容器自己，需按部署包说明设置可达的 NAS 地址并限制访问。</p>
+<p data-en="An authorized user performs Docker operations. Read the exported instructions and verify ports and networking before checking the Compose configuration. Do not modify unrelated containers or expose internal ports for this guide." >Docker 操作由有权限的用户自行完成。先查看导出包中的部署说明，核对端口和网络，再运行配置检查；不要为了本教程修改其他容器或公开内部端口。</p>
+</details>
+</section>
+<section class="troubleshooting" id="troubleshooting">
+<h2 data-en="When stuck, start with the symptom" >卡住时，从现象找下一步</h2>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th data-en="Symptom" scope="col">看到什么</th>
+<th data-en="Check first" scope="col">先查哪里</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td data-en="Domain not found / DNS error" >域名找不到 / DNS 错误</td>
+<td data-en="DNS hosting, record values, nameservers and incorrect AAAA records" >DNS 在哪托管、记录值、NS 是否生效、是否存在错误 AAAA</td>
+</tr>
+<tr>
+<td data-en="Connection timeout" >连接超时</td>
+<td data-en="Public IP, security groups, firewall and service listeners; check phone and server networks separately" >公网 IP、安全组、防火墙、服务监听；分别检查手机与服务器网络</td>
+</tr>
+<tr>
+<td data-en="Certificate error" >证书错误</td>
+<td data-en="Certificate hostname, issuance logs and public 80/443 reachability" >域名与证书是否匹配、证书签发日志、80/443 可达性</td>
+</tr>
+<tr>
+<td data-en="Cloudflare 1033" >Cloudflare 1033</td>
+<td data-en="Connector online status and correct tunnel token" >连接器是否在线、隧道 Token 与隧道是否一致</td>
+</tr>
+<tr>
+<td data-en="502 / 504" >502 / 504</td>
+<td data-en="Proxy upstream port, SSH tunnel and NAS-to-computer route; not the sign-in password" >反代上游端口、SSH 隧道、NAS 到电脑路由；不要先改登录密码</td>
+</tr>
+<tr>
+<td data-en="Home loads, sign-in reports cross-site request" >首页可见，登录报跨站错误</td>
+<td data-en="Check whether the browser used HTTP; configure an HTTPS redirect and reopen the page" >浏览器是否在 HTTP；先配置 HTTPS 跳转并重新打开页面</td>
+</tr>
+<tr>
+<td data-en="SSH sign-in succeeds, forwarding fails" >SSH 登录成功，转发不成功</td>
+<td data-en="Forwarding permissions, loopback port conflicts, key restrictions and other Match rules" >转发权限、回环端口占用、公钥限制、其他 Match 规则</td>
+</tr>
+<tr>
+<td data-en="Replies arrive in a delayed batch" >回复等很久才整段出现</td>
+<td data-en="Proxy buffering and caching; preserve streaming" >反代响应缓冲与缓存；保持流式响应</td>
+</tr>
+<tr>
+<td data-en="Entry check reports a different gateway" >检测提示不是当前网关</td>
+<td data-en="DNS, public Host and whether the upstream reaches another instance" >DNS、站点 Host 和上游是否指到了其他实例</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p data-en="Check fixed entry proves that the testing computer can reach this gateway via HTTPS. A real phone test with Wi-Fi off completes external-access verification." class="callout">检测固定入口只能证明执行检测的电脑能经 HTTPS 连到当前网关；手机关闭 Wi-Fi 的真实访问，才是外网链路的最后验收。</p>
+<a data-en="Official Caddy automatic HTTPS documentation ↗" href="https://caddyserver.com/docs/automatic-https">Caddy 自动 HTTPS 官方说明 ↗</a> · <a data-en="Official Nginx proxy documentation ↗" href="https://nginx.org/en/docs/http/ngx_http_proxy_module.html">Nginx 反向代理官方说明 ↗</a>
+</section>
+</main>
+<footer class="setup-footer">
+<a data-en="Back to overview" href="./#connect">返回产品介绍</a>
+<p>Codex Mobile Bridge · <span data-en="Examples are illustrative. Replace them before use." >示例信息用于演示，请替换后再操作。</span>
+</p>
+</footer>
+<div id="copy-status" class="copy-status" role="status" aria-live="polite" hidden>
+</div>
+</body>
+</html>
