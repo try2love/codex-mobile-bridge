@@ -1,0 +1,46 @@
+// Execute only against the isolated fixture repository, never a user project.
+async function runGitManagementTests() {
+  const wb = window.BridgeWorkbench, panel = wb.current.files.find(t => t.id === 'git').git, checks = [];
+  const check = (value, label) => { if (!value) throw Error(label); checks.push(label); };
+  const wait = async predicate => { for (let i = 0; i < 400; i++) { if (predicate()) return; await new Promise(r => setTimeout(r, 25)); } throw Error('Git management fixture did not settle'); };
+  const click = (selector, text) => { const node = [...document.querySelectorAll(selector)].find(n => n.textContent.trim() === text); if (!node || node.disabled) throw Error('Missing enabled control: '+text); node.click(); };
+  const mode = async text => { click('.wb-git-modes button', text); await wait(() => document.querySelector('.wb-git-modes button[aria-pressed=true]')?.textContent === text); };
+  await mode('历史'); await wait(() => document.querySelector('.wb-history-row'));
+  check(document.querySelectorAll('.wb-history-row').length >= 4, 'History shows the fork and merge fixture commits');
+  const first = document.querySelector('.wb-history-row'); first.click(); await wait(() => document.querySelector('.wb-history-file'));
+  check(document.querySelector('.wb-git-detail').textContent.includes('第一父提交'), 'Merge detail identifies the first-parent comparison');
+  check(first.querySelectorAll('path').length >= 2, 'Merge graph draws multiple parent edges');
+  check(document.querySelector('.wb-history-refs').textContent.includes('preview-git'), 'History displays tag and branch references');
+  await wait(() => document.querySelector('.wb-history-diff-area .wb-diff-summary'));
+  check(document.querySelector('.wb-history-diff-area').textContent.includes('History graph ready'), 'Historical file diff is loaded from the selected commit');
+  await mode('变更'); await wait(() => document.querySelector('.wb-git-file'));
+  click('.wb-git-actions button', '全部暂存'); await wait(() => !panel.busy && document.querySelectorAll('.wb-git-file[data-section="staged"]').length >= 5);
+  check(!document.querySelector('.wb-git-file[data-section="unstaged"]'), 'Stage all moves working changes into the staged group');
+  const stagedCount = document.querySelectorAll('.wb-git-file[data-section="staged"]').length;
+  click('.wb-git-actions button', '提交 · ' + stagedCount); await wait(() => document.querySelector('.wb-git-dialog[open] textarea'));
+  check(document.querySelectorAll('.wb-commit-files li').length === stagedCount, 'Commit confirmation lists exactly the staged files');
+  const text = document.querySelector('.wb-git-dialog textarea'); text.value = 'Review workbench from mobile fixture';
+  document.querySelector('.wb-git-dialog form').requestSubmit(); await wait(() => !document.querySelector('.wb-git-dialog') && !!document.querySelector('.wb-git-clean'));
+  check(panel.state.entries.length === 0, 'Confirmed commit leaves a clean fixture worktree');
+  await mode('分支'); await wait(() => document.querySelector('.wb-branch-card'));
+  click('.wb-git-actions button', '创建分支'); await wait(() => document.querySelector('.wb-git-dialog input'));
+  document.querySelector('.wb-git-dialog input').value = 'feature/ui-management'; document.querySelector('.wb-git-dialog form').requestSubmit();
+  await wait(() => !panel.busy && !document.querySelector('.wb-git-dialog') && panel.state.branch === 'feature/ui-management');
+  check(panel.state.branch === 'feature/ui-management', 'Create branch dialog creates and switches to the named branch');
+  await wait(() => document.querySelectorAll('.wb-branch-card').length === 3);
+  const card = [...document.querySelectorAll('.wb-branch-card')].find(n => n.querySelector('strong').textContent === 'feature/mobile-workbench');
+  [...card.querySelectorAll('button')].find(n => n.textContent === '切换').click();
+  check(document.querySelector('.wb-git-dialog').textContent.includes('feature/mobile-workbench'), 'Switch confirmation names the destination branch');
+  document.querySelector('.wb-git-dialog form').requestSubmit();
+  await wait(() => !panel.busy && !document.querySelector('.wb-git-dialog') && panel.state.branch === 'feature/mobile-workbench');
+  check(panel.state.branch === 'feature/mobile-workbench', 'Confirmed branch switch updates the active branch');
+  await wait(() => document.querySelectorAll('.wb-branch-card').length === 3);
+  const feature = [...document.querySelectorAll('.wb-branch-card')].find(n => n.querySelector('strong').textContent === 'feature/history');
+  [...feature.querySelectorAll('button')].find(n => n.textContent === '合并到当前分支').click();
+  check(document.querySelector('.wb-git-dialog').textContent.includes('feature/history 合并到 feature/mobile-workbench'), 'Merge confirmation names both source and target');
+  document.querySelector('.wb-git-dialog form').requestSubmit(); await wait(() => !panel.busy && !document.querySelector('.wb-git-dialog'));
+  check(!panel.actionError, 'Confirmed merge returns a successful result without leaving the workbench');
+  await mode('历史'); await wait(() => document.querySelector('.wb-history-row'));
+  check(document.querySelector('.wb-history-row').textContent.includes('Review workbench from mobile fixture'), 'New local commit appears at the top of history');
+  return checks;
+}

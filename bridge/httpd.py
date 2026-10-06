@@ -383,11 +383,16 @@ class Handler(BaseHTTPRequestHandler):
                     return self.output(200, {'pushplusEnabled': config['pushplusEnabled'],
                                              'hasPushplusToken': bool(config['pushplusToken'])})
             bridge = self.server.bridge.for_host(query.get("host", ["local"])[0])
-            workspace_match = re.fullmatch(r"/api/sessions/([0-9a-f-]{36})/workspace(?:/(preview|download|upload|git-status|git-diff))?", path)
+            workspace_match = re.fullmatch(r"/api/sessions/([0-9a-f-]{36})/workspace(?:/(preview|download|upload|git-status|git-diff|git-history|git-commit|git-history-diff|git-branches|git-action))?", path)
             if workspace_match:
                 thread_id, operation = workspace_match.groups()
                 relative = query.get('path', [''])[0]
                 if write:
+                    if operation == 'git-action':
+                        body = self.read_json()
+                        if set(body) - {'action', 'version', 'path', 'branch', 'message'} or not {'action', 'version'} <= set(body):
+                            raise ValueError('Git 操作请求无效')
+                        return self.output(200, bridge.workspace(thread_id, operation, body))
                     if operation != 'upload': return self.output(405, {'error': '不支持此文件操作'})
                     sizes = self.headers.get_all('Content-Length', [])
                     if self.headers.get('Transfer-Encoding') or len(sizes) != 1 or not sizes[0].isdigit() or not 0 <= int(sizes[0]) <= MAX_TRANSFER:
@@ -396,6 +401,14 @@ class Handler(BaseHTTPRequestHandler):
                     if len(content) != int(sizes[0]): raise ValueError('上传中断，请重试')
                     return self.output(200, bridge.workspace(thread_id, 'upload', {'path': relative, 'encoded': base64.b64encode(content).decode()}))
                 if operation == 'upload': return self.output(405, {'error': '请使用上传操作'})
+                if operation == 'git-action': return self.output(405, {'error': 'Git 操作需要 POST 请求'})
+                if operation == 'git-history':
+                    return self.output(200, bridge.workspace(thread_id, operation, {'limit': int(query.get('limit', ['40'])[0]), 'ref': query.get('ref', ['all'])[0]}))
+                if operation == 'git-commit':
+                    return self.output(200, bridge.workspace(thread_id, operation, {'revision': query.get('revision', [''])[0]}))
+                if operation == 'git-history-diff':
+                    return self.output(200, bridge.workspace(thread_id, operation, {'revision': query.get('revision', [''])[0], 'path': relative}))
+                if operation == 'git-branches': return self.output(200, bridge.workspace(thread_id, operation, {}))
                 if operation == 'git-status': return self.output(200, bridge.workspace(thread_id, operation, {}))
                 if operation == 'git-diff':
                     return self.output(200, bridge.workspace(thread_id, operation, {'path': relative, 'section': query.get('section', ['unstaged'])[0]}))

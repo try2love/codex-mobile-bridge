@@ -100,7 +100,7 @@ class Workbench {
   }
   paint() {
     const session = this.current; if (!session) return;
-    for (const node of this.panel.querySelectorAll('.wb-file-list,.wb-preview-content,.wb-git-list,.wb-git-diff')) this.scrollPositions.set(node, node.scrollTop);
+    for (const node of this.panel.querySelectorAll('.wb-file-list,.wb-preview-content,.wb-git-list,.wb-git-diff,.wb-branch-list')) this.scrollPositions.set(node, node.scrollTop);
     this.tabs.replaceChildren();
     for (const tab of [{id: 'chat', name: '聊天'}, ...session.files]) {
       const group = this.node('div', 'wb-tab'); group.classList.toggle('selected', session.active === tab.id);
@@ -114,7 +114,7 @@ class Workbench {
     const active = session.files.find(t => t.id === session.active);
     if (active) {
       this.panel.append(active.body);
-      for (const node of active.body.querySelectorAll('.wb-file-list,.wb-preview-content,.wb-git-list,.wb-git-diff')) node.scrollTop = this.scrollPositions.get(node) || 0;
+      for (const node of active.body.querySelectorAll('.wb-file-list,.wb-preview-content,.wb-git-list,.wb-git-diff,.wb-branch-list')) node.scrollTop = this.scrollPositions.get(node) || 0;
     }
     this.refreshThumbnails();
   }

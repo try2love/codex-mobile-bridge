@@ -22,6 +22,7 @@ class GitWorkspaceTests(unittest.TestCase):
         self.root = Path(self.temp.name) / 'project'; self.root.mkdir()
         self.git('init', '-q', '-b', 'main')
         self.git('config', 'user.name', 'Fixture'); self.git('config', 'user.email', 'fixture@example.invalid')
+        self.git('config', 'commit.gpgsign', 'false'); self.git('config', 'core.hooksPath', '.git/hooks')
         self.work = Workspace(self.root)
 
     def tearDown(self): self.temp.cleanup()
@@ -130,6 +131,125 @@ class GitWorkspaceTests(unittest.TestCase):
             self.assertEqual(Bridge.workspace(bridge, support.THREAD, 'git-status', {})['branch'], 'main')
             self.assertIn('+remote change', Bridge.workspace(bridge, support.THREAD, 'git-diff', {'path': 'hello.txt', 'section': 'unstaged'})['text'])
 
+    def mutate(self, action, **params):
+        return GitWorkspace(self.work).mutate(action, self.status()['version'], **params)
+
+    def test_management_staging_commit_preserves_unstaged_content(self):
+        self.baseline(); path = self.root / 'hello.txt'; path.write_text('staged version\n')
+        self.mutate('stage', path='hello.txt'); path.write_text('later working version\n')
+        snapshot = self.status()['version']
+        result = GitWorkspace(self.work).mutate('commit', snapshot, message='Commit staged content')
+        self.assertEqual(result['outcome'], 'success')
+        self.assertEqual(self.git('show', 'HEAD:hello.txt').stdout, b'staged version\n')
+        self.assertEqual(path.read_text(), 'later working version\n')
+        self.assertEqual(self.status()['entries'][0]['worktree'], 'M')
+        with self.assertRaisesRegex(ValueError, '已发生变化'):
+            GitWorkspace(self.work).mutate('commit', snapshot, message='Do not duplicate')
+        self.assertEqual(self.git('rev-list', '--count', 'HEAD').stdout.strip(), b'2')
+        self.mutate('stage-all'); self.mutate('unstage-all')
+        self.assertEqual(self.git('diff', '--cached').stdout, b'')
+
+    def test_management_unborn_unstage_and_deleted_directory(self):
+        (self.root / 'new.txt').write_text('first')
+        self.mutate('stage', path='new.txt'); (self.root / 'new.txt').write_text('second')
+        self.mutate('unstage', path='new.txt')
+        self.assertEqual((self.root / 'new.txt').read_text(), 'second')
+        self.mutate('stage-all'); self.mutate('commit', message='First commit')
+        (self.root / 'folder').mkdir(); (self.root / 'folder/a.txt').write_text('file')
+        self.mutate('stage-all'); self.mutate('commit', message='Folder')
+        (self.root / 'folder/a.txt').unlink(); (self.root / 'folder').rmdir()
+        self.mutate('stage', path='folder/a.txt')
+        self.assertEqual(self.status()['entries'][0]['index'], 'D')
+
+    def test_management_rejects_stale_state_and_dirty_branch_switch(self):
+        self.baseline(); self.mutate('create-branch', branch='feature/demo')
+        self.assertEqual(self.status()['branch'], 'feature/demo')
+        path = self.root / 'hello.txt'; path.write_text('one')
+        stale = self.status()['version']; path.write_text('two changed')
+        with self.assertRaisesRegex(ValueError, '已发生变化'):
+            GitWorkspace(self.work).mutate('stage', stale, path='hello.txt')
+        with self.assertRaisesRegex(ValueError, '未提交'):
+            self.mutate('switch-branch', branch='main')
+        self.assertEqual(path.read_text(), 'two changed')
+        with self.assertRaises(ValueError): self.mutate('reset', branch='main')
+
+    def test_management_merge_conflict_abort_and_resolved_commit(self):
+        self.baseline(); self.mutate('create-branch', branch='feature/demo')
+        (self.root / 'hello.txt').write_text('feature\n'); self.mutate('stage-all'); self.mutate('commit', message='Feature')
+        self.mutate('switch-branch', branch='main')
+        (self.root / 'hello.txt').write_text('main\n'); self.mutate('stage-all'); self.mutate('commit', message='Main')
+        result = self.mutate('merge', branch='feature/demo')
+        self.assertEqual(result['outcome'], 'conflict'); self.assertEqual(self.status()['operation'], 'merge')
+        with self.assertRaisesRegex(ValueError, '冲突'): self.mutate('commit', message='Cannot commit unresolved conflict')
+        self.mutate('abort-merge'); self.assertEqual((self.root / 'hello.txt').read_text(), 'main\n')
+        self.assertIsNone(self.status()['operation'])
+        self.mutate('merge', branch='feature/demo'); (self.root / 'hello.txt').write_text('main\n')
+        self.mutate('stage-all'); self.assertEqual(self.status()['entries'], [])
+        self.mutate('commit', message='Resolve merge while retaining current content')
+        self.assertIsNone(self.status()['operation'])
+        self.assertEqual(len(self.git('show', '-s', '--format=%P', 'HEAD').stdout.split()), 2)
+
+    def test_history_graph_details_and_first_parent_merge_diff(self):
+        self.baseline(); initial = self.git('rev-parse', 'HEAD').stdout.decode().strip()
+        self.mutate('create-branch', branch='feature/demo')
+        (self.root / 'feature.txt').write_text('feature\n'); self.mutate('stage-all'); self.mutate('commit', message='Feature work')
+        self.mutate('switch-branch', branch='main')
+        (self.root / 'main.txt').write_text('main\n'); self.mutate('stage-all'); self.mutate('commit', message='Main work')
+        self.mutate('merge', branch='feature/demo'); self.git('tag', 'fixture-v1')
+        work = GitWorkspace(self.work); history = work.history(limit=2)
+        self.assertEqual(len(history['commits']), 2); self.assertTrue(history['hasMore'])
+        tip = history['commits'][0]; self.assertEqual(len(tip['parents']), 2); self.assertIn('fixture-v1', tip['refs'])
+        self.assertEqual({c['id'] for c in work.history(limit=40)['commits']}, set(self.git('rev-list', '--all').stdout.decode().split()))
+        detail = work.commit_detail(tip['id']); self.assertEqual([e['path'] for e in detail['entries']], ['feature.txt'])
+        self.assertIn('+feature', work.historical_diff(tip['id'], 'feature.txt')['text'])
+        self.assertIn('+first', work.historical_diff(initial, 'hello.txt')['text'])
+        with self.assertRaises(ValueError): work.historical_diff(tip['id'], 'hello.txt')
+        with self.assertRaises(ValueError): work.commit_detail('--all')
+        self.assertEqual(len(work.branches()['branches']), 2)
+
+    def test_management_subdirectory_cannot_commit_other_project_files(self):
+        self.baseline(); (self.root / 'nested').mkdir(); (self.root / 'nested/a.txt').write_text('nested')
+        self.git('add', 'hello.txt'); (self.root / 'hello.txt').write_text('outside'); self.git('add', 'hello.txt')
+        nested = GitWorkspace(Workspace(self.root / 'nested'))
+        state = nested.status(); nested.mutate('stage-all', state['version'])
+        with self.assertRaisesRegex(ValueError, '仓库根目录'):
+            nested.mutate('commit', nested.status()['version'], message='Do not include outside files')
+        self.assertIn(b'hello.txt', self.git('diff', '--cached', '--name-only').stdout)
+        self.assertEqual(self.git('rev-list', '--count', 'HEAD').stdout.strip(), b'1')
+
+    def test_management_commit_hooks_are_respected_and_failures_keep_index(self):
+        self.baseline(); hook = self.root / '.git/hooks/pre-commit'
+        hook.write_text('#!/bin/sh\nexit 1\n'); hook.chmod(0o700)
+        (self.root / 'hello.txt').write_text('pending'); self.mutate('stage-all')
+        with self.assertRaisesRegex(ValueError, '未完成'): self.mutate('commit', message='Blocked by hook')
+        self.assertEqual(self.git('rev-list', '--count', 'HEAD').stdout.strip(), b'1')
+        self.assertEqual(self.status()['entries'][0]['index'], 'M')
+
+
+    def test_remote_management_and_history_use_remote_repository(self):
+        self.baseline(); (self.root / 'hello.txt').write_text('remote staged change\n')
+        store = RemoteStore('fixture-host'); store.get = lambda _: {'cwd': str(self.root)}
+        bridge = SimpleNamespace(host='remote:fixture', store=store)
+        def execute(alias, source, timeout):
+            self.assertEqual(alias, 'fixture-host'); output = io.StringIO()
+            with contextlib.redirect_stdout(output): exec(compile(source, '<remote-git>', 'exec'), {})
+            return json.loads(output.getvalue())
+        with patch('bridge.service.ssh_read', side_effect=execute):
+            state = Bridge.workspace(bridge, support.THREAD, 'git-status', {})
+            staged = Bridge.workspace(bridge, support.THREAD, 'git-action', {'action':'stage-all', 'version':state['version']})
+            committed = Bridge.workspace(bridge, support.THREAD, 'git-action', {'action':'commit', 'version':staged['state']['version'], 'message':'Remote fixture commit'})
+            self.assertEqual(committed['outcome'], 'success')
+            history = Bridge.workspace(bridge, support.THREAD, 'git-history', {})
+            self.assertEqual(history['commits'][0]['subject'], 'Remote fixture commit')
+
+    def test_concurrent_mobile_writes_are_serialized(self):
+        self.baseline(); (self.root / 'hello.txt').write_text('pending')
+        owner = GitWorkspace(self.work); state = owner.require_repository()
+        with owner.mutation_lock():
+            with self.assertRaisesRegex(ValueError, '另一个 Git 操作'):
+                GitWorkspace(self.work).mutate('stage-all', state['version'])
+        self.assertEqual(self.git('diff', '--cached').stdout, b'')
+
 
 class GitHttpTests(unittest.TestCase):
     setUpClass = classmethod(support.HttpTests.setUpClass.__func__)
@@ -155,3 +275,14 @@ class GitHttpTests(unittest.TestCase):
         connection = http.client.HTTPConnection('127.0.0.1', self.port)
         connection.request('GET', '/git-panel.js'); response = connection.getresponse()
         self.assertEqual(response.status, 200); self.assertIn(b'class GitPanel', response.read()); connection.close()
+
+    def test_mutations_require_csrf_and_explicit_action(self):
+        target = self.path + 'git-action'
+        auth = self.login()
+        self.assertEqual(self.request('GET', target, headers=auth)[0], 405)
+        self.assertEqual(self.request('POST', target, {'action':'commit','version':'fixture'}, {'Cookie':auth['Cookie']})[0], 403)
+        self.assertEqual(self.request('POST', target, {'action':'commit','version':'fixture'}, {**auth,'Origin':'https://evil.example'})[0], 403)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.request('POST', target, {'action':'stage','version':'fixture','path':'a.txt'}, auth)[0], 200)
+        self.assertEqual(self.calls[-1][1], 'git-action')
+        self.assertEqual(self.request('POST', target, {'action':'stage','version':'fixture','root':'/outside'}, auth)[0], 400)

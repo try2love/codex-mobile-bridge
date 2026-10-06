@@ -2,10 +2,13 @@
 import base64
 from contextlib import contextmanager
 import difflib
+import hashlib
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
+import tempfile
 import threading
 import uuid
 
@@ -140,37 +143,43 @@ class Workspace:
 
 
 class GitWorkspace:
-    """Read-only Git metadata and bounded blob comparisons within a chat project."""
+    """Project Git inspection and explicitly requested local Git operations."""
     def __init__(self, workspace):
         self.workspace = workspace
         self.environment = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
         self.environment.update(GIT_OPTIONAL_LOCKS='0', GIT_TERMINAL_PROMPT='0', GIT_NO_LAZY_FETCH='1', LC_ALL='C')
         self.command = ['git', '--no-pager', '--no-optional-locks', '--literal-pathspecs',
                         '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', '-c', 'protocol.allow=never']
+        self.write_command = ['git', '--no-pager', '--literal-pathspecs', '-c', 'core.fsmonitor=false',
+                              '-c', 'protocol.allow=never', '-c', 'gc.auto=0']
         # Status may otherwise run a repository's clean/process filter on dirty files.
         code, keys, truncated = self.run(['config', '--name-only', '--get-regexp', r'^filter\..*\.(clean|process|required)$'])
         if code not in (0, 1) or truncated: raise ValueError('无法读取 Git 配置，请在电脑上检查仓库')
         for key in keys.decode('utf-8', 'replace').splitlines():
             self.command += ['-c', key + ('=false' if key.endswith('.required') else '=')]
 
-    def run(self, args, limit=2 * 1024 * 1024):
+    def run(self, args, limit=2 * 1024 * 1024, write=False, message=None):
+        source = tempfile.TemporaryFile(dir=self.gitdir) if message is not None else None
+        if source: source.write(message.encode('utf-8')); source.seek(0)
         try:
-            process = subprocess.Popen(self.command + args, cwd=self.workspace.root, env=self.environment,
-                                       stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            process = subprocess.Popen((self.write_command if write else self.command) + args, cwd=self.workspace.root, env=self.environment,
+                                       stdin=source if source else subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         except FileNotFoundError:
             raise ValueError('此电脑或 SSH 服务器未安装 Git') from None
+        finally:
+            if source: source.close()
         expired = threading.Event()
         def timeout():
             expired.set()
             try: process.kill()
             except OSError: pass
-        timer = threading.Timer(10, timeout); timer.start()
+        timer = threading.Timer(30 if write else 10, timeout); timer.start()
         try:
             data = process.stdout.read(limit + 1)
             truncated = len(data) > limit
             if truncated: process.kill()
             code = process.wait()
-            if expired.is_set(): raise ValueError('Git 读取超时，请在电脑上检查仓库后重试')
+            if expired.is_set(): raise ValueError('Git 操作结果未确认，请刷新状态和历史后再决定是否重试' if write else 'Git 读取超时，请在电脑上检查仓库后重试')
             return code, data[:limit], truncated
         finally:
             timer.cancel(); process.stdout.close()
@@ -180,6 +189,9 @@ class GitWorkspace:
         code, top, _ = self.run(['rev-parse', '--show-toplevel'])
         if code: return {'available': False, 'message': '当前项目不是 Git 工作区，或仓库不可访问'}
         repository = Path(os.fsdecode(top.rstrip(b'\n'))).resolve()
+        code, gitdir, _ = self.run(['rev-parse', '--absolute-git-dir'])
+        if code: raise ValueError('无法读取 Git 仓库位置')
+        self.gitdir = Path(os.fsdecode(gitdir.rstrip(b'\n')))
         prefix = self.workspace.root.relative_to(repository).as_posix()
         self.prefix = '' if prefix == '.' else prefix + '/'
         code, raw, truncated = self.run(['status', '--porcelain=v2', '--branch', '-z', '--untracked-files=all',
@@ -204,7 +216,18 @@ class GitWorkspace:
                             'index': xy[0], 'worktree': xy[1], 'conflict': kind == 'u', 'untracked': kind == '?', 'submodule': submodule})
         entries.sort(key=lambda entry: entry['path'].casefold())
         counts = headers.get('branch.ab', '').split()
-        return {'available': True, 'project': self.workspace.root.name, 'scope': prefix, 'branch': headers.get('branch.head', ''),
+        fingerprint = hashlib.sha256(raw)
+        for name in ('index', 'HEAD', 'MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD'):
+            try: fingerprint.update((self.gitdir / name).read_bytes())
+            except FileNotFoundError: pass
+        for entry in entries:
+            try:
+                info = (self.workspace.root / entry['path']).lstat()
+                fingerprint.update(str((entry['path'], info.st_mtime_ns, info.st_ctime_ns, info.st_size)).encode('utf-8', 'replace'))
+            except FileNotFoundError: pass
+        operation = 'merge' if (self.gitdir / 'MERGE_HEAD').exists() else 'other' if any((self.gitdir / name).exists() for name in ('rebase-merge', 'rebase-apply', 'CHERRY_PICK_HEAD', 'REVERT_HEAD')) else None
+        return {'available': True, 'project': self.workspace.root.name, 'repository': repository.name, 'scope': prefix, 'branch': headers.get('branch.head', ''),
+                'version': fingerprint.hexdigest(), 'operation': operation,
                 'commit': headers.get('branch.oid', ''), 'upstream': headers.get('branch.upstream'),
                 'ahead': int(counts[0]) if counts else None, 'behind': -int(counts[1]) if counts else None, 'entries': entries}
 
@@ -243,17 +266,178 @@ class GitWorkspace:
         else:
             before = b'' if entry['worktree'] == 'A' else self.blob(':' + self.prefix + path)
             after = b'' if entry['worktree'] == 'D' else self.working(path)
+        return self.text_diff(before, after, result)
+
+    @staticmethod
+    def text_diff(before, after, result):
         if before is None or after is None: return {**result, 'kind': 'large'}
         try:
             if b'\0' in before or b'\0' in after: return {**result, 'kind': 'binary'}
             old, new = before.decode('utf-8'), after.decode('utf-8')
         except UnicodeDecodeError: return {**result, 'kind': 'binary'}
-        if section == 'conflict': return {**result, 'kind': 'conflict', 'text': new}
+        if result.get('section') == 'conflict': return {**result, 'kind': 'conflict', 'text': new}
         old_lines, new_lines = old.splitlines(keepends=True), new.splitlines(keepends=True)
         if len(old_lines) + len(new_lines) > 8000: return {**result, 'kind': 'large'}
-        lines = difflib.unified_diff(old_lines, new_lines, fromfile=entry['oldPath'] or path, tofile=path, n=3)
+        lines = difflib.unified_diff(old_lines, new_lines, fromfile=result.get('oldPath') or result['path'], tofile=result['path'], n=3)
         text = ''.join(line if line.endswith('\n') else line + '\n\\ No newline at end of file\n' for line in lines)
         return {**result, 'text': text, 'metadataOnly': not text}
+
+
+    def require_repository(self):
+        state = self.status()
+        if not state['available']: raise ValueError(state['message'])
+        return state
+
+    @staticmethod
+    def revision(value):
+        if not isinstance(value, str) or not re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', value):
+            raise ValueError('提交标识无效，请刷新历史')
+        return value
+
+    def history(self, limit=40, ref='all'):
+        state = self.require_repository()
+        if not isinstance(limit, int) or not 1 <= limit <= 1000 or ref not in ('all', 'current'):
+            raise ValueError('历史查询无效')
+        revisions = ['--all'] if ref == 'all' else []
+        if state['commit'] != '(initial)': revisions.append('HEAD')
+        elif ref == 'current': return {'commits': [], 'hasMore': False}
+        code, raw, truncated = self.run(['log', '--topo-order', '-n', str(limit + 1),
+            '--format=%H%x00%P%x00%an%x00%aI%x00%s%x00%D', '-z', *revisions, '--'])
+        if code or truncated: raise ValueError('历史记录不可读取或过大，请在电脑上检查仓库')
+        fields = raw.decode('utf-8', 'replace').split('\0')
+        if fields[-1] == '': fields.pop()
+        commits = []
+        for start in range(0, len(fields), 6):
+            oid, parents, author, date, subject, refs = fields[start:start + 6]
+            commits.append({'id': oid, 'parents': parents.split(), 'author': author, 'date': date,
+                            'subject': subject, 'refs': refs})
+        return {'commits': commits[:limit], 'hasMore': len(commits) > limit, 'scope': state['scope']}
+
+    def commit_detail(self, revision):
+        self.require_repository(); self.revision(revision)
+        code, raw, truncated = self.run(['show', '-s', '--format=%H%x00%P%x00%an%x00%aI%x00%B', revision, '--'], MAX_PREVIEW)
+        if code or truncated: raise ValueError('提交详情不可读取')
+        oid, parents, author, date, message = raw.decode('utf-8', 'replace').split('\0', 4)
+        parents = parents.split()
+        comparison = [parents[0], oid] if parents else ['--root', oid]
+        code, raw, truncated = self.run(['diff-tree', '--no-commit-id', '--raw', '--no-abbrev', '-z', '-r', '-M', *comparison, '--', '.'])
+        if code or truncated: raise ValueError('此提交的文件列表过大或不可读取')
+        tokens = iter(raw.decode('utf-8', 'replace').split('\0')); entries = []
+        for header in tokens:
+            if not header: continue
+            old_mode, mode, old_id, new_id, change = header[1:].split(' ')
+            path = next(tokens); old = None
+            if change.startswith(('R', 'C')): old, path = path, next(tokens)
+            if not path.startswith(self.prefix): continue
+            entries.append({'path': path[len(self.prefix):], 'oldPath': old[len(self.prefix):] if old and old.startswith(self.prefix) else None,
+                            'change': change[0], 'oldId': old_id if not old or old.startswith(self.prefix) else '0' * len(old_id),
+                            'newId': new_id, 'submodule': old_mode == '160000' or mode == '160000'})
+        return {'id': oid, 'parents': parents, 'author': author, 'date': date, 'message': message.rstrip(), 'entries': entries}
+
+    def historical_diff(self, revision, path):
+        self.workspace.parts(path)
+        detail = self.commit_detail(revision)
+        entry = next((entry for entry in detail['entries'] if entry['path'] == path), None)
+        if not entry: raise ValueError('文件不属于此提交的项目变更')
+        result = {'path': path, 'oldPath': entry['oldPath'], 'kind': 'diff'}
+        if entry['submodule']: return {**result, 'kind': 'submodule'}
+        before = b'' if set(entry['oldId']) == {'0'} else self.blob(entry['oldId'])
+        after = b'' if set(entry['newId']) == {'0'} else self.blob(entry['newId'])
+        return self.text_diff(before, after, result)
+
+    def branches(self):
+        state = self.require_repository()
+        code, raw, truncated = self.run(['for-each-ref', '--sort=refname', '--format=%(refname:short)%00%(objectname)%00%(upstream:short)', 'refs/heads/'])
+        if code or truncated: raise ValueError('无法读取分支列表')
+        entries = []
+        for line in raw.decode('utf-8', 'replace').splitlines():
+            name, oid, upstream = line.split('\0')
+            entries.append({'name': name, 'id': oid, 'upstream': upstream, 'current': name == state['branch']})
+        return {'branches': entries}
+
+    @contextmanager
+    def mutation_lock(self):
+        # Shared across HTTP workers and separate SSH Python processes.
+        with (self.gitdir / 'codex-mobile-workbench.lock').open('a+b') as lock:
+            if os.name == 'nt':
+                import msvcrt
+                lock.seek(0); lock.write(b'0'); lock.flush(); lock.seek(0)
+                try: msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+                except OSError: raise ValueError('另一个 Git 操作正在执行，请稍后刷新') from None
+            else:
+                import fcntl
+                try: fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError: raise ValueError('另一个 Git 操作正在执行，请稍后刷新') from None
+            try: yield
+            finally:
+                if os.name == 'nt': lock.seek(0); msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+                else: fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+    def mutate(self, action, version, path='', branch='', message=''):
+        allowed = ('stage', 'unstage', 'stage-all', 'unstage-all', 'commit', 'create-branch', 'switch-branch', 'merge', 'abort-merge')
+        if action not in allowed: raise ValueError('不支持此 Git 操作')
+        self.require_repository()
+        with self.mutation_lock():
+            state = self.require_repository()
+            if not isinstance(version, str) or version != state['version']:
+                raise ValueError('仓库已发生变化，请刷新并核对后重新操作')
+            if state['operation'] == 'other': raise ValueError('仓库正在变基或拣选，请先在电脑上完成该操作')
+            if action in ('commit', 'create-branch', 'switch-branch', 'merge', 'abort-merge') and state['scope'] != '.':
+                raise ValueError('此操作影响整个仓库，请在仓库根目录对应的聊天中操作')
+            if action in ('stage', 'unstage'):
+                parts = self.workspace.parts(path)
+                if not parts or '.git' in parts: raise ValueError('请选择项目中的变更文件')
+                entry = next((e for e in state['entries'] if e['path'] == path), None)
+                if not entry or entry['submodule']: raise ValueError('文件状态已变化或为子模块，请刷新后在电脑上处理')
+                # Existing parent components must not redirect staging outside the project.
+                if action == 'stage':
+                    try:
+                        with self.workspace.directory(parts[:-1]): pass
+                    except FileNotFoundError:
+                        if entry['worktree'] != 'D': raise
+                paths = [path]
+                if action == 'unstage' and entry['oldPath']: paths.append(entry['oldPath'])
+            else: paths = ['.']
+            if action.startswith('stage'):
+                command = ['add', '-A', '--', *paths]
+            elif action.startswith('unstage'):
+                # In an unborn repository, remove only index entries; preserve even
+                # worktree files edited again after their first staging.
+                command = ['restore', '--staged', '--source=HEAD', '--', *paths] if state['commit'] != '(initial)' else ['rm', '-r', '-f', '--cached', '--ignore-unmatch', '--', *paths]
+            elif action == 'commit':
+                if state['branch'] == '(detached)': raise ValueError('当前为分离 HEAD，请先创建分支再提交')
+                if any(e['conflict'] for e in state['entries']): raise ValueError('请先解决冲突并暂存文件')
+                if state['operation'] != 'merge' and not any(not e['untracked'] and e['index'] != '.' for e in state['entries']): raise ValueError('请先暂存需要提交的文件')
+                if not isinstance(message, str) or not message.strip() or len(message.encode('utf-8')) > 16000 or '\0' in message:
+                    raise ValueError('请填写提交说明（最多 16 KB）')
+                command = ['commit', '--file=-']
+            elif action == 'abort-merge':
+                if state['operation'] != 'merge': raise ValueError('当前没有可中止的合并')
+                command = ['merge', '--abort']
+            else:
+                if state['operation']: raise ValueError('请先完成或中止当前合并')
+                if state['entries']: raise ValueError('请先提交或在电脑上保存未提交的改动，再操作分支')
+                if not isinstance(branch, str) or not branch or len(branch) > 200 or branch.startswith('-'):
+                    raise ValueError('分支名称无效')
+                code, normalized, _ = self.run(['check-ref-format', '--branch', branch])
+                if code or normalized.decode('utf-8', 'replace').strip() != branch: raise ValueError('分支名称无效')
+                names = {entry['name'] for entry in self.branches()['branches']}
+                if action == 'create-branch':
+                    if branch in names: raise ValueError('同名分支已存在')
+                    command = ['switch', '-c', branch]
+                else:
+                    if branch not in names or branch == state['branch']: raise ValueError('请选择另一个已存在的本地分支')
+                    command = ['switch', '--no-guess', branch] if action == 'switch-branch' else ['merge', '--no-edit', '--no-stat', '--no-autostash', 'refs/heads/' + branch]
+            code, _, truncated = self.run(command, write=True, message=message if action == 'commit' else None)
+            result = self.status()
+            if code or truncated:
+                if action == 'merge' and result.get('operation') == 'merge':
+                    return {'outcome': 'conflict' if any(e['conflict'] for e in result['entries']) else 'merge-pending',
+                            'message': '合并尚未完成，请检查变更；可解决冲突后提交，或中止本次合并。', 'state': result}
+                raise ValueError('Git 操作未完成或结果未确认。请刷新状态和历史；如无变化，请在电脑上检查 Git 身份、签名、hooks 或仓库锁后重试。')
+            labels = {'stage': '已暂存文件', 'unstage': '已取消暂存', 'stage-all': '已暂存项目变更', 'unstage-all': '已取消项目暂存',
+                      'commit': '已提交到本地分支', 'create-branch': '已创建并切换分支', 'switch-branch': '已切换分支', 'merge': '分支已合并', 'abort-merge': '已中止合并'}
+            return {'outcome': 'success', 'message': labels[action], 'state': result}
 
 
 def operate(root, action, params):
@@ -261,6 +445,11 @@ def operate(root, action, params):
         workspace = Workspace(root)
         if action == 'git-status': return GitWorkspace(workspace).status()
         if action == 'git-diff': return GitWorkspace(workspace).diff(**params)
+        if action == 'git-history': return GitWorkspace(workspace).history(**params)
+        if action == 'git-commit': return GitWorkspace(workspace).commit_detail(**params)
+        if action == 'git-history-diff': return GitWorkspace(workspace).historical_diff(**params)
+        if action == 'git-branches': return GitWorkspace(workspace).branches()
+        if action == 'git-action': return GitWorkspace(workspace).mutate(**params)
         if action == 'list': return workspace.listing(**params)
         if action == 'preview': return workspace.read(params['path'])
         if action == 'download': return workspace.read(params['path'], download=True)
