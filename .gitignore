@@ -19,3 +19,9 @@ __pycache__/
 node_modules/
 dist/
 *.spec
+
+# Local native push platform credentials
+/mobile/android-push/google-services.json
+/mobile/android-push/.gradle/
+/mobile/android-push/build/
+/mobile/android-push/local.properties

@@ -1,0 +1,13 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="io.github.try2love.codexbridge.preview" android:versionCode="8" android:versionName="0.1.0-preview.8">
+ <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35"/>
+ <uses-permission android:name="android.permission.INTERNET"/><uses-permission android:name="android.permission.CAMERA"/><uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+ <uses-feature android:name="android.hardware.camera" android:required="false"/>
+ <application android:label="Bridge Preview" android:theme="@style/AppTheme" android:icon="@drawable/ic_bridge" android:allowBackup="false" android:usesCleartextTraffic="true">
+  <activity android:name="io.github.try2love.codexbridge.MainActivity" android:exported="true" android:launchMode="singleTop" android:windowSoftInputMode="adjustResize">
+   <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+   <intent-filter><action android:name="android.intent.action.VIEW"/><category android:name="android.intent.category.DEFAULT"/><category android:name="android.intent.category.BROWSABLE"/><data android:scheme="codexbridge" android:host="open"/></intent-filter>
+  </activity>
+  <activity android:name="io.github.try2love.codexbridge.ScanActivity" android:exported="false"/>
+  <service android:name="io.github.try2love.codexbridge.MonitorService" android:exported="false"/>
+ </application>
+</manifest>

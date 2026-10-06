@@ -8,6 +8,8 @@ test('invalid or older saved appearance values keep the page readable',()=>{
   assert.equal(normalize({showReasoning:false,showProcess:false}).showReasoning,false);
   assert.equal(normalize({showReasoning:false,showProcess:false}).showProcess,false);
   assert.deepEqual(normalize({showReasoning:'false',showProcess:null}),defaults);
+  assert.equal(normalize({showFileThumbnails:false}).showFileThumbnails,false);
+  assert.equal(normalize({showFileThumbnails:'false'}).showFileThumbnails,true);
 });
 
 function luminance(hex){

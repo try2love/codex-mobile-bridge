@@ -1,0 +1,12 @@
+plugins { id 'com.android.application' version '8.7.3'; id 'com.google.gms.google-services' version '4.4.2' }
+android {
+ namespace 'io.github.try2love.codexbridge.preview'
+ compileSdk 35
+ buildToolsVersion "35.0.0"
+ defaultConfig { applicationId 'io.github.try2love.codexbridge.preview'; minSdk 26; targetSdk 35; versionCode 8; versionName '0.1.0-preview.8-push' }
+ sourceSets { main { manifest.srcFile 'AndroidManifest.xml'; java.srcDirs = ['../android/src', 'src']; res.srcDirs = ['../android/res']; assets.srcDirs = ['../android/assets'] } }
+ compileOptions { sourceCompatibility JavaVersion.VERSION_1_8; targetCompatibility JavaVersion.VERSION_1_8 }
+ signingConfigs { preview { storeFile file('../../.tmp/mobile-tools/preview-debug.p12'); storePassword 'android'; keyAlias 'preview'; keyPassword 'android' } }
+ buildTypes { debug { signingConfig signingConfigs.preview } }
+}
+dependencies { implementation 'com.google.firebase:firebase-messaging:24.1.0'; implementation 'com.google.zxing:core:3.5.3' }

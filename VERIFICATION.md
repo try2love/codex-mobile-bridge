@@ -1,3 +1,57 @@
+## v1.4.0 发布候选检查（2026-10-06）
+
+- 用户已验收 Preview 并授权正式发布；保留 PR #11 原始提交历史及 Preview 期间的兼容性修复。
+- 本地完整 Python 套件 473 项：467 通过、6 项 Windows 条件跳过；Desktop/Web 144 项通过；更新套件 15 通过、1 项 Windows 条件跳过。
+- 未确认发送支持显式忽略，记录保留以阻止同一消息自动重发；账号切换阻塞同步解除。HTTP 操作需登录、同源和 CSRF 校验，仅允许处理未确认记录；明确的提供商拒绝在记录发送前校验。
+- 折叠箭头增大，空白地址输入框聚焦时提供 HTTPS 前缀。最终跨平台构建、签名清单与线上资产验证由发布工作流完成，以下保留本地 Preview 验证历史。
+
+## v1.4.0-beta.3 界面验证（2026-10-06，未发布）
+
+- 复现 Skill 描述裁切：旧卡片固定 74px，测试内容需要 196px。恢复自适应高度，移除固定高度虚拟列表，保留目录缓存、搜索和分页，按真实滚动位置加载后续页。
+- 390px 手机宽度实测完整描述可见，卡片高度随内容增长，无页面横向溢出；截图已检查。更新样式与脚本资源标识，避免浏览器继续使用旧 CSS。
+- Desktop/Web 回归 143 项通过，包含完整描述、真实滚动分页、搜索与选择状态。
+- 隔离 Electron 检查通过：局域网、本机及四种外网连接均可折叠；已有配置默认收起，新增配置展开，重绘保留状态；折叠后的在线指引可点击，校验错误自动展开定位。
+- beta.3 macOS arm64 DMG/ZIP 已生成。打包 App 的折叠、指引及隔离启动停止通过；DMG 架构、深度签名、内置网关和 TLS 检查通过。未公证，未构建其他平台。
+- 当前安装的 App 和真实网关均未替换；没有 GitHub 推送或线上发布。
+
+## v1.4.0-beta.2 定向修复验证（2026-10-06，未发布）
+
+- 复现正常安装的 Skill 符号链接阻断目录，以及过期账号切换记录误拦原提供商发送。修复前失败，修复后通过。
+- 原生只读目录实测：71 个 Skill，无目录错误，链接型 Skill 可选择；首次约 0.172 秒，内存缓存约 0.0002 秒，磁盘缓存约 0.0006 秒。此为本机一次测量，不是性能保证；测试缓存位于项目临时目录。
+- 目录、账号、聊天 IPC 和原生 Fast 定向 Python 回归：125 项，123 通过、2 项 Windows 条件跳过。Desktop/Web：142 项通过。
+- 已验证原生目录发现的外部路径与符号链接、断链不阻断其他条目、加载后链接目标变化拒绝发送、保留原会话提供商及 IPC owner；加载错误退出等待状态并可重试。
+- 隔离 Electron 测试确认各连接方案旁的中英文指引链接及实际点击 URL，界面截图已检查。线上教程 HTTP 200，五个目标章节均存在。
+- macOS arm64 DMG/ZIP 已生成；DMG 解包架构、深度签名、内置网关和 TLS 检查通过；打包 App 隔离启动停止、在线指引、配置定位及凭据检查通过。
+- 未替换已安装 App，未重启真实网关，未向真实聊天发送测试消息。真实手机发送验收仍待用户；未构建其他平台。本次没有推送 GitHub 或更新线上网站。
+
+## v1.4.0-beta.1 本地整合验证（2026-10-06，未发布）
+
+- 来源：本地 v1.3.3 后续改动与 PR #11 的 cdcd28cf0 整合；保留普通用户 SSH、固定 Cloudflare、凭据管理、登录保护和原生 Fast。自定义 API 继续使用现有供应商目录读取策略。
+- 已新增并通过回归：完整远端 helper 构造、独立模型接口的 Fast 能力与当前档位、原生供应商权限边界、Skill 链接真实目标校验、分页期间新选择、更新停止请求与原 PID 退出确认。
+- Python：完整套件 467 项，457 通过、10 跳过；其中 4 项 SSH 测试已用现有打包依赖环境补跑全部通过，剩余 6 项仅适用于 Windows。合计 461 项通过。
+- Desktop/Web：141 项通过。更新 Node 套件：15 项通过，1 项 Windows 条件跳过。
+- 本地 macOS arm64 DMG、ZIP 已生成。DMG 实际解包后通过架构、App 深度签名、内置网关签名与证书验证；签名为 ad-hoc，未公证。
+- 打包 App 使用隔离数据通过启动停止、内置 cloudflared、默认入口通知、字段定位、5 秒提示及凭据保留检查；打包网关通过持久登录、重启、设备撤销、IP 封禁、白名单与电脑端恢复检查。
+- 未测试本次候选在真实 Cloudflare/SSH 入口和 iOS 真机上的完整链路；未构建 Windows、Intel Mac 或 Linux 包。需要用户本地验收后，才进入 v1.4.0 正式发布。
+- 没有推送代码、合并远端 PR、发布 Release 或替换 Applications 中现有 App。
+
+---
+
+## PR #11 作者提供的 v1.3.4 验证记录（历史参考，非本地整合验收）
+
+- Quick Tunnel：排除 Cloudflare API 域名误识别；cloudflared 仍在重试时保持 connecting，不再提前失败或重启存活进程。真实包内隧道冒烟通过，本机与外网 HTTP 均为 200。
+- 更新链路：官方直连优先、受限镜像兜底；签名与包哈希不放松。检查按钮立即进入忙碌态，更新助手重试自有网关停止确认，保留启动输出/控制错误并持久化更新结果日志。本机 Bark 测试请求不再经过系统代理，避免设备 Key 泄露给代理。
+- 图片预览：本机会话可渲染模型 Markdown 本地图片和运行时 `ImageView` 证据；模型 Markdown 仍限制在 workspace/visualizations，只有 `ImageView` 允许桌面截图特例。兼容 `ImageView` / `imageView`，空正文不占位，路径不跨会话暴露，仍需登录与图片类型校验。
+- 模型目录：自定义 provider 优先读取运行时 `model/list`，仅在无原生目录时回退 OpenAI-compatible `/models`；目录携带当前 effort，手机端可加载 3 个 GLM 模型与 low–ultra 强度，且不向其他端点转发凭据。
+- 独立加载：进入会话时 `catalog?kind=models` 与 `catalog?kind=skills` 并行请求，分别缓存；模型读取不被 Skill 扫描阻塞。Skill 默认 200 条、最大 500 条分页，搜索 200ms debounce，虚拟列表每次仅渲染约 30 条；重复打开等待同一 pending 请求，不重复触发 runtime。
+- Skill 一致性：用户自装 Skill 权威目录为 `~/.codex/skills`，符号链接逃出 `~/.codex` 时不触发 runtime 扫描；SQLite 按 `CODEX_HOME + cwd` 分桶，WAL/0600/原子写入，5000 条目录分页和搜索通过。发送前校验路径边界、文件大小、mtime 和 SHA-256，失效选择不允许静默发送。远端 SSH 在远端主机读取和校验，不把远端 metadata 写入本机。
+- 竞态与滚动：搜索或显式刷新会递增 Skill 请求代际并重置滚动位置；延迟 append 返回时若查询已变化则丢弃，不覆盖新搜索结果。
+- 最终回归：Python 425 项通过、6 项平台条件跳过；Desktop/Web Node 140 项通过。包含与 main 新增通知监控/能耗优化合并后的完整套件，并覆盖 Windows/POSIX 图片路径归一化。
+- macOS arm64 v1.3.4 包通过深度严格签名、架构、内置运行时、公网 HTTPS 和打包 App 隔离启动冒烟校验。
+
+---
+
+
 # 验证记录
 
 ## v1.3.3 发布准备（2026-10-05）
@@ -45,7 +99,7 @@
 - 模型目录按聊天提供商、工作目录和执行主机读取，缓存区分提供商。官方账号保留原生目录；API 查询失败时不退回 GPT，显示错误并保留手动输入。旧模型不在列表时要求选择后应用，读取目录不改变会话模型。SSH 注入的模型查询与 TLS 源文件同步纳入打包。
 - Python 全量 319 项中 315 通过、4 项平台检查跳过；随后新增的原 owner 应用 Gemini 模型专项测试通过，验证缺少推理强度元数据仍可应用且不触发消息。Node 115 项通过，覆盖网页选项、旧模型提示、应用请求与查询失败路径。
 - macOS arm64 本地测试包重新构建，完整性签名、隔离 GUI 与包内工作进程启动通过；包内 Web 和 SSH 目录依赖与最终源码逐字节一致。证据在 `.tmp/account-switching/catalog-*.log`。
-- 本轮范围为 Bridge 网页聊天模型选择器，没有修改官方 Codex 桌面应用。未使用真实账号、重启用户 Codex、替换安装、提交、推送或发布。真实 suopan-antigravity 的模型列表和 Responses 兼容性，以及 Windows/Ubuntu 实机仍待用户验收。
+- 本轮范围为 Bridge 网页聊天模型选择器，没有修改官方 Codex 桌面应用。未使用真实账号、重启用户 Codex、替换安装、提交、推送或发布。用户自定义提供方的模型列表和 Responses 兼容性，以及 Windows/Ubuntu 实机仍待用户验收。
 
 ## API 路由、额度布局与 computer use（2026-10-03，本地试用，未发布）
 
@@ -545,3 +599,59 @@ Windows 不允许当前用户创建符号链接时，仅符号链接逃逸测试
 - ego-browser 在 390×844 检查真实网页资源与隔离 HTTP/假桌面 IPC：v1.3 首页分组和归档复选框；三个发送方式和三个工作模式；主页快捷入口隐藏后仍可从设置打开；全局及单会话通知保存；计划意见使执行按钮禁用、修改按钮突出，并按修改路径发送；旧会话立即排到最近列表顶部。手机截图无横向溢出。
 - 临时测试 App 与其 18788 网关已停止；正式 8787 网关保持运行。新 arm64 临时包仅供下一轮验收，不推送、不合并、不替换正式安装。
 - 未向真实模型会话发送任务或向 PushPlus/Bark/ntfy 发送通知。真实 Goal 调度联动、真实旧会话体感、远端 SSH 与手机通知实收仍待用户验收。
+
+
+## Local connection setup preview — 2026-10-05
+
+Local implementation based on v1.3.3, not published. New configurations enable address notifications; saved opt-outs remain unchanged. Desktop builds include a locked, SHA-256-verified cloudflared binary for each target architecture. New profiles support SSH host/user/port, password/private-key/agent authentication, host-key confirmation, Ubuntu/Debian Caddy deployment, and remotely managed Cloudflare tunnels. Existing OpenSSH aliases remain supported.
+
+Validation:
+- Python suite: 417 tests run, 4 skipped; later affected-path regression: 54 tests passed.
+- Desktop suite: 131 tests passed.
+- Loopback Paramiko server: unknown-host rejection before password authentication, explicit trust, changed-key rejection before authentication, encrypted private-key authentication, actual bytes over loopback reverse forwarding, and shutdown.
+- Native-vault adapter: isolated mock checks for credential separation, errors without plaintext fallback, and secrets excluded from ordinary configuration. The user's real system credential store was not modified.
+- Named-tunnel runner: token absent from command arguments/status files, passed only in the child environment; provider output is not persisted. No real Cloudflare account or tunnel was used.
+- Real source and packaged Electron windows: clean-data defaults, bundled executable/version detection, SSH fields, fixed-domain form, Chinese/English rendering, private IPC, and isolated gateway start/stop. Screenshots inspected under `.tmp/`.
+- Final affected-path checks after export/vault adjustments: 41 Python tests and 44 desktop tests passed. Packaged Paramiko/cryptography completed an actual loopback SSH host-key exchange before authentication.
+- Apple Silicon package: native executable architecture, deep ad-hoc signature integrity, cloudflared execution, bundled HTTPS roots and rejection of untrusted certificates. No notarization claim.
+
+One-click deployment is implemented, with shell syntax checking and local tests of configuration guards/result semantics. It has not been exercised against a real Ubuntu/Debian server or a live DNS/certificate authority deployment. Windows, Linux and Intel Mac build paths were updated but not executed in this local run. End-to-end phone access, OS credential-store permission prompts and actual fixed Cloudflare reconnection require user-environment validation. No GitHub push, release or existing-install replacement was performed.
+
+## Local preview feedback fixes — 2026-10-06
+
+- Reproduced the reported SSH-password error with an enabled Cloudflare profile whose default `sshAuth` was `password`. Startup now checks SSH passwords only for server profiles. Regressions cover Cloudflare alone, disabled/deleted SSH profiles, and saved-password SSH preflight followed by mixed-profile startup.
+- Validation returns a field and connection ID over private IPC. The renderer switches tabs, opens enclosing details, scrolls and focuses the exact field. Short-lived results use a dismissible fixed toast with a 10-second progress bar; gateway status stays persistent. SSH preflight results remain in the relevant card alongside current tunnel status.
+- Saved connection and notification credentials remain masked, with a reveal button. They are read through an authorized private IPC call, excluded from ordinary snapshots, and unchanged displayed secrets are not resubmitted to a new notification destination. Session-only credentials survive renderer reload and clear actions empty the fields. New gateway login passwords remain in the current renderer session; legacy one-way password hashes cannot be recovered after restart. The existing initial-login file remains readable when present.
+- SSH key selection requests `showHiddenFiles` and defaults to the user's `.ssh` directory, per current Electron documentation. The native dialog options were verified through the real IPC handler with a stubbed dialog; no personal private key was read.
+- Verification: 57 affected Python tests passed; 131 desktop tests passed; real source Electron workflow verified focus, progress duration, manual dismissal, expiry, masked/revealed credential retention, renderer reload, clear actions and Cloudflare-only launch. Loopback SSH authentication used a synthetic password with a mocked native vault and preflight command output; no real server configuration was changed.
+- The rebuilt macOS arm64 preview passed actual packaged UI/IPC validation, retained-token and Cloudflare-only start/stop tests, bundled cloudflared version checks, architecture/signature checks and HTTPS trust checks. A no-op local connector was used for enabled-tunnel launch tests; these are not evidence of live Cloudflare connectivity.
+- Final DMG: 165,393,840 bytes. Local artifact: `dist/local-preview/Codex-Mobile-Bridge-1.3.3-macOS-arm64.dmg`. No GitHub push, publication, installation replacement, DNS change or real native-vault write. Real Cloudflare/phone access and remote deployment remain unverified.
+
+## Fixed-domain onboarding and runtime settings — 2026-10-06 (local)
+
+- The user confirmed their Cloudflare fixed tunnel is now accessible. This is user-reported live acceptance of that route, not a new end-to-end network test performed in this change.
+- Added a complete domain-to-phone guide in `docs/fixed-domain.md`, a six-step expandable App guide and a bilingual product-site Cloudflare route. The instructions cover registrar nameservers, Active status, the connector token, the local HTTP route, DNS creation and separate desktop/mobile-data verification.
+- Clarified that ordinary SSH users can maintain a high-port loopback reverse tunnel; root/sudo is required only for the existing system-level HTTPS installation. No changes were made to existing servers, SSH accounts, DNS or active tunnels.
+- Runtime settings now lead with startup/data controls and the bundled Cloudflare status. Custom paths, IPC overrides and installer/repair actions remain available in collapsed advanced sections. Removed the fixed-entry label that incorrectly implied every fixed domain needs server deployment.
+- Validation: 44 existing desktop tests passed; real Electron UI with an isolated data directory checked collapsed/reachable repair controls, six guide steps and English translations. Chinese runtime/guide screenshots inspected. The local product page was checked in ego-browser: the new route switches correctly, all six steps render, English translation is complete, and there is no horizontal overflow at the tested desktop viewport. No real token or remote server was used for these UI checks.
+- Built a separate macOS arm64 preview at `dist/domain-guide-preview/mac-arm64/Codex Mobile Bridge Preview.app`. Ad-hoc signature verification passed; packaged UI files match the updated source. An isolated packaged launch verified the guide, collapsed advanced controls and bundled cloudflared 2026.9.3 execution without starting a gateway. No GitHub push or website publication was performed.
+
+## Local SSH setup with manual administrator steps (2026-10-06)
+
+- Replaced automatic server installation with three stages: manual server preparation, SSH sign-in check, and connection plus fixed-entry verification. Removed sudo controls and the remote installation implementation; both desktop IPC and backend reject the former deployment action before opening an SSH connection.
+- SSH inspection authenticates and resolves DNS locally without executing remote commands. Successful sign-in explicitly leaves forwarding permissions and HTTPS access unverified. Existing saved SSH settings remain usable; obsolete per-connection sudo settings are discarded when saved.
+- Added `docs/server-ssh.md` and updated the App, product page, READMEs, and generated references. Server setup copy instructs the user to perform administrative commands manually; it no longer requests automated Agent deployment. Public examples use `try2love` and the explicitly illustrative domain.
+- Validation: 47 Python tests passed for connection setup, desktop settings and fixed entries; 44 desktop Node tests passed. Isolated loopback SSH tests exercised authentication and real byte forwarding. Tests cover removed-action rejection, sign-in without remote commands, configuration migration and manual export instructions.
+- Rebuilt the local macOS arm64 preview, verified its signature and packaged UI/source consistency, and launched it with isolated temporary data. Verified Chinese/English setup steps, absence of sudo/deploy controls, rejection by both packaged IPC and backend, and manual export text. Inspected the Chinese screenshot. No real server or public HTTPS deployment was tested in this change; the test App did not start a gateway.
+- No GitHub push or publication was performed.
+
+## Local login security and setup usability (2026-10-06)
+
+- Web sign-in now defaults to a seven-day remembered login using an HttpOnly cookie, without storing the plaintext password. Unchecking it uses a browser-session cookie; the existing standard server lifetime and QR lifetime remain available. Remembered expiry is absolute and does not slide on refresh.
+- Five consecutive failed passwords from the same canonical client IP cause a durable automatic block and revoke that IP's sessions. Counts survive restart; successful sign-in resets the count. Concurrent requests cannot hash more than five guesses before blocking. The web UI shows remaining attempts and blocked state; only private desktop device management can unblock/reset. Existing trusted-proxy address handling is retained and tested against direct header spoofing.
+- Security alerts use the existing enabled phone channels, with a default-on independent switch, delivery deduplication and retry. Notification tests use mocked senders; no real phone notification was sent during this verification.
+- Reproduced a saved disabled SSH profile's check button remaining disabled, with no pending edits or busy operation. Removed the enablement requirement for inspection in both renderer and backend, while keeping connection startup disabled. Added a clipboard-only, read-only server inspection prompt, including current non-secret settings and explicit no-sudo/no-mutation instructions.
+- Fixed the missing exact PushPlus English translation and changed dismissible desktop feedback/progress to five seconds. Added the product-page Cloudflare walkthrough link and local deep-link handling; the online site remains unpublished.
+- Tests: 97 targeted Python tests plus 29 existing HTTP/pairing regressions passed; 44 desktop Node tests passed. Real isolated desktop UI checks covered disabled-profile inspection, prompt copying (mocked clipboard), English PushPlus text, dismiss/expiry timing and the website target (mocked external opening).
+- Real isolated mobile-page and desktop-window checks passed for remaining counts, blocked reload, desktop unblock, seven-day cookie, restart persistence, unchecked session cookie and narrow-screen overflow. Repeated against the packaged gateway runtime. Screenshots inspected for the blocked phone view and desktop unblock controls. No real Codex chat, remote server, DNS setting or production gateway was changed.
+- Updated the local macOS arm64 preview; no commit, push, Release or website publication.

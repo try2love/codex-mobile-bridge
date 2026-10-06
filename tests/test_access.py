@@ -295,6 +295,44 @@ class ConcurrentRuntimeTests(unittest.TestCase):
             self.assertTrue(errors)
             tunnel.on_origin.assert_not_called()
 
+    def test_quick_tunnel_keeps_waiting_while_cloudflared_retries_api(self):
+        with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as directory:
+            data = Path(directory)
+            executable = data/'cloudflared';executable.touch()
+            api_ready = threading.Event()
+            first_failure = threading.Event()
+            class RetryStream:
+                def __init__(self): self.lines = iter([
+                    'failed to request quick Tunnel: Post "https://api.trycloudflare.com/tunnel": EOF',
+                    'https://late.trycloudflare.com',
+                    'Registered tunnel connection',
+                ])
+                def __iter__(self):
+                    yield next(self.lines)
+                    first_failure.set()
+                    api_ready.wait(3)
+                    yield from self.lines
+            process = MagicMock(stdout=RetryStream(), poll=lambda: None)
+            process.terminate.side_effect = api_ready.set
+            tunnel = QuickTunnel(executable, 8787, data, MagicMock())
+            starter = threading.Thread(target=tunnel.start)
+            try:
+                with patch('bridge.tunnel.subprocess.Popen', return_value=process):
+                    starter.start()
+                    # A slow Quick Tunnel must remain explicitly connecting instead
+                    # of turning into a false failure while cloudflared retries.
+                    self.assertTrue(first_failure.wait(2))
+                    self.assertFalse(tunnel.ready.is_set())
+                    self.assertEqual(json.loads((data/'cloudflare-status.json').read_text(encoding='utf-8'))['state'], 'connecting')
+                    api_ready.set();starter.join(3)
+                    self.assertFalse(starter.is_alive())
+                    self.assertEqual(tunnel.url, 'https://late.trycloudflare.com')
+                    self.assertEqual(tunnel.on_origin.call_args.args, ('https://late.trycloudflare.com',))
+            finally:
+                tunnel.close();starter.join(3)
+            self.assertFalse(starter.is_alive())
+            process.terminate.assert_called_once()
+
     def test_quick_tunnel_creates_new_url_after_tunnel_not_found(self):
         with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as directory:
             data = Path(directory)

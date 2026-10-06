@@ -25,6 +25,19 @@ aside{background:var(--surface)}
 #chat-title{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:15px;line-height:24px;font-weight:600}
 .status{background:var(--soft);color:var(--green);font-size:10px;padding:5px 8px;max-width:92px;overflow:hidden;text-overflow:ellipsis}
 .status.offline{background:var(--warning-bg);color:var(--warning-text)}
+.header-icon{display:block;width:24px;height:24px;flex:none;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.header-icon circle{fill:currentColor;stroke:none}
+.list-heading #new-chat{display:inline-flex;align-items:center;justify-content:center;gap:5px;font-size:14px;line-height:20px}
+.list-heading #refresh{display:inline-flex;align-items:center;justify-content:center;width:48px;height:48px;padding:12px;flex:none}
+.chat-head .chat-info{display:flex;align-items:center;align-self:stretch}
+.chat-head .chat-title-button{display:flex;align-items:center;min-height:40px;padding:0}
+.chat-head>.status{line-height:14px;height:24px;padding:5px 8px;flex:none}
+@media(max-width:720px){.chat-head #back{display:flex;align-items:center;justify-content:center}}
+/* Match the native 48-point menu at top 4: all toolbar centres are at 28. */
+.bridge-mobile .chat-head{height:56px;min-height:56px;padding:0 64px 0 8px;border-bottom:0;box-shadow:inset 0 -1px var(--line)}
+.bridge-mobile .chat-head .chat-title-button{height:48px}
+.bridge-mobile .list-heading{height:56px;min-height:56px;padding:0 48px 0 4px}
+.bridge-mobile .list-heading #new-chat,.bridge-mobile .list-heading #refresh{height:48px;margin:0}
 .timeline-row.activity{margin:0 0 12px}
 .activity{margin:0}.activity summary{padding:2px 0}
 .notice{background:var(--warning-bg);color:var(--warning-text)}
@@ -130,3 +143,17 @@ aside{background:var(--surface)}
 @media(max-width:600px){.compose-bottom select{font-size:11px}.compose-actions button{white-space:nowrap}}
 
 .goal-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}.goal-actions button{margin:0;padding:8px;font-size:12px;white-space:nowrap}
+
+.image-preview{position:fixed;inset:0;box-sizing:border-box;width:100%;height:100dvh;max-width:none;max-height:none;margin:0;padding:0;border:0;background:#15171b;color:#fff;overflow:hidden}
+.image-preview[open]{display:flex;flex-direction:column}
+.image-preview::backdrop{background:#15171b}
+.image-preview-toolbar{display:flex;align-items:center;gap:12px;flex:none;padding:max(8px,env(safe-area-inset-top)) max(64px,env(safe-area-inset-right)) 8px max(12px,env(safe-area-inset-left));border-bottom:1px solid #ffffff20}
+#image-preview-close{display:flex;align-items:center;justify-content:center;flex:none;min-width:72px;min-height:44px;margin:0;padding:8px 12px;border:1px solid #ffffff30;border-radius:12px;background:#ffffff12;color:#fff;font:inherit;font-size:16px;cursor:pointer}
+#image-preview-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
+.image-preview-content{display:flex;align-items:center;justify-content:center;flex:1;min-height:0;min-width:0;padding:12px;overflow:auto}
+.image-preview-content img{display:block;max-width:100%;max-height:100%;object-fit:contain}
+.image-preview-content img[hidden]{display:none}
+#image-preview-status{flex:none;margin:0;padding:0 20px max(16px,env(safe-area-inset-bottom));text-align:center;font-size:14px;color:#d1d5db}
+#image-preview-status:empty{padding-bottom:env(safe-area-inset-bottom)}
+img[data-image-preview]{cursor:zoom-in}
+img[data-image-preview]:focus-visible,#image-preview-close:focus-visible{outline:2px solid #8bb5ff;outline-offset:3px}

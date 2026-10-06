@@ -37,10 +37,11 @@ window.addEventListener('focus',()=>{if(!$('app').hidden)accountsPanel?.refresh(
 function chatKey(id=currentId,host=currentHost){return host+'|'+id;}
 function sessionUrl(id,action='',host=currentHost){return '/api/sessions/'+id+(action?'/'+action:'')+'?host='+encodeURIComponent(host);}
 function hostUrl(path,host=currentHost){return /^\/api\/sessions\/[0-9a-f-]{36}/.test(path)&&!/[?&]host=/.test(path)?path+(path.includes('?')?'&':'?')+'host='+encodeURIComponent(host):path;}
-let catalogData=null, selectedSkills=new Set();
+let catalogData={models:null,skills:null};let catalogResults={models:null,skills:null};let catalogTasks={models:null,skills:null};let selectedSkills=new Set(),invalidSkills=new Set(),skillIndex=new Map(),skillTotal=0,skillPages=[],skillQuery={q:'',offset:0,limit:200},skillSearchTimer,skillRequest=0;
 function el(tag,cls,text){const node=document.createElement(tag);if(cls)node.className=cls;if(text!==undefined)node.textContent=text;return node;}
 function toast(text){text=t(text);$('toast').textContent=text;$('toast').hidden=false;clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('toast').hidden=true,4200);}
-async function api(path,body,signal){const options={signal,credentials:'same-origin',cache:'no-store',headers:{}};if(body!==undefined){options.method='POST';options.headers={'Content-Type':'application/json','X-CSRF-Token':csrf};options.body=JSON.stringify(body);}const response=await fetch(hostUrl(path),options);const data=await response.json();if(!response.ok){if(response.status===401)showLogin();throw Error(data.error||t('请求失败'));}return data;}
+async function api(path,body,signal){const options={signal,credentials:'same-origin',cache:'no-store',headers:{}};if(body!==undefined){options.method='POST';options.headers={'Content-Type':'application/json','X-CSRF-Token':csrf};options.body=JSON.stringify(body);}const response=await fetch(hostUrl(path),options);const data=await response.json();if(!response.ok){if(response.status===401)showLogin();throw Object.assign(Error(data.error||t('请求失败')),{loginStatus:data.loginStatus});}return data;}
+const workbench=window.BridgeWorkbench=new Workbench({chat:$('chat'),request:api,csrf:()=>csrf,notify:toast,onUnauthorized:()=>showLogin()});
 async function uploadAttachment(key,id,file){const separator=key.indexOf('|'),host=key.slice(0,separator),thread=key.slice(separator+1);const response=await fetch(sessionUrl(thread,'uploads',host)+'&id='+encodeURIComponent(id)+'&name='+encodeURIComponent(file.name),{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/octet-stream','X-CSRF-Token':csrf},body:file});const result=await response.json();if(!response.ok){if(response.status===401)showLogin();const error=Error(result.error||t('附件上传失败，请重试'));error.retryable=response.status>=500||response.status===429;throw error;}return result;}
 async function uploadAttachmentWithRetry(key,id,file){let last;for(let attempt=0;attempt<3;attempt++){try{return await uploadAttachment(key,id,file);}catch(error){last=error;if(error.name==='AbortError'||error.retryable===false||attempt===2)throw error;await new Promise(resolve=>setTimeout(resolve,400*(attempt+1)));}}if(last instanceof TypeError)last.message=t('附件上传中断，请重试');throw last;}
 const attachments=new ChatAttachments({root:$('attachment-list'),button:$('attach-button'),input:$('attachment-input'),paste:$('message'),drop:$('composer'),preview:(key,id)=>{const at=key.indexOf('|'),host=key.slice(0,at),thread=key.slice(at+1);return hostUrl(sessionUrl(thread,'uploads/'+encodeURIComponent(id)+'/preview',host));},onChange:()=>{if(currentId)$('send').disabled=sending||!attachments.ready()||!state||state.loadingHistory||state.activating;},thumbnail:async(key,id,file)=>{
@@ -49,7 +50,7 @@ const attachments=new ChatAttachments({root:$('attachment-list'),button:$('attac
   const response=await fetch(sessionUrl(thread,'uploads/'+encodeURIComponent(id)+'/thumb',host)+'&width='+image.width+'&height='+image.height,{method:'POST',credentials:'same-origin',headers:{'Content-Type':image.mime,'X-CSRF-Token':csrf},body:image.data});
   const result=await response.json();if(!response.ok){if(response.status===401)showLogin();throw Error(result.error||t('缩略图生成失败'));}return result;
 },upload:uploadAttachmentWithRetry});
-function visibleChat(){return currentId&&!document.hidden&&$('app').classList.contains('chat-open')?chatKey():null;}
+function visibleChat(){return currentId&&!workbench.isFileVisible&&!document.hidden&&$('app').classList.contains('chat-open')?chatKey():null;}
 function renderActivity(){for(const button of document.querySelectorAll('.session')){
   button.querySelector('.session-indicator')?.remove();const indicator=sessionActivity.indicator(chatKey(button.dataset.id,button.dataset.host));
   if(indicator){const dot=el('span','session-indicator '+indicator.kind);dot.title=t(indicator.label);dot.setAttribute('aria-label',t(indicator.label));button.querySelector('strong').prepend(dot);}
@@ -62,21 +63,27 @@ async function refreshActivity(){
 setInterval(refreshActivity,5000);
 window.addEventListener('focus',refreshActivity);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)refreshActivity();});
-function showLogin(passwordless=false){if(typeof accountsPanel!=='undefined')accountsPanel?.clear();accountPanel.clear();chatTimeline?.dispose();chatTimeline=null;document.querySelectorAll('dialog[open]').forEach(d=>d.close());$('app').hidden=true;$('login').hidden=false;$('credentials').hidden=passwordless;$('noauth').hidden=!passwordless;$('username').required=!passwordless;$('password').required=!passwordless;$('password').value='';}
+let loginStatus={attemptsRemaining:5,attemptLimit:5,blocked:false};
+function renderLoginStatus(status=loginStatus){
+  loginStatus=status||loginStatus;
+  $('login-attempts').textContent=loginStatus.blocked?t('此 IP 已被封禁，请在电脑网关 App 的“登录设备”中解除。'):t('剩余尝试次数：')+loginStatus.attemptsRemaining+'/'+loginStatus.attemptLimit+t('；连续输错 5 次将封禁此 IP。');
+  $('login-button').disabled=loginStatus.blocked;
+}
+function showLogin(passwordless=false,status){workbench.reset();if(typeof accountsPanel!=='undefined')accountsPanel?.clear();accountPanel.clear();chatTimeline?.dispose();chatTimeline=null;document.querySelectorAll('dialog[open]').forEach(d=>d.close());$('app').hidden=true;$('login').hidden=false;$('credentials').hidden=passwordless;$('noauth').hidden=!passwordless;$('username').required=!passwordless;$('password').required=!passwordless;$('password').value='';$('remember-login').parentElement.hidden=passwordless;$('login-attempts').hidden=passwordless;renderLoginStatus(status);}
 async function start(pairingToken=null){
   const auth=await api('/api/auth');
   if(pairingToken!==null){
     try{const result=await api('/api/pair',{token:pairingToken});csrf=result.csrf;await enter();return;}
     catch(error){
       if(auth.authenticated){csrf=auth.csrf;await enter();toast(error.message);}
-      else{showLogin(auth.passwordless);$('login-error').textContent=t(error.message);}
+      else{showLogin(auth.passwordless,auth.loginStatus);$('login-error').textContent=t(error.message);}
       return;
     }finally{pairingToken=null;}
   }
-  if(!auth.authenticated){showLogin(auth.passwordless);return;}csrf=auth.csrf;await enter();
+  if(!auth.authenticated){showLogin(auth.passwordless,auth.loginStatus);return;}csrf=auth.csrf;await enter();
 }
 async function enter(){$('login').hidden=true;$('app').hidden=false;accountsPanel?.refresh();const list=loadList(true).catch(e=>toast(e.message));const [id,host='local']=location.hash.slice(1).split('~');if(/^[0-9a-f-]{36}$/.test(id))await openChat(id,decodeURIComponent(host));await list;}
-$('login-form').addEventListener('submit',async event=>{event.preventDefault();$('login-button').disabled=true;$('login-error').textContent='';try{const result=await api('/api/login',{username:$('username').value,password:$('password').value});csrf=result.csrf;$('password').value='';await enter();}catch(error){$('login-error').textContent=t(error.message);}finally{$('login-button').disabled=false;}});
+$('login-form').addEventListener('submit',async event=>{event.preventDefault();if(loginStatus.blocked)return;$('login-button').disabled=true;$('login-error').textContent='';try{const result=await api('/api/login',{username:$('username').value,password:$('password').value,remember:$('remember-login').checked});renderLoginStatus({attemptsRemaining:5,attemptLimit:5,blocked:false});csrf=result.csrf;$('password').value='';await enter();}catch(error){$('login-error').textContent=t(error.message);renderLoginStatus(error.loginStatus);}finally{$('login-button').disabled=loginStatus.blocked;}});
 $('logout').onclick=async()=>{await api('/api/logout',{});csrf='';state=null;currentId=null;$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();$('sessions').replaceChildren();$('message').value='';sessionStorage.clear();attachments.reset();sessionActivity.clear();recentInteractions.clear();showLogin();};
 function dateText(value){if(!value)return '';return new Date(value*1000).toLocaleDateString(BridgeI18n.locale(),{month:'numeric',day:'numeric'});}
 $('list-mode').value=localStorage.getItem('list-mode')||'recent';
@@ -169,8 +176,9 @@ document.addEventListener('bridge-message-error',event=>toast(event.detail));
 $('fork-source').onclick=()=>{const source=state?.forkedFrom;if(source){$('chat-details-dialog').close();openChat(source.id,source.host).catch(e=>toast(e.message));}};
 function saveDraft(){if(currentId)sessionStorage.setItem('draft:'+chatKey(),$('message').value);}
 $('message').oninput=saveDraft;
-async function openChat(id,host="local"){if(messageActions.pending&&messageActions.dialog.open)return;messageActions.dialog.close();saveDraft();chatTimeline?.dispose();currentId=id;currentHost=host;state=null;workModes.open(chatKey(id,host));attachments.open(chatKey(id,host));catalogData=null;modelRequest++;modelTarget=null;fastModeControl.reset();$('model-dialog').close();notificationState={available:false,watching:false,notifyOnCompletion:false};notificationRequest++;$('notify-dialog').close();$('rename-dialog').close();$('chat-details-dialog').close();$('notify-button').disabled=true;$('notify-button').textContent=t('提醒');try{selectedSkills=new Set(JSON.parse(sessionStorage.getItem('skills:'+chatKey(id,host))||'[]'));}catch{selectedSkills=new Set();}renderSkillPills();approvalStamp='';submittedRequestIds.clear();$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();$('message').value=sessionStorage.getItem('draft:'+chatKey(id,host))||'';$('send-error').textContent='';$('chat-title').textContent=t('正在连接…');$('chat-meta').textContent='';$('status').textContent=t('连接中');$('welcome').hidden=true;$('chat').hidden=false;$('app').classList.add('chat-open');$('send').disabled=true;history.replaceState(null,'','#'+id+'~'+encodeURIComponent(host));document.querySelectorAll('.session').forEach(n=>n.classList.toggle('selected',n.dataset.id===id&&n.dataset.host===host));const timeline=chatTimeline=new ChatTimeline({url:action=>sessionUrl(id,action,host),request:api,renderMeta:renderState,renderText:(node,text,files,fullText)=>renderMarkdown(node,text,files,file=>sessionUrl(id,'files/'+file.id,host),{fullText}),onAction:(action,row,timeline)=>{const pendingKey='fork-edit:'+host+'|'+id;let pending;try{pending=JSON.parse(sessionStorage.getItem(pendingKey));}catch{}if(pending&&pending.sourceTurnId===row.turnId&&action==='edit'){sessionStorage.setItem('message-edit:'+timeline.url('message-action')+':'+row.key,pending.text);sessionStorage.removeItem(pendingKey);}return messageActions.open(action,row,timeline);},status:text=>{$('status').textContent=t(text);}});
+async function openChat(id,host="local"){if(messageActions.pending&&messageActions.dialog.open)return;messageActions.dialog.close();workbench.open(id,host);saveDraft();chatTimeline?.dispose();currentId=id;currentHost=host;state=null;workModes.open(chatKey(id,host));attachments.open(chatKey(id,host));catalogData={models:null,skills:null};catalogResults={models:null,skills:null};catalogTasks={models:null,skills:null};skillIndex=new Map();skillTotal=0;skillPages=[];skillQuery={q:'',offset:0,limit:200};invalidSkills=new Set();skillRequest++;modelRequest++;modelTarget=null;fastModeControl.reset();$('model-dialog').close();notificationState={available:false,watching:false,notifyOnCompletion:false};notificationRequest++;$('notify-dialog').close();$('rename-dialog').close();$('chat-details-dialog').close();$('notify-button').disabled=true;$('notify-button').textContent=t('提醒');try{selectedSkills=new Set(JSON.parse(sessionStorage.getItem('skills:'+chatKey(id,host))||'[]'));}catch{selectedSkills=new Set();}renderSkillPills();approvalStamp='';submittedRequestIds.clear();$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();$('message').value=sessionStorage.getItem('draft:'+chatKey(id,host))||'';$('send-error').textContent='';$('chat-title').textContent=t('正在连接…');$('chat-meta').textContent='';$('status').textContent=t('连接中');$('welcome').hidden=true;$('chat').hidden=false;$('app').classList.add('chat-open');$('send').disabled=true;history.replaceState(null,'','#'+id+'~'+encodeURIComponent(host));document.querySelectorAll('.session').forEach(n=>n.classList.toggle('selected',n.dataset.id===id&&n.dataset.host===host));const timeline=chatTimeline=new ChatTimeline({url:action=>sessionUrl(id,action,host),request:api,renderMeta:renderState,renderText:(node,text,files,fullText)=>renderMarkdown(node,text,files,file=>sessionUrl(id,'files/'+file.id,host),{fullText}),onAction:(action,row,timeline)=>{const pendingKey='fork-edit:'+host+'|'+id;let pending;try{pending=JSON.parse(sessionStorage.getItem(pendingKey));}catch{}if(pending&&pending.sourceTurnId===row.turnId&&action==='edit'){sessionStorage.setItem('message-edit:'+timeline.url('message-action')+':'+row.key,pending.text);sessionStorage.removeItem(pendingKey);}return messageActions.open(action,row,timeline);},status:text=>{$('status').textContent=t(text);}});
   window.BridgePresentation?.openChat();
+  startCatalog();
   const reading=timeline.start();
   // Opening a chat activates its original owner while saved history paints.
   api(sessionUrl(id,'reconnect',host),{activate:true},timeline.abort.signal).catch(error=>{if(!timeline.abort.signal.aborted)toast(error.message);});
@@ -229,7 +237,7 @@ async function saveNotificationDefaults(){
   await window.loadNotificationDefaults();
 }
 $('notification-requests').onchange=$('notification-completions').onchange=saveNotificationDefaults;
-$('back').onclick=()=>{$('app').classList.remove('chat-open');history.replaceState(null,'',location.pathname);loadList(true).catch(e=>toast(e.message));};
+$('back').onclick=()=>{workbench.rememberScroll();workbench.stopThumbnails();$('app').classList.remove('chat-open');history.replaceState(null,'',location.pathname);loadList(true).catch(e=>toast(e.message));};
 function renderState(view){state=view;$('fork-source').hidden=!view.forkedFrom;$('fork-source').textContent=view.forkedFrom?t('来源会话：')+view.forkedFrom.title:'';if($('model-dialog').open&&modelTarget===chatKey())fastModeControl.sync(view);if(visibleChat()){sessionActivity.read(chatKey());renderActivity();}$('execution-host').textContent=t('在 ')+(view.host==='local'?t('电脑'):view.hostLabel||t('SSH 主机'))+t(' 运行');$('chat-title').textContent=view.loadingHistory?t('正在读取聊天…'):view.title;$('chat-meta').textContent=(view.host==='local'?t('此电脑'):view.hostLabel||t('SSH 主机'))+' · '+(view.cwd||t('电脑上的聊天'));$('model-name').textContent=view.model||t('模型');$('model-current').textContent=view.model?t('当前模型：')+view.model:'';$('model-current').hidden=!view.model;$('model-effort').textContent=view.effort?'· '+view.effort:'';$('model-effort').hidden=!view.effort;$('model-button').title=[view.model||t('模型'),view.effort].filter(Boolean).join(' · ');$('provider').textContent=[view.model,view.provider].filter(Boolean).join(' · ');$('status').textContent=!view.connected?(view.loadingHistory?t('读取历史中'):view.activating?t('正在加载桌面聊天…'):view.connecting?t('连接桌面中'):t('历史记录')):view.requests.length?t('等待回应'):view.status==='active'?t('运行中'):t('已连接');$('status').classList.toggle('offline',!view.connected);$('notice').hidden=view.connected;$('notice-text').textContent=view.activating?t('正在自动连接；必要时会在电脑 Codex 中打开此聊天。'):view.connecting?t('正在连接桌面，可先阅读已保存的历史。'):t(view.connectionError)||t('暂未连接，可先阅读历史或点击重新连接。');$('history').hidden=view.historyComplete||!view.connected;$('working').hidden=view.status!=='active';$('stop').hidden=view.status!=='active'||!view.connected;$('send').disabled=view.loadingHistory||view.activating||sending||!attachments.ready();$('send-mode').querySelector('[value=steer]').disabled=view.status!=='active';if(view.status!=='active'&&$('send-mode').value==='steer')$('send-mode').value='send';workModes.render(view,$('send-mode').value,sending);renderApprovals(view.requests);renderQueue(view.submissions||[]);}
 $('send-mode').onchange=()=>workModes.render(state,$('send-mode').value,sending);
 function jsonPretty(value){return typeof value==='string'?value:JSON.stringify(value,null,2);}
@@ -286,25 +294,127 @@ function renderPlanApproval(request){
   }
   yes.onclick=()=>submit('implement');revise.onclick=()=>submit('revise');return card;
 }
-function renderQueue(rows){$('queued').replaceChildren();for(const row of rows){const card=el('div','queue-card');const reply=row.text.startsWith('<send_user_message_question_reply>');card.append(el('strong','',row.status==='queued'?t('等待当前任务完成'):t('发送结果待确认')),el('p','',reply?t('问题回复'):row.text));if(row.attachments?.length)card.append(el('small','muted',t('附件：')+row.attachments.join('、')));if(row.status==='queued'){const cancel=el('button','plain',t('撤回待发送消息'));cancel.onclick=async()=>{try{await api('/api/sessions/'+currentId+'/queue',{id:row.id});toast('已撤回');}catch(e){toast(e.message);}};card.append(cancel);}else card.append(el('p','muted',t('请检查聊天记录。网关不会自动重发这条消息。')));$('queued').append(card);}}
+async function ignoreSubmission(value){
+  const result=await api('/api/accounts/ignore-submission',value);
+  const key='pending:'+chatKey(value.threadId,value.host);
+  try{if(JSON.parse(sessionStorage.getItem(key))?.id===value.submissionId)sessionStorage.removeItem(key);}catch{}
+  if(currentId===value.threadId&&currentHost===value.host&&state){state.submissions=(state.submissions||[]).filter(row=>row.id!==value.submissionId);renderQueue(state.submissions);}
+  return result;
+}
+function renderQueue(rows){
+  $('queued').replaceChildren();
+  const target=currentId,host=currentHost;
+  for(const row of rows){
+    const card=el('div','queue-card'),reply=row.text.startsWith('<send_user_message_question_reply>');
+    card.append(el('strong','',row.status==='queued'?t('等待当前任务完成'):t('发送结果待确认')),el('p','',reply?t('问题回复'):row.text));
+    if(row.attachments?.length)card.append(el('small','muted',t('附件：')+row.attachments.join('、')));
+    if(row.status==='queued'){
+      const cancel=el('button','plain',t('撤回待发送消息'));
+      cancel.onclick=async()=>{try{await api(sessionUrl(target,'queue',host),{id:row.id});toast('已撤回');}catch(e){toast(e.message);}};card.append(cancel);
+    }else{
+      card.append(el('p','muted',t('请检查聊天记录。网关不会自动重发这条消息。')));
+      const ignore=el('button','plain',t('忽略'));
+      ignore.onclick=async()=>{
+        if(!window.confirm(t('忽略只会移除未确认提示，不会撤回或重发消息。请先检查聊天记录。')))return;
+        ignore.disabled=true;
+        try{accountsPanel?.accept(await ignoreSubmission({threadId:target,submissionId:row.id,host}));toast('已忽略未确认记录');}
+        catch(e){ignore.disabled=false;toast(e.message);}
+      };card.append(ignore);
+    }
+    $('queued').append(card);
+  }
+}
 function uuid(){const bytes=crypto.getRandomValues(new Uint8Array(16));bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;const h=[...bytes].map(x=>x.toString(16).padStart(2,'0')).join('');return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);}
-$('composer').onsubmit=async event=>{event.preventDefault();if(sending||!currentId)return;const text=$('message').value;if(!attachments.ready()){toast('请等待附件上传完成');return;}const attachmentIds=attachments.ids();if(!text.trim()&&!attachmentIds.length)return;const mode=$('send-mode').value,workMode=workModes.value(mode);if(workMode==='goal'&&attachmentIds.length){$('send-error').textContent=t('目标模式暂不支持附件');return;}const skills=[...selectedSkills].sort();const key='pending:'+chatKey();let pending;try{pending=JSON.parse(sessionStorage.getItem(key));}catch{}if(!pending||pending.text!==text||pending.mode!==mode||pending.workMode!==workMode||JSON.stringify(pending.skills||[])!==JSON.stringify(skills)||JSON.stringify(pending.attachments||[])!==JSON.stringify(attachmentIds))pending={id:uuid(),text,mode,skills,workMode,attachments:attachmentIds,uiLocale:BridgeI18n.locale()};sessionStorage.setItem(key,JSON.stringify(pending));sending=true;attachments.setLocked(true);workModes.render(state,mode,true);$('send').disabled=true;$('send-error').textContent='';const target=currentId,targetHost=currentHost;try{const result=await api(sessionUrl(target,'send',targetHost),pending);if(result.status==='unknown')throw Error(t('消息可能已送达，请检查聊天记录。再次点击不会重复提交。'));bumpRecency(target,targetHost);sessionStorage.removeItem(key);workModes.submitted(chatKey(target,targetHost),workMode);attachments.clear(chatKey(target,targetHost),attachmentIds);sessionStorage.removeItem('draft:'+chatKey(target,targetHost));if(currentId===target&&currentHost===targetHost){$('message').value='';selectedSkills.clear();renderSkillPills();window.BridgePresentation?.resizeMessage();}toast(workMode==='goal'?(result.activation?.status==='queued'?t('目标已创建，启动已排队'):result.activation?t('目标已创建，正在启动'):t('已提交目标请求，等待桌面确认')):result.status==='queued'?t('已加入待发送队列'):t('已发送到会话'));}catch(error){if(currentId===target&&currentHost===targetHost){$('send-error').textContent=t(error.message);window.BridgePresentation?.showError();}}finally{sending=false;attachments.setLocked(false);workModes.render(state,$('send-mode').value,false);$('send').disabled=!state||state.loadingHistory||state.activating||!attachments.ready();}};
+$('composer').onsubmit=async event=>{event.preventDefault();if(sending||!currentId)return;const text=$('message').value;if(!attachments.ready()){toast('请等待附件上传完成');return;}const attachmentIds=attachments.ids();if(!text.trim()&&!attachmentIds.length)return;const mode=$('send-mode').value,workMode=workModes.value(mode);if(workMode==='goal'&&attachmentIds.length){$('send-error').textContent=t('目标模式暂不支持附件');return;}if(invalidSkills.size){$('send-error').textContent=t('已选 Skill 已失效，请刷新列表后重新选择');return;}const skills=[...selectedSkills].sort();const key='pending:'+chatKey();let pending;try{pending=JSON.parse(sessionStorage.getItem(key));}catch{}if(!pending||pending.text!==text||pending.mode!==mode||pending.workMode!==workMode||JSON.stringify(pending.skills||[])!==JSON.stringify(skills)||JSON.stringify(pending.attachments||[])!==JSON.stringify(attachmentIds))pending={id:uuid(),text,mode,skills,workMode,attachments:attachmentIds,uiLocale:BridgeI18n.locale()};sessionStorage.setItem(key,JSON.stringify(pending));sending=true;attachments.setLocked(true);workModes.render(state,mode,true);$('send').disabled=true;$('send-error').textContent='';const target=currentId,targetHost=currentHost;try{const result=await api(sessionUrl(target,'send',targetHost),pending);if(result.status==='ignored')throw Error(t('这条未确认记录已忽略，请刷新后重新编辑消息。'));if(result.status==='unknown')throw Error(t('消息可能已送达，请检查聊天记录。再次点击不会重复提交。'));bumpRecency(target,targetHost);sessionStorage.removeItem(key);workModes.submitted(chatKey(target,targetHost),workMode);attachments.clear(chatKey(target,targetHost),attachmentIds);sessionStorage.removeItem('draft:'+chatKey(target,targetHost));if(currentId===target&&currentHost===targetHost){$('message').value='';selectedSkills.clear();renderSkillPills();window.BridgePresentation?.resizeMessage();}toast(workMode==='goal'?(result.activation?.status==='queued'?t('目标已创建，启动已排队'):result.activation?t('目标已创建，正在启动'):t('已提交目标请求，等待桌面确认')):result.status==='queued'?t('已加入待发送队列'):t('已发送到会话'));}catch(error){if(currentId===target&&currentHost===targetHost){$('send-error').textContent=t(error.message);window.BridgePresentation?.showError();}}finally{sending=false;attachments.setLocked(false);workModes.render(state,$('send-mode').value,false);$('send').disabled=!state||state.loadingHistory||state.activating||!attachments.ready();}};
 $('message').onkeydown=event=>{if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)){event.preventDefault();$('composer').requestSubmit();}};
 $('stop').onclick=async()=>{try{await api('/api/sessions/'+currentId+'/stop',{});toast('已请求停止');}catch(e){toast(e.message);}};
 $('history').onclick=async()=>{$('history').disabled=true;try{await api('/api/sessions/'+currentId+'/history',{});}catch(e){toast(e.message);}finally{$('history').disabled=false;}};
 $('reconnect').onclick=async()=>{const id=currentId,host=currentHost;$('reconnect').disabled=true;try{await api(sessionUrl(id,'reconnect',host),{activate:true});}catch(e){toast(e.message);}finally{$('reconnect').disabled=false;}};
 document.querySelectorAll('[data-close]').forEach(button=>button.onclick=()=>$(button.dataset.close).close());
-async function loadCatalog(refresh=false){const target=currentId,targetHost=currentHost;const value=await api('/api/sessions/'+target+'/catalog'+(refresh?'?refresh=true':''));if(currentId!==target||currentHost!==targetHost)throw Error(t('聊天已切换'));catalogData=value;return value;}
-function renderEfforts(){const id=$('model-select').value;const model=catalogData?.models.find(m=>m.id===id);$('custom-model-label').hidden=id!=='__custom__';$('custom-model').required=id==='__custom__';const options=model?.efforts?.length?model.efforts:['none','minimal','low','medium','high','xhigh','max','ultra'];$('effort-select').replaceChildren(...options.map(value=>new Option(value,value)));$('effort-select').value=options.includes(state?.effort)?state.effort:model?.defaultEffort||'medium';$('model-description').textContent=model?.description||t('自定义模型需要当前 API 服务支持。');fastModeControl.select(id);$('model-save').disabled=!state?.connected||!id;}
+async function loadCatalogKind(kind,refresh=false){
+  if(kind!=='models')throw Error(t('未知目录类型'));
+  const target=currentId,targetHost=currentHost;
+  if(!refresh&&catalogResults[kind])return catalogResults[kind];
+  if(!refresh&&catalogTasks[kind])return catalogTasks[kind];
+  const request=api('/api/sessions/'+target+'/catalog?kind='+kind+(refresh?'&refresh=true':'')).then(value=>{
+    if(currentId!==target||currentHost!==targetHost)throw Error(t('聊天已切换'));
+    const payload=value?.[kind]??value?.data??value;
+    if(!Array.isArray(payload)){
+      const actual=payload===null?'null':typeof payload;
+      throw Error(t('模型目录返回无效')+' ('+kind+': '+actual+')');
+    }
+    catalogData[kind]=payload.map(row=>typeof row==='string'?{id:row,name:row}:row).filter(row=>row&&(row.id||row.model));
+    const result={...value,kind,[kind]:catalogData[kind]};
+    catalogResults[kind]=result;
+    return result;
+  }).finally(()=>{if(catalogTasks[kind]&&target===currentId&&targetHost===targetHost)catalogTasks[kind]=null;});
+  catalogTasks[kind]=request;
+  return request;
+}
+function resetSkillCatalog(){
+  clearTimeout(skillSearchTimer);$('skill-search').value='';$('skill-list').scrollTop=0;skillRequest++;
+  catalogData.skills=[];catalogResults.skills=null;catalogTasks.skills=null;
+  skillIndex=new Map();skillTotal=0;skillPages=[];skillQuery={q:'',offset:0,limit:200};invalidSkills=new Set();
+}
+async function loadSkills({refresh=false,append=false}={}){
+  const target=currentId,targetHost=currentHost;
+  const query={...skillQuery};
+  if(!refresh&&!append&&catalogResults.skills)return catalogResults.skills;
+  if(!refresh&&!append&&catalogTasks.skills)return catalogTasks.skills;
+  if(refresh){
+    skillRequest++;catalogTasks.skills=null;catalogResults.skills=null;skillPages=[];skillQuery.offset=0;invalidSkills=new Set();
+    $('skill-list').scrollTop=0;
+  }
+  query.offset=refresh?0:skillQuery.offset;
+  const generation=skillRequest;
+  const requestKey=chatKey(target,targetHost)+'|'+query.q+'|'+query.offset;
+  if(!append&&catalogTasks.skills?.key===requestKey&&catalogTasks.skills?.generation===generation)return catalogTasks.skills;
+  const ids=[...selectedSkills].slice(0,8);
+  const path='/api/sessions/'+target+'/catalog?kind=skills&q='+encodeURIComponent(query.q)+'&limit='+query.limit+'&offset='+query.offset+(refresh?'&refresh=true':'')+ids.map(id=>'&id='+encodeURIComponent(id)).join('');
+  const request=api(path).then(value=>{
+    if(currentId!==target||currentHost!==targetHost||generation!==skillRequest)return value;
+    const rows=Array.isArray(value?.skills)?value.skills:[];
+    if(!Array.isArray(value?.skills))throw Error(t('模型目录返回无效')+' (skills: '+(value?.skills===null?'null':typeof value?.skills)+')');
+    if(refresh||!append)skillPages=[];
+    const existing=refresh||!append?new Set():new Set(skillPages.map(row=>row.id));
+    for(const row of rows){if(!existing.has(row.id)){skillPages.push(row);existing.add(row.id);}}
+    catalogData.skills=skillPages;
+    for(const row of [...rows,...(Array.isArray(value.selectedSkills)?value.selectedSkills:[])])if(row?.id)skillIndex.set(row.id,row);
+    skillTotal=Math.max(0,Number(value.total)||0);
+    skillQuery.offset=skillPages.length;
+    catalogResults.skills=value;
+    const valid=new Set((Array.isArray(value.selectedSkills)?value.selectedSkills:[]).map(row=>row.id));
+    const checked=new Set(ids);
+    invalidSkills=new Set([...selectedSkills].filter(id=>checked.has(id)?!valid.has(id):invalidSkills.has(id)));
+    renderSkillPills();renderSkills();renderSkillCache(value);$('skills-error').textContent=[...(value.errors||[]),value.refreshError].filter(Boolean).join('\n');
+    return value;
+  }).finally(()=>{
+    if(catalogTasks.skills===request&&generation===skillRequest)catalogTasks.skills=null;
+  });
+  request.key=requestKey;request.generation=generation;catalogTasks.skills=request;
+  return request;
+}
+function renderSkillCache(value){
+  const node=$('skills-cache');if(!node)return;
+  const state=value?.cache?.state;
+  node.textContent=state==='stale'?t('正在显示缓存 Skill，后台会自动刷新。'):state==='legacy'?t('正在显示旧版缓存 Skill，后台会自动刷新。'):'';
+}
+function startCatalog(){
+  loadCatalogKind('models').catch(()=>{});
+  resetSkillCatalog();loadSkills().catch(()=>{});
+}
+function renderEfforts(){const id=$('model-select').value;const models=Array.isArray(catalogData?.models)?catalogData.models:[];const model=models.find(m=>m.id===id);$('custom-model-label').hidden=id!=='__custom__';$('custom-model').required=id==='__custom__';const options=model?.efforts?.length?model.efforts:['none','minimal','low','medium','high','xhigh','max','ultra'];$('effort-select').replaceChildren(...options.map(value=>new Option(value,value)));$('effort-select').value=options.includes(state?.effort)?state.effort:model?.defaultEffort||'medium';$('model-description').textContent=model?.description||t('自定义模型需要当前 API 服务支持。');fastModeControl.select(id);$('model-save').disabled=!state?.connected||!id;}
 $('model-button').onclick=async()=>{
-  if(!currentId||modelSaving)return;const request=++modelRequest,target=chatKey();modelTarget=target;fastModeControl.reset();
+  const request=++modelRequest,target=chatKey();modelTarget=target;fastModeControl.reset();
   $('model-form').querySelectorAll('input,select,button').forEach(n=>n.disabled=false);
   $('model-error').textContent='';$('model-select').replaceChildren(new Option(t('读取模型列表…'),''));$('model-save').disabled=true;$('model-dialog').showModal();
   try{
-    const catalog=await loadCatalog(true);if(request!==modelRequest||target!==chatKey())return;
-    $('model-select').replaceChildren(...(catalog.modelSource==='api'?[new Option(t('请选择上游模型'),'')]:[]),...catalog.models.map(m=>new Option(m.name,m.id)),new Option(t('自定义模型…'),'__custom__'));
-    const current=state?.model||catalog.currentModel,known=catalog.models.some(m=>m.id===current);$('model-select').value=known?current:catalog.modelSource==='api'&&catalog.models.length?'':'__custom__';$('custom-model').value=current||'';
-    $('model-error').textContent=catalog.modelError?t(catalog.modelError):catalog.modelSource==='api'&&!known&&catalog.models.length?t('当前聊天模型不在上游列表中，请选择可用模型后应用。'):'';
+    const catalog=await loadCatalogKind('models');
+    if(request!==modelRequest||target!==chatKey())return;
+    $('model-select').replaceChildren(...(catalog.modelSource==='api'?[new Option(t('请选择上游模型'),'')]:[]),...(Array.isArray(catalog.models)?catalog.models:[]).map(m=>new Option(m.name,m.id)),new Option(t('自定义模型…'),'__custom__'));
+    const current=state?.model||catalog.currentModel,models=Array.isArray(catalog.models)?catalog.models:[],known=models.some(m=>m.id===current);$('model-select').value=known?current:catalog.modelSource==='api'&&models.length?'':'__custom__';$('custom-model').value=current||'';
+    $('model-error').textContent=catalog.modelError?t(catalog.modelError):catalog.modelSource==='api'&&!known&&models.length?t('当前聊天模型不在上游列表中，请选择可用模型后应用。'):'';
+    catalog.kind='models';
     fastModeControl.open(catalog,state,$('model-select').value);renderEfforts();
   }catch(e){if(request===modelRequest&&target===chatKey())$('model-error').textContent=t(e.message);}
 };
@@ -321,10 +431,53 @@ $('model-form').onsubmit=async event=>{
   }catch(e){if(request===modelRequest&&chatKey(target,host)===chatKey())$('model-error').textContent=t(e.message);}
   finally{modelSaving=false;if(request===modelRequest){$('model-form').querySelectorAll('input,select,button').forEach(n=>n.disabled=false);fastModeControl.setBusy(false);$('model-save').disabled=!state?.connected;}}
 };
-function renderSkillPills(){$('skill-count').textContent=selectedSkills.size?'('+selectedSkills.size+')':'';$('skill-pills').replaceChildren();for(const id of selectedSkills){const skill=catalogData?.skills.find(s=>s.id===id);const pill=el('button','skill-pill',(skill?.displayName||t('已选 Skill'))+' ×');pill.type='button';pill.onclick=()=>{selectedSkills.delete(id);renderSkillPills();renderSkills();};$('skill-pills').append(pill);}if(currentId)sessionStorage.setItem('skills:'+chatKey(),JSON.stringify([...selectedSkills]));}
-function renderSkills(){$('skill-list').replaceChildren();const search=$('skill-search').value.toLocaleLowerCase();for(const skill of catalogData?.skills||[]){if(![skill.name,skill.displayName,skill.description].join(' ').toLocaleLowerCase().includes(search))continue;const label=el('label','skill-option');const input=el('input');input.type='checkbox';input.value=skill.id;input.checked=selectedSkills.has(skill.id);input.onchange=()=>{if(input.checked&&selectedSkills.size>=8){input.checked=false;toast('最多选择 8 个 Skill');return;}if(input.checked)selectedSkills.add(skill.id);else selectedSkills.delete(skill.id);renderSkillPills();};const content=el('span');content.append(el('strong','',skill.displayName),el('small','',skill.description));label.append(input,content);$('skill-list').append(label);}if(!$('skill-list').children.length)$('skill-list').append(el('p','muted',t('没有匹配的 Skill')));}
-async function openSkills(refresh=false){if(!currentId)return;$('skills-error').textContent='';$('skill-list').textContent=t('正在读取已安装 Skill…');if(!$('skills-dialog').open)$('skills-dialog').showModal();try{await loadCatalog(refresh);renderSkills();renderSkillPills();}catch(e){$('skills-error').textContent=t(e.message);$('skill-list').replaceChildren();}}
-$('skills-button').onclick=()=>openSkills();$('skills-refresh').onclick=()=>openSkills(true);$('skill-search').oninput=renderSkills;
+function renderSkillPills(){
+  $('skill-count').textContent=selectedSkills.size?'('+selectedSkills.size+')':'';
+  $('skill-pills').replaceChildren();
+  for(const id of selectedSkills){
+    const skill=skillIndex.get(id),invalid=invalidSkills.has(id);
+    const pill=el('button','skill-pill'+(invalid?' invalid':''),(skill?.displayName||(invalid?t('已失效 Skill'):t('已选 Skill')))+' ×');
+    pill.type='button';pill.onclick=()=>{selectedSkills.delete(id);invalidSkills.delete(id);renderSkillPills();renderSkills();};
+    $('skill-pills').append(pill);
+  }
+  if(currentId)sessionStorage.setItem('skills:'+chatKey(),JSON.stringify([...selectedSkills]));
+}
+function renderSkills(){
+  const list=$('skill-list'),rows=Array.isArray(catalogData?.skills)?catalogData.skills:[];
+  const search=$('skill-search').value.toLocaleLowerCase();
+  const visible=search===skillQuery.q.toLocaleLowerCase()?rows:rows.filter(skill=>[skill.name,skill.displayName,skill.description].join(' ').toLocaleLowerCase().includes(search));
+  list.replaceChildren();
+  for(const skill of visible){
+    const label=el('label','skill-option');
+    const input=el('input');input.type='checkbox';input.value=skill.id;input.checked=selectedSkills.has(skill.id);
+    input.onchange=()=>{
+      if(input.checked&&selectedSkills.size>=8){input.checked=false;toast('最多选择 8 个 Skill');return;}
+      if(input.checked){selectedSkills.add(skill.id);invalidSkills.delete(skill.id);}else selectedSkills.delete(skill.id);
+      renderSkillPills();
+    };
+    const content=el('span');content.append(el('strong','',skill.displayName),el('small','',skill.description));
+    label.append(input,content);list.append(label);
+  }
+  if(!visible.length)list.append(el('p','muted',t('没有匹配的 Skill')));
+}
+async function openSkills(refresh=false){
+  if(!currentId)return;$('skills-error').textContent='';if(!$('skills-dialog').open)$('skills-dialog').showModal();
+  if(catalogData.skills?.length)renderSkills();
+  else $('skill-list').textContent=t('正在读取已安装 Skill…');
+  try{await loadSkills({refresh});renderSkills();renderSkillPills();}
+  catch(e){
+    if(catalogData.skills?.length)renderSkills();
+    else $('skill-list').textContent=t('Skill 加载失败，请点击刷新重试');
+    $('skills-error').textContent=t(e.message);renderSkillPills();
+  }
+}
+function skillScroll(){
+  const list=$('skill-list');
+  if(skillTotal>skillPages.length&&list.scrollHeight-list.clientHeight-list.scrollTop<240&&!catalogTasks.skills)loadSkills({append:true}).catch(e=>toast(e.message));
+}
+$('skills-button').onclick=()=>openSkills();$('skills-refresh').onclick=()=>openSkills(true);
+$('skill-list').onscroll=skillScroll;
+$('skill-search').oninput=()=>{clearTimeout(skillSearchTimer);skillSearchTimer=setTimeout(()=>{skillRequest++;skillQuery.q=$('skill-search').value;skillQuery.offset=0;skillPages=[];catalogData.skills=[];catalogResults.skills=null;catalogTasks.skills=null;$('skill-list').scrollTop=0;renderSkills();loadSkills().catch(e=>{$('skills-error').textContent=t(e.message);});},200);};
 window.addEventListener('pagehide',saveDraft);
 function startFromLink(token){return start(token).catch(error=>{showLogin();$('login-error').textContent=t(error.message);});}
 startFromLink(initialPairingToken);initialPairingToken=null;
@@ -336,6 +489,7 @@ $('phone-language').onchange=()=>{
   const replies=[...$('approvals').querySelectorAll('input,textarea,select')].map(node=>({value:node.value,checked:node.checked}));
   BridgeI18n.setLanguage($('phone-language').value);BridgeI18n.apply();accountPanel.render();if(typeof accountsPanel!=="undefined")accountsPanel?.render();renderList();
   if(!$('new-chat-title').dataset.edited)$('new-chat-title').value=t('新聊天');
+  renderLoginStatus();
   for(const id of ['login-error','send-error','model-error','skills-error','new-chat-error','notify-error','rename-error','pushplus-error','toast'])$(id).textContent=t($(id).textContent);
   for(const option of $('new-chat-project').options){const project=newChatProjects.find(p=>p.key===option.value);if(project)option.textContent=project.name+' · '+(project.host==='local'?t('此电脑'):project.hostLabel);}
   if($('model-select').querySelector('[value=__custom__]'))$('model-select').querySelector('[value=__custom__]').textContent=t('自定义模型…');
@@ -399,5 +553,5 @@ async function pushplusAction(test){
 $('pushplus-form').onsubmit=event=>{event.preventDefault();return pushplusAction(false);};
 $('pushplus-test').onclick=()=>pushplusAction(true);
 
-const accountsPanel=typeof AccountsPanel==='undefined'?null:new AccountsPanel({root:$('accounts-content'),read:()=>api('/api/accounts'),request:({action,...value})=>api(action==='details'?'/api/accounts/details':'/api/accounts/switch',value),onChanged:()=>accountPanel.clear(),onUpdate:value=>{accountPanel.schedule();const official=value.current?.kind==='chatgpt';$('account-button').hidden=!official;if(!official)$('account-details').open=false;const label=value.current?.kind==='api'?'API 接入':official?'账号与额度':'账号与接入';$('accounts-button').setAttribute('data-i18n',label);$('accounts-button').textContent=t(label);}});
+const accountsPanel=typeof AccountsPanel==='undefined'?null:new AccountsPanel({root:$('accounts-content'),read:()=>api('/api/accounts'),request:({action,...value})=>action==='ignoreSubmission'?ignoreSubmission(value):api(action==='details'?'/api/accounts/details':'/api/accounts/switch',value),onChanged:()=>accountPanel.clear(),onUpdate:value=>{accountPanel.schedule();const official=value.current?.kind==='chatgpt';$('account-button').hidden=!official;if(!official)$('account-details').open=false;const label=value.current?.kind==='api'?'API 接入':official?'账号与额度':'账号与接入';$('accounts-button').setAttribute('data-i18n',label);$('accounts-button').textContent=t(label);}});
 if(accountsPanel)$('accounts-button').onclick=()=>{$('accounts-dialog').showModal();accountsPanel.refresh();};

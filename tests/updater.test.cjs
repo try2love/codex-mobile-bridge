@@ -3,7 +3,7 @@ const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs/promises'),path=require('node:path');
 const {generateKeyPairSync,sign,createHash}=require('node:crypto');
 const {buildManifest}=require('../scripts/sign-update.cjs');
-const {Updater,manifest,compare,assetName,releaseUrl,allowedUrl,RELEASES,transfer}=require('../desktop/updater.cjs');
+const {Updater,manifest,compare,assetName,releaseUrl,allowedUrl,allowedMirrorUrl,mirrorUrl,RELEASES,MIRROR,transfer}=require('../desktop/updater.cjs');
 const keys=generateKeyPairSync('ed25519');
 const current='0.2.0-beta.5',next='0.2.0-beta.6',platform='darwin',arch='arm64';
 function signed(value,key=keys.privateKey){const payload=Buffer.from(JSON.stringify(value));return Buffer.from(JSON.stringify({payload:payload.toString('base64'),signature:sign(null,payload,key).toString('base64')}));}
@@ -35,6 +35,33 @@ test('release metadata requests JSON while downloadable assets request bytes',as
     assert.equal((await transfer(fetch,url,{limit:100})).bytes.toString(),'fixture');
   }
 });
+test('mirror transport is restricted and falls back without weakening verification',()=>{
+  const manifestUrl=releaseUrl(next,'bridge-update.json');
+  assert.equal(allowedMirrorUrl(RELEASES),RELEASES);
+  assert.equal(allowedMirrorUrl(mirrorUrl(RELEASES)),MIRROR+RELEASES);
+  for(const url of [MIRROR+'https://evil.example/update',MIRROR,MIRROR+'not-a-url'])assert.throws(()=>allowedMirrorUrl(url));
+});
+
+test('update metadata and packages retry through the signed transport mirror',async t=>{
+  await fs.mkdir(path.join(__dirname,'../.tmp'),{recursive:true});
+  const directory=await fs.mkdtemp(path.join(__dirname,'../.tmp/update-mirror-'));
+  t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+  const requests=[];
+  const official=url=>url.startsWith(MIRROR)?url.slice(MIRROR.length):url;
+  const status=url=>url.startsWith(MIRROR)||!(url===RELEASES||url.endsWith('.zip'))?200:503;
+  const response=(url,body)=>new Response(body,{status:status(url)});
+  const fetch=async(url,options)=>{
+    requests.push(url);
+    return response(url,official(url)===RELEASES?JSON.stringify([{tag_name:'v'+next,assets:[{name:'bridge-update.json'}]}]):
+      official(url).endsWith('.json')?signed(info()):bytes);
+  };
+  const updater=new Updater({current,platform,arch,key:keys.publicKey,fetch,directory,install:async()=>{}});
+  assert.equal((await updater.check()).state,'available');
+  assert.equal((await updater.install()).state,'restarting');
+  assert.deepEqual(requests,[RELEASES,mirrorUrl(RELEASES),releaseUrl(next,'bridge-update.json'),
+    updater.candidate.asset.url,mirrorUrl(updater.candidate.asset.url)]);
+});
+
 test('versions order beta, rc and stable numerically and reject ambiguous versions',()=>{
   assert.ok(compare('0.2.0-beta.10','0.2.0-beta.9')>0);assert.ok(compare('0.2.0-rc.0','0.2.0-beta.99')>0);
   assert.ok(compare('0.2.0','0.2.0-rc.99')>0);assert.ok(compare('0.3.0-beta.0','0.2.99')>0);

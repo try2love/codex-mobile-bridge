@@ -8,7 +8,7 @@ const {pairingImage}=require('./qr.cjs');
 const {createTray}=require('./tray.cjs');
 const {normalize,translate}=require('./i18n.js');
 const cloudflared=require('./cloudflared.cjs');
-const {Updater,allowedUrl}=require('./updater.cjs');
+const {Updater,allowedMirrorUrl}=require('./updater.cjs');
 const {spawn}=require('node:child_process');
 const {randomUUID}=require('node:crypto');
 const {interfaces}=require('./network.cjs');
@@ -20,6 +20,7 @@ if(process.env.CMB_DATA_DIR)app.setPath('userData',path.join(path.resolve(proces
 let window,dataDir,tray,quitting=false,snapshotPending,lastSnapshot,updateQuitting=false;
 let installPending,installStatus={},updater,workerWrites=0;
 const snapshotWorker=createSnapshotWorker();
+let connectionSecrets={},setupPending=false;
 const entry=pathToFileURL(path.join(__dirname,'index.html')).href;
 function releaseTray(){snapshotWorker.close();quitting=true;tray?.dispose();tray=null;}
 function loadDataDir(){
@@ -42,7 +43,9 @@ function updateManaged(){
 }
 function worker(action,payload){
   if(action==='snapshot'&&updateQuitting)return Promise.resolve({...lastSnapshot,update:updater.status()});
-  const writes=['save','start','stop','devices','notification-watches'].includes(action);
+  if(setupPending&&['save','start','stop'].includes(action))return Promise.reject(Error('请等待服务器操作完成。'));
+  if(action==='start')payload={...payload,connectionSecrets};
+  const writes=['server-setup','connection-credentials','save','start','stop','devices','notification-watches'].includes(action);
   if(writes&&updater?.busy)return Promise.reject(Error('正在更新应用，请稍候。'));
   if(writes)workerWrites++;
   if(action==='snapshot'&&snapshotPending)return snapshotPending;
@@ -87,7 +90,7 @@ async function installUpdate(candidate){
 }
 function setupUpdater(){
   updater=new Updater({current:app.getVersion(),key:fs.readFileSync(path.join(__dirname,'update-public-key.pem')),
-    fetch:cloudflared.electronFetch(net,allowedUrl),directory:path.join(app.getPath('userData'),'updates'),
+    fetch:cloudflared.electronFetch(net,allowedMirrorUrl),directory:path.join(app.getPath('userData'),'updates'),
     supported:app.isPackaged&&['darwin','win32'].includes(process.platform),install:installUpdate});
   setTimeout(()=>updater.check(),5000).unref();
   setInterval(()=>updater.check(),6*60*60*1000).unref();
@@ -101,7 +104,7 @@ function register(){
   ipcMain.handle('bridge:check-update',event=>{authorize(event);return updater.check();});
   ipcMain.handle('bridge:install-update',event=>{
     authorize(event);
-    if(installPending||workerWrites||updateManaged())throw Error('请等待当前操作完成后再更新。');
+    if(installPending||workerWrites||setupPending||updateManaged())throw Error('请等待当前操作完成后再更新。');
     return updater.install();
   });
   ipcMain.handle('bridge:language',event=>{authorize(event);return language;});
@@ -122,7 +125,47 @@ function register(){
         await shell.openExternal(url.href);return value;
       }
     }
-    return worker(action,payload);
+    try{return await worker(action,payload);}catch(error){if(error.validation)return {validationError:{message:error.message,...error.validation}};throw error;}
+  });
+  ipcMain.handle('bridge:read-credentials',async(event,value={})=>{
+    authorize(event);
+    if(value.id&&connectionSecrets[value.id])return {...connectionSecrets[value.id]};
+    return worker('read-credentials',value);
+  });
+  ipcMain.handle('bridge:connection-credentials',async(event,value)=>{
+    authorize(event);
+    if(updater?.busy)throw Error('正在更新应用，请稍候。');
+    const current=await worker('snapshot');
+    if(!current.preferences.connections.some(c=>c.id===value?.id))throw Error('请先保存连接配置。');
+    const secret=value.secrets;
+    if(!secret||typeof secret!=='object'||Object.keys(secret).some(key=>!['password','passphrase','tunnelToken','clear'].includes(key)))throw Error('连接凭据格式不正确');
+    for(const [key,text] of Object.entries(secret))if(key!=='clear'&&(typeof text!=='string'||text.length>16384||text.includes('\0')))throw Error('连接凭据格式不正确');
+    if(secret.clear){await worker('connection-credentials',{id:value.id,secrets:{clear:true}});delete connectionSecrets[value.id];}
+    else if(value.remember){await worker('connection-credentials',{id:value.id,secrets:secret});delete connectionSecrets[value.id];}
+    else connectionSecrets[value.id]={...connectionSecrets[value.id],...secret};
+    return {message:value.remember?'连接凭据已保存到系统凭据存储。':'连接凭据仅保留在本次 App 运行内存中。'};
+  });
+  ipcMain.handle('bridge:copy-server-diagnostics',async(event,value)=>{
+    authorize(event);const result=await worker('server-setup',{id:value.id,action:'diagnostics',language:value.language});
+    clipboard.writeText(result.prompt);return {message:value.language==='en'?'Read-only server inspection prompt copied.':'服务器只读检查 Prompt 已复制。'};
+  });
+  ipcMain.handle('bridge:server-setup',async(event,value)=>{
+    authorize(event);
+    if(!['host','trust','inspect'].includes(value?.action))throw Error('App 仅支持 SSH 连接检查；服务器安装与权限配置请手动完成。');
+    if(updater?.busy)throw Error('正在更新应用，请稍候。');
+    if(setupPending)throw Error('请等待服务器操作完成。');
+    setupPending=true;
+    try{
+    if(value.action==='trust'){
+      const current=await worker('server-setup',{id:value.id,action:'host'});
+      if(current.fingerprint!==value.fingerprint)throw Error('主机指纹已变化，请重新检查。');
+      const result=await dialog.showMessageBox(window,{type:'warning',buttons:[t('取消'),t('信任此服务器')],defaultId:0,cancelId:0,
+        message:t(current.changed?'服务器主机指纹已改变':'首次连接此服务器'),
+        detail:current.host+':'+current.port+'\n'+current.fingerprint+'\n'+t('请与服务器管理员或控制台中的主机指纹核对。')});
+      if(result.response!==1)return {cancelled:true,message:t('未保存主机指纹。')};
+    }
+    return await worker('server-setup',{id:value.id,action:value.action,fingerprint:value.fingerprint,secrets:connectionSecrets[value.id]});
+    }finally{setupPending=false;}
   });
   ipcMain.handle('bridge:install-cloudflared',async event=>{
     authorize(event);if(updater.busy)throw Error('正在更新应用，请稍候。');if(installPending)return installPending;
@@ -156,20 +199,22 @@ function register(){
   ipcMain.handle('bridge:copy-deployment',async(event,payload)=>{
     authorize(event);const bundle=await worker('deployment',payload);
     const english=payload?.language==='en';
-    const intro=english?'Deploy Codex Mobile Bridge using the configuration below. Check existing services first; do not overwrite existing sites.':'请按以下配置帮我部署 Codex 手机网关的固定入口。先检查已有服务，不要覆盖已有站点。';
+    const manual=bundle.accessMode==='server';
+    const intro=manual?(english?'Manual setup reference. Review the configuration; administrative commands must be run by the user.':'手动配置参考。请检查以下配置；涉及管理员权限的命令必须由用户自行执行。'):english?'Deploy Codex Mobile Bridge using the configuration below. Check existing services first; do not overwrite existing sites.':'请按以下配置帮我部署 Codex 手机网关的固定入口。先检查已有服务，不要覆盖已有站点。';
     const text=intro+'\n\n'+Object.entries(bundle.files).filter(([name])=>name!==(english?'部署说明.md':'DEPLOYMENT_EN.md')).map(([name,content])=>'--- '+name+' ---\n'+content).join('\n');
-    clipboard.writeText(text);return {message:english?'Deployment instructions and configuration copied. Paste them into your server or NAS Agent.':'部署说明与配置已复制，可粘贴给服务器或 NAS 上的 Agent。'};
+    clipboard.writeText(text);return {message:manual?(english?'Manual setup reference copied. Administrative steps must be performed by the user.':'手动配置参考已复制；管理员操作请由用户自行完成。'):english?'Deployment instructions and configuration copied. Paste them into your server or NAS Agent.':'部署说明与配置已复制，可粘贴给服务器或 NAS 上的 Agent。'};
   });
   ipcMain.handle('bridge:choose',async(event,kind)=>{
     authorize(event);
-    if(!['folder','file','data'].includes(kind))throw Error('未知路径类型');
-    const result=await dialog.showOpenDialog(window,{properties:[kind==='file'?'openFile':'openDirectory']});
+    if(!['folder','file','data','ssh-key'].includes(kind))throw Error('未知路径类型');
+    const result=await dialog.showOpenDialog(window,kind==='ssh-key'?{defaultPath:path.join(app.getPath('home'),'.ssh'),properties:['openFile','showHiddenFiles']}:{properties:[kind==='file'?'openFile':'openDirectory']});
     if(result.canceled)return null;
     const selected=result.filePaths[0];
     if(kind==='data'){
       if(updater.busy)throw Error('正在更新应用，请稍候。');
       if(installPending)throw Error('正在安装 cloudflared，请完成后再切换数据目录。');
-      installStatus={};
+      if(setupPending)throw Error('请等待服务器操作完成。');
+      installStatus={};connectionSecrets={};
       dataDir=selected;fs.mkdirSync(app.getPath('userData'),{recursive:true});
       fs.writeFileSync(path.join(app.getPath('userData'),'bridge-location.json'),JSON.stringify({dataDir}),{mode:0o600});
     }
@@ -183,6 +228,11 @@ function register(){
     if(target==='project-pulls')return shell.openExternal('https://github.com/try2love/codex-mobile-bridge/pulls');
     if(target==='credentials')return shell.openPath(path.join(dataDir,'首次登录.txt'));
     if(target==='data')return shell.openPath(dataDir);
+    if(target==='cloudflare-dashboard')return shell.openExternal('https://one.dash.cloudflare.com/');
+    if(['setup-lan','setup-quick','setup-cloudflare','setup-server','setup-nas'].includes(target))return shell.openExternal('https://try2love.github.io/codex-mobile-bridge/setup.html?lang='+(language==='en'?'en':'zh')+'#'+target.slice(6));
+    if(target==='cloudflare-domain-help')return shell.openExternal('https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel/');
+    if(target==='server-https-help')return shell.openExternal('https://caddyserver.com/docs/running');
+    if(target==='server-ssh-help')return shell.openExternal('https://man.openbsd.org/sshd_config#AllowTcpForwarding');
     if(target==='cloudflare-help')return shell.openExternal('https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/');
     if(target==='ntfy-help')return shell.openExternal('https://docs.ntfy.sh/subscribe/phone/');
     if(target==='bark-help')return shell.openExternal('https://bark.day.app/#/tutorial');

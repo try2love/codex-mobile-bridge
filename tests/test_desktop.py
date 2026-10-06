@@ -149,7 +149,7 @@ class CloudflareSetupTests(unittest.TestCase):
             desktop = Desktop(data)
             desktop.status = lambda: {'running': False}
             write_json(data/'desktop.json', {'cloudflared': '', 'codexHome': directory, 'tunnel': True})
-            with patch('bridge.desktop.shutil.which', return_value=''), patch('bridge.desktop.sys.platform', 'fixture'):
+            with patch('bridge.desktop.shutil.which', return_value=''), patch('bridge.desktop.sys.platform', 'fixture'), patch('bridge.desktop.sys._MEIPASS', str(data/'absent-bundle'), create=True):
                 with patch('bridge.desktop.subprocess.Popen') as spawn:
                     with self.assertRaisesRegex(ValueError, '一键安装'): desktop.start()
                     spawn.assert_not_called()

@@ -1,5 +1,6 @@
 """Opt-in phone notifications. Watching a chat never changes its execution owner."""
 import hashlib
+from .validation import FieldError, at_field
 import json
 import re
 import threading
@@ -8,7 +9,7 @@ import uuid
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import quote, urlsplit
-from urllib.request import Request, build_opener, HTTPRedirectHandler, HTTPSHandler
+from urllib.request import Request, build_opener, HTTPRedirectHandler, HTTPSHandler, ProxyHandler
 
 from .model import pending_requests, ordered_turns
 from .tls import client_context
@@ -16,7 +17,7 @@ from .tls import client_context
 DEFAULTS = {'enabled': False, 'server': 'https://ntfy.sh', 'topic': '', 'token': '',
             'barkEnabled': False, 'barkServer': 'https://api.day.app', 'barkKey': '',
             'pushplusEnabled': False, 'pushplusToken': '',
-            'clickBase': '', 'includeTitle': False, 'addressEnabled': False, 'addressName': ''}
+            'clickBase': '', 'includeTitle': False, 'addressEnabled': True, 'addressName': '', 'securityEnabled': True, 'mobileEnabled': False, 'mobileAppLinks': False}
 
 
 def read_json(path, default):
@@ -52,43 +53,43 @@ def settings(data_dir):
 def save_settings(data_dir, value):
     prior = settings(data_dir)
     result = {**prior, **{k: value[k] for k in DEFAULTS if k in value}}
-    result['server'] = valid_url(str(result['server']), allow_path=True)
-    result['barkServer'] = valid_url(str(result['barkServer']), allow_path=True)
-    for key in ('enabled', 'barkEnabled', 'pushplusEnabled', 'includeTitle', 'addressEnabled'):
+    result['server'] = at_field('ntfy-server', valid_url, str(result['server']), allow_path=True)
+    result['barkServer'] = at_field('bark-server', valid_url, str(result['barkServer']), allow_path=True)
+    for key in ('enabled', 'barkEnabled', 'pushplusEnabled', 'includeTitle', 'addressEnabled', 'securityEnabled', 'mobileEnabled', 'mobileAppLinks'):
         if not isinstance(result[key], bool):
             raise ValueError('通知开关格式不正确')
     if not isinstance(result['addressName'], str) or len(result['addressName']) > 80 or any(not c.isprintable() for c in result['addressName']):
-        raise ValueError('网关名称应为不超过 80 字的单行文本')
+        raise FieldError('网关名称应为不超过 80 字的单行文本', 'address-name')
     if not isinstance(result['topic'], str) or (result['topic'] and not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', result['topic'])):
-        raise ValueError('ntfy 主题只允许 1–64 位字母、数字、下划线和短横线')
+        raise FieldError('ntfy 主题只允许 1–64 位字母、数字、下划线和短横线', 'ntfy-topic')
     if result['enabled'] and not result['topic']:
-        raise ValueError('开启通知前请填写 ntfy 主题')
+        raise FieldError('开启通知前请填写 ntfy 主题', 'ntfy-topic')
     if result['clickBase']:
         # A link back to the existing LAN gateway may intentionally use HTTP.
         parsed = urlsplit(result['clickBase'])
         if parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
-            raise ValueError('通知跳转地址格式不正确')
+            raise FieldError('通知跳转地址格式不正确', 'click-base')
         result['clickBase'] = result['clickBase'].rstrip('/')
     if not isinstance(result['token'], str) or len(result['token']) > 2000 or '\n' in result['token'] or '\r' in result['token']:
-        raise ValueError('ntfy Token 格式不正确')
+        raise FieldError('ntfy Token 格式不正确', 'ntfy-token')
     # Blank fields from the UI preserve a token only for the same server.
     if not value.get('token'):
         result['token'] = '' if value.get('clearToken') or result['server'] != prior['server'] else prior['token']
     if not isinstance(result['barkKey'], str) or len(result['barkKey']) > 2000 or any(not c.isprintable() or c.isspace() or c in '/?#' for c in result['barkKey']):
-        raise ValueError('Bark Device Key 格式不正确，请仅填写密钥，不要粘贴完整推送地址')
+        raise FieldError('Bark Device Key 格式不正确，请仅填写密钥，不要粘贴完整推送地址', 'bark-key')
     if not value.get('barkKey'):
         result['barkKey'] = '' if value.get('clearBarkKey') or result['barkServer'] != prior['barkServer'] else prior['barkKey']
     if result['barkEnabled'] and not result['barkKey']:
-        raise ValueError('开启 Bark 前请填写 Device Key；更换服务地址后需重新填写')
+        raise FieldError('开启 Bark 前请填写 Device Key；更换服务地址后需重新填写', 'bark-key')
     if 'clearPushplusToken' in value and not isinstance(value['clearPushplusToken'], bool):
         raise ValueError('PushPlus 配置格式不正确')
     token = result['pushplusToken']
     if not isinstance(token, str) or len(token) > 2000 or any(not c.isprintable() or c.isspace() for c in token):
-        raise ValueError('PushPlus Token 格式不正确')
+        raise FieldError('PushPlus Token 格式不正确', 'pushplus-token')
     if not value.get('pushplusToken'):
         result['pushplusToken'] = '' if value.get('clearPushplusToken') else prior['pushplusToken']
     if result['pushplusEnabled'] and not result['pushplusToken']:
-        raise ValueError('开启 PushPlus 前请填写 Token')
+        raise FieldError('开启 PushPlus 前请填写 Token', 'pushplus-token')
     write_json(Path(data_dir)/'notifications.json', result)
     return result
 
@@ -124,8 +125,12 @@ def publish_bark(config, title, body, click=''):
         payload['url'] = click
     request = Request(server + '/push', data=json.dumps(payload, ensure_ascii=False).encode(),
                       headers={'Content-Type': 'application/json'})
+    handlers = [NoRedirect(), HTTPSHandler(context=client_context())]
+    # A local Bark gateway must not receive a private device key through a system proxy.
+    if urlsplit(server).hostname in ('localhost', '127.0.0.1', '::1'):
+        handlers.insert(0, ProxyHandler({}))
     try:
-        with build_opener(NoRedirect(), HTTPSHandler(context=client_context())).open(request, timeout=8) as response:
+        with build_opener(*handlers).open(request, timeout=8) as response:
             result = json.loads(response.read(65536))
             if not 200 <= response.status < 300 or not isinstance(result, dict) or result.get('code') != 200:
                 raise ValueError('Rejected')
@@ -200,10 +205,24 @@ class Notifications:
         self.target_signature = None
         self.wakeup = getattr(bridge, 'notification_event', threading.Event())
         self.worker = None
+        from .security_notifications import SecurityNotifications
+        self.security = SecurityNotifications(self.data_dir)
+        from .mobile_events import MobileEvents
+        self.mobile = MobileEvents(self.data_dir)
+        from .mobile_push import MobilePush
+        self.mobile_push = MobilePush(self.data_dir, self.mobile)
+
+    def _targets(self, config):
+        result = channels(config)
+        if config.get('mobileEnabled'):
+            result['mobile'] = 'mobile:' + self.mobile.value['streamId']
+        return result
 
     def start(self):
         self.worker = threading.Thread(target=self._run, daemon=True)
         self.worker.start()
+        self.push_worker = threading.Thread(target=self._push_run, daemon=True)
+        self.push_worker.start()
 
     def close(self):
         self.closed.set()
@@ -259,7 +278,7 @@ class Notifications:
                 write_json(self.data_dir/'notification-completions.json', self.completions)
                 write_json(self.data_dir/'notification-policies.json', policies)
             row = self._effective({'id': thread_id, 'host': host}, policies)
-            return {'available': bool(channels(settings(self.data_dir))), 'watching': row['notifyOnRequest'] or row['notifyOnCompletion'],
+            return {'available': bool(self._targets(settings(self.data_dir))), 'watching': row['notifyOnRequest'] or row['notifyOnCompletion'],
                     'notifyOnRequest': row['notifyOnRequest'], 'notifyOnCompletion': row['notifyOnCompletion'],
                     'requests': row['choices']['requests'], 'completion': row['choices']['completion']}
 
@@ -282,7 +301,7 @@ class Notifications:
                 raise ValueError('提醒开关格式不正确')
         with self.lock:
             config = settings(self.data_dir)
-            targets = channels(config)
+            targets = self._targets(config)
             rows = self.watches()
             prior = next((r for r in rows if r['id'] == thread_id and r['host'] == host), None)
             if existing_only and prior is None:
@@ -397,6 +416,8 @@ class Notifications:
         base = config.get('clickBase') or self.public_url() or next((o for o in origins if o.startswith('https://')), '')
         if not base:
             base = next((o for o in origins if urlsplit(o).hostname not in ('127.0.0.1', 'localhost')), '')
+        if base and config.get('mobileAppLinks'):
+            return 'codexbridge://open?origin=' + quote(base.rstrip('/'), safe='') + '&thread=' + thread_id + '&host=' + quote(host, safe='')
         return base.rstrip('/') + '/#' + thread_id + '~' + quote(host, safe='') if base else ''
 
     def _send_keys(self, config, row, title, channel, target, keys, completed):
@@ -412,8 +433,11 @@ class Notifications:
         if config['includeTitle']:
             body = title[:120] + '\n' + body
         try:
-            sender = {'ntfy': publish, 'bark': publish_bark, 'pushplus': publish_pushplus}[channel]
-            sender(config, heading, body, self.click_url(config, row['id'], row['host']))
+            if channel == 'mobile':
+                self.mobile.append(pending, row, heading, body, completed)
+            else:
+                sender = {'ntfy': publish, 'bark': publish_bark, 'pushplus': publish_pushplus}[channel]
+                sender(config, heading, body, self.click_url(config, row['id'], row['host']))
             for key in pending:
                 self.ledger[key] = {'delivered': True, 'time': now}
             self._status(channel, lastSent=now, error='')
@@ -426,7 +450,7 @@ class Notifications:
 
     def scan(self):
         config = settings(self.data_dir)
-        targets = channels(config)
+        targets = self._targets(config)
         signature = tuple(sorted(targets.items()))
         if signature != self.target_signature:
             self.candidates.update({key: {'host': key[0], 'id': key[1]} for key in self.dormant})
@@ -498,6 +522,8 @@ class Notifications:
                                 self.attached.pop(key, None)
                             continue  # Saved history is not a live pending approval.
                         requests = pending_requests(session.state)
+                        live_running = session.state.get('threadRuntimeStatus', {}).get('type') == 'active' or any(t.get('status') == 'inProgress' for t in ordered_turns(session.state))
+                        self.mobile_push.update_activity(row, 'waiting' if requests else 'running' if live_running else 'ready')
                         title = session.state.get('title') or '聊天'
                         turns = [{'turnId': t.get('turnId'), 'status': t.get('status')} for t in ordered_turns(session.state)]
                     completed_keys = {channel: self._completion_pending({**current, 'title': title}, turns, target) if current.get('notifyOnCompletion') else [] for channel, target in targets.items()}
@@ -540,6 +566,7 @@ class Notifications:
     def _run(self):
         while not self.closed.is_set():
             try:
+                self.security.scan()
                 self.scan()
             except Exception:
                 self._status(error='通知配置读取失败，请在电脑启动器重新保存配置。')
@@ -547,3 +574,17 @@ class Notifications:
             self.wakeup.clear()
             # Coalesce a burst of stream patches rather than scan per token.
             self.closed.wait(1)
+
+    def _push_allowed(self, event):
+        policy = self._effective({'id': event['threadId'], 'host': event['host']})
+        if event['kind'] == 'state':
+            return policy['notifyOnRequest'] or policy['notifyOnCompletion']
+        return policy['notifyOnCompletion' if event['kind'] == 'completion' else 'notifyOnRequest']
+
+    def _push_run(self):
+        while not self.closed.is_set():
+            try:
+                self.mobile_push.drain(settings(self.data_dir).get('mobileEnabled', False), self._push_allowed)
+            except Exception:
+                self._status('nativePush', error='系统推送暂不可用，请检查平台配置')
+            self.closed.wait(3)

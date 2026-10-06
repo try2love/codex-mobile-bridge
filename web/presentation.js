@@ -1,7 +1,7 @@
 'use strict';
 // Appearance is local to this browser; no desktop or account settings are changed.
 const ChatAppearance=(()=>{
-  const defaults={theme:'system',accent:'#4664ed',fontSize:16,codeSize:13,density:'standard',showReasoning:true,showProcess:true,showActivity:true,showPushplus:true,showAccounts:true};
+  const defaults={theme:'system',accent:'#4664ed',fontSize:16,codeSize:13,density:'standard',showReasoning:true,showProcess:true,showActivity:true,showPushplus:true,showAccounts:true,showFileThumbnails:true};
   function normalize(value={}){
     if(!value||typeof value!=='object')value={};
     return {theme:['system','light','dark'].includes(value.theme)?value.theme:defaults.theme,
@@ -13,6 +13,7 @@ const ChatAppearance=(()=>{
       showProcess:typeof value.showProcess==='boolean'?value.showProcess:defaults.showProcess,
       showPushplus:typeof value.showPushplus==='boolean'?value.showPushplus:defaults.showPushplus,
       showAccounts:typeof value.showAccounts==='boolean'?value.showAccounts:defaults.showAccounts,
+      showFileThumbnails:typeof value.showFileThumbnails==='boolean'?value.showFileThumbnails:defaults.showFileThumbnails,
       showActivity:typeof value.showActivity==='boolean'?value.showActivity:defaults.showActivity};
   }
   function luminance(hex){
@@ -52,6 +53,8 @@ if(typeof document!=='undefined')(()=>{
     root.dataset.theme=dark?'dark':'light';root.dataset.density=settings.density;
     root.dataset.showActivity=String(settings.showActivity);
     root.dataset.showPushplus=String(settings.showPushplus);root.dataset.showAccounts=String(settings.showAccounts);
+    get('appearance-file-thumbnails').checked=settings.showFileThumbnails;
+    window.BridgeWorkbench?.setThumbnails(settings.showFileThumbnails);
     get('appearance-pushplus').checked=settings.showPushplus;get('appearance-accounts').checked=settings.showAccounts;
     root.dataset.showReasoning=String(settings.showReasoning);root.dataset.showProcess=String(settings.showProcess);
     if(typeof chatTimeline!=='undefined')chatTimeline?.setVisibility(settings);
@@ -101,6 +104,7 @@ if(typeof document!=='undefined')(()=>{
   get('appearance-density').onchange=()=>change({density:get('appearance-density').value});
   get('appearance-reasoning').onchange=()=>change({showReasoning:get('appearance-reasoning').checked});
   get('appearance-activity').onchange=()=>change({showActivity:get('appearance-activity').checked});
+  get('appearance-file-thumbnails').onchange=()=>change({showFileThumbnails:get('appearance-file-thumbnails').checked});
   get('appearance-process').onchange=()=>change({showProcess:get('appearance-process').checked});
   document.querySelectorAll('[data-accent]').forEach(button=>button.onclick=()=>change({accent:button.dataset.accent}));
   get('appearance-pushplus').onchange=()=>change({showPushplus:get('appearance-pushplus').checked});

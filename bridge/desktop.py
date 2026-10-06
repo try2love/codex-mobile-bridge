@@ -16,6 +16,7 @@ from .notifications import Notifications, read_json, write_json, settings, save_
 from .store import SessionStore, StoreUnavailable
 from .remote import AppHosts
 from . import access, network
+from .validation import FieldError, at_field
 
 
 class Desktop:
@@ -36,7 +37,8 @@ class Desktop:
     def preferences(self):
         name = 'cloudflared.exe' if os.name == 'nt' else 'cloudflared'
         executable = self.data_dir/'bin'/name
-        detected = str(executable) if executable.is_file() else shutil.which(name) or ''
+        bundled = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parents[1]/'dist'))/'cloudflared'/name
+        detected = str(bundled) if bundled.is_file() else str(executable) if executable.is_file() else shutil.which(name) or ''
         if not detected and sys.platform == 'darwin':
             detected = next((value for value in ('/opt/homebrew/bin/cloudflared', '/usr/local/bin/cloudflared') if Path(value).is_file()), '')
         defaults = {'autoStart': False, 'port': 8787, 'lan': True, 'lanAddresses': None, 'localAccess': True, 'tunnel': (self.data_dir/'外网地址.txt').exists(),
@@ -44,7 +46,7 @@ class Desktop:
                     'codexHome': os.environ.get('CODEX_HOME', str(Path.home()/'.codex')),
                     'ipcPath': '', 'codexBin': ''}
         saved = read_json(self.data_dir/'desktop.json', {})
-        if not saved.get('cloudflared'):
+        if not saved.get('cloudflared') or not Path(saved['cloudflared']).is_file():
             saved['cloudflared'] = defaults['cloudflared']
         rows = access.connections({**defaults, **saved})
         return {**defaults, **{k: v for k, v in saved.items() if k not in access.DEFAULTS},
@@ -112,6 +114,7 @@ class Desktop:
                 'origins': config.get('origins', []), 'notifications': {**notifications, 'token': '', 'hasToken': bool(notifications['token']), 'barkKey': '', 'hasBarkKey': bool(notifications['barkKey']), 'pushplusToken': '', 'hasPushplusToken': bool(notifications['pushplusToken'])},
                 'watches': self.notification_watches({'action': 'list'})['watches'],
                 'notificationUrls': notification_urls,
+                'securityNotificationStatus': read_json(self.data_dir/'security-notifications.json', {}),
                 'addressNotificationStatus': read_json(self.data_dir/'address-notifications.json', {}),
                 'notificationStatus': read_json(self.data_dir/'notification-status.json', {}),
                 'dataDir': str(self.data_dir), 'credentialsAvailable': (self.data_dir/'首次登录.txt').exists(),
@@ -124,30 +127,30 @@ class Desktop:
         preferences['tunnel'] = any(c['enabled'] and c['accessMode'] == 'quick' for c in preferences['connections'])
         port = preferences['port']
         if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
-            raise ValueError('端口必须为 1–65535')
-        preferences['lanAddresses'] = network.selected_addresses(preferences['lanAddresses'])
+            raise FieldError('端口必须为 1–65535', 'port')
+        preferences['lanAddresses'] = at_field('lan-scope', network.selected_addresses, preferences['lanAddresses'])
         for key in ('lan', 'tunnel', 'autoStart', 'localAccess'):
             if not isinstance(preferences[key], bool):
                 raise ValueError('网络开关格式不正确')
         for key in ('codexHome', 'codexBin', 'ipcPath', 'cloudflared'):
             if not isinstance(preferences[key], str) or '\x00' in preferences[key] or len(preferences[key]) > 4096:
-                raise ValueError('路径格式不正确')
+                raise FieldError('路径格式不正确', {'codexHome': 'codex-home', 'codexBin': 'codex-bin', 'ipcPath': 'ipc-path', 'cloudflared': 'cloudflared'}[key])
         if not Path(preferences['codexHome']).expanduser().is_dir():
-            raise ValueError('Codex 数据目录不存在')
+            raise FieldError('Codex 数据目录不存在', 'codex-home')
         if self.status()['running'] and any(preferences[k] != old_preferences[k] for k in preferences if k != 'autoStart'):
             raise ValueError('请先停止网关再更改网络或运行路径，以免正在使用的地址失效')
         config = self.config()
         auth = value['auth']
         if auth.get('mode') not in ('password', 'none') or not isinstance(auth.get('username'), str) or not auth['username'].strip() or len(auth['username']) > 200:
-            raise ValueError('请填写有效的登录账号和登录方式')
+            raise FieldError('请填写有效的登录账号和登录方式', 'username')
         password = auth.get('password', '')
-        hours = session_hours(auth.get('sessionHours', config['auth'].get('sessionHours', 12)))
+        hours = at_field('session-hours', session_hours, auth.get('sessionHours', config['auth'].get('sessionHours', 12)))
         if not isinstance(password, str) or (password and not 12 <= len(password) <= 1000):
-            raise ValueError('新密码至少需要 12 个字符')
+            raise FieldError('新密码至少需要 12 个字符', 'password')
         origins = value.get('origins', [])
         if not isinstance(origins, list):
-            raise ValueError('额外 HTTPS 源格式不正确')
-        origins = list(dict.fromkeys(access.origin(origin) for origin in origins))
+            raise FieldError('额外 HTTPS 源格式不正确', 'origins')
+        origins = list(dict.fromkeys(at_field('origins', access.origin, origin) for origin in origins))
         old_fixed = access.public_urls(old_preferences)
         origins = [origin for origin in origins if origin not in old_fixed]
         for fixed in access.public_urls(preferences):
@@ -184,7 +187,8 @@ class Desktop:
                 args.extend([flag, p[key]])
         return args
 
-    def start(self):
+    def start(self, value=None):
+        temporary = (value or {}).get('connectionSecrets', {})
         self.config()
         state = self.status()
         if state['running']:
@@ -192,13 +196,25 @@ class Desktop:
         preferences = self.preferences()
         if not Path(preferences['codexHome']).expanduser().is_dir():
             raise ValueError('请先选择存在的 Codex 数据目录')
-        if preferences['tunnel']:
+        if any(c['enabled'] and c['accessMode'] in ('quick', 'cloudflare') for c in preferences['connections']):
             executable = preferences['cloudflared']
             if not executable or not Path(executable).is_file() or not os.access(executable, os.X_OK):
                 raise ValueError('未找到可运行的 cloudflared，请在“运行配置”中一键安装并保存，或关闭临时 Cloudflare 连接。')
         access.validate_connections(preferences)
-        if any(c['enabled'] and c['accessMode'] == 'server' for c in preferences['connections']) and not shutil.which('ssh'):
+        from .server_connection import managed
+        if any(c['enabled'] and c['accessMode'] == 'server' and not managed(c, self.data_dir) for c in preferences['connections']) and not shutil.which('ssh'):
             raise ValueError('未找到 OpenSSH 客户端；请先安装或启用系统 SSH 客户端')
+        from .server_connection import credentials
+        for entry in preferences['connections']:
+            if not entry['enabled']:
+                continue
+            if entry['accessMode'] == 'cloudflare' or (entry['accessMode'] == 'server' and entry.get('sshAuth', 'config') != 'config'):
+                secret = credentials(entry, self.data_dir, temporary.get(entry['id']))
+                if entry['accessMode'] == 'cloudflare' and not secret.get('tunnelToken'):
+                    raise FieldError('请先填写并保存 Cloudflare Tunnel Token。', 'tunnelToken', entry['id'])
+                if entry['accessMode'] == 'server' and entry.get('sshAuth') == 'password' and not secret.get('password'):
+                    raise FieldError('请先填写并保存 SSH 密码。', 'password', entry['id'])
+                temporary[entry['id']] = secret
         for address in network.bindings(preferences):
             probe = socket.socket()
             if os.name != "nt":
@@ -210,12 +226,14 @@ class Desktop:
             finally:
                 probe.close()
         command = [sys.executable] if getattr(sys, 'frozen', False) else [sys.executable, str(Path(__file__).resolve().parents[1]/'desktop.py')]
-        command += ['serve', '--data-dir', str(self.data_dir)]
+        command += ['serve', '--data-dir', str(self.data_dir), '--connection-secrets-stdin']
         kwargs = {'creationflags': subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt' else {'start_new_session': True}
         # Frozen children run as independent applications, not multiprocessing workers.
         environment = {**os.environ, 'PYINSTALLER_RESET_ENVIRONMENT': '1'}
         with (self.data_dir/'gateway.log').open('ab') as log:
-            process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=log, stderr=log, env=environment, **kwargs)
+            process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=log, stderr=log, env=environment, **kwargs)
+            process.stdin.write(json.dumps(temporary).encode('utf-8'))
+            process.stdin.close()
         return {'started': True, 'pid': process.pid, 'message': '正在启动网关'}
 
     def stop(self):
@@ -309,8 +327,9 @@ class Desktop:
         return {'message': f'{name} 已接受测试通知，请在手机确认是否收到'}
 
     def deployment(self, value):
-        files = access.deployment(access.select_connection(self.preferences(), value))
-        return {'files': files}
+        entry = access.select_connection(self.preferences(), value)
+        files = access.deployment(entry)
+        return {'files': files, 'accessMode': entry['accessMode']}
 
     def export_deployment(self, value):
         files = access.deployment(access.select_connection(self.preferences(), value))
@@ -320,6 +339,45 @@ class Desktop:
                 archive.writestr(name, content)
         path.chmod(0o600)
         return {'path': str(path)}
+
+    def read_credentials(self, value):
+        # Explicit private IPC only. Never include plaintext in polled snapshots.
+        if value.get('id'):
+            from .connection_secrets import read
+            if not any(c['id'] == value['id'] for c in self.preferences()['connections']):
+                raise ValueError('请先保存连接配置。')
+            return read(self.data_dir, value['id'])
+        notification = settings(self.data_dir)
+        result = {key: notification[key] for key in ('token', 'barkKey', 'pushplusToken')}
+        initial = self.data_dir/'首次登录.txt'
+        result['password'] = ''
+        if initial.exists():
+            result['password'] = next((line[3:] for line in initial.read_text(encoding='utf-8').splitlines() if line.startswith('密码：')), '')
+        return result
+
+    def connection_credentials(self, value):
+        entry = next((c for c in self.preferences()['connections'] if c['id'] == value.get('id')), None)
+        if not entry:
+            raise ValueError('请先保存连接配置。')
+        from .connection_secrets import save
+        save(self.data_dir, entry['id'], value.get('secrets', {}))
+        return {'message': '连接凭据已保存到系统凭据存储。'}
+
+    def server_setup(self, value):
+        entry = access.select_connection(self.preferences(), value, allow_disabled=True)
+        if entry['accessMode'] != 'server':
+            raise ValueError('请选择自有服务器连接。')
+        from . import server_connection
+        action = value.get('action')
+        if action == 'diagnostics':
+            return {'prompt': server_connection.diagnostic_prompt(entry, value.get('language'))}
+        if action == 'host':
+            return server_connection.host_probe(entry, self.data_dir)
+        if action == 'trust':
+            return server_connection.trust(entry, self.data_dir, value.get('fingerprint'))
+        if action == 'inspect':
+            return server_connection.inspect(entry, self.data_dir, value.get('secrets'))
+        raise ValueError('App 仅支持 SSH 连接检查；服务器安装与权限配置请手动完成。')
 
     def check_entry(self, value):
         if not self.status()['running']:

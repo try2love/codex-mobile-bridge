@@ -31,25 +31,25 @@ Linux x64 / ARM64 实验性适配、Ubuntu 22.04 构建与 VMware 网络说明�
 
 ## 下载与快速开始（推荐）
 
-日常使用直接下载桌面 App，**无需 Agent 帮忙部署，也无需安装 Python、Node.js 或打开终端**。当前版本为 **v1.3.3 正式版**。
+日常使用直接下载桌面 App，**无需 Agent 帮忙部署，也无需安装 Python、Node.js 或打开终端**。当前版本为 **v1.4.0 正式版**。
 
 | 系统 | 下载 | 打开方式 |
 | --- | --- | --- |
-| Windows x64（推荐安装包） | [下载 Setup.exe](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.3.3/Codex-Mobile-Bridge-1.3.3-Windows-x64-Setup.exe) | 运行安装包，从快捷方式打开 |
-| Windows x64（免安装） | [下载完整 ZIP](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.3.3/Codex-Mobile-Bridge-1.3.3-Windows-x64.zip) | 完整解压后运行 `Codex Mobile Bridge.exe`，不要单独移动 exe |
-| macOS Apple Silicon（M 系列） | [下载 arm64 DMG](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.3.3/Codex-Mobile-Bridge-1.3.3-macOS-arm64.dmg) | 打开 DMG，将 App 拖入“应用程序” |
-| macOS Intel（英特尔） | [下载 x64 DMG](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.3.3/Codex-Mobile-Bridge-1.3.3-macOS-x64.dmg) | 打开 DMG，将 App 拖入“应用程序” |
-| Ubuntu x64（实验性） | [下载 .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.3.3/Codex-Mobile-Bridge-1.3.3-Linux-amd64.deb) | Ubuntu 22.04；安装后以普通用户启动 |
-| Ubuntu ARM64（实验性） | [下载 .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.3.3/Codex-Mobile-Bridge-1.3.3-Linux-arm64.deb) | Ubuntu 22.04 ARM64；不含 32 位 ARM |
+| Windows x64（推荐安装包） | [下载 Setup.exe](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/Codex-Mobile-Bridge-1.4.0-Windows-x64-Setup.exe) | 运行安装包，从快捷方式打开 |
+| Windows x64（免安装） | [下载完整 ZIP](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/Codex-Mobile-Bridge-1.4.0-Windows-x64.zip) | 完整解压后运行 `Codex Mobile Bridge.exe`，不要单独移动 exe |
+| macOS Apple Silicon（M 系列） | [下载 arm64 DMG](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/Codex-Mobile-Bridge-1.4.0-macOS-arm64.dmg) | 打开 DMG，将 App 拖入“应用程序” |
+| macOS Intel（英特尔） | [下载 x64 DMG](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/Codex-Mobile-Bridge-1.4.0-macOS-x64.dmg) | 打开 DMG，将 App 拖入“应用程序” |
+| Ubuntu x64（实验性） | [下载 .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/Codex-Mobile-Bridge-1.4.0-Linux-amd64.deb) | Ubuntu 22.04；安装后以普通用户启动 |
+| Ubuntu ARM64（实验性） | [下载 .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/Codex-Mobile-Bridge-1.4.0-Linux-arm64.deb) | Ubuntu 22.04 ARM64；不含 32 位 ARM |
 
-[查看所有版本与更新说明](https://github.com/try2love/codex-mobile-bridge/releases) · [下载 SHA256 校验文件](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.3.3/SHA256SUMS.txt)。两种 Mac 同时提供 ZIP，供应用内更新或手动替换使用。Windows ARM 暂无专用安装包。Mac 版采用本地完整性签名但未公证，首次打开可能需要手动允许；Windows 版未做证书签名。详见下方 macOS 首次打开说明。
+[查看所有版本与更新说明](https://github.com/try2love/codex-mobile-bridge/releases) · [下载 SHA256 校验文件](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/SHA256SUMS.txt)。两种 Mac 同时提供 ZIP，供应用内更新或手动替换使用。Windows ARM 暂无专用安装包。Mac 版采用本地完整性签名但未公证，首次打开可能需要手动允许；Windows 版未做证书签名。详见下方 macOS 首次打开说明。
 
 1. 在电脑上打开原来的 **Codex App**，再打开 **Codex Mobile Bridge**。
 2. 在“网络与登录”保留局域网访问，保存后点击 **启动网关**。已有配置时沿用原端口。
 3. 手机连接同一局域网，在 App 首页展开对应地址下的 **扫码登录**，用手机相机扫描即可进入，无需输入密码。也可以手动打开地址，使用 App 提供的登录凭据。
 4. 在手机网页选择已有聊天或新建聊天，即可继续交互。使用期间保持电脑唤醒、Codex App 和网关运行。
 
-需要外网访问时，可在 App 添加临时 HTTPS、自有服务器或 NAS 连接。临时 HTTPS 可在 App 内一键安装 `cloudflared`；固定域名和 NAS 需要首次配置服务器或反向代理，详见[连接方式说明](#connections)。源码运行、自定义部署或需要 Agent 协助时，使用后面的[部署 Agent 执行说明](#agent-deployment)。
+需要外网访问时，可在 App 添加临时 HTTPS、自有服务器或 NAS 连接。桌面构建已内置 `cloudflared`；自有服务器支持手动准备服务器后通过普通用户 SSH 连接，也可使用 Cloudflare 固定隧道或已有 NAS 反代，详见[连接方式说明](#connections)。源码运行、自定义部署或需要 Agent 协助时，使用后面的[部署 Agent 执行说明](#agent-deployment)。
 
 <a id="macos-first-launch"></a>
 
@@ -59,7 +59,7 @@ Linux x64 / ARM64 实验性适配、Ubuntu 22.04 构建与 VMware 网络说明�
 
 从 `v0.2.0-beta.5` 起，可在桌面 App 的「应用更新」中检查新版、查看说明并点击「更新并重启」。下载与校验完成后短暂重启网关，保留登录、网络、通知和关注聊天配置；失败时尝试恢复原版本。此前版本需要先手动安装一次支持更新的版本。使用临时 HTTPS 时，重启后请打开最新地址。发布与恢复说明见 [桌面更新文档](docs/desktop-updates.md)。
 
-**Windows beta.7 / 1.0.0 用户：**旧更新器可能因目录占用报 `WinError 32` 并回退。请先在托盘选择“停止网关并退出”，再用 **1.3.3 Setup.exe** 安装到原位置；无需卸载或删除数据。1.1.0 修复后续更新的目录占用问题。
+**Windows beta.7 / 1.0.0 用户：**旧更新器可能因目录占用报 `WinError 32` 并回退。请先在托盘选择“停止网关并退出”，再用 **1.4.0 Setup.exe** 安装到原位置；无需卸载或删除数据。1.1.0 修复后续更新的目录占用问题。
 
 ### 手机阅读与显示设置
 
@@ -82,7 +82,10 @@ v1.3.0 支持在 Bridge 桌面端添加官方账号、自定义 API 或扫描导
 
 ### 登录有效期与设备管理
 
-- 在 **网络与登录 → 登录有效期（小时）** 中设置。保存后重启网关生效；修改账号、密码、登录方式或有效期会撤销此前登录。普通网关重启和 App 更新保留未过期登录。
+- 网页登录默认勾选 **记住密码（7 天免登录）**：保存登录 Cookie，不保存明文密码，7 天后需重新登录；取消勾选使用浏览器会话 Cookie。
+- 同一 IP **连续输错 5 次即自动封禁**，网页显示剩余次数，失败计数与封禁记录在重启后保留。正确登录会重置连续失败次数；封禁后只能在电脑 App 的 **登录设备 → 自动封禁 IP** 解除并重置次数。
+- **手机通知 → 登录安全通知** 默认开启，封禁时通过已启用的 PushPlus、Bark、ntfy 发送通知，可单独关闭；关闭通知不关闭封禁。
+- 普通登录有效期在 **网络与登录 → 登录有效期（小时）** 中设置。保存后重启网关生效；修改账号、密码、登录方式或有效期会撤销此前登录。普通网关重启和 App 更新保留未过期登录。
 - `0` 表示不自动过期。浏览器仍可能清理长期未使用的 Cookie；退出登录、清除浏览器数据或更换访问域名后需要重新验证。
 - **登录设备** 展示一次浏览器登录的 IP、浏览器标识、登录时间、最近访问（最多约一分钟延迟）和到期时间。**撤销登录** 只移除该登录，之后可重新验证；**封禁此 IP** 会撤销该 IP 的全部登录并禁止重新登录。
 - IP 白名单默认关闭，启用后仅允许列表内地址；黑名单优先。支持精确 IPv4 / IPv6 地址，每行一个。规则保存后立即生效，可随时从电脑 App 解除，不需要手机端权限。
@@ -93,10 +96,10 @@ v1.3.0 支持在 Bridge 桌面端添加官方账号、自定义 API 或扫描导
 
 当前 Mac 版具有本地完整性签名（ad-hoc），**没有 Apple Developer ID 签名和公证**，首次打开仍可能被 macOS 拦截。旧版 `v0.2.0-beta.1` 还存在包签名缺陷，请优先下载 `v1.1.0` 或后续版本。
 
-1. 从本仓库的 Release 下载对应芯片的 DMG 或 ZIP，以及 `SHA256SUMS.txt`。计算下载文件的 SHA-256，与校验文件中同名文件的一行比较；不一致时重新下载，不要放行。以下以 1.3.3 的 M 系列 Mac DMG 为例，其他文件请替换文件名：
+1. 从本仓库的 Release 下载对应芯片的 DMG 或 ZIP，以及 `SHA256SUMS.txt`。计算下载文件的 SHA-256，与校验文件中同名文件的一行比较；不一致时重新下载，不要放行。以下以 1.4.0 的 M 系列 Mac DMG 为例，其他文件请替换文件名：
 
    ```sh
-   shasum -a 256 "$HOME/Downloads/Codex-Mobile-Bridge-1.3.3-macOS-arm64.dmg"
+   shasum -a 256 "$HOME/Downloads/Codex-Mobile-Bridge-1.4.0-macOS-arm64.dmg"
    ```
 
 2. 打开 DMG，将 `Codex Mobile Bridge.app` 拖入“应用程序”，再推出磁盘映像；ZIP 则先解压并移动 App。尝试从“应用程序”打开后，前往 **系统设置 → 隐私与安全性 → 仍要打开**，按系统提示确认。
@@ -123,7 +126,7 @@ v1.3.0 支持在 Bridge 桌面端添加官方账号、自定义 API 或扫描导
 - **连接与状态**：一键启停、复制和打开手机地址、展开二维码扫码登录、查看首次登录凭据。
 - **网络与登录**：局域网访问、端口、Cloudflare 临时 HTTPS、自有服务器固定域名、NAS / Docker 反代、额外 HTTPS 源、账号密码或免密模式、登录有效期（小时，0 表示不自动过期）。
 - **登录设备**：查看浏览器登录的 IP、登录时间和最近访问；撤销登录、封禁 IP，配置 IP 白名单与黑名单。
-- **运行配置**：Codex 数据目录、IPC 地址、Codex 与 cloudflared 程序路径、网关数据目录、打开 App 自动启动。
+- **运行配置**：打开 App 自动启动、网关数据目录与 Cloudflare 组件状态。程序路径、IPC 和修复安装收在高级设置中，通常无需修改。
 - **手机通知**：Bark / ntfy 独立配置、测试和发送状态，共用通知跳转地址与标题隐私设置。
 - **运行日志**：每个日志来源默认从最新记录开始，刷新后回到顶部；同一错误堆栈保持原顺序。
 
@@ -133,11 +136,11 @@ Windows 关闭窗口会收起到系统托盘；双击托盘或再次启动 App �
 
 右上角可切换 **简体中文 / English**，与 Mac 新界面位置一致。首次启动按系统语言选择（英文系统使用英文，其他语言回退简体中文），之后记住手动选择，并保留旧 Windows 版已保存的语言偏好。切换立即更新桌面页面、连接配置、状态提示和 Windows 托盘，不重启网关、不丢弃未保存配置。桌面偏好保存在 App 用户目录的 `language.json`。手机网页使用同一翻译表，但语言可独立选择并记忆；原始运行日志和聊天内容不翻译，未知系统错误保留原始诊断信息。
 
-外网访问在“网络与登录 → 其他连接配置”添加并启用连接，可选择临时 HTTPS、自有服务器 SSH 或 NAS 反代。使用临时 HTTPS 时，在“运行配置”选择 `cloudflared.exe`；复用旧 `.local` 时会查找其 `bin/cloudflared.exe`，旧单入口配置也会自动迁移为连接项。等待入口就绪并检查实际 HTTPS 地址，`127.0.0.1` 不是手机外网入口。默认保留账号密码保护。
+外网访问在“网络与登录 → 其他连接配置”添加并启用连接，可选择临时 HTTPS、自有服务器 SSH 或 NAS 反代。桌面 App 已内置 `cloudflared.exe`，临时和固定 Cloudflare 隧道无需另行安装；复用旧 `.local` 时会查找其 `bin/cloudflared.exe`，旧单入口配置也会自动迁移为连接项。等待入口就绪并检查实际 HTTPS 地址，`127.0.0.1` 不是手机外网入口。默认保留账号密码保护。
 
 未保存修改会在对应设置页的侧栏入口和底部保存栏显示小红点；切换页面仍保留提示，保存成功或改回原值后清除，保存失败时继续保留。
 
-cloudflared 是可选程序。在“运行配置”点击“一键下载并安装”，或选择已有程序；只有点击安装按钮才会联网下载。
+桌面 App 按系统和架构内置 cloudflared，首次使用临时或固定 Cloudflare 隧道无需额外安装。自定义程序路径和源码运行仍可在“运行配置”检测或安装；内置版本随 App 更新。
 
 ### 手机扫码登录
 
@@ -157,13 +160,24 @@ cloudflared 是可选程序。在“运行配置”点击“一键下载并安�
 | 方式 | 适用场景 | 首次配置 |
 | --- | --- | --- |
 | 仅局域网 | 手机与电脑在同一网络 | 保留局域网开关与端口 |
-| 临时 HTTPS | 无域名，愿意使用 Cloudflare | 选择已有 cloudflared 程序 |
-| 自有服务器 + SSH | 有 Linux 公网服务器和域名；电脑在校园网或 NAT 后 | 填固定 HTTPS 地址、已有 SSH 别名或 `user@hostname`；导出 Caddy Docker 包 |
+| 临时 HTTPS | 无域名，愿意使用 Cloudflare | 添加连接、保存并启动；自动使用内置程序 |
+| Cloudflare 固定隧道 | 有私人域名，没有服务器 | 在 Cloudflare 配置 DNS 与公开主机名，填写域名和 Tunnel Token |
+| 自有服务器 + SSH | 有 Linux 公网服务器和域名；电脑在校园网或 NAT 后 | 按教程手动准备 HTTPS 与转发权限，再填普通用户 SSH 配置、检查登录并启动连接 |
 | NAS / 已有反代 / Docker | NAS 已能访问电脑，已有域名和 HTTPS 反代 | 填固定 HTTPS 地址、NAS 可达的电脑 HTTP 地址；直接反代或导出 Nginx Docker 包 |
 
-**App 内可“导出部署包”或“复制给部署 Agent”**。生成的包带实际填写的地址、端口、中文步骤、验收项和启停命令，不含登录密码、Token、Codex 数据或 SSH 私钥。首次服务器部署完成后，日常只需打开 App 并启动网关；可启用“打开 App 时自动启动网关”。
+**App 内可导出或复制配置参考**（SSH 连接显示“导出手动配置参考”和“复制手动配置说明”，NAS 保留部署包入口）。生成的包带实际填写的地址、端口、中文步骤、验收项和启停命令，不含登录密码、Token、Codex 数据或 SSH 私钥。首次服务器部署完成后，日常只需打开 App 并启动网关；可启用“打开 App 时自动启动网关”。
 
-自有服务器方案：`手机 → 服务器 HTTPS → 服务器回环端口 → SSH → 电脑网关 → 原 Codex App`。SSH 随网关启停、断线自动重试，不占用电脑 LAN 端口以外的新监听端口。复用系统 OpenSSH 和现有密钥/ssh-agent，首次主机指纹需用户在终端确认；不接收 SSH 密码、不跳过指纹检查。服务器需允许远程转发、保持回环绑定；自动证书方案需 DNS 指向服务器，80/443 可达且空闲。生成的 Caddy 包使用 Linux host 网络，不能直接用于 Mac/Windows Docker Desktop。已有反代占用 80/443 时，使用包内上游地址接入现有站点，无需启动新的 Caddy。
+本文使用 `try2love` 作为示例用户名，`https://codex.try2love.com` 作为示例地址，仅用于配置演示，不代表可访问的演示站点；请替换为自己的配置。
+
+**只有域名、没有服务器？** 阅读[固定域名完整教程](docs/fixed-domain.md)：从注册商修改 NS、创建 Cloudflare 隧道、填写 Token 到手机蜂窝网络验收，也包括常见错误排查。App 的 Cloudflare 连接卡片中可展开“首次配置”查看步骤。
+
+自有服务器方案：`手机 → 服务器 HTTPS → 服务器回环端口 → SSH → 电脑网关 → 原 Codex App`。SSH 随网关启停、断线自动重试，不占用电脑 LAN 端口以外的新监听端口。支持密码、本地私钥（含口令）、SSH Agent 和已有 SSH 配置；新配置在 App 内核对主机指纹，指纹改变会拒绝连接。旧系统 SSH 别名继续兼容。密码和 Token 可保存在系统凭据存储，或仅在本次 App 内存中使用；不会写入普通配置或部署包。服务器需允许远程转发、保持回环绑定；自动证书方案需 DNS 指向服务器，80/443 可达且空闲。生成的 Caddy 包使用 Linux host 网络，不能直接用于 Mac/Windows Docker Desktop。已有反代占用 80/443 时，使用包内上游地址接入现有站点，无需启动新的 Caddy。
+
+**SSH 日常连接不要求 root。** 使用普通用户（例如 `try2love`），按[服务器 SSH 分步教程](docs/server-ssh.md)完成：① 手动准备 DNS、HTTPS 和转发权限；② App 保存配置并检查 SSH 登录；③ 启动连接、检测固定入口，再用手机蜂窝网络验收。
+
+服务器软件安装、防火墙及 SSH 权限配置由用户或管理员手动完成。App 不接收 sudo 密码、不执行远端安装命令；已有网站接入原反向代理。SSH 登录通过只代表认证成功，不代表转发权限或公网入口已经可用。可导出或复制手动配置参考，其中的管理员命令须由用户自行执行。
+
+只有私人域名时，选择 **固定域名 · Cloudflare Tunnel**：通常先将域名 DNS 托管到 Cloudflare（注册商不必迁移），创建隧道并添加公开主机名，如 `codex.try2love.com` → `http://localhost:8787`，在 App 保存域名和 Tunnel Token 后启动。Token 仅运行已有隧道，不自动创建 DNS；不需要公网服务器或电脑入站端口。建议独立子域名，不使用 `/codex/` 路径。电脑、Codex App 和网关仍需在线。
 
 NAS 方案：Docker 只部署 HTTP 入口，原电脑仍需保持唤醒并运行 Codex App 与网关。NAS 反代已有 HTTPS 时可直接转发到电脑，通常无需增加容器。跨网络且不互通时，仅填写域名无法连接，应选择服务器 SSH 方案或先准备可用 VPN 路由。详见 [NAS 部署说明](deploy/nas/README.md)。
 
@@ -171,7 +185,7 @@ NAS 方案：Docker 只部署 HTTP 入口，原电脑仍需保持唤醒并运行
 
 ### 额外 HTTPS 地址有什么用？
 
-这是网关的 **访问地址允许列表**。只有已经在其他地方配置好反向代理或隧道、希望额外域名访问同一网关时，才需要填写，例如 `https://codex.example.com`，每行一个，不含路径。
+这是网关的 **访问地址允许列表**。只有已经在其他地方配置好反向代理或隧道、希望额外域名访问同一网关时，才需要填写，例如 `https://codex.try2love.com`，每行一个，不含路径。
 
 填写域名不会建立隧道、配置 DNS 或申请证书。代理必须能到达电脑网关，并保留该域名的 Host 请求头。连接卡片中的固定域名会自动加入，不必重复填写；只用局域网或临时 Cloudflare 时留空即可。
 
@@ -181,7 +195,7 @@ NAS 方案：Docker 只部署 HTTP 入口，原电脑仍需保持唤醒并运行
 
 ### 配置手机通知：Bark 与 ntfy
 
-1. **iPhone 推荐 Bark**：安装 Bark 并允许通知，在电脑 App 的“手机通知 → Bark 推送”填写服务地址和 Device Key。例如手机展示 `https://api.day.app/你的密钥`，服务地址填 `https://api.day.app`，Device Key 只填密钥。也支持自建服务；手机须在对应服务器注册。密钥保存后不回显，留空保留，更换服务器须重新填写。参阅 [Bark 官方说明](https://bark.day.app/#/tutorial)。
+1. **iPhone 推荐 Bark**：安装 Bark 并允许通知，在电脑 App 的“手机通知 → Bark 推送”填写服务地址和 Device Key。例如手机展示 `https://api.day.app/你的密钥`，服务地址填 `https://api.day.app`，Device Key 只填密钥。也支持自建服务；手机须在对应服务器注册。密钥保存后默认遮罩显示，可点击眼睛图标查看；更换服务器须重新填写。参阅 [Bark 官方说明](https://bark.day.app/#/tutorial)。
 2. **Android 使用 ntfy**：安装 ntfy 并允许系统通知、锁屏显示和后台运行。首次测试可用 `https://ntfy.sh`：点击“生成随机主题”，在手机 ntfy 订阅相同的服务和完整主题名，公共匿名主题的 Token 留空。主题自动创建，无需单独注册。匿名主题没有访问控制，知道名字的人可读写；使用随机长名称并保持聊天标题关闭。正式使用可选择受访问控制保护的主题，按服务要求填写 Token。
 3. 启用需要的通道，保存配置，再分别点击“发送 Bark 测试通知”或“发送 ntfy 测试通知”，以手机实际收到为验收标准。两个通道可单独启用或同时开启，接收相同的会话提醒。此步骤无需启动网关；服务器接受请求不等于手机已经收到。
 4. 启动网关，在网页 **设置 → 全会话通知** 分别选择请求处理通知和运行完毕通知。新配置默认开启请求处理通知、关闭运行完毕通知；必须先配置并开启至少一个推送通道。
@@ -195,7 +209,7 @@ NAS 方案：Docker 只部署 HTTP 入口，原电脑仍需保持唤醒并运行
 
 ### 网关启动与入口通知
 
-在电脑 App 的 **手机通知 → 网关启动与入口通知** 开启“每次启动网关及入口变化时发送地址”，可填写网关名称。先启用至少一个 PushPlus、Bark 或 ntfy 通道并保存配置，再启动网关、点击“发送当前入口测试通知”，确认手机收到。
+新配置默认开启地址通知，升级保留已保存的关闭选择。在电脑 App 的 **手机通知 → 网关启动与入口通知** 可设置“每次启动网关及入口变化时发送地址”，可填写网关名称。先启用至少一个 PushPlus、Bark 或 ntfy 通道并保存配置，再启动网关、点击“发送当前入口测试通知”，确认手机收到。
 
 每次启动网关都会汇总发送已启用的访问地址，即使地址未变。包括局域网、NAS / 已有反代固定域名、自有服务器（SSH 转发建立后）和临时 HTTPS（隧道就绪后）；稍晚就绪的入口和地址变化会补发更新。关闭的网卡、关闭的入口和回环地址不在通知中。局域网链接需同一网络，固定域名需已完成部署。
 
@@ -264,7 +278,7 @@ App 设置界面通过本机进程通信管理网关；网关启停、更新及�
 - 仅从源码或命令行运行时需要 Python 3.9+；网关本身只使用 Python 标准库，无需 `pip install` 或前端构建。Windows 使用原生 CPython，无需 WSL。桌面 App 的开发与打包另需 Node.js 及构建依赖。
 - 电脑保持唤醒、联网，网关进程保持运行。
 - 使用 SSH 聊天时：App 中已配置该主机，电脑上相应 SSH 别名可非交互连接，远端有 Python 3。Windows 需要 PATH 中可用的 OpenSSH `ssh.exe`。模型/Skill 目录还需要远端可用的 Codex 运行时。
-- 外网临时隧道可选依赖：`cloudflared`，App 可一键安装，也可自行安装；仓库不包含该程序。
+- 外网隧道：桌面构建内置 `cloudflared`，源码运行可自行安装；二进制在构建时按锁定版本和 SHA-256 获取，不提交到仓库。源码使用新 SSH 配置或系统凭据存储时，需安装 `requirements-desktop.txt` 中相应依赖。
 
 ## 命令行启动：局域网（进阶）
 
@@ -326,13 +340,13 @@ python3 -B "$PWD/run.py" --lan
 
 ### 安装 cloudflared
 
-**桌面 App（推荐）**：
+**桌面 App（推荐）**：已内置程序，无需额外下载。
 
-1. 在“网络与登录”添加并启用“临时 HTTPS · Cloudflare”，点击卡片的“安装与配置教程”。
-2. 在“运行配置”点击“一键下载并安装”。App 从 Cloudflare 官方 GitHub 获取匹配本机系统与架构的版本，核对 Release 的 SHA-256 后安装到网关数据目录，并运行 `--version` 检测。无需管理员权限，不修改系统 PATH，也不会自动创建外网隧道。
-3. 路径会自动填入并标记为未保存；点击“保存配置”，返回首页启动网关。首页会独立显示临时 HTTPS 的连接状态，连接成功后出现手机地址与登录二维码。
+1. 在“网络与登录”添加并启用“临时 HTTPS · Cloudflare”，保存配置。
+2. 返回“连接与状态”启动网关，等待临时 HTTPS 就绪。
+3. 用手机打开地址或扫码登录。需要长期不变的地址时，使用[Cloudflare 固定域名教程](docs/fixed-domain.md)。
 
-已有程序可点击“检测已安装程序”，或手动选择文件。安装器支持 macOS arm64 / x64、Windows x64 / x86；其他架构使用官方教程。下载最长等待 3 分钟；网络错误、校验失败或缺少校验信息时会取消安装，不覆盖已有程序或配置。GitHub 无法访问时，App 内有官方教程与手动安装步骤。网关启动后，隧道连接失败不影响局域网使用；详细信息在“运行日志”的 Cloudflare 部分。
+仅当组件缺失、需要自定义程序或源码运行时，展开“运行配置 → Cloudflare 组件 → 高级：自定义程序与故障修复”。这里保留程序路径、检测和修复安装。下载会核对 Cloudflare 官方 Release 的 SHA-256，安装在网关数据目录，不需要管理员权限；更换路径后请保存。网络或校验失败不会覆盖已有程序。隧道失败时可查看“运行日志”，局域网仍可独立使用。
 
 **源码 / 命令行部署**：
 
@@ -384,7 +398,7 @@ ln -s "$(command -v cloudflared)" .local/bin/cloudflared
 将自己的隧道或反向代理指向 `http://127.0.0.1:8787`，保留外部 `Host`，然后启动：
 
 ```sh
-python3 -B "$PWD/run.py" --origin https://codex.example.com
+python3 -B "$PWD/run.py" --origin https://codex.try2love.com
 ```
 
 可与 `--lan` 一起使用。允许多个入口时重复传入 `--origin`，或者写入 `.local/config.json` 的 `origins` 数组。值必须是完整 HTTPS 源，不带路径和末尾 `/`。
@@ -486,7 +500,7 @@ python3 -B "$PWD/run.py" --lan --no-auth
 
 也可将配置中的 `auth.mode` 设置为 `none`。免密页面仍需点击连接，以建立会话和 CSRF 令牌。**免密时，任何能访问网关的人都能读取聊天并控制对应 Codex 会话**，仅适合受控网络。
 
-默认密码以独立随机 salt 和 PBKDF2-HMAC-SHA256 保存，登录有效期默认 12 小时，可在桌面 App 设置为 0–87600 的整数小时；0 表示网关不设到期时间。有限时长从登录时算起，访问不会延长到期时间。HTTP API、SSE 和长轮询都需要登录，并校验 Host、Origin；写操作另校验 CSRF。该网关面向个人使用，没有多用户角色隔离，不应共享账号。
+默认密码以独立随机 salt 和 PBKDF2-HMAC-SHA256 保存，普通登录有效期默认 12 小时（网页勾选“记住密码”时固定为 7 天），可在桌面 App 设置为 0–87600 的整数小时；0 表示网关不设到期时间。有限时长从登录时算起，访问不会延长到期时间。HTTP API、SSE 和长轮询都需要登录，并校验 Host、Origin；写操作另校验 CSRF。该网关面向个人使用，没有多用户角色隔离，不应共享账号。
 
 ## 实现原理
 
@@ -536,7 +550,7 @@ flowchart TD
 - macOS 与 Windows 的真实验证范围分别记录在 [验证记录](VERIFICATION.md)；Linux 原生安装与网关检查由 CI 覆盖，实际桌面 IPC、Wayland/FUSE 和不同发行版仍需实机验证。
 - 内部 IPC 不是稳定的公开 API；Codex App 更新后可能出现不兼容。
 - 尚未加载的聊天可查看保存历史，发送前可能需要在 App 中打开一次。
-- SSH 连接需已有可非交互使用的认证；网关不提供 SSH 密码、主机指纹或 MFA 交互。
+- 桌面自有服务器入口支持密码、私钥及主机指纹交互；Codex 远端聊天仍复用其已有非交互 SSH 配置，未新增 MFA 或跳板机部署支持。
 - 云聊天、SSH 文件下载尚未接入。
 - 本地文件只允许访问聊天引用的工作目录及 Codex visualizations 内文件；目录外附件只显示描述。
 - 复杂 MCP 表单、身份验证挑战和部分特殊请求需要在桌面处理。
@@ -550,7 +564,7 @@ flowchart TD
 桌面 App 的日常使用无需 Agent。需要源码部署、自定义网络入口或协助排错时，可将下面这段话直接复制给电脑上的 Agent：
 
 ```text
-请帮我部署并运行 https://github.com/try2love/codex-mobile-bridge ：先识别当前电脑是 Windows 还是 macOS，阅读仓库 README 中的“给部署 Agent 的执行说明”，优先使用已发布的桌面 App 或复用现有安装，按我的需求完成配置、启动和验收；复用现有 Codex App 会话及模型认证，默认启用账号密码和局域网访问，保持已有局域网端口。若我需要外网访问，优先复用已有 NAS/HTTPS 反向代理，有自有服务器和域名时可配置 SSH 回程与固定 HTTPS，没有现成入口再配置临时 HTTPS 隧道；验证聊天读取、实时同步和可用的操作链路，保持服务运行，最后给我可点击的手机访问地址、登录凭据获取方式、App 启停操作或命令、验证结果及仍需我完成的步骤。
+请帮我部署并运行 https://github.com/try2love/codex-mobile-bridge ：先识别当前电脑是 Windows 还是 macOS，阅读仓库 README 中的“给部署 Agent 的执行说明”，优先使用已发布的桌面 App 或复用现有安装，按我的需求完成配置、启动和验收；复用现有 Codex App 会话及模型认证，默认启用账号密码和局域网访问，保持已有局域网端口。若我需要外网访问，优先复用已有 NAS/HTTPS 反向代理，有自有服务器和域名时可准备 SSH 回程与固定 HTTPS 的配置参考，涉及服务器管理员权限的操作由我手动完成，没有现成入口再配置临时 HTTPS 隧道；验证聊天读取、实时同步和可用的操作链路，保持服务运行，最后给我可点击的手机访问地址、登录凭据获取方式、App 启停操作或命令、验证结果及仍需我完成的步骤。
 ```
 
 本节面向替用户部署本项目的 Agent。交付目标是：**用户拿到可用的手机访问地址和登录方式，打开原 Codex App 的同一条会话，消息仍由原 电脑 或 SSH 服务器执行，并能收到结果与待确认请求。** 用户只要求其中一部分时，按其范围部署；已有选择和授权可以复用。
@@ -749,7 +763,7 @@ python3 -B -m unittest discover -s tests -v
 
 ## 许可证与参考
 
-项目源码使用 [MIT License](LICENSE)。Codex App 和 cloudflared 为独立软件，未随本仓库分发，遵循各自许可。
+项目源码使用 [MIT License](LICENSE)。Codex App 为独立软件，不随本项目分发。桌面构建内置 cloudflared 并附带其许可证；二进制不提交到源码仓库，遵循其自身许可。
 
 - [OpenAI Codex App Server 文档](https://learn.chatgpt.com/docs/app-server)
 - [Cloudflare Quick Tunnel 文档](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/)
@@ -778,5 +792,5 @@ PushPlus 通过微信接收通知，**接入前需要付费实名认证，最低
 - PushPlus 配置由整个网关共享，更换 Token 会改变所有已关注聊天的 PushPlus 接收目标。所有已登录设备均可修改；开启免密访问时，能够访问网关的设备也拥有此权限。
 - **设置 → 全会话通知** 控制所有聊天的请求处理与运行完毕通知；每个聊天的 **提醒** 可独立覆盖。网关持续运行时，关闭网页仍会发送通知。PushPlus 可与 Bark、ntfy 同时使用。
 - **设置 → 主页快捷入口** 可分别隐藏 PushPlus 和账户管理入口；功能仍可从设置打开，显示偏好仅保存在当前浏览器。通知策略保存在网关，各设备共享。
-- Token 保存到本机通知配置文件，页面不回显；留空保留原 Token，关闭通道后可勾选清除。
+- Token 保存到本机通知配置文件；电脑 App 默认遮罩显示并支持查看，网页不回传已保存的 Token。留空保留原 Token，关闭通道后可勾选清除。
 - 点击聊天顶部标题，在聊天详情中选择 **修改聊天名称**，输入新名称并保存（最多 120 个字符）。名称写入该聊天所在主机的 Codex；支持本机和 SSH 聊天，网页列表与标题同步更新。

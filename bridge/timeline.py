@@ -52,7 +52,7 @@ class Timeline:
                 row = {k: message[k] for k in ('role', 'kind', 'status', 'title', 'phase', 'requestId') if k in message}
                 row.update(key=key, turnId=turn['id'], order=len(rows), version=version,
                            text=text[:180 if activity else TEXT_PREVIEW],
-                           truncated=activity or len(text) > TEXT_PREVIEW, turnStatus=turn.get('status'),
+                           truncated=(activity and bool(text)) or len(text) > TEXT_PREVIEW, turnStatus=turn.get('status'),
                            editable=turn.get('actionable', True) and message is first_user and message.get('kind') == 'userMessage',
                            forkable=turn.get('actionable', True) and message['role'] == 'assistant' and message.get('phase') != 'commentary' and turn.get('status') == 'completed')
                 if message.get('attachments'):

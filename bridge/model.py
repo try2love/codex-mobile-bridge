@@ -2,6 +2,10 @@
 import copy
 import json
 import re
+from pathlib import Path
+from urllib.parse import unquote, urlsplit
+from urllib.request import url2pathname
+import ntpath
 
 
 
@@ -108,6 +112,22 @@ def normalize_item(item):
         row.update(role="user", text=text)
     elif kind in ("agentMessage", "assistantMessage"):
         row.update(role="assistant", text=item.get("text", ""), phase=item.get("phase"))
+    elif kind in ("ImageView", "imageView"):
+        raw = item.get("path", "")
+        path = raw
+        try:
+            parsed = urlsplit(raw)
+            if parsed.scheme == "file" and parsed.netloc in ("", "localhost"):
+                file_path = unquote(parsed.path)
+                # file:///D:/... has a leading slash on Windows too.
+                if re.fullmatch(r"/[A-Za-z]:[\\/].+", file_path):
+                    file_path = file_path[1:]
+                path = url2pathname(file_path)
+        except ValueError:
+            path = raw
+        row.update(role="activity", title="图片预览", text="", phase="commentary")
+        if path:
+            row["attachments"] = [{"type": "localImage", "path": path, "name": Path(path).name}]
     elif kind == "reasoning":
         row.update(role="activity", title="思考摘要", text="\n".join(item.get("summary", [])))
     elif kind == "commandExecution":

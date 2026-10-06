@@ -11,7 +11,7 @@ import time
 import unittest
 import uuid
 from contextlib import closing
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from bridge.auth import Auth, password_record
 from bridge.files import artifact_paths
@@ -152,6 +152,23 @@ class IntegrationTests(unittest.TestCase):
         self.assertNotIn('model', request)
         self.assertNotIn('modelProvider', request)
         self.assertTrue(call['params']['turnStart']['context']['inheritThreadSettings'])
+
+    def test_external_provider_change_does_not_use_stale_managed_account_to_block_send(self):
+        from bridge.accounts import Accounts
+        manager = Accounts(self.bridge)
+        self.bridge.accounts = manager
+        config = self.root / 'config.toml'
+        config.write_text('model_provider="bridge_api"\n')
+        manager.index['accounts'] = [{'id': 'a' * 32, 'kind': 'api'}]
+        manager.mark_active('a' * 32)
+        config.write_text('model_provider="custom-api"\n')
+        self.assertFalse(manager.active_matches())
+        self.bridge.send(THREAD, 'hello from the existing provider', str(uuid.uuid4()))
+        calls = [r for r in self.fixture.requests if r['method'] == 'thread-follower-start-turn']
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]['targetClientId'], 'owner')
+        self.assertNotIn('modelProvider', calls[0]['params']['turnStart']['request'])
+        self.assertEqual(self.bridge.view(THREAD)['provider'], 'custom-api')
 
     def test_local_database_failure_keeps_other_hosts_in_list(self):
         from types import SimpleNamespace
@@ -457,7 +474,9 @@ class IntegrationTests(unittest.TestCase):
     def test_explicit_skill_input_and_dedup(self):
         path = self.root / 'SKILL.md'
         path.write_text('---\nname: sample\n---\nSample')
-        self.bridge.catalog_reader.get = lambda *a, **k: {'models': [], 'skills': [{'id': 'sample-id', 'name': 'sample', 'path': str(path)}]}
+        skill = {'id': 'sample-id', 'name': 'sample', 'path': str(path)}
+        self.bridge.catalog_reader.get_kind = lambda kind, *a, **k: {'skills': [skill]}
+        self.bridge.catalog_reader.validate_skills = lambda cwd, ids, refresh=False: ([skill] if set(ids) == {'sample-id'} else [])
         message_id = str(uuid.uuid4())
         self.bridge.send(THREAD, 'Use this skill', message_id, skills=['sample-id'])
         request = self.fixture.requests[-1]['params']['turnStart']['request']
@@ -470,7 +489,8 @@ class IntegrationTests(unittest.TestCase):
     def test_remote_host_routes_send_settings_and_approval_to_mac_owner(self):
         host = 'remote-ssh-discovered:fixture'
         self.bridge.host = self.fixture.host = host
-        self.bridge.catalog_reader.get = lambda *a, **k: {'models': [], 'skills': []}
+        self.bridge.catalog_reader.get = lambda *a, **k: {'models': [], 'skills': [], 'fastMode': {'allowed': False}}
+        self.bridge.catalog_reader.get_kind = lambda kind, *a, **k: {'skills': []}
         self.fixture.state['requests'] = [{'id': 7, 'method': 'item/commandExecution/requestApproval', 'params': {}}]
         self.assertTrue(self.bridge.view(THREAD)['connected'])
         self.bridge.send(THREAD, 'remote', str(uuid.uuid4()))
@@ -541,6 +561,34 @@ class IntegrationTests(unittest.TestCase):
         saved = json.loads((self.root / 'data/submissions.json').read_text(encoding='utf-8'))
         self.assertEqual(saved[THREAD + ':' + message_id]['status'], 'unknown')
 
+    def test_ignore_unknown_is_durable_and_never_replays_or_cancels_other_records(self):
+        message_id = str(uuid.uuid4())
+        key = THREAD + ':' + message_id
+        self.bridge.submissions[key] = {'text': 'uncertain', 'mode': 'send', 'status': 'unknown', 'at': 1}
+        queued = str(uuid.uuid4())
+        self.bridge.submissions[THREAD + ':' + queued] = {'text': 'queued', 'mode': 'queue', 'status': 'queued', 'at': 2}
+        self.assertEqual(self.bridge.ignore_submission(THREAD, message_id)['status'], 'ignored')
+        self.assertEqual(self.bridge.ignore_submission(THREAD, message_id)['status'], 'ignored')
+        self.assertFalse(self.fixture.requests)
+        saved = json.loads(self.bridge.ledger_path.read_text())
+        self.assertEqual(saved[key]['status'], 'ignored')
+        with self.assertRaises(ValueError): self.bridge.ignore_submission(THREAD, queued)
+        with self.assertRaises(ValueError): self.bridge.ignore_submission(str(uuid.uuid4()), message_id)
+        self.assertEqual(self.bridge.send(THREAD, 'uncertain', message_id)['status'], 'ignored')
+        self.assertFalse(any(r['method'] == 'thread-follower-start-turn' for r in self.fixture.requests))
+
+    def test_provider_rejection_does_not_create_unconfirmed_record(self):
+        from bridge.accounts import Accounts
+        manager = Accounts(self.bridge)
+        self.bridge.accounts = manager
+        (self.root / 'config.toml').write_text('model_provider="bridge_api"\n')
+        manager.index['accounts'] = [{'id': 'a' * 32, 'kind': 'api'}]
+        manager.mark_active('a' * 32)
+        with self.assertRaisesRegex(ValueError, '原提供商'):
+            self.bridge.send(THREAD, 'blocked before sending', str(uuid.uuid4()))
+        self.assertEqual(self.bridge.submissions, {})
+
+
 
 class ModelTests(unittest.TestCase):
     def test_canonical_history(self):
@@ -560,6 +608,37 @@ class ModelTests(unittest.TestCase):
         req = normalize_request({'id': 'x', 'method': 'mcpServer/elicitation/request', 'params': {'_meta': {'openai/userVerification': {'token': 'secret'}}}})
         self.assertFalse(req['supported'])
         self.assertNotIn('secret', json.dumps(req))
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows drive path syntax')
+    def test_reference_path_accepts_windows_drive_paths(self):
+        from bridge.files import reference_path
+        path = reference_path('D:\\workspace\\report.txt')
+        self.assertTrue(path.is_absolute())
+        self.assertEqual(path, PureWindowsPath('D:/workspace/report.txt'))
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows drive path syntax')
+    def test_windows_drive_markdown_reference_remains_in_workspace(self):
+        with tempfile.TemporaryDirectory(dir=str(ROOT / '.tmp')) as directory:
+            root = Path(directory)
+            workspace = root / 'workspace';workspace.mkdir()
+            allowed = workspace / 'report.txt';allowed.write_text('report', encoding='utf-8')
+            outside = root / 'private.txt';outside.write_text('private', encoding='utf-8')
+            value = state();value['cwd'] = str(workspace)
+            value['turns'] = [{'items': [{'type': 'agentMessage', 'text': f'[report]({allowed}) [private]({outside})'}]}]
+            files = artifact_paths(value, root / '.codex')
+            self.assertEqual([item['name'] for item in files.values()], ['report.txt'])
+
+    def test_file_uri_image_view_links_plain_markdown_reference(self):
+        with tempfile.TemporaryDirectory(dir=str(ROOT / '.tmp')) as directory:
+            root = Path(directory)
+            image = root / 'preview.png';image.write_bytes(b'PNG')
+            value = {**state(), 'cwd': str(root), 'turns': [{'items': [
+                {'type': 'ImageView', 'path': image.as_uri()},
+                {'type': 'agentMessage', 'text': f'![preview]({image})'},
+            ]}]}
+            files = artifact_paths(value, root / '.codex')
+            self.assertEqual(len(files), 1)
+            self.assertEqual(next(iter(files.values()))['reference'], str(image))
 
     def test_artifacts_only_referenced_workspace_files(self):
         with tempfile.TemporaryDirectory(dir=str(ROOT / '.tmp')) as directory:
@@ -652,6 +731,54 @@ class HttpTests(unittest.TestCase):
         self.assertIn('HttpOnly', headers['Set-Cookie'])
         return {'Cookie': headers['Set-Cookie'].split(';')[0], 'X-CSRF-Token': body['csrf']}
 
+    def test_ignore_submission_route_requires_login_csrf_and_exact_payload(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        ignore = Mock(return_value={'accounts': [], 'blockers': []})
+        self.server.bridge.accounts = SimpleNamespace(ignore_submission=ignore)
+        payload = {'threadId': THREAD, 'submissionId': str(uuid.uuid4()), 'host': 'local'}
+        path = '/api/accounts/ignore-submission'
+        self.assertEqual(self.request('POST', path, payload)[0], 401)
+        auth = self.login()
+        self.assertEqual(self.request('POST', path, payload, {'Cookie': auth['Cookie']})[0], 403)
+        self.assertEqual(self.request('POST', path, {**payload, 'extra': True}, auth)[0], 400)
+        ignore.assert_not_called()
+        self.assertEqual(self.request('POST', path, payload, auth)[0], 200)
+        ignore.assert_called_once_with(payload)
+
+    def test_cross_site_link_can_open_homepage_only(self):
+        navigation = {'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'navigate',
+                      'Sec-Fetch-Dest': 'document', 'Sec-Fetch-User': '?1'}
+        for path in ['/', '/?source=link']:
+            with self.subTest(path=path):
+                conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=3)
+                self.addCleanup(conn.close)
+                # A link from another site has Fetch Metadata but no Origin.
+                conn.request('GET', path, headers=navigation)
+                response = conn.getresponse()
+                self.assertEqual(response.status, 200)
+                self.assertTrue(response.getheader('Content-Type').startswith('text/html'))
+                self.assertEqual(response.read(), (ROOT / 'web' / 'index.html').read_bytes())
+
+    def test_cross_site_navigation_keeps_api_embedding_origin_and_host_guards(self):
+        navigation = {'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'navigate',
+                      'Sec-Fetch-Dest': 'document'}
+        cases = [
+            ('GET', '/api/auth', navigation),
+            ('GET', '/api/sessions', navigation),
+            ('GET', '/app.js', navigation),
+            ('GET', '/', {**navigation, 'Sec-Fetch-Dest': 'iframe'}),
+            ('GET', '/', {**navigation, 'Sec-Fetch-Mode': 'cors'}),
+            ('GET', '/', {'Sec-Fetch-Site': 'cross-site'}),
+            ('GET', '/', {**navigation, 'Origin': 'https://other.example'}),
+            ('GET', '/', {**navigation, 'Host': 'other.example'}),
+            ('POST', '/', navigation),
+            ('POST', '/api/login', navigation),
+        ]
+        for method, path, headers in cases:
+            with self.subTest(method=method, path=path, headers=headers):
+                self.assertEqual(self.request(method, path, headers=headers)[0], 403)
+
     def test_pushplus_configuration_requires_login_and_csrf_and_hides_token(self):
         from bridge.notifications import Notifications, settings
         from unittest.mock import patch
@@ -684,6 +811,23 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(self.request('POST', path, {'title':'New'}, headers)[0], 200)
         self.server.bridge.for_host.assert_called_once_with('remote')
         remote.rename.assert_called_once_with(THREAD, 'New')
+
+    def test_skill_catalog_route_paginates_searches_and_hydrates_selection(self):
+        from unittest.mock import Mock
+        headers = self.login()
+        catalog = self.server.bridge.catalog = Mock()
+        catalog.return_value = {'kind': 'skills', 'skills': [], 'selectedSkills': [], 'total': 0}
+        path = ('/api/sessions/' + THREAD + '/catalog?kind=skills&q=fixture&limit=5&offset=10'
+                '&id=selected-1&id=selected-2&id=selected-1&host=local')
+        status, _, body = self.request('GET', path, headers=headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(catalog.call_args.args, (THREAD,))
+        self.assertEqual(catalog.call_args.kwargs, {'refresh': False, 'kind': 'skills', 'query': 'fixture', 'offset': 10, 'limit': 5, 'ids': ['selected-1', 'selected-2']})
+        self.assertEqual(self.request('GET', '/api/sessions/'+THREAD+'/catalog?kind=skills&limit=999', headers=headers)[0], 200)
+        self.assertEqual(catalog.call_args.kwargs['limit'], 500)
+        self.assertEqual(self.request('GET', '/api/sessions/'+THREAD+'/catalog?kind=skills&offset=-1', headers=headers)[0], 200)
+        self.assertEqual(catalog.call_args.kwargs['offset'], 0)
+        self.assertEqual(self.request('GET', '/api/sessions/'+THREAD+'/catalog?kind=skills&offset=bad', headers=headers)[0], 400)
 
     def test_web_appearance_assets_are_served_with_correct_types(self):
         for name, content_type in [('presentation.js', 'text/javascript'), ('presentation.css', 'text/css')]:
@@ -810,7 +954,7 @@ class HttpTests(unittest.TestCase):
             response = conn.getresponse()
             self.assertEqual(response.status, 200)
             scripts = re.findall(r'<script src="([^"]+)"', response.read().decode())
-            self.assertEqual(scripts, ['/vendor/markdown-it.min.js', '/vendor/katex/katex.min.js',
+            self.assertEqual([script.split('?', 1)[0] for script in scripts], ['/vendor/markdown-it.min.js', '/vendor/katex/katex.min.js',
                                        '/vendor/texmath.js', '/message-actions.js', '/markdown.js', '/i18n.js', '/timeline.js', '/account.js', '/modes.js', '/attachments.js', '/activity.js', '/fast-mode.js', '/accounts.js', '/app.js', '/presentation.js'])
             for script in scripts:
                 conn.request('GET', script)

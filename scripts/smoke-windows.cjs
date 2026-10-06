@@ -148,7 +148,8 @@ async function main(){
     assert.equal(await client.evaluate('snapshot.notifications.hasBarkKey'),true);
     assert.equal(await client.evaluate('snapshot.notifications.barkKey'),'');
     assert.equal(await client.evaluate('snapshot.auth.sessionHours'),0);
-    assert.equal(await client.evaluate("document.getElementById('bark-key').value"),'');
+    assert.equal(await client.evaluate("document.getElementById('bark-key').value"),'synthetic-bark-key');
+    assert.equal(await client.evaluate("document.getElementById('bark-key').type"),'password');
     screenshots.push(await screenshot('notifications'));
     await client.evaluate("tab('devices')");
     await until(()=>client.evaluate('!devicesBusy&&!!devicesState'),'Device management');

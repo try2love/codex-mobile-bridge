@@ -6,6 +6,7 @@ This checks signature integrity, not Developer ID trust or notarization.
 import argparse
 import json
 import platform
+import plistlib
 import subprocess
 import sys
 import tempfile
@@ -18,7 +19,12 @@ def verify(app, arch):
         raise RuntimeError(f'Bundled gateway metadata does not match macOS {arch}: {metadata}')
     native_arch = {'arm64': 'arm64', 'x64': 'x86_64'}[arch]
     runtime = app/'Contents/Resources/gateway/codex-mobile-gateway'
-    for executable in (app/'Contents/MacOS/Codex Mobile Bridge', runtime):
+    info = plistlib.loads((app/'Contents/Info.plist').read_bytes())
+    cloudflared = runtime.parent/'_internal/cloudflared/cloudflared'
+    if not (cloudflared.parent/'LICENSE').is_file():
+        raise RuntimeError('Missing bundled cloudflared license')
+    subprocess.run([str(cloudflared), '--version'], check=True, timeout=10)
+    for executable in (app/'Contents/MacOS'/info['CFBundleExecutable'], runtime, cloudflared):
         subprocess.run(['lipo', str(executable), '-verify_arch', native_arch], check=True)
     subprocess.run(['codesign', '--verify', '--deep', '--strict', '--verbose=2', str(app)], check=True)
     subprocess.run(['codesign', '--verify', '--strict', '--verbose=2', str(runtime)], check=True)

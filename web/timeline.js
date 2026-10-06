@@ -15,7 +15,7 @@ class ChatTimeline {
     this.showReasoning=document.documentElement.dataset.showReasoning!=='false';
     this.showProcess=document.documentElement.dataset.showProcess!=='false';
     this.onScroll=()=>{
-      if(this.suppress)return;
+      if(this.suppress||!this.viewport.clientHeight)return;
       const upward=this.viewport.scrollTop<this.lastTop;
       this.lastTop=this.viewport.scrollTop;this.following=this.atBottom();this.anchor=this.capture();
       if(this.following)this.newer.hidden=true;
@@ -30,7 +30,7 @@ class ChatTimeline {
   dispose(){this.abort.abort();clearTimeout(this.startRetry);this.resize.disconnect();this.viewport.removeEventListener('scroll',this.onScroll);this.newer.hidden=true;}
   atBottom(){return this.viewport.scrollHeight-this.viewport.scrollTop-this.viewport.clientHeight<110;}
   nearTop(){const nodes=[...this.container.children].filter(n=>!n.hidden);return nodes.length>0&&nodes.slice(0,11).some(n=>n.getBoundingClientRect().bottom>=this.viewport.getBoundingClientRect().top);}
-  capture(accept=()=>true){const top=this.viewport.getBoundingClientRect().top;const nodes=[...this.container.children].filter(n=>!n.hidden&&accept(n));const node=nodes.find(n=>n.getBoundingClientRect().bottom>top)||nodes[nodes.length-1];return node?{key:node.dataset.key,offset:node.getBoundingClientRect().top-top}:null;}
+  capture(accept=()=>true){if(!this.viewport.clientHeight)return this.anchor;const top=this.viewport.getBoundingClientRect().top;const nodes=[...this.container.children].filter(n=>!n.hidden&&accept(n));const node=nodes.find(n=>n.getBoundingClientRect().bottom>top)||nodes[nodes.length-1];return node?{key:node.dataset.key,offset:node.getBoundingClientRect().top-top}:null;}
   rowVisible(row){
     if(row.role==='user'||row.role==='error')return true;
     if(row.kind==='reasoning')return this.showReasoning;
@@ -46,7 +46,7 @@ class ChatTimeline {
   }
   jumpBottom(){this.viewport.scrollTop=this.viewport.scrollHeight;this.following=true;this.newer.hidden=true;}
   restore(anchor,bottom=false){
-    if(this.abort.signal.aborted)return;
+    if(this.abort.signal.aborted||!this.viewport.clientHeight)return;
     this.suppress=true;
     const node=anchor&&this.nodes.get(anchor.key)?.node;
     if(bottom)this.jumpBottom();
@@ -126,6 +126,7 @@ class ChatTimeline {
     const paint=()=>{
       const detail=this.details.get(row.key),text=detail?.text??row.text;
       body.replaceChildren();if(activity)body.textContent=text;else this.renderText(body,text,[...this.files.values()],()=>this.fullText(row));
+      if(activity)body.hidden=!text;
       more.hidden=detail?detail.next===null:!row.truncated;
       more.textContent=detail?timelineText('继续加载正文'):timelineText('展开完整内容');
     };
@@ -157,6 +158,7 @@ class ChatTimeline {
             ?source+'&variant=original'
             :source;
           const link=document.createElement('a');link.href=original;link.target='_blank';link.rel='noopener';
+          link.dataset.imagePreview=original;link.dataset.imageName=item.name||timelineText('图片附件');
           const image=document.createElement('img');image.className='attachment-image';image.alt=item.name||timelineText('图片附件');
           image.loading='lazy';image.decoding='async';image.src=source;
           image.onerror=()=>link.remove();link.append(image);attachments.append(link);

@@ -142,6 +142,29 @@ class TransactionTests(unittest.TestCase):
         self.assertNotIn('stop', self.calls)
         self.assertEqual((self.target / 'version').read_text(), 'old')
 
+    def test_health_timeout_after_identity_check_still_sends_stop(self):
+        outer = self
+        probes = iter([dict(self.state), {'running': False, 'pid': None}, {'running': False, 'pid': None}])
+        class Desktop:
+            def status(self): return next(probes, dict(outer.state))
+            def stop(self):
+                outer.calls.append('stop')
+                outer.state.update(running=False, instanceId=None)
+        self.assertEqual(self.run_update(desktop=Desktop())['state'], 'updated')
+        self.assertIn('stop', self.calls)
+
+    def test_health_timeout_is_not_exit_proof_for_verified_pid(self):
+        outer = self
+        probes = iter([{**self.state, 'pid': 424242}])
+        class Desktop:
+            def status(self): return next(probes, {'running': False, 'pid': None})
+            def stop(self): outer.calls.append('stop')
+        with patch.object(updater, 'process_exists', return_value=True), patch.object(updater, 'STOP_RETRY_SECONDS', .01):
+            result = self.run_update(desktop=Desktop())
+        self.assertEqual(result['state'], 'failed')
+        self.assertNotIn('launch-new', self.calls)
+        self.assertEqual((self.target / 'version').read_text(), 'old')
+
     def test_transient_gateway_status_is_retried(self):
         delayed = iter([{'running': False, 'portOccupied': False, 'instanceId': None}, None])
         outer = self
@@ -155,6 +178,46 @@ class TransactionTests(unittest.TestCase):
         result = self.run_update(desktop=Desktop())
         self.assertEqual(result['state'], 'updated')
         self.assertEqual(self.calls, ['stop', 'launch-new', 'start-new'])
+
+    def test_gateway_stop_retry_survives_first_ambiguous_probe(self):
+        normal = self.start
+        def start(target, data_dir, desktop):
+            if (target / 'version').read_text() == 'new': normal(target, data_dir, desktop)
+        self.start = start
+        probes = iter([None, self.state, self.state, {'running': False, 'pid': None}])
+        outer = self
+        class Desktop:
+            def status(self):
+                value = next(probes, {'running': False, 'pid': None})
+                return dict(value or outer.state)
+            def stop(self):
+                outer.calls.append('stop')
+                outer.state.update(running=False, instanceId=None)
+        with patch.object(updater, 'STOP_RETRY_SECONDS', .1):
+            result = self.run_update(desktop=Desktop())
+        self.assertEqual(result['state'], 'updated')
+        self.assertEqual(self.calls, ['stop', 'launch-new', 'start-new'])
+
+    def test_gateway_stop_failure_does_not_swap_or_leave_gateway_stopped(self):
+        outer = self
+        class Desktop:
+            def status(self): return dict(outer.state)
+            def stop(self): outer.calls.append('stop-failed'); raise RuntimeError('control timeout')
+        with patch.object(updater, 'STOP_RETRY_SECONDS', .1):
+            result = self.run_update(desktop=Desktop())
+        self.assertEqual(result['state'], 'failed')
+        self.assertIn('网关尚未停止', result['message'])
+        self.assertNotIn('launch-new', self.calls)
+        self.assertTrue(self.state['running'])
+
+    def test_failed_update_keeps_durable_journal_after_transaction_cleanup(self):
+        def fail(*args): raise RuntimeError('health failed')
+        result = self.run_update(health=fail)
+        rows = [json.loads(line) for line in (self.data/'desktop-update.log').read_text().splitlines()]
+        self.assertEqual(rows[-1]['state'], 'failed')
+        self.assertEqual(rows[-1]['message'], 'health failed')
+        self.assertEqual(rows[-1]['target'], str(self.target))
+        self.assertTrue(result['recovered'])
 
     def test_pending_transaction_is_rejected_until_helper_exits(self):
         transaction = self.root / '.cmb-update-pending'
@@ -248,6 +311,28 @@ class TransactionTests(unittest.TestCase):
         self.run_update()
         self.assertEqual(self.calls, ['launch-new'])
         self.assertFalse(self.state['running'])
+
+    def test_app_exit_and_worker_errors_are_reported_with_diagnostics(self):
+        class Child:
+            def poll(self): return 2
+            def terminate(self): pass
+            def wait(self, timeout): pass
+        transaction = self.root / 'transaction';transaction.mkdir()
+        (transaction/'new-app.log').write_text('Electron failed: missing framework', encoding='utf-8')
+        with self.assertRaisesRegex(RuntimeError, 'exit 2.*missing framework'):
+            updater.check_app(Child(), transaction, self.plan)
+        original_locations = updater.locations
+        class Command:
+            returncode = 1
+            stdout = b'{"ok":false,"error":"cloudflared is missing"}'
+            stderr = b'secondary detail'
+        def fake_locations(target):
+            if target == self.target: return original_locations(target)
+            return (self.target/'unused', self.target/'unused-worker', self.target)
+        with patch.object(updater, 'locations', fake_locations), \
+             patch.object(updater.subprocess, 'run', return_value=Command()):
+            with self.assertRaisesRegex(RuntimeError, 'cloudflared is missing'):
+                updater.start_gateway(self.target, str(self.data), self.desktop)
 
     def test_failed_gateway_start_restores_original_app_and_gateway(self):
         normal = self.start

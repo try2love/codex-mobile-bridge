@@ -113,6 +113,27 @@ class RecentHistoryTests(unittest.TestCase):
             self.assertEqual(tail['turns'], full['turns'][-limit:])
             self.assertEqual(tail['turnsPagination']['hasLoadedOldest'], limit >= 120)
 
+    def test_saved_imageview_event_is_preserved_for_history_rendering(self):
+        import json
+        self.path.write_text('\n'.join(json.dumps(record, ensure_ascii=False) for record in [
+            {'type':'event_msg','payload':{'type':'task_started','turn_id':'image-turn'}},
+            {'type':'event_msg','payload':{'type':'item_completed','item':{'type':'imageView','id':'view','path':'file:///C:/fixture-preview.png'}}},
+            {'type':'response_item','payload':{'type':'message','role':'assistant','content':[{'type':'output_text','text':'![preview](file:///C:/fixture-preview.png)'}]}},
+            {'type':'event_msg','payload':{'type':'task_complete'}},
+        ])+'\n', encoding='utf-8')
+        state=self.store.history('fixture')
+        kinds=[item.get('type') for item in state['turns'][0]['items']]
+        self.assertIn('ImageView',kinds)
+        from bridge.files import artifact_paths, referenced_model_images
+        referenced=list(referenced_model_images(state))
+        self.assertEqual(len(referenced),1)
+        image=self.home/'preview.png';image.write_bytes(b'PNG')
+        uri=image.as_uri()
+        state['turns'][0]['items'][0]['path']=uri
+        state['turns'][0]['items'][1]['text']=f'![preview]({image})'
+        files=artifact_paths(state,self.home)
+        self.assertIn(str(image),{item['reference'] for item in files.values()})
+
     def test_cache_does_not_share_mutations_and_invalidates_after_append(self):
         import json
         tail = self.store.history('fixture', 20)

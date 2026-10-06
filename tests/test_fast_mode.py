@@ -78,6 +78,16 @@ class FastSettingsTests(unittest.TestCase):
     def calls(self):
         return [r for r in self.fixture.requests if r['method'] == 'thread-follower-update-thread-settings']
 
+    def test_split_catalog_keeps_current_tier_and_provider_boundary(self):
+        self.prepare('default')
+        self.bridge.catalog_reader.get_kind = lambda *args, **kwargs: copy.deepcopy(self.catalog)
+        value = self.bridge.catalog(THREAD, kind='models')
+        self.assertTrue(value['fastMode']['allowed'])
+        self.assertEqual(value['currentServiceTier'], 'default')
+        self.fixture.state.update(modelProvider='custom')
+        self.bridge.session(THREAD).state['modelProvider'] = 'custom'
+        self.assertFalse(self.bridge.catalog(THREAD, kind='models')['fastMode']['allowed'])
+
     def test_enable_disable_rechecks_and_updates_original_owner_without_starting_turn(self):
         self.prepare('default')
         result = self.bridge.settings(THREAD, 'official-model', 'high', fast_mode=True)

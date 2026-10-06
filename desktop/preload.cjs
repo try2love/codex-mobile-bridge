@@ -1,5 +1,6 @@
 'use strict';
 const {contextBridge,ipcRenderer}=require('electron');
+
 contextBridge.exposeInMainWorld('bridgeDesktop',{
   checkUpdate:()=>ipcRenderer.invoke('bridge:check-update'),
   installUpdate:()=>ipcRenderer.invoke('bridge:install-update'),
@@ -10,6 +11,10 @@ contextBridge.exposeInMainWorld('bridgeDesktop',{
   pairing:value=>ipcRenderer.invoke('bridge:pairing',value),
   installCloudflared:()=>ipcRenderer.invoke('bridge:install-cloudflared'),
   checkCloudflared:value=>ipcRenderer.invoke('bridge:check-cloudflared',value),
+  copyServerDiagnostics:value=>ipcRenderer.invoke('bridge:copy-server-diagnostics',value),
+  serverSetup:value=>ipcRenderer.invoke('bridge:server-setup',value),
+  connectionCredentials:value=>ipcRenderer.invoke('bridge:connection-credentials',value),
+  readCredentials:value=>ipcRenderer.invoke('bridge:read-credentials',value),
   snapshot:()=>ipcRenderer.invoke('bridge:snapshot'),
   accounts:value=>ipcRenderer.invoke('bridge:accounts',value),
   account:value=>ipcRenderer.invoke('bridge:account',value),

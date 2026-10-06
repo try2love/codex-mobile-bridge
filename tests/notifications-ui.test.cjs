@@ -5,7 +5,7 @@ const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 // Run the actual phone handlers with an isolated DOM and notification API.
 async function fixture(){
   const nodes=new Map(),saved=new Map(),writes=[];
-  const node=(tag='')=>({tagName:tag.toUpperCase(),children:[],value:'',checked:false,disabled:false,hidden:false,open:false,textContent:'',dataset:{},options:[],
+  const node=(tag='')=>({tagName:tag.toUpperCase(),children:[],value:'',checked:false,disabled:false,hidden:false,open:false,textContent:'',dataset:{},options:[],style:{},scrollTop:0,parentElement:{},
     classList:{add(){},remove(){},toggle(){}},addEventListener(){},replaceChildren(...values){this.children=values;},append(...values){this.children.push(...values);},querySelectorAll(){return [];},querySelector(){return {disabled:false};},
     showModal(){this.open=true;},close(){this.open=false;}});
   const html=fs.readFileSync(path.join(__dirname,'../web/index.html'),'utf8');

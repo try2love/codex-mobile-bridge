@@ -86,6 +86,8 @@
             image.src = destination.url;
             image.alt = label;
             image.loading = 'lazy';
+            image.dataset.imagePreview = destination.url; image.dataset.imageName = label;
+            image.tabIndex = 0; image.setAttribute('role', 'button');
             parent.append(image);
           } else if (destination) {
             // Remote images remain links instead of making background requests.
@@ -100,6 +102,7 @@
           if (token.type === 'link_open') {
             const destination = target(token.attrGet('href') || '');
             element = destination ? link(destination.url, token.attrGet('title')) : document.createElement('span');
+            if (destination?.file?.image) { element.dataset.imagePreview = destination.url; element.dataset.imageName = destination.file.name; }
           } else if (tags.has(token.tag)) {
             element = document.createElement(token.tag);
             if (token.tag === 'ol' && token.attrGet('start')) element.start = Number(token.attrGet('start'));

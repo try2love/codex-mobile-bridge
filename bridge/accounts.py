@@ -453,6 +453,8 @@ class Accounts:
 
     def control(self, value):
         action = value.get('action', 'list')
+        if action == 'ignoreSubmission':
+            return self.ignore_submission(value)
         if action == 'details':
             self.info.request(value)
             return self.desktop_status()
@@ -510,8 +512,17 @@ class Accounts:
             for key, row in list(bridge.submissions.items()):
                 if row.get('status') in ('queued', 'unknown'):
                     result.append({'id': key.split(':')[0], 'host': getattr(bridge, 'host', 'local'),
-                                   'title': row.get('title') or key.split(':')[0], 'reason': row['status']})
+                                   'title': row.get('title') or key.split(':')[0], 'reason': row['status'],
+                                   'submissionId': key.split(':')[-1]})
         return result
+
+    def ignore_submission(self, value):
+        with self.gate:
+            self.check_ready()
+            host = value.get('host', 'local')
+            bridge = self.bridge if host == 'local' else self.bridge.for_host(host)
+            bridge.ignore_submission(value.get('threadId', ''), value.get('submissionId', ''))
+            return self.public()
 
     def idle(self):
         blocked = self.blockers()

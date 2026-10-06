@@ -32,6 +32,7 @@ class AccountsTests(unittest.TestCase):
             account=Account(self.home,self.root,executable=self.root/'runtime'), ipc=Mock(), _disconnected=Mock())
         self.manager = Accounts(self.bridge)
         self.bridge.accounts = self.manager
+        self.bridge._check_provider = lambda session: Bridge._check_provider(self.bridge, session)
         self.manager.index['desktopExecutable'] = '/fixture/Desktop'
         self.app = Mock()
         self.app.executable = Path('/fixture/Desktop')
@@ -184,7 +185,7 @@ class AccountsTests(unittest.TestCase):
         self.assertEqual((self.manager.directory(identifier)/'auth.json').read_bytes(),latest)
 
     def test_api_switch_allows_native_openai_and_bridge_provider_chats(self):
-        row=self.api();self.manager.index['activeId']=row['id'];self.bridge.host='local'
+        row=self.api();self.manager.mark_active(row['id']);self.bridge.host='local'
         self.bridge.ipc.request.return_value={'result':{'ok':True}}
         for provider in ('openai','bridge_api'):
             session=SimpleNamespace(id='fixture',owner='desktop',view=lambda:{'provider':provider})
@@ -192,7 +193,7 @@ class AccountsTests(unittest.TestCase):
         self.assertEqual(self.bridge.ipc.request.call_count,2)
 
     def test_old_provider_cannot_receive_messages_after_switch(self):
-        row=self.api();self.manager.index['activeId']=row['id']
+        row=self.api();self.manager.mark_active(row['id'])
         self.bridge.host='local'
         session=SimpleNamespace(view=lambda:{'provider':'other-custom'})
         with self.assertRaisesRegex(ValueError,'原提供商'):

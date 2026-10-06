@@ -1,4 +1,5 @@
 import copy
+from contextlib import nullcontext
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
 import json
@@ -15,7 +16,8 @@ from .ipc import DesktopIPC, IPCError
 from .transport import ipc_endpoint
 from .model import apply_patches, computer_use_approval, items_array, normalize_state, normalize_request, ordered_turns, pending_requests, async_requests, request_id, user_display_text
 from .store import SessionStore, StoreUnavailable
-from .files import artifact_paths
+from .files import artifact_paths, referenced_model_images
+from .workspace import operate as workspace_operation
 from .catalog import Catalog
 from .remote import AppHosts, RemoteStore, RemoteCatalog, RemoteUnavailable, ssh_read, payload
 from .create import rename_thread, create_empty, fork_copy, open_in_desktop, CreationError, ForkUnavailable
@@ -954,13 +956,16 @@ class Bridge:
                 raise IPCError(session.error or "请先在桌面 App 打开此聊天")
         return session
 
-    @operation
-    def _call(self, session, method, params, timeout=30):
-        if self.host == 'local' and self.accounts and self.accounts.index.get('activeId'):
+    def _check_provider(self, session):
+        if self.host == 'local' and self.accounts and self.accounts.active_matches():
             row = self.accounts.row(self.accounts.index['activeId'])
             expected = ('openai',) if row['kind'] == 'chatgpt' else ('openai', 'bridge_api')
             if session.view().get('provider') not in expected:
                 raise ValueError('此聊天保留了原提供商，请切回对应接入或新建聊天')
+
+    @operation
+    def _call(self, session, method, params, timeout=30):
+        self._check_provider(session)
         return self.ipc.request(method, {"conversationId": session.id, **params}, target=session.owner, host=self.host, timeout=timeout)["result"]
 
     def _save_ledger(self):
@@ -1086,6 +1091,20 @@ class Bridge:
                     break
         view["goalSubmission"] = {"id": key, "objective": entry["text"], "status": status}
 
+    def workspace(self, thread_id, action, params):
+        uuid.UUID(thread_id)
+        # Read project metadata only: file browsing never activates a Codex owner.
+        root = self.store.get(thread_id).get('cwd')
+        if self.host == 'local':
+            return workspace_operation(root, action, params)
+        if not isinstance(self.store, RemoteStore):
+            raise RemoteUnavailable('此主机暂不支持文件浏览')
+        source = Path(__file__).with_name('workspace.py').read_text(encoding='utf-8')
+        source += '\nimport json\ntry:\n result={"value": operate(**' + payload({'root': root, 'action': action, 'params': params}) + ')}\nexcept (ValueError, PermissionError) as error:\n result={"error": str(error)}\nprint(json.dumps(result, ensure_ascii=False))\n'
+        result = ssh_read(self.store.alias, source, timeout=60)
+        if 'error' in result: raise ValueError(result['error'])
+        return result['value']
+
     def artifact(self, thread_id, artifact_id):
         session = self.session(thread_id, attach=False)
         with session.condition:
@@ -1141,6 +1160,7 @@ class Bridge:
                         path = attachment.get('path')
                         if isinstance(path, str) and path:
                             paths.append(Path(path))
+            paths.extend(referenced_model_images(session.state or {}, image_views_only=True))
         for path in paths:
             try:
                 resolved = path.resolve()
@@ -1224,8 +1244,14 @@ class Bridge:
                                       hostLabel='此电脑' if self.host == 'local' else self.hosts.hosts().get(self.host, {}).get('displayName', self.host))
                 texts = [row['text'] for row in result['rows'] if row['role'] == 'assistant']
             cwd = (session.state or {}).get('cwd')
-        # Resolve only links in the delivered page, not every file in the chat.
-        file_state = {'cwd': cwd, 'turns': [{'items': [{'type': 'agentMessage', 'text': text} for text in texts]}]}
+            media_items = [item for turn in ordered_turns(session.state or {})
+                           for item in items_array(turn.get('items')) if item.get('type') in ('ImageView', 'imageView')]
+        # Resolve links in the delivered page, plus ImageView evidence needed by
+        # embedded model screenshots that can live outside workspace roots.
+        file_state = {'cwd': cwd, 'turns': [
+            {'items': [{'type': 'agentMessage', 'text': text} for text in texts]},
+            {'items': media_items},
+        ]}
         artifacts = artifact_paths(file_state, self.store.home) if self.host == 'local' else {}
         result['files'] = [{'id': k, 'name': v['name'], 'reference': v['reference'], 'image': v['image']} for k, v in artifacts.items()]
         if mode != 'detail':
@@ -1233,18 +1259,29 @@ class Bridge:
             result['meta']['forkedFrom'] = self._fork_origin(thread_id)
         return result
 
-    @operation
-    def catalog(self, thread_id, refresh=False):
+    def catalog(self, thread_id, refresh=False, kind=None, query='', offset=0, limit=200, ids=None):
         session = self.session(thread_id)
         with session.condition:
             cwd = session.state.get("cwd")
             model = session.state.get("latestModel")
             effort = session.state.get("latestReasoningEffort") or (session.state.get("latestThreadSettings") or {}).get("effort")
             provider = session.view().get('provider')
+        if kind in ('models', 'skills'):
+            value = self.catalog_reader.get_kind(kind, cwd, refresh=refresh, provider=provider,
+                                                 query=query, offset=offset, limit=limit, ids=ids)
+            if kind == 'models':
+                with session.condition:
+                    view = session.view()
+                return {**value, 'kind': 'models', 'currentModel': model or value.get('currentModel'),
+                        'currentEffort': effort or value.get('currentEffort'),
+                        'fastMode': {**value.get('fastMode', {}), 'allowed': view.get('provider') == 'openai' and value.get('fastMode', {}).get('allowed') is True},
+                        **({'currentServiceTier': view['serviceTier']} if 'serviceTier' in view else {})}
+            return {**value, 'kind': 'skills'}
         catalog = self.catalog_reader.get(cwd, refresh=refresh, provider=provider)
         with session.condition:
             view = session.view()
-        return {**catalog, "currentModel": model, "currentEffort": effort,
+        return {**catalog, "currentModel": model or catalog.get("currentModel"),
+                "currentEffort": effort or catalog.get("currentEffort"),
                 'fastMode': {**catalog.get('fastMode', {}), 'allowed': view.get('provider') == 'openai' and catalog.get('fastMode', {}).get('allowed') is True},
                 **({'currentServiceTier': view['serviceTier']} if 'serviceTier' in view else {})}
 
@@ -1253,12 +1290,15 @@ class Bridge:
             raise ValueError("最多选择 8 个 Skill")
         if not skills:
             return []
-        catalog = self.catalog(session.id)
-        by_id = {s["id"]: s for s in catalog["skills"]}
+        with session.condition:
+            cwd = session.state.get("cwd") or str(self.codex_home)
+        identifiers = sorted(set(skills))
+        rows = self.catalog_reader.validate_skills(cwd, identifiers)
+        by_id = {row["id"]: row for row in rows}
         selected = []
-        for key in sorted(set(skills)):
+        for key in identifiers:
             skill = by_id.get(key)
-            if not skill or (self.host == "local" and not Path(skill["path"]).is_file()):
+            if not skill:
                 raise ValueError("Skill 不可用，请刷新列表")
             selected.append({"id": key, "name": skill["name"], "path": skill["path"]})
         return selected
@@ -1452,6 +1492,24 @@ class Bridge:
         return {"status": "cancelled"}
 
     @operation
+    def ignore_submission(self, thread_id, submission_id):
+        uuid.UUID(thread_id)
+        uuid.UUID(submission_id)
+        with self.lock:
+            session = self.live.get(thread_id)
+        with session.action_lock if session else nullcontext():
+            with self.submit_lock:
+                entry = self.submissions.get(thread_id + ':' + submission_id)
+                if not entry or entry['status'] not in ('unknown', 'ignored'):
+                    raise ValueError('只能忽略发送结果未确认的记录')
+                entry['status'] = 'ignored'
+                self._save_ledger()
+            if session:
+                with session.condition:
+                    session.changed()
+        return {'status': 'ignored', 'id': submission_id}
+
+    @operation
     def send(self, thread_id, text, submission_id, mode="send", skills=None, *, work_mode=None,
              plan_response=None, attachments=None, ui_locale=None, activation=None):
         uuid.UUID(submission_id)
@@ -1496,6 +1554,7 @@ class Bridge:
                             prior.get("goalActivation") != activation):
                         raise ValueError("同一消息标识不能用于不同内容")
                     return {"status": prior["status"], "duplicate": True, "id": submission_id}
+            self._check_provider(session)
             with session.condition:
                 active = (session.state or {}).get("threadRuntimeStatus", {}).get("type") == "active"
                 if active and mode == "send":

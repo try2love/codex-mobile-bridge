@@ -178,6 +178,16 @@ class SessionStore:
             elif record.get("type") == "event_msg" and payload.get("type") in ("task_complete", "turn_aborted"):
                 if current:
                     current["status"] = "completed" if payload["type"] == "task_complete" else "interrupted"
+            elif record.get("type") == "event_msg" and payload.get("type") == "item_completed":
+                item = payload.get("item", {})
+                if isinstance(item, dict) and item.get("type") in ("ImageView", "imageView"):
+                    # ImageView evidence only exists in event records. Preserve it
+                    # so saved history can still render the image after restart.
+                    if current is None:
+                        current = {"turnId": "history", "status": "completed", "items": []}
+                        turns.append(current)
+                        items = current["items"]
+                    items.append({"id": item.get("id", str(len(items))), "type": "ImageView", "path": item.get("path", "")})
             elif record.get("type") == "response_item":
                 if current is None:
                     current = {"turnId": "history", "status": "completed", "items": []}

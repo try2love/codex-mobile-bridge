@@ -39,6 +39,7 @@ class RemoteStore:
         self.alias = alias
         self.home = None  # Never map remote paths onto the local filesystem.
         self.cache = {}
+        self.kind_caches = {}
         self.lock = threading.Lock()
 
     def call(self, method, args):
@@ -72,28 +73,71 @@ class RemoteStore:
 class RemoteCatalog:
     def __init__(self, alias):
         self.alias = alias
-        self.cache = {}
-        self.lock = threading.Lock()
+        self.kind_caches = {}
+        self.lock = threading.RLock()
+
+    def _source(self):
+        source = Path(__file__).with_name('tls.py').read_text(encoding='utf-8') + '\n'
+        source += Path(__file__).with_name('account_models.py').read_text(encoding='utf-8').replace('from .tls import client_context', '') + '\n'
+        source += Path(__file__).with_name('catalog.py').read_text(encoding='utf-8').replace('from .account_models import model_ids', '')
+        source += '\nimport shutil\nhome=Path(os.environ.get("CODEX_HOME", str(Path.home()/".codex")))\n'
+        source += 'runtime=shutil.which("codex") or str(Path.home()/".local/bin/codex")\n'
+        source += 'reader=Catalog(home, runtime, allow_background_refresh=False)\n'
+        return source
 
     def get(self, cwd, refresh=False, provider=None):
         with self.lock:
             key = (cwd, provider)
-            previous = self.cache.get(key)
+            previous = self.kind_caches.setdefault('catalog', {}).get(key)
             if previous and not refresh and time.monotonic() - previous[0] < 300:
                 return previous[1]
-            # Execute the same read-only catalog helpers on the chat's own host.
-            source = Path(__file__).with_name('tls.py').read_text(encoding='utf-8')+'\n'
-            source += Path(__file__).with_name('account_models.py').read_text(encoding='utf-8').replace('from .tls import client_context', '')+'\n'
-            source += Path(__file__).with_name('catalog.py').read_text(encoding='utf-8').replace('from .account_models import model_ids', '')
-            source += '\nimport shutil\nhome=Path(os.environ.get("CODEX_HOME", str(Path.home()/".codex")))\n'
-            source += 'runtime=shutil.which("codex") or str(Path.home()/".local/bin/codex")\n'
-            source += 'print(json.dumps(Catalog(home, runtime).get(' + payload(cwd) + ', provider=' + payload(provider) + '), ensure_ascii=False))\n'
+            source = self._source()
+            source += 'print(json.dumps(reader.get(' + payload(cwd) + ', refresh=' + payload(refresh) + ', provider=' + payload(provider) + '), ensure_ascii=False))\n'
             try:
-                result = ssh_read(self.alias, source, timeout=60)
+                result = ssh_read(self.alias, source, timeout=120)
             except RemoteUnavailable as exc:
                 raise CatalogError(str(exc)) from exc
-            self.cache[key] = (time.monotonic(), result)
+            self.kind_caches['catalog'][key] = (time.monotonic(), result)
             return result
+
+    def get_kind(self, kind, cwd, refresh=False, provider=None, query='', offset=0, limit=200, ids=None):
+        if kind not in ('models', 'skills'):
+            raise CatalogError('未知目录类型')
+        with self.lock:
+            identifiers = tuple(ids or [])
+            if kind == 'skills':
+                key = (kind, cwd, query, offset, limit, identifiers)
+            else:
+                key = (kind, cwd, provider)
+            cache = self.kind_caches.setdefault(kind, {})
+            previous = cache.get(key)
+            if previous and not refresh and time.monotonic() - previous[0] < 300:
+                return previous[1]
+            source = self._source()
+            source += ('print(json.dumps(reader.get_kind(' + payload(kind) + ', ' + payload(cwd) +
+                        ', refresh=' + payload(refresh) + ', provider=' + payload(provider) +
+                        ', query=' + payload(query) + ', offset=' + payload(offset) +
+                        ', limit=' + payload(limit) + ', ids=' + payload(list(identifiers)) +
+                        '), ensure_ascii=False))\n')
+            try:
+                result = ssh_read(self.alias, source, timeout=120)
+            except RemoteUnavailable as exc:
+                raise CatalogError(str(exc)) from exc
+            cache[key] = (time.monotonic(), result)
+            if kind == 'skills' and not refresh and result.get('cache', {}).get('state') in ('stale', 'legacy'):
+                return self.get_kind(kind, cwd, refresh=True, provider=provider, query=query,
+                                      offset=offset, limit=limit, ids=list(identifiers))
+            return result
+
+    def validate_skills(self, cwd, ids, refresh=False):
+        source = self._source()
+        source += ('print(json.dumps(reader.validate_skills(' + payload(cwd) + ', ' + payload(list(ids)) +
+                    ', refresh=' + payload(refresh) + '), ensure_ascii=False))\n')
+        try:
+            result = ssh_read(self.alias, source, timeout=120)
+        except RemoteUnavailable as exc:
+            raise CatalogError(str(exc)) from exc
+        return result
 
 
 class AppHosts:

@@ -48,8 +48,16 @@ def password_record(password):
     return {"algorithm": "pbkdf2-sha256", "iterations": 600000, "salt": salt.hex(), "hash": digest.hex()}
 
 
+class LoginRejected(PermissionError):
+    def __init__(self, message, status):
+        super().__init__(message)
+        self.status = status
+
+
 class Auth:
     COOKIE = "codex_mobile_session"
+    MAX_FAILURES = 5
+    REMEMBER_HOURS = 7 * 24
 
     def __init__(self, config, data_dir=None):
         self.config = config
@@ -61,10 +69,13 @@ class Auth:
         self.sessions = {}
         self.policy = access_policy({})
         self.failures = {}
+        self.auto_blocks = {}
         self.lock = threading.RLock()
         if self.path and self.path.exists():
             saved = json.loads(self.path.read_text(encoding='utf-8'))
             self.policy = access_policy(saved['policy'])
+            self.failures = saved.get('failures', {})
+            self.auto_blocks = saved.get('autoBlocks', {})
             if saved['identity'] == self.identity:
                 self.sessions = {k: v for k, v in saved['sessions'].items() if self.valid(v)}
             else:
@@ -84,14 +95,14 @@ class Auth:
         temporary = self.path.with_name(self.path.name + '.' + secrets.token_hex(8) + '.tmp')
         try:
             with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w', encoding='utf-8') as stream:
-                json.dump({'identity': self.identity, 'policy': self.policy, 'sessions': self.sessions}, stream)
+                json.dump({'identity': self.identity, 'policy': self.policy, 'sessions': self.sessions, 'failures': self.failures, 'autoBlocks': self.auto_blocks}, stream)
             temporary.replace(self.path)
         finally:
             temporary.unlink(missing_ok=True)
 
     def permitted(self, address):
         with self.lock:
-            return (address not in self.policy['blocklist'] and
+            return (address not in self.auto_blocks and address not in self.policy['blocklist'] and
                     (not self.policy['allowlistEnabled'] or address in self.policy['allowlist']))
 
     def client(self, peer, headers, secure=False):
@@ -116,32 +127,48 @@ class Auth:
                 return {'ip': peer, 'peer': peer, 'source': 'proxy'}
         return {'ip': peer, 'peer': peer, 'source': 'proxy' if secure else 'direct'}
 
-    def login(self, username, password, address, user_agent='', client=None):
-        now = time.time()
+    def login_status(self, address):
         with self.lock:
-            recent = [t for t in self.failures.get(address, []) if now - t < 300]
-            self.failures[address] = recent
-            if len(recent) >= 8:
-                raise PermissionError("尝试次数过多，请 5 分钟后再试")
-            # Reserve the attempt before hashing, so parallel attempts cannot bypass the limit.
-            recent.append(now)
-        if self.config.get("mode", "password") != "none":
-            digest = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(self.config["salt"]), self.config["iterations"], dklen=32)
-            valid = hmac.compare_digest(digest.hex(), self.config["hash"]) and hmac.compare_digest(username.encode(), self.config["username"].encode())
-            if not valid:
-                raise PermissionError("账号或密码不正确")
-        with self.lock:
-            self.failures.pop(address, None)
-        return self.new_session(address, user_agent, client)
+            blocked = not self.permitted(address)
+            return {'attemptsRemaining': 0 if blocked else max(0, self.MAX_FAILURES - self.failures.get(address, 0)),
+                    'attemptLimit': self.MAX_FAILURES, 'blocked': blocked}
 
-    def new_session(self, address='', user_agent='', client=None):
+    def login(self, username, password, address, user_agent='', client=None, remember=None):
+        if remember is not None and type(remember) is not bool:
+            raise ValueError('记住密码选项格式不正确')
+        address = canonical_ip(address)
+        # Serialize validation and durable accounting: simultaneous requests must
+        # not create extra password attempts or clear a newly applied block.
+        with self.lock:
+            if not self.permitted(address):
+                raise LoginRejected('此 IP 已被封禁，请在电脑网关 App 的“登录设备”中解除。', self.login_status(address))
+            if self.config.get('mode', 'password') != 'none':
+                digest = hashlib.pbkdf2_hmac('sha256', password.encode(), bytes.fromhex(self.config['salt']), self.config['iterations'], dklen=32)
+                valid = hmac.compare_digest(digest.hex(), self.config['hash']) and hmac.compare_digest(username.encode(), self.config['username'].encode())
+                if not valid:
+                    count = self.failures.get(address, 0) + 1
+                    self.failures[address] = count
+                    if count >= self.MAX_FAILURES:
+                        self.auto_blocks[address] = {'id': secrets.token_hex(16), 'ip': address,
+                                                     'blockedAt': time.time(), 'attempts': count}
+                        self.sessions = {k: v for k, v in self.sessions.items() if v['ip'] != address}
+                    self.persist()
+                    message = ('此 IP 已被封禁，请在电脑网关 App 的“登录设备”中解除。'
+                               if address in self.auto_blocks else '账号或密码不正确')
+                    raise LoginRejected(message, self.login_status(address))
+            self.failures.pop(address, None)
+            return self.new_session(address, user_agent, client, remember)
+
+    def new_session(self, address='', user_agent='', client=None, remember=None):
         with self.lock:
             if address and not self.permitted(address):
                 raise PermissionError('此 IP 已被访问规则禁止')
             now = time.time()
+            hours = self.REMEMBER_HOURS if remember is True else self.hours
             self.sessions = {k: v for k, v in self.sessions.items() if self.valid(v)}
             token = secrets.token_urlsafe(32)
-            session = {"csrf": secrets.token_urlsafe(32), "expires": now + self.hours * 3600 if self.hours else 0,
+            session = {"csrf": secrets.token_urlsafe(32), "expires": now + hours * 3600 if hours else 0,
+                       "persistent": remember is not False,
                        'created': now, 'lastSeen': now, 'userAgent': user_agent[:512],
                        **(client or {'ip': address, 'peer': address, 'source': 'direct'})}
             self.sessions[self.key(token)] = session
@@ -168,6 +195,8 @@ class Auth:
         session = self.get(token)
         if not session:
             return 0
+        if not session.get('persistent', True):
+            return None
         # Browsers cap persistent cookie lifetimes. Refresh on /api/auth without
         # extending the server's absolute expiry; 0 has no server-side deadline.
         return min(400 * 86400, max(1, math.ceil(session['expires'] - time.time()))) if session['expires'] else 400 * 86400
@@ -185,6 +214,12 @@ class Auth:
                 self.policy = access_policy(value.get('policy'))
                 self.sessions = {k: v for k, v in self.sessions.items() if self.permitted(v['ip'])}
                 self.persist()
+            elif action == 'unblock':
+                address = canonical_ip(value.get('ip', ''))
+                self.auto_blocks.pop(address, None)
+                self.failures.pop(address, None)
+                self.policy['blocklist'] = [ip for ip in self.policy['blocklist'] if ip != address]
+                self.persist()
             elif action in ('revoke', 'block'):
                 session = self.sessions.get(value.get('id'))
                 if session and action == 'block':
@@ -197,6 +232,7 @@ class Auth:
             elif action != 'list':
                 raise ValueError('未知设备管理操作')
             return {'policy': {k: list(v) if isinstance(v, list) else v for k, v in self.policy.items()},
+                    'autoBlocks': sorted(self.auto_blocks.values(), key=lambda row: row['blockedAt'], reverse=True),
                     'sessions': sorted([{'id': k, **{field: val for field, val in v.items() if field != 'csrf'}}
                                         for k, v in self.sessions.items() if self.valid(v)],
                                        key=lambda row: row['lastSeen'], reverse=True)}

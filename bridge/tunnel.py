@@ -9,10 +9,10 @@ from .notifications import write_json
 
 
 class QuickTunnel:
-    URL = re.compile(r'https://[a-z0-9-]+\.trycloudflare\.com\b')
+    URL = re.compile(r'https://(?!api\.)[a-z0-9-]+\.trycloudflare\.com\b')
     LOST_TUNNEL = re.compile(r'Unauthorized: Tunnel not found')
-    CONNECT_TIMEOUT = 60
     RESTART_DELAY = 2
+    START_POLL = 0.5
 
     def __init__(self, executable, port, data_dir, on_origin):
         self.executable = Path(executable)
@@ -44,12 +44,13 @@ class QuickTunnel:
         # recover the old DNS name; a new process creates the replacement URL.
         self.supervisor = threading.Thread(target=self._supervise, name='quick-tunnel', daemon=True)
         self.supervisor.start()
-        for _ in range(self.CONNECT_TIMEOUT):
-            if self.ready.wait(1):
+        # Cloudflare retries Quick Tunnel creation inside the same process.
+        # Keep the gateway available while that handshake is unhealthy; the
+        # supervisor only replaces the child when it exits or reports a loss.
+        while not self.closed.wait(self.START_POLL):
+            if self.ready.is_set():
                 return self.url
-            if self.closed.is_set():
-                raise RuntimeError("隧道已停止")
-        raise RuntimeError("外网隧道未连接，请查看 .local/tunnel.log（校园网需允许向外连接 TCP 7844）")
+        raise RuntimeError("隧道已停止")
 
     def _supervise(self):
         delay = 0
@@ -87,12 +88,12 @@ class QuickTunnel:
             self.process = process
             self.reader = threading.Thread(target=self._read, args=(process,), daemon=True)
             self.reader.start()
-        for _ in range(self.CONNECT_TIMEOUT):
+        while not self.closed.is_set():
             if self.ready.is_set():
                 return True
-            if self.broken.is_set() or self.finished.is_set() or self.closed.is_set():
+            if self.broken.is_set() or self.finished.is_set():
                 return False
-            self.ready.wait(1)
+            self.ready.wait(self.START_POLL)
         return False
 
     def _read(self, process):

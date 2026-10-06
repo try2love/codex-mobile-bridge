@@ -4,6 +4,10 @@ const fs=require('node:fs/promises'),path=require('node:path');
 const {createHash,verify}=require('node:crypto');
 const REPO='try2love/codex-mobile-bridge';
 const RELEASES=`https://api.github.com/repos/${REPO}/releases?per_page=100`;
+// The mirror only changes transport. Release selection still requires GitHub's
+// manifest signature, and the ZIP is checked against its signed SHA-256.
+const MIRROR='https://gh-proxy.com/';
+const MIRROR_RETRIES=new Set([403,429,500,502,503,504]);
 const MAX_PACKAGE=1024*1024*1024;
 function version(value){
   const match=/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(alpha|beta|rc)\.(0|[1-9]\d*))?$/.exec(value);
@@ -19,6 +23,40 @@ function allowedUrl(value){
   if(u.protocol!=='https:'||u.username||u.password||u.port||u.hash)throw Error('更新地址未通过来源检查。');
   if(value===RELEASES||u.hostname==='github.com'&&u.pathname.startsWith(`/${REPO}/releases/download/`)||['release-assets.githubusercontent.com','objects.githubusercontent.com'].includes(u.hostname))return u.href;
   throw Error('更新地址未通过来源检查。');
+}
+function mirrorUrl(value){
+  allowedUrl(value);
+  return MIRROR+value;
+}
+function allowedMirrorUrl(value){
+  if(value.startsWith(MIRROR)){
+    const nested=value.slice(MIRROR.length);
+    allowedUrl(nested);
+    return value;
+  }
+  return allowedUrl(value);
+}
+function isAbort(error){return error?.name==='AbortError'||error?.code==='ABORT_ERR';}
+async function fetchWithMirror(fetch,url,{signal,headers}){
+  const officialHeaders={...headers};
+  const attempts=[['official',url,officialHeaders]];
+  if(signal?.aborted)return fetch(allowedUrl(url),{signal,headers:officialHeaders});
+  try{allowedUrl(url);}catch(error){if(isAbort(error))throw error;throw error;}
+  attempts.push(['mirror',mirrorUrl(url),officialHeaders]);
+  let lastError;
+  for(const [index,[label,target,requestHeaders]] of attempts.entries()){
+    try{
+      const response=await fetch(allowedMirrorUrl(target),{signal,headers:requestHeaders});
+      if(response.ok||label==='mirror'||!MIRROR_RETRIES.has(response.status))return response;
+      await response.body?.cancel();
+      lastError=Error(`更新服务返回 ${response.status}。`);
+    }catch(error){
+      if(isAbort(error))throw error;
+      lastError=error;
+      if(index===attempts.length-1)throw error;
+    }
+  }
+  throw lastError||Error('无法获取更新，请检查网络后重试。');
 }
 function assetName(v,platform,arch){
   version(v);
@@ -37,7 +75,7 @@ function manifest(bytes,key,{current,platform,arch,expected}){
   return {version:value.version,notes:typeof value.notes==='string'?value.notes.slice(0,20000):'',asset:{...asset,url:releaseUrl(value.version,name)}};
 }
 async function transfer(fetch,url,{limit,signal,file,onProgress=()=>{}}){
-  const response=await fetch(allowedUrl(url),{signal,headers:{'User-Agent':'Codex-Mobile-Bridge','Accept':url===RELEASES?'application/vnd.github+json':'application/octet-stream'}});
+  const response=await fetchWithMirror(fetch,url,{signal,headers:{'User-Agent':'Codex-Mobile-Bridge','Accept':url===RELEASES?'application/vnd.github+json':'application/octet-stream'}});
   if(!response.ok){await response.body?.cancel();throw Error('无法获取更新，请检查网络后重试。');}
   const reader=response.body.getReader(),chunks=[],hash=createHash('sha256');let size=0,handle;
   try{
@@ -97,4 +135,4 @@ class Updater{
     finally{if(staging)await fs.rm(staging,{recursive:true,force:true});}
   }
 }
-module.exports={Updater,version,compare,manifest,assetName,allowedUrl,releaseUrl,RELEASES,transfer};
+module.exports={Updater,version,compare,manifest,assetName,allowedUrl,allowedMirrorUrl,mirrorUrl,releaseUrl,RELEASES,MIRROR,transfer};

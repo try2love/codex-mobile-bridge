@@ -72,7 +72,8 @@ def save_config(path, config):
     temp.replace(path)
 
 
-def main(connections=None):
+def main(connections=None, connection_secrets=None):
+    connection_secrets = connection_secrets or {}
     # Redirected Windows streams may use a codec that cannot encode Chinese.
     sys.stdout.reconfigure(encoding='utf-8')
     sys.stderr.reconfigure(encoding='utf-8', errors='backslashreplace')
@@ -169,6 +170,11 @@ def main(connections=None):
         return entry_urls(preferences, hosts, ready_url(tunnel, args.port, server.instance_id), external)
     address_notifications = AddressNotifications(args.config.parent, notification_urls, server.instance_id)
     notifications = Notifications(bridge, args.config.parent, lambda: server.origins, lambda: config.get('publicUrl', ''))
+    def valid_push_session(key):
+        with server.auth.lock:
+            session = server.auth.sessions.get(key)
+            return bool(session and server.auth.valid(session) and server.auth.permitted(session["ip"]))
+    notifications.mobile_push.session_valid = valid_push_session
     for listener in servers:
         listener.notifications = notifications
     def stop_signal(signum, frame):
@@ -187,9 +193,22 @@ def main(connections=None):
         if args.ssh_target:
             forwards.append({'sshTarget': args.ssh_target, 'sshRemotePort': args.ssh_remote_port, 'id': 'cli'})
         for entry in forwards:
-            ssh_tunnel = SSHTunnel(entry['sshTarget'], entry['sshRemotePort'], args.port, args.config.parent, entry['id'])
+            from bridge.server_connection import managed
+            if not managed(entry, args.config.parent):
+                ssh_tunnel = SSHTunnel(entry['sshTarget'], entry['sshRemotePort'], args.port, args.config.parent, entry['id'])
+            else:
+                from bridge.server_connection import ManagedForward
+                ssh_tunnel = ManagedForward(entry, args.port, args.config.parent, connection_secrets.get(entry['id']))
             ssh_tunnels.append(ssh_tunnel)
             ssh_tunnel.start()
+        for entry in entries:
+            if entry['enabled'] and entry['accessMode'] == 'cloudflare':
+                from bridge.named_tunnel import NamedTunnel
+                from bridge.server_connection import credentials
+                secret = credentials(entry, args.config.parent, connection_secrets.get(entry['id']))
+                named = NamedTunnel(args.cloudflared, entry, args.config.parent, secret.get('tunnelToken', ''))
+                ssh_tunnels.append(named)
+                named.start()
         if args.tunnel:
             print("正在建立临时 HTTPS 外网连接…", flush=True)
             quick_origin = None

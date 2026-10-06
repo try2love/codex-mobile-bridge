@@ -3,13 +3,16 @@ import http.client
 import ipaddress
 import json
 import re
+import shlex
 from urllib.parse import urlsplit
 
 from .tls import client_context
+from .validation import FieldError, at_field
 
 
 DEFAULTS = {'accessMode': 'lan', 'publicUrl': '', 'proxyUpstream': '',
-            'sshTarget': '', 'sshRemotePort': 18787}
+            'sshTarget': '', 'sshRemotePort': 18787, 'sshAuth': 'config',
+            'sshHost': '', 'sshPort': 22, 'sshUser': '', 'sshKeyPath': ''}
 
 
 def origin(value, scheme='https'):
@@ -37,33 +40,49 @@ def origin(value, scheme='https'):
 
 def validate(preferences):
     p = {**DEFAULTS, **preferences}
-    if p['accessMode'] not in ('lan', 'quick', 'server', 'nas'):
-        raise ValueError('请选择有效的外网连接方式')
+    if p['accessMode'] not in ('lan', 'quick', 'cloudflare', 'server', 'nas'):
+        raise FieldError('请选择有效的外网连接方式', 'connection-kind')
     if p['publicUrl']:
-        p['publicUrl'] = origin(p['publicUrl'])
+        p['publicUrl'] = at_field('publicUrl', origin, p['publicUrl'])
     if p['proxyUpstream']:
-        p['proxyUpstream'] = origin(p['proxyUpstream'], 'http')
+        p['proxyUpstream'] = at_field('proxyUpstream', origin, p['proxyUpstream'], 'http')
     if (not isinstance(p['sshTarget'], str) or len(p['sshTarget']) > 253
             or (p['sshTarget'] and not re.fullmatch(r'[\w][\w.@-]*', p['sshTarget']))):
-        raise ValueError('SSH 目标请填写已有 Host 别名或 user@hostname，不含空格和命令参数')
+        raise FieldError('SSH 目标请填写已有 Host 别名或 user@hostname，不含空格和命令参数', 'sshTarget')
     port = p['sshRemotePort']
     if isinstance(port, bool) or not isinstance(port, int) or not 1024 <= port <= 65535:
-        raise ValueError('服务器回环端口须为 1024–65535')
-    if p['accessMode'] in ('server', 'nas') and not p['publicUrl']:
-        raise ValueError('请填写手机访问的固定 HTTPS 地址')
+        raise FieldError('服务器回环端口须为 1024–65535', 'sshRemotePort')
+    if p['accessMode'] in ('server', 'nas', 'cloudflare') and not p['publicUrl']:
+        raise FieldError('请填写手机访问的固定 HTTPS 地址', 'publicUrl')
     if p['accessMode'] == 'server':
-        if not p['sshTarget']:
-            raise ValueError('请填写服务器的 SSH 目标')
+        if p['sshAuth'] == 'config' and not p['sshTarget']:
+            raise FieldError('请填写服务器的 SSH 目标', 'sshTarget')
         if urlsplit(p['publicUrl']).port not in (None, 443):
-            raise ValueError('服务器自动 HTTPS 方案使用 443 端口；已有其他入口请选择 NAS / 已有反代')
+            raise FieldError('服务器 HTTPS 入口使用 443 端口；已有其他入口请选择 NAS / 已有反代', 'publicUrl')
     if p['accessMode'] == 'nas':
         if not p['lan'] or not p['proxyUpstream']:
-            raise ValueError('NAS 方式需要开启局域网访问并填写 NAS 可达的电脑 HTTP 地址')
+            raise FieldError('NAS 方式需要开启局域网访问并填写 NAS 可达的电脑 HTTP 地址', 'proxyUpstream')
         parsed = urlsplit(p['proxyUpstream'])
         if (parsed.port or 80) != p['port']:
-            raise ValueError('电脑上游地址的端口须与网关监听端口一致')
+            raise FieldError('电脑上游地址的端口须与网关监听端口一致', 'proxyUpstream')
         if parsed.hostname in ('localhost', '127.0.0.1', '::1'):
-            raise ValueError('NAS 上游请使用电脑的局域网地址，不能使用回环地址')
+            raise FieldError('NAS 上游请使用电脑的局域网地址，不能使用回环地址', 'proxyUpstream')
+    if p['sshAuth'] not in ('config', 'password', 'key', 'agent'):
+        raise FieldError('请选择 SSH 认证方式', 'sshAuth')
+    if isinstance(p['sshPort'], bool) or not isinstance(p['sshPort'], int) or not 1 <= p['sshPort'] <= 65535:
+        raise FieldError('SSH 端口须为 1–65535', 'sshPort')
+    for key in ('sshHost', 'sshUser', 'sshKeyPath'):
+        if not isinstance(p[key], str) or len(p[key]) > 4096 or any(c in p[key] for c in ('\x00', '\n', '\r')):
+            raise FieldError('SSH 配置格式不正确', key)
+    if p['accessMode'] == 'server' and p['sshAuth'] != 'config':
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.:-]*', p['sshHost']):
+            raise FieldError('请填写服务器 IP 或主机名，不含协议或路径', 'sshHost')
+        if not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]*', p['sshUser']):
+            raise FieldError('请填写有效的 SSH 用户名', 'sshUser')
+        if p['sshAuth'] == 'key' and not p['sshKeyPath']:
+            raise FieldError('请选择本地 SSH 私钥文件', 'sshKeyPath')
+    if p['accessMode'] == 'cloudflare' and urlsplit(p['publicUrl']).port not in (None, 443):
+        raise FieldError('Cloudflare 固定隧道请使用标准 HTTPS 域名', 'publicUrl')
     p['tunnel'] = p['accessMode'] == 'quick'
     return p
 
@@ -91,31 +110,35 @@ def validate_connections(preferences):
         if row['id'] in ids:
             raise ValueError('连接配置 ID 重复')
         ids.add(row['id'])
-        if not isinstance(row.get('enabled'), bool) or row.get('accessMode') not in ('quick', 'server', 'nas'):
+        if not isinstance(row.get('enabled'), bool) or row.get('accessMode') not in ('quick', 'cloudflare', 'server', 'nas'):
             raise ValueError('连接类型或开关格式不正确')
         if not isinstance(row.get('name', ''), str) or len(row.get('name', '')) > 100:
-            raise ValueError('连接名称最多 100 个字符')
+            raise FieldError('连接名称最多 100 个字符', 'name', row['id'])
         current = {**DEFAULTS, **{k: row[k] for k in DEFAULTS if k in row},
                    'id': row['id'], 'name': row.get('name', '').strip(), 'enabled': row['enabled']}
         for key in ('publicUrl', 'sshTarget', 'proxyUpstream'):
             if isinstance(current[key], str):
                 current[key] = current[key].strip()
         if current['enabled']:
-            checked = validate({**current, 'lan': preferences.get('lan', False), 'port': preferences.get('port', 8787)})
+            try:
+                checked = validate({**current, 'lan': preferences.get('lan', False), 'port': preferences.get('port', 8787)})
+            except FieldError as exc:
+                exc.validation['connectionId'] = row['id']
+                raise
             for key in DEFAULTS:
                 current[key] = checked[key]
             if current['accessMode'] == 'quick':
                 if quick:
-                    raise ValueError('每个网关只需启用一个临时 Cloudflare 入口；可同时启用其他连接方式')
+                    raise FieldError('每个网关只需启用一个临时 Cloudflare 入口；可同时启用其他连接方式', 'enabled', row['id'])
                 quick = True
             else:
                 if current['publicUrl'] in urls:
-                    raise ValueError('已启用的连接不能使用相同 HTTPS 地址')
+                    raise FieldError('已启用的连接不能使用相同 HTTPS 地址', 'publicUrl', row['id'])
                 urls.add(current['publicUrl'])
             if current['accessMode'] == 'server':
-                forward = (current['sshTarget'], current['sshRemotePort'])
+                forward = (current['sshTarget'] if current['sshAuth'] == 'config' else (current['sshHost'], current['sshPort']), current['sshRemotePort'])
                 if forward in forwards:
-                    raise ValueError('同一 SSH 目标的回环端口不能重复')
+                    raise FieldError('同一 SSH 目标的回环端口不能重复', 'sshRemotePort', row['id'])
                 forwards.add(forward)
         result.append(current)
     return result
@@ -123,24 +146,27 @@ def validate_connections(preferences):
 
 def public_urls(preferences):
     return [c['publicUrl'] for c in connections(preferences)
-            if c['enabled'] and c['accessMode'] in ('server', 'nas')]
+            if c['enabled'] and c['accessMode'] in ('server', 'nas', 'cloudflare')]
 
 
 def public_url(preferences):
     return next(iter(public_urls(preferences)), '')
 
 
-def select_connection(preferences, value):
+def select_connection(preferences, value, allow_disabled=False):
     selected = next((c for c in connections(preferences) if c['id'] == value.get('id')), None)
-    if not selected or not selected['enabled'] or selected['accessMode'] not in ('server', 'nas'):
+    if not selected or (not selected['enabled'] and not allow_disabled) or selected['accessMode'] not in ('server', 'nas', 'cloudflare'):
         raise ValueError('请先保存并启用需要操作的固定连接配置')
     return validate({**selected, 'lan': preferences['lan'], 'port': preferences['port']})
 
 
 def deployment(preferences):
     p = validate(preferences)
+    if p['accessMode'] == 'cloudflare':
+        raise ValueError('固定 Cloudflare 隧道请在 Cloudflare 配置公开主机名，并在 App 保存 Tunnel Token。')
     if p['accessMode'] not in ('server', 'nas'):
         raise ValueError('请先选择并保存自有服务器或 NAS 配置')
+    ssh_example = shlex.join(['ssh', p['sshTarget']] if p['sshAuth'] == 'config' else ['ssh', '-p', str(p['sshPort']), p['sshUser']+'@'+p['sshHost']])
     url = p['publicUrl']
     upstream = f'http://127.0.0.1:{p["sshRemotePort"]}' if p['accessMode'] == 'server' else p['proxyUpstream']
     common = f'''# Codex 手机网关 · 固定入口部署
@@ -178,9 +204,11 @@ volumes:
     }}
 }}
 '''}
-        steps = f'''## 自有 Linux 服务器（Docker Engine）
+        steps = f'''## 自有 Linux 服务器（手动配置参考）
 
-1. 确认电脑终端可使用 `ssh {p['sshTarget']}` 连接目标服务器。首次连接由用户核对主机指纹；后台连接需要已有 SSH 密钥或已解锁的 ssh-agent。App 不存储服务器密码，也不会跳过主机验证。
+安装软件、配置防火墙和 SSH 权限、启动 Docker 等操作由用户或管理员亲自在终端完成。App 不接收 sudo 密码、不执行远端命令。优先接入已有反向代理；以下 Docker 配置为可选参考。
+
+1. 可使用 `{ssh_example}` 检查服务器连接，也可在 App 内使用“检查 SSH 登录”。首次连接需核对主机指纹；密码、私钥或 SSH Agent 在 App 配置，凭据不包含在此部署包内。
 2. 服务器须允许远程端口转发（AllowTcpForwarding remote 或 yes），GatewayPorts 使用 no 或 clientspecified。回环端口 {p['sshRemotePort']} 须空闲。不要使用 GatewayPorts yes，以免强制向公网绑定。
 3. 将域名 DNS 的 A/AAAA 记录指向这台服务器。将本包解压到一个新目录；服务器须已安装 Docker Compose，且公网 TCP 80、443 可达并空闲。已有网站占用这两个端口时，不要停止旧网站；使用已有反代，将上游设为 {upstream} 并保留公网 Host 即可，无需启动本包的 Caddy。
 4. 在电脑 App 保存配置并启动网关。电脑主动建立 SSH 回程连接，不要求服务器能直接访问电脑的局域网 IP。
@@ -252,9 +280,11 @@ docker compose logs --tail=50
 仅使用用户授权的服务器/NAS；执行前确认现有站点、端口和 DNS，禁止覆盖已有服务。部署依赖缺失时先说明。不要复制 Codex 凭据或私钥，不更改电脑网关端口。完成后返回固定 HTTPS 地址、原局域网地址、密码获取方式、部署目录、启停命令、已通过和未通过的验收项。没有权限或真实入口时，说明尚未部署，不声称连通。
 '''
     if p['accessMode'] == 'server':
-        english_steps = f'''1. Verify `ssh {p['sshTarget']}` from your computer. Confirm the host fingerprint yourself first. Background access uses existing keys or an unlocked ssh-agent; the App never stores an SSH password or bypasses host verification.
+        english_steps = f'''All server software installation, firewall and SSH permission changes, and Docker operations must be performed manually by the user or administrator. The app does not accept sudo passwords or execute remote commands. Prefer an existing reverse proxy; Docker is an optional reference.
+
+1. Check `{ssh_example}` from your computer, or use Check SSH sign-in in the App. Verify the host fingerprint. Configure password, key or agent authentication in the App; credentials are not included in this package.
 2. The server must allow remote forwarding (`AllowTcpForwarding remote` or `yes`). Keep `GatewayPorts no` or `clientspecified`, never `yes`. Port {p['sshRemotePort']} must be free and restricted to loopback.
-3. Point the domain's A/AAAA records to this server. Install Docker Compose if authorized and ensure public TCP 80/443 are reachable and free. Extract this bundle into a new directory. The Caddy service uses host networking on Linux Docker Engine, on the same host as SSH; do not run this bundle on Mac/Windows Docker Desktop.
+3. Point the domain's A/AAAA records to this server. Have the user or administrator manually install Docker Compose if needed and ensure public TCP 80/443 are reachable and free. Extract this bundle into a new directory. The Caddy service uses host networking on Linux Docker Engine, on the same host as SSH; do not run this bundle on Mac/Windows Docker Desktop.
 4. Start the computer gateway. It connects out to the server over SSH, including behind NAT or on a campus network.
 5. On the server run `docker compose config`, then `docker compose up -d`. Caddy obtains and renews certificates, persisted in the named Docker volumes. If an existing proxy already owns 80/443, keep it and use {upstream} as its upstream, preserving the public Host header; do not start another Caddy instance.
 '''
@@ -285,6 +315,15 @@ Start/update: `docker compose up -d`. Logs: `docker compose logs --tail=50`. Sto
 
 Project: https://github.com/try2love/codex-mobile-bridge
 Use only authorized servers or NAS devices. Check existing sites, DNS and ports before deploying; do not overwrite existing services. Explain missing dependencies before installing them. Keep the computer gateway port, model authentication and SSH keys unchanged. Return the fixed HTTPS URL, original LAN URL, credential retrieval method, deployment directory, start/stop commands, verified results and remaining checks. If access is unavailable, deliver the prepared configuration and clearly say deployment is pending.
+'''
+    if p['accessMode'] == 'server':
+        files['部署说明.md'] = files['部署说明.md'].split('## 给部署 Agent')[0] + '''## 手动配置边界
+
+此内容仅供用户检查与手动配置，不是自动部署指令。涉及管理员权限的命令必须由用户自行执行；不要让 App 或部署 Agent 代输 sudo 密码、安装服务或修改系统权限。保留已有站点、Codex 凭据、SSH 私钥及电脑网关端口。
+'''
+        files['DEPLOYMENT_EN.md'] = files['DEPLOYMENT_EN.md'].split('## Instructions for deployment Agents')[0] + '''## Manual setup boundary
+
+This is a reference for user review and manual setup, not an automatic deployment instruction. Administrative commands must be executed by the user. Do not ask the app or an Agent to enter sudo passwords, install services or change system permissions. Preserve existing sites, Codex credentials, SSH keys and the computer gateway port.
 '''
     return files
 

@@ -9,9 +9,11 @@ from importlib.metadata import distribution
 from pathlib import Path
 import certifi
 root = Path(__file__).resolve().parents[1]
+subprocess.run([sys.executable, str(root/'scripts/bundle-cloudflared.py')], check=True)
 command = [sys.executable, '-m', 'PyInstaller', '--noconfirm', '--clean', '--onedir', '--name', 'codex-mobile-gateway',
            '--distpath', str(root/'dist'), '--workpath', str(root/'.tmp/pyinstaller'), '--specpath', str(root/'.tmp'),
            '--add-data', str(root/'web')+':web']
+command.extend(['--add-data', str(root/'dist/cloudflared')+':cloudflared', '--collect-all', 'paramiko', '--collect-all', 'keyring'])
 if sys.platform == 'darwin':
     command.extend(['--target-arch', platform.machine()])
 # Ship roots and their license explicitly; source users still need only stdlib.
@@ -20,7 +22,7 @@ certificate_package = distribution('certifi')
 license_file = next(p for p in certificate_package.files if p.name == 'LICENSE')
 command.extend(['--add-data', str(certificate_package.locate_file(license_file))+':licenses/certifi'])
 # The SSH adapter intentionally injects these source modules into remote Python.
-for name in ('store.py', 'catalog.py', 'create.py', 'account_models.py', 'tls.py'):
+for name in ('store.py', 'catalog.py', 'create.py', 'account_models.py', 'tls.py', 'workspace.py'):
     command.extend(['--add-data', str(root/'bridge'/name)+':bridge'])
 command.append(str(root/'desktop.py'))
 subprocess.run(command, cwd=root, check=True)

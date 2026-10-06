@@ -28,8 +28,10 @@ class AddressNotificationTests(unittest.TestCase):
                                       'addressName': 'Home computer', 'token': 'never-in-body',
                                       'clickBase': 'https://obsolete.example'})
 
-    def test_defaults_disabled_and_settings_validate(self):
+    def test_defaults_enabled_and_explicit_disable_preserved(self):
         with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as directory:
+            self.assertTrue(settings(directory)['addressEnabled'])
+            save_settings(directory, {'addressEnabled': False})
             self.assertFalse(settings(directory)['addressEnabled'])
         for value in ({'addressEnabled': 'true'}, {'addressName': 'x\ny'}, {'addressName': 'x'*81}):
             with self.assertRaises(ValueError):

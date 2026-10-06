@@ -31,25 +31,25 @@ Experimental Linux x64 / ARM64 integration, Ubuntu 22.04 builds, and VMware netw
 
 ## Download and quick start (recommended)
 
-Download the desktop App for everyday use. **No deployment Agent, Python, Node.js or terminal is required.** The current release is **v1.3.3 (stable)**.
+Download the desktop App for everyday use. **No deployment Agent, Python, Node.js or terminal is required.** The current release is **v1.4.0 (stable)**.
 
 | Platform | Download | Open |
 | --- | --- | --- |
-| Windows x64 (recommended installer) | [Download Setup.exe](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.3.3/Codex-Mobile-Bridge-1.3.3-Windows-x64-Setup.exe) | Run the installer and launch from the shortcut |
-| Windows x64 (no installation) | [Download full ZIP](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.3.3/Codex-Mobile-Bridge-1.3.3-Windows-x64.zip) | Extract the entire ZIP and run `Codex Mobile Bridge.exe`; do not move just the exe |
-| macOS Apple Silicon (M series) | [Download arm64 DMG](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.3.3/Codex-Mobile-Bridge-1.3.3-macOS-arm64.dmg) | Open the DMG and drag the App to Applications |
-| macOS Intel | [Download x64 DMG](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.3.3/Codex-Mobile-Bridge-1.3.3-macOS-x64.dmg) | Open the DMG and drag the App to Applications |
-| Ubuntu x64 (experimental) | [Download .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.3.3/Codex-Mobile-Bridge-1.3.3-Linux-amd64.deb) | Ubuntu 22.04; launch as a regular user |
-| Ubuntu ARM64 (experimental) | [Download .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.3.3/Codex-Mobile-Bridge-1.3.3-Linux-arm64.deb) | Ubuntu 22.04 ARM64; no 32-bit ARM build |
+| Windows x64 (recommended installer) | [Download Setup.exe](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/Codex-Mobile-Bridge-1.4.0-Windows-x64-Setup.exe) | Run the installer and launch from the shortcut |
+| Windows x64 (no installation) | [Download full ZIP](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/Codex-Mobile-Bridge-1.4.0-Windows-x64.zip) | Extract the entire ZIP and run `Codex Mobile Bridge.exe`; do not move just the exe |
+| macOS Apple Silicon (M series) | [Download arm64 DMG](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/Codex-Mobile-Bridge-1.4.0-macOS-arm64.dmg) | Open the DMG and drag the App to Applications |
+| macOS Intel | [Download x64 DMG](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/Codex-Mobile-Bridge-1.4.0-macOS-x64.dmg) | Open the DMG and drag the App to Applications |
+| Ubuntu x64 (experimental) | [Download .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/Codex-Mobile-Bridge-1.4.0-Linux-amd64.deb) | Ubuntu 22.04; launch as a regular user |
+| Ubuntu ARM64 (experimental) | [Download .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/Codex-Mobile-Bridge-1.4.0-Linux-arm64.deb) | Ubuntu 22.04 ARM64; no 32-bit ARM build |
 
-[All releases and release notes](https://github.com/try2love/codex-mobile-bridge/releases) · [Download SHA256 checksums](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.3.3/SHA256SUMS.txt). Both Mac architectures also include ZIPs for in-app updates or manual replacement. Windows ARM packages are not available. The Mac build is ad-hoc signed but not notarized and may require manual approval; Windows builds have no certificate signature. See the macOS first-launch instructions below.
+[All releases and release notes](https://github.com/try2love/codex-mobile-bridge/releases) · [Download SHA256 checksums](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/SHA256SUMS.txt). Both Mac architectures also include ZIPs for in-app updates or manual replacement. Windows ARM packages are not available. The Mac build is ad-hoc signed but not notarized and may require manual approval; Windows builds have no certificate signature. See the macOS first-launch instructions below.
 
 1. Open the original **Codex App** on the computer, then open **Codex Mobile Bridge**.
 2. Keep LAN access enabled under **Network and login**, save, and click **Start gateway**. Preserve the existing port if you already have a configuration.
 3. Connect the phone to the same LAN. Expand **Scan to sign in** below its address in the App and scan with the phone camera to sign in without typing a password. Alternatively, open the address manually and use the login credentials provided by the App.
 4. Select an existing chat or create a new one in the phone browser. Keep the computer awake with Codex App and the gateway running.
 
-For access outside your LAN, add temporary HTTPS, an own-server connection or a NAS connection in the App. Temporary HTTPS offers in-App installation of `cloudflared`; fixed domains and NAS access need initial server or reverse-proxy setup. See [Parallel connections](#parallel-connections). For source deployment, custom networking or help from an Agent, see the optional [Deployment Agent instructions](#deployment-agent-instructions).
+For access outside your LAN, add temporary HTTPS, an own-server connection or a NAS connection in the App. Desktop builds bundle `cloudflared`. Server profiles connect over SSH after you manually prepare the server; a fixed Cloudflare tunnel also supports private domains without a server. See [Parallel connections](#parallel-connections). For source deployment, custom networking or help from an Agent, see the optional [Deployment Agent instructions](#deployment-agent-instructions).
 
 ### In-app updates
 
@@ -57,7 +57,7 @@ For access outside your LAN, add temporary HTTPS, an own-server connection or a 
 
 Starting with `v0.2.0-beta.5`, use **App updates** to check for a release, read its notes, and select **Update and restart**. The app verifies the signed manifest and package before replacing itself, preserves login, network, notification and watched-chat settings, and restores a previously running gateway. Installation failures attempt to restore the previous app. Older versions need one manual upgrade to a version with this feature. Temporary HTTPS addresses change when the gateway restarts.
 
-**Windows beta.7 / 1.0.0 users:** the old updater may roll back with `WinError 32` because its working directory is locked. Choose **Stop gateway and quit** in the tray, then install **1.3.3 Setup.exe** to the same location. Do not uninstall or delete your data. Version 1.1.0 fixes this working-directory issue for subsequent updates.
+**Windows beta.7 / 1.0.0 users:** the old updater may roll back with `WinError 32` because its working directory is locked. Choose **Stop gateway and quit** in the tray, then install **1.4.0 Setup.exe** to the same location. Do not uninstall or delete your data. Version 1.1.0 fixes this working-directory issue for subsequent updates.
 
 ### Phone reading and display settings
 
@@ -80,7 +80,10 @@ View remaining percentages, reset times and available usage resets. Missing info
 
 ### Login validity and device access
 
-- Set **Network and login → Login validity (hours)** to an integer from 0 to 87600, then restart the gateway. The default is 12 hours; 0 sets no server expiry. A finite deadline starts at login and does not slide with activity.
+- Web sign-in defaults to **Remember me (7 days)**. It keeps a login cookie, not the plaintext password. Uncheck it to use a browser-session cookie.
+- Five consecutive password failures automatically block the source IP. The page shows remaining attempts; counts and blocks survive restarts. Successful authentication resets the count. Unblock and reset attempts only under **Login devices → Automatically blocked IPs** in the desktop app.
+- **Phone notifications → Login security notifications** is enabled by default and uses enabled PushPlus, Bark and ntfy channels. Disabling alerts does not disable blocking.
+- Set standard login validity under **Network and login → Login validity (hours)** to an integer from 0 to 87600, then restart the gateway. The default is 12 hours; 0 sets no server expiry. A finite deadline starts at login and does not slide with activity.
 - Normal gateway restarts and App updates preserve unexpired logins. Changing the account, password, login mode or validity invalidates earlier logins on restart. Logout, clearing browser cookies or changing hostnames requires signing in again; browsers may also remove long-unused cookies.
 - **Signed-in devices** shows browser login records, IPs, browser identifiers, login/expiry times and last activity (updated at most once a minute). **Revoke login** removes one login; **Block this IP** revokes every login at that IP and prevents new logins.
 - The optional allowlist accepts only listed IPs; the blocklist takes priority. Enter exact IPv4 or IPv6 addresses, one per line. Rules apply immediately and can always be changed in the local desktop App.
@@ -92,10 +95,10 @@ View remaining percentages, reset times and available usage resets. Missing info
 
 The Mac build has an **ad-hoc integrity signature**, but **no Apple Developer ID signature or notarization**. macOS can still block the first launch. The older `v0.2.0-beta.1` also has a bundle-signing defect; use `v1.1.0` or later.
 
-1. Download the DMG or ZIP for your Mac's chip and `SHA256SUMS.txt` from this repository's Release. Calculate the downloaded file's hash and compare it with the matching filename in the checksum file. If they differ, download again instead of allowing the app. The example below uses the 1.3.3 Apple Silicon DMG; replace the filename for other downloads.
+1. Download the DMG or ZIP for your Mac's chip and `SHA256SUMS.txt` from this repository's Release. Calculate the downloaded file's hash and compare it with the matching filename in the checksum file. If they differ, download again instead of allowing the app. The example below uses the 1.4.0 Apple Silicon DMG; replace the filename for other downloads.
 
    ```sh
-   shasum -a 256 "$HOME/Downloads/Codex-Mobile-Bridge-1.3.3-macOS-arm64.dmg"
+   shasum -a 256 "$HOME/Downloads/Codex-Mobile-Bridge-1.4.0-macOS-arm64.dmg"
    ```
 
 2. Open the DMG, drag `Codex Mobile Bridge.app` to Applications, then eject the disk image. For a ZIP, extract it and move the App instead. Try opening it from Applications, then go to **System Settings → Privacy & Security → Open Anyway** and confirm.
@@ -123,7 +126,7 @@ The App provides:
 
 - **Overview:** start/stop the gateway, copy/open phone URLs, expand QR sign-in, and locate initial login credentials.
 - **Network and login:** the LAN port, independently enabled connection profiles, extra HTTPS addresses, username/password or explicit passwordless access.
-- **Runtime settings:** Codex data directory, IPC address, executable paths, gateway data directory, and automatic startup when the App opens.
+- **Runtime settings:** automatic gateway startup, gateway data directory and Cloudflare component status. Custom paths, IPC overrides and repair installation are collapsed under advanced settings.
 - **Phone notifications:** independent Bark and ntfy settings, test buttons and delivery status, with a shared click URL and title privacy option.
 - **App updates:** automatic release checks, signed downloads, update and restart, and recovery status.
 - **Runtime logs:** newest records first within each source; stack traces within one error keep their original order. Refresh returns to the newest records.
@@ -132,7 +135,7 @@ If you already use the command-line gateway, choose its existing `.local` direct
 
 Unsaved changes appear as red dots in the affected sidebar section and save bar. Switching pages or languages preserves edits. Saving successfully, or reverting to the original values, clears the indicators.
 
-`cloudflared` remains optional. Under Runtime settings, click Download and install, or select an existing executable. No download happens until you click the install button.
+Desktop builds bundle a pinned cloudflared binary for the target OS and architecture. No first-run download is needed. Runtime settings keep custom executables and source-run installation under **Advanced: custom program and repair**.
 
 ### QR sign-in
 
@@ -150,15 +153,24 @@ Under **Network and login → Additional connections**, choose a type and click 
 | Connection | When to use it | Configuration |
 | --- | --- | --- |
 | LAN | Phone and computer share a reachable network | Enable LAN access and keep the existing port |
-| Temporary Cloudflare HTTPS | No domain or existing public entry | Add a temporary connection and install or select cloudflared under Runtime settings |
-| Own server + SSH | You have a Linux public server and domain; the computer is behind NAT or on a campus network | Enter the fixed HTTPS URL, existing SSH alias or `user@hostname`, and server loopback port |
+| Temporary Cloudflare HTTPS | No domain or existing public entry | Add a connection, save, and start using the bundled program |
+| Fixed Cloudflare tunnel | Private domain, no server | Configure Cloudflare DNS and a public hostname; enter the domain and tunnel token |
+| Own server + SSH | You have a Linux public server and domain; the computer is behind NAT or on a campus network | Manually prepare HTTPS and forwarding permissions, then enter a regular SSH account, check sign-in and connect |
 | NAS / existing proxy / Docker | The NAS can reach the computer and already has an HTTPS reverse proxy | Enter the fixed HTTPS URL and the computer's HTTP address as reachable from the NAS |
 
 LAN, a temporary Cloudflare tunnel and multiple fixed entries can run together. Only one temporary tunnel is needed per gateway. Profiles targeting the same SSH server need different loopback ports. Different SSH aliases pointing to the same server can still conflict; choose their ports accordingly.
 
 All entries reach the same gateway and share the same gateway login. Saved single-entry settings from earlier versions are converted when read; existing files are not rewritten until you save.
 
-Each enabled fixed profile has **Export deployment ZIP**, **Copy for deployment Agent**, and **Check fixed entry** actions. The ZIP contains concrete configuration and Chinese/English deployment instructions, without passwords, notification tokens, Codex data or SSH private keys. Clipboard instructions use the current UI language.
+Server profiles offer **Export manual setup reference**, **Copy manual setup instructions**, and **Check fixed entry**. NAS profiles retain their deployment ZIP and Agent instructions. The ZIP contains concrete configuration and Chinese/English deployment instructions, without passwords, notification tokens, Codex data or SSH private keys. Clipboard instructions use the current UI language.
+
+The username `try2love` and URL `https://codex.try2love.com` are configuration examples, not a live demo site. Replace them with your own settings.
+
+#### Private domain without a server
+
+Choose **Fixed domain · Cloudflare Tunnel**. Use Cloudflare DNS for the domain (keep your registrar), create a tunnel, and publish a hostname such as `codex.try2love.com` pointing to `http://localhost:8787`. Save the hostname and tunnel token in the App, start the gateway, then check the fixed entry. The token runs the existing tunnel; it does not create DNS records. No public server or inbound computer port is needed. Use a dedicated hostname, not a `/codex/` path. Keep the computer, Codex App and gateway online.
+
+See the [complete fixed-domain walkthrough (Chinese)](docs/fixed-domain.md), or expand the first-time setup guide in the Cloudflare connection card. The guide covers nameservers, the tunnel token, the hostname route and verification over phone mobile data.
 
 #### Own server
 
@@ -166,9 +178,13 @@ Each enabled fixed profile has **Export deployment ZIP**, **Copy for deployment 
 Phone → server HTTPS → server loopback port → SSH → computer gateway → original Codex App
 ```
 
-The computer initiates SSH, so the server does not need direct access to the computer's private IP. SSH forwarding starts/stops with the gateway and retries after disconnection. It uses existing system OpenSSH keys or an unlocked ssh-agent. Verify the server fingerprint in a terminal first; the App does not save SSH passwords or bypass host verification.
+The computer initiates SSH, so the server does not need direct access to the computer's private IP. SSH forwarding starts/stops with the gateway and retries after disconnection. New profiles support password, private key with optional passphrase, SSH agent, and existing SSH configuration. Confirm the host fingerprint in the App; changed keys are rejected. Legacy OpenSSH aliases remain supported. Passwords and tunnel tokens can be stored in the native OS credential store or held only for this app session, never in ordinary configuration or exported packages.
 
 The server must allow remote forwarding and keep the listening socket on loopback (`GatewayPorts no` or `clientspecified`, not `yes`). For the generated Caddy configuration, DNS must point to the server and public TCP 80/443 must be reachable and free. Caddy obtains and renews certificates. Its generated Docker service uses host networking on Linux Docker Engine, on the same host as SSH; it is not a Mac/Windows Docker Desktop deployment.
+
+Everyday SSH forwarding can use a regular user such as `try2love`, without root or sudo. Follow the [server SSH walkthrough (Chinese)](docs/server-ssh.md): manually prepare DNS, HTTPS and forwarding permissions; save the app settings and check SSH sign-in; start the connection and check the fixed entry, then verify over phone mobile data.
+
+Server software installation, firewall rules and SSH permissions must be configured manually by you or your administrator. The app does not accept sudo passwords or run remote installation commands. Preserve existing sites and use their reverse proxy. SSH sign-in success does not verify forwarding or public HTTPS access. Export or copy setup references for manual use; any administrative commands must be run by the user.
 
 If an existing proxy already owns 80/443, keep it. Use the upstream printed in the deployment instructions and preserve the public Host header instead of starting another Caddy instance.
 
@@ -186,7 +202,7 @@ The overview lists all enabled fixed URLs. With the notification click URL empty
 
 ### What are “Additional HTTPS addresses”?
 
-This is the gateway's **address allowlist**. Add a URL only when its HTTPS reverse proxy or tunnel is already configured elsewhere and you need another domain to reach the gateway. Enter one origin per line, such as `https://codex.example.com`, without a path.
+This is the gateway's **address allowlist**. Add a URL only when its HTTPS reverse proxy or tunnel is already configured elsewhere and you need another domain to reach the gateway. Enter one origin per line, such as `https://codex.try2love.com`, without a path.
 
 Adding a URL does **not** create a tunnel, configure DNS or obtain a certificate. The proxy must reach the gateway and preserve the public Host header. Fixed URLs in connection profiles are added automatically. Leave this field empty when using only LAN or temporary Cloudflare.
 
@@ -212,7 +228,7 @@ An explicitly configured notification click URL takes priority over automatic se
 
 In the desktop App, open **Phone notifications → Gateway startup and entry notifications** and enable sending addresses on every gateway start and entry change. Optionally name the gateway. Enable at least one PushPlus, Bark or ntfy channel, save, start the gateway and send a current-entry test. Confirm receipt on your phone.
 
-Every gateway start sends the enabled addresses, even when unchanged: LAN, NAS / existing reverse-proxy domains, personal servers once SSH forwarding connects, and temporary HTTPS once ready. Later-ready entries and address changes trigger an update. Disabled interfaces, disabled entries and loopback addresses are excluded. LAN links require the same network; fixed domains require completed deployment.
+New configurations enable address notifications by default; saved opt-outs survive upgrades. Configure at least one notification channel for delivery. Every gateway start sends the enabled addresses, even when unchanged: LAN, NAS / existing reverse-proxy domains, personal servers once SSH forwarding connects, and temporary HTTPS once ready. Later-ready entries and address changes trigger an update. Disabled interfaces, disabled entries and loopback addresses are excluded. LAN links require the same network; fixed domains require completed deployment.
 
 The switch is off by default and independent of chat notifications. Messages use current entries rather than the chat click URL, contain no passwords or login tokens, and retry per channel. Stopping the gateway or disabling the switch stops new sends. Configure and test after upgrading to v1.3.2 or later before relying on notifications for subsequent restarts; earlier versions do not support this feature.
 
@@ -244,7 +260,7 @@ Large history pages also have a byte budget, so a large reply may require multip
 - Desktop App development and packaging additionally require Node.js and the build dependencies below.
 - Keep the computer awake, network reachable and gateway running.
 - For SSH chats: the host is configured in the App, the SSH alias works non-interactively, and remote Python 3 is available. Model/Skill discovery also needs the remote Codex runtime. On Windows, OpenSSH `ssh.exe` must be on PATH.
-- Optional temporary tunnel: an installed `cloudflared` executable.
+- Desktop builds include cloudflared. Source runs install it separately; new SSH profiles and native credential storage also require the relevant dependencies from `requirements-desktop.txt`.
 
 ## Command-line LAN setup (advanced)
 
@@ -286,7 +302,7 @@ Without `--lan`, the gateway listens only on `127.0.0.1`. It does not install a 
 
 ## Temporary HTTPS and existing proxies
 
-**Desktop App:** add a Temporary HTTPS · Cloudflare connection and open its Installation and setup button. Under Runtime settings, choose Download and install. The App downloads the matching official GitHub Release, verifies its SHA-256 digest, installs it in the gateway data directory and checks `--version`. It needs no admin privileges, does not change system PATH and does not start a tunnel during installation.
+**Desktop App:** add a Temporary HTTPS · Cloudflare connection, save and start. The matching program is bundled. For source runs or repair, expand **Runtime settings → Cloudflare component → Advanced: custom program and repair** to find Download and install. The App downloads the matching official GitHub Release, verifies its SHA-256 digest, installs it in the gateway data directory and checks `--version`. It needs no admin privileges, does not change system PATH and does not start a tunnel during installation.
 
 The detected path is filled in as an unsaved change. Save settings, then start the gateway from the overview. Temporary HTTPS has a separate status; its URL and login QR code appear when connected. An existing executable can be selected and checked instead. Supported installer targets: macOS arm64 / x64 and Windows x64 / x86. Other architectures use the linked official guide. Downloads time out after 3 minutes; failed verification, missing digests or network failures leave existing binaries and settings unchanged. The App includes manual steps and an official download link. If a running gateway’s tunnel fails, LAN access remains available; see the Cloudflare section in Runtime logs.
 
@@ -301,7 +317,7 @@ On Windows, use `py -3 -B .\run.py` and the path to `cloudflared.exe`. Quick Tun
 For an already configured HTTPS reverse proxy:
 
 ```sh
-python3 -B run.py --lan --origin https://codex.example.com
+python3 -B run.py --lan --origin https://codex.try2love.com
 ```
 
 Preserve the external Host header, Origin, cookies and CSRF header; disable proxy caching/buffering and allow long requests. Use a dedicated hostname root, not `/codex/`. The proxy must reach the computer. TLS termination and DNS are configured on your own infrastructure. The App's profile export is the guided route for own-server SSH and NAS deployments.
@@ -357,7 +373,7 @@ The local desktop management interface uses guarded Electron IPC and a private s
 An Agent is optional for everyday App use. For source deployment, custom network setup or troubleshooting, copy this to an Agent on the computer:
 
 ```text
-Deploy and run https://github.com/try2love/codex-mobile-bridge for me. Identify whether this computer runs Windows or macOS and read the repository's deployment Agent instructions. Prefer a published desktop App or reuse an existing installation; configure, start and verify it for my needs. Reuse existing Codex App chats and their model authentication. Keep username/password authentication and LAN access enabled by default, preserving any existing LAN port. For external access, reuse an existing NAS/HTTPS reverse proxy when available; with an owned server and domain, use an SSH return tunnel and fixed HTTPS; otherwise configure a temporary HTTPS tunnel. Connection methods may run together. Verify chat reading, live updates and the available interaction paths. Keep the service running, then return clickable phone URLs, how to obtain login credentials, App start/stop actions or commands, verified results and any steps I still need to complete.
+Deploy and run https://github.com/try2love/codex-mobile-bridge for me. Identify whether this computer runs Windows or macOS and read the repository's deployment Agent instructions. Prefer a published desktop App or reuse an existing installation; configure, start and verify it for my needs. Reuse existing Codex App chats and their model authentication. Keep username/password authentication and LAN access enabled by default, preserving any existing LAN port. For external access, reuse an existing NAS/HTTPS reverse proxy when available; with an owned server and domain, prepare references for SSH forwarding and fixed HTTPS, leaving administrative server operations for me to perform manually; otherwise configure a temporary HTTPS tunnel. Connection methods may run together. Verify chat reading, live updates and the available interaction paths. Keep the service running, then return clickable phone URLs, how to obtain login credentials, App start/stop actions or commands, verified results and any steps I still need to complete.
 ```
 
 ### 1. Inspect the environment
@@ -370,7 +386,7 @@ Choose connections based on actual reachability: LAN, temporary tunnel, an exist
 
 Use the packaged App for the guided workflow, or the OS-specific CLI commands above. Keep default password authentication unless the user explicitly chooses otherwise. Preserve the current port. Use an independent temporary directory for tests, and never commit it.
 
-For fixed entries, export the selected profile's deployment ZIP or copy its Agent instructions. Inspect existing sites and ports before applying them. If server access is unavailable, deliver the configuration and explain what remains unconfigured. Do not claim a service is deployed solely because the files were generated.
+For SSH server entries, export or copy the manual setup reference. The user must perform all administrative server operations manually; Agents may explain and review the configuration. NAS entries retain their deployment ZIP and Agent instructions. Inspect existing sites and ports before applying configuration. If server access is unavailable, deliver the configuration and explain what remains unconfigured. Do not claim a service is deployed solely because the files were generated.
 
 Keep the process running using the user's chosen launcher or an authorized process-management method. Verify which process actually owns the port. Stop through the project's control mechanism; do not kill arbitrary processes based on stale PIDs.
 

@@ -43,6 +43,15 @@ async function runTimelineTests() {
   timeline.apply({...page(320,321,2),before:undefined,hasMore:undefined});
   check(timeline.rows.size===201,'Live append adds one message');
   check(Math.abs(viewport.scrollTop-top)<2&&!timeline.newer.hidden,'Live reply preserves history reading and shows new content button');
+  await frame();await frame();
+  const reading=timeline.capture(),readingTop=viewport.scrollTop;
+  viewport.style.display='none';
+  await frame();await frame();
+  viewport.dispatchEvent(new Event('scroll'));
+  check(JSON.stringify(timeline.capture())===JSON.stringify(reading),'Hidden workbench chat retains its reading anchor');
+  viewport.style.display='';
+  await frame();await frame();
+  check(Math.abs(viewport.scrollTop-readingTop)<2,'Returning from a file tab preserves the timeline offset');
   const update=row(320);update.text+=' streamed';update.version='streamed';
   timeline.apply({...page(0,0,3),rows:[update]});
   check(timeline.rows.size===201,'Streaming replaces the same message');
@@ -132,5 +141,10 @@ async function runTimelineVisibilityTests() {
   check(requested===1&&!backfill.nodes.get('final').node.hidden,'A page of hidden activity backfills earlier replies');
   check(!backfill.hasMore,'Filtered history still stops at the end');
   backfill.dispose();
+  const empty=new ChatTimeline({url:action=>'/fixture/'+action+'?host=local',request:async()=>page([{key:'empty-image',role:'activity',kind:'imageView',title:'图片预览',text:'',order:0,version:'v1',truncated:false}],1),renderMeta:()=>{},renderText:(node,text)=>node.textContent=text,status:()=>{}});
+  empty.apply(page([{key:'empty-image',role:'activity',kind:'imageView',title:'图片预览',text:'',order:0,version:'v1',truncated:false}],1),true);
+  const emptyBody=empty.nodes.get('empty-image').node.querySelector('.activity-body');
+  check(emptyBody.hidden&&getComputedStyle(emptyBody).display==='none','Empty image preview body does not reserve space');
+  empty.dispose();
   return checks;
 }

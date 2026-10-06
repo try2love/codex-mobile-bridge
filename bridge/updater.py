@@ -22,6 +22,7 @@ APP = 'Codex Mobile Bridge'
 APP_ID = 'io.github.try2love.codexmobilebridge'
 RESULT = 'desktop-update-result.json'
 PENDING_TRANSACTION_TIMEOUT = 15*60
+STOP_RETRY_SECONDS = 8
 
 
 def write_json(path, value):
@@ -38,6 +39,23 @@ def read_record(path):
     except (OSError, ValueError):
         return None
     return value if isinstance(value, dict) else None
+
+
+def record_update(data_dir, result, target=None):
+    """Keep a durable diagnosis line after the transaction is cleaned."""
+    value = {'at': time.time(), 'pid': os.getpid(), 'target': target, **result}
+    with (Path(data_dir) / 'desktop-update.log').open('a', encoding='utf-8') as stream:
+        stream.write(json.dumps(value, ensure_ascii=False, sort_keys=True) + '\n')
+
+
+def child_log(transaction, limit=8000):
+    path = Path(transaction) / 'new-app.log'
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return ''
+    text = data[-limit:].decode('utf-8', errors='replace').strip()
+    return text
 
 
 def process_exists(pid):
@@ -288,20 +306,30 @@ def launch_app(target, transaction, plan, acknowledge=True):
         env.pop(key, None)
     if acknowledge:
         env.update(CMB_UPDATE_TRANSACTION=str(transaction), CMB_UPDATE_TOKEN=plan['token'])
-    child = subprocess.Popen([str(executable)], env=env, stdin=subprocess.DEVNULL,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                            **({'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt' else {'start_new_session': True}))
+    with (transaction / 'new-app.log').open('ab') as log:
+        child = subprocess.Popen([str(executable)], env=env, stdin=subprocess.DEVNULL,
+                                 stdout=log, stderr=subprocess.STDOUT,
+                                 **({'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt' else {'start_new_session': True}))
     write_json(transaction / 'launched.json', {'pid': child.pid})
     return child
 
 
 def start_gateway(target, data_dir, desktop):
     _, worker, _ = locations(target)
-    command = subprocess.run([str(worker), 'start', '--data-dir', data_dir], capture_output=True,
-                             timeout=35, env={**os.environ, 'PYINSTALLER_RESET_ENVIRONMENT': '1'})
-    response = json.loads(command.stdout.decode('utf-8'))
+    try:
+        command = subprocess.run([str(worker), 'start', '--data-dir', data_dir], capture_output=True,
+                                 timeout=35, env={**os.environ, 'PYINSTALLER_RESET_ENVIRONMENT': '1'})
+    except subprocess.TimeoutExpired as error:
+        detail = (error.stderr or b'').decode('utf-8', errors='replace').strip() or 'control process timed out'
+        raise RuntimeError('更新后的网关启动失败：' + detail) from error
+    try:
+        response = json.loads(command.stdout.decode('utf-8'))
+    except (UnicodeDecodeError, ValueError):
+        response = {}
     if command.returncode or not response.get('ok'):
-        raise RuntimeError('更新后的网关启动失败。')
+        detail = response.get('error') or command.stderr.decode('utf-8', errors='replace').strip() or (
+            command.stdout.decode('utf-8', errors='replace').strip() or f'exit {command.returncode}')
+        raise RuntimeError('更新后的网关启动失败：' + detail)
     end = time.monotonic() + 40
     while time.monotonic() < end:
         if desktop.status()['running']:
@@ -314,7 +342,8 @@ def check_app(child, transaction, plan):
     end = time.monotonic() + 30
     while time.monotonic() < end:
         if child.poll() is not None:
-            raise RuntimeError('更新后的应用未能启动。')
+            logs = child_log(transaction)
+            raise RuntimeError(f'更新后的应用未能启动（exit {child.poll()}）：' + (logs or '没有应用输出'))
         try:
             ack = json.loads((transaction / 'ack.json').read_text(encoding='utf-8'))
             if ack == {'token': plan['token'], 'version': plan['version'], 'dataDir': plan['dataDir']}:
@@ -322,7 +351,8 @@ def check_app(child, transaction, plan):
         except (OSError, ValueError):
             pass
         time.sleep(.2)
-    raise TimeoutError('更新后的应用未就绪。')
+    logs = child_log(transaction)
+    raise TimeoutError('更新后的应用未就绪：' + (logs or '没有应用输出，也未写入确认'))
 
 
 def registry_version(target, version):
@@ -392,12 +422,39 @@ def apply(plan_file, *, desktop=None, wait=wait_parent, launch=launch_app, healt
                 raise RuntimeError('网关状态发生变化，更新已取消。')
             time.sleep(.2)
         if plan['runtime']['running']:
-            desktop.stop()
-            if desktop.status()['running']:
-                raise RuntimeError('网关尚未停止，更新已取消。')
+            # Stop can return while the listener is finishing its final socket
+            # cleanup, and a single health probe can therefore be ambiguous.
+            # Retry against the recorded instance; never terminate a foreign PID.
+            stop_error = None
+            verified_pid = state.get('pid') or plan['runtime'].get('pid')
+            acknowledged = False
+            stop_deadline = time.monotonic() + STOP_RETRY_SECONDS
+            while True:
+                try:
+                    desktop.stop()
+                    acknowledged = True
+                except Exception as error:
+                    stop_error = error
+                state = desktop.status()
+                if state.get('portOccupied') or (state.get('instanceId') and state['instanceId'] != expected_id):
+                    raise RuntimeError('网关状态发生变化，更新已取消。')
+                if acknowledged or time.monotonic() >= stop_deadline:
+                    break
+                time.sleep(.2)
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                state = desktop.status()
+                if state.get('portOccupied') or (state.get('instanceId') and state['instanceId'] != expected_id):
+                    raise RuntimeError('网关状态发生变化，更新已取消。')
+                if acknowledged and not state.get('running') and (not verified_pid or not process_exists(verified_pid)):
+                    break
+                time.sleep(.2)
+            else:
+                detail = str(stop_error) if stop_error else '实例仍在运行'
+                raise RuntimeError('网关尚未停止，更新已取消：' + detail)
             stopped = True
-            if os.name == 'nt' and state.get('pid'):
-                wait_parent(state['pid'], timeout=20)
+            if os.name == 'nt' and verified_pid:
+                wait_parent(verified_pid, timeout=20)
         move_app(target, backup)
         try:
             move_app(staged, target)
@@ -433,6 +490,7 @@ def apply(plan_file, *, desktop=None, wait=wait_parent, launch=launch_app, healt
                   'recovered': recovery_error is None, 'backup': str(backup)}
         if recovery_error:
             result['recoveryError'] = recovery_error
+    record_update(plan['dataDir'], result, plan.get('target'))
     write_json(Path(plan['dataDir']) / RESULT, result)
     write_json(transaction / 'result.json', result)
     return result

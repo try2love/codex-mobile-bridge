@@ -1,0 +1,19 @@
+{
+  "accepted": [
+    ["https://codex.try2love.com", "https://codex.try2love.com/"],
+    ["https://codex.try2love.com/", "https://codex.try2love.com/"],
+    ["https://codex.try2love.com/#pair=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "https://codex.try2love.com/#pair=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"],
+    ["http://192.168.1.20:8791", "http://192.168.1.20:8791/"],
+    ["http://127.0.0.1:8791", "http://127.0.0.1:8791/"],
+    ["http://[::1]:8791", "http://[::1]:8791/"],
+    ["http://10.0.0.1", "http://10.0.0.1/"],
+    ["http://172.31.0.1", "http://172.31.0.1/"]
+  ],
+  "rejected": [
+    "http://codex.try2love.com", "http://8.8.8.8", "http://172.32.0.1", "http://169.254.1.1",
+    "https://user:password@codex.try2love.com", "https://codex.try2love.com/path",
+    "https://codex.try2love.com/?token=secret", "https://codex.try2love.com/#pair=short",
+    "https://codex.try2love.com/#other=secret", "file:///etc/passwd", "javascript:alert(1)",
+    "https://codex.try2love.com:0", "https://codex.try2love.com:65536", "https://"
+  ]
+}
