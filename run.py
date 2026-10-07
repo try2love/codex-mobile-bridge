@@ -158,6 +158,7 @@ def main(connections=None, connection_secrets=None):
     tunnel = None
     tunnel_thread = None
     ssh_tunnels = []
+    shared_relay = None
     def notification_urls():
         if not gateway_ready(args.port, server.instance_id):
             return []
@@ -236,6 +237,8 @@ def main(connections=None, connection_secrets=None):
                     print(str(exc), flush=True)
             tunnel_thread = threading.Thread(target=connect_tunnel, daemon=True)
             tunnel_thread.start()
+        from bridge.shared_relay import start as start_shared_relay
+        shared_relay = start_shared_relay(args.config.parent, server)
         notifications.start()
         address_notifications.start()
         bridge.accounts.monitor.start()
@@ -251,6 +254,8 @@ def main(connections=None, connection_secrets=None):
         for listener, thread in listener_threads:
             listener.shutdown()
             thread.join()
+        if shared_relay:
+            shared_relay.close()
         address_notifications.close()
         bridge.accounts.monitor.close()
         notifications.close()

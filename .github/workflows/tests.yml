@@ -38,6 +38,8 @@ jobs:
       - name: Verify Windows continuous terminal before the full suite
         if: runner.os == 'Windows'
         run: python -B -m unittest discover -s tests -p test_windows_terminal.py -v
+      - name: Install optional shared relay transport for integration tests
+        run: python -m pip install -r requirements-relay.txt
       - run: python -B -m unittest discover -s tests -v
 
   desktop-tests:

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>中继管理 · Codex Mobile Bridge</title>
+  <style>
+    :root { color-scheme: light dark; --bg:#f5f6f8; --panel:#fff; --fg:#202631; --muted:#697180; --line:#e1e5eb; --accent:#315ed3; --danger:#b32a37; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.6 system-ui,sans-serif; }
+    main { max-width:1100px; margin:auto; padding:40px 24px; }
+    header,.row { display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+    h1 { font-size:28px; margin:0; letter-spacing:-.6px; } h2 { font-size:18px; margin:0 0 16px; }
+    p { margin:8px 0 16px; } .muted,small { color:var(--muted); } .brand { font-size:12px; letter-spacing:1.2px; color:var(--accent); font-weight:700; }
+    section,.card { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:24px; margin-top:20px; }
+    #login-panel { max-width:480px; margin:48px auto; } .stats { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; } .stats strong { display:block; font-size:30px; }
+    label { display:block; font-weight:600; margin-bottom:6px; } input,select,textarea,button { font:inherit; }
+    input,select,textarea { width:100%; border:1px solid var(--line); border-radius:8px; padding:10px 12px; background:var(--bg); color:var(--fg); }
+    button { border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--fg); padding:9px 15px; cursor:pointer; white-space:nowrap; }
+    button.primary { background:var(--accent); border-color:var(--accent); color:white; } button.danger { color:var(--danger); } button:disabled { opacity:.5; cursor:wait; }
+    button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible { outline:3px solid #87a7ff; outline-offset:2px; }
+    #login-form button { margin-top:16px; width:100%; } #invite-form { display:grid; grid-template-columns:1fr 180px auto; align-items:end; gap:16px; }
+    #invitation-result { margin-top:20px; padding-top:20px; border-top:1px solid var(--line); } textarea { resize:vertical; min-height:112px; margin:8px 0; }
+    .scroll { overflow:auto; } table { border-collapse:collapse; width:100%; text-align:left; white-space:nowrap; } th { font-size:13px; color:var(--muted); font-weight:500; } th,td { padding:12px 14px 12px 0; border-bottom:1px solid var(--line); } td { max-width:300px; overflow:hidden; text-overflow:ellipsis; } tbody tr:last-child td { border:0; }
+    .badge { display:inline-block; border-radius:20px; background:var(--bg); padding:2px 10px; font-size:13px; } .online { color:#12805d; background:#e8f6ef; }
+    #status { min-height:24px; margin-top:16px; overflow-wrap:anywhere; } #status.error { color:var(--danger); } #origin { overflow-wrap:anywhere; }
+    dialog { width:min(440px,calc(100% - 32px)); padding:24px; border:1px solid var(--line); border-radius:14px; background:var(--panel); color:var(--fg); } dialog::backdrop { background:#10182880; } dialog p { overflow-wrap:anywhere; }
+    [hidden] { display:none !important; }
+    @media (max-width:640px) { main { padding:24px 16px; } section,.card { padding:18px; } #invite-form { grid-template-columns:1fr; } .stats { gap:8px; } .stats .card { padding:12px; } .stats strong { font-size:24px; } .stats small { font-size:12px; } h1 { font-size:24px; } }
+    @media (prefers-color-scheme:dark) { :root { --bg:#141820; --panel:#1d2330; --fg:#e5eaf2; --muted:#a0aabc; --line:#343e50; --accent:#7b9dff; --danger:#ff929b; } button.primary { color:#141820; } .online { background:#193b32; color:#85dbb7; } }
+  </style>
+</head>
+<body>
+<main>
+  <header><div><div class="brand">CODEX MOBILE BRIDGE</div><h1>中继管理</h1></div><button id="logout" hidden>退出登录</button></header>
+  <p class="muted">管理邀请码与设备访问，让每位用户连接自己的 Codex。</p>
+  <div id="status" role="status" aria-live="polite"></div>
+  <section id="login-panel">
+    <h2>管理员登录</h2>
+    <p class="muted" id="login-help">使用服务器管理员生成的管理密钥登录。</p>
+    <form id="login-form"><label for="admin-key">管理密钥</label><input type="password" id="admin-key" required autocomplete="current-password" maxlength="256"><button class="primary" type="submit">登录管理后台</button></form>
+  </section>
+  <div id="dashboard" hidden>
+    <div class="row"><div><small>中继地址</small><div id="origin"></div></div><button id="refresh">刷新状态</button></div>
+    <div class="stats">
+      <div class="card"><small>在线电脑</small><strong id="online-count">0</strong></div>
+      <div class="card"><small>有效设备</small><strong id="device-count">0</strong></div>
+      <div class="card"><small>可用邀请码</small><strong id="invite-count">0</strong></div>
+    </div>
+    <section>
+      <h2>发放邀请码</h2>
+      <form id="invite-form">
+        <div><label for="owner">用户备注</label><input id="owner" placeholder="例如：Alice" maxlength="80" required></div>
+        <div><label for="hours">有效期</label><select id="hours"><option value="1">1 小时</option><option value="24" selected>24 小时</option><option value="168">7 天</option><option value="720">30 天</option></select></div>
+        <button class="primary" type="submit">生成邀请码</button>
+      </form>
+      <div id="invitation-result" hidden><label for="invitation-text">发送给用户</label><p class="muted">邀请码仅在本次生成后显示，请复制保存。每个邀请码只能注册一台电脑。</p><textarea id="invitation-text" readonly></textarea><div class="row"><button id="copy">复制接入信息</button><button id="dismiss-invitation">收起并清除</button></div></div>
+    </section>
+    <section><div class="row"><h2>设备</h2><small>撤销后，该电脑及其手机授权将失效</small></div><p id="devices-empty" class="muted">还没有设备接入。先发放邀请码，让用户在电脑客户端完成注册。</p><div class="scroll"><table id="devices-table" hidden><thead><tr><th>电脑名称</th><th>用户备注</th><th>状态</th><th>注册时间</th><th>操作</th></tr></thead><tbody id="devices"></tbody></table></div></section>
+    <section><h2>邀请码记录</h2><p id="invitations-empty" class="muted">还没有发放邀请码。</p><div class="scroll"><table id="invitations-table" hidden><thead><tr><th>用户备注</th><th>状态</th><th>到期时间</th></tr></thead><tbody id="invitations"></tbody></table></div></section>
+    <p class="muted" id="updated"></p>
+  </div>
+</main>
+<dialog id="revoke-dialog" aria-labelledby="revoke-title"><h2 id="revoke-title">撤销设备访问</h2><p id="revoke-description"></p><p class="muted">该电脑需要新的邀请码才能重新接入。已提交的 Codex 操作不会因此撤回。</p><div class="row"><button id="cancel-revoke">取消</button><button class="danger" id="confirm-revoke">确认撤销</button></div></dialog>
+<script src="/relay/admin/admin.js"></script>
+</body>
+</html>
