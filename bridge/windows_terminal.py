@@ -5,8 +5,10 @@ import ctypes as C
 from ctypes import wintypes as W
 import hashlib
 import os
+from pathlib import Path
 import queue
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -39,6 +41,8 @@ def api():
     kernel = C.WinDLL('kernel32', use_last_error=True)
     signatures = {
         'CreatePipe': (W.BOOL, [C.POINTER(W.HANDLE), C.POINTER(W.HANDLE), C.c_void_p, W.DWORD]),
+        'CreateFileW': (W.HANDLE, [W.LPCWSTR, W.DWORD, W.DWORD, C.c_void_p, W.DWORD, W.DWORD, W.HANDLE]),
+        'SetStdHandle': (W.BOOL, [W.DWORD, W.HANDLE]),
         'CreatePseudoConsole': (C.c_long, [COORD, W.HANDLE, W.HANDLE, W.DWORD, C.POINTER(W.HANDLE)]),
         'ResizePseudoConsole': (C.c_long, [W.HANDLE, COORD]), 'ClosePseudoConsole': (None, [W.HANDLE]),
         'InitializeProcThreadAttributeList': (W.BOOL, [C.c_void_p, W.DWORD, W.DWORD, C.POINTER(C.c_size_t)]),
@@ -61,6 +65,21 @@ def api():
 def checked(result):
     if not result:
         raise C.WinError(C.get_last_error())
+
+
+def child_main(shell):
+    # A stdio gateway's redirected handles can survive the ConPTY attachment.
+    # Reopen them in this child only; never replace the gateway's RPC streams.
+    kernel = api(); handles = []
+    try:
+        for number, name in ((-10, 'CONIN$'), (-11, 'CONOUT$'), (-12, 'CONOUT$')):
+            handle = kernel.CreateFileW(name, 0xc0000000, 3, None, 3, 0, None)
+            if handle == W.HANDLE(-1).value: raise C.WinError(C.get_last_error())
+            handles.append(handle); checked(kernel.SetStdHandle(number, handle))
+        code = subprocess.call([shell])
+    finally:
+        for handle in handles: kernel.CloseHandle(handle)
+    raise SystemExit(code)
 
 
 class WindowsTerminalSession(TerminalSession):
@@ -89,9 +108,12 @@ class WindowsTerminalSession(TerminalSession):
             startup = STARTUPINFOEX(); startup.StartupInfo.cb = C.sizeof(startup)
             startup.lpAttributeList = C.cast(attributes, C.c_void_p)
             process = PROCESS_INFORMATION()
-            # CreateProcess receives an argv-quoted executable, never a shell command.
-            command = C.create_unicode_buffer(subprocess.list2cmdline([self.shell]))
-            checked(k.CreateProcessW(self.shell, command, None, None, False, 0x00080000, None, self.root, C.byref(startup), C.byref(process)))
+            # The helper reconnects its standard handles before starting the user's shell.
+            launcher = [sys.executable]
+            if not getattr(sys, 'frozen', False): launcher.append(str(Path(__file__).resolve().parents[1] / 'desktop.py'))
+            launcher.extend(['--terminal-child', self.shell])
+            command = C.create_unicode_buffer(subprocess.list2cmdline(launcher))
+            checked(k.CreateProcessW(sys.executable, command, None, None, False, 0x00080000, None, self.root, C.byref(startup), C.byref(process)))
             self.process_handle = process.hProcess; k.CloseHandle(process.hThread)
         except Exception:
             if self.console.value: k.ClosePseudoConsole(self.console)

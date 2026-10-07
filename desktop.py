@@ -4,7 +4,10 @@ import argparse
 import json
 import sys
 if len(sys.argv) == 3 and sys.argv[1] == '--terminal-child':
-    from bridge.pty_terminal import child_main
+    if sys.platform == 'win32':
+        from bridge.windows_terminal import child_main
+    else:
+        from bridge.pty_terminal import child_main
     child_main(sys.argv[2])
 
 from bridge.desktop import Desktop
