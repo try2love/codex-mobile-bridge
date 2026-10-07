@@ -2,6 +2,7 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"显示当前连接的电脑":"Show connected computer",
 "创建侧边聊天":"Create side chat",
 "临时侧边聊天":"Temporary side chat",
 "开启一段侧边聊天":"Start a side chat",

@@ -15,6 +15,13 @@ import java.util.concurrent.*;
 public final class MainActivity extends Activity {
  private LinearLayout root,bar;private WebView web;private String origin="";private TextView status;
  private android.content.SharedPreferences prefs;private final ExecutorService worker=Executors.newSingleThreadExecutor();
+ private final ExecutorService probes=Executors.newFixedThreadPool(3);
+ private final Handler homeHandler=new Handler(Looper.getMainLooper());
+ private final Map<String,TextView> homeStates=new LinkedHashMap<>();
+ private final List<GatewayProbe> homeProbes=new ArrayList<>();
+ private final List<Future<?>> probeTasks=new ArrayList<>();
+ private int probeGeneration;private boolean resumed;
+ private final Runnable homeRefresh=()->checkComputers();
  private long homeBackAt;private Toast exitToast;
  private boolean downloading;private ArtifactDownload.Result pendingDownload;
  private ServiceConnection monitor;private ValueCallback<Uri[]> files;private int generation;
@@ -40,7 +47,7 @@ public final class MainActivity extends Activity {
   status=text("",12);status.setTextColor(0xff6b7075);status.setGravity(Gravity.CENTER);root.addView(status);
   if(!openIntent(getIntent())){String active=prefs.getString("active","");if(saved().contains(active))connect(active+"/");else home();}monitor();
  }
- void clear(){resetExitGesture();generation++;if(web!=null){web.stopLoading();web.destroy();web=null;}while(root.getChildCount()>2)root.removeViewAt(2);}
+ void clear(){stopComputerChecks();homeStates.clear();resetExitGesture();generation++;if(web!=null){web.stopLoading();web.destroy();web=null;}while(root.getChildCount()>2)root.removeViewAt(2);}
  void home(){clear();header(false);status.setVisibility(View.GONE);ScrollView scroll=new ScrollView(this);scroll.setFillViewport(true);LinearLayout content=column();content.setPadding(dp(20),dp(16),dp(20),dp(24));scroll.addView(content);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
   ImageView icon=new ImageView(this);icon.setImageResource(getResources().getIdentifier("ic_computer","drawable",getPackageName()));icon.setScaleType(ImageView.ScaleType.FIT_CENTER);LinearLayout.LayoutParams ip=new LinearLayout.LayoutParams(dp(64),dp(58));ip.gravity=Gravity.CENTER;ip.bottomMargin=dp(24);content.addView(icon,ip);
   TextView headline=text(L("电脑上的工作，\n带在身边。"),30);headline.setTypeface(null,android.graphics.Typeface.BOLD);headline.setGravity(Gravity.CENTER);add(headline,content,10);
@@ -48,8 +55,17 @@ public final class MainActivity extends Activity {
   LinearLayout connection=card();Button scan=button(L("扫码连接电脑"),this::scan);scan.setTextColor(0xffffffff);scan.setBackground(background(0xff202124,16));add(scan,connection,8);add(button(L("输入网关地址"),this::manualAddress),connection,0);add(connection,content,24);
   TextView section=text(L("你的电脑"),19);section.setTypeface(null,android.graphics.Typeface.BOLD);add(section,content,12);
   if(saved().isEmpty()){LinearLayout empty=card();add(text(L("还没有连接的电脑"),17),empty,6);TextView hint=text(L("在电脑网关中展开“扫码登录”，然后用上方按钮扫描。"),14);hint.setTextColor(0xff777b80);add(hint,empty,0);add(empty,content,18);}
-  for(String entry:saved()){LinearLayout computer=card();TextView name=text(Uri.parse(entry).getHost()+"   ›",17);name.setTypeface(null,android.graphics.Typeface.BOLD);add(name,computer,4);TextView address=text(entry,13);address.setTextColor(0xff777b80);add(address,computer,0);computer.setOnClickListener(v->connect(entry+"/"));computer.setContentDescription(L("连接 ")+Uri.parse(entry).getHost());add(computer,content,12);}
-  TextView foot=text(L("外出使用 HTTPS 地址；局域网地址需要连接同一网络。"),13);foot.setTextColor(0xff777b80);foot.setGravity(Gravity.CENTER);add(foot,content,0);
+  for(String entry:saved()){LinearLayout computer=card();TextView name=text(Uri.parse(entry).getHost()+"   ›",17);name.setTypeface(null,android.graphics.Typeface.BOLD);add(name,computer,4);TextView address=text(entry,13);address.setTextColor(0xff777b80);add(address,computer,0);TextView reachability=text(L("检查中…"),12);reachability.setTextColor(0xff777b80);reachability.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);add(reachability,computer,0);homeStates.put(entry,reachability);computer.setOnClickListener(v->connect(entry+"/"));computer.setContentDescription(L("连接 ")+Uri.parse(entry).getHost());add(computer,content,12);}
+  TextView foot=text(L("外出使用 HTTPS 地址；局域网地址需要连接同一网络。"),13);foot.setTextColor(0xff777b80);foot.setGravity(Gravity.CENTER);add(foot,content,0);checkComputers();
+ }
+ void stopComputerChecks(){probeGeneration++;homeHandler.removeCallbacks(homeRefresh);for(GatewayProbe probe:homeProbes)probe.cancel();homeProbes.clear();for(Future<?> task:probeTasks)task.cancel(true);probeTasks.clear();}
+ void checkComputers(){
+  stopComputerChecks();if(!resumed||web!=null||homeStates.isEmpty())return;final int ticket=probeGeneration;
+  for(Map.Entry<String,TextView> entry:homeStates.entrySet()){
+   GatewayProbe probe=new GatewayProbe();homeProbes.add(probe);
+   probeTasks.add(probes.submit(()->{boolean online=probe.check(entry.getKey());runOnUiThread(()->{if(ticket!=probeGeneration||!resumed||web!=null)return;TextView label=entry.getValue();label.setText((online?"● ":"○ ")+L(online?"在线":"暂不可达"));label.setTextColor(online?0xff23815b:0xff777b80);});}));
+  }
+  homeHandler.postDelayed(homeRefresh,30000);
  }
  void manualAddress(){resetExitGesture();EditText field=new EditText(this);field.setSingleLine();field.setInputType(17);field.setText("https://");field.setSelection(field.length());field.setPadding(dp(24),dp(16),dp(24),dp(16));new AlertDialog.Builder(this).setTitle(L("连接电脑")).setMessage(L("粘贴电脑网关提供的访问地址")).setView(field).setPositiveButton(L("继续"),(d,w)->choose(field.getText().toString())).setNegativeButton(L("取消"),null).show();}
  void choose(String value){resetExitGesture();try{String target=GatewayURL.connection(value);String base=GatewayURL.origin(value);new AlertDialog.Builder(this).setTitle(L("连接到这台电脑？")).setMessage(base+L("\n请确认这是你自己的网关。")).setPositiveButton(L("连接"),(d,w)->connect(target)).setNegativeButton(L("取消"),null).show();}catch(Exception e){message(e.getMessage());}}
@@ -160,10 +176,10 @@ public final class MainActivity extends Activity {
  void scan(){if(checkSelfPermission(Manifest.permission.CAMERA)!=PackageManager.PERMISSION_GRANTED){requestPermissions(new String[]{Manifest.permission.CAMERA},21);return;}startActivityForResult(new Intent(this,ScanActivity.class),20);}
  @Override public void onRequestPermissionsResult(int code,String[] names,int[] results){super.onRequestPermissionsResult(code,names,results);if(results.length==0||results[0]!=PackageManager.PERMISSION_GRANTED){message(L("未获得权限，可继续粘贴地址使用。"));return;}if(code==24)enableNativePush();if(code==21)scan();if(code==23)testNotification();if(code==22){prefs.edit().putBoolean("alerts",true).apply();monitor();}}
  @Override protected void onActivityResult(int code,int result,Intent data){super.onActivityResult(code,result,data);if(code==32){saveDownload(result,data);return;}if(code==20&&result==RESULT_OK&&data!=null)choose(data.getStringExtra("code"));if(code==31&&files!=null){files.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(result,data));files=null;}}
- @Override protected void onResume(){super.onResume();MonitorService.foregroundEpoch++;MonitorService.visible=true;if(web!=null)web.onResume();registerPushToken();}
- @Override protected void onPause(){resetExitGesture();MonitorService.visible=false;if(web!=null)web.onPause();CookieManager.getInstance().flush();super.onPause();}
+ @Override protected void onResume(){super.onResume();resumed=true;checkComputers();MonitorService.foregroundEpoch++;MonitorService.visible=true;if(web!=null)web.onResume();registerPushToken();}
+ @Override protected void onPause(){resumed=false;stopComputerChecks();resetExitGesture();MonitorService.visible=false;if(web!=null)web.onPause();CookieManager.getInstance().flush();super.onPause();}
  void resetExitGesture(){homeBackAt=0;if(exitToast!=null){exitToast.cancel();exitToast=null;}}
  @Override public void onBackPressed(){handleBack();}
  void handleBack(){if(web==null){long now=SystemClock.elapsedRealtime();if(homeBackAt!=0&&now-homeBackAt<=2000){resetExitGesture();finishAndRemoveTask();}else{homeBackAt=now;if(exitToast!=null)exitToast.cancel();exitToast=Toast.makeText(this,L("再按一次返回退出 App"),Toast.LENGTH_SHORT);exitToast.show();}return;}resetExitGesture();if(!GatewayURL.sameOrigin(web.getUrl(),origin)){home();return;}final int ticket=generation;web.evaluateJavascript("(()=>{const dialog=document.querySelector('dialog[open]');if(dialog){dialog.close();return true;}if(window.BridgeWorkbench?.back())return true;if(document.getElementById('app')?.classList.contains('chat-open')){document.getElementById('back')?.click();return true;}return false;})()",result->{if(ticket==generation&&!"true".equals(result))home();});}
- @Override public void onDestroy(){if(pendingDownload!=null){pendingDownload.file.delete();pendingDownload=null;}if(files!=null)files.onReceiveValue(null);clear();worker.shutdownNow();if(monitor!=null)getApplicationContext().unbindService(monitor);super.onDestroy();}
+ @Override public void onDestroy(){if(pendingDownload!=null){pendingDownload.file.delete();pendingDownload=null;}if(files!=null)files.onReceiveValue(null);clear();probes.shutdownNow();worker.shutdownNow();if(monitor!=null)getApplicationContext().unbindService(monitor);super.onDestroy();}
 }

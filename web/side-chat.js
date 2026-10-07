@@ -117,7 +117,7 @@ class SideChatPanel {
         dialog.querySelectorAll('button').forEach(b=>b.disabled=true);
         try{const state=await this.request({action:'permissions',id:child,preset,confirmed:preset==='full-access'});if(this.state?.id===child)this.apply(state);dialog.close();}
         catch(e){error.textContent=BridgeI18n.t(e.message);}finally{dialog.querySelectorAll('button').forEach(b=>b.disabled=false);}
-      },BridgeI18n.t(label));button.className='skill-option';button.setAttribute('aria-pressed',String(this.state.permissionMode===preset));button.append(n('strong','',BridgeI18n.t(label)),n('span','',BridgeI18n.t(help)));dialog.append(button);
+      },BridgeI18n.t(label));permissionOption(button,preset,label,help,this.state.permissionMode===preset);dialog.append(button);
     }dialog.append(error);
   }
   async modelSettings(){

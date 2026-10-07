@@ -83,7 +83,14 @@ async function start(pairingToken=null){
   }
   if(!auth.authenticated){showLogin(auth.passwordless,auth.loginStatus);return;}csrf=auth.csrf;await enter();
 }
-async function enter(){$('login').hidden=true;$('app').hidden=false;accountsPanel?.refresh();const list=loadList(true).catch(e=>toast(e.message));const [id,host='local']=location.hash.slice(1).split('~');if(/^[0-9a-f-]{36}$/.test(id))await openChat(id,decodeURIComponent(host));await list;}
+async function refreshComputer(){
+  $('computer-name').textContent=location.host;$('connected-computer').title=location.host;
+  try{const auth=await api('/api/auth');if(!auth.authenticated||$('app').hidden)return;
+    const name=auth.computer?.name||location.host;$('computer-name').textContent=name;
+    $('connected-computer').title=[name,auth.computer?.platform,location.host].filter(Boolean).join(' · ');
+  }catch{/* Older or temporarily unavailable gateways keep the connected address. */}
+}
+async function enter(){refreshComputer();$('login').hidden=true;$('app').hidden=false;accountsPanel?.refresh();const list=loadList(true).catch(e=>toast(e.message));const [id,host='local']=location.hash.slice(1).split('~');if(/^[0-9a-f-]{36}$/.test(id))await openChat(id,decodeURIComponent(host));await list;}
 $('login-form').addEventListener('submit',async event=>{event.preventDefault();if(loginStatus.blocked)return;$('login-button').disabled=true;$('login-error').textContent='';try{const result=await api('/api/login',{username:$('username').value,password:$('password').value,remember:$('remember-login').checked});renderLoginStatus({attemptsRemaining:5,attemptLimit:5,blocked:false});csrf=result.csrf;$('password').value='';await enter();}catch(error){$('login-error').textContent=t(error.message);renderLoginStatus(error.loginStatus);}finally{$('login-button').disabled=loginStatus.blocked;}});
 $('logout').onclick=async()=>{await api('/api/logout',{});csrf='';state=null;currentId=null;$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();$('sessions').replaceChildren();$('message').value='';sessionStorage.clear();attachments.reset();sessionActivity.clear();recentInteractions.clear();showLogin();};
 function dateText(value){if(!value)return '';return new Date(value*1000).toLocaleDateString(BridgeI18n.locale(),{month:'numeric',day:'numeric'});}
@@ -562,10 +569,10 @@ if(accountsPanel)$('accounts-button').onclick=()=>{$('accounts-dialog').showModa
 $('permissions-button').onclick=()=>{
   if(!currentId||!state?.connected)return;
   const id=currentId,host=currentHost,dialog=el('dialog','picker'),head=el('div','picker-head');
-  head.append(el('h2','',t('会话权限')));const close=el('button','icon-button','×');close.type='button';close.onclick=()=>dialog.close();head.append(close);dialog.append(head,el('p','muted',t('保存后从下一轮生效')));
+  head.append(el('h2','',t('会话权限')));const close=el('button','icon-button','×');close.type='button';close.setAttribute('aria-label',t('关闭'));close.onclick=()=>dialog.close();head.append(close);dialog.append(head,el('p','muted',t('保存后从下一轮生效')));
   const error=el('p','error');
   for(const [preset,label,help] of [['ask','请求批准','需要额外权限时询问你。'],['auto-review','帮我批准','由 Codex 审核需要额外权限的操作。'],['full-access','完全访问权限','允许访问工作区外的文件和网络，无需逐次批准。']]){
-    const button=el('button','skill-option');button.type='button';button.append(el('strong','',t(label)),el('span','',t(help)));button.setAttribute('aria-pressed',String(state.permissionMode===preset));
+    const button=permissionOption(el('button'),preset,label,help,state.permissionMode===preset);
     button.onclick=async()=>{
       if(preset==='full-access'&&!confirm(t('允许此会话完全访问电脑文件和网络？请仅在信任任务内容时开启。')))return;
       dialog.querySelectorAll('button').forEach(b=>b.disabled=true);

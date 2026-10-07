@@ -30,6 +30,40 @@ final class NoRedirect: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
 }
 
+// Foreground-only, cookie-free reachability check with a bounded response.
+final class GatewayReachability: NSObject, URLSessionDataDelegate {
+    private var session: URLSession?
+    private var data = Data()
+    private var completion: ((Bool) -> Void)?
+    func start(_ origin: String, completion: @escaping (Bool) -> Void) {
+        guard let url = URL(string: origin + "/api/auth") else { completion(false); return }
+        self.completion = completion
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 4; config.timeoutIntervalForResource = 5
+        config.httpShouldSetCookies = false; config.httpCookieStorage = nil; config.urlCredentialStorage = nil; config.urlCache = nil
+        let session = URLSession(configuration: config, delegate: self, delegateQueue: nil); self.session = session
+        var request = URLRequest(url: url); request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        session.dataTask(with: request).resume()
+    }
+    func cancel() { completion = nil; session?.invalidateAndCancel(); session = nil }
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        completionHandler((response as? HTTPURLResponse)?.statusCode == 200 && response.expectedContentLength <= 16384 ? .allow : .cancel)
+    }
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive bytes: Data) {
+        guard data.count + bytes.count <= 16384 else { dataTask.cancel(); return }; data.append(bytes)
+    }
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        let value = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        let online = error == nil && (task.response as? HTTPURLResponse)?.statusCode == 200 && value?["authenticated"] is Bool && value?["passwordless"] is Bool && !(value?["instanceId"] as? String ?? "").isEmpty
+        session.finishTasksAndInvalidate()
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }; self.completion?(online); self.completion = nil; self.session = nil
+        }
+    }
+}
+
 final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, UIDocumentPickerDelegate {
     private var web: WKWebView?
     private var origin = ""
@@ -151,6 +185,10 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
       document.addEventListener('DOMContentLoaded', install, { once: true });
     })();
     """
+    private var computerStates: [String: UILabel] = [:]
+    private var computerProbes: [GatewayReachability] = []
+    private var computerTimer: Timer?
+    private var computerRevision = 0
     private let redirect = NoRedirect()
     private lazy var session: URLSession = { let c = URLSessionConfiguration.ephemeral; c.timeoutIntervalForRequest = 12; c.httpShouldSetCookies = false; return URLSession(configuration: c, delegate: redirect, delegateQueue: nil) }()
     private var saved: [String] { defaults.stringArray(forKey: "origins") ?? [] }
@@ -259,7 +297,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         let inbox = UIBarButtonItem(image: UIImage(systemName: "bell"), style: .plain, target: self, action: #selector(self.inbox)); inbox.accessibilityLabel = MobileStrings.text("通知")
         navigationItem.rightBarButtonItems = [settings, inbox]
     }
-    private func clear() { artifactDownload?.cancel { _ in }; artifactDownload = nil; downloadStarting = false; removeDownloadFile(); gatewayMenuTop?.isActive = false; gatewayMenuTop = nil; generation += 1; web?.stopLoading(); web?.navigationDelegate = nil; web?.uiDelegate = nil; web = nil; for v in page.arrangedSubviews where v !== subtitle { page.removeArrangedSubview(v); v.removeFromSuperview() } }
+    private func clear() { stopComputerChecks(); computerStates.removeAll(); artifactDownload?.cancel { _ in }; artifactDownload = nil; downloadStarting = false; removeDownloadFile(); gatewayMenuTop?.isActive = false; gatewayMenuTop = nil; generation += 1; web?.stopLoading(); web?.navigationDelegate = nil; web?.uiDelegate = nil; web = nil; for v in page.arrangedSubviews where v !== subtitle { page.removeArrangedSubview(v); v.removeFromSuperview() } }
     @objc func home() {
         clear(); navigation(home: true); subtitle.isHidden = true
         let container = UIView(); page.addArrangedSubview(container); let content = scrollContent(in: container)
@@ -278,10 +316,31 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
                 row.contentHorizontalAlignment = .leading
                 row.configuration?.subtitle = address; row.configuration?.titleAlignment = .leading
                 row.configuration?.subtitleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { a in var a = a; a.foregroundColor = .secondaryLabel; return a }
-                content.addArrangedSubview(card([row]))
+                let status = label(MobileStrings.text("检查中…"), size: 12, secondary: true)
+                computerStates[address] = status
+                content.addArrangedSubview(card([row, status]))
             }
         }
         let foot = label(MobileStrings.text("外出使用 HTTPS 地址；局域网地址需要连接同一网络。"), size: 13, secondary: true); foot.textAlignment = .center; content.addArrangedSubview(foot)
+        checkComputers()
+    }
+    private func stopComputerChecks() {
+        computerRevision += 1; computerTimer?.invalidate(); computerTimer = nil
+        computerProbes.forEach { $0.cancel() }; computerProbes.removeAll()
+    }
+    private func checkComputers() {
+        stopComputerChecks()
+        guard web == nil, UIApplication.shared.applicationState == .active, !computerStates.isEmpty else { return }
+        let revision = computerRevision
+        for (address, label) in computerStates {
+            let probe = GatewayReachability(); computerProbes.append(probe)
+            probe.start(address) { [weak self, weak label] online in
+                guard let self, self.computerRevision == revision, self.web == nil else { return }
+                label?.text = (online ? "● " : "○ ") + MobileStrings.text(online ? "在线" : "暂不可达")
+                label?.textColor = online ? .systemGreen : .secondaryLabel
+            }
+        }
+        computerTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self] _ in self?.checkComputers() }
     }
     private func manualAddress() {
         let a = UIAlertController(title: MobileStrings.text("连接电脑"), message: MobileStrings.text("粘贴电脑网关提供的访问地址"), preferredStyle: .alert)
@@ -471,8 +530,8 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             }
         }
     } }
-    @objc private func active() { foregroundBaselines.removeAll();sync(); activityTimer?.invalidate(); activityTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.syncLiveActivity() }; syncLiveActivity(); timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in self?.sync() } }
-    @objc private func inactive() { timer?.invalidate(); timer = nil; activityTimer?.invalidate(); activityTimer = nil; if #available(iOS 16.2, *) { Task { await LiveActivityController.shared.pause() } } }
+    @objc private func active() { checkComputers(); foregroundBaselines.removeAll();sync(); activityTimer?.invalidate(); activityTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.syncLiveActivity() }; syncLiveActivity(); timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in self?.sync() } }
+    @objc private func inactive() { stopComputerChecks(); timer?.invalidate(); timer = nil; activityTimer?.invalidate(); activityTimer = nil; if #available(iOS 16.2, *) { Task { await LiveActivityController.shared.pause() } } }
     private func sync() {
         registerNativePush()
         guard UIApplication.shared.applicationState == .active, !loading else { return }
@@ -841,6 +900,7 @@ enum MobileStrings {
         "10 秒后显示本地测试通知，可以先锁屏。此测试不代表远程推送已经接通。": "A local test notification will appear in 10 seconds. You may lock the screen. This does not verify remote push delivery.",
         "测试通知未能创建，请检查系统通知设置。": "Could not schedule the test. Check system notification settings.",
         "未获得相机权限，请粘贴网关地址。": "Camera access denied. Paste the gateway address instead.",
+        "检查中…": "Checking…", "在线": "Online", "暂不可达": "Unreachable",
         "取消扫码": "Cancel scan"
     ]
     static func text(_ value: String) -> String {

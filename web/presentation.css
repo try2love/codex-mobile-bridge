@@ -157,3 +157,19 @@ aside{background:var(--surface)}
 #image-preview-status:empty{padding-bottom:env(safe-area-inset-bottom)}
 img[data-image-preview]{cursor:zoom-in}
 img[data-image-preview]:focus-visible,#image-preview-close:focus-visible{outline:2px solid #8bb5ff;outline-offset:3px}
+
+/* Permission cards share the same layout in main and side chats. */
+.permission-option{display:flex;align-items:center;gap:16px;width:100%;padding:18px 16px;margin:10px 0;border:1px solid var(--line);border-radius:14px;background:var(--raised);color:var(--text);text-align:left;}
+.permission-option:hover{background:var(--surface);border-color:var(--muted)}
+.permission-option[aria-pressed=true]{border-color:var(--green);background:var(--soft)}
+.permission-option>svg{flex:none;width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.permission-option>span:not(.permission-check){flex:1;min-width:0}
+.permission-option strong{display:block;font-size:16px;line-height:1.5;font-weight:650}
+.permission-option small{display:block;margin-top:4px;color:var(--muted);font-size:13px;line-height:1.55}
+.permission-check{flex:none;width:18px;color:var(--green);font-size:18px}
+.list-heading h2{flex:none}
+.connected-computer{display:flex;align-items:center;gap:5px;min-width:0;flex:1;color:var(--muted);font-size:11px;justify-content:center}
+.connected-computer svg{width:15px;height:15px;flex:none;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.connected-computer span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.list-heading #new-chat{margin-left:auto;flex:none}
+:root[data-show-computer=false] .connected-computer{display:none}
