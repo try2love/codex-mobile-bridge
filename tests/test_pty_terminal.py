@@ -20,6 +20,8 @@ class PtyTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]/'.tmp')
         self.root = Path(self.temp.name); self.sessions = []
         self.env = patch.dict(os.environ, {'ZDOTDIR':'.', 'HISTFILE':str(self.root/'history')}); self.env.start()
+        # Keep distro-wide interactive setup (e.g. compinit prompts) out of the fixture.
+        (self.root/'.zshenv').write_text('unsetopt GLOBAL_RCS\n')
         (self.root/'.zshrc').write_text("PROMPT='fixture% '\nexport BRIDGE_STARTUP_TEST=loaded\n")
     def tearDown(self):
         for session in self.sessions: session.stop(); self.assertTrue(session.done.wait(5))
