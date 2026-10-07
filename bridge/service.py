@@ -14,6 +14,7 @@ import unicodedata
 from pathlib import Path
 
 from .terminal import TerminalManager
+from .side_chat import NativeSideChats
 from .ipc import DesktopIPC, IPCError
 from .transport import ipc_endpoint
 from .model import apply_patches, computer_use_approval, items_array, normalize_state, normalize_request, ordered_turns, pending_requests, async_requests, request_id, user_display_text
@@ -117,6 +118,7 @@ class Bridge:
         self.live = {}
         self.lock = threading.RLock()
         self.ipc = DesktopIPC(ipc_path or ipc_endpoint(codex_home), self._event, self._disconnected)
+        self.side_chats = NativeSideChats(self.ipc.path, host)
         self.closed = threading.Event()
         Path(data_dir).mkdir(parents=True, exist_ok=True, mode=0o700)
         self.ledger_path = Path(data_dir) / "submissions.json"
@@ -704,6 +706,11 @@ class Bridge:
         self.store.get(thread_id)  # Uploads do not activate a desktop chat.
         return self.uploads.put(thread_id, identifier, name, data)
 
+    @operation
+    def side_chat(self, thread_id, owner, action, body):
+        self.store.get(thread_id)
+        return self.side_chats.operate(thread_id, owner, action, body)
+
     def upload_thumb(self, thread_id, identifier, data, width, height):
         self.store.get(thread_id)
         return self.uploads.set_thumb(thread_id, identifier, data, width, height)
@@ -917,6 +924,7 @@ class Bridge:
     def _maintain(self):
         delay = 3
         while not self.closed.wait(delay):
+            self.side_chats.reap()
             if self.accounts is not None:
                 try:
                     self.accounts.check_ready()
@@ -1809,6 +1817,7 @@ class Bridge:
 
     def close(self):
         self.terminals.close()
+        self.side_chats.close()
         self.closed.set()
         if self.host == "local" and self.accounts:
             self.accounts.login_cancel.set()

@@ -1,6 +1,20 @@
 # 原生侧边聊天接入调研
 
-调研日期：2026-10-07。范围：当前本机 Codex 桌面构建的只读协议与实现检查，以及官方 app-server 文档。没有修改 Codex 安装包、启动替代模型会话或发送真实模型请求。
+调研日期：2026-10-07。初次调研为只读检查；后续经用户授权，使用用户手动创建的原生侧边聊天进行了真实收发与关闭实验。没有修改 Codex 安装包或启动替代模型进程。
+
+## 本地接管实验
+
+已实现工作台独立子标签：连接电脑端已打开的原生侧边聊天、读取回复、发送文本，以及断开手机连接。它不创建普通持久聊天，也不启动独立 app-server。
+
+- 桌面快照必须同时满足 `ephemeral: true`、`sideConversation: true`、`forkedFromId` 等于当前主会话。实际验证取得了这些字段。
+- 发送复用原桌面 owner 的 `thread-follower-start-turn`，使用 `inheritThreadSettings: true`，不覆盖模型、提供商、工作目录或权限。真实测试消息得到正常回复。
+- 每次发送前取得新快照。用户在桌面关闭测试侧边聊天后，现有连接无法再取得快照，校验拒绝继续发送，不执行 `thread/resume`。
+- 内容和发送去重状态只存在内存中；断开后清理。发送回复丢失时不自动重放。不活跃的手机连接在 5 分钟后释放 follower；这只是 Bridge 连接清理时间，不是原生聊天寿命。
+- 确认、审批和结束原生临时聊天仍需在电脑端操作。手机关闭子标签只断开连接，不能宣称销毁了桌面聊天。
+
+当前发现入口是 macOS 当日日志里最近的 `thread/inject_items` 路由记录，只提取候选 ID，再用实时快照确认所属主会话和临时性质。没有匹配日志时无法自动发现；该机制依赖当前桌面版本，尚不是跨平台稳定接口。同一主会话有多条侧边聊天时，连接最近发现且可用的一条。
+
+用户选择了通过桌面 UI 创建的实验路线，但 Computer Use 工具明确禁止控制 Codex 自身。未使用其他自动化工具绕过限制，由用户手动创建和关闭完成验证。因此本次交付是**原生侧边聊天接管预览**，自动创建和远程销毁尚未实现。
 
 ## 结论
 
@@ -46,5 +60,6 @@
 ## 依据
 
 - [Codex App Server 官方文档](https://developers.openai.com/codex/app-server)：`thread/fork`、`ephemeral`、`thread/unsubscribe` 以及 stdio/Unix socket/WebSocket transport。
+- [当前 App Server 生命周期说明](https://learn.chatgpt.com/docs/app-server#unsubscribe-from-a-loaded-thread)：最后一个订阅者取消订阅后，连续 30 分钟没有订阅者和会话活动才卸载。这与桌面自己的非活跃 owner 清理不是同一个计时器，不应硬编码成侧边聊天的统一寿命。
 - [Codex 桌面功能官方文档](https://developers.openai.com/codex/app/features)。公开页面未提供可直接从 Bridge 调用的原生侧边聊天 API。
 - 本机桌面构建的创建、丢弃和非活跃会话清理逻辑，以及当前进程的只读 transport 检查。上述内部符号和条件是当前版本的观测，不视为稳定公开 API。

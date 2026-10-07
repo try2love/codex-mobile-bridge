@@ -90,7 +90,7 @@ class Workbench {
     if (!this.sessions.has(key)) this.sessions.set(key, {id, host, key, active: 'chat', files: [], directory: '', search: '', hidden: false, scroll: 0});
     this.current = this.sessions.get(key); this.paint();
   }
-  reset() { this.stopThumbnails(); this.uploadController?.abort(); for (const session of this.sessions.values()) for (const tab of session.files) { tab.controller?.abort(); tab.git?.dispose(); tab.terminal?.dispose(); tab.agents?.dispose(); } this.sessions.clear(); this.current = null; this.chat.classList.remove('workbench-active'); this.panel.replaceChildren(); this.panel.hidden = true; this.tabs.replaceChildren(); }
+  reset() { this.stopThumbnails(); this.uploadController?.abort(); for (const session of this.sessions.values()) for (const tab of session.files) { tab.controller?.abort(); tab.git?.dispose(); tab.terminal?.dispose(); tab.agents?.dispose(); tab.sideChat?.dispose(); } this.sessions.clear(); this.current = null; this.chat.classList.remove('workbench-active'); this.panel.replaceChildren(); this.panel.hidden = true; this.tabs.replaceChildren(); }
   get isFileVisible() { return !!this.current && this.current.active !== 'chat'; }
   url(session, operation = '', path = '') { return '/api/sessions/' + session.id + '/workspace' + (operation ? '/' + operation : '') + '?host=' + encodeURIComponent(session.host) + '&path=' + encodeURIComponent(path); }
   rememberScroll() { if (this.current?.active === 'chat') this.current.scroll = this.chat.querySelector('.timeline').scrollTop; }
@@ -122,7 +122,7 @@ class Workbench {
   back() { const floating=this.panel.querySelector('.wb-float'); if(floating){floating.querySelector('[aria-label="关闭详情"]').click();return true;} if (!this.isFileVisible) return false; this.select('chat'); return true; }
   close(id) {
     const session = this.current, index = session.files.findIndex(t => t.id === id);
-    if (index < 0) return; session.files[index].controller?.abort(); session.files[index].git?.dispose(); session.files[index].terminal?.dispose(); session.files[index].agents?.dispose(); session.files.splice(index, 1);
+    if (index < 0) return; session.files[index].controller?.abort(); session.files[index].git?.dispose(); session.files[index].terminal?.dispose(); session.files[index].agents?.dispose(); session.files[index].sideChat?.dispose(); session.files.splice(index, 1);
     if (session.active === id) this.select(session.files.find(t => t.id === 'files') ? 'files' : 'chat'); else this.paint();
   }
   files() {
@@ -164,7 +164,7 @@ class Workbench {
     const session=this.current;if(!session)return;
     if(!session.files.some(tab=>tab.id==='sidechat')) {
       const tab={id:'sidechat',name:'侧边聊天',body:this.node('div','wb-side-content')};
-      session.files.push(tab);new SideChatPanel(this,session,tab);
+      session.files.push(tab);tab.sideChat=new SideChatPanel(this,session,tab);
     }
     this.select('sidechat');
   }

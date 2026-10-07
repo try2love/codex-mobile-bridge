@@ -398,6 +398,20 @@ class Handler(BaseHTTPRequestHandler):
                     return self.output(200, {'pushplusEnabled': config['pushplusEnabled'],
                                              'hasPushplusToken': bool(config['pushplusToken'])})
             bridge = self.server.bridge.for_host(query.get("host", ["local"])[0])
+            side_match = re.fullmatch(r"/api/sessions/([0-9a-f-]{36})/side-chat", path)
+            if side_match:
+                if self.server.auth.config.get('mode') == 'none':
+                    raise PermissionError('侧边聊天需要启用网关密码保护')
+                owner = self.server.auth.key(self.token())
+                body = self.read_json() if write else {}
+                action = body.get('action') if write else 'read'
+                fields = {'connect': {'action', 'id', 'connectionId'}, 'send': {'action', 'text', 'submissionId', 'connectionId'},
+                          'disconnect': {'action', 'connectionId'}, 'read': set()}
+                if action not in fields or set(body) - fields[action] or (write and action == 'read'):
+                    raise ValueError('无效侧边聊天操作')
+                if not write:
+                    body['connectionId'] = query.get('connectionId', [''])[0]
+                return self.output(200, bridge.side_chat(side_match[1], owner, action, body))
             agent_match = re.fullmatch(r"/api/sessions/([0-9a-f-]{36})/subagents", path)
             if agent_match:
                 if write: return self.output(405, {'error': '子智能体面板仅查看现有任务'})
