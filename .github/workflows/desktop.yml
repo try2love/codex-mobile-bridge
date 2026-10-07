@@ -1,6 +1,10 @@
 name: Desktop builds
 on:
   workflow_call:
+    inputs:
+      source_ref:
+        type: string
+        default: ''
   workflow_dispatch:
   push:
     branches: [main, feature/desktop-ntfy, codex/windows-desktop-app, integration/desktop-cross-platform, codex/ubuntu-support]
@@ -24,6 +28,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
@@ -95,6 +101,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
@@ -105,7 +113,7 @@ jobs:
       - name: Install Linux build and display dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-0 libnss3 libgbm1 libasound2 libxss1 libsecret-1-0 libfuse2 xvfb xauth dbus-x11 xdg-utils iproute2
+          sudo apt-get install -y libgtk-3-0 libnss3 libgbm1 libasound2 libxss1 libsecret-1-0 libfuse2 xvfb xauth dbus-x11 xdg-utils iproute2 zsh
       - run: python -m pip install -r requirements-desktop.txt
       - run: npm ci
       - run: python -B -m unittest discover -s tests -v
