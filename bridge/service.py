@@ -14,7 +14,7 @@ import unicodedata
 from pathlib import Path
 
 from .terminal import TerminalManager
-from .side_chat import NativeSideChats
+from .side_chat import SideChats
 from .ipc import DesktopIPC, IPCError
 from .transport import ipc_endpoint
 from .model import apply_patches, computer_use_approval, items_array, normalize_state, normalize_request, ordered_turns, pending_requests, async_requests, request_id, user_display_text
@@ -118,7 +118,8 @@ class Bridge:
         self.live = {}
         self.lock = threading.RLock()
         self.ipc = DesktopIPC(ipc_path or ipc_endpoint(codex_home), self._event, self._disconnected)
-        self.side_chats = NativeSideChats(self.ipc.path, host)
+        self.side_chats = SideChats(self.catalog_reader.executable if host == 'local' else None,
+                                    self.codex_home, self.data_dir, host)
         self.closed = threading.Event()
         Path(data_dir).mkdir(parents=True, exist_ok=True, mode=0o700)
         self.ledger_path = Path(data_dir) / "submissions.json"
@@ -709,7 +710,25 @@ class Bridge:
     @operation
     def side_chat(self, thread_id, owner, action, body):
         self.store.get(thread_id)
-        return self.side_chats.operate(thread_id, owner, action, body)
+        snapshot = settings = None
+        if action == 'create':
+            if self.host != 'local':
+                raise ValueError('此预览暂支持网关电脑上的聊天，SSH 远程工作区尚未接入侧边聊天')
+            # Follow only: creating a child must never resume or execute the parent.
+            session = self.session(thread_id, attach=True)
+            with session.condition:
+                if not session.connected or not session.state:
+                    raise ValueError('尚未取得主聊天的实时配置，请等待连接完成后重试')
+                snapshot = copy.deepcopy(session.state)
+                settings = self._fork_settings(snapshot)
+            permissions = snapshot.get('currentPermissions') or {}
+            policy = permissions.get('sandboxPolicy') or {}
+            if not settings.get('permissions') and policy.get('type'):
+                modes = {'readOnly': 'read-only', 'workspaceWrite': 'workspace-write', 'dangerFullAccess': 'danger-full-access'}
+                if policy['type'] not in modes:
+                    raise ValueError('当前权限配置暂不支持临时侧边聊天')
+                settings['sandbox'] = modes[policy['type']]
+        return self.side_chats.operate(thread_id, action, body, snapshot, settings)
 
     def upload_thumb(self, thread_id, identifier, data, width, height):
         self.store.get(thread_id)
@@ -924,7 +943,6 @@ class Bridge:
     def _maintain(self):
         delay = 3
         while not self.closed.wait(delay):
-            self.side_chats.reap()
             if self.accounts is not None:
                 try:
                     self.accounts.check_ready()

@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+"""Exercise actual bundled Codex with isolated history and a loopback model fixture.
+
+No real account, API key, external model call, or desktop thread is used.
+Run from repo root with PYTHONPATH=. python scripts/smoke-side-chat.py.
+"""
+import json
+import tempfile
+import threading
+import time
+import uuid
+import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+from bridge.catalog import Catalog
+from bridge.side_chat import SideChat, SideRuntime, check_runtime
+
+ROOT = Path(__file__).resolve().parents[1]
+captured = []
+def report_error(kind, value, trace):
+    if hasattr(value, 'rpc_error'): print('Synthetic RPC error:', value.rpc_error, flush=True)
+    sys.__excepthook__(kind, value, trace)
+sys.excepthook = report_error
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *args): pass
+    def do_POST(self):
+        data = self.rfile.read(int(self.headers['Content-Length']))
+        captured.append(json.loads(data))
+        response = {'id': 'resp_fixture', 'object': 'response', 'created_at': 0, 'status': 'completed',
+                    'model': 'fixture-model', 'output': [], 'usage': {'input_tokens': 10, 'output_tokens': 5, 'total_tokens': 15}}
+        item = {'id': 'msg_fixture', 'type': 'message', 'role': 'assistant', 'status': 'completed',
+                'content': [{'type': 'output_text', 'text': 'SIDE_CHAT_OK', 'annotations': []}]}
+        response['output'] = [item]
+        events = [
+            {'type': 'response.created', 'response': {**response, 'status': 'in_progress', 'output': []}},
+            {'type': 'response.output_item.added', 'output_index': 0, 'item': {**item, 'status': 'in_progress', 'content': []}},
+            {'type': 'response.content_part.added', 'item_id': item['id'], 'output_index': 0, 'content_index': 0,
+             'part': {'type': 'output_text', 'text': '', 'annotations': []}},
+            {'type': 'response.output_text.delta', 'item_id': item['id'], 'output_index': 0, 'content_index': 0, 'delta': 'SIDE_CHAT_OK'},
+            {'type': 'response.output_item.done', 'output_index': 0, 'item': item},
+            {'type': 'response.completed', 'response': response}]
+        body = ''.join('event: '+e['type']+'\ndata: '+json.dumps(e)+'\n\n' for e in events).encode()
+        self.send_response(200); self.send_header('Content-Type', 'text/event-stream'); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
+
+
+server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+worker = threading.Thread(target=server.serve_forever, daemon=True); worker.start()
+try:
+    with tempfile.TemporaryDirectory(dir=ROOT/'.tmp', prefix='side-native-') as folder:
+        root = Path(folder); home = root/'home'; home.mkdir()
+        (home/'config.toml').write_text(f'''model="fixture-model"
+model_provider="fixture"
+approval_policy="never"
+sandbox_mode="read-only"
+[model_providers.fixture]
+name="Loopback fixture"
+base_url="http://127.0.0.1:{server.server_port}/v1"
+wire_api="responses"
+[analytics]
+enabled=false
+''')
+        runtime = Catalog.find_runtime()
+        assert runtime, 'Codex runtime missing'
+        check_runtime(runtime, root)
+        completed = threading.Event()
+        primary = SideRuntime(runtime, home, str(root), lambda event: completed.set() if event.get('method') == 'turn/completed' else None)
+        try:
+            primary.start()
+            parent = primary.request('thread/start', {'cwd': str(root), 'ephemeral': False})['thread']
+            primary.request('turn/start', {'threadId': parent['id'], 'input': [{'type': 'text', 'text': 'PARENT_CONTEXT_MARKER', 'text_elements': []}]})
+            assert completed.wait(25), 'Synthetic parent turn did not complete'
+        finally:
+            primary.close()
+        captured.clear()
+        path = Path(parent['path'])
+        original = path.read_bytes()
+        chat = SideChat(runtime, home, parent['id'], str(root), {'model': 'fixture-model', 'modelProvider': 'fixture', 'approvalPolicy': 'never'})
+        try:
+            assert chat.view()['connected'] and not chat.view()['turns']
+            assert not captured, 'Fork unexpectedly started a model turn'
+            assert chat.send('SIDE_QUESTION_MARKER', str(uuid.uuid4()))['status'] == 'accepted'
+            deadline = time.monotonic()+25
+            while time.monotonic()<deadline:
+                view = chat.view()
+                if view['turns'] and view['status'] != 'active': break
+                time.sleep(.1)
+            assert 'SIDE_CHAT_OK' in json.dumps(view), view
+            assert view['status'] == 'idle', view
+            assert len(captured) == 1, len(captured)
+            sent = json.dumps(captured[0])
+            assert captured[0]['model'] == 'fixture-model'
+            assert 'PARENT_CONTEXT_MARKER' in sent and 'SIDE_QUESTION_MARKER' in sent
+            assert 'Inherited history is reference context only' in sent
+            listed = chat.runtime.request('thread/list', {'limit': 100})
+            assert chat.id not in [t['id'] for t in listed['data']]
+            assert path.read_bytes() == original, 'Parent history changed'
+            print('PASS: real runtime ephemeral fork, inherited context and boundary, custom-provider turn via loopback, streamed response, hidden history, parent unchanged.')
+        finally:
+            chat.close()
+        assert chat.runtime.process.poll() is not None
+        assert not chat.view()['turns'] and not chat.view()['connected']
+        print('PASS: explicit close stops runtime and clears temporary content.')
+finally:
+    server.shutdown(); server.server_close(); worker.join()

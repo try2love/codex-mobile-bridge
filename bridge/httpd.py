@@ -405,12 +405,11 @@ class Handler(BaseHTTPRequestHandler):
                 owner = self.server.auth.key(self.token())
                 body = self.read_json() if write else {}
                 action = body.get('action') if write else 'read'
-                fields = {'connect': {'action', 'id', 'connectionId'}, 'send': {'action', 'text', 'submissionId', 'connectionId'},
-                          'disconnect': {'action', 'connectionId'}, 'read': set()}
+                fields = {'create': {'action', 'creationId'}, 'send': {'action', 'id', 'text', 'submissionId'},
+                          'close': {'action', 'id'}, 'stop': {'action', 'id'},
+                          'respond': {'action', 'id', 'requestId', 'response'}, 'read': set()}
                 if action not in fields or set(body) - fields[action] or (write and action == 'read'):
                     raise ValueError('无效侧边聊天操作')
-                if not write:
-                    body['connectionId'] = query.get('connectionId', [''])[0]
                 return self.output(200, bridge.side_chat(side_match[1], owner, action, body))
             agent_match = re.fullmatch(r"/api/sessions/([0-9a-f-]{36})/subagents", path)
             if agent_match:

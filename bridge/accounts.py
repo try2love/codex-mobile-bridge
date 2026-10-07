@@ -663,6 +663,8 @@ class Accounts:
 
     def invalidate(self):
         for bridge in [self.bridge, *self.bridge.remote_bridges.values()]:
+            if getattr(bridge, 'side_chats', None):
+                bridge.side_chats.close()
             bridge.ipc.close()
             bridge._disconnected()
             if hasattr(bridge.catalog_reader, 'cache'):

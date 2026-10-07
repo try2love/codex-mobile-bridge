@@ -120,9 +120,13 @@ class Workbench {
     this.refreshThumbnails();
   }
   back() { const floating=this.panel.querySelector('.wb-float'); if(floating){floating.querySelector('[aria-label="关闭详情"]').click();return true;} if (!this.isFileVisible) return false; this.select('chat'); return true; }
-  close(id) {
+  async close(id) {
     const session = this.current, index = session.files.findIndex(t => t.id === id);
-    if (index < 0) return; session.files[index].controller?.abort(); session.files[index].git?.dispose(); session.files[index].terminal?.dispose(); session.files[index].agents?.dispose(); session.files[index].sideChat?.dispose(); session.files.splice(index, 1);
+    if (index < 0) return;
+    if (session.files[index].sideChat && !await session.files[index].sideChat.end()) return;
+    if (!session.files[index] || session.files[index].id !== id) return;
+    session.files[index].controller?.abort(); session.files[index].git?.dispose(); session.files[index].terminal?.dispose(); session.files[index].agents?.dispose(); session.files[index].sideChat?.dispose(); session.files.splice(index, 1);
+    if (this.current !== session) { if (session.active === id) session.active = 'chat'; return; }
     if (session.active === id) this.select(session.files.find(t => t.id === 'files') ? 'files' : 'chat'); else this.paint();
   }
   files() {
@@ -138,7 +142,7 @@ class Workbench {
     const dialog = this.node('dialog', 'picker wb-new-tab'), head = this.node('div', 'picker-head');
     head.append(this.node('h2', '', '新标签页'), this.button('×', () => dialog.close(), '关闭'));
     const choices = this.node('div', 'wb-tab-choices');
-    for (const [name, description, action] of [['文件', '浏览项目文件、上传与下载', () => this.files()], ['Git', '历史、暂存、提交与分支管理', () => this.git()], ['终端', '运行项目命令、构建与查看输出', () => this.terminal()], ['侧边聊天', '当前会话下的原生临时聊天', () => this.sideChat()], ['子智能体', '查看派生任务关系与执行记录', () => this.agents()]]) {
+    for (const [name, description, action] of [['文件', '浏览项目文件、上传与下载', () => this.files()], ['Git', '历史、暂存、提交与分支管理', () => this.git()], ['终端', '运行项目命令、构建与查看输出', () => this.terminal()], ['侧边聊天', '继承当前上下文，临时讨论并跨设备接续', () => this.sideChat()], ['子智能体', '查看派生任务关系与执行记录', () => this.agents()]]) {
       const button = this.button('', () => { dialog.close(); action(); }, name);
       button.append(this.node('strong', '', name), this.node('span', '', description)); choices.append(button);
     }
