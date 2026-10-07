@@ -34,6 +34,10 @@ class Desktop:
             credentials.chmod(0o600)
         return read_json(self.config_path, {})
 
+    def shared_relay(self, value):
+        from .shared_relay import Controller
+        return Controller(self.data_dir).control(value)
+
     def preferences(self):
         name = 'cloudflared.exe' if os.name == 'nt' else 'cloudflared'
         executable = self.data_dir/'bin'/name

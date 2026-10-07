@@ -7,7 +7,7 @@ let saving=false,startPending=false,cloudflaredBusy=false,cloudflaredResult=null
 const titles={overview:t('连接与状态'),network:t('网络与登录'),devices:t('登录设备'),notifications:t('手机通知'),advanced:t('运行配置'),accounts:t('账号与接入'),account:t('账户与额度'),updates:t('应用更新'),logs:t('运行日志')};
 const accountPanel=new AccountPanel({root:$('account-content'),button:$('account-button'),read:refresh=>api.account({action:'read',refresh}),consume:value=>api.account({action:'consume',...value}),onHidden:()=>{$('account-details').open=false;},visible:()=>activeTab==='accounts'&&!document.hidden&&$('account-details').open});
 const watchPanel=new WatchPanel({root:$('watches'),change:value=>api.notificationWatches(value)});
-function fields(){return [...$('settings').querySelectorAll('input,textarea,select')].filter(node=>!node.closest('#watches')&&!node.closest('#connections')&&!node.closest('#lan-addresses')&&node.id!=='connection-kind');}
+function fields(){return [...$('settings').querySelectorAll('input,textarea,select')].filter(node=>!node.closest('#shared-relay')&&!node.closest('#watches')&&!node.closest('#connections')&&!node.closest('#lan-addresses')&&node.id!=='connection-kind');}
 function fieldValues(){return Object.fromEntries(fields().map(node=>[node.id,node.type==='checkbox'?node.checked:node.value]));}
 function updateDirty(){
   const changed=new Set();

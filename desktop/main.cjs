@@ -45,7 +45,7 @@ function worker(action,payload){
   if(action==='snapshot'&&updateQuitting)return Promise.resolve({...lastSnapshot,update:updater.status()});
   if(setupPending&&['save','start','stop'].includes(action))return Promise.reject(Error('请等待服务器操作完成。'));
   if(action==='start')payload={...payload,connectionSecrets};
-  const writes=['server-setup','connection-credentials','save','start','stop','devices','notification-watches'].includes(action);
+  const writes=['shared-relay','server-setup','connection-credentials','save','start','stop','devices','notification-watches'].includes(action);
   if(writes&&updater?.busy)return Promise.reject(Error('正在更新应用，请稍候。'));
   if(writes)workerWrites++;
   if(action==='snapshot'&&snapshotPending)return snapshotPending;
@@ -180,6 +180,11 @@ function register(){
     const executable=typeof value==='string'&&value.trim()?value.trim():snapshot.preferences.cloudflared;
     if(!executable||!path.isAbsolute(executable))throw Error('未找到 cloudflared，请点击一键安装，或选择已下载的程序。');
     return {path:executable,version:await cloudflared.probe(executable)};
+  });
+  ipcMain.handle('bridge:shared-relay',async(event,payload)=>{
+    authorize(event);
+    const value=await worker('shared-relay',payload);
+    return payload?.action==='pair'?{...value,...await pairingImage(value)}:value;
   });
   ipcMain.handle('bridge:pairing',async(event,payload)=>{
     authorize(event);

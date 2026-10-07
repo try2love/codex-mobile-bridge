@@ -17,7 +17,7 @@ def main():
     sys.stdout.reconfigure(encoding='utf-8')
     sys.stdin.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser()
-    parser.add_argument('action', choices=['read-credentials', 'server-setup', 'connection-credentials', 'snapshot-stream', 'snapshot', 'save', 'start', 'stop', 'logs', 'test-notification', 'deployment', 'export-deployment', 'check-entry', 'devices', 'pairing', 'account', 'accounts', 'notification-watches', 'serve', 'update-prepare', 'update-apply'])
+    parser.add_argument('action', choices=['shared-relay', 'read-credentials', 'server-setup', 'connection-credentials', 'snapshot-stream', 'snapshot', 'save', 'start', 'stop', 'logs', 'test-notification', 'deployment', 'export-deployment', 'check-entry', 'devices', 'pairing', 'account', 'accounts', 'notification-watches', 'serve', 'update-prepare', 'update-apply'])
     parser.add_argument('--data-dir', required=True)
     parser.add_argument('--plan')
     parser.add_argument('--connection-secrets-stdin', action='store_true')
@@ -48,7 +48,7 @@ def main():
             result = apply(args.plan)
         elif args.action == 'test-notification':
             result = desktop.test_notification(json.loads(sys.stdin.read(100000) or '{}'))
-        elif args.action in ('start', 'read-credentials', 'server-setup', 'connection-credentials', 'save', 'deployment', 'export-deployment', 'check-entry', 'devices', 'pairing', 'account', 'accounts', 'notification-watches'):
+        elif args.action in ('start', 'shared-relay', 'read-credentials', 'server-setup', 'connection-credentials', 'save', 'deployment', 'export-deployment', 'check-entry', 'devices', 'pairing', 'account', 'accounts', 'notification-watches'):
             result = getattr(desktop, args.action.replace('-', '_'))(json.loads(sys.stdin.read(100000) or '{}'))
         else:
             method = getattr(desktop, args.action.replace('-', '_'))

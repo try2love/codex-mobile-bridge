@@ -13,7 +13,7 @@ subprocess.run([sys.executable, str(root/'scripts/bundle-cloudflared.py')], chec
 command = [sys.executable, '-m', 'PyInstaller', '--noconfirm', '--clean', '--onedir', '--name', 'codex-mobile-gateway',
            '--distpath', str(root/'dist'), '--workpath', str(root/'.tmp/pyinstaller'), '--specpath', str(root/'.tmp'),
            '--add-data', str(root/'web')+':web']
-command.extend(['--add-data', str(root/'dist/cloudflared')+':cloudflared', '--collect-all', 'paramiko', '--collect-all', 'keyring'])
+command.extend(['--add-data', str(root/'dist/cloudflared')+':cloudflared', '--collect-all', 'paramiko', '--collect-all', 'keyring', '--collect-all', 'aiohttp'])
 if sys.platform == 'darwin':
     command.extend(['--target-arch', platform.machine()])
 # Ship roots and their license explicitly; source users still need only stdlib.
