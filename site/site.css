@@ -22,3 +22,6 @@
 @media(max-width:600px){nav{flex-wrap:wrap;justify-content:flex-start;gap:7px 15px}}
 
 .mobile-download-links{display:flex;align-items:flex-start;flex-direction:column;gap:12px;margin-top:18px}.mobile-download-links a:not(.button){font-size:13px}.actions>.fineprint{align-self:center}
+
+.hero-v2 .hero-support{margin-top:18px;font-size:14px;line-height:1.8;color:var(--ink);max-width:650px}
+.hero-v2 h1{text-wrap:balance}
