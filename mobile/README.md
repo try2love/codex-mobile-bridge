@@ -40,7 +40,7 @@ Android 发现新版后显示说明，点击「下载 APK」在系统浏览器�
 
 ## Android 安装
 
-安装 `dist/mobile-preview/Codex-Mobile-Bridge-2.0.0-preview.1-Android.apk`。支持 Android 8.0 及以上，使用本地预览签名，不通过应用商店分发。相机权限仅供扫码使用，拒绝相机权限后仍可粘贴地址登录。应用图标与项目 Logo 保持一致。
+安装 `dist/mobile-preview/Codex-Mobile-Bridge-2.0.0-preview.2-Android.apk`。支持 Android 8.0 及以上，使用本地预览签名，不通过应用商店分发。相机权限仅供扫码使用，拒绝相机权限后仍可粘贴地址登录。应用图标与项目 Logo 保持一致。
 
 在电脑列表首页，按一次系统返回会提示「再按一次返回退出 App」，2 秒内再按一次即可退出。聊天和工作台中的返回仍用于页面导航；退出不会清除已保存的电脑与登录状态。
 
@@ -148,4 +148,4 @@ SSH 模式使用电脑已有的 SSH 别名和已信任主机，需要服务器�
 
 macOS/Linux 使用登录 shell 的连续 PTY；Windows 10 1809 及以上使用系统 ConPTY 和 COMSPEC shell，无需额外 Python 终端依赖。Windows ConPTY 回归已加入现有 Windows CI 测试矩阵，但本轮本地运行环境是 macOS，未声称完成 Windows/Linux 真机测试。侧边聊天面向各系统本地网关；SSH 远程工作区的侧边聊天仍未接入。
 
-v2.0.0-preview.1 为公开预发布。Android APK 可覆盖本地预览安装；iOS 提供未签名 IPA 和 Xcode 源码包，需要自行签名。编译通过不等同于完成所有机型真机验证。
+v2.0.0-preview.2 为公开预发布。Android APK 可覆盖本地预览安装；iOS 提供未签名 IPA 和 Xcode 源码包，需要自行签名。编译通过不等同于完成所有机型真机验证。

@@ -4,7 +4,7 @@
 
 # Codex App Mobile Bridge
 
-> **v2.0.0-preview.1**: [Release and downloads](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.0.0-preview.1) · [Web / App workbench](https://try2love.github.io/codex-mobile-bridge/?lang=en#preview) · [Mobile installation](mobile/README.md). Opt-in preview; stable users will not receive this update. Mobile background push is not connected yet.
+> **v2.0.0-preview.2**: [Release and downloads](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.0.0-preview.2) · [Web / App workbench](https://try2love.github.io/codex-mobile-bridge/?lang=en#preview) · [Mobile installation](mobile/README.md). Opt-in preview; stable users will not receive this update. Mobile background push is not connected yet.
 
 
 [简体中文](README.md) · [English](README_EN.md)

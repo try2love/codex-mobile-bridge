@@ -578,7 +578,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
                 button(MobileStrings.text("移除这台电脑"), symbol: "trash") { [weak self, weak sheet] in sheet?.dismiss(animated: true) { self?.confirmRemove() } }
             ]))
         }
-        let current = Bundle.main.object(forInfoDictionaryKey: "BridgeReleaseVersion") as? String ?? "2.0.0-preview.1"
+        let current = Bundle.main.object(forInfoDictionaryKey: "BridgeReleaseVersion") as? String ?? "2.0.0-preview.2"
         let updateStatus = label("", size: 13, secondary: true)
         let check = button(MobileStrings.text("检查更新"), symbol: "arrow.down.circle") {}
         check.addAction(UIAction { [weak self, weak sheet, weak check, weak updateStatus] _ in

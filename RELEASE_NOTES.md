@@ -1,3 +1,26 @@
+## v2.0.0-preview.2 · 更新与模型兼容改进
+
+- 优化应用更新流程，修复更新时可能卡住的问题。
+- 改善第三方 API 模型列表兼容性，支持 CC Switch 模型目录。
+- 保留现有 Android、iOS 和 Web 界面及操作方式，三端共用模型兼容改进。
+
+### 感谢贡献者
+
+- 感谢 [@qybgh](https://github.com/qybgh) 在 [#15](https://github.com/try2love/codex-mobile-bridge/pull/15) 中贡献的更新交接修复与测试，本版在确认更新助手就绪后执行交接。
+- 感谢 [@702165405](https://github.com/702165405) 在 [#16](https://github.com/try2love/codex-mobile-bridge/pull/16) 中贡献的模型目录兼容改进。本次接纳该共用补丁，独立原生 Android 客户端未纳入本版。
+
+这是主动选择体验的预发布版本，不设为 Latest；v1.4.0 正式版用户的更新通道保持不变。Android 可覆盖安装并保留数据；iOS 未签名 IPA 仍需自行签名，源码包提供 Xcode 工程。使用 SHA256SUMS.txt 校验下载文件。
+
+### English
+
+- Improve app update handoff reliability and third-party API model catalog compatibility, including CC Switch.
+- Keep the existing Android, iOS and Web experience; all clients share the model catalog improvement.
+- Thanks to [@qybgh](https://github.com/qybgh) for the update handoff work in [#15](https://github.com/try2love/codex-mobile-bridge/pull/15), and [@702165405](https://github.com/702165405) for the shared model catalog contribution in [#16](https://github.com/try2love/codex-mobile-bridge/pull/16). The standalone native Android client is not included.
+
+This is an opt-in prerelease, not Latest. Stable v1.4.0 users remain on the stable channel. Install the Android APK over the previous preview; the unsigned iOS IPA requires your own signing.
+
+---
+
 ## v2.0.0-preview.1 · 网页与手机远程工作台
 
 这是主动选择体验的 **Pre-release**，不会设为 Latest，也不会向 v1.4.0 正式版用户推送更新。正式版继续保留。请先停止旧网关再试用预览，保留配置备份；体验后可重新安装正式版。
