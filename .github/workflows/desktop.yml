@@ -43,6 +43,11 @@ jobs:
       - run: npm run test:desktop
       - run: npm run test:updater
       - run: python scripts/build-desktop.py
+      - name: Verify packaged Windows continuous terminal
+        if: runner.os == 'Windows'
+        run: python -B -m unittest discover -s tests -p test_windows_terminal.py -v
+        env:
+          CMB_TEST_RUNTIME: ${{ github.workspace }}/dist/gateway/codex-mobile-gateway.exe
       - if: runner.os == 'macOS'
         run: npm run build:mac -- --${{ matrix.arch }}
         env:

@@ -2,9 +2,11 @@
 import os
 from pathlib import Path
 import tempfile
+import sys
 import time
 import unittest
 import uuid
+from unittest.mock import patch
 
 
 @unittest.skipUnless(os.name == 'nt', 'ConPTY requires Windows')
@@ -14,7 +16,9 @@ class ConPtyTests(unittest.TestCase):
         directory = Path(__file__).resolve().parents[1] / '.tmp'; directory.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=directory) as folder:
             root=Path(folder); (root/'nested folder').mkdir()
-            session=WindowsTerminalSession(root,80,24)
+            runtime = os.environ.get('CMB_TEST_RUNTIME')
+            with patch.object(sys, 'executable', runtime or sys.executable), patch.object(sys, 'frozen', bool(runtime), create=True):
+                session=WindowsTerminalSession(root,80,24)
             try:
                 deadline=time.monotonic()+10
                 while '>' not in session.read()['output'] and time.monotonic()<deadline:time.sleep(.05)
