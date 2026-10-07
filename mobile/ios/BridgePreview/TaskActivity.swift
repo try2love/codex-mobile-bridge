@@ -6,14 +6,16 @@ struct TaskActivity: ActivityAttributes {
     struct ContentState: Codable, Hashable {
         var phase: String
         var updatedAt: Date
+        var language: String? = nil
+        func text(_ zh: String, _ en: String) -> String { (language ?? Locale.preferredLanguages.first ?? "zh").hasPrefix("en") ? en : zh }
         var label: String {
             switch phase {
-            case "running": return "正在执行"
-            case "waiting": return "等待回应"
-            case "ended": return "本轮已结束"
-            case "paused": return "打开 App 同步"
-            case "offline": return "暂未连接"
-            default: return "已连接"
+            case "running": return text("正在执行", "Running")
+            case "waiting": return text("等待回应", "Waiting for you")
+            case "ended": return text("本轮已结束", "Turn completed")
+            case "paused": return text("打开 App 同步", "Open app to sync")
+            case "offline": return text("暂未连接", "Disconnected")
+            default: return text("已连接", "Connected")
             }
         }
         var symbol: String {

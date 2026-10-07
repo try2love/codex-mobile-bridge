@@ -17,7 +17,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationC
         UserDefaults.standard.set(deviceToken.map { String(format: "%02x", $0) }.joined(), forKey: "apnsToken")
         controller.registerNativePush()
     }
-    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) { controller.info("系统推送注册失败，请检查推送签名与网络。") }
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) { controller.info(MobileStrings.text("系统推送注册失败，请检查推送签名与网络。")) }
     func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool { controller.openLink(url); return true }
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completion: @escaping () -> Void) {
         let data = response.notification.request.content.userInfo
@@ -39,6 +39,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
     private var downloadFile: URL?
     private var timer: Timer?
     private var activityTimer: Timer?
+    private var foregroundBaselines = Set<String>()
     private var loading = false
     private var generation = 0
     private let defaults = UserDefaults.standard
@@ -101,7 +102,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
       const footer = document.querySelector('.sidebar-foot');
       if (footer) {
         document.body.appendChild(footer);
-        const home = document.createElement('a'); home.href = 'codexbridge://home'; home.className = 'plain'; home.textContent = '返回电脑列表';
+        const home = document.createElement('a'); home.href = 'codexbridge://home'; home.className = 'plain'; home.dataset.i18n = '返回电脑列表'; home.textContent = typeof BridgeI18n !== 'undefined' ? BridgeI18n.t('返回电脑列表') : '返回电脑列表';
         footer.appendChild(home);
       }
       const push = document.getElementById('pushplus-settings'), settings = document.getElementById('appearance-dialog');
@@ -116,6 +117,8 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
       if (window !== window.top) return;
       const nativePrompt = window.prompt.bind(window);
       const command = 'codexbridge-copy:__BRIDGE_CLIPBOARD_TOKEN__';
+      const syncLanguage = () => { if (typeof BridgeI18n !== 'undefined') nativePrompt('codexbridge-language:__BRIDGE_CLIPBOARD_TOKEN__', BridgeI18n.language()); };
+      document.addEventListener('bridge-language', syncLanguage); syncLanguage();
       let clicked = false;
       document.addEventListener('click', event => {
         clicked = event.isTrusted && !!event.target.closest?.('.message-copy, .code-copy');
@@ -166,16 +169,8 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         subtitle.font = .preferredFont(forTextStyle: .caption1); subtitle.textColor = .secondaryLabel; subtitle.textAlignment = .center; subtitle.numberOfLines = 2; page.addArrangedSubview(subtitle)
         var menuStyle = UIButton.Configuration.plain(); menuStyle.image = UIImage(systemName: "ellipsis")
         menuStyle.baseForegroundColor = .label; menuStyle.baseBackgroundColor = .secondarySystemBackground; menuStyle.cornerStyle = .capsule
-        gatewayMenu.configuration = menuStyle; gatewayMenu.accessibilityLabel = "电脑与通知"; gatewayMenu.showsMenuAsPrimaryAction = true
-        gatewayMenu.menu = UIMenu(children: [
-            UIAction(title: "返回电脑列表", image: UIImage(systemName: "desktopcomputer")) { [weak self] _ in self?.home() },
-            UIAction(title: "在灵动岛显示此聊天", image: UIImage(systemName: "capsule")) { [weak self] _ in self?.startLiveActivity() },
-            UIAction(title: "结束灵动岛显示", image: UIImage(systemName: "xmark.circle")) { _ in if #available(iOS 16.2, *) { Task { await LiveActivityController.shared.stop() } } },
-            UIAction(title: "通知收件箱", image: UIImage(systemName: "bell")) { [weak self] _ in self?.inbox() },
-            UIAction(title: "刷新页面", image: UIImage(systemName: "arrow.clockwise")) { [weak self] _ in self?.refresh() },
-            UIAction(title: "外观与显示", image: UIImage(systemName: "paintpalette")) { [weak self] _ in self?.web?.evaluateJavaScript("document.querySelector('[data-open-appearance]')?.click()") },
-            UIAction(title: "手机设置", image: UIImage(systemName: "gearshape")) { [weak self] _ in self?.settings() }
-        ])
+        gatewayMenu.configuration = menuStyle; gatewayMenu.accessibilityLabel = MobileStrings.text("电脑与通知"); gatewayMenu.showsMenuAsPrimaryAction = true
+        updateGatewayMenu()
         gatewayMenu.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(gatewayMenu)
         NSLayoutConstraint.activate([gatewayMenu.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -8), gatewayMenu.widthAnchor.constraint(equalToConstant: 48), gatewayMenu.heightAnchor.constraint(equalToConstant: 48)])
         if let active = defaults.string(forKey: "active"), saved.contains(active) { openSaved(active) } else { home() }
@@ -213,7 +208,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         let curve = notification.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? UInt ?? 0
         UIView.animate(withDuration: duration, delay: 0, options: [UIView.AnimationOptions(rawValue: curve << 16), .beginFromCurrentState]) { self.view.layoutIfNeeded() }
     }
-    func info(_ text: String) { let a = UIAlertController(title: nil, message: text, preferredStyle: .alert); a.addAction(UIAlertAction(title: "好", style: .default)); present(a, animated: true) }
+    func info(_ text: String) { let a = UIAlertController(title: nil, message: MobileStrings.text(text), preferredStyle: .alert); a.addAction(UIAlertAction(title: MobileStrings.text("好"), style: .default)); present(a, animated: true) }
     private func label(_ text: String, size: CGFloat = 15, weight: UIFont.Weight = .regular, secondary: Bool = false) -> UILabel {
         let l = UILabel(); l.text = text; l.numberOfLines = 0
         l.font = UIFontMetrics.default.scaledFont(for: .systemFont(ofSize: size, weight: weight)); l.adjustsFontForContentSizeCategory = true
@@ -240,6 +235,18 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         NSLayoutConstraint.activate([content.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 20), content.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -28), content.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 20), content.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -20), content.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor, constant: -40)])
         return content
     }
+    private func updateGatewayMenu() {
+        gatewayMenu.accessibilityLabel = MobileStrings.text("电脑与通知")
+        gatewayMenu.menu = UIMenu(children: [
+            UIAction(title: MobileStrings.text("返回电脑列表"), image: UIImage(systemName: "desktopcomputer")) { [weak self] _ in self?.home() },
+            UIAction(title: MobileStrings.text("在灵动岛显示此聊天"), image: UIImage(systemName: "capsule")) { [weak self] _ in self?.startLiveActivity() },
+            UIAction(title: MobileStrings.text("结束灵动岛显示"), image: UIImage(systemName: "xmark.circle")) { _ in if #available(iOS 16.2, *) { Task { await LiveActivityController.shared.stop() } } },
+            UIAction(title: MobileStrings.text("通知收件箱"), image: UIImage(systemName: "bell")) { [weak self] _ in self?.inbox() },
+            UIAction(title: MobileStrings.text("刷新页面"), image: UIImage(systemName: "arrow.clockwise")) { [weak self] _ in self?.refresh() },
+            UIAction(title: MobileStrings.text("外观与显示"), image: UIImage(systemName: "paintpalette")) { [weak self] _ in self?.web?.evaluateJavaScript("document.querySelector('[data-open-appearance]')?.click()") },
+            UIAction(title: MobileStrings.text("手机设置"), image: UIImage(systemName: "gearshape")) { [weak self] _ in self?.settings() }
+        ])
+    }
     private func navigation(home: Bool) {
         navigationController?.setNavigationBarHidden(!home, animated: false)
         gatewayMenu.isHidden = home
@@ -248,8 +255,8 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         logo.widthAnchor.constraint(equalToConstant: 30).isActive = true; logo.heightAnchor.constraint(equalToConstant: 30).isActive = true; logo.layer.cornerRadius = 7; logo.clipsToBounds = true
         let brand = UIStackView(arrangedSubviews: [logo, label("Codex Bridge", size: 18, weight: .semibold)]); brand.axis = .horizontal; brand.spacing = 8; brand.alignment = .center
         navigationItem.leftBarButtonItem = UIBarButtonItem(customView: brand)
-        let settings = UIBarButtonItem(image: UIImage(systemName: "gearshape"), style: .plain, target: self, action: #selector(self.settings)); settings.accessibilityLabel = "设置"
-        let inbox = UIBarButtonItem(image: UIImage(systemName: "bell"), style: .plain, target: self, action: #selector(self.inbox)); inbox.accessibilityLabel = "通知"
+        let settings = UIBarButtonItem(image: UIImage(systemName: "gearshape"), style: .plain, target: self, action: #selector(self.settings)); settings.accessibilityLabel = MobileStrings.text("设置")
+        let inbox = UIBarButtonItem(image: UIImage(systemName: "bell"), style: .plain, target: self, action: #selector(self.inbox)); inbox.accessibilityLabel = MobileStrings.text("通知")
         navigationItem.rightBarButtonItems = [settings, inbox]
     }
     private func clear() { artifactDownload?.cancel { _ in }; artifactDownload = nil; downloadStarting = false; removeDownloadFile(); gatewayMenuTop?.isActive = false; gatewayMenuTop = nil; generation += 1; web?.stopLoading(); web?.navigationDelegate = nil; web?.uiDelegate = nil; web = nil; for v in page.arrangedSubviews where v !== subtitle { page.removeArrangedSubview(v); v.removeFromSuperview() } }
@@ -258,13 +265,13 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         let container = UIView(); page.addArrangedSubview(container); let content = scrollContent(in: container)
         let visual = UIImageView(image: UIImage(systemName: "desktopcomputer")); visual.tintColor = .label; visual.contentMode = .scaleAspectFit; visual.heightAnchor.constraint(equalToConstant: 54).isActive = true
         let hero = column(spacing: 14); hero.addArrangedSubview(visual)
-        let heading = label("电脑上的工作，\n带在身边。", size: 30, weight: .semibold); heading.textAlignment = .center; hero.addArrangedSubview(heading)
-        let hint = label("继续聊天、查看结果，让电脑替你运行。", secondary: true); hint.textAlignment = .center; hero.addArrangedSubview(hint)
+        let heading = label(MobileStrings.text("电脑上的工作，\n带在身边。"), size: 30, weight: .semibold); heading.textAlignment = .center; hero.addArrangedSubview(heading)
+        let hint = label(MobileStrings.text("继续聊天、查看结果，让电脑替你运行。"), secondary: true); hint.textAlignment = .center; hero.addArrangedSubview(hint)
         hero.setCustomSpacing(24, after: visual); content.addArrangedSubview(hero)
-        content.addArrangedSubview(card([button("扫码连接电脑", symbol: "qrcode.viewfinder", primary: true) { [weak self] in self?.scan() }, button("输入网关地址", symbol: "link") { [weak self] in self?.manualAddress() }]))
-        content.addArrangedSubview(label("你的电脑", size: 19, weight: .semibold))
+        content.addArrangedSubview(card([button(MobileStrings.text("扫码连接电脑"), symbol: "qrcode.viewfinder", primary: true) { [weak self] in self?.scan() }, button(MobileStrings.text("输入网关地址"), symbol: "link") { [weak self] in self?.manualAddress() }]))
+        content.addArrangedSubview(label(MobileStrings.text("你的电脑"), size: 19, weight: .semibold))
         if saved.isEmpty {
-            content.addArrangedSubview(card([label("还没有连接的电脑", size: 17, weight: .medium), label("在电脑网关中展开“扫码登录”，然后用上方按钮扫描。", secondary: true)]))
+            content.addArrangedSubview(card([label(MobileStrings.text("还没有连接的电脑"), size: 17, weight: .medium), label(MobileStrings.text("在电脑网关中展开“扫码登录”，然后用上方按钮扫描。"), secondary: true)]))
         } else {
             for address in saved {
                 let row = button(URL(string: address)?.host ?? address, symbol: "desktopcomputer") { [weak self] in self?.openSaved(address) }
@@ -274,27 +281,27 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
                 content.addArrangedSubview(card([row]))
             }
         }
-        let foot = label("外出使用 HTTPS 地址；局域网地址需要连接同一网络。", size: 13, secondary: true); foot.textAlignment = .center; content.addArrangedSubview(foot)
+        let foot = label(MobileStrings.text("外出使用 HTTPS 地址；局域网地址需要连接同一网络。"), size: 13, secondary: true); foot.textAlignment = .center; content.addArrangedSubview(foot)
     }
     private func manualAddress() {
-        let a = UIAlertController(title: "连接电脑", message: "粘贴电脑网关提供的访问地址", preferredStyle: .alert)
+        let a = UIAlertController(title: MobileStrings.text("连接电脑"), message: MobileStrings.text("粘贴电脑网关提供的访问地址"), preferredStyle: .alert)
         a.addTextField { field in field.text = "https://"; field.keyboardType = .URL; field.autocapitalizationType = .none; field.autocorrectionType = .no; field.placeholder = "https://codex.try2love.com" }
-        a.addAction(UIAlertAction(title: "取消", style: .cancel)); a.addAction(UIAlertAction(title: "继续", style: .default) { [weak self, weak a] _ in self?.choose(a?.textFields?.first?.text ?? "") }); present(a, animated: true)
+        a.addAction(UIAlertAction(title: MobileStrings.text("取消"), style: .cancel)); a.addAction(UIAlertAction(title: MobileStrings.text("继续"), style: .default) { [weak self, weak a] _ in self?.choose(a?.textFields?.first?.text ?? "") }); present(a, animated: true)
     }
     func choose(_ value: String) {
         do { let url = try GatewayURL.connection(value); let address = try GatewayURL.origin(value)
-            let alert = UIAlertController(title: "连接到这台电脑？", message: address + "\n请确认这是你自己的网关。", preferredStyle: .alert)
-            alert.addAction(UIAlertAction(title: "取消", style: .cancel)); alert.addAction(UIAlertAction(title: "连接", style: .default) { _ in self.connect(url, address: address) }); present(alert, animated: true)
+            let alert = UIAlertController(title: MobileStrings.text("连接到这台电脑？"), message: address + MobileStrings.text("\n请确认这是你自己的网关。"), preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: MobileStrings.text("取消"), style: .cancel)); alert.addAction(UIAlertAction(title: MobileStrings.text("连接"), style: .default) { _ in self.connect(url, address: address) }); present(alert, animated: true)
         } catch { info(error.localizedDescription) }
     }
     func openNotification(_ address: String, thread: String?, host: String) {
-        guard saved.contains(address) else { info("请先连接通知对应的电脑。"); return }
+        guard saved.contains(address) else { info(MobileStrings.text("请先连接通知对应的电脑。")); return }
         if let thread, let target = try? GatewayURL.chat(address, thread: thread, host: host) { connect(target, address: address) } else { openSaved(address) }
     }
-    func openSaved(_ address: String) { guard saved.contains(address), let url = URL(string: address + "/") else { info("请先扫码保存通知对应的电脑。"); return }; connect(url, address: address) }
+    func openSaved(_ address: String) { guard saved.contains(address), let url = URL(string: address + "/") else { info(MobileStrings.text("请先扫码保存通知对应的电脑。")); return }; connect(url, address: address) }
     private func connect(_ url: URL, address: String) {
         if origin != address, #available(iOS 16.2, *) { Task { await LiveActivityController.shared.stop() } }
-        clear(); navigation(home: false); subtitle.isHidden = false; origin = address; var all = saved; if !all.contains(address) { all.append(address) }; defaults.set(all, forKey: "origins"); defaults.set(address, forKey: "active"); subtitle.text = "正在连接 · " + address
+        clear(); navigation(home: false); subtitle.isHidden = false; origin = address; var all = saved; if !all.contains(address) { all.append(address) }; defaults.set(all, forKey: "origins"); defaults.set(address, forKey: "active"); subtitle.text = MobileStrings.text("正在连接 · ") + address
         let configuration = WKWebViewConfiguration(); configuration.websiteDataStore = .default(); configuration.applicationNameForUserAgent = "BridgeMobile/0.1-iOS"
         configuration.ignoresViewportScaleLimits = false
         configuration.userContentController.addUserScript(WKUserScript(source: Self.fixedViewport, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
@@ -320,14 +327,19 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         }
         decisionHandler(.cancel)
         if action.navigationType == .linkActivated, ["http", "https"].contains(url.scheme ?? "") {
-            let a = UIAlertController(title: "在浏览器打开外部链接？", message: url.host, preferredStyle: .alert); a.addAction(UIAlertAction(title: "取消", style: .cancel)); a.addAction(UIAlertAction(title: "打开", style: .default) { _ in UIApplication.shared.open(url) }); present(a, animated: true)
+            let a = UIAlertController(title: MobileStrings.text("在浏览器打开外部链接？"), message: url.host, preferredStyle: .alert); a.addAction(UIAlertAction(title: MobileStrings.text("取消"), style: .cancel)); a.addAction(UIAlertAction(title: MobileStrings.text("打开"), style: .default) { _ in UIApplication.shared.open(url) }); present(a, animated: true)
         }
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { subtitle.isHidden = true; registerNativePush() }
-    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { subtitle.isHidden = false; subtitle.text = "连接失败，请检查电脑和地址后刷新" }
-    func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) { let a = UIAlertController(title: nil, message: message, preferredStyle: .alert); a.addAction(UIAlertAction(title: "好", style: .default) { _ in completionHandler() }); present(a, animated: true) }
-    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) { let a = UIAlertController(title: nil, message: message, preferredStyle: .alert); a.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in completionHandler(false) }); a.addAction(UIAlertAction(title: "确认", style: .default) { _ in completionHandler(true) }); present(a, animated: true) }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { subtitle.isHidden = false; subtitle.text = MobileStrings.text("连接失败，请检查电脑和地址后刷新") }
+    func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) { let a = UIAlertController(title: nil, message: message, preferredStyle: .alert); a.addAction(UIAlertAction(title: MobileStrings.text("好"), style: .default) { _ in completionHandler() }); present(a, animated: true) }
+    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) { let a = UIAlertController(title: nil, message: message, preferredStyle: .alert); a.addAction(UIAlertAction(title: MobileStrings.text("取消"), style: .cancel) { _ in completionHandler(false) }); a.addAction(UIAlertAction(title: MobileStrings.text("确认"), style: .default) { _ in completionHandler(true) }); present(a, animated: true) }
     func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (String?) -> Void) {
+        if prompt == "codexbridge-language:" + clipboardToken {
+            guard webView === web, frame.isMainFrame, let source = frame.request.url, GatewayURL.same(source, origin),
+                  let current = webView.url, GatewayURL.same(current, origin), let language = defaultText, ["zh", "en"].contains(language) else { completionHandler(nil); return }
+            defaults.set(language, forKey: "bridge-language");updateGatewayMenu();completionHandler("saved");return
+        }
         guard prompt == "codexbridge-copy:" + clipboardToken, webView === web,
               UIApplication.shared.applicationState == .active, frame.isMainFrame,
               let source = frame.request.url, GatewayURL.same(source, origin),
@@ -340,9 +352,9 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         GatewayURL.same(url, origin) && url.path.range(of: "^/api/sessions/[0-9a-f-]{36}/(?:files/[a-f0-9]{64}|workspace/download)$", options: .regularExpression) != nil
     }
     private func downloadArtifact(_ request: URLRequest) {
-        guard !downloadStarting, artifactDownload == nil, downloadFile == nil else { info("已有下载进行中，请稍候"); return }
+        guard !downloadStarting, artifactDownload == nil, downloadFile == nil else { info(MobileStrings.text("已有下载进行中，请稍候")); return }
         guard let web, let url = request.url, isArtifact(url) else { return }
-        let ticket = generation; downloadStarting = true; subtitle.text = "正在下载…"; subtitle.isHidden = false
+        let ticket = generation; downloadStarting = true; subtitle.text = MobileStrings.text("正在下载…"); subtitle.isHidden = false
         web.startDownload(using: request) { [weak self] download in
             guard let self, ticket == self.generation else { download.cancel { _ in }; return }
             self.downloadStarting = false; self.artifactDownload = download; download.delegate = self
@@ -359,20 +371,20 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         guard download === artifactDownload else { completionHandler(nil); return }
         guard let url = response.url, isArtifact(url),
               let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            completionHandler(nil); downloadError("下载失败，请检查登录状态后重试"); return
+            completionHandler(nil); downloadError(MobileStrings.text("下载失败，请检查登录状态后重试")); return
         }
-        guard response.expectedContentLength <= 50 * 1024 * 1024 else { completionHandler(nil); downloadError("附件超过 50 MB 下载限制"); return }
+        guard response.expectedContentLength <= 50 * 1024 * 1024 else { completionHandler(nil); downloadError(MobileStrings.text("附件超过 50 MB 下载限制")); return }
         do {
             let folder = FileManager.default.temporaryDirectory.appendingPathComponent("bridge-download-" + UUID().uuidString, isDirectory: true)
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             let name = (suggestedFilename.replacingOccurrences(of: "\\", with: "/") as NSString).lastPathComponent
             let file = folder.appendingPathComponent(name.isEmpty || name == "." || name == ".." ? "download" : name)
             downloadFile = file; completionHandler(file)
-        } catch { completionHandler(nil); downloadError("无法保存下载文件，请检查剩余空间") }
+        } catch { completionHandler(nil); downloadError(MobileStrings.text("无法保存下载文件，请检查剩余空间")) }
     }
     func download(_ download: WKDownload, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, decisionHandler: @escaping (WKDownload.RedirectPolicy) -> Void) {
         decisionHandler(.cancel)
-        if download === artifactDownload { downloadError("下载地址发生跳转，已取消。请重新打开电脑附件。") }
+        if download === artifactDownload { downloadError(MobileStrings.text("下载地址发生跳转，已取消。请重新打开电脑附件。")) }
     }
     func downloadDidFinish(_ download: WKDownload) {
         guard download === artifactDownload, let file = downloadFile else { return }
@@ -381,31 +393,31 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         present(picker, animated: true)
     }
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
-        guard download === artifactDownload else { return }; downloadError("下载失败，请检查网络后重试")
+        guard download === artifactDownload else { return }; downloadError(MobileStrings.text("下载失败，请检查网络后重试"))
     }
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) { removeDownloadFile() }
     func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) { removeDownloadFile() }
     func openLink(_ url: URL) {
         guard let c = URLComponents(url: url, resolvingAgainstBaseURL: false), c.scheme == "codexbridge", c.host == "open" else { return }
         let q = c.queryItems ?? []; func get(_ key: String) -> String? { q.first(where: { $0.name == key })?.value }
-        guard let address = get("origin"), saved.contains(address), let thread = get("thread"), let target = try? GatewayURL.chat(address, thread: thread, host: get("host") ?? "local") else { info("请先扫码保存通知对应的电脑，再打开聊天。"); return }
+        guard let address = get("origin"), saved.contains(address), let thread = get("thread"), let target = try? GatewayURL.chat(address, thread: thread, host: get("host") ?? "local") else { info(MobileStrings.text("请先扫码保存通知对应的电脑，再打开聊天。")); return }
         connect(target, address: address)
     }
-    private func fetch(_ done: @escaping (Result<[String: Any], Error>) -> Void) {
-        let address = origin, ticket = generation
+    private func fetch(address requestedAddress: String? = nil, _ done: @escaping (Result<[String: Any], Error>) -> Void) {
+        let address = requestedAddress ?? origin, ticket = generation
         guard let target = URL(string: address + "/api/mobile/events"), !address.isEmpty else { done(.failure(GatewayURL.InvalidURL())); return }
         WKWebsiteDataStore.default().httpCookieStore.getAllCookies { cookies in
             guard ticket == self.generation else { self.loading = false; return }
             let host = target.host ?? ""
             let matching = cookies.filter { cookie in cookie.name == "codex_mobile_session" && cookie.domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")) == host && (!cookie.isSecure || target.scheme == "https") && (cookie.expiresDate == nil || cookie.expiresDate! > Date()) }
-            guard !matching.isEmpty else { done(.failure(NSError(domain: "Bridge", code: 401, userInfo: [NSLocalizedDescriptionKey: "请先连接并登录电脑网关"]))); return }
+            guard !matching.isEmpty else { done(.failure(NSError(domain: "Bridge", code: 401, userInfo: [NSLocalizedDescriptionKey: MobileStrings.text("请先连接并登录电脑网关")]))); return }
             var request = URLRequest(url: target); request.setValue(address, forHTTPHeaderField: "Origin"); request.setValue(HTTPCookie.requestHeaderFields(with: matching)["Cookie"], forHTTPHeaderField: "Cookie")
             self.session.dataTask(with: request) { data, response, error in
                 let code = (response as? HTTPURLResponse)?.statusCode
                 let result: Result<[String: Any], Error>
                 if let error { result = .failure(error) }
                 else if code == 200, let data, data.count <= 512000, let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { result = .success(value) }
-                else { result = .failure(NSError(domain: "Bridge", code: code ?? 0, userInfo: [NSLocalizedDescriptionKey: code == 401 || code == 403 ? "登录已失效，请重新连接电脑" : "请使用配套电脑 Preview，并检查连接"])) }
+                else { result = .failure(NSError(domain: "Bridge", code: code ?? 0, userInfo: [NSLocalizedDescriptionKey: code == 401 || code == 403 ? MobileStrings.text("登录已失效，请重新连接电脑") : MobileStrings.text("请使用配套电脑 Preview，并检查连接")])) }
                 DispatchQueue.main.async { if ticket == self.generation { done(result) } else { self.loading = false } }
             }.resume()
         }
@@ -424,14 +436,14 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         switch result {
         case .failure(let error): self.info(error.localizedDescription)
         case .success(let data):
-            guard data["enabled"] as? Bool == true else { self.info("请在电脑 Preview 的手机通知中开启“手机 App 通知收件箱”并保存。"); return }
+            guard data["enabled"] as? Bool == true else { self.info(MobileStrings.text("请在电脑 Preview 的手机通知中开启“手机 App 通知收件箱”并保存。")); return }
             let stream = data["streamId"] as? String ?? ""
             let clearKey = "cleared:" + self.origin + ":" + stream
             let events = (data["events"] as? [[String: Any]] ?? []).filter { ($0["sequence"] as? Int ?? 0) > self.defaults.integer(forKey: clearKey) }
             let address = self.origin
-            let (sheet, content) = self.sheet("通知")
+            let (sheet, content) = self.sheet(MobileStrings.text("通知"))
             if !events.isEmpty {
-                content.addArrangedSubview(self.button("清空通知", symbol: "trash") { [weak self, weak sheet] in
+                content.addArrangedSubview(self.button(MobileStrings.text("清空通知"), symbol: "trash") { [weak self, weak sheet] in
                     let cursor = data["cursor"] as? Int ?? 0
                     self?.defaults.set(cursor, forKey: clearKey)
                     UNUserNotificationCenter.current().getDeliveredNotifications { notices in
@@ -441,16 +453,16 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
                     sheet?.dismiss(animated: true) { self?.inbox() }
                 })
             }
-            content.addArrangedSubview(self.label("最近任务提醒", size: 24, weight: .semibold))
+            content.addArrangedSubview(self.label(MobileStrings.text("最近任务提醒"), size: 24, weight: .semibold))
             if events.isEmpty {
-                content.addArrangedSubview(self.card([self.label("暂无通知", size: 18, weight: .medium), self.label("在聊天中开启“提醒”，任务完成或需要你处理时，会记录在这里。", secondary: true)]))
+                content.addArrangedSubview(self.card([self.label(MobileStrings.text("暂无通知"), size: 18, weight: .medium), self.label(MobileStrings.text("在聊天中开启“提醒”，任务完成或需要你处理时，会记录在这里。"), secondary: true)]))
             }
             let date = DateFormatter(); date.dateStyle = .short; date.timeStyle = .short
             for event in events.reversed() {
-                var items: [UIView] = [self.label(event["title"] as? String ?? "任务提醒", size: 17, weight: .semibold)]
+                var items: [UIView] = [self.label(event["title"] as? String ?? MobileStrings.text("任务提醒"), size: 17, weight: .semibold)]
                 if let body = event["body"] as? String, !body.isEmpty { items.append(self.label(body, secondary: true)) }
                 if let timestamp = event["createdAt"] as? Double { items.append(self.label(date.string(from: Date(timeIntervalSince1970: timestamp)), size: 12, secondary: true)) }
-                items.append(self.button("查看聊天", symbol: "arrow.up.right") { [weak self, weak sheet] in
+                items.append(self.button(MobileStrings.text("查看聊天"), symbol: "arrow.up.right") { [weak self, weak sheet] in
                     sheet?.dismiss(animated: true) {
                         if let thread = event["threadId"] as? String, let host = event["host"] as? String, let url = try? GatewayURL.chat(address, thread: thread, host: host) { self?.connect(url, address: address) }
                     }
@@ -459,9 +471,47 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             }
         }
     } }
-    @objc private func active() { activityTimer?.invalidate(); activityTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.syncLiveActivity() }; syncLiveActivity(); timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in self?.sync() } }
+    @objc private func active() { foregroundBaselines.removeAll();sync(); activityTimer?.invalidate(); activityTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.syncLiveActivity() }; syncLiveActivity(); timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in self?.sync() } }
     @objc private func inactive() { timer?.invalidate(); timer = nil; activityTimer?.invalidate(); activityTimer = nil; if #available(iOS 16.2, *) { Task { await LiveActivityController.shared.pause() } } }
-    private func sync() { registerNativePush(); guard UIApplication.shared.applicationState == .active, !origin.isEmpty, web != nil, !loading else { return }; loading = true; fetch { result in self.loading = false; if case .success(let data) = result, data["enabled"] as? Bool == true { let cursor = data["cursor"] as? Int ?? 0, key = "cursor:" + self.origin; let previous = self.defaults.integer(forKey: key); if self.defaults.object(forKey: key) != nil, cursor > previous { self.gatewayMenu.accessibilityLabel = "更多，有新的任务提醒" }; self.defaults.set(cursor, forKey: key) } } }
+    private func sync() {
+        registerNativePush()
+        guard UIApplication.shared.applicationState == .active, !loading else { return }
+        loading = true
+        let addresses = saved
+        func next(_ index: Int) {
+            guard index < addresses.count else { self.loading = false; return }
+            let address = addresses[index]
+            self.fetch(address: address) { result in
+                if case .success(let data) = result, data["enabled"] as? Bool == true, let stream = data["streamId"] as? String {
+                    let key = "cursor:" + address, previous = self.defaults.integer(forKey: key)
+                    let ready = self.foregroundBaselines.contains(address) && self.defaults.string(forKey: "stream:" + address) == stream
+                    let cleared = self.defaults.integer(forKey: "cleared:" + address + ":" + stream)
+                    if ready, self.defaults.bool(forKey: "foregroundAlerts"), UIApplication.shared.applicationState == .active {
+                        for event in data["events"] as? [[String: Any]] ?? [] where (event["sequence"] as? Int ?? 0) > max(previous, cleared) {
+                            let content = UNMutableNotificationContent()
+                            content.title = event["title"] as? String ?? MobileStrings.text("任务提醒")
+                            content.body = event["body"] as? String ?? ""
+                            content.sound = .default
+                            content.userInfo = ["origin": address, "thread": event["threadId"] as? String ?? "", "host": event["host"] as? String ?? "local", "sequence": event["sequence"] as? Int ?? 0]
+                            let identifier = address + ":" + stream + ":" + (event["id"] as? String ?? String(event["sequence"] as? Int ?? 0))
+                            UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil))
+                        }
+                    }
+                    self.defaults.set(data["cursor"] as? Int ?? 0, forKey: key)
+                    self.defaults.set(stream, forKey: "stream:" + address)
+                    self.foregroundBaselines.insert(address)
+                }
+                next(index + 1)
+            }
+        }
+        next(0)
+    }
+    private func toggleForegroundAlerts() {
+        if defaults.bool(forKey: "foregroundAlerts") { defaults.set(false, forKey: "foregroundAlerts"); return }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { allowed, _ in
+            DispatchQueue.main.async { self.defaults.set(allowed, forKey: "foregroundAlerts"); self.foregroundBaselines.removeAll(); if allowed { self.sync() } else { self.info(MobileStrings.text("请在系统设置中允许通知。")) } }
+        }
+    }
     private func currentTask(_ completion: @escaping ([String: String]?) -> Void) {
         guard let web, let url = web.url, GatewayURL.same(url, origin) else { completion(nil); return }
         let ticket = generation
@@ -477,10 +527,10 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         }
     }
     private func startLiveActivity() {
-        guard #available(iOS 16.2, *) else { info("实时活动需要 iOS 16.2 或更新版本。"); return }
+        guard #available(iOS 16.2, *) else { info(MobileStrings.text("实时活动需要 iOS 16.2 或更新版本。")); return }
         currentTask { [weak self] task in
             guard let self else { return }
-            guard let task else { self.info("请先打开要跟踪的聊天，再选择灵动岛显示。"); return }
+            guard let task else { self.info(MobileStrings.text("请先打开要跟踪的聊天，再选择灵动岛显示。")); return }
             Task { do { try await LiveActivityController.shared.start(origin: self.origin, thread: task["thread"]!, host: task["host"] ?? "local", phase: task["phase"] ?? "offline") }
                 catch { self.info(error.localizedDescription) } }
         }
@@ -496,45 +546,45 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         }
     }
     @objc private func settings() {
-        let (sheet, content) = sheet("设置")
-        content.addArrangedSubview(label("通知", size: 19, weight: .semibold))
+        let (sheet, content) = sheet(MobileStrings.text("设置"))
+        content.addArrangedSubview(label(MobileStrings.text("通知"), size: 19, weight: .semibold))
         content.addArrangedSubview(card([
-            label("锁屏任务提醒", size: 17, weight: .semibold),
-            button("启用系统后台推送", symbol: "bell") { [weak self, weak sheet] in sheet?.dismiss(animated: true) { self?.enableNativePush() } },
-            label("请在电脑端配置 Bark 等通知通道。当前 App 在打开时同步收件箱。", secondary: true),
-            button("测试本机通知", symbol: "bell.badge") { [weak self, weak sheet] in sheet?.dismiss(animated: true) { self?.testNotification() } },
-            label("10 秒后显示，用于检查手机的通知权限。", size: 13, secondary: true)
+            label(MobileStrings.text("前台任务提醒"), size: 17, weight: .semibold),
+            button(defaults.bool(forKey: "foregroundAlerts") ? MobileStrings.text("关闭任务通知") : MobileStrings.text("开启任务通知"), symbol: "bell") { [weak self, weak sheet] in sheet?.dismiss(animated: true) { self?.toggleForegroundAlerts() } },
+            label(MobileStrings.text("App 打开时提醒已连接电脑的新任务消息。离开 App 或锁屏后不保证通知；可在电脑端配置 Bark 或 ntfy。"), secondary: true),
+            button(MobileStrings.text("测试本机通知"), symbol: "bell.badge") { [weak self, weak sheet] in sheet?.dismiss(animated: true) { self?.testNotification() } },
+            label(MobileStrings.text("10 秒后显示，用于检查手机的通知权限。"), size: 13, secondary: true)
         ]))
         if #available(iOS 16.2, *) {
-            content.addArrangedSubview(label("灵动岛与锁屏", size: 19, weight: .semibold))
+            content.addArrangedSubview(label(MobileStrings.text("灵动岛与锁屏"), size: 19, weight: .semibold))
             content.addArrangedSubview(card([
-                label("跟踪当前聊天", size: 17, weight: .semibold),
-                label("从电脑菜单选择聊天跟踪。后台显示可能不是最新状态，打开 App 可继续同步。", secondary: true),
-                button("预览灵动岛", symbol: "capsule") { [weak self, weak sheet] in
+                label(MobileStrings.text("跟踪当前聊天"), size: 17, weight: .semibold),
+                label(MobileStrings.text("从电脑菜单选择聊天跟踪。后台显示可能不是最新状态，打开 App 可继续同步。"), secondary: true),
+                button(MobileStrings.text("预览灵动岛"), symbol: "capsule") { [weak self, weak sheet] in
                     sheet?.dismiss(animated: true) {
                         Task { do { try await LiveActivityController.shared.start(origin: "", thread: "", host: "local", phase: "running", demo: true) }
                             catch { self?.info(error.localizedDescription) } }
                     }
                 },
-                button("结束灵动岛显示", symbol: "xmark.circle") { Task { await LiveActivityController.shared.stop() } }
+                button(MobileStrings.text("结束灵动岛显示"), symbol: "xmark.circle") { Task { await LiveActivityController.shared.stop() } }
             ]))
         }
-        content.addArrangedSubview(label("当前电脑", size: 19, weight: .semibold))
+        content.addArrangedSubview(label(MobileStrings.text("当前电脑"), size: 19, weight: .semibold))
         if origin.isEmpty {
-            content.addArrangedSubview(card([label("尚未选择电脑", size: 17), label("返回首页扫码或输入网关地址。", secondary: true)]))
+            content.addArrangedSubview(card([label(MobileStrings.text("尚未选择电脑"), size: 17), label(MobileStrings.text("返回首页扫码或输入网关地址。"), secondary: true)]))
         } else {
             content.addArrangedSubview(card([
                 label(URL(string: origin)?.host ?? origin, size: 17, weight: .semibold), label(origin, size: 13, secondary: true),
-                button("移除这台电脑", symbol: "trash") { [weak self, weak sheet] in sheet?.dismiss(animated: true) { self?.confirmRemove() } }
+                button(MobileStrings.text("移除这台电脑"), symbol: "trash") { [weak self, weak sheet] in sheet?.dismiss(animated: true) { self?.confirmRemove() } }
             ]))
         }
-        let version = label("Bridge Preview · 0.1.0 (12)", size: 13, secondary: true); version.textAlignment = .center; content.addArrangedSubview(version)
+        let version = label("Bridge Preview · 0.1.0 (13)", size: 13, secondary: true); version.textAlignment = .center; content.addArrangedSubview(version)
     }
     private var pushSupported: Bool { Bundle.main.object(forInfoDictionaryKey: "BridgePushEnabled") as? Bool == true }
     private func enableNativePush() {
-        guard pushSupported else { info("此预览尚未配置 Apple 推送签名。需要开发者账号和电脑端推送服务后才能启用后台任务提醒。"); return }
+        guard pushSupported else { info(MobileStrings.text("此预览尚未配置 Apple 推送签名。需要开发者账号和电脑端推送服务后才能启用后台任务提醒。")); return }
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { allowed, _ in DispatchQueue.main.async {
-            guard allowed else { self.info("请在系统设置中允许通知。"); return }
+            guard allowed else { self.info(MobileStrings.text("请在系统设置中允许通知。")); return }
             self.defaults.set(true, forKey: "nativePushEnabled"); UIApplication.shared.registerForRemoteNotifications()
         } }
     }
@@ -557,12 +607,12 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
     }
     private func testNotification() {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert,.sound,.badge]) { allowed, _ in
-            guard allowed else { DispatchQueue.main.async { self.info("请在系统设置允许 Bridge Preview 通知。") }; return }
+            guard allowed else { DispatchQueue.main.async { self.info(MobileStrings.text("请在系统设置允许 Bridge Preview 通知。")) }; return }
             DispatchQueue.main.async {
-                let content = UNMutableNotificationContent(); content.title = "手机通知测试"; content.body = "本机通知已开启"; content.sound = .default
+                let content = UNMutableNotificationContent(); content.title = MobileStrings.text("手机通知测试"); content.body = MobileStrings.text("本机通知已开启"); content.sound = .default
                 if !self.origin.isEmpty { content.userInfo = ["origin": self.origin] }
                 UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "preview-test", content: content, trigger: UNTimeIntervalNotificationTrigger(timeInterval: 10, repeats: false))) { error in
-                    DispatchQueue.main.async { self.info(error == nil ? "10 秒后显示本地测试通知，可以先锁屏。此测试不代表远程推送已经接通。" : "测试通知未能创建，请检查系统通知设置。") }
+                    DispatchQueue.main.async { self.info(error == nil ? MobileStrings.text("10 秒后显示本地测试通知，可以先锁屏。此测试不代表远程推送已经接通。") : MobileStrings.text("测试通知未能创建，请检查系统通知设置。")) }
                 }
             }
         }
@@ -572,9 +622,9 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         web.callAsyncJavaScript("const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 5000); try { const a = await (await fetch('/api/auth', {signal:controller.signal})).json(); if (a.authenticated) await fetch('/api/logout', {method:'POST', signal:controller.signal, headers:{'Content-Type':'application/json', 'X-CSRF-Token':a.csrf}, body:'{}'}); } finally { clearTimeout(timer); }", arguments: [:], in: nil, in: .page) { _ in done() }
     }
     private func confirmRemove() {
-        let a = UIAlertController(title: "移除这台电脑？", message: "清除本机保存的连接和登录状态，电脑上的聊天不受影响。", preferredStyle: .alert)
-        a.addAction(UIAlertAction(title: "取消", style: .cancel))
-        a.addAction(UIAlertAction(title: "移除", style: .destructive) { _ in
+        let a = UIAlertController(title: MobileStrings.text("移除这台电脑？"), message: MobileStrings.text("清除本机保存的连接和登录状态，电脑上的聊天不受影响。"), preferredStyle: .alert)
+        a.addAction(UIAlertAction(title: MobileStrings.text("取消"), style: .cancel))
+        a.addAction(UIAlertAction(title: MobileStrings.text("移除"), style: .destructive) { _ in
             self.revokeConnection {
             if #available(iOS 16.2, *) { Task { await LiveActivityController.shared.stop() } }
             let old = self.origin; self.defaults.set(self.saved.filter { $0 != old }, forKey: "origins"); self.defaults.removeObject(forKey: "active"); self.defaults.removeObject(forKey: "cursor:" + old)
@@ -583,7 +633,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         }); present(a, animated: true)
     }
     private func scan() {
-        AVCaptureDevice.requestAccess(for: .video) { allowed in DispatchQueue.main.async { guard allowed else { self.info("未获得相机权限，请粘贴网关地址。"); return }; let scanner = Scanner(); scanner.result = { [weak self] value in self?.dismiss(animated: true) { self?.choose(value) } }; self.present(scanner, animated: true) } }
+        AVCaptureDevice.requestAccess(for: .video) { allowed in DispatchQueue.main.async { guard allowed else { self.info(MobileStrings.text("未获得相机权限，请粘贴网关地址。")); return }; let scanner = Scanner(); scanner.result = { [weak self] value in self?.dismiss(animated: true) { self?.choose(value) } }; self.present(scanner, animated: true) } }
     }
 }
 
@@ -598,10 +648,154 @@ final class Scanner: UIViewController, AVCaptureMetadataOutputObjectsDelegate {
         guard let device = AVCaptureDevice.default(for: .video), let input = try? AVCaptureDeviceInput(device: device), capture.canAddInput(input) else { dismiss(animated: true); return }
         capture.addInput(input); let output = AVCaptureMetadataOutput(); guard capture.canAddOutput(output) else { return }; capture.addOutput(output); output.setMetadataObjectsDelegate(self, queue: .main); output.metadataObjectTypes = [.qr]
         let preview = AVCaptureVideoPreviewLayer(session: capture); preview.videoGravity = .resizeAspectFill; view.layer.addSublayer(preview); layer = preview
-        let close = UIButton(type: .system); close.setTitle("取消扫码", for: .normal); close.tintColor = .white; close.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(close); close.addAction(UIAction { _ in self.dismiss(animated: true) }, for: .touchUpInside); NSLayoutConstraint.activate([close.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 15), close.centerXAnchor.constraint(equalTo: view.centerXAnchor)])
+        let close = UIButton(type: .system); close.setTitle(MobileStrings.text("取消扫码"), for: .normal); close.tintColor = .white; close.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(close); close.addAction(UIAction { _ in self.dismiss(animated: true) }, for: .touchUpInside); NSLayoutConstraint.activate([close.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 15), close.centerXAnchor.constraint(equalTo: view.centerXAnchor)])
         queue.async { self.capture.startRunning() }
     }
     override func viewDidLayoutSubviews() { super.viewDidLayoutSubviews(); layer?.frame = view.bounds }
     override func viewWillDisappear(_ animated: Bool) { queue.async { self.capture.stopRunning() }; super.viewWillDisappear(animated) }
     func metadataOutput(_ output: AVCaptureMetadataOutput, didOutput objects: [AVMetadataObject], from connection: AVCaptureConnection) { guard !found, let text = (objects.first as? AVMetadataMachineReadableCodeObject)?.stringValue else { return }; found = true; result?(text) }
+}
+
+// Product strings only. Chat content and server-provided names are not translated.
+enum MobileStrings {
+    static let values: [String: String] = [
+"Codex 未完成侧边聊天操作，请检查模型接入和运行时版本":"Codex could not complete the side chat operation. Check the model connection and runtime version.",
+"临时侧边聊天数量已达上限，请关闭不用的聊天；必要时重启网关":"Too many temporary side chats. End unused chats or restart the gateway.",
+"侧边聊天工作目录不一致，已取消创建":"Side chat creation cancelled because the working directory did not match.",
+"侧边聊天已关闭或失效":"Side chat closed or expired",
+"侧边聊天已失效，请关闭后新建":"Side chat expired. End it and create a new one.",
+"侧边聊天执行失败，请检查模型接入后重试":"Side chat failed. Check the model connection and try again.",
+"侧边聊天操作结果未确认，请刷新状态，不要重复发送":"Operation unconfirmed. Refresh the status before sending again.",
+"侧边聊天的模型接入与主聊天不一致，已取消创建":"Side chat creation cancelled because its model connection did not match the parent.",
+"侧边聊天运行时已断开":"Side chat runtime disconnected",
+"同一消息标识不能用于不同内容":"A message ID cannot be reused for different content",
+"无效侧边聊天操作":"Invalid side chat operation",
+"无法确认临时分支，已取消创建":"Could not verify the temporary branch. Creation cancelled.",
+"模型 ID 格式不正确":"Invalid model ID",
+"此 Codex 运行时不支持临时侧边聊天，请更新 Codex":"This runtime does not support temporary side chats. Update Codex.",
+"此侧边聊天已关闭或已失效，请刷新标签":"Side chat closed or expired. Refresh this tab.",
+"此次创建的侧边聊天已关闭，请重新打开标签后新建":"This side chat was ended. Reopen the tab to create another.",
+"此请求已处理或已失效":"This request was handled or expired",
+"此请求暂不支持在侧边聊天处理，请停止本次回复。":"This request is not supported in side chats. Stop this response.",
+"此请求暂不支持，请停止本次回复":"Unsupported request. Stop this response.",
+"此预览暂支持网关电脑上的聊天，SSH 远程工作区尚未接入侧边聊天":"Side chats currently support the gateway computer. SSH remote workspaces are not supported yet.",
+"确认回复格式不正确":"Invalid approval response",
+"确认操作无效":"Invalid approval action",
+"请先等待回复完成或处理确认请求":"Wait for the response or handle the pending request first",
+"请输入 1–20000 字的消息":"Enter a message of 1–20,000 characters",
+"请选择有效的推理强度":"Choose a valid reasoning effort",
+"请选择本次允许、拒绝或取消":"Choose allow once, deny or cancel",
+"请选择本次允许或拒绝":"Choose allow once or deny",
+"这个模型不支持所选推理强度":"This model does not support the selected reasoning effort",
+"公网地址必须使用 HTTPS；HTTP 仅限局域网":"Public addresses require HTTPS. HTTP is only allowed on a local network.",
+"网关地址不应包含路径":"Gateway addresses must not include a path",
+"请使用电脑网关提供的地址或二维码":"Use the address or QR code from your computer’s gateway",
+"请填写完整网关地址，不含账号或参数":"Enter a complete gateway address without credentials or query parameters",
+"请填写完整的 HTTPS 网关地址，或局域网 HTTP 地址，不含路径、账号和参数。":"Enter a complete HTTPS gateway address, or a local HTTP address, without a path, credentials or parameters.",
+        "通知收件箱": "Notification inbox",
+        "手机设置": "Mobile settings",
+        "返回电脑列表": "Back to computers",
+        "账号与接入": "Accounts and connections",
+        "外观与显示": "Appearance",
+        "刷新页面": "Reload page",
+        "好": "OK",
+        "电脑上的工作，\n带在身边。": "Your computer’s work,\nalways with you.",
+        "继续聊天、查看结果，让电脑替你运行。": "Continue chats and view results while your computer does the work.",
+        "扫码连接电脑": "Scan to connect",
+        "输入网关地址": "Enter gateway address",
+        "你的电脑": "Your computers",
+        "还没有连接的电脑": "No computers connected yet",
+        "在电脑网关中展开“扫码登录”，然后用上方按钮扫描。": "Open “Scan to sign in” on your computer’s gateway, then scan using the button above.",
+        "连接 ": "Connect ",
+        "外出使用 HTTPS 地址；局域网地址需要连接同一网络。": "Use HTTPS when away. Local addresses require the same network.",
+        "连接电脑": "Connect to computer",
+        "粘贴电脑网关提供的访问地址": "Paste the address shown by your computer’s gateway",
+        "继续": "Continue",
+        "取消": "Cancel",
+        "连接到这台电脑？": "Connect to this computer?",
+        "\n请确认这是你自己的网关。": "\nMake sure this is your own gateway.",
+        "连接": "Connect",
+        "正在连接 · ": "Connecting · ",
+        "电脑与聊天选项": "Computer and chat options",
+        "在浏览器打开外部链接？\n": "Open external link in browser?\n",
+        "打开": "Open",
+        "连接失败，请在更多菜单中刷新": "Connection failed. Reload from the More menu.",
+        "没有可用的文件选择器": "No file picker available",
+        "已有下载进行中，请稍候": "A download is in progress. Please wait.",
+        "此下载不是当前电脑的附件，请在浏览器中打开": "This download is not an attachment from the current computer. Open it in your browser.",
+        "正在下载…": "Downloading…",
+        "没有可用的文件保存器": "No file saver available",
+        "下载失败，请重试": "Download failed. Try again.",
+        "文件已保存": "File saved",
+        "保存失败，请重试": "Could not save. Try again.",
+        "请先扫码保存通知对应的电脑，再打开聊天。": "Scan and save the notification’s computer before opening the chat.",
+        "通知链接无效": "Invalid notification link",
+        "完成": "Done",
+        "请先连接并登录电脑": "Connect and sign in to a computer first",
+        "正在读取通知…": "Loading notifications…",
+        "请在电脑 Preview 的手机通知中开启“手机 App 通知收件箱”并保存。": "Enable and save “Mobile app notification inbox” in the desktop Preview’s notification settings.",
+        "通知": "Notifications",
+        "最近任务提醒": "Recent task notifications",
+        "清空通知": "Clear notifications",
+        "暂无通知": "No notifications yet",
+        "在聊天中开启“提醒”，任务完成或需要你处理时，会记录在这里。": "Enable chat notifications to see completed tasks and requests that need your attention here.",
+        "任务提醒": "Task notification",
+        "查看聊天  ↗": "View chat  ↗",
+        "聊天链接无效": "Invalid chat link",
+        "设置": "Settings",
+        "启用系统后台推送": "Enable system push",
+        "关闭任务通知": "Turn off task notifications",
+        "开启任务通知": "Turn on task notifications",
+        "App 打开时提醒已连接电脑的新任务消息。离开 App 或锁屏后不保证通知；可在电脑端配置 Bark 或 ntfy。": "Receive new task alerts from saved computers while this app is open. Delivery after leaving the app or locking the screen is not guaranteed. Configure Bark or ntfy on your computer for external alerts.",
+        "测试本机通知": "Test local notification",
+        "10 秒后显示，用于检查手机的通知权限。": "Appears in 10 seconds to check notification permissions.",
+        "当前电脑": "Current computer",
+        "尚未选择电脑": "No computer selected",
+        "返回首页扫码或输入网关地址。": "Return home to scan or enter a gateway address.",
+        "移除这台电脑": "Remove this computer",
+        "此预览尚未配置系统推送项目。当前仅同步收件箱；配置 Firebase 或厂商推送后才能启用后台任务提醒。": "System push is not configured. Background task alerts require Firebase or a device vendor’s push service.",
+        "手机通知测试": "Mobile notification test",
+        "本机通知已开启": "Local notifications are enabled",
+        "10 秒后显示本地测试通知，可以先返回桌面。此测试不代表远程推送已经接通。": "A local test notification will appear in 10 seconds. You may leave the app. This does not verify remote push delivery.",
+        "移除这台电脑？": "Remove this computer?",
+        "清除本机保存的连接和登录状态，电脑上的聊天不受影响。": "Remove the saved connection and sign-in on this device. Chats on the computer are unaffected.",
+        "移除": "Remove",
+        "未获得权限，可继续粘贴地址使用。": "Permission denied. You can still paste an address to connect.",
+        "系统推送注册失败，请检查推送签名与网络。": "Push registration failed. Check signing and network access.",
+        "电脑与通知": "Computers and notifications",
+        "在灵动岛显示此聊天": "Show this chat in Dynamic Island",
+        "结束灵动岛显示": "End Live Activity",
+        "请先连接通知对应的电脑。": "Connect to the computer for this notification first.",
+        "请先扫码保存通知对应的电脑。": "Scan and save this notification’s computer first.",
+        "在浏览器打开外部链接？": "Open external link in browser?",
+        "连接失败，请检查电脑和地址后刷新": "Connection failed. Check the computer and address, then reload.",
+        "确认": "确认",
+        "下载失败，请检查登录状态后重试": "Download failed. Check sign-in and try again.",
+        "附件超过 50 MB 下载限制": "Attachment exceeds the 50 MB download limit",
+        "无法保存下载文件，请检查剩余空间": "Could not save the download. Check available storage.",
+        "下载地址发生跳转，已取消。请重新打开电脑附件。": "Download redirect blocked. Reopen the attachment from your computer.",
+        "下载失败，请检查网络后重试": "Download failed. Check your network and try again.",
+        "请先连接并登录电脑网关": "Connect and sign in to your computer’s gateway first",
+        "登录已失效，请重新连接电脑": "Sign-in expired. Reconnect to the computer.",
+        "请使用配套电脑 Preview，并检查连接": "Use the matching desktop Preview and check the connection",
+        "查看聊天": "View chat",
+        "请在系统设置中允许通知。": "Allow notifications in system settings.",
+        "实时活动需要 iOS 16.2 或更新版本。": "Live Activities require iOS 16.2 or later.",
+        "请先打开要跟踪的聊天，再选择灵动岛显示。": "Open a chat first, then choose to show it in Dynamic Island.",
+        "前台任务提醒": "Foreground task notifications",
+        "灵动岛与锁屏": "Dynamic Island and Lock Screen",
+        "跟踪当前聊天": "Track current chat",
+        "从电脑菜单选择聊天跟踪。后台显示可能不是最新状态，打开 App 可继续同步。": "Choose a chat to track from the computer menu. Background status may be out of date; open the app to sync.",
+        "预览灵动岛": "Preview Live Activity",
+        "此预览尚未配置 Apple 推送签名。需要开发者账号和电脑端推送服务后才能启用后台任务提醒。": "Apple push signing is not configured. Background alerts require a developer account and a gateway push service.",
+        "请在系统设置允许 Bridge Preview 通知。": "Allow Bridge Preview notifications in system settings.",
+        "10 秒后显示本地测试通知，可以先锁屏。此测试不代表远程推送已经接通。": "A local test notification will appear in 10 seconds. You may lock the screen. This does not verify remote push delivery.",
+        "测试通知未能创建，请检查系统通知设置。": "Could not schedule the test. Check system notification settings.",
+        "未获得相机权限，请粘贴网关地址。": "Camera access denied. Paste the gateway address instead.",
+        "取消扫码": "Cancel scan"
+    ]
+    static func text(_ value: String) -> String {
+        let language = UserDefaults.standard.string(forKey: "bridge-language") ?? Locale.preferredLanguages.first ?? "zh"
+        return language.hasPrefix("en") ? values[value] ?? value : value
+    }
 }

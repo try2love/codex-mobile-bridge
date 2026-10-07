@@ -2,6 +2,8 @@
   if (window !== window.top) return;
   const nativePrompt = window.prompt.bind(window);
   const command = 'codexbridge-copy:__BRIDGE_CLIPBOARD_TOKEN__';
+      const syncLanguage = () => { if (typeof BridgeI18n !== 'undefined') nativePrompt('codexbridge-language:__BRIDGE_CLIPBOARD_TOKEN__', BridgeI18n.language()); };
+      document.addEventListener('bridge-language', syncLanguage); syncLanguage();
   let clicked = false;
   document.addEventListener('click', event => {
     clicked = event.isTrusted && !!event.target.closest?.('.message-copy, .code-copy');

@@ -90,8 +90,8 @@ class DesktopFixture:
                     self.requests.append(message)
                     if method == 'thread-follower-update-thread-settings':
                         settings = message['params']['threadSettings']
-                        self.state['latestModel'] = settings['model']
-                        self.state['latestReasoningEffort'] = settings['effort']
+                        if 'model' in settings: self.state['latestModel'] = settings['model']
+                        if 'effort' in settings: self.state['latestReasoningEffort'] = settings['effort']
                         self.state['latestThreadSettings'] = {**self.state.get('latestThreadSettings', {}), **settings}
                         self.revision += 1
                         self.snapshot()

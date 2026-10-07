@@ -13,7 +13,7 @@ class ListSync {
       if(!this.start||event.touches.length!==1)return;
       const dx=event.touches[0].clientX-this.start.x,dy=event.touches[0].clientY-this.start.y;
       if(Math.abs(dx)>40||dy<0){this.start=null;return;}
-      if(dy>10){event.preventDefault();this.distance=dy;status.textContent=dy>=72?'松开刷新聊天列表':'下拉刷新聊天列表';status.hidden=false;}
+      if(dy>10){event.preventDefault();this.distance=dy;status.textContent=dy>=72?BridgeI18n.t('松开刷新聊天列表'):BridgeI18n.t('下拉刷新聊天列表');status.hidden=false;}
     },{passive:false});
     root.addEventListener('touchend',()=>{const refresh=this.start&&this.distance>=72;this.start=null;if(refresh)this.update(true);else if(!this.busy)status.hidden=true;});
     root.addEventListener('touchcancel',()=>{this.start=null;if(!this.busy)status.hidden=true;});
@@ -23,9 +23,9 @@ class ListSync {
   async update(explicit=false){
     if(this.busy||document.hidden||!this.visible()||!this.ready()||(!explicit&&this.root.scrollTop>24))return;
     this.busy=true;clearTimeout(this.hideTimer);
-    if(explicit){this.status.hidden=false;this.status.textContent='正在刷新聊天列表…';}
-    try{await this.refresh();if(explicit){this.status.textContent='聊天列表已更新';this.hideTimer=setTimeout(()=>this.status.hidden=true,2500);}}
-    catch(e){this.status.hidden=false;this.status.textContent='列表暂未更新，点击重试';}
+    if(explicit){this.status.hidden=false;this.status.textContent=BridgeI18n.t('正在刷新聊天列表…');}
+    try{await this.refresh();if(explicit){this.status.textContent=BridgeI18n.t('聊天列表已更新');this.hideTimer=setTimeout(()=>this.status.hidden=true,2500);}}
+    catch(e){this.status.hidden=false;this.status.textContent=BridgeI18n.t('列表暂未更新，点击重试');}
     finally{this.busy=false;}
   }
 }

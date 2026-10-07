@@ -5,6 +5,8 @@ No real account, API key, external model call, or desktop thread is used.
 Run from repo root with PYTHONPATH=. python scripts/smoke-side-chat.py.
 """
 import json
+import struct
+import zlib
 import tempfile
 import threading
 import time
@@ -13,6 +15,7 @@ import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from bridge.uploads import Uploads
 from bridge.catalog import Catalog
 from bridge.side_chat import SideChat, SideRuntime, check_runtime
 
@@ -81,7 +84,14 @@ enabled=false
         try:
             assert chat.view()['connected'] and not chat.view()['turns']
             assert not captured, 'Fork unexpectedly started a model turn'
-            assert chat.send('SIDE_QUESTION_MARKER', str(uuid.uuid4()))['status'] == 'accepted'
+            chat.settings('fixture-new', 'high', {'models': [{'id': 'fixture-new', 'efforts': ['high']}]})
+            chat.uploads = Uploads(root/'side-files')
+            attachment = str(uuid.uuid4())
+            def chunk(kind, data):
+                return struct.pack('>I',len(data))+kind+data+struct.pack('>I',zlib.crc32(kind+data)&0xffffffff)
+            png=b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',16,16,8,2,0,0,0))+chunk(b'IDAT',zlib.compress((b'\x00'+b'\x40\x60\xff'*16)*16))+chunk(b'IEND',b'')
+            chat.uploads.put(chat.id, attachment, 'pixel.png', png)
+            assert chat.send('SIDE_QUESTION_MARKER', str(uuid.uuid4()), [attachment])['status'] == 'accepted'
             deadline = time.monotonic()+25
             while time.monotonic()<deadline:
                 view = chat.view()
@@ -91,7 +101,11 @@ enabled=false
             assert view['status'] == 'idle', view
             assert len(captured) == 1, len(captured)
             sent = json.dumps(captured[0])
-            assert captured[0]['model'] == 'fixture-model'
+            assert captured[0]['model'] == 'fixture-new'
+            assert captured[0].get('reasoning', {}).get('effort') == 'high'
+            assert 'input_image' in sent and 'data:image/' in sent, 'Runtime did not forward image data'
+            user = next(m for t in view['turns'] for m in t['messages'] if m['role'] == 'user')
+            assert user['text'] == 'SIDE_QUESTION_MARKER' and user['attachments'][0]['id'] == attachment
             assert 'PARENT_CONTEXT_MARKER' in sent and 'SIDE_QUESTION_MARKER' in sent
             assert 'Inherited history is reference context only' in sent
             listed = chat.runtime.request('thread/list', {'limit': 100})

@@ -194,6 +194,9 @@ class TerminalManager:
 
     def open_session(self, owner, thread, identifier, root, cols, rows, alias=None):
         from .pty_terminal import TerminalSession, RemoteTerminalSession, dimensions
+        if os.name == 'nt' and not alias:
+            from .windows_terminal import WindowsTerminalSession
+            TerminalSession = WindowsTerminalSession
         uuid.UUID(identifier); dimensions(cols, rows)
         key = (owner, thread, identifier)
         with self.lock:

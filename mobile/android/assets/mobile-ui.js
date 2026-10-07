@@ -42,7 +42,7 @@
   const footer = document.querySelector('.sidebar-foot');
   if (footer) {
     document.body.appendChild(footer);
-    const home = document.createElement('a'); home.href = 'codexbridge://home'; home.className = 'plain'; home.textContent = '返回电脑列表';
+    const home = document.createElement('a'); home.href = 'codexbridge://home'; home.className = 'plain'; home.dataset.i18n = '返回电脑列表'; home.textContent = typeof BridgeI18n !== 'undefined' ? BridgeI18n.t('返回电脑列表') : '返回电脑列表';
     footer.appendChild(home);
   }
   const push = document.getElementById('pushplus-settings'), settings = document.getElementById('appearance-dialog');

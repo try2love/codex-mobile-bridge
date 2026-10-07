@@ -149,6 +149,23 @@ def normalize_item(item):
     return row
 
 
+def permission_mode(state):
+    turns = ordered_turns(state)
+    latest = state.get('latestThreadSettings') or {}
+    params = (turns[-1].get('params') or {}) if turns else {}
+    current = state.get('currentPermissions') or {}
+    values = {**current, **params, **latest}
+    profile = values.get('activePermissionProfile') or {}
+    profile_id = values.get('permissions') or profile.get('id')
+    policy = values.get('sandboxPolicy') or {}
+    if profile_id == ':danger-full-access' or (not profile_id and policy.get('type') == 'dangerFullAccess'):
+        return 'full-access' if values.get('approvalPolicy') == 'never' else 'custom'
+    if profile_id == ':workspace' or (not profile_id and policy.get('type') == 'workspaceWrite'):
+        if values.get('approvalPolicy') == 'on-request':
+            return 'auto-review' if values.get('approvalsReviewer') == 'auto_review' else 'ask'
+    return 'custom'
+
+
 def normalize_state(state, connected=True):
     turns = ordered_turns(state)
     result = []
@@ -182,6 +199,7 @@ def normalize_state(state, connected=True):
     return {"id": state.get("id", state.get("sessionId")), "title": state.get("title") or "未命名聊天",
             "cwd": state.get("cwd"), "model": state.get("latestModel"), "provider": state.get("modelProvider"), "effort": state.get("latestReasoningEffort") or (state.get("latestThreadSettings") or {}).get("effort"),
             "connected": connected, "status": state.get("threadRuntimeStatus", {}).get("type", "idle"),
+            "permissionMode": permission_mode(state),
             "collaborationMode": (state.get("latestCollaborationMode") or {}).get("mode"),
             **({'serviceTier': tier['serviceTier']} if 'serviceTier' in tier else {}),
             "goal": copy.deepcopy(state.get("threadGoal") or state.get("completedThreadGoal")),

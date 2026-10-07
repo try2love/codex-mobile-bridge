@@ -49,7 +49,7 @@ if not key.exists():
 run(build_tools/'zipalign','-f','4',work/'unsigned.apk',work/'aligned.apk')
 out = ROOT/'dist/mobile-preview'
 out.mkdir(parents=True,exist_ok=True)
-apk = out/'Codex-Mobile-Bridge-Android-0.1.0-preview.8.apk'
+apk = out/'Codex-Mobile-Bridge-Android-0.1.0-preview.9.apk'
 run(build_tools/'apksigner','sign','--ks',key,'--ks-pass','pass:android','--out',apk,work/'aligned.apk')
 run(build_tools/'apksigner','verify','--verbose',apk)
 print(apk)

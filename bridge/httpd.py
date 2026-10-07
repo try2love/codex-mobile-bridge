@@ -66,7 +66,7 @@ STATIC = {"/vendor/xterm/xterm.js": ("vendor/xterm/xterm.js", "text/javascript; 
           "/style.css": ("style.css", "text/css; charset=utf-8"),
           "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
           "/icon.png": ("icon.png", "image/png")}
-THREAD_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})(?:/(events|send|stop|history|respond|reconnect|queue|catalog|settings|poll|timeline|changes|detail|notifications|uploads|message-action|rename))?$")
+THREAD_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})(?:/(events|send|stop|history|respond|reconnect|queue|catalog|settings|permissions|poll|timeline|changes|detail|notifications|uploads|message-action|rename))?$")
 FONT_ROUTE = re.compile(r"^/vendor/katex/fonts/(KaTeX_[A-Za-z0-9_-]+\.(woff2|woff|ttf))$")
 UPLOAD_PREVIEW_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})/uploads/([0-9a-f-]{36})/preview$")
 UPLOAD_THUMB_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})/uploads/([0-9a-f-]{36})/thumb$")
@@ -398,6 +398,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self.output(200, {'pushplusEnabled': config['pushplusEnabled'],
                                              'hasPushplusToken': bool(config['pushplusToken'])})
             bridge = self.server.bridge.for_host(query.get("host", ["local"])[0])
+            side = query.get('side', [None])[0]
+            if side is not None and self.server.auth.config.get('mode') == 'none':
+                raise PermissionError('侧边聊天需要启用网关密码保护')
             side_match = re.fullmatch(r"/api/sessions/([0-9a-f-]{36})/side-chat", path)
             if side_match:
                 if self.server.auth.config.get('mode') == 'none':
@@ -405,7 +408,8 @@ class Handler(BaseHTTPRequestHandler):
                 owner = self.server.auth.key(self.token())
                 body = self.read_json() if write else {}
                 action = body.get('action') if write else 'read'
-                fields = {'create': {'action', 'creationId'}, 'send': {'action', 'id', 'text', 'submissionId'},
+                fields = {'create': {'action', 'creationId'}, 'send': {'action', 'id', 'text', 'submissionId', 'attachments'},
+                          'catalog': {'action', 'id'}, 'settings': {'action', 'id', 'model', 'effort'},
                           'close': {'action', 'id'}, 'stop': {'action', 'id'},
                           'respond': {'action', 'id', 'requestId', 'response'}, 'read': set()}
                 if action not in fields or set(body) - fields[action] or (write and action == 'read'):
@@ -470,7 +474,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.download(bridge, *file_match.groups())
             preview_match = UPLOAD_PREVIEW_ROUTE.fullmatch(path)
             if not write and preview_match:
-                return self.upload_preview(bridge, *preview_match.groups(), variant=query.get('variant', ['thumb'])[0])
+                return self.upload_preview(bridge, *preview_match.groups(), variant=query.get('variant', ['thumb'])[0], side=side)
             desktop_image_match = DESKTOP_IMAGE_ROUTE.fullmatch(path)
             if not write and desktop_image_match:
                 return self.desktop_image_preview(bridge, *desktop_image_match.groups())
@@ -486,7 +490,7 @@ class Handler(BaseHTTPRequestHandler):
                     width, height = int(query.get('width', ['0'])[0]), int(query.get('height', ['0'])[0])
                 except ValueError:
                     raise ValueError('缩略图尺寸无效') from None
-                return self.output(200, bridge.upload_thumb(thumb_match[1], thumb_match[2], data, width, height))
+                return self.output(200, bridge.side_attachment(thumb_match[1], side, 'set_thumb', thumb_match[2], data, width, height) if side is not None else bridge.upload_thumb(thumb_match[1], thumb_match[2], data, width, height))
             goal_match = GOAL_CANCEL_ROUTE.fullmatch(path)
             if write and goal_match:
                 body = self.read_json()
@@ -513,7 +517,7 @@ class Handler(BaseHTTPRequestHandler):
                 data = self.rfile.read(size)
                 if len(data) != size:
                     raise ValueError('附件上传中断，请重试')
-                return self.output(200, bridge.upload(thread_id, query.get('id', [''])[0], query.get('name', [''])[0], data))
+                return self.output(200, bridge.side_attachment(thread_id, side, 'put', query.get('id', [''])[0], query.get('name', [''])[0], data) if side is not None else bridge.upload(thread_id, query.get('id', [''])[0], query.get('name', [''])[0], data))
             if action == 'notifications':
                 if self.server.notifications is None:
                     return self.output(200, {'available': False, 'watching': False, 'notifyOnCompletion': False})
@@ -558,6 +562,10 @@ class Handler(BaseHTTPRequestHandler):
                                      attachments=body.get('attachments'), ui_locale=body.get("uiLocale"))
             elif action == "rename":
                 result = bridge.rename(thread_id, body.get("title"))
+            elif action == "permissions":
+                if set(body) - {'preset', 'confirmed'}:
+                    raise ValueError('权限设置无效')
+                result = bridge.permissions(thread_id, body.get('preset'), body.get('confirmed', False))
             elif action == "settings":
                 if 'fastMode' in body and not isinstance(body['fastMode'], bool):
                     raise ValueError('Fast 模式开关无效')
@@ -620,11 +628,11 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def upload_preview(self, bridge, thread_id, upload_id, variant='thumb'):
-        artifact, served_variant = bridge.upload_preview(thread_id, upload_id, variant)
+    def upload_preview(self, bridge, thread_id, upload_id, variant='thumb', side=None):
+        artifact, served_variant = bridge.side_attachment(thread_id, side, 'preview', upload_id, variant) if side is not None else bridge.upload_preview(thread_id, upload_id, variant)
         data = Path(artifact["previewPath"]).read_bytes()
         etag = '"' + artifact["previewSha256"] + '"'
-        cache_control = 'private, no-store' if served_variant == 'fallback-original' else 'private, max-age=31536000, immutable'
+        cache_control = 'private, no-store' if side is not None or served_variant == 'fallback-original' else 'private, max-age=31536000, immutable'
         if self.headers.get("If-None-Match") == etag:
             self.send_response(304)
             self.headers_common(cache_control)

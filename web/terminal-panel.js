@@ -21,23 +21,23 @@ class TerminalPanel {
         await this.workbench.request(this.url(),{action:'open',id:this.id,cols:this.term.cols,rows:this.term.rows});
       if(this.disposed){if(!this.hadId)this.workbench.request(this.url(),{action:'close',id:this.id}).catch(()=>{});return;}
       this.apply(result);this.schedule();
-    }catch(e){if(!this.disposed){if(!this.status)this.render({});this.status.textContent=e.message;this.reopen.hidden=false;}}
+    }catch(e){if(!this.disposed){if(!this.status)this.render({});this.status.textContent=BridgeI18n.t(e.message);this.reopen.hidden=false;}}
   }
   render(info){
     const n=(...a)=>this.workbench.node(...a),b=(...a)=>this.workbench.button(...a);
     this.tab.body.replaceChildren();this.tab.body.classList.add('wb-pty');
-    const head=n('div','wb-terminal-head');this.location=n('strong','',info.shell||'连接终端…');
-    this.reopen=b('重新打开',()=>this.restart());this.reopen.hidden=true;
-    head.append(this.location,b('清屏',()=>this.term.clear()),this.reopen);
-    this.screen=n('div','wb-terminal-screen');this.screen.setAttribute('aria-label','交互终端');
+    const head=n('div','wb-terminal-head');this.location=n('strong','',info.shell||BridgeI18n.t('连接终端…'));
+    this.reopen=b(BridgeI18n.t('重新打开'),()=>this.restart());this.reopen.hidden=true;
+    head.append(this.location,b(BridgeI18n.t('清屏'),()=>this.term.clear()),this.reopen);
+    this.screen=n('div','wb-terminal-screen');this.screen.setAttribute("data-i18n-aria-label",'交互终端');this.screen.setAttribute('aria-label',BridgeI18n.t('交互终端'));
     this.status=n('p','wb-status');this.status.setAttribute('role','status');
     const keys=n('div','wb-terminal-keys');
     for(const [label,value] of [['Ctrl+C','\x03'],['Tab','\t'],['Esc','\x1b'],['↑','\x1b[A'],['↓','\x1b[B'],['←','\x1b[D'],['→','\x1b[C']])keys.append(b(label,()=>this.enqueue(value)));
-    this.form=n('form','wb-terminal-input');this.input=n('textarea');this.input.rows=2;this.input.placeholder='输入命令或回复，换行键可换行';this.input.setAttribute('aria-label','终端输入');this.input.setAttribute('autocapitalize','off');this.input.setAttribute('autocorrect','off');this.input.spellcheck=false;
-    this.send=n('button','','发送到终端');this.send.type='submit';this.send.disabled=true;
+    this.form=n('form','wb-terminal-input');this.input=n('textarea');this.input.rows=2;this.input.setAttribute("data-i18n-placeholder",'输入命令或回复，换行键可换行');this.input.placeholder=BridgeI18n.t('输入命令或回复，换行键可换行');this.input.setAttribute("data-i18n-aria-label",'终端输入');this.input.setAttribute('aria-label',BridgeI18n.t('终端输入'));this.input.setAttribute('autocapitalize','off');this.input.setAttribute('autocorrect','off');this.input.spellcheck=false;
+    this.send=n('button','',BridgeI18n.t('发送到终端'));this.send.type='submit';this.send.disabled=true;
     this.form.append(this.input,this.send);this.form.onsubmit=e=>{e.preventDefault();this.submit();};
     // Enter in the mobile composer ALWAYS inserts a newline. Submit is explicit.
-    this.retry=b('重试未确认输入',()=>{this.inputError=false;this.retry.hidden=true;this.flush();});this.retry.hidden=true;
+    this.retry=b(BridgeI18n.t('重试未确认输入'),()=>{this.inputError=false;this.retry.hidden=true;this.flush();});this.retry.hidden=true;
     this.tab.body.append(head,this.screen,keys,this.form,this.status,this.retry);
     this.term=new Terminal({fontSize:14,fontFamily:'Menlo, Consolas, monospace',cursorBlink:true,scrollback:2000,
       theme:{background:'#11151b',foreground:'#e2e8f0',cursor:'#7ee0b6'},allowProposedApi:false,
@@ -46,7 +46,7 @@ class TerminalPanel {
     this.term.parser.registerOscHandler(52,()=>true);
     this.fit=new FitAddon.FitAddon();this.term.loadAddon(this.fit);this.term.open(this.screen);
     this.term.onData(data=>this.enqueue(data));
-    this.term.onResize(({cols,rows})=>{clearTimeout(this.resizeTimer);this.resizeTimer=setTimeout(()=>{if(this.running&&!this.disposed)this.workbench.request(this.url(),{action:'resize',id:this.id,cols,rows}).catch(e=>this.status.textContent=e.message);},120);});
+    this.term.onResize(({cols,rows})=>{clearTimeout(this.resizeTimer);this.resizeTimer=setTimeout(()=>{if(this.running&&!this.disposed)this.workbench.request(this.url(),{action:'resize',id:this.id,cols,rows}).catch(e=>this.status.textContent=BridgeI18n.t(e.message));},120);});
     this.observer=new ResizeObserver(()=>this.layout());this.observer.observe(this.screen);this.layout();
   }
   mobile(){return document.documentElement.classList.contains('bridge-mobile')||matchMedia('(pointer:coarse)').matches||matchMedia('(max-width:720px)').matches;}
@@ -76,21 +76,21 @@ class TerminalPanel {
         await this.workbench.request(this.url(),{action:'input',id:this.id,inputId:entry.id,data:entry.data});
         this.operations.shift();
       }
-    }catch(e){if(!this.disposed){this.inputError=true;this.status.textContent=e.message+' · 输入结果未确认；重试不会重复输入。';this.retry.hidden=false;this.send.disabled=true;this.term.options.disableStdin=true;}}
+    }catch(e){if(!this.disposed){this.inputError=true;this.status.textContent=BridgeI18n.t(e.message)+BridgeI18n.t(' · 输入结果未确认；重试不会重复输入。');this.retry.hidden=false;this.send.disabled=true;this.term.options.disableStdin=true;}}
     finally{this.flushing=false;if(!this.disposed&&!this.inputError){this.send.disabled=!this.running;this.layout();}}
   }
   apply(result){
     if(result.reset)this.term.reset();
     if(result.output)this.term.write(result.output);
     this.cursor=result.cursor;this.running=result.running;
-    this.location.textContent=result.shell||'终端';this.location.title=result.cwd||'';
-    if(!this.inputError)this.status.textContent=result.running?'连续会话 · 关闭标签将结束终端':result.message||'终端已退出';
+    this.location.textContent=result.shell||BridgeI18n.t('终端');this.location.title=result.cwd||'';
+    if(!this.inputError)this.status.textContent=result.running?BridgeI18n.t('连续会话 · 关闭标签将结束终端'):result.message||BridgeI18n.t('终端已退出');
     this.send.disabled=!this.running||this.inputError;this.reopen.hidden=this.running;this.layout();
   }
-  schedule(){clearTimeout(this.timer);if(!this.disposed&&this.running)this.timer=setTimeout(()=>this.poll(),document.hidden||this.session.active!==this.tab.id?2000:150);}
+  schedule(){clearTimeout(this.timer);if(!this.disposed&&this.running)this.timer=setTimeout(()=>this.poll(),document.hidden||!this.workbench.isVisible(this.session,this.tab)?2000:150);}
   async poll(){
     try{const result=await this.workbench.request(this.url('&id='+this.id+'&after='+this.cursor));if(!this.disposed)this.apply(result);}
-    catch(e){if(!this.disposed){this.status.textContent=e.message;if([401,403,404].includes(e.status)){this.running=false;this.send.disabled=true;this.reopen.hidden=false;}}}
+    catch(e){if(!this.disposed){this.status.textContent=BridgeI18n.t(e.message);if([401,403,404].includes(e.status)){this.running=false;this.send.disabled=true;this.reopen.hidden=false;}}}
     this.schedule();
   }
   async restart(){
@@ -100,7 +100,7 @@ class TerminalPanel {
       try{await this.workbench.request(this.url(),{action:'close',id:this.id});}catch(e){if(e.status!==404)throw e;}
       this.id=uuid();this.save();this.cursor=0;this.operations=[];this.inputError=false;this.retry.hidden=true;this.term.reset();
       const result=await this.workbench.request(this.url(),{action:'open',id:this.id,cols:this.term.cols,rows:this.term.rows});if(!this.disposed){this.apply(result);this.schedule();}
-    }catch(e){if(!this.disposed)this.status.textContent=e.message;}
+    }catch(e){if(!this.disposed)this.status.textContent=BridgeI18n.t(e.message);}
     finally{this.restarting=false;}
   }
   dispose(){

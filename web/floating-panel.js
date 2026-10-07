@@ -7,14 +7,15 @@ class FloatingPanel {
     this.element = node('section', 'wb-float'); this.element.setAttribute('role', 'region');
     this.element.setAttribute('aria-label', title);
     const bar = node('div', 'wb-float-bar');
-    this.grip = button(title, () => {}, '调整上边缘高度；上下方向键调整'); this.grip.className = 'wb-float-grip';
+    this.grip = button(title, () => {}, BridgeI18n.t('调整上边缘高度；上下方向键调整')); this.grip.className = 'wb-float-grip';
     const handle = node('span', 'wb-drag-handle'); handle.setAttribute('aria-hidden', 'true');
     this.grip.replaceChildren(handle, node('span', 'wb-float-title', title));
-    this.maximize = button('□', () => { state.maximized = !state.maximized; this.layout(); }, '展开至完整高度');
-    const reset = button('↺', () => { delete state.rect; state.maximized = false; this.layout(); }, '恢复默认高度');
-    const dismiss = button('×', () => { this.destroy(); close(); }, '关闭详情');
+    this.maximize = button('□', () => { state.maximized = !state.maximized; this.layout(); }, BridgeI18n.t('展开至完整高度'));
+    const reset = button('↺', () => { delete state.rect; state.maximized = false; this.layout(); }, BridgeI18n.t('恢复默认高度'));
+    const dismiss = button('×', () => { this.destroy(); close(); }, BridgeI18n.t('关闭详情'));
+    dismiss.classList.add('wb-float-close');
     bar.append(this.grip, reset, this.maximize, dismiss);
-    this.resize = button('', () => {}, '调整下边缘高度；上下方向键调整'); this.resize.className = 'wb-float-resize';
+    this.resize = button('', () => {}, BridgeI18n.t('调整下边缘高度；上下方向键调整')); this.resize.className = 'wb-float-resize';
     const bottomHandle = node('span', 'wb-drag-handle'); bottomHandle.setAttribute('aria-hidden', 'true'); this.resize.append(bottomHandle);
     this.element.append(bar, content, this.resize); host.append(this.element);
     this.bind(this.grip, 'top'); this.bind(this.resize, 'bottom');
@@ -35,7 +36,7 @@ class FloatingPanel {
     Object.assign(this.element.style, {left:x+'px', top:y+'px', width:w+'px', height:h+'px'});
     this.element.classList.toggle('maximized', !!this.state.maximized);
     this.maximize.textContent = this.state.maximized ? '❐' : '□';
-    this.maximize.title = this.state.maximized ? '还原高度' : '展开至完整高度';
+    this.maximize.title = this.state.maximized ? BridgeI18n.t('还原高度') : BridgeI18n.t('展开至完整高度');
     this.maximize.setAttribute('aria-label', this.maximize.title);
     this.maximize.setAttribute('aria-pressed', String(!!this.state.maximized));
   }

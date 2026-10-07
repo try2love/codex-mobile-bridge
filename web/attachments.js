@@ -91,6 +91,7 @@ class ChatAttachments {
       if(row.image){
         const image=node('img',null,'attachment-thumb');image.alt='';image.decoding='async';
         image.src=(row.status==='ready'&&row.thumb&&this.preview&&this.key)?this.preview(this.key,row.id):(row.objectUrl||'');
+        if(row.status==='ready'&&this.preview&&this.key){image.src=this.preview(this.key,row.id);image.dataset.imagePreview=image.src+(image.src.includes('?')?'&':'?')+'variant=original';image.dataset.imageName=row.name;image.tabIndex=0;image.setAttribute('role','button');image.setAttribute('aria-label',t('图片附件')+' '+row.name);}
         image.onerror=()=>image.remove();card.append(image);
       }
       info.append(node('strong',row.name));

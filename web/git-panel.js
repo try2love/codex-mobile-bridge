@@ -10,27 +10,27 @@ class GitPanel {
   async load() {
     this.dispose(); const controller = this.tab.controller = new AbortController();
     const head = this.node('div', 'wb-git-head'), title = this.node('div', 'wb-git-heading');
-    title.append(this.node('strong', '', 'Git'), this.node('span', '', '当前项目的变更'));
-    const refresh = this.button('刷新', () => this.load(), '刷新 Git 状态');
+    title.append(this.node('strong', '', 'Git'), this.node('span', '', BridgeI18n.t('当前项目的变更')));
+    const refresh = this.button(BridgeI18n.t('刷新'), () => this.load(), BridgeI18n.t('刷新 Git 状态'));
     head.append(title, refresh);
-    const status = this.node('p', 'wb-status', '正在读取 Git 状态…'); status.setAttribute('role', 'status');
+    const status = this.node('p', 'wb-status', BridgeI18n.t('正在读取 Git 状态…')); status.setAttribute('role', 'status');
     this.tab.body.replaceChildren(head, status);
     try {
       const result = await this.workbench.request(this.workbench.url(this.session, 'git-status'), undefined, controller.signal);
       if (controller.signal.aborted) return;
       if (!result.available) { status.textContent = result.message; return; }
       this.state = result;
-      const branch = result.branch === '(detached)' ? '分离 HEAD · ' + result.commit.slice(0, 8) : result.branch;
-      title.replaceChildren(this.node('strong', '', branch || 'Git'), this.node('span', '', result.project + ' · ' + (this.session.host === 'local' ? '此电脑' : 'SSH')));
+      const branch = result.branch === '(detached)' ? BridgeI18n.t('分离 HEAD · ') + result.commit.slice(0, 8) : result.branch;
+      title.replaceChildren(this.node('strong', '', branch || 'Git'), this.node('span', '', result.project + ' · ' + (this.session.host === 'local' ? BridgeI18n.t('此电脑') : 'SSH')));
       title.firstChild.title = branch;
       const notes = [];
-      if (result.operation) notes.push(result.operation === 'merge' ? '合并进行中：解决冲突后暂存并提交，或中止合并' : '仓库正在变基或拣选，请在电脑上完成');
-      if (result.commit === '(initial)') notes.push('尚无提交');
-      if (result.scope !== '.') notes.push('文件差异仅限当前项目目录');
-      if (result.upstream) notes.push(result.upstream + (result.ahead === null ? '' : ' · 领先 ' + result.ahead + ' / 落后 ' + result.behind) + '（本地记录）');
+      if (result.operation) notes.push(result.operation === 'merge' ? BridgeI18n.t('合并进行中：解决冲突后暂存并提交，或中止合并') : BridgeI18n.t('仓库正在变基或拣选，请在电脑上完成'));
+      if (result.commit === '(initial)') notes.push(BridgeI18n.t('尚无提交'));
+      if (result.scope !== '.') notes.push(BridgeI18n.t('文件差异仅限当前项目目录'));
+      if (result.upstream) notes.push(result.upstream + (result.ahead === null ? '' : BridgeI18n.t(' · 领先 ') + result.ahead + BridgeI18n.t(' / 落后 ') + result.behind) + BridgeI18n.t('（本地记录）'));
       status.textContent = notes.join(' · '); status.hidden = !notes.length;
       const modes = this.node('div', 'wb-git-modes');
-      for (const [key, label] of [['changes', '变更'], ['history', '历史'], ['branches', '分支']]) {
+      for (const [key, label] of [['changes', BridgeI18n.t('变更')], ['history', BridgeI18n.t('历史')], ['branches', BridgeI18n.t('分支')]]) {
         const button = this.button(label, () => { this.mode = key; this.load(); }); button.setAttribute('aria-pressed', String(this.mode === key)); modes.append(button);
       }
       this.tab.body.append(modes);
@@ -38,19 +38,19 @@ class GitPanel {
       if (this.mode === 'history') { await this.history(controller); return; }
       if (this.mode === 'branches') { await this.branches(controller); return; }
       const actions = this.node('div', 'wb-git-actions');
-      const stage = this.button('全部暂存', () => this.execute({action:'stage-all'}).catch(()=>{}));
-      const unstage = this.button('全部取消暂存', () => this.execute({action:'unstage-all'}).catch(()=>{}));
+      const stage = this.button(BridgeI18n.t('全部暂存'), () => this.execute({action:'stage-all'}).catch(()=>{}));
+      const unstage = this.button(BridgeI18n.t('全部取消暂存'), () => this.execute({action:'unstage-all'}).catch(()=>{}));
       const staged = result.entries.filter(e => !e.untracked && !e.conflict && e.index !== '.');
       stage.disabled = !result.entries.some(e => e.untracked || e.conflict || e.worktree !== '.'); unstage.disabled = !staged.length;
-      const commit = this.button((result.operation === 'merge' ? '完成合并' : '提交') + (staged.length ? ' · ' + staged.length : ''), () => this.commitDialog()); commit.className = 'primary';
+      const commit = this.button((result.operation === 'merge' ? BridgeI18n.t('完成合并') : BridgeI18n.t('提交')) + (staged.length ? ' · ' + staged.length : ''), () => this.commitDialog()); commit.className = 'primary';
       commit.disabled = (!staged.length && result.operation !== 'merge') || result.scope !== '.' || result.entries.some(e => e.conflict) || result.branch === '(detached)';
       actions.append(stage, unstage, commit);
-      if (result.operation === 'merge') actions.append(this.button('中止合并', () => this.confirm('中止本次合并', '将恢复合并前的状态，本次合并中的冲突处理也会被撤销。', {action:'abort-merge'}, '中止合并')));
+      if (result.operation === 'merge') actions.append(this.button(BridgeI18n.t('中止合并'), () => this.confirm(BridgeI18n.t('中止本次合并'), BridgeI18n.t('将恢复合并前的状态，本次合并中的冲突处理也会被撤销。'), {action:'abort-merge'}, BridgeI18n.t('中止合并'))));
       this.tab.body.append(actions);
-      const layout = this.node('div', 'wb-git-layout'); this.list = this.node('div', 'wb-git-list'); this.list.setAttribute('aria-label', 'Git 变更文件');
+      const layout = this.node('div', 'wb-git-layout'); this.list = this.node('div', 'wb-git-list'); this.list.setAttribute("data-i18n-aria-label",'Git 变更文件');this.list.setAttribute('aria-label', BridgeI18n.t('Git 变更文件'));
       this.layoutHost = layout; layout.classList.add('wb-float-host');
       layout.append(this.list); this.tab.body.append(layout);
-      const groups = [['conflict', '冲突', e => e.conflict], ['unstaged', '未暂存', e => !e.conflict && !e.untracked && e.worktree !== '.'], ['staged', '已暂存', e => !e.conflict && !e.untracked && e.index !== '.'], ['untracked', '未跟踪', e => e.untracked]];
+      const groups = [['conflict', BridgeI18n.t('冲突'), e => e.conflict], ['unstaged', BridgeI18n.t('未暂存'), e => !e.conflict && !e.untracked && e.worktree !== '.'], ['staged', BridgeI18n.t('已暂存'), e => !e.conflict && !e.untracked && e.index !== '.'], ['untracked', BridgeI18n.t('未跟踪'), e => e.untracked]];
       let restored;
       for (const [section, name, filter] of groups) {
         const entries = result.entries.filter(filter); if (!entries.length) continue;
@@ -58,22 +58,22 @@ class GitPanel {
         for (const entry of entries) {
           const row = this.button('', () => this.show(entry, section, row), entry.path); row.className = 'wb-git-file'; row.dataset.section = section; row.dataset.path = entry.path;
           const code = section === 'conflict' ? 'U' : section === 'untracked' ? '?' : entry[section === 'staged' ? 'index' : 'worktree'];
-          const labels = {M: '修改', A: '新增', D: '删除', R: '重命名', C: '复制', T: '类型变化', U: '冲突', '?': '新文件'};
+          const labels = {M: BridgeI18n.t('修改'), A: BridgeI18n.t('新增'), D: BridgeI18n.t('删除'), R: BridgeI18n.t('重命名'), C: BridgeI18n.t('复制'), T: BridgeI18n.t('类型变化'), U: BridgeI18n.t('冲突'), '?': BridgeI18n.t('新文件')};
           const badge = this.node('span', 'wb-git-badge', code); badge.dataset.change = code; badge.title = labels[code] || code; badge.setAttribute('aria-label', badge.title);
-          const paths = this.node('span', 'wb-git-path'); paths.append(this.node('strong', '', entry.path));
-          if (entry.oldPath) paths.append(this.node('small', '', '原路径：' + entry.oldPath));
+          const paths = this.node('span', 'wb-git-path'); paths.append(this.workbench.raw(this.node('strong', '', entry.path)));
+          if (entry.oldPath) paths.append(this.node('small', '', BridgeI18n.t('原路径：') + entry.oldPath));
           row.append(badge, paths);
-          const rowGroup = this.node('div', 'wb-git-row'), action = this.button(section === 'staged' ? '−' : '＋', () => this.execute({action:section === 'staged' ? 'unstage' : 'stage', path:entry.path}).catch(()=>{}), (section === 'staged' ? '取消暂存 ' : '暂存 ') + entry.path);
+          const rowGroup = this.node('div', 'wb-git-row'), action = this.button(section === 'staged' ? '−' : '＋', () => this.execute({action:section === 'staged' ? 'unstage' : 'stage', path:entry.path}).catch(()=>{}), (section === 'staged' ? BridgeI18n.t('取消暂存 ') : BridgeI18n.t('暂存 ')) + entry.path);
           action.className = 'wb-git-row-action'; action.disabled = !!entry.submodule; rowGroup.append(row, action); group.append(rowGroup);
           if (this.selected === section + ':' + entry.path) restored = [entry, section, row];
         }
         this.list.append(group);
       }
       if (!result.entries.length) {
-        layout.replaceChildren(this.node('div', 'wb-git-clean', '当前项目没有未提交的改动'));
+        layout.replaceChildren(this.node('div', 'wb-git-clean', BridgeI18n.t('当前项目没有未提交的改动')));
         this.selected = null;
       } else if (restored) this.show(...restored);
-    } catch (error) { if (!controller.signal.aborted) { status.hidden = false; status.textContent = error.message; status.classList.add('error'); } }
+    } catch (error) { if (!controller.signal.aborted) { status.hidden = false; status.textContent=BridgeI18n.t(error.message); status.classList.add('error'); } }
   }
   openDetail(title) {
     this.floating?.destroy();
@@ -92,22 +92,22 @@ class GitPanel {
     for (const button of this.list.querySelectorAll('.wb-git-file')) { button.classList.toggle('selected', button === row); button.setAttribute('aria-pressed', String(button === row)); }
     this.openDetail(entry.path);
     const header = this.node('div', 'wb-git-diff-head');
-    const labels = {staged: '已暂存 · HEAD → 暂存区', unstaged: '未暂存 · 暂存区 → 工作区', untracked: '未跟踪 · 新文件', conflict: '冲突 · 当前工作区内容'};
-    header.append(this.node('strong', '', entry.path), this.node('small', '', labels[section]));
-    const content = this.node('div', 'wb-git-diff'); content.setAttribute('tabindex', '0'); content.setAttribute('aria-label', '文件差异');
-    content.append(this.node('p', 'wb-status', '正在读取差异…')); this.detail.replaceChildren(header, content);
+    const labels = {staged: BridgeI18n.t('已暂存 · HEAD → 暂存区'), unstaged: BridgeI18n.t('未暂存 · 暂存区 → 工作区'), untracked: BridgeI18n.t('未跟踪 · 新文件'), conflict: BridgeI18n.t('冲突 · 当前工作区内容')};
+    header.append(this.workbench.raw(this.node('strong', '', entry.path)), this.node('small', '', labels[section]));
+    const content = this.node('div', 'wb-git-diff'); content.setAttribute('tabindex', '0'); content.setAttribute("data-i18n-aria-label",'文件差异');content.setAttribute('aria-label', BridgeI18n.t('文件差异'));
+    content.append(this.node('p', 'wb-status', BridgeI18n.t('正在读取差异…'))); this.detail.replaceChildren(header, content);
     try {
       const result = await this.workbench.request(this.workbench.url(this.session, 'git-diff', entry.path) + '&section=' + section, undefined, controller.signal);
       if (controller.signal.aborted) return;
       this.renderDiff(result, content, header);
-    } catch (error) { if (!controller.signal.aborted) content.replaceChildren(this.node('p', 'wb-status error', error.message), this.button('重试', () => this.show(entry, section, row))); }
+    } catch (error) { if (!controller.signal.aborted) content.replaceChildren(this.node('p', 'wb-status error', error.message), this.button(BridgeI18n.t('重试'), () => this.show(entry, section, row))); }
   }
   renderDiff(result, content, header) {
       content.replaceChildren();
-      const messages = {binary: '二进制或非 UTF-8 文件，暂不提供文本差异。', large: '文件超过差异预览限制，请在电脑上查看。', submodule: '此项为子模块，请在电脑上查看子模块内部的改动。'};
+      const messages = {binary: BridgeI18n.t('二进制或非 UTF-8 文件，暂不提供文本差异。'), large: BridgeI18n.t('文件超过差异预览限制，请在电脑上查看。'), submodule: BridgeI18n.t('此项为子模块，请在电脑上查看子模块内部的改动。')};
       if (messages[result.kind]) { content.append(this.node('p', 'wb-status', messages[result.kind])); return; }
       if (result.kind === 'conflict') { const pre = this.node('pre', 'wb-git-conflict', result.text); content.append(pre); return; }
-      if (!result.text) { content.append(this.node('p', 'wb-status', '没有文本差异，可能是权限变化、重命名或空文件。')); return; }
+      if (!result.text) { content.append(this.node('p', 'wb-status', BridgeI18n.t('没有文本差异，可能是权限变化、重命名或空文件。'))); return; }
       const lines = result.text.split('\n'); if (lines[lines.length - 1] === '') lines.pop();
       let oldLine = 0, newLine = 0, added = 0, removed = 0, inHunk = false;
       const fragment = document.createDocumentFragment();
@@ -140,7 +140,7 @@ class GitPanel {
   }
   dialog(title, description, label, action, fields = []) {
     const dialog = this.node('dialog', 'picker wb-git-dialog'), form = this.node('form');
-    const head = this.node('div', 'picker-head'), close = this.button('×', () => dialog.close(), '关闭');
+    const head = this.node('div', 'picker-head'), close = this.button('×', () => dialog.close(), BridgeI18n.t('关闭'));
     head.append(this.node('h2', '', title), close);
     const error = this.node('p', 'error'); error.setAttribute('role', 'alert');
     const submit = this.node('button', 'primary', label); submit.type = 'submit';
@@ -149,9 +149,9 @@ class GitPanel {
     dialog.addEventListener('cancel', event => { if (pending) event.preventDefault(); });
     dialog.addEventListener('close', () => dialog.remove());
     form.onsubmit = async event => {
-      event.preventDefault(); if (pending) return; pending = true; submit.disabled = close.disabled = true; error.textContent = '正在执行…';
+      event.preventDefault(); if (pending) return; pending = true; submit.disabled = close.disabled = true; error.textContent = BridgeI18n.t('正在执行…');
       try { await action(); dialog.close(); }
-      catch (failure) { error.textContent = failure.message; }
+      catch (failure) { error.textContent=BridgeI18n.t(failure.message); }
       finally { pending = false; submit.disabled = close.disabled = false; }
     };
     document.body.append(dialog); dialog.showModal(); return dialog;
@@ -163,9 +163,9 @@ class GitPanel {
   commitDialog() {
     const version = this.state.version, list = this.node('ul', 'wb-commit-files');
     for (const entry of this.state.entries.filter(e => !e.untracked && e.index !== '.')) list.append(this.node('li', '', entry.path));
-    if (!list.children.length && this.state.operation === 'merge') list.append(this.node('li', '', '文件内容不变，本次提交记录分支合并关系。'));
-    const message = this.node('textarea'); message.required = true; message.rows = 4; message.placeholder = '提交说明'; message.setAttribute('aria-label', '提交说明');
-    this.dialog('提交到 ' + this.state.branch, '仅提交下列已暂存的内容，保留未暂存改动。使用电脑或服务器现有的 Git 身份、签名和 hooks。', '确认提交', () => this.execute({action:'commit', message:message.value}, version), [list, message]);
+    if (!list.children.length && this.state.operation === 'merge') list.append(this.node('li', '', BridgeI18n.t('文件内容不变，本次提交记录分支合并关系。')));
+    const message = this.node('textarea'); message.required = true; message.rows = 4; message.setAttribute("data-i18n-placeholder",'提交说明');message.placeholder = BridgeI18n.t('提交说明'); message.setAttribute("data-i18n-aria-label",'提交说明');message.setAttribute('aria-label', BridgeI18n.t('提交说明'));
+    this.dialog(BridgeI18n.t('提交到 ') + this.state.branch, BridgeI18n.t('仅提交下列已暂存的内容，保留未暂存改动。使用电脑或服务器现有的 Git 身份、签名和 hooks。'), BridgeI18n.t('确认提交'), () => this.execute({action:'commit', message:message.value}, version), [list, message]);
   }
   graph(commit, lanes) {
     let lane = lanes.indexOf(commit.id), incoming = lane >= 0;
@@ -183,83 +183,83 @@ class GitPanel {
     return svg;
   }
   async history(controller) {
-    const toolbar = this.node('div', 'wb-history-toolbar'), scope = this.node('select'); scope.setAttribute('aria-label', '历史范围');
-    for (const [value, label] of [['all','所有分支与标签'],['current','当前分支']]) { const option = this.node('option', '', label); option.value = value; scope.append(option); }
+    const toolbar = this.node('div', 'wb-history-toolbar'), scope = this.node('select'); scope.setAttribute("data-i18n-aria-label",'历史范围');scope.setAttribute('aria-label', BridgeI18n.t('历史范围'));
+    for (const [value, label] of [['all',BridgeI18n.t('所有分支与标签')],['current',BridgeI18n.t('当前分支')]]) { const option = this.node('option', '', label); option.value = value; scope.append(option); }
     scope.value = this.historyRef || 'all'; scope.onchange = () => { this.historyRef = scope.value; this.historyLimit = 40; this.load(); };
-    toolbar.append(scope, this.node('span', 'muted', '本地提交记录'));
+    toolbar.append(scope, this.node('span', 'muted', BridgeI18n.t('本地提交记录')));
     const layout = this.historyLayout = this.node('div', 'wb-git-layout wb-history-layout'), list = this.node('div', 'wb-git-list wb-history-list');
     this.layoutHost = layout; layout.classList.add('wb-float-host'); layout.append(list);
-    list.append(this.node('p', 'wb-status', '正在读取历史…')); this.tab.body.append(toolbar, layout);
+    list.append(this.node('p', 'wb-status', BridgeI18n.t('正在读取历史…'))); this.tab.body.append(toolbar, layout);
     const result = await this.workbench.request(this.workbench.url(this.session, 'git-history') + '&limit=' + this.historyLimit + '&ref=' + scope.value, undefined, controller.signal);
     if (controller.signal.aborted) return;
     list.replaceChildren(); const lanes = [];
     for (const commit of result.commits) {
       const row = this.button('', () => this.showCommit(commit), commit.subject || commit.id.slice(0, 8)); row.className = 'wb-history-row'; row.dataset.commit = commit.id;
-      const text = this.node('span', 'wb-history-text'); text.append(this.node('strong', '', commit.subject || '(无提交标题)'), this.node('small', '', commit.id.slice(0, 8) + ' · ' + commit.author + ' · ' + commit.date.slice(0, 10)));
-      if (commit.refs) text.append(this.node('span', 'wb-history-refs', commit.refs));
+      const text = this.node('span', 'wb-history-text'); text.append(this.workbench.raw(this.node('strong', '', commit.subject || BridgeI18n.t('(无提交标题)'))), this.node('small', '', commit.id.slice(0, 8) + ' · ' + commit.author + ' · ' + commit.date.slice(0, 10)));
+      if (commit.refs) text.append(this.workbench.raw(this.node('span', 'wb-history-refs', commit.refs)));
       row.append(this.graph(commit, lanes), text); list.append(row);
     }
-    if (!result.commits.length) list.append(this.node('p', 'wb-status', '尚无提交记录'));
-    if (result.hasMore && this.historyLimit < 1000) list.append(this.button('加载更早的提交', () => { this.historyLimit += 40; this.load(); }));
-    else if (result.hasMore) list.append(this.node('p', 'wb-status', '已显示最近 1,000 条提交'));
+    if (!result.commits.length) list.append(this.node('p', 'wb-status', BridgeI18n.t('尚无提交记录')));
+    if (result.hasMore && this.historyLimit < 1000) list.append(this.button(BridgeI18n.t('加载更早的提交'), () => { this.historyLimit += 40; this.load(); }));
+    else if (result.hasMore) list.append(this.node('p', 'wb-status', BridgeI18n.t('已显示最近 1,000 条提交')));
     if (this.selectedCommit) { const selected = result.commits.find(c => c.id === this.selectedCommit); if (selected) this.showCommit(selected); }
   }
   async showCommit(commit) {
     this.diffController?.abort(); this.historyDiffController?.abort(); const controller = this.diffController = new AbortController();
-    this.selectedCommit = commit.id; this.openDetail('提交 · ' + commit.id.slice(0, 8));
+    this.selectedCommit = commit.id; this.openDetail(BridgeI18n.t('提交 · ') + commit.id.slice(0, 8));
     for (const row of this.tab.body.querySelectorAll('.wb-history-row')) { row.classList.toggle('selected', row.dataset.commit === commit.id); row.setAttribute('aria-pressed', String(row.dataset.commit === commit.id)); }
-    this.detail.replaceChildren(this.node('p', 'wb-status', '正在读取提交…'));
+    this.detail.replaceChildren(this.node('p', 'wb-status', BridgeI18n.t('正在读取提交…')));
     try {
       const result = await this.workbench.request(this.workbench.url(this.session, 'git-commit') + '&revision=' + commit.id, undefined, controller.signal);
       if (controller.signal.aborted) return;
       const info = this.node('details', 'wb-commit-info'), summary = this.node('summary', '', result.message.split('\n')[0] || commit.id.slice(0, 8));
-      info.append(summary, this.node('p', '', result.message), this.node('small', '', result.author + ' · ' + result.date), this.node('code', '', result.id));
+      info.append(summary, this.workbench.raw(this.node('p', '', result.message)), this.node('small', '', result.author + ' · ' + result.date), this.node('code', '', result.id));
       const parents = this.node('div', 'wb-commit-parents');
-      for (const parent of result.parents) parents.append(this.button('父提交 ' + parent.slice(0, 8), () => this.showCommit({id:parent})));
+      for (const parent of result.parents) parents.append(this.button(BridgeI18n.t('父提交 ') + parent.slice(0, 8), () => this.showCommit({id:parent})));
       info.append(parents);
-      const picker = this.node('select', 'wb-history-file'); picker.setAttribute('aria-label', '提交中的文件');
+      const picker = this.node('select', 'wb-history-file'); picker.setAttribute("data-i18n-aria-label",'提交中的文件');picker.setAttribute('aria-label', BridgeI18n.t('提交中的文件'));
       for (const entry of result.entries) { const option = this.node('option', '', entry.change + ' · ' + entry.path); option.value = entry.path; picker.append(option); }
-      const label = this.node('p', 'wb-status', result.entries.length + ' 个文件' + (result.parents.length > 1 ? ' · 与第一父提交比较' : ''));
+      const label = this.node('p', 'wb-status', result.entries.length + BridgeI18n.t(' 个文件') + (result.parents.length > 1 ? BridgeI18n.t(' · 与第一父提交比较') : ''));
       const diffArea = this.node('div', 'wb-history-diff-area');
       picker.onchange = () => this.showHistoricalDiff(commit.id, picker.value, diffArea);
       this.detail.replaceChildren(info, label);
       if (result.entries.length) { this.detail.append(picker, diffArea); picker.onchange(); }
-      else this.detail.append(this.node('p', 'wb-empty', '此提交没有当前项目范围内的文件变更'));
+      else this.detail.append(this.node('p', 'wb-empty', BridgeI18n.t('此提交没有当前项目范围内的文件变更')));
     } catch (error) { if (!controller.signal.aborted) this.detail.replaceChildren(this.node('p', 'wb-status error', error.message)); }
   }
   async showHistoricalDiff(revision, path, area) {
     this.historyDiffController?.abort(); const controller = this.historyDiffController = new AbortController();
     const header = this.node('div', 'wb-git-diff-head'), content = this.node('div', 'wb-git-diff'); content.tabIndex = 0;
-    content.append(this.node('p', 'wb-status', '正在读取差异…')); area.replaceChildren(header, content);
+    content.append(this.node('p', 'wb-status', BridgeI18n.t('正在读取差异…'))); area.replaceChildren(header, content);
     try {
       const result = await this.workbench.request(this.workbench.url(this.session, 'git-history-diff', path) + '&revision=' + revision, undefined, controller.signal);
       if (!controller.signal.aborted) this.renderDiff(result, content, header);
     } catch (error) { if (!controller.signal.aborted) content.replaceChildren(this.node('p', 'wb-status error', error.message)); }
   }
   async branches(controller) {
-    const toolbar = this.node('div', 'wb-git-actions'), create = this.button('创建分支', () => {
-      const name = this.node('input'); name.required = true; name.placeholder = '例如 feature/new-work'; name.setAttribute('aria-label', '新分支名称');
+    const toolbar = this.node('div', 'wb-git-actions'), create = this.button(BridgeI18n.t('创建分支'), () => {
+      const name = this.node('input'); name.required = true; name.setAttribute("data-i18n-placeholder",'例如 feature/new-work');name.placeholder = BridgeI18n.t('例如 feature/new-work'); name.setAttribute("data-i18n-aria-label",'新分支名称');name.setAttribute('aria-label', BridgeI18n.t('新分支名称'));
       const version = this.state.version;
-      this.dialog('创建并切换分支', '新分支从当前提交开始。', '创建并切换', () => this.execute({action:'create-branch', branch:name.value.trim()}, version), [name]);
+      this.dialog(BridgeI18n.t('创建并切换分支'), BridgeI18n.t('新分支从当前提交开始。'), BridgeI18n.t('创建并切换'), () => this.execute({action:'create-branch', branch:name.value.trim()}, version), [name]);
     });
     create.disabled = this.state.scope !== '.' || !!this.state.operation; toolbar.append(create); this.tab.body.append(toolbar);
-    const list = this.node('div', 'wb-branch-list'); list.append(this.node('p', 'wb-status', '正在读取分支…')); this.tab.body.append(list);
+    const list = this.node('div', 'wb-branch-list'); list.append(this.node('p', 'wb-status', BridgeI18n.t('正在读取分支…'))); this.tab.body.append(list);
     const result = await this.workbench.request(this.workbench.url(this.session, 'git-branches'), undefined, controller.signal);
     if (controller.signal.aborted) return;
     list.replaceChildren();
     for (const branch of result.branches) {
       const card = this.node('div', 'wb-branch-card'), name = this.node('div');
-      name.append(this.node('strong', '', branch.name), this.node('small', '', (branch.current ? '当前分支 · ' : '') + branch.id.slice(0, 8) + (branch.upstream ? ' · ' + branch.upstream : '')));
+      name.append(this.workbench.raw(this.node('strong', '', branch.name)), this.node('small', '', (branch.current ? BridgeI18n.t('当前分支 · ') : '') + branch.id.slice(0, 8) + (branch.upstream ? ' · ' + branch.upstream : '')));
       const actions = this.node('div', 'wb-git-actions');
       if (!branch.current) {
-        const change = this.button('切换', () => this.confirm('切换分支', '从 ' + this.state.branch + ' 切换到 ' + branch.name + '。工作区文件会更新为目标分支的内容。', {action:'switch-branch', branch:branch.name}, '确认切换'));
-        const merge = this.button('合并到当前分支', () => this.confirm('合并分支', '将 ' + branch.name + ' 合并到 ' + this.state.branch + '。可能产生合并提交或需要处理冲突。', {action:'merge', branch:branch.name}, '开始合并'));
+        const change = this.button(BridgeI18n.t('切换'), () => this.confirm(BridgeI18n.t('切换分支'), BridgeI18n.t('从 ') + this.state.branch + BridgeI18n.t(' 切换到 ') + branch.name + BridgeI18n.t('。工作区文件会更新为目标分支的内容。'), {action:'switch-branch', branch:branch.name}, BridgeI18n.t('确认切换')));
+        const merge = this.button(BridgeI18n.t('合并到当前分支'), () => this.confirm(BridgeI18n.t('合并分支'), BridgeI18n.t('将 ') + branch.name + BridgeI18n.t(' 合并到 ') + this.state.branch + BridgeI18n.t('。可能产生合并提交或需要处理冲突。'), {action:'merge', branch:branch.name}, BridgeI18n.t('开始合并')));
         change.disabled = merge.disabled = this.state.scope !== '.' || !!this.state.operation; actions.append(change, merge);
       }
       card.append(name, actions); list.append(card);
     }
-    if (!result.branches.length) list.append(this.node('p', 'wb-status', '首次提交后会显示分支记录'));
-    if (this.state.entries.length) list.prepend(this.node('p', 'wb-status', '切换和合并前，请先提交或在电脑上保存未提交的改动。'));
+    if (!result.branches.length) list.append(this.node('p', 'wb-status', BridgeI18n.t('首次提交后会显示分支记录')));
+    if (this.state.entries.length) list.prepend(this.node('p', 'wb-status', BridgeI18n.t('切换和合并前，请先提交或在电脑上保存未提交的改动。')));
   }
 
 }

@@ -19,7 +19,7 @@ final class LiveActivityController {
         guard ticket == revision else { return }
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { throw Failure.disabled }
         wasRunning = phase == "running"
-        let activity = try Activity.request(attributes: TaskActivity(origin: origin, thread: thread, host: host, demo: demo), content: ActivityContent(state: .init(phase: phase, updatedAt: Date()), staleDate: Date().addingTimeInterval(45)), pushType: pushAvailable && !demo ? .token : nil)
+        let activity = try Activity.request(attributes: TaskActivity(origin: origin, thread: thread, host: host, demo: demo), content: ActivityContent(state: .init(phase: phase, updatedAt: Date(), language: UserDefaults.standard.string(forKey: "bridge-language")), staleDate: Date().addingTimeInterval(45)), pushType: pushAvailable && !demo ? .token : nil)
         observeTokens(activity)
     }
     private func observeTokens(_ activity: Activity<TaskActivity>) {
@@ -35,7 +35,7 @@ final class LiveActivityController {
         var phase = phase
         if phase == "running" { wasRunning = true }
         if phase == "ready" && (wasRunning || item.content.state.phase == "ended") { phase = "ended" }
-        await item.update(ActivityContent(state: .init(phase: phase, updatedAt: Date()), staleDate: Date().addingTimeInterval(45)))
+        await item.update(ActivityContent(state: .init(phase: phase, updatedAt: Date(), language: UserDefaults.standard.string(forKey: "bridge-language")), staleDate: Date().addingTimeInterval(45)))
     }
     func pause() async {
         guard let item = current else { return }

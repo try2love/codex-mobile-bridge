@@ -440,8 +440,8 @@ class Bridge:
         if profile and profile.get('id'):
             result['permissions'] = profile['id']
         for key in ('approvalPolicy', 'approvalsReviewer', 'runtimeWorkspaceRoots'):
-            if key in permissions:
-                result[key] = permissions[key]
+            if key in latest or key in permissions:
+                result[key] = latest[key] if key in latest else permissions[key]
         return result
 
     @operation
@@ -728,7 +728,11 @@ class Bridge:
                 if policy['type'] not in modes:
                     raise ValueError('当前权限配置暂不支持临时侧边聊天')
                 settings['sandbox'] = modes[policy['type']]
-        return self.side_chats.operate(thread_id, action, body, snapshot, settings)
+        return self.side_chats.operate(thread_id, action, body, snapshot, settings, self.catalog_reader)
+
+    def side_attachment(self, thread_id, child, operation, *args):
+        self.store.get(thread_id)
+        return self.side_chats.attachment(thread_id, child, operation, *args)
 
     def upload_thumb(self, thread_id, identifier, data, width, height):
         self.store.get(thread_id)
@@ -1149,7 +1153,7 @@ class Bridge:
         root = self.store.get(thread_id).get('cwd')
         if action == 'info':
             from .pty_terminal import default_shell
-            return {'cwd': root, 'host': self.host, 'mode': 'pty' if self.host != 'local' or os.name != 'nt' else 'command',
+            return {'cwd': root, 'host': self.host, 'mode': 'pty',
                     'shell': default_shell() if self.host == 'local' else None}
         identifier = params.get('id', '')
         if action == 'open':
@@ -1397,6 +1401,26 @@ class Bridge:
                     session.saved_view['title'] = title
                 session.changed()
         return {'id': thread_id, 'host': self.host, 'title': title}
+
+    @operation
+    def permissions(self, thread_id, preset, confirmed=False):
+        if preset not in ('ask', 'auto-review', 'full-access'):
+            raise ValueError('权限设置无效')
+        if preset == 'full-access' and confirmed is not True:
+            raise ValueError('请确认完全访问权限')
+        session = self._target(thread_id)
+        with session.action_lock:
+            profile = ':danger-full-access' if preset == 'full-access' else ':workspace'
+            settings = {'approvalPolicy': 'never' if preset == 'full-access' else 'on-request',
+                        'approvalsReviewer': 'auto_review' if preset == 'auto-review' else 'user',
+                        'permissions': profile, 'activePermissionProfile': {'id': profile, 'extends': None}}
+            # Desktop owner validates feature/policy support. Never silently fall back.
+            result = self._call(session, 'thread-follower-update-thread-settings', {'threadSettings': settings})
+            if not result.get('applied'):
+                raise IPCError('桌面未应用权限设置，请刷新后重试')
+        with session.condition:
+            confirmed = session.condition.wait_for(lambda: session.view().get('permissionMode') == preset, timeout=5)
+        return {'applied': True, 'confirmed': confirmed, 'permissionMode': preset}
 
     @operation
     def settings(self, thread_id, model, effort, *, fast_mode=None):
