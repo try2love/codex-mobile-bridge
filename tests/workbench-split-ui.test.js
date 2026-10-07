@@ -14,18 +14,18 @@ async function runWorkbenchSplitTests(){
  check(wb.splitMode&&!wb.isFileVisible,'Dropping opens main chat and side tab together');
  check(wb.isVisible(session,panel.tab),'Right side remains active for polling');
  const left=wb.mainPane.getBoundingClientRect(),right=wb.panel.getBoundingClientRect();
- check(left.width>=350&&right.width>=350&&right.left>left.right,'Both panes are visible with minimum widths');
+ check(left.width>=320&&right.width>=320&&right.left>left.right,'Both panes are visible with minimum widths');
  const before=left.width;wb.divider.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));await frame();
  check(wb.mainPane.getBoundingClientRect().width>before,'Keyboard resizes the divider');
- wb.setRatio(0);await frame();check(wb.mainPane.clientWidth>=350,'Cannot shrink left pane below minimum');
- wb.setRatio(1);await frame();check(wb.panel.clientWidth>=350,'Cannot shrink right pane below minimum');
+ wb.setRatio(0);await frame();check(wb.mainPane.getBoundingClientRect().width>=320,'Cannot shrink left pane below minimum');
+ wb.setRatio(1);await frame();check(wb.panel.getBoundingClientRect().width>=320,'Cannot shrink right pane below minimum');
  wb.setRatio(.5);wb.files();await frame();check(wb.splitMode&&session.splitTab==='files','Selecting another tool replaces only the right pane');
  wb.select('sidechat');await frame();check(panel.input.value==='side split draft'&&draft.value==='main split draft','Switching tools preserves both drafts');
  document.documentElement.classList.add('bridge-mobile');await frame();
- check(!wb.splitMode&&wb.splitButton.hidden&&!wb.tabs.querySelector('[draggable=true]'),'Native App has no split or draggable tabs even at desktop width');
- check(panel.tab.body.isConnected&&panel.input.value==='side split draft','App fallback keeps selected tab and draft');
+ check(wb.splitMode&&!wb.splitButton.hidden,'Wide native App supports split just like Web');
+ check(panel.tab.body.isConnected&&panel.input.value==='side split draft','Native layout keeps selected tab and draft');
  document.documentElement.classList.remove('bridge-mobile');await frame();
- check(wb.splitMode,'Returning to wide web restores split preference');
+ check(wb.splitMode,'Web and native App share split preference');
  wb.unsplit();check(!wb.splitMode&&session.active==='sidechat','Exiting split retains the selected tool');
  return checks;
 }

@@ -177,6 +177,8 @@ public final class MainActivity extends Activity {
  @Override public void onRequestPermissionsResult(int code,String[] names,int[] results){super.onRequestPermissionsResult(code,names,results);if(results.length==0||results[0]!=PackageManager.PERMISSION_GRANTED){message(L("未获得权限，可继续粘贴地址使用。"));return;}if(code==24)enableNativePush();if(code==21)scan();if(code==23)testNotification();if(code==22){prefs.edit().putBoolean("alerts",true).apply();monitor();}}
  @Override protected void onActivityResult(int code,int result,Intent data){super.onActivityResult(code,result,data);if(code==32){saveDownload(result,data);return;}if(code==20&&result==RESULT_OK&&data!=null)choose(data.getStringExtra("code"));if(code==31&&files!=null){files.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(result,data));files=null;}}
  @Override protected void onResume(){super.onResume();resumed=true;checkComputers();MonitorService.foregroundEpoch++;MonitorService.visible=true;if(web!=null)web.onResume();registerPushToken();}
+ // Keep the live WebView and its drafts/tabs when rotating or resizing the window.
+ @Override public void onConfigurationChanged(android.content.res.Configuration config){super.onConfigurationChanged(config);root.requestApplyInsets();if(web!=null){web.requestLayout();web.invalidate();}}
  @Override protected void onPause(){resumed=false;stopComputerChecks();resetExitGesture();MonitorService.visible=false;if(web!=null)web.onPause();CookieManager.getInstance().flush();super.onPause();}
  void resetExitGesture(){homeBackAt=0;if(exitToast!=null){exitToast.cancel();exitToast=null;}}
  @Override public void onBackPressed(){handleBack();}

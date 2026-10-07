@@ -33,24 +33,23 @@ class Workbench {
     };
     this.divider.onpointerup=event=>{if(this.divider.hasPointerCapture(event.pointerId))this.divider.releasePointerCapture(event.pointerId);};
     this.divider.onlostpointercapture=()=>this.layout.classList.remove('wb-resizing');
-    this.divider.onkeydown=event=>{if(['ArrowLeft','ArrowRight','Home'].includes(event.key)){event.preventDefault();this.setRatio(event.key==='Home'?.5:(this.current.splitRatio||.5)+(event.key==='ArrowLeft'?-.025:.025));}};
+    this.divider.onkeydown=event=>{if(['ArrowLeft','ArrowRight','Home'].includes(event.key)){event.preventDefault();this.setRatio(event.key==='Home'?.5:(this.current.splitRatio??.5)+(event.key==='ArrowLeft'?-.025:.025));}};
     this.dropZone.ondragover=event=>{if(this.dragTab&&this.canSplit()){event.preventDefault();event.dataTransfer.dropEffect='move';}};
     this.dropZone.ondrop=event=>{event.preventDefault();if(this.dragTab)this.split(this.dragTab);this.endDrag();};
-    this.media=window.matchMedia('(min-width: 1100px)');
-    this.media.addEventListener('change',()=>this.paint());
-    this.resizeObserver=new ResizeObserver(()=>{const eligible=this.canSplit();if(eligible!==this.splitEligible)this.paint();else if(this.splitMode)this.setRatio(this.current.splitRatio||.5);});
+    this.resizeObserver=new ResizeObserver(()=>{const eligible=this.canSplit();if(eligible!==this.splitEligible){this.rememberScroll();this.paint();}else if(this.splitMode)this.setRatio(this.current.splitRatio??.5,false);});
     this.resizeObserver.observe(chat);
     this.mobileObserver=new MutationObserver(()=>this.paint());this.mobileObserver.observe(document.documentElement,{attributes:true,attributeFilter:['class']});
 
   }
-  canSplit(){return this.media.matches&&!document.querySelector('.bridge-mobile')&&this.chat.clientWidth>=760;}
+  canSplit(){return this.chat.clientWidth>=720;}
   get splitMode(){return this.canSplit()&&!!this.current?.splitTab;}
   isVisible(session,tab){return this.current===session&&(this.splitMode?session.splitTab===tab.id:session.active===tab.id);}
-  setRatio(value){
+  setRatio(value,remember=true){
     if(!this.current)return;
-    const width=this.layout.clientWidth,minimum=Math.min(.5,360/Math.max(width,1));
-    const ratio=Math.max(minimum,Math.min(1-minimum,value));this.current.splitRatio=ratio;
-    this.chat.style.setProperty('--wb-left',`calc(${ratio*100}% - 4px)`);
+    const width=this.layout.clientWidth,divider=parseFloat(getComputedStyle(this.chat).getPropertyValue('--wb-divider-width'))||8;
+    const minimum=Math.min(.5,(320+divider/2)/Math.max(width,1));
+    const ratio=Math.max(minimum,Math.min(1-minimum,value));if(remember)this.current.splitRatio=ratio;
+    this.chat.style.setProperty('--wb-left',`calc(${ratio*100}% - var(--wb-divider-width, 8px) / 2)`);
     this.divider.setAttribute('aria-valuemin',String(Math.round(minimum*100)));this.divider.setAttribute('aria-valuemax',String(Math.round((1-minimum)*100)));this.divider.setAttribute('aria-valuenow',String(Math.round(ratio*100)));
   }
   split(id){if(!this.canSplit()||!this.current?.files.some(t=>t.id===id))return;this.rememberScroll();this.current.splitTab=id;this.current.active=id;this.paint();}
@@ -143,15 +142,16 @@ class Workbench {
   reset() { this.stopThumbnails(); this.uploadController?.abort(); for (const session of this.sessions.values()) for (const tab of session.files) { tab.controller?.abort(); tab.git?.dispose(); tab.terminal?.dispose(); tab.agents?.dispose(); tab.sideChat?.dispose(); } this.sessions.clear(); this.current = null; this.chat.classList.remove('workbench-active','wb-split');this.endDrag(); this.panel.replaceChildren(); this.panel.hidden = true; this.tabs.replaceChildren(); }
   get isFileVisible() { return !!this.current && !this.splitMode && this.current.active !== 'chat'; }
   url(session, operation = '', path = '') { return '/api/sessions/' + session.id + '/workspace' + (operation ? '/' + operation : '') + '?host=' + encodeURIComponent(session.host) + '&path=' + encodeURIComponent(path); }
-  rememberScroll() { if (this.current && !this.isFileVisible) this.current.scroll = this.chat.querySelector('.timeline').scrollTop; }
+  rememberScroll() { const timeline=this.chat.querySelector('.timeline');if (this.current && !this.chat.classList.contains('workbench-active') && timeline.clientHeight) this.current.scroll = timeline.scrollTop; }
   select(id) {
     if (!this.current) return;
-    this.rememberScroll(); this.current.active = id; if(this.splitMode&&id!=='chat')this.current.splitTab=id; this.paint();
+    this.rememberScroll(); this.current.active = id; if(this.current.splitTab&&id!=='chat')this.current.splitTab=id; this.paint();
     if (id === 'chat') { const session = this.current; requestAnimationFrame(() => { if (session === this.current && session.active === 'chat') this.chat.querySelector('.timeline').scrollTop = session.scroll; }); }
   }
   paint() {
     const session = this.current; if (!session) return;
-    for (const node of this.panel.querySelectorAll('.wb-file-list,.wb-preview-content,.wb-git-list,.wb-git-diff,.wb-branch-list')) this.scrollPositions.set(node, node.scrollTop);
+    const restoreMain=this.chat.classList.contains('workbench-active')&&!this.isFileVisible;
+    for (const node of this.panel.querySelectorAll('.wb-file-list,.wb-preview-content,.wb-git-list,.wb-git-diff,.wb-branch-list,.wb-side-messages')) this.scrollPositions.set(node, node.scrollTop);
     this.splitEligible=this.canSplit();
     this.tabs.replaceChildren();
     for (const tab of [{id: 'chat', name: BridgeI18n.t('聊天')}, ...session.files]) {
@@ -166,13 +166,14 @@ class Workbench {
     }
     this.chat.classList.toggle('workbench-active', this.isFileVisible); this.panel.hidden = !this.isFileVisible&&!this.splitMode;
     this.chat.classList.toggle('wb-split',this.splitMode);this.splitButton.hidden=!this.splitEligible;this.splitButton.disabled=!this.splitMode&&session.active==='chat';
-    const splitLabel=this.splitMode?'退出分屏':'在右侧分屏';this.splitButton.dataset.i18nTitle=splitLabel;this.splitButton.dataset.i18nAriaLabel=splitLabel;this.splitButton.title=BridgeI18n.t(splitLabel);this.splitButton.setAttribute('aria-label',BridgeI18n.t(splitLabel));this.splitButton.setAttribute('aria-pressed',String(this.splitMode));if(this.splitMode)this.setRatio(session.splitRatio||.5);
-    this.panel.replaceChildren();
+    const splitLabel=this.splitMode?'退出分屏':'在右侧分屏';this.splitButton.dataset.i18nTitle=splitLabel;this.splitButton.dataset.i18nAriaLabel=splitLabel;this.splitButton.title=BridgeI18n.t(splitLabel);this.splitButton.setAttribute('aria-label',BridgeI18n.t(splitLabel));this.splitButton.setAttribute('aria-pressed',String(this.splitMode));if(this.splitMode)this.setRatio(session.splitRatio??.5,false);
     const active = session.files.find(t => t.id === (this.splitMode?session.splitTab:session.active));
+    // Keep the visible tool mounted across resizing (including its focus and scroll).
+    if(this.panel.firstElementChild!==active?.body)this.panel.replaceChildren(...(active?[active.body]:[]));
     if (active) {
-      this.panel.append(active.body);
-      for (const node of active.body.querySelectorAll('.wb-file-list,.wb-preview-content,.wb-git-list,.wb-git-diff,.wb-branch-list')) node.scrollTop = this.scrollPositions.get(node) || 0;
+      for (const node of active.body.querySelectorAll('.wb-file-list,.wb-preview-content,.wb-git-list,.wb-git-diff,.wb-branch-list,.wb-side-messages')) node.scrollTop = this.scrollPositions.get(node) || 0;
     }
+    if(restoreMain)this.chat.querySelector('.timeline').scrollTop=session.scroll;
     this.refreshThumbnails();
   }
   back() { const floating=this.panel.querySelector('.wb-float'); if(floating){floating.querySelector('.wb-float-close').click();return true;} if (!this.isFileVisible) return false; this.select('chat'); return true; }
