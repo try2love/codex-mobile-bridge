@@ -53,8 +53,10 @@ class Workspace:
                 path = path / part
                 if path.is_symlink() or getattr(path, 'is_junction', lambda: False)():
                     raise PermissionError('暂不支持通过符号链接访问文件')
+                if not path.exists():
+                    raise FileNotFoundError('目录不存在')
                 if not path.is_dir():
-                    raise ValueError('目录不存在')
+                    raise NotADirectoryError('路径不是目录')
             yield path, None
 
     @staticmethod

@@ -19,13 +19,19 @@ class TerminalTests(unittest.TestCase):
     def tearDown(self):
         self.manager.close();self.temp.cleanup()
     def identifier(self):return str(uuid.uuid4())
+    def python_command(self, source):
+        script = self.root / (self.identifier() + '.py')
+        script.write_text(source, encoding='utf-8')
+        args = [sys.executable, '-u', str(script)]
+        return subprocess.list2cmdline(args) if os.name == 'nt' else shlex.join(args)
     def test_output_exit_and_cwd(self):
-        key=self.identifier();self.manager.start('owner','thread',key,self.root,"pwd; printf '你好\\n'; exit 7")
+        command=self.python_command("import os,sys;sys.stdout.buffer.write((os.getcwd()+'\\n你好\\n').encode('utf-8'));sys.exit(7)")
+        key=self.identifier();self.manager.start('owner','thread',key,self.root,command)
         job=self.manager.get('owner','thread',key);self.assertTrue(job.done.wait(5));result=job.read()
         self.assertIn(str(self.root),result['output']);self.assertIn('你好',result['output']);self.assertEqual(result['exitCode'],7)
         self.assertEqual(job.read(result['cursor'])['output'],'')
     def test_start_idempotent_and_scoped(self):
-        key=self.identifier();command='echo run >> runs.txt'
+        key=self.identifier();command=self.python_command("with open('runs.txt','ab') as f:f.write(b'run\\n')")
         self.manager.start('owner','thread',key,self.root,command)
         self.manager.get('owner','thread',key).done.wait(5)
         self.manager.start('owner','thread',key,self.root,command)
@@ -34,42 +40,44 @@ class TerminalTests(unittest.TestCase):
         for owner,thread in [('other','thread'),('owner','other')]:
             with self.assertRaises(KeyError):self.manager.get(owner,thread,key)
     def test_output_limit_and_incremental_unicode(self):
-        job=CommandJob(self.root,shlex.quote(sys.executable)+" -c "+shlex.quote("import sys;sys.stdout.write('中'*300000)"))
+        job=CommandJob(self.root,self.python_command("import sys;sys.stdout.buffer.write(('中'*300000).encode('utf-8'))"))
         self.assertTrue(job.done.wait(8));result=job.read()
         self.assertEqual(len(result['output']),MAX_OUTPUT);self.assertTrue(result['reset']);self.assertTrue(result['truncated']);self.assertNotIn('�',result['output'])
     def test_stop_and_gateway_close(self):
-        key=self.identifier();self.manager.start('owner','thread',key,self.root,'sleep 90')
+        command=self.python_command('import time;time.sleep(90)')
+        key=self.identifier();self.manager.start('owner','thread',key,self.root,command)
         job=self.manager.get('owner','thread',key);job.stop();self.assertTrue(job.done.wait(4));self.assertFalse(job.read()['running'])
-        key=self.identifier();self.manager.start('owner','thread',key,self.root,'sleep 90');job=self.manager.get('owner','thread',key)
+        key=self.identifier();self.manager.start('owner','thread',key,self.root,command);job=self.manager.get('owner','thread',key)
         self.manager.close();self.assertTrue(job.done.is_set())
     def test_invalid_command_and_parallel_limit(self):
         for command in ('','\0',None,'x'*16001):
             with self.assertRaises(ValueError):self.manager.start('owner','thread',self.identifier(),self.root,command)
-        for _ in range(4):self.manager.start('owner','thread',self.identifier(),self.root,'sleep 90')
+        command=self.python_command('import time;time.sleep(90)')
+        for _ in range(4):self.manager.start('owner','thread',self.identifier(),self.root,command)
         with self.assertRaises(ValueError):self.manager.start('owner','thread',self.identifier(),self.root,'echo no')
     def test_timeout(self):
         with patch('bridge.terminal.MAX_SECONDS',.05):
-            job=CommandJob(self.root,'sleep 90');self.assertTrue(job.done.wait(4));self.assertIn('上限',job.read()['message'])
+            job=CommandJob(self.root,self.python_command('import time;time.sleep(90)'));self.assertTrue(job.done.wait(4));self.assertIn('上限',job.read()['message'])
     def test_remote_protocol_output_and_stop(self):
         original=subprocess.Popen
         def launch(args,**kwargs):
             self.assertEqual(args[:2],['ssh','-T']);self.assertIn('StrictHostKeyChecking=yes',args)
             return original([sys.executable,'-u','-c',shlex.split(args[-1])[-1]],**kwargs)
         with patch('bridge.terminal.subprocess.Popen',side_effect=launch):
-            job=RemoteCommandJob('fixture',self.root,"printf remote; sleep 90")
+            job=RemoteCommandJob('fixture',self.root,self.python_command("import time;print('remote',flush=True);time.sleep(90)"))
             deadline=time.monotonic()+5
             while not job.read()['output'] and time.monotonic()<deadline:time.sleep(.02)
             self.assertIn('remote',job.read()['output']);job.stop();self.assertTrue(job.done.wait(5))
     def test_remote_normal_exit_reaps_transport_cleanly(self):
         original=subprocess.Popen
         with patch('bridge.terminal.subprocess.Popen', side_effect=lambda args,**kwargs:original([sys.executable,'-u','-c',shlex.split(args[-1])[-1]],**kwargs)):
-            job=RemoteCommandJob('fixture',self.root,'printf completed')
+            job=RemoteCommandJob('fixture',self.root,self.python_command("import sys;sys.stdout.write('completed')"))
             self.assertTrue(job.done.wait(5));self.assertEqual(job.code,0)
             self.assertEqual(job.process.returncode,0);self.assertEqual(job.read()['output'],'completed')
 
     def test_remote_disconnect_cleans_command(self):
         from bridge import terminal
-        source=Path(terminal.__file__).read_text()+"\nserve_remote("+repr(str(self.root))+", 'sleep 90')"
+        source=Path(terminal.__file__).read_text(encoding='utf-8')+"\nserve_remote("+repr(str(self.root))+", "+repr(self.python_command('import time;time.sleep(90)'))+")"
         process=subprocess.Popen([sys.executable,'-u','-c',source],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
         event=json.loads(process.stdout.readline());self.assertTrue(event['running']);process.stdin.close()
         process.wait(timeout=5);process.stdout.close();process.stderr.close();self.assertEqual(process.returncode,0)

@@ -58,8 +58,9 @@ class GitWorkspaceTests(unittest.TestCase):
 
     def test_untracked_ignored_binary_large_and_no_newline(self):
         self.baseline(); (self.root / '.gitignore').write_text('ignored.txt\n'); (self.root / 'ignored.txt').write_text('private')
-        (self.root / '中文 [x]*.txt').write_text('<img src=x>')
-        self.assertIn('+<img src=x>\n\\ No newline', self.diff('中文 [x]*.txt', 'untracked')['text'])
+        name = '中文 [x].txt' if os.name == 'nt' else '中文 [x]*.txt'
+        (self.root / name).write_text('<img src=x>')
+        self.assertIn('+<img src=x>\n\\ No newline', self.diff(name, 'untracked')['text'])
         self.assertNotIn('ignored.txt', [e['path'] for e in self.status()['entries']])
         with self.assertRaises(ValueError): self.diff('ignored.txt', 'untracked')
         (self.root / 'binary').write_bytes(b'\x00\xff')
@@ -140,7 +141,7 @@ class GitWorkspaceTests(unittest.TestCase):
         snapshot = self.status()['version']
         result = GitWorkspace(self.work).mutate('commit', snapshot, message='Commit staged content')
         self.assertEqual(result['outcome'], 'success')
-        self.assertEqual(self.git('show', 'HEAD:hello.txt').stdout, b'staged version\n')
+        self.assertEqual(self.git('show', 'HEAD:hello.txt').stdout, os.linesep.join(['staged version', '']).encode())
         self.assertEqual(path.read_text(), 'later working version\n')
         self.assertEqual(self.status()['entries'][0]['worktree'], 'M')
         with self.assertRaisesRegex(ValueError, '已发生变化'):
@@ -158,7 +159,9 @@ class GitWorkspaceTests(unittest.TestCase):
         (self.root / 'folder').mkdir(); (self.root / 'folder/a.txt').write_text('file')
         self.mutate('stage-all'); self.mutate('commit', message='Folder')
         (self.root / 'folder/a.txt').unlink(); (self.root / 'folder').rmdir()
-        self.mutate('stage', path='folder/a.txt')
+        # Exercise the Windows path-walking fallback on every CI platform.
+        with patch('bridge.workspace.os.supports_dir_fd', set()):
+            self.mutate('stage', path='folder/a.txt')
         self.assertEqual(self.status()['entries'][0]['index'], 'D')
 
     def test_management_rejects_stale_state_and_dirty_branch_switch(self):

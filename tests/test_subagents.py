@@ -1,4 +1,5 @@
 import json
+from contextlib import closing
 from pathlib import Path
 import sqlite3
 import unittest
@@ -24,7 +25,7 @@ class SubagentTests(unittest.TestCase):
                      {'type':'event_msg','payload':{'type':'task_complete'}}]
             log.write_text('\n'.join(json.dumps(row) for row in records))
         value=source or {'subagent':{'thread_spawn':{'parent_thread_id':parent,'agent_nickname':title,'agent_path':'/root/'+title}}}
-        with sqlite3.connect(self.root/'state_5.sqlite') as db:
+        with closing(sqlite3.connect(self.root/'state_5.sqlite')) as db, db:
             db.execute('INSERT INTO threads VALUES(?,?,?,?,?,?,?,?)',(identifier,title,'/workspace',2,0,None,json.dumps(value),str(log)))
         return identifier
     def test_tree_includes_descendants_excludes_other_roots(self):
@@ -43,7 +44,7 @@ class SubagentTests(unittest.TestCase):
         bad=self.child(support.THREAD,path=self.root/'external.jsonl')
         with self.assertRaises(ValueError):self.bridge.subagents(support.THREAD,bad)
         child=self.child(support.THREAD)
-        with sqlite3.connect(self.root/'state_5.sqlite') as db:
+        with closing(sqlite3.connect(self.root/'state_5.sqlite')) as db, db:
             db.execute('UPDATE threads SET source=? WHERE id=?',(json.dumps({'subagent':{'thread_spawn':{'parent_thread_id':child}}}),child))
         with self.assertRaises(KeyError):self.bridge.subagents(support.THREAD,child)
     def test_remote_delegates_with_original_parent(self):

@@ -37,8 +37,9 @@ class PtyTests(unittest.TestCase):
     def test_default_shell_uses_account_setting_not_inherited_shell(self):
         import pwd
         from types import SimpleNamespace
-        with patch.object(pwd,'getpwuid',return_value=SimpleNamespace(pw_shell='/bin/zsh')), patch.dict(os.environ,{'SHELL':'/bin/bash'}):
-            self.assertEqual(default_shell(),'/bin/zsh')
+        for actual, inherited in (('/bin/zsh', '/bin/bash'), ('/bin/bash', '/bin/zsh')):
+            with self.subTest(actual=actual), patch.object(pwd,'getpwuid',return_value=SimpleNamespace(pw_shell=actual)), patch.dict(os.environ,{'SHELL':inherited}):
+                self.assertEqual(default_shell(),actual)
     def test_real_tty_startup_cd_environment_and_interactive_read(self):
         with patch('bridge.pty_terminal.default_shell',return_value='/bin/zsh'): s=self.session()
         self.send(s,"printf 'STARTUP:%s\\n' \"$BRIDGE_STARTUP_TEST\"; test -t 0 && echo PTY_OK\r")

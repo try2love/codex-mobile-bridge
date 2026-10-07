@@ -235,7 +235,9 @@ class SideSettingsTests(unittest.TestCase):
 
     def test_catalog_is_child_scoped_and_stale_id_cannot_mutate(self):
         from unittest.mock import Mock
-        manager = SideChats('runtime', '/home', '/tmp', 'local', factory=lambda *a: SideChat(*a, runtime_factory=RuntimeFixture))
+        directory = tempfile.TemporaryDirectory(dir=support.ROOT / '.tmp')
+        self.addCleanup(directory.cleanup)
+        manager = SideChats('runtime', '/home', directory.name, 'local', factory=lambda *a: SideChat(*a, runtime_factory=RuntimeFixture))
         manager.checked = True;self.addCleanup(manager.close)
         parent=str(uuid.uuid4())
         child=manager.operate(parent,'create',{'creationId':str(uuid.uuid4())},{'cwd':'/original'},{'model':'original','modelProvider':'custom'})

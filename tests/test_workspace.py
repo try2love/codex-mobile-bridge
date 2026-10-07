@@ -21,7 +21,7 @@ class WorkspaceTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(dir=support.ROOT / '.tmp')
         self.root = Path(self.temp.name) / 'project'; self.root.mkdir()
         self.work = Workspace(self.root)
-        (self.root / 'folder').mkdir(); (self.root / 'hello.txt').write_text('你好\nworkspace🙂')
+        (self.root / 'folder').mkdir(); (self.root / 'hello.txt').write_bytes('你好\nworkspace🙂'.encode('utf-8'))
         (self.root / '.hidden').write_text('hidden')
 
     def tearDown(self): self.temp.cleanup()
@@ -61,7 +61,7 @@ class WorkspaceTests(unittest.TestCase):
         self.assertFalse(self.work.upload('folder/new.txt', data)['existing'])
         self.assertTrue(self.work.upload('folder/new.txt', data)['existing'])
         with self.assertRaises(ValueError): self.work.upload('folder/new.txt', 'YQ==')
-        self.assertEqual((self.root / 'folder/new.txt').read_text(), '文件🙂')
+        self.assertEqual((self.root / 'folder/new.txt').read_text(encoding='utf-8'), '文件🙂')
         with self.assertRaises(PermissionError): self.work.upload('.git/config', data)
         with patch('bridge.workspace.os.link', side_effect=OSError('disk error')):
             with self.assertRaises(ValueError): operate(str(self.root), 'upload', {'path': 'failed', 'encoded': data})
