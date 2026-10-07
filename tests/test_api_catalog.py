@@ -1,6 +1,7 @@
 import hashlib
 import os
 import json
+import io
 import stat
 import tempfile
 import time
@@ -9,8 +10,34 @@ from pathlib import Path
 from unittest.mock import patch
 
 from bridge.catalog import Catalog, CatalogError
+from bridge.account_models import model_ids
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class ModelResponseTests(unittest.TestCase):
+    def read(self, value):
+        with patch('bridge.account_models.build_opener') as factory:
+            factory.return_value.open.return_value = io.BytesIO(json.dumps(value).encode())
+            return model_ids('https://fixture.invalid/v1', 'fixture-key')
+
+    def test_openai_and_cc_switch_catalog_formats(self):
+        self.assertEqual(self.read({'data': [{'id': 'gpt-5.5'}]}), ['gpt-5.5'])
+        self.assertEqual(self.read({'models': [
+            {'slug': 'gpt-5.5', 'visibility': 'list'},
+            {'slug': 'hidden', 'visibility': 'hide'},
+            {'slug': '../invalid model'}, {'slug': 'gpt-5.5'}]}), ['gpt-5.5'])
+
+    def test_empty_cc_switch_catalog_explains_no_available_models(self):
+        with self.assertRaisesRegex(ValueError, '未返回可用模型'):
+            self.read({'models': []})
+
+    def test_existing_formats_keep_id_semantics(self):
+        self.assertEqual(self.read([{'id': 'array-model'}]), ['array-model'])
+        self.assertEqual(self.read({'data': [{'id': 'openai-model'}],
+                                    'models': [{'slug': 'native-model'}]}), ['openai-model'])
+        with self.assertRaisesRegex(ValueError, '未返回可用模型'):
+            self.read({'data': [], 'models': [{'slug': 'native-model'}]})
 
 
 class ApiCatalogTests(unittest.TestCase):
@@ -40,6 +67,17 @@ class ApiCatalogTests(unittest.TestCase):
         self.assertEqual([m['model'] for m in result['models']], ['provider-fixture'])
         self.assertNotIn('model/list', [method for method, _ in self.calls])
         self.assertEqual(result['modelSource'], 'api')
+
+    def test_native_upstream_uses_the_same_public_catalog_as_openai(self):
+        results = []
+        for payload in ({'data': [{'id': 'provider-fixture'}]},
+                        {'models': [{'slug': 'provider-fixture'}, {'slug': 'hidden', 'visibility': 'hide'}]}):
+            with patch('bridge.account_models.build_opener') as factory:
+                factory.return_value.open.return_value = io.BytesIO(json.dumps(payload).encode())
+                results.append(self.reader.read_models(self.request, str(self.home), 'bridge_api'))
+        self.assertEqual(results[0], results[1])
+        self.assertEqual([m['model'] for m in results[1]['models']], ['provider-fixture'])
+        self.assertNotIn('fixture-key', json.dumps(results))
 
     def test_api_uses_upstream_ids_when_runtime_has_no_native_catalog(self):
         def request(method,params):

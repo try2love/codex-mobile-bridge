@@ -25,12 +25,15 @@ def model_ids(base_url, key):
         if len(payload) > 1024*1024:
             raise ValueError('上游模型列表过大，请手动填写模型 ID')
         value = json.loads(payload)
-        rows = value.get('data') if isinstance(value, dict) else (value if isinstance(value, list) else None)
+        native = isinstance(value, dict) and 'data' not in value and 'models' in value
+        rows = value.get('models' if native else 'data') if isinstance(value, dict) else (value if isinstance(value, list) else None)
         if not isinstance(rows, list):
             raise ValueError('上游未返回兼容的模型列表，请手动填写模型 ID')
-        result = sorted({row['id'] for row in rows if isinstance(row, dict)
-                         and isinstance(row.get('id'), str)
-                         and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_./:@+-]{0,199}', row['id'])})
+        field = 'slug' if native else 'id'
+        result = sorted({row[field] for row in rows if isinstance(row, dict)
+                         and (not native or row.get('visibility') != 'hide')
+                         and isinstance(row.get(field), str)
+                         and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_./:@+-]{0,199}', row[field])})
         if not result:
             raise ValueError('上游未返回可用模型，请手动填写模型 ID')
         return result

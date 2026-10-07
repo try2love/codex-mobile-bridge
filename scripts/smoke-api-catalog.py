@@ -13,12 +13,13 @@ from bridge.catalog import Catalog
 
 class Handler(BaseHTTPRequestHandler):
     calls=[]
+    payload={'data':[{'id':'gemini-fixture'},{'id':'gemini-second'}]}
     def log_message(self,*args):pass
     def do_CONNECT(self):self.send_error(403)
     def do_GET(self):
         self.calls.append((self.path,self.headers.get('Authorization')))
         self.send_response(200);self.send_header('Content-Type','application/json');self.end_headers()
-        self.wfile.write(b'{"data":[{"id":"gemini-fixture"},{"id":"gemini-second"}]}')
+        self.wfile.write(json.dumps(self.payload).encode())
 
 
 root=Path(__file__).resolve().parents[1]
@@ -32,14 +33,17 @@ with tempfile.TemporaryDirectory(dir=root/'.tmp') as directory:
     env={key:base for key in ('HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','http_proxy','https_proxy','all_proxy')}
     env.update(NO_PROXY='127.0.0.1,localhost',no_proxy='127.0.0.1,localhost')
     try:
-        with patch.dict(os.environ,env):
-            for key in ('OPENAI_API_KEY','OPENAI_BASE_URL'):os.environ.pop(key,None)
-            result=Catalog(home).get(home,refresh=True)
-        ids=[model['id'] for model in result['models']]
-        assert ids==['gemini-fixture','gemini-second'],ids
-        assert ('/v1/models','Bearer synthetic-catalog-key') in Handler.calls
-        assert result['modelSource']=='api' and not result['fastMode']['allowed']
-        assert 'synthetic-catalog-key' not in json.dumps(result)
-        print('PASS: native effective API config + authenticated loopback /models -> Gemini-only chat catalog, no real account or inference.')
+        for payload in (Handler.payload, {'models':[{'slug':'gemini-fixture'},
+                         {'slug':'gemini-second'}, {'slug':'hidden-fixture','visibility':'hide'}]}):
+            Handler.payload=payload;Handler.calls.clear()
+            with patch.dict(os.environ,env):
+                for key in ('OPENAI_API_KEY','OPENAI_BASE_URL'):os.environ.pop(key,None)
+                result=Catalog(home).get(home,refresh=True)
+            ids=[model['id'] for model in result['models']]
+            assert ids==['gemini-fixture','gemini-second'],ids
+            assert ('/v1/models','Bearer synthetic-catalog-key') in Handler.calls
+            assert result['modelSource']=='api' and not result['fastMode']['allowed']
+            assert 'synthetic-catalog-key' not in json.dumps(result)
+        print('PASS: OpenAI and CC Switch loopback responses produce the same public chat catalog, no real account or inference.')
     finally:
         server.shutdown();server.server_close()
