@@ -1122,8 +1122,21 @@ class Bridge:
         uuid.UUID(thread_id)
         root = self.store.get(thread_id).get('cwd')
         if action == 'info':
-            return {'cwd': root, 'host': self.host, 'shell': 'sh' if self.host != 'local' or os.name != 'nt' else 'cmd'}
+            from .pty_terminal import default_shell
+            return {'cwd': root, 'host': self.host, 'mode': 'pty' if self.host != 'local' or os.name != 'nt' else 'command',
+                    'shell': default_shell() if self.host == 'local' else None}
         identifier = params.get('id', '')
+        if action == 'open':
+            return self.terminals.open_session(owner, thread_id, identifier, root, params.get('cols'), params.get('rows'),
+                                                self.store.alias if isinstance(self.store, RemoteStore) else None)
+        if action in ('input', 'resize', 'close', 'poll'):
+            session = self.terminals.session(owner, thread_id, identifier)
+            if action == 'input': return session.write(params.get('inputId'), params.get('data'))
+            if action == 'resize': return session.resize(params.get('cols'), params.get('rows'))
+            if action == 'close': session.stop(); return {'closed': True}
+            after = params.get('after', 0)
+            if type(after) is not int or not 0 <= after <= 10**12: raise ValueError('无效输出游标')
+            return session.read(after)
         if action == 'start':
             return self.terminals.start(owner, thread_id, identifier, root, params.get('command'),
                                         self.store.alias if isinstance(self.store, RemoteStore) else None)

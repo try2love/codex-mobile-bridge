@@ -163,7 +163,7 @@ class RemoteCommandJob(CommandJob):
 
 class TerminalManager:
     def __init__(self):
-        self.lock = threading.RLock(); self.jobs = {}; self.seen = {}
+        self.lock = threading.RLock(); self.jobs = {}; self.seen = {}; self.sessions = {}; self.closed = set()
 
     def start(self, owner, thread, identifier, root, command, alias=None):
         uuid.UUID(identifier)
@@ -192,8 +192,30 @@ class TerminalManager:
             if job is None: raise KeyError('命令不存在或不属于当前登录；网关重启后记录会清除')
             return job
 
+    def open_session(self, owner, thread, identifier, root, cols, rows, alias=None):
+        from .pty_terminal import TerminalSession, RemoteTerminalSession, dimensions
+        uuid.UUID(identifier); dimensions(cols, rows)
+        key = (owner, thread, identifier)
+        with self.lock:
+            if key in self.closed: raise ValueError('此终端已关闭，请打开新终端')
+            if key in self.sessions: return self.sessions[key].read()
+            if not root or (not alias and not Path(root).is_dir()): raise ValueError('聊天项目目录不可用')
+            active = [k for k, job in self.sessions.items() if not job.done.is_set()]
+            if len(active) >= 16 or sum(k[0] == owner for k in active) >= 4: raise ValueError('请先关闭其他终端')
+            if len(self.closed) >= 4096: raise ValueError('终端记录已满，请重启网关')
+            for old in list(self.sessions):
+                if self.sessions[old].done.is_set(): self.closed.add(old); del self.sessions[old]
+            self.sessions[key] = RemoteTerminalSession(alias, root, cols, rows) if alias else TerminalSession(root, cols, rows)
+            return self.sessions[key].read()
+
+    def session(self, owner, thread, identifier):
+        with self.lock:
+            session = self.sessions.get((owner, thread, identifier))
+            if session is None: raise KeyError('终端已关闭或不属于当前登录，请重新打开')
+            return session
+
     def close(self):
-        with self.lock: jobs = list(self.jobs.values())
+        with self.lock: jobs = list(self.jobs.values()) + list(self.sessions.values())
         for job in jobs: job.stop('网关已停止')
         deadline = time.monotonic() + 5
         for job in jobs: job.done.wait(max(0, deadline-time.monotonic()))

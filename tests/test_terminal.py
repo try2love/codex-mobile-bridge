@@ -94,3 +94,12 @@ class TerminalHttpTests(unittest.TestCase):
         self.assertEqual(self.request('POST',path,{**body,'cwd':'/outside'},auth)[0],400)
         self.assertEqual(self.request('POST',path,body,auth)[0],200);self.assertEqual(calls[-1][2],'start')
         self.assertEqual(self.request('GET',path+'?host=wrong',headers=auth)[0],404)
+        for body in ({'action':'open','id':str(uuid.uuid4()),'cols':80,'rows':24},
+                     {'action':'input','id':str(uuid.uuid4()),'inputId':str(uuid.uuid4()),'data':'pwd\r'},
+                     {'action':'resize','id':str(uuid.uuid4()),'cols':100,'rows':30},
+                     {'action':'close','id':str(uuid.uuid4())}):
+            self.assertEqual(self.request('POST',path,body,{'Cookie':auth['Cookie']})[0],403)
+            self.assertEqual(self.request('POST',path,body,auth)[0],200)
+            self.assertEqual(calls[-1][2],body['action'])
+        self.assertEqual(self.request('GET',path+'?mode=pty&id='+str(uuid.uuid4()),headers=auth)[0],200)
+        self.assertEqual(calls[-1][2],'poll')
