@@ -8,6 +8,7 @@ import mimetypes
 import re
 import secrets
 import socket
+import platform
 import threading
 import time
 from http import HTTPStatus
@@ -31,7 +32,8 @@ from .create import CreationError
 from .account import AccountError
 
 LOG = logging.getLogger(__name__)
-STATIC = {"/vendor/xterm/xterm.js": ("vendor/xterm/xterm.js", "text/javascript; charset=utf-8"),
+STATIC = {"/permissions.js": ("permissions.js", "text/javascript; charset=utf-8"),
+          "/vendor/xterm/xterm.js": ("vendor/xterm/xterm.js", "text/javascript; charset=utf-8"),
           "/vendor/xterm/addon-fit.js": ("vendor/xterm/addon-fit.js", "text/javascript; charset=utf-8"),
           "/vendor/xterm/xterm.css": ("vendor/xterm/xterm.css", "text/css; charset=utf-8"),
           "/command-terminal-panel.js": ("command-terminal-panel.js", "text/javascript; charset=utf-8"),
@@ -276,6 +278,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.output(200, {"authenticated": bool(session), "csrf": session["csrf"] if session else None,
                                          "loginStatus": self.server.auth.login_status(self.client()["ip"]),
                                          "instanceId": self.server.instance_id,
+                                         **({"computer": {"name": socket.gethostname(), "platform": platform.system()}} if session else {}),
                                          "notifications": self.server.notifications is not None,
                                          "passwordless": self.server.auth.config.get("mode") == "none",
                                          "transport": "poll" if self.headers.get("Host", "").endswith(".trycloudflare.com") else "sse"},

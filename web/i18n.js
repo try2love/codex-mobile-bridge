@@ -47,6 +47,7 @@ const en={
 "最近一张重置卡到期：":"Next reset credit expires: ",
 "查看并使用当前账号的重置卡":"View and use reset credits for the current account",
 
+"显示当前连接的电脑":"Show connected computer",
 "创建侧边聊天":"Create side chat",
 "临时侧边聊天":"Temporary side chat",
 "开启一段侧边聊天":"Start a side chat",

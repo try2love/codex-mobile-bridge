@@ -731,6 +731,20 @@ class HttpTests(unittest.TestCase):
         self.assertIn('HttpOnly', headers['Set-Cookie'])
         return {'Cookie': headers['Set-Cookie'].split(';')[0], 'X-CSRF-Token': body['csrf']}
 
+    def test_computer_identity_is_only_available_after_login(self):
+        from unittest.mock import patch
+        with patch('bridge.httpd.socket.gethostname', return_value='demo-workstation'):
+            status, _, public = self.request('GET', '/api/auth')
+            self.assertEqual(status, 200)
+            self.assertNotIn('computer', public)
+            self.assertIsInstance(public['instanceId'], str)
+            before = public['loginStatus']
+            auth = self.login()
+            status, _, private = self.request('GET', '/api/auth', headers=auth)
+            self.assertEqual(private['computer']['name'], 'demo-workstation')
+            self.assertIn(private['computer']['platform'], ['Darwin', 'Linux', 'Windows'])
+            self.assertEqual(private['loginStatus'], before)
+
     def test_ignore_submission_route_requires_login_csrf_and_exact_payload(self):
         from types import SimpleNamespace
         from unittest.mock import Mock
@@ -955,7 +969,7 @@ class HttpTests(unittest.TestCase):
             self.assertEqual(response.status, 200)
             scripts = re.findall(r'<script src="([^"]+)"', response.read().decode())
             self.assertEqual([script.split('?', 1)[0] for script in scripts], ['/vendor/markdown-it.min.js', '/vendor/katex/katex.min.js',
-                                       '/vendor/texmath.js', '/message-actions.js', '/markdown.js', '/i18n.js', '/image-viewer.js', '/timeline.js', '/account.js', '/modes.js', '/attachments.js', '/activity.js', '/fast-mode.js', '/accounts.js', '/floating-panel.js', '/git-panel.js', '/vendor/xterm/xterm.js', '/vendor/xterm/addon-fit.js', '/command-terminal-panel.js', '/terminal-panel.js', '/side-chat.js', '/agents-panel.js', '/workbench.js', '/list-sync.js', '/app.js', '/presentation.js'])
+                                       '/vendor/texmath.js', '/message-actions.js', '/markdown.js', '/i18n.js', '/image-viewer.js', '/timeline.js', '/account.js', '/modes.js', '/attachments.js', '/activity.js', '/fast-mode.js', '/accounts.js', '/floating-panel.js', '/git-panel.js', '/vendor/xterm/xterm.js', '/vendor/xterm/addon-fit.js', '/command-terminal-panel.js', '/terminal-panel.js', '/permissions.js', '/side-chat.js', '/agents-panel.js', '/workbench.js', '/list-sync.js', '/app.js', '/presentation.js'])
             for script in scripts:
                 conn.request('GET', script)
                 response = conn.getresponse()
