@@ -60,9 +60,14 @@ async function main(){
     await worker('devices',{action:'save',policy:{}});
     signed=await login();assert.equal(signed.status,200);cookie=signed.cookie.split(';')[0];
     await worker('stop');state=await worker('snapshot');state.auth.sessionHours=1;await worker('save',state);await start();
-    assert.equal((await request('/api/auth',{cookie})).body.authenticated,false);
+    // Lifetime changes apply to new sessions; existing device access is preserved.
+    assert.equal((await request('/api/auth',{cookie})).body.authenticated,true);
     signed=await login();assert.equal(signed.status,200);assert.match(signed.cookie,/Max-Age=3600/);
-    console.log('PASS: packaged login lifetime, durable restart, device list, revocation, IP block/relogin denial, allowlist, desktop recovery and auth-setting invalidation.');
+    cookie=signed.cookie.split(';')[0];
+    await worker('stop');state=await worker('snapshot');state.auth.password='synthetic-replacement-password';await worker('save',state);await start();
+    assert.equal((await request('/api/auth',{cookie})).body.authenticated,false);
+    assert.equal((await request('/api/login',{body:{username:'admin',password:'synthetic-replacement-password'}})).status,200);
+    console.log('PASS: packaged login lifetime, durable restart, device list, revocation, IP block/relogin denial, allowlist, desktop recovery and password-change invalidation.');
   }finally{
     try{await worker('stop');}catch{}
     await fs.rm(dataDir,{recursive:true,force:true});
