@@ -11,7 +11,8 @@ import uuid
 class ConPtyTests(unittest.TestCase):
     def test_persistent_shell_unicode_resize_dedupe_and_close(self):
         from bridge.windows_terminal import WindowsTerminalSession
-        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]/'.tmp') as folder:
+        directory = Path(__file__).resolve().parents[1] / '.tmp'; directory.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=directory) as folder:
             root=Path(folder); (root/'nested folder').mkdir()
             session=WindowsTerminalSession(root,80,24)
             try:
