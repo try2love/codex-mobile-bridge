@@ -8,6 +8,8 @@ class FloatingPanel {
     this.element.setAttribute('aria-label', title);
     const bar = node('div', 'wb-float-bar');
     this.grip = button(title, () => {}, '拖动窗口；方向键移动'); this.grip.className = 'wb-float-grip';
+    const handle = node('span', 'wb-drag-handle'); handle.setAttribute('aria-hidden', 'true');
+    this.grip.replaceChildren(handle, node('span', 'wb-float-title', title));
     this.maximize = button('□', () => { state.maximized = !state.maximized; this.layout(); }, '最大化窗口');
     const reset = button('↺', () => { delete state.rect; state.maximized = false; this.layout(); }, '恢复默认大小');
     const dismiss = button('×', () => { this.destroy(); close(); }, '关闭详情');

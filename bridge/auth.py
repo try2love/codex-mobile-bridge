@@ -4,6 +4,7 @@ import ipaddress
 import json
 import math
 import os
+import re
 import secrets
 import threading
 import time
@@ -59,12 +60,17 @@ class Auth:
     MAX_FAILURES = 5
     REMEMBER_HOURS = 7 * 24
 
+    @staticmethod
+    def mobile_client(user_agent):
+        # Only selects lifetime AFTER authentication; this is not proof of identity.
+        return bool(re.search(r'(?:^|\s)BridgeMobile/[\w.-]+-(?:iOS|Android)(?:\s|$)', user_agent))
+
     def __init__(self, config, data_dir=None):
         self.config = config
         self.hours = session_hours(config.get('sessionHours', 12))
         identity = {k: config.get(k) for k in ('mode', 'username', 'salt', 'hash', 'iterations')}
-        identity['sessionHours'] = self.hours
         self.identity = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+        legacy_identity = hashlib.sha256(json.dumps({**identity, 'sessionHours': self.hours}, sort_keys=True).encode()).hexdigest()
         self.path = Path(data_dir) / 'auth-sessions.json' if data_dir is not None else None
         self.sessions = {}
         self.policy = access_policy({})
@@ -76,8 +82,10 @@ class Auth:
             self.policy = access_policy(saved['policy'])
             self.failures = saved.get('failures', {})
             self.auto_blocks = saved.get('autoBlocks', {})
-            if saved['identity'] == self.identity:
+            if saved['identity'] in (self.identity, legacy_identity):
                 self.sessions = {k: v for k, v in saved['sessions'].items() if self.valid(v)}
+                if saved['identity'] != self.identity:
+                    self.persist()
             else:
                 self.persist()
 
@@ -164,14 +172,18 @@ class Auth:
             if address and not self.permitted(address):
                 raise PermissionError('此 IP 已被访问规则禁止')
             now = time.time()
-            hours = self.REMEMBER_HOURS if remember is True else self.hours
+            trusted = self.mobile_client(user_agent)
+            hours = 0 if trusted else self.REMEMBER_HOURS if remember is True else self.hours
             self.sessions = {k: v for k, v in self.sessions.items() if self.valid(v)}
             token = secrets.token_urlsafe(32)
             session = {"csrf": secrets.token_urlsafe(32), "expires": now + hours * 3600 if hours else 0,
-                       "persistent": remember is not False,
+                       "persistent": trusted or remember is not False,
+                       'trustedDevice': trusted, 'remembered': remember is True and not trusted,
                        'created': now, 'lastSeen': now, 'userAgent': user_agent[:512],
                        **(client or {'ip': address, 'peer': address, 'source': 'direct'})}
             self.sessions[self.key(token)] = session
+            # Password login and one-use pairing are both successful authentication.
+            self.failures.pop(address, None)
             self.persist()
             return token, session
 
@@ -182,8 +194,17 @@ class Auth:
                 return None
             if session and self.valid(session):
                 if client:
-                    changed = session['ip'] != client['ip'] or time.time() - session['lastSeen'] >= 60
-                    session.update(client, userAgent=user_agent[:512], lastSeen=time.time() if changed else session['lastSeen'])
+                    now = time.time()
+                    upgrade = self.mobile_client(user_agent) and not session.get('trustedDevice')
+                    # Migrate previously issued seven-day cookies while they are valid.
+                    remembered = session.get('remembered', session.get('persistent', True) and
+                                             session['expires'] - session['created'] == self.REMEMBER_HOURS * 3600)
+                    changed = upgrade or session['ip'] != client['ip'] or now - session['lastSeen'] >= 60
+                    if upgrade:
+                        session.update(expires=0, persistent=True, trustedDevice=True, remembered=False)
+                    elif remembered and changed:
+                        session.update(expires=now + self.REMEMBER_HOURS * 3600, remembered=True)
+                    session.update(client, userAgent=user_agent[:512], lastSeen=now if changed else session['lastSeen'])
                     if changed:
                         self.persist()
                 return session
@@ -197,8 +218,7 @@ class Auth:
             return 0
         if not session.get('persistent', True):
             return None
-        # Browsers cap persistent cookie lifetimes. Refresh on /api/auth without
-        # extending the server's absolute expiry; 0 has no server-side deadline.
+        # Browsers cap cookie lifetimes; /api/auth reissues a cookie after renewal.
         return min(400 * 86400, max(1, math.ceil(session['expires'] - time.time()))) if session['expires'] else 400 * 86400
 
     def logout(self, token):

@@ -145,6 +145,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 
     def output(self, status, data, content_type="application/json; charset=utf-8", cookie=None, content_disposition=None):
+        # Keep the browser cookie in step with the renewed server-side deadline,
+        # including long-lived pages that do not revisit /api/auth.
+        if cookie is None and 200 <= status < 300 and urlsplit(self.path).path.startswith('/api/'):
+            token = self.token()
+            if token and self.server.auth.get(token):
+                cookie = self.cookie(token)
         body = json.dumps(data, ensure_ascii=False).encode() if not isinstance(data, bytes) else data
         accepts_gzip = re.search(r'(?:^|,)\s*gzip\s*(?:;\s*q=([01](?:\.\d+)?))?\s*(?:,|$)',
                                  self.headers.get('Accept-Encoding', ''), re.IGNORECASE)

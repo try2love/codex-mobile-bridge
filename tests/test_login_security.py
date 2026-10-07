@@ -5,6 +5,7 @@ import http.client
 import json
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -27,7 +28,7 @@ class LoginSecurityTests(unittest.TestCase):
         self.directory = Path(self.temp.name)
         self.auth = Auth(CONFIG, self.directory)
 
-    def fail(self, auth=None, address=IP):
+    def reject_login(self, auth=None, address=IP):
         with self.assertRaises(LoginRejected) as failure:
             (auth or self.auth).login('tester', 'wrong-password', address)
         return failure.exception.status
@@ -35,9 +36,9 @@ class LoginSecurityTests(unittest.TestCase):
     def test_fifth_failure_blocks_persistently_revokes_and_desktop_unblocks(self):
         token, _ = self.auth.login('tester', 'correct-password', IP)
         for remaining in range(4, 0, -1):
-            self.assertEqual(self.fail()['attemptsRemaining'], remaining)
+            self.assertEqual(self.reject_login()['attemptsRemaining'], remaining)
         restarted = Auth(CONFIG, self.directory)
-        self.assertEqual(self.fail(restarted), {'attemptsRemaining': 0, 'attemptLimit': 5, 'blocked': True})
+        self.assertEqual(self.reject_login(restarted), {'attemptsRemaining': 0, 'attemptLimit': 5, 'blocked': True})
         restarted = Auth(CONFIG, self.directory)
         self.assertIsNone(restarted.get(token))
         with self.assertRaises(LoginRejected):
@@ -54,7 +55,7 @@ class LoginSecurityTests(unittest.TestCase):
         final.login('tester', 'correct-password', IP)
 
     def test_success_resets_consecutive_failures_and_other_ips_are_independent(self):
-        self.fail()
+        self.reject_login()
         self.assertEqual(self.auth.login_status('192.0.2.8')['attemptsRemaining'], 5)
         self.auth.login('tester', 'correct-password', IP)
         self.assertEqual(Auth(CONFIG, self.directory).login_status(IP)['attemptsRemaining'], 5)
@@ -63,9 +64,44 @@ class LoginSecurityTests(unittest.TestCase):
         original = hashlib.pbkdf2_hmac
         with patch('bridge.auth.hashlib.pbkdf2_hmac', wraps=original) as hashing:
             with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
-                list(executor.map(lambda _: self.fail(), range(12)))
+                list(executor.map(lambda _: self.reject_login(), range(12)))
             self.assertEqual(hashing.call_count, 5)
         self.assertEqual(self.auth.auto_blocks[IP]['attempts'], 5)
+
+    def test_mobile_login_is_trusted_but_still_requires_password_and_revocation(self):
+        for agent in ('BridgeMobile/0.1-iOS', 'BridgeMobile/0.1-Android'):
+            with self.assertRaises(LoginRejected):
+                self.auth.login('tester', 'wrong', IP, agent)
+            token, row = self.auth.login('tester', 'correct-password', IP, agent, remember=False)
+            self.assertEqual(row['expires'], 0)
+            self.assertEqual(self.auth.login_status(IP)['attemptsRemaining'], 5)
+            with patch('bridge.auth.time.time', return_value=row['created'] + 365 * 86400):
+                self.assertIsNotNone(Auth(CONFIG, self.directory).get(token))
+            self.auth.manage({'action': 'revoke', 'id': self.auth.key(token)})
+            self.assertIsNone(Auth(CONFIG, self.directory).get(token))
+
+    def test_remembered_browser_renews_on_use_and_expires_after_inactivity(self):
+        with patch('bridge.auth.time.time', return_value=1000):
+            token, _ = self.auth.login('tester', 'correct-password', IP, remember=True)
+        client = {'ip': IP, 'peer': IP, 'source': 'direct'}
+        with patch('bridge.auth.time.time', return_value=1000 + 6 * 86400):
+            self.auth.get(token, client, 'Safari')
+        with patch('bridge.auth.time.time', return_value=1000 + 8 * 86400):
+            self.assertIsNotNone(Auth(CONFIG, self.directory).get(token))
+        with patch('bridge.auth.time.time', return_value=1000 + 13 * 86400):
+            self.assertIsNone(Auth(CONFIG, self.directory).get(token))
+
+    def test_existing_valid_mobile_session_upgrades_but_expired_one_does_not(self):
+        with patch('bridge.auth.time.time', return_value=1000):
+            token, _ = self.auth.new_session(IP)
+        client = {'ip': IP, 'peer': IP, 'source': 'direct'}
+        with patch('bridge.auth.time.time', return_value=2000):
+            self.assertIsNone(self.auth.get('not-authenticated', client, 'BridgeMobile/0.1-iOS'))
+            self.assertEqual(self.auth.get(token, client, 'BridgeMobile/0.1-iOS')['expires'], 0)
+        with patch('bridge.auth.time.time', return_value=3000):
+            expired, _ = self.auth.new_session(IP)
+        with patch('bridge.auth.time.time', return_value=3000 + 13 * 3600):
+            self.assertIsNone(self.auth.get(expired, client, 'BridgeMobile/0.1-iOS'))
 
     def test_remember_cookie_lasts_seven_days_and_unchecked_is_session_cookie(self):
         with patch('bridge.auth.time.time', return_value=1000):
@@ -82,7 +118,7 @@ class LoginSecurityTests(unittest.TestCase):
 
     def block(self):
         for _ in range(5):
-            self.fail()
+            self.reject_login()
 
     def test_security_alert_is_once_per_block_and_never_contains_credentials(self):
         save_settings(self.directory, {'enabled': True, 'topic': 'fixture'})
@@ -156,7 +192,7 @@ class LoginHttpTests(unittest.TestCase):
         self.server.auth.manage({'action': 'unblock', 'ip': '127.0.0.1'})
         self.assertEqual(self.request('/api/auth')[2]['loginStatus']['attemptsRemaining'], 5)
 
-    def test_cookie_modes_and_refresh_do_not_extend_seven_day_expiry(self):
+    def test_cookie_modes_and_auth_refresh(self):
         for remember in (True, False):
             status, headers, _ = self.request('/api/login', {'username': 'tester', 'password': 'correct-password', 'remember': remember})
             self.assertEqual(status, 200)
@@ -168,6 +204,34 @@ class LoginHttpTests(unittest.TestCase):
             self.assertEqual('Max-Age=' in refreshed['Set-Cookie'], remember)
             if remember:
                 self.assertIn('Max-Age=604800', headers['Set-Cookie'])
+
+    def test_mobile_http_stays_signed_in_and_success_clears_attempts(self):
+        headers = {'User-Agent': 'BridgeMobile/0.1-Android'}
+        self.assertFalse(self.request('/api/auth', headers=headers)[2]['authenticated'])
+        for _ in range(3):
+            self.request('/api/login', {'username': 'tester', 'password': 'wrong'}, headers)
+        _, response, _ = self.request('/api/login', {'username': 'tester', 'password': 'correct-password'}, headers)
+        cookie = response['Set-Cookie'].split(';')[0]
+        self.assertIn('Max-Age=34560000', response['Set-Cookie'])
+        with patch('bridge.auth.time.time', return_value=time.time() + 30 * 86400):
+            status, _, value = self.request('/api/auth', headers={**headers, 'Cookie': cookie})
+            self.assertEqual(status, 200)
+            self.assertTrue(value['authenticated'])
+            self.assertEqual(value['loginStatus']['attemptsRemaining'], 5)
+        row = self.server.auth.manage({})['sessions'][0]
+        self.server.auth.manage({'action': 'revoke', 'id': row['id']})
+        self.assertFalse(self.request('/api/auth', headers={**headers, 'Cookie': cookie})[2]['authenticated'])
+
+    def test_remembered_http_cookie_and_server_deadline_renew_together(self):
+        start = time.time()
+        _, response, _ = self.request('/api/login', {'username': 'tester', 'password': 'correct-password', 'remember': True})
+        cookie = response['Set-Cookie'].split(';')[0]
+        with patch('bridge.auth.time.time', return_value=start + 6 * 86400):
+            _, response, value = self.request('/api/auth', headers={'Cookie': cookie})
+            self.assertTrue(value['authenticated'])
+            self.assertIn('Max-Age=604800', response['Set-Cookie'])
+        with patch('bridge.auth.time.time', return_value=start + 8 * 86400):
+            self.assertTrue(self.request('/api/auth', headers={'Cookie': cookie})[2]['authenticated'])
 
     def test_forwarded_ip_is_counted_but_direct_header_spoof_is_ignored(self):
         headers = {'Host': 'entry.example', 'Origin': 'https://entry.example', 'X-Forwarded-For': '192.0.2.99, '+IP}

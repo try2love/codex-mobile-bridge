@@ -76,7 +76,7 @@ class AuthTests(unittest.TestCase):
         self.assertIsNone(self.auth().get(second))
 
     def test_auth_setting_changes_invalidate_logins_but_keep_ip_rules(self):
-        for field, value in [('username', 'changed'), ('hash', 'changed'), ('mode', 'password'), ('sessionHours', 12)]:
+        for field, value in [('username', 'changed'), ('hash', 'changed'), ('mode', 'password')]:
             self.config = {'mode': 'none', 'sessionHours': 0}
             auth = self.auth()
             auth.manage({'action': 'save', 'policy': {'blocklist': ['192.0.2.9']}})
@@ -87,6 +87,14 @@ class AuthTests(unittest.TestCase):
             self.assertFalse(changed.permitted('192.0.2.9'))
             self.config = {'mode': 'none', 'sessionHours': 0}
             self.assertIsNone(self.auth().get(token))
+
+    def test_duration_change_keeps_trusted_device_but_password_change_revokes(self):
+        self.config['sessionHours'] = 12
+        token, _ = self.auth().new_session('192.0.2.1', 'BridgeMobile/0.1-iOS')
+        self.config['sessionHours'] = 1
+        self.assertIsNotNone(self.auth().get(token))
+        self.config['hash'] = 'changed-password'
+        self.assertIsNone(self.auth().get(token))
 
     def test_block_ip_revokes_all_matching_sessions_and_denies_relogin(self):
         auth = self.auth()

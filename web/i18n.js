@@ -15,7 +15,7 @@ const en={
 "通知链接优先打开手机 App":"Open notification links in the mobile app",
 "请先在手机 App 保存对应网关。Bark 等通道可跳转到 App；未安装 App 时请关闭此选项，继续使用网页链接。":"Save this gateway in the mobile app first. Supported notification channels can open the app. Turn this off to keep using web links.",
 
-"记住密码（7 天免登录）":"Remember me (stay signed in for 7 days)",
+"记住登录（闲置 7 天后过期）":"Remember me (expires after 7 inactive days)",
 "记住密码选项格式不正确":"Invalid remember-me option",
 "剩余尝试次数：":"Attempts remaining: ",
 "；连续输错 5 次将封禁此 IP。":"; 5 consecutive failures will block this IP.",
@@ -29,7 +29,7 @@ const en={
 "暂无自动封禁的 IP。":"No automatically blocked IPs.",
 "解除封禁并重置次数":"Unblock and reset attempts",
 "IP 已解封，剩余尝试次数已重置。":"IP unblocked and remaining attempts reset.",
-"普通登录默认 12 小时；0 表示不自动过期。网页勾选“记住密码”时有效期固定为 7 天。网关重启保留有效登录；修改账号、密码、登录方式或有效期后需重新登录。":"Standard sign-in defaults to 12 hours; 0 means no automatic expiry. Remember me on the web uses a fixed 7-day lifetime. Valid sessions survive gateway restarts; changes to the account, password, login mode or lifetime require signing in again.",
+"普通网页登录默认 12 小时；0 表示不自动过期。网页记住登录后，使用时自动续期，闲置 7 天后过期。手机 App 登录或扫码后持续信任。修改账号、密码、登录方式或撤销设备会使登录失效。":"Standard web sign-in defaults to 12 hours; 0 disables expiry. Remembered web sign-ins renew on use and expire after 7 inactive days. Mobile app sign-ins and pairing remain trusted until the account, password or sign-in mode changes, or the device is revoked.",
 "网页版配置步骤":"Step-by-step website guide",
 "复制服务器检查 Prompt":"Copy server inspection prompt",
 "使用微信登录 PushPlus、关注服务号并完成实名认证，复制个人资料中的 Token。勾选启用并保存后发送测试通知，再在需要提醒的聊天中开启提醒。":"Sign in to PushPlus with WeChat, follow its service account, complete real-name verification, and copy the token from your profile. Enable and save it, send a test notification, then turn on reminders for the chats you want to follow.",

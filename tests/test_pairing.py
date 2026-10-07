@@ -55,6 +55,16 @@ class PairingTests(unittest.TestCase):
         restarted = Pairing(self.auth, {ORIGIN})
         with self.assertRaises(PermissionError): restarted.exchange(raw, ORIGIN, 'new-client')
 
+    def test_mobile_pairing_trusts_device_and_resets_password_failures(self):
+        self.auth.failures['192.0.2.7'] = 3
+        grant = self.grant()
+        token, row = self.pairing.exchange(grant['url'].split('#pair=')[1], ORIGIN,
+                                          '192.0.2.7', 'BridgeMobile/0.1-iOS')
+        self.assertEqual(row['expires'], 0)
+        self.assertEqual(self.auth.login_status('192.0.2.7')['attemptsRemaining'], 5)
+        self.auth.manage({'action': 'revoke', 'id': self.auth.key(token)})
+        self.assertIsNone(self.auth.get(token))
+
     def test_concurrent_redemption_has_exactly_one_winner(self):
         grant = self.grant()
         def redeem(_):
