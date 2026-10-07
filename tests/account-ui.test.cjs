@@ -99,3 +99,10 @@ test('account switching during a reset removes the old result and pending card',
   await ui.panel.redeem('card-1');assert.match(ui.text(),/other@example.test/);assert.doesNotMatch(ui.text(),/已使用重置卡/);
   assert.equal(ui.panel.pending,null);
 });
+
+test('refresh keeps the snapshot visible, blocks reset and retains it on query failure',async()=>{
+ const ui=fixture();await ui.panel.refresh();let reject;ui.setRead(()=>new Promise((r,j)=>reject=j));const pending=ui.panel.refresh();
+ assert.match(ui.text(),/查询中/);assert.match(ui.text(),/剩余 75%/);await ui.panel.redeem('card-1');assert.equal(ui.writes.length,0);
+ reject(Error('unavailable'));await pending;assert.match(ui.text(),/剩余 75%/);assert.match(ui.text(),/保留上次结果/);assert.equal(ui.panel.value.canReset,false);
+ ui.setRead(async()=>({...ui.value(),limits:[{name:'Codex',windows:[{remainingPercent:60}]}]}));await ui.panel.refresh();assert.match(ui.text(),/剩余 60%/);assert.doesNotMatch(ui.text(),/剩余 75%|保留上次结果/);assert.equal(ui.panel.value.canReset,true);
+});

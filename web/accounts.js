@@ -1,7 +1,7 @@
 /* Shared account selector; enrollment controls exist only in the desktop host. */
 class AccountsPanel {
-  constructor({root,read,request,desktop=false,onChanged=()=>{},onUpdate=()=>{}}){
-    Object.assign(this,{root,read,request,desktop,onChanged,onUpdate});this.value=null;this.busy=false;this.timer=null;this.generation=0;this.operationError=false;this.expandedModels=new Set();
+  constructor({root,read,request,desktop=false,onChanged=()=>{},onUpdate=()=>{},onReset=null}){
+    Object.assign(this,{root,read,request,desktop,onChanged,onUpdate,onReset});this.value=null;this.busy=false;this.timer=null;this.generation=0;this.operationError=false;this.expandedModels=new Set();
     this.build();
   }
   text(value){return typeof BridgeI18n==='undefined'?value:BridgeI18n.t(value);}
@@ -16,6 +16,8 @@ class AccountsPanel {
     this.error=this.node('p',undefined,'error');this.error.setAttribute('role','alert');
     this.rows=this.node('div');this.refreshButton=this.button('刷新',()=>this.refresh());
     this.current=this.node('p',undefined,'accounts-current');this.blocked=this.node('div',undefined,'account-muted');this.root.append(this.current,this.status,this.error,this.blocked,this.rows,this.refreshButton);
+    this.tools=this.node('details');this.tools.append(this.node('summary','提醒与 Codex Desktop 更新'));
+    this.reminders=this.node('div');this.updates=this.node('section');this.tools.append(this.reminders,this.updates);this.root.append(this.tools);
     if(!this.desktop){this.root.append(this.node('p','添加、修改与删除账号请在电脑端完成。','account-muted'));return;}
     const scanDetails=this.node('details');scanDetails.append(this.node('summary','扫描本机配置'));
     this.scanSource=this.field('Codex 配置目录');this.scanSource.input.placeholder=this.text('留空使用当前 Codex 数据目录');
@@ -94,21 +96,31 @@ class AccountsPanel {
       if(generation===this.generation&&!this.busy)this.accept(value);
     }
   }
+  relative(minutes){const days=Math.floor(minutes/1440),hours=Math.floor(minutes%1440/60),rest=minutes%60;return [days?days+this.text(' 天'):'',hours?hours+this.text(' 小时'):'',rest?rest+this.text(' 分钟'):''].filter(Boolean).join(' ');}
+  resetTime(stamp){const minutes=Math.ceil((stamp*1000-Date.now())/60000);return (minutes>0?this.relative(minutes)+this.text('后恢复'):this.text('等待刷新'))+' · '+new Date(stamp*1000).toLocaleString();}
   accountUsage(card,row){
     if(row.kind==='chatgpt'){
       const usage=row.details?.usage,box=this.node('div',undefined,'accounts-usage');
-      if(usage?.status==='loading')box.append(this.node('span','正在读取额度…','account-muted'));
+      if(usage?.status==='loading'&&!usage.limits)box.append(this.node('span','查询中…','account-query'));
       else if(!usage)box.append(this.node('span','正在读取额度…','account-muted'));
       else if(usage.status==='error')box.append(this.node('span',usage.error,'account-muted'));
-      else{
+      if(usage?.limits){
         for(const bucket of usage.limits||[])for(const window of bucket.windows||[]){
           const line=this.node('div',undefined,'accounts-window'),minutes=window.windowDurationMins;
           const label=minutes?minutes%1440===0?minutes/1440+this.text(' 天'):minutes%60===0?minutes/60+this.text(' 小时'):minutes+this.text(' 分钟'):this.text('额度窗口');
           line.append(this.node('span',bucket.name+' · '+label),this.node('strong',window.remainingPercent==null?this.text('暂未提供'):this.text('剩余 ')+Math.round(window.remainingPercent*10)/10+'%'));
           if(window.remainingPercent!=null){const progress=this.node('progress');progress.max=100;progress.value=window.remainingPercent;progress.setAttribute('aria-label',this.text('剩余额度'));line.append(progress);}
-          if(window.resetsAt)line.title=this.text('恢复时间：')+new Date(window.resetsAt*1000).toLocaleString();box.append(line);
+          if(window.resetsAt){const reset=this.node('small',undefined,'account-reset-time');reset.textContent=this.resetTime(window.resetsAt);line.append(reset);}box.append(line);
         }
         if(!usage.limits?.length)box.append(this.node('span','暂未提供额度信息','account-muted'));
+        for(const bucket of usage.limits||[])if(bucket.credits){const credit=bucket.credits;box.append(this.node('p',bucket.name+' · Credits: '+(credit.unlimited?this.text('不限量'):credit.balance??this.text('暂未提供')),'account-muted'));}
+        const period=usage.subscription?.periodEndsAt;
+        if(period){const minutes=Math.ceil((period*1000-Date.now())/60000);box.append(this.node('p',this.text('当前订阅周期：')+(minutes>0?this.relative(minutes)+this.text('后结束'):this.text('已到记录日期，请核对续费状态'))+' · '+new Date(period*1000).toLocaleString(),'account-subscription'));}
+        else box.append(this.node('p','订阅周期暂未提供','account-muted'));
+        if(usage.updatedAt)box.append(this.node('small',this.text('更新于：')+new Date(usage.updatedAt*1000).toLocaleString()+(usage.status==='loading'?' · '+this.text('查询中…'):''),'account-updated'));
+        if(usage.status==='error')box.append(this.node('small','保留上次结果，数据尚未更新','account-muted'));
+        const expiry=usage.resetCredits?.credits?.filter(c=>c.status==='available'&&typeof c.expiresAt==='number').map(c=>c.expiresAt).sort((a,b)=>a-b)[0];
+        if(expiry)box.append(this.node('small',this.text('最近一张重置卡到期：')+new Date(expiry*1000).toLocaleString(),'account-muted'));
       }
       const refresh=this.button('查看剩余额度',()=>this.perform({action:'details',id:row.id,section:'usage',refresh:true}));refresh.disabled=this.busy||usage?.status==='loading';box.append(refresh);card.append(box);
     }
@@ -123,7 +135,7 @@ class AccountsPanel {
       else for(const model of models.models){const line=this.node('div');line.textContent=model.name===model.id?model.id:model.name+' · '+model.id;box.append(line);}card.append(box);
     }
   }
-  accept(value){const old=this.value;this.value=value;if(old&&(old.activeId!==value.activeId||old.current?.kind!==value.current?.kind||old.current?.name!==value.current?.name||old.switch?.phase!==value.switch?.phase))this.onChanged(value);this.onUpdate(value);this.render();}
+  accept(value){const old=this.value;if(!this.desktop&&old?.canSwitch===false&&value.canSwitch===undefined)value={...value,canSwitch:false};this.value=value;if(old&&(old.activeId!==value.activeId||old.current?.kind!==value.current?.kind||old.current?.name!==value.current?.name||old.switch?.phase!==value.switch?.phase))this.onChanged(value);this.onUpdate(value);this.render();}
   clear(){clearTimeout(this.timer);this.generation++;this.value=null;this.loading=false;this.busy=false;this.operationError=false;this.error.textContent='';this.rows.replaceChildren();}
   requestId(){
     if(typeof crypto.randomUUID==='function')return crypto.randomUUID();
@@ -135,6 +147,28 @@ class AccountsPanel {
     try{await this.perform({action:'switch',id:row.id,requestId:this.requestId(),confirmed:true,tasksConfirmed:true});this.refresh();}
     catch(error){this.operationError=true;this.error.textContent=this.text('无法创建切换请求，请刷新页面后重试');}
   }
+  renderTools(){
+    const value=this.value;if(!value)return;
+    this.reminders.replaceChildren();
+    this.reminders.append(this.node('p','提醒通过电脑端已配置的 Bark、ntfy 或 PushPlus 发送，电脑与网关需要保持运行。','account-muted'));
+    const labels={lowQuota:'额度不足 10% 时提醒',quotaReset:'确认额度恢复后提醒',resetExpiry:'重置卡到期前 24 小时提醒',subscriptionExpiry:'订阅周期结束前 7／3／1 天提醒',desktopUpdate:'Codex Desktop 新版本提醒'};
+    for(const [key,label] of Object.entries(labels)){
+      const wrap=this.node('label',undefined,'account-reminder'),input=document.createElement('input');input.type='checkbox';input.checked=!!value.reminders?.[key];input.disabled=this.busy;
+      input.onchange=()=>this.perform({action:'reminders',preferences:{[key]:input.checked}});wrap.append(input,this.node('span',label));this.reminders.append(wrap);
+    }
+    if(value.reminderError)this.reminders.append(this.node('p',value.reminderError,'error'));
+    const update=value.desktopUpdate||{state:'idle'},labelsUpdate={idle:'尚未检查',checking:'正在检查官方更新渠道…',available:'官方渠道有新版本',checked:'本次未发现更高的公开版本',unsupported:'需要在电脑端检查',error:'更新检查失败',requesting:'正在打开原生更新器…',needsDesktop:'等待电脑端确认'};
+    this.updates.replaceChildren(this.node('h3','Codex Desktop 更新'),this.node('p',labelsUpdate[update.state]||update.state));
+    if(update.currentVersion)this.updates.append(this.node('p',this.text('当前版本：')+update.currentVersion+(update.targetVersion?' → '+update.targetVersion:''),'account-muted'));
+    if(update.message)this.updates.append(this.node('p',update.message,'account-muted'));
+    if(update.checkedAt)this.updates.append(this.node('small',this.text('检查于：')+new Date(update.checkedAt*1000).toLocaleString(),'account-muted'));
+    const checking=['checking','requesting'].includes(update.state),denied=!this.desktop&&value.canSwitch===false;
+    const check=this.button('检查 Codex Desktop 更新',()=>this.perform({action:'checkDesktopUpdate'}));check.disabled=this.busy||checking||denied;this.updates.append(check);
+    if(update.canRequest&&update.currentBuild){const request=this.button('在电脑上打开更新器',()=>{
+      if(window.confirm(this.text('确认所有桌面任务（包括未在网页显示的任务）已结束，并授权打开 Codex 原生更新器？系统可能要求在电脑上确认安装。')))
+        this.perform({action:'requestDesktopUpdate',requestId:this.requestId(),currentBuild:update.currentBuild,confirmed:true,tasksConfirmed:true});
+    });request.disabled=this.busy||checking||denied;this.updates.append(request);}
+  }
   render(){
     const value=this.value;if(!value)return;
     const phase=value.switch?.phase||'idle',labels={idle:'请选择已保存的接入',preparing:'正在准备账号',stopping:'正在退出 Codex 桌面应用',applying:'正在应用接入配置',starting:'正在启动 Codex 桌面应用',verifying:'正在核验账号与桌面连接',complete:'切换完成',restoring:'正在恢复原接入',restored:'已恢复原接入',failed:'切换未完成',interrupted:'需要在桌面端恢复原接入'};
@@ -145,13 +179,20 @@ class AccountsPanel {
       const ignore=this.button('忽略',()=>{if(window.confirm(this.text('忽略只会移除未确认提示，不会撤回或重发消息。请先检查聊天记录。')))return this.perform({action:'ignoreSubmission',threadId:row.id,submissionId:row.submissionId,host:row.host||'local'});});
       ignore.disabled=this.busy||switching;line.append(ignore);
     }this.blocked.append(line);}
-    this.refreshButton.disabled=this.loading;this.rows.replaceChildren();
+    this.refreshButton.disabled=this.loading;this.rows.replaceChildren();this.renderTools();
     if(!value.accounts.length)this.rows.append(this.node('p','尚未添加账号。请在电脑端添加官方账号或自定义 API。'));
     for(const row of [...value.accounts].sort((a,b)=>Number(b.id===value.activeId)-Number(a.id===value.activeId))){
       const card=this.node('section',undefined,'account-bucket'),active=value.activeId===row.id;
       const identity=this.node('div',undefined,'accounts-identity'),name=this.node('div',undefined,'accounts-name');
       const heading=this.node('h3');heading.textContent=row.name;const title=this.node('div',undefined,'accounts-name-heading');title.append(heading);
-      if(row.kind==='chatgpt'&&row.details?.usage?.status==='ready')title.append(this.node('span',this.text('重置卡')+' · '+(row.details.usage.resetCredits?.availableCount??this.text('暂未提供')),'accounts-credit'));
+      if(row.kind==='chatgpt'){
+        if(row.details?.usage?.planType||row.planType)title.append(this.node('span',row.details?.usage?.planType||row.planType,'accounts-plan'));
+        const usage=row.details?.usage;
+        if(usage?.resetCredits){const label=this.text('重置卡')+' · '+(usage.resetCredits.availableCount??this.text('暂未提供'));
+          const reset=active&&this.onReset?this.button(label,()=>this.onReset(row)):this.node('span',label,'accounts-credit');
+          if(active&&this.onReset){reset.disabled=this.busy||switching;reset.setAttribute('aria-label',this.text('查看并使用当前账号的重置卡'));}
+          title.append(reset);}
+      }
       name.append(title,this.node('p',row.kind==='chatgpt'?(row.email||this.text('官方 ChatGPT 账号')):(row.baseUrl+' · '+row.model),'account-muted'));
       identity.append(name);this.accountUsage(identity,row);card.append(identity);
       const choose=this.button(active?'当前接入':'切换到此接入',()=>this.choose(row));choose.disabled=this.busy||switching||active||(!this.desktop&&value.canSwitch===false);card.append(choose);

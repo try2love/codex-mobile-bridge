@@ -3,7 +3,7 @@ import hashlib
 import threading
 import time
 
-from .account import Account, normalize_limits
+from .account import Account, subscription_period
 from .account_models import model_ids
 from .notifications import read_json
 
@@ -115,7 +115,7 @@ class AccountInfo:
             ttl = 0 if value.get('refresh') else 300
             if cached.get('status') == 'loading' or time.time()-cached.get('checkedAt', 0) < ttl:
                 return manager.public()
-            info[section] = {'status':'loading'}
+            info[section] = {**cached, 'status':'loading', 'error':None}
             threading.Thread(target=self.read, args=(row,section,value.get('refresh',False)), daemon=True).start()
             return manager.public()
 
@@ -145,6 +145,8 @@ class AccountInfo:
                             raise ValueError('账号身份不匹配')
                         if section == 'usage':
                             result = manager.bridge.account.limits(rpc, context, refresh=refresh)
+                            result.update(planType=context.get('planType'),
+                                          subscription=subscription_period(home, context.get('email')))
                         else:
                             models, cursor, seen = [], None, set()
                             while True:
@@ -170,4 +172,6 @@ class AccountInfo:
                       'error':'额度暂不可用，请检查登录后重试' if section == 'usage' else '模型列表暂不可用，请检查接入后重试'}
         with manager.lock:
             if any(r['id'] == row['id'] for r in manager.index['accounts']):
+                if result['status'] == 'error':
+                    result = {**self.entries.get(row['id'], {}).get(section, {}), **result}
                 self.entries.setdefault(row['id'], {})[section] = result

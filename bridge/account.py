@@ -1,9 +1,11 @@
 """Account-only RPCs using the desktop runtime and its configured credential store.
 
-No credentials are read by the bridge and no thread or login RPC is permitted.
+Only sanitized account metadata leaves the gateway; no thread or login RPC is permitted.
 The desktop's reset permission is enforced here as well as in its own UI.
 """
 import copy
+import base64
+from datetime import datetime
 import hashlib
 import json
 import math
@@ -110,6 +112,34 @@ def number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
+def subscription_period(home, email=None):
+    """Optional native-login claim, not a billing API or token-expiry estimate."""
+    try:
+        path = Path(home)/'auth.json'
+        tokens = read_json(path, {}).get('tokens') or {}
+        for name in ('id_token', 'access_token'):
+            try:
+                encoded = tokens.get(name, '').split('.')[1]
+                claims = json.loads(base64.urlsafe_b64decode(encoded + '=' * (-len(encoded) % 4)))
+                if email and claims.get('email') and claims['email'] != email:
+                    continue
+                auth = claims.get('https://api.openai.com/auth') or {}
+                value = auth.get('chatgpt_subscription_active_until')
+                if isinstance(value, str):
+                    if value.replace('.', '', 1).isdigit():
+                        value = float(value)
+                    else:
+                        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+                        value = parsed.timestamp() if parsed.tzinfo else None
+                if number(value) and value > 0:
+                    return {'periodEndsAt':value, 'source':'login', 'observedAt':path.stat().st_mtime}
+            except (ValueError, KeyError, IndexError, TypeError):
+                continue
+    except (OSError, ValueError, TypeError):
+        pass
+    return None
+
+
 def normalize_limits(raw):
     buckets = raw.get('rateLimitsByLimitId')
     if not isinstance(buckets, dict):
@@ -128,7 +158,15 @@ def normalize_limits(raw):
             windows.append({'kind': name, 'remainingPercent': max(0, min(100, 100-used)) if number(used) else None,
                             **{field: value.get(field) if number(value.get(field)) else None
                                for field in ('windowDurationMins', 'resetsAt')}})
-        limits.append({'id': str(key), 'name': bucket.get('limitName') or str(key), 'windows': windows})
+        credit = bucket.get('credits')
+        credits = None
+        if isinstance(credit, dict):
+            balance = credit.get('balance')
+            credits = {'hasCredits':credit.get('hasCredits') if isinstance(credit.get('hasCredits'), bool) else None,
+                       'unlimited':credit.get('unlimited') is True,
+                       'balance':balance if number(balance) or isinstance(balance, str) and len(balance) <= 80 else None}
+        limits.append({'id': str(key), 'name': bucket.get('limitName') or str(key), 'windows': windows,
+                       'credits':credits})
     resets = raw.get('rateLimitResetCredits')
     cards = None
     if isinstance(resets, dict):
@@ -182,16 +220,18 @@ class Account:
         if not refresh and cached and time.time()-cached['checkedAt'] < 300:
             return copy.deepcopy(cached['value'])
         value = normalize_limits(rpc.request('account/rateLimits/read'))
-        self.usage_cache[key] = {'checkedAt':time.time(), 'value':value}
+        value['updatedAt'] = time.time()
+        self.usage_cache[key] = {'checkedAt':value['updatedAt'], 'value':value}
         return copy.deepcopy(value)
 
-    def _status(self, rpc, context):
+    def _status(self, rpc, context, refresh=False):
         if not context.get('accountKey'):
             return {'visible': False, 'loginType': context['loginType']}
         result = {'visible': True, **context, 'limits': [], 'resetCredits': None, 'error': None}
         try:
-            result.update(self.limits(rpc, context))
+            result.update(self.limits(rpc, context, refresh=refresh))
         except AccountError as exc:
+            result.update(copy.deepcopy(self.usage_cache.get(context['accountKey'], {}).get('value', {})))
             result['error'] = str(exc)
         current = self.context(rpc)
         if current.get('accountKey') != context['accountKey']:
@@ -201,15 +241,14 @@ class Account:
         result['pendingReset'] = next(({'requestId': key, 'accountKey': row['accountKey'], 'creditId': row['creditId']}
                                       for key, row in ledger.items()
                                       if row['accountKey'] == context['accountKey'] and not row.get('outcome')), None)
-        result['updatedAt'] = time.time()
+        result.setdefault('updatedAt', None)
+        result['subscription'] = subscription_period(self.home, context.get('email'))
         return result
 
     def read(self, refresh=True):
         with self.lock, self.rpc() as rpc:
             context = self.context(rpc)
-            if refresh:
-                self.usage_cache.pop(context.get('accountKey'), None)
-            return self._status(rpc, context)
+            return self._status(rpc, context, refresh=refresh)
 
     def consume(self, value):
         if value.get('confirmed') is not True:

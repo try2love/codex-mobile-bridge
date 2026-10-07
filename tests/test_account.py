@@ -84,6 +84,18 @@ class AccountTests(unittest.TestCase):
         self.assertNotIn('secret', str(result))
         self.assertEqual(self.consumes(), [])
 
+    def test_failed_refresh_keeps_timestamp_and_never_reuses_another_account_snapshot(self):
+        first = self.account.read()
+        self.rpc.fail_read = True
+        failed = self.account.read()
+        self.assertEqual(failed['limits'], first['limits'])
+        self.assertEqual(failed['updatedAt'], first['updatedAt'])
+        self.assertTrue(failed['error'])
+        self.rpc.auth['account']['email'] = 'different@example.test'
+        changed = self.account.read()
+        self.assertEqual(changed['limits'], [])
+        self.assertIsNone(changed['updatedAt'])
+
     def test_api_key_signed_out_custom_provider_and_profile_are_hidden(self):
         for auth, login_type in (({'type': 'apiKey'}, 'api'), (None, 'signedOut'), ({'type': 'unknown'}, 'unknown')):
             self.rpc.auth['account'] = auth

@@ -353,6 +353,6 @@ $('refresh-devices').onclick=loadDevices;
 $('device-policy').oninput=$('device-policy').onchange=()=>{devicesDirty=true;$('device-feedback').textContent=t('IP 规则有未保存的修改。');};
 $('device-policy').onsubmit=event=>{event.preventDefault();return changeDevices({action:'save',policy:devicePolicy()});};
 
-const accountsPanel=typeof AccountsPanel==='undefined'?null:new AccountsPanel({root:$('accounts-content'),desktop:true,read:()=>api.accounts({action:'list'}),request:value=>api.accounts(value),onChanged:()=>accountPanel.clear(),onUpdate:value=>{accountPanel.schedule();$('account-button').hidden=value.current?.kind!=='chatgpt';if($('account-button').hidden)$('account-details').open=false;}});
+const accountsPanel=typeof AccountsPanel==='undefined'?null:new AccountsPanel({root:$('accounts-content'),desktop:true,read:()=>api.accounts({action:'list'}),request:value=>api.accounts(value),onReset:()=>{$('account-details').open=true;accountPanel.refresh();$('account-details').scrollIntoView({block:'nearest'});},onChanged:()=>accountPanel.clear(),onUpdate:value=>{accountPanel.schedule();$('account-button').hidden=value.current?.kind!=='chatgpt';if($('account-button').hidden)$('account-details').open=false;}});
 
 $('account-details').ontoggle=()=>{if($('account-details').open)accountPanel.refresh();};

@@ -15,7 +15,7 @@ function fixture(desktop=false){
     language:()=>{vm.runInContext("BridgeI18n.setLanguage('en')",context);panel.render();}};
 }
 test('web exposes saved account selection without enrollment or credential inputs',async()=>{
- const ui=fixture();await ui.panel.refresh();assert.equal(ui.all().some(n=>n.tag==='input'),false);assert.match(ui.text(),/API <script>/);assert.equal(ui.all().some(n=>n.tag==='script'),false);
+ const ui=fixture();await ui.panel.refresh();assert.equal(ui.all().some(n=>n.tag==='input'&&n.type!=='checkbox'),false);assert.match(ui.text(),/API <script>/);assert.equal(ui.all().some(n=>n.tag==='script'),false);
  ui.confirm(false);await ui.panel.choose(ui.value().accounts[0]);assert.equal(ui.requests.length,0);
  ui.confirm(true);await ui.panel.choose(ui.value().accounts[0]);assert.deepEqual(Object.keys(ui.requests[0]).sort(),['action','confirmed','id','requestId','tasksConfirmed']);
  assert.equal(ui.requests[0].tasksConfirmed,true);assert.match(ui.prompts[0],/未在网页显示/);
@@ -142,4 +142,17 @@ test('desktop and web can ignore only the selected unknown submission',async()=>
   ui.confirm(true);await ui.all().find(n=>n.textContent==='忽略').onclick();
   assert.deepEqual(JSON.parse(JSON.stringify(ui.requests[0])),{action:'ignoreSubmission',threadId:'thread',submissionId:'message',host:'local'});
  }
+});
+
+test('loading and failed refresh retain percentages, cards and the last successful time',()=>{
+ const ui=fixture();const usage={status:'ready',updatedAt:1900000000,limits:[{name:'Codex',windows:[{remainingPercent:75,windowDurationMins:300,resetsAt:2000000000}]}],resetCredits:{availableCount:2}};
+ for(const status of ['ready','loading','error']){ui.panel.accept({...ui.value(),accounts:[{id:'official',kind:'chatgpt',name:'Official',details:{usage:{...usage,status,error:status==='error'?'查询失败':undefined}}}]});
+ assert.match(ui.text(),/剩余 75%/);assert.match(ui.text(),/重置卡 · 2/);assert.match(ui.text(),/更新于/);assert.match(ui.text(),/后恢复|等待刷新/);
+ if(status==='loading')assert.match(ui.text(),/查询中/);if(status==='error')assert.match(ui.text(),/保留上次结果/);}
+ ui.panel.accept({...ui.value(),accounts:[{id:'other',kind:'chatgpt',name:'Different',details:{usage:{status:'loading'}}}]});assert.doesNotMatch(ui.text(),/剩余 75%|重置卡 · 2/);
+});
+test('current-account card has a direct reset entry and API cards have no subscription quota',()=>{
+ const ui=fixture();let chosen;ui.panel.onReset=row=>chosen=row.id;
+ ui.panel.accept({...ui.value(),activeId:'official',accounts:[{id:'official',kind:'chatgpt',name:'Official',details:{usage:{status:'ready',limits:[],resetCredits:{availableCount:2}}}}]});
+ ui.all().find(n=>n.tag==='button'&&n.textContent==='重置卡 · 2').onclick();assert.equal(chosen,'official');
 });

@@ -96,6 +96,27 @@ class InfoTests(unittest.TestCase):
             info.request({'id':row['id'],'section':'usage'});worker.assert_not_called()
             info.request({'id':row['id'],'section':'usage','refresh':True});worker.assert_called_once()
 
+    def test_refresh_retains_last_success_during_loading_and_failure(self):
+        row,_=self.official();info=self.manager.info
+        previous={'status':'ready','checkedAt':123,'limits':[{'name':'Codex','windows':[]}],
+                  'resetCredits':{'availableCount':2},'updatedAt':123}
+        info.entries[row['id']]={'usage':previous.copy()}
+        with patch('bridge.account_info.threading.Thread'):
+            info.request({'id':row['id'],'section':'usage','refresh':True})
+        pending=info.entries[row['id']]['usage']
+        self.assertEqual(pending['status'],'loading')
+        self.assertEqual(pending['limits'],previous['limits'])
+        self.assertEqual(pending['updatedAt'],123)
+        info.read_identity=Mock(return_value={'kind':'signedOut','name':''})
+        with patch('bridge.accounts.ManagedRPC') as rpc:
+            rpc.return_value.__enter__.return_value=self.rpc(rate_error=True)
+            info.read(row,'usage',True)
+        failed=info.entries[row['id']]['usage']
+        self.assertEqual(failed['status'],'error')
+        self.assertEqual(failed['limits'],previous['limits'])
+        self.assertEqual(failed['updatedAt'],123)
+        self.assertNotIn('raw private',json.dumps(failed))
+
     def test_usage_cache_lasts_five_minutes_but_explicit_read_bypasses_it(self):
         row,_=self.official();info=self.manager.info
         info.entries[row['id']]={'usage':{'status':'ready','checkedAt':time.time()-299}}

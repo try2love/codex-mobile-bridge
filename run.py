@@ -238,6 +238,7 @@ def main(connections=None, connection_secrets=None):
             tunnel_thread.start()
         notifications.start()
         address_notifications.start()
+        bridge.accounts.monitor.start()
         control.start(server.shutdown, server.pairing.control, server.instance_id, server.auth, bridge.account.control, server.notifications.control, bridge.accounts.control)
         for listener in servers[1:]:
             thread = threading.Thread(target=listener.serve_forever, kwargs={'poll_interval': 0.5}, daemon=True)
@@ -251,6 +252,7 @@ def main(connections=None, connection_secrets=None):
             listener.shutdown()
             thread.join()
         address_notifications.close()
+        bridge.accounts.monitor.close()
         notifications.close()
         if tunnel:
             tunnel.close()

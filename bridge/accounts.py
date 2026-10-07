@@ -134,6 +134,10 @@ class Accounts:
         self.discovery = None
         self.candidates = {}
         self.info = AccountInfo(self)
+        from .desktop_updates import DesktopUpdates
+        from .account_monitor import AccountMonitor
+        self.updates = DesktopUpdates(self)
+        self.monitor = AccountMonitor(self)
         self.login_cancel = threading.Event()
         self.thread = None
 
@@ -161,6 +165,8 @@ class Accounts:
             private_json(self.root/'switch.json', self.state)
 
     def check_ready(self):
+        if self.updates.status()['state'] == 'requesting':
+            raise ValueError('正在交接桌面更新，请稍后再操作')
         if self.state.get('phase') not in ('idle', 'complete', 'failed', 'restored'):
             raise ValueError('账号正在切换或等待恢复，请稍后再操作聊天')
 
@@ -194,7 +200,9 @@ class Accounts:
                                   'details': copy.deepcopy(self.info.entries.get(row['id'], {}))}
                                  for row in self.index['accounts']],
                     'activeId': current.get('id'), 'activeVerified': verified, 'current': current, 'blockers': self.blockers(),
-                    'externalChange': bool(self.index.get('activeId')) and not verified, 'switch': dict(self.state)}
+                    'externalChange': bool(self.index.get('activeId')) and not verified, 'switch': dict(self.state),
+                    'reminders':dict(self.monitor.preferences), 'reminderError':self.monitor.last_error,
+                    'desktopUpdate':self.updates.status()}
 
     def desktop_status(self):
         result = self.public()
@@ -453,6 +461,15 @@ class Accounts:
 
     def control(self, value):
         action = value.get('action', 'list')
+        if action == 'reminders':
+            self.monitor.configure(value.get('preferences'))
+            return self.desktop_status()
+        if action == 'checkDesktopUpdate':
+            self.updates.check()
+            return self.desktop_status()
+        if action == 'requestDesktopUpdate':
+            self.updates.request({k:v for k,v in value.items() if k != 'action'})
+            return self.desktop_status()
         if action == 'ignoreSubmission':
             return self.ignore_submission(value)
         if action == 'details':

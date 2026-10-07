@@ -334,6 +334,23 @@ class Handler(BaseHTTPRequestHandler):
                 result = self.server.bridge.accounts.public()
                 result['canSwitch'] = self.server.auth.config.get('mode') != 'none'
                 return self.output(200, result)
+            if write and path == '/api/accounts/reminders':
+                body = self.read_json()
+                if set(body) != {'preferences'}:
+                    raise ValueError('提醒设置无效')
+                self.server.bridge.accounts.monitor.configure(body['preferences'])
+                return self.output(200, self.server.bridge.accounts.public())
+            if write and path == '/api/accounts/desktop-update':
+                if self.server.auth.config.get('mode') == 'none':
+                    raise PermissionError('免密访问不能操作桌面更新，请在桌面端操作')
+                body = self.read_json()
+                if body == {'action':'checkDesktopUpdate'}:
+                    self.server.bridge.accounts.updates.check()
+                elif body.get('action') == 'requestDesktopUpdate':
+                    self.server.bridge.accounts.updates.request({k:v for k,v in body.items() if k != 'action'})
+                else:
+                    raise ValueError('桌面更新请求无效')
+                return self.output(202, self.server.bridge.accounts.public())
             if write and path == '/api/accounts/details':
                 body = self.read_json()
                 if set(body) - {'id', 'section', 'refresh'} or not {'id', 'section'} <= set(body):

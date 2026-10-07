@@ -20,3 +20,9 @@
 .sidebar-foot>#accounts-button{flex:0 0 7em}
 
 .accounts-name-heading{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+
+.account-reset-time{grid-column:1/-1;color:var(--muted,#65705d);font-size:11px;line-height:1.6}.account-query{font-size:12px;color:var(--accent,#526c39)}.account-subscription,.account-updated{flex-basis:100%;margin:2px 0;font-size:12px}.accounts-plan{font-size:11px;font-weight:650;text-transform:uppercase;border:1px solid var(--line,#dfe3eb);border-radius:12px;padding:2px 8px}.accounts-usage .account-muted{flex-basis:100%;margin:2px 0}
+
+.accounts-panel .account-reminder{display:flex;align-items:center;gap:9px;font-size:13px}.accounts-panel .account-reminder input{width:16px;height:16px;flex:none}.accounts-panel>details>section{margin-top:20px;border-top:1px solid var(--line,#dfe3eb);padding-top:10px}.accounts-panel>details>section button{margin:10px 8px 0 0}
+
+@media(max-width:640px){.accounts-window{width:100%;max-width:none}.accounts-identity .accounts-usage{min-width:0;flex-basis:100%}}
