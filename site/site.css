@@ -10,3 +10,5 @@
 .account-gallery{display:grid;gap:40px}.account-gallery figcaption{display:grid;gap:6px}.account-gallery figcaption strong{font-size:18px;color:var(--ink)}.account-gallery figcaption span{font-size:14px}.account-gallery .media-shell{padding:10px}.account-gallery img{width:100%;height:auto}
 
 .connection-guide{margin-top:24px;border-top:1px solid var(--line);padding-top:20px}.connection-guide summary{cursor:pointer;font-size:16px;font-weight:600}.connection-guide .steps{margin-top:24px}.connection-guide h3{font-size:16px}.connection-guide p{overflow-wrap:anywhere}
+
+.preview-section .lead{max-width:850px}.preview-workspace{margin:32px 0}.preview-workspace img{display:block;width:100%;height:auto}.preview-section .capability p{font-size:14px}.preview-limits{padding:24px;border:1px solid #dfc694;border-radius:12px;background:#fff8e8;margin-top:20px}.preview-limits ul{padding-left:20px;color:var(--muted);font-size:14px}.preview-limits li+li{margin-top:10px}.preview-limits a{font-size:14px}
