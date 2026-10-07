@@ -75,15 +75,15 @@ async function installUpdate(candidate){
   while(Date.now()<end){
     if(spawnError)throw spawnError;
     if(child.exitCode!==null)throw Error('无法启动应用更新进程。');
-    try{if(JSON.parse(fs.readFileSync(ready,'utf8')).token===token){
-      updateQuitting=true;if(snapshotPending)await snapshotPending;snapshotWorker.close();
-      setTimeout(()=>app.quit(),300);
-      // Some macOS window/extension states can keep a graceful quit alive.
-      // The helper owns the gateway and waits for this PID, so force exit well
-      // before its 45 second parent timeout instead of cancelling the swap.
-      setTimeout(()=>{releaseTray();try{if(typeof app.exit==='function')app.exit(0);}catch{}},10000);
+    let readyToken;
+    try{readyToken=JSON.parse(fs.readFileSync(ready,'utf8')).token;}catch{}
+    if(readyToken===token){
+      updateQuitting=true;snapshotPending?.catch(()=>{});snapshotWorker.close();
+      // The verified helper owns gateway shutdown and the bundle swap. Do not
+      // let a pending snapshot or cancellable quit hook block the handoff.
+      app.exit(0);
       return;
-    }}catch{}
+    }
     await new Promise(resolve=>setTimeout(resolve,100));
   }
   throw Error('无法启动应用更新进程。');

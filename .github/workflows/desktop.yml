@@ -82,6 +82,9 @@ jobs:
       - name: Exercise packaged update and recovery
         shell: bash
         run: node scripts/smoke-update.cjs
+      - name: Exercise real UI update controller handoff
+        shell: bash
+        run: npm run test:update-controller
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ runner.os }}-${{ matrix.arch }}

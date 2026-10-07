@@ -17,7 +17,8 @@
     "build:linux": "electron-builder --linux AppImage deb --publish never",
     "test:linux-app": "node scripts/smoke-linux.cjs",
     "test:pairing": "electron scripts/smoke-pairing.cjs",
-    "test:updater": "node --test tests/updater.test.cjs tests/update-handoff.test.cjs"
+    "test:updater": "node --test tests/updater.test.cjs tests/update-handoff.test.cjs tests/update-controller.test.cjs",
+    "test:update-controller": "node scripts/smoke-update-controller.cjs"
   },
   "devDependencies": {
     "electron": "44.5.1",

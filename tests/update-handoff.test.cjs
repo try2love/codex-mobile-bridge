@@ -61,7 +61,9 @@ test('real desktop install handoff releases the install directory after the cont
 const fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
 const {spawn}=require('node:child_process'),requireMain=require('node:module').createRequire(${JSON.stringify(main)});
 const f=${JSON.stringify(f)};
-const app={isPackaged:true,requestSingleInstanceLock:()=>true,whenReady:()=>({then(){}}),on(){},getPath:()=>f.data,quit:()=>process.exit(0)};
+const app={isPackaged:true,requestSingleInstanceLock:()=>true,whenReady:()=>({then(){}}),on(){},getPath:()=>f.data,
+  quit:()=>{throw Error('update handoff must not rely on a cancellable graceful quit')},
+  exit:code=>process.exit(code)};
 const context=vm.createContext({__dirname:path.dirname(${JSON.stringify(main)}),setTimeout,
   process:{env:{},platform:'win32',arch:process.arch,pid:process.pid,execPath:path.join(f.target,'Codex Mobile Bridge.exe')},
   require(name){
