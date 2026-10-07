@@ -63,9 +63,19 @@ test('update metadata and packages retry through the signed transport mirror',as
 });
 
 test('versions order beta, rc and stable numerically and reject ambiguous versions',()=>{
+  assert.ok(compare('2.0.0-preview.10','2.0.0-preview.9')>0);
+  assert.ok(compare('2.0.0','2.0.0-preview.99')>0);
   assert.ok(compare('0.2.0-beta.10','0.2.0-beta.9')>0);assert.ok(compare('0.2.0-rc.0','0.2.0-beta.99')>0);
   assert.ok(compare('0.2.0','0.2.0-rc.99')>0);assert.ok(compare('0.3.0-beta.0','0.2.99')>0);
   for(const bad of ['v0.2.0','0.2','0.2.0-beta','0.02.0','0.2.0-beta.01','1.0.0/../../'])assert.throws(()=>compare(bad,current));
+});
+test('v1.4.0 stable users never receive the v2 preview even with misleading release flags',async()=>{
+  for(const prerelease of [true,false]){
+    let requests=0;
+    const fetch=async()=>{requests++;return new Response(JSON.stringify([{tag_name:'v2.0.0-preview.1',draft:false,prerelease,assets:[{name:'bridge-update.json'}]}]));};
+    const updater=new Updater({current:'1.4.0',platform,arch,key:keys.publicKey,fetch,directory:'.tmp',install:async()=>{throw Error('Must not install');}});
+    assert.equal((await updater.check()).state,'current');assert.equal(requests,1);assert.equal(updater.candidate,null);
+  }
 });
 test('signatures authenticate exact payload and reject another release identity',()=>{
   assert.equal(validate(signed(info())).version,next);

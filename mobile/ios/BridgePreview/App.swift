@@ -578,7 +578,40 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
                 button(MobileStrings.text("移除这台电脑"), symbol: "trash") { [weak self, weak sheet] in sheet?.dismiss(animated: true) { self?.confirmRemove() } }
             ]))
         }
-        let version = label("Bridge Preview · 0.1.0 (13)", size: 13, secondary: true); version.textAlignment = .center; content.addArrangedSubview(version)
+        let current = Bundle.main.object(forInfoDictionaryKey: "BridgeReleaseVersion") as? String ?? "2.0.0-preview.1"
+        let updateStatus = label("", size: 13, secondary: true)
+        let check = button(MobileStrings.text("检查更新"), symbol: "arrow.down.circle") {}
+        check.addAction(UIAction { [weak self, weak sheet, weak check, weak updateStatus] _ in
+            guard let self, let sheet, let check, let updateStatus else { return }
+            self.checkUpdate(current: current, sheet: sheet, check: check, status: updateStatus)
+        }, for: .touchUpInside)
+        content.addArrangedSubview(card([label(MobileStrings.text("应用更新"), size: 19, weight: .semibold), label("Bridge Preview · " + current, size: 14), label(MobileStrings.text("预览通道 · 手动检查，不自动安装"), size: 13, secondary: true), check, updateStatus, label(MobileStrings.text("iOS 预览需要使用自己的 Apple 账号重新签名安装，暂不支持 App 内直接覆盖更新。"), size: 13, secondary: true)]))
+    }
+    private func checkUpdate(current: String, sheet: UIViewController, check: UIButton, status: UILabel) {
+        check.isEnabled = false; status.text = MobileStrings.text("正在检查更新…")
+        var request = URLRequest(url: MobileRelease.api); request.timeoutInterval = 20
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("Codex-Mobile-Bridge/" + current, forHTTPHeaderField: "User-Agent")
+        let session = URLSession(configuration: .ephemeral)
+        session.dataTask(with: request) { [weak sheet, weak check, weak status] data, response, error in
+            defer { session.finishTasksAndInvalidate() }
+            var candidate: MobileRelease?; var failed = false
+            do {
+                guard error == nil, (response as? HTTPURLResponse)?.statusCode == 200, let data, data.count <= 4 * 1024 * 1024 else { throw URLError(.badServerResponse) }
+                candidate = try MobileRelease.select(data, current: current)
+            } catch { failed = true }
+            DispatchQueue.main.async {
+                guard let sheet, sheet.presentingViewController != nil, let check, let status else { return }
+                check.isEnabled = true
+                let url = candidate?.page ?? URL(string: MobileRelease.repository + "/releases")!
+                if !failed && candidate == nil { status.text = MobileStrings.text("当前已是此通道最新版本。"); return }
+                status.text = MobileStrings.text(failed ? "检查失败，请检查网络后重试。也可以打开版本页面。" : "发现新版本") + (candidate.map { " · " + $0.version } ?? "")
+                let alert = UIAlertController(title: status.text, message: candidate.map { MobileStrings.text("iOS 预览需要使用自己的 Apple 账号重新签名安装，暂不支持 App 内直接覆盖更新。") + "\n\n" + $0.notes }, preferredStyle: .alert)
+                alert.addAction(UIAlertAction(title: MobileStrings.text("稍后"), style: .cancel))
+                alert.addAction(UIAlertAction(title: MobileStrings.text(failed ? "版本页面" : "查看新版与安装指引"), style: .default) { _ in UIApplication.shared.open(url) })
+                sheet.present(alert, animated: true)
+            }
+        }.resume()
     }
     private var pushSupported: Bool { Bundle.main.object(forInfoDictionaryKey: "BridgePushEnabled") as? Bool == true }
     private func enableNativePush() {
@@ -694,6 +727,22 @@ enum MobileStrings {
 "请填写完整的 HTTPS 网关地址，或局域网 HTTP 地址，不含路径、账号和参数。":"Enter a complete HTTPS gateway address, or a local HTTP address, without a path, credentials or parameters.",
         "通知收件箱": "Notification inbox",
         "手机设置": "Mobile settings",
+"应用更新": "App updates",
+"预览通道 · 手动检查，不自动安装": "Preview channel · Manual checks, no automatic install",
+"检查更新": "Check for updates",
+"正在检查更新…": "Checking for updates…",
+"没有可用的浏览器，请在电脑上打开 GitHub Release。": "No browser is available. Open GitHub Releases on your computer.",
+"检查失败，请检查网络后重试。也可以打开版本页面。": "Could not check for updates. Check your network and retry, or open the releases page.",
+"版本页面": "Releases",
+"当前已是此通道最新版本。": "You are up to date on this channel.",
+"发现新版本": "Update available",
+"下载后按系统提示覆盖安装，不要先卸载。已保存的电脑与登录状态会保留。": "After downloading, follow the system prompts to update without uninstalling. Saved computers and sign-ins will be retained.",
+"稍后": "Later",
+"更新说明": "Release notes",
+"下载 APK": "Download APK",
+"查看新版与安装指引": "View update and installation guide",
+"iOS 预览需要使用自己的 Apple 账号重新签名安装，暂不支持 App 内直接覆盖更新。": "The iOS preview requires signing the new build with your own Apple account. Direct in-app installation is not available yet.",
+
         "返回电脑列表": "Back to computers",
         "账号与接入": "Accounts and connections",
         "外观与显示": "Appearance",

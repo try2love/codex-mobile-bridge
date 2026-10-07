@@ -4,6 +4,9 @@
 
 # Codex App 手机网关
 
+> **v2.0.0-preview.1 预览版**：[发布与下载](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.0.0-preview.1) · [Web / App 工作台介绍](https://try2love.github.io/codex-mobile-bridge/#preview) · [手机安装说明](mobile/README.md)。预览版需主动安装，不向正式版用户推送。手机后台通知尚未接通。
+
+
 [简体中文](README.md) · [English](README_EN.md)
 
 **[双语介绍与使用演示 ↗](https://try2love.github.io/codex-mobile-bridge/?lang=zh)** · **[下载桌面 App](https://github.com/try2love/codex-mobile-bridge/releases)**

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build a local debug APK using project-local JDK/SDK; never installs tools."""
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -49,7 +50,8 @@ if not key.exists():
 run(build_tools/'zipalign','-f','4',work/'unsigned.apk',work/'aligned.apk')
 out = ROOT/'dist/mobile-preview'
 out.mkdir(parents=True,exist_ok=True)
-apk = out/'Codex-Mobile-Bridge-Android-0.1.0-preview.10.apk'
+version = json.loads((ROOT/'package.json').read_text())['version']
+apk = out/('Codex-Mobile-Bridge-'+version+'-Android.apk')
 run(build_tools/'apksigner','sign','--ks',key,'--ks-pass','pass:android','--out',apk,work/'aligned.apk')
 run(build_tools/'apksigner','verify','--verbose',apk)
 print(apk)

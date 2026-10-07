@@ -62,6 +62,8 @@ jobs:
           PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
         run: |
           flags=()
-          if [[ "$TAG" == *-* ]]; then flags+=(--prerelease); fi
+          if [[ "$TAG" == *-* ]]; then flags+=(--prerelease --latest=false); fi
           gh release create "$TAG" dist/release/* --verify-tag --draft --title "$TAG" --notes-file RELEASE_NOTES.md "${flags[@]}"
-          if [[ "$PUBLISH" == true ]]; then gh release edit "$TAG" --draft=false; fi
+          # Preview releases stay draft until the locally signed mobile assets
+          # and their checksums have been uploaded and verified by the maintainer.
+          if [[ "$PUBLISH" == true && "$TAG" != *-preview.* ]]; then gh release edit "$TAG" --draft=false; fi

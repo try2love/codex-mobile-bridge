@@ -10,9 +10,9 @@ const MIRROR='https://gh-proxy.com/';
 const MIRROR_RETRIES=new Set([403,429,500,502,503,504]);
 const MAX_PACKAGE=1024*1024*1024;
 function version(value){
-  const match=/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(alpha|beta|rc)\.(0|[1-9]\d*))?$/.exec(value);
+  const match=/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(alpha|beta|preview|rc)\.(0|[1-9]\d*))?$/.exec(value);
   if(!match)throw Error('更新版本格式无效。');
-  const parts=[...match.slice(1,4).map(Number),{alpha:0,beta:1,rc:2}[match[4]]??3,Number(match[5]||0)];
+  const parts=[...match.slice(1,4).map(Number),{alpha:0,beta:1,preview:2,rc:3}[match[4]]??4,Number(match[5]||0)];
   if(parts.some(v=>!Number.isSafeInteger(v)))throw Error('更新版本格式无效。');
   return parts;
 }

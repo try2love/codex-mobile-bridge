@@ -9,7 +9,7 @@
 <link rel="icon" href="./assets/icon.png"><link rel="canonical" href="https://try2love.github.io/codex-mobile-bridge/">
 <link rel="alternate" hreflang="zh-Hans" href="https://try2love.github.io/codex-mobile-bridge/?lang=zh">
 <link rel="alternate" hreflang="en" href="https://try2love.github.io/codex-mobile-bridge/?lang=en">
-<link rel="stylesheet" href="./site.css?v=20261006-setup"><script defer src="./site.js?v=20261006-setup"></script></head><body>
+<link rel="stylesheet" href="./site.css?v=20261007-preview1"><script defer src="./site.js?v=20261007-preview1"></script></head><body>
 <svg class="svg-defs" aria-hidden="true"><defs>
 <symbol id="i-phone" viewBox="0 0 32 32"><rect x="9" y="2" width="14" height="28" rx="3"/><path d="M13 6h6M14 26h4"/></symbol>
 <symbol id="i-network" viewBox="0 0 32 32"><circle cx="16" cy="16" r="12"/><ellipse cx="16" cy="16" rx="5" ry="12"/><path d="M4 16h24M7 9h18M7 23h18"/></symbol>
@@ -18,6 +18,7 @@
 <symbol id="i-agent" viewBox="0 0 32 32"><path d="m11 9-7 7 7 7M21 9l7 7-7 7M18 5l-4 22"/></symbol>
 </defs></svg>
 <header><div class="bar"><a class="brand" href="#top"><img src="./assets/icon.png" width="31" height="31" alt=""><span>CODEX MOBILE BRIDGE<small data-en="Desktop power. Browser freedom." >电脑运行 · 跨设备接力</small></span></a><nav aria-label="介绍导航" data-en-aria-label="Product navigation">
+<a data-en="Preview" href="#preview">预览版</a>
 <a data-en="Demo" href="#demo" class="">演示</a>
 <a data-en="Features" href="#features" class="">功能</a>
 <a data-en="Setup guide" data-setup-link href="./setup.html#server">配置教程</a>
@@ -52,6 +53,28 @@
 <p data-en="Official Remote pairs devices using the same ChatGPT account and workspace. This project uses a separate gateway login, so the viewing device does not need to sign in to the same OpenAI account." >官方 Remote 采用同一 ChatGPT 账号与工作区的设备配对。本项目使用独立的网关登录，访问设备无需登录同一个 OpenAI 账号。</p>
 <a data-en="See official Remote requirements ↗" href="https://learn.chatgpt.com/docs/remote-connections" class="">查看官方 Remote 的连接条件 ↗</a>
 </div></section>
+<section id="preview" class="preview-section">
+<div class="section-head"><div><p class="eyebrow">2.0.0 / PREVIEW 1</p><h2 data-en="Your remote workspace, in a browser or an App.">远程工作台，来到网页和手机 App。</h2></div><p data-en="An opt-in preview. Stable v1.4.0 users will not receive this update automatically.">主动体验的预览版。v1.4.0 正式版用户不会收到这次更新推送。</p></div>
+<p class="lead" data-en="Keep the conversation open while browsing project files, using a real terminal, reviewing Git history or exploring a temporary side chat.">保留当前会话，随时打开项目文件、真实终端、Git 历史或临时侧边聊天，让远程操作有一个完整的工作空间。</p>
+<div class="actions"><a class="button primary" href="https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.0.0-preview.1" data-en="Desktop &amp; Web preview ↗">电脑端与 Web 预览 ↗</a><a class="button" href="https://github.com/try2love/codex-mobile-bridge/releases/download/v2.0.0-preview.1/Codex-Mobile-Bridge-2.0.0-preview.1-Android.apk" data-en="Download Android APK">下载 Android APK</a><a class="button" href="https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.0.0-preview.1" data-en="iOS preview &amp; self-signing">iOS 预览与自行签名</a></div>
+<p class="mini-note" data-en="Install the v2 preview gateway on your computer first. Web users open its address; App users scan its QR code. The workbench is not included in the v1.4.0 gateway.">先在电脑安装 v2 预览网关：Web 用户打开访问地址，App 用户扫码连接。v1.4.0 网关不包含工作台功能。</p>
+<figure class="preview-workspace"><div class="media-shell"><button class="shot" data-zoom aria-label="预览版宽屏工作台：主聊天与侧边聊天并排（示例数据）" data-en-aria-label="Preview desktop workbench with main and side chats (sample data)"><img src="./assets/preview-workbench.png" width="1440" height="1000" loading="lazy" alt="可调整宽度的双栏工作台与完整聊天输入区" data-en-alt="Resizable workspace panes and complete chat composers"></button></div><figcaption data-en="Actual Web preview · Sample data · Wide browsers support split panes; phones keep a compact single pane.">Web 预览真实界面 · 示例数据 · 宽屏可拖动分屏，手机保持紧凑单栏。</figcaption></figure>
+<div class="capabilities">
+<article class="capability"><span class="cap-number">01 / FILES</span><h3 data-en="Files, close to the task">文件就在任务旁</h3><p data-en="Browse project folders, preview text and images, upload and download files. Recognizable file icons and optional image thumbnails make navigation easier.">浏览项目目录，预览文本与图片，上传和下载文件。文件类型图标与可开关的图片缩略图，让查找更直观。</p></article>
+<article class="capability"><span class="cap-number">02 / TERMINAL</span><h3 data-en="A continuous terminal">真正连续的终端</h3><p data-en="Keep your working directory and shell state. Use the host’s shell, interact with commands, and compose multiple lines before sending from your phone.">保留当前目录与 shell 状态，使用主机默认终端并进行交互。手机可先编写多行命令，再明确发送。</p></article>
+<article class="capability"><span class="cap-number">03 / GIT</span><h3 data-en="From changes to commits">从变更到提交</h3><p data-en="Review diffs and commit graphs, stage files, commit, create or switch branches, and merge locally. Remote push and destructive history rewriting are not provided.">查看差异与历史链路，暂存、提交，创建与切换分支、执行本地合并。暂不提供远程推送或破坏性历史重写。</p></article>
+<article class="capability"><span class="cap-number">04 / SIDE CHAT</span><h3 data-en="Explore without leaving the conversation">在会话旁继续探讨</h3><p data-en="Create a temporary side chat from the current context, with its own model, reasoning, Skills, permissions and attachments. Default and Plan modes are supported; clients on the same gateway share the chat.">从当前上下文创建临时侧边聊天，独立选择模型、思考程度、Skill、权限与附件。支持普通／计划模式，同一网关的设备共享消息。</p></article>
+<article class="capability"><span class="cap-number">05 / WORKSPACE</span><h3 data-en="More room for useful work">把空间留给工作</h3><p data-en="Open tools in tabs, resize floating details, and drag wide-browser panes side by side. Inspect saved subagent history without leaving the main conversation.">工具以标签打开，详情窗口可调整高度；宽屏网页可拖动分屏。无需离开主会话即可查看子智能体的已保存记录。</p></article>
+<article class="capability"><span class="cap-number">06 / MOBILE</span><h3 data-en="One App, several computers">一个 App，连接多台电脑</h3><p data-en="Android and iOS save multiple gateways. Copy directly, preview attachments, clear notifications and check for App updates in settings. Android exits with two Back presses from the computer list.">Android 与 iOS 可保存多台电脑网关，直接复制内容、预览附件、清空通知，并在设置检查 App 更新。安卓在电脑列表连续两次返回即可退出。</p></article>
+</div>
+<div class="preview-limits"><h3 data-en="Before you try the preview">体验前，请了解这些边界</h3><ul>
+<li data-en="Mobile task notifications are reliable only while the App is active. Background and lock-screen delivery are not guaranteed. Bark, ntfy and PushPlus remain available as external channels.">手机任务提醒目前以前台为主，不保证后台或锁屏送达；可继续使用 Bark、ntfy、PushPlus 外部通知。</li>
+<li data-en="iOS Live Activities show the last known state when inactive. The unsigned IPA needs your own signing; the Xcode project is also provided. There is no App Store or TestFlight build yet.">iOS 灵动岛在后台显示的可能是旧状态。未签名 IPA 需要自行签名，也提供 Xcode 工程；目前没有 App Store 或 TestFlight 安装版。</li>
+<li data-en="Side chats are temporary Bridge chats, not native Codex desktop tabs. Ending them or restarting the gateway clears their contents. SSH side chats are not supported yet.">侧边聊天是 Bridge 临时会话，不是 Codex 桌面原生标签；结束聊天或重启网关后内容清除。SSH 工作区暂不支持侧边聊天。</li>
+<li data-en="Try previews separately from everyday use. Keep your configuration backup, and stop the old gateway before starting another gateway on the same port.">建议将预览体验与日常使用分开，保留配置备份；相同端口只运行一个网关。</li>
+</ul><a href="https://github.com/try2love/codex-mobile-bridge/blob/v2.0.0-preview.1/mobile/README.md" data-en="Read mobile setup and capability details ↗">查看手机安装与能力说明 ↗</a></div>
+</section>
+
 <section id="demo">
 <div class="section-head"><div><p data-en="01 / WALKTHROUGH" class="eyebrow">01 / WALKTHROUGH</p><h2 data-en="See it in action." >先看看，它是怎么用的。</h2></div><p data-en="Follow the actual interface, from starting the gateway to continuing a chat on another device." >从启动网关到跨设备继续聊天，跟着实际界面走一遍。</p></div>
 <div class="video-shell"><video id="tour" controls playsinline preload="none" width="1280" height="900" poster="./assets/tour-poster.jpg?v=1.3.0" aria-label="产品使用演示" data-en-aria-label="Product walkthrough"><source src="./assets/product-tour.mp4?v=1.3.0" type="video/mp4"><track kind="subtitles" src="./assets/tour-zh.vtt?v=1.3.0" srclang="zh" label="简体中文" default><track kind="subtitles" src="./assets/tour-en.vtt?v=1.3.0" srclang="en" label="English">
@@ -273,7 +296,7 @@
 </div></section>
 <section id="connect">
 <div class="section-head"><div><p data-en="05 / CONNECTIONS" class="eyebrow">05 / CONNECTIONS</p><h2 data-en="Choose a connection that fits." >选一条适合你的连接方式。</h2></div><p data-en="Multiple connections can stay enabled and reach the same gateway." >多个入口可以同时启用，连接同一个电脑网关。</p></div>
-<p class="mini-note" data-en="Setup guide preview: named-tunnel controls, bundled cloudflared and staged SSH controls described below belong to the unreleased local preview. Public app downloads have not changed.">配置教程预览：下文的固定隧道入口、内置 cloudflared 与分步 SSH 操作对应尚未发布的本地预览版；目前公开下载的 App 版本未更新。</p>
+<p class="mini-note" data-en="Connection guides apply to stable v1.4.0 and later. Temporary HTTPS is the quickest route; fixed domains, servers and NAS setups are advanced options.">连接教程适用于正式版 v1.4.0 及后续版本。临时 HTTPS 最方便快捷，固定域名、服务器与 NAS 为进阶方案。</p>
 <p class="mini-note" data-en="Recommended for quick personal access: no domain or server, with the fewest setup steps. The current URL can usually remain in use while the gateway and tunnel process stay running and connected; Cloudflare does not guarantee permanent allocation or uptime. Enable address notifications and configure a notification channel to receive the new URL when the tunnel is recreated. Delivery depends on connectivity and the notification service.">推荐个人快速接入：无需域名和服务器，配置最少、上手最快。网关与隧道进程持续运行且连接正常时，通常可以沿用当前地址；Cloudflare 不保证永久占用或持续可用。隧道重建导致地址变化后，启用“每次启动网关及入口变化时发送地址”并配置好通知渠道，即可接收新地址；送达时间取决于网络与通知服务。</p>
 <p class="mini-note" data-en="Advanced setups require relevant knowledge of DNS, HTTPS, SSH, server or NAS administration. Commands and configurations are references only and may not suit your environment. Review them, back up your data and obtain the necessary authorization before use. You assume the risks of using, modifying or executing these examples. To the maximum extent permitted by applicable law, the authors and contributors are not liable for resulting data loss, service interruption, security incidents, costs or other loss, except liability that cannot lawfully be excluded or limited.">进阶方案需要具备 DNS、HTTPS、SSH、服务器或 NAS 管理等相关知识。本文命令与配置仅供参考，不保证适合你的环境；执行前请自行核对、备份并取得必要授权。使用、修改或执行这些示例的风险由使用者自行承担。在适用法律允许的最大范围内，项目作者与贡献者不对由此造成的数据丢失、服务中断、安全事件、费用或其他损失承担责任；依法不得排除或限制的责任除外。</p>
 <div class="connection"><div class="tabs" role="tablist" aria-label="连接方式" data-en-aria-label="Connection options">
@@ -462,7 +485,7 @@
 <p class="footer-meta">
 <span data-en="Community open source · MIT license · Not affiliated with OpenAI" >社区开源项目 · MIT 许可证 · 与 OpenAI 无隶属关系</span>
 <br>
-<span data-en="Download v1.4.0 · Updated October 6, 2026" >当前下载 v1.4.0 · 更新于 2026-10-06</span>
+<span data-en="Stable v1.4.0 · Preview v2.0.0-preview.1 · Updated October 7, 2026" >正式版 v1.4.0 · 预览版 v2.0.0-preview.1 · 更新于 2026-10-07</span>
 </p></div><div class="footer-links">
 <a data-en="Thanks to the LINUX DO community and everyone supporting this project." href="https://linux.do/">感谢 LINUX DO 社区及各位佬友的支持。</a>
 <a data-en="English documentation ↗" href="https://github.com/try2love/codex-mobile-bridge" data-doc-link>中文使用说明 ↗</a>

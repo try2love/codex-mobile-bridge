@@ -3,6 +3,22 @@ import android.content.Context;
 final class MobileStrings {
  private static final java.util.Map<String,String> values=new java.util.HashMap<>();
  static {
+values.put("应用更新","App updates");
+values.put("预览通道 · 手动检查，不自动安装","Preview channel \u00b7 Manual checks, no automatic install");
+values.put("检查更新","Check for updates");
+values.put("正在检查更新…","Checking for updates\u2026");
+values.put("没有可用的浏览器，请在电脑上打开 GitHub Release。","No browser is available. Open GitHub Releases on your computer.");
+values.put("检查失败，请检查网络后重试。也可以打开版本页面。","Could not check for updates. Check your network and retry, or open the releases page.");
+values.put("版本页面","Releases");
+values.put("当前已是此通道最新版本。","You are up to date on this channel.");
+values.put("发现新版本","Update available");
+values.put("下载后按系统提示覆盖安装，不要先卸载。已保存的电脑与登录状态会保留。","After downloading, follow the system prompts to update without uninstalling. Saved computers and sign-ins will be retained.");
+values.put("稍后","Later");
+values.put("更新说明","Release notes");
+values.put("下载 APK","Download APK");
+values.put("查看新版与安装指引","View update and installation guide");
+values.put("iOS 预览需要使用自己的 Apple 账号重新签名安装，暂不支持 App 内直接覆盖更新。","The iOS preview requires signing the new build with your own Apple account. Direct in-app installation is not available yet.");
+
 values.put("Codex 未完成侧边聊天操作，请检查模型接入和运行时版本","Codex could not complete the side chat operation. Check the model connection and runtime version.");
 values.put("临时侧边聊天数量已达上限，请关闭不用的聊天；必要时重启网关","Too many temporary side chats. End unused chats or restart the gateway.");
 values.put("侧边聊天工作目录不一致，已取消创建","Side chat creation cancelled because the working directory did not match.");

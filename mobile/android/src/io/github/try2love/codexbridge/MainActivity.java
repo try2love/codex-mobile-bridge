@@ -116,7 +116,37 @@ public final class MainActivity extends Activity {
   LinearLayout notifications=card();Button toggle=button(prefs.getBoolean("alerts",false)?L("关闭任务通知"):L("开启任务通知"),()->{dialog.dismiss();toggleNotifications();});add(toggle,notifications,8);add(text(L("App 打开时提醒已连接电脑的新任务消息。离开 App 或锁屏后不保证通知；可在电脑端配置 Bark 或 ntfy。"),14),notifications,12);
   add(button(L("测试本机通知"),()->{dialog.dismiss();testNotification();}),notifications,4);add(text(L("10 秒后显示，用于检查手机的通知权限。"),13),notifications,0);add(notifications,content,22);
   add(text(L("当前电脑"),19),content,12);LinearLayout computer=card();if(origin.isEmpty()){add(text(L("尚未选择电脑"),17),computer,8);add(text(L("返回首页扫码或输入网关地址。"),14),computer,0);}else{add(text(Uri.parse(origin).getHost(),17),computer,8);add(text(origin,13),computer,12);Button remove=button(L("移除这台电脑"),()->{dialog.dismiss();confirmRemove();});remove.setTextColor(0xffb44235);add(remove,computer,0);}add(computer,content,24);
-  TextView version=text("Bridge Preview · 0.1.0-preview.10",13);version.setTextColor(0xff777b80);version.setGravity(Gravity.CENTER);add(version,content,0);
+  LinearLayout updates=card();add(text(L("应用更新"),19),updates,8);add(text("Bridge Preview · "+appVersion(),14),updates,8);add(text(L("预览通道 · 手动检查，不自动安装"),13),updates,8);
+  TextView updateStatus=text("",13);Button check=button(L("检查更新"),()->{});check.setOnClickListener(v->checkUpdate(dialog,check,updateStatus));add(check,updates,6);add(updateStatus,updates,0);add(updates,content,20);
+  TextView version=text("Codex Mobile Bridge",13);version.setTextColor(0xff777b80);version.setGravity(Gravity.CENTER);add(version,content,0);
+ }
+ String appVersion(){try{return getPackageManager().getPackageInfo(getPackageName(),0).versionName;}catch(Exception e){return "2.0.0-preview.1";}}
+ void openUpdateUrl(String url){try{startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(url)));}catch(ActivityNotFoundException e){message(L("没有可用的浏览器，请在电脑上打开 GitHub Release。"));}}
+ void checkUpdate(Dialog dialog,Button check,TextView updateStatus){
+  check.setEnabled(false);updateStatus.setText(L("正在检查更新…"));final String current=appVersion();
+  worker.execute(()->{
+   MobileRelease candidate=null;String problem=null;
+   java.net.HttpURLConnection connection=null;
+   try{
+    connection=(java.net.HttpURLConnection)new java.net.URL(MobileRelease.API).openConnection();connection.setConnectTimeout(15000);connection.setReadTimeout(15000);connection.setInstanceFollowRedirects(false);connection.setRequestProperty("Accept","application/vnd.github+json");connection.setRequestProperty("User-Agent","Codex-Mobile-Bridge/"+current);
+    if(connection.getResponseCode()!=200)throw new java.io.IOException();
+    java.io.ByteArrayOutputStream bytes=new java.io.ByteArrayOutputStream();
+    try(java.io.InputStream in=connection.getInputStream()){byte[] block=new byte[8192];int n;while((n=in.read(block))!=-1){if(bytes.size()+n>4*1024*1024)throw new java.io.IOException();bytes.write(block,0,n);}}
+    JSONArray rows=new JSONArray(bytes.toString("UTF-8"));
+    for(int i=0;i<rows.length();i++){JSONObject row=rows.getJSONObject(i);JSONArray assets=row.optJSONArray("assets");if(assets==null)continue;
+     for(int j=0;j<assets.length();j++){JSONObject asset=assets.getJSONObject(j);String tag=row.optString("tag_name");if(!MobileRelease.eligible(current,tag,row.optBoolean("draft",true),row.optBoolean("prerelease",true),asset.optString("name"),asset.optString("browser_download_url")))continue;
+      String version=tag.substring(1);if(candidate==null||MobileRelease.compare(version,candidate.version)>0){String notes=row.optString("body");candidate=new MobileRelease(version,notes.substring(0,Math.min(notes.length(),12000)));}
+     }
+    }
+   }catch(Exception e){problem=L("检查失败，请检查网络后重试。也可以打开版本页面。");}finally{if(connection!=null)connection.disconnect();}
+   final MobileRelease result=candidate;final String error=problem;
+   runOnUiThread(()->{if(isFinishing()||isDestroyed()||!dialog.isShowing())return;check.setEnabled(true);
+    if(error!=null){updateStatus.setText(error);new AlertDialog.Builder(this).setMessage(error).setNegativeButton(L("关闭"),null).setPositiveButton(L("版本页面"),(d,w)->openUpdateUrl(MobileRelease.REPO+"/releases")).show();return;}
+    if(result==null){updateStatus.setText(L("当前已是此通道最新版本。"));return;}
+    updateStatus.setText(L("发现新版本")+" · "+result.version);
+    new AlertDialog.Builder(this).setTitle(L("发现新版本")+" · "+result.version).setMessage(L("下载后按系统提示覆盖安装，不要先卸载。已保存的电脑与登录状态会保留。")+"\n\n"+result.notes).setNegativeButton(L("稍后"),null).setNeutralButton(L("更新说明"),(d,w)->openUpdateUrl(result.page())).setPositiveButton(L("下载 APK"),(d,w)->openUpdateUrl(result.download)).show();
+   });
+  });
  }
  void enableNativePush(){
   if(Build.VERSION.SDK_INT>=33&&checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED){requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},24);return;}

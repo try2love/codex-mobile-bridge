@@ -1,10 +1,76 @@
-<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict>
-<key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string><key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string><key>CFBundleName</key><string>Bridge Preview</string><key>CFBundleDisplayName</key><string>Bridge Preview</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>0.1.0</string><key>CFBundleVersion</key><string>13</string><key>LSRequiresIPhoneOS</key><true/>
-<key>CFBundleIcons</key><dict><key>CFBundlePrimaryIcon</key><dict><key>CFBundleIconFiles</key><array><string>AppIcon60x60</string></array></dict></dict>
-<key>CFBundleIcons~ipad</key><dict><key>CFBundlePrimaryIcon</key><dict><key>CFBundleIconFiles</key><array><string>AppIcon60x60</string><string>AppIcon76x76</string><string>AppIcon83x83</string></array></dict></dict>
-<key>NSSupportsLiveActivities</key><true/>
-<key>UILaunchScreen</key><dict/><key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
-<key>NSCameraUsageDescription</key><string>扫描你电脑网关上的登录二维码。</string><key>NSLocalNetworkUsageDescription</key><string>连接同一网络中的电脑网关，继续你的聊天。</string>
-<key>NSAppTransportSecurity</key><dict><key>NSAllowsArbitraryLoads</key><true/></dict>
-<key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>io.github.try2love.codexbridge.preview</string><key>CFBundleURLSchemes</key><array><string>codexbridge</string></array></dict></array>
-</dict></plist>
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleName</key>
+	<string>Bridge Preview</string>
+	<key>CFBundleDisplayName</key>
+	<string>Bridge Preview</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>2.0.0</string>
+	<key>CFBundleVersion</key>
+	<string>20</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>CFBundleIcons</key>
+	<dict>
+		<key>CFBundlePrimaryIcon</key>
+		<dict>
+			<key>CFBundleIconFiles</key>
+			<array>
+				<string>AppIcon60x60</string>
+			</array>
+		</dict>
+	</dict>
+	<key>CFBundleIcons~ipad</key>
+	<dict>
+		<key>CFBundlePrimaryIcon</key>
+		<dict>
+			<key>CFBundleIconFiles</key>
+			<array>
+				<string>AppIcon60x60</string>
+				<string>AppIcon76x76</string>
+				<string>AppIcon83x83</string>
+			</array>
+		</dict>
+	</dict>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>扫描你电脑网关上的登录二维码。</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>连接同一网络中的电脑网关，继续你的聊天。</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>io.github.try2love.codexbridge.preview</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>codexbridge</string>
+			</array>
+		</dict>
+	</array>
+	<key>BridgeReleaseVersion</key>
+	<string>2.0.0-preview.1</string>
+</dict>
+</plist>

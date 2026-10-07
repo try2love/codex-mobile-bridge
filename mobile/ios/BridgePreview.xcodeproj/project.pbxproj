@@ -16,6 +16,7 @@ B00000000000000000000017 = {isa = PBXCopyFilesBuildPhase; buildActionMask = 2147
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXBuildFile section */
+C00000000000000000000002 = {isa = PBXBuildFile; fileRef = C00000000000000000000001; };
 		A00000000000000000000030 /* App.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000020 /* App.swift */; };
 		A00000000000000000000031 /* GatewayURL.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000021 /* GatewayURL.swift */; };
 		A00000000000000000000050 /* AppIcon60x60@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000040; };
@@ -31,6 +32,7 @@ B0000000000000000000000E = {isa = PBXBuildFile; fileRef = B000000000000000000000
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+C00000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileRelease.swift; sourceTree = "<group>"; };
 		A00000000000000000000007 /* BridgePreview.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = BridgePreview.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A00000000000000000000020 /* App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App.swift; sourceTree = "<group>"; };
 		A00000000000000000000021 /* GatewayURL.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayURL.swift; sourceTree = "<group>"; };
@@ -80,6 +82,7 @@ B00000000000000000000004,
 			isa = PBXGroup;
 			children = (
 				A00000000000000000000020 /* App.swift */,
+C00000000000000000000001,
 B00000000000000000000001,B00000000000000000000002,
 				A00000000000000000000021 /* GatewayURL.swift */,
 				A00000000000000000000022 /* Info.plist */,
@@ -170,6 +173,7 @@ B00000000000000000000019,
 			buildActionMask = 2147483647;
 			files = (
 				A00000000000000000000030 /* App.swift in Sources */,
+C00000000000000000000002,
 B0000000000000000000000A,B0000000000000000000000B,
 				A00000000000000000000031 /* GatewayURL.swift in Sources */,
 			);
