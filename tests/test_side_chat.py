@@ -310,3 +310,90 @@ class SideAttachmentTests(unittest.TestCase):
         new = self.create(self.parent)
         with self.assertRaises(ValueError):
             self.manager.operate(self.parent, 'send', {'id': new, 'text': 'read', 'submissionId': str(uuid.uuid4()), 'attachments': [identifier]})
+
+class SideComposerTests(unittest.TestCase):
+    def setUp(self):
+        self.chat = SideChat('runtime', '/home', str(uuid.uuid4()), '/project',
+            {'model': 'fixture', 'modelProvider': 'custom', 'permissions': ':workspace',
+             'approvalPolicy': 'on-request', 'approvalsReviewer': 'user'}, RuntimeFixture)
+        self.addCleanup(self.chat.close)
+
+    def wait(self, condition):
+        import time
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            if condition(): return
+            time.sleep(.01)
+        self.fail('Side-chat state did not settle')
+
+    def test_plan_skills_and_scoped_permissions_are_real_requests(self):
+        from unittest.mock import Mock
+        catalog = Mock()
+        catalog.validate_skills.return_value = [{'id': 'skill', 'name': 'research', 'path': '/safe/SKILL.md'}]
+        state = self.chat.permissions('auto-review')
+        self.assertEqual(state['permissionMode'], 'auto-review')
+        method, params = self.chat.runtime.calls[-1]
+        self.assertEqual(method, 'thread/settings/update')
+        self.assertEqual(params['threadId'], self.chat.id)
+        self.chat.send('plan this', str(uuid.uuid4()), skills=['skill'], work_mode='plan', catalog_reader=catalog)
+        method, params = self.chat.runtime.calls[-1]
+        self.assertEqual(method, 'turn/start')
+        self.assertEqual(params['collaborationMode']['mode'], 'plan')
+        self.assertEqual(params['collaborationMode']['settings']['model'], 'fixture')
+        self.assertIsNone(params['collaborationMode']['settings']['developer_instructions'])
+        self.assertEqual(params['approvalsReviewer'], 'auto_review')
+        self.assertEqual(params['input'][1], {'type': 'skill', 'name': 'research', 'path': '/safe/SKILL.md'})
+        catalog.validate_skills.assert_called_with('/project', ['skill'])
+        self.assertEqual(self.chat.view()['collaborationMode'], 'plan')
+        with self.assertRaises(ValueError): self.chat.permissions('full-access')
+        self.chat.permissions('full-access', True)
+        self.assertEqual(self.chat.view()['permissionMode'], 'full-access')
+
+    def test_rejected_permission_never_changes_displayed_setting(self):
+        error = SideChatError('blocked');error.rpc_error = {'code': -1}
+        with patch.object(self.chat.runtime, 'request', side_effect=error):
+            with self.assertRaises(SideChatError): self.chat.permissions('full-access', True)
+        self.assertEqual(self.chat.view()['permissionMode'], 'ask')
+        self.assertEqual(self.chat.turn_permissions['permissions'], ':workspace')
+
+    def test_queue_waits_cancels_and_is_sent_once_after_completion(self):
+        self.chat.send('running', str(uuid.uuid4()))
+        queued, cancelled = str(uuid.uuid4()), str(uuid.uuid4())
+        self.assertEqual(self.chat.send('later', queued, mode='queue', work_mode='plan')['status'], 'queued')
+        self.chat.send('remove me', cancelled, mode='queue')
+        self.chat.cancel_queued(cancelled)
+        self.assertEqual(sum(m == 'turn/start' for m, _ in self.chat.runtime.calls), 1)
+        self.chat.runtime.emit('turn/completed', turn={'id': 'turn', 'status': 'completed'})
+        self.wait(lambda: self.chat.submissions[queued]['status'] == 'accepted')
+        self.assertEqual(sum(m == 'turn/start' for m, _ in self.chat.runtime.calls), 2)
+        self.assertEqual(self.chat.runtime.calls[-1][1]['collaborationMode']['mode'], 'plan')
+        self.chat.send('later', queued, mode='queue', work_mode='plan')
+        self.assertEqual(sum(m == 'turn/start' for m, _ in self.chat.runtime.calls), 2)
+        self.assertEqual(self.chat.submissions[cancelled]['status'], 'cancelled')
+
+    def test_steer_is_bound_to_current_child_turn_and_never_changes_mode(self):
+        with self.assertRaises(ValueError): self.chat.send('follow', str(uuid.uuid4()), mode='steer', work_mode=None)
+        self.chat.send('running', str(uuid.uuid4()), work_mode='plan')
+        identifier = str(uuid.uuid4())
+        self.chat.send('follow', identifier, mode='steer', work_mode=None)
+        method, params = self.chat.runtime.calls[-1]
+        self.assertEqual(method, 'turn/steer')
+        self.assertEqual(params['expectedTurnId'], 'turn')
+        self.assertEqual(params['threadId'], self.chat.id)
+        self.assertNotIn('collaborationMode', params)
+        self.assertTrue(any(m['text']=='follow' for m in self.chat.view()['turns'][0]['messages']))
+        self.chat.send('follow', identifier, mode='steer', work_mode=None)
+        self.assertEqual(sum(m == 'turn/steer' for m, _ in self.chat.runtime.calls), 1)
+
+    def test_goal_invalid_skills_and_cancelled_queue_cannot_send(self):
+        from unittest.mock import Mock
+        catalog = Mock();catalog.validate_skills.return_value = []
+        with self.assertRaises(ValueError): self.chat.send('goal', str(uuid.uuid4()), work_mode='goal')
+        with self.assertRaises(ValueError): self.chat.send('bad skill', str(uuid.uuid4()), skills=['unknown'], catalog_reader=catalog)
+        self.assertEqual(sum(m == 'turn/start' for m, _ in self.chat.runtime.calls), 0)
+        self.chat.send('running', str(uuid.uuid4()))
+        self.chat.send('queued', str(uuid.uuid4()), mode='queue')
+        self.chat.close()
+        self.assertFalse(self.chat.view()['submissions'])
+        self.wait(lambda: not self.chat.queue_worker.is_alive())
+        self.assertEqual(sum(m == 'turn/start' for m, _ in self.chat.runtime.calls), 1)

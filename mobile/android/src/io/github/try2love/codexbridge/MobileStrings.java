@@ -36,6 +36,7 @@ values.put("网关地址不应包含路径","Gateway addresses must not include 
 values.put("请使用电脑网关提供的地址或二维码","Use the address or QR code from your computer\u2019s gateway");
 values.put("请填写完整网关地址，不含账号或参数","Enter a complete gateway address without credentials or query parameters");
 values.put("请填写完整的 HTTPS 网关地址，或局域网 HTTP 地址，不含路径、账号和参数。","Enter a complete HTTPS gateway address, or a local HTTP address, without a path, credentials or parameters.");
+  values.put("再按一次返回退出 App","Press back again to exit");
   values.put("通知收件箱","Notification inbox");
   values.put("手机设置","Mobile settings");
   values.put("返回电脑列表","Back to computers");

@@ -2,6 +2,17 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"创建侧边聊天":"Create side chat",
+"临时侧边聊天":"Temporary side chat",
+"开启一段侧边聊天":"Start a side chat",
+"继承当前会话的上下文，单独讨论一个问题。主会话的任务不会被接续执行。":"Explore a question using this chat’s context. The main chat’s task will not continue here.",
+"可跨设备继续。结束聊天或重启网关后，临时内容会清除。":"Continue across devices. Ending the chat or restarting the gateway clears its contents.",
+"侧边聊天支持普通模式和计划模式；补充内容沿用当前任务模式":"Side chats support Default and Plan modes. Follow-ups use the running task’s mode.",
+"当前没有可补充的任务，请发送新消息":"No running task to follow up on. Send a new message.",
+"请先等待回复完成，或选择完成后发送／补充当前任务":"Wait for the reply, queue the message, or follow up on the running task.",
+"待发送消息已达上限，请先等待或取消排队":"The message queue is full. Wait or cancel a queued message.",
+"消息已开始发送或已处理，请刷新状态":"This message has started sending or was already handled. Refresh its status.",
+
 "主会话":"Main chat",
 "调整分屏宽度":"Resize split panes",
 "拖到这里，在右侧打开":"Drop here to open on the right",

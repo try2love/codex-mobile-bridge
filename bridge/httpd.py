@@ -408,8 +408,9 @@ class Handler(BaseHTTPRequestHandler):
                 owner = self.server.auth.key(self.token())
                 body = self.read_json() if write else {}
                 action = body.get('action') if write else 'read'
-                fields = {'create': {'action', 'creationId'}, 'send': {'action', 'id', 'text', 'submissionId', 'attachments'},
-                          'catalog': {'action', 'id'}, 'settings': {'action', 'id', 'model', 'effort'},
+                fields = {'create': {'action', 'creationId'}, 'send': {'action', 'id', 'text', 'submissionId', 'attachments', 'skills', 'mode', 'workMode'},
+                          'catalog': {'action', 'id'}, 'skills': {'action', 'id', 'query', 'offset', 'refresh', 'selected'},
+                          'permissions': {'action', 'id', 'preset', 'confirmed'}, 'cancel-queued': {'action', 'id', 'submissionId'}, 'settings': {'action', 'id', 'model', 'effort'},
                           'close': {'action', 'id'}, 'stop': {'action', 'id'},
                           'respond': {'action', 'id', 'requestId', 'response'}, 'read': set()}
                 if action not in fields or set(body) - fields[action] or (write and action == 'read'):

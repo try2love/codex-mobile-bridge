@@ -65,6 +65,8 @@ wire_api="responses"
 [analytics]
 enabled=false
 ''')
+        skill_dir=home/'skills'/'side-check';skill_dir.mkdir(parents=True)
+        (skill_dir/'SKILL.md').write_text('---\nname: side-check\ndescription: Synthetic side-chat skill for local verification.\n---\nSKILL_CONTEXT_MARKER: Explain the question without changing any files.\n')
         runtime = Catalog.find_runtime()
         assert runtime, 'Codex runtime missing'
         check_runtime(runtime, root)
@@ -85,13 +87,19 @@ enabled=false
             assert chat.view()['connected'] and not chat.view()['turns']
             assert not captured, 'Fork unexpectedly started a model turn'
             chat.settings('fixture-new', 'high', {'models': [{'id': 'fixture-new', 'efforts': ['high']}]})
+            chat.permissions('ask')
+            assert chat.view()['permissionMode']=='ask'
+            chat.permissions('auto-review')
+            assert chat.view()['permissionMode']=='auto-review'
+            catalog=Catalog(home,executable=runtime,allow_background_refresh=False)
+            skill=next(row for row in catalog.get_kind('skills',str(root),refresh=True)['skills'] if row['name']=='side-check')
             chat.uploads = Uploads(root/'side-files')
             attachment = str(uuid.uuid4())
             def chunk(kind, data):
                 return struct.pack('>I',len(data))+kind+data+struct.pack('>I',zlib.crc32(kind+data)&0xffffffff)
             png=b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',16,16,8,2,0,0,0))+chunk(b'IDAT',zlib.compress((b'\x00'+b'\x40\x60\xff'*16)*16))+chunk(b'IEND',b'')
             chat.uploads.put(chat.id, attachment, 'pixel.png', png)
-            assert chat.send('SIDE_QUESTION_MARKER', str(uuid.uuid4()), [attachment])['status'] == 'accepted'
+            assert chat.send('SIDE_QUESTION_MARKER', str(uuid.uuid4()), [attachment], work_mode='plan', skills=[skill['id']], catalog_reader=catalog)['status'] == 'accepted'
             deadline = time.monotonic()+25
             while time.monotonic()<deadline:
                 view = chat.view()
@@ -108,6 +116,21 @@ enabled=false
             assert user['text'] == 'SIDE_QUESTION_MARKER' and user['attachments'][0]['id'] == attachment
             assert 'PARENT_CONTEXT_MARKER' in sent and 'SIDE_QUESTION_MARKER' in sent
             assert 'Inherited history is reference context only' in sent
+            assert 'SKILL_CONTEXT_MARKER' in sent, 'Selected skill was not delivered'
+            modes=[c.get('text','') for item in captured[0].get('input',[]) if item.get('role')=='developer' for c in item.get('content',[]) if c.get('text','').startswith('<collaboration_mode>')]
+            assert modes and 'plan mode' in modes[-1].lower() and view['collaborationMode']=='plan'
+            queued=str(uuid.uuid4())
+            assert chat.send('QUEUE_QUESTION_MARKER',queued,mode='queue',work_mode='default')['status']=='queued'
+            deadline=time.monotonic()+25
+            while time.monotonic()<deadline:
+                next_view=chat.view()
+                if len(captured)==2 and next_view['status']=='idle':break
+                time.sleep(.1)
+            assert len(captured)==2 and 'QUEUE_QUESTION_MARKER' in json.dumps(captured[1])
+            assert next_view['collaborationMode']=='default'
+            modes=[c.get('text','') for item in captured[1].get('input',[]) if item.get('role')=='developer' for c in item.get('content',[]) if c.get('text','').startswith('<collaboration_mode>')]
+            assert modes and 'default mode' in modes[-1].lower()
+            print('PASS: real Skill context, Plan/Default modes, permission updates, and queued turn execution.')
             listed = chat.runtime.request('thread/list', {'limit': 100})
             assert chat.id not in [t['id'] for t in listed['data']]
             assert path.read_bytes() == original, 'Parent history changed'

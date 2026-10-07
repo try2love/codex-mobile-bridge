@@ -108,11 +108,11 @@
 .wb-split .timeline{padding:20px}.wb-split .composer{margin:0 16px}
 
 .wb-side-composer.composer{margin:0 14px;padding:8px 0 max(12px,env(safe-area-inset-bottom));background:var(--page);min-width:0}
-.wb-side-composer textarea{min-height:70px;max-height:180px;font-size:16px;resize:none}
+.wb-side-composer textarea{min-height:48px;height:48px;max-height:160px;font-size:16px;resize:none}
 .wb-side-composer .composer-tools{margin-bottom:8px}.wb-side-composer .tool-button{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .wb-side-composer .compose-actions{margin-left:auto}.wb-side-composer .attachment-list{max-height:140px;overflow:auto}
 .attachment-thumb[data-image-preview]{cursor:zoom-in}
-.wb-side-composer .compose-bottom{display:flex;justify-content:space-between}
+
 
 /* Each split pane owns its header; the divider aligns with that header boundary. */
 .wb-tool-strip{display:flex;align-items:center;gap:6px;flex:1;min-width:0}
@@ -131,3 +131,12 @@
 .wb-split .wb-divider::after{height:42px;top:calc(50% - 21px);opacity:.5}
 .wb-split .wb-divider:hover::after,.wb-split .wb-divider:focus-visible::after{opacity:1;background:var(--accent)}
 .wb-split .wb-side-head{padding:8px 12px}.wb-split .wb-side-head button{min-height:32px;padding:5px 10px;font-size:12px}
+
+.wb-side-landing{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:28px;gap:16px;min-height:0;overflow:auto}
+.wb-side-landing h2{margin:0;font-size:21px;letter-spacing:-.4px}.wb-side-landing p{margin:0;max-width:360px;line-height:1.75;font-size:13px}.wb-side-landing .primary{min-height:40px;margin-top:4px}
+.wb-side-symbol{display:grid;place-items:center;width:54px;height:54px;background:var(--soft);border:1px solid var(--line);border-radius:16px;color:var(--accent);font-size:30px}
+.wb-side-caption{flex:1;color:var(--muted);font-size:12px}.wb-side-content>.wb-status{padding:0;margin:8px 16px;font-size:11px}
+.wb-side-model{flex:0 1 auto;min-width:0;max-width:55%!important;color:var(--text)!important}.wb-side-composer .composer-tools{align-items:center;gap:8px}.wb-side-composer .tool-button:not(.wb-side-model){flex-shrink:0}
+.wb-side-queue{flex:none;max-height:25%;overflow:auto;margin:0 14px}.wb-side-queue:empty{display:none}
+.wb-side-landing~.wb-status:empty{display:none}.wb-side-content:not(.has-side-chat)>.wb-status{margin:0 24px 24px;text-align:center}
+.wb-side-composer .compose-actions{margin-left:0}.wb-side-composer .composer-tools .composer-toggle{margin-left:auto}
