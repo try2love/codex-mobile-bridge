@@ -27,9 +27,13 @@ enum GatewayURL {
         return c.string == origin
     }
     static func chat(_ origin: String, thread: String, host: String) throws -> URL {
-        guard UUID(uuidString: thread) != nil, host.count <= 256 else { throw InvalidURL() }
-        // Host is percent encoded once inside the fragment, as in the web client.
-        return URL(string: origin + "/#" + thread + "~" + (host.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "local"))!
+        let desktop = host == "desktop:claude" || host == "desktop:deepseek"
+        guard !thread.isEmpty, thread.utf16.count <= 512, host.utf16.count <= 256,
+              !(thread + host).unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }),
+              desktop || (!host.hasPrefix("desktop:") && UUID(uuidString: thread) != nil) else { throw InvalidURL() }
+        // Encode each field once; tilde remains the fragment delimiter only.
+        let identifier = desktop ? thread.addingPercentEncoding(withAllowedCharacters: CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._"))! : thread
+        return URL(string: origin + "/#" + identifier + "~" + (host.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "local"))!
     }
     struct InvalidURL: LocalizedError { var errorDescription: String? { "请填写完整的 HTTPS 网关地址，或局域网 HTTP 地址，不含路径、账号和参数。" } }
 }

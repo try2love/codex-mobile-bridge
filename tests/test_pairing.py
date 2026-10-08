@@ -122,15 +122,66 @@ class PairingHTTPTests(unittest.TestCase):
     def tearDown(self):
         self.server.shutdown(); self.worker.join(); self.server.server_close()
 
-    def request(self, path, body=None, origin=ORIGIN, cookie=None, host='192.0.2.1:8787'):
+    def request(self, path, body=None, origin=ORIGIN, cookie=None, host='192.0.2.1:8787', user_agent=''):
         connection = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=3)
         headers = {'Host': host}
         if origin: headers['Origin'] = origin
         if cookie: headers['Cookie'] = cookie
+        if user_agent: headers['User-Agent'] = user_agent
         if body is not None: headers['Content-Type'] = 'application/json'
         connection.request('POST' if body is not None else 'GET', path, json.dumps(body) if body is not None else None, headers)
         response = connection.getresponse(); data = json.loads(response.read()); code = response.status; cookies = response.getheader('Set-Cookie'); connection.close()
         return code, data, cookies
+
+    def test_mobile_qr_login_survives_time_restart_and_missing_background_ua(self):
+        # Exercise actual issuance, HTTP redemption and cookie renewal. Only
+        # the isolated server clock advances; no real device/account is used.
+        for platform in ('Android', 'iOS'):
+            for origin, host in ((ORIGIN, '192.0.2.1:8787'), ('https://example.com', 'example.com')):
+                with self.subTest(platform=platform, origin=origin), tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as directory:
+                    self.server.auth = Auth(self.password, directory)
+                    self.server.pairing = Pairing(self.server.auth, {origin})
+                    ua = 'Mozilla/5.0 BridgeMobile/0.1-' + platform
+                    grant = self.server.pairing.control({'action': 'create', 'url': origin})
+                    code, _, cookie = self.request('/api/pair', {'token': grant['url'].split('#pair=')[1]}, origin=origin, host=host, user_agent=ua)
+                    self.assertEqual(code, 200)
+                    self.assertIn('Max-Age=34560000', cookie)
+                    self.assertEqual('Secure' in cookie, origin.startswith('https:'))
+                    cookie = cookie.split(';')[0]
+                    token = cookie.split('=', 1)[1]
+                    created = self.server.auth.get(token)['created']
+                    for delay in (12 * 3600 + 1, 30 * 86400, 401 * 86400):
+                        with patch('bridge.auth.time.time', return_value=created + delay):
+                            self.server.auth = Auth(self.password, directory)
+                            for agent in ('', ua):
+                                code, value, refreshed = self.request('/api/auth', origin=origin, host=host, cookie=cookie, user_agent=agent)
+                                self.assertEqual(code, 200)
+                                self.assertTrue(value['authenticated'])
+                                self.assertTrue(value['trustedDevice'])
+                                self.assertIn('Max-Age=34560000', refreshed)
+                    self.server.auth.manage({'action': 'revoke', 'id': Auth.key(token)})
+                    self.server.auth = Auth(self.password, directory)
+                    self.assertFalse(self.request('/api/auth', origin=origin, host=host, cookie=cookie, user_agent=ua)[1]['authenticated'])
+                    self.assertFalse(self.request('/api/auth', origin=origin, host=host, user_agent=ua)[1]['authenticated'])
+
+    def test_legacy_mobile_cookie_upgrades_only_while_still_valid(self):
+        with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as directory:
+            self.server.auth = Auth(self.password, directory)
+            token, session = self.server.auth.new_session('127.0.0.1', 'Legacy mobile browser')
+            cookie = Auth.COOKIE + '=' + token
+            ua = 'Mozilla/5.0 BridgeMobile/0.1-Android'
+            with patch('bridge.auth.time.time', return_value=session['created'] + 11 * 3600):
+                self.server.auth = Auth(self.password, directory)
+                _, value, refreshed = self.request('/api/auth', cookie=cookie, user_agent=ua)
+                self.assertTrue(value['trustedDevice'])
+                self.assertIn('Max-Age=34560000', refreshed)
+            with patch('bridge.auth.time.time', return_value=session['created'] + 401 * 86400):
+                self.server.auth = Auth(self.password, directory)
+                self.assertTrue(self.request('/api/auth', cookie=cookie, user_agent=ua)[1]['authenticated'])
+
+            expired, row = self.server.auth.new_session('127.0.0.1', 'Legacy mobile browser')
+            with patch('bridge.auth.time.time', return_value=row['expires'] + 1):
+                self.assertFalse(self.request('/api/auth', cookie=Auth.COOKIE+'='+expired, user_agent=ua)[1]['authenticated'])
 
     def test_exchange_cookie_csrf_and_password_path(self):
         self.assertEqual(self.request('/api/sessions')[0], 401)

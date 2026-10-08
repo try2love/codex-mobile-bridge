@@ -11,6 +11,9 @@ import Foundation
         let chat = try GatewayURL.chat(base, thread: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", host: "my server/~")
         precondition(chat.absoluteString == base + "/#aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee~my%20server%2F%7E")
         do { _ = try GatewayURL.chat(base, thread: String(repeating:"-", count:36), host:"local"); fatalError("Invalid UUID accepted") } catch {}
-        print("Swift: 28 URL and route checks passed")
+        for row in cases["desktopAccepted"] as! [[String]] { let target = try GatewayURL.chat(base, thread: row[0], host: row[1]); precondition(target.absoluteString == base + "/" + row[2]) }
+        for row in cases["desktopRejected"] as! [[String]] { do { _ = try GatewayURL.chat(base, thread: row[0], host: row[1]); fatalError("Invalid desktop link accepted") } catch {} }
+        do { _ = try GatewayURL.chat(base, thread: String(repeating:"x", count:513), host:"desktop:claude"); fatalError("Long desktop ID accepted") } catch {}
+        print("Swift: 37 URL and route checks passed")
     }
 }

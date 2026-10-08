@@ -9,7 +9,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from relay.protocol import MAX_BODY, MAX_FRAME, origin, validate, decode, content_type
+from relay.protocol import MAX_BODY, MAX_FRAME, origin, validate, decode, content_type, download_headers
 from .tls import client_context
 
 
@@ -118,6 +118,7 @@ class Connector:
         config = {'auth': {'mode': 'password', 'sessionHours': 0}, 'origins': [], 'localAccess': True}
         self.server = GatewayServer(('127.0.0.1', 0), gateway.bridge, config, gateway.web_dir)
         self.server.notifications = gateway.notifications
+        self.server.desktop_sessions = getattr(gateway, 'desktop_sessions', None)
         self.local_origin = 'http://127.0.0.1:' + str(self.server.server_port)
         self.server.origins.add(self.local_origin)
         self.server.hosts.add(self.local_origin.removeprefix('http://'))
@@ -153,6 +154,7 @@ class Connector:
             body = decode(message.get('body'))
             validate(message.get('method'), message.get('path'), len(body))
             mime = content_type(message.get('contentType'))
+            range_headers = download_headers(message.get('headers', {}))
             if not self.enabled():
                 return result(503, {'error': '本机共享中继已关闭。'})
             if phone not in self.sessions:
@@ -162,9 +164,17 @@ class Connector:
             secret, session = self.sessions[phone]
             headers = {'Cookie': self.server.auth.COOKIE + '=' + secret,
                        'Origin': self.local_origin, 'X-CSRF-Token': session['csrf'],
-                       'Content-Type': mime, 'Accept-Encoding': 'identity'}
+                       'Content-Type': mime, 'Accept-Encoding': 'identity', **range_headers}
             async with client.request(message['method'], self.local_origin + message['path'], headers=headers,
                                       data=body if message['method'] == 'POST' else None, allow_redirects=False) as response:
+                if (range_headers.get('Range') and range_headers.get('If-Range') and response.status == 200
+                        and response.headers.get('Accept-Ranges') == 'bytes' and response.headers.get('ETag')
+                        and response.headers['ETag'] != range_headers['If-Range']
+                        and response.content_length is not None and response.content_length > MAX_BODY):
+                    # The standard full 200 fallback cannot fit one relay frame.
+                    # Ask clients to restart at zero instead of retrying forever
+                    # with the old validator or buffering an oversized response.
+                    return result(409, {'error': '文件已变化，请重新下载。', 'code': 'download_changed'})
                 data = bytearray()
                 async for chunk in response.content.iter_chunked(65536):
                     data.extend(chunk)
@@ -172,7 +182,9 @@ class Connector:
                         raise ValueError('Response exceeds shared relay limit (20 MiB)')
                 return {'id': identifier, 'status': response.status, 'body': base64.b64encode(data).decode(),
                         'contentType': response.headers.get('Content-Type', 'application/octet-stream'),
-                        'disposition': response.headers.get('Content-Disposition', '')}
+                        'disposition': response.headers.get('Content-Disposition', ''),
+                        'headers': download_headers({key: response.headers[key] for key in
+                            ('ETag', 'Content-Range', 'Accept-Ranges') if key in response.headers}, response=True)}
         except (ValueError, PermissionError, KeyError, TypeError) as exc:
             return result(403, {'error': str(exc)})
         except Exception:

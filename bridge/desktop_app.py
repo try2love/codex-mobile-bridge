@@ -96,7 +96,7 @@ class DesktopApp:
                     except (OSError, RuntimeError):
                         continue
             return result
-        output = subprocess.run(['ps', '-u', str(os.getuid()), '-o', 'pid=,comm='],
+        output = subprocess.run(['ps', '-ww', '-u', str(os.getuid()), '-o', 'pid=,comm='],
                                 capture_output=True, text=True, check=True, timeout=10).stdout
         result = []
         for line in output.splitlines():
@@ -105,16 +105,17 @@ class DesktopApp:
                 result.append(int(fields[0]))
         return result
 
-    def stop(self):
+    def stop(self, *, runtime_pids=(), gui_pids=None):
         pids = self.processes()
-        if pids and sys.platform == 'darwin':
+        main = pids if gui_pids is None else [pid for pid in gui_pids if pid in pids]
+        if main and sys.platform == 'darwin':
             bundle = next((p for p in self.executable.parents if p.suffix == '.app'), None)
             if bundle is None:
                 raise ValueError('macOS 桌面程序必须位于应用程序包中')
             script = 'on run argv\n tell application (item 1 of argv) to quit\nend run'
             subprocess.run(['osascript', '-e', script, str(bundle)], check=True,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=25)
-        for pid in pids:
+        for pid in main:
             if sys.platform == 'darwin':
                 continue
             if pid not in self.processes():
@@ -127,6 +128,20 @@ class DesktopApp:
                                timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
             else:
                 os.kill(pid, signal.SIGTERM)
+        # Only a caller that verified the native host's complete idle state may
+        # include it here. Never force-kill or terminate unrelated profiles.
+        for pid in runtime_pids:
+            if pid not in pids or pid not in self.processes():
+                continue
+            if sys.platform == 'win32':
+                subprocess.run(['taskkill.exe', '/PID', str(pid)], check=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
+            else:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
         deadline = time.monotonic() + 25
         while self.processes():
             if time.monotonic() >= deadline:

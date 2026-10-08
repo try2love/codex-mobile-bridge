@@ -143,8 +143,10 @@ def payload(device, event):
              'sequence': str(event['sequence']), 'streamId': event.get('streamId', '')}
     # Push carries generic state only. Full inbox content stays behind gateway authentication.
     title = '本轮已结束' if event['kind'] == 'completion' else '有任务等待你确认'
+    client = {'desktop:claude': 'Claude', 'desktop:deepseek': 'DSH'}.get(event['host'])
+    heading = client + ' · Codex Bridge' if client else 'Codex Bridge'
     if device['kind'] == 'fcm':
-        return {'message': {'token': device['token'], 'notification': {'title': 'Codex Bridge', 'body': title},
+        return {'message': {'token': device['token'], 'notification': {'title': heading, 'body': title},
                            'data': route, 'android': {'priority': 'high', 'ttl': '3600s', 'notification': {'channel_id': 'tasks', 'tag': 'bridge|'+device['origin']+'|'+str(event['sequence'])}}}}
     if device['kind'] == 'activity':
         now = int(time.time())
@@ -152,7 +154,7 @@ def payload(device, event):
                         'content-state': {'phase': event.get('phase', 'ended' if event['kind'] == 'completion' else 'waiting'),
                                           'updatedAt': now-978307200},
                         **({'dismissal-date': now+300} if event['kind'] == 'completion' else {'stale-date': now+300})}}
-    return {'aps': {'alert': {'title': 'Codex Bridge', 'body': title}, 'sound': 'default', 'thread-id': event['threadId']}, **route}
+    return {'aps': {'alert': {'title': heading, 'body': title}, 'sound': 'default', 'thread-id': event['threadId']}, **route}
 
 
 def send_provider(config, device, event):

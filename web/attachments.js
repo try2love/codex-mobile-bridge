@@ -59,6 +59,11 @@ class ChatAttachments {
     }
     if(this.drafts.get(key)===rows){this.save(key,rows);if(this.key===key)this.render();}
   }
+  forget(matches){
+    for(const [key,rows] of this.drafts)if(matches(key)){for(const row of rows)if(row.objectUrl&&typeof URL?.revokeObjectURL==='function')URL.revokeObjectURL(row.objectUrl);rows.splice(0);this.drafts.delete(key);try{sessionStorage.removeItem('attachments:'+key);}catch{}}
+    try{for(let i=sessionStorage.length-1;i>=0;i--){const key=sessionStorage.key(i);if(key?.startsWith('attachments:')&&matches(key.slice(12)))sessionStorage.removeItem(key);}}catch{}
+    if(this.key&&matches(this.key)){this.key=null;this.rows=[];this.error='';this.render();}
+  }
   reset(){
     for(const rows of this.drafts.values())for(const row of rows)if(row.objectUrl&&typeof URL?.revokeObjectURL==='function')URL.revokeObjectURL(row.objectUrl);
     this.key=null;this.rows=[];this.drafts.clear();this.error='';this.render();

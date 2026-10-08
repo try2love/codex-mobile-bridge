@@ -16,11 +16,15 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from .uploads import MAX_FILE
-from .workspace import MAX_TRANSFER
+from .workspace import MAX_TRANSFER, Workspace
 from .notifications import settings as notification_settings, save_settings as save_notification_settings, publish_pushplus
 from socketserver import TCPServer
 from urllib.parse import parse_qs, urlsplit, quote
 
+from .integrations.manager import DesktopSessions, READS, WRITES
+from .integrations.uploads import DesktopUploads
+from .harness import Harness
+from .harness_proxy import proxy as harness_proxy
 from .pairing import Pairing
 from .auth import Auth, LoginRejected
 from .ipc import IPCError
@@ -33,6 +37,16 @@ from .account import AccountError
 
 LOG = logging.getLogger(__name__)
 STATIC = {"/permissions.js": ("permissions.js", "text/javascript; charset=utf-8"),
+          "/downloads.js": ("downloads.js", "text/javascript; charset=utf-8"),
+          "/downloads.css": ("downloads.css", "text/css; charset=utf-8"),
+          "/client-icons/codex.png": ("client-icons/codex.png", "image/png"),
+          "/client-icons/claude.png": ("client-icons/claude.png", "image/png"),
+          "/client-icons/deepseek.png": ("client-icons/deepseek.png", "image/png"),
+          "/client-navigation.js": ("client-navigation.js", "text/javascript; charset=utf-8"),
+          "/client-navigation.css": ("client-navigation.css", "text/css; charset=utf-8"),
+          "/desktop-sessions.js": ("desktop-sessions.js", "text/javascript; charset=utf-8"),
+          "/client-accounts.js": ("client-accounts.js", "text/javascript; charset=utf-8"),
+          "/desktop-sessions.css": ("desktop-sessions.css", "text/css; charset=utf-8"),
           "/vendor/xterm/xterm.js": ("vendor/xterm/xterm.js", "text/javascript; charset=utf-8"),
           "/vendor/xterm/addon-fit.js": ("vendor/xterm/addon-fit.js", "text/javascript; charset=utf-8"),
           "/vendor/xterm/xterm.css": ("vendor/xterm/xterm.css", "text/css; charset=utf-8"),
@@ -87,6 +101,9 @@ class GatewayServer(ThreadingHTTPServer):
         if shared is None:
             self.bridge = bridge
             self.notifications = None
+            self.harness = Harness(data_dir) if data_dir else None
+            self.desktop_sessions = DesktopSessions(data_dir, bridge, gateway_running=True) if data_dir else None
+            self.desktop_uploads = DesktopUploads(data_dir) if data_dir else None
             self.instance_id = secrets.token_hex(16)
             self.auth = Auth(config["auth"], data_dir)
             self.origins = set(config["origins"])
@@ -99,9 +116,17 @@ class GatewayServer(ThreadingHTTPServer):
         else:
             # Listeners serve one gateway: shared sessions, pairing, limits and
             # mutable tunnel origins, with a single notification manager.
-            for name in ('bridge', 'notifications', 'instance_id', 'auth', 'origins', 'pairing', 'hosts', 'secure_hosts', 'web_dir', 'slots', 'ui_language_path'):
+            for name in ('bridge', 'harness', 'desktop_sessions', 'desktop_uploads', 'notifications', 'instance_id', 'auth', 'origins', 'pairing', 'hosts', 'secure_hosts', 'web_dir', 'slots', 'ui_language_path'):
                 setattr(self, name, getattr(shared, name))
-        super().__init__(address, Handler)
+        try:
+            super().__init__(address, Handler)
+        except OSError:
+            if shared is None:
+                if self.harness:
+                    self.harness.close()
+                if self.desktop_sessions:
+                    self.desktop_sessions.close()
+            raise
 
     def ui_language(self):
         try:
@@ -220,7 +245,7 @@ class Handler(BaseHTTPRequestHandler):
             raise PermissionError("不允许跨站请求")
         # External links may open the public HTML shell. Fetches, embedded pages
         # and API requests must still pass the cross-site restriction.
-        homepage_navigation = (not write and self.command == 'GET' and urlsplit(self.path).path == '/'
+        homepage_navigation = (not write and self.command == 'GET' and urlsplit(self.path).path in ('/', '/harness', '/harness/')
                                and self.headers.get('Sec-Fetch-Mode') == 'navigate'
                                and self.headers.get('Sec-Fetch-Dest') == 'document')
         if self.headers.get("Sec-Fetch-Site") == "cross-site" and not homepage_navigation:
@@ -260,8 +285,25 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         self.handle_method(True)
 
+    def do_HEAD(self):
+        self.harness_method()
+
+    def do_PUT(self):
+        self.harness_method()
+
+    do_PATCH = do_PUT
+    do_DELETE = do_PUT
+
+    def harness_method(self):
+        if urlsplit(self.path).path.startswith('/harness/'):
+            self.handle_method(self.command not in ('GET', 'HEAD'))
+        else:
+            self.send_error(405)
+
     def handle_method(self, write):
         try:
+            if urlsplit(self.path).path == '/harness' or urlsplit(self.path).path.startswith('/harness/'):
+                return harness_proxy(self)
             if not write and self.path == '/api/health':
                 expected = {'127.0.0.1:' + str(self.server.server_port), 'localhost:' + str(self.server.server_port)}
                 if (self.client_address[0] != '127.0.0.1' or self.connection.getsockname()[0] != '127.0.0.1'
@@ -313,6 +355,88 @@ class Handler(BaseHTTPRequestHandler):
             auth = self.authorized(write)
             if not auth:
                 return
+            if path == '/api/clients':
+                manager = self.server.desktop_sessions
+                if manager is None:
+                    return self.output(503, {'error': '应用管理不可用'})
+                if write:
+                    value = self.read_json()
+                    if not isinstance(value, dict) or set(value) != {'provider', 'enabled'}:
+                        raise ValueError('应用开关无效')
+                    return self.output(200, manager.toggle_client(value))
+                return self.output(200, manager.clients())
+            desktop_upload = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude)/uploads(?:/([0-9a-f-]{36})/(thumb|preview))?', path)
+            if desktop_upload:
+                manager, uploads = self.server.desktop_sessions, self.server.desktop_uploads
+                if manager is None or uploads is None:
+                    return self.output(503, {'error': '桌面会话接入不可用'})
+                provider, identifier, operation = desktop_upload.groups()
+                manager.require_enabled(provider)
+                sid = query.get('sessionId', [None])[0]
+                scope = uploads.scope(provider, sid)
+                # Check the original desktop conversation before accepting files.
+                detail = manager.call(provider, 'detail', sid)
+                if not detail.get('session'):
+                    raise ValueError('会话标识无效')
+                if not write and operation == 'preview':
+                    artifact, variant = uploads.store.preview(scope, identifier, query.get('variant', ['thumb'])[0])
+                    return self.attachment_preview(artifact, variant)
+                if not write or operation == 'preview':
+                    return self.output(405, {'error': '请求方式无效'})
+                maximum = 1024 * 1024 if operation == 'thumb' else MAX_FILE
+                sizes = self.headers.get_all('Content-Length', [])
+                if self.headers.get('Transfer-Encoding') or len(sizes) != 1 or not sizes[0].isdigit() or not 0 < int(sizes[0]) <= maximum:
+                    raise ValueError('附件大小无效')
+                data = self.rfile.read(int(sizes[0]))
+                if len(data) != int(sizes[0]):
+                    raise ValueError('附件上传中断，请重试')
+                if operation == 'thumb':
+                    result = uploads.store.set_thumb(scope, identifier, data, int(query.get('width', ['0'])[0]), int(query.get('height', ['0'])[0]))
+                else:
+                    result = uploads.store.put(scope, query.get('id', [''])[0], query.get('name', [''])[0], data)
+                return self.output(200, result)
+            desktop_accounts = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude)/accounts', path)
+            if desktop_accounts:
+                manager = self.server.desktop_sessions
+                if manager is None:
+                    return self.output(503, {'error': '桌面会话接入不可用'})
+                value = self.read_json() if write else {'action': 'list'}
+                operation = value.get('action')
+                if operation not in (('details', 'switch') if write else ('list',)):
+                    return self.output(403, {'error': '添加、修改与删除账号请在电脑端完成。'})
+                if operation == 'switch' and self.server.auth.config.get('mode') == 'none':
+                    raise PermissionError('请启用密码保护后再切换账号')
+                return self.output(200, manager.client_accounts(desktop_accounts.group(1), {**value, 'operation': operation}))
+            desktop_notifications = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude)/notifications', path)
+            if desktop_notifications:
+                manager = self.server.desktop_sessions
+                if manager is None or self.server.notifications is None:
+                    return self.output(503, {'error': '桌面会话接入不可用'})
+                provider = desktop_notifications.group(1)
+                manager.require_enabled(provider)
+                sid = query.get('sessionId', [''])[0]
+                return self.output(200, self.server.notifications.policy(
+                    sid, 'desktop:' + provider, self.read_json() if write else None))
+            desktop_workspace = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude)/(workspace(?:/[a-z-]+)?|terminal)', path)
+            if path.startswith('/api/desktop-sessions/') and not desktop_workspace:
+                parts = path.strip('/').split('/')
+                manager = self.server.desktop_sessions
+                if manager is None:
+                    return self.output(503, {'error': '桌面会话接入不可用'})
+                if len(parts) != 4 or parts[2] not in ('deepseek', 'claude') or parts[3] not in (WRITES if write else READS):
+                    return self.output(404, {'error': '接口不存在'})
+                manager.require_enabled(parts[2])
+                body = self.read_json() if write else {}
+                sid = body.pop('sessionId', None) if write else query.get('sessionId', [None])[0]
+                if write and any(key in body for key in ('resolvedImages', 'resolvedFiles')):
+                    raise ValueError('附件格式无效')
+                if write and parts[3] == 'send' and 'attachments' in body:
+                    if self.server.desktop_uploads is None:
+                        return self.output(503, {'error': '桌面会话接入不可用'})
+                    body['resolvedImages'] = self.server.desktop_uploads.resolve(parts[2], sid, body.pop('attachments'))
+                return self.output(200, manager.call(parts[2], parts[3], sid, body))
+            if path == '/api/harness' and not write:
+                return self.output(200, self.server.harness.status() if self.server.harness else {'running': False, 'state': 'stopped', 'url': '/harness/'})
             if path == '/api/mobile/push':
                 manager = self.server.notifications
                 if manager is None:
@@ -428,7 +552,17 @@ class Handler(BaseHTTPRequestHandler):
                         config = save_notification_settings(manager.data_dir, body)
                     return self.output(200, {'pushplusEnabled': config['pushplusEnabled'],
                                              'hasPushplusToken': bool(config['pushplusToken'])})
-            bridge = self.server.bridge.for_host(query.get("host", ["local"])[0])
+            if desktop_workspace:
+                if self.server.desktop_sessions is None:
+                    return self.output(503, {'error': '桌面会话接入不可用'})
+                provider, operation = desktop_workspace.groups()
+                sid = query.get('sessionId', [''])[0]
+                bridge = self.server.desktop_sessions.workspace_bridge(provider, sid)
+                path = '/api/sessions/' + bridge.identifier + '/' + operation
+            else:
+                bridge = self.server.bridge.for_host(query.get("host", ["local"])[0])
+                if path.startswith('/api/sessions') and self.server.desktop_sessions:
+                    self.server.desktop_sessions.require_enabled('codex')
             side = query.get('side', [None])[0]
             if side is not None and self.server.auth.config.get('mode') == 'none':
                 raise PermissionError('侧边聊天需要启用网关密码保护')
@@ -496,10 +630,10 @@ class Handler(BaseHTTPRequestHandler):
                 if operation is None:
                     return self.output(200, bridge.workspace(thread_id, 'list', {'path': relative, 'hidden': query.get('hidden') == ['true'],
                         'search': query.get('search', [''])[0], 'offset': int(query.get('offset', ['0'])[0])}))
-                result = bridge.workspace(thread_id, operation, {'path': relative})
                 if operation == 'download':
-                    return self.output(200, base64.b64decode(result['data']), 'application/octet-stream',
-                        content_disposition="attachment; filename*=UTF-8''" + quote(result['name'], safe=''))
+                    with bridge.workspace(thread_id, 'download-stream', {'path': relative, **self.download_request()}) as (metadata, stream):
+                        return self.download_response(metadata, stream)
+                result = bridge.workspace(thread_id, operation, {'path': relative})
                 return self.output(200, result)
             file_match = re.fullmatch(r"/api/sessions/([0-9a-f-]{36})/files/([a-f0-9]{64})", path)
             if not write and file_match:
@@ -649,22 +783,52 @@ class Handler(BaseHTTPRequestHandler):
 
     def download(self, bridge, thread_id, artifact_id):
         artifact = bridge.artifact(thread_id, artifact_id)
-        data = artifact["path"].read_bytes()
-        self.send_response(200)
+        path = artifact['path']
+        # Walk the authorized absolute path without following replaced parent
+        # symlinks; retain the established 50 MiB artifact limit.
+        with Workspace(path.anchor).download(path.relative_to(path.anchor).as_posix(),
+                limit=50 * 1024 * 1024, **self.download_request()) as (metadata, stream):
+            mime = mimetypes.guess_type(artifact['name'])[0] if artifact['image'] else None
+            return self.download_response(metadata, stream, mime or 'application/octet-stream',
+                                          'inline' if artifact['image'] else 'attachment')
+
+    def download_request(self):
+        # Duplicate Range fields are an unsupported multi-range request.
+        return {'range_header': ','.join(self.headers.get_all('Range', [])),
+                'if_range': ','.join(self.headers.get_all('If-Range', []))}
+
+    def download_response(self, metadata, stream, mime='application/octet-stream', disposition='attachment'):
+        self.send_response(metadata['status'])
         self.headers_common()
-        mime = mimetypes.guess_type(artifact["name"])[0] if artifact["image"] else "application/octet-stream"
-        self.send_header("Content-Type", mime or "application/octet-stream")
-        self.send_header("Content-Length", str(len(data)))
-        disposition = "inline" if artifact["image"] else "attachment"
-        self.send_header("Content-Disposition", disposition + "; filename*=UTF-8''" + quote(artifact["name"], safe=""))
+        self.send_header('Content-Type', mime)
+        self.send_header('Content-Length', str(metadata['length']))
+        self.send_header('Accept-Ranges', 'bytes')
+        self.send_header('ETag', metadata['etag'])
+        if metadata.get('contentRange'):
+            self.send_header('Content-Range', metadata['contentRange'])
+        self.send_header('Content-Disposition', disposition + "; filename*=UTF-8''" + quote(metadata['name'], safe=''))
+        token = self.token()
+        if token and self.server.auth.get(token): self.send_header('Set-Cookie', self.cookie(token))
         self.end_headers()
-        self.wfile.write(data)
+        try:
+            remaining = metadata['length']
+            while remaining:
+                chunk = stream.read(min(65536, remaining))
+                if not chunk: raise OSError('Download snapshot ended early')
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
+        except OSError:
+            # Never append a JSON error to an already-started binary response.
+            self.close_connection = True
 
     def upload_preview(self, bridge, thread_id, upload_id, variant='thumb', side=None):
         artifact, served_variant = bridge.side_attachment(thread_id, side, 'preview', upload_id, variant) if side is not None else bridge.upload_preview(thread_id, upload_id, variant)
+        return self.attachment_preview(artifact, served_variant, private=side is not None)
+
+    def attachment_preview(self, artifact, served_variant, private=False):
         data = Path(artifact["previewPath"]).read_bytes()
         etag = '"' + artifact["previewSha256"] + '"'
-        cache_control = 'private, no-store' if side is not None or served_variant == 'fallback-original' else 'private, max-age=31536000, immutable'
+        cache_control = 'private, no-store' if private or served_variant == 'fallback-original' else 'private, max-age=31536000, immutable'
         if self.headers.get("If-None-Match") == etag:
             self.send_response(304)
             self.headers_common(cache_control)

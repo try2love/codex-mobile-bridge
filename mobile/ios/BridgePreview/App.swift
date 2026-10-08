@@ -65,13 +65,34 @@ final class GatewayReachability: NSObject, URLSessionDataDelegate {
     }
 }
 
-final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, UIDocumentPickerDelegate {
+final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelegate, UIDocumentPickerDelegate {
     private var web: WKWebView?
     private var origin = ""
     private var clipboardToken = ""
-    private var artifactDownload: WKDownload?
-    private var downloadStarting = false
-    private var downloadFile: URL?
+    private var downloadState = DownloadManager.Snapshot()
+    private let downloadPanel = DownloadPanel()
+    private var exportPicker: UIDocumentPickerViewController?
+    private var downloadBottom: NSLayoutConstraint?
+    private lazy var downloads: DownloadManager = {
+        let manager = DownloadManager()
+        manager.onChange = { [weak self] state in
+            guard let self else { return }; self.downloadState = state; self.downloadPanel.render(state)
+            self.view.bringSubviewToFront(self.downloadPanel)
+        }
+        manager.credentials = { [weak self] address, target, done in
+            guard let self, self.saved.contains(address), DownloadManager.allows(target, origin: address) else { done(nil); return }
+            WKWebsiteDataStore.default().httpCookieStore.getAllCookies { [weak self] cookies in
+                guard let self, self.saved.contains(address) else { done(nil); return }
+                let matching = cookies.filter { cookie in
+                    cookie.name == "codex_mobile_session" && cookie.path == "/" &&
+                    cookie.domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")) == target.host &&
+                    (!cookie.isSecure || target.scheme == "https") && (cookie.expiresDate == nil || cookie.expiresDate! > Date())
+                }
+                done(matching.isEmpty ? nil : HTTPCookie.requestHeaderFields(with: matching)["Cookie"])
+            }
+        }
+        return manager
+    }()
     private var uploadPicker: UIDocumentPickerViewController?
     private var uploadCompletion: (([URL]?) -> Void)?
     private var uploadGeneration = 0
@@ -109,14 +130,14 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         '.bridge-mobile .list-heading { min-height: 56px; padding-right: 48px; }',
         '.bridge-mobile .list-heading button { height: 48px; display: inline-flex; align-items: center; justify-content: center; margin: 0; }',
         '.bridge-mobile .chat-head { min-height: 56px; padding: 4px 64px 4px 8px; gap: 6px; }',
-        '.bridge-mobile .chat-head .appearance-button, .bridge-mobile .list-actions .appearance-button { display: none; }',
+        '.bridge-mobile .chat-head .appearance-button, .bridge-mobile .list-actions .appearance-button, .bridge-mobile .list-more { display: none !important; }',
         '.bridge-mobile #back { width: 40px; height: 48px; padding: 8px; margin-left: 0; flex: none; }',
-        '.bridge-mobile .sidebar-foot { order: 99; flex: none; min-height: 44px; padding: 2px 16px max(4px, env(safe-area-inset-bottom)); background: var(--page); }',
+        '.bridge-mobile .sidebar-foot:not(.client-functions) { order: 99; flex: none; min-height: 44px; padding: 2px 16px max(4px, env(safe-area-inset-bottom)); background: var(--page); }',
         '.bridge-mobile:not(.bridge-authenticated) .sidebar-foot { display: none; }',
         '.bridge-mobile body.chat-detail > .sidebar-foot { display: none; }',
         '.bridge-mobile body.chat-detail .composer { padding-bottom: max(8px, env(safe-area-inset-bottom)); }',
         '.bridge-mobile .sidebar-foot #logout { display: none; }',
-        '.bridge-mobile .sidebar-foot button, .bridge-mobile .sidebar-foot a { min-height: 40px; display: inline-flex; align-items: center; text-decoration: none; }',
+        '.bridge-mobile .sidebar-foot:not(.client-functions) button, .bridge-mobile .sidebar-foot:not(.client-functions) a { min-height: 40px; display: inline-flex; align-items: center; text-decoration: none; }',
         '.bridge-mobile .sidebar-foot > span { display: none; }',
         '.bridge-mobile .composer { padding-bottom: 8px; }',
         '.bridge-mobile input:not([type=checkbox]):not([type=radio]), .bridge-mobile textarea { font-size: max(16px, 1em); }'
@@ -137,7 +158,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         labelAccount();
       }
       const footer = document.querySelector('.sidebar-foot');
-      if (footer) {
+      if (footer && !document.querySelector('.client-navigation')) {
         document.body.appendChild(footer);
         const home = document.createElement('a'); home.href = 'codexbridge://home'; home.className = 'plain bridge-home'; home.dataset.i18n = '返回电脑列表'; home.textContent = typeof BridgeI18n !== 'undefined' ? BridgeI18n.t('返回电脑列表') : '返回电脑列表';
         footer.appendChild(home);
@@ -239,6 +260,20 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         updateGatewayMenu()
         gatewayMenu.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(gatewayMenu)
         NSLayoutConstraint.activate([gatewayMenu.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -8), gatewayMenu.widthAnchor.constraint(equalToConstant: 48), gatewayMenu.heightAnchor.constraint(equalToConstant: 48)])
+        downloadPanel.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(downloadPanel)
+        downloadPanel.onToggle = { [weak self] in
+            guard let self else { return }
+            if [.connecting, .downloading].contains(self.downloadState.phase) { self.downloads.pause() }
+            else if self.downloadState.canResume { self.downloads.resume() } else { self.downloads.restart() }
+        }
+        downloadPanel.onCancel = { [weak self] in self?.downloads.cancel() }
+        downloadPanel.onSave = { [weak self] in self?.saveDownload() }
+        downloadBottom = downloadPanel.bottomAnchor.constraint(equalTo: page.bottomAnchor, constant: -16)
+        let downloadWidth = downloadPanel.widthAnchor.constraint(equalToConstant: 360); downloadWidth.priority = .defaultHigh
+        NSLayoutConstraint.activate([downloadBottom!, downloadWidth,
+            downloadPanel.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
+            downloadPanel.leadingAnchor.constraint(greaterThanOrEqualTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12)])
+        downloadPanel.render(downloadState)
         if let active = defaults.string(forKey: "active"), saved.contains(active) { openSaved(active) } else { home() }
         NotificationCenter.default.addObserver(self, selector: #selector(active), name: UIApplication.didBecomeActiveNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(inactive), name: UIApplication.willResignActiveNotification, object: nil)
@@ -262,6 +297,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         }
         // Use actual occlusion, not keyboardLayoutGuide's stale post-dismissal height.
         pageBottom.constant = -overlap
+        downloadBottom?.constant = -(overlap > 0 ? 12 : max(12, view.safeAreaInsets.bottom + 8))
         gatewayMenuTop?.constant = 4
     }
     @objc private func keyboardChanged(_ notification: Notification) {
@@ -301,10 +337,15 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         NSLayoutConstraint.activate([content.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 20), content.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -28), content.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 20), content.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -20), content.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor, constant: -40)])
         return content
     }
+    private func openAccounts() {
+        guard let web, let current = web.url, GatewayURL.same(current, origin) else { return }
+        web.evaluateJavaScript("(()=>{if(typeof window.BridgeNavigation?.accounts==='function')return window.BridgeNavigation.accounts();document.getElementById('accounts-button')?.click();return true;})()")
+    }
     private func updateGatewayMenu() {
         gatewayMenu.accessibilityLabel = MobileStrings.text("电脑与通知")
         gatewayMenu.menu = UIMenu(children: [
             UIAction(title: MobileStrings.text("返回电脑列表"), image: UIImage(systemName: "desktopcomputer")) { [weak self] _ in self?.home() },
+            UIAction(title: MobileStrings.text("账号与接入"), image: UIImage(systemName: "person.crop.circle")) { [weak self] _ in self?.openAccounts() },
             UIAction(title: MobileStrings.text("在灵动岛显示此聊天"), image: UIImage(systemName: "capsule")) { [weak self] _ in self?.startLiveActivity() },
             UIAction(title: MobileStrings.text("结束灵动岛显示"), image: UIImage(systemName: "xmark.circle")) { _ in if #available(iOS 16.2, *) { Task { await LiveActivityController.shared.stop() } } },
             UIAction(title: MobileStrings.text("通知收件箱"), image: UIImage(systemName: "bell")) { [weak self] _ in self?.inbox() },
@@ -325,7 +366,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         let inbox = UIBarButtonItem(image: UIImage(systemName: "bell"), style: .plain, target: self, action: #selector(self.inbox)); inbox.accessibilityLabel = MobileStrings.text("通知")
         navigationItem.rightBarButtonItems = [settings, inbox]
     }
-    private func clear() { finishUpload(nil); stopComputerChecks(); computerStates.removeAll(); artifactDownload?.cancel { _ in }; artifactDownload = nil; downloadStarting = false; removeDownloadFile(); gatewayMenuTop?.isActive = false; gatewayMenuTop = nil; generation += 1; web?.stopLoading(); web?.navigationDelegate = nil; web?.uiDelegate = nil; web = nil; for v in page.arrangedSubviews where v !== subtitle { page.removeArrangedSubview(v); v.removeFromSuperview() } }
+    private func clear() { finishUpload(nil); stopComputerChecks(); computerStates.removeAll(); gatewayMenuTop?.isActive = false; gatewayMenuTop = nil; generation += 1; web?.stopLoading(); web?.navigationDelegate = nil; web?.uiDelegate = nil; web = nil; for v in page.arrangedSubviews where v !== subtitle { page.removeArrangedSubview(v); v.removeFromSuperview() } }
     @objc func home() {
         clear(); navigation(home: true); subtitle.isHidden = true
         let container = UIView(); page.addArrangedSubview(container); let content = scrollContent(in: container)
@@ -464,54 +505,23 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         completionHandler("copied")
     }
     private func isArtifact(_ url: URL) -> Bool {
-        GatewayURL.same(url, origin) && url.path.range(of: "^/api/sessions/[0-9a-f-]{36}/(?:files/[a-f0-9]{64}|workspace/download)$", options: .regularExpression) != nil
+        DownloadManager.allows(url, origin: origin)
     }
     private func downloadArtifact(_ request: URLRequest) {
-        guard !downloadStarting, artifactDownload == nil, downloadFile == nil else { info(MobileStrings.text("已有下载进行中，请稍候")); return }
-        guard let web, let url = request.url, isArtifact(url) else { return }
-        let ticket = generation; downloadStarting = true; subtitle.text = MobileStrings.text("正在下载…"); subtitle.isHidden = false
-        web.startDownload(using: request) { [weak self] download in
-            guard let self, ticket == self.generation else { download.cancel { _ in }; return }
-            self.downloadStarting = false; self.artifactDownload = download; download.delegate = self
-        }
+        guard !downloadState.busy else { downloadPanel.expand(); info(MobileStrings.text("已有下载进行中，请稍候")); return }
+        guard let url = request.url, isArtifact(url) else { return }
+        downloadPanel.expand(); downloads.start(url, origin: origin)
     }
-    private func removeDownloadFile() {
-        if let file = downloadFile { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
-        downloadFile = nil
-    }
-    private func downloadError(_ message: String) {
-        artifactDownload = nil; downloadStarting = false; removeDownloadFile(); subtitle.isHidden = true; info(message)
-    }
-    func download(_ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
-        guard download === artifactDownload else { completionHandler(nil); return }
-        guard let url = response.url, isArtifact(url),
-              let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            completionHandler(nil); downloadError(MobileStrings.text("下载失败，请检查登录状态后重试")); return
-        }
-        guard response.expectedContentLength <= 50 * 1024 * 1024 else { completionHandler(nil); downloadError(MobileStrings.text("附件超过 50 MB 下载限制")); return }
-        do {
-            let folder = FileManager.default.temporaryDirectory.appendingPathComponent("bridge-download-" + UUID().uuidString, isDirectory: true)
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            let name = (suggestedFilename.replacingOccurrences(of: "\\", with: "/") as NSString).lastPathComponent
-            let file = folder.appendingPathComponent(name.isEmpty || name == "." || name == ".." ? "download" : name)
-            downloadFile = file; completionHandler(file)
-        } catch { completionHandler(nil); downloadError(MobileStrings.text("无法保存下载文件，请检查剩余空间")) }
-    }
-    func download(_ download: WKDownload, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, decisionHandler: @escaping (WKDownload.RedirectPolicy) -> Void) {
-        decisionHandler(.cancel)
-        if download === artifactDownload { downloadError(MobileStrings.text("下载地址发生跳转，已取消。请重新打开电脑附件。")) }
-    }
-    func downloadDidFinish(_ download: WKDownload) {
-        guard download === artifactDownload, let file = downloadFile else { return }
-        artifactDownload = nil; subtitle.isHidden = true
+    private func saveDownload() {
+        guard downloadState.phase == .complete, let file = downloadState.file, presentedViewController == nil else { return }
         let picker = UIDocumentPickerViewController(forExporting: [file], asCopy: true); picker.delegate = self
+        exportPicker = picker
         present(picker, animated: true)
-    }
-    func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
-        guard download === artifactDownload else { return }; downloadError(MobileStrings.text("下载失败，请检查网络后重试"))
     }
     // Older iOS versions keep WebKit's built-in uploader. iOS 18.4+ supports
     // an explicit document picker with readable, imported copies and multi-selection.
+    // Xcode 16.3 (Swift 6.1) is the first SDK that declares this iOS API.
+    #if compiler(>=6.1)
     @available(iOS 18.4, *)
     func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor @Sendable ([URL]?) -> Void) {
         guard webView === web, frame.isMainFrame, let source = frame.request.url, GatewayURL.same(source, origin),
@@ -522,12 +532,14 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         uploadPicker = picker; uploadCompletion = completionHandler; uploadGeneration = generation
         present(picker, animated: true)
     }
+    #endif
     private func finishUpload(_ urls: [URL]?) {
         let completion = uploadCompletion; uploadCompletion = nil; uploadPicker = nil
         completion?(urls)
     }
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-        guard controller === uploadPicker else { removeDownloadFile(); return }
+        if controller === exportPicker { exportPicker = nil; if !urls.isEmpty { downloads.markSaved() }; return }
+        guard controller === uploadPicker else { return }
         guard uploadGeneration == generation, let current = web?.url, GatewayURL.same(current, origin) else { finishUpload(nil); return }
         guard !urls.isEmpty, urls.allSatisfy({ $0.isFileURL && FileManager.default.isReadableFile(atPath: $0.path) }) else {
             finishUpload(nil)
@@ -537,7 +549,8 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         finishUpload(urls)
     }
     func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
-        if controller === uploadPicker { finishUpload(nil) } else { removeDownloadFile() }
+        if controller === uploadPicker { finishUpload(nil) }
+        if controller === exportPicker { exportPicker = nil }
     }
     func openLink(_ url: URL) {
         guard let c = URLComponents(url: url, resolvingAgainstBaseURL: false), c.scheme == "codexbridge", c.host == "open" else { return }
@@ -553,14 +566,29 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             let host = target.host ?? ""
             let matching = cookies.filter { cookie in cookie.name == "codex_mobile_session" && cookie.domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")) == host && (!cookie.isSecure || target.scheme == "https") && (cookie.expiresDate == nil || cookie.expiresDate! > Date()) }
             guard !matching.isEmpty else { done(.failure(NSError(domain: "Bridge", code: 401, userInfo: [NSLocalizedDescriptionKey: MobileStrings.text("请先连接并登录电脑网关")]))); return }
-            var request = URLRequest(url: target); request.setValue(address, forHTTPHeaderField: "Origin"); request.setValue(HTTPCookie.requestHeaderFields(with: matching)["Cookie"], forHTTPHeaderField: "Cookie")
+            var request = URLRequest(url: target); request.setValue(address, forHTTPHeaderField: "Origin"); request.setValue(HTTPCookie.requestHeaderFields(with: matching)["Cookie"], forHTTPHeaderField: "Cookie"); request.setValue("BridgeMobile/0.1-iOS", forHTTPHeaderField: "User-Agent")
             self.session.dataTask(with: request) { data, response, error in
                 let code = (response as? HTTPURLResponse)?.statusCode
                 let result: Result<[String: Any], Error>
                 if let error { result = .failure(error) }
                 else if code == 200, let data, data.count <= 512000, let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { result = .success(value) }
                 else { result = .failure(NSError(domain: "Bridge", code: code ?? 0, userInfo: [NSLocalizedDescriptionKey: code == 401 || code == 403 ? MobileStrings.text("登录已失效，请重新连接电脑") : MobileStrings.text("请使用配套电脑 Preview，并检查连接")])) }
-                DispatchQueue.main.async { if ticket == self.generation { done(result) } else { self.loading = false } }
+                DispatchQueue.main.async {
+                    guard ticket == self.generation else { self.loading = false; return }
+                    guard code == 200, let response = response as? HTTPURLResponse,
+                          let responseURL = response.url, GatewayURL.same(responseURL, address),
+                          let headers = response.allHeaderFields as? [String: String],
+                          let renewed = HTTPCookie.cookies(withResponseHeaderFields: headers, for: target).first(where: { cookie in
+                              cookie.name == "codex_mobile_session" && cookie.domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")) == host && cookie.path == "/" && matching.contains(where: { $0.name == cookie.name && $0.value == cookie.value })
+                          }) else { done(result); return }
+                    let store = WKWebsiteDataStore.default().httpCookieStore
+                    store.getAllCookies { current in
+                        guard ticket == self.generation else { self.loading = false; return }
+                        // Do not resurrect a removed connection or replace a newer login.
+                        guard self.saved.contains(address), current.contains(where: { $0.name == renewed.name && $0.value == renewed.value && $0.domain == renewed.domain && $0.path == renewed.path }) else { done(result); return }
+                        store.setCookie(renewed) { if ticket == self.generation { done(result) } else { self.loading = false } }
+                    }
+                }
             }.resume()
         }
     }
@@ -614,7 +642,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         }
     } }
     @objc private func active() { checkComputers(); foregroundBaselines.removeAll();sync(); activityTimer?.invalidate(); activityTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.syncLiveActivity() }; syncLiveActivity(); timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in self?.sync() } }
-    @objc private func inactive() { stopComputerChecks(); timer?.invalidate(); timer = nil; activityTimer?.invalidate(); activityTimer = nil; if #available(iOS 16.2, *) { Task { await LiveActivityController.shared.pause() } } }
+    @objc private func inactive() { downloads.pause(); stopComputerChecks(); timer?.invalidate(); timer = nil; activityTimer?.invalidate(); activityTimer = nil; if #available(iOS 16.2, *) { Task { await LiveActivityController.shared.pause() } } }
     private func sync() {
         registerNativePush()
         guard UIApplication.shared.applicationState == .active, !loading else { return }
@@ -802,6 +830,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         a.addAction(UIAlertAction(title: MobileStrings.text("取消"), style: .cancel))
         a.addAction(UIAlertAction(title: MobileStrings.text("移除"), style: .destructive) { _ in
             let revision = self.generation
+            self.downloads.cancel(origin: target)
             self.revokeConnection(target) {
                 if target == self.origin, #available(iOS 16.2, *) { Task { await LiveActivityController.shared.stop() } }
                 self.defaults.set(self.saved.filter { $0 != target }, forKey: "origins")
@@ -817,6 +846,75 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
     }
     private func scan() {
         AVCaptureDevice.requestAccess(for: .video) { allowed in DispatchQueue.main.async { guard allowed else { self.info(MobileStrings.text("未获得相机权限，请粘贴网关地址。")); return }; let scanner = Scanner(); scanner.result = { [weak self] value in self?.dismiss(animated: true) { self?.choose(value) } }; self.present(scanner, animated: true) } }
+    }
+}
+
+final class DownloadPanel: UIView {
+    var onToggle: (() -> Void)?
+    var onCancel: (() -> Void)?
+    var onSave: (() -> Void)?
+    private let title = UILabel()
+    private let detail = UILabel()
+    private let status = UILabel()
+    private let progress = UIProgressView(progressViewStyle: .default)
+    private let content = UIStackView()
+    private let toggle = UIButton(type: .system)
+    private let save = UIButton(type: .system)
+    private let cancel = UIButton(type: .system)
+    private let collapse = UIButton(type: .system)
+    private var collapsed = false
+    private var state = DownloadManager.Snapshot()
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .secondarySystemGroupedBackground
+        layer.cornerRadius = 16; layer.borderWidth = 0.5; layer.borderColor = UIColor.separator.cgColor
+        layer.shadowColor = UIColor.black.cgColor; layer.shadowOpacity = 0.12; layer.shadowRadius = 12; layer.shadowOffset = CGSize(width: 0, height: 4)
+        tintColor = UIColor(red: 0.24, green: 0.42, blue: 0.68, alpha: 1)
+        let stack = UIStackView(); stack.axis = .vertical; stack.spacing = 6; stack.translatesAutoresizingMaskIntoConstraints = false; addSubview(stack)
+        NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14), stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10), stack.topAnchor.constraint(equalTo: topAnchor, constant: 8), stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10)])
+        let header = UIStackView(); header.axis = .horizontal; header.spacing = 8; header.alignment = .center
+        let icon = UIImageView(image: UIImage(systemName: "arrow.down.circle")); icon.tintColor = tintColor; icon.contentMode = .scaleAspectFit
+        icon.widthAnchor.constraint(equalToConstant: 22).isActive = true
+        title.font = .preferredFont(forTextStyle: .subheadline); title.lineBreakMode = .byTruncatingMiddle; title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        collapse.widthAnchor.constraint(equalToConstant: 44).isActive = true; collapse.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        collapse.addAction(UIAction { [weak self] _ in guard let self else { return }; self.collapsed.toggle(); self.render(self.state) }, for: .touchUpInside)
+        header.addArrangedSubview(icon); header.addArrangedSubview(title); header.addArrangedSubview(collapse); stack.addArrangedSubview(header)
+        content.axis = .vertical; content.spacing = 7; stack.addArrangedSubview(content)
+        detail.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular); detail.textColor = .secondaryLabel; detail.numberOfLines = 2
+        status.font = .preferredFont(forTextStyle: .caption1); status.textColor = .secondaryLabel; status.numberOfLines = 2
+        progress.progressTintColor = tintColor; progress.trackTintColor = .tertiarySystemFill
+        content.addArrangedSubview(detail); content.addArrangedSubview(progress); content.addArrangedSubview(status)
+        let actions = UIStackView(); actions.axis = .horizontal; actions.spacing = 8; actions.distribution = .fillEqually; content.addArrangedSubview(actions)
+        for button in [toggle, save, cancel] {
+            var config = UIButton.Configuration.tinted(); config.cornerStyle = .medium
+            config.baseForegroundColor = tintColor; config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in var output = incoming; output.font = .systemFont(ofSize: 14, weight: .medium); return output }
+            button.configuration = config; button.heightAnchor.constraint(greaterThanOrEqualToConstant: 40).isActive = true; actions.addArrangedSubview(button)
+        }
+        toggle.addAction(UIAction { [weak self] _ in self?.onToggle?() }, for: .touchUpInside)
+        cancel.addAction(UIAction { [weak self] _ in self?.onCancel?() }, for: .touchUpInside)
+        save.addAction(UIAction { [weak self] _ in self?.onSave?() }, for: .touchUpInside)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    func expand() { collapsed = false; render(state) }
+    func render(_ state: DownloadManager.Snapshot) {
+        self.state = state; isHidden = !state.visible; content.isHidden = collapsed
+        let percentage = state.total.map { $0 == 0 ? 100 : min(100, Int(Double(state.received) / Double($0) * 100)) }
+        let phases: [DownloadManager.Phase: String] = [.connecting: "正在连接…", .downloading: "正在下载…", .paused: "已暂停", .failed: "下载未完成", .complete: "下载完成，待保存", .saved: "已保存", .idle: "", .cancelled: "已取消"]
+        let phase = MobileStrings.text(phases[state.phase] ?? "")
+        title.text = state.name + (collapsed ? " · " + (state.phase == .downloading ? percentage.map { "\($0)%" } ?? phase : phase) : "")
+        title.accessibilityLabel = state.name
+        collapse.setImage(UIImage(systemName: collapsed ? "chevron.up" : "chevron.down"), for: .normal)
+        collapse.accessibilityLabel = MobileStrings.text(collapsed ? "展开下载" : "收起下载")
+        func bytes(_ value: Int64) -> String { ByteCountFormatter.string(fromByteCount: value, countStyle: .file) }
+        detail.text = bytes(state.received) + (state.total.map { " / " + bytes($0) } ?? "") +
+            (percentage.map { " · \($0)%" } ?? "") + (state.phase == .downloading ? " · " + bytes(Int64(max(0, state.speed))) + "/s" : "")
+        status.text = state.message.isEmpty ? phase : MobileStrings.text(state.message)
+        progress.isHidden = state.total == nil
+        progress.progress = state.total.map { $0 == 0 ? 1 : Float(Double(state.received) / Double($0)) } ?? 0
+        toggle.isHidden = ![.connecting, .downloading, .paused, .failed].contains(state.phase)
+        toggle.configuration?.title = MobileStrings.text([.connecting, .downloading].contains(state.phase) ? "暂停" : state.canResume ? "继续下载" : "重新下载")
+        save.isHidden = state.phase != .complete; save.configuration?.title = MobileStrings.text("保存到文件")
+        cancel.configuration?.title = MobileStrings.text(state.phase == .saved ? "关闭" : "取消下载")
     }
 }
 
@@ -842,6 +940,27 @@ final class Scanner: UIViewController, AVCaptureMetadataOutputObjectsDelegate {
 // Product strings only. Chat content and server-provided names are not translated.
 enum MobileStrings {
     static let values: [String: String] = [
+        "正在连接…": "Connecting…",
+        "已暂停": "Paused",
+        "下载未完成": "Download incomplete",
+        "下载完成，待保存": "Downloaded · ready to save",
+        "已保存": "Saved",
+        "已取消": "Cancelled",
+        "展开下载": "Expand download",
+        "收起下载": "Collapse download",
+        "暂停": "Pause",
+        "继续下载": "Resume",
+        "重新下载": "Restart",
+        "保存到文件": "Save to Files",
+        "取消下载": "Cancel download",
+        "关闭": "Close",
+        "当前服务器不支持续传，请重新下载": "This server cannot resume downloads. Restart the download.",
+        "下载响应格式不正确，请重新下载": "Invalid download response. Restart the download.",
+        "文件已变化，请重新下载": "The file changed. Restart the download.",
+        "网关不支持安全续传，请更新网关后重试": "Update the gateway to resume downloads safely.",
+        "文件已变化或服务器不支持续传，请重新下载": "The file changed or the server cannot resume it. Restart the download.",
+        "下载中断，可继续下载": "Download interrupted. You can resume it.",
+        "电脑暂时不可用，可继续下载": "Computer temporarily unavailable. You can resume the download.",
         "无法读取所选文件，请从系统文件选择器重新选择。": "Cannot read the selected file. Select it again using the system file picker.",
         "重命名": "Rename",
         "重命名电脑": "Rename computer",
@@ -901,7 +1020,6 @@ enum MobileStrings {
 "iOS 预览需要使用自己的 Apple 账号重新签名安装，暂不支持 App 内直接覆盖更新。": "The iOS preview requires signing the new build with your own Apple account. Direct in-app installation is not available yet.",
 
         "返回电脑列表": "Back to computers",
-        "账号与接入": "Accounts and connections",
         "外观与显示": "Appearance",
         "刷新页面": "Reload page",
         "好": "OK",
@@ -910,6 +1028,7 @@ enum MobileStrings {
         "扫码连接电脑": "Scan to connect",
         "输入网关地址": "Enter gateway address",
         "你的电脑": "Your computers",
+        "账号与接入": "Accounts & connections",
         "还没有连接的电脑": "No computers connected yet",
         "在电脑网关中展开“扫码登录”，然后用上方按钮扫描。": "Open “Scan to sign in” on your computer’s gateway, then scan using the button above.",
         "连接 ": "Connect ",

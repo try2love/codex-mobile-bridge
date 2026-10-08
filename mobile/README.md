@@ -15,7 +15,7 @@
 
 手机 App 中点击聊天的「复制」或「复制代码」可直接复制到系统剪贴板。iPhone App 内保持固定页面比例，正文大小可在「外观与显示」中调整。
 
-二维码只用于本次登录，不保存在电脑列表中。登录状态由系统 WebView 保存，受网关会话有效期和撤销规则约束。需要清除手机登录时，可在手机设置移除电脑，或在电脑端的「登录设备」撤销相应登录。
+二维码只用于本次登录，不保存在电脑列表中。登录状态由系统 WebView 保存；手机 App 使用受信任设备绑定，不受普通网页登录有效期影响，正常重启 App 或网关后仍可连接。需要清除手机登录时，可在手机设置移除电脑，或在电脑端的「登录设备」撤销相应登录。共享中继采用独立的 30 天授权，到期后需重新配对并由电脑批准。
 
 ## 折叠屏与平板分屏
 
@@ -89,7 +89,7 @@ Android 发现新版后显示说明，点击「下载 APK」在系统浏览器�
 
 ## 本地构建
 
-Android 构建脚本为 `scripts/build-mobile-android.py`，仅使用项目 `.tmp/mobile-tools` 中已准备好的 JDK、SDK 和 ZXing，不安装全局工具。原生地址边界验证运行 `python3 scripts/test-mobile-urls.py`；网关收件箱测试位于 `tests/test_mobile_events.py`。
+Android 构建脚本为 `scripts/build-mobile-android.py`，仅使用项目 `.tmp/mobile-tools` 中已准备好的 JDK、SDK 和 ZXing，不安装全局工具。原生地址边界验证运行 `python3 scripts/test-mobile-urls.py`；Android 后台会话续期验证运行 `python3 scripts/test-mobile-session.py`（需要 JDK，或指定 `JAVA_HOME`）；网关收件箱测试位于 `tests/test_mobile_events.py`。
 
 第三方依赖与许可证见 [NOTICE.md](NOTICE.md)。
 

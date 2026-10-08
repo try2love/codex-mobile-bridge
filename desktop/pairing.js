@@ -33,8 +33,8 @@ function renderPairingEntry(entry){
   if(!active)entry.image.removeAttribute('src');
   entry.status.textContent=entry.busy?t('正在检查连接并生成二维码…'):state==='used'?t('手机已登录，此二维码已失效。'):state==='expired'?t('二维码已过期，请刷新。'):active?t('剩余有效时间：')+Math.floor(remaining/60)+':'+String(remaining%60).padStart(2,'0'):'';
   entry.error.textContent=t(entry.errorMessage||'');entry.error.hidden=!entry.errorMessage;
-  entry.hint.textContent=t('使用手机相机扫码后在浏览器打开，即可登录。手机需要能访问此地址。');
-  entry.privacy.textContent=t('二维码 5 分钟内有效，仅可使用一次。持有码即可登录，请勿分享截图；收起或刷新会撤销旧码。登录后可使用 12 小时。');
+  entry.hint.textContent=t('使用手机 App 的“扫码连接电脑”扫描后即可登录，无需输入网关密码。也可以使用手机相机在浏览器中打开。手机需要能访问此地址。');
+  entry.privacy.textContent=t('二维码 5 分钟内有效，仅可使用一次。持有码即可登录，请勿分享截图；收起或刷新会撤销旧码。手机 App 绑定后可持续使用，直到退出登录或在“登录设备”中撤销；浏览器遵循登录有效期设置。');
   entry.refresh.textContent=t('刷新二维码');entry.refresh.disabled=entry.busy||!entry.running;
 }
 function renderPairing(){for(const entry of qrEntries.values())renderPairingEntry(entry);}

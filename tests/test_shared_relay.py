@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from relay.protocol import validate, origin, MAX_BODY
+from relay.protocol import validate, origin, MAX_BODY, download_headers
 from relay.registry import Registry
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -70,6 +70,15 @@ class RegistryTests(unittest.TestCase):
         self.r.revoke(a['deviceId'])
         with self.assertRaises(PermissionError): self.r.device(a['deviceToken'])
 
+    def test_desktop_account_access_and_attachments_keep_relay_boundaries(self):
+        for provider in ('claude', 'deepseek'):
+            root = '/api/desktop-sessions/'+provider+'/'
+            for method, action in [('GET', 'account'), ('GET', 'access'), ('POST', 'access'), ('POST', 'uploads'), ('GET', 'uploads/'+THREAD+'/preview'), ('POST', 'uploads/'+THREAD+'/thumb')]:
+                validate(method, root+action+'?sessionId=native')
+            for method, action in [('POST', 'account'), ('GET', 'uploads'), ('POST', 'uploads/'+THREAD+'/preview'), ('GET', 'uploads/'+THREAD+'/thumb'), ('GET', 'uploads/../../file')]:
+                with self.assertRaises(PermissionError):
+                    validate(method, root+action)
+
     def test_protocol_v2_routes_and_management_boundary(self):
         for method, action in [('GET','workspace/download?path=a.txt'), ('POST','workspace/upload?path=a.txt'), ('POST','terminal'), ('POST','side-chat'), ('GET','catalog?kind=skills'), ('POST','permissions')]:
             validate(method, '/api/sessions/'+THREAD+'/'+action)
@@ -77,6 +86,27 @@ class RegistryTests(unittest.TestCase):
             with self.assertRaises((ValueError, PermissionError)): validate('POST', path)
         with self.assertRaises(ValueError): validate('POST', '/api/sessions', MAX_BODY+1)
         with self.assertRaises(ValueError): origin('http://example.com')
+
+    def test_desktop_allowlist_keeps_configuration_and_streams_local(self):
+        for method in ('GET', 'POST'):
+            validate(method, '/api/clients')
+        for provider in ('claude', 'deepseek'):
+            for method, action in [('GET', 'list'), ('GET', 'detail'), ('GET', 'catalog'),
+                                   ('GET', 'projects'), ('POST', 'create'), ('POST', 'send'),
+                                   ('POST', 'respond'), ('POST', 'settings'), ('POST', 'stop'),
+                                   ('GET', 'workspace/download'), ('POST', 'workspace/upload'),
+                                   ('GET', 'workspace/git-status'), ('POST', 'workspace/git-action'),
+                                   ('GET', 'terminal'), ('POST', 'terminal')]:
+                validate(method, '/api/desktop-sessions/'+provider+'/'+action+'?sessionId=native-session')
+            for action in ('install', 'remove', 'status', 'scan', 'eval', 'restart', 'events', 'terminal/events'):
+                for method in ('GET', 'POST'):
+                    with self.assertRaises(PermissionError):
+                        validate(method, '/api/desktop-sessions/'+provider+'/'+action)
+            with self.assertRaises(PermissionError):
+                validate('GET', '/api/desktop-sessions/'+provider+'/send')
+        for path in ('/api/clients/scan', '/api/desktop-sessions/codex/list', '/api/desktop-sessions/arbitrary/list'):
+            with self.assertRaises(PermissionError):
+                validate('POST', path)
 
 
 try:
@@ -138,14 +168,14 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.sockets.append(ws)
         return ws
 
-    async def real_connector(self, device):
+    async def real_connector(self, device, desktop_sessions=None):
         directory = Path(self.temp.name)/device['deviceId']
         save_config(directory, {**device, 'url': self.url, 'enabled': True})
         bridge = SimpleNamespace(host_errors=[], list=lambda **kw: [{'title': device['deviceName'], 'id': THREAD}])
         bridge.create_chat = lambda project, title, identifier: self.created.append((device['deviceName'], identifier)) or {'id': identifier}
         bridge.for_host = lambda host: bridge
         bridge.terminal = lambda thread, owner, action, body: {'owner': owner, 'action': action}
-        gateway = SimpleNamespace(bridge=bridge, web_dir=ROOT/'web', notifications=None)
+        gateway = SimpleNamespace(bridge=bridge, web_dir=ROOT/'web', notifications=None, desktop_sessions=desktop_sessions)
         connector = Connector(directory, gateway, test_http=True)
         connector.start(); self.connectors.append(connector)
         for _ in range(100):
@@ -179,6 +209,79 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.get('/api/sessions', headers={**p,'Host':'evil.test'})).status, 401)
         self.assertEqual((await self.client.get('/api/accounts', headers=p)).status, 401)
         self.assertEqual((await self.client.get('/api/auth', headers=p)).status, 200)
+
+    async def test_native_clients_sessions_files_and_terminal_share_authenticated_manager(self):
+        a = await self.device('Alice')
+        calls, uploads = [], []
+        enabled = {'claude': True, 'deepseek': True}
+        def require(provider):
+            if not enabled[provider]:
+                raise ValueError('disabled client')
+        def control(value):
+            calls.append(('toggle', value))
+            enabled[value['provider']] = value['enabled']
+            return {'clients': [{'id': key, 'enabled': value} for key, value in enabled.items()]}
+        def call(provider, action, sid, body):
+            require(provider)
+            calls.append((provider, action, sid, body))
+            return {'provider': provider, 'sessions': [{'id': 'native-session'}]}
+        data = bytes(range(256))
+        root = Path(self.temp.name) / 'native-workspace'; root.mkdir()
+        (root / 'example.bin').write_bytes(data)
+        def workspace(provider, sid):
+            require(provider)
+            self.assertEqual(sid, 'native-session')
+            def files(thread, action, body):
+                if action == 'upload':
+                    uploads.append(base64.b64decode(body['encoded']))
+                    return {'ok': True}
+                if action == 'download-stream':
+                    from bridge.workspace import operate
+                    return operate(root, action, body)
+                return {'data': base64.b64encode(data).decode(), 'name': 'example.bin'}
+            return SimpleNamespace(identifier=THREAD, workspace=files,
+                                   terminal=lambda thread, owner, action, body: {'owner': owner, 'provider': provider, 'action': action})
+        manager = SimpleNamespace(clients=lambda: {'clients': [{'id': 'deepseek', 'enabled': True}]},
+                                  toggle_client=control, require_enabled=require, call=call, workspace_bridge=workspace)
+        connector = await self.real_connector(a, manager)
+        self.assertIs(connector.server.desktop_sessions, manager)
+        p, other = await self.phone(a), await self.phone(a)
+        self.assertEqual((await self.client.get('/api/clients')).status, 401)
+        self.assertEqual((await self.client.get('/api/clients', headers=p)).status, 200)
+        response = await self.client.get('/api/desktop-sessions/claude/list', headers=p)
+        self.assertEqual(response.status, 200)
+        self.assertEqual((await response.json())['provider'], 'claude')
+        bad_csrf = {**p, 'X-CSRF-Token': 'incorrect'}
+        self.assertEqual((await self.client.post('/api/clients', json={'provider': 'deepseek', 'enabled': False}, headers=bad_csrf)).status, 401)
+        for provider in ('claude', 'deepseek'):
+            base = '/api/desktop-sessions/'+provider+'/'
+            response = await self.client.post(base+'send', json={'sessionId': 'native-session', 'id': THREAD, 'text': 'hello'}, headers=p)
+            self.assertEqual(response.status, 200)
+            self.assertIn((provider, 'send', 'native-session', {'id': THREAD, 'text': 'hello'}), calls)
+            download = await self.client.get(base+'workspace/download?sessionId=native-session&path=example.bin', headers=p)
+            self.assertEqual(await download.read(), data)
+            self.assertIn('example.bin', download.headers['Content-Disposition'])
+            ranged = await self.client.get(base+'workspace/download?sessionId=native-session&path=example.bin',
+                                          headers={**p, 'Range': 'bytes=64-127', 'If-Range': download.headers['ETag']})
+            self.assertEqual(ranged.status, 206)
+            self.assertEqual(ranged.headers['Content-Range'], 'bytes 64-127/256')
+            self.assertEqual(await ranged.read(), data[64:128])
+            upload = await self.client.post(base+'workspace/upload?sessionId=native-session&path=example.bin', data=data,
+                                           headers={**p, 'Content-Type': 'application/octet-stream'})
+            self.assertEqual(upload.status, 200)
+            owners = []
+            for headers in (p, other, p):
+                response = await self.client.post(base+'terminal?sessionId=native-session', json={'action': 'open'}, headers=headers)
+                self.assertEqual(response.status, 200)
+                owners.append((await response.json())['owner'])
+            self.assertNotEqual(owners[0], owners[1])
+            self.assertEqual(owners[0], owners[2])
+        self.assertEqual(uploads, [data, data])
+        self.assertEqual((await self.client.post('/api/clients', json={'provider': 'deepseek', 'enabled': False}, headers=p)).status, 200)
+        self.assertEqual((await self.client.get('/api/desktop-sessions/deepseek/list', headers=p)).status, 400)
+        for path in ('/api/clients/scan', '/api/desktop-sessions/deepseek/install', '/api/desktop-sessions/claude/eval'):
+            self.assertEqual((await self.client.post(path, json={}, headers=p)).status, 401)
+        self.assertEqual((await self.client.get('/api/desktop-sessions/deepseek/events', headers=p)).status, 401)
 
     async def test_wrong_device_cannot_supply_a_response(self):
         a,b = await self.device('Alice'),await self.device('Bob')
@@ -254,6 +357,78 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.headers['Content-Disposition'],'attachment; filename="a.bin"')
         self.assertNotIn('Set-Cookie',response.headers)
         self.assertEqual(self.state.buffered,0)
+
+    async def test_real_range_resume_changed_content_and_empty_file(self):
+        from bridge.workspace import operate
+        a = await self.device('Alice'); connector = await self.real_connector(a); p = await self.phone(a)
+        root = Path(self.temp.name) / 'download-workspace'; root.mkdir()
+        file = root / 'example.bin'
+        data = bytes(range(256)) * 8200; file.write_bytes(data)
+        connector.server.bridge.workspace = lambda thread, action, params: operate(root, action, params)
+        url = '/api/sessions/' + THREAD + '/workspace/download?path=example.bin'
+        result, etag = bytearray(), None
+        for offset in range(0, len(data), 1024 * 1024):
+            response = await self.client.get(url, headers={**p, 'Range': 'bytes=%d-%d' % (offset, offset + 1024 * 1024 - 1),
+                                                          **({'If-Range': etag} if etag else {})})
+            self.assertEqual(response.status, 206)
+            self.assertEqual(response.headers['Accept-Ranges'], 'bytes')
+            self.assertEqual(response.headers['ETag'], etag or response.headers['ETag'])
+            self.assertNotIn('Set-Cookie', response.headers)
+            etag = response.headers['ETag']; result.extend(await response.read())
+        self.assertEqual(bytes(result), data)
+        file.write_bytes(b'changed')
+        response = await self.client.get(url, headers={**p, 'Range': 'bytes=2-3', 'If-Range': etag})
+        self.assertEqual(response.status, 200)
+        self.assertNotEqual(response.headers['ETag'], etag)
+        self.assertEqual(await response.read(), b'changed')
+        response = await self.client.get(url, headers={**p, 'Range': 'bytes=7-'})
+        self.assertEqual(response.status, 416)
+        self.assertEqual(response.headers['Content-Range'], 'bytes */7')
+        self.assertEqual(await response.read(), b'')
+        file.write_bytes(b'')
+        response = await self.client.get(url, headers={**p, 'Range': 'bytes=0-1048575'})
+        self.assertEqual(response.status, 416)
+        self.assertEqual(response.headers['Content-Range'], 'bytes */0')
+
+    async def test_relay_range_headers_are_explicitly_allowlisted(self):
+        for value, response in [({'Cookie': 'secret'}, False), ({'Authorization': 'secret'}, False),
+                ({'Set-Cookie': 'secret'}, True), ({'Range': 'bytes=0-1\r\nCookie: secret'}, False),
+                ({'Content-Range': 'bad'}, True), ({'ETag': 'not-quoted'}, True)]:
+            with self.assertRaises(ValueError): download_headers(value, response)
+        a = await self.device('Alice'); w = await self.socket(a); p = await self.phone(a)
+        task = asyncio.create_task(self.client.get('/api/sessions/'+THREAD+'/workspace/download?path=a.bin',
+                headers={**p, 'Range': 'bytes=2-4', 'If-Range': '"test"', 'X-Secret': 'not-forwarded'}))
+        msg = await w.receive_json()
+        self.assertEqual(msg['headers'], {'Range': 'bytes=2-4', 'If-Range': '"test"'})
+        await w.send_json({'id': msg['id'], 'status': 206, 'body': base64.b64encode(b'abc').decode(),
+                          'contentType': 'application/octet-stream',
+                          'headers': {'ETag': '"test"', 'Content-Range': 'bytes 2-4/8', 'Accept-Ranges': 'bytes'}})
+        response = await task
+        self.assertEqual(response.status, 206)
+        self.assertEqual(response.headers['Content-Length'], '3')
+        self.assertEqual(response.headers['Content-Range'], 'bytes 2-4/8')
+        self.assertEqual(await response.read(), b'abc')
+
+    async def test_changed_large_artifact_requires_restart_without_oversized_relay_frame(self):
+        self.state.timeout = 3
+        a = await self.device('Alice'); connector = await self.real_connector(a); p = await self.phone(a)
+        file = Path(self.temp.name) / 'large.bin'
+        with file.open('wb') as stream: stream.truncate(MAX_BODY + 1)
+        connector.server.bridge.artifact = lambda thread, identifier: {'path': file, 'name': file.name, 'image': False}
+        url = '/api/sessions/' + THREAD + '/files/' + 'a' * 64
+        response = await self.client.get(url, headers={**p, 'Range': 'bytes=0-1048575'})
+        self.assertEqual(response.status, 206)
+        etag = response.headers['ETag']
+        self.assertEqual(len(await response.read()), 1048576)
+        with file.open('r+b') as stream: stream.write(b'changed')
+        response = await self.client.get(url, headers={**p, 'Range': 'bytes=1048576-2097151', 'If-Range': etag})
+        self.assertEqual(response.status, 409)
+        self.assertEqual((await response.json())['code'], 'download_changed')
+        # Restarting with no old validator still downloads bounded ranges.
+        response = await self.client.get(url, headers={**p, 'Range': 'bytes=0-1048575'})
+        self.assertEqual(response.status, 206)
+        self.assertNotEqual(response.headers['ETag'], etag)
+        self.assertTrue((await response.read()).startswith(b'changed'))
 
     async def test_pause_closes_local_forward_gate_even_before_socket_disconnect(self):
         a = await self.device('Alice'); c = await self.real_connector(a); p = await self.phone(a)

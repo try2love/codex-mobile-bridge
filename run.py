@@ -146,6 +146,9 @@ def main(connections=None, connection_secrets=None):
             servers.append(GatewayServer((address, args.port), bridge, config, ROOT / 'web', args.config.parent,
                                          **({'shared': servers[0]} if servers else {})))
     except OSError:
+        if servers:
+            servers[0].harness.close()
+            servers[0].desktop_sessions.close()
         for listener in servers:
             listener.server_close()
         bridge.close()
@@ -170,7 +173,7 @@ def main(connections=None, connection_secrets=None):
                 external[entry['id']] = status
         return entry_urls(preferences, hosts, ready_url(tunnel, args.port, server.instance_id), external)
     address_notifications = AddressNotifications(args.config.parent, notification_urls, server.instance_id)
-    notifications = Notifications(bridge, args.config.parent, lambda: server.origins, lambda: config.get('publicUrl', ''))
+    notifications = Notifications(bridge, args.config.parent, lambda: server.origins, lambda: config.get('publicUrl', ''), desktop_sessions=server.desktop_sessions)
     def valid_push_session(key):
         with server.auth.lock:
             session = server.auth.sessions.get(key)
@@ -242,11 +245,12 @@ def main(connections=None, connection_secrets=None):
         notifications.start()
         address_notifications.start()
         bridge.accounts.monitor.start()
-        control.start(server.shutdown, server.pairing.control, server.instance_id, server.auth, bridge.account.control, server.notifications.control, bridge.accounts.control)
+        control.start(server.shutdown, server.pairing.control, server.instance_id, server.auth, bridge.account.control, server.notifications.control, bridge.accounts.control, server.harness.control, server.desktop_sessions.control)
         for listener in servers[1:]:
             thread = threading.Thread(target=listener.serve_forever, kwargs={'poll_interval': 0.5}, daemon=True)
             thread.start()
             listener_threads.append((listener, thread))
+        server.desktop_sessions.start()
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:
         pass
@@ -256,6 +260,8 @@ def main(connections=None, connection_secrets=None):
             thread.join()
         if shared_relay:
             shared_relay.close()
+        server.harness.close()
+        server.desktop_sessions.close()
         address_notifications.close()
         bridge.accounts.monitor.close()
         notifications.close()

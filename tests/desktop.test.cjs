@@ -74,6 +74,7 @@ async function renderer(initialLanguage='zh-CN',{autoStart=false}={}){
     classList:{toggle(){}},click(){return this.onclick?.();},append(){},replaceChildren(){},setAttribute(){},removeAttribute(){},querySelectorAll(){return [];}};}
   const html=fs.readFileSync(path.join(__dirname,'../desktop/index.html'),'utf8');
   for(const match of html.matchAll(/\bid="([^"]+)"/g))nodes.set(match[1],node());
+  for(const id of ['clients-start','clients-stop'])nodes.set(id,node());
   const value={runtime:{running:false,portOccupied:false,supportsNotifications:true},
     preferences:{port:8787,lan:true,tunnel:false,autoStart,connections:[]},
     auth:{mode:'password',username:'admin'},notifications:{enabled:false,server:'https://ntfy.sh',topic:''},
@@ -103,6 +104,36 @@ test('automatic gateway startup works without a Documents permission API',async(
   const ui=await renderer('zh-CN',{autoStart:true});
   assert.deepEqual(ui.calls,['snapshot','start','snapshot']);
   assert.equal(ui.nodes.get('status').textContent,'启动中');
+});
+
+test('overview and client-page gateway controls share pending state and reject duplicate operations',async()=>{
+  const ui=await renderer();let started,stopped,starts=0,stops=0;
+  ui.api.start=()=>{starts++;return new Promise(resolve=>started=resolve);};
+  const start=ui.nodes.get('clients-start').onclick();await new Promise(setImmediate);
+  assert.equal(ui.nodes.get('start').disabled,true);assert.equal(ui.nodes.get('clients-start').disabled,true);
+  await ui.nodes.get('start').onclick();assert.equal(starts,1);
+  started({started:true,message:'正在启动网关'});await start;
+  ui.value.runtime.running=true;await ui.poll();
+  assert.equal(ui.nodes.get('clients-stop').disabled,false);
+  ui.api.stop=()=>{stops++;return new Promise(resolve=>stopped=resolve);};
+  const stop=ui.nodes.get('clients-stop').onclick();
+  assert.equal(ui.nodes.get('stop').disabled,true);assert.equal(ui.nodes.get('clients-stop').disabled,true);
+  await ui.nodes.get('stop').onclick();assert.equal(stops,1);
+  ui.value.runtime.running=false;stopped({message:'网关已停止'});await stop;
+  for(const id of ['start','clients-start'])assert.equal(ui.nodes.get(id).disabled,false);
+  for(const id of ['stop','clients-stop'])assert.equal(ui.nodes.get(id).disabled,true);
+});
+
+test('client-page gateway controls retain save checks and recover both buttons on failure',async()=>{
+  const ui=await renderer();ui.run('dirty=true');await ui.nodes.get('clients-start').onclick();
+  assert.equal(ui.calls.includes('start'),false);assert.match(ui.nodes.get('toast-message').textContent,/请先保存/);
+  ui.run('dirty=false');ui.api.start=async()=>{throw Error('start rejected');};
+  await ui.nodes.get('clients-start').onclick();
+  for(const id of ['start','clients-start'])assert.equal(ui.nodes.get(id).disabled,false);
+  ui.value.runtime.running=true;await ui.poll();ui.api.stop=async()=>{throw Error('stop rejected');};
+  await ui.nodes.get('clients-stop').onclick();
+  for(const id of ['stop','clients-stop'])assert.equal(ui.nodes.get(id).disabled,false);
+  assert.match(ui.nodes.get('toast-message').textContent,/stop rejected/);
 });
 
 test('startup feedback follows readiness, page changes and later shutdown',async()=>{
@@ -383,7 +414,7 @@ test('missing Cloudflare opens setup before start and installing preserves draft
   const ui=await renderer();let started=0;
   ui.value.preferences.tunnel=true;await ui.poll();ui.api.start=async()=>{started++;};
   ui.api.checkCloudflared=async()=>{throw Error('未找到 cloudflared，请点击一键安装，或选择已下载的程序。');};
-  await ui.start();assert.equal(started,0);assert.equal(ui.run('activeTab'),'advanced');
+  await ui.start();assert.equal(started,0);assert.equal(ui.run('activeTab'),'network');
   for(const id of ['cloudflared','password','ntfy-topic'])ui.nodes.get(id).closest=()=>({dataset:{panel:'advanced'}});
   ui.run("fields=()=>['cloudflared','password','ntfy-topic'].map($);savedFields=fieldValues()");
   ui.nodes.get('password').value='unsaved password';ui.nodes.get('ntfy-topic').value='draft-topic';

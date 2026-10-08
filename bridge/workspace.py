@@ -17,6 +17,30 @@ MAX_PREVIEW = 512 * 1024
 IMAGES = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp'}
 
 
+def download_range(size, etag, range_header='', if_range=''):
+    """Only one byte range is supported; unsupported syntax is ignored."""
+    result = {'status': 200, 'offset': 0, 'length': size, 'size': size, 'etag': etag}
+    # We do not advertise Last-Modified: only an exact strong validator resumes.
+    if if_range and if_range != etag:
+        return result
+    match = re.fullmatch(r'bytes=(\d*)-(\d*)', range_header)
+    if not match or not any(match.groups()):
+        return result
+    first, last = match.groups()
+    # Limit integer parsing independently of the host Python version.
+    if len(first) > 20 or len(last) > 20:
+        return {**result, 'status': 416, 'length': 0, 'contentRange': 'bytes */' + str(size)}
+    if first:
+        start = int(first)
+        end = min(int(last), size - 1) if last else size - 1
+    else:
+        start, end = max(0, size - int(last)), size - 1
+    if start >= size or end < start:
+        return {**result, 'status': 416, 'length': 0, 'contentRange': 'bytes */' + str(size)}
+    return {**result, 'status': 206, 'offset': start, 'length': end - start + 1,
+            'contentRange': 'bytes %d-%d/%d' % (start, end, size)}
+
+
 class Workspace:
     def __init__(self, root):
         if not root or not Path(root).is_absolute():
@@ -115,6 +139,58 @@ class Workspace:
         except UnicodeDecodeError:
             pass
         return result
+
+    @contextmanager
+    def download(self, path, range_header='', if_range='', limit=MAX_TRANSFER):
+        try:
+            with self._download(path, range_header, if_range, limit) as value:
+                yield value
+        except PermissionError:
+            raise
+        except OSError as error:
+            raise ValueError('文件不可访问，请刷新目录后重试') from error
+
+    @contextmanager
+    def _download(self, path, range_header, if_range, limit):
+        parts = self.parts(path)
+        if not parts: raise ValueError('请选择文件')
+        # A private disk snapshot binds the validator to exactly the bytes sent,
+        # even if an editor replaces or writes the source during the response.
+        with tempfile.TemporaryFile(prefix='bridge-download-') as snapshot:
+            with self.directory(parts[:-1]) as (directory, fd):
+                handle = self.open_file(directory, fd, parts[-1], os.O_RDONLY)
+                with os.fdopen(handle, 'rb') as stream:
+                    before = os.fstat(stream.fileno())
+                    if not stat.S_ISREG(before.st_mode): raise ValueError('仅支持普通文件')
+                    if before.st_size > limit: raise ValueError('文件超过 %d MB 下载限制' % (limit // 1024 // 1024))
+                    def copy_range(selection):
+                        digest, size = hashlib.sha256(), 0
+                        stream.seek(0); snapshot.seek(0); snapshot.truncate()
+                        while True:
+                            chunk = stream.read(65536)
+                            if not chunk: break
+                            end = size + len(chunk)
+                            if end > limit: raise ValueError('文件超过 %d MB 下载限制' % (limit // 1024 // 1024))
+                            digest.update(chunk)
+                            left = max(size, selection['offset'])
+                            right = min(end, selection['offset'] + selection['length'])
+                            if right > left: snapshot.write(chunk[left - size:right - size])
+                            size = end
+                        after = os.fstat(stream.fileno())
+                        if ((before.st_size, before.st_mtime_ns, before.st_ctime_ns) !=
+                                (after.st_size, after.st_mtime_ns, after.st_ctime_ns) or size != before.st_size):
+                            raise ValueError('文件正在变化，请稍后重新下载')
+                        return '"sha256-' + digest.hexdigest() + '"'
+                    # Hash all bytes, but normally retain only the requested
+                    # chunk. No file-sized allocation or repeated full snapshot.
+                    selection = download_range(before.st_size, '', range_header)
+                    etag = copy_range(selection)
+                    result = download_range(before.st_size, etag, range_header, if_range)
+                    if result['length'] != selection['length'] or result['offset'] != selection['offset']:
+                        result['etag'] = copy_range(result)
+            result['name'] = parts[-1]
+            snapshot.seek(0)
+            yield result, snapshot
 
     def upload(self, path, encoded):
         parts = self.parts(path)
@@ -455,6 +531,7 @@ def operate(root, action, params):
         if action == 'list': return workspace.listing(**params)
         if action == 'preview': return workspace.read(params['path'])
         if action == 'download': return workspace.read(params['path'], download=True)
+        if action == 'download-stream': return workspace.download(**params)
         if action == 'upload': return workspace.upload(**params)
         raise ValueError('不支持的文件操作')
     except PermissionError:

@@ -178,9 +178,13 @@ def channels(config):
 
 
 class Notifications:
-    def __init__(self, bridge, data_dir, origins=lambda: [], public_url=lambda: ''):
+    def __init__(self, bridge, data_dir, origins=lambda: [], public_url=lambda: '', *, desktop_sessions=None):
         self.bridge, self.data_dir, self.origins = bridge, Path(data_dir), origins
         self.public_url = public_url
+        self.desktop_sessions = desktop_sessions
+        self.desktop_poll_at = 0
+        self.desktop_details = {}
+        self.desktop_cursor = 0
         self.lock = threading.RLock()
         self.closed = threading.Event()
         self.ledger = read_json(self.data_dir/'notification-delivery.json', {})
@@ -262,14 +266,28 @@ class Notifications:
         enabled = {key: policies[key] if choice == 'inherit' else choice == 'on' for key, choice in choices.items()}
         return {**row, 'notifyOnRequest': enabled['requests'], 'notifyOnCompletion': enabled['completion'], 'choices': choices}
 
+    @staticmethod
+    def desktop_provider(host):
+        return {'desktop:claude': 'claude', 'desktop:deepseek': 'deepseek'}.get(host)
+
     def policy(self, thread_id, host, value=None):
-        uuid.UUID(thread_id)
+        provider = self.desktop_provider(host)
+        if provider:
+            if not isinstance(thread_id, str) or not 1 <= len(thread_id) <= 512 or any(ord(c) < 32 or ord(c) == 127 for c in thread_id):
+                raise ValueError('会话标识无效')
+        else:
+            uuid.UUID(thread_id)
         with self.lock:
             policies = self.policies()
             if value is not None:
                 if not isinstance(value, dict) or set(value) != {'requests', 'completion'} or any(v not in ('inherit', 'on', 'off') for v in value.values()):
                     raise ValueError('聊天通知设置格式不正确')
-                if self.bridge is not None:
+                if provider:
+                    if self.desktop_sessions is None:
+                        raise ValueError('桌面会话接入不可用')
+                    self.desktop_sessions.require_enabled(provider)
+                    self.desktop_sessions.call(provider, 'detail', thread_id)
+                elif self.bridge is not None:
                     self.bridge.for_host(host).store.get(thread_id)
                 self.dormant.discard((host, thread_id))
                 self.wakeup.set()
@@ -289,6 +307,8 @@ class Notifications:
         if policies['requests'] or policies['completion']:
             rows.update(self.candidates)
         for key in policies.get('chats', {}):
+            if key.startswith(('desktop:claude|', 'desktop:deepseek|')):
+                continue
             host, identifier = key.rsplit('|', 1)
             rows.setdefault((host, identifier), {'id': identifier, 'host': host})
         effective = [self._effective(row, policies, legacy_rows) for row in rows.values()]
@@ -412,6 +432,7 @@ class Notifications:
         return (target + ':' if target else '') + hashlib.sha256(json.dumps(identity, ensure_ascii=False).encode()).hexdigest()
 
     def click_url(self, config, thread_id, host):
+        thread_id = quote(thread_id, safe='').replace('~', '%7E')
         origins = sorted(self.origins())
         base = config.get('clickBase') or self.public_url() or next((o for o in origins if o.startswith('https://')), '')
         if not base:
@@ -425,10 +446,15 @@ class Notifications:
         pending = [k for k in keys if not self.ledger.get(k, {}).get('delivered') and now >= self.ledger.get(k, {}).get('next', 0)]
         if not pending:
             return False
+        provider = self.desktop_provider(row['host'])
+        if provider and (self.desktop_sessions is None or not self.desktop_sessions.enabled(provider)):
+            return False
         current = self._effective(row)
         if not current['notifyOnCompletion' if completed else 'notifyOnRequest']:
             return False
-        heading = 'Codex 运行已完成' if completed else 'Codex 需要你的确认'
+        provider = self.desktop_provider(row['host'])
+        client = {'claude': 'Claude', 'deepseek': 'DSH'}.get(provider, 'Codex')
+        heading = client + (' 运行已完成' if completed else ' 需要你的确认')
         body = f'有 {len(pending)} 次运行已完成，请打开聊天查看。' if completed else f'有 {len(pending)} 项请求等待处理，请打开聊天查看。'
         if config['includeTitle']:
             body = title[:120] + '\n' + body
@@ -475,6 +501,9 @@ class Notifications:
             for key, record in list(self.completions.items()):
                 host, identifier, target = json.loads(key)
                 row = {'host': host, 'id': identifier}
+                provider = self.desktop_provider(host)
+                if provider and (self.desktop_sessions is None or not self.desktop_sessions.enabled(provider)):
+                    continue
                 if target not in targets.values() or not self._effective(row, policies, legacy_rows)['notifyOnCompletion']:
                     del self.completions[key]
                     write_json(self.data_dir/'notification-completions.json', self.completions)
@@ -545,10 +574,62 @@ class Notifications:
                             self.attached.pop(key, None)
             except Exception:
                 self._status(error='部分关注聊天暂时无法连接，请检查电脑 App 或 SSH 连接。')
+        changed = self._scan_desktops(config, targets) or changed
         if changed:
             if len(self.ledger) > 5000:
                 self.ledger = dict(sorted(self.ledger.items(), key=lambda p: p[1].get('time', 0))[-4000:])
             write_json(self.data_dir/'notification-delivery.json', self.ledger)
+
+    def _scan_desktops(self, config, targets):
+        manager = self.desktop_sessions
+        if not targets or manager is None or time.monotonic() < self.desktop_poll_at:
+            return False
+        self.desktop_poll_at = time.monotonic() + 10
+        rows = manager.notification_rows()
+        if not rows:
+            return False
+        # Rotate bounded history reads so one large client's history cannot block
+        # permission notifications or continuously reread every idle transcript.
+        offset = self.desktop_cursor % len(rows)
+        rows = rows[offset:] + rows[:offset]
+        self.desktop_cursor = (offset + 8) % len(rows)
+        changed, reads = False, 0
+        for row in rows:
+            if self.closed.is_set():
+                break
+            if not manager.enabled(row['provider']):
+                continue
+            current = self._effective(row)
+            if not (current['notifyOnRequest'] or current['notifyOnCompletion']):
+                continue
+            title = row.get('title') or '聊天'
+            requests = [r for r in row.get('requests', []) if isinstance(r, dict) and r.get('id')]
+            if requests or row.get('runtimeKnown') is True:
+                self.mobile_push.update_activity(row, 'waiting' if requests else 'running' if row.get('status') == 'active' else 'ready')
+            for channel, target in targets.items():
+                keys = [self._delivery_key(row, r['id'], target=target) for r in requests]
+                changed = self._send_keys(config, row, title, channel, target, keys, False) or changed
+            if not current['notifyOnCompletion']:
+                continue
+            key = (row['host'], row['id'])
+            signature = (row.get('updatedAt'), row.get('status'))
+            cached = self.desktop_details.get(key)
+            if cached is None or cached[0] != signature or row.get('status') == 'active':
+                if reads >= 8:
+                    continue
+                reads += 1
+                try:
+                    detail = manager.call(row['provider'], 'detail', row['id'])
+                    if detail.get('connected') is False or not isinstance(detail.get('turns'), list):
+                        continue
+                    cached = (signature, detail['turns'])
+                    self.desktop_details[key] = cached
+                except (OSError, ValueError):
+                    continue
+            for channel, target in targets.items():
+                keys = self._completion_pending({**current, 'title': title}, cached[1], target)
+                changed = self._send_keys(config, row, title, channel, target, keys, True) or changed
+        return changed
 
     def _status(self, channel=None, **values):
         path = self.data_dir/'notification-status.json'
@@ -576,6 +657,9 @@ class Notifications:
             self.closed.wait(1)
 
     def _push_allowed(self, event):
+        provider = self.desktop_provider(event['host'])
+        if provider and (self.desktop_sessions is None or not self.desktop_sessions.enabled(provider)):
+            return False
         policy = self._effective({'id': event['threadId'], 'host': event['host']})
         if event['kind'] == 'state':
             return policy['notifyOnRequest'] or policy['notifyOnCompletion']

@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 from bridge import network
@@ -73,7 +74,7 @@ class LocalAccessTests(unittest.TestCase):
     def test_local_browser_blocked_but_private_health_and_tunnel_work(self):
         with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as folder:
             config = {'auth': {'mode': 'none'}, 'origins': ['https://phone.example.com'], 'localAccess': False}
-            server = GatewayServer(('127.0.0.1', 0), object(), config, ROOT/'web', Path(folder))
+            server = GatewayServer(('127.0.0.1', 0), SimpleNamespace(accounts=SimpleNamespace()), config, ROOT/'web', Path(folder))
             port = server.server_port
             host = f'127.0.0.1:{port}'
             server.hosts.update([host, f'192.0.2.7:{port}'])

@@ -69,7 +69,7 @@ const context=vm.createContext({__dirname:path.dirname(${JSON.stringify(main)}),
   require(name){
     if(name==='electron')return {app};
     if(name==='./qr.cjs')return {};
-    if(name==='./controller.cjs')return {createSnapshotWorker:()=>({close(){}}),workerFor:()=>({}),runWorker:async(_,action,payload)=>{
+    if(name==='./controller.cjs')return {createSnapshotWorker:()=>({close(){}}),createManagementWorker:()=>({close(){}}),workerFor:()=>({}),runWorker:async(_,action,payload)=>{
       if(action!=='update-prepare')throw Error(action);
       fs.writeFileSync(f.plan,JSON.stringify(payload));return {helper:f.helper,plan:f.plan};
     }};

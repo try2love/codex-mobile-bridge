@@ -135,13 +135,23 @@ class Workbench {
   }
   open(id, host) {
     this.rememberScroll();
-    const key = host + '|' + id;
-    if (!this.sessions.has(key)) this.sessions.set(key, {id, host, key, active: 'chat', files: [], directory: '', search: '', hidden: false, scroll: 0});
+    const key = (this.provider&&this.provider!=='codex'?this.provider+'|':'')+host + '|' + id;
+    if (!this.sessions.has(key)) this.sessions.set(key, {id, host, key, provider:this.provider, active: 'chat', files: [], directory: '', search: '', hidden: false, scroll: 0});
     this.current = this.sessions.get(key); this.paint();
   }
-  reset() { this.stopThumbnails(); this.uploadController?.abort(); for (const session of this.sessions.values()) for (const tab of session.files) { tab.controller?.abort(); tab.git?.dispose(); tab.terminal?.dispose(); tab.agents?.dispose(); tab.sideChat?.dispose(); } this.sessions.clear(); this.current = null; this.chat.classList.remove('workbench-active','wb-split');this.endDrag(); this.panel.replaceChildren(); this.panel.hidden = true; this.tabs.replaceChildren(); }
+  reset(provider=null) {
+    const visible=!provider||this.current?.provider===provider;
+    if(visible){this.stopThumbnails();this.uploadController?.abort();}
+    for(const [key,session] of this.sessions)if(!provider||session.provider===provider){for(const tab of session.files){tab.controller?.abort();tab.git?.dispose();tab.terminal?.dispose();tab.agents?.dispose();tab.sideChat?.dispose();}this.sessions.delete(key);}
+    if(visible){this.current=null;this.chat.classList.remove('workbench-active','wb-split');this.endDrag();this.panel.replaceChildren();this.panel.hidden=true;this.tabs.replaceChildren();}
+  }
   get isFileVisible() { return !!this.current && !this.splitMode && this.current.active !== 'chat'; }
-  url(session, operation = '', path = '') { return '/api/sessions/' + session.id + '/workspace' + (operation ? '/' + operation : '') + '?host=' + encodeURIComponent(session.host) + '&path=' + encodeURIComponent(path); }
+  endpoint(session, action) {
+    return session.provider && session.provider !== 'codex'
+      ? '/api/desktop-sessions/'+session.provider+'/'+action+'?sessionId='+encodeURIComponent(session.id)
+      : '/api/sessions/'+session.id+'/'+action+'?host='+encodeURIComponent(session.host);
+  }
+  url(session, operation = '', path = '') { return this.endpoint(session,'workspace'+(operation?'/'+operation:''))+'&path='+encodeURIComponent(path); }
   rememberScroll() { const timeline=this.chat.querySelector('.timeline');if (this.current && !this.chat.classList.contains('workbench-active') && timeline.clientHeight) this.current.scroll = timeline.scrollTop; }
   select(id) {
     if (!this.current) return;
@@ -202,7 +212,9 @@ class Workbench {
     const choices = this.node('div', 'wb-tab-choices');
     for (const [name, description, action] of [[BridgeI18n.t('文件'), BridgeI18n.t('浏览项目文件、上传与下载'), () => this.files()], ['Git', BridgeI18n.t('历史、暂存、提交与分支管理'), () => this.git()], [BridgeI18n.t('终端'), BridgeI18n.t('运行项目命令、构建与查看输出'), () => this.terminal()], [BridgeI18n.t('侧边聊天'), BridgeI18n.t('继承当前上下文，临时讨论并跨设备接续'), () => this.sideChat()], [BridgeI18n.t('子智能体'), BridgeI18n.t('查看派生任务关系与执行记录'), () => this.agents()]]) {
       const button = this.button('', () => { dialog.close(); action(); }, name);
-      button.append(this.node('strong', '', name), this.node('span', '', description)); choices.append(button);
+      button.append(this.node('strong', '', name), this.node('span', '', description));
+      if(this.current.provider&&['侧边聊天','子智能体'].map(BridgeI18n.t).includes(name)) {button.disabled=true;button.lastChild.textContent=BridgeI18n.t('当前客户端尚未提供此能力');}
+      choices.append(button);
     }
     dialog.append(head, choices); dialog.addEventListener('close', () => dialog.remove()); document.body.append(dialog); dialog.showModal();
   }
@@ -245,14 +257,14 @@ class Workbench {
       session.directory = path; tab.body.replaceChildren();
       const toolbar = this.node('div', 'wb-toolbar');
       const up = this.button('‹', () => this.directory(session, tab, path.split('/').slice(0, -1).join('/')), BridgeI18n.t('上一级目录')); up.disabled = !path;
-      const crumb = this.node('div', 'wb-path', path || BridgeI18n.t('项目文件')); crumb.title = path || BridgeI18n.t('当前聊天的项目目录');
+      const crumb = this.node('div', 'wb-path', path || BridgeI18n.t('项目文件')); if(path)this.raw(crumb);else crumb.dataset.i18nTitle='当前聊天的项目目录';crumb.title = path || BridgeI18n.t('当前聊天的项目目录');
       toolbar.append(up, crumb, this.button('↻', () => this.directory(session, tab, path), BridgeI18n.t('刷新目录')), this.button(BridgeI18n.t('上传'), () => this.uploadDialog(session, tab, path)));
       const filters = this.node('div', 'wb-filters');
       const search = this.node('input'); search.type = 'search'; search.setAttribute("data-i18n-placeholder",'搜索当前目录');search.placeholder = BridgeI18n.t('搜索当前目录'); search.setAttribute("data-i18n-aria-label",'搜索当前目录');search.setAttribute('aria-label', BridgeI18n.t('搜索当前目录')); search.value = session.search;
       const form = this.node('form', 'wb-search'); form.append(search, this.button(BridgeI18n.t('搜索'), () => { session.search = search.value; this.directory(session, tab, path); }));
       form.onsubmit = e => { e.preventDefault(); session.search = search.value; this.directory(session, tab, path); };
       const label = this.node('label'), hidden = this.node('input'); hidden.type = 'checkbox'; hidden.checked = session.hidden;
-      hidden.onchange = () => { session.hidden = hidden.checked; this.directory(session, tab, path); }; label.append(hidden, document.createTextNode(BridgeI18n.t('隐藏文件')));
+      hidden.onchange = () => { session.hidden = hidden.checked; this.directory(session, tab, path); }; label.append(hidden, this.node('span', '', '隐藏文件'));
       filters.append(form, label); tab.list = this.node('div', 'wb-file-list'); tab.status = this.node('p', 'wb-status', BridgeI18n.t('正在读取文件…')); tab.status.setAttribute('role', 'status');
       tab.body.append(toolbar, filters, tab.status, tab.list);
     }
@@ -260,11 +272,12 @@ class Workbench {
       const url = this.url(session, '', path) + '&hidden=' + session.hidden + '&search=' + encodeURIComponent(session.search) + '&offset=' + (append ? tab.next : 0);
       const result = await this.request(url, undefined, controller.signal);
       if (controller.signal.aborted || !this.sessions.has(session.key)) return;
-      session.project = result.project; tab.body.querySelector('.wb-path').textContent = result.project + (path ? ' / ' + path : '');
-      tab.status.textContent = result.total ? result.total + BridgeI18n.t(' 项 · ') + (session.host === 'local' ? BridgeI18n.t('电脑上的项目') : BridgeI18n.t('SSH 项目')) : BridgeI18n.t('当前目录没有匹配的文件');
+      session.project = result.project; const crumb=tab.body.querySelector('.wb-path');delete crumb.dataset.i18n;crumb.textContent = result.project + (path ? ' / ' + path : '');
+      delete tab.status.dataset.i18n;
+      tab.status.replaceChildren(...(result.total ? [this.node('span', '', String(result.total)), this.node('span', '', ' 项 · '), this.node('span', '', session.host === 'local' ? '电脑上的项目' : 'SSH 项目')] : [this.node('span', '', '当前目录没有匹配的文件')]));
       tab.body.querySelector('.wb-load-more')?.remove();
       for (const entry of result.entries) {
-        const row = this.button('', () => { if (entry.kind === 'directory') { session.search = ''; this.directory(session, tab, entry.path); } else this.preview(session, entry); }, entry.name);
+        const row = this.raw(this.button('', () => { if (entry.kind === 'directory') { session.search = ''; this.directory(session, tab, entry.path); } else this.preview(session, entry); }, entry.name));
         row.className = 'wb-file'; row.disabled = entry.kind === 'blocked';
         row.append(this.fileIcon(entry), this.raw(this.node('span', 'wb-file-name', entry.name)), this.node('span', 'wb-file-meta', entry.kind === 'directory' ? BridgeI18n.t('文件夹') : entry.kind === 'blocked' ? BridgeI18n.t('链接或特殊文件') : this.size(entry.size)));
         tab.list.append(row);
@@ -289,7 +302,7 @@ class Workbench {
       head.append(title);
       if (result.size <= 20 * 1024 * 1024) { const download = this.node('a', 'wb-download', BridgeI18n.t('下载')); download.href = this.url(session, 'download', entry.path); download.download = result.name; head.append(download); }
       const content = this.node('div', 'wb-preview-content');
-      if (result.kind === 'image') { const image = this.node('img'); image.src = 'data:' + result.mime + ';base64,' + result.data; image.alt = result.name; content.append(image); }
+      if (result.kind === 'image') { const image = this.node('img'); image.src = 'data:' + result.mime + ';base64,' + result.data; image.alt = result.name; window.BridgeImageViewer?.registerWorkspaceImage(image, result); content.append(image); }
       else if (result.kind === 'text') {
         if (/\.md$/i.test(result.name)) renderMarkdown(content, result.text);
         else { const pre = this.node('pre'); pre.append(this.node('code', '', result.text)); content.append(pre); }

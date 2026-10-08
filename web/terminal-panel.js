@@ -6,10 +6,11 @@ class TerminalPanel {
     this.key='pty:'+session.key;
     try{this.id=sessionStorage.getItem(this.key);}catch{}
     this.hadId=!!this.id;this.id ||= uuid();this.save();
+    this.tab.name=BridgeI18n.t('终端 · 连接中');this.workbench.paint();
     this.load();
   }
   save(){try{sessionStorage.setItem(this.key,this.id);}catch{}}
-  url(extra=''){return '/api/sessions/'+this.session.id+'/terminal?host='+encodeURIComponent(this.session.host)+'&mode=pty'+extra;}
+  url(extra=''){return this.workbench.endpoint(this.session,'terminal')+'&mode=pty'+extra;}
   async load(){
     try{
       const info=await this.workbench.request(this.url());if(this.disposed)return;
@@ -21,7 +22,7 @@ class TerminalPanel {
         await this.workbench.request(this.url(),{action:'open',id:this.id,cols:this.term.cols,rows:this.term.rows});
       if(this.disposed){if(!this.hadId)this.workbench.request(this.url(),{action:'close',id:this.id}).catch(()=>{});return;}
       this.apply(result);this.schedule();
-    }catch(e){if(!this.disposed){if(!this.status)this.render({});this.status.textContent=BridgeI18n.t(e.message);this.reopen.hidden=false;}}
+    }catch(e){if(!this.disposed){if(!this.status)this.render({});this.status.textContent=BridgeI18n.t(e.message);this.reopen.hidden=false;this.tab.name=BridgeI18n.t('终端 · 未连接');this.workbench.paint();}}
   }
   render(info){
     const n=(...a)=>this.workbench.node(...a),b=(...a)=>this.workbench.button(...a);
@@ -83,6 +84,7 @@ class TerminalPanel {
     if(result.reset)this.term.reset();
     if(result.output)this.term.write(result.output);
     this.cursor=result.cursor;this.running=result.running;
+    const label=BridgeI18n.t(result.running?'终端 · 已连接':'终端 · 已退出');if(this.tab.name!==label){this.tab.name=label;this.workbench.paint();}
     this.location.textContent=result.shell||BridgeI18n.t('终端');this.location.title=result.cwd||'';
     if(!this.inputError)this.status.textContent=result.running?BridgeI18n.t('连续会话 · 关闭标签将结束终端'):result.message||BridgeI18n.t('终端已退出');
     this.send.disabled=!this.running||this.inputError;this.reopen.hidden=this.running;this.layout();

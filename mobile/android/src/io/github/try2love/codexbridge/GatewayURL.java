@@ -25,7 +25,8 @@ public final class GatewayURL {
     }
     public static boolean sameOrigin(String url,String origin){try{URI u=new URI(url);return u.getRawUserInfo()==null&&(u.getScheme()+"://"+u.getRawAuthority()).equals(origin);}catch(Exception e){return false;}}
     public static String chat(String origin,String thread,String host)throws Exception {
-        if(!thread.matches("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")||host.length()>256)throw new Exception("聊天链接无效");
-        return origin+"/#"+thread+"~"+URLEncoder.encode(host,"UTF-8").replace("+","%20");
+        boolean desktop="desktop:claude".equals(host)||"desktop:deepseek".equals(host);
+        if(thread==null||host==null||thread.isEmpty()||thread.length()>512||host.length()>256||(thread+host).matches("(?s).*[\\x00-\\x1f\\x7f].*")||(!desktop&&(host.startsWith("desktop:")||!thread.matches("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"))))throw new Exception("聊天链接无效");
+        return origin+"/#"+URLEncoder.encode(thread,"UTF-8").replace("+","%20").replace("*","%2A")+"~"+URLEncoder.encode(host,"UTF-8").replace("+","%20");
     }
 }

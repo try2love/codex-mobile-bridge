@@ -18,8 +18,12 @@ lines += [
     'for(String value:new String[]{"https://codex.try2love.com.evil.example/","http://codex.try2love.com/","https://user@codex.try2love.com/"})if(GatewayURL.sameOrigin(value,base))throw new AssertionError(value);',
     'if(!GatewayURL.chat(base,"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","my server/~").equals(base+"/#aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee~my%20server%2F%7E"))throw new AssertionError();',
     'try{GatewayURL.chat(base,"------------------------------------","local");throw new AssertionError();}catch(Exception expected){}',
-    'System.out.println("Java: 28 URL and route checks passed");}}'
 ]
+for identifier, host, fragment in cases['desktopAccepted']:
+    lines.append(f'if(!GatewayURL.chat(base,{json.dumps(identifier)},{json.dumps(host)}).equals(base+{json.dumps("/"+fragment)}))throw new AssertionError("Desktop route mismatch");')
+for identifier, host in cases['desktopRejected']:
+    lines.append(f'try{{GatewayURL.chat(base,{json.dumps(identifier)},{json.dumps(host)});throw new AssertionError("Invalid desktop route accepted");}}catch(Exception expected){{}}')
+lines += ['try{GatewayURL.chat(base,new String(new char[513]).replace("\\u0000","x"),"desktop:claude");throw new AssertionError();}catch(Exception expected){}', 'System.out.println("Java: 37 URL and route checks passed");}}']
 (work/'URLTests.java').write_text('\n'.join(lines))
 jdk = next((root/'.tmp/mobile-tools/jdk').glob('*/Contents/Home'))
 subprocess.run([str(jdk/'bin/javac'),'-d',str(work),str(root/'mobile/android/src/io/github/try2love/codexbridge/GatewayURL.java'),str(work/'URLTests.java')],check=True)

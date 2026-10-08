@@ -97,6 +97,28 @@ class SessionStore:
             return [dict(row) for row in conn.execute('SELECT id, ' + clock +
                     ' AS changed_at FROM threads WHERE ' + ' AND '.join(filters), (since,))]
 
+    def lifecycle_threads(self):
+        """Desktop roots and their complete agent subtree, using metadata only."""
+        with self._connect() as conn:
+            columns = {r[1] for r in conn.execute('PRAGMA table_info(threads)')}
+            fields = [name for name in ('id', 'originator', 'source') if name in columns]
+            rows = [dict(row) for row in conn.execute('SELECT ' + ','.join(fields) + ' FROM threads')]
+        desktop = {row['id'] for row in rows if 'originator' not in columns
+                   or row.get('originator') in ('Codex Desktop', 'codex_work_desktop', 'codex_mobile_bridge')
+                   or (row.get('originator') is None and row.get('source') == 'vscode')}
+        children = {}
+        for row in rows:
+            parent = self._agent_source(row).get('parent_thread_id')
+            if isinstance(parent, str):
+                children.setdefault(parent, []).append(row['id'])
+        pending = list(desktop)
+        while pending:
+            for child in children.get(pending.pop(), []):
+                if child not in desktop:
+                    desktop.add(child)
+                    pending.append(child)
+        return [{'id': identifier} for identifier in sorted(desktop)]
+
     def recencies(self, identifiers):
         if not identifiers:
             return {}

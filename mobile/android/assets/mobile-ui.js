@@ -11,14 +11,14 @@
     '.bridge-mobile .list-heading { min-height: 56px; padding-right: 48px; }',
     '.bridge-mobile .list-heading button { height: 48px; display: inline-flex; align-items: center; justify-content: center; margin: 0; }',
     '.bridge-mobile .chat-head { min-height: 56px; padding: 4px 64px 4px 8px; gap: 6px; }',
-    '.bridge-mobile .chat-head .appearance-button, .bridge-mobile .list-actions .appearance-button { display: none; }',
+    '.bridge-mobile .chat-head .appearance-button, .bridge-mobile .list-actions .appearance-button, .bridge-mobile .list-more { display: none !important; }',
     '.bridge-mobile #back { width: 40px; height: 48px; padding: 8px; margin-left: 0; flex: none; }',
-    '.bridge-mobile .sidebar-foot { order: 99; flex: none; min-height: 44px; padding: 2px 16px max(4px, env(safe-area-inset-bottom)); background: var(--page); }',
+    '.bridge-mobile .sidebar-foot:not(.client-functions) { order: 99; flex: none; min-height: 44px; padding: 2px 16px max(4px, env(safe-area-inset-bottom)); background: var(--page); }',
     '.bridge-mobile:not(.bridge-authenticated) .sidebar-foot { display: none; }',
     '.bridge-mobile body.chat-detail > .sidebar-foot { display: none; }',
     '.bridge-mobile body.chat-detail .composer { padding-bottom: max(8px, env(safe-area-inset-bottom)); }',
     '.bridge-mobile .sidebar-foot #logout { display: none; }',
-    '.bridge-mobile .sidebar-foot button, .bridge-mobile .sidebar-foot a { min-height: 40px; display: inline-flex; align-items: center; text-decoration: none; }',
+    '.bridge-mobile .sidebar-foot:not(.client-functions) button, .bridge-mobile .sidebar-foot:not(.client-functions) a { min-height: 40px; display: inline-flex; align-items: center; text-decoration: none; }',
     '.bridge-mobile .sidebar-foot > span { display: none; }',
     '.bridge-mobile .composer { padding-bottom: 8px; }',
     '.bridge-mobile input:not([type=checkbox]):not([type=radio]), .bridge-mobile textarea { font-size: max(16px, 1em); }'
@@ -39,7 +39,7 @@
     labelAccount();
   }
   const footer = document.querySelector('.sidebar-foot');
-  if (footer) {
+  if (footer && !document.querySelector('.client-navigation')) {
     document.body.appendChild(footer);
     const home = document.createElement('a'); home.href = 'codexbridge://home'; home.className = 'plain bridge-home'; home.dataset.i18n = '返回电脑列表'; home.textContent = typeof BridgeI18n !== 'undefined' ? BridgeI18n.t('返回电脑列表') : '返回电脑列表';
     footer.appendChild(home);

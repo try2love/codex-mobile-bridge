@@ -55,6 +55,7 @@ if(typeof document!=='undefined')(()=>{
     root.dataset.showActivity=String(settings.showActivity);
     root.dataset.showComputer=String(settings.showComputer);get('appearance-computer').checked=settings.showComputer;
     root.dataset.showPushplus=String(settings.showPushplus);root.dataset.showAccounts=String(settings.showAccounts);
+    root.dataset.showFileThumbnails=String(settings.showFileThumbnails);
     get('appearance-file-thumbnails').checked=settings.showFileThumbnails;
     window.BridgeWorkbench?.setThumbnails(settings.showFileThumbnails);
     get('appearance-pushplus').checked=settings.showPushplus;get('appearance-accounts').checked=settings.showAccounts;

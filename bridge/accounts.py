@@ -66,6 +66,9 @@ def operation(method):
         if manager is None:
             return method(self, *args, **kwargs)
         with manager.gate:
+            guard = getattr(manager, 'require_client_enabled', None)
+            if guard is not None:
+                guard()
             manager.check_ready()
             return method(self, *args, **kwargs)
     return call

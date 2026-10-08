@@ -9,6 +9,18 @@
     ["http://10.0.0.1", "http://10.0.0.1/"],
     ["http://172.31.0.1", "http://172.31.0.1/"]
   ],
+  "desktopAccepted": [
+    ["claude-chat", "desktop:claude", "#claude-chat~desktop%3Aclaude"],
+    ["run/one~two?x=1&y=2#frag", "desktop:deepseek", "#run%2Fone%7Etwo%3Fx%3D1%26y%3D2%23frag~desktop%3Adeepseek"],
+    ["percent% and*space", "desktop:deepseek", "#percent%25%20and%2Aspace~desktop%3Adeepseek"]
+  ],
+  "desktopRejected": [
+    ["", "desktop:claude"],
+    ["not-a-uuid", "local"],
+    ["aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "desktop:unknown"],
+    ["line\nbreak", "desktop:deepseek"],
+    ["control\u007f", "desktop:claude"]
+  ],
   "rejected": [
     "http://codex.try2love.com", "http://8.8.8.8", "http://172.32.0.1", "http://169.254.1.1",
     "https://user:password@codex.try2love.com", "https://codex.try2love.com/path",

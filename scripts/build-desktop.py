@@ -9,6 +9,7 @@ from importlib.metadata import distribution
 from pathlib import Path
 import certifi
 root = Path(__file__).resolve().parents[1]
+subprocess.run([sys.executable, str(root/'scripts/build-client-helpers.py')], check=True)
 subprocess.run([sys.executable, str(root/'scripts/bundle-cloudflared.py')], check=True)
 command = [sys.executable, '-m', 'PyInstaller', '--noconfirm', '--clean', '--onedir', '--name', 'codex-mobile-gateway',
            '--distpath', str(root/'dist'), '--workpath', str(root/'.tmp/pyinstaller'), '--specpath', str(root/'.tmp'),
@@ -24,6 +25,10 @@ command.extend(['--add-data', str(certificate_package.locate_file(license_file))
 # The SSH adapter intentionally injects these source modules into remote Python.
 for name in ('store.py', 'catalog.py', 'create.py', 'account_models.py', 'tls.py', 'workspace.py', 'terminal.py', 'pty_terminal.py'):
     command.extend(['--add-data', str(root/'bridge'/name)+':bridge'])
+command.extend(['--add-data', str(root/'bridge/integrations')+':bridge/integrations'])
+helper = root/'dist/client-helpers'/('claude-bridge-helper.exe' if sys.platform == 'win32' else 'claude-bridge-helper')
+if helper.is_file():
+    command.extend(['--add-binary', str(helper)+':client-helpers'])
 command.append(str(root/'desktop.py'))
 subprocess.run(command, cwd=root, check=True)
 source = root/'dist/codex-mobile-gateway'

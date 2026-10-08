@@ -1,8 +1,10 @@
 """Read existing App SSH metadata; turns still use the desktop's IPC owner."""
 import base64
+from contextlib import contextmanager
 import json
 import os
 import subprocess
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -14,12 +16,16 @@ class RemoteUnavailable(RuntimeError):
     pass
 
 
-def ssh_read(alias, source, timeout=18):
+def ssh_command(alias):
     if not alias or alias.startswith('-') or any(c.isspace() for c in alias):
         raise RemoteUnavailable('SSH 别名无效')
-    command = ['ssh', '-T', '-o', 'BatchMode=yes', '-o', 'ClearAllForwardings=yes',
+    return ['ssh', '-T', '-o', 'BatchMode=yes', '-o', 'ClearAllForwardings=yes',
                '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes',
                '-o', 'UpdateHostKeys=no', alias, 'python3 -']
+
+
+def ssh_read(alias, source, timeout=18):
+    command = ssh_command(alias)
     try:
         result = subprocess.run(command, input=source, text=True, encoding='utf-8', capture_output=True, timeout=timeout)
         if result.returncode:
@@ -27,6 +33,36 @@ def ssh_read(alias, source, timeout=18):
         return json.loads(result.stdout)
     except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
         raise RemoteUnavailable('SSH 主机暂不可用，请检查电脑上的连接') from exc
+
+
+@contextmanager
+def ssh_download(alias, source):
+    """Keep remote binary output on disk, including full-response fallbacks."""
+    from .workspace import MAX_TRANSFER
+    command = ssh_command(alias)
+    with tempfile.TemporaryFile(prefix='bridge-ssh-download-') as stream:
+        try:
+            result = subprocess.run(command, input=source.encode('utf-8'), stdout=stream,
+                                    stderr=subprocess.DEVNULL, timeout=60)
+            if result.returncode:
+                raise RemoteUnavailable('SSH 下载失败，请检查电脑上该主机的 SSH 连接')
+            length = stream.tell()
+            stream.seek(0)
+            header = stream.readline(8193)
+            if len(header) > 8192 or not header.endswith(b'\n'):
+                raise ValueError('Invalid remote download header')
+            metadata = json.loads(header)
+            if 'error' in metadata:
+                if metadata.get('permission'): raise PermissionError(metadata['error'])
+                raise ValueError(metadata['error'])
+            if (type(metadata.get('length')) is not int or not 0 <= metadata['length'] <= MAX_TRANSFER
+                    or length - len(header) != metadata['length']):
+                raise ValueError('SSH 下载中断，请重试')
+        except PermissionError:
+            raise
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RemoteUnavailable('SSH 主机暂不可用，请检查电脑上的连接') from exc
+        yield metadata, stream
 
 
 def payload(value):
@@ -59,6 +95,9 @@ class RemoteStore:
 
     def notification_changes(self, since=0):
         return self.call('notification_changes', {'since': since})
+
+    def lifecycle_threads(self):
+        return self.call('lifecycle_threads', {})
 
     def get(self, thread_id):
         return self.call('get', {'thread_id': thread_id})

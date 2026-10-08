@@ -8,7 +8,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from aiohttp import web, WSMsgType
-from .protocol import MAX_BODY, MAX_FRAME, origin, validate, decode, content_type
+from .protocol import MAX_BODY, MAX_FRAME, origin, validate, decode, content_type, download_headers
 from .registry import Registry, token
 
 # Same host-only cookie name as the existing native clients; relay token space
@@ -174,7 +174,8 @@ class Relay:
                     disposition = value.get('disposition', '')
                     if not isinstance(disposition, str) or len(disposition) > 4096 or '\r' in disposition or '\n' in disposition:
                         raise ValueError('Invalid download header')
-                    item['future'].set_result((status, body, mime, disposition))
+                    headers = download_headers(value.get('headers', {}), response=True)
+                    item['future'].set_result((status, body, mime, disposition, headers))
                 except (ValueError, TypeError, AttributeError):
                     break
         finally:
@@ -205,14 +206,16 @@ class Relay:
         try:
             body = await request.read()
             mime = content_type(request.headers.get('Content-Type', 'application/json'))
+            headers = download_headers({key: ','.join(request.headers.getall(key)) for key in
+                                        ('Range', 'If-Range') if key in request.headers})
             await asyncio.wait_for(ws.send_json({'id': identifier, 'phone': phone['id'], 'method': request.method,
                                                 'phones': [p['id'] for p in self.registry.phones(phone['device'])],
                                                 'path': request.path_qs, 'body': base64.b64encode(body).decode(),
-                                                'contentType': mime}), timeout=10)
-            status, response, mime, disposition = await asyncio.wait_for(future, timeout=self.timeout)
+                                                'contentType': mime, 'headers': headers}), timeout=10)
+            status, response, mime, disposition, range_headers = await asyncio.wait_for(future, timeout=self.timeout)
             # Revocation also applies to a response already in flight.
             self.phone_auth(request)
-            headers = {'Content-Type': mime}
+            headers = {'Content-Type': mime, **range_headers}
             if disposition:
                 headers['Content-Disposition'] = disposition
             return web.Response(status=status, body=response, headers=headers)

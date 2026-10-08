@@ -150,13 +150,18 @@ aside{background:var(--surface)}
 .image-preview-toolbar{display:flex;align-items:center;gap:12px;flex:none;padding:max(8px,env(safe-area-inset-top)) max(64px,env(safe-area-inset-right)) 8px max(12px,env(safe-area-inset-left));border-bottom:1px solid #ffffff20}
 #image-preview-close{display:flex;align-items:center;justify-content:center;flex:none;min-width:72px;min-height:44px;margin:0;padding:8px 12px;border:1px solid #ffffff30;border-radius:12px;background:#ffffff12;color:#fff;font:inherit;font-size:16px;cursor:pointer}
 #image-preview-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
-.image-preview-content{display:flex;align-items:center;justify-content:center;flex:1;min-height:0;min-width:0;padding:12px;overflow:auto}
-.image-preview-content img{display:block;max-width:100%;max-height:100%;object-fit:contain}
+.image-preview-content{position:relative;flex:1;min-height:0;min-width:0;overflow:hidden;touch-action:none;user-select:none;overscroll-behavior:contain}
+.image-preview-content img{position:absolute;left:50%;top:50%;display:block;max-width:none;max-height:none;object-fit:contain;transform:translate(-50%,-50%);pointer-events:none}
 .image-preview-content img[hidden]{display:none}
+.image-preview-content.is-zoomed{cursor:grab}.image-preview-content.is-dragging{cursor:grabbing}
+.image-preview-controls{display:flex;align-items:center;justify-content:center;gap:8px;flex:none;padding:8px max(12px,env(safe-area-inset-right)) 12px max(12px,env(safe-area-inset-left))}
+.image-preview-controls button{min-width:44px;min-height:44px;margin:0;padding:8px 12px;border:1px solid #ffffff30;border-radius:10px;background:#ffffff12;color:#fff;font:inherit;font-size:16px;cursor:pointer}
+.image-preview-controls button:disabled{opacity:.4;cursor:default}
+#image-preview-scale{min-width:52px;text-align:center;font-size:13px;font-variant-numeric:tabular-nums}
 #image-preview-status{flex:none;margin:0;padding:0 20px max(16px,env(safe-area-inset-bottom));text-align:center;font-size:14px;color:#d1d5db}
 #image-preview-status:empty{padding-bottom:env(safe-area-inset-bottom)}
-img[data-image-preview]{cursor:zoom-in}
-img[data-image-preview]:focus-visible,#image-preview-close:focus-visible{outline:2px solid #8bb5ff;outline-offset:3px}
+img[data-image-preview],img.image-preview-source{cursor:zoom-in}
+img[data-image-preview]:focus-visible,img.image-preview-source:focus-visible,#image-preview-close:focus-visible,.image-preview-controls button:focus-visible{outline:2px solid #8bb5ff;outline-offset:3px}
 
 /* Permission cards share the same layout in main and side chats. */
 .permission-option{display:flex;align-items:center;gap:16px;width:100%;padding:18px 16px;margin:10px 0;border:1px solid var(--line);border-radius:14px;background:var(--raised);color:var(--text);text-align:left;}
@@ -178,11 +183,11 @@ img[data-image-preview]:focus-visible,#image-preview-close:focus-visible{outline
 body:has(#app:not([hidden]))>.phone-header{display:none}
 .list-actions{display:flex;align-items:center;gap:4px;margin-left:auto;flex:none}
 .list-actions .appearance-button{width:40px;height:44px;flex:none}
-.bridge-mobile .sidebar-foot{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));align-items:center;gap:8px}
-.bridge-mobile .sidebar-foot #accounts-button{grid-column:1;grid-row:1;justify-self:start;white-space:normal;max-width:100%;min-width:0;text-align:left}
-.bridge-mobile .sidebar-foot #pushplus-settings{grid-column:2;grid-row:1;justify-self:center;white-space:normal;max-width:100%;min-width:0;text-align:center}
-.bridge-mobile .sidebar-foot .bridge-home{grid-column:3;grid-row:1;justify-self:end;white-space:normal;max-width:100%;min-width:0;text-align:right}
-:root.bridge-mobile[data-show-accounts=false] .sidebar-foot #pushplus-settings{grid-column:1 / 3;justify-self:start}
+.bridge-mobile .sidebar-foot:not(.client-functions){display:grid;grid-template-columns:repeat(3,minmax(0,1fr));align-items:center;gap:8px}
+.bridge-mobile .sidebar-foot:not(.client-functions) #accounts-button{grid-column:1;grid-row:1;justify-self:start;white-space:normal;max-width:100%;min-width:0;text-align:left}
+.bridge-mobile .sidebar-foot:not(.client-functions) #pushplus-settings{grid-column:2;grid-row:1;justify-self:center;white-space:normal;max-width:100%;min-width:0;text-align:center}
+.bridge-mobile .sidebar-foot:not(.client-functions) .bridge-home{grid-column:3;grid-row:1;justify-self:end;white-space:normal;max-width:100%;min-width:0;text-align:right}
+:root.bridge-mobile[data-show-accounts=false] .sidebar-foot:not(.client-functions) #pushplus-settings{grid-column:1 / 3;justify-self:start}
 
 .bridge-mobile .list-actions .appearance-button{display:none}
 

@@ -22,7 +22,7 @@ class CommandTerminalPanel {
     tab.body.append(head,this.location,this.screen,this.form,this.status,help);
     this.load();
   }
-  url(extra='') {return '/api/sessions/'+this.session.id+'/terminal?host='+encodeURIComponent(this.session.host)+extra;}
+  url(extra='') {return this.workbench.endpoint(this.session,'terminal')+extra;}
   async load() {
     try {
       const info=await this.workbench.request(this.url());if(this.disposed)return;

@@ -3,7 +3,7 @@ const {app,BrowserWindow,ipcMain,dialog,shell,clipboard,Tray,Menu,net}=require('
 const path=require('node:path');
 const fs=require('node:fs');
 const {pathToFileURL}=require('node:url');
-const {runWorker,workerFor,createSnapshotWorker}=require('./controller.cjs');
+const {runWorker,workerFor,createSnapshotWorker,createManagementWorker}=require('./controller.cjs');
 const {pairingImage}=require('./qr.cjs');
 const {createTray}=require('./tray.cjs');
 const {normalize,translate}=require('./i18n.js');
@@ -21,9 +21,10 @@ if(process.env.CMB_DATA_DIR)app.setPath('userData',path.join(path.resolve(proces
 let window,dataDir,tray,quitting=false,snapshotPending,lastSnapshot,updateQuitting=false;
 let installPending,installStatus={},updater,workerWrites=0;
 const snapshotWorker=createSnapshotWorker();
+const managementWorker=createManagementWorker();
 let connectionSecrets={},setupPending=false;
 const entry=pathToFileURL(path.join(__dirname,'index.html')).href;
-function releaseTray(){snapshotWorker.close();quitting=true;tray?.dispose();tray=null;}
+function releaseTray(){snapshotWorker.close();managementWorker.close();quitting=true;tray?.dispose();tray=null;}
 function loadDataDir(){
   if(process.env.CMB_UPDATE_DATA_DIR)return path.resolve(process.env.CMB_UPDATE_DATA_DIR);
   if(process.env.CMB_DATA_DIR)return path.resolve(process.env.CMB_DATA_DIR);
@@ -46,17 +47,17 @@ function worker(action,payload){
   if(action==='snapshot'&&updateQuitting)return Promise.resolve({...lastSnapshot,update:updater.status()});
   if(setupPending&&['save','start','stop'].includes(action))return Promise.reject(Error('请等待服务器操作完成。'));
   if(action==='start')payload={...payload,connectionSecrets};
-  const writes=['shared-relay','server-setup','connection-credentials','save','start','stop','devices','notification-watches'].includes(action);
+  const writes=(['harness','desktop-sessions'].includes(action)&&!['status','clients','detect'].includes(payload?.action))||['shared-relay','server-setup','connection-credentials','save','start','stop','devices','notification-watches'].includes(action);
   if(writes&&updater?.busy)return Promise.reject(Error('正在更新应用，请稍候。'));
   if(writes)workerWrites++;
   if(action==='snapshot'&&snapshotPending)return snapshotPending;
   const options=workerFor({packaged:app.isPackaged,resources:process.resourcesPath,root,dataDir});
-  const result=(action==='snapshot'&&!updater?.busy?snapshotWorker.read(options):runWorker(options,action,payload)).then(value=>['snapshot','save'].includes(action)?{...value,networkInterfaces:interfaces(),cloudflaredInstall:installStatus,update:updater?.status(),updateResult:updateResult(),updateManaged:updateManaged()}:value).finally(()=>{if(writes)workerWrites--;});
+  const result=(action==='snapshot'&&!updater?.busy?snapshotWorker.read(options):['accounts','account','desktop-sessions','start','stop','save'].includes(action)?managementWorker.call(options,action,payload):runWorker(options,action,payload)).then(value=>['snapshot','save'].includes(action)?{...value,networkInterfaces:interfaces(),cloudflaredInstall:installStatus,update:updater?.status(),updateResult:updateResult(),updateManaged:updateManaged()}:value).finally(()=>{if(writes)workerWrites--;});
   if(action==='snapshot')snapshotPending=result.then(value=>{lastSnapshot=value;return value;}).finally(()=>{snapshotPending=null;});
   return action==='snapshot'?snapshotPending:result;
 }
 async function installUpdate(candidate){
-  snapshotWorker.close();
+  snapshotWorker.close();managementWorker.close();
   const target=process.platform==='darwin'?path.resolve(process.execPath,'../../..'):path.dirname(process.execPath);
   const token=randomUUID();
   const prepared=await worker('update-prepare',{archive:candidate.archive,sha256:candidate.asset.sha256,version:candidate.version,
@@ -117,7 +118,7 @@ function register(){
     fs.writeFileSync(path.join(directory,'language.json'),JSON.stringify({language:value}));
     language=value;const title=t('Codex 手机网关');if(window.getTitle()!==title)window.setTitle(title);tray?.relabel();return language;
   });
-  for(const action of ['snapshot','save','start','stop','logs','test-notification','check-entry','devices','account', 'accounts','notification-watches'])ipcMain.handle('bridge:'+action,async(event,payload)=>{
+  for(const action of ['snapshot','save','start','stop','logs','test-notification','check-entry','devices','account', 'accounts', 'harness', 'desktop-sessions','notification-watches'])ipcMain.handle('bridge:'+action,async(event,payload)=>{
     authorize(event);
     if(action==='accounts'){
       if(updater?.busy&&payload?.action!=='list')throw Error('正在更新应用，请稍候。');
@@ -127,6 +128,7 @@ function register(){
         await shell.openExternal(url.href);return value;
       }
     }
+    if(action==='desktop-sessions'&&payload?.action==='prepare-claude'){const value=await worker(action,payload);clipboard.writeText(value.script);delete value.script;return value;}
     try{return await worker(action,payload);}catch(error){if(error.validation)return {validationError:{message:error.message,...error.validation}};throw error;}
   });
   ipcMain.handle('bridge:read-credentials',async(event,value={})=>{
@@ -218,6 +220,7 @@ function register(){
     if(result.canceled)return null;
     const selected=result.filePaths[0];
     if(kind==='data'){
+      if(workerWrites)throw Error('请等待当前操作完成。');
       if(updater.busy)throw Error('正在更新应用，请稍候。');
       if(installPending)throw Error('正在安装 cloudflared，请完成后再切换数据目录。');
       if(setupPending)throw Error('请等待服务器操作完成。');
@@ -247,6 +250,11 @@ function register(){
     if(target==='pushplus-verify')return shell.openExternal('https://www.pushplus.plus/center/real-auth?source=push');
     if(target==='pushplus-limits')return shell.openExternal('https://www.pushplus.plus/doc/guide/use.html');
     const snapshot=await worker('snapshot');
+    if(target==='harness'){
+      const state=await worker('harness',{action:'status'});
+      if(!state.running||!snapshot.urls.length)throw Error('请先启动网关和 Harness');
+      return shell.openExternal(new URL('/harness/',snapshot.urls[0]).href);
+    }
     if(!snapshot.urls.includes(target)||!/^https?:\/\//.test(target))throw Error('地址不可用');
     await shell.openExternal(target);
   });

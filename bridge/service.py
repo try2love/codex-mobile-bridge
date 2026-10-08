@@ -22,7 +22,7 @@ from .store import SessionStore, StoreUnavailable
 from .files import artifact_paths, referenced_model_images
 from .workspace import operate as workspace_operation
 from .catalog import Catalog
-from .remote import AppHosts, RemoteStore, RemoteCatalog, RemoteUnavailable, ssh_read, payload
+from .remote import AppHosts, RemoteStore, RemoteCatalog, RemoteUnavailable, ssh_read, ssh_download, payload
 from .create import rename_thread, create_empty, fork_copy, open_in_desktop, CreationError, ForkUnavailable
 from .timeline import Timeline
 from .account import Account
@@ -563,6 +563,162 @@ class Bridge:
                 self.remote_bridges[host] = Bridge(self.codex_home, folder, host, available[host]['alias'], ipc_path=self.ipc.path)
                 self.remote_bridges[host].accounts = self.accounts
             return self.remote_bridges[host]
+
+    def assert_desktop_idle(self, timeout=20):
+        """Passively check every desktop owner before an application shutdown.
+
+        The caller holds the account operation gate until shutdown completes.
+        Saved rollouts and the gateway's existing follow cache are not evidence
+        that a desktop-only or remote task is idle.
+        """
+        deadline = time.monotonic() + timeout
+        unknown = '无法确认 Codex 桌面任务状态，请检查桌面后重试'
+        busy = 'Codex 有任务运行或等待确认，请先结束任务再关闭'
+
+        def remaining():
+            value = deadline - time.monotonic()
+            if value <= 0:
+                raise ValueError(unknown)
+            return value
+
+        def check_submissions():
+            if self.accounts.blockers():
+                raise ValueError('Codex 有任务或待确认操作，请先处理后再关闭')
+
+        check_submissions()
+        try:
+            # AppHosts normally tolerates damaged metadata for list rendering.
+            # A lifecycle decision must not silently lose its remote coverage.
+            metadata = self.codex_home / '.codex-global-state.json'
+            if metadata.exists() and not isinstance(json.loads(metadata.read_text(encoding='utf-8')), dict):
+                raise ValueError('Invalid desktop metadata')
+            hosts = self.hosts.hosts()
+            sources = {self.host: self, **self.remote_bridges}
+            for host in hosts:
+                remaining()
+                if host not in sources:
+                    sources[host] = self.for_host(host)
+        except Exception as exc:
+            raise ValueError('无法读取 Codex 桌面和 SSH 会话，请检查连接后重试') from exc
+        check_submissions()
+        # SSH metadata already has its own finite transport timeout. Waiting on
+        # these read-only jobs is also bounded by this operation's deadline.
+        executor = ThreadPoolExecutor(max_workers=min(4, len(sources)))
+        reads = {host: executor.submit(source.store.lifecycle_threads) for host, source in sources.items()}
+        threads = []
+        try:
+            for host, source in sources.items():
+                rows = reads[host].result(timeout=remaining())
+                identifiers = {row['id'] for row in rows}
+                with source.lock:
+                    identifiers.update(source.live)
+                if any(not isinstance(sid, str) or not sid for sid in identifiers):
+                    raise ValueError('Invalid desktop session metadata')
+                threads.extend((host, sid) for sid in sorted(identifiers))
+        except Exception as exc:
+            raise ValueError('无法读取 Codex 桌面和 SSH 会话，请检查连接后重试') from exc
+        finally:
+            for read in reads.values():
+                read.cancel()
+            executor.shutdown(wait=False)
+
+        condition = threading.Condition()
+        followed = {}
+        disconnected = False
+
+        def disconnect():
+            nonlocal disconnected
+            with condition:
+                disconnected = True
+                condition.notify_all()
+
+        def event(message):
+            params = message.get('params', {})
+            with condition:
+                if message.get('method') == 'client-status-changed':
+                    if params.get('status') == 'disconnected':
+                        for record in followed.values():
+                            if record['owner'] == params.get('clientId'):
+                                record['invalid'] = True
+                        condition.notify_all()
+                    return
+                if message.get('method') != 'thread-stream-state-changed':
+                    return
+                key = (params.get('hostId'), params.get('conversationId'))
+                record = followed.get(key)
+                if record is None:
+                    return
+                try:
+                    if message.get('version') != 11 or message.get('sourceClientId') != record['owner']:
+                        raise ValueError('Desktop owner changed')
+                    change = params['change']
+                    if type(change.get('revision')) is not int:
+                        raise ValueError('Missing revision')
+                    if record['revision'] is not None and change['revision'] < record['revision']:
+                        raise ValueError('Stale revision')
+                    if change.get('type') == 'snapshot':
+                        state = change['conversationState']
+                    elif change.get('type') == 'patches' and record['revision'] is not None:
+                        if change.get('baseRevision') != record['revision']:
+                            raise ValueError('Revision mismatch')
+                        state = apply_patches(record['state'], change['patches'])
+                    else:
+                        raise ValueError('Missing snapshot')
+                    if not isinstance(state, dict) or state.get('id') != key[1]:
+                        raise ValueError('Session mismatch')
+                    record.update(state=state, revision=change['revision'])
+                except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+                    record['invalid'] = True
+                condition.notify_all()
+
+        def check_state(record):
+            if disconnected or record['invalid'] or record['state'] is None:
+                raise ValueError(unknown)
+            state = record['state']
+            try:
+                runtime = state.get('threadRuntimeStatus', {}).get('type')
+                if (runtime in ('active', 'running', 'waiting', 'busy') or pending_requests(state)
+                        or any(turn.get('status') == 'inProgress' for turn in ordered_turns(state))):
+                    raise ValueError(busy)
+                if runtime != 'idle':
+                    raise ValueError(unknown)
+            except (TypeError, AttributeError, KeyError) as exc:
+                raise ValueError(unknown) from exc
+
+        ipc = DesktopIPC(self.ipc.path, on_event=event, on_disconnect=disconnect)
+        try:
+            remaining()
+            ipc.connect()
+            for host, sid in threads:
+                try:
+                    response = ipc.request('thread-owner-discovery', {'hostId': host, 'conversationId': sid},
+                                           host=host, timeout=min(6, remaining()))
+                except IPCError as exc:
+                    if str(exc) == 'no-client-found':
+                        continue
+                    raise ValueError(unknown) from exc
+                owner = response.get('handledByClientId')
+                if not isinstance(owner, str) or not owner:
+                    raise ValueError(unknown)
+                record = {'owner': owner, 'state': None, 'revision': None, 'invalid': False}
+                with condition:
+                    followed[(host, sid)] = record
+                ipc.follow(sid, owner, host=host)
+                with condition:
+                    condition.wait_for(lambda: record['state'] is not None or record['invalid'] or disconnected,
+                                       timeout=min(4, remaining()))
+                    check_state(record)
+            remaining()
+            check_submissions()
+            with condition:
+                if disconnected:
+                    raise ValueError(unknown)
+                for record in followed.values():
+                    check_state(record)
+        except IPCError as exc:
+            raise ValueError(unknown) from exc
+        finally:
+            ipc.close()
 
     def list(self, query="", limit=100, offset=0, archived=False):
         sources = [(self, "此电脑")]
@@ -1135,6 +1291,9 @@ class Bridge:
         if not isinstance(self.store, RemoteStore):
             raise RemoteUnavailable('此主机暂不支持文件浏览')
         source = Path(__file__).with_name('workspace.py').read_text(encoding='utf-8')
+        if action == 'download-stream':
+            source += '\nimport json, sys\ntry:\n with operate(**' + payload({'root': root, 'action': action, 'params': params}) + ') as (metadata, stream):\n  sys.stdout.buffer.write(json.dumps(metadata).encode()+b"\\n")\n  while True:\n   chunk=stream.read(65536)\n   if not chunk: break\n   sys.stdout.buffer.write(chunk)\nexcept (ValueError, PermissionError, OSError) as error:\n sys.stdout.buffer.write(json.dumps({"error": str(error), "permission": isinstance(error, PermissionError)}).encode()+b"\\n")\n'
+            return ssh_download(self.store.alias, source)
         source += '\nimport json\ntry:\n result={"value": operate(**' + payload({'root': root, 'action': action, 'params': params}) + ')}\nexcept (ValueError, PermissionError) as error:\n result={"error": str(error)}\nprint(json.dumps(result, ensure_ascii=False))\n'
         result = ssh_read(self.store.alias, source, timeout=60)
         if 'error' in result: raise ValueError(result['error'])

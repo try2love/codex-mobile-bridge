@@ -8,7 +8,7 @@ const requireMain=require('node:module').createRequire(main);
 // gateway, or actual update process is started by these failure-path tests.
 function controller({ready='valid',readyAt=0,pending=false,spawnError=false,exited=false,platform='win32',packaged=true}={}){
   let now=0;
-  const calls={exit:[],quit:0,closed:0},timers=[],intervals=[];
+  const calls={exit:[],quit:0,closed:0,managementClosed:0},timers=[],intervals=[];
   const app={isPackaged:packaged,requestSingleInstanceLock:()=>true,whenReady:()=>({then(){}}),on(){},
     getVersion:()=> '2.0.0-preview.3',getPath:()=>'/fixture/user',exit:code=>calls.exit.push(code),quit:()=>calls.quit++};
   const context=vm.createContext({__dirname:path.dirname(main),
@@ -32,7 +32,7 @@ function controller({ready='valid',readyAt=0,pending=false,spawnError=false,exit
         }};
       if(name==='node:child_process')return {spawn:()=>({pid:456,exitCode:exited?1:null,unref(){},
         on(event,fn){if(spawnError&&event==='error')fn(Error('helper spawn failed'));}})};
-      if(name==='./controller.cjs')return {createSnapshotWorker:()=>({close(){calls.closed++;}}),workerFor:()=>({}),
+      if(name==='./controller.cjs')return {createSnapshotWorker:()=>({close(){calls.closed++;}}),createManagementWorker:()=>({close(){calls.managementClosed++;}}),workerFor:()=>({}),
         runWorker:async()=>({helper:'/fixture/helper',plan:'/fixture/transaction/plan.json'})};
       return requireMain(name);
     }});
@@ -65,6 +65,7 @@ test('verified helper exits immediately even with a stalled snapshot and cancell
     await Promise.race([f.run(),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('controller waited for snapshot')),100);})]);
   }finally{clearTimeout(timer);}
   assert.deepEqual(f.calls.exit,[0]);assert.equal(f.calls.quit,0);
+  assert.equal(f.calls.managementClosed,1);
   assert.equal(vm.runInContext('updateQuitting',f.context),true);
 });
 

@@ -11,6 +11,27 @@ final class MobileStrings {
   values.put("留空恢复默认名称","Leave blank to restore the default name");
   values.put("名称最多 80 个字符","Use no more than 80 characters");
   values.put("保存","Save");
+  values.put("已有下载任务，请先完成或取消","Finish or cancel the current download first");
+  values.put("展开下载","Expand download");
+  values.put("收起下载","Collapse download");
+  values.put("暂停","Pause");
+  values.put("关闭","Close");
+  values.put("重新下载","Restart");
+  values.put("下载完成","Download complete");
+  values.put("已暂停","Paused");
+  values.put("下载中断","Download interrupted");
+  values.put("正在暂停…","Pausing…");
+  values.put("正在保存…","Saving…");
+  values.put("下载地址不是当前电脑的附件","This download is not an attachment from the current computer");
+  values.put("下载尚未完成","The download is not complete");
+  values.put("登录已失效，请重新连接电脑后继续下载","Sign-in expired. Reconnect to the computer, then continue the download.");
+  values.put("文件已发生变化，请重新下载","The file has changed. Restart the download.");
+  values.put("网关返回的续传信息无效，请重新下载","The gateway returned invalid resume information. Restart the download.");
+  values.put("当前网关不支持续传，请重新下载","This gateway does not support resuming. Restart the download.");
+  values.put("工作区文件超过 20 MB 下载限制","Workspace file exceeds the 20 MB download limit");
+  values.put("下载文件大小与响应不一致，请重新下载","The download size does not match the response. Restart the download.");
+  values.put("下载中断，请检查网络和存储后重试","Download interrupted. Check your network and storage, then retry.");
+
 
 values.put("应用更新","App updates");
 values.put("预览通道 · 手动检查，不自动安装","Preview channel \u00b7 Manual checks, no automatic install");

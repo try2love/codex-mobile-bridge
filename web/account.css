@@ -50,3 +50,5 @@
 .account-reset-dialog::backdrop{background:#0006}.account-reset-dialog .picker-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}.account-reset-dialog .picker-head h2{margin:0;font-size:18px;overflow-wrap:anywhere}
 
 .account-reset-dialog button{font:inherit;padding:9px 13px;border:1px solid var(--line,#dfe3eb);border-radius:8px;background:var(--raised,#fff);color:inherit;cursor:pointer}.account-reset-dialog button:disabled{opacity:.5;cursor:default}.account-reset-dialog .picker-head>button{flex:none}
+
+.accounts-panel .accounts-import-name{max-width:320px}

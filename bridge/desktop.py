@@ -7,6 +7,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import time
 import zipfile
 from pathlib import Path
 
@@ -24,6 +25,53 @@ class Desktop:
         self.data_dir = Path(data_dir).expanduser().resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.config_path = self.data_dir/'config.json'
+        self.local_bridge = None
+        self.local_sessions = None
+        self.starting_until = 0
+
+    def close_local(self, check_busy=False):
+        if self.local_bridge:
+            accounts = self.local_bridge.accounts
+            if check_busy:
+                accounts.assert_editable()
+                if accounts.thread and accounts.thread.is_alive():
+                    raise ValueError('请等待账号操作完成后再启动网关')
+            # Finish in-flight account reads before transferring ownership.
+            with self.local_bridge.account.lock:
+                if self.local_sessions:
+                    self.local_sessions.close()
+                self.local_bridge.close()
+            self.local_bridge = self.local_sessions = None
+
+    def local_services(self):
+        if time.monotonic() < self.starting_until:
+            raise ValueError('网关正在启动，请稍后重试')
+        if self.local_bridge is None:
+            from .service import Bridge
+            from .integrations.manager import DesktopSessions
+            from .integrations.discovery import discover_clients
+            p = self.preferences()
+            discovered = discover_clients(p)
+            runtime = p.get('codexBin') or discovered['codex'].get('runtime')
+            self.local_bridge = Bridge(Path(p['codexHome']).expanduser(), self.data_dir,
+                                       ipc_path=p.get('ipcPath') or None, codex_bin=runtime or None)
+            self.local_sessions = DesktopSessions(self.data_dir, self.local_bridge)
+        return self.local_bridge, self.local_sessions
+
+    def local_control(self, action, capability, value):
+        record = read_record(self.data_dir/'gateway-control.json')
+        if record:
+            if not self.status()['running']:
+                raise ValueError('网关状态暂不可用，请稍后刷新')
+            if not record.get(capability):
+                raise ValueError('请重新启动网关以启用客户端管理')
+            self.close_local(check_busy=True)
+            self.starting_until = 0
+            return request_pairing(self.data_dir, {'action': action, 'value': value}, timeout=100)
+        bridge, sessions = self.local_services()
+        if action == 'desktop-sessions':
+            return sessions.control(value)
+        return bridge.accounts.control(value) if action == 'accounts' else bridge.accounts.account(value)
 
     def config(self):
         if not self.config_path.exists():
@@ -162,6 +210,8 @@ class Desktop:
                 origins.append(fixed)
         if self.status()['running'] and origins != config.get('origins', []):
             raise ValueError('请先停止网关再更改 HTTPS 地址，保存后重新启动')
+        if any(preferences[k] != old_preferences[k] for k in ('codexHome', 'codexBin', 'ipcPath')):
+            self.close_local(check_busy=True)
         # Validate all values before writing any setting.
         notification_value = value.get('notifications', {})
         # save_settings performs the remaining validation; settings files have separate owners.
@@ -197,6 +247,7 @@ class Desktop:
         state = self.status()
         if state['running']:
             return {'started': False, 'message': '已连接正在运行的网关'}
+        self.close_local(check_busy=True)
         preferences = self.preferences()
         if not Path(preferences['codexHome']).expanduser().is_dir():
             raise ValueError('请先选择存在的 Codex 数据目录')
@@ -238,6 +289,7 @@ class Desktop:
             process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=log, stderr=log, env=environment, **kwargs)
             process.stdin.write(json.dumps(temporary).encode('utf-8'))
             process.stdin.close()
+        self.starting_until = time.monotonic() + 30
         return {'started': True, 'pid': process.pid, 'message': '正在启动网关'}
 
     def stop(self):
@@ -247,21 +299,36 @@ class Desktop:
             if state.get('switch', {}).get('phase') in ('preparing', 'stopping', 'applying', 'starting', 'verifying', 'restoring'):
                 raise ValueError('请等待账号切换完成后再停止网关')
         request_stop(self.data_dir)
+        self.starting_until = 0
         return {'message': '网关已停止'}
 
     def accounts(self, value):
+        return self.local_control('accounts', 'accountsManagement', value)
+
+    def desktop_sessions(self, value):
+        return self.local_control('desktop-sessions', 'desktopSessionsManagement', value)
+
+    def harness(self, value):
+        from .harness import configuration, detect, save
         record = read_record(self.data_dir/'gateway-control.json') or {}
-        if not self.status()['running'] or not record.get('accountsManagement'):
-            raise ValueError('请先启动支持账号管理的新版网关')
-        return request_pairing(self.data_dir, {'action': 'accounts', 'value': value}, timeout=100)
+        if self.status()['running']:
+            if not record.get('harnessManagement'):
+                raise ValueError('请重新启动网关以启用 Harness')
+            return request_pairing(self.data_dir, {'action': 'harness', 'value': value}, timeout=80)
+        if record:
+            raise ValueError('网关状态暂不可用，请稍后刷新')
+        action = value.get('action', 'status')
+        if action == 'save':
+            save(self.data_dir, value.get('config', {}))
+        elif action not in ('status', 'detect'):
+            raise ValueError('请先启动网关')
+        result = {'state': 'stopped', 'running': False, 'config': configuration(self.data_dir), 'logs': [], 'url': '/harness/'}
+        if action == 'detect':
+            result['detected'] = detect()
+        return result
 
     def account(self, value):
-        record = read_record(self.data_dir/'gateway-control.json') or {}
-        if not self.status()['running'] or not record.get('accountManagement'):
-            if value.get('action', 'read') == 'read':
-                return {'visible': False}
-            raise ValueError('请启动新版网关后重试')
-        return request_pairing(self.data_dir, {'action': 'account', 'value': value}, timeout=100)
+        return self.local_control('account', 'accountManagement', value)
 
     def devices(self, value):
         if self.status()['running']:
