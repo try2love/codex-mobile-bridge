@@ -40,7 +40,7 @@ class UpdateTests(unittest.TestCase):
 
     def test_native_handoff_never_reports_installation_complete(self):
         updater=self.manager.updates
-        with patch('bridge.desktop_updates.subprocess.run') as run, patch('bridge.desktop_updates.DesktopApp') as app:
+        with patch('bridge.desktop_updates.sys.platform','darwin'), patch('bridge.desktop_updates.subprocess.run') as run, patch('bridge.desktop_updates.DesktopApp') as app:
             app.return_value.processes.return_value=[1234]
             run.return_value.stdout='opened\n'
             updater._request({'bundle':'/fixture.app'})
@@ -49,8 +49,10 @@ class UpdateTests(unittest.TestCase):
             self.assertEqual(run.call_args.kwargs['timeout'],180)
         self.assertEqual(updater.status()['state'],'needsDesktop')
         self.assertNotIn('kill',str(run.call_args))
-        with patch('bridge.desktop_updates.subprocess.run',side_effect=OSError('private path')):
+        with patch('bridge.desktop_updates.sys.platform','darwin'), patch('bridge.desktop_updates.subprocess.run',side_effect=OSError('private path')) as run, patch('bridge.desktop_updates.DesktopApp') as app:
+            app.return_value.processes.return_value=[1234]
             updater._request({'bundle':'/fixture.app'})
+            run.assert_called_once()
         self.assertEqual(updater.status()['state'],'needsDesktop')
         self.assertNotIn('private path',str(updater.status()))
 

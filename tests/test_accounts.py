@@ -5,7 +5,7 @@ import tempfile
 import threading
 import unittest
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -335,7 +335,10 @@ class DesktopAppTests(unittest.TestCase):
             with self.assertRaises(ValueError):DesktopApp(path,folder).validate(Path(folder)/'runtime')
 
     def test_macos_relaunch_uses_launch_services_and_preserves_codex_home(self):
-        app = DesktopApp('/Applications/Fixture Codex.app/Contents/MacOS/Fixture', '/fixture/codex home')
+        # This launch fixture models macOS paths without resolving them on the host OS.
+        app = DesktopApp.__new__(DesktopApp)
+        app.executable = PurePosixPath('/Applications/Fixture Codex.app/Contents/MacOS/Fixture')
+        app.home = PurePosixPath('/fixture/codex home')
         with patch('bridge.desktop_app.sys.platform', 'darwin'), patch('bridge.desktop_app.subprocess.run') as run, patch('bridge.desktop_app.subprocess.Popen') as direct:
             app.start()
         args = run.call_args.args[0]
