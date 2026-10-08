@@ -28,6 +28,68 @@ SPARKLE = '{http://www.andymatuschak.org/xml-namespaces/sparkle}'
 CHANNELS = {'prod':'codex-app-prod', 'public-beta':'codex-app-beta'}
 STORE_PRODUCTS = {'prod':'9PLM9XGG6VKS', 'public-beta':'9N8CJ4W95TBZ'}
 
+# Use the target PID, not its display name. The first menu is often the Apple
+# menu; inspect the target application's top-level menus for its update action.
+MAC_UPDATE_SCRIPT = '''on run argv
+with timeout of 180 seconds
+tell application "System Events"
+  set targetPid to item 1 of argv as integer
+  if not (exists (first application process whose unix id is targetPid)) then error "BRIDGE_UPDATE_PROCESS_MISSING"
+  tell (first application process whose unix id is targetPid)
+    set frontmost to true
+    repeat 30 times
+      if exists menu bar 1 then
+      repeat with heading in menu bar items of menu bar 1
+        set choices to {}
+        try
+          set choices to every menu item of menu 1 of heading whose name contains "Check for Updates"
+          if (count of choices) is 0 then set choices to every menu item of menu 1 of heading whose name contains "检查更新"
+          if (count of choices) is 0 then set choices to every menu item of menu 1 of heading whose name contains "檢查更新"
+        on error errorText number errorNumber
+          if errorNumber is not -1719 and errorNumber is not -1728 then error errorText number errorNumber
+        end try
+        if (count of choices) > 0 then
+          if not (enabled of item 1 of choices) then error "BRIDGE_UPDATE_MENU_DISABLED"
+          click item 1 of choices
+          return "opened"
+        end if
+      end repeat
+      end if
+      delay 0.2
+    end repeat
+    error "BRIDGE_UPDATE_MENU_MISSING"
+  end tell
+end tell
+end timeout
+end run'''
+
+UPDATE_FAILURE_MESSAGES = {
+    'automationPermission':'请在系统设置的“隐私与安全性 → 自动化”中允许网关控制 System Events，然后重试。',
+    'accessibilityPermission':'请在系统设置的“隐私与安全性 → 辅助功能”中允许网关，然后重试；若已开启，请退出并重新打开网关。',
+    'timeout':'等待系统授权或更新菜单超时。请完成电脑端授权、解锁电脑后重试。',
+    'menuUnavailable':'未找到 Codex 的“检查更新”菜单。请在 Codex 桌面应用中手动检查更新。',
+    'menuDisabled':'Codex 的“检查更新”菜单暂不可用。请等待桌面应用就绪后重试。',
+    'desktopUnavailable':'未找到唯一的 Codex 桌面进程。请打开所选桌面应用后重试。',
+    'handoffFailed':'未能操作 Codex 更新菜单。请解锁电脑后重试，或在 Codex 桌面应用中手动检查更新。',
+}
+
+
+def update_failure(error):
+    # AppleScript stderr may contain local paths: classify it, never expose it.
+    if isinstance(error, subprocess.TimeoutExpired):
+        return 'timeout'
+    raw = str(getattr(error, 'stderr', '') or '')
+    if '(-1743)' in raw:
+        return 'automationPermission'
+    if '(-25211)' in raw or 'not allowed assistive access' in raw.lower() or '不允许辅助访问' in raw or '不允许进行辅助访问' in raw:
+        return 'accessibilityPermission'
+    if '(-1712)' in raw:
+        return 'timeout'
+    for marker, reason in [('MENU_MISSING','menuUnavailable'), ('MENU_DISABLED','menuDisabled'), ('PROCESS_MISSING','desktopUnavailable')]:
+        if 'BRIDGE_UPDATE_'+marker in raw:
+            return reason
+    return 'desktopUnavailable' if str(error) == 'desktopUnavailable' else 'handoffFailed'
+
 
 def version(value):
     if not isinstance(value, str) or not re.fullmatch(r'\d+(?:\.\d+)*', value):
@@ -195,24 +257,13 @@ class DesktopUpdates:
             self.requests[request_id] = meta['build']
             write_json(self.attempts_path, self.requests)
             self.value.update(state='requesting', canRequest=False)
+            self.value.pop('failureReason', None)
             self.worker = threading.Thread(target=self._request, args=(meta,), daemon=True)
             self.worker.start()
 
     def _request(self, meta):
         # The vendor owns the install prompt and policy; never click an arbitrary dialog.
-        script = '''on run argv
-tell application (item 1 of argv) to activate
-tell application "System Events"
-  tell (first process whose unix id is (item 2 of argv as integer))
-    tell menu 1 of menu bar item 1 of menu bar 1
-      set choices to every menu item whose name contains "Check for Updates"
-      if (count of choices) is 0 then set choices to every menu item whose name contains "检查更新"
-      if (count of choices) is 0 then error "Update menu is unavailable"
-      click item 1 of choices
-    end tell
-  end tell
-end tell
-end run'''
+        failure = None
         try:
             if sys.platform == 'win32':
                 if meta.get('storeProductId') not in STORE_PRODUCTS.values():
@@ -222,13 +273,14 @@ end run'''
             else:
                 processes = DesktopApp(self.executable(), self.manager.home).processes()
                 if len(processes) != 1:
-                    raise ValueError('无法确认唯一的目标桌面进程')
-                subprocess.run(['osascript', '-e', script, meta['bundle'], str(processes[0])], check=True, timeout=25,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    raise ValueError('desktopUnavailable')
+                result = subprocess.run(['osascript', '-e', MAC_UPDATE_SCRIPT, str(processes[0])], check=True, timeout=180,
+                                        capture_output=True, text=True)
+                if result.stdout.strip() != 'opened':
+                    raise ValueError('handoffFailed')
                 message = '已打开 Codex 原生更新器，请在电脑端确认安装；此操作不代表更新完成'
-            state = 'needsDesktop'
-        except Exception:
-            state, message = 'needsDesktop', ('未能打开系统商店，请在电脑端检查更新' if sys.platform == 'win32' else
-                                            '未能打开原生更新器，请解锁电脑并检查辅助功能权限，或手动检查更新')
+        except Exception as error:
+            failure = update_failure(error)
+            message = ('未能打开系统商店，请在电脑端检查更新' if sys.platform == 'win32' else UPDATE_FAILURE_MESSAGES[failure])
         with self.lock:
-            self.value.update(state=state, canRequest=False, message=message)
+            self.value.update(state='needsDesktop', canRequest=bool(failure), message=message, failureReason=failure)

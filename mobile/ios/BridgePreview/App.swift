@@ -2,6 +2,7 @@ import UIKit
 @preconcurrency import WebKit
 import AVFoundation
 import UserNotifications
+import UniformTypeIdentifiers
 
 @main
 final class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterDelegate {
@@ -71,6 +72,9 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
     private var artifactDownload: WKDownload?
     private var downloadStarting = false
     private var downloadFile: URL?
+    private var uploadPicker: UIDocumentPickerViewController?
+    private var uploadCompletion: (([URL]?) -> Void)?
+    private var uploadGeneration = 0
     private var timer: Timer?
     private var activityTimer: Timer?
     private var foregroundBaselines = Set<String>()
@@ -105,7 +109,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         '.bridge-mobile .list-heading { min-height: 56px; padding-right: 48px; }',
         '.bridge-mobile .list-heading button { height: 48px; display: inline-flex; align-items: center; justify-content: center; margin: 0; }',
         '.bridge-mobile .chat-head { min-height: 56px; padding: 4px 64px 4px 8px; gap: 6px; }',
-        '.bridge-mobile .chat-head .appearance-button { display: none; }',
+        '.bridge-mobile .chat-head .appearance-button, .bridge-mobile .list-actions .appearance-button { display: none; }',
         '.bridge-mobile #back { width: 40px; height: 48px; padding: 8px; margin-left: 0; flex: none; }',
         '.bridge-mobile .sidebar-foot { order: 99; flex: none; min-height: 44px; padding: 2px 16px max(4px, env(safe-area-inset-bottom)); background: var(--page); }',
         '.bridge-mobile:not(.bridge-authenticated) .sidebar-foot { display: none; }',
@@ -114,7 +118,6 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         '.bridge-mobile .sidebar-foot #logout { display: none; }',
         '.bridge-mobile .sidebar-foot button, .bridge-mobile .sidebar-foot a { min-height: 40px; display: inline-flex; align-items: center; text-decoration: none; }',
         '.bridge-mobile .sidebar-foot > span { display: none; }',
-        '.bridge-mobile #appearance-dialog #pushplus-settings { min-height: 44px; }',
         '.bridge-mobile .composer { padding-bottom: 8px; }',
         '.bridge-mobile input:not([type=checkbox]):not([type=radio]), .bridge-mobile textarea { font-size: max(16px, 1em); }'
       ]) sheet.insertRule(rule, sheet.cssRules.length);
@@ -136,13 +139,38 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
       const footer = document.querySelector('.sidebar-foot');
       if (footer) {
         document.body.appendChild(footer);
-        const home = document.createElement('a'); home.href = 'codexbridge://home'; home.className = 'plain'; home.dataset.i18n = '返回电脑列表'; home.textContent = typeof BridgeI18n !== 'undefined' ? BridgeI18n.t('返回电脑列表') : '返回电脑列表';
+        const home = document.createElement('a'); home.href = 'codexbridge://home'; home.className = 'plain bridge-home'; home.dataset.i18n = '返回电脑列表'; home.textContent = typeof BridgeI18n !== 'undefined' ? BridgeI18n.t('返回电脑列表') : '返回电脑列表';
         footer.appendChild(home);
       }
-      const push = document.getElementById('pushplus-settings'), settings = document.getElementById('appearance-dialog');
-      if (push && settings) {
-        settings.insertBefore(push, settings.querySelector('.appearance-actions'));
-        push.addEventListener('click', () => settings.close());
+      const computer = document.getElementById('connected-computer');
+      const name = document.getElementById('computer-name');
+      if (computer && name) {
+        const connectionName = window.prompt('codexbridge-computer:__BRIDGE_CLIPBOARD_TOKEN__', '');
+        if (connectionName) {
+          let device = false;
+          try { device = localStorage.getItem('bridge-computer-name-mode') === 'device'; } catch {}
+          computer.setAttribute('role', 'button'); computer.tabIndex = 0;
+          const render = () => {
+            const actual = computer.dataset.deviceName || location.host;
+            name.textContent = device ? actual : connectionName;
+            const text = device ? '点击显示连接名称' : '点击显示电脑真实名称';
+            const hint = typeof BridgeI18n !== 'undefined' ? BridgeI18n.t(text) : text;
+            computer.title = hint + ' · ' + (device ? connectionName : actual);
+            computer.setAttribute('aria-label', name.textContent + ' · ' + hint);
+          };
+          const toggle = () => {
+            device = !device;
+            try { localStorage.setItem('bridge-computer-name-mode', device ? 'device' : 'connection'); } catch {}
+            render();
+          };
+          computer.addEventListener('click', toggle);
+          computer.addEventListener('keydown', event => {
+            if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggle(); }
+          });
+          document.addEventListener('bridge-computer', render);
+          document.addEventListener('bridge-language', render);
+          render();
+        }
       }
     })();
     """
@@ -253,8 +281,8 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         l.textColor = secondary ? .secondaryLabel : .label; return l
     }
     private func button(_ title: String, symbol: String? = nil, primary: Bool = false, action: @escaping () -> Void) -> UIButton {
-        let b = UIButton(type: .system); var c = primary ? UIButton.Configuration.filled() : .plain()
-        c.title = title; c.baseForegroundColor = primary ? .systemBackground : .label; c.baseBackgroundColor = .label
+        let b = UIButton(type: .system); var c = primary ? UIButton.Configuration.filled() : .tinted()
+        c.title = title; c.baseForegroundColor = primary ? .systemBackground : .label; c.baseBackgroundColor = primary ? .label : .secondarySystemFill
         c.cornerStyle = .fixed; c.background.cornerRadius = 16
         c.contentInsets = NSDirectionalEdgeInsets(top: 17, leading: 18, bottom: 17, trailing: 18)
         if let symbol { c.image = UIImage(systemName: symbol); c.imagePadding = 10 }
@@ -297,7 +325,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         let inbox = UIBarButtonItem(image: UIImage(systemName: "bell"), style: .plain, target: self, action: #selector(self.inbox)); inbox.accessibilityLabel = MobileStrings.text("通知")
         navigationItem.rightBarButtonItems = [settings, inbox]
     }
-    private func clear() { stopComputerChecks(); computerStates.removeAll(); artifactDownload?.cancel { _ in }; artifactDownload = nil; downloadStarting = false; removeDownloadFile(); gatewayMenuTop?.isActive = false; gatewayMenuTop = nil; generation += 1; web?.stopLoading(); web?.navigationDelegate = nil; web?.uiDelegate = nil; web = nil; for v in page.arrangedSubviews where v !== subtitle { page.removeArrangedSubview(v); v.removeFromSuperview() } }
+    private func clear() { finishUpload(nil); stopComputerChecks(); computerStates.removeAll(); artifactDownload?.cancel { _ in }; artifactDownload = nil; downloadStarting = false; removeDownloadFile(); gatewayMenuTop?.isActive = false; gatewayMenuTop = nil; generation += 1; web?.stopLoading(); web?.navigationDelegate = nil; web?.uiDelegate = nil; web = nil; for v in page.arrangedSubviews where v !== subtitle { page.removeArrangedSubview(v); v.removeFromSuperview() } }
     @objc func home() {
         clear(); navigation(home: true); subtitle.isHidden = true
         let container = UIView(); page.addArrangedSubview(container); let content = scrollContent(in: container)
@@ -312,17 +340,39 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             content.addArrangedSubview(card([label(MobileStrings.text("还没有连接的电脑"), size: 17, weight: .medium), label(MobileStrings.text("在电脑网关中展开“扫码登录”，然后用上方按钮扫描。"), secondary: true)]))
         } else {
             for address in saved {
-                let row = button(URL(string: address)?.host ?? address, symbol: "desktopcomputer") { [weak self] in self?.openSaved(address) }
+                let row = button(computerName(address) + "   ›") { [weak self] in self?.openSaved(address) }
                 row.contentHorizontalAlignment = .leading
-                row.configuration?.subtitle = address; row.configuration?.titleAlignment = .leading
-                row.configuration?.subtitleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { a in var a = a; a.foregroundColor = .secondaryLabel; return a }
+                row.configuration?.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0)
                 let status = label(MobileStrings.text("检查中…"), size: 12, secondary: true)
+                status.setContentHuggingPriority(.required, for: .horizontal)
+                status.setContentCompressionResistancePriority(.required, for: .horizontal)
                 computerStates[address] = status
-                content.addArrangedSubview(card([row, status]))
+                let heading = UIStackView(arrangedSubviews: [status, row]); heading.axis = .horizontal; heading.alignment = .center; heading.spacing = 10
+                let rename = button(MobileStrings.text("重命名"), symbol: "pencil") { [weak self] in self?.renameComputer(address) }
+                let remove = button(MobileStrings.text("移除这台电脑"), symbol: "trash") { [weak self] in self?.confirmRemove(address) }
+                remove.configuration?.baseForegroundColor = .systemRed
+                let actions = UIStackView(arrangedSubviews: [rename, remove]); actions.axis = .horizontal; actions.distribution = .fillEqually; actions.spacing = 8
+                content.addArrangedSubview(card([heading, label(address, size: 13, secondary: true), actions]))
             }
         }
         let foot = label(MobileStrings.text("外出使用 HTTPS 地址；局域网地址需要连接同一网络。"), size: 13, secondary: true); foot.textAlignment = .center; content.addArrangedSubview(foot)
         checkComputers()
+    }
+    private func computerName(_ address: String) -> String {
+        defaults.string(forKey: "name:" + address) ?? URL(string: address)?.host ?? address
+    }
+    private func renameComputer(_ address: String) {
+        let alert = UIAlertController(title: MobileStrings.text("重命名电脑"), message: address + "\n" + MobileStrings.text("留空恢复默认名称"), preferredStyle: .alert)
+        alert.addTextField { field in field.text = self.computerName(address) }
+        alert.addAction(UIAlertAction(title: MobileStrings.text("取消"), style: .cancel))
+        alert.addAction(UIAlertAction(title: MobileStrings.text("保存"), style: .default) { [weak self, weak alert] _ in
+            guard let self else { return }
+            let name = (alert?.textFields?.first?.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard name.count <= 80 else { self.info(MobileStrings.text("名称最多 80 个字符")); return }
+            if name.isEmpty { self.defaults.removeObject(forKey: "name:" + address) } else { self.defaults.set(name, forKey: "name:" + address) }
+            self.home()
+        })
+        present(alert, animated: true)
     }
     private func stopComputerChecks() {
         computerRevision += 1; computerTimer?.invalidate(); computerTimer = nil
@@ -364,8 +414,9 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         let configuration = WKWebViewConfiguration(); configuration.websiteDataStore = .default(); configuration.applicationNameForUserAgent = "BridgeMobile/0.1-iOS"
         configuration.ignoresViewportScaleLimits = false
         configuration.userContentController.addUserScript(WKUserScript(source: Self.fixedViewport, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
-        configuration.userContentController.addUserScript(WKUserScript(source: Self.webAppearance, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         clipboardToken = UUID().uuidString
+        let appearanceScript = Self.webAppearance.replacingOccurrences(of: "__BRIDGE_CLIPBOARD_TOKEN__", with: clipboardToken)
+        configuration.userContentController.addUserScript(WKUserScript(source: appearanceScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         let clipboardScript = Self.webClipboard.replacingOccurrences(of: "__BRIDGE_CLIPBOARD_TOKEN__", with: clipboardToken)
         configuration.userContentController.addUserScript(WKUserScript(source: clipboardScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         let web = WKWebView(frame: .zero, configuration: configuration); self.web = web; web.scrollView.contentInsetAdjustmentBehavior = .never; web.navigationDelegate = self; web.uiDelegate = self; web.allowsBackForwardNavigationGestures = true; web.customUserAgent = nil; page.addArrangedSubview(web); gatewayMenuTop = gatewayMenu.topAnchor.constraint(equalTo: web.topAnchor, constant: 4); gatewayMenuTop?.isActive = true; web.load(URLRequest(url: url))
@@ -394,6 +445,11 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
     func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) { let a = UIAlertController(title: nil, message: message, preferredStyle: .alert); a.addAction(UIAlertAction(title: MobileStrings.text("好"), style: .default) { _ in completionHandler() }); present(a, animated: true) }
     func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) { let a = UIAlertController(title: nil, message: message, preferredStyle: .alert); a.addAction(UIAlertAction(title: MobileStrings.text("取消"), style: .cancel) { _ in completionHandler(false) }); a.addAction(UIAlertAction(title: MobileStrings.text("确认"), style: .default) { _ in completionHandler(true) }); present(a, animated: true) }
     func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (String?) -> Void) {
+        if prompt == "codexbridge-computer:" + clipboardToken {
+            guard webView === web, frame.isMainFrame, let source = frame.request.url, GatewayURL.same(source, origin),
+                  let current = webView.url, GatewayURL.same(current, origin) else { completionHandler(nil); return }
+            completionHandler(computerName(origin)); return
+        }
         if prompt == "codexbridge-language:" + clipboardToken {
             guard webView === web, frame.isMainFrame, let source = frame.request.url, GatewayURL.same(source, origin),
                   let current = webView.url, GatewayURL.same(current, origin), let language = defaultText, ["zh", "en"].contains(language) else { completionHandler(nil); return }
@@ -454,8 +510,35 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
         guard download === artifactDownload else { return }; downloadError(MobileStrings.text("下载失败，请检查网络后重试"))
     }
-    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) { removeDownloadFile() }
-    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) { removeDownloadFile() }
+    // Older iOS versions keep WebKit's built-in uploader. iOS 18.4+ supports
+    // an explicit document picker with readable, imported copies and multi-selection.
+    @available(iOS 18.4, *)
+    func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor @Sendable ([URL]?) -> Void) {
+        guard webView === web, frame.isMainFrame, let source = frame.request.url, GatewayURL.same(source, origin),
+              let current = webView.url, GatewayURL.same(current, origin), presentedViewController == nil else { completionHandler(nil); return }
+        finishUpload(nil)
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: true)
+        picker.allowsMultipleSelection = parameters.allowsMultipleSelection; picker.delegate = self
+        uploadPicker = picker; uploadCompletion = completionHandler; uploadGeneration = generation
+        present(picker, animated: true)
+    }
+    private func finishUpload(_ urls: [URL]?) {
+        let completion = uploadCompletion; uploadCompletion = nil; uploadPicker = nil
+        completion?(urls)
+    }
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        guard controller === uploadPicker else { removeDownloadFile(); return }
+        guard uploadGeneration == generation, let current = web?.url, GatewayURL.same(current, origin) else { finishUpload(nil); return }
+        guard !urls.isEmpty, urls.allSatisfy({ $0.isFileURL && FileManager.default.isReadableFile(atPath: $0.path) }) else {
+            finishUpload(nil)
+            controller.dismiss(animated: true) { self.info(MobileStrings.text("无法读取所选文件，请从系统文件选择器重新选择。")) }
+            return
+        }
+        finishUpload(urls)
+    }
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        if controller === uploadPicker { finishUpload(nil) } else { removeDownloadFile() }
+    }
     func openLink(_ url: URL) {
         guard let c = URLComponents(url: url, resolvingAgainstBaseURL: false), c.scheme == "codexbridge", c.host == "open" else { return }
         let q = c.queryItems ?? []; func get(_ key: String) -> String? { q.first(where: { $0.name == key })?.value }
@@ -633,11 +716,11 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             content.addArrangedSubview(card([label(MobileStrings.text("尚未选择电脑"), size: 17), label(MobileStrings.text("返回首页扫码或输入网关地址。"), secondary: true)]))
         } else {
             content.addArrangedSubview(card([
-                label(URL(string: origin)?.host ?? origin, size: 17, weight: .semibold), label(origin, size: 13, secondary: true),
+                label(computerName(origin), size: 17, weight: .semibold), label(origin, size: 13, secondary: true),
                 button(MobileStrings.text("移除这台电脑"), symbol: "trash") { [weak self, weak sheet] in sheet?.dismiss(animated: true) { self?.confirmRemove() } }
             ]))
         }
-        let current = Bundle.main.object(forInfoDictionaryKey: "BridgeReleaseVersion") as? String ?? "2.0.0-preview.2"
+        let current = Bundle.main.object(forInfoDictionaryKey: "BridgeReleaseVersion") as? String ?? "2.0.0-preview.3"
         let updateStatus = label("", size: 13, secondary: true)
         let check = button(MobileStrings.text("检查更新"), symbol: "arrow.down.circle") {}
         check.addAction(UIAction { [weak self, weak sheet, weak check, weak updateStatus] _ in
@@ -709,18 +792,26 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             }
         }
     }
-    private func revokeConnection(_ done: @escaping () -> Void) {
-        guard let web, let url = web.url, GatewayURL.same(url, origin) else { done(); return }
+    private func revokeConnection(_ address: String, _ done: @escaping () -> Void) {
+        guard address == origin, let web, let url = web.url, GatewayURL.same(url, address) else { done(); return }
         web.callAsyncJavaScript("const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 5000); try { const a = await (await fetch('/api/auth', {signal:controller.signal})).json(); if (a.authenticated) await fetch('/api/logout', {method:'POST', signal:controller.signal, headers:{'Content-Type':'application/json', 'X-CSRF-Token':a.csrf}, body:'{}'}); } finally { clearTimeout(timer); }", arguments: [:], in: nil, in: .page) { _ in done() }
     }
-    private func confirmRemove() {
-        let a = UIAlertController(title: MobileStrings.text("移除这台电脑？"), message: MobileStrings.text("清除本机保存的连接和登录状态，电脑上的聊天不受影响。"), preferredStyle: .alert)
+    private func confirmRemove(_ address: String? = nil) {
+        let target = address ?? origin
+        let a = UIAlertController(title: MobileStrings.text("移除这台电脑？"), message: target + "\n\n" + MobileStrings.text("清除本机保存的连接和登录状态，电脑上的聊天不受影响。"), preferredStyle: .alert)
         a.addAction(UIAlertAction(title: MobileStrings.text("取消"), style: .cancel))
         a.addAction(UIAlertAction(title: MobileStrings.text("移除"), style: .destructive) { _ in
-            self.revokeConnection {
-            if #available(iOS 16.2, *) { Task { await LiveActivityController.shared.stop() } }
-            let old = self.origin; self.defaults.set(self.saved.filter { $0 != old }, forKey: "origins"); self.defaults.removeObject(forKey: "active"); self.defaults.removeObject(forKey: "cursor:" + old)
-            WKWebsiteDataStore.default().httpCookieStore.getAllCookies { cookies in for cookie in cookies where cookie.domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")) == URL(string: old)?.host && cookie.name == "codex_mobile_session" { WKWebsiteDataStore.default().httpCookieStore.delete(cookie) } }; self.origin = ""; self.home()
+            let revision = self.generation
+            self.revokeConnection(target) {
+                if target == self.origin, #available(iOS 16.2, *) { Task { await LiveActivityController.shared.stop() } }
+                self.defaults.set(self.saved.filter { $0 != target }, forKey: "origins")
+                if self.defaults.string(forKey: "active") == target { self.defaults.removeObject(forKey: "active") }
+                self.defaults.removeObject(forKey: "cursor:" + target); self.defaults.removeObject(forKey: "stream:" + target); self.defaults.removeObject(forKey: "name:" + target)
+                WKWebsiteDataStore.default().httpCookieStore.getAllCookies { cookies in
+                    for cookie in cookies where cookie.domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")) == URL(string: target)?.host && cookie.name == "codex_mobile_session" { WKWebsiteDataStore.default().httpCookieStore.delete(cookie) }
+                }
+                if self.origin == target { self.origin = "" }
+                if self.generation == revision { self.home() }
             }
         }); present(a, animated: true)
     }
@@ -751,6 +842,13 @@ final class Scanner: UIViewController, AVCaptureMetadataOutputObjectsDelegate {
 // Product strings only. Chat content and server-provided names are not translated.
 enum MobileStrings {
     static let values: [String: String] = [
+        "无法读取所选文件，请从系统文件选择器重新选择。": "Cannot read the selected file. Select it again using the system file picker.",
+        "重命名": "Rename",
+        "重命名电脑": "Rename computer",
+        "留空恢复默认名称": "Leave blank to restore the default name",
+        "名称最多 80 个字符": "Use no more than 80 characters",
+        "保存": "Save",
+
 "Codex 未完成侧边聊天操作，请检查模型接入和运行时版本":"Codex could not complete the side chat operation. Check the model connection and runtime version.",
 "临时侧边聊天数量已达上限，请关闭不用的聊天；必要时重启网关":"Too many temporary side chats. End unused chats or restart the gateway.",
 "侧边聊天工作目录不一致，已取消创建":"Side chat creation cancelled because the working directory did not match.",

@@ -4,7 +4,7 @@
 
 # Codex App Mobile Bridge
 
-> **v2.0.0-preview.2**: [Release and downloads](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.0.0-preview.2) · [Web / App workbench](https://try2love.github.io/codex-mobile-bridge/?lang=en#preview) · [Mobile installation](mobile/README.md). Opt-in preview; stable users will not receive this update. Mobile background push is not connected yet.
+> **v2.0.0-preview.3**: [Release and downloads](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.0.0-preview.3) · [Web / App workbench](https://try2love.github.io/codex-mobile-bridge/?lang=en#preview) · [Mobile installation](mobile/README.md). Opt-in preview; stable users will not receive this update. Mobile background push is not connected yet.
 
 
 [简体中文](README.md) · [English](README_EN.md)
@@ -79,7 +79,7 @@ The desktop app can scan the current or a specified Codex data directory and imp
 
 After starting the updated gateway, **Account and usage** appears in the desktop panel and phone chat list only for native ChatGPT sign-in on this computer. For API keys and custom providers, the phone shows non-clickable “API connection” text; signed-out accounts have a separate status. The page reads this status automatically on entry and retries temporary failures. These are this computer's account limits, independent of the selected SSH chat.
 
-View remaining percentages, reset times and available usage resets. Missing information is shown as unavailable. Using a reset requires the Codex desktop usage-reset permission and confirmation for each operation. Interrupted requests retain their original redemption ID for retry. The bundled runtime manages account credentials; they are never sent to the phone.
+View remaining percentages, reset times and available usage resets. In the v2 preview, reset credits can be used for the current or another saved official account without switching sign-in or enabling Codex's agent usage-reset setting. Confirm the account and credit expiry, then wait five seconds before using a credit. Interrupted requests retain their original redemption ID for retry. Subscription dates are queried online; blocked or missing results remain unconfirmed rather than being inferred from token expiry or old login records. Account credentials are never sent to the phone.
 
 ### Login validity and device access
 

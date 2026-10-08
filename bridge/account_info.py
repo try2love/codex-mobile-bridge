@@ -3,8 +3,7 @@ import hashlib
 import threading
 import time
 
-from .account import Account, subscription_period
-from .account_models import model_ids
+from .account import Account
 from .notifications import read_json
 
 
@@ -129,8 +128,7 @@ class AccountInfo:
                     manager.check_ready()
                     manager.row(row['id'])
                 if row['kind'] == 'api':
-                    key = read_json(manager.directory(row['id'])/'api.json', {})['key']
-                    result = {'models':[{'id':i,'name':i} for i in model_ids(row['baseUrl'],key)]}
+                    result = {'models':manager.api_models(row, refresh)}
                 else:
                     identity = self.read_identity()
                     active = self.match(identity)
@@ -146,7 +144,7 @@ class AccountInfo:
                         if section == 'usage':
                             result = manager.bridge.account.limits(rpc, context, refresh=refresh)
                             result.update(planType=context.get('planType'),
-                                          subscription=subscription_period(home, context.get('email')))
+                                          subscription=manager.bridge.account.subscription(home, context, refresh=refresh))
                         else:
                             models, cursor, seen = [], None, set()
                             while True:

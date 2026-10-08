@@ -31,14 +31,14 @@ async function goalAction(action,payload) {
 }
 const workModes=new WorkModes({select:$('work-mode'),hint:$('mode-hint'),goalRoot:$('goal-state'),goalToggle:$('goal-toggle'),newId:uuid,
   onCancel:payload=>goalAction('cancel',payload),onStatus:payload=>goalAction('status',payload),onEdit:payload=>goalAction('edit',payload)});
-const accountPanel=new AccountPanel({root:$('account-content'),button:$('account-button'),read:refresh=>api('/api/account'+(refresh?'':'?cached=1')),consume:body=>api('/api/account/reset',body),onHidden:()=>{$('account-details').open=false;},visible:()=>!$('app').hidden&&!document.hidden&&$('accounts-dialog').open&&$('account-details').open});
+const accountPanel=new AccountPanel({root:$('account-content'),button:$('account-button'),read:refresh=>api('/api/account'+(refresh?'':'?cached=1')),consume:body=>api('/api/account/reset',body),onConsumed:()=>{const id=accountsPanel?.value?.activeId;if(id)accountsPanel.perform({action:'details',id,section:'usage',refresh:true});},onHidden:()=>{$('account-details').open=false;},visible:()=>!$('app').hidden&&!document.hidden&&$('accounts-dialog').open&&$('account-details').open});
 $('account-details').ontoggle=()=>{if($('account-details').open)accountPanel.refresh();};
 window.addEventListener('focus',()=>{if(!$('app').hidden)accountsPanel?.refresh();});
 function chatKey(id=currentId,host=currentHost){return host+'|'+id;}
 function sessionUrl(id,action='',host=currentHost){return '/api/sessions/'+id+(action?'/'+action:'')+'?host='+encodeURIComponent(host);}
 function hostUrl(path,host=currentHost){return /^\/api\/sessions\/[0-9a-f-]{36}/.test(path)&&!/[?&]host=/.test(path)?path+(path.includes('?')?'&':'?')+'host='+encodeURIComponent(host):path;}
 let listLoading=0;
-let catalogData={models:null,skills:null};let catalogResults={models:null,skills:null};let catalogTasks={models:null,skills:null};let selectedSkills=new Set(),invalidSkills=new Set(),skillIndex=new Map(),skillTotal=0,skillPages=[],skillQuery={q:'',offset:0,limit:200},skillSearchTimer,skillRequest=0;
+let modelCatalogGeneration=0;let catalogData={models:null,skills:null};let catalogResults={models:null,skills:null};let catalogTasks={models:null,skills:null};let selectedSkills=new Set(),invalidSkills=new Set(),skillIndex=new Map(),skillTotal=0,skillPages=[],skillQuery={q:'',offset:0,limit:200},skillSearchTimer,skillRequest=0;
 function el(tag,cls,text){const node=document.createElement(tag);if(cls)node.className=cls;if(text!==undefined)node.textContent=text;return node;}
 function toast(text){text=t(text);$('toast').textContent=text;$('toast').hidden=false;clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('toast').hidden=true,4200);}
 async function api(path,body,signal){const options={signal,credentials:'same-origin',cache:'no-store',headers:{}};if(body!==undefined){options.method='POST';options.headers={'Content-Type':'application/json','X-CSRF-Token':csrf};options.body=JSON.stringify(body);}const response=await fetch(hostUrl(path),options);const data=await response.json();if(!response.ok){if(response.status===401)showLogin();throw Object.assign(Error(data.error||t('请求失败')),{loginStatus:data.loginStatus,status:response.status});}return data;}
@@ -70,9 +70,10 @@ function renderLoginStatus(status=loginStatus){
   $('login-attempts').textContent=loginStatus.blocked?t('此 IP 已被封禁，请在电脑网关 App 的“登录设备”中解除。'):t('剩余尝试次数：')+loginStatus.attemptsRemaining+'/'+loginStatus.attemptLimit+t('；连续输错 5 次将封禁此 IP。');
   $('login-button').disabled=loginStatus.blocked;
 }
-function showLogin(passwordless=false,status){if(window.BridgeSharedRelay){location.replace('/relay/');return;}workbench.reset();if(typeof accountsPanel!=='undefined')accountsPanel?.clear();accountPanel.clear();chatTimeline?.dispose();chatTimeline=null;document.querySelectorAll('dialog[open]').forEach(d=>d.close());$('app').hidden=true;$('login').hidden=false;$('credentials').hidden=passwordless;$('noauth').hidden=!passwordless;$('username').required=!passwordless;$('password').required=!passwordless;$('password').value='';$('remember-login').parentElement.hidden=passwordless||/BridgeMobile\/[\w.-]+-(iOS|Android)(?:\s|$)/.test(navigator.userAgent);$('login-attempts').hidden=passwordless;renderLoginStatus(status);}
+function showLogin(passwordless=false,status){$('mobile-binding-status').hidden=true;if(window.BridgeSharedRelay){location.replace('/relay/');return;}workbench.reset();if(typeof accountsPanel!=='undefined')accountsPanel?.clear();accountPanel.clear();chatTimeline?.dispose();chatTimeline=null;document.querySelectorAll('dialog[open]').forEach(d=>d.close());$('app').hidden=true;$('login').hidden=false;$('credentials').hidden=passwordless;$('noauth').hidden=!passwordless;$('username').required=!passwordless;$('password').required=!passwordless;$('password').value='';$('remember-login').parentElement.hidden=passwordless||/BridgeMobile\/[\w.-]+-(iOS|Android)(?:\s|$)/.test(navigator.userAgent);$('login-attempts').hidden=passwordless;renderLoginStatus(status);}
 async function start(pairingToken=null){
   const auth=await api('/api/auth');
+  if(['en','zh'].includes(auth.uiLanguage)){$('phone-language').value=auth.uiLanguage;$('phone-language').onchange();}
   if(pairingToken!==null){
     try{const result=await api('/api/pair',{token:pairingToken});csrf=result.csrf;await enter();return;}
     catch(error){
@@ -84,13 +85,16 @@ async function start(pairingToken=null){
   if(!auth.authenticated){showLogin(auth.passwordless,auth.loginStatus);return;}csrf=auth.csrf;await enter();
 }
 async function refreshComputer(){
+  $('connected-computer').dataset.deviceName=location.host;
   $('computer-name').textContent=location.host;$('connected-computer').title=location.host;
   try{const auth=await api('/api/auth');if(!auth.authenticated||$('app').hidden)return;
-    const name=auth.computer?.name||location.host;$('computer-name').textContent=name;
+    const binding=$('mobile-binding-status');binding.hidden=!auth.trustedDevice;binding.setAttribute('data-i18n','此手机已绑定，可在电脑网关的“登录设备”中解除绑定。');binding.textContent=t('此手机已绑定，可在电脑网关的“登录设备”中解除绑定。');
+    const name=auth.computer?.name||location.host;$('connected-computer').dataset.deviceName=name;$('computer-name').textContent=name;
     $('connected-computer').title=[name,auth.computer?.platform,location.host].filter(Boolean).join(' · ');
   }catch{/* Older or temporarily unavailable gateways keep the connected address. */}
+  finally{document.dispatchEvent(new Event('bridge-computer'));}
 }
-async function enter(){refreshComputer();$('login').hidden=true;$('app').hidden=false;accountsPanel?.refresh();const list=loadList(true).catch(e=>toast(e.message));const [id,host='local']=location.hash.slice(1).split('~');if(/^[0-9a-f-]{36}$/.test(id))await openChat(id,decodeURIComponent(host));await list;}
+async function enter(){refreshComputer();$('login').hidden=true;$('app').hidden=false;document.dispatchEvent(new Event('bridge-authenticated'));accountsPanel?.refresh();const list=loadList(true).catch(e=>toast(e.message));const [id,host='local']=location.hash.slice(1).split('~');if(/^[0-9a-f-]{36}$/.test(id))await openChat(id,decodeURIComponent(host));await list;}
 $('login-form').addEventListener('submit',async event=>{event.preventDefault();if(loginStatus.blocked)return;$('login-button').disabled=true;$('login-error').textContent='';try{const result=await api('/api/login',{username:$('username').value,password:$('password').value,remember:$('remember-login').checked});renderLoginStatus({attemptsRemaining:5,attemptLimit:5,blocked:false});csrf=result.csrf;$('password').value='';await enter();}catch(error){$('login-error').textContent=t(error.message);renderLoginStatus(error.loginStatus);}finally{$('login-button').disabled=loginStatus.blocked;}});
 $('logout').onclick=async()=>{await api('/api/logout',{});csrf='';state=null;currentId=null;$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();$('sessions').replaceChildren();$('message').value='';sessionStorage.clear();attachments.reset();sessionActivity.clear();recentInteractions.clear();showLogin();};
 function dateText(value){if(!value)return '';return new Date(value*1000).toLocaleDateString(BridgeI18n.locale(),{month:'numeric',day:'numeric'});}
@@ -186,7 +190,7 @@ document.addEventListener('bridge-message-error',event=>toast(event.detail));
 $('fork-source').onclick=()=>{const source=state?.forkedFrom;if(source){$('chat-details-dialog').close();openChat(source.id,source.host).catch(e=>toast(e.message));}};
 function saveDraft(){if(currentId)sessionStorage.setItem('draft:'+chatKey(),$('message').value);}
 $('message').oninput=saveDraft;
-async function openChat(id,host="local"){if(messageActions.pending&&messageActions.dialog.open)return;messageActions.dialog.close();workbench.open(id,host);saveDraft();chatTimeline?.dispose();currentId=id;currentHost=host;state=null;workModes.open(chatKey(id,host));attachments.open(chatKey(id,host));catalogData={models:null,skills:null};catalogResults={models:null,skills:null};catalogTasks={models:null,skills:null};skillIndex=new Map();skillTotal=0;skillPages=[];skillQuery={q:'',offset:0,limit:200};invalidSkills=new Set();skillRequest++;modelRequest++;modelTarget=null;fastModeControl.reset();$('model-dialog').close();notificationState={available:false,watching:false,notifyOnCompletion:false};notificationRequest++;$('notify-dialog').close();$('rename-dialog').close();$('chat-details-dialog').close();$('notify-button').disabled=true;$('notify-button').textContent=t('提醒');try{selectedSkills=new Set(JSON.parse(sessionStorage.getItem('skills:'+chatKey(id,host))||'[]'));}catch{selectedSkills=new Set();}renderSkillPills();approvalStamp='';submittedRequestIds.clear();$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();$('message').value=sessionStorage.getItem('draft:'+chatKey(id,host))||'';$('send-error').textContent='';$('chat-title').textContent=t('正在连接…');$('chat-meta').textContent='';$('status').textContent=t('连接中');$('welcome').hidden=true;$('chat').hidden=false;$('app').classList.add('chat-open');$('send').disabled=true;history.replaceState(null,'','#'+id+'~'+encodeURIComponent(host));document.querySelectorAll('.session').forEach(n=>n.classList.toggle('selected',n.dataset.id===id&&n.dataset.host===host));const timeline=chatTimeline=new ChatTimeline({url:action=>sessionUrl(id,action,host),request:api,renderMeta:renderState,renderText:(node,text,files,fullText)=>renderMarkdown(node,text,files,file=>sessionUrl(id,'files/'+file.id,host),{fullText}),onAction:(action,row,timeline)=>{const pendingKey='fork-edit:'+host+'|'+id;let pending;try{pending=JSON.parse(sessionStorage.getItem(pendingKey));}catch{}if(pending&&pending.sourceTurnId===row.turnId&&action==='edit'){sessionStorage.setItem('message-edit:'+timeline.url('message-action')+':'+row.key,pending.text);sessionStorage.removeItem(pendingKey);}return messageActions.open(action,row,timeline);},status:text=>{$('status').textContent=t(text);}});
+async function openChat(id,host="local"){if(messageActions.pending&&messageActions.dialog.open)return;messageActions.dialog.close();workbench.open(id,host);saveDraft();chatTimeline?.dispose();currentId=id;currentHost=host;state=null;workModes.open(chatKey(id,host));attachments.open(chatKey(id,host));modelCatalogGeneration++;catalogData={models:null,skills:null};catalogResults={models:null,skills:null};catalogTasks={models:null,skills:null};skillIndex=new Map();skillTotal=0;skillPages=[];skillQuery={q:'',offset:0,limit:200};invalidSkills=new Set();skillRequest++;modelRequest++;modelTarget=null;fastModeControl.reset();$('model-dialog').close();notificationState={available:false,watching:false,notifyOnCompletion:false};notificationRequest++;$('notify-dialog').close();$('rename-dialog').close();$('chat-details-dialog').close();$('notify-button').disabled=true;$('notify-button').textContent=t('提醒');try{selectedSkills=new Set(JSON.parse(sessionStorage.getItem('skills:'+chatKey(id,host))||'[]'));}catch{selectedSkills=new Set();}renderSkillPills();approvalStamp='';submittedRequestIds.clear();$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();$('message').value=sessionStorage.getItem('draft:'+chatKey(id,host))||'';$('send-error').textContent='';$('chat-title').textContent=t('正在连接…');$('chat-meta').textContent='';$('status').textContent=t('连接中');$('welcome').hidden=true;$('chat').hidden=false;$('app').classList.add('chat-open');$('send').disabled=true;history.replaceState(null,'','#'+id+'~'+encodeURIComponent(host));document.querySelectorAll('.session').forEach(n=>n.classList.toggle('selected',n.dataset.id===id&&n.dataset.host===host));const timeline=chatTimeline=new ChatTimeline({url:action=>sessionUrl(id,action,host),request:api,renderMeta:renderState,renderText:(node,text,files,fullText)=>renderMarkdown(node,text,files,file=>sessionUrl(id,'files/'+file.id,host),{fullText}),onAction:(action,row,timeline)=>{const pendingKey='fork-edit:'+host+'|'+id;let pending;try{pending=JSON.parse(sessionStorage.getItem(pendingKey));}catch{}if(pending&&pending.sourceTurnId===row.turnId&&action==='edit'){sessionStorage.setItem('message-edit:'+timeline.url('message-action')+':'+row.key,pending.text);sessionStorage.removeItem(pendingKey);}return messageActions.open(action,row,timeline);},status:text=>{$('status').textContent=t(text);}});
   window.BridgePresentation?.openChat();
   startCatalog();
   const reading=timeline.start();
@@ -344,11 +348,12 @@ $('reconnect').onclick=async()=>{const id=currentId,host=currentHost;$('reconnec
 document.querySelectorAll('[data-close]').forEach(button=>button.onclick=()=>$(button.dataset.close).close());
 async function loadCatalogKind(kind,refresh=false){
   if(kind!=='models')throw Error(t('未知目录类型'));
-  const target=currentId,targetHost=currentHost;
+  if(refresh)modelCatalogGeneration++;
+  const target=currentId,targetHost=currentHost,generation=modelCatalogGeneration;
   if(!refresh&&catalogResults[kind])return catalogResults[kind];
   if(!refresh&&catalogTasks[kind])return catalogTasks[kind];
   const request=api('/api/sessions/'+target+'/catalog?kind='+kind+(refresh?'&refresh=true':'')).then(value=>{
-    if(currentId!==target||currentHost!==targetHost)throw Error(t('聊天已切换'));
+    if(currentId!==target||currentHost!==targetHost||generation!==modelCatalogGeneration)throw Error(t('聊天已切换'));
     const payload=value?.[kind]??value?.data??value;
     if(!Array.isArray(payload)){
       const actual=payload===null?'null':typeof payload;
@@ -358,7 +363,7 @@ async function loadCatalogKind(kind,refresh=false){
     const result={...value,kind,[kind]:catalogData[kind]};
     catalogResults[kind]=result;
     return result;
-  }).finally(()=>{if(catalogTasks[kind]&&target===currentId&&targetHost===targetHost)catalogTasks[kind]=null;});
+  }).finally(()=>{if(catalogTasks[kind]===request)catalogTasks[kind]=null;});
   catalogTasks[kind]=request;
   return request;
 }
@@ -414,22 +419,42 @@ function startCatalog(){
   loadCatalogKind('models').catch(()=>{});
   resetSkillCatalog();loadSkills().catch(()=>{});
 }
-function renderEfforts(){const id=$('model-select').value;const models=Array.isArray(catalogData?.models)?catalogData.models:[];const model=models.find(m=>m.id===id);$('custom-model-label').hidden=id!=='__custom__';$('custom-model').required=id==='__custom__';const options=model?.efforts?.length?model.efforts:['none','minimal','low','medium','high','xhigh','max','ultra'];$('effort-select').replaceChildren(...options.map(value=>new Option(value,value)));$('effort-select').value=options.includes(state?.effort)?state.effort:model?.defaultEffort||'medium';$('model-description').textContent=model?.description||t('自定义模型需要当前 API 服务支持。');fastModeControl.select(id);$('model-save').disabled=!state?.connected||!id;}
+function resetModelCatalog(){
+  modelCatalogGeneration++;catalogData.models=null;catalogResults.models=null;catalogTasks.models=null;
+  modelRequest++;modelTarget=null;fastModeControl.reset();$('model-dialog').close();
+}
+function renderEfforts(){
+  const id=$('model-select').value,models=Array.isArray(catalogData?.models)?catalogData.models:[];
+  const model=models.find(m=>m.id===(id==='__custom__'?$('custom-model').value.trim():id));
+  $('custom-model-label').hidden=id!=='__custom__';$('custom-model').required=id==='__custom__';
+  const options=model?.efforts?.length?model.efforts:catalogResults.models?.modelSource==='api'?['none','minimal','low','medium','high','xhigh','max','ultra']:[];
+  $('effort-select').replaceChildren(...options.map(value=>new Option(value,value)));
+  $('effort-select').value=options.includes(state?.effort)?state.effort:options.includes(model?.defaultEffort)?model.defaultEffort:options[0]||'';
+  $('effort-select').disabled=!options.length;
+  $('model-description').textContent=!options.length?t('未能读取此模型的推理能力，请重新打开模型设置'):model?.description||t('自定义模型需要当前 API 服务支持。');
+  fastModeControl.select(id);$('model-save').disabled=!state?.connected||!id||!options.length;
+}
 $('model-button').onclick=async()=>{
+  if(modelSaving)return;
+  $('model-refresh').disabled=true;
   const request=++modelRequest,target=chatKey();modelTarget=target;fastModeControl.reset();
   $('model-form').querySelectorAll('input,select,button').forEach(n=>n.disabled=false);
   $('model-error').textContent='';$('model-select').replaceChildren(new Option(t('读取模型列表…'),''));$('model-save').disabled=true;$('model-dialog').showModal();
   try{
-    const catalog=await loadCatalogKind('models');
+    const catalog=await loadCatalogKind('models',true);
     if(request!==modelRequest||target!==chatKey())return;
     $('model-select').replaceChildren(...(catalog.modelSource==='api'?[new Option(t('请选择上游模型'),'')]:[]),...(Array.isArray(catalog.models)?catalog.models:[]).map(m=>new Option(m.name,m.id)),new Option(t('自定义模型…'),'__custom__'));
     const current=state?.model||catalog.currentModel,models=Array.isArray(catalog.models)?catalog.models:[],known=models.some(m=>m.id===current);$('model-select').value=known?current:catalog.modelSource==='api'&&models.length?'':'__custom__';$('custom-model').value=current||'';
     $('model-error').textContent=catalog.modelError?t(catalog.modelError):catalog.modelSource==='api'&&!known&&models.length?t('当前聊天模型不在上游列表中，请选择可用模型后应用。'):'';
+    $('model-access').textContent=(catalog.modelAccessName?t('当前接入：')+catalog.modelAccessName:t('聊天接入：')+(state?.provider||''));
     catalog.kind='models';
     fastModeControl.open(catalog,state,$('model-select').value);renderEfforts();
   }catch(e){if(request===modelRequest&&target===chatKey())$('model-error').textContent=t(e.message);}
+  finally{if(request===modelRequest)$('model-refresh').disabled=false;}
 };
+$('model-refresh').onclick=()=>$('model-button').onclick();
 $('model-select').onchange=renderEfforts;
+$('custom-model').oninput=renderEfforts;
 $('model-form').onsubmit=async event=>{
   event.preventDefault();if(modelSaving||modelTarget!==chatKey()||$('model-save').disabled)return;
   const request=modelRequest,target=currentId,host=currentHost;
@@ -440,7 +465,7 @@ $('model-form').onsubmit=async event=>{
     const result=await api(sessionUrl(target,'settings',host),body);
     if(request===modelRequest&&chatKey(target,host)===chatKey()){$('model-dialog').close();toast(result.confirmed?t('桌面模型设置已同步'):t('桌面已接受设置，等待同步'));}
   }catch(e){if(request===modelRequest&&chatKey(target,host)===chatKey())$('model-error').textContent=t(e.message);}
-  finally{modelSaving=false;if(request===modelRequest){$('model-form').querySelectorAll('input,select,button').forEach(n=>n.disabled=false);fastModeControl.setBusy(false);$('model-save').disabled=!state?.connected;}}
+  finally{modelSaving=false;if(request===modelRequest){$('model-form').querySelectorAll('input,select,button').forEach(n=>n.disabled=false);fastModeControl.setBusy(false);renderEfforts();}}
 };
 function renderSkillPills(){
   $('skill-count').textContent=selectedSkills.size?'('+selectedSkills.size+')':'';
@@ -564,7 +589,7 @@ async function pushplusAction(test){
 $('pushplus-form').onsubmit=event=>{event.preventDefault();return pushplusAction(false);};
 $('pushplus-test').onclick=()=>pushplusAction(true);
 
-const accountsPanel=window.BridgeSharedRelay||typeof AccountsPanel==='undefined'?null:new AccountsPanel({root:$('accounts-content'),read:()=>api('/api/accounts'),request:({action,...value})=>action==='ignoreSubmission'?ignoreSubmission(value):api(action==='details'?'/api/accounts/details':action==='reminders'?'/api/accounts/reminders':action==='checkDesktopUpdate'||action==='requestDesktopUpdate'?'/api/accounts/desktop-update':'/api/accounts/switch',action==='checkDesktopUpdate'||action==='requestDesktopUpdate'?{action,...value}:value),onReset:()=>{$('account-details').open=true;accountPanel.refresh();$('account-details').scrollIntoView({block:'nearest'});},onChanged:()=>accountPanel.clear(),onUpdate:value=>{accountPanel.schedule();const official=value.current?.kind==='chatgpt';$('account-button').hidden=!official;if(!official)$('account-details').open=false;const label=value.current?.kind==='api'?'API 接入':official?'账号与额度':'账号与接入';$('accounts-button').setAttribute('data-i18n',label);$('accounts-button').textContent=t(label);}});
+const accountsPanel=window.BridgeSharedRelay||typeof AccountsPanel==='undefined'?null:new AccountsPanel({root:$('accounts-content'),toolbar:$('accounts-heading'),read:()=>api('/api/accounts'),request:({action,...value})=>action==='ignoreSubmission'?ignoreSubmission(value):api(action==='account'?'/api/accounts/account':action==='details'?'/api/accounts/details':action==='reminders'?'/api/accounts/reminders':action==='checkDesktopUpdate'||action==='requestDesktopUpdate'?'/api/accounts/desktop-update':'/api/accounts/switch',action==='checkDesktopUpdate'||action==='requestDesktopUpdate'?{action,...value}:value),onReset:async()=>{$('account-details').open=true;await accountPanel.refresh();$('account-content').querySelector('.account-cards')?.scrollIntoView({block:'nearest'});},onChanged:()=>{accountPanel.clear();resetModelCatalog();},onUpdate:value=>{accountPanel.schedule();const official=value.current?.kind==='chatgpt';$('account-button').hidden=!official;if(!official)$('account-details').open=false;const label=value.current?.kind==='api'?'API 接入':official?'账号与额度':'账号与接入';$('accounts-button').setAttribute('data-i18n',label);$('accounts-button').textContent=t(label);}});
 if(accountsPanel)$('accounts-button').onclick=()=>{$('accounts-dialog').showModal();accountsPanel.refresh();};
 
 $('permissions-button').onclick=()=>{
@@ -583,3 +608,5 @@ $('permissions-button').onclick=()=>{
   }
   dialog.append(error);document.body.append(dialog);dialog.addEventListener('close',()=>dialog.remove());dialog.showModal();
 };
+
+if(accountsPanel){accountsPanel.current.after($('account-details'));}

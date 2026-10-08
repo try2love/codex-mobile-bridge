@@ -3,11 +3,11 @@ const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const official={visible:true,loginType:'chatgpt',accountKey:'a'.repeat(64),limits:[],resetCredits:null,canReset:false,updatedAt:1900000000};
 
-async function fixture(read,kind='chatgpt',catalog=null){
+async function fixture(read,kind='chatgpt',catalog=null,gatewayLanguage){
   const nodes=new Map(),timers=new Map(),requests=[],intervals=[],events={},responses=[];let timerId=0,delayNextSkill=null,failNextSkill=false;
   const node=(tag='div')=>({tagName:tag.toUpperCase(),getBoundingClientRect(){return {width:0};},value:'',checked:false,disabled:false,hidden:false,open:false,textContent:'',dataset:{},options:[],children:[],style:{},scrollTop:0,parentElement:{},
     classList:{add(){},remove(){},toggle(){},contains(){return false;}},addEventListener(){},setAttribute(k,v){this[k]=v;},closest(selector){return selector==='dialog'?nodes.get('accounts-dialog'):null;},
-    replaceChildren(...children){this.children=children;},append(...children){this.children.push(...children);},querySelectorAll(){return [];},querySelector(){return null;},
+    replaceChildren(...children){this.children=children;},append(...children){for(const child of children){child.parentElement=this;this.children.push(child);}},after(child){const parent=this.parentElement;if(parent?.children){parent.children.splice(parent.children.indexOf(this)+1,0,child);child.parentElement=parent;}},querySelectorAll(){return [];},querySelector(){return null;},
     showModal(){this.open=true;},close(){this.open=false;}});
   const html=fs.readFileSync(path.join(__dirname,'../web/index.html'),'utf8');
   for(const match of html.matchAll(/<([a-z]+)\b([^>]*\bid="([^"]+)"[^>]*)>/g)){
@@ -15,13 +15,13 @@ async function fixture(read,kind='chatgpt',catalog=null){
   }
   const storage=()=>({getItem(){return null;},setItem(){},clear(){}});
   const response=(data,status=200)=>({ok:status===200,status,json:async()=>data});
-  const context=vm.createContext({Workbench:class{open(){}reset(){}setThumbnails(){}relabel(){}},navigator:{userAgent:'test'},Date,Option:function(text,value){return {...node('option'),textContent:text,value};},document:{addEventListener(){},documentElement:{},getElementById:id=>nodes.get(id),querySelector:()=>({classList:{toggle(){}}}),querySelectorAll:()=>[],createElement:node},
+  const context=vm.createContext({Workbench:class{open(){}reset(){}setThumbnails(){}relabel(){}},Event:class{constructor(type){this.type=type;}},navigator:{userAgent:'test'},Date,Option:function(text,value){return {...node('option'),textContent:text,value};},document:{addEventListener(){},dispatchEvent(){},documentElement:{},getElementById:id=>nodes.get(id),querySelector:()=>({classList:{toggle(){}}}),querySelectorAll:()=>[],createElement:node},
     window:{addEventListener:(name,fn)=>events[name]=fn},localStorage:storage(),sessionStorage:storage(),
     location:{hash:'',pathname:'/',search:''},history:{replaceState(){}},
     setTimeout(fn,delay){timers.set(++timerId,{fn,delay});return timerId;},clearTimeout(id){timers.delete(id);},setInterval(fn,delay){intervals.push({fn,delay});},
     fetch:async(url,options={})=>{
       requests.push(url);
-      if(url==='/api/auth')return response({authenticated:true,csrf:'fixture'});
+      if(url==='/api/auth')return response({authenticated:true,csrf:'fixture',uiLanguage:gatewayLanguage});
       if(url.startsWith('/api/sessions?'))return response({sessions:[]});
       if(url==='/api/account'||url==='/api/account?cached=1')return read(response);
       if(url==='/api/accounts')return response({accounts:[],activeId:null,current:{kind,status:'ready',name:'Fixture'},switch:{phase:'idle'}});
@@ -133,10 +133,9 @@ test('cached async model catalog still renders the picker instead of returning r
   assert.ok(ui.nodes.get('model-select').children.some(o=>o.value==='fixture-model'));
 });
 test('model catalog accepts legacy array payloads and reports invalid payload types',async()=>{
-  const catalog={models:[{id:'fixture-model',name:'Fixture',efforts:[]}],skills:[],modelSource:'api',fastMode:{allowed:false}};
+  const catalog={data:[{id:'legacy-model',name:'Legacy',efforts:[]}],modelSource:'api',fastMode:{allowed:false}};
   const ui=await fixture(r=>r(official),'api',catalog);
   ui.run("currentId='11111111-1111-4111-8111-111111111111';currentHost='local';state={connected:true,model:'fixture-model'}");
-  ui.run("catalogData.models=null;catalogTasks.models=Promise.resolve({data:[{id:'legacy-model',name:'Legacy'}],modelSource:'api'}).then(value=>{catalogData.models=Array.from(value.data);return {...value,kind:'models',models:catalogData.models}})");
   await ui.nodes.get('model-button').onclick();
   assert.ok(ui.nodes.get('model-select').children.some(o=>o.value==='legacy-model'));
   const bad=await fixture(r=>r(official),'api',{...catalog,models:'invalid'});
@@ -249,4 +248,57 @@ test('Skill pagination uses actual scroll geometry and keeps complete descriptio
   ui.run('skillScroll()');assert.equal(ui.requests.filter(x=>x.includes('kind=skills')).length,1);
   ui.nodes.get('skill-list').scrollTop=29500;ui.run('skillScroll()');await new Promise(setImmediate);
   assert.equal(ui.run('skillPages.length'),220);
+});
+
+test('entering a gateway follows its language, and manual switching remains available',async()=>{
+ const ui=await fixture(r=>r(official),'chatgpt',null,'en');assert.equal(ui.run('BridgeI18n.language()'),'en');
+ ui.nodes.get('phone-language').value='zh';ui.nodes.get('phone-language').onchange();assert.equal(ui.run('BridgeI18n.language()'),'zh');
+ await ui.run('start()');assert.equal(ui.run('BridgeI18n.language()'),'en');
+ const chinese=await fixture(r=>r(official),'chatgpt',null,'zh');assert.equal(chinese.run('BridgeI18n.language()'),'zh');
+});
+
+
+test('account switch discards API model capabilities before opening the official picker',async()=>{
+ const catalog={models:[{id:'gpt-6-astra',name:'Astra',efforts:[]}],modelSource:'api'};
+ const ui=await fixture(r=>r(official),'api',catalog);
+ ui.run("currentId='11111111-1111-4111-8111-111111111111';state={connected:true,model:'gpt-6-astra',effort:'minimal'}");
+ await ui.nodes.get('model-button').onclick();
+ catalog.modelSource='codex';catalog.models=[{id:'gpt-6-astra',name:'Astra',efforts:['low','medium','high','xhigh','max','ultra'],defaultEffort:'low'}];
+ ui.run("accountsPanel.accept({accounts:[],activeId:'official',current:{kind:'chatgpt',name:'Official'},switch:{phase:'complete'}})");
+ await ui.nodes.get('model-button').onclick();
+ assert.deepEqual(ui.nodes.get('effort-select').children.map(o=>o.value),catalog.models[0].efforts);
+ assert.equal(ui.nodes.get('effort-select').value,'low');
+ await ui.nodes.get('model-form').onsubmit({preventDefault(){}});
+ assert.equal(ui.responses.at(-1).effort,'low');
+});
+test('official model with unknown capabilities does not offer every effort or allow saving',async()=>{
+ const catalog={models:[{id:'official-missing',name:'Missing',efforts:[]}],modelSource:'codex'};
+ const ui=await fixture(r=>r(official),'chatgpt',catalog);
+ ui.run("currentId='11111111-1111-4111-8111-111111111111';state={connected:true,model:'official-missing',effort:'minimal'}");
+ await ui.nodes.get('model-button').onclick();
+ assert.equal(ui.nodes.get('effort-select').disabled,true);
+ assert.equal(ui.nodes.get('effort-select').children.some(o=>o.value==='none'||o.value==='minimal'),false);
+ assert.equal(ui.nodes.get('model-save').disabled,true);
+});
+test('model default must belong to its supported efforts',async()=>{
+ const catalog={models:[{id:'official-fixture',name:'Fixture',efforts:['low','high'],defaultEffort:'minimal'}],modelSource:'codex'};
+ const ui=await fixture(r=>r(official),'chatgpt',catalog);
+ ui.run("currentId='11111111-1111-4111-8111-111111111111';state={connected:true,model:'official-fixture',effort:'none'}");
+ await ui.nodes.get('model-button').onclick();
+ assert.equal(ui.nodes.get('effort-select').value,'low');
+});
+
+
+test('explicit upstream refresh replaces the list and reports its access name',async()=>{
+ const catalog={models:[{id:'gpt-fixture',name:'GPT',efforts:[]}],modelSource:'api',modelAccessName:'Old access'};
+ const ui=await fixture(r=>r(official),'api',catalog);
+ ui.run("currentId='11111111-1111-4111-8111-111111111111';state={connected:true,model:'gpt-fixture',effort:'high'}");
+ await ui.nodes.get('model-button').onclick();
+ catalog.models=[{id:'gemini-pro',name:'Gemini',efforts:[]}];catalog.modelAccessName='suopan-antigravity';
+ await ui.nodes.get('model-refresh').onclick();
+ assert.equal(ui.nodes.get('model-select').children.some(o=>o.value==='gpt-fixture'),false);
+ assert.equal(ui.nodes.get('model-select').children.some(o=>o.value==='gemini-pro'),true);
+ assert.match(ui.nodes.get('model-access').textContent,/suopan-antigravity/);
+ assert.equal(ui.responses.length,0);
+ assert.ok(ui.requests.filter(r=>r.includes('catalog?kind=models&refresh=true')).length>=2);
 });

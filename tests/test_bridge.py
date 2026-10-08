@@ -442,7 +442,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(self.fixture.requests[-1]['method'], 'thread-follower-start-turn')
 
     def test_model_settings_use_native_owner_without_turn_or_policy_change(self):
-        self.bridge.catalog_reader.get = lambda *a, **k: {'models': [{'id': 'model-b', 'efforts': ['low', 'high']}], 'skills': []}
+        self.bridge.catalog_reader.get_kind = lambda *a, **k: {'models': [{'id': 'model-b', 'efforts': ['low', 'high']}], 'skills': []}
         result = self.bridge.settings(THREAD, 'model-b', 'high')
         self.assertTrue(result['confirmed'])
         call = self.fixture.requests[-1]
@@ -453,12 +453,32 @@ class IntegrationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.bridge.settings(THREAD, 'model-b', 'ultra')
 
+    def test_official_model_without_capabilities_cannot_save_guessed_effort(self):
+        self.bridge.catalog_reader.get_kind = lambda *a, **k: {'models': [{'id':'official-missing','efforts':[]}], 'modelSource':'codex'}
+        with self.assertRaisesRegex(ValueError, '推理能力'):
+            self.bridge.settings(THREAD, 'official-missing', 'minimal')
+        self.assertFalse(any(r['method'] == 'thread-follower-update-thread-settings' for r in self.fixture.requests))
+
+    def test_managed_catalog_uses_selected_access_instead_of_old_chat_provider(self):
+        from unittest.mock import Mock
+        from types import SimpleNamespace
+        selected={'models':[{'id':'gemini-fixture','efforts':[]}],'modelSource':'api','modelAccessName':'Gemini access'}
+        self.bridge.accounts=SimpleNamespace(current_models=Mock(return_value=selected))
+        self.bridge.catalog_reader.get=Mock(side_effect=AssertionError('must not query old provider models'))
+        self.bridge.catalog_reader.get_kind=Mock(return_value={'skills':[],'errors':[]})
+        for kind in ('models',None):
+            result=self.bridge.catalog(THREAD,refresh=True,kind=kind)
+            self.assertEqual(result['models'],selected['models'])
+            self.assertEqual(result['modelAccessName'],'Gemini access')
+        self.assertEqual([c.args[0] for c in self.bridge.catalog_reader.get_kind.call_args_list],['skills'])
+        self.bridge.accounts=None
+
     def test_upstream_model_without_effort_metadata_uses_original_provider_and_owner(self):
         reads = []
-        def catalog(cwd, **kwargs):
+        def catalog(kind, cwd, **kwargs):
             reads.append((cwd, kwargs))
             return {'models': [{'id': 'gemini-fixture', 'efforts': []}], 'skills': [], 'modelSource': 'api'}
-        self.bridge.catalog_reader.get = catalog
+        self.bridge.catalog_reader.get_kind = catalog
         before = self.bridge.view(THREAD)
         result = self.bridge.settings(THREAD, 'gemini-fixture', 'high')
         self.assertTrue(result['confirmed'])
@@ -490,7 +510,7 @@ class IntegrationTests(unittest.TestCase):
         host = 'remote-ssh-discovered:fixture'
         self.bridge.host = self.fixture.host = host
         self.bridge.catalog_reader.get = lambda *a, **k: {'models': [], 'skills': [], 'fastMode': {'allowed': False}}
-        self.bridge.catalog_reader.get_kind = lambda kind, *a, **k: {'skills': []}
+        self.bridge.catalog_reader.get_kind = lambda kind, *a, **k: {kind: []}
         self.fixture.state['requests'] = [{'id': 7, 'method': 'item/commandExecution/requestApproval', 'params': {}}]
         self.assertTrue(self.bridge.view(THREAD)['connected'])
         self.bridge.send(THREAD, 'remote', str(uuid.uuid4()))
@@ -577,16 +597,19 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(self.bridge.send(THREAD, 'uncertain', message_id)['status'], 'ignored')
         self.assertFalse(any(r['method'] == 'thread-follower-start-turn' for r in self.fixture.requests))
 
-    def test_provider_rejection_does_not_create_unconfirmed_record(self):
+    def test_account_switch_keeps_old_custom_chat_on_its_desktop_owner(self):
         from bridge.accounts import Accounts
         manager = Accounts(self.bridge)
         self.bridge.accounts = manager
         (self.root / 'config.toml').write_text('model_provider="bridge_api"\n')
         manager.index['accounts'] = [{'id': 'a' * 32, 'kind': 'api'}]
         manager.mark_active('a' * 32)
-        with self.assertRaisesRegex(ValueError, '原提供商'):
-            self.bridge.send(THREAD, 'blocked before sending', str(uuid.uuid4()))
-        self.assertEqual(self.bridge.submissions, {})
+        self.bridge.send(THREAD, 'continue old chat', str(uuid.uuid4()))
+        call = next(r for r in self.fixture.requests if r['method'] == 'thread-follower-start-turn')
+        self.assertEqual(call['targetClientId'], 'owner')
+        self.assertTrue(call['params']['turnStart']['context']['inheritThreadSettings'])
+        self.assertNotIn('modelProvider', call['params']['turnStart']['request'])
+        self.assertEqual(self.fixture.state['modelProvider'], 'custom-api')
 
 
 
@@ -731,6 +754,17 @@ class HttpTests(unittest.TestCase):
         self.assertIn('HttpOnly', headers['Set-Cookie'])
         return {'Cookie': headers['Set-Cookie'].split(';')[0], 'X-CSRF-Token': body['csrf']}
 
+    def test_gateway_language_updates_without_restart_and_before_login(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / '.tmp') as folder:
+            self.server.ui_language_path = Path(folder) / 'ui-language.json'
+            self.assertEqual(self.request('GET', '/api/auth')[2]['uiLanguage'], 'zh')
+            for value, expected in [('{"language":"en"}', 'en'), ('{"language":"zh"}', 'zh'), ('broken', 'zh')]:
+                self.server.ui_language_path.write_text(value)
+                status, _, data = self.request('GET', '/api/auth')
+                self.assertEqual(status, 200)
+                self.assertFalse(data['authenticated'])
+                self.assertEqual(data['uiLanguage'], expected)
+
     def test_computer_identity_is_only_available_after_login(self):
         from unittest.mock import patch
         with patch('bridge.httpd.socket.gethostname', return_value='demo-workstation'):
@@ -853,6 +887,20 @@ class HttpTests(unittest.TestCase):
             self.assertTrue(response.getheader('Content-Type').startswith(content_type))
             self.assertEqual(response.read(), (ROOT / 'web' / name).read_bytes())
 
+    def test_saved_account_reset_route_requires_login_csrf_and_same_origin(self):
+        from unittest.mock import Mock
+        manager = Mock();manager.account.return_value = {'outcome':'reset','account':{'visible':True}}
+        self.server.bridge.accounts = manager
+        path = '/api/accounts/account'
+        body = {'id':'a'*32,'operation':'consume','confirmed':True}
+        self.assertEqual(self.request('POST', path, body)[0], 401)
+        auth = self.login()
+        self.assertEqual(self.request('POST', path, body, {'Cookie':auth['Cookie']})[0], 403)
+        self.assertEqual(self.request('POST', path, body, {**auth,'Origin':'https://other.test'})[0], 403)
+        manager.account.assert_not_called()
+        self.assertEqual(self.request('POST', path, body, auth)[2]['outcome'], 'reset')
+        manager.account.assert_called_once_with(body)
+
     def test_account_routes_require_login_csrf_and_same_origin(self):
         from unittest.mock import Mock
         account = self.server.bridge.account = Mock()
@@ -871,6 +919,36 @@ class HttpTests(unittest.TestCase):
         account.consume.assert_called_once_with(body)
         account.consume.side_effect = PermissionError('Only native login')
         self.assertEqual(self.request('POST', '/api/account/reset', body, auth)[0], 403)
+
+    def test_mobile_pairing_persists_as_revocable_device_across_restart(self):
+        from unittest.mock import patch
+        from bridge.pairing import Pairing
+        for platform in ('Android', 'iOS'):
+            with self.subTest(platform=platform):
+                config = {'mode': 'none', 'sessionHours': 1}
+                temporary = tempfile.TemporaryDirectory(dir=ROOT / '.tmp')
+                self.addCleanup(temporary.cleanup)
+                directory = Path(temporary.name)
+                self.server.auth = Auth(config, directory)
+                # Local test uses an approved non-loopback alias for QR issuance.
+                origin = 'http://phone.example.test'
+                self.server.auth.new_session('127.0.0.1')
+                pairing = Pairing(self.server.auth, {origin})
+                grant = pairing.control({'action': 'create', 'url': origin})
+                ua = 'Mozilla/5.0 BridgeMobile/0.1-' + platform
+                token, row = pairing.exchange(grant['url'].split('#pair=')[1], origin, '127.0.0.1', ua)
+                headers = {'Cookie': Auth.COOKIE + '=' + token, 'User-Agent': ua}
+                with patch('bridge.auth.time.time', return_value=row['created'] + 30 * 86400):
+                    self.server.auth = Auth(config, directory)
+                    status, response, body = self.request('GET', '/api/auth', headers=headers)
+                    self.assertEqual(status, 200)
+                    self.assertTrue(body['authenticated'])
+                    self.assertTrue(body['trustedDevice'])
+                    self.assertIn('HttpOnly', response['Set-Cookie'])
+                    self.assertIn('Max-Age=34560000', response['Set-Cookie'])
+                    self.server.auth.manage({'action': 'revoke', 'id': Auth.key(token)})
+                    self.server.auth = Auth(config, directory)
+                    self.assertFalse(self.request('GET', '/api/auth', headers=headers)[2]['authenticated'])
 
     def test_login_cookie_lifetime_and_device_revocation(self):
         self.server.auth = Auth({'mode': 'none', 'sessionHours': 0})

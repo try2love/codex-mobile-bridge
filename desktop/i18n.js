@@ -1,5 +1,5 @@
 'use strict';
-const {dictionary}=require('../web/i18n.js');
+const {dictionary,translateEnglish}=require('../web/i18n.js');
 // Only native-shell messages live here; all shared UI text comes from web/i18n.
 const english={...dictionary,
   '正在读取状态':'Loading status','打开控制面板':'Open control panel',
@@ -12,6 +12,6 @@ const english={...dictionary,
 function normalize(value){return typeof value==='string'&&/^en(?:-|$)/i.test(value)?'en':'zh-CN';}
 function translate(text,language){
   const source=String(text).replace(/^Error invoking remote method '[^']+': (?:Error: )?/,'');
-  return normalize(language)==='en'?(english[source]??source):source;
+  return normalize(language)==='en'?(english[source]??translateEnglish(source)):source;
 }
 module.exports={normalize,translate,english};

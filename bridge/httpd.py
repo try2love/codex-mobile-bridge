@@ -93,14 +93,22 @@ class GatewayServer(ThreadingHTTPServer):
             self.pairing = Pairing(self.auth, self.origins)
             self.hosts = {urlsplit(o).netloc for o in self.origins}
             self.secure_hosts = {urlsplit(o).netloc for o in self.origins if o.startswith("https://")}
+            self.ui_language_path = Path(data_dir) / 'ui-language.json' if data_dir else None
             self.web_dir = Path(web_dir)
             self.slots = threading.BoundedSemaphore(48)
         else:
             # Listeners serve one gateway: shared sessions, pairing, limits and
             # mutable tunnel origins, with a single notification manager.
-            for name in ('bridge', 'notifications', 'instance_id', 'auth', 'origins', 'pairing', 'hosts', 'secure_hosts', 'web_dir', 'slots'):
+            for name in ('bridge', 'notifications', 'instance_id', 'auth', 'origins', 'pairing', 'hosts', 'secure_hosts', 'web_dir', 'slots', 'ui_language_path'):
                 setattr(self, name, getattr(shared, name))
         super().__init__(address, Handler)
+
+    def ui_language(self):
+        try:
+            value = json.loads(self.ui_language_path.read_text(encoding='utf-8')) if self.ui_language_path else {}
+            return 'en' if value.get('language') == 'en' else 'zh'
+        except (OSError, ValueError, AttributeError):
+            return 'zh'
 
     def server_bind(self):
         # HTTPServer resolves the listening IP with getfqdn(), which can stall
@@ -275,7 +283,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.output(200, file.read_bytes(), 'font/'+font[2])
             if not write and path == "/api/auth":
                 session = self.login_session()
-                return self.output(200, {"authenticated": bool(session), "csrf": session["csrf"] if session else None,
+                return self.output(200, {"uiLanguage": self.server.ui_language(), "authenticated": bool(session), "trustedDevice": bool(session and session.get("trustedDevice")), "csrf": session["csrf"] if session else None,
                                          "loginStatus": self.server.auth.login_status(self.client()["ip"]),
                                          "instanceId": self.server.instance_id,
                                          **({"computer": {"name": socket.gethostname(), "platform": platform.system()}} if session else {}),
@@ -354,6 +362,9 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     raise ValueError('桌面更新请求无效')
                 return self.output(202, self.server.bridge.accounts.public())
+            if write and path == '/api/accounts/account':
+                body = self.read_json()
+                return self.output(200, self.server.bridge.accounts.account(body))
             if write and path == '/api/accounts/details':
                 body = self.read_json()
                 if set(body) - {'id', 'section', 'refresh'} or not {'id', 'section'} <= set(body):

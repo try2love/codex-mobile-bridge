@@ -128,8 +128,7 @@ class AccountTests(unittest.TestCase):
         body = self.attempt()
         with self.assertRaises(ValueError): self.account.consume({**body, 'confirmed': False})
         self.rpc.config['desktop']['agent-usage-reset-enabled'] = False
-        self.assertFalse(self.account.read()['canReset'])
-        with self.assertRaises(PermissionError): self.account.consume(body)
+        self.assertTrue(self.account.read()['canReset'])
         self.rpc.config['desktop']['agent-usage-reset-enabled'] = True
         self.rpc.auth['account']['email'] = 'other@example.test'
         with self.assertRaises(PermissionError): self.account.consume(body)
@@ -141,12 +140,11 @@ class AccountTests(unittest.TestCase):
         self.rpc.on_limits = lambda: self.rpc.auth.update(account=None)
         self.assertEqual(self.account.read(), {'visible': False, 'loginType': 'signedOut'})
 
-    def test_late_permission_change_blocks_reset(self):
+    def test_desktop_agent_permission_does_not_block_manual_reset(self):
         body = self.attempt()
         self.rpc.on_limits = lambda: self.rpc.config['desktop'].update({'agent-usage-reset-enabled': False})
-        with self.assertRaises(PermissionError): self.account.consume(body)
-        self.assertEqual(self.consumes(), [])
-        self.assertFalse(self.account.path.exists())
+        self.assertEqual(self.account.consume(body)['outcome'], 'reset')
+        self.assertEqual(len(self.consumes()), 1)
 
     def test_account_changed_while_validating_card_cannot_consume(self):
         body = self.attempt()

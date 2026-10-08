@@ -128,7 +128,7 @@ class Accounts:
         self.gate = threading.RLock()
         self.index = read_json(self.root/'index.json', {'accounts': [], 'activeId': None, 'desktopExecutable': ''})
         self.state = read_json(self.root/'switch.json', {'phase': 'idle'})
-        if self.state.get('phase') in ('preparing', 'stopping', 'applying', 'starting', 'verifying', 'restoring'):
+        if self.state.get('phase') in ('preparing', 'stopping', 'applying', 'migrating', 'starting', 'verifying', 'restoring'):
             self.state.update(phase='interrupted', error='上次切换中断，请在桌面端恢复原接入')
         self.enrollment = None
         self.discovery = None
@@ -182,7 +182,10 @@ class Accounts:
             if row['kind'] == 'chatgpt':
                 tokens = read_json(self.home/'auth.json', {}).get('tokens') or {}
                 return token_owner({'tokens': tokens}) == row.get('tokenOwner') and bool(row.get('tokenOwner'))
-            return True
+            auth = self.home/'auth.json'
+            if 'auth' in stamp:
+                return stamp['auth'] == (hashlib.sha256(auth.read_bytes()).hexdigest() if auth.is_file() else None)
+            return read_json(auth, {}).get('OPENAI_API_KEY') == read_json(self.directory(row['id'])/'api.json', {}).get('key')
         except (OSError, ValueError, KeyError, TypeError):
             return False
 
@@ -190,6 +193,9 @@ class Accounts:
         self.index['activeId'] = identifier
         self.index['activeStamp'] = ({'config': hashlib.sha256((self.home/'config.toml').read_bytes()).hexdigest()}
                                      if identifier else None)
+        if identifier and self.row(identifier)['kind'] == 'api':
+            auth = self.home/'auth.json'
+            self.index['activeStamp']['auth'] = hashlib.sha256(auth.read_bytes()).hexdigest() if auth.is_file() else None
         self.save()
 
     def public(self):
@@ -363,6 +369,31 @@ class Accounts:
             self.update_discovery()
             return self.desktop_status()
 
+    def api_models(self, row, refresh=False):
+        cached = self.info.entries.get(row['id'], {}).get('models') or {}
+        if not refresh and cached.get('status') == 'ready' and time.time()-cached.get('checkedAt', 0) < 300:
+            return copy.deepcopy(cached['models'])
+        key = read_json(self.directory(row['id'])/'api.json', {})['key']
+        models = [{'id': identifier, 'name': identifier, 'efforts': []} for identifier in model_ids(row['baseUrl'], key)]
+        self.info.entries.setdefault(row['id'], {})['models'] = {'models':copy.deepcopy(models), 'status':'ready', 'checkedAt':time.time()}
+        return models
+
+    def current_models(self, refresh=False):
+        with self.lock:
+            self.check_ready()
+            if not self.active_matches():
+                return None
+            row = dict(self.row(self.index['activeId']))
+            if row['kind'] != 'api':
+                result = self.bridge.catalog_reader.get_kind('models', str(self.home), refresh=refresh, provider='openai')
+            else:
+                result = {'models':[], 'modelSource':'api', 'fastMode':{'allowed':False}}
+                try:
+                    result['models'] = self.api_models(row, refresh)
+                except ValueError as error:
+                    result['modelError'] = str(error)
+            return {**result, 'modelAccessName':row['name'], 'modelAccountId':row['id']}
+
     def models(self, value):
         with self.lock:
             self.assert_editable()
@@ -459,8 +490,43 @@ class Accounts:
             threading.Thread(target=run, daemon=True).start()
             return self.desktop_status()
 
+    def account(self, value):
+        """Operate one saved login without changing the desktop's active connection."""
+        from .account import Account
+        action = value.get('operation', 'read')
+        if action not in ('read', 'consume') or set(value) - {'action', 'id', 'operation', 'refresh', 'confirmed', 'requestId', 'accountKey', 'creditId'}:
+            raise ValueError('账号重置请求包含不支持的字段')
+        with self.gate, self.bridge.account.lock, self.lock:
+            self.check_ready()
+            row = dict(self.row(value.get('id')))
+            if row['kind'] != 'chatgpt':
+                raise ValueError('仅官方 ChatGPT 账号可使用重置卡')
+            identity = self.info.read_identity()
+            active = self.info.match(identity)
+            home = self.home if active and active['id'] == row['id'] else self.directory(row['id'])
+            if token_owner(read_json(home/'auth.json', {})) != row.get('tokenOwner'):
+                raise ValueError('账号身份不匹配')
+            if home != self.home:
+                private_bytes(home/'config.toml', b'cli_auth_credentials_store = "file"\nmodel_provider = "openai"\n')
+            target = Account(home, self.bridge.data_dir, executable=self.runtime)
+            target.usage_cache = self.bridge.account.usage_cache
+            target.subscription_cache = self.bridge.account.subscription_cache
+            def checked_context(rpc):
+                context = Account.context(rpc)
+                if (context.get('loginType') != 'chatgpt' or context.get('email') != row.get('email') or
+                        token_owner(read_json(home/'auth.json', {})) != row.get('tokenOwner')):
+                    raise ValueError('账号身份已变化')
+                return context
+            target.context = checked_context
+            result = target.control({**{k:v for k,v in value.items() if k not in ('action','id','operation')}, 'action':action})
+            if action == 'consume':
+                self.info.entries.get(row['id'], {}).pop('usage', None)
+            return result
+
     def control(self, value):
         action = value.get('action', 'list')
+        if action == 'account':
+            return self.account(value)
         if action == 'reminders':
             self.monitor.configure(value.get('preferences'))
             return self.desktop_status()
@@ -492,7 +558,9 @@ class Accounts:
             return self.recover(value)
         with self.lock:
             self.assert_editable()
-            if action == 'configure':
+            if action == 'scanDesktop':
+                self.index['desktopExecutable'] = DesktopApp.scan(self.runtime, self.home)
+            elif action == 'configure':
                 executable = value.get('desktopExecutable')
                 if not isinstance(executable, str) or not Path(executable).is_absolute():
                     raise ValueError('请填写桌面程序的完整路径')
@@ -605,6 +673,11 @@ class Accounts:
         if row['kind'] == 'chatgpt':
             private_bytes(folder/'auth.json', (self.directory(row['id'])/'auth.json').read_bytes())
             changes['model_providers.openai'] = None
+            # Saved chats may still use this ID. Keep an official-auth alias so
+            # the desktop can resume them normally without migrating projects.
+            changes['model_providers.bridge_api'] = {
+                'name': 'OpenAI', 'wire_api': 'responses',
+                'requires_openai_auth': True, 'supports_websockets': True}
         else:
             secret = read_json(self.directory(row['id'])/'api.json', {})['key']
             private_json(folder/'auth.json', {'auth_mode': 'apikey', 'OPENAI_API_KEY': secret})
@@ -623,7 +696,7 @@ class Accounts:
             if config.get('profile'):
                 raise ValueError('当前配置启用了 profile，请先在桌面切回默认配置')
             if row['kind'] == 'chatgpt':
-                # Read the native catalog again after changing provider below.
+                # Let the official runtime select its default model.
                 changes['model'] = None
             result = rpc.request('config/batchWrite', {'edits': [{'keyPath': key, 'value': val, 'mergeStrategy': 'replace'}
                                                                 for key, val in changes.items()]})
@@ -684,7 +757,9 @@ class Accounts:
                 bridge.side_chats.close()
             bridge.ipc.close()
             bridge._disconnected()
-            if hasattr(bridge.catalog_reader, 'cache'):
+            if hasattr(bridge.catalog_reader, 'invalidate_models'):
+                bridge.catalog_reader.invalidate_models()
+            elif hasattr(bridge.catalog_reader, 'cache'):
                 bridge.catalog_reader.cache.clear()
 
     def retain_current(self, snapshot):
@@ -776,6 +851,11 @@ class Accounts:
                         app.validate(self.runtime)
                         app.stop()
                         self.restore_files(backup['files'])
+                        if backup.get('threadsApplying'):
+                            # Only older previews wrote thread migrations to this
+                            # recovery record. New switches never load projects.
+                            from .thread_access import ThreadAccess
+                            ThreadAccess(self.bridge).restore(backup['threads'])
                         self.invalidate()
                         app.start()
                         self.wait_ready(app)

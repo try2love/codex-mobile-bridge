@@ -11,6 +11,16 @@ from pathlib import Path
 class DesktopApp:
     def __init__(self, executable, home):
         self.executable = Path(executable).expanduser().resolve()
+        if self.executable.suffix == '.app':
+            import plistlib
+            try:
+                info = plistlib.loads((self.executable/'Contents/Info.plist').read_bytes())
+                name = info['CFBundleExecutable']
+                if not isinstance(name, str) or Path(name).name != name:
+                    raise ValueError('invalid executable')
+                self.executable = (self.executable/'Contents/MacOS'/name).resolve()
+            except (OSError, ValueError, KeyError):
+                raise ValueError('请选择有效的 Codex / ChatGPT 应用程序包') from None
         self.home = Path(home).resolve()
 
     @staticmethod
@@ -35,10 +45,27 @@ class DesktopApp:
                 candidates += [parent/'chatgpt', parent/'ChatGPT', parent/'codex-desktop', parent/'codex']
         return next((str(p) for p in candidates if p.is_file() and p.resolve() != runtime), '')
 
+    @staticmethod
+    def scan(runtime, home):
+        candidate = DesktopApp.discover(runtime)
+        if candidate:
+            app = DesktopApp(candidate, home)
+            app.validate(runtime)
+            return str(app.executable)
+        if sys.platform == 'darwin':
+            for root in (Path('/Applications'), Path.home()/'Applications'):
+                for name in ('Codex.app', 'ChatGPT.app'):
+                    bundle = root/name
+                    if (bundle/'Contents/Resources/codex-cli/bin/codex').is_file():
+                        app = DesktopApp(bundle, home)
+                        app.validate(runtime)
+                        return str(app.executable)
+        raise ValueError('未找到 Codex 桌面程序，请选择已安装的应用程序包或可执行文件')
+
     def validate(self, runtime):
         if not self.executable.is_file() or not os.access(self.executable, os.X_OK):
             raise ValueError('请选择已安装的 Codex / ChatGPT 桌面程序')
-        if self.executable == Path(runtime).resolve():
+        if runtime and self.executable == Path(runtime).resolve():
             raise ValueError('桌面程序不能选择内置 Codex 命令行运行时')
         # Launch scripts cannot be matched reliably to the resulting GUI process.
         with self.executable.open('rb') as stream:
@@ -107,6 +134,14 @@ class DesktopApp:
             time.sleep(.25)
 
     def start(self):
+        if sys.platform == 'darwin':
+            bundle = next((p for p in self.executable.parents if p.suffix == '.app'), None)
+            if bundle is None:
+                raise ValueError('macOS 桌面程序必须位于应用程序包中')
+            # Launch as a GUI app, not as a gateway child inheriting its privacy identity.
+            subprocess.run(['/usr/bin/open', '-a', str(bundle), '--env', 'CODEX_HOME='+str(self.home)],
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=25)
+            return
         options = ({'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP, 'close_fds': True}
                    if sys.platform == 'win32' else {'start_new_session': True})
         self.child = subprocess.Popen([str(self.executable)], cwd=self.home,

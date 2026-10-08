@@ -14,18 +14,6 @@ class InsightsTests(unittest.TestCase):
     setUp = test_accounts.AccountsTests.setUp
     tearDown = test_accounts.AccountsTests.tearDown
 
-    def test_subscription_reads_only_explicit_claim_and_never_token_expiry(self):
-        def auth(claims):
-            encoded = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip('=')
-            (self.home/'auth.json').write_text(json.dumps({'tokens':{'id_token':'e30.'+encoded+'.sig'}}))
-        auth({'email':'fixture@test','exp':2000000000})
-        self.assertIsNone(subscription_period(self.home,'fixture@test'))
-        auth({'email':'fixture@test','https://api.openai.com/auth':{'chatgpt_subscription_active_until':'2030-01-01T00:00:00Z'}})
-        value=subscription_period(self.home,'fixture@test')
-        self.assertEqual(value['periodEndsAt'],1893456000)
-        self.assertEqual(set(value),{'periodEndsAt','source','observedAt'})
-        self.assertIsNone(subscription_period(self.home,'different@test'))
-
     def test_credits_are_separate_from_reset_cards_and_unknown_is_not_zero(self):
         result=normalize_limits({'rateLimits':{'credits':{'balance':'62500','unlimited':False,'private':'secret'}},
                                  'rateLimitResetCredits':{'availableCount':2}})
@@ -33,6 +21,16 @@ class InsightsTests(unittest.TestCase):
         self.assertEqual(result['resetCredits']['availableCount'],2)
         self.assertNotIn('secret',str(result))
         self.assertIsNone(normalize_limits({'rateLimits':{}})['limits'][0]['credits'])
+
+    def test_subscription_reminder_is_explicitly_a_nonlive_login_record(self):
+        now = 1791400000
+        reminders = events({'subscription':{'periodEndsAt':now+86400,'source':'login'}}, {}, now,
+                           {**DEFAULTS, 'subscriptionExpiry':True})
+        self.assertEqual(len(reminders), 1)
+        self.assertIn('并非实时账单信息', reminders[0][3])
+        self.assertNotIn('当前订阅周期', reminders[0][3])
+        self.assertEqual(events({'subscription':{'periodEndsAt':now-1,'source':'login'}}, {}, now,
+                                {**DEFAULTS, 'subscriptionExpiry':True}), [])
 
     def test_reminders_do_not_guess_recovery_from_a_passed_timestamp(self):
         now=2000000000

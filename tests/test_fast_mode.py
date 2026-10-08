@@ -74,6 +74,7 @@ class FastSettingsTests(unittest.TestCase):
         def get(cwd, refresh=False, provider=None):
             self.reads.append(refresh);return copy.deepcopy(self.catalog)
         self.bridge.catalog_reader.get = get
+        self.bridge.catalog_reader.get_kind = lambda kind, *a, **k: get(*a, **k)
 
     def calls(self):
         return [r for r in self.fixture.requests if r['method'] == 'thread-follower-update-thread-settings']

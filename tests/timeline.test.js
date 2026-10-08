@@ -9,7 +9,8 @@ async function runTimelineTests() {
   document.getElementById('app').classList.add('chat-open');
   const viewport=document.getElementById('timeline');
   viewport.style.cssText='height:400px;flex:none;overflow:auto;width:370px';
-  const row=i=>({key:'k'+i,order:i,role:'assistant',version:'v'+i,text:'Record '+i+'\n'+'test paragraph '.repeat(12)});
+  const row=i=>({key:'k'+i,order:i,role:'assistant',version:'v'+i,text:'Record '+i+'\n'+'test paragraph '.repeat(12),
+    ...(i===318?{model:'gpt-6-astra',effort:'max'}:i===319?{model:'gemini-pro',effort:'high'}:{})});
   const page=(from,to,sequence=1)=>({rows:Array.from({length:to-from},(_,i)=>row(from+i)),sequence,epoch:'epoch',before:'epoch.k'+from,hasMore:from>0,meta:{requests:[{id:'pending'}]},files:[]});
   const pending=[],requests=[];let meta,signal;
   const request=(url,body,abort)=>{
@@ -22,6 +23,9 @@ async function runTimelineTests() {
   const timeline=new ChatTimeline({url:action=>'/fixture/'+action+'?host=local',request,renderMeta:v=>meta=v,renderText:(node,text)=>node.textContent=text,status:()=>{}});
   await timeline.start();
   check(timeline.rows.size===20,'First paint has 20 messages');
+  check(timeline.nodes.get('k318').node.firstChild.textContent==='CODEX · gpt-6-astra max','Old reply retains its own model and effort');
+  check(timeline.nodes.get('k319').node.firstChild.textContent==='CODEX · gemini-pro high','New reply shows its own model and effort');
+  check(timeline.nodes.get('k317').node.firstChild.textContent==='CODEX','Missing historical model is not guessed');
   check(meta.requests[0].id==='pending','Approval metadata arrives with first page');
   await until(()=>pending.length===1);
   check(pending[0].limit===80,'Quiet backfill requests only 80 more');

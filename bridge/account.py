@@ -1,11 +1,9 @@
 """Account-only RPCs using the desktop runtime and its configured credential store.
 
 Only sanitized account metadata leaves the gateway; no thread or login RPC is permitted.
-The desktop's reset permission is enforced here as well as in its own UI.
+Manual resets require explicit confirmation, independently of agent auto-reset preferences.
 """
 import copy
-import base64
-from datetime import datetime
 import hashlib
 import json
 import math
@@ -17,6 +15,7 @@ import time
 import uuid
 from pathlib import Path
 
+from .subscription import subscription_period
 from .catalog import Catalog
 from .notifications import read_json, write_json
 
@@ -112,34 +111,6 @@ def number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
-def subscription_period(home, email=None):
-    """Optional native-login claim, not a billing API or token-expiry estimate."""
-    try:
-        path = Path(home)/'auth.json'
-        tokens = read_json(path, {}).get('tokens') or {}
-        for name in ('id_token', 'access_token'):
-            try:
-                encoded = tokens.get(name, '').split('.')[1]
-                claims = json.loads(base64.urlsafe_b64decode(encoded + '=' * (-len(encoded) % 4)))
-                if email and claims.get('email') and claims['email'] != email:
-                    continue
-                auth = claims.get('https://api.openai.com/auth') or {}
-                value = auth.get('chatgpt_subscription_active_until')
-                if isinstance(value, str):
-                    if value.replace('.', '', 1).isdigit():
-                        value = float(value)
-                    else:
-                        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
-                        value = parsed.timestamp() if parsed.tzinfo else None
-                if number(value) and value > 0:
-                    return {'periodEndsAt':value, 'source':'login', 'observedAt':path.stat().st_mtime}
-            except (ValueError, KeyError, IndexError, TypeError):
-                continue
-    except (OSError, ValueError, TypeError):
-        pass
-    return None
-
-
 def normalize_limits(raw):
     buckets = raw.get('rateLimitsByLimitId')
     if not isinstance(buckets, dict):
@@ -186,6 +157,7 @@ class Account:
         self.path = Path(data_dir) / 'account-resets.json'
         self.lock = threading.Lock()
         self.usage_cache = {}
+        self.subscription_cache = {}
 
     def rpc(self):
         return AccountRPC(self.home, self.executable)
@@ -211,7 +183,7 @@ class Account:
         identity = json.dumps([account, auth.get('workspaceRouting')], sort_keys=True, separators=(',', ':'))
         return {'loginType': 'chatgpt', 'accountKey': hashlib.sha256(identity.encode()).hexdigest(),
                 'email': account.get('email'), 'planType': account.get('planType'),
-                'canReset': (config.get('desktop') or {}).get('agent-usage-reset-enabled') is True}
+                'canReset': True}
 
     def limits(self, rpc, context, refresh=False):
         # Called under the shared account lock by both account views.
@@ -222,6 +194,15 @@ class Account:
         value = normalize_limits(rpc.request('account/rateLimits/read'))
         value['updatedAt'] = time.time()
         self.usage_cache[key] = {'checkedAt':value['updatedAt'], 'value':value}
+        return copy.deepcopy(value)
+
+    def subscription(self, home, context, refresh=False):
+        key = context['accountKey']
+        cached = self.subscription_cache.get(key)
+        if not refresh and cached and time.time()-cached['observedAt'] < 300:
+            return copy.deepcopy(cached)
+        value = subscription_period(home, context.get('email'))
+        self.subscription_cache[key] = value
         return copy.deepcopy(value)
 
     def _status(self, rpc, context, refresh=False):
@@ -242,7 +223,7 @@ class Account:
                                       for key, row in ledger.items()
                                       if row['accountKey'] == context['accountKey'] and not row.get('outcome')), None)
         result.setdefault('updatedAt', None)
-        result['subscription'] = subscription_period(self.home, context.get('email'))
+        result['subscription'] = self.subscription(self.home, context, refresh=refresh)
         return result
 
     def read(self, refresh=True):
@@ -267,8 +248,6 @@ class Account:
                 raise PermissionError('仅官方 ChatGPT 账号可使用重置卡')
             if context['accountKey'] != account_key:
                 raise PermissionError('电脑端账号已变化，请刷新后重新确认')
-            if not context['canReset']:
-                raise PermissionError('请先在 Codex 桌面设置中允许使用额度重置')
             ledger = read_json(self.path, {})
             previous = ledger.get(request_id)
             if previous and (previous['accountKey'] != account_key or previous['creditId'] != credit_id):

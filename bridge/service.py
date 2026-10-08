@@ -72,6 +72,14 @@ class LiveSession:
     def view(self):
         with self.condition:
             result = normalize_state(self.state or {"id": self.id}, self.connected)
+            if self.saved_view:
+                saved_labels = {turn['id']: turn for turn in self.saved_view['turns'] if turn.get('status') != 'inProgress'}
+                for turn in result['turns']:
+                    saved = saved_labels.get(turn['id'])
+                    if saved is not None:
+                        # Desktop history hydration can substitute today's model.
+                        # Recorded turn_context is authoritative for past replies.
+                        turn['model'], turn['effort'] = saved.get('model'), saved.get('effort')
             # Native paginated snapshots only contain the loaded tail. Keep the
             # saved prefix in the presentation, never in the IPC patch base.
             if self.saved_view and not result['historyComplete']:
@@ -989,16 +997,10 @@ class Bridge:
                 raise IPCError(session.error or "请先在桌面 App 打开此聊天")
         return session
 
-    def _check_provider(self, session):
-        if self.host == 'local' and self.accounts and self.accounts.active_matches():
-            row = self.accounts.row(self.accounts.index['activeId'])
-            expected = ('openai',) if row['kind'] == 'chatgpt' else ('openai', 'bridge_api')
-            if session.view().get('provider') not in expected:
-                raise ValueError('此聊天保留了原提供商，请切回对应接入或新建聊天')
-
     @operation
     def _call(self, session, method, params, timeout=30):
-        self._check_provider(session)
+        # The existing desktop owner retains this thread's provider and credentials.
+        # A newly selected default account must not gate unrelated existing providers.
         return self.ipc.request(method, {"conversationId": session.id, **params}, target=session.owner, host=self.host, timeout=timeout)["result"]
 
     def _save_ledger(self):
@@ -1338,9 +1340,12 @@ class Bridge:
             model = session.state.get("latestModel")
             effort = session.state.get("latestReasoningEffort") or (session.state.get("latestThreadSettings") or {}).get("effort")
             provider = session.view().get('provider')
+        selected = self.accounts.current_models(refresh) if self.host == 'local' and self.accounts and kind != 'skills' else None
+        if kind == 'models' and selected is not None:
+            return {**selected, 'kind':'models', 'currentModel':model, 'currentEffort':effort}
         if kind in ('models', 'skills'):
             value = self.catalog_reader.get_kind(kind, cwd, refresh=refresh, provider=provider,
-                                                 query=query, offset=offset, limit=limit, ids=ids)
+                                                 **({'query':query, 'offset':offset, 'limit':limit, 'ids':ids} if kind == 'skills' else {}))
             if kind == 'models':
                 with session.condition:
                     view = session.view()
@@ -1349,7 +1354,8 @@ class Bridge:
                         'fastMode': {**value.get('fastMode', {}), 'allowed': view.get('provider') == 'openai' and value.get('fastMode', {}).get('allowed') is True},
                         **({'currentServiceTier': view['serviceTier']} if 'serviceTier' in view else {})}
             return {**value, 'kind': 'skills'}
-        catalog = self.catalog_reader.get(cwd, refresh=refresh, provider=provider)
+        catalog = ({**self.catalog_reader.get_kind('skills', cwd, refresh=refresh, provider=provider), **selected}
+                   if selected is not None else self.catalog_reader.get(cwd, refresh=refresh, provider=provider))
         with session.condition:
             view = session.view()
         return {**catalog, "currentModel": model or catalog.get("currentModel"),
@@ -1433,8 +1439,10 @@ class Bridge:
         session = self._target(thread_id)
         with session.action_lock:
             # Recheck login/model/policy on the execution host before a speed change.
-            catalog = self.catalog(thread_id, refresh=fast_mode is not None)
+            catalog = self.catalog(thread_id, refresh=fast_mode is not None, kind='models')
             known = next((m for m in catalog["models"] if m["id"] == model), None)
+            if catalog.get('modelSource') == 'codex' and (not known or not known.get('efforts')):
+                raise ValueError('未能读取此模型的推理能力，请重新打开模型设置')
             if known and known["efforts"] and effort not in known["efforts"]:
                 raise ValueError("这个模型不支持所选推理强度")
             settings = {'model': model, 'effort': effort}
@@ -1646,7 +1654,6 @@ class Bridge:
                             prior.get("goalActivation") != activation):
                         raise ValueError("同一消息标识不能用于不同内容")
                     return {"status": prior["status"], "duplicate": True, "id": submission_id}
-            self._check_provider(session)
             with session.condition:
                 active = (session.state or {}).get("threadRuntimeStatus", {}).get("type") == "active"
                 if active and mode == "send":

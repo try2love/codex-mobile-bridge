@@ -2,6 +2,99 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"可选择 .app 应用程序包或桌面可执行文件":"Choose an .app bundle or the desktop executable",
+"扫描桌面程序":"Scan for desktop app",
+"未找到 Codex 桌面程序，请选择已安装的应用程序包或可执行文件":"Codex desktop app was not found. Choose the installed app bundle or executable.",
+"请选择有效的 Codex / ChatGPT 应用程序包":"Choose a valid Codex / ChatGPT app bundle",
+"从上游刷新可用模型":"Refresh available models from upstream",
+"当前接入：":"Current access: ",
+"聊天接入：":"Chat access: ",
+"旧聊天接入未能更新，请在电脑端检查":"Could not update access for an existing chat. Check the desktop app.",
+"旧聊天模型未能更新，请在电脑端检查":"Could not update the model for an existing chat. Check the desktop app.",
+"当前接入未返回可用模型":"The current access returned no available models",
+
+"未能读取此模型的推理能力，请重新打开模型设置": "Reasoning capabilities could not be loaded for this model. Reopen model settings.",
+"查询到的订阅周期截止日期：": "Subscription period end date: ",
+"订阅信息暂不可用，请稍后刷新": "Subscription details are unavailable. Refresh again later.",
+"订阅日期来自在线查询，续订与扣费状态请以 ChatGPT 订阅页面为准。": "Date retrieved online. Check the ChatGPT subscription page for renewal and billing status.",
+"此账号暂不可使用重置卡，请刷新后重试": "Reset credits are unavailable for this account. Refresh and retry.",
+"订阅周期截止前 7／3／1 天提醒": "Remind me 7, 3, and 1 days before the subscription period ends",
+"点击显示电脑真实名称": "Show the computer's device name",
+"点击显示连接名称": "Show the saved connection name",
+
+"API 地址须为 HTTPS，只有本机服务可使用 HTTP": "API URLs must use HTTPS. HTTP is allowed only for local services.",
+"API 接入配置未生效": "The API connection settings did not take effect.",
+"不支持的账号操作": "Unsupported account operation.",
+"不支持的账号管理操作": "Unsupported account management operation.",
+"仍有桌面实例占用连接，请在电脑端关闭后重试": "A desktop instance is still using the connection. Close it on the computer and retry.",
+"保存的账号需要重新登录": "Sign in to the saved account again.",
+"切换不支持符号链接形式的认证或配置文件": "Account switching does not support symlinked authentication or configuration files.",
+"切换请求标识无效": "Invalid account-switch request ID.",
+"同一请求不能切换到不同账号": "The same request cannot switch to different accounts.",
+"同一请求不能用于不同版本": "The same request cannot be used for different versions.",
+"商店产品标识无效": "Invalid store product ID.",
+"尚未取得官方账号凭据": "Official account credentials are not available yet.",
+"尚未取得账号身份，请重新登录": "Account identity is unavailable. Sign in again.",
+"当前不需要恢复": "No recovery is needed.",
+"当前配置启用了 profile，请先在桌面切回默认配置": "A configuration profile is active. Switch to the default configuration on the desktop first.",
+"恢复文件无效": "Invalid recovery file.",
+"所选程序不是原版 Codex 桌面应用": "The selected program is not the official Codex desktop app.",
+"找不到桌面 App 的 Codex 运行时": "Cannot find the desktop app's Codex runtime.",
+"接入配置被其他配置层覆盖，无法安全切换": "Other configuration layers override this connection. It cannot be switched safely.",
+"无法确认唯一的目标桌面进程": "Cannot identify a single target desktop process.",
+"更新清单与已安装程序不匹配": "The update manifest does not match the installed app.",
+"更新清单过大": "The update manifest is too large.",
+"更新版本格式无法识别": "The update version format is unrecognized.",
+"更新请求标识无效": "Invalid update request ID.",
+"未知操作": "Unknown operation.",
+"未能确认桌面连接和目标账号，请检查电脑端": "Could not verify the desktop connection and target account. Check the computer.",
+"未识别 Codex 桌面安装方式": "The Codex desktop installation type is unrecognized.",
+"桌面更新渠道已变化，请使用原生更新器": "The desktop update channel has changed. Use the app's own updater.",
+"桌面程序元数据不完整": "Desktop app metadata is incomplete.",
+"模型提供商未生效": "The model provider setting did not take effect.",
+"模型目录分页未完成": "The model catalog could not be fully loaded.",
+"正在交接桌面更新，请稍后再操作": "Handing off the desktop update. Try again shortly.",
+"此账号已添加，请先删除旧档案再重新授权": "This account is already saved. Remove its old entry before authorizing it again.",
+"清除凭据开关格式不正确": "Invalid clear-credentials option.",
+"登录地址未通过验证": "The sign-in URL failed validation.",
+"登录已取消": "Sign-in cancelled.",
+"登录已取消或过期，请重新登录": "Sign-in was cancelled or expired. Sign in again.",
+"请先保存连接配置。": "Save the connection settings first.",
+"请填写 1–80 字的账号名称": "Enter an account name between 1 and 80 characters.",
+"请填写有效 API Key": "Enter a valid API key.",
+"请填写有效 API 地址": "Enter a valid API URL.",
+"请填写有效模型 ID": "Enter a valid model ID.",
+"请填写桌面程序的完整路径": "Enter the full path to the desktop app.",
+"请确认恢复原接入并重启桌面应用": "Confirm restoring the previous connection and restarting the desktop app.",
+"请确认所有桌面任务已结束，并同意重启 Codex 桌面应用": "Confirm that all desktop tasks have finished and allow the Codex desktop app to restart.",
+"请确认所有桌面任务已结束，并授权打开原生更新器": "Confirm that all desktop tasks have finished and allow the app's own updater to open.",
+"请等待账号切换完成后再停止网关": "Wait for account switching to finish before stopping the gateway.",
+"请选择自有服务器连接。": "Select a self-hosted server connection.",
+"账号不存在，请刷新列表": "The account no longer exists. Refresh the list.",
+"账号文件不能是符号链接": "Account files cannot be symlinks.",
+"账号服务超时或已断开": "The account service timed out or disconnected.",
+"账号标识无效": "Invalid account ID.",
+"账号目录不能是符号链接": "The account directory cannot be a symlink.",
+"账号身份不匹配": "Account identity does not match.",
+"账号身份已变化": "Account identity has changed.",
+"账号身份未生效": "The account identity did not take effect.",
+"运行时拒绝账号或配置操作，请检查登录及工作区限制": "The runtime rejected the account or configuration operation. Check sign-in and workspace restrictions.",
+"连接凭据格式不正确": "Invalid connection credentials format.",
+"账号重置请求包含不支持的字段": "The account reset request contains unsupported fields.",
+"查看并使用所选账号的重置卡": "View and use reset credits for the selected account",
+"PushPlus 测试失败，请检查服务地址、认证和网络": "PushPlus test failed. Check the service address, authentication and network.",
+"未收到所选文件，请重新选择。": "No selected file was received. Choose the file again.",
+"无法读取所选文件，请从系统文件选择器重新选择。": "Cannot read the selected file. Select it again using the system file picker.",
+"已保存的接入":"Saved connections",
+"此手机已绑定，可在电脑网关的“登录设备”中解除绑定。":"This phone is linked. Unlink it under Signed-in devices in the desktop gateway.",
+"已绑定手机":"Linked phone",
+"解除绑定":"Unlink phone",
+"查看并使用重置卡":"View and use reset credits",
+"已过期":"Expired",
+"不可用":"Unavailable",
+"请核对账号和到期时间，等待五秒后可确认。":"Check the account and expiry date. Confirmation is available after five seconds.",
+"可以确认使用，或取消返回。":"You can now confirm, or cancel to go back.",
+
 "共享中继 · 内测":"Shared relay · Preview",
 "使用管理员提供的 HTTPS 地址和一次性邀请码连接自己的电脑。电脑需要保持唤醒，Codex 和网关需要保持运行。":"Connect your computer using an HTTPS address and a one-use invitation from your administrator. Keep your computer awake, with Codex and the gateway running.",
 "中继 HTTPS 地址":"Relay HTTPS URL",
@@ -36,7 +129,7 @@ const en={
 "额度不足 10% 时提醒":"Notify when quota is at or below 10%",
 "确认额度恢复后提醒":"Notify after quota recovery is confirmed",
 "重置卡到期前 24 小时提醒":"Notify 24 hours before a reset credit expires",
-"订阅周期结束前 7／3／1 天提醒":"Notify 7, 3 and 1 days before the recorded subscription period ends",
+"登录记录中的订阅日期前 7／3／1 天提醒":"Notify 7, 3 and 1 days before the subscription date in the login record",
 "Codex Desktop 新版本提醒":"Notify about new Codex Desktop releases",
 "Codex Desktop 更新":"Codex Desktop updates",
 "尚未检查":"Not checked yet",
@@ -49,14 +142,22 @@ const en={
 "等待电脑端确认":"Waiting for confirmation on the computer",
 "检查于：":"Checked at: ",
 "检查 Codex Desktop 更新":"Check Codex Desktop updates",
-"在电脑上打开更新器":"Open the updater on the computer",
-"确认所有桌面任务（包括未在网页显示的任务）已结束，并授权打开 Codex 原生更新器？系统可能要求在电脑上确认安装。":"Confirm all desktop tasks, including those not visible here, have finished and authorize opening the native Codex updater? Installation may need confirmation on the computer.",
+"在电脑上检查 Codex 更新":"Check for Codex updates on the computer",
+"确认所有桌面任务（包括未在网页显示的任务）已结束，并在电脑上打开 Codex 的“检查更新”界面？后续检查、下载与安装由 Codex 自行处理。":"Confirm all desktop tasks, including those not visible here, have finished and open Codex’s Check for Updates on the computer? Codex handles checking, downloading and installing the update.",
 "此安装方式需要在电脑端或系统商店检查更新":"Check updates on the computer or in its system store for this installation.",
 "此发布渠道需要由 Codex 桌面应用检查更新":"This release channel must be checked by Codex Desktop.",
 "安装资格、灰度发布和更新策略由 Codex 原生更新器确认":"The native Codex updater determines eligibility, staged rollout and update policy.",
 "无法读取官方更新渠道，请稍后重试或在电脑端检查":"The official update channel could not be read. Retry later or check on the computer.",
 "已打开 Codex 原生更新器，请在电脑端确认安装；此操作不代表更新完成":"The native updater has been opened. Confirm installation on the computer; the update is not complete yet.",
 "未能打开原生更新器，请解锁电脑并检查辅助功能权限，或手动检查更新":"Could not open the native updater. Unlock the computer and check Accessibility permissions, or check manually.",
+"未能打开更新器":"Could not open the updater",
+"请在系统设置的“隐私与安全性 → 自动化”中允许网关控制 System Events，然后重试。":"In System Settings > Privacy & Security > Automation, allow the gateway to control System Events, then try again.",
+"请在系统设置的“隐私与安全性 → 辅助功能”中允许网关，然后重试；若已开启，请退出并重新打开网关。":"Allow the gateway in System Settings > Privacy & Security > Accessibility, then try again. If it is already enabled, quit and reopen the gateway.",
+"等待系统授权或更新菜单超时。请完成电脑端授权、解锁电脑后重试。":"Timed out waiting for system permission or the update menu. Complete permission setup on the computer, unlock it, then try again.",
+"未找到 Codex 的“检查更新”菜单。请在 Codex 桌面应用中手动检查更新。":"Could not find the Codex Check for Updates menu. Check for updates manually in Codex Desktop.",
+"Codex 的“检查更新”菜单暂不可用。请等待桌面应用就绪后重试。":"The Codex Check for Updates menu is temporarily disabled. Wait for the desktop app to be ready, then try again.",
+"未找到唯一的 Codex 桌面进程。请打开所选桌面应用后重试。":"Could not identify a single Codex Desktop process. Open the selected desktop app, then try again.",
+"未能操作 Codex 更新菜单。请解锁电脑后重试，或在 Codex 桌面应用中手动检查更新。":"Could not use the Codex update menu. Unlock the computer and try again, or check for updates manually in Codex Desktop.",
 "账号提醒发送失败，请检查手机通知配置":"Account reminder delivery failed. Check phone notification settings.",
 "账号提醒暂不可用，将在下一次检查时重试":"Account reminders are temporarily unavailable and will retry at the next check.",
 "免密访问不能操作桌面更新，请在桌面端操作":"Passwordless access cannot control desktop updates. Use the computer.",
@@ -64,10 +165,9 @@ const en={
 
 "查询中…":"Checking\u2026",
 "不限量":"Unlimited",
-"当前订阅周期：":"Current subscription period: ",
-"后结束":" remaining",
-"已到记录日期，请核对续费状态":"Recorded end date reached; check renewal status",
-"订阅周期暂未提供":"Subscription period is unavailable",
+"登录记录中的订阅日期（非实时）：":"Subscription date in login record (not live): ",
+"订阅有效期暂未确认":"Subscription end date is unconfirmed",
+"登录记录可能滞后，请以 ChatGPT 订阅页面为准。":"Login records may be outdated. Refer to the ChatGPT subscription page.",
 "保留上次结果，数据尚未更新":"Showing the last result; data has not been updated",
 "最近一张重置卡到期：":"Next reset credit expires: ",
 "查看并使用当前账号的重置卡":"View and use reset credits for the current account",
@@ -352,7 +452,7 @@ const en={
   "保存程序路径": "Save application path",
   "恢复原接入": "Restore previous account",
   "确认恢复原接入并重启 Codex 桌面应用？": "Restore the previous account and restart Codex?",
-  "确认所有桌面任务（包括未在网页显示的任务）已结束，并切换账号、重启 Codex 桌面应用？": "Confirm that all desktop tasks, including those not shown here, have ended. Switch accounts and restart Codex?",
+  "确认所有桌面任务（包括未在网页显示的任务）已结束，并切换接入、重启 Codex 桌面应用？": "Confirm all desktop tasks, including those not shown here, have ended. Switch access and restart Codex Desktop?",
   "请选择已保存的接入": "Choose a saved account",
   "正在准备账号": "Preparing account",
   "正在退出 Codex 桌面应用": "Closing Codex",
@@ -1655,7 +1755,14 @@ const en={
 let lang='zh';
 try{lang=localStorage.getItem('bridge-language')==='en'?'en':'zh';}catch{}
 const zh=Object.fromEntries(Object.entries(en).filter(([,value])=>value!=='').map(([key,value])=>[value,key]));
-function t(source){return lang==='en'?(en[source]??source):(zh[source]??source);}
+function translateEnglish(source){
+  if(typeof source==='string')source=source.replace(/^Error invoking remote method '[^']+': (?:Error: )?/,'');
+  if(Object.hasOwn(en,source))return en[source];
+  const failed=/^部分通道发送失败：(.+)；请在手机确认其他通道是否收到。$/.exec(source);
+  if(failed)return 'Some channels failed: '+failed[1]+'. Check your phone for messages from the other channels.';
+  return source;
+}
+function t(source){return lang==='en'?translateEnglish(source):(zh[source]??source);}
 function apply(root=document){
   document.documentElement.lang=lang==='en'?'en':'zh-CN';
   root.querySelectorAll('[data-i18n]').forEach(node=>{const value=t(node.dataset.i18n);if(node.children?.length){const text=[...node.childNodes].find(n=>n.nodeType===3);if(text)text.textContent=value;}else node.textContent=value;});
@@ -1664,6 +1771,6 @@ function apply(root=document){
 }
 function setLanguage(value){lang=value==='en'?'en':'zh';try{localStorage.setItem('bridge-language',lang);}catch{}if(typeof document!=='undefined'&&typeof CustomEvent!=='undefined')document.dispatchEvent(new CustomEvent('bridge-language',{detail:lang}));}
 function source(text){return Object.hasOwn(en,text)?text:zh[text];}
-return {t,apply,setLanguage,source,language:()=>lang,locale:()=>lang==='en'?'en-US':'zh-CN',dictionary:en};
+return {t,translateEnglish,apply,setLanguage,source,language:()=>lang,locale:()=>lang==='en'?'en-US':'zh-CN',dictionary:en};
 })();
 if(typeof module!=='undefined')module.exports=BridgeI18n;

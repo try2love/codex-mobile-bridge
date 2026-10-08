@@ -113,6 +113,26 @@ class RecentHistoryTests(unittest.TestCase):
             self.assertEqual(tail['turns'], full['turns'][-limit:])
             self.assertEqual(tail['turnsPagination']['hasLoadedOldest'], limit >= 120)
 
+    def test_turn_context_labels_do_not_follow_later_thread_settings_or_cache(self):
+        import json
+        records=[]
+        for index,model,effort in [('one','gpt-6-astra','max'),('two','gemini-pro','high')]:
+            records.extend([
+                {'type':'event_msg','payload':{'type':'task_started','turn_id':index}},
+                {'type':'turn_context','payload':{'turn_id':index,'model':model,'effort':effort}},
+                {'type':'response_item','payload':{'type':'message','role':'assistant','content':[{'text':index}]}},
+                {'type':'event_msg','payload':{'type':'task_complete','turn_id':index}}])
+        self.path.write_text(''.join(json.dumps(r)+'\n' for r in records))
+        meta={'rollout_path':str(self.path),'cwd':'/fixture','model':'next-model','model_provider':'next-provider'}
+        first=self.store._history('fixture',meta)
+        meta.update(model='changed-without-turn',model_provider='changed-provider')
+        cached=self.store._history('fixture',meta)
+        self.assertEqual(first['latestModel'],'next-model')
+        self.assertEqual(cached['latestModel'],'changed-without-turn')
+        self.assertEqual(cached['modelProvider'],'changed-provider')
+        self.assertEqual([t['params'] for t in cached['turns']],
+                         [{'model':'gpt-6-astra','effort':'max'},{'model':'gemini-pro','effort':'high'}])
+
     def test_saved_imageview_event_is_preserved_for_history_rendering(self):
         import json
         self.path.write_text('\n'.join(json.dumps(record, ensure_ascii=False) for record in [

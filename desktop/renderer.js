@@ -5,7 +5,7 @@ let snapshot,dirty=false,loading=false,startingUntil=0,activeTab='overview',save
 const busyActions=new Set();
 let saving=false,startPending=false,cloudflaredBusy=false,cloudflaredResult=null,cloudflaredProgress=null;
 const titles={overview:t('连接与状态'),network:t('网络与登录'),devices:t('登录设备'),notifications:t('手机通知'),advanced:t('运行配置'),accounts:t('账号与接入'),account:t('账户与额度'),updates:t('应用更新'),logs:t('运行日志')};
-const accountPanel=new AccountPanel({root:$('account-content'),button:$('account-button'),read:refresh=>api.account({action:'read',refresh}),consume:value=>api.account({action:'consume',...value}),onHidden:()=>{$('account-details').open=false;},visible:()=>activeTab==='accounts'&&!document.hidden&&$('account-details').open});
+const accountPanel=new AccountPanel({root:$('account-content'),button:$('account-button'),read:refresh=>api.account({action:'read',refresh}),consume:value=>api.account({action:'consume',...value}),onConsumed:()=>{const id=accountsPanel?.value?.activeId;if(id)accountsPanel.perform({action:'details',id,section:'usage',refresh:true});},onHidden:()=>{$('account-details').open=false;},visible:()=>activeTab==='accounts'&&!document.hidden&&$('account-details').open});
 const watchPanel=new WatchPanel({root:$('watches'),change:value=>api.notificationWatches(value)});
 function fields(){return [...$('settings').querySelectorAll('input,textarea,select')].filter(node=>!node.closest('#shared-relay')&&!node.closest('#watches')&&!node.closest('#connections')&&!node.closest('#lan-addresses')&&node.id!=='connection-kind');}
 function fieldValues(){return Object.fromEntries(fields().map(node=>[node.id,node.type==='checkbox'?node.checked:node.value]));}
@@ -312,12 +312,12 @@ function renderDevices(value){
   for(const session of value.sessions){
     const row=document.createElement('div');row.className='device-row';
     const address=document.createElement('strong');address.textContent=session.ip;
-    const browser=document.createElement('p');browser.textContent=session.userAgent||t('未知浏览器');
+    const browser=document.createElement('p');browser.textContent=(session.trustedDevice?t('已绑定手机')+' · ':'')+(session.userAgent||t('未知浏览器'));
     const detail=document.createElement('p');detail.className='hint';
     detail.textContent=t(session.source==='proxy'?'代理 IP（未提供客户端地址）':session.source==='forwarded'?'经可信代理转发':'直连地址')+' · '+t('登录时间：')+date(session.created)+' · '+t('最近访问：')+date(session.lastSeen)+' · '+t('有效期至：')+(session.expires?date(session.expires):t('不自动过期'));
     const actions=document.createElement('div');actions.className='actions';
     for(const [label,action] of [['撤销登录','revoke'],['封禁此 IP','block'],['加入白名单','allow']]){
-      const button=document.createElement('button');button.type='button';button.textContent=t(label);button.disabled=devicesBusy;
+      const button=document.createElement('button');button.type='button';button.textContent=t(action==='revoke'&&session.trustedDevice?'解除绑定':label);button.disabled=devicesBusy;
       button.onclick=()=>{
         if(action==='allow'){
           input('ip-allowlist',[...new Set([...devicePolicy().allowlist,session.ip])].join('\n'));
@@ -353,6 +353,8 @@ $('refresh-devices').onclick=loadDevices;
 $('device-policy').oninput=$('device-policy').onchange=()=>{devicesDirty=true;$('device-feedback').textContent=t('IP 规则有未保存的修改。');};
 $('device-policy').onsubmit=event=>{event.preventDefault();return changeDevices({action:'save',policy:devicePolicy()});};
 
-const accountsPanel=typeof AccountsPanel==='undefined'?null:new AccountsPanel({root:$('accounts-content'),desktop:true,read:()=>api.accounts({action:'list'}),request:value=>api.accounts(value),onReset:()=>{$('account-details').open=true;accountPanel.refresh();$('account-details').scrollIntoView({block:'nearest'});},onChanged:()=>accountPanel.clear(),onUpdate:value=>{accountPanel.schedule();$('account-button').hidden=value.current?.kind!=='chatgpt';if($('account-button').hidden)$('account-details').open=false;}});
+const accountsPanel=typeof AccountsPanel==='undefined'?null:new AccountsPanel({root:$('accounts-content'),desktop:true,read:()=>api.accounts({action:'list'}),request:value=>api.accounts(value),onReset:async()=>{$('account-details').open=true;await accountPanel.refresh();$('account-content').querySelector('.account-cards')?.scrollIntoView({block:'nearest'});},onChanged:()=>accountPanel.clear(),onUpdate:value=>{accountPanel.schedule();$('account-button').hidden=value.current?.kind!=='chatgpt';if($('account-button').hidden)$('account-details').open=false;}});
 
 $('account-details').ontoggle=()=>{if($('account-details').open)accountPanel.refresh();};
+
+if(accountsPanel){accountsPanel.current.after($('account-details'));}

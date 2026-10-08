@@ -82,6 +82,11 @@ class RemoteCatalog:
         self.kind_caches = {}
         self.lock = threading.RLock()
 
+    def invalidate_models(self):
+        with self.lock:
+            for kind in ('catalog', 'models'):
+                self.kind_caches.pop(kind, None)
+
     def _source(self):
         source = Path(__file__).with_name('tls.py').read_text(encoding='utf-8') + '\n'
         source += Path(__file__).with_name('account_models.py').read_text(encoding='utf-8').replace('from .tls import client_context', '') + '\n'

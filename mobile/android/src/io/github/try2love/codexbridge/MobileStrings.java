@@ -3,6 +3,15 @@ import android.content.Context;
 final class MobileStrings {
  private static final java.util.Map<String,String> values=new java.util.HashMap<>();
  static {
+  values.put("未收到所选文件，请重新选择。","No selected file was received. Choose the file again.");
+  values.put("无法读取所选文件，请从系统文件选择器重新选择。","Cannot read the selected file. Select it again using the system file picker.");
+
+  values.put("重命名","Rename");
+  values.put("重命名电脑","Rename computer");
+  values.put("留空恢复默认名称","Leave blank to restore the default name");
+  values.put("名称最多 80 个字符","Use no more than 80 characters");
+  values.put("保存","Save");
+
 values.put("应用更新","App updates");
 values.put("预览通道 · 手动检查，不自动安装","Preview channel \u00b7 Manual checks, no automatic install");
 values.put("检查更新","Check for updates");

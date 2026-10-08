@@ -70,11 +70,24 @@ test('versions order beta, rc and stable numerically and reject ambiguous versio
   for(const bad of ['v0.2.0','0.2','0.2.0-beta','0.02.0','0.2.0-beta.01','1.0.0/../../'])assert.throws(()=>compare(bad,current));
 });
 test('v1.4.0 stable users never receive the v2 preview even with misleading release flags',async()=>{
-  for(const prerelease of [true,false]){
+  for(const version of ['2.0.0-preview.1','2.0.0-preview.2','2.0.0-preview.3'])for(const prerelease of [true,false]){
     let requests=0;
-    const fetch=async()=>{requests++;return new Response(JSON.stringify([{tag_name:'v2.0.0-preview.1',draft:false,prerelease,assets:[{name:'bridge-update.json'}]}]));};
+    const fetch=async()=>{requests++;return new Response(JSON.stringify([{tag_name:'v'+version,draft:false,prerelease,assets:[{name:'bridge-update.json'}]}]));};
     const updater=new Updater({current:'1.4.0',platform,arch,key:keys.publicKey,fetch,directory:'.tmp',install:async()=>{throw Error('Must not install');}});
     assert.equal((await updater.check()).state,'current');assert.equal(requests,1);assert.equal(updater.candidate,null);
+  }
+});
+test('preview.2 discovers signed preview.3 only after it leaves draft',async()=>{
+  const version='2.0.0-preview.3',data=info();data.version=version;data.assets['darwin-arm64'].name=assetName(version,platform,arch);
+  for(const draft of [true,false]){
+    const requests=[];
+    const fetch=async url=>{requests.push(url);return new Response(url===RELEASES?
+      JSON.stringify([{tag_name:'v'+version,draft,prerelease:true,assets:[{name:'bridge-update.json'}]}]):signed(data));};
+    const updater=new Updater({current:'2.0.0-preview.2',platform,arch,key:keys.publicKey,fetch,directory:'.tmp',install:async()=>{throw Error('Must not install');}});
+    const result=await updater.check();
+    assert.equal(result.state,draft?'current':'available');
+    assert.deepEqual(requests,draft?[RELEASES]:[RELEASES,releaseUrl(version,'bridge-update.json')]);
+    assert.equal(updater.candidate?.version??null,draft?null:version);
   }
 });
 test('signatures authenticate exact payload and reject another release identity',()=>{

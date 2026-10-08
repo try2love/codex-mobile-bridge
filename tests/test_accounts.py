@@ -32,7 +32,6 @@ class AccountsTests(unittest.TestCase):
             account=Account(self.home,self.root,executable=self.root/'runtime'), ipc=Mock(), _disconnected=Mock())
         self.manager = Accounts(self.bridge)
         self.bridge.accounts = self.manager
-        self.bridge._check_provider = lambda session: Bridge._check_provider(self.bridge, session)
         self.manager.index['desktopExecutable'] = '/fixture/Desktop'
         self.app = Mock()
         self.app.executable = Path('/fixture/Desktop')
@@ -60,6 +59,37 @@ class AccountsTests(unittest.TestCase):
         folder=self.manager.root/'prepared';folder.mkdir(exist_ok=True)
         private_bytes(folder/'config.toml',b'model_provider="bridge_api"\nmodel="test-model"\n')
         return folder
+
+    def test_chat_catalog_and_account_details_use_the_same_selected_upstream(self):
+        row=self.api(name='Gemini access');self.manager.mark_active(row['id'])
+        self.manager.info.entries={}
+        with patch('bridge.accounts.model_ids', return_value=['gemini-flash','gemini-pro']) as upstream:
+            details=self.manager.api_models(row, refresh=True)
+            chat=self.manager.current_models()
+        self.assertEqual(chat['models'],details)
+        self.assertEqual(chat['modelSource'],'api');self.assertEqual(chat['modelAccessName'],'Gemini access')
+        self.assertEqual(upstream.call_count,1)
+        self.assertNotIn('secret-fixture',json.dumps(chat))
+
+    def test_changed_live_api_credentials_do_not_query_saved_account_models(self):
+        row=self.api();self.manager.mark_active(row['id'])
+        private_json(self.home/'auth.json',{'OPENAI_API_KEY':'changed-fixture-key'})
+        with patch('bridge.accounts.model_ids') as upstream:
+            self.assertIsNone(self.manager.current_models(refresh=True))
+        upstream.assert_not_called()
+
+    def test_account_switch_invalidates_split_model_catalog(self):
+        from bridge.catalog import Catalog
+        reader = Catalog(self.home, executable=self.root/'runtime')
+        self.bridge.catalog_reader = reader
+        raw = {'models': [{'model':'gpt-6-astra'}], 'modelSource':'api'}
+        with patch.object(reader, '_fetch', side_effect=lambda *args: raw):
+            self.assertEqual(reader.get_kind('models', self.home)['models'][0]['efforts'], [])
+            raw = {'models': [{'model':'gpt-6-astra', 'supportedReasoningEfforts':[{'reasoningEffort':'low'}]}], 'modelSource':'codex'}
+            self.manager.invalidate()
+            result = reader.get_kind('models', self.home)
+        self.assertEqual(result['modelSource'], 'codex')
+        self.assertEqual(result['models'][0]['efforts'], ['low'])
 
     def test_metadata_never_returns_secrets_and_edit_keeps_key(self):
         row=self.api()
@@ -107,6 +137,60 @@ class AccountsTests(unittest.TestCase):
         self.assertEqual(self.manager.snapshot_files(),self.original)
         self.assertIsNone(self.manager.index['activeId'])
         self.assertNotIn('fixture failure',json.dumps(self.manager.public()))
+
+    def test_switch_and_failed_switch_do_not_load_saved_chats_or_query_models(self):
+        from bridge.notifications import read_json
+        for failure in (False, True):
+            with self.subTest(failure=failure):
+                row=self.api(name='Target '+str(failure));self.manager.prepare=self.prepare
+                self.bridge.store=Mock()
+                self.bridge.store.list.side_effect=AssertionError('switch must not enumerate saved chats')
+                self.bridge.store.history.side_effect=AssertionError('switch must not read saved history')
+                self.bridge.catalog_reader.get_kind=Mock(side_effect=AssertionError('switch must not load a model catalog'))
+                original=self.manager.snapshot_files();phases=[];events=[]
+                phase=Accounts.phase.__get__(self.manager)
+                def record_phase(name,**values):
+                    phases.append(name);phase(name,**values)
+                self.manager.phase=record_phase
+                self.app.stop.side_effect=lambda: events.append('stop')
+                def start():
+                    backup=read_json(self.manager.root/'rollback.json',{})
+                    self.assertNotIn('threads',backup)
+                    self.assertNotIn('threadsApplying',backup)
+                    events.append('start')
+                self.app.start.side_effect=start
+                self.manager.wait_ready=Mock(side_effect=[ValueError('fixture failure'),None] if failure else None)
+                with patch.object(self.manager,'api_models',side_effect=AssertionError('switch must not request upstream models')), patch('bridge.thread_access.ThreadAccessRPC') as runtime:
+                    self.switch(row);self.manager.thread.join(3)
+                self.assertEqual(self.manager.state['phase'],'restored' if failure else 'complete')
+                self.assertEqual(events,['stop','start','stop','start'] if failure else ['stop','start'])
+                self.assertNotIn('migrating',phases)
+                self.bridge.store.list.assert_not_called();self.bridge.store.history.assert_not_called()
+                self.bridge.catalog_reader.get_kind.assert_not_called();runtime.assert_not_called()
+                if failure:self.assertEqual(self.manager.snapshot_files(),original)
+                self.assertFalse((self.manager.root/'rollback.json').exists())
+                self.manager.phase=phase
+
+    def test_restart_during_thread_migration_requires_recovery(self):
+        self.manager.phase('migrating',completed=1,total=2)
+        restarted=Accounts(self.bridge)
+        self.assertEqual(restarted.state['phase'],'interrupted')
+        with self.assertRaises(ValueError):restarted.check_ready()
+
+    def test_manual_recovery_restores_saved_thread_routes_before_relaunch(self):
+        records=[{'id':'old','provider':'original','model':'old-model','effort':'max'}]
+        private_json(self.manager.root/'rollback.json',{'files':self.original,'activeId':None,
+                     'desktopExecutable':'/fixture/Desktop','threads':records,'threadsApplying':True})
+        self.manager.state={'phase':'interrupted'}
+        events=[]
+        self.app.start.side_effect=lambda: events.append('start')
+        def restore(saved):
+            self.assertEqual(saved,records);self.assertEqual(self.manager.snapshot_files(),self.original)
+            events.append('restore')
+        with patch('bridge.accounts.DesktopApp',return_value=self.app), patch('bridge.thread_access.ThreadAccess') as migration:
+            migration.return_value.restore.side_effect=restore
+            self.manager.recover({'confirmed':True});self.manager.thread.join(3)
+        self.assertEqual(events,['restore','start']);self.assertEqual(self.manager.state['phase'],'restored')
 
     def test_failed_recovery_stays_blocked_across_gateway_restart(self):
         row=self.api();self.manager.prepare=self.prepare
@@ -192,13 +276,13 @@ class AccountsTests(unittest.TestCase):
             self.assertEqual(Bridge._call(self.bridge,session,'thread-follower-start-turn',{}),{'ok':True})
         self.assertEqual(self.bridge.ipc.request.call_count,2)
 
-    def test_old_provider_cannot_receive_messages_after_switch(self):
+    def test_old_provider_is_delegated_to_original_desktop_owner_after_switch(self):
         row=self.api();self.manager.mark_active(row['id'])
         self.bridge.host='local'
-        session=SimpleNamespace(view=lambda:{'provider':'other-custom'})
-        with self.assertRaisesRegex(ValueError,'原提供商'):
-            Bridge._call(self.bridge,session,'thread-follower-start-turn',{})
-        self.bridge.ipc.request.assert_not_called()
+        self.bridge.ipc.request.return_value={'result':{'ok':True}}
+        session=SimpleNamespace(id='fixture',owner='original-desktop',view=lambda:{'provider':'other-custom'})
+        self.assertEqual(Bridge._call(self.bridge,session,'thread-follower-start-turn',{}), {'ok':True})
+        self.assertEqual(self.bridge.ipc.request.call_args.kwargs['target'], 'original-desktop')
 
     def test_preparation_failure_leaves_live_files_and_gui_untouched(self):
         row=self.api();self.manager.prepare=Mock(side_effect=ValueError('private upstream error'))
@@ -206,6 +290,34 @@ class AccountsTests(unittest.TestCase):
         self.assertEqual(self.manager.state['phase'],'failed')
         self.app.stop.assert_not_called()
         self.assertEqual(self.manager.snapshot_files(),self.original)
+
+    def test_official_preparation_keeps_saved_api_chats_on_official_auth(self):
+        row={'id':uuid.uuid4().hex,'kind':'chatgpt','email':'fixture@example.test'}
+        saved=b'{"tokens":{"account_id":"official-fixture"}}'
+        private_bytes(self.manager.directory(row['id'])/'auth.json',saved)
+        rpc=Mock()
+        rpc.request.side_effect=lambda method, params: {
+            'config/read':{'config':{'model_provider':'bridge_api'}},
+            'config/batchWrite':{'status':'ok'},
+            'account/read':{'account':{'type':'chatgpt','email':row['email']}}
+        }[method]
+        with patch('bridge.accounts.ManagedRPC') as runtime:
+            runtime.return_value.__enter__.return_value=rpc
+            prepared=self.manager.prepare(row,self.original)
+        edits=next(call.args[1]['edits'] for call in rpc.request.call_args_list if call.args[0]=='config/batchWrite')
+        changes={edit['keyPath']:edit['value'] for edit in edits}
+        alias=changes['model_providers.bridge_api']
+        self.assertIsInstance(alias,dict,'saved bridge_api chats still need a provider definition')
+        self.assertEqual(alias['name'],'OpenAI')
+        self.assertTrue(alias['requires_openai_auth'])
+        for stale in ('base_url','env_key','experimental_bearer_token','http_headers','env_http_headers'):
+            self.assertNotIn(stale,alias)
+        self.assertEqual(changes['model_provider'],'openai')
+        self.assertIsNone(changes['openai_base_url'])
+        self.assertIsNone(changes['model_providers.openai'])
+        self.assertEqual((prepared/'auth.json').read_bytes(),saved)
+        self.assertEqual(self.manager.snapshot_files(),self.original)
+        self.assertTrue(all(not call.args[0].startswith(('thread/','turn/')) for call in rpc.request.call_args_list))
 
     @unittest.skipIf(os.name=='nt','POSIX symlink')
     def test_live_symlinks_are_not_overwritten(self):
@@ -221,6 +333,27 @@ class DesktopAppTests(unittest.TestCase):
             path=Path(folder)/'launcher';path.write_bytes(b'#!/bin/sh\n');path.chmod(0o700)
             with self.assertRaises(ValueError):DesktopApp(path,folder).validate(path)
             with self.assertRaises(ValueError):DesktopApp(path,folder).validate(Path(folder)/'runtime')
+
+    def test_macos_relaunch_uses_launch_services_and_preserves_codex_home(self):
+        app = DesktopApp('/Applications/Fixture Codex.app/Contents/MacOS/Fixture', '/fixture/codex home')
+        with patch('bridge.desktop_app.sys.platform', 'darwin'), patch('bridge.desktop_app.subprocess.run') as run, patch('bridge.desktop_app.subprocess.Popen') as direct:
+            app.start()
+        args = run.call_args.args[0]
+        self.assertEqual(args, ['/usr/bin/open', '-a', '/Applications/Fixture Codex.app', '--env', 'CODEX_HOME=/fixture/codex home'])
+        self.assertTrue(run.call_args.kwargs['check'])
+        direct.assert_not_called()
+
+    def test_app_bundle_input_resolves_its_actual_executable(self):
+        import plistlib
+        with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as folder:
+            bundle=Path(folder)/'ChatGPT.app';(bundle/'Contents/MacOS').mkdir(parents=True)
+            (bundle/'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleExecutable':'ActualDesktop'}))
+            path=bundle/'Contents/MacOS/ActualDesktop';path.write_bytes(b'\xcf\xfa');path.chmod(0o700)
+            app=DesktopApp(bundle,folder);app.validate(Path(folder)/'runtime')
+            self.assertEqual(app.executable,path.resolve())
+            app.validate(None)
+            with patch('bridge.desktop_app.DesktopApp.discover', return_value=str(path)):
+                self.assertEqual(DesktopApp.scan(None,folder),str(path.resolve()))
 
     def test_macos_bundle_discovery_uses_plist_executable(self):
         import plistlib

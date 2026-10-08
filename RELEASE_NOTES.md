@@ -1,3 +1,39 @@
+## v2.0.0-preview.3 · 账号、模型与移动端体验改进
+
+- **账号与重置卡**：整理“账号与接入”布局，当前接入置顶，刷新时保留上次成功的额度与更新时间。每个已保存的官方账号均可手动使用重置卡，无需先切换登录，也不依赖 Codex 的代理用量重置开关；确认页展示账号和卡片到期时间，等待五秒后才可使用，结果不明时重试同一请求。
+- **模型与旧聊天**：模型选择器与账号页共用当前接入的模型来源，可主动刷新上游列表；官方模型的推理选项按能力匹配。切换接入后，兼容的旧聊天可继续使用新接入，修复旧供应商检查误拦发送的问题。回复旁展示该轮模型与推理强度，缺少记录的历史回复不补猜标签。
+- **更轻的账号切换**：切换时只更新认证与接入配置，不再批量加载旧聊天或访问其项目目录；取消网关启动时的文稿目录探测。主动打开文件树、预览或下载附件等文件功能仍可能需要对应的系统权限。
+- **手机连接与附件**：电脑列表支持重命名、移除连接及入口在线状态；聊天顶部可在保存的连接名称与真实设备名称之间切换。改进扫码后的登录保持，修复手机选完文件后附件名称、预览及上传状态缺失的问题，Android 与 iOS 同步相关界面和功能。
+- **更紧凑的界面**：调整聊天列表顶部及底部按钮布局，将账号页刷新按钮放在标题旁；完善中英文操作提示、网关默认语言和手机弹窗样式。共享中继入口暂时隐藏。
+- **桌面程序与更新**：新增桌面程序扫描，macOS 支持直接填写 `.app` 路径。“在电脑上检查 Codex 更新”打开原版 Codex 的“检查更新 / Check for Updates…”菜单，后续检查、下载与安装由 Codex 自身处理；网关仍使用独立的更新入口。
+
+### 已知限制
+
+- 订阅日期接口可能受限或无法返回日期，此时显示暂未确认，不据此判断订阅过期。真实账号查询仍存在被上游拒绝的情况。
+- 已知 GPT-Load v2.0.0-rc.45 的 Antigravity → Gemini 协议转换路径可能返回 `422 protocol_conversion_unsupported`；能列出模型不代表该模型已能正常对话。
+- 旧 API 聊天切回官方接入后，部分聊天可能暂不显示 Fast 开关。原版 Codex 的实际退出、启动和更新菜单、macOS 系统权限弹窗及手机真机仍需进一步验证；隔离运行时与模拟上游测试不等于这些场景已经实测通过。
+
+这是主动选择体验的 **Pre-release**，不设为 Latest，不向 v1.4.0 正式版用户推送。Android 请覆盖安装以保留数据；**iOS IPA 未签名**，需自行签名，源码包提供 Xcode 工程，暂无 App Store / TestFlight 分发。使用 `SHA256SUMS.txt` 校验下载文件。
+
+### English
+
+- **Accounts and usage resets:** Improve the Accounts and access layout, keep the active connection first, and retain the last successful usage reading while refreshing. Use reset credits for any saved ChatGPT account without switching sign-in or enabling Codex's agent usage-reset setting. Review the account and credit expiry, wait five seconds to confirm, and retry the same request if its outcome is unknown.
+- **Models and existing chats:** The model picker and account panel share the active connection's model source and support refreshing the upstream list. Official models show supported reasoning levels. Compatible existing chats can continue through the new connection after switching, without the stale-provider warning blocking messages. Replies show the model and reasoning level recorded for that turn; missing historical metadata is left unset.
+- **Lighter account switching:** Switching updates authentication and connection configuration without loading all old chats or accessing their project folders. Remove the Documents-folder probe at gateway startup. Explicit file browsing and attachment previews or downloads may still require system file permissions.
+- **Mobile connections and attachments:** Rename or remove saved computers, see connection availability, and toggle the chat header between the saved name and device name. Improve sign-in persistence after QR pairing and fix missing attachment names, previews and upload status after file selection. Android and iOS share these interface and feature updates.
+- **Interface refinements:** Tighten chat-list controls, place account refresh beside the heading, and improve English/Chinese operation messages, default language selection and mobile dialogs. The shared-relay entry is temporarily hidden.
+- **Desktop discovery and updates:** Scan for the desktop application and accept macOS `.app` paths directly. “Check for Codex updates on the computer” opens the original Codex app's “Check for Updates…” menu; Codex handles checking, downloading and installation. Gateway updates remain separate.
+
+### Known limitations
+
+- Subscription-date queries may be blocked or return no date. The interface reports an unconfirmed date rather than treating the subscription as expired; real-account queries can still be rejected by the upstream service.
+- The Antigravity-to-Gemini conversion path in GPT-Load v2.0.0-rc.45 may return `422 protocol_conversion_unsupported`. A model appearing in the list does not establish that conversation requests work.
+- Some former API chats may hide the Fast toggle after switching back to official sign-in. Original Codex app quit/launch and update-menu behavior, macOS permission dialogs and physical mobile devices still need further validation. Isolated runtime and mock-upstream checks do not establish that those scenarios have passed.
+
+This is an opt-in **Pre-release**, not Latest, and is excluded from stable v1.4.0 updates. Install Android over the existing app to retain data. The **iOS IPA is unsigned** and requires your own signing; the source ZIP includes the Xcode project. There is no App Store or TestFlight distribution. Verify downloads with `SHA256SUMS.txt`.
+
+---
+
 ## v2.0.0-preview.2 · 更新与模型兼容改进
 
 - 优化应用更新流程，修复更新时可能卡住的问题。

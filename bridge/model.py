@@ -189,7 +189,11 @@ def normalize_state(state, connected=True):
             opening = text_content(turn.get("params", {}).get("input", []))
             if opening:
                 messages.insert(0, {"id": "opening-" + str(turn.get("turnId", ordinal)), "role": "user", "kind": "userMessage", "text": opening})
-        result.append({"id": turn.get("turnId") or str(ordinal), "status": turn.get("status"),
+        params = turn.get('params') or {}
+        settings = (params.get('collaborationMode') or {}).get('settings') or {}
+        model = params.get('model') or settings.get('model') or turn.get('model')
+        effort = params.get('effort') or params.get('reasoningEffort') or settings.get('reasoning_effort') or turn.get('reasoningEffort')
+        result.append({"model": model, "effort": effort, "id": turn.get("turnId") or str(ordinal), "status": turn.get("status"),
                        "startedAt": turn.get("turnStartedAtMs"), "messages": messages,
                        "actionable": bool(turn.get("turnId")) and turn.get("turnId") != "history",
                        "error": turn.get("error"), "diff": turn.get("diff")})

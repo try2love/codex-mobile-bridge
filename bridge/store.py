@@ -208,7 +208,10 @@ class SessionStore:
             if cached is not None:
                 self.history_cache.move_to_end(cache_key)
                 result = copy.deepcopy(cached)
-                result.update(title=meta.get('name') or meta.get('title'), cwd=meta['cwd'], latestModel=meta.get('model'))
+                result.update(title=meta.get('name') or meta.get('title'), cwd=meta['cwd'])
+                result['modelProvider'] = meta.get('model_provider')
+                if meta.get('model'):
+                    result['latestModel'] = meta['model']
                 return result
         raw, complete = self._recent_lines(resolved, turn_limit)
         items, turns, current = [], [], None
@@ -222,6 +225,10 @@ class SessionStore:
                 current = {"turnId": payload.get("turn_id"), "status": "inProgress", "items": []}
                 turns.append(current)
                 items = current["items"]
+            elif record.get("type") == "turn_context" and current is not None:
+                settings = (payload.get('collaboration_mode') or {}).get('settings') or {}
+                current['params'] = {'model':payload.get('model') or settings.get('model'),
+                                     'effort':payload.get('effort') or settings.get('reasoning_effort')}
             elif record.get("type") == "event_msg" and payload.get("type") in ("task_complete", "turn_aborted"):
                 if current:
                     current["status"] = "completed" if payload["type"] == "task_complete" else "interrupted"
@@ -251,7 +258,9 @@ class SessionStore:
                 elif payload.get("type") in ("function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output"):
                     items.append({"id": payload.get("call_id", str(len(items))), "type": "storedToolEvent", **payload})
         result = {"id": thread_id, "title": meta.get("name") or meta.get("title"), "cwd": meta["cwd"],
-                "latestModel": meta.get("model"), "modelProvider": meta.get("model_provider"),
+                "latestModel": meta.get('model') or next((t['params']['model'] for t in reversed(turns) if (t.get('params') or {}).get('model')), None),
+                "latestReasoningEffort": next((t['params']['effort'] for t in reversed(turns) if (t.get('params') or {}).get('effort')), None),
+                "modelProvider": meta.get("model_provider"),
                 "turns": turns, "turnsPagination": {"hasLoadedOldest": complete}, "requests": [], "threadRuntimeStatus": {"type": "notLoaded"}}
         with self.history_lock:
             if len(raw) <= 4 * 1024 * 1024:

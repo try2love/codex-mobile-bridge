@@ -35,8 +35,10 @@ def events(account, previous, now, preferences):
         if period and 0 < period-now <= 7*86400:
             days = math.ceil((period-now)/86400)
             stage = 1 if days <= 1 else 3 if days <= 3 else 7
-            result.append(('subscriptionExpiry', f'{period}:{stage}', 'Codex 订阅周期提醒',
-                           f'记录的当前订阅周期将在 {days} 天内结束，请核对自动续费状态。'))
+            result.append(('subscriptionExpiry', f'{period}:{stage}', '订阅周期提醒' if account['subscription'].get('source') == 'online' else '订阅登录记录提醒',
+                           (f'在线查询的订阅周期将在 {days} 天内截止，续订状态请以 ChatGPT 订阅页面为准。'
+                            if account['subscription'].get('source') == 'online' else
+                            f'登录记录中的订阅日期将在 {days} 天内到达。该记录并非实时账单信息，请以 ChatGPT 订阅页面为准。')))
     return result
 
 

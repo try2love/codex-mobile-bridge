@@ -1,5 +1,6 @@
 import unittest
 import uuid
+import subprocess
 from unittest.mock import patch, Mock
 
 import test_accounts
@@ -41,14 +42,54 @@ class UpdateTests(unittest.TestCase):
         updater=self.manager.updates
         with patch('bridge.desktop_updates.subprocess.run') as run, patch('bridge.desktop_updates.DesktopApp') as app:
             app.return_value.processes.return_value=[1234]
+            run.return_value.stdout='opened\n'
             updater._request({'bundle':'/fixture.app'})
             run.assert_called_once()
+            self.assertEqual(run.call_args.args[0][-1],'1234')
+            self.assertEqual(run.call_args.kwargs['timeout'],180)
         self.assertEqual(updater.status()['state'],'needsDesktop')
         self.assertNotIn('kill',str(run.call_args))
         with patch('bridge.desktop_updates.subprocess.run',side_effect=OSError('private path')):
             updater._request({'bundle':'/fixture.app'})
         self.assertEqual(updater.status()['state'],'needsDesktop')
         self.assertNotIn('private path',str(updater.status()))
+
+    def test_native_failures_are_specific_sanitized_and_retryable(self):
+        updater=self.manager.updates
+        for error,reason in [
+            (subprocess.TimeoutExpired('osascript',180),'timeout'),
+            (subprocess.CalledProcessError(1,'osascript',stderr='private path (-1743)'),'automationPermission'),
+            (subprocess.CalledProcessError(1,'osascript',stderr='private path (-25211)'),'accessibilityPermission'),
+            (subprocess.CalledProcessError(1,'osascript',stderr='BRIDGE_UPDATE_MENU_MISSING (-2700)'),'menuUnavailable'),
+            (subprocess.CalledProcessError(1,'osascript',stderr='BRIDGE_UPDATE_MENU_DISABLED (-2700)'),'menuDisabled'),
+            (OSError('private path'),'handoffFailed')]:
+            with self.subTest(reason=reason),patch('bridge.desktop_updates.sys.platform','darwin'),patch('bridge.desktop_updates.DesktopApp') as app,patch('bridge.desktop_updates.subprocess.run',side_effect=error):
+                app.return_value.processes.return_value=[1234]
+                updater._request({'bundle':'/fixture.app'})
+                self.assertEqual(updater.status()['failureReason'],reason)
+                self.assertTrue(updater.status()['canRequest'])
+                self.assertNotIn('private path',str(updater.status()))
+
+    def test_retry_uses_new_authorization_and_success_requires_menu_click_acknowledgment(self):
+        updater=self.manager.updates
+        with patch('bridge.desktop_updates.sys.platform','darwin'),patch('bridge.desktop_updates.DesktopApp') as app,patch('bridge.desktop_updates.subprocess.run') as run:
+            app.return_value.processes.return_value=[1234]
+            run.return_value.stdout=''
+            updater._request({'bundle':'/fixture.app'})
+            self.assertTrue(updater.status()['canRequest'])
+            run.return_value.stdout='opened\n'
+            updater._request({'bundle':'/fixture.app'})
+            self.assertFalse(updater.status()['canRequest'])
+            self.assertIsNone(updater.status().get('failureReason'))
+        updater.value.update(canRequest=True)
+        payload={'requestId':str(uuid.uuid4()),'confirmed':True,'tasksConfirmed':True,'currentBuild':'1'}
+        with patch('bridge.desktop_updates.installed',return_value={'build':'1','bundle':'/fixture.app'}),patch('bridge.desktop_updates.sys.platform','darwin'),patch('bridge.desktop_updates.threading.Thread') as worker:
+            updater.request(payload)
+            updater.value.update(state='needsDesktop',canRequest=True)
+            updater.request(payload)
+            self.assertEqual(worker.call_count,1)
+            updater.request({**payload,'requestId':str(uuid.uuid4())})
+            self.assertEqual(worker.call_count,2)
 
     def test_check_failure_is_not_up_to_date_and_does_not_run_installer(self):
         updater=self.manager.updates

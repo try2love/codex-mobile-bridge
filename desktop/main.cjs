@@ -7,6 +7,7 @@ const {runWorker,workerFor,createSnapshotWorker}=require('./controller.cjs');
 const {pairingImage}=require('./qr.cjs');
 const {createTray}=require('./tray.cjs');
 const {normalize,translate}=require('./i18n.js');
+const {publishLanguage}=require('./gateway-language.cjs');
 const cloudflared=require('./cloudflared.cjs');
 const {Updater,allowedMirrorUrl}=require('./updater.cjs');
 const {spawn}=require('node:child_process');
@@ -112,6 +113,7 @@ function register(){
     authorize(event);
     if(!['zh-CN','en'].includes(value))throw Error('Unsupported language');
     const directory=app.getPath('userData');fs.mkdirSync(directory,{recursive:true});
+    publishLanguage(dataDir,value);
     fs.writeFileSync(path.join(directory,'language.json'),JSON.stringify({language:value}));
     language=value;const title=t('Codex 手机网关');if(window.getTitle()!==title)window.setTitle(title);tray?.relabel();return language;
   });
@@ -220,7 +222,7 @@ function register(){
       if(installPending)throw Error('正在安装 cloudflared，请完成后再切换数据目录。');
       if(setupPending)throw Error('请等待服务器操作完成。');
       installStatus={};connectionSecrets={};
-      dataDir=selected;fs.mkdirSync(app.getPath('userData'),{recursive:true});
+      publishLanguage(selected,language);dataDir=selected;fs.mkdirSync(app.getPath('userData'),{recursive:true});
       fs.writeFileSync(path.join(app.getPath('userData'),'bridge-location.json'),JSON.stringify({dataDir}),{mode:0o600});
     }
     return selected;
@@ -278,7 +280,7 @@ else{
   app.whenReady().then(()=>{
     language=normalize(app.getLocale());
     try{language=normalize(JSON.parse(fs.readFileSync(path.join(app.getPath('userData'),'language.json'),'utf8')).language);}catch{}
-    dataDir=loadDataDir();setupUpdater();register();
+    dataDir=loadDataDir();publishLanguage(dataDir,language);setupUpdater();register();
     if(process.platform==='win32'){
       app.setAppUserModelId('io.github.try2love.codexmobilebridge');
       tray=createTray({Tray,Menu,icon:path.join(__dirname,'assets/icon.ico'),show:showWindow,worker,t,

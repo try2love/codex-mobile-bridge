@@ -263,6 +263,12 @@ class Catalog:
         self.skill_refreshing = set()
         self.allow_background_refresh = allow_background_refresh
 
+    def invalidate_models(self):
+        with self.lock:
+            self.cache.clear()
+        with self.kind_locks['models']:
+            self.kind_caches['models'].clear()
+
     @staticmethod
     def find_runtime():
         if sys.platform == 'linux':
@@ -570,7 +576,7 @@ class Catalog:
                 raw = self._fetch(cwd, provider, kind)
                 models = [{'id': m.get('model', m.get('id')), 'name': m.get('displayName', m.get('model')),
                            'description': m.get('description', ''), 'efforts': [e['reasoningEffort'] for e in m.get('supportedReasoningEfforts', [])],
-                           'defaultEffort': m.get('defaultReasoningEffort'), 'fastTier': self.fast_tier(m),
+                           'defaultEffort': m.get('defaultReasoningEffort'), 'isDefault': m.get('isDefault', False), 'fastTier': self.fast_tier(m),
                            'defaultServiceTier': m.get('defaultServiceTier')} for m in raw['models'] if not m.get('hidden')]
                 value = {'models': models, 'kind': 'models', 'modelSource': raw.get('modelSource', 'codex'),
                          'fastMode': raw.get('fastMode', {'allowed': False}),
@@ -656,7 +662,7 @@ class Catalog:
             raw = self._fetch(cwd, provider)
             models = [{'id': m.get('model', m.get('id')), 'name': m.get('displayName', m.get('model')),
                        'description': m.get('description', ''), 'efforts': [e['reasoningEffort'] for e in m.get('supportedReasoningEfforts', [])],
-                       'defaultEffort': m.get('defaultReasoningEffort'), 'fastTier': self.fast_tier(m),
+                       'defaultEffort': m.get('defaultReasoningEffort'), 'isDefault': m.get('isDefault', False), 'fastTier': self.fast_tier(m),
                        'defaultServiceTier': m.get('defaultServiceTier')} for m in raw['models'] if not m.get('hidden')]
             skills, errors = [], []
             for entry in raw['skillEntries']:

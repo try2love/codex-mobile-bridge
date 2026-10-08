@@ -67,27 +67,43 @@ test('development launch keeps script as its own argument',()=>{
 
 // Exercise the real renderer's start and polling handlers with a controlled
 // backend and clock. DOM layout and input editing are outside these checks.
-async function renderer(initialLanguage='zh-CN'){
+async function renderer(initialLanguage='zh-CN',{autoStart=false}={}){
   const fs=require('node:fs'),vm=require('node:vm');
   const nodes=new Map();
   function node(){return {parentNode:{insertBefore(){}},getAnimations(){return [];},animate(){},closest(){return null;},value:'',checked:false,hidden:false,textContent:'',dataset:{},
-    classList:{toggle(){}},append(){},replaceChildren(){},setAttribute(){},removeAttribute(){},querySelectorAll(){return [];}};}
+    classList:{toggle(){}},click(){return this.onclick?.();},append(){},replaceChildren(){},setAttribute(){},removeAttribute(){},querySelectorAll(){return [];}};}
   const html=fs.readFileSync(path.join(__dirname,'../desktop/index.html'),'utf8');
   for(const match of html.matchAll(/\bid="([^"]+)"/g))nodes.set(match[1],node());
   const value={runtime:{running:false,portOccupied:false,supportsNotifications:true},
-    preferences:{port:8787,lan:true,tunnel:false,autoStart:false,connections:[]},
+    preferences:{port:8787,lan:true,tunnel:false,autoStart,connections:[]},
     auth:{mode:'password',username:'admin'},notifications:{enabled:false,server:'https://ntfy.sh',topic:''},
     notificationStatus:{},watches:[],origins:[],urls:[],dataDir:'/test',credentialsAvailable:false};
   let now=1000,poll;
-  const api={account:async()=>({visible:false}),language:async()=>initialLanguage,setLanguage:async value=>value,snapshot:async()=>structuredClone(value),start:async()=>({started:true,message:'正在启动网关'}),
+  const calls=[];
+  const api={account:async()=>({visible:false}),language:async()=>initialLanguage,setLanguage:async value=>value,snapshot:async()=>{calls.push('snapshot');return structuredClone(value);},start:async()=>{calls.push('start');return {started:true,message:'正在启动网关'};},
     save:async payload=>{value.preferences={...value.preferences,...payload.preferences};return structuredClone(value);},logs:async()=>({text:''})};
   const context=vm.createContext({window:{bridgeDesktop:api},
     localStorage:{getItem(){return null;},setItem(){}},document:{hidden:false,addEventListener(name,fn){this[name]=fn;},documentElement:{},getElementById:id=>nodes.get(id),createElement:node,querySelectorAll:()=>[]},
     URL,Date:class extends Date{static now(){return now;}},setTimeout(){},clearTimeout(){},clearInterval(){},setInterval:(callback,ms)=>{if(callback.name==='refresh')poll=callback;}});
   for(const name of ['web/i18n.js','desktop/secret-fields.js','desktop/connections.js','desktop/pairing.js','web/account.js','desktop/watches.js','desktop/renderer.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',name),'utf8'),context);
   await new Promise(setImmediate);
-  return {nodes,value,context,api,run:code=>vm.runInContext(code,context),poll:()=>poll(),advance:ms=>{now+=ms;},start:()=>nodes.get('start').onclick()};
+  return {nodes,value,context,api,calls,run:code=>vm.runInContext(code,context),poll:()=>poll(),advance:ms=>{now+=ms;},start:()=>nodes.get('start').onclick()};
 }
+
+test('opening the control panel and starting the gateway need no Documents permission API',async()=>{
+  const ui=await renderer();
+  assert.deepEqual(ui.calls,['snapshot']);
+  assert.equal(ui.nodes.has('documents-access'),false);
+  await ui.start();
+  assert.deepEqual(ui.calls,['snapshot','start','snapshot']);
+  assert.equal(ui.nodes.get('status').textContent,'启动中');
+});
+
+test('automatic gateway startup works without a Documents permission API',async()=>{
+  const ui=await renderer('zh-CN',{autoStart:true});
+  assert.deepEqual(ui.calls,['snapshot','start','snapshot']);
+  assert.equal(ui.nodes.get('status').textContent,'启动中');
+});
 
 test('startup feedback follows readiness, page changes and later shutdown',async()=>{
   const ui=await renderer();await ui.start();
@@ -156,6 +172,7 @@ test('preload forwards the selected notification channel over private IPC',()=>{
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../desktop/preload.cjs'),'utf8'),{require:()=>({
     contextBridge:{exposeInMainWorld:(name,value)=>{api=value;}},ipcRenderer:{invoke:(...args)=>{calls.push(args);}}
   })});
+  assert.equal('documentsAccess' in api,false);
   api.testNotification({channel:'bark'});
   assert.deepEqual(calls,[['bridge:test-notification',{channel:'bark'}]]);
 });
@@ -531,6 +548,7 @@ test('native window title ignores page changes and only updates when locale chan
     if(name==='electron')return {app:{requestSingleInstanceLock:()=>true,whenReady:()=>({then(){}}),on(){},getPath:()=>'.tmp'},BrowserWindow:Window,ipcMain:{handle:(name,handler)=>handlers[name]=handler}};
     if(name==='node:fs')return {...fs,mkdirSync(){},writeFileSync(){}};
     if(name==='./qr.cjs')return {};
+    if(name==='./gateway-language.cjs')return {publishLanguage(){}};
     return requireMain(name);
   }});
   vm.runInContext(fs.readFileSync(path.resolve(__dirname,'../desktop/main.cjs'),'utf8'),context);
@@ -542,4 +560,12 @@ test('native window title ignores page changes and only updates when locale chan
   handlers['bridge:set-language'](event,'zh-CN');assert.equal(changes,0);
   handlers['bridge:set-language'](event,'en');assert.equal(changes,1);
   handlers['bridge:set-language'](event,'en');assert.equal(changes,1);
+});
+
+
+test('English toast translates account failures and dynamic operation feedback',async()=>{
+ const ui=await renderer('en');
+ for(const message of ['请先保存连接配置。', '账号不存在，请刷新列表', '部分通道发送失败：ntfy；请在手机确认其他通道是否收到。']){
+  ui.context.feedback(message,true);assert.doesNotMatch(ui.nodes.get('toast-message').textContent,/[\u4e00-\u9fff]/);
+ }
 });
