@@ -4,6 +4,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -170,6 +171,36 @@ class ClaudeSessionTests(unittest.TestCase):
         self.assertEqual(unlocked['windowsSession']['state'], 'unlocked')
         self.assertTrue(locked['clients'][0]['connected'])
         self.assertNotIn('windowsSession', cached)
+
+    def test_desktop_initialization_checks_session_before_launch_or_restart(self):
+        self.locked()
+        manager = object.__new__(DesktopSessions); manager.gateway_running = True
+        manager.client_lock = threading.RLock(); manager._changing = lambda provider: nullcontext()
+        manager._descriptor = Mock(); manager._stop_client = Mock()
+        manager.adapters = {'claude': Mock()}; manager.clients = Mock(return_value={'clients': []})
+        with patch('bridge.integrations.manager.sys', SimpleNamespace(platform='win32')), \
+             patch('bridge.integrations.client_launch.launch_client') as launch, \
+             patch('bridge.integrations.client_launch.inspect_client') as inspect:
+            for restart in (False, True):
+                manager.adapters['claude'].status.return_value = {'connected': restart}
+                with self.assertRaises(windows_session.DesktopUnavailable):
+                    manager.connect_claude(restart=restart)
+            manager._descriptor.assert_not_called(); manager._stop_client.assert_not_called()
+            launch.assert_not_called(); inspect.assert_not_called()
+            manager.adapters['claude'].connect.assert_not_called()
+            manager.adapters['claude'].status.return_value = {'connected': True}
+            self.snapshot.reset_mock()
+            self.assertEqual(manager.connect_claude(), {'clients': []})
+            self.snapshot.assert_not_called(); launch.assert_not_called()
+            manager.adapters['claude'].connect.assert_not_called()
+
+    def test_stopped_gateway_initialization_only_saves_startup_preference(self):
+        self.locked()
+        manager = object.__new__(DesktopSessions); manager.gateway_running = False
+        manager.toggle_client = Mock(return_value={'clients': []})
+        self.assertEqual(manager.connect_claude(), {'clients': []})
+        manager.toggle_client.assert_called_once_with({'provider': 'claude', 'enabled': True})
+        self.snapshot.assert_not_called()
 
 
 if __name__ == '__main__':

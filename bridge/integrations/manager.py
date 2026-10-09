@@ -562,6 +562,10 @@ class DesktopSessions:
             return self.toggle_client({'provider': 'claude', 'enabled': True})
         from .client_launch import inspect_client, launch_client
         with self.client_lock, self._changing('claude'):
+            if not restart and self.adapters['claude'].status().get('connected') is True:
+                return self.clients(refresh=True)
+            if sys.platform == 'win32':
+                windows_session.require_interactive()
             descriptor = self._descriptor('claude')
             if restart:
                 self._stop_client('claude', descriptor, inspect_client(descriptor))
