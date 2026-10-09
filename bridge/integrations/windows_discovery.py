@@ -3,7 +3,8 @@ import json
 import os
 import re
 import subprocess
-from pathlib import Path
+import xml.etree.ElementTree as ET
+from pathlib import Path, PureWindowsPath
 
 
 PRODUCT_NAMES = {'codex': ('Codex', 'ChatGPT'), 'claude': ('Claude', 'Claude Desktop'),
@@ -90,6 +91,30 @@ def _electron(path):
             (path.parent/'resources/app/package.json').is_file())
 
 
+def _package_executables(folder, binaries):
+    """Prefer a package's visible GUI entry over adjacent launch shims/helpers."""
+    try:
+        with (folder/'AppxManifest.xml').open('rb') as stream:
+            content = stream.read(1024 * 1024 + 1)
+        if len(content) > 1024 * 1024:
+            return
+        manifest = ET.fromstring(content)
+        names = {name.casefold() for name in binaries}
+        for app in manifest.findall('{*}Applications/{*}Application'):
+            visual = app.find('{*}VisualElements')
+            if visual is None or visual.get('AppListEntry', '').casefold() == 'none':
+                continue
+            relative = PureWindowsPath(app.get('Executable', ''))
+            if (relative.drive or relative.root or '..' in relative.parts or
+                    relative.name.casefold() not in names):
+                continue
+            candidate = folder.joinpath(*relative.parts)
+            if _electron(candidate):
+                yield candidate
+    except (OSError, ValueError, ET.ParseError):
+        return
+
+
 def registered_candidates(provider, inventory):
     """Yield GUI candidates with their safe package metadata, in source order."""
     binaries = tuple(name + '.exe' for name in PRODUCT_NAMES[provider])
@@ -99,8 +124,13 @@ def registered_candidates(provider, inventory):
         folder = _path(row.get('InstallLocation'))
         if folder:
             metadata = {'packageFamilyName': row['PackageFamilyName']} if isinstance(row.get('PackageFamilyName'), str) else {}
+            for path in _package_executables(folder, binaries):
+                yield {'executable': str(path), **metadata}
+            # Current Codex Store packages also contain a small Codex.exe shim;
+            # ChatGPT.exe is the Electron GUI identified by the package manifest.
+            package_binaries = ('ChatGPT.exe', 'Codex.exe') if provider == 'codex' else binaries
             for root in (folder/'app', folder):
-                for binary in binaries:
+                for binary in package_binaries:
                     yield {'executable': str(root/binary), **metadata}
     for row in _rows(inventory, 'uninstall'):
         if not _product(row.get('DisplayName'), provider):
