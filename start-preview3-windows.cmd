@@ -1,6 +1,6 @@
 @echo off
 setlocal
-set "CMB_DATA_DIR=%~dp0.local\windows-preview3"
+set "CMB_DATA_DIR=%~dp0.local\windows-preview3-user"
 set "CMB_UPDATE_DATA_DIR="
 set "CMB_UPDATE_TRANSACTION="
 set "ELECTRON_RUN_AS_NODE="

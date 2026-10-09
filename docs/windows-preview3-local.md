@@ -4,7 +4,7 @@
 
 ## 启动与手机测试
 
-双击项目根目录的 `start-preview3-windows.cmd`。它启动 `dist/desktop/win-unpacked` 中的已编译 App，并使用独立的 `.local/windows-preview3` 配置目录。
+双击项目根目录的 `start-preview3-windows.cmd`。它启动 `dist/desktop/win-unpacked` 中的已编译 App，并使用独立的 `.local/windows-preview3-user` 配置目录。
 
 本机已经准备好端口 **8788** 的测试配置：电脑打开 `http://127.0.0.1:8788/`，手机与电脑在同一网络时，打开网关面板显示的局域网地址。展开面板里的二维码扫码登录，也可在面板查看首次登录凭据。原有 8787 网关使用原配置继续运行。
 
@@ -40,4 +40,4 @@ npm.cmd run test:updater
 npm.cmd run test:windows-app
 ```
 
-构建和运行日志位于 `.tmp`，网关日志和登录配置位于 `.local/windows-preview3`。这些目录被 Git 忽略。
+构建和运行日志位于 `.tmp`，网关日志和登录配置位于 `.local/windows-preview3-user`。这些目录被 Git 忽略。
