@@ -44,7 +44,10 @@ class DesktopSessionsView {
     const epoch=this.readEpoch,account=this.accountEpochs.get(provider)||0,key=JSON.stringify([provider,action,sid,epoch,account]);
     if(this.readTasks.has(key))return this.readTasks.get(key);
     const task={current:()=>epoch===this.readEpoch&&account===(this.accountEpochs.get(provider)||0)};
-    task.promise=(async()=>this.request(this.path(action,sid,provider)))();this.readTasks.set(key,task);
+    task.promise=(async()=>{const value=await this.request(this.path(action,sid,provider));if(task.current()){
+      if(action==='list')this.providerViews.set(provider,{...this.providerViews.get(provider),rows:value.sessions||[],cachedAt:Date.now()});
+      else if(action==='detail')this.detailCache.set(JSON.stringify([provider,sid]),value);
+    }return value;})();this.readTasks.set(key,task);
     const done=()=>{if(this.readTasks.get(key)===task)this.readTasks.delete(key);};task.promise.then(done,done);return task;
   }
   setClientStates(clients,retry,initialize,refresh){
@@ -96,7 +99,7 @@ class DesktopSessionsView {
     if(this.renderConnectionStatus()){this.updateActivity(this.rows,false);this.renderIndicators();this.freshDetail=false;this.updateComposer();return;}
     if(this.loading===generation){this.refreshPending=generation;return;}this.loading=generation;
     const detail=this.sid?this.detail(generation).catch(error=>{if(generation===this.generation){this.error.textContent=BridgeI18n.t(error.message);this.status.textContent=BridgeI18n.t('连接失败');}}):Promise.resolve();
-    try{const value=await this.request(this.path('list',null,provider));if(generation!==this.generation)return;this.rows=value.sessions||[];this.updateActivity(this.rows,value.connected!==false);this.listStatus.textContent=BridgeI18n.t(value.connected===false?'尚未连接':this.rows.length?'已连接桌面':'已连接，桌面还没有会话');this.renderConnectionStatus();this.renderList();this.rememberView();}
+    try{const task=this.sharedRead(provider,'list'),value=await task.promise;if(!task.current()||generation!==this.generation)return;this.rows=value.sessions||[];this.updateActivity(this.rows,value.connected!==false);this.listStatus.textContent=BridgeI18n.t(value.connected===false?'尚未连接':this.rows.length?'已连接桌面':'已连接，桌面还没有会话');this.renderConnectionStatus();this.renderList();this.rememberView();}
     catch(error){if(generation===this.generation){this.updateActivity(this.rows,false);this.renderIndicators();if(!this.renderConnectionStatus())this.listStatus.textContent=BridgeI18n.t(error.message);if(this.sid&&!this.state)this.error.textContent=this.listStatus.textContent;}}
     finally{await detail;if(this.loading===generation)this.loading=null;if(generation===this.generation){if(this.refreshPending===generation){this.refreshPending=null;this.refresh();}else this.timer=setTimeout(()=>this.refresh(),this.sid||ClientLifecycle.connection(this.clientStates?.find(client=>client.id===provider)).waiting?2000:5000);}}
   }
@@ -123,7 +126,7 @@ class DesktopSessionsView {
   }
   async detail(generation){
     const sid=this.sid,provider=this.provider,revision=this.detailRevision,task=this.sharedRead(provider,'detail',sid),current=()=>task.current()&&generation===this.generation&&provider===this.provider&&sid===this.sid&&revision===this.detailRevision;let value;
-    try{value=await task.promise;}catch(error){if(current())throw error;return;}if(!current())return;this.detailCache.set(JSON.stringify([provider,sid]),value);this.applyDetail(value);
+    try{value=await task.promise;}catch(error){if(current())throw error;return;}if(!current())return;this.applyDetail(value);
   }
   applyDetail(value,cached=false){
     this.freshDetail=!cached;this.state={...value.session,capabilities:value.capabilities||value.session.capabilities||{},maxRequestBytes:value.maxRequestBytes||value.session.maxRequestBytes||0};this.title.textContent=this.state.title;this.status.textContent=BridgeI18n.t(cached?'正在连接…':this.state.requests?.length?'等待回应':this.state.status==='active'?'运行中':'已连接');this.updateComposer();this.renderMessages(value.messages||[]);
