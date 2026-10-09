@@ -66,7 +66,7 @@ const ClientLifecycle=(()=>{
       const finish=value=>{choice=value;dialog.close();};
       const options=[
         ['仅停用手机接入','保留电脑 App 和现有任务。',false],
-        ['同时退出电脑 App',client.id==='claude'?'通过 Claude 原生菜单正常退出；如有任务或保存确认，请在电脑端处理。下次开启时会尝试重新连接。':'仅在所有任务结束且没有待确认操作时退出。',true]
+        ['正常退出电脑 App',client.id==='claude'?'通过 Claude 原生菜单正常退出；如有任务或保存确认，请在电脑端处理。下次开启时会尝试重新连接。':client.id==='codex'&&client.canForceQuit===true?'仅在所有任务结束且没有待确认操作时，通过 Codex 原生菜单正常退出。锁屏时可能不可用；如有退出确认，请在电脑端处理。':'仅在所有任务结束且没有待确认操作时退出。',true]
       ];
       if(client.canForceQuit===true)options.push(['后台强制结束','结束应用进程，可能丢失未保存内容或中断任务。锁屏时也可使用。','force']);
       for(const [label,note,value] of options){

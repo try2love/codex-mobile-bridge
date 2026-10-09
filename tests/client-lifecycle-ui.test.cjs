@@ -20,7 +20,7 @@ test('a real close dialog presents three distinct choices and defaults focus to 
  for(const expected of [false,true,null]){
   const ui=fixture(),result=ui.choose({id:'deepseek',name:'DSH'}),dialog=ui.dialog();
   const buttons=dialog.children.at(-1).children;assert.equal(dialog.tag,'dialog');assert.equal(dialog.open,true);assert.equal(buttons.length,3);
-  assert.match(buttons[0].textContent,/仅停用手机接入.*保留电脑 App 和现有任务/);assert.match(buttons[1].textContent,/同时退出电脑 App.*所有任务结束/);assert.equal(buttons[2].textContent,'取消');
+  assert.match(buttons[0].textContent,/仅停用手机接入.*保留电脑 App 和现有任务/);assert.match(buttons[1].textContent,/正常退出电脑 App.*所有任务结束/);assert.equal(buttons[2].textContent,'取消');
   assert.equal(ui.document.activeElement,buttons[2]);assert.equal(dialog.attributes['aria-labelledby'],dialog.children[0].id);
   buttons[expected===null?2:expected?1:0].onclick();assert.equal(await result,expected);assert.equal(ui.document.body.children.length,0);
  }
@@ -33,6 +33,8 @@ test('background force quit requires an explicit capability and fresh choice wit
    const result=ui.choose(client),dialog=ui.dialog(),buttons=dialog.children.at(-1).children;
    assert.equal(buttons.length,4);assert.equal(ui.document.activeElement,buttons[3]);
    assert.equal(buttons[2].dataset.quitDesktop,'true');assert.equal(buttons[2].dataset.forceDesktop,'true');
+   assert.match(buttons[1].textContent,language==='en'?/Quit the desktop app normally/:/正常退出电脑 App/);
+   if(id==='codex')assert.match(buttons[1].textContent,language==='en'?/Codex's native menu.*all tasks finish.*unavailable.*locked.*confirmation on your computer/:/所有任务结束.*Codex 原生菜单正常退出.*锁屏时可能不可用.*退出确认.*电脑端处理/);
    assert.match(buttons[2].textContent,language==='en'?/Force quit in background.*Unsaved content may be lost.*tasks may be interrupted.*locked/:/后台强制结束.*可能丢失未保存内容或中断任务.*锁屏时也可使用/);
    if(language==='en')assert.doesNotMatch(dialog.textContent,/[\u4e00-\u9fff]/);
    if(expected==='force')buttons[2].onclick();else dialog.emit('cancel',{preventDefault(){}});
@@ -102,7 +104,7 @@ test('Escape and other dialog close events always cancel the desktop exit choice
  }
 });
 test('the shared close dialog is fully translated in English and preserves client names',async()=>{
- const ui=fixture('en'),result=ui.choose({id:'claude',name:'Claude Test'}),dialog=ui.dialog();assert.doesNotMatch(dialog.textContent,/[\u4e00-\u9fff]/);assert.match(dialog.textContent,/Claude Test/);assert.match(dialog.textContent,/Disable phone access only/);assert.match(dialog.textContent,/Also quit the desktop app/);dialog.close();await result;
+ const ui=fixture('en'),result=ui.choose({id:'claude',name:'Claude Test'}),dialog=ui.dialog();assert.doesNotMatch(dialog.textContent,/[\u4e00-\u9fff]/);assert.match(dialog.textContent,/Claude Test/);assert.match(dialog.textContent,/Disable phone access only/);assert.match(dialog.textContent,/Quit the desktop app normally/);dialog.close();await result;
 });
 test('both UIs load the shared dialog and desktop packages include it',()=>{
  const read=file=>fs.readFileSync(path.join(__dirname,'..',file),'utf8');

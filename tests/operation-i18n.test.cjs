@@ -15,7 +15,7 @@ test('shared relay preview entry is not mounted in the desktop UI',()=>{
 });
 
 test('background force quit choices, risks and progress translate for desktop and mobile',()=>{
- const messages=['后台强制结束','结束应用进程，可能丢失未保存内容或中断任务。锁屏时也可使用。','正在后台强制结束…','重试后台强制结束'];
+ const messages=['正常退出电脑 App','后台强制结束','结束应用进程，可能丢失未保存内容或中断任务。锁屏时也可使用。','正在后台强制结束…','重试后台强制结束','后台强制结束请求无效','此系统不支持 Windows 客户端强制结束','桌面应用配置不可用，请重新扫描','客户端进程已变化或无法核对，已停止强制结束；请重新扫描后重试','所选应用与网关或其启动进程重叠，不能强制结束','未能结束全部客户端进程，请检查权限或在电脑端处理后重试','等待客户端强制结束超时，请重新扫描并检查电脑端状态'];
  i18n.setLanguage('en');for(const source of messages){assert.doesNotMatch(i18n.t(source),/[\u4e00-\u9fff]/,source);assert.equal(desktop.translate(source,'en'),i18n.t(source));}i18n.setLanguage('zh');
 });
 
