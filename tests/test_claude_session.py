@@ -39,7 +39,8 @@ class ClaudeSessionTests(unittest.TestCase):
 
     def test_locked_initialization_never_starts_desktop_or_prepares_injection(self):
         self.locked()
-        with patch('bridge.integrations.claude.running_app') as app, patch.object(self.adapter, 'prepare') as prepare:
+        with patch('bridge.integrations.claude.running_app') as app, patch.object(self.adapter, 'prepare') as prepare, \
+             patch.object(claude_setup, 'helper_path', return_value=Path(self.temp.name)/'missing-helper'):
             self.adapter._connect_native(False, Path(self.temp.name)/'cancel')
         self.assertEqual(self.adapter.status()['setupState'], 'needs-unlock')
         app.assert_not_called(); prepare.assert_not_called()
@@ -53,8 +54,11 @@ class ClaudeSessionTests(unittest.TestCase):
 
     def test_lock_during_helper_stops_only_helper_and_reports_unlock(self):
         process = Mock(returncode=0)
+        calls = 0
         def communicate(**kwargs):
-            if not process.terminate.called:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
                 self.locked(); raise subprocess.TimeoutExpired('helper', .2)
             return '', ''
         process.communicate.side_effect = communicate
