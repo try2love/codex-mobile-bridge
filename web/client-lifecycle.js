@@ -45,7 +45,7 @@ const ClientLifecycle=(()=>{
     return new Promise(resolve=>{
       const dialog=document.createElement('dialog');dialog.className='client-disable-dialog';
       const node=(tag,text)=>{const element=document.createElement(tag);element.dataset.i18n=text;element.textContent=BridgeI18n.t(text);return element;};
-      const title=node('h2','初始化连接'),description=node('p','会打开电脑上的 Claude 和开发者工具，并使用键盘焦点；请暂停电脑端操作，完成后恢复后台连接。');
+      const title=node('h2','初始化连接'),description=node('p','Windows 上优先后台初始化，无需保持键盘焦点；开发者工具可能短暂出现。后台方式不可用时，仅在桌面可交互时尝试前台引导。');
       const identity=document.createElement('p');identity.textContent=client.name||client.id;
       const id='client-initialize-'+(++sequence);title.id=id+'-title';description.id=id+'-description';dialog.setAttribute('aria-labelledby',title.id);dialog.setAttribute('aria-describedby',description.id);
       const actions=document.createElement('div');actions.className='client-disable-options';let choice=false;
@@ -66,7 +66,7 @@ const ClientLifecycle=(()=>{
       const finish=value=>{choice=value;dialog.close();};
       for(const [label,note,value] of [
         ['仅停用手机接入','保留电脑 App 和现有任务。',false],
-        ['同时退出电脑 App',client.id==='claude'?'通过 Claude 原生菜单正常退出；如有任务或保存确认，请在电脑端处理。完全退出后需重新初始化连接，初始化会使用电脑前台和键盘焦点。':'仅在所有任务结束且没有待确认操作时退出。',true]
+        ['同时退出电脑 App',client.id==='claude'?'通过 Claude 原生菜单正常退出；如有任务或保存确认，请在电脑端处理。下次开启时会尝试重新连接。':'仅在所有任务结束且没有待确认操作时退出。',true]
       ]){
         const button=document.createElement('button');button.type='button';button.dataset.quitDesktop=String(value);
         button.append(node('strong',label),node('small',note));button.onclick=()=>finish(value);actions.append(button);

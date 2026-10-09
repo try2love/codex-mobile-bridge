@@ -151,7 +151,7 @@ class ClientNavigation {
       if(!failure&&state.retryable&&this.gatewayRunning!==false){const retry=document.createElement('button');retry.type='button';retry.textContent=BridgeI18n.t('重试连接');retry.disabled=this.pending.size>0||!!this.choosing||this.hasUncertain();retry.onclick=()=>this.toggle(client.id,true).catch(error=>this.notify(error.message));control.append(retry);}
       if(!failure&&state.canInitialize&&this.gatewayRunning!==false){const initialize=document.createElement('button');initialize.type='button';initialize.textContent=BridgeI18n.t('初始化连接');initialize.disabled=this.pending.size>0||!!this.choosing||this.hasUncertain();initialize.onclick=()=>this.initialize(client.id).catch(error=>this.notify(error.message));control.append(initialize);}
     }
-    note.textContent=BridgeI18n.t(this.gatewayRunning===false?'网关未启动，开关仅保存下次启动时的选择，不会打开或退出应用。':'安装和登录请在电脑端完成。关闭接入时可选择保留或退出电脑 App。Claude 通过原生菜单正常退出。完全退出或重新加载后需初始化连接，初始化会使用电脑前台和键盘焦点。')+' '+BridgeI18n.t(ClientLifecycle.sessionNotice(this.windowsSession));
+    note.textContent=BridgeI18n.t(this.gatewayRunning===false?'网关未启动，开关仅保存下次启动时的选择，不会打开或退出应用。':'安装和登录请在电脑端完成。关闭接入时可选择保留或退出电脑 App。Windows Claude 开启时优先后台初始化，开发者工具可能短暂出现。')+' '+BridgeI18n.t(ClientLifecycle.sessionNotice(this.windowsSession));
   }
   openManager(){
     if(this.manager?.dialog.open)return;

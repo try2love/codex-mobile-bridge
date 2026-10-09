@@ -29,7 +29,7 @@ test('a real close dialog presents three distinct choices and defaults focus to 
 test('initialization requires an explicit foreground confirmation and defaults to cancel',async()=>{
  for(const language of ['zh','en'])for(const accepted of [false,true]){
   const ui=fixture(language),result=ui.initialize({id:'claude',name:'Claude'}),dialog=ui.dialog(),buttons=dialog.children.at(-1).children;
-  assert.equal(buttons.length,2);assert.equal(ui.document.activeElement,buttons[1]);assert.match(dialog.textContent,language==='en'?/developer tools.*keyboard focus.*Pause your work/:/开发者工具.*键盘焦点.*暂停电脑端操作/);if(language==='en')assert.doesNotMatch(dialog.textContent,/[\u4e00-\u9fff]/);
+  assert.equal(buttons.length,2);assert.equal(ui.document.activeElement,buttons[1]);assert.match(dialog.textContent,language==='en'?/Windows.*background initialization.*keyboard focus.*foreground setup/:/Windows.*后台初始化.*键盘焦点.*前台引导/);if(language==='en')assert.doesNotMatch(dialog.textContent,/[\u4e00-\u9fff]/);
   buttons[accepted?0:1].onclick();assert.equal(await result,accepted);
  }
  for(const escape of [false,true]){const ui=fixture(),result=ui.initialize({id:'claude'}),dialog=ui.dialog();if(escape)dialog.emit('cancel',{preventDefault(){}});else dialog.close();assert.equal(await result,false);}
@@ -91,7 +91,7 @@ test('Claude explains its native quit menu while other clients retain the idle r
   if(id==='claude'){
    assert.match(note,language==='en'?/Quit normally through Claude's native menu/:/原生菜单正常退出/);assert.doesNotMatch(note,/may appear briefly|短暂出现/);
    assert.match(note,language==='en'?/task or save confirmation on your computer/:/任务或保存确认.*电脑端处理/);
-   assert.match(note,language==='en'?/After quitting completely.*initialization again.*keyboard focus/:/完全退出后需重新初始化连接.*键盘焦点/);
+   assert.match(note,language==='en'?/next time.*reconnect/:/下次开启时会尝试重新连接/);
    assert.doesNotMatch(note,/only after all tasks finish|仅在所有任务结束/i);
   }else assert.equal(note,language==='en'?'Quit only after all tasks finish and no approvals are pending.':'仅在所有任务结束且没有待确认操作时退出。');
   if(language==='en')assert.doesNotMatch(dialog.textContent,/[\u4e00-\u9fff]/);

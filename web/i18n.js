@@ -4,6 +4,12 @@ const BridgeI18n=(()=>{
 const en={
 "电脑已锁定":"Computer locked",
 "电脑桌面暂不可用":"Computer desktop unavailable",
+"Windows 上优先后台初始化，无需保持键盘焦点；开发者工具可能短暂出现。后台方式不可用时，仅在桌面可交互时尝试前台引导。":"On Windows, background initialization is attempted first and does not require keyboard focus. Developer tools may appear briefly. If unavailable, foreground setup is attempted only when the desktop is interactive.",
+"通过 Claude 原生菜单正常退出；如有任务或保存确认，请在电脑端处理。下次开启时会尝试重新连接。":"Quit normally through Claude's native menu; handle any task or save confirmation on your computer. The next time you enable Claude, the gateway will try to reconnect.",
+"安装和登录请在电脑端完成。关闭接入时可选择保留或退出电脑 App。Windows Claude 开启时优先后台初始化，开发者工具可能短暂出现。":"Install and sign in on your computer. When disabling access, choose whether to keep or quit the desktop app. On Windows, enabling Claude attempts background initialization first; developer tools may appear briefly.",
+"选择需要接入的应用。Windows Claude 开启时优先后台连接；失败后可以重试。":"Select apps to connect. On Windows, enabling Claude attempts a background connection first; failed attempts can be retried.",
+"正在后台初始化 Claude 连接":"Initializing the Claude connection in the background",
+"后台初始化已提交，但尚未收到 Claude 连接回执，请检查目录信任或刷新状态后重试":"Background initialization was submitted, but Claude has not confirmed the connection. Check workspace trust or refresh the status before retrying.",
 "电脑已锁定，后台服务继续运行；需要桌面交互的操作请解锁后重试。":"The computer is locked. Background services continue running; unlock it before retrying operations that need desktop interaction.",
 "电脑交互桌面暂不可用，后台服务继续运行；恢复桌面后可重试。":"The interactive desktop is unavailable. Background services continue running; restore the desktop, then retry.",
 "操作结果尚未确认，请刷新状态后再重试。":"The operation outcome is unknown. Refresh its status before retrying.",
