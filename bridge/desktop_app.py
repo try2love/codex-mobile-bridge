@@ -8,6 +8,70 @@ import time
 from pathlib import Path
 
 
+def process_inventory(executables):
+    """One uncached display snapshot for resolved GUI paths and their commands.
+
+    Control operations keep using DesktopApp.processes and fresh command reads.
+    On macOS executable names may contain spaces, so collect identities first
+    and then read all matching command lines in a single second ps invocation.
+    """
+    result = {Path(executable): {'pids': [], 'commands': {}} for executable in executables}
+    targets = {os.path.normcase(str(path)): value for path, value in result.items()}
+    if not targets:
+        return result
+
+    def match(executable):
+        return targets.get(os.path.normcase(str(Path(executable).resolve())))
+
+    if sys.platform == 'win32':
+        script = ('[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new(); $s=(Get-Process -Id $PID).SessionId; '
+                  'Get-CimInstance Win32_Process | Where-Object {$_.SessionId -eq $s -and $_.ExecutablePath} | '
+                  'Select-Object ProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress')
+        response = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
+                                  capture_output=True, text=True, encoding='utf-8', timeout=15,
+                                  creationflags=subprocess.CREATE_NO_WINDOW, check=True)
+        rows = json.loads(response.stdout or '[]')
+        if isinstance(rows, dict): rows = [rows]
+        for row in rows:
+            state = match(row['ExecutablePath'])
+            if state is not None:
+                pid = int(row['ProcessId']); state['pids'].append(pid)
+                state['commands'][pid] = row.get('CommandLine') or ''
+        return result
+    if sys.platform == 'linux':
+        for path in Path('/proc').iterdir():
+            if not path.name.isdigit():
+                continue
+            try:
+                if path.stat().st_uid != os.getuid():
+                    continue
+                state = targets.get(str((path/'exe').resolve(strict=True)))
+            except (OSError, RuntimeError):
+                continue
+            if state is not None:
+                pid = int(path.name); state['pids'].append(pid)
+                try: state['commands'][pid] = (path/'cmdline').read_bytes().decode().replace('\0', ' ').strip()
+                except (OSError, UnicodeError): pass  # Disappearing/unreadable commands remain unknown.
+        return result
+    response = subprocess.run(['ps', '-ww', '-u', str(os.getuid()), '-o', 'pid=,comm='],
+                              capture_output=True, text=True, check=True, timeout=10)
+    for line in response.stdout.splitlines():
+        fields = line.strip().split(None, 1)
+        if len(fields) == 2:
+            state = match(fields[1])
+            if state is not None: state['pids'].append(int(fields[0]))
+    pids = [pid for state in result.values() for pid in state['pids']]
+    if pids:
+        response = subprocess.run(['ps', '-ww', '-p', ','.join(map(str, pids)), '-o', 'pid=,args='],
+                                  capture_output=True, text=True, timeout=10)
+        if response.returncode not in (0, 1): response.check_returncode()
+        commands = {int(parts[0]): parts[1] for line in response.stdout.splitlines()
+                    if len(parts := line.strip().split(None, 1)) == 2}
+        for state in result.values():
+            state['commands'] = {pid: commands[pid] for pid in state['pids'] if pid in commands}
+    return result
+
+
 class DesktopApp:
     def __init__(self, executable, home):
         self.executable = Path(executable).expanduser().resolve()

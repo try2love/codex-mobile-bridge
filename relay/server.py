@@ -282,6 +282,8 @@ def create_app(directory, public_origin, test_http=False, timeout=90):
                 raise PermissionError('Unrecognized origin')
             if request.headers.get('Sec-Fetch-Site') == 'cross-site':
                 raise PermissionError('Cross-site access denied')
+            if any(value.strip().lower() != 'identity' for value in request.headers.getall('Content-Encoding', [])):
+                raise web.HTTPUnsupportedMediaType(reason='Compressed request bodies are not supported')
             response = await handler(request)
         except PermissionError as exc:
             response = web.json_response({'error': str(exc)}, status=401)
@@ -298,7 +300,10 @@ def create_app(directory, public_origin, test_http=False, timeout=90):
                                      'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"})
         return response
 
-    app = web.Application(middlewares=[boundary], client_max_size=MAX_BODY + 1)
+    # Content-Length and the shared buffer budget must describe the same bytes.
+    # Disable decompression before parsing, including unauthenticated requests.
+    app = web.Application(middlewares=[boundary], client_max_size=MAX_BODY + 1,
+                          handler_args={'auto_decompress': False})
     app[STATE] = state
     from .admin import Admin
     Admin(state).routes(app)

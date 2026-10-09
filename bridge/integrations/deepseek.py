@@ -7,6 +7,7 @@ import shutil
 import urllib.error
 import urllib.request
 from pathlib import Path
+from ..account_models import NoRedirect
 from ..lifecycle import private_json
 from .errors import BridgeUnavailable
 from .deepseek_setup import MARKER, insertion, verified_directory, legacy_account_configured
@@ -174,7 +175,7 @@ class DeepSeek:
             if not isinstance(port, int) or not 1 <= port <= 65535:
                 raise ValueError('Harness 端口无效')
             request = urllib.request.Request(f'http://127.0.0.1:{port}/mobile', data=json.dumps({'action': action, 'sid': sid, 'body': body or {}}).encode(), headers={'Authorization': 'Bearer '+config['token'], 'Content-Type': 'application/json'})
-            with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=30) as response:
+            with urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect()).open(request, timeout=30) as response:
                 raw = response.read(32*1024*1024+1)
             if len(raw) > 32*1024*1024:
                 raise BridgeUnavailable('会话内容过大，请在桌面查看')

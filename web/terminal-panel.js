@@ -3,6 +3,8 @@
 class TerminalPanel {
   constructor(workbench, session, tab) {
     Object.assign(this, {workbench, session, tab});this.disposed=false;this.cursor=0;this.running=false;this.operations=[];
+    this.visibility=()=>{clearTimeout(this.timer);if(document.hidden)this.readController?.abort();else if(this.running){if(this.polling)this.resumeRead=true;else this.poll();}};
+    document.addEventListener('visibilitychange',this.visibility);
     this.key='pty:'+session.key;
     try{this.id=sessionStorage.getItem(this.key);}catch{}
     this.hadId=!!this.id;this.id ||= uuid();this.save();
@@ -18,8 +20,8 @@ class TerminalPanel {
         this.fallback=new CommandTerminalPanel(this.workbench,this.session,this.tab);return;
       }
       this.render(info);
-      const result=this.hadId?await this.workbench.request(this.url('&id='+this.id+'&after=0')):
-        await this.workbench.request(this.url(),{action:'open',id:this.id,cols:this.term.cols,rows:this.term.rows});
+      if(this.hadId){this.running=true;await this.poll();return;}
+      const result=await this.workbench.request(this.url(),{action:'open',id:this.id,cols:this.term.cols,rows:this.term.rows});
       if(this.disposed){if(!this.hadId)this.workbench.request(this.url(),{action:'close',id:this.id}).catch(()=>{});return;}
       this.apply(result);this.schedule();
     }catch(e){if(!this.disposed){if(!this.status)this.render({});this.status.textContent=BridgeI18n.t(e.message);this.reopen.hidden=false;this.tab.name=BridgeI18n.t('终端 · 未连接');this.workbench.paint();}}
@@ -89,24 +91,30 @@ class TerminalPanel {
     if(!this.inputError)this.status.textContent=result.running?BridgeI18n.t('连续会话 · 关闭标签将结束终端'):result.message||BridgeI18n.t('终端已退出');
     this.send.disabled=!this.running||this.inputError;this.reopen.hidden=this.running;this.layout();
   }
-  schedule(){clearTimeout(this.timer);if(!this.disposed&&this.running)this.timer=setTimeout(()=>this.poll(),document.hidden||!this.workbench.isVisible(this.session,this.tab)?2000:150);}
+  schedule(){clearTimeout(this.timer);if(!this.disposed&&this.running&&!document.hidden&&!this.restarting)this.timer=setTimeout(()=>this.poll(),!this.workbench.isVisible(this.session,this.tab)?2000:150);}
   async poll(){
-    try{const result=await this.workbench.request(this.url('&id='+this.id+'&after='+this.cursor));if(!this.disposed)this.apply(result);}
-    catch(e){if(!this.disposed){this.status.textContent=BridgeI18n.t(e.message);if([401,403,404].includes(e.status)){this.running=false;this.send.disabled=true;this.reopen.hidden=false;}}}
-    this.schedule();
+    if(this.disposed||document.hidden||this.polling||!this.running||this.restarting)return;
+    this.polling=true;clearTimeout(this.timer);const id=this.id,controller=this.readController=new AbortController();
+    try{const result=await this.workbench.request(this.url('&id='+this.id+'&after='+this.cursor),undefined,controller.signal);if(!this.disposed&&!controller.signal.aborted&&this.id===id)this.apply(result);}
+    catch(e){if(!this.disposed&&!controller.signal.aborted&&this.id===id){this.status.textContent=BridgeI18n.t(e.message);if([401,403,404].includes(e.status)){this.running=false;this.send.disabled=true;this.reopen.hidden=false;}}}
+    finally{
+      this.polling=false;this.readController=null;
+      const resume=this.resumeRead;this.resumeRead=false;
+      if(resume&&!this.disposed&&!document.hidden)this.poll();else this.schedule();
+    }
   }
   async restart(){
-    if(this.restarting)return;this.restarting=true;
+    if(this.restarting)return;this.restarting=true;this.readController?.abort();clearTimeout(this.timer);
     try{
       // Close the previous id even after a lost open response; never orphan a shell.
       try{await this.workbench.request(this.url(),{action:'close',id:this.id});}catch(e){if(e.status!==404)throw e;}
       this.id=uuid();this.save();this.cursor=0;this.operations=[];this.inputError=false;this.retry.hidden=true;this.term.reset();
       const result=await this.workbench.request(this.url(),{action:'open',id:this.id,cols:this.term.cols,rows:this.term.rows});if(!this.disposed){this.apply(result);this.schedule();}
     }catch(e){if(!this.disposed)this.status.textContent=BridgeI18n.t(e.message);}
-    finally{this.restarting=false;}
+    finally{this.restarting=false;this.schedule();}
   }
   dispose(){
-    this.disposed=true;clearTimeout(this.timer);clearTimeout(this.resizeTimer);this.observer?.disconnect();this.term?.dispose();this.fallback?.dispose();
+    this.disposed=true;document.removeEventListener('visibilitychange',this.visibility);this.readController?.abort();clearTimeout(this.timer);clearTimeout(this.resizeTimer);this.observer?.disconnect();this.term?.dispose();this.fallback?.dispose();
     if(!this.fallback)this.workbench.request(this.url(),{action:'close',id:this.id}).catch(()=>{});
     try{sessionStorage.removeItem(this.key);}catch{}
   }

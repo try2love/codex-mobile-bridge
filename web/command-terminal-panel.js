@@ -3,6 +3,8 @@
 class CommandTerminalPanel {
   constructor(workbench, session, tab) {
     Object.assign(this, {workbench, session, tab}); this.disposed=false; this.cursor=0; this.output='';
+    this.visibility=()=>{clearTimeout(this.timer);if(document.hidden)this.readController?.abort();else if(this.running){if(this.polling)this.resumeRead=true;else this.poll();}};
+    document.addEventListener('visibilitychange',this.visibility);
     this.key='terminal:'+session.key;
     try { this.id=sessionStorage.getItem(this.key); } catch {}
     const n=(...args)=>workbench.node(...args), b=(...args)=>workbench.button(...args);
@@ -51,22 +53,28 @@ class CommandTerminalPanel {
     this.running=result.running;this.run.disabled=this.running;this.stop.disabled=!this.running;
     this.status.textContent=(result.running?BridgeI18n.t('运行中'):result.message||BridgeI18n.t('已结束 · 退出码 ')+result.exitCode)+(result.truncated?BridgeI18n.t(' · 仅保留最近输出'):'');
   }
-  schedule(){clearTimeout(this.timer);if(!this.disposed)this.timer=setTimeout(()=>this.poll(),document.hidden?5000:900);}
+  schedule(){clearTimeout(this.timer);if(!this.disposed&&!document.hidden&&!this.canceling)this.timer=setTimeout(()=>this.poll(),900);}
   async poll() {
+    if(this.disposed||document.hidden||this.polling||!this.running||this.canceling)return;
+    this.polling=true;clearTimeout(this.timer);const id=this.id,controller=this.readController=new AbortController();
     try {
-      const result=await this.workbench.request(this.url('&id='+this.id+'&after='+this.cursor));
-      if(this.disposed)return;this.apply(result);if(this.running)this.schedule();
+      const result=await this.workbench.request(this.url('&id='+this.id+'&after='+this.cursor),undefined,controller.signal);
+      if(this.disposed||controller.signal.aborted||this.id!==id)return;this.apply(result);
     } catch(e){
-      if(this.disposed)return;
+      if(this.disposed||controller.signal.aborted||this.id!==id)return;
       this.status.textContent=e.message;
       if(e.status===404){this.running=false;this.run.disabled=false;this.stop.disabled=true;this.id=null;this.remember();}
-      else this.schedule();
+    } finally {
+      this.polling=false;this.readController=null;
+      const resume=this.resumeRead;this.resumeRead=false;
+      if(resume&&!this.disposed&&!document.hidden&&!this.canceling)this.poll();else if(this.running)this.schedule();
     }
   }
   async cancel() {
-    if(!this.id)return;this.stop.disabled=true;
-    try {const result=await this.workbench.request(this.url(),{action:'stop',id:this.id});if(!this.disposed){this.apply({...result,output:'',cursor:this.cursor});this.schedule();}}
+    if(!this.id||this.canceling)return;this.canceling=true;this.stop.disabled=true;this.readController?.abort();clearTimeout(this.timer);
+    try {const result=await this.workbench.request(this.url(),{action:'stop',id:this.id,after:this.cursor});if(!this.disposed)this.apply(result);}
     catch(e){if(!this.disposed){this.status.textContent=e.message;this.stop.disabled=false;}}
+    finally{this.canceling=false;if(this.running)this.schedule();}
   }
-  dispose(){this.disposed=true;clearTimeout(this.timer);}
+  dispose(){this.disposed=true;document.removeEventListener('visibilitychange',this.visibility);this.readController?.abort();clearTimeout(this.timer);}
 }

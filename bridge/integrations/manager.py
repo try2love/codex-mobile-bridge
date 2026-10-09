@@ -8,7 +8,8 @@ import socket
 import subprocess
 import uuid
 from pathlib import Path
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
+from concurrent.futures import Future
 
 from .claude import Claude
 from .deepseek import DeepSeek, BRIDGE_REVISION, UPDATE_REASON
@@ -17,6 +18,15 @@ from ..lifecycle import private_json
 
 READS = {'list', 'detail', 'catalog', 'projects', 'account', 'access'}
 WRITES = {'send', 'stop', 'settings', 'respond', 'create', 'access'}
+
+
+def _copy_read(value):
+    # Native responses are JSON; only containers need copying, not large strings.
+    if isinstance(value, dict):
+        return {key: _copy_read(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_copy_read(item) for item in value]
+    return value
 
 
 class DesktopSessions:
@@ -46,6 +56,12 @@ class DesktopSessions:
                 self.config.setdefault('setup', {})['deepseek'] = {
                     'setupStatus': 'failed', 'reason': '已有 Harness 接入无法验证，请重新扫描'}
         self.locks = {name: threading.RLock() for name in ('codex', *self.adapters)}
+        self.read_lock = threading.Lock()
+        self.reads = {}
+        self.read_epochs = dict.fromkeys(self.locks, 0)
+        self.read_changes = dict.fromkeys(self.locks, 0)
+        self.binding_epochs = dict.fromkeys(self.locks, 0)
+        self.binding_changes = dict.fromkeys(self.locks, 0)
         self.db_lock = threading.Lock()
         self.db = sqlite3.connect(self.directory/'requests.sqlite', check_same_thread=False)
         self.db.execute('CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY, fingerprint TEXT, result TEXT)')
@@ -71,6 +87,60 @@ class DesktopSessions:
             self.receipt_dbs[path] = sqlite3.connect(path, check_same_thread=False)
         return self.receipt_dbs[path]
 
+    @contextmanager
+    def _changing(self, provider, rebind=True):
+        # Keep progress reads available during writes, but never join a read from
+        # an earlier account/connector generation. Safety checks bypass _read.
+        with self.locks[provider]:
+            with self.read_lock:
+                self.read_epochs[provider] += 1
+                self.read_changes[provider] += 1
+                if rebind:
+                    self.binding_epochs[provider] += 1
+                    self.binding_changes[provider] += 1
+            try:
+                yield
+            finally:
+                with self.read_lock:
+                    self.read_epochs[provider] += 1
+                    self.read_changes[provider] -= 1
+                    if rebind:
+                        self.binding_epochs[provider] += 1
+                        self.binding_changes[provider] -= 1
+
+    def _read(self, provider, action, sid=None, body=None):
+        body = body or {}
+        with self.read_lock:
+            if self.closed.is_set():
+                raise BridgeUnavailable('客户端连接已关闭')
+            adapter = self.adapters[provider]
+            epoch = self.read_epochs[provider]
+            binding = self.binding_epochs[provider]
+            key = (provider, id(adapter), epoch, action, sid, json.dumps(body, sort_keys=True))
+            future = self.reads.get(key) if not self.read_changes[provider] else None
+            owner = future is None
+            if owner:
+                future = Future()
+                if not self.read_changes[provider]:
+                    self.reads[key] = future
+        if owner:
+            try:
+                future.set_result(adapter.call(action, sid, body))
+            except BaseException as exc:
+                future.set_exception(exc)
+            finally:
+                with self.read_lock:
+                    if self.reads.get(key) is future:
+                        del self.reads[key]
+        # Copy before the last generation check so a slow copy cannot publish
+        # a response from an account that was switched in the meantime.
+        result = _copy_read(future.result())
+        with self.read_lock:
+            if self.closed.is_set() or self.binding_epochs[provider] != binding or self.adapters[provider] is not adapter:
+                raise BridgeUnavailable('客户端状态已变化，请重试')
+        # Consumers may annotate rows. Sharing a result object crosses requests.
+        return result
+
     def call(self, provider, action, sid=None, body=None):
         if provider not in self.adapters or action not in READS | WRITES:
             raise ValueError('不支持的桌面操作')
@@ -81,7 +151,7 @@ class DesktopSessions:
         body = body or {}
         adapter = self.adapters[provider]
         if action in READS and not (action == 'access' and 'mode' in body):
-            return adapter.call(action, sid, body)
+            return self._read(provider, action, sid, body)
         rid = str(uuid.UUID(body.get('id', '')))
         if action == 'send' and (not isinstance(body.get('text'), str) or
                                  not body['text'].strip() and not body.get('resolvedImages') or len(body['text']) > 100000):
@@ -89,8 +159,9 @@ class DesktopSessions:
         if action == 'create' and (not isinstance(body.get('title', ''), str) or len(body.get('title', '')) > 120):
             raise ValueError('聊天名称不能超过 120 字')
         fingerprint = hashlib.sha256(json.dumps([provider, action, sid, body], sort_keys=True).encode()).hexdigest()
-        # Serialize mutations per backend, while reads continue to show progress.
-        with self.locks[provider]:
+        # Normal chat writes keep progress reads available; account/lifecycle
+        # operations additionally invalidate the connector binding.
+        with self._changing(provider, rebind=False):
             if self.config.get('enabled', {}).get(provider) is False:
                 raise ValueError('此应用已关闭，请在应用管理中开启')
             with self.db_lock:
@@ -134,7 +205,7 @@ class DesktopSessions:
                 status = adapter.call('status') if provider == 'deepseek' else adapter.status()
                 if status.get('connected') is not True:
                     continue
-                listing = adapter.call('list')
+                listing = self._read(provider, 'list')
                 if listing.get('connected') is False:
                     continue
                 for row in listing.get('sessions', []):
@@ -210,7 +281,7 @@ class DesktopSessions:
                 if not row['installed']:
                     outcomes[provider] = {'setupStatus': 'not-installed', 'reason': '尚未安装此客户端'}
                     continue
-                with self.locks[provider]:
+                with self._changing(provider):
                     try:
                         if provider == 'claude':
                             options = {'explicit_home': True} if row.get('dataDirectoryExplicit') else {}
@@ -392,14 +463,14 @@ class DesktopSessions:
     def connect_deepseek(self, restart=False):
         if not self.gateway_running:
             return self.toggle_client({'provider': 'deepseek', 'enabled': True})
-        with self.client_lock, self.locks['deepseek']:
+        with self.client_lock, self._changing('deepseek'):
             self._start_deepseek(restart)
             return self.clients(refresh=True)
 
     def recover_deepseek(self, value):
         """Private desktop control only; web app controls never dispatch here."""
         from .deepseek_recovery import DeepSeekRecovery
-        with self.client_lock, self.locks['deepseek']:
+        with self.client_lock, self._changing('deepseek'):
             if not self.config.get('discovered', {}).get('deepseek'):
                 self.scan()
             descriptor, adapter = self._descriptor('deepseek'), self.adapters['deepseek']
@@ -428,7 +499,7 @@ class DesktopSessions:
         if not self.gateway_running:
             return self.toggle_client({'provider': 'claude', 'enabled': True})
         from .client_launch import inspect_client, launch_client
-        with self.client_lock, self.locks['claude']:
+        with self.client_lock, self._changing('claude'):
             descriptor = self._descriptor('claude')
             if restart:
                 self._stop_client('claude', descriptor, inspect_client(descriptor))
@@ -458,14 +529,7 @@ class DesktopSessions:
                     reason = '接入配置已就绪' if ready else ('正在检查账号配置' if current.get('status') == 'checking' else reason)
                 except (AttributeError, ValueError, OSError):
                     pass
-            codex_running = False
-            if ready:
-                try:
-                    from .client_launch import inspect_client
-                    codex_running = inspect_client(self._descriptor('codex'))['running']
-                except (AttributeError, ValueError, OSError, subprocess.SubprocessError):
-                    pass
-            rows.append({'id': 'codex', 'name': 'Codex', 'installed': discovered.get('codex', {}).get('installed', ready), 'configured': ready, 'connected': ready and codex_running,
+            rows.append({'id': 'codex', 'name': 'Codex', 'installed': discovered.get('codex', {}).get('installed', ready), 'configured': ready, 'connected': False,
                          'setupStatus': 'ready' if ready else 'unconfigured',
                          'enabled': self.config.get('enabled', {}).get('codex', ready), 'reason': reason})
             for provider, name in [('claude', 'Claude'), ('deepseek', 'DSH')]:
@@ -490,9 +554,9 @@ class DesktopSessions:
                             invalid = status.get('configured') is False
                             reason = (('已恢复此前的 Harness 接入' if setup.get('setupStatus') == 'recovered' else '接入配置已就绪') if ready else '请在桌面配置账号或 API')
                         else:
-                            sessions = adapter.call('list').get('sessions', [])
+                            sessions = self._read(provider, 'list').get('sessions', [])
                             if sessions:
-                                catalog = adapter.call('catalog', sessions[0]['id'], {'section': 'models'})
+                                catalog = self._read(provider, 'catalog', sessions[0]['id'], {'section': 'models'})
                                 ready = bool(catalog.get('models'))
                                 invalid = catalog.get('models') == []
                             reason = (status.get('reason') if status.get('consoleCleanupPending') else '桌面连接与模型配置可用') if ready else '请在桌面登录并配置模型、创建一个项目会话'
@@ -525,14 +589,29 @@ class DesktopSessions:
                 rows.append({'id': provider, 'name': name, 'installed': discovered.get(provider, {}).get('installed', connected),
                              'setupStatus': ('recovered' if provider == 'deepseek' and setup_status == 'recovered' else 'ready') if ready and not pending_restart else setup_status, 'configured': configured, 'connected': connected,
                              'enabled': self.enabled(provider), 'reason': reason})
+            from .client_launch import inspect_clients
+            descriptors = []
+            for row in rows:
+                if row['installed']:
+                    try:
+                        descriptors.append(self._descriptor(row['id']))
+                    except (AttributeError, ValueError, OSError):
+                        pass
+            try:
+                native_states = inspect_clients(descriptors) if descriptors else {}
+            except (OSError, subprocess.SubprocessError):
+                native_states = {}
             for row in rows:
                 row.update(running=False, mainRunning=False, backgroundRunning=False, backgroundCount=0)
                 if row['installed']:
                     try:
-                        from .client_launch import inspect_client
-                        native = inspect_client(self._descriptor(row['id']))
+                        native = native_states.get(row['id'])
+                        if native is None:
+                            raise ValueError('客户端进程状态不可用')
                         row.update(running=native['running'], mainRunning=bool(native.get('mainPids')),
                                    backgroundRunning=bool(native.get('runtimePids')), backgroundCount=len(native.get('runtimePids', [])))
+                        if row['id'] == 'codex':
+                            row['connected'] = row['configured'] and native['running']
                         if row['id'] == 'deepseek' and (row['backgroundCount'] > 1 or row['backgroundRunning'] and not row['mainRunning']):
                             row.update(setupStatus='recovery-required', reason='Harness 存在残留或多个后台实例，请在桌面使用完整退出并重新接入')
                     except (ValueError, OSError, subprocess.SubprocessError):
@@ -551,7 +630,7 @@ class DesktopSessions:
             raise ValueError('应用开关无效')
         from .client_launch import inspect_client, launch_client
         accounts = self.bridge.accounts if provider == 'codex' and self.bridge else None
-        with self.client_lock, self.locks[provider], accounts.gate if accounts else nullcontext(), accounts.lock if accounts else nullcontext():
+        with self.client_lock, self._changing(provider), accounts.gate if accounts else nullcontext(), accounts.lock if accounts else nullcontext():
             if accounts:
                 accounts.assert_editable()
             row = next(row for row in self.clients(refresh=True)['clients'] if row['id'] == provider)
@@ -632,7 +711,7 @@ class DesktopSessions:
         if operation not in ('import-current', 'switch'):
             raise ValueError('不支持的账号操作')
         from .client_launch import inspect_client
-        with self.client_lock, self.locks[provider]:
+        with self.client_lock, self._changing(provider):
             # Harness persists one atomic credential file; saving it does not
             # require the multi-file profile snapshot used by Claude.
             if provider == 'deepseek' and operation == 'import-current':
@@ -684,6 +763,8 @@ class DesktopSessions:
                         pass  # Keep the private rollback snapshot if cleanup fails.
             finally:
                 self.account_operations.discard(provider)
+                with self.read_lock:
+                    self.workspace_roots = {key: row for key, row in self.workspace_roots.items() if key[0] != provider}
                 self.client_cache = None
             return self._accounts_public(provider, result)
 
@@ -692,15 +773,23 @@ class DesktopSessions:
         self.require_enabled(provider)
         if not isinstance(sid, str) or not sid or len(sid) > 512:
             raise ValueError('会话标识无效')
-        cached = self.workspace_roots.get((provider, sid))
-        if cached and time.monotonic() - cached[0] < 10:
+        with self.read_lock:
+            epoch = self.binding_epochs[provider]
+            if self.binding_changes[provider]:
+                raise BridgeUnavailable('客户端状态已变化，请重试')
+            cached = self.workspace_roots.get((provider, sid))
+            cached = cached if cached and cached[2] == epoch and time.monotonic() - cached[0] < 10 else None
+        if cached:
             row = cached[1]
         else:
             rows = self.call(provider, 'list').get('sessions', [])
             row = next((row for row in rows if row.get('id') == sid), None)
             if row is None:
                 raise ValueError('桌面会话不存在')
-            self.workspace_roots[(provider, sid)] = (time.monotonic(), row)
+            with self.read_lock:
+                if self.binding_epochs[provider] != epoch or self.binding_changes[provider]:
+                    raise BridgeUnavailable('客户端状态已变化，请重试')
+                self.workspace_roots[(provider, sid)] = (time.monotonic(), row, epoch)
         from ..workspace import Workspace
         root = row.get('cwd')
         Workspace(root)  # Reject unavailable and non-local workspaces (e.g. Cowork VM).
@@ -716,7 +805,7 @@ class DesktopSessions:
             provider = value.get('provider')
             if provider not in self.adapters:
                 raise ValueError('不支持的桌面客户端')
-            return self.adapters[provider].call('account')
+            return self._read(provider, 'account')
         if action == 'scan':
             return self.scan(setup=value.get('setup', True) is True)
         if action in ('connect-deepseek', 'restart-deepseek'):
@@ -724,7 +813,8 @@ class DesktopSessions:
         if action in ('connect-claude', 'restart-claude', 'cancel-claude'):
             adapter = self.adapters['claude']
             if action == 'cancel-claude':
-                adapter.cancel()
+                with self._changing('claude'):
+                    adapter.cancel()
             else:
                 return self.connect_claude(restart=action == 'restart-claude')
             return self.clients(refresh=True)
@@ -736,7 +826,7 @@ class DesktopSessions:
             return {'backends': self.status(), 'deepseekHome': str(self.adapters['deepseek'].home),
                     'claudeWorkspace': str(self.adapters['claude'].directory)}
         provider = 'claude' if action == 'prepare-claude' else 'deepseek'
-        with self.locks[provider]:
+        with self._changing(provider):
             if action == 'prepare-claude':
                 return self.adapters['claude'].prepare()
             if action == 'install-deepseek':

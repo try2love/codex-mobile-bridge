@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import concurrent.futures
+import gzip
 import json
 import tempfile
 import time
@@ -209,6 +210,49 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.get('/api/sessions', headers={**p,'Host':'evil.test'})).status, 401)
         self.assertEqual((await self.client.get('/api/accounts', headers=p)).status, 401)
         self.assertEqual((await self.client.get('/api/auth', headers=p)).status, 200)
+
+    async def test_compressed_control_request_cannot_bypass_four_kib_limit(self):
+        device = await self.device('Fixture')
+        pair = self.state.registry.pair(device['deviceId'])
+        claim = self.state.registry.claim(pair['token'], 'Phone')['claim']
+        raw = json.dumps({'claim': claim, 'padding': 'x'*16384}).encode()
+        encoded = gzip.compress(raw)
+        self.assertLess(len(encoded), 4096)
+        self.assertGreater(len(raw), 4096)
+        response = await self.client.post('/relay/claim-status', data=encoded,
+            headers={'Origin': self.url, 'Content-Type': 'application/json', 'Content-Encoding': 'gzip'})
+        self.assertEqual(response.status, 415)
+        self.assertEqual(self.state.registry.consume(claim), ({'state': 'pending'}, None))
+
+    async def test_compressed_forward_is_rejected_before_connector_or_budget_use(self):
+        device = await self.device('Fixture')
+        await self.real_connector(device)
+        phone = await self.phone(device)
+        raw = json.dumps({'id': 'compressed', 'project': 'fixture', 'padding': 'x'*16384}).encode()
+        response = await self.client.post('/api/sessions', data=gzip.compress(raw),
+            headers={**phone, 'Content-Type': 'application/json', 'Content-Encoding': 'gzip'})
+        self.assertEqual(response.status, 415)
+        self.assertEqual(self.created, [])
+        self.assertEqual(self.state.pending, {})
+        self.assertEqual(self.state.buffered, 0)
+
+    async def test_identity_encoding_preserves_normal_json_and_control_limit(self):
+        device = await self.device('Fixture')
+        headers = {'Authorization': 'Bearer '+device['deviceToken'], 'Content-Encoding': 'identity'}
+        response = await self.client.post('/relay/device', json={'action': 'status'}, headers=headers)
+        self.assertEqual(response.status, 200)
+        response = await self.client.post('/relay/device', json={'action': 'status', 'padding': 'x'*4096}, headers=headers)
+        self.assertEqual(response.status, 400)
+
+    async def test_all_content_encoding_fields_are_checked_without_decompression(self):
+        # Even malformed encoded bytes must reach the boundary as wire bytes,
+        # rather than raising a decompression error inside aiohttp first.
+        for encodings in (['br'], ['gzip, identity'], ['identity', 'gzip'], ['gzip', 'identity']):
+            with self.subTest(encodings=encodings):
+                headers = [('Origin', self.url), ('Content-Type', 'application/json')]
+                headers.extend(('Content-Encoding', value) for value in encodings)
+                response = await self.client.post('/relay/claim-status', data=b'not compressed', headers=headers)
+                self.assertEqual(response.status, 415)
 
     async def test_native_clients_sessions_files_and_terminal_share_authenticated_manager(self):
         a = await self.device('Alice')

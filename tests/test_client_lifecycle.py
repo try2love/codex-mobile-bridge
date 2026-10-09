@@ -49,6 +49,7 @@ class ClientLifecycleTests(unittest.TestCase):
         self.running = True
         self.inspect = self.patch('inspect_client', side_effect=lambda _: {'running': self.running,
             'pids': [11, 12] if self.running else [], 'mainPids': [11] if self.running else [], 'runtimePids': [12] if self.running else [], 'unknown': False})
+        self.inspect_batch = self.patch('inspect_clients', side_effect=lambda rows: {row['id']: self.inspect.side_effect(row) for row in rows})
         self.launch = self.patch('launch_client', side_effect=self.start)
         self.launch_dsh = self.patch('launch_deepseek', side_effect=self.start)
         self.stop = self.patch('stop_client', side_effect=self.finish)

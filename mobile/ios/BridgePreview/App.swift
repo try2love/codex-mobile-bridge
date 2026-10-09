@@ -100,6 +100,8 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
     private var activityTimer: Timer?
     private var foregroundBaselines = Set<String>()
     private var loading = false
+    private var pollGeneration = 0
+    private var pollTask: URLSessionDataTask?
     private var generation = 0
     private let defaults = UserDefaults.standard
     private let page = UIStackView()
@@ -366,7 +368,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         let inbox = UIBarButtonItem(image: UIImage(systemName: "bell"), style: .plain, target: self, action: #selector(self.inbox)); inbox.accessibilityLabel = MobileStrings.text("通知")
         navigationItem.rightBarButtonItems = [settings, inbox]
     }
-    private func clear() { finishUpload(nil); stopComputerChecks(); computerStates.removeAll(); gatewayMenuTop?.isActive = false; gatewayMenuTop = nil; generation += 1; web?.stopLoading(); web?.navigationDelegate = nil; web?.uiDelegate = nil; web = nil; for v in page.arrangedSubviews where v !== subtitle { page.removeArrangedSubview(v); v.removeFromSuperview() } }
+    private func clear() { cancelSync(); finishUpload(nil); stopComputerChecks(); computerStates.removeAll(); gatewayMenuTop?.isActive = false; gatewayMenuTop = nil; generation += 1; web?.stopLoading(); web?.navigationDelegate = nil; web?.uiDelegate = nil; web = nil; for v in page.arrangedSubviews where v !== subtitle { page.removeArrangedSubview(v); v.removeFromSuperview() } }
     @objc func home() {
         clear(); navigation(home: true); subtitle.isHidden = true
         let container = UIView(); page.addArrangedSubview(container); let content = scrollContent(in: container)
@@ -558,38 +560,55 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         guard let address = get("origin"), saved.contains(address), let thread = get("thread"), let target = try? GatewayURL.chat(address, thread: thread, host: get("host") ?? "local") else { info(MobileStrings.text("请先扫码保存通知对应的电脑，再打开聊天。")); return }
         connect(target, address: address)
     }
-    private func fetch(address requestedAddress: String? = nil, _ done: @escaping (Result<[String: Any], Error>) -> Void) {
+    private func fetch(address requestedAddress: String? = nil, after: Int? = nil, poll: Int? = nil, _ done: @escaping (Result<[String: Any], Error>) -> Void) {
         let address = requestedAddress ?? origin, ticket = generation
-        guard let target = URL(string: address + "/api/mobile/events"), !address.isEmpty else { done(.failure(GatewayURL.InvalidURL())); return }
+        func valid() -> Bool { ticket == self.generation && (poll.map { self.pollCurrent($0) } ?? true) }
+        let query = after.map { "?after=\(max(0, $0))" } ?? ""
+        guard let target = URL(string: address + "/api/mobile/events" + query), !address.isEmpty else { done(.failure(GatewayURL.InvalidURL())); return }
         WKWebsiteDataStore.default().httpCookieStore.getAllCookies { cookies in
-            guard ticket == self.generation else { self.loading = false; return }
+            guard valid() else { return }
+            guard poll == nil || self.saved.contains(address) else { done(.failure(NSError(domain: "Bridge", code: 401))); return }
             let host = target.host ?? ""
             let matching = cookies.filter { cookie in cookie.name == "codex_mobile_session" && cookie.domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")) == host && (!cookie.isSecure || target.scheme == "https") && (cookie.expiresDate == nil || cookie.expiresDate! > Date()) }
             guard !matching.isEmpty else { done(.failure(NSError(domain: "Bridge", code: 401, userInfo: [NSLocalizedDescriptionKey: MobileStrings.text("请先连接并登录电脑网关")]))); return }
             var request = URLRequest(url: target); request.setValue(address, forHTTPHeaderField: "Origin"); request.setValue(HTTPCookie.requestHeaderFields(with: matching)["Cookie"], forHTTPHeaderField: "Cookie"); request.setValue("BridgeMobile/0.1-iOS", forHTTPHeaderField: "User-Agent")
-            self.session.dataTask(with: request) { data, response, error in
+            let task = self.session.dataTask(with: request) { data, response, error in
                 let code = (response as? HTTPURLResponse)?.statusCode
                 let result: Result<[String: Any], Error>
                 if let error { result = .failure(error) }
                 else if code == 200, let data, data.count <= 512000, let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { result = .success(value) }
                 else { result = .failure(NSError(domain: "Bridge", code: code ?? 0, userInfo: [NSLocalizedDescriptionKey: code == 401 || code == 403 ? MobileStrings.text("登录已失效，请重新连接电脑") : MobileStrings.text("请使用配套电脑 Preview，并检查连接")])) }
                 DispatchQueue.main.async {
-                    guard ticket == self.generation else { self.loading = false; return }
-                    guard code == 200, let response = response as? HTTPURLResponse,
-                          let responseURL = response.url, GatewayURL.same(responseURL, address),
-                          let headers = response.allHeaderFields as? [String: String],
-                          let renewed = HTTPCookie.cookies(withResponseHeaderFields: headers, for: target).first(where: { cookie in
-                              cookie.name == "codex_mobile_session" && cookie.domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")) == host && cookie.path == "/" && matching.contains(where: { $0.name == cookie.name && $0.value == cookie.value })
-                          }) else { done(result); return }
+                    guard valid() else { return }
+                    if poll != nil { self.pollTask = nil }
+                    let response = response as? HTTPURLResponse
+                    let headers = response?.allHeaderFields as? [String: String] ?? [:]
+                    let renewed = code == 200 && response?.url.map({ GatewayURL.same($0, address) }) == true ? HTTPCookie.cookies(withResponseHeaderFields: headers, for: target).first(where: { cookie in
+                        cookie.name == "codex_mobile_session" && cookie.domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")) == host && cookie.path == "/" && matching.contains(where: { $0.name == cookie.name && $0.value == cookie.value })
+                    }) : nil
+                    guard poll != nil || renewed != nil else { done(result); return }
                     let store = WKWebsiteDataStore.default().httpCookieStore
                     store.getAllCookies { current in
-                        guard ticket == self.generation else { self.loading = false; return }
-                        // Do not resurrect a removed connection or replace a newer login.
-                        guard self.saved.contains(address), current.contains(where: { $0.name == renewed.name && $0.value == renewed.value && $0.domain == renewed.domain && $0.path == renewed.path }) else { done(result); return }
-                        store.setCookie(renewed) { if ticket == self.generation { done(result) } else { self.loading = false } }
+                        guard valid() else { return }
+                        // A response from a removed/replaced login cannot renew its
+                        // cookie or commit that account's notification cursor.
+                        let bindingCurrent = self.saved.contains(address) && matching.contains(where: { sent in current.contains(where: { $0.name == sent.name && $0.value == sent.value && $0.domain == sent.domain && $0.path == sent.path }) })
+                        if poll != nil && !bindingCurrent { done(.failure(NSError(domain: "Bridge", code: 401))); return }
+                        guard bindingCurrent, let renewed else { done(result); return }
+                        store.setCookie(renewed) {
+                            guard valid() else { return }
+                            guard poll != nil else { done(result); return }
+                            store.getAllCookies { latest in
+                                guard valid() else { return }
+                                guard self.saved.contains(address), latest.contains(where: { $0.name == renewed.name && $0.value == renewed.value && $0.domain == renewed.domain && $0.path == renewed.path }) else { done(.failure(NSError(domain: "Bridge", code: 401))); return }
+                                done(result)
+                            }
+                        }
                     }
                 }
-            }.resume()
+            }
+            if poll != nil { self.pollTask = task }
+            task.resume()
         }
     }
     private func sheet(_ title: String) -> (UINavigationController, UIStackView) {
@@ -641,18 +660,29 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             }
         }
     } }
-    @objc private func active() { checkComputers(); foregroundBaselines.removeAll();sync(); activityTimer?.invalidate(); activityTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.syncLiveActivity() }; syncLiveActivity(); timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in self?.sync() } }
-    @objc private func inactive() { downloads.pause(); stopComputerChecks(); timer?.invalidate(); timer = nil; activityTimer?.invalidate(); activityTimer = nil; if #available(iOS 16.2, *) { Task { await LiveActivityController.shared.pause() } } }
+    @objc private func active() { cancelSync(); checkComputers(); foregroundBaselines.removeAll();sync(); activityTimer?.invalidate(); activityTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.syncLiveActivity() }; syncLiveActivity(); timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in self?.sync() } }
+    @objc private func inactive() { cancelSync(); downloads.pause(); stopComputerChecks(); timer?.invalidate(); timer = nil; activityTimer?.invalidate(); activityTimer = nil; if #available(iOS 16.2, *) { Task { await LiveActivityController.shared.pause() } } }
+    private func cancelSync() {
+        pollGeneration += 1; pollTask?.cancel(); pollTask = nil; loading = false
+    }
+    private func pollCurrent(_ ticket: Int) -> Bool {
+        ticket == pollGeneration && UIApplication.shared.applicationState == .active
+    }
     private func sync() {
-        registerNativePush()
         guard UIApplication.shared.applicationState == .active, !loading else { return }
-        loading = true
+        registerNativePush()
+        loading = true; pollGeneration += 1
+        let ticket = pollGeneration
         let addresses = saved
         func next(_ index: Int) {
+            guard self.pollCurrent(ticket) else { return }
             guard index < addresses.count else { self.loading = false; return }
             let address = addresses[index]
-            self.fetch(address: address) { result in
-                if case .success(let data) = result, data["enabled"] as? Bool == true, let stream = data["streamId"] as? String {
+            guard self.saved.contains(address) else { next(index + 1); return }
+            let after = self.defaults.integer(forKey: "cursor:" + address)
+            self.fetch(address: address, after: after, poll: ticket) { result in
+                guard self.pollCurrent(ticket) else { return }
+                if self.saved.contains(address), case .success(let data) = result, data["enabled"] as? Bool == true, let stream = data["streamId"] as? String {
                     let key = "cursor:" + address, previous = self.defaults.integer(forKey: key)
                     let ready = self.foregroundBaselines.contains(address) && self.defaults.string(forKey: "stream:" + address) == stream
                     let cleared = self.defaults.integer(forKey: "cleared:" + address + ":" + stream)

@@ -5,7 +5,7 @@ import sys
 import time
 from pathlib import Path
 
-from ..desktop_app import DesktopApp
+from ..desktop_app import DesktopApp, process_inventory
 
 
 def launch_deepseek(descriptor, restart=False):
@@ -97,10 +97,32 @@ def _commands(app, pids):
 
 
 def inspect_client(descriptor):
-    import re
     app = _app(descriptor)
     pids = app.processes()
     commands = _commands(app, pids)
+    return _process_state(descriptor, app, pids, commands)
+
+
+def inspect_clients(descriptors):
+    """Batch display state only; no snapshot is retained for a later operation."""
+    apps = {}
+    for descriptor in descriptors:
+        if not isinstance(descriptor, dict):
+            continue
+        try:
+            app = _app(descriptor)
+        except (ValueError, OSError):
+            continue
+        apps[descriptor['id']] = (descriptor, app)
+    if not apps:
+        return {}
+    inventory = process_inventory(app.executable for _, app in apps.values())
+    return {provider: _process_state(descriptor, app, **inventory[app.executable])
+            for provider, (descriptor, app) in apps.items()}
+
+
+def _process_state(descriptor, app, pids, commands):
+    import re
     main, hosts = [], []
     unknown = any(not commands.get(pid) for pid in pids)
     for pid, command in commands.items():
