@@ -133,7 +133,7 @@ class ClaudeKeyboard {
                 Environment.GetFolderPath(Environment.SpecialFolder.Windows)))) {}
         }:null;
         return WaitWindow(()=>SelectWindow(ReadWindows(process.Id),process.Id,GetForegroundWindow()),
-                          reopen,check,()=>Thread.Sleep(250),48);
+                          reopen,check,()=>Thread.Sleep(250),32);
     }
     static string ApplicationId(int pid) {
         var handle=OpenProcess(0x1000,false,pid); // Query limited process metadata only.
@@ -354,7 +354,7 @@ class ClaudeKeyboard {
         }
         return found;
     }
-    static void QuitMenu<T>(Func<string,T> find,Action<T> invoke,Action<T> expand,Action check,Action pause) where T:class {
+    static void QuitMenu<T>(Func<string,T> find,Action<T> invoke,Action<T> expand,Action check,Action pause,Action<T> submit=null) where T:class {
         check();var file=find("file");
         if(file==null) {
             var menu=find("menu");if(menu==null)throw new Exception(QuitMenuUnavailable);
@@ -365,7 +365,7 @@ class ClaudeKeyboard {
         check();expand(file);
         var exit=WaitMenuEntry(()=>find("exit"),check,pause);
         if(exit==null)throw new Exception(QuitMenuUnavailable);
-        check();invoke(exit);
+        check();(submit??invoke)(exit);
     }
     static AutomationElement FindQuitControl(AutomationElement root,string role,int pid) {
         var elements=root.FindAll(TreeScope.Descendants,new PropertyCondition(AutomationElement.ControlTypeProperty,
@@ -375,19 +375,17 @@ class ClaudeKeyboard {
         return UniqueQuitControl(candidates,item=>item.Current.ProcessId==pid&&AvailableMenuControl(item)
             &&QuitMenuName(role,item.Current.ControlType,item.Current.Name));
     }
-    static bool OwnedByWindow(IntPtr window,IntPtr owner) {
-        for(int i=0;i<8&&window!=IntPtr.Zero;i++,window=GetWindow(window,4))if(window==owner)return true;
-        return false;
+    static bool SameQuitTarget(bool exited,bool owned,long actualStart,long expectedStart,bool exists,int windowPid,int expectedPid) {
+        return !exited&&owned&&actualStart==expectedStart&&exists&&windowPid==expectedPid;
     }
     static void CheckQuitNavigation(Process process,long started,IntPtr window) {
         CheckCancelled();
-        if(process.HasExited||!Owned(process.Id)||process.StartTime.ToUniversalTime().Ticks!=started)
-            throw new Exception("Claude 主进程已改变，退出请求已停止");
-        var foreground=GetForegroundWindow();uint pid;GetWindowThreadProcessId(foreground,out pid);
-        if(pid!=process.Id||!OwnedByWindow(foreground,window))
-            throw new Exception("焦点已离开 Claude，退出请求已停止，请重试");
+        uint pid;GetWindowThreadProcessId(window,out pid);
+        if(!SameQuitTarget(process.HasExited,Owned(process.Id),process.StartTime.ToUniversalTime().Ticks,
+            started,IsWindow(window),(int)pid,process.Id))
+            throw new Exception("Claude 主进程或窗口已改变，退出请求已停止，请重试");
     }
-    static void InvokeQuitControl(AutomationElement item,Action check,bool expand) {
+    static void InvokeQuitControl(AutomationElement item,Action check,bool expand,Action submitting=null) {
         check();
         if(item==null||item.Current.ProcessId!=quitPid||!AvailableMenuControl(item))throw new Exception(QuitMenuUnavailable);
         object pattern;
@@ -395,7 +393,22 @@ class ClaudeKeyboard {
             ((ExpandCollapsePattern)pattern).Expand();return;
         }
         if(!item.TryGetCurrentPattern(InvokePattern.Pattern,out pattern))throw new Exception(QuitMenuUnavailable);
+        check();if(submitting!=null)submitting();
         ((InvokePattern)pattern).Invoke();
+    }
+    sealed class QuitSubmission {
+        public volatile bool Started,Finished;
+        public Exception Error;
+        public QuitSubmission(AutomationElement item,Action check) {
+            // Invoke may wait for a native modal confirmation. Observe that
+            // dialog from the main thread without accepting or dismissing it.
+            var thread=new Thread(delegate() {
+                try {InvokeQuitControl(item,check,false,()=>Started=true);}
+                catch(Exception error) {Error=error;}
+                finally {Finished=true;}
+            });
+            thread.IsBackground=true;thread.SetApartmentState(ApartmentState.MTA);thread.Start();
+        }
     }
     static bool HasNativeDialog(Process process) {
         foreach(var window in ReadWindows(process.Id)) {
@@ -439,14 +452,16 @@ class ClaudeKeyboard {
         CheckCancelled();
         if(process.HasExited||!Owned(process.Id)||process.StartTime.ToUniversalTime().Ticks!=started)
             throw new Exception("Claude 主进程已改变，退出请求已停止");
-        inputWindow=window;Activate(window);
         var root=AutomationElement.FromHandle(window);
         Action check=()=>CheckQuitNavigation(process,started,window);
+        QuitSubmission submission=null;
         QuitMenu(role=>FindQuitControl(root,role,process.Id),item=>InvokeQuitControl(item,check,false),
-            item=>InvokeQuitControl(item,check,true),check,()=>Thread.Sleep(100));
+            item=>InvokeQuitControl(item,check,true),check,()=>Thread.Sleep(100),item=>submission=new QuitSubmission(item,check));
         // Normal teardown changes focus and can take time to flush sessions.
         // Never repeat Exit or accept a native busy-work confirmation.
         string state=ObserveQuit(()=>process.HasExited,()=>HasNativeDialog(process),()=>Thread.Sleep(200),16);
+        if(state=="submitted"&&(!submission.Started||submission.Finished&&submission.Error!=null))
+            throw submission.Error??new Exception("Claude 尚未接收退出请求，请重试");
         QuitResult(state,state=="exited"?"Claude 已正常退出":state=="pending"?
             "Claude 正在等待电脑端退出确认，请自行确认或取消":"已请求 Claude 正常退出，正在等待保存和退出完成",process.Id);
     }
@@ -493,7 +508,7 @@ class ClaudeKeyboard {
         var timer=Stopwatch.StartNew();
         SubmitVerifiedConsole(text,()=>Contents(prompt),value.SetValue,
             ()=>document.DocumentRange.GetText(-1).TrimEnd('\r','\n'),()=>CheckPrompt(prompt),
-            ()=>Thread.Sleep(50),()=>timer.Elapsed.TotalSeconds>=20,delegate {
+            ()=>Thread.Sleep(50),()=>timer.Elapsed.TotalSeconds>=6,delegate {
                 Stage("脚本已完整写入并核对，正在提交");
                 Send(new[]{Key(13,false),Key(13,true)});
             });
@@ -607,6 +622,10 @@ class ClaudeKeyboard {
         if(SelectDevTools(new[]{tools},7).Count!=0)throw new Exception("Claude 隐藏开发者工具自检失败");
     }
     static void CheckNativeQuit() {
+        if(!SameQuitTarget(false,true,11,11,true,7,7)||SameQuitTarget(true,true,11,11,true,7,7)||
+           SameQuitTarget(false,false,11,11,true,7,7)||SameQuitTarget(false,true,12,11,true,7,7)||
+           SameQuitTarget(false,true,11,11,false,7,7)||SameQuitTarget(false,true,11,11,true,8,7))
+            throw new Exception("Claude 原生退出目标身份自检失败");
         var actions=new List<string>();int stage=0;
         Func<string,string> find=role=>(role=="menu"&&stage==0||role=="file"&&stage==1||role=="exit"&&stage==2)?role:null;
         Action<string> invoke=item=>{actions.Add("invoke:"+item);stage++;};
@@ -686,7 +705,7 @@ class ClaudeKeyboard {
             EnumWindows(delegate(IntPtr handle,IntPtr data){previousWindows.Add(handle);return true;},IntPtr.Zero);
             if(prompt==null&&!reuseTools) {Shortcut();inputWindow=IntPtr.Zero;}
             Stage("等待 Console 输入框");
-            var deadline=DateTime.UtcNow.AddSeconds(12);
+            var deadline=DateTime.UtcNow.AddSeconds(8);
             while(prompt==null&&DateTime.UtcNow<deadline) {
                 Thread.Sleep(250);CheckForeground();
                 var current=GetForegroundWindow();
