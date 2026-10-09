@@ -112,6 +112,7 @@ class LocalAccessTests(unittest.TestCase):
                     other.server_close()
             finally:
                 server.shutdown();thread.join();server.server_close()
+                server.harness.close();server.desktop_sessions.close()
 
     def test_real_gateway_binds_only_selected_address_and_stops_every_listener(self):
         lan = next((ip for ip in run.addresses() if ip not in ('127.0.0.1', 'localhost')), None)

@@ -39,7 +39,8 @@ class WindowsDesktopLaunchTests(unittest.TestCase):
         self.assertEqual(spawn.call_count, 2)
 
     def test_cold_claude_launch_falls_back_to_registered_manifest_application(self):
-        with patch('bridge.integrations.claude_setup._main_pids', side_effect=[[], [42]]), \
+        with patch('bridge.windows_session.require_interactive'), \
+                patch('bridge.integrations.claude_setup._main_pids', side_effect=[[], [42]]), \
                 patch('bridge.integrations.claude_setup.time.sleep'), \
                 patch('subprocess.Popen', side_effect=[self.denied, Mock()]) as spawn:
             self.assertEqual(running_app(self.executable, self.root), 42)
@@ -48,7 +49,8 @@ class WindowsDesktopLaunchTests(unittest.TestCase):
     def test_client_enable_uses_same_cold_store_activation(self):
         descriptor = {'id': 'claude', 'installed': True, 'executable': str(self.executable),
                       'dataDirectory': str(self.root)}
-        with patch.object(DesktopApp, 'processes', side_effect=[[], [42]]), \
+        with patch('bridge.windows_session.require_interactive'), \
+                patch.object(DesktopApp, 'processes', side_effect=[[], [42]]), \
                 patch('bridge.integrations.claude_setup._main_pids', side_effect=[[], [42]]), \
                 patch('bridge.integrations.claude_setup.time.sleep'), \
                 patch('subprocess.Popen', side_effect=[self.denied, Mock()]) as spawn:
