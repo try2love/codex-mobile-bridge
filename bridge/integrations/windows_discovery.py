@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import struct
 import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path, PureWindowsPath
@@ -136,6 +137,87 @@ def application_user_model_id(executable):
             if candidate.resolve() == executable and re.fullmatch(r'[A-Za-z0-9._-]+', identifier):
                 matches.add(family+'!'+identifier)
     return next(iter(matches)) if len(matches) == 1 else ''
+
+
+def _read_app_execution_link(path):
+    """Read the OS alias target without resolving or executing its launch shim."""
+    import ctypes
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.CreateFileW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+                                  ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p]
+    kernel.CreateFileW.restype = ctypes.c_void_p
+    kernel.DeviceIoControl.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32,
+                                      ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p]
+    kernel.DeviceIoControl.restype = ctypes.c_int
+    kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+    handle = kernel.CreateFileW(str(path), 0, 7, None, 3, 0x00200000 | 0x02000000, None)
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        buffer, length = ctypes.create_string_buffer(16384), ctypes.c_uint32()
+        if not kernel.DeviceIoControl(handle, 0x000900a8, None, 0, buffer, len(buffer), ctypes.byref(length), None):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return buffer.raw[:length.value]
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def _execution_link_identity(data):
+    """Accept only the observed Windows AppExecLink v3 target representation."""
+    if len(data) < 14:
+        return None
+    tag, size, _, version = struct.unpack('<IHHI', data[:12])
+    if tag != 0x8000001b or version != 3 or size + 8 != len(data):
+        return None
+    try:
+        values = data[12:].decode('utf-16-le').split('\0')
+    except UnicodeError:
+        return None
+    if len(values) != 5 or values[-1] or not all(values[:3]):
+        return None
+    return values[:3]
+
+
+def application_execution_alias(executable):
+    """Require registration, manifest and the actual alias to name the selected GUI."""
+    executable = Path(executable).resolve()
+    app_id = application_user_model_id(executable)
+    local = os.environ.get('LOCALAPPDATA')
+    if not app_id or not local or not Path(local).is_absolute():
+        return None
+    family, identifier = app_id.split('!', 1)
+    matches = set()
+    for folder in executable.parents:
+        try:
+            with (folder/'AppxManifest.xml').open('rb') as stream:
+                content = stream.read(1024 * 1024 + 1)
+            if len(content) > 1024 * 1024:
+                continue
+            manifest = ET.fromstring(content)
+            for app in manifest.findall('{*}Applications/{*}Application'):
+                relative = PureWindowsPath(app.get('Executable', ''))
+                if (app.get('Id') != identifier or relative.drive or relative.root or '..' in relative.parts
+                        or folder.joinpath(*relative.parts).resolve() != executable):
+                    continue
+                for extension in app.findall('{*}Extensions/{*}Extension'):
+                    target = PureWindowsPath(extension.get('Executable', app.get('Executable', '')))
+                    if (extension.get('Category') != 'windows.appExecutionAlias' or target != relative):
+                        continue
+                    for entry in extension.findall('{*}AppExecutionAlias/{*}ExecutionAlias'):
+                        name = entry.get('Alias', '')
+                        if not re.fullmatch(r'[A-Za-z0-9_.-]+\.exe', name, re.I):
+                            continue
+                        alias = Path(local)/'Microsoft/WindowsApps'/name
+                        try:
+                            identity = _execution_link_identity(_read_app_execution_link(alias))
+                        except OSError:
+                            continue
+                        if (identity and identity[:2] == [family, app_id] and Path(identity[2]).is_absolute()
+                                and Path(identity[2]).resolve() == executable):
+                            matches.add(alias)
+        except (OSError, ValueError, ET.ParseError):
+            continue
+    return next(iter(matches)) if len(matches) == 1 else None
 
 
 def launch_windows_desktop(executable, *, cancelled=None, **options):
