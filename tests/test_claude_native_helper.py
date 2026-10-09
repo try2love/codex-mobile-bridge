@@ -1,4 +1,4 @@
-"""Run the real macOS Console selector regression without controlling any app."""
+"""Run native selectors against self-checks and disposable app fixtures only."""
 import json
 import os
 import shutil
@@ -106,3 +106,150 @@ class Fixture {
         finally:
             stop.write_text('stop', encoding='utf-8')
             process.communicate(timeout=22)
+
+    def test_native_quit_on_inactive_desktop_preserves_confirmation(self):
+        import ctypes
+        import uuid
+        from ctypes import wintypes as w
+
+        class Security(ctypes.Structure):
+            _fields_ = [('length', w.DWORD), ('descriptor', w.LPVOID), ('inherit', w.BOOL)]
+
+        class Startup(ctypes.Structure):
+            _fields_ = [('cb', w.DWORD), ('reserved', w.LPWSTR), ('desktop', w.LPWSTR),
+                ('title', w.LPWSTR), ('x', w.DWORD), ('y', w.DWORD), ('width', w.DWORD),
+                ('height', w.DWORD), ('columns', w.DWORD), ('rows', w.DWORD),
+                ('fill', w.DWORD), ('flags', w.DWORD), ('show', w.WORD),
+                ('reservedSize', w.WORD), ('reservedBytes', ctypes.POINTER(ctypes.c_byte)),
+                ('stdin', w.HANDLE), ('stdout', w.HANDLE), ('stderr', w.HANDLE)]
+
+        class ProcessInfo(ctypes.Structure):
+            _fields_ = [('process', w.HANDLE), ('thread', w.HANDLE), ('pid', w.DWORD), ('tid', w.DWORD)]
+
+        user = ctypes.WinDLL('user32', use_last_error=True)
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        user.CreateDesktopW.argtypes = [w.LPCWSTR, w.LPCWSTR, w.LPVOID, w.DWORD, w.DWORD, w.LPVOID]
+        user.CreateDesktopW.restype = w.HANDLE
+        user.CloseDesktop.argtypes = [w.HANDLE]
+        user.CloseDesktop.restype = w.BOOL
+        user.GetForegroundWindow.restype = w.HWND
+        kernel.CreateFileW.argtypes = [w.LPCWSTR, w.DWORD, w.DWORD, ctypes.POINTER(Security),
+                                      w.DWORD, w.DWORD, w.HANDLE]
+        kernel.CreateFileW.restype = w.HANDLE
+        kernel.CreateProcessW.argtypes = [w.LPCWSTR, w.LPWSTR, w.LPVOID, w.LPVOID, w.BOOL,
+            w.DWORD, w.LPVOID, w.LPCWSTR, ctypes.POINTER(Startup), ctypes.POINTER(ProcessInfo)]
+        kernel.CreateProcessW.restype = w.BOOL
+        kernel.WaitForSingleObject.argtypes = [w.HANDLE, w.DWORD]
+        kernel.WaitForSingleObject.restype = w.DWORD
+        kernel.GetExitCodeProcess.argtypes = [w.HANDLE, ctypes.POINTER(w.DWORD)]
+        kernel.GetExitCodeProcess.restype = w.BOOL
+        kernel.CloseHandle.argtypes = [w.HANDLE]
+        kernel.CloseHandle.restype = w.BOOL
+
+        name = 'ClaudeBridgeTest-' + uuid.uuid4().hex
+        desktop = user.CreateDesktopW(name, None, None, 0, 0x01ff, None)
+        self.assertTrue(desktop, ctypes.WinError(ctypes.get_last_error()))
+        self.addCleanup(user.CloseDesktop, desktop)
+        foreground = user.GetForegroundWindow()
+
+        def launch(args, output):
+            security = Security(ctypes.sizeof(Security), None, True)
+            handles = []
+            try:
+                for path, access, disposition in [('NUL', 0x80000000, 3), (str(output), 0x40000000, 2)]:
+                    handle = kernel.CreateFileW(path, access, 3, ctypes.byref(security), disposition, 0x80, None)
+                    if handle == ctypes.c_void_p(-1).value:
+                        raise ctypes.WinError(ctypes.get_last_error())
+                    handles.append(handle)
+                startup = Startup()
+                startup.cb = ctypes.sizeof(startup)
+                startup.desktop = 'winsta0\\' + name
+                startup.flags = 0x100
+                startup.stdin, startup.stdout, startup.stderr = handles[0], handles[1], handles[1]
+                info = ProcessInfo()
+                command = ctypes.create_unicode_buffer(subprocess.list2cmdline([str(arg) for arg in args]))
+                if not kernel.CreateProcessW(None, command, None, None, True, 0x08000000,
+                        None, str(self.folder), ctypes.byref(startup), ctypes.byref(info)):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                kernel.CloseHandle(info.thread)
+                self.addCleanup(kernel.CloseHandle, info.process)
+                return info
+            finally:
+                for handle in handles:
+                    kernel.CloseHandle(handle)
+
+        def exited(info):
+            return kernel.WaitForSingleObject(info.process, 0) == 0
+
+        def wait(info, seconds):
+            self.assertEqual(kernel.WaitForSingleObject(info.process, int(seconds * 1000)), 0,
+                             'synthetic process did not finish')
+            code = w.DWORD()
+            self.assertTrue(kernel.GetExitCodeProcess(info.process, ctypes.byref(code)))
+            return code.value
+
+        source, fixture = self.folder/'quit-fixture.cs', self.folder/'Claude.exe'
+        source.write_text('''using System;
+using System.Diagnostics;
+using System.IO;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Threading;
+class QuitFixture {
+    [STAThread] static void Main(string[] args) {
+        var app=new Application(); var window=new Window {Title="Claude",Width=360,Height=240};
+        var menu=new Menu();var file=new MenuItem {Header="File"};var exit=new MenuItem {Header="Exit"};
+        file.Items.Add(exit);menu.Items.Add(file);window.Content=menu;
+        var timer=new DispatcherTimer {Interval=TimeSpan.FromMilliseconds(100)};
+        var deadline=DateTime.UtcNow.AddSeconds(45);
+        timer.Tick+=(sender,eventArgs)=>{if(File.Exists(args[1])||DateTime.UtcNow>=deadline)app.Shutdown();};
+        exit.Click+=(sender,eventArgs)=>{
+            File.AppendAllText(args[2],"exit\\n");
+            if(args[3]=="pending") {
+                var confirm=new Window {Title="Save changes",Owner=window,Width=260,Height=120};
+                var buttons=new StackPanel();var keep=new Button {Content="Wait for Claude"};
+                keep.Click+=(s,e)=>{File.AppendAllText(args[2],"answered\\n");confirm.Close();};
+                buttons.Children.Add(keep);confirm.Content=buttons;confirm.ShowDialog();
+            } else app.Shutdown();
+        };
+        window.Loaded+=(sender,eventArgs)=>File.WriteAllText(args[0],Process.GetCurrentProcess().Id.ToString());
+        timer.Start();app.Run(window);
+    }
+}
+''', encoding='utf-8')
+        built = subprocess.run([str(self.framework/'csc.exe'), '/nologo', '/target:winexe', '/platform:x64',
+            '/out:'+str(fixture), '/reference:System.Xaml.dll',
+            *['/reference:'+str(self.framework/'WPF'/dll) for dll in
+              ('PresentationFramework.dll', 'PresentationCore.dll', 'WindowsBase.dll')], str(source)],
+            capture_output=True, text=True, timeout=30)
+        self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
+
+        # This desktop is never activated or switched to. All tested apps are
+        # disposable fixtures; the real Claude and user's input remain untouched.
+        for mode in ('normal', 'pending'):
+            with self.subTest(mode=mode):
+                ready, stop, marker = (self.folder/(mode+suffix) for suffix in ('.ready', '.stop', '.invoked'))
+                app = launch([fixture, ready, stop, marker, mode], self.folder/(mode+'.app.log'))
+                helper = None
+                try:
+                    deadline = time.monotonic()+10
+                    while not ready.exists() and not exited(app) and time.monotonic() < deadline:
+                        time.sleep(.05)
+                    self.assertTrue(ready.exists(), 'inactive-desktop fixture did not initialize')
+                    output = self.folder/(mode+'.quit.log')
+                    helper = launch([self.helper, app.pid, '--quit', fixture], output)
+                    self.assertEqual(wait(helper, 15), 0, output.read_text(encoding='utf-8-sig'))
+                    result = json.loads(output.read_text(encoding='utf-8-sig'))
+                    self.assertEqual(marker.read_text(encoding='utf-8'), 'exit\n')
+                    if mode == 'normal':
+                        self.assertIn(result['quitState'], ('exited', 'submitted'))
+                        self.assertEqual(wait(app, 5), 0)
+                    else:
+                        self.assertEqual(result['quitState'], 'pending', result)
+                        self.assertFalse(exited(app), 'native confirmation must remain open')
+                    self.assertEqual(user.GetForegroundWindow(), foreground)
+                finally:
+                    stop.write_text('stop', encoding='utf-8')
+                    wait(app, 46)
+                    if helper is not None:
+                        wait(helper, 10)
