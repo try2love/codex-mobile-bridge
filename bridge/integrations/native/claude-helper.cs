@@ -43,6 +43,8 @@ class ClaudeKeyboard {
     static string executable;
     static string cancelFile;
     static IntPtr inputWindow;
+    static bool quitAction;
+    static int quitPid;
     static int session=Process.GetCurrentProcess().SessionId;
     static void Stage(string text) {Console.WriteLine(text);Console.Out.Flush();}
     static void Activate(IntPtr window) {
@@ -179,7 +181,8 @@ class ClaudeKeyboard {
         Console.WriteLine(json.Append("]}").ToString());
     }
     static void CheckCancelled() {
-        if ((cancelFile!=null && File.Exists(cancelFile)) || (GetAsyncKeyState(27)&0x8001)!=0) throw new Exception("已取消键盘连接，点击 Claude 标题选择启动可重试");
+        if ((cancelFile!=null && File.Exists(cancelFile)) || (!quitAction&&(GetAsyncKeyState(27)&0x8001)!=0))
+            throw new Exception(quitAction?"已取消 Claude 退出":"已取消键盘连接，点击 Claude 标题选择启动可重试");
     }
     static void CheckForeground() {
         CheckCancelled();
@@ -335,6 +338,113 @@ class ClaudeKeyboard {
         },InvokeMenuControl,ExpandMenuControl,CheckForeground,()=>Thread.Sleep(100));
         // Preserve Claude's native Enable/Don't Enable confirmation.
         Stage("请确认 Claude 的开发者模式提示，完成后会继续连接");
+    }
+    const string QuitMenuUnavailable="找不到 Claude 的原生退出菜单，请在电脑端检查菜单后重试";
+    static bool QuitMenuName(string role,ControlType type,string name) {
+        if(role=="menu")return type==ControlType.Button&&(name=="Menu"||name=="菜单"||name=="選單");
+        if(type!=ControlType.MenuItem)return false;
+        if(role=="file")return name=="File"||name=="文件"||name=="檔案";
+        return role=="exit"&&(name=="Exit"||name=="退出"||name=="結束");
+    }
+    static T UniqueQuitControl<T>(IEnumerable<T> items,Func<T,bool> matches) where T:class {
+        T found=null;
+        foreach(var item in items)if(matches(item)) {
+            if(found!=null)throw new Exception("Claude 退出菜单不唯一，请在电脑端检查后重试");
+            found=item;
+        }
+        return found;
+    }
+    static void QuitMenu<T>(Func<string,T> find,Action<T> invoke,Action<T> expand,Action check,Action pause) where T:class {
+        check();var file=find("file");
+        if(file==null) {
+            var menu=find("menu");if(menu==null)throw new Exception(QuitMenuUnavailable);
+            check();invoke(menu);
+            file=WaitMenuEntry(()=>find("file"),check,pause);
+        }
+        if(file==null)throw new Exception(QuitMenuUnavailable);
+        check();expand(file);
+        var exit=WaitMenuEntry(()=>find("exit"),check,pause);
+        if(exit==null)throw new Exception(QuitMenuUnavailable);
+        check();invoke(exit);
+    }
+    static AutomationElement FindQuitControl(AutomationElement root,string role,int pid) {
+        var elements=root.FindAll(TreeScope.Descendants,new PropertyCondition(AutomationElement.ControlTypeProperty,
+            role=="menu"?ControlType.Button:ControlType.MenuItem));
+        var candidates=new List<AutomationElement>();
+        foreach(AutomationElement item in elements)candidates.Add(item);
+        return UniqueQuitControl(candidates,item=>item.Current.ProcessId==pid&&AvailableMenuControl(item)
+            &&QuitMenuName(role,item.Current.ControlType,item.Current.Name));
+    }
+    static bool OwnedByWindow(IntPtr window,IntPtr owner) {
+        for(int i=0;i<8&&window!=IntPtr.Zero;i++,window=GetWindow(window,4))if(window==owner)return true;
+        return false;
+    }
+    static void CheckQuitNavigation(Process process,long started,IntPtr window) {
+        CheckCancelled();
+        if(process.HasExited||!Owned(process.Id)||process.StartTime.ToUniversalTime().Ticks!=started)
+            throw new Exception("Claude 主进程已改变，退出请求已停止");
+        var foreground=GetForegroundWindow();uint pid;GetWindowThreadProcessId(foreground,out pid);
+        if(pid!=process.Id||!OwnedByWindow(foreground,window))
+            throw new Exception("焦点已离开 Claude，退出请求已停止，请重试");
+    }
+    static void InvokeQuitControl(AutomationElement item,Action check,bool expand) {
+        check();
+        if(item==null||item.Current.ProcessId!=quitPid||!AvailableMenuControl(item))throw new Exception(QuitMenuUnavailable);
+        object pattern;
+        if(expand&&item.TryGetCurrentPattern(ExpandCollapsePattern.Pattern,out pattern)) {
+            ((ExpandCollapsePattern)pattern).Expand();return;
+        }
+        if(!item.TryGetCurrentPattern(InvokePattern.Pattern,out pattern))throw new Exception(QuitMenuUnavailable);
+        ((InvokePattern)pattern).Invoke();
+    }
+    static bool HasNativeDialog(Process process) {
+        foreach(var window in ReadWindows(process.Id)) {
+            if(!window.Visible||window.Cloaked||DevToolsTitle(window.Title))continue;
+            try {
+                var root=AutomationElement.FromHandle(window.Handle);object pattern;
+                if(root.Current.ProcessId!=process.Id||!Owned(process.Id))continue;
+                bool modal=root.TryGetCurrentPattern(WindowPattern.Pattern,out pattern)&&((WindowPattern)pattern).Current.IsModal;
+                if(modal)return true;
+                if(window.ClassName!="#32770")continue;
+                var buttons=root.FindAll(TreeScope.Descendants,new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.Button));
+                foreach(AutomationElement button in buttons) {
+                    string name=button.Current.Name;
+                    if(button.Current.ProcessId==process.Id&&!button.Current.IsOffscreen&&
+                       (name=="Quit anyway"||name=="仍要退出"||name=="仍要結束"||name=="Wait for Claude"||name=="等待 Claude"))return true;
+                }
+            }catch(ElementNotAvailableException) {}
+        }
+        return false;
+    }
+    static string ObserveQuit(Func<bool> exited,Func<bool> dialog,Action pause,int attempts) {
+        for(int i=0;i<attempts;i++) {
+            if(exited())return "exited";
+            if(dialog())return "pending";
+            if(i+1<attempts)pause();
+        }
+        return exited()?"exited":"submitted";
+    }
+    static void QuitResult(string state,string reason,int pid) {
+        Console.WriteLine("{\"quitState\":"+JsonString(state)+",\"reason\":"+JsonString(reason)+",\"pid\":"+pid+"}");
+    }
+    static void QuitNative(Process process) {
+        // This explicit exit path invokes native controls only. It must never
+        // enter the DevTools, SendInput or Console focus paths below.
+        long started=process.StartTime.ToUniversalTime().Ticks;
+        if(HasNativeDialog(process)) {
+            QuitResult("pending","Claude 有待处理的原生对话框，请在电脑端确认或取消",process.Id);return;
+        }
+        var window=WaitAppWindow(process,true);
+        inputWindow=window;Activate(window);
+        var root=AutomationElement.FromHandle(window);
+        Action check=()=>CheckQuitNavigation(process,started,window);
+        QuitMenu(role=>FindQuitControl(root,role,process.Id),item=>InvokeQuitControl(item,check,false),
+            item=>InvokeQuitControl(item,check,true),check,()=>Thread.Sleep(100));
+        // Normal teardown changes focus and can take time to flush sessions.
+        // Never repeat Exit or accept a native busy-work confirmation.
+        string state=ObserveQuit(()=>process.HasExited,()=>HasNativeDialog(process),()=>Thread.Sleep(200),16);
+        QuitResult(state,state=="exited"?"Claude 已正常退出":state=="pending"?
+            "Claude 正在等待电脑端退出确认，请自行确认或取消":"已请求 Claude 正常退出，正在等待保存和退出完成",process.Id);
     }
     static string ReadContents(string text,string value) {
         // Chromium contenteditable exposes an empty ValuePattern even when its
@@ -492,6 +602,33 @@ class ClaudeKeyboard {
         tools.Visible=false;
         if(SelectDevTools(new[]{tools},7).Count!=0)throw new Exception("Claude 隐藏开发者工具自检失败");
     }
+    static void CheckNativeQuit() {
+        var actions=new List<string>();int stage=0;
+        Func<string,string> find=role=>(role=="menu"&&stage==0||role=="file"&&stage==1||role=="exit"&&stage==2)?role:null;
+        Action<string> invoke=item=>{actions.Add("invoke:"+item);stage++;};
+        Action<string> expand=item=>{actions.Add("expand:"+item);stage++;};
+        QuitMenu(find,invoke,expand,()=>{},()=>{});
+        if(String.Join(",",actions.ToArray())!="invoke:menu,expand:file,invoke:exit")throw new Exception("Claude 原生退出导航自检失败");
+        actions.Clear();stage=0;bool cancelled=false;
+        try {QuitMenu(find,invoke,expand,()=>{if(stage==2)throw new OperationCanceledException();},()=>{});}
+        catch(OperationCanceledException){cancelled=true;}
+        if(!cancelled||actions.Contains("invoke:exit"))throw new Exception("Claude 原生退出取消自检失败");
+        actions.Clear();stage=0;bool missing=false;
+        try {QuitMenu(role=>role=="file"?role:null,invoke,expand,()=>{},()=>{});}
+        catch(Exception){missing=true;}
+        if(!missing||actions.Contains("invoke:exit"))throw new Exception("Claude 缺失退出菜单自检失败");
+        if(!QuitMenuName("exit",ControlType.MenuItem,"Exit")||!QuitMenuName("exit",ControlType.MenuItem,"退出")||
+           !QuitMenuName("exit",ControlType.MenuItem,"結束")||QuitMenuName("exit",ControlType.Button,"Exit")||
+           QuitMenuName("exit",ControlType.Button,"Quit anyway")||QuitMenuName("exit",ControlType.MenuItem,"Close Window"))
+            throw new Exception("Claude 退出菜单允许列表自检失败");
+        bool ambiguous=false;
+        try {UniqueQuitControl(new[]{"exit","exit"},item=>item=="exit");}catch(Exception){ambiguous=true;}
+        if(!ambiguous)throw new Exception("Claude 退出菜单歧义自检失败");
+        int checks=0;
+        if(ObserveQuit(()=>++checks==2,()=>false,()=>{},3)!="exited"||
+           ObserveQuit(()=>false,()=>true,()=>{},3)!="pending"||
+           ObserveQuit(()=>false,()=>false,()=>{},3)!="submitted")throw new Exception("Claude 退出结果自检失败");
+    }
     [STAThread] static int Main(string[] args) {
         Console.OutputEncoding=new UTF8Encoding(false);
         try {
@@ -506,13 +643,17 @@ class ClaudeKeyboard {
                 CheckNativeLaunch();
                 CheckDirectSubmission();
                 CheckDetachedReuse();
-                Console.WriteLine("keyboard ABI, Console allowlist and contenteditable text fallback OK; window selection and cancellable restore OK; menu navigation OK; packaged launch OK; atomic console submission OK; detached console reuse OK");return 0;
+                CheckNativeQuit();
+                Console.WriteLine("keyboard ABI, Console allowlist and contenteditable text fallback OK; window selection and cancellable restore OK; menu navigation OK; packaged launch OK; atomic console submission OK; detached console reuse OK; native menu quit guards OK");return 0;
             }
             if(args.Length!=3 && args.Length!=4) throw new Exception("键盘连接参数无效");
+            quitAction=args[1]=="--quit";
             cancelFile=args.Length==4?args[3]:null;
             executable=Path.GetFullPath(args[2]);
             var process=Process.GetProcessById(Int32.Parse(args[0]));
+            quitPid=process.Id;
             if(!Owned(process.Id)) throw new Exception("目标不是 Claude");
+            if(quitAction) {QuitNative(process);return 0;}
             if(args[1]=="--inspect-window") {InspectWindow(process);return 0;}
             if(args[1]=="--close-devtools") {CloseDevTools();return 0;}
             if(args[1]=="--enable-devtools") {GetAsyncKeyState(27);EnableDeveloperMode(process);return 0;}
@@ -558,6 +699,10 @@ class ClaudeKeyboard {
             // initialization. Reconnects never launch this keyboard helper.
             FocusPrompt(prompt);WriteConsoleOnce(prompt,text);Thread.Sleep(700);
             Console.WriteLine("脚本已输入，等待连接回执");return 0;
-        } catch(Exception e) {Console.WriteLine(e is System.ComponentModel.Win32Exception?"无法读取 Claude 窗口，请检查运行权限":e.Message);return 1;}
+        } catch(Exception e) {
+            string message=e is System.ComponentModel.Win32Exception?"无法读取 Claude 窗口，请检查运行权限":e.Message;
+            if(quitAction)QuitResult("failed",message,quitPid);else Console.WriteLine(message);
+            return 1;
+        }
     }
 }
