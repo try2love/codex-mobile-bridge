@@ -85,10 +85,42 @@ class DshNativeQuitTests(unittest.TestCase):
 
     def test_old_plugin_does_not_fall_back_to_process_termination(self):
         self.status.pop('nativeQuit')
-        with self.assertRaisesRegex(ValueError, '接入.*更新'):
-            self.stop()
+        with patch('bridge.integrations.dsh_windows_quit.installer_quit_command', side_effect=ValueError('无后台退出通道')), \
+                patch('bridge.integrations.client_launch._commands', return_value={}):
+            with self.assertRaisesRegex(ValueError, '后台退出通道'):
+                self.stop()
         self.assertEqual(self.adapter.call.call_count, 1)
         self.app.stop.assert_not_called()
+
+    def test_legacy_plugin_uses_supported_installer_handoff_after_idle_check(self):
+        self.status.pop('nativeQuit')
+        self.adapter.call.side_effect = [self.status, {'bridgeRevision': 3, 'complete': True,
+                                                     'sessions': [{'status': 'idle', 'runtimeKnown': True, 'requests': []}]}]
+        command = ['fixture.exe', '--dsh-installer-quit']
+        with patch('bridge.integrations.dsh_windows_quit.installer_quit_command', return_value=command), \
+                patch('bridge.integrations.dsh_windows_quit.send_installer_quit') as send, \
+                patch('bridge.integrations.client_launch._commands', return_value={}):
+            self.stop()
+        send.assert_called_once_with(command)
+        self.assertEqual([call.args[0] for call in self.adapter.call.call_args_list], ['status', 'lifecycle'])
+        self.app.stop.assert_not_called()
+
+    def test_legacy_handoff_rechecks_tasks_and_endpoint_before_sending(self):
+        self.status.pop('nativeQuit')
+        for busy in (True, False):
+            def response(action, **kwargs):
+                if action == 'status': return self.status
+                if not busy:
+                    (self.directory/'endpoint.json').write_text(json.dumps({**self.endpoint, 'generation': 'changed'}))
+                return {'bridgeRevision': 3, 'complete': True, 'sessions': [
+                    {'status': 'active' if busy else 'idle', 'runtimeKnown': True, 'requests': []}]}
+            self.adapter.call.side_effect = response
+            with self.subTest(busy=busy), \
+                    patch('bridge.integrations.dsh_windows_quit.installer_quit_command', return_value=['fixture.exe']), \
+                    patch('bridge.integrations.dsh_windows_quit.send_installer_quit') as send, \
+                    patch('bridge.integrations.client_launch._commands', return_value={}):
+                with self.assertRaises(ValueError): self.stop()
+                send.assert_not_called()
 
     def test_replaced_endpoint_never_receives_quit(self):
         (self.directory/'endpoint.json').write_text(json.dumps({**self.endpoint, 'pid': 99}))
