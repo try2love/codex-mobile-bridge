@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 
 from bridge.catalog import Catalog
 from bridge.create import CreationUnavailable
+from bridge.desktop import Desktop
 from bridge.goal import GoalRPC
 from bridge.service import Bridge, LiveSession
 from bridge.side_chat import SideChatError
@@ -134,3 +135,22 @@ class RuntimeConsumerTests(unittest.TestCase):
             self.assertNotIn(body['id'], persisted)
             self.assertEqual(self.bridge.message_action(source, body)['id'], child)
             self.assertEqual(fork.call_count, 2)
+
+    def test_windows_local_services_preserve_automatic_selection_and_fallback(self):
+        for name, configured, automatic, expected in (
+            ('automatic', '', self.new, None),
+            ('explicit', str(self.old), self.new, str(self.old)),
+            ('nonstandard', '', None, str(self.old)),
+        ):
+            with self.subTest(name=name):
+                desktop = Desktop(self.root / name)
+                preferences = {'codexHome': str(self.root), 'codexBin': configured}
+                self.find.return_value = automatic
+                with patch.object(desktop, 'preferences', return_value=preferences), \
+                     patch('bridge.desktop.os', SimpleNamespace(name='nt')), \
+                     patch('bridge.integrations.discovery.discover_clients',
+                           return_value={'codex': {'runtime': str(self.old)}}), \
+                     patch('bridge.service.Bridge') as bridge, \
+                     patch('bridge.integrations.manager.DesktopSessions'):
+                    desktop.local_services()
+                    self.assertEqual(bridge.call_args.kwargs['codex_bin'], expected)

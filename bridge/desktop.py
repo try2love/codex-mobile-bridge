@@ -48,11 +48,16 @@ class Desktop:
             raise ValueError('网关正在启动，请稍后重试')
         if self.local_bridge is None:
             from .service import Bridge
+            from .catalog import Catalog
             from .integrations.manager import DesktopSessions
             from .integrations.discovery import discover_clients
             p = self.preferences()
             discovered = discover_clients(p)
-            runtime = p.get('codexBin') or discovered['codex'].get('runtime')
+            runtime = p.get('codexBin')
+            # Keep ordinary Windows installations automatic across App updates.
+            # Preserve discovery's fallback for nonstandard desktop bundles.
+            if not runtime and (os.name != 'nt' or not Catalog.find_runtime()):
+                runtime = discovered['codex'].get('runtime')
             self.local_bridge = Bridge(Path(p['codexHome']).expanduser(), self.data_dir,
                                        ipc_path=p.get('ipcPath') or None, codex_bin=runtime or None)
             self.local_sessions = DesktopSessions(self.data_dir, self.local_bridge)
