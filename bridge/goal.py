@@ -229,25 +229,32 @@ class GoalRPC:
         'thread/goal/clear',
     }
 
-    def __init__(self, home, executable):
-        self.home, self.executable = Path(home), Path(executable) if executable else None
+    def __init__(self, home, executable, *, executable_getter=None):
+        self.home, self._executable = Path(home), Path(executable) if executable else None
+        self.executable_getter = executable_getter
         self.process = None
         self.messages = None
         self.counter = 0
         self.lock = threading.RLock()
 
+    @property
+    def executable(self):
+        value = self.executable_getter() if self.executable_getter else self._executable
+        return Path(value) if value else None
+
     def start(self):
         with self.lock:
             if self.process:
                 return self
-            if not self.executable or not self.executable.is_file():
+            executable = self.executable
+            if not executable or not executable.is_file():
                 raise GoalUnavailable('找不到桌面 App 的 Codex 运行时')
             options = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
             try:
                 messages = queue.Queue()
                 self.messages = messages
                 self.process = subprocess.Popen(
-                    [str(self.executable), 'app-server', '--listen', 'stdio://'], cwd=self.home,
+                    [str(executable), 'app-server', '--listen', 'stdio://'], cwd=self.home,
                     env={**os.environ, 'CODEX_HOME': str(self.home)}, stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding='utf-8', **options)
                 reader = threading.Thread(target=self._read, args=(messages, self.process.stdout), daemon=True)

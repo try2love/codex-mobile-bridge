@@ -123,7 +123,6 @@ class Accounts:
     def __init__(self, bridge):
         self.bridge = bridge
         self.home = bridge.codex_home
-        self.runtime = bridge.catalog_reader.executable
         self.root = bridge.data_dir/'accounts'
         if self.root.is_symlink():
             raise ValueError('账号目录不能是符号链接')
@@ -143,6 +142,10 @@ class Accounts:
         self.monitor = AccountMonitor(self)
         self.login_cancel = threading.Event()
         self.thread = None
+
+    @property
+    def runtime(self):
+        return self.bridge.catalog_reader.executable
 
     def directory(self, identifier):
         if not isinstance(identifier, str) or not re.fullmatch(r'[0-9a-f]{32}', identifier):

@@ -151,16 +151,18 @@ def normalize_limits(raw):
 
 
 class Account:
-    def __init__(self, home, data_dir, executable=None):
+    def __init__(self, home, data_dir, executable=None, *, executable_getter=None):
         self.home = Path(home)
-        self.executable = executable or Catalog.find_runtime()
+        self.executable = executable if executable_getter else executable or Catalog.find_runtime()
+        self.executable_getter = executable_getter
         self.path = Path(data_dir) / 'account-resets.json'
         self.lock = threading.Lock()
         self.usage_cache = {}
         self.subscription_cache = {}
 
     def rpc(self):
-        return AccountRPC(self.home, self.executable)
+        executable = self.executable_getter() if self.executable_getter else self.executable
+        return AccountRPC(self.home, executable)
 
     @staticmethod
     def context(rpc):
