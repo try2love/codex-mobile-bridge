@@ -337,7 +337,10 @@ class DesktopSessions:
                 try:
                     self.toggle_client({'provider': provider, 'enabled': True})
                 except (ValueError, OSError, subprocess.SubprocessError) as exc:
-                    self.config.setdefault('setup', {})[provider] = {'setupStatus': 'failed', 'reason': str(exc)}
+                    setup = self.config.setdefault('setup', {})
+                    previous = setup.get(provider, {}) if provider == 'deepseek' else {}
+                    setup[provider] = {**previous, 'setupStatus': (
+                        'restart-required' if previous.get('requiredBridgeRevision') else 'failed'), 'reason': str(exc)}
                     private_json(self.config_path, self.config)
                     self.client_cache = None
 
@@ -439,7 +442,47 @@ class DesktopSessions:
         if provider == 'claude':
             self.adapters[provider].cancel()
 
+    def _deepseek_connection(self, phase, reason, **values):
+        setup = self.config.setdefault('setup', {}).setdefault('deepseek', {})
+        previous = dict(setup)
+        setup.update(connectionState=phase, connectionReason=reason, **values)
+        if phase not in ('starting', 'connecting'):
+            for key in ('connectionStartedAt', 'connectionDeadline'):
+                setup.pop(key, None)
+        if previous != setup:
+            private_json(self.config_path, self.config)
+            self.client_cache = None
+
+    def _begin_deepseek_connection(self):
+        now = time.time()
+        self._deepseek_connection('starting', '正在启动 Harness 桌面应用',
+                                  connectionStartedAt=now, connectionDeadline=now + 60)
+
+    def _deepseek_launched(self, result, *, first_launch=False):
+        if not result.get('running') and result.get('launched') is not True:
+            raise ValueError('客户端尚未启动，请在电脑端检查后重试')
+        setup = self.config['setup']['deepseek']
+        if first_launch and result.get('running'):
+            reason = 'Harness 已打开，请完成首次设置后点击接入'
+            self._deepseek_connection('idle', reason, setupStatus='needs-first-launch', reason=reason)
+            return
+        phase = 'connecting' if result.get('running') else 'starting'
+        reason = 'Harness 已启动，正在等待桌面连接' if result.get('running') else '正在启动 Harness 桌面应用'
+        values = {'pendingFirstLaunch': first_launch}
+        if not setup.get('requiredBridgeRevision'):
+            values.update(setupStatus=phase, reason=reason)
+        self._deepseek_connection(phase, reason, **values)
+
     def _start_deepseek(self, restart=False):
+        try:
+            return self._prepare_deepseek(restart)
+        except (ValueError, OSError, subprocess.SubprocessError) as exc:
+            setup = self.config.setdefault('setup', {}).get('deepseek', {})
+            values = {} if setup.get('requiredBridgeRevision') else {'setupStatus': 'failed', 'reason': str(exc)}
+            self._deepseek_connection('error', str(exc), **values)
+            raise
+
+    def _prepare_deepseek(self, restart=False):
         from .client_launch import inspect_client, launch_deepseek
         if self.deepseek_restore_error:
             raise BridgeUnavailable(self.deepseek_restore_error)
@@ -451,12 +494,9 @@ class DesktopSessions:
         if state['running'] and not state.get('mainPids'):
             raise ValueError('检测到残留 Harness 后台实例且无法核对任务状态，请在电脑端退出 Harness 后重试')
         if not (adapter.home/'profiles/desktop/cordis.patch.yml').is_file():
+            self._begin_deepseek_connection()
             result = launch_deepseek(row)
-            if not result.get('running'):
-                raise ValueError('客户端尚未启动，请在电脑端检查后重试')
-            setup['deepseek'] = {'setupStatus': 'needs-first-launch',
-                                'reason': 'Harness 已打开，请完成首次设置后点击接入'}
-            private_json(self.config_path, self.config)
+            self._deepseek_launched(result, first_launch=True)
             return
         installed = adapter.ensure_installed()
         if installed.get('reused'):
@@ -475,13 +515,9 @@ class DesktopSessions:
             setup['deepseek'] = {'setupStatus': 'restart-required', 'reason': UPDATE_REASON,
                                  'requiredBridgeRevision': BRIDGE_REVISION}
             private_json(self.config_path, self.config)
+        self._begin_deepseek_connection()
         result = launch_deepseek(row)
-        if not result.get('running'):
-            raise ValueError('客户端尚未启动，请在电脑端检查后重试')
-        if not setup.get('deepseek', {}).get('requiredBridgeRevision'):
-            setup['deepseek'] = {'setupStatus': 'connecting', 'reason': '正在等待 Harness 连接'}
-        self.client_cache = None
-        private_json(self.config_path, self.config)
+        self._deepseek_launched(result)
 
     def connect_deepseek(self, restart=False):
         if not self.gateway_running:
@@ -534,7 +570,9 @@ class DesktopSessions:
 
     def clients(self, refresh=False):
         with self.client_lock:
-            if not refresh and self.client_cache and time.monotonic() - self.client_cache[0] < 15:
+            pending = self.client_cache and any(row.get('id') == 'deepseek' and
+                row.get('connectionState') in ('starting', 'connecting') for row in self.client_cache[1]['clients'])
+            if not refresh and self.client_cache and time.monotonic() - self.client_cache[0] < (1 if pending else 15):
                 return self.client_cache[1]
             rows = []
             discovered = self.config.get('discovered', {})
@@ -569,7 +607,7 @@ class DesktopSessions:
                     if provider == 'claude':
                         setup_status = status.get('setupState', setup_status)
                         reason = status.get('reason') or reason
-                    connected = bool(status.get('connected'))
+                    connected = status.get('connected') is True if provider == 'deepseek' else bool(status.get('connected'))
                     if connected:
                         if provider == 'deepseek':
                             ready = status.get('configured') is True and not status.get('updateRequired')
@@ -592,6 +630,10 @@ class DesktopSessions:
                     reason = UPDATE_REASON
                 elif pending_restart:
                     reason = setup.get('reason') or '请结束当前任务后重启 Harness 完成接入'
+                elif provider == 'deepseek' and connected:
+                    # Transport readiness and account setup are separate. A live
+                    # current connector also clears stale restart/failure labels.
+                    setup_status = 'recovered' if ready and setup_status == 'recovered' else 'ready' if ready else 'unconfigured'
                 verified = self.config.setdefault('verified', {})
                 binding = self._verified(provider)
                 if invalid and provider in verified:
@@ -604,9 +646,11 @@ class DesktopSessions:
                 remembered = bool(binding.get('executable') and verified.get(provider) == binding and
                                   discovered.get(provider, {}).get('installed'))
                 configured = ready or remembered
+                if provider == 'deepseek' and (pending_restart or status.get('updateRequired')):
+                    configured = False
                 if not connected and remembered and setup_status not in ('failed', 'restart-required', 'needs-initialization'):
                     reason = '客户端已配置，可开启桌面应用'
-                if provider == 'deepseek' and setup.get('setupStatus') == 'failed' and not ready:
+                if provider == 'deepseek' and setup.get('setupStatus') == 'failed' and not connected:
                     setup_status, reason = 'failed', setup.get('reason', reason)
                 rows.append({'id': provider, 'name': name, 'installed': discovered.get(provider, {}).get('installed', connected),
                              'setupStatus': ('recovered' if provider == 'deepseek' and setup_status == 'recovered' else 'ready') if ready and not pending_restart else setup_status, 'configured': configured, 'connected': connected,
@@ -638,6 +682,8 @@ class DesktopSessions:
                             row.update(setupStatus='recovery-required', reason='Harness 存在残留或多个后台实例，请在桌面使用完整退出并重新接入')
                     except (ValueError, OSError, subprocess.SubprocessError):
                         pass
+                if row['id'] == 'deepseek':
+                    self._deepseek_progress(row, native_states.get('deepseek'))
                 # Selection is a startup preference; readiness still requires live evidence.
                 row['selectable'] = bool(row['configured'] or row['installed'] and row['setupStatus'] != 'unsupported')
                 if not self.gateway_running and row['enabled'] and row['setupStatus'] != 'recovery-required':
@@ -646,6 +692,56 @@ class DesktopSessions:
             result = {'clients': rows, 'computer': socket.gethostname(), 'gatewayRunning': self.gateway_running}
             self.client_cache = (time.monotonic(), result)
             return result
+
+    def _deepseek_progress(self, row, native):
+        """Describe observed startup without relaunching or touching desktop tasks."""
+        setup = self.config.get('setup', {}).get('deepseek', {})
+        row.update(connectionState='connected' if row['connected'] else 'idle', retryable=False)
+        if row['setupStatus'] == 'recovery-required':
+            row['connectionState'] = 'error'
+            return
+        if row['connected']:
+            if row['setupStatus'] != 'restart-required':
+                for key in ('requiredBridgeRevision', 'restartEndpoint', 'restartConnected', 'pendingFirstLaunch'):
+                    setup.pop(key, None)
+                self._deepseek_connection('connected', row['reason'], setupStatus=row['setupStatus'], reason=row['reason'])
+            else:
+                self._deepseek_connection('connected', row['reason'])
+            return
+        if not self.gateway_running or not row['enabled']:
+            return
+        phase = setup.get('connectionState') or setup.get('setupStatus')
+        reason = setup.get('connectionReason') or row['reason']
+        if phase in ('starting', 'connecting'):
+            deadline = setup.get('connectionDeadline')
+            if not isinstance(deadline, (int, float)):
+                deadline = time.time() + 60
+                self._deepseek_connection(phase, reason, connectionDeadline=deadline)
+            if time.time() >= deadline:
+                phase, reason = 'timeout', 'Harness 连接超时，请检查桌面应用后重试接入'
+            elif native is not None and not native['running'] and phase == 'connecting':
+                phase, reason = 'error', 'Harness 已退出，连接未完成，请重试启动'
+            elif native is not None and native['running']:
+                if setup.get('pendingFirstLaunch'):
+                    reason = 'Harness 已打开，请完成首次设置后点击接入'
+                    self._deepseek_connection('idle', reason, setupStatus='needs-first-launch', reason=reason)
+                    row.update(setupStatus='needs-first-launch', reason=reason, retryable=True)
+                    return
+                phase, reason = 'connecting', 'Harness 已启动，正在等待桌面连接'
+            values = {} if setup.get('requiredBridgeRevision') else {
+                'setupStatus': 'failed' if phase == 'error' else phase, 'reason': reason}
+            self._deepseek_connection(phase, reason, **values)
+            row['setupStatus'] = setup.get('setupStatus', row['setupStatus'])
+        elif phase == 'connected':
+            phase = 'error'
+            reason = ('Harness 连接已中断，请重试接入' if native is None or native['running']
+                      else 'Harness 未运行，请重试启动')
+        elif row['setupStatus'] == 'failed':
+            phase = 'error'
+        if phase in ('starting', 'connecting', 'error', 'timeout'):
+            row.update(connectionState=phase, reason=reason, retryable=phase in ('error', 'timeout'))
+        elif row['setupStatus'] in ('needs-first-launch', 'restart-required'):
+            row['retryable'] = True
 
     def toggle_client(self, value):
         provider, enabled = value.get('provider'), value.get('enabled')
