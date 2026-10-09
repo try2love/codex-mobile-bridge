@@ -15,6 +15,24 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def created_filetime(pid):
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.OpenProcess.argtypes = [w.DWORD, w.BOOL, w.DWORD]
+    kernel.OpenProcess.restype = w.HANDLE
+    kernel.GetProcessTimes.argtypes = [w.HANDLE, ctypes.POINTER(w.FILETIME), ctypes.POINTER(w.FILETIME), ctypes.POINTER(w.FILETIME), ctypes.POINTER(w.FILETIME)]
+    kernel.CloseHandle.argtypes = [w.HANDLE]
+    handle = kernel.OpenProcess(0x1000, False, pid)
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        times = [w.FILETIME() for _ in range(4)]
+        if not kernel.GetProcessTimes(handle, *[ctypes.byref(value) for value in times]):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return times[0].dwHighDateTime << 32 | times[0].dwLowDateTime
+    finally:
+        kernel.CloseHandle(handle)
+
+
 class InactiveDesktop:
     class Security(ctypes.Structure):
         _fields_ = [('length', w.DWORD), ('descriptor', w.LPVOID), ('inherit', w.BOOL)]
@@ -37,6 +55,8 @@ class InactiveDesktop:
         self.user.CreateDesktopW.restype = w.HANDLE
         self.user.CloseDesktop.argtypes = [w.HANDLE]
         self.user.GetForegroundWindow.restype = w.HWND
+        self.user.IsWindowVisible.argtypes = [w.HWND]
+        self.user.IsWindowVisible.restype = w.BOOL
         self.kernel.CreateFileW.argtypes = [w.LPCWSTR, w.DWORD, w.DWORD, ctypes.POINTER(self.Security), w.DWORD, w.DWORD, w.HANDLE]
         self.kernel.CreateFileW.restype = w.HANDLE
         self.kernel.CreateProcessW.argtypes = [w.LPCWSTR, w.LPWSTR, w.LPVOID, w.LPVOID, w.BOOL, w.DWORD, w.LPVOID, w.LPCWSTR, ctypes.POINTER(self.Startup), ctypes.POINTER(self.ProcessInfo)]
@@ -110,7 +130,7 @@ else {
     }
   });
   app.whenReady().then(async () => {
-    window = new BrowserWindow({show: state.mode !== 'hidden', width: 600, height: 400,
+    window = new BrowserWindow({show: !state.mode.startsWith('hidden'), width: 600, height: 400,
       title: 'Codex menu fixture', webPreferences: {preload: path.join(__dirname, 'preload.js')}});
     window.removeMenu();
     window.on('close', event => {if (!stopping) {event.preventDefault(); window.hide();}});
@@ -122,7 +142,7 @@ else {
     });
     ipcMain.on('fixture-expanded', () => {
       fs.appendFileSync(path.join(base, 'expands.log'), 'expand\n');
-      if (state.mode === 'late-cancel') fs.writeFileSync(path.join(base, 'cancel'), 'cancel');
+      if (state.mode.endsWith('late-cancel')) fs.writeFileSync(path.join(base, 'cancel'), 'cancel');
     });
     await window.loadFile(path.join(__dirname, 'index.html'));
     fs.writeFileSync(path.join(base, 'ready.json'), JSON.stringify({pid: process.pid, handle: window.getNativeWindowHandle().readBigUInt64LE().toString()}));
@@ -141,7 +161,7 @@ const mode=MODE, label=LABEL, accelerator=mode==='wrong-accelerator'?'Ctrl+W':'C
 function open(){
   file.setAttribute('aria-expanded','true');content.hidden=false;
   window.fixture.expanded();
-  if(mode==='late-cancel'){setTimeout(render,500);return;}
+  if(mode.endsWith('late-cancel')){setTimeout(render,500);return;}
   render();
 }
 function render(){
@@ -177,7 +197,7 @@ class CodexNativeQuit(unittest.TestCase):
         self.assertIn('cancellation guards OK', result.stdout)
 
     def test_wrong_process_identity_has_no_dispatch(self):
-        result = subprocess.run([str(self.helper), str(os.getpid()), '--quit', str(self.helper)], capture_output=True, text=True, encoding='utf-8-sig', timeout=10)
+        result = subprocess.run([str(self.helper), str(os.getpid()), '--quit', str(self.helper), str(created_filetime(os.getpid()))], capture_output=True, text=True, encoding='utf-8-sig', timeout=10)
         self.assertEqual(result.returncode, 1)
         rows = result.stdout.strip().splitlines()
         self.assertEqual(len(rows), 1)
@@ -200,7 +220,7 @@ class CodexNativeQuit(unittest.TestCase):
         (app/'main.js').write_text(MAIN, encoding='utf-8')
         (app/'preload.js').write_text(PRELOAD, encoding='utf-8')
         state = target/'resources'
-        for mode in ('normal', 'hidden', 'pending', 'duplicate', 'wrong-accelerator', 'cancelled', 'late-cancel'):
+        for mode in ('normal', 'hidden', 'pending', 'duplicate', 'wrong-accelerator', 'cancelled', 'late-cancel', 'wrong-creation', 'hidden-late-cancel'):
             with self.subTest(mode=mode):
                 for name in ('stop', 'ready.json', 'dispatches.log', 'reopens.log', 'expands.log'):
                     (state/name).unlink(missing_ok=True)
@@ -216,13 +236,14 @@ class CodexNativeQuit(unittest.TestCase):
                     while not (state/'ready.json').exists() and time.monotonic()<deadline and desktop.wait(app_process, 0) is None:
                         time.sleep(.1)
                     self.assertTrue((state/'ready.json').exists(), app_log.read_text(encoding='utf-8', errors='replace'))
-                    pid = json.loads((state/'ready.json').read_text())['pid']
+                    ready = json.loads((state/'ready.json').read_text())
+                    pid = ready['pid']
                     log = state/'helper.log'
                     cancel = state/'cancel'
                     cancel.unlink(missing_ok=True)
                     if mode == 'cancelled':
                         cancel.write_text('cancel', encoding='utf-8')
-                    helper, _ = desktop.start([self.helper, str(pid), '--quit', target/'electron.exe', cancel], log, target)
+                    helper, _ = desktop.start([self.helper, str(pid), '--quit', target/'electron.exe', str(created_filetime(pid)+(1 if mode == 'wrong-creation' else 0)), cancel], log, target)
                     exit_code = desktop.wait(helper, 23)
                     self.assertIsNotNone(exit_code, 'helper exceeded its deadline')
                     output = log.read_text(encoding='utf-8-sig')
@@ -243,9 +264,13 @@ class CodexNativeQuit(unittest.TestCase):
                         self.assertEqual(reply['quitState'], 'failed', output)
                         self.assertIsNone(desktop.wait(app_process, 0), 'unverified command closed the app')
                     reopens = (state/'reopens.log').read_text().splitlines() if (state/'reopens.log').exists() else []
-                    self.assertEqual(len(reopens), int(mode == 'hidden'), output)
-                    if mode == 'late-cancel':
+                    self.assertEqual(len(reopens), 0, output)
+                    if mode == 'wrong-creation':
+                        self.assertIn('启动身份', reply['reason'])
+                    if mode.endswith('late-cancel'):
                         self.assertEqual((state/'expands.log').read_text().splitlines(), ['expand'])
+                    if mode == 'hidden-late-cancel':
+                        self.assertFalse(desktop.user.IsWindowVisible(int(ready['handle'])), 'cancelled quit did not restore the hidden window')
                     self.assertEqual(desktop.user.GetForegroundWindow(), desktop.foreground)
                 finally:
                     (state/'stop').write_text('stop', encoding='utf-8')
