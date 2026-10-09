@@ -3,13 +3,14 @@ import asyncio
 import json
 import re
 import secrets
+import sys
 import threading
 import time
 from pathlib import Path
 
 from . import claude_model as model
 from .claude_setup import (inspect_installation, console_source, developer_mode_enabled,
-                          native_action, running_app, claude_data_home)
+                          native_action, running_app, claude_data_home, background_running_app)
 from .errors import BridgeUnavailable
 from .mailbox import FileDesktop, MAX_REQUEST, CONNECTOR_REVISION
 from ..lifecycle import private_json
@@ -92,8 +93,8 @@ class Claude:
         with self.setup_lock:
             self.discovery.update(setupState=state, reason=reason, **values)
 
-    def reconnect(self):
-        """Prepare background handoff only; native initialization is user-triggered."""
+    def reconnect(self, *, launch=False):
+        """Recover a signed handoff, optionally starting Windows Claude without UI."""
         old_monitor = None
         with self.setup_lock:
             if self.setup_thread and self.setup_thread.is_alive():
@@ -112,10 +113,42 @@ class Claude:
             self.discovery['autoConnect'] = True
             if self.desktop is None or reset:
                 self.prepare(reset=reset and self.desktop is not None)
-            self._setup_state('needs-initialization',
-                '请手动连接 Claude；初始化会短暂使用前台窗口，之后在后台保持连接。')
+            if self.status()['connected']:
+                return self.status()
+            if launch and sys.platform == 'win32':
+                self._setup_state('starting', '正在后台启动 Claude')
+                self.setup_thread = threading.Thread(target=self._connect_background,
+                    args=(self.setup_cancel, self.discovery['executable'], self.discovery.get('dataHome')), daemon=True)
+                self.setup_thread.start()
+            else:
+                self._setup_state('needs-initialization',
+                    '正在等待已有 Claude 连接；每次完整退出应用后需要重新初始化连接。')
             private_json(self.directory/'discovery.json', self.discovery)
             return self.status()
+
+    def _connect_background(self, cancel, executable, data_home):
+        try:
+            if not data_home:
+                raise ValueError('未找到 Claude 数据目录，请重新扫描')
+            result = background_running_app(executable, data_home, cancelled=cancel)
+            if cancel.is_set():
+                return
+            self._setup_state('connecting', 'Claude 已启动，正在等待已有桌面连接恢复')
+            for _ in range(30):
+                if cancel.is_set():
+                    return
+                if self.desktop and self.desktop.connected:
+                    self._setup_state('connected', '桌面连接可用')
+                    return
+                if cancel.wait(.2):
+                    return
+            self._setup_state('needs-initialization',
+                ('Claude 已在后台启动' if result['launched'] else 'Claude 正在运行') +
+                '；每次完整退出应用后需要重新初始化连接。')
+        except Exception as exc:
+            if not cancel.is_set():
+                self._setup_state('failed', str(exc) if isinstance(exc, (ValueError, OSError))
+                                  else 'Claude 后台启动未完成，请重试')
 
     def connect(self, restart=False):
         """Start visible native connection setup without a public listener."""
