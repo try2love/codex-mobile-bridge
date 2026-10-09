@@ -98,7 +98,7 @@ class ClaudeDiscovery(unittest.TestCase):
         original_open = Path.open
 
         def legacy_open(path, mode='r', buffering=-1, encoding=None, errors=None, newline=None):
-            if 'b' not in mode and encoding is None:
+            if 'b' not in mode and encoding in (None, 'locale'):
                 encoding = 'cp936'
             return original_open(path, mode, buffering, encoding, errors, newline)
 
@@ -121,14 +121,19 @@ class ClaudeProfileEvidence(unittest.TestCase):
         self.executable = self.root/'Applications/Claude.app/Contents/MacOS/Claude'
         self.default = self.root/'Library/Application Support/Claude'
         self.third = self.default.with_name('Claude-3p')
+        self.posix_default = self.default.as_posix()[len(self.default.drive):]
+        self.posix_third = self.third.as_posix()[len(self.third.drive):]
+        for patcher in (patch.object(Path, 'home', return_value=self.root),
+                        patch('bridge.desktop_app.os.getuid', return_value=1000, create=True)):
+            patcher.start(); self.addCleanup(patcher.stop)
 
     @patch('bridge.integrations.claude_setup.sys.platform', 'darwin')
     def test_only_selected_executable_open_storage_establishes_profile(self):
         other = self.root/'Other/Claude.app/Contents/MacOS/Claude'
         processes = Mock(stdout=f' 42 {self.executable}\n 51 {other}\n')
-        files = Mock(stdout=f'p42\nn{self.third}/Local Storage/leveldb/LOCK\n'
-                            f'n{self.third}/Session Storage/LOCK\n'
-                            f'n{self.default}/claude_desktop_config.json\n')
+        files = Mock(stdout=f'p42\nn{self.posix_third}/Local Storage/leveldb/LOCK\n'
+                            f'n{self.posix_third}/Session Storage/LOCK\n'
+                            f'n{self.posix_default}/claude_desktop_config.json\n')
         with patch('bridge.integrations.claude_setup.subprocess.run', side_effect=[processes, files]) as run:
             self.assertEqual(claude_setup.claude_data_home(self.executable, self.default), self.third)
         self.assertEqual(run.call_args.args[0], ['/usr/sbin/lsof', '-a', '-p', '42', '-Fn'])
@@ -142,7 +147,7 @@ class ClaudeProfileEvidence(unittest.TestCase):
 
     @patch('bridge.integrations.claude_setup.sys.platform', 'darwin')
     def test_conflicting_storage_roots_do_not_guess(self):
-        files = Mock(stdout=f'p42\nn{self.third}/Session Storage/LOCK\nn{self.default}/Local Storage/leveldb/LOCK\n')
+        files = Mock(stdout=f'p42\nn{self.posix_third}/Session Storage/LOCK\nn{self.posix_default}/Local Storage/leveldb/LOCK\n')
         with patch('bridge.integrations.claude_setup.DesktopApp.processes', return_value=[42]), \
              patch('bridge.integrations.claude_setup.subprocess.run', return_value=files):
             self.assertEqual(claude_setup.claude_data_home(self.executable, self.default), self.default)
@@ -537,7 +542,7 @@ class ClaudeNativeConnection(unittest.TestCase):
         target.write_text(console_source(source, config), encoding='utf-8')
         completed = subprocess.run(['node', 'tests/claude-connector.test.cjs'], cwd=ROOT,
                                    env={**os.environ, 'CONNECTOR_TEMPLATE': str(target)},
-                                   capture_output=True, text=True, timeout=15)
+                                   capture_output=True, text=True, encoding='utf-8', timeout=15)
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
     def test_console_transform_preserves_configuration_string_whitespace(self):
