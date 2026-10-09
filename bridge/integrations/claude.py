@@ -15,6 +15,7 @@ from .errors import BridgeUnavailable
 from .mailbox import FileDesktop, MAX_REQUEST, CONNECTOR_REVISION
 from ..lifecycle import private_json
 from ..windows_session import DesktopUnavailable
+from .. import windows_session
 
 
 class Claude:
@@ -139,29 +140,94 @@ class Claude:
             self._setup_state(state, reason, **values)
             return True
 
-    def _connect_background(self, cancel, executable, data_home):
+    def _connect_background(self, cancel, executable, data_home, *, foreground=False, cancel_path=None):
+        def current():
+            return cancel is self.setup_cancel and not cancel.is_set()
+        def unavailable(state, reason):
+            if not current():
+                return
+            if state != 'cancelled' and foreground and windows_session.status().get('interactive') is True:
+                # Only an explicit initialization may use foreground setup, and
+                # only when the background operation definitely sent no input.
+                self._connect_native(False, cancel_path, cancel)
+            else:
+                self._background_state(cancel, state, reason)
+        native_started = False
         try:
+            if not current():
+                return
+            if self.desktop and self.desktop.connected:
+                self._background_state(cancel, 'connected', '桌面连接可用')
+                return
             if not data_home:
                 raise ValueError('未找到 Claude 数据目录，请重新扫描')
-            background_running_app(executable, data_home, cancelled=cancel, launch_gate=self.setup_lock)
+            app = background_running_app(executable, data_home, cancelled=cancel,
+                                         launch_gate=self.setup_lock, initialize_console=True)
             if not self._background_state(cancel, 'connecting', 'Claude 已启动，正在等待已有桌面连接恢复'):
                 return
-            for _ in range(30):
-                if cancel.is_set():
+            for _ in range(5):
+                if not current():
                     return
                 if self.desktop and self.desktop.connected:
                     self._background_state(cancel, 'connected', '桌面连接可用')
                     return
                 if cancel.wait(.2):
                     return
-            self._background_state(cancel, 'needs-initialization',
-                'Claude 已在后台运行；完全退出或重新加载后需要初始化连接，可从手机发起，过程会使用电脑前台。')
+            if not current():
+                return
+            if not self.discovery.get('dataHomeExplicit'):
+                active_home = str(claude_data_home(executable, data_home))
+                if active_home != data_home:
+                    with self.setup_lock:
+                        if not current():
+                            return
+                        self.discovery['dataHome'] = active_home
+                        private_json(self.directory/'discovery.json', self.discovery)
+                    data_home = active_home
+            if not developer_mode_enabled(data_home):
+                unavailable('needs-developer-mode', '请在 Claude 中确认开发者模式后重试初始化连接')
+                return
+            with self.setup_lock:
+                if not current():
+                    return
+                prepared = self.prepare()
+                cancel_path = cancel_path or self.directory/'cancel-native-connection'
+                cancel_path.unlink(missing_ok=True)
+            if not self._background_state(cancel, 'connecting', '正在后台初始化 Claude 连接'):
+                return
+            native_started = True
+            result = native_action('connect-background', pid=app['pid'], executable=executable,
+                                   script=prepared['consolePath'], cancel_path=cancel_path, cancelled=cancel)
+            if not current():
+                return
+            if self.desktop and self.desktop.connected:
+                self._background_state(cancel, 'connected', '桌面连接可用')
+                return
+            if result.get('submission') == 'none':
+                unavailable(result.get('setupState', 'needs-initialization'),
+                            result.get('reason', '当前 Claude 未提供可用的后台连接窗口，请显式初始化连接'))
+                return
+            # Submission (including an interrupted receipt) is not readiness.
+            # Never invoke the foreground injector after input may have arrived.
+            for _ in range(32):
+                if not current():
+                    return
+                if self.desktop and self.desktop.connected:
+                    self._background_state(cancel, 'connected', '桌面连接可用')
+                    return
+                if cancel.wait(.25):
+                    return
+            self._background_state(cancel, 'needs-retry',
+                '后台初始化已提交，但尚未收到 Claude 连接回执，请检查目录信任或刷新状态后重试')
         except Exception as exc:
-            self._background_state(cancel, 'failed', str(exc) if isinstance(exc, (ValueError, OSError))
-                                   else 'Claude 后台启动未完成，请重试')
+            reason = str(exc) if isinstance(exc, (ValueError, OSError)) else 'Claude 后台启动或初始化未完成，请重试'
+            if native_started:
+                self._background_state(cancel, 'needs-retry', reason)
+            else:
+                unavailable('failed', reason)
 
     def connect(self, restart=False):
-        """Start visible native connection setup without a public listener."""
+        """Initialize through verified background UI, with explicit foreground fallback."""
         old_monitor = None
         background_monitor = False
         with self.setup_lock:
@@ -202,8 +268,14 @@ class Claude:
             self._setup_state('connecting', '正在连接 Claude', consoleCleanupPending=False)
             if self.desktop is None and (self.directory/'connection.json').exists():
                 self.prepare()
-            self.setup_mode = 'native'
-            self.setup_thread = threading.Thread(target=self._connect_native, args=(restart, cancel_path, self.setup_cancel), daemon=True)
+            if sys.platform == 'win32' and not restart:
+                self.setup_mode = 'background'
+                self.setup_thread = threading.Thread(target=self._connect_background,
+                    args=(self.setup_cancel, self.discovery['executable'], self.discovery.get('dataHome')),
+                    kwargs={'foreground': True, 'cancel_path': cancel_path}, daemon=True)
+            else:
+                self.setup_mode = 'native'
+                self.setup_thread = threading.Thread(target=self._connect_native, args=(restart, cancel_path, self.setup_cancel), daemon=True)
             self.setup_thread.start()
             return self.status()
 

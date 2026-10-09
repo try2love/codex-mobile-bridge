@@ -564,14 +564,13 @@ class DesktopSessions:
         with self.client_lock, self._changing('claude'):
             if not restart and self.adapters['claude'].status().get('connected') is True:
                 return self.clients(refresh=True)
-            if sys.platform == 'win32':
-                windows_session.require_interactive()
             descriptor = self._descriptor('claude')
             if restart:
                 self._stop_client('claude', descriptor, inspect_client(descriptor))
-            result = launch_client(descriptor)
-            if not result.get('running'):
-                raise ValueError('客户端尚未启动，请在电脑端检查后重试')
+            if sys.platform != 'win32':
+                result = launch_client(descriptor)
+                if not result.get('running'):
+                    raise ValueError('客户端尚未启动，请在电脑端检查后重试')
             self.adapters['claude'].connect()
             return self.clients(refresh=True)
 
@@ -866,6 +865,15 @@ class DesktopSessions:
         from .client_launch import launch_client
         if provider == 'deepseek':
             self._start_deepseek()
+        elif provider == 'claude' and sys.platform == 'win32':
+            from .claude_setup import background_running_app
+            reconnect = self.gateway_running and self.enabled(provider)
+            # Account transactions require a confirmed main process before
+            # committing restored credentials; reconnect alone is asynchronous.
+            background_running_app(descriptor['executable'], descriptor['dataDirectory'],
+                                   initialize_console=reconnect)
+            if reconnect:
+                self.adapters[provider].reconnect(launch=True)
         else:
             result = launch_client(descriptor)
             if not result.get('running'):

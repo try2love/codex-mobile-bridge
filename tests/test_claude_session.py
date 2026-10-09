@@ -172,7 +172,7 @@ class ClaudeSessionTests(unittest.TestCase):
         self.assertTrue(locked['clients'][0]['connected'])
         self.assertNotIn('windowsSession', cached)
 
-    def test_desktop_initialization_checks_session_before_launch_or_restart(self):
+    def test_locked_initialization_routes_through_background_adapter_and_preserves_restart_gate(self):
         self.locked()
         manager = object.__new__(DesktopSessions); manager.gateway_running = True
         manager.client_lock = threading.RLock(); manager._changing = lambda provider: nullcontext()
@@ -183,11 +183,16 @@ class ClaudeSessionTests(unittest.TestCase):
              patch('bridge.integrations.client_launch.inspect_client') as inspect:
             for restart in (False, True):
                 manager.adapters['claude'].status.return_value = {'connected': restart}
-                with self.assertRaises(windows_session.DesktopUnavailable):
-                    manager.connect_claude(restart=restart)
-            manager._descriptor.assert_not_called(); manager._stop_client.assert_not_called()
-            launch.assert_not_called(); inspect.assert_not_called()
-            manager.adapters['claude'].connect.assert_not_called()
+                self.assertEqual(manager.connect_claude(restart=restart), {'clients': []})
+            self.assertEqual(manager._descriptor.call_count, 2)
+            manager._stop_client.assert_called_once_with('claude', manager._descriptor.return_value, inspect.return_value)
+            launch.assert_not_called(); inspect.assert_called_once()
+            self.assertEqual(manager.adapters['claude'].connect.call_count, 2)
+            manager._stop_client.side_effect = ValueError('任务仍在运行')
+            with self.assertRaisesRegex(ValueError, '任务仍在运行'):
+                manager.connect_claude(restart=True)
+            self.assertEqual(manager.adapters['claude'].connect.call_count, 2)
+            manager.adapters['claude'].connect.reset_mock()
             manager.adapters['claude'].status.return_value = {'connected': True}
             self.snapshot.reset_mock()
             self.assertEqual(manager.connect_claude(), {'clients': []})

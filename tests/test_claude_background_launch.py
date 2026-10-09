@@ -149,14 +149,14 @@ class ClaudeBackgroundWorker(unittest.TestCase):
         native.assert_not_called()
         self.adapter.setup_thread = None
 
-    def test_cold_start_reports_initialization_after_bounded_handoff_wait(self):
+    def test_cold_start_without_developer_mode_reports_required_user_choice(self):
         with patch('bridge.integrations.claude.background_running_app', return_value={'pid': 42, 'launched': True}), \
              patch.object(self.adapter.setup_cancel, 'wait', return_value=False) as wait, \
              patch('bridge.integrations.claude.native_action') as native:
             self.adapter._connect_background(self.adapter.setup_cancel, 'fixture', self.temp.name)
-        self.assertEqual(wait.call_count, 30)
-        self.assertEqual(self.adapter.status()['setupState'], 'needs-initialization')
-        self.assertIn('完全退出或重新加载', self.adapter.status()['reason'])
+        self.assertEqual(wait.call_count, 5)
+        self.assertEqual(self.adapter.status()['setupState'], 'needs-developer-mode')
+        self.assertIn('开发者模式', self.adapter.status()['reason'])
         native.assert_not_called()
 
     def test_cancelled_or_replaced_worker_cannot_overwrite_current_state(self):
@@ -175,14 +175,16 @@ class ClaudeBackgroundWorker(unittest.TestCase):
         worker = threading.Thread(target=background)
         self.adapter.setup_thread = worker; self.adapter.setup_mode = 'background'
         worker.start(); self.assertTrue(entered.wait(1))
-        with patch('bridge.integrations.claude.threading.Thread') as native:
+        with patch('bridge.integrations.claude.threading.Thread') as native, \
+             patch('bridge.integrations.claude.sys.platform', 'win32'):
             self.adapter.connect()
         self.assertFalse(worker.is_alive())
         self.assertTrue(cancel.is_set())
-        self.assertEqual(native.call_args.kwargs['target'], self.adapter._connect_native)
-        self.assertFalse(native.call_args.kwargs['args'][0])
+        self.assertEqual(native.call_args.kwargs['target'], self.adapter._connect_background)
+        self.assertIs(native.call_args.kwargs['args'][0], self.adapter.setup_cancel)
+        self.assertTrue(native.call_args.kwargs['kwargs']['foreground'])
         native.return_value.start.assert_called_once_with()
-        self.assertEqual(self.adapter.setup_mode, 'native')
+        self.assertEqual(self.adapter.setup_mode, 'background')
         self.adapter.setup_thread = None
 
 
