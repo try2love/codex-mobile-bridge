@@ -54,6 +54,45 @@ class WindowsDiscoveryTests(unittest.TestCase):
         self.assertEqual(rows['deepseek']['executable'], str(dsh))
         self.assertEqual(rows['deepseek']['dataDirectory'], str(self.home/'.dsh'))
 
+    def test_store_manifest_selects_visible_gui_before_shims_and_helpers(self):
+        shim = self.executable('Store/App/app/Codex.exe')
+        self.executable('Store/App/app/ChatGPT.exe')
+        gui = self.executable('Store/App/gui/ChatGPT.exe')
+        helper = self.executable('Store/App/app/resources/codex-command-runner.exe', electron=False)
+        (shim.parent.parent/'AppxManifest.xml').write_text(
+            '<Package xmlns="urn:appx" xmlns:uap="urn:uap"><Applications>'
+            '<Application Id="CodexCoreCommandRunner" Executable="app/resources/codex-command-runner.exe">'
+            '<uap:VisualElements AppListEntry="none"/></Application>'
+            '<Application Id="Hidden" Executable="app/Codex.exe">'
+            '<uap:VisualElements AppListEntry="none"/></Application>'
+            '<Application Id="App" Executable="gui\\ChatGPT.exe"><uap:VisualElements/></Application>'
+            '</Applications></Package>')
+        rows = self.scan({'packages': [{'Name': 'OpenAI.Codex', 'InstallLocation': str(shim.parent.parent)}]})
+        self.assertEqual(rows['codex']['executable'], str(gui))
+        self.assertNotEqual(rows['codex']['executable'], str(helper))
+
+    def test_store_fallback_prefers_chatgpt_over_codex_shim(self):
+        shim = self.executable('Store/App/app/Codex.exe')
+        gui = self.executable('Store/App/app/ChatGPT.exe')
+        inventory = {'packages': [{'Name': 'OpenAI.Codex', 'InstallLocation': str(shim.parent.parent)}]}
+        for manifest in (None, '<broken', ' ' * (1024 * 1024 + 1)):
+            with self.subTest(manifest='missing' if manifest is None else len(manifest)):
+                if manifest is not None:
+                    (shim.parent.parent/'AppxManifest.xml').write_text(manifest)
+                self.assertEqual(self.scan(inventory)['codex']['executable'], str(gui))
+
+    def test_manifest_does_not_escape_package_or_select_runtime(self):
+        gui = self.executable('Store/App/app/ChatGPT.exe')
+        self.executable('Store/Escape/ChatGPT.exe')
+        self.executable('Store/App/app/resources/codex.exe', electron=False)
+        (gui.parent.parent/'AppxManifest.xml').write_text(
+            '<Package><Applications>'
+            '<Application Executable="../Escape/ChatGPT.exe"><VisualElements/></Application>'
+            '<Application Executable="app/resources/codex.exe"><VisualElements/></Application>'
+            '</Applications></Package>')
+        rows = self.scan({'packages': [{'Name': 'OpenAI.Codex', 'InstallLocation': str(gui.parent.parent)}]})
+        self.assertEqual(rows['codex']['executable'], str(gui))
+
     def test_registered_install_location_and_quoted_display_icon(self):
         dsh = self.executable('Custom/DSH Desktop.exe')
         claude = self.executable('Custom Claude/Claude.exe')
