@@ -680,10 +680,15 @@ class DesktopSessions:
         if not home or not descriptor.get('installed'):
             raise ValueError('尚未安装此客户端')
         key = (provider, home)
+        if provider == 'claude':
+            key += (descriptor.get('executable'), descriptor.get('packageFamilyName'),
+                    bool(descriptor.get('dataDirectoryExplicit')))
         if key not in self.account_stores:
             if provider == 'claude':
                 from .claude_accounts import ClaudeAccounts
-                store = ClaudeAccounts(self.directory/'claude-accounts', home)
+                store = ClaudeAccounts(self.directory/'claude-accounts', home,
+                    executable=descriptor.get('executable'), package_family=descriptor.get('packageFamilyName'),
+                    explicit_home=bool(descriptor.get('dataDirectoryExplicit')))
             else:
                 from .deepseek_accounts import DeepSeekAccounts
                 store = DeepSeekAccounts(self.directory/'deepseek-accounts', home)
