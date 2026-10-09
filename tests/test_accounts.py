@@ -174,7 +174,7 @@ class AccountsTests(unittest.TestCase):
                 def record_phase(name,**values):
                     phases.append(name);phase(name,**values)
                 self.manager.phase=record_phase
-                self.app.stop.side_effect=lambda: events.append('stop')
+                self.app.stop.side_effect=lambda **kwargs: events.append('stop')
                 def start():
                     backup=read_json(self.manager.root/'rollback.json',{})
                     self.assertNotIn('threads',backup)
@@ -186,6 +186,7 @@ class AccountsTests(unittest.TestCase):
                     self.switch(row);wait_for_account_worker(self)
                 self.assertEqual(self.manager.state['phase'],'restored' if failure else 'complete')
                 self.assertEqual(events,['stop','start','stop','start'] if failure else ['stop','start'])
+                self.assertTrue(all(call.kwargs == {'provider': 'codex'} for call in self.app.stop.call_args_list))
                 self.assertNotIn('migrating',phases)
                 self.bridge.store.list.assert_not_called();self.bridge.store.history.assert_not_called()
                 self.bridge.catalog_reader.get_kind.assert_not_called();runtime.assert_not_called()
@@ -272,7 +273,7 @@ class AccountsTests(unittest.TestCase):
 
     def test_native_exit_edits_are_retained_before_switch_and_rollback(self):
         row=self.api();self.manager.prepare=Mock(side_effect=self.prepare)
-        def stop():
+        def stop(**kwargs):
             if self.app.stop.call_count==1:
                 private_bytes(self.home/'config.toml',b'# saved during exit\n')
         self.app.stop.side_effect=stop
