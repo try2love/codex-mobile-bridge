@@ -130,11 +130,12 @@ class CodexQuit {
     static string Compact(string text) {
         var result=new StringBuilder();foreach(char value in text??"")if(!Char.IsWhiteSpace(value))result.Append(value);return result.ToString();
     }
+    static readonly string[] QuitLabels={"退出 Codex","Quit Codex","退出 ChatGPT","Quit ChatGPT"};
     static bool QuitLabel(string text) {
-        return text=="退出 Codex"||text=="Quit Codex";
+        foreach(string label in QuitLabels)if(text==label)return true;return false;
     }
     static bool QuitName(string name,string accelerator) {
-        foreach(string label in new[]{"退出 Codex","Quit Codex"}) {
+        foreach(string label in QuitLabels) {
             if(Compact(name)==Compact(label+"Ctrl+Q"))return true;
             if(Compact(name)==Compact(label)&&Compact(accelerator)=="Ctrl+Q")return true;
         }
@@ -203,8 +204,8 @@ class CodexQuit {
         operation.State="submitted";operation.Reason="已请求 Codex 正常退出，正在等待保存和退出完成";
     }
     static void SelfCheck() {
-        if(!QuitName("退出 Codex Ctrl+Q","")||!QuitName("Quit Codex","Ctrl+Q")||QuitName("Quit Codex","Alt+F4")||
-            QuitName("Close Codex Ctrl+Q","")||QuitName("Quit Codex Ctrl+Q extra","")||QuitName("Quit Claude Ctrl+Q",""))throw new Exception("quit selector failed");
+        if(!QuitName("退出 Codex Ctrl+Q","")||!QuitName("退出 ChatGPT Ctrl+Q","")||!QuitName("Quit Codex","Ctrl+Q")||QuitName("Quit Codex","Alt+F4")||
+            QuitName("Close Codex Ctrl+Q","")||QuitName("Quit Codex Ctrl+Q extra","")||QuitName("Quit Claude Ctrl+Q","")||QuitName("退出登录 Ctrl+Q",""))throw new Exception("quit selector failed");
         var standalone=NativeLaunch(@"C:\Fixture\Codex.exe",null);
         if(standalone.UseShellExecute||standalone.Arguments!=""||!standalone.CreateNoWindow)throw new Exception("native launch failed");
         bool rejected=false;try{NativeLaunch(@"C:\Fixture\Codex.exe","bad id --quit");}catch{rejected=true;}
