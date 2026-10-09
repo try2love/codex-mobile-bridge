@@ -414,7 +414,7 @@ class DesktopSessions:
         except Exception:
             if provider == 'claude':
                 try:
-                    self.adapters[provider].connect()
+                    self.adapters[provider].reconnect()
                 except Exception:
                     pass  # A recovery failure must not hide the native quit error.
             raise
@@ -586,7 +586,7 @@ class DesktopSessions:
                 remembered = bool(binding.get('executable') and verified.get(provider) == binding and
                                   discovered.get(provider, {}).get('installed'))
                 configured = ready or remembered
-                if not connected and remembered and setup_status not in ('failed', 'restart-required'):
+                if not connected and remembered and setup_status not in ('failed', 'restart-required', 'needs-initialization'):
                     reason = '客户端已配置，可开启桌面应用'
                 if provider == 'deepseek' and setup.get('setupStatus') == 'failed' and not ready:
                     setup_status, reason = 'failed', setup.get('reason', reason)
@@ -623,7 +623,8 @@ class DesktopSessions:
                 # Selection is a startup preference; readiness still requires live evidence.
                 row['selectable'] = bool(row['configured'] or row['installed'] and row['setupStatus'] != 'unsupported')
                 if not self.gateway_running and row['enabled'] and row['setupStatus'] != 'recovery-required':
-                    row['reason'] = '已选择，启动网关后自动接入'
+                    row['reason'] = ('已选择，启动网关后在后台等待连接' if row['id'] == 'claude'
+                                     else '已选择，启动网关后自动接入')
             result = {'clients': rows, 'computer': socket.gethostname(), 'gatewayRunning': self.gateway_running}
             self.client_cache = (time.monotonic(), result)
             return result
@@ -649,12 +650,12 @@ class DesktopSessions:
             if enabled:
                 if provider == 'deepseek':
                     self._start_deepseek()
+                elif provider == 'claude':
+                    self.adapters[provider].reconnect()
                 else:
                     result = launch_client(descriptor)
                     if not result.get('running'):
                         raise ValueError('客户端尚未启动，请在电脑端检查后重试')
-                    if provider == 'claude':
-                        self.adapters[provider].connect()
             else:
                 self._stop_client(provider, descriptor, inspect_client(descriptor))
             # Persist only after the native lifecycle operation succeeds.
@@ -708,7 +709,7 @@ class DesktopSessions:
             if not result.get('running'):
                 raise ValueError('客户端尚未启动，请在电脑端检查后重试')
             if self.gateway_running and self.enabled(provider):
-                self.adapters[provider].connect()
+                self.adapters[provider].reconnect()
 
     def client_accounts(self, provider, value):
         operation = value.get('operation', 'list')

@@ -25,7 +25,7 @@ class ClaudeBackgroundReconnectTests(unittest.TestCase):
 
     def adapter(self, **options):
         adapter = Claude(self.directory, **options)
-        self.addCleanup(adapter.close)
+        self.addCleanup(lambda: adapter.close() if adapter.loop is None or not adapter.loop.is_closed() else None)
         return adapter
 
     def heartbeat(self, adapter):
@@ -59,7 +59,6 @@ class ClaudeBackgroundReconnectTests(unittest.TestCase):
         self.assertTrue(adapter.status()['connected'])
         generation, token = adapter.desktop.generation, adapter.desktop.token
         adapter.close()
-        self._cleanups.pop()  # The already-closed adapter must not overwrite the new owner's mailbox.
         with patch.object(Claude, 'connect') as connect:
             other = self.adapter()
         connect.assert_not_called()

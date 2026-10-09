@@ -65,7 +65,7 @@ class DesktopConnectionsPanel {
     finally{this.scanning=false;this.renderScan();await this.refreshClients(true);await this.refresh();}
   }
   renderScan(){
-    const node=document.getElementById('client-scan-status');if(node){node.textContent=BridgeI18n.t(this.scanMessage||'选择需要接入的应用；启动网关后自动打开并检查登录状态。');node.classList.toggle('error',!!this.scanError);}
+    const node=document.getElementById('client-scan-status');if(node){node.textContent=BridgeI18n.t(this.scanMessage||'选择需要接入的应用；Claude 首次连接需手动初始化，之后在后台重连。');node.classList.toggle('error',!!this.scanError);}
     const button=document.getElementById('refresh-clients');if(button){button.disabled=!!this.scanning||!!this.busy;button.textContent=BridgeI18n.t(this.scanning?'正在扫描…':'重新扫描');}
     this.root.querySelectorAll('[data-desktop-action="scan"]').forEach(button=>button.disabled=!!this.scanning);
   }
@@ -89,9 +89,9 @@ class DesktopConnectionsPanel {
       const row=node('tr'),identity=node('td'),name=node('div',undefined,'connection-name'),logo=node('span',undefined,'client-logo');
       const img=node('img');img.src='../web/client-icons/'+client.id+'.png';img.alt='';logo.append(img);
       const label=node('div');label.append(node('strong',client.name),node('small',({codex:'Codex Desktop',claude:'Claude Desktop',deepseek:'DeepSeek Harness'})[client.id]));name.append(logo,label);identity.append(name);
-      const access=node('td'),toggle=node('input');toggle.type='checkbox';toggle.className='client-toggle';toggle.checked=client.enabled;toggle.disabled=!(client.selectable??client.configured)||this.scanning||this.busy;toggle.setAttribute('aria-label',t('启用')+' '+client.name);toggle.title=t(client.reason);toggle.onchange=()=>this.toggleClient(client.id,toggle.checked);access.append(toggle,node('small',this.pendingClient?.id===client.id?(this.gatewayRunning===false?'正在保存…':this.pendingClient.enabled?'正在打开应用…':'正在退出应用…'):client.setupStatus==='unsupported'?'暂不可用':client.enabled?(this.gatewayRunning===false?'随网关启动':'已启用'):!client.installed&&!client.configured?'待配置':'未启用'));
-      const statusLabel=({'unsupported':'暂不支持自动接入','connecting':'连接中','restart-required':'等待重启','needs-permission':'等待授权','needs-developer-mode':'等待开发者模式确认','needs-trust':'等待目录授权','cancelled':'已取消连接','failed':'连接失败'})[client.setupStatus]||'待接入';
-      const status=node('td');status.append(node('span',client.backgroundRunning&&client.mainRunning===false?'后台运行，桌面未打开':client.connected?'已连接':client.installed===false?'未安装':client.running===false?'应用未运行':client.configured?'已配置':statusLabel,client.connected?'state-ready':client.setupStatus==='failed'?'state-error':['unsupported','needs-permission','needs-developer-mode','needs-trust'].includes(client.setupStatus)?'state-pending':''),node('small',client.reason));
+      const access=node('td'),toggle=node('input');toggle.type='checkbox';toggle.className='client-toggle';toggle.checked=client.enabled;toggle.disabled=!(client.selectable??client.configured)||this.scanning||this.busy;toggle.setAttribute('aria-label',t('启用')+' '+client.name);toggle.title=t(client.reason);toggle.onchange=()=>this.toggleClient(client.id,toggle.checked);access.append(toggle,node('small',this.pendingClient?.id===client.id?(this.gatewayRunning===false?'正在保存…':this.pendingClient.enabled?(client.id==='claude'?'正在准备后台连接…':'正在打开应用…'):'正在退出应用…'):client.setupStatus==='unsupported'?'暂不可用':client.enabled?(this.gatewayRunning===false?'随网关启动':'已启用'):!client.installed&&!client.configured?'待配置':'未启用'));
+      const statusLabel=({'unsupported':'暂不支持自动接入','connecting':'连接中','needs-initialization':'需要手动初始化','restart-required':'等待重启','needs-permission':'等待授权','needs-developer-mode':'等待开发者模式确认','needs-trust':'等待目录授权','cancelled':'已取消连接','failed':'连接失败'})[client.setupStatus]||'待接入';
+      const status=node('td');status.append(node('span',client.backgroundRunning&&client.mainRunning===false?'后台运行，桌面未打开':client.connected?'已连接':client.installed===false?'未安装':client.setupStatus==='needs-initialization'?statusLabel:client.running===false?'应用未运行':client.configured?'已配置':statusLabel,client.connected?'state-ready':client.setupStatus==='failed'?'state-error':['unsupported','needs-initialization','needs-permission','needs-developer-mode','needs-trust'].includes(client.setupStatus)?'state-pending':''),node('small',client.reason));
       const account=node('td');account.dataset.clientAccount=client.id;
       if(client.id!=='codex')account.append(node('span',client.configured?'已配置':'待配置'),node('small',client.id==='claude'?'在 Claude 中管理账号':'在 Harness 中管理账号 / API'));
       const actions=node('td'),buttons=node('div',undefined,'connection-actions'),manage=node('button',client.setupStatus==='unsupported'?'查看详情':client.configured?'管理':'配置');
@@ -102,7 +102,7 @@ class DesktopConnectionsPanel {
       }
       if(this.gatewayRunning!==false&&client.id==='claude'&&client.installed&&!client.connected&&client.setupStatus!=='unsupported'){
         const restart=client.setupStatus==='restart-required',pending=['connecting','needs-developer-mode'].includes(client.setupStatus);
-        const connect=node('button',pending?'取消连接':restart?'重启并接入':client.setupStatus==='needs-permission'?'授权并连接':'连接 Claude',pending?'':'primary');
+        const connect=node('button',pending?'取消连接':restart?'重启并接入':client.setupStatus==='needs-permission'?'授权并连接':client.setupStatus==='needs-initialization'?'手动连接':'连接 Claude',pending?'':'primary');
         connect.type='button';connect.disabled=!!this.busy||!!this.scanning;connect.onclick=()=>this.action(pending?'cancel-claude':restart?'restart-claude':'connect-claude');buttons.append(connect);manage.textContent=t('查看详情');manage.className='connection-secondary';
       }
       manage.type='button';manage.onclick=()=>window.GatewayLayout.selectClient(client.id);buttons.append(manage);actions.append(buttons);row.append(identity,access,status,account,actions);body.append(row);

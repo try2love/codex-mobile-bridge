@@ -37,7 +37,7 @@ class Claude:
         if auto_connect and (self.directory/'connection.json').exists() and self.discovery.get('autoConnect') is not False:
             self.prepare()
         if auto_connect and self.discovery.get('autoConnect') is True:
-            self.connect()
+            self.reconnect()
 
     def configure(self, executable, data_home=None, *, explicit_home=False):
         """Remember auto-discovery even with the public gateway stopped.
@@ -92,6 +92,31 @@ class Claude:
         with self.setup_lock:
             self.discovery.update(setupState=state, reason=reason, **values)
 
+    def reconnect(self):
+        """Prepare background handoff only; native initialization is user-triggered."""
+        old_monitor = None
+        with self.setup_lock:
+            if self.setup_thread and self.setup_thread.is_alive():
+                if not self.setup_cancel.is_set():
+                    return self.status()  # Preserve an explicit initialization in progress.
+                old_monitor = self.setup_thread
+        if old_monitor:
+            old_monitor.join(timeout=5)
+        with self.setup_lock:
+            if self.setup_thread and self.setup_thread.is_alive():
+                raise ValueError('请先取消正在进行的 Claude 连接')
+            if not self.discovery.get('installed') or self.discovery.get('automaticConnection') != 'native-console':
+                return self.status()
+            reset = self.setup_cancel.is_set()
+            self.setup_cancel = threading.Event()
+            self.discovery['autoConnect'] = True
+            if self.desktop is None or reset:
+                self.prepare(reset=reset and self.desktop is not None)
+            self._setup_state('needs-initialization',
+                '请手动连接 Claude；初始化会短暂使用前台窗口，之后在后台保持连接。')
+            private_json(self.directory/'discovery.json', self.discovery)
+            return self.status()
+
     def connect(self, restart=False):
         """Start visible native connection setup without a public listener."""
         old_monitor = None
@@ -126,7 +151,7 @@ class Claude:
             private_json(self.directory/'discovery.json', self.discovery)
             cancel_path = self.directory/'cancel-native-connection'
             cancel_path.unlink(missing_ok=True)
-            self._setup_state('connecting', '正在自动连接 Claude', consoleCleanupPending=False)
+            self._setup_state('connecting', '正在连接 Claude', consoleCleanupPending=False)
             if self.desktop is None and (self.directory/'connection.json').exists():
                 self.prepare()
             self.setup_thread = threading.Thread(target=self._connect_native, args=(restart, cancel_path), daemon=True)
