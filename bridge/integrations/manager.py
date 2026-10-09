@@ -365,7 +365,7 @@ class DesktopSessions:
         row = self.config.get('discovered', {}).get(provider, {})
         return {key: row.get(key) for key in ('executable', 'dataDirectory')}
 
-    def _assert_idle(self, provider, state):
+    def _assert_idle(self, provider, state, *, native_confirmation=False):
         unknown = '无法确认客户端所有任务均已结束；可选择“仅停用手机接入”保留电脑 App，或在电脑端退出后重试'
         if provider == 'deepseek' and len(state.get('runtimePids', [])) > 1:
             raise ValueError('检测到多个 Harness 后台实例，无法确认全部任务状态；请在电脑上结束多余实例后重试')
@@ -390,7 +390,8 @@ class DesktopSessions:
             if status.get('bridgeRevision') != BRIDGE_REVISION:
                 raise ValueError('当前 Harness 接入版本无法核对任务状态，请在电脑端退出 Harness 后再连接')
         try:
-            listing = adapter.call('lifecycle' if provider == 'deepseek' else 'list')
+            listing = (adapter.call('list', timeout=8) if native_confirmation else
+                       adapter.call('lifecycle' if provider == 'deepseek' else 'list'))
         except (ValueError, OSError, BridgeUnavailable):
             raise TaskStateUnavailable(unknown) from None
         sessions = listing.get('sessions')
@@ -408,12 +409,13 @@ class DesktopSessions:
 
     def _stop_client(self, provider, descriptor, state, *, native_confirmation=False):
         from .client_launch import stop_client, stop_deepseek
+        native_confirmation = native_confirmation and provider == 'claude' and sys.platform == 'win32'
         if not state['running']:
             if provider == 'claude':
                 self.adapters[provider].cancel()
             return
         try:
-            self._assert_idle(provider, state)
+            self._assert_idle(provider, state, native_confirmation=native_confirmation)
         except TaskStateUnavailable:
             # Only explicit user-requested quit can defer unavailable task evidence
             # to Claude's own normal exit confirmation. Account changes cannot.
@@ -667,9 +669,10 @@ class DesktopSessions:
                 return self.clients()
             if accounts:
                 accounts.assert_editable()
-            row = next(row for row in self.clients(refresh=True)['clients'] if row['id'] == provider)
-            if enabled and not row['selectable']:
-                raise ValueError(row['reason'])
+            if enabled:
+                row = next(row for row in self.clients(refresh=True)['clients'] if row['id'] == provider)
+                if not row['selectable']:
+                    raise ValueError(row['reason'])
             if not self.gateway_running:
                 self.config.setdefault('enabled', {})[provider] = enabled
                 private_json(self.config_path, self.config)

@@ -241,13 +241,26 @@ class ClientLifecycleTests(unittest.TestCase):
         self.assertTrue(self.manager.enabled('claude'))
 
     def test_windows_claude_incomplete_list_cannot_hide_known_busy_tasks(self):
-        self.claude.call.side_effect = lambda *args: {'complete': False, 'sessions': [
+        self.claude.call.side_effect = lambda *args, **kwargs: {'complete': False, 'sessions': [
             {'id': 'one', 'status': 'running', 'runtimeKnown': True}]}
         with patch('bridge.integrations.manager.sys.platform', 'win32'):
             with self.assertRaisesRegex(ValueError, '任务运行或等待'):
                 self.manager.toggle_client({'provider': 'claude', 'enabled': False, 'quitDesktop': True})
         self.stop.assert_not_called()
         self.assertTrue(self.manager.enabled('claude'))
+
+    def test_windows_claude_exit_probe_timeout_uses_native_confirmation_without_readiness_scan(self):
+        def call(action, *args, **kwargs):
+            self.assertEqual(action, 'list')
+            self.assertEqual(kwargs, {'timeout': 8})
+            raise TimeoutError('stale connector')
+        self.claude.call.side_effect = call
+        with patch('bridge.integrations.manager.sys.platform', 'win32'), \
+                patch.object(self.manager, 'clients', return_value={'clients': []}) as clients:
+            self.manager.toggle_client({'provider': 'claude', 'enabled': False, 'quitDesktop': True})
+        self.stop.assert_called_once()
+        clients.assert_called_once_with()
+        self.assertFalse(self.manager.enabled('claude'))
 
     def test_windows_claude_unknown_processes_block_native_confirmation(self):
         self.claude.status.return_value = {'connected': False}

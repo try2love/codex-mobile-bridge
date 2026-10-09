@@ -430,10 +430,18 @@ class Claude:
             raise BridgeUnavailable('桌面未接受操作，请检查原会话')
         return {'status': 'accepted'}
 
-    def call(self, action, sid=None, body=None):
+    def call(self, action, sid=None, body=None, *, timeout=100):
         if self.loop is None:
             raise BridgeUnavailable(self.status()['reason'])
-        return asyncio.run_coroutine_threadsafe(self.dispatch(action, sid, body or {}), self.loop).result(timeout=100)
+        pending = asyncio.run_coroutine_threadsafe(self.dispatch(action, sid, body or {}), self.loop)
+        try:
+            return pending.result(timeout=timeout)
+        except TimeoutError:
+            # A bounded lifecycle read must not linger after native quit starts.
+            # Mutations retain their existing uncertain-outcome semantics.
+            if action == 'list':
+                pending.cancel()
+            raise
 
     def close(self):
         # Ownership handoff must preserve explicit connection intent. A user's
