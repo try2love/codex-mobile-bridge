@@ -233,6 +233,27 @@ def native_action(action, *, pid=None, executable=None, script=None, cancel_path
         raise ValueError('不支持的 Claude 本机操作')
     def quit_failed(reason):
         return {'quitState': 'failed', 'reason': reason, 'pid': pid}
+    def quit_dispatched(output):
+        if sys.platform != 'win32':
+            return False
+        if isinstance(output, bytes):
+            output = output.decode('utf-8', errors='replace')
+        if not isinstance(output, str):
+            return False
+        for line in output.splitlines():
+            try:
+                value = json.loads(line)
+            except ValueError:
+                continue
+            if (isinstance(value, dict) and value.get('quitPhase') == 'dispatching'
+                    and type(value.get('pid')) is int and value['pid'] == pid):
+                return True
+        return False
+    def quit_interrupted(reason, dispatched):
+        if dispatched:
+            return {'quitState': 'submitted', 'pid': pid,
+                    'reason': 'Claude 退出命令回执中断，正在等待保存和退出完成'}
+        return quit_failed(reason)
     if cancelled and cancelled.is_set():
         if action == 'quit':
             return quit_failed('已取消 Claude 退出')
@@ -275,35 +296,42 @@ def native_action(action, *, pid=None, executable=None, script=None, cancel_path
     if sys.platform == 'win32' and action in ('inspect-error', 'close-devtools'):
         timeout = 8
     deadline = time.monotonic() + timeout
+    dispatched = False
     while True:
         try:
             stdout, _ = process.communicate(timeout=.2)
             break
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as expired:
+            if action == 'quit':
+                dispatched = dispatched or quit_dispatched(expired.output)
             blocked = desktop_blocked()
             if (cancelled and cancelled.is_set()) or blocked or time.monotonic() >= deadline:
                 # Stop only our input helper, never the Claude desktop process.
                 process.terminate()
-                try: process.communicate(timeout=3)
+                try: stdout, _ = process.communicate(timeout=3)
                 except subprocess.TimeoutExpired:
-                    process.kill(); process.communicate()
+                    process.kill(); stdout, _ = process.communicate()
                 if action == 'quit':
-                    return quit_failed('已取消 Claude 退出' if cancelled and cancelled.is_set()
-                                       else 'Claude 原生退出请求超时，请在电脑端检查退出状态')
+                    return quit_interrupted('已取消 Claude 退出' if cancelled and cancelled.is_set()
+                                            else 'Claude 原生退出请求超时，请在电脑端检查退出状态',
+                                            dispatched or quit_dispatched(stdout))
                 if blocked and not (cancelled and cancelled.is_set()):
                     return blocked
                 return {'setupState': 'cancelled' if cancelled and cancelled.is_set() else 'needs-retry',
                         'reason': '已取消 Claude 连接' if cancelled and cancelled.is_set() else 'Claude 自动连接超时，请重试'}
     if action == 'quit':
+        dispatched = dispatched or quit_dispatched(stdout)
         try:
             value = json.loads(stdout.strip().splitlines()[-1])
             if (not isinstance(value, dict) or value.get('quitState') not in ('exited', 'pending', 'submitted', 'failed')
                     or type(value.get('pid')) is not int or value['pid'] != pid or not isinstance(value.get('reason'), str)
                     or (process.returncode and value['quitState'] != 'failed')):
                 raise ValueError('invalid native quit result')
+            if value['quitState'] == 'failed' and dispatched:
+                return quit_interrupted(value['reason'], dispatched)
             return {'quitState': value['quitState'], 'pid': pid, 'reason': value['reason'][:300]}
         except (ValueError, IndexError, AttributeError):
-            return quit_failed('Claude 原生退出组件未返回有效状态，请在电脑端检查退出状态')
+            return quit_interrupted('Claude 原生退出组件未返回有效状态，请在电脑端检查退出状态', dispatched)
     if sys.platform != 'win32':
         try:
             value = json.loads(stdout.strip().splitlines()[-1])
