@@ -2,6 +2,19 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"需要初始化连接":"Connection initialization required",
+"初始化连接":"Initialize connection",
+"开始初始化":"Start initialization",
+"会打开电脑上的 Claude 和开发者工具，并使用键盘焦点；请暂停电脑端操作，完成后恢复后台连接。":"This opens Claude and its developer tools on your computer and uses keyboard focus. Pause your work on the computer; the connection will return to the background when finished.",
+"通过 Claude 原生菜单退出，菜单可能短暂出现；如有任务或保存确认，请在电脑端处理。完全退出后需重新初始化连接，初始化会使用电脑前台和键盘焦点。":"Quit through Claude's native menu. The menu may appear briefly; handle any task or save confirmation on your computer. After quitting completely, the connection requires initialization again, using the computer's foreground window and keyboard focus.",
+"安装和登录请在电脑端完成。关闭接入时可选择保留或退出电脑 App。Claude 退出会短暂打开原生菜单。Claude 完全退出或重新加载后需初始化连接，初始化会使用电脑前台和键盘焦点。":"Install and sign in on your computer. When disabling access, choose whether to keep the desktop app running or quit it. Quitting Claude briefly opens its native menu. After a complete quit or reload, Claude needs connection initialization, using the computer's foreground window and keyboard focus.",
+"正在后台启动 Claude":"Starting Claude in the background",
+"Claude 已启动，正在等待已有桌面连接恢复":"Claude has started. Waiting for the existing desktop connection to recover.",
+"Claude 完全退出或重新加载后需要初始化连接；可从手机发起，过程会使用电脑前台。":"After a complete quit or reload, Claude needs connection initialization. You can start it from your phone; it uses the computer's foreground window.",
+"Claude 已在后台运行；完全退出或重新加载后需要初始化连接，可从手机发起，过程会使用电脑前台。":"Claude is running in the background. After a complete quit or reload, initialize the connection from your phone; this uses the computer's foreground window.",
+"Claude 后台启动未完成，请重试":"Claude could not finish starting in the background. Try again.",
+"Claude 未运行，请重试后台启动":"Claude is not running. Try starting it in the background again.",
+"已选择，启动网关后在后台启动并连接":"Selected. The app will start and connect in the background when the gateway starts.",
 "正在启动应用…":"Starting the app…",
 "正在连接，请稍候…":"Connecting, please wait…",
 "正在等待客户端连接，完成后会自动显示聊天。":"Waiting for the client to connect. Chats will appear automatically when ready.",

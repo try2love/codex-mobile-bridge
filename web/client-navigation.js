@@ -65,7 +65,7 @@ class ClientNavigation {
     return this.refresh();
   }
   connection(client){return ClientLifecycle.connection({...client,pendingEnable:this.gatewayRunning!==false&&this.pending.has(client.id)&&client.enabled});}
-  syncViewClients(){this.view.setClientStates?.(this.clients.map(client=>({...client,pendingEnable:this.gatewayRunning!==false&&this.pending.has(client.id)&&client.enabled})),id=>this.toggle(id,true));}
+  syncViewClients(){this.view.setClientStates?.(this.clients.map(client=>({...client,pendingEnable:this.gatewayRunning!==false&&this.pending.has(client.id)&&client.enabled})),id=>this.toggle(id,true),id=>this.initialize(id));}
   async choose(id){
     this.provider=id;if(id)localStorage.setItem('bridge-client',id);
     const ready=this.view.choose(id||'codex');this.paint();await ready;
@@ -87,7 +87,13 @@ class ClientNavigation {
     if(target.provider==='codex')await openCodex(target.id,target.host);else await this.view.open(target.id);
     return true;
   }
-  async toggle(id,enabled){
+  async initialize(id){
+    const client=this.clients.find(row=>row.id===id);if(this.gatewayRunning===false||this.pending.size||this.choosing||!client||!this.connection(client).canInitialize)return;
+    this.choosing=id;++this.revision;this.paint();let confirmed=false;
+    try{confirmed=await ClientLifecycle.chooseInitialize(client);}finally{this.choosing=null;this.paint();}
+    if(confirmed)return this.toggle(id,true,{initializeDesktop:true});
+  }
+  async toggle(id,enabled,{initializeDesktop=false}={}){
     const client=this.clients.find(row=>row.id===id);if(this.pending.size||this.choosing||!client||(enabled&&!(client.selectable??client.configured)))return;
     let quitDesktop=false;
     if(!enabled&&this.gatewayRunning!==false){
@@ -99,7 +105,7 @@ class ClientNavigation {
     const before=this.clients.map(c=>({...c})),previous=this.provider;
     this.pending.add(id);this.pendingQuitDesktop=quitDesktop;++this.revision;
     this.applyClients({clients:this.clients.map(c=>c.id===id?{...c,enabled}:c)});
-    try{const data=await this.request('/api/clients',{provider:id,enabled,...(!enabled?{quitDesktop}:{})});this.applyClients(data);}
+    try{const data=await this.request('/api/clients',{provider:id,enabled,...(!enabled?{quitDesktop}:{}),...(initializeDesktop?{initializeDesktop:true}:{})});this.applyClients(data);}
     catch(error){this.provider=previous;this.applyClients({clients:before});throw error;}
     finally{this.pending.delete(id);this.pendingQuitDesktop=false;++this.revision;this.paint();}
   }
@@ -136,8 +142,9 @@ class ClientNavigation {
       toggle.append(document.createElement('span'));control.append(toggle,label);row.append(this.icon(client.id),text,control);list.append(row);
       toggle.onclick=()=>this.toggle(client.id,!client.enabled).catch(error=>this.notify(error.message));
       if(state.retryable&&this.gatewayRunning!==false){const retry=document.createElement('button');retry.type='button';retry.textContent=BridgeI18n.t('重试连接');retry.disabled=this.pending.size>0||!!this.choosing;retry.onclick=()=>this.toggle(client.id,true).catch(error=>this.notify(error.message));control.append(retry);}
+      if(state.canInitialize&&this.gatewayRunning!==false){const initialize=document.createElement('button');initialize.type='button';initialize.textContent=BridgeI18n.t('初始化连接');initialize.disabled=this.pending.size>0||!!this.choosing;initialize.onclick=()=>this.initialize(client.id).catch(error=>this.notify(error.message));control.append(initialize);}
     }
-    note.textContent=BridgeI18n.t(this.gatewayRunning===false?'网关未启动，开关仅保存下次启动时的选择，不会打开或退出应用。':'安装和登录请在电脑端完成。关闭接入时可选择保留或退出电脑 App。Claude 退出会短暂打开原生菜单。Claude 完全退出或重新加载后需在电脑端初始化。');
+    note.textContent=BridgeI18n.t(this.gatewayRunning===false?'网关未启动，开关仅保存下次启动时的选择，不会打开或退出应用。':'安装和登录请在电脑端完成。关闭接入时可选择保留或退出电脑 App。Claude 退出会短暂打开原生菜单。Claude 完全退出或重新加载后需初始化连接，初始化会使用电脑前台和键盘焦点。');
   }
   openManager(){
     if(this.manager?.dialog.open)return;
