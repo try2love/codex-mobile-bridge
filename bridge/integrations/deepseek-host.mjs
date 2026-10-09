@@ -9,6 +9,7 @@ export async function apply(ctx,config){
   // The gateway accepts at most 100 MiB of decoded images plus small JSON fields.
   const maxRequestBytes=Math.ceil(100*1024*1024*4/3)+1024*1024;
   const questions=new Map(),history=new Map();
+  let quitting=false,activeMutations=0;
   const signal=()=>new AbortController().signal;
   const list=async()=> (await ctx.sessionController.list({},signal())).items;
   const find=async id=>{const row=(await list()).find(r=>r.sessionId===id);if(!row)throw Error('DeepSeek 会话不存在');return row;};
@@ -94,8 +95,7 @@ export async function apply(ctx,config){
       finally{questions.delete(id);controller.abort();original?.removeEventListener('abort',abort);req.signal=original;}
     },{prepend:true,global:true});
   }
-  async function dispatch(action,sid,body){
-    if(action==='lifecycle'){
+  function lifecycle(){
       // The runtime registry includes child agents omitted from the chat list.
       // This snapshot is requested only before a native quit/restart.
       if(typeof ctx.agents.list!=='function')return {connected:true,bridgeRevision:3,complete:false,sessions:[]};
@@ -104,12 +104,26 @@ export async function apply(ctx,config){
       const sessions=agents.map(agent=>({id:agent.id,status:agent.status==='running'?'active':agent.status==='idle'?'idle':'unknown',runtimeKnown:['idle','running'].includes(agent.status),requests:[...questions.values()].filter(q=>q.sid===agent.id).map(q=>q.public)}));
       for(const question of questions.values())if(!sessions.some(s=>s.id===question.sid))sessions.push({id:question.sid,status:'waiting',runtimeKnown:true,requests:[question.public]});
       return {connected:true,bridgeRevision:3,complete:sessions.every(s=>typeof s.id==='string'&&s.id.length>0),sessions};
-    }
+  }
+  const idle=runtime=>runtime.complete&&runtime.sessions.every(s=>s.runtimeKnown&&s.status==='idle'&&!s.requests.length);
+  const quitFailed=error=>{quitting=false;ctx.logger?.error?.('Harness native quit failed: '+String(error.message||error));};
+  function finishQuit(){
+    try{
+      const exit=ctx.get?.('appExit');
+      // No await between this snapshot and appExit: native work can arrive
+      // while the HTTP acceptance is flushing, even after mobile writes stop.
+      if(!quitting||activeMutations||!idle(lifecycle())||typeof exit!=='function'){quitting=false;return;}
+      Promise.resolve(exit(0)).catch(quitFailed);
+    }catch(error){quitFailed(error);}
+  }
+  async function dispatch(action,sid,body){
+    if(action==='lifecycle')return lifecycle();
     if(action==='quit'){
+      if(quitting)throw Error('Harness 正在退出，请稍后重试');
       if(body.expectedPid!==process.pid||body.expectedGeneration!==generation)throw Error('Harness 进程已变化，请重新检查后再退出');
       if(typeof ctx.get?.('appExit')!=='function')throw Error('当前 Harness 未提供正常退出接口，请在电脑端退出');
-      const runtime=await dispatch('lifecycle');
-      if(!runtime.complete||runtime.sessions.some(s=>!s.runtimeKnown||s.status!=='idle'||s.requests.length))throw Error('有任务运行、等待确认或状态未知，请先在电脑端检查后再退出');
+      if(activeMutations||!idle(lifecycle()))throw Error('有任务运行、等待确认或状态未知，请先在电脑端检查后再退出');
+      quitting=true;
       return {status:'accepted',pid:process.pid,generation};
     }
     if(action==='status')return {connected:true,bridgeRevision:3,nativeQuit:typeof ctx.get?.('appExit')==='function',configured:(await account()).status==='configured'};
@@ -143,9 +157,14 @@ export async function apply(ctx,config){
     const credential=String(req.headers.authorization||'').replace(/^Bearer /,'');const a=Buffer.from(credential),b=Buffer.from(token);
     if(req.method!=='POST'||req.url!=='/mobile'||req.headers.origin||a.length!==b.length||!timingSafeEqual(a,b)){res.writeHead(403);res.end();return;}
     let size=0,chunks=[];for await(const chunk of req){size+=chunk.length;if(size>maxRequestBytes)throw Error('请求过大');chunks.push(chunk);}const {action,sid,body={}}=JSON.parse(Buffer.concat(chunks));
-    const result=await dispatch(action,sid,body);res.writeHead(200,{'content-type':'application/json','cache-control':'no-store'});
+    const mutating=['create','rename','archive','stop','send','respond','settings'].includes(action)||(action==='access'&&Boolean(body?.mode));
+    if(mutating&&quitting)throw Error('Harness 正在退出，请稍后重试');
+    let result;
+    if(mutating)activeMutations++;
+    try{result=await dispatch(action,sid,body);}finally{if(mutating)activeMutations--;}
+    res.writeHead(200,{'content-type':'application/json','cache-control':'no-store'});
     // Flush acceptance before native teardown disposes this connector's server.
-    res.end(JSON.stringify(result),action==='quit'?()=>{Promise.resolve().then(()=>ctx.get('appExit')(0)).catch(error=>ctx.logger?.error?.('Harness native quit failed: '+String(error.message||error)));}:undefined);
+    res.end(JSON.stringify(result),action==='quit'?finishQuit:undefined);
   }catch(error){res.writeHead(400,{'content-type':'application/json'});res.end(JSON.stringify({error:String(error.message||error)}));}});
   await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});
   const port=server.address().port,generation=randomUUID();await writeFile(endpoint+'.tmp',JSON.stringify({port,pid:process.pid,generation}),{mode:0o600});await rename(endpoint+'.tmp',endpoint);

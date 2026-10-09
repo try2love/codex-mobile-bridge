@@ -127,7 +127,7 @@ def verified_directory(entry, home):
         current = hashlib.sha256(Path(__file__).with_name('deepseek-host.mjs').read_bytes()).hexdigest()
         if digest not in (current, LEGACY_SOURCE, PREVIOUS_SOURCE, PREVIOUS_CLEANUP_SOURCE, PREVIOUS_CATALOG_SOURCE, *PREVIOUS_QUIT_SOURCES):
             return None
-        return directory, digest != current
+        return directory, digest not in (current, *PREVIOUS_QUIT_SOURCES)
     except (OSError, ValueError, KeyError, TypeError, IndexError):
         return None
 

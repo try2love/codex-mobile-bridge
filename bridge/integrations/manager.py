@@ -458,7 +458,7 @@ class DesktopSessions:
         needs_reload = needs_update or previous.get('setupStatus') == 'restart-required' and not status.get('connected')
         if state['running'] and (restart or needs_reload):
             self._stop_client('deepseek', row, state)
-        if needs_update or restart and getattr(adapter, 'reused', False):
+        if needs_update or getattr(adapter, 'reused', False) and (restart or not state['running']):
             adapter.update_existing()
             setup['deepseek'] = {'setupStatus': 'restart-required', 'reason': UPDATE_REASON,
                                  'requiredBridgeRevision': BRIDGE_REVISION}
