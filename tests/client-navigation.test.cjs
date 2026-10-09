@@ -94,7 +94,7 @@ test('notification routing rejects malformed targets and never enables a disable
   assert.equal(await nav.openChatLink('#chat~desktop%3Aclaude',()=>{}),true);assert.equal(notices.length,1);assert.equal(nav.clients.find(c=>c.id==='claude').enabled,false);
 });
 test('a slow notification link cannot reopen a chat after the user switches clients',async()=>{
-  const {nav}=fixture();let finish;nav.view.generation=0;nav.view.choose=function(id){this.provider=id;this.generation++;return id==='claude'?new Promise(resolve=>finish=resolve):Promise.resolve();};nav.view.open=async()=>{throw Error('stale notification opened');};
+  const {nav}=fixture();nav.provider=nav.view.provider='codex';let finish;nav.view.generation=0;nav.view.choose=function(id){this.provider=id;this.generation++;return id==='claude'?new Promise(resolve=>finish=resolve):Promise.resolve();};nav.view.open=async()=>{throw Error('stale notification opened');};
   const opening=nav.openChatLink('#chat~desktop%3Aclaude',()=>{});await nav.choose('deepseek');finish();await opening;assert.equal(nav.provider,'deepseek');
 });
 
