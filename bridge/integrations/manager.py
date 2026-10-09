@@ -401,11 +401,13 @@ class DesktopSessions:
             raise ValueError(unknown)
 
     def _stop_client(self, provider, descriptor, state):
-        from .client_launch import stop_client, stop_deepseek
+        from .client_launch import WINDOWS_CLAUDE_QUIT_REASON, stop_client, stop_deepseek
         if not state['running']:
             if provider == 'claude':
                 self.adapters[provider].cancel()
             return
+        if provider == 'claude' and sys.platform == 'win32':
+            raise ValueError(WINDOWS_CLAUDE_QUIT_REASON)
         self._assert_idle(provider, state)
         if provider == 'claude':
             # Cancel the monitor before native quit, so it cannot relaunch Claude.

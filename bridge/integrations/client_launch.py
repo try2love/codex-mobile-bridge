@@ -7,6 +7,8 @@ from pathlib import Path
 
 from ..desktop_app import DesktopApp, process_inventory
 
+WINDOWS_CLAUDE_QUIT_REASON = '当前 Claude Desktop 不支持后台退出；请在电脑上从 Claude 菜单或系统托盘选择“退出”，也可以选择“仅停用手机接入”'
+
 
 def launch_deepseek(descriptor, restart=False):
     """Never replace a running desktop during an automatic scan.
@@ -157,6 +159,9 @@ def _process_state(descriptor, app, pids, commands):
 
 
 def stop_client(descriptor, *, state):
+    if sys.platform == 'win32' and descriptor.get('id') == 'claude':
+        # CloseMainWindow minimizes this build to its tray; it is not app quit.
+        raise ValueError(WINDOWS_CLAUDE_QUIT_REASON)
     # Revalidate process identities immediately before sending native quit.
     current = inspect_client(descriptor)
     if current['unknown'] or set(current['pids']) - set(state['pids']):
