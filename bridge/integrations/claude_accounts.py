@@ -18,6 +18,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
+from contextlib import closing
 from pathlib import Path
 from urllib import error, parse, request
 
@@ -83,7 +84,7 @@ def _cookies(home):
             if path.is_symlink() or any(parent.is_symlink() for parent in path.parents):
                 raise ValueError('Claude 登录目录不能是符号链接')
             try:
-                with sqlite3.connect(path.as_uri()+'?mode=ro', uri=True, timeout=2) as db:
+                with closing(sqlite3.connect(path.as_uri()+'?mode=ro', uri=True, timeout=2)) as db:
                     rows = db.execute("SELECT host_key,name,value,encrypted_value,expires_utc FROM cookies WHERE name IN ('sessionKey','lastActiveOrg')").fetchall()
                 valid = [(host, name, value or '', bytes(encrypted or b''), expiry)
                          for host, name, value, encrypted, expiry in rows
