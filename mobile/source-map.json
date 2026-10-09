@@ -1,0 +1,44 @@
+{
+  "moves": {
+    "mobile/android/assets/mobile-ui.js": "mobile/shared/web/mobile-ui.js",
+    "mobile/android/assets/mobile-clipboard.js": "mobile/shared/web/mobile-clipboard.js"
+  },
+  "extractions": [
+    {
+      "from": "mobile/ios/BridgePreview/App.swift",
+      "member": "fixedViewport",
+      "to": "mobile/ios/BridgePreview/WebScripts.swift"
+    },
+    {
+      "from": "mobile/ios/BridgePreview/App.swift",
+      "member": "webAppearance",
+      "to": "mobile/shared/web/mobile-ui.js"
+    },
+    {
+      "from": "mobile/ios/BridgePreview/App.swift",
+      "member": "webClipboard",
+      "to": "mobile/shared/web/mobile-clipboard.js"
+    },
+    {
+      "from": "mobile/android/src/io/github/try2love/codexbridge/MainActivity.java",
+      "member": "webAppearance",
+      "to": "mobile/android/src/io/github/try2love/codexbridge/MobileWebScripts.java"
+    }
+  ],
+  "hosts": {
+    "ios": {
+      "entry": "mobile/ios/BridgePreview/App.swift",
+      "scripts": "mobile/ios/BridgePreview/WebScripts.swift",
+      "resources": "mobile/ios/BridgePreview.xcodeproj/project.pbxproj"
+    },
+    "android": {
+      "entry": "mobile/android/src/io/github/try2love/codexbridge/MainActivity.java",
+      "scripts": "mobile/android/src/io/github/try2love/codexbridge/MobileWebScripts.java",
+      "session": "mobile/android/assets/mobile-session.js",
+      "resources": "scripts/build-mobile-android.py"
+    },
+    "androidPush": {
+      "resources": "mobile/android-push/build.gradle"
+    }
+  }
+}

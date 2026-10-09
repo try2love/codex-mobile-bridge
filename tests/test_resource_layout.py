@@ -15,9 +15,10 @@ from bridge.resources import project_root, source_text
 
 ROOT = Path(__file__).resolve().parents[1]
 # Public URLs from the pre-layout source snapshot (21ae09f). Physical directories
-# may change, but the manifest must not publish additional files or directories.
+# may change. Only the two explicit host/layout entrypoints are added; physical
+# directories and manifest entries must not become public URLs.
 PUBLIC_URLS = set('''
-/ /permissions.js /downloads.js /downloads.css
+/ /host.js /layout.js /permissions.js /downloads.js /downloads.css
 /client-icons/codex.png /client-icons/claude.png /client-icons/deepseek.png
 /client-navigation.js /client-navigation.css /desktop-sessions.js
 /client-accounts.js /desktop-sessions.css /vendor/xterm/xterm.js
@@ -85,10 +86,12 @@ class ResourceLayoutTests(unittest.TestCase):
         web = (ROOT/'web').resolve()
         for url, (relative, mime) in STATIC.items():
             with self.subTest(url=url):
-                self.assertEqual(relative, layout.get(url, relative))
-                target = (web/relative).resolve()
-                target.relative_to(web)
-                self.assertTrue(target.is_file(), relative)
+                configured = layout.get(url, relative)
+                self.assertEqual(relative, tuple(configured) if isinstance(configured, list) else configured)
+                for item in (relative,) if isinstance(relative, str) else relative:
+                    target = (web/item).resolve()
+                    target.relative_to(web)
+                    self.assertTrue(target.is_file(), item)
                 self.assertTrue(mime)
         # Directory relocation and manifest metadata do not become HTTP routes.
         for url in ('/index.html', '/assets.json', '/shell/app.js',

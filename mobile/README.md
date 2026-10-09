@@ -89,6 +89,8 @@ Android 发现新版后显示说明，点击「下载 APK」在系统浏览器�
 
 ## 本地构建
 
+原生源码与资源入口见 [源码对照表](source-map.json)，平台修改规则见 [Android](android/AGENTS.md) 和 [iOS](ios/AGENTS.md)。两端共用的页面适配与剪贴板脚本只有 `shared/web/` 一份源；Android 会话续期脚本保留在 `android/assets/`。源码资源回归可运行 `node --test mobile/tests/*.test.cjs`，不调用原生编译器。
+
 Android 构建脚本为 `scripts/build-mobile-android.py`，仅使用项目 `.tmp/mobile-tools` 中已准备好的 JDK、SDK 和 ZXing，不安装全局工具。原生地址边界验证运行 `python3 scripts/test-mobile-urls.py`；Android 后台会话续期验证运行 `python3 scripts/test-mobile-session.py`（需要 JDK，或指定 `JAVA_HOME`）；网关收件箱测试位于 `tests/test_mobile_events.py`。
 
 第三方依赖与许可证见 [NOTICE.md](NOTICE.md)。
@@ -126,7 +128,7 @@ SSH 模式使用电脑已有的 SSH 别名和已信任主机，需要服务器�
 
 在电脑浏览器中，将工作台标签拖到右侧提示区，或选中标签后点击加号旁的分屏按钮。左栏固定显示主会话，右栏可切换终端、侧边聊天、文件与 Git 等工具。拖动中间分隔条可调整宽度，两栏保留最小可用宽度；分隔条也支持左右方向键，Home 恢复均分。再次点击分屏按钮可返回单栏。
 
-仅在浏览器宽度至少 1100 像素且会话区域足够宽时显示分屏入口；窄屏网页及手机 App 保持单栏。缩小窗口或切换工具不会清空输入草稿。
+会话区域可用宽度达到 720 像素时显示分屏入口，适用于网页、平板和折叠屏 App；空间不足时显示单栏。宿主类型不决定是否能分屏，缩小窗口或切换工具不会清空输入草稿。
 
 ### 子智能体
 

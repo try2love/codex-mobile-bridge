@@ -10,7 +10,7 @@ class ClientNavigation {
     this.footer.querySelector(':scope > span')?.remove();
     const make=(label,action)=>{const b=document.createElement('button');b.type='button';b.className='plain';b.dataset.i18n=label;b.textContent=BridgeI18n.t(label);b.onclick=action;return b;};
     this.manage=make('应用管理',()=>this.openManager());this.manage.id='clients-button';
-    this.home=document.createElement('a');this.home.className='plain';this.home.dataset.i18n='返回电脑列表';this.home.textContent=BridgeI18n.t('返回电脑列表');this.home.href='#computers';this.home.id='computers-button';this.home.onclick=event=>{if(document.documentElement.classList.contains('bridge-mobile')){this.home.href='codexbridge://home';return;}event.preventDefault();this.homeDialog();};
+    this.home=document.createElement('a');this.home.className='plain';this.home.dataset.i18n='返回电脑列表';this.home.textContent=BridgeI18n.t('返回电脑列表');this.home.href='#computers';this.home.id='computers-button';this.home.onclick=event=>{if(BridgeHost.hasNativeLayout()){this.home.href='codexbridge://home';return;}event.preventDefault();this.homeDialog();};
     this.footer.append(this.manage,this.home);this.syncHome();new MutationObserver(()=>this.syncHome()).observe(document.documentElement,{attributes:true,attributeFilter:['class']});
     document.getElementById('logout').hidden=true;
     this.badge=document.createElement('span');this.badge.className='client-badge';this.heading.querySelector('h2').append(this.badge);
@@ -42,7 +42,7 @@ class ClientNavigation {
     document.addEventListener('visibilitychange',()=>{if(!document.hidden)this.refresh();});
     this.timer=setInterval(()=>{if(!document.hidden&&!document.getElementById('app').hidden)this.refresh();},15000);this.paint();
   }
-  syncHome(){this.home.hidden=!document.documentElement.classList.contains('bridge-mobile');}
+  syncHome(){this.home.hidden=!BridgeHost.hasNativeLayout();}
   preference(key,value){if(value!==undefined)localStorage.setItem('navigation:'+key,String(value));return localStorage.getItem('navigation:'+key)!=='false';}
   icon(id){const n=document.createElement('span');n.className='client-icon client-'+id;n.setAttribute('aria-hidden','true');const img=document.createElement('img');img.src='/client-icons/'+id+'.png';img.alt='';n.append(img);return n;}
   applyClients(data){
@@ -143,7 +143,7 @@ class ClientNavigation {
   }
 
   homeDialog(){
-    if(document.documentElement.classList.contains('bridge-mobile')){location.href='codexbridge://home';return;}
+    if(BridgeHost.hasNativeLayout()){location.href='codexbridge://home';return;}
     // Web gateways do not share cookies; remember only explicit gateway URLs.
     const dialog=this.view.dialog('电脑列表'),current=document.createElement('p');current.textContent=this.computerName.textContent||location.host;dialog.append(current);
     const input=document.createElement('input');input.type='url';input.placeholder=BridgeI18n.t('https://你的网关地址');input.setAttribute('aria-label',BridgeI18n.t('电脑网关地址'));

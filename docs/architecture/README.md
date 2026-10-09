@@ -18,7 +18,11 @@
 | 通知、后台巡检、事件游标 | `bridge/features/notifications/` | `desktop/features/notifications/`，`mobile/android/`、`mobile/ios/` |
 | 局域网、域名、SSH、中继连接 | `bridge/features/network/` | `desktop/features/connections/`，独立服务 `relay/` |
 | 网关更新或 Codex 更新 | `bridge/features/updates/` | `desktop/features/updates/`、签名与构建脚本 |
-| Web/手机聊天布局、应用切换 | `web/features/chat/`、`web/features/clients/` | `web/shell/`、手机壳的原生菜单/返回逻辑 |
+| 共享聊天功能、应用切换 | `web/features/chat/`、`web/features/clients/` | `web/shell/` |
+| 窄屏、横屏、宽屏分屏 | `web/layouts/` | 工作台自身标签/草稿状态仍归 `web/features/workspace/` |
+| 浏览器与手机 App 的差别 | `web/hosts/` | `mobile/shared/web/` 共同注入脚本 |
+| Android 原生菜单、返回、下载、通知 | `mobile/android/` | 可选推送壳 `mobile/android-push/` |
+| iOS 原生菜单、导航、下载、通知 | `mobile/ios/` | Xcode 的 Sources/Resources 与 `WebScripts.swift` |
 | 桌面网关页面与模块排布 | `desktop/shell/`、`desktop/features/` | `desktop/index.html`、`main.cjs`、`preload.cjs` |
 
 ## 目录与职责
@@ -40,9 +44,14 @@ bridge/
     windows/ macos/ linux/ posix/
   resources.py                   源码/冻结运行时的资源定位
 web/                             Web 与手机共享聊天界面
-  shell/ features/ shared/        按界面功能组织，公开 URL 保持稳定
+  shell/ features/ shared/        共享功能与页面组织
+  hosts/                         browser / iOS / Android 宿主适配
+  layouts/                       紧凑 / 中等 / 宽屏与容器分屏
 desktop/                         桌面网关外壳及功能页面
-mobile/                          Android/iOS 原生壳、扫码、通知、下载
+mobile/
+  ios/ android/                  各平台原生壳、扫码、通知、下载
+  shared/web/                    两端共用、随 App 打包的注入脚本
+  android-push/                  Android 可选推送构建配置
 relay/                           独立中继服务及管理页面
 scripts/                         测试、构建、验证和受控烟测入口
 tests/                           Python 与 Node 回归；browser/ 单列浏览器夹具
@@ -92,7 +101,7 @@ flowchart TD
 ## 资源与兼容性
 
 - 外部入口 `run.py`、`desktop.py`、HTTP URL、配置和数据格式保持不变。内部 Python import 已改为新目录，没有旧模块别名层；项目外自写脚本若直接导入旧内部模块，需要参考 [路径对照](path-map.json) 更新。
-- `web/assets.json` 只映射磁盘布局；`bridge/api/assets.py` 的固定白名单决定可公开访问的 URL。新增映射不会自动开放任意文件。中继使用同一映射。
+- `web/assets.json` 映射单一文件或按声明顺序组合的 CSS 源文件；`bridge/api/assets.py` 的固定白名单决定可公开访问的 URL。新增映射不会自动开放任意文件。中继使用同一映射。
 - `scripts/gateway-resources.json` 列出必须随网关分发的 SSH 源文件、连接脚本和许可；移动它们时同步清单。CA 证书仍按 TLS 模块的相邻位置分发。
 - 桌面页面直接引用一部分 Web 共享文件，需同时更新 `desktop/index.html` 和 `package.json` 资源清单；不要把磁盘路径改动误用为浏览器公开 URL 改动。
 - 资源路径回归会在无本地 `bridge` 包的隔离 Python 中执行 SSH 源码定义；这不等于真实 SSH、冻结程序或原生助手已验证。
@@ -101,6 +110,17 @@ flowchart TD
 
 这次整理已经拆出可独立维护的系统实现，重排了功能与客户端模块。`app/service.py`、`api/httpd.py` 和部分页面组织文件仍较大，保留既有业务入口有助于控制回归。后续应沿真实功能需求逐块抽取，避免单纯按行数切文件。
 
-一次性命令执行的 `CommandJob` 仍在终端功能模块内保留系统分支，以保持 SSH 源码自包含；桌面 Electron 主进程内也保留窗口/系统菜单的现有分支。目录划分并不意味着所有 `sys.platform`/`process.platform` 判断已消失。Android/iOS 已有独立原生目录，本轮保留它们的结构和行为。
+一次性命令执行的 `CommandJob` 仍在终端功能模块内保留系统分支，以保持 SSH 源码自包含；桌面 Electron 主进程内也保留窗口/系统菜单的现有分支。目录划分并不意味着所有 `sys.platform`/`process.platform` 判断已消失。移动端已合并共同注入脚本并分离原生资源加载职责；原生控制器仍保留既有导航和安全回调，避免为了目录分类扩大行为改动。
 
-本次整理的归档、可比结果与未验证范围见 [目录重组验证记录](refactor-verification.md)。
+初次整理的归档、可比结果与未验证范围见 [目录重组验证记录](refactor-verification.md)；后续 iOS/Android 与宽窄布局区分见 [界面分层验证记录](surface-verification.md)。
+
+## 四种访问界面的修改边界
+
+“iOS/Android/浏览器”和“紧凑/中等/宽屏”是独立维度，不维护四份聊天业务代码。手机浏览器仍是浏览器宿主；平板和折叠屏中的 App 可以采用宽屏布局。页面尺寸改变时保留现有会话、草稿、标签、阅读位置和用户分屏选择。
+
+- 修改仅 iOS 的行为：从 `mobile/ios/AGENTS.md` 开始；Android 同理。
+- 修改两端共同的原生菜单让位或剪贴板脚本：从 `mobile/shared/AGENTS.md` 开始；源码只存一份，两端构建清单都引用它。
+- 修改窄屏/宽屏排布：从 `web/layouts/README.md` 开始；不能靠宿主或设备型号判断可用空间。
+- 修改浏览器/App 的功能入口差异：从 `web/hosts/README.md` 开始；宿主提示不提供原生权限。
+
+CSS 按有序源清单在内存中组合，保留原公开样式 URL 与级联顺序，不生成打包文件或增加每个片段的 HTTP 请求。缓存按源文件的修改时间和大小失效，编辑源码后仍可刷新验证。共享原生脚本的来源对照见 `mobile/source-map.json`。

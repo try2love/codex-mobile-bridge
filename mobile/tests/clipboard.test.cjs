@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
 const root = path.resolve(__dirname, '../..');
-const script = fs.readFileSync(path.join(root, 'mobile/android/assets/mobile-clipboard.js'), 'utf8');
+const script = fs.readFileSync(path.join(root, 'mobile/shared/web/mobile-clipboard.js'), 'utf8');
 function fixture({ reply = 'copied', late = false, frame = false } = {}) {
   const events = {}, writes = [], errors = [], timers = [];
   const context = { navigator: {}, setTimeout: fn => timers.push(fn),
@@ -64,8 +64,10 @@ test('oversized text is rejected, never silently truncated', async () => {
 test('embedded frames cannot install the native copy hook', () => {
   const f = fixture({ frame: true }); assert.equal(f.events.click, undefined);
 });
-test('iOS and Android ship identical clipboard behavior', () => {
-  const swift = fs.readFileSync(path.join(root, 'mobile/ios/BridgePreview/App.swift'), 'utf8');
-  const embedded = swift.split('private static let webClipboard = """')[1].split('"""')[0];
-  assert.equal(embedded.trim().split('\n').map(l => l.replace(/^    /, '')).join('\n').trim(), script.trim());
+test('both native hosts load the shared clipboard resource', () => {
+  const swift = fs.readFileSync(path.join(root, 'mobile/ios/BridgePreview/WebScripts.swift'), 'utf8');
+  const java = fs.readFileSync(path.join(root, 'mobile/android/src/io/github/try2love/codexbridge/MobileWebScripts.java'), 'utf8');
+  assert.match(swift, /clipboard = try Self\.source\("mobile-clipboard", bundle: bundle\)/);
+  assert.match(java, /"mobile-clipboard\.js"/);
+  assert.equal(fs.existsSync(path.join(root, 'mobile/android/assets/mobile-clipboard.js')), false);
 });

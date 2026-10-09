@@ -16,6 +16,7 @@ from pathlib import Path, PureWindowsPath
 from bridge.features.auth.auth import Auth, password_record
 from bridge.features.workspace.files import artifact_paths
 from bridge.api.httpd import GatewayServer
+from bridge.api.assets import asset_bytes
 from bridge.clients.codex.ipc import DesktopIPC, IPCError
 from bridge.features.sessions.model import apply_patches, normalize_state, normalize_request
 from bridge.app.service import Bridge, LiveSession, validate_form
@@ -878,15 +879,14 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(self.request('GET', '/api/sessions/'+THREAD+'/catalog?kind=skills&offset=bad', headers=headers)[0], 400)
 
     def test_web_appearance_assets_are_served_with_correct_types(self):
-        for name, physical, content_type in [('presentation.js', 'features/settings/presentation.js', 'text/javascript'),
-                                              ('presentation.css', 'shared/presentation.css', 'text/css')]:
+        for name, content_type in [('presentation.js', 'text/javascript'), ('presentation.css', 'text/css')]:
             conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=3)
             self.addCleanup(conn.close)
             conn.request('GET', '/' + name, headers={'Origin': self.origin})
             response = conn.getresponse()
             self.assertEqual(response.status, 200)
             self.assertTrue(response.getheader('Content-Type').startswith(content_type))
-            self.assertEqual(response.read(), (ROOT / 'web' / physical).read_bytes())
+            self.assertEqual(response.read(), asset_bytes(ROOT / 'web', '/' + name))
 
     def test_saved_account_reset_route_requires_login_csrf_and_same_origin(self):
         from unittest.mock import Mock
@@ -1047,7 +1047,7 @@ class HttpTests(unittest.TestCase):
             response = conn.getresponse()
             self.assertEqual(response.status, 200)
             scripts = re.findall(r'<script src="([^"]+)"', response.read().decode())
-            self.assertEqual([script.split('?', 1)[0] for script in scripts], ['/vendor/markdown-it.min.js', '/vendor/katex/katex.min.js',
+            self.assertEqual([script.split('?', 1)[0] for script in scripts], ['/host.js', '/layout.js', '/vendor/markdown-it.min.js', '/vendor/katex/katex.min.js',
                                        '/vendor/texmath.js', '/message-actions.js', '/markdown.js', '/i18n.js', '/downloads.js', '/image-viewer.js', '/timeline.js', '/account.js', '/modes.js', '/attachments.js', '/activity.js', '/fast-mode.js', '/accounts.js', '/client-accounts.js', '/floating-panel.js', '/git-panel.js', '/vendor/xterm/xterm.js', '/vendor/xterm/addon-fit.js', '/command-terminal-panel.js', '/terminal-panel.js', '/permissions.js', '/side-chat.js', '/agents-panel.js', '/workbench.js', '/list-sync.js', '/desktop-sessions.js', '/client-navigation.js', '/app.js', '/presentation.js'])
             for script in scripts:
                 conn.request('GET', script)

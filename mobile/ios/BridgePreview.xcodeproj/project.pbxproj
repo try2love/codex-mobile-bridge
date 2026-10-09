@@ -16,6 +16,9 @@ B00000000000000000000017 = {isa = PBXCopyFilesBuildPhase; buildActionMask = 2147
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXBuildFile section */
+E00000000000000000000002 /* WebScripts.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000000000000000000001; };
+E00000000000000000000004 /* mobile-ui.js in Resources */ = {isa = PBXBuildFile; fileRef = E00000000000000000000003; };
+E00000000000000000000006 /* mobile-clipboard.js in Resources */ = {isa = PBXBuildFile; fileRef = E00000000000000000000005; };
 D00000000000000000000002 = {isa = PBXBuildFile; fileRef = D00000000000000000000001; };
 C00000000000000000000002 = {isa = PBXBuildFile; fileRef = C00000000000000000000001; };
 		A00000000000000000000030 /* App.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000020 /* App.swift */; };
@@ -33,6 +36,9 @@ B0000000000000000000000E = {isa = PBXBuildFile; fileRef = B000000000000000000000
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+E00000000000000000000001 /* WebScripts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebScripts.swift; sourceTree = "<group>"; };
+E00000000000000000000003 /* mobile-ui.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = ../shared/web/mobile-ui.js; sourceTree = SOURCE_ROOT; };
+E00000000000000000000005 /* mobile-clipboard.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = ../shared/web/mobile-clipboard.js; sourceTree = SOURCE_ROOT; };
 D00000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadManager.swift; sourceTree = "<group>"; };
 C00000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileRelease.swift; sourceTree = "<group>"; };
 		A00000000000000000000007 /* BridgePreview.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = BridgePreview.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -66,6 +72,7 @@ B00000000000000000000016 = {isa = PBXFrameworksBuildPhase; buildActionMask = 214
 			isa = PBXGroup;
 			children = (
 				A00000000000000000000006 /* BridgePreview */,
+E00000000000000000000007 /* Shared Web */,
 B00000000000000000000014,
 				A00000000000000000000004 /* Products */,
 			);
@@ -84,6 +91,7 @@ B00000000000000000000004,
 			isa = PBXGroup;
 			children = (
 				A00000000000000000000020 /* App.swift */,
+E00000000000000000000001 /* WebScripts.swift */,
 D00000000000000000000001,
 C00000000000000000000001,
 B00000000000000000000001,B00000000000000000000002,
@@ -99,6 +107,7 @@ B00000000000000000000001,B00000000000000000000002,
 			sourceTree = "<group>";
 		};
 B00000000000000000000014 = {isa = PBXGroup; children = (B00000000000000000000003,); path = BridgeActivity; sourceTree = "<group>"; };
+E00000000000000000000007 /* Shared Web */ = {isa = PBXGroup; children = (E00000000000000000000003, E00000000000000000000005,); name = "Shared Web"; sourceTree = "<group>"; };
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -161,6 +170,8 @@ B00000000000000000000019,
 			buildActionMask = 2147483647;
 			files = (
 				A00000000000000000000054 /* AppIcon83x83@2x.png in Resources */,
+E00000000000000000000004 /* mobile-ui.js in Resources */,
+E00000000000000000000006 /* mobile-clipboard.js in Resources */,
 				A00000000000000000000053 /* AppIcon76x76@2x.png in Resources */,
 				A00000000000000000000052 /* AppIcon76x76.png in Resources */,
 				A00000000000000000000051 /* AppIcon60x60@3x.png in Resources */,
@@ -176,6 +187,7 @@ B00000000000000000000019,
 			buildActionMask = 2147483647;
 			files = (
 				A00000000000000000000030 /* App.swift in Sources */,
+E00000000000000000000002 /* WebScripts.swift in Sources */,
 D00000000000000000000002,
 C00000000000000000000002,
 B0000000000000000000000A,B0000000000000000000000B,

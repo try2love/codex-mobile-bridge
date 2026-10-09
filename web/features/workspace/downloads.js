@@ -12,7 +12,8 @@ const BridgeDownload = (() => {
          /^\/api\/desktop-sessions\/(?:claude|deepseek)\/workspace\/download$/.test(url.pathname));
     } catch { return false; }
   }
-  const native = ua => /BridgeMobile\/[\w.-]+-(iOS|Android)(?:\s|$)/.test(ua);
+  const host = typeof module === 'object' && module.exports ? require('../../hosts/environment.js') : BridgeHost;
+  const native = host.isNativeApp;
   function filename(disposition, fallback) {
     const encoded = /filename\*=UTF-8''([^;]+)/i.exec(disposition || '');
     const quoted = /filename="([^"]+)"/i.exec(disposition || '');

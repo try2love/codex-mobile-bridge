@@ -41,7 +41,7 @@ class Workbench {
     this.mobileObserver=new MutationObserver(()=>this.paint());this.mobileObserver.observe(document.documentElement,{attributes:true,attributeFilter:['class']});
 
   }
-  canSplit(){return this.chat.clientWidth>=720;}
+  canSplit(){return BridgeLayout.canSplit(this.chat.clientWidth);}
   get splitMode(){return this.canSplit()&&!!this.current?.splitTab;}
   isVisible(session,tab){return this.current===session&&(this.splitMode?session.splitTab===tab.id:session.active===tab.id);}
   setRatio(value,remember=true){

@@ -1,0 +1,2 @@
+@media(min-width:721px){#sidebar{padding-top:0}}
+@media(min-width:721px) and (max-width:1100px){.app.chat-open{grid-template-columns:minmax(0,1fr)}.app.chat-open>#sidebar{display:none}.desktop-sessions.ds-open{grid-template-columns:minmax(0,1fr)}.desktop-sessions.ds-open>.ds-list{display:none}#back{display:block}}

@@ -4,7 +4,13 @@
   "/icon.png": "icon.png",
   "/manifest.webmanifest": "manifest.webmanifest",
   "/app.js": "shell/app.js",
-  "/style.css": "shell/style.css",
+  "/style.css": [
+    "shell/style.css",
+    "layouts/wide/shell.css",
+    "shell/chat-list.css",
+    "layouts/compact/shell.css",
+    "shell/content.css"
+  ],
   "/activity.js": "features/chat/activity.js",
   "/attachments.js": "features/chat/attachments.js",
   "/fast-mode.js": "features/chat/fast-mode.js",
@@ -17,9 +23,24 @@
   "/account.js": "features/accounts/account.js",
   "/accounts.js": "features/accounts/accounts.js",
   "/client-accounts.js": "features/accounts/client-accounts.js",
-  "/client-navigation.css": "features/clients/client-navigation.css",
+  "/client-navigation.css": [
+    "features/clients/client-navigation.css",
+    "hosts/mobile-navigation.css",
+    "layouts/medium/client-navigation.css",
+    "layouts/compact/client-navigation.css",
+    "hosts/mobile-navigation-compact.css",
+    "features/clients/client-navigation-actions.css",
+    "hosts/mobile-navigation-menu.css",
+    "features/clients/client-management.css"
+  ],
   "/client-navigation.js": "features/clients/client-navigation.js",
-  "/desktop-sessions.css": "features/clients/desktop-sessions.css",
+  "/desktop-sessions.css": [
+    "features/clients/desktop-sessions.css",
+    "layouts/wide/desktop-sessions.css",
+    "features/clients/desktop-session-content.css",
+    "layouts/compact/desktop-sessions.css",
+    "features/clients/desktop-session-controls.css"
+  ],
   "/desktop-sessions.js": "features/clients/desktop-sessions.js",
   "/agents-panel.js": "features/workspace/agents-panel.js",
   "/command-terminal-panel.js": "features/workspace/command-terminal-panel.js",
@@ -29,11 +50,24 @@
   "/git-panel.js": "features/workspace/git-panel.js",
   "/side-chat.js": "features/workspace/side-chat.js",
   "/terminal-panel.js": "features/workspace/terminal-panel.js",
-  "/workbench.css": "features/workspace/workbench.css",
+  "/workbench.css": [
+    "features/workspace/workbench.css",
+    "layouts/medium/workbench.css",
+    "features/workspace/workbench-input.css"
+  ],
   "/workbench.js": "features/workspace/workbench.js",
   "/presentation.js": "features/settings/presentation.js",
   "/i18n.js": "shared/i18n.js",
   "/markdown.js": "shared/markdown.js",
   "/image-viewer.js": "shared/image-viewer.js",
-  "/presentation.css": "shared/presentation.css"
+  "/presentation.css": [
+    "shared/presentation.css",
+    "hosts/mobile-header.css",
+    "shared/presentation-content.css",
+    "layouts/compact/presentation.css",
+    "shared/presentation-controls.css",
+    "hosts/mobile-footer.css"
+  ],
+  "/host.js": "hosts/environment.js",
+  "/layout.js": "layouts/viewport.js"
 }

@@ -1,0 +1,1 @@
+.app{flex:1;min-height:0;display:grid;grid-template-columns:310px minmax(0,1fr)}aside{display:flex;flex-direction:column;border-right:1px solid var(--line);padding:8px 16px 0;background:#f1f2eb;min-height:0}

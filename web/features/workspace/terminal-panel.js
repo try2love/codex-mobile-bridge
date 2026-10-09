@@ -52,7 +52,7 @@ class TerminalPanel {
     this.term.onResize(({cols,rows})=>{clearTimeout(this.resizeTimer);this.resizeTimer=setTimeout(()=>{if(this.running&&!this.disposed)this.workbench.request(this.url(),{action:'resize',id:this.id,cols,rows}).catch(e=>this.status.textContent=BridgeI18n.t(e.message));},120);});
     this.observer=new ResizeObserver(()=>this.layout());this.observer.observe(this.screen);this.layout();
   }
-  mobile(){return document.documentElement.classList.contains('bridge-mobile')||matchMedia('(pointer:coarse)').matches||matchMedia('(max-width:720px)').matches;}
+  mobile(){return BridgeHost.hasNativeLayout()||BridgeLayout.prefersTouchInput()||BridgeLayout.isCompactViewport();}
   layout(){
     if(this.disposed||!this.screen?.clientHeight||!this.screen.clientWidth)return;
     this.fit.fit();this.tab.body.classList.toggle('wb-terminal-touch',this.mobile());this.term.options.disableStdin=!this.running||this.mobile()||this.inputError;

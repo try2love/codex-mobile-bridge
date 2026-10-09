@@ -19,7 +19,7 @@ class CommandTerminalPanel {
     this.prompt=n('span','wb-terminal-prompt','$');this.prompt.setAttribute('aria-hidden','true');
     this.run=n('button','',BridgeI18n.t('运行 ↵'));this.run.type='submit';this.run.disabled=true;
     this.form.append(this.prompt,this.command,this.run);this.form.onsubmit=e=>{e.preventDefault();this.start();};
-    this.command.onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing&&!document.documentElement.classList.contains('bridge-mobile')&&innerWidth>720){e.preventDefault();this.form.requestSubmit();}};
+    this.command.onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing&&!BridgeHost.hasNativeLayout()&&!BridgeLayout.isCompactViewport(innerWidth)){e.preventDefault();this.form.requestSubmit();}};
     const help=n('details','wb-terminal-help');help.append(n('summary','',BridgeI18n.t('命令终端 · 使用说明')),n('p','',BridgeI18n.t('每条命令从项目目录运行，沿用当前系统用户权限。Enter 运行，Shift+Enter 换行。支持脚本与构建输出，暂不支持 vim、密码输入等交互式程序。单次最多运行 30 分钟。')));
     tab.body.append(head,this.location,this.screen,this.form,this.status,help);
     this.load();

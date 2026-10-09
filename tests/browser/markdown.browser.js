@@ -1,5 +1,5 @@
 /* Run in a browser with web/vendor/markdown-it.min.js, web/shared/markdown.js and
- * web/shell/style.css loaded. The result reports each checked rendering behavior. */
+ * the gateway /style.css bundle loaded. The result reports each checked rendering behavior. */
 (() => {
   const checks = [];
   function check(name, condition) {

@@ -1,0 +1,8 @@
+
+/* Give unfolded phones and smaller tablets the full window for the workbench. */
+@media(min-width:721px) and (max-width:1099px){
+  .app{display:block}aside{height:100%;border:0}main{display:none;height:100%}
+  .app.chat-open aside{display:none}.app.chat-open main{display:block}
+  .chat-head #back{display:flex;align-items:center;justify-content:center;margin-left:-4px;width:36px;height:40px;flex:none;padding:0;font-size:29px}
+  body.chat-detail>.phone-header{display:none}
+}

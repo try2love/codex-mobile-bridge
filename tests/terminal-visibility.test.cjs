@@ -14,6 +14,8 @@ function fixture(kind) {
     sessionStorage:{getItem:()=>null,setItem(){},removeItem(){}},
     setTimeout:(fn,ms)=>{timers.set(++next,{fn,ms});return next;},clearTimeout:id=>timers.delete(id)});
   const name = kind === 'pty' ? 'TerminalPanel' : 'CommandTerminalPanel';
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/hosts/environment.js'),'utf8'),context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/layouts/viewport.js'),'utf8'),context);
   vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/features/workspace/',kind==='pty'?'terminal-panel.js':'command-terminal-panel.js'),'utf8')+`;globalThis.Panel=${name};`,context);
   context.Panel.prototype.load = () => {};
   const workbench = {paint(){},node,button:node,isVisible:()=>true,endpoint:()=>'/terminal?',

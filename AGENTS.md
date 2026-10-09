@@ -2,6 +2,7 @@
 
 先读 [docs/architecture/README.md](docs/architecture/README.md)，按功能、客户端和操作系统定位改动。运行与协议约束见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
+- Web 的宿主适配归 `web/hosts/`，宽窄布局归 `web/layouts/`，两端共同注入脚本归 `mobile/shared/web/`。遵循各自 `AGENTS.md`；原生运行环境与窗口尺寸必须独立。
 - `bridge/features/` 放共享业务；`bridge/clients/` 放 Codex、Claude、DeepSeek 协议；`bridge/platforms/` 放原生系统操作。遵循目标平台子目录的 `AGENTS.md`。
 - 平台实现不能反向导入客户端或业务模块。共用规则不复制到各系统；操作系统指本机还是 SSH 目标，必须分清。
 - 保留原桌面会话的 owner/provider/auth/cwd；被动读取和通知不得启动或切换会话。发送/授权/停止不得加入只读请求合并。写入结果未知不得自动重放。

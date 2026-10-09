@@ -240,7 +240,7 @@ class Relay:
             mime = 'text/html' if name.endswith('.html') else 'text/javascript'
             return web.Response(body=(ROOT/'relay'/'web'/name).read_bytes(), content_type=mime)
         # Serve the same v2 web assets; execution and authentication stay on devices.
-        from bridge.api.assets import STATIC, FONT_ROUTE
+        from bridge.api.assets import STATIC, FONT_ROUTE, asset_bytes
         if path == '/':
             try:
                 self.phone_auth(request)
@@ -250,8 +250,8 @@ class Relay:
             html = html.replace('<head>', '<head><script src="/relay/mode.js"></script>', 1)
             return web.Response(text=html, content_type='text/html')
         if path in STATIC:
-            name, mime = STATIC[path]
-            return web.Response(body=(ROOT/'web'/name).read_bytes(), headers={'Content-Type': mime})
+            _, mime = STATIC[path]
+            return web.Response(body=asset_bytes(ROOT/'web', path), headers={'Content-Type': mime})
         match = FONT_ROUTE.fullmatch(path)
         if match:
             return web.FileResponse(ROOT/'web/vendor/katex/fonts'/match[1])

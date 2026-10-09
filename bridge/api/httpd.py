@@ -36,7 +36,7 @@ from bridge.features.sessions.create import CreationError
 from bridge.features.accounts.account import AccountError
 
 LOG = logging.getLogger(__name__)
-from bridge.api.assets import STATIC, FONT_ROUTE
+from bridge.api.assets import STATIC, FONT_ROUTE, asset_bytes
 
 THREAD_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})(?:/(events|send|stop|history|respond|reconnect|queue|catalog|settings|permissions|poll|timeline|changes|detail|notifications|uploads|message-action|rename))?$")
 UPLOAD_PREVIEW_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})/uploads/([0-9a-f-]{36})/preview$")
@@ -271,8 +271,8 @@ class Handler(BaseHTTPRequestHandler):
             path = urlsplit(self.path).path
             query = parse_qs(urlsplit(self.path).query)
             if not write and path in STATIC:
-                name, content_type = STATIC[path]
-                return self.output(200, (self.server.web_dir / name).read_bytes(), content_type)
+                _, content_type = STATIC[path]
+                return self.output(200, asset_bytes(self.server.web_dir, path), content_type)
             font = FONT_ROUTE.fullmatch(path)
             if not write and font:
                 file = self.server.web_dir / 'vendor/katex/fonts' / font[1]

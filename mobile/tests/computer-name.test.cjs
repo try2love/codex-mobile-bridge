@@ -1,7 +1,7 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
 const root=path.resolve(__dirname,'../..');
-const script=fs.readFileSync(path.join(root,'mobile/android/assets/mobile-ui.js'),'utf8').replace(/\r\n/g,'\n');
+const script=fs.readFileSync(path.join(root,'mobile/shared/web/mobile-ui.js'),'utf8').replace(/\r\n/g,'\n');
 function fixture(alias='My computer',mode=null){
  const events={},clicks={},store={},name={textContent:''},computer={dataset:{deviceName:'Real Mac'},setAttribute(k,v){this[k]=v;},addEventListener(k,f){clicks[k]=f;}};
  const context={URL,location:{origin:'https://gateway.test',host:'gateway.test'},window:{prompt:()=>alias},MutationObserver:class{observe(){}},localStorage:{getItem:()=>mode,setItem:(k,v)=>store[k]=v},BridgeI18n:{t:s=>s},document:{styleSheets:[{href:'https://gateway.test/style.css',cssRules:[],insertRule(){}}],documentElement:{classList:{contains:()=>false,add(){},toggle(){}}},getElementById:id=>({'app':{hidden:false},'connected-computer':computer,'computer-name':name}[id]),querySelector:()=>null,addEventListener:(k,f)=>events[k]=f}};
@@ -20,9 +20,11 @@ test('per-origin preference survives reload and renamed connection is read afres
 test('older native clients without name support keep the gateway behavior',()=>{
  const f=fixture(null);assert.equal(f.computer.role,undefined);assert.equal(f.clicks.click,undefined);
 });
-test('Android and iOS inject identical mobile layout and name behavior',()=>{
+test('Android and iOS inject shared mobile layout with the native connection token',()=>{
  const swift=fs.readFileSync(path.join(root,'mobile/ios/BridgePreview/App.swift'),'utf8').replace(/\r\n/g,'\n');
- const body=swift.split('private static let webAppearance = """\n')[1].split('    """')[0].split('\n').map(l=>l.startsWith('    ')?l.slice(4):l).join('\n');
- assert.equal(body.trim(),script.trim());
- assert.match(swift,/codexbridge-computer:/);assert.match(swift,/appearanceScript.*replacingOccurrences/);
+ const loader=fs.readFileSync(path.join(root,'mobile/ios/BridgePreview/WebScripts.swift'),'utf8');
+ const android=fs.readFileSync(path.join(root,'mobile/android/src/io/github/try2love/codexbridge/MainActivity.java'),'utf8');
+ assert.match(loader,/appearance = try Self\.source\("mobile-ui", bundle: bundle\)/);
+ assert.match(swift,/codexbridge-computer:/);assert.match(swift,/scripts\.appearance\.replacingOccurrences\(of: "__BRIDGE_CLIPBOARD_TOKEN__", with: clipboardToken\)/);
+ assert.match(android,/MobileWebScripts\.appearance\(getAssets\(\)\)\.replace\("__BRIDGE_CLIPBOARD_TOKEN__",clipboardToken\)/);
 });

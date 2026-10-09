@@ -6,15 +6,17 @@ const references=html=>[...html.matchAll(/(?:src|href)="([^"]+)"/g)].map(match=>
 test('every public web entry resolves through the static asset allowlist',()=>{
   for(const [url,file] of Object.entries(assets)){
     assert.ok(url.startsWith('/')&&!url.includes('?'),url);
-    assert.ok(!path.isAbsolute(file)&&!file.split('/').includes('..'),file);
-    assert.ok(fs.statSync(path.join(root,'web',file)).isFile(),url);
+    for(const part of [].concat(file)){
+      assert.ok(!path.isAbsolute(part)&&!part.split('/').includes('..'),part);
+      assert.ok(fs.statSync(path.join(root,'web',part)).isFile(),url);
+    }
   }
   const html=fs.readFileSync(path.join(root,'web/index.html'),'utf8');
   for(const ref of references(html)){
     const url=new URL(ref,'http://gateway.invalid/').pathname;
     const file=assets[url]||(url.startsWith('/vendor/')?url.slice(1):null);
     assert.ok(file,'Unmapped public resource: '+url);
-    assert.ok(fs.statSync(path.join(root,'web',file)).isFile(),url);
+    for(const part of [].concat(file))assert.ok(fs.statSync(path.join(root,'web',part)).isFile(),url);
   }
   assert.equal(assets['/'],assets['/index.html']);
   assert.ok(assets['/app.js']);assert.ok(assets['/style.css']);

@@ -140,16 +140,3 @@
 .wb-side-queue{flex:none;max-height:25%;overflow:auto;margin:0 14px}.wb-side-queue:empty{display:none}
 .wb-side-landing~.wb-status:empty{display:none}.wb-side-content:not(.has-side-chat)>.wb-status{margin:0 24px 24px;text-align:center}
 .wb-side-messages{overflow-anchor:none}
-
-/* Give unfolded phones and smaller tablets the full window for the workbench. */
-@media(min-width:721px) and (max-width:1099px){
-  .app{display:block}aside{height:100%;border:0}main{display:none;height:100%}
-  .app.chat-open aside{display:none}.app.chat-open main{display:block}
-  .chat-head #back{display:flex;align-items:center;justify-content:center;margin-left:-4px;width:36px;height:40px;flex:none;padding:0;font-size:29px}
-  body.chat-detail>.phone-header{display:none}
-}
-@media(pointer:coarse){
-  #chat{--wb-divider-width:24px}
-  .workbench-tabs .wb-add,.workbench-tabs .wb-split-button{width:44px;height:44px;min-height:44px}
-}
-.wb-side-composer .compose-actions{margin-left:0}.wb-side-composer .composer-tools .composer-toggle{margin-left:auto}
