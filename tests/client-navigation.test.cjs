@@ -15,6 +15,10 @@ test('changing provider paints the shell before its slow read resolves',async()=
   resolve();await pending;
 });
 
+test('clicking the selected provider does not reset its view or issue another read',async()=>{
+ const {nav}=fixture();let calls=0;nav.view.choose=async()=>{calls++;};await nav.choose('claude');assert.equal(calls,0);
+});
+
 test('phone initialization sends foreground intent only after an explicit confirmation',async()=>{
  for(const accepted of [false,true]){
   const ui=fixture(),nav=ui.nav,calls=[];ui.setInitializeChoice(accepted);Object.assign(nav.clients[1],{installed:true,connected:false,setupStatus:'needs-initialization'});nav.request=async(url,body)=>{calls.push(body);return {clients:nav.clients.map(client=>client.id==='claude'?{...client,connectionState:'connecting'}:client)};};
