@@ -6,7 +6,7 @@
 
 双击项目根目录的 `start-preview3-windows.cmd`。它启动 `dist/desktop/win-unpacked` 中的已编译 App，并使用独立的 `.local/windows-preview3-user` 配置目录。
 
-本机已经准备好端口 **8788** 的测试配置：电脑打开 `http://127.0.0.1:8788/`，手机与电脑在同一网络时，打开网关面板显示的局域网地址。展开面板里的二维码扫码登录，也可在面板查看首次登录凭据。原有 8787 网关使用原配置继续运行。
+本机已经准备好端口 **8788** 的测试配置：手机与电脑在同一网络时，打开网关面板显示的局域网地址。当前地址为 `http://10.21.154.171:8788/`；本机网页访问遵循现有设置，关闭时 `127.0.0.1:8788` 返回 403 属正常行为。展开面板里的二维码扫码登录，也可在面板查看首次登录凭据。原有 8787 网关使用原配置继续运行。
 
 新实例连接电脑现有的 Codex 数据目录。请在手机选择已保存的项目，新建一个测试聊天；该聊天会真实出现在 Codex 中。测试完成可从新网关的托盘选择“停止网关并退出”。
 
@@ -43,6 +43,30 @@ node --test tests/client-connections-ui.test.cjs tests/client-accounts-ui.test.c
 ```
 
 ## 构建
+
+### 停用手机接入与退出电脑 App
+
+手机“应用管理”和网关客户端开关现在提供三个明确选项：
+
+- **仅停用手机接入**：保存停用状态，保留电脑 App、正在运行的任务和已有终端；即使尚未连接、任务状态未知或程序路径失效也可停用。停用后到达的聊天、文件和终端操作会被阻止。
+- **同时退出电脑 App**：仅在支持原生退出且任务状态可完整核对时执行；运行中或等待确认的任务仍会阻止退出。
+- **取消**：不发送停用请求，开关保持原状。按 Escape 也会取消。
+
+Windows DSH 2.0.17 的 Host 是 Electron Node utility 进程，已修复此前把它当作普通子进程过滤的问题。原生退出会核对唯一 Host、连接实例与完整任务状态，再通过 DSH 自己的 `appExit` 完成清理；窗口隐藏不再算作退出。
+
+已有 revision 3 连接器仍可继续使用。若提示接入需要更新才能退出，请先在电脑端完整退出 DSH，再在网关重新开启接入；新连接器在应用已停止时更新，不会为了升级退出能力而自动结束现有任务。
+
+当前安装的 Windows Claude Desktop 没有向连接器提供后台退出接口，其关闭窗口操作只是隐藏到托盘。选择“同时退出”会明确说明限制；可选择“仅停用手机接入”，需要退出 App 时从 Claude 菜单或系统托盘选择“退出”。
+
+刷新手机页面即可加载新的关闭选项。相关回归命令：
+
+```powershell
+$env:PYTHONPATH='tests'
+.\.tmp\build-env\Scripts\python.exe -B -m unittest test_client_lifecycle test_client_launch test_dsh_utility_host test_deepseek_migration test_deepseek_recovery -v
+node --test tests/client-lifecycle-ui.test.cjs tests/client-navigation.test.cjs tests/client-connections-ui.test.cjs tests/deepseek-native-quit.test.mjs
+```
+
+### 编译步骤
 
 在 Windows x64 上使用原生 Python 3.12 或更高版本、Node.js 24。此工作树已准备好 `.tmp/build-env` 和 `node_modules`。
 

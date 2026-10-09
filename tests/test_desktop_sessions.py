@@ -181,7 +181,9 @@ class HttpAdapters(unittest.TestCase):
         headers = self.login()
         for quit_desktop in (False, True):
             body = {'provider': 'claude', 'enabled': False, 'quitDesktop': quit_desktop}
-            self.assertEqual(self.request('POST', '/api/clients', body, {'Cookie': headers['Cookie']})[0], 403)
+            # Auth rejects before reading a body. Avoid a Windows TCP reset from
+            # unread request bytes obscuring the expected CSRF response.
+            self.assertEqual(self.request('POST', '/api/clients', headers={'Cookie': headers['Cookie']})[0], 403)
             self.assertEqual(self.request('POST', '/api/clients', body, headers)[0], 200)
             self.server.desktop_sessions.toggle_client.assert_called_with(body)
         self.assertEqual(self.request('POST', '/api/clients', {
