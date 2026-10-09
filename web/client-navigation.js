@@ -106,13 +106,14 @@ class ClientNavigation {
       finally{this.choosing=null;this.paint();}
       if(quitDesktop===null)return;
     }
+    const forceDesktop=quitDesktop==='force';quitDesktop=quitDesktop===true||forceDesktop;
     const before=this.clients.map(c=>({...c})),previous=this.provider;
     this.operationFailures??=new Map();this.operationFailures.delete(id);let failed=false;
-    this.pending.add(id);this.pendingQuitDesktop=quitDesktop;++this.revision;
+    this.pending.add(id);this.pendingQuitDesktop=quitDesktop;this.pendingForceDesktop=forceDesktop;++this.revision;
     this.applyClients({clients:this.clients.map(c=>c.id===id?{...c,enabled}:c)});
-    try{const data=await ClientLifecycle.request(signal=>this.request('/api/clients',{provider:id,enabled,...(!enabled?{quitDesktop}:{}),...(initializeDesktop?{initializeDesktop:true}:{})},signal),{timeout:this.lifecycleTimeout??45000});this.applyClients(data);}
-    catch(error){failed=true;this.operationFailures.set(id,ClientLifecycle.failure(initializeDesktop?'initialize':enabled?'enable':quitDesktop?'quit':'disable',error));this.provider=previous;this.applyClients({clients:before});throw error;}
-    finally{this.pending.delete(id);this.pendingQuitDesktop=false;++this.revision;this.paint();if(failed)await this.refresh();}
+    try{const data=await ClientLifecycle.request(signal=>this.request('/api/clients',{provider:id,enabled,...(!enabled?{quitDesktop}:{}),...(forceDesktop?{forceDesktop:true}:{}),...(initializeDesktop?{initializeDesktop:true}:{})},signal),{timeout:this.lifecycleTimeout??45000});this.applyClients(data);}
+    catch(error){failed=true;this.operationFailures.set(id,ClientLifecycle.failure(initializeDesktop?'initialize':enabled?'enable':forceDesktop?'force':quitDesktop?'quit':'disable',error));this.provider=previous;this.applyClients({clients:before});throw error;}
+    finally{this.pending.delete(id);this.pendingQuitDesktop=false;this.pendingForceDesktop=false;++this.revision;this.paint();if(failed)await this.refresh();}
   }
   paint(){
     this.syncViewClients();
@@ -129,7 +130,7 @@ class ClientNavigation {
   }
   managementState(client){
     if(this.operationFailures?.get(client.id)?.uncertain)return '结果待确认';
-    if(this.pending.has(client.id))return this.gatewayRunning===false?'正在保存…':client.enabled?'开启中…':this.pendingQuitDesktop?'正在退出应用…':'正在停用接入…';
+    if(this.pending.has(client.id))return this.gatewayRunning===false?'正在保存…':client.enabled?'开启中…':this.pendingForceDesktop?'正在后台强制结束…':this.pendingQuitDesktop?'正在退出应用…':'正在停用接入…';
     if(this.gatewayRunning===false)return client.enabled?'已选择，下次启动生效':'未选择，下次启动生效';
     return client.enabled?'已启用':'未启用';
   }

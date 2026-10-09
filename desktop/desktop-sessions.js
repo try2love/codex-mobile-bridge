@@ -87,13 +87,14 @@ class DesktopConnectionsPanel {
       finally{this.choosingClient=null;this.renderClients();this.renderScan();}
       if(quitDesktop===null)return;
     }
+    const forceDesktop=quitDesktop==='force';quitDesktop=quitDesktop===true||forceDesktop;
     const before=this.clients;
     this.operationFailures??=new Map();this.operationFailures.delete(id);
-    this.busy=true;this.pendingClient={id,enabled,quitDesktop};this.clientsRevision++;this.statusRevision++;
+    this.busy=true;this.pendingClient={id,enabled,quitDesktop,forceDesktop};this.clientsRevision++;this.statusRevision++;
     this.clients=this.clients.map(client=>client.id===id?{...client,enabled}:client);
     this.renderClients();this.renderScan();
-    try{const value=await ClientLifecycle.request(()=>this.api.desktopSessions({action:'toggle-client',provider:id,enabled,...(!enabled?{quitDesktop}:{})}),{timeout:this.lifecycleTimeout??45000});if(value.clients)this.clients=value.clients;this.gatewayRunning=value.gatewayRunning??this.gatewayRunning;this.windowsSession=value.windowsSession??this.windowsSession;}
-    catch(error){this.operationFailures.set(id,ClientLifecycle.failure(enabled?'enable':quitDesktop?'quit':'disable',error,'desktop'));this.clients=before;this.feedback(error.message,true);}
+    try{const value=await ClientLifecycle.request(()=>this.api.desktopSessions({action:'toggle-client',provider:id,enabled,...(!enabled?{quitDesktop}:{}),...(forceDesktop?{forceDesktop:true}:{})}),{timeout:this.lifecycleTimeout??45000});if(value.clients)this.clients=value.clients;this.gatewayRunning=value.gatewayRunning??this.gatewayRunning;this.windowsSession=value.windowsSession??this.windowsSession;}
+    catch(error){this.operationFailures.set(id,ClientLifecycle.failure(enabled?'enable':forceDesktop?'force':quitDesktop?'quit':'disable',error,'desktop'));this.clients=before;this.feedback(error.message,true);}
     finally{this.busy=false;this.pendingClient=null;this.renderClients();this.renderScan();await this.refreshClients(true);}
   }
   renderClients(){
@@ -106,7 +107,7 @@ class DesktopConnectionsPanel {
       const row=node('tr'),identity=node('td'),name=node('div',undefined,'connection-name'),logo=node('span',undefined,'client-logo');
       const img=node('img');img.src='../web/client-icons/'+client.id+'.png';img.alt='';logo.append(img);
       const label=node('div');label.append(node('strong',client.name),node('small',({codex:'Codex Desktop',claude:'Claude Desktop',deepseek:'DeepSeek Harness'})[client.id]));name.append(logo,label);identity.append(name);
-      const access=node('td'),toggle=node('input');toggle.type='checkbox';toggle.className='client-toggle';toggle.checked=client.enabled;toggle.disabled=(!client.enabled&&!(client.selectable??client.configured))||this.scanning||this.busy||!!this.choosingClient;toggle.setAttribute('aria-label',t('启用')+' '+client.name);toggle.title=t(client.reason);toggle.onchange=()=>this.toggleClient(client.id,toggle.checked);access.append(toggle,node('small',this.pendingClient?.id===client.id?(this.gatewayRunning===false?'正在保存…':this.pendingClient.enabled?(client.id==='claude'?'正在准备后台连接…':'正在打开应用…'):this.pendingClient.quitDesktop?'正在退出应用…':'正在停用接入…'):client.setupStatus==='unsupported'?'暂不可用':client.enabled?(this.gatewayRunning===false?'随网关启动':'已启用'):!client.installed&&!client.configured?'待配置':'未启用'));
+      const access=node('td'),toggle=node('input');toggle.type='checkbox';toggle.className='client-toggle';toggle.checked=client.enabled;toggle.disabled=(!client.enabled&&!(client.selectable??client.configured))||this.scanning||this.busy||!!this.choosingClient;toggle.setAttribute('aria-label',t('启用')+' '+client.name);toggle.title=t(client.reason);toggle.onchange=()=>this.toggleClient(client.id,toggle.checked);access.append(toggle,node('small',this.pendingClient?.id===client.id?(this.gatewayRunning===false?'正在保存…':this.pendingClient.enabled?(client.id==='claude'?'正在准备后台连接…':'正在打开应用…'):this.pendingClient.forceDesktop?'正在后台强制结束…':this.pendingClient.quitDesktop?'正在退出应用…':'正在停用接入…'):client.setupStatus==='unsupported'?'暂不可用':client.enabled?(this.gatewayRunning===false?'随网关启动':'已启用'):!client.installed&&!client.configured?'待配置':'未启用'));
       toggle.disabled=toggle.disabled||this.hasUncertain();const state=this.connection(client),failure=this.operationFailures?.get(client.id),status=node('td'),stateLabel=node('span',state.label,state.waiting?'state-pending client-connection-waiting':client.connected?'state-ready':state.error?'state-error':state.action?'state-pending':'');stateLabel.setAttribute('role','status');stateLabel.setAttribute('aria-busy',String(state.waiting));status.append(stateLabel,node('small',failure?ClientLifecycle.failureMessage(failure):state.reason));
       const account=node('td');account.dataset.clientAccount=client.id;
       if(client.id!=='codex')account.append(node('span',client.configured?'已配置':'待配置'),node('small',client.id==='claude'?'在 Claude 中管理账号':'在 Harness 中管理账号 / API'));

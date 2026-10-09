@@ -32,11 +32,11 @@ const ClientLifecycle=(()=>{
     return {action,message:error.message,uncertain};
   }
   function failureMessage(value){return value.uncertain?'操作结果尚未确认，请刷新状态后再重试。':value.message;}
-  function retryLabel(action){return ({enable:'重试开启',quit:'重试退出',disable:'重试停用',initialize:'重试初始化'})[action]||'重试操作';}
+  function retryLabel(action){return ({enable:'重试开启',quit:'重试退出',force:'重试后台强制结束',disable:'重试停用',initialize:'重试初始化'})[action]||'重试操作';}
   function reconcile(failures,clients){
     for(const [id,value] of failures||[]){
       if(!value.uncertain)continue;const client=clients.find(row=>row.id===id);
-      const completed=client&&(value.action==='quit'?client.enabled===false&&client.running===false:value.action==='disable'?client.enabled===false:value.action==='initialize'?client.connected||connection(client).waiting:value.action==='enable'?client.enabled&&(client.running||client.connected||connection(client).waiting):false);
+      const completed=client&&(['quit','force'].includes(value.action)?client.enabled===false&&client.running===false:value.action==='disable'?client.enabled===false:value.action==='initialize'?client.connected||connection(client).waiting:value.action==='enable'?client.enabled&&(client.running||client.connected||connection(client).waiting):false);
       if(completed)failures.delete(id);else failures.set(id,{...value,uncertain:false,message:client?.reason||'状态已刷新，可重试上次操作。'});
     }
   }
@@ -64,11 +64,14 @@ const ClientLifecycle=(()=>{
       dialog.setAttribute('aria-labelledby',title.id);dialog.setAttribute('aria-describedby',description.id);
       const actions=document.createElement('div');actions.className='client-disable-options';let choice=null;
       const finish=value=>{choice=value;dialog.close();};
-      for(const [label,note,value] of [
+      const options=[
         ['仅停用手机接入','保留电脑 App 和现有任务。',false],
         ['同时退出电脑 App',client.id==='claude'?'通过 Claude 原生菜单正常退出；如有任务或保存确认，请在电脑端处理。下次开启时会尝试重新连接。':'仅在所有任务结束且没有待确认操作时退出。',true]
-      ]){
-        const button=document.createElement('button');button.type='button';button.dataset.quitDesktop=String(value);
+      ];
+      if(client.canForceQuit===true)options.push(['后台强制结束','结束应用进程，可能丢失未保存内容或中断任务。锁屏时也可使用。','force']);
+      for(const [label,note,value] of options){
+        const button=document.createElement('button');button.type='button';button.dataset.quitDesktop=String(value!==false);
+        if(value==='force')button.dataset.forceDesktop='true';
         button.append(node('strong',label),node('small',note));button.onclick=()=>finish(value);actions.append(button);
       }
       const cancel=node('button','取消');cancel.type='button';cancel.onclick=()=>finish(null);actions.append(cancel);
