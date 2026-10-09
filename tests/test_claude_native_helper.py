@@ -50,8 +50,9 @@ class WindowsNativeWindowSelectors(unittest.TestCase):
         result = subprocess.run([str(self.helper), '--self-check'], capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('window selection and cancellable restore OK', result.stdout)
+        self.assertIn('menu navigation OK', result.stdout)
 
-    def test_readonly_inspection_finds_owned_window_without_main_window_handle(self):
+    def test_readonly_inspection_finds_owned_window_instead_of_main_window_hint(self):
         source, fixture = self.folder/'fixture.cs', self.folder/'Claude.exe'
         source.write_text('''using System;
 using System.Diagnostics;
@@ -89,7 +90,9 @@ class Fixture {
                                     capture_output=True, text=True, encoding='utf-8-sig', timeout=10)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             diagnostic = json.loads(result.stdout)
-            self.assertEqual(diagnostic['mainWindowHandle'], 0)
+            # Windows input-method overlays can themselves become the .NET
+            # "main" window; the owned application window is excluded either way.
+            self.assertNotEqual(diagnostic['mainWindowHandle'], int(window))
             self.assertEqual(diagnostic['selectedWindowHandle'], int(window))
             selected = next(row for row in diagnostic['windows'] if row['handle'] == int(window))
             self.assertTrue(selected['visible'])
