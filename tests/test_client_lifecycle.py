@@ -117,18 +117,18 @@ class ClientLifecycleTests(unittest.TestCase):
         self.stop.assert_not_called()
         self.claude.connect.assert_not_called()
 
-    def test_gateway_start_only_launches_selected_clients(self):
+    def test_gateway_start_prepares_selected_claude_without_launching_or_native_input(self):
         self.manager.config['enabled'] = {'codex': False, 'claude': True, 'deepseek': False}
         with patch.object(self.manager, 'scan'):
             self.manager.start_enabled()
-        self.launch.assert_called_once()
-        self.assertEqual(self.launch.call_args.args[0]['id'], 'claude')
+        self.launch.assert_not_called()
         self.launch_dsh.assert_not_called()
-        self.claude.connect.assert_called_once()
+        self.claude.connect.assert_not_called()
+        self.claude.reconnect.assert_called_once_with()
 
     def test_one_start_failure_preserves_selection_and_does_not_block_other_apps(self):
         self.manager.config['enabled'] = {'codex': False, 'claude': True, 'deepseek': True}
-        self.launch.side_effect = ValueError('launch rejected')
+        self.claude.reconnect.side_effect = ValueError('launch rejected')
         with patch.object(self.manager, 'scan'):
             self.manager.start_enabled()
         self.launch_dsh.assert_called_once()
@@ -288,13 +288,21 @@ class ClientLifecycleTests(unittest.TestCase):
         self.stop.assert_called_once()
         self.assertFalse(self.manager.enabled('claude'))
 
-    def test_stopped_verified_claude_can_be_enabled_and_launched(self):
+    def test_stopped_verified_claude_enable_does_not_open_its_window(self):
         self.toggle('claude', False)
         self.claude.status.return_value = {'connected': False}
         self.assertTrue(next(r for r in self.manager.clients(refresh=True)['clients'] if r['id'] == 'claude')['configured'])
         self.toggle('claude', True)
+        self.launch.assert_not_called()
+        self.claude.connect.assert_not_called()
+        self.claude.reconnect.assert_called_once_with()
+
+    def test_explicit_claude_connect_button_may_launch_and_initialize(self):
+        self.running = False
+        self.manager.control({'action': 'connect-claude'})
         self.launch.assert_called_once()
         self.claude.connect.assert_called_once_with()
+        self.claude.reconnect.assert_not_called()
 
     def test_pending_interaction_blocks_stop_and_preserves_preference(self):
         self.claude.call.side_effect = lambda action, *args: ({'connected': True, 'complete': True,
@@ -363,12 +371,13 @@ class ClientLifecycleTests(unittest.TestCase):
         def reconnect():
             self.claude.status.return_value = {'connected': True}
         self.claude.cancel.side_effect = cancel
-        self.claude.connect.side_effect = reconnect
+        self.claude.reconnect.side_effect = reconnect
         self.stop.side_effect = ValueError('native refused exit')
         with self.assertRaisesRegex(ValueError, 'native refused'):
             self.toggle('claude', False)
         self.claude.cancel.assert_called_once_with(persist=False)
-        self.claude.connect.assert_called_once_with()
+        self.claude.reconnect.assert_called_once_with()
+        self.claude.connect.assert_not_called()
         self.assertTrue(self.manager.enabled('claude'))
         self.assertTrue(self.claude.discovery['autoConnect'])
         self.assertTrue(self.claude.status()['connected'])
@@ -377,20 +386,21 @@ class ClientLifecycleTests(unittest.TestCase):
         self.claude.discovery = {'autoConnect': True}
         original = ValueError('native refused exit')
         self.stop.side_effect = original
-        self.claude.connect.side_effect = RuntimeError('connection restore failed')
+        self.claude.reconnect.side_effect = RuntimeError('connection restore failed')
         with self.assertRaises(ValueError) as raised:
             self.toggle('claude', False)
         self.assertIs(raised.exception, original)
         self.claude.cancel.assert_called_once_with(persist=False)
-        self.claude.connect.assert_called_once_with()
+        self.claude.reconnect.assert_called_once_with()
+        self.claude.connect.assert_not_called()
         self.assertTrue(self.manager.enabled('claude'))
         self.assertTrue(self.claude.discovery['autoConnect'])
 
-    def test_failed_start_keeps_disabled(self):
+    def test_failed_background_preparation_keeps_disabled(self):
         self.manager.config['enabled']['claude'] = False
         self.running = False
-        self.launch.side_effect = None; self.launch.return_value = {'running': False}
-        with self.assertRaisesRegex(ValueError, '尚未启动'):
+        self.claude.reconnect.side_effect = ValueError('mailbox unavailable')
+        with self.assertRaisesRegex(ValueError, 'mailbox unavailable'):
             self.toggle('claude', True)
         self.assertFalse(self.manager.enabled('claude'))
 

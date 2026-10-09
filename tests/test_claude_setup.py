@@ -394,10 +394,11 @@ class ClaudeNativeConnection(unittest.TestCase):
             self.adapter.connect()
         # Use the real owner thread for close; the setup monitor is mocked.
         self.adapter.close()
-        with patch.object(Claude, 'connect') as resume:
+        with patch.object(Claude, 'connect') as native, patch.object(Claude, 'reconnect', create=True) as resume:
             other = Claude(self.adapter.directory)
         self.addCleanup(other.close)
         resume.assert_called_once_with()
+        native.assert_not_called()
         self.assertTrue(other.discovery['autoConnect'])
         self.assertIsNotNone(other.desktop)
 
