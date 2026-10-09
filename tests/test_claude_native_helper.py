@@ -107,6 +107,21 @@ class Fixture {
             stop.write_text('stop', encoding='utf-8')
             process.communicate(timeout=22)
 
+    def test_background_connection_rejects_other_process_without_dispatch(self):
+        script = self.folder/'background-connector.js'
+        script.write_text('/* codex bridge connector */void 0;', encoding='utf-8')
+        result = subprocess.run([str(self.helper), str(os.getpid()),
+            '--connect-background='+str(script), sys.executable],
+            capture_output=True, text=True, encoding='utf-8-sig', timeout=10)
+        self.assertEqual(result.returncode, 1)
+        replies = result.stdout.splitlines()
+        self.assertEqual(len(replies), 1, 'no target may report a dispatch')
+        reply = json.loads(replies[0])
+        self.assertEqual(reply['setupState'], 'failed')
+        self.assertEqual(reply['submission'], 'none')
+        self.assertEqual(reply['pid'], os.getpid())
+        self.assertTrue(reply['reason'].strip())
+
     def test_native_quit_on_inactive_desktop_preserves_confirmation(self):
         import ctypes
         import uuid
