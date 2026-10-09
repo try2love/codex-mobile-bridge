@@ -256,6 +256,99 @@ class ClaudeAccountSnapshots(unittest.TestCase):
         self.assertEqual(detected.home, self.home)
         self.assertEqual(detected.public()['activeId'], api)
 
+    def windows_store_profiles(self):
+        environment = patch.dict(os.environ, {'APPDATA': str(self.root/'Roaming'), 'LOCALAPPDATA': str(self.root/'Local')})
+        environment.start(); self.addCleanup(environment.stop)
+        platform = patch(MODULE+'sys.platform', 'win32')
+        platform.start(); self.addCleanup(platform.stop)
+        self.family = 'Claude_fixturepublisher'
+        self.executable = self.root/'WindowsApps/Claude_1.0.0.0_x64__fixturepublisher/app/Claude.exe'
+        self.home = self.root/'Local/Packages'/self.family/'LocalCache/Roaming/Claude'
+        self.threep = self.root/'Local/Claude-3p'
+        self.home.mkdir(parents=True)
+        self.login('store')
+
+    def test_windows_store_thirdparty_mode_switch_and_rollback_use_same_profiles(self):
+        self.windows_store_profiles()
+        self.accounts = ClaudeAccounts(self.root/'accounts', self.home, executable=self.executable)
+        official = self.save('Official')
+        self.gateway()
+        self.accounts = ClaudeAccounts(self.root/'accounts', self.threep, executable=self.executable)
+        api = self.save('Gateway')
+        self.assertEqual(self.accounts.home, self.home)
+        self.assertEqual(self.accounts.threep, self.threep)
+        token = self.accounts.restore(official)
+        self.assertEqual(self.accounts.public()['activeId'], official)
+        for home in (self.home, self.threep):
+            self.assertEqual(json.loads((home/CONFIG).read_text(encoding='utf-8'))['deploymentMode'], '1p')
+        self.accounts.rollback(token)
+        self.assertEqual(self.accounts.public()['activeId'], api)
+        self.assertFalse((self.root/'Roaming/Claude').exists())
+        self.assertFalse((self.root/'Local/Claude-Data').exists())
+
+    def test_windows_detected_active_mode_beats_stale_official_selector(self):
+        self.windows_store_profiles()
+        self.gateway()
+        self.write(self.home/CONFIG, {'deploymentMode': '1p'})
+        accounts = ClaudeAccounts(self.root/'accounts', self.threep, executable=self.executable)
+        self.assertEqual(accounts.public()['current']['kind'], 'api')
+        self.assertEqual(json.loads((self.home/CONFIG).read_text(encoding='utf-8')), {'deploymentMode': '1p'})
+
+    def test_windows_empty_migration_directory_does_not_override_store_profile(self):
+        self.windows_store_profiles()
+        (self.root/'Local/Claude-Data').mkdir()
+        self.gateway()
+        accounts = ClaudeAccounts(self.root/'accounts', self.threep, executable=self.executable)
+        self.assertEqual(accounts.home, self.home)
+
+    def test_windows_ambiguous_counterpart_is_readable_but_never_written(self):
+        self.windows_store_profiles()
+        self.gateway()
+        modern = self.root/'Local/Claude-Data'
+        self.write(modern/CONFIG, {'deploymentMode': '3p', 'fixture': 'other profile'})
+        accounts = ClaudeAccounts(self.root/'accounts', self.threep, executable=self.executable)
+        saved = accounts.import_current()['activeId']
+        before = {home: (home/CONFIG).read_bytes() for home in (self.home, self.threep, modern)}
+        with self.assertRaisesRegex(ValueError, '多个.*目录'):
+            accounts.restore(saved)
+        self.assertEqual(before, {home: (home/CONFIG).read_bytes() for home in before})
+        self.assertFalse((self.root/'accounts/transactions').exists())
+
+    def test_windows_modern_official_profile_pairs_with_local_thirdparty(self):
+        self.windows_store_profiles()
+        self.home = self.root/'Local/Claude-Data'
+        self.home.mkdir()
+        self.login('modern')
+        accounts = ClaudeAccounts(self.root/'accounts', self.home, executable=self.executable)
+        self.assertEqual(accounts.home, self.home)
+        self.assertEqual(accounts.threep, self.threep)
+        self.assertEqual(accounts.public()['current']['kind'], 'official')
+
+    def test_explicit_and_unrelated_profiles_never_pair_by_basename(self):
+        self.windows_store_profiles()
+        for home, explicit in ((self.threep, True), (self.home, True), (self.root/'custom/Claude', False)):
+            with self.subTest(home=home, explicit=explicit):
+                accounts = ClaudeAccounts(self.root/'accounts', home, executable=self.executable, explicit_home=explicit)
+                self.assertEqual(accounts.home, home)
+                self.assertEqual(accounts.threep, home)
+                self.assertEqual({root for _, root, _ in accounts._targets()}, {home})
+
+    def test_manager_preserves_installation_and_explicit_profile_selection(self):
+        from bridge.integrations.manager import DesktopSessions
+        self.windows_store_profiles()
+        manager = DesktopSessions.__new__(DesktopSessions)
+        manager.directory, manager.adapters, manager.account_stores = self.root/'manager', {'claude': object()}, {}
+        descriptor = {'installed': True, 'dataDirectory': str(self.threep),
+                      'executable': str(self.root/'Claude.exe'), 'packageFamilyName': self.family}
+        manager.config = {'discovered': {'claude': descriptor}}
+        paired = manager._account_store('claude')
+        self.assertEqual(paired.home, self.home)
+        descriptor['dataDirectoryExplicit'] = True
+        explicit = manager._account_store('claude')
+        self.assertIsNot(paired, explicit)
+        self.assertEqual(explicit.home, self.threep)
+        self.assertEqual(explicit.threep, self.threep)
+
     def test_unknown_usage_payload_never_implies_full_remaining_quota(self):
         identifier = self.save()
         with patch(MODULE+'_web_json', return_value={'unrecognized': 'private'}):
