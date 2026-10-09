@@ -3,7 +3,7 @@
 class DesktopSessionsView {
   constructor({root,select,request,notify,onSelect,csrf,onUnauthorized}) {
     Object.assign(this,{root,select,request,notify,onSelect,csrf,onUnauthorized});this.provider='codex';this.generation=0;this.detailRevision=0;this.drafts=new Map();this.accountDrafts=new Map();this.skillSelections=new Map();this.pending=new Map();this.rows=[];this.messageNodes=new Map();this.providerViews=new Map();this.detailCache=new Map();this.activity=new SessionActivity({key:'bridge-desktop-session-activity'});try{this.collapsedGroups=new Set(JSON.parse(localStorage.getItem('bridge-desktop-session-groups')||'[]'));}catch{this.collapsedGroups=new Set();}
-    this.readTasks=new Map();this.readEpoch=0;this.accountEpochs=new Map();
+    this.readTasks=new Map();this.readEpoch=0;this.providerReadEpochs=new Map();
     this.container=this.node('section','desktop-sessions');root.append(this.container);this.container.hidden=true;
     this.list=this.node('aside','ds-list');this.main=this.node('main','ds-main');this.container.append(this.list,this.main);
     this.search=this.node('input','search');this.search.placeholder=BridgeI18n.t('搜索聊天或项目');this.label(this.search,'搜索聊天或项目');this.search.oninput=()=>this.renderList();
@@ -41,14 +41,19 @@ class DesktopSessionsView {
   iconButton(text,path,fn){const button=this.button('',fn);button.className='icon-button';this.label(button,text);button.title=BridgeI18n.t(text);const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('class','header-icon');svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('aria-hidden','true');const shape=document.createElementNS(svg.namespaceURI,'path');shape.setAttribute('d',path);svg.append(shape);button.append(svg);return button;}
   path(action,sid=this.sid,provider=this.provider){return '/api/desktop-sessions/'+provider+'/'+action+(sid?'?sessionId='+encodeURIComponent(sid):'');}
   sharedRead(provider,action,sid=null){
-    const epoch=this.readEpoch,account=this.accountEpochs.get(provider)||0,key=JSON.stringify([provider,action,sid,epoch,account]);
+    const epoch=this.readEpoch,version=this.providerReadEpochs.get(provider)||0,key=JSON.stringify([provider,action,sid,epoch,version]);
     if(this.readTasks.has(key))return this.readTasks.get(key);
-    const task={current:()=>epoch===this.readEpoch&&account===(this.accountEpochs.get(provider)||0)};
+    const task={current:()=>epoch===this.readEpoch&&version===(this.providerReadEpochs.get(provider)||0)};
     task.promise=(async()=>{const value=await this.request(this.path(action,sid,provider));if(task.current()){
       if(action==='list')this.providerViews.set(provider,{...this.providerViews.get(provider),rows:value.sessions||[],cachedAt:Date.now()});
       else if(action==='detail')this.detailCache.set(JSON.stringify([provider,sid]),value);
     }return value;})();this.readTasks.set(key,task);
     const done=()=>{if(this.readTasks.get(key)===task)this.readTasks.delete(key);};task.promise.then(done,done);return task;
+  }
+  invalidateReads(provider){
+    this.providerReadEpochs.set(provider,(this.providerReadEpochs.get(provider)||0)+1);for(const key of this.readTasks.keys())if(JSON.parse(key)[0]===provider)this.readTasks.delete(key);
+    const saved=this.providerViews.get(provider);if(saved)saved.cachedAt=0;
+    if(provider===this.provider){this.freshDetail=false;this.detailRevision++;this.loading=null;this.refreshPending=null;}
   }
   setClientStates(clients,retry,initialize,refresh){
     const before=this.clientStates?.find(client=>client.id===this.provider);this.clientStates=clients;this.retryClient=retry;this.initializeClient=initialize;this.refreshClients=refresh;
@@ -79,7 +84,7 @@ class DesktopSessionsView {
   }
   backToList(){if(!this.isChatOpen)return false;this.saveDraft();this.workbench.rememberScroll();this.sid=null;this.state=null;this.freshDetail=false;this.detailRevision++;this.showSelection(false);this.renderList();this.updateComposer();this.rememberView();return true;}
   async accountChanged(provider,previous={},next={}){
-    this.accountEpochs.set(provider,(this.accountEpochs.get(provider)||0)+1);for(const key of this.readTasks.keys())if(JSON.parse(key)[0]===provider)this.readTasks.delete(key);
+    this.invalidateReads(provider);
     const identity=value=>JSON.stringify([provider,[...(value.activeIds||[value.activeId].filter(Boolean))].sort()]);
     if(provider===this.provider)this.saveDraft();
     const drafts=new Map([...this.drafts].filter(([key])=>key.startsWith(provider+':')));this.accountDrafts.set(identity(previous),drafts);
@@ -94,15 +99,15 @@ class DesktopSessionsView {
     if(provider!==this.provider)return;
     this.rows=[];this.listStamp='';this.lastMessages=[];this.requestStamp='';this.messageNodes.clear();this.messages.replaceChildren();this.requests.replaceChildren();this.showSelection(false);this.renderList();this.updateComposer();await this.refresh();
   }
-  clear(){this.readEpoch++;this.readTasks.clear();this.accountEpochs.clear();this.workbench.reset();clearTimeout(this.timer);this.generation++;this.detailRevision++;this.provider='codex';this.select.value='codex';this.select.hidden=true;this.container.hidden=true;this.root.classList.remove('desktop-mode');this.sid=null;this.state=null;this.showSelection(false);this.drafts.clear();this.accountDrafts.clear();this.skillSelections.clear();this.providerViews.clear();this.detailCache.clear();this.activity.clear();this.freshDetail=false;this.rows=[];this.listStamp='';this.rowsRoot.replaceChildren();this.lastMessages=[];this.requestStamp='';this.pending.clear();this.attachments.reset();this.messages.replaceChildren();this.requests.replaceChildren();this.messageNodes.clear();}
+  clear(){this.readEpoch++;this.readTasks.clear();this.providerReadEpochs.clear();this.workbench.reset();clearTimeout(this.timer);this.generation++;this.detailRevision++;this.provider='codex';this.select.value='codex';this.select.hidden=true;this.container.hidden=true;this.root.classList.remove('desktop-mode');this.sid=null;this.state=null;this.state=null;this.showSelection(false);this.drafts.clear();this.accountDrafts.clear();this.skillSelections.clear();this.providerViews.clear();this.detailCache.clear();this.activity.clear();this.freshDetail=false;this.rows=[];this.listStamp='';this.rowsRoot.replaceChildren();this.lastMessages=[];this.requestStamp='';this.pending.clear();this.attachments.reset();this.messages.replaceChildren();this.requests.replaceChildren();this.messageNodes.clear();}
   async refresh(){
     clearTimeout(this.timer);const generation=this.generation,provider=this.provider;if(provider==='codex'||document.hidden||this.root.hidden)return;
     if(this.renderConnectionStatus()){this.updateActivity(this.rows,false);this.renderIndicators();this.freshDetail=false;this.updateComposer();return;}
-    if(this.loading===generation){this.refreshPending=generation;return;}this.loading=generation;
+    if(this.loading?.generation===generation){this.refreshPending=generation;return;}const loading={generation};this.loading=loading;
     if(this.sid)this.detail(generation).catch(error=>{if(generation===this.generation){this.error.textContent=BridgeI18n.t(error.message);this.status.textContent=BridgeI18n.t('连接失败');}});
     try{const task=this.sharedRead(provider,'list'),value=await task.promise;if(!task.current()||generation!==this.generation)return;this.rows=value.sessions||[];this.updateActivity(this.rows,value.connected!==false);this.listStatus.textContent=BridgeI18n.t(value.connected===false?'尚未连接':this.rows.length?'已连接桌面':'已连接，桌面还没有会话');this.renderConnectionStatus();this.renderList();this.rememberView();}
     catch(error){if(generation===this.generation){this.updateActivity(this.rows,false);this.renderIndicators();if(!this.renderConnectionStatus())this.listStatus.textContent=BridgeI18n.t(error.message);if(this.sid&&!this.state)this.error.textContent=this.listStatus.textContent;}}
-    finally{if(this.loading===generation)this.loading=null;if(generation===this.generation){if(this.refreshPending===generation){this.refreshPending=null;this.refresh();}else this.timer=setTimeout(()=>this.refresh(),this.sid||ClientLifecycle.connection(this.clientStates?.find(client=>client.id===provider)).waiting?2000:5000);}}
+    finally{if(this.loading===loading){this.loading=null;if(generation===this.generation){if(this.refreshPending===generation){this.refreshPending=null;this.refresh();}else this.timer=setTimeout(()=>this.refresh(),this.sid||ClientLifecycle.connection(this.clientStates?.find(client=>client.id===provider)).waiting?2000:5000);}}}
   }
   visibleActivity(){return this.isChatOpen&&!document.hidden&&!this.workbench.isFileVisible?this.provider+'|'+this.sid:null;}
   updateActivity(rows,connected=true){this.activity.update(rows.map(row=>({id:row.id,host:this.provider,connected,status:row.status,turnId:row.turnId,turnStatus:row.turnStatus})),this.visibleActivity());}
@@ -164,10 +169,10 @@ class DesktopSessionsView {
   }}
   requestId(){if(typeof uuid==='function')return uuid();if(typeof crypto.randomUUID==='function')return crypto.randomUUID();const bytes=crypto.getRandomValues(new Uint8Array(16));bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;const h=[...bytes].map(x=>x.toString(16).padStart(2,'0')).join('');return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);}
   async mutate(action,body,sessionId=action==='create'?null:this.sid){
-    if(this.busy)return null;const provider=this.provider,generation=this.generation,key=provider+':'+sessionId+':'+action+':'+JSON.stringify(body);this.busy=true;this.error.textContent='';this.updateComposer();
+    if(this.busy)return null;const provider=this.provider,generation=this.generation,key=provider+':'+sessionId+':'+action+':'+JSON.stringify(body);this.invalidateReads(provider);this.busy=true;this.error.textContent='';this.updateComposer();
     try{let id=this.pending.get(key);if(!id){id=this.requestId();this.pending.set(key,id);}const result=await this.request(this.path(action,null,provider),{...body,id,sessionId});if(!['accepted','queued','ready'].includes(result.status))throw Error(result.message||'结果待核对，请检查桌面原会话');this.pending.delete(key);return result;}
     catch(error){if(generation===this.generation&&sessionId===this.sid)this.error.textContent=BridgeI18n.t(error.message);this.notify(BridgeI18n.t(error.message));return null;}
-    finally{this.busy=false;this.updateComposer();if(generation===this.generation)this.refresh();}
+    finally{this.invalidateReads(provider);this.busy=false;this.updateComposer();if(generation===this.generation)this.refresh();}
   }
   attachmentUrl(key,id,action){const [provider,sid]=JSON.parse(key);return this.path('uploads/'+encodeURIComponent(id)+'/'+action,sid,provider);}
   async uploadBinary(url,data,type){const response=await fetch(url,{method:'POST',credentials:'same-origin',headers:{'Content-Type':type||'application/octet-stream','X-CSRF-Token':this.csrf()},body:data});const result=await response.json();if(!response.ok){if(response.status===401)this.onUnauthorized();throw Error(result.error||BridgeI18n.t('附件上传失败，请重试'));}return result;}
