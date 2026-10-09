@@ -411,15 +411,16 @@ class DesktopSessions:
                     row.get('runtimeKnown') is not True for row in sessions)):
             raise TaskStateUnavailable(unknown)
 
-    def _stop_client(self, provider, descriptor, state, *, native_confirmation=False):
+    def _stop_client(self, provider, descriptor, state, *, native_confirmation=False, force=False):
         from .client_launch import stop_client, stop_deepseek
         native_confirmation = native_confirmation and provider == 'claude' and sys.platform == 'win32'
-        if not state['running']:
+        if not state['running'] and not force:
             if provider == 'claude':
                 self.adapters[provider].cancel()
             return
         try:
-            self._assert_idle(provider, state, native_confirmation=native_confirmation)
+            if not force:
+                self._assert_idle(provider, state, native_confirmation=native_confirmation)
         except TaskStateUnavailable:
             # Only explicit user-requested quit can defer unavailable task evidence
             # to Claude's own normal exit confirmation. Account changes cannot.
@@ -429,7 +430,10 @@ class DesktopSessions:
             # Cancel the monitor before native quit, so it cannot relaunch Claude.
             self.adapters[provider].cancel(persist=False)
         try:
-            if provider == 'deepseek' and sys.platform == 'win32':
+            if force:
+                from ..windows_force_exit import force_stop_client
+                force_stop_client(descriptor, state=state)
+            elif provider == 'deepseek' and sys.platform == 'win32':
                 stop_deepseek(descriptor, self.adapters[provider], state=state)
             else:
                 stop_client(descriptor, state=state)
@@ -678,6 +682,7 @@ class DesktopSessions:
                 native_states = {}
             for row in rows:
                 row.update(running=False, mainRunning=False, backgroundRunning=False, backgroundCount=0)
+                row['canForceQuit'] = bool(sys.platform == 'win32' and self.gateway_running and row['installed'])
                 if row['installed']:
                     try:
                         native = native_states.get(row['id'])
@@ -775,6 +780,9 @@ class DesktopSessions:
             raise ValueError('应用开关无效')
         if 'quitDesktop' in value and (type(value['quitDesktop']) is not bool or enabled):
             raise ValueError('应用开关无效')
+        if 'forceDesktop' in value and (type(value['forceDesktop']) is not bool or enabled
+                or value.get('quitDesktop') is not True or sys.platform != 'win32' or not self.gateway_running):
+            raise ValueError('后台强制结束请求无效')
         if 'initializeDesktop' in value and (type(value['initializeDesktop']) is not bool
                 or provider != 'claude' or enabled is not True):
             raise ValueError('应用初始化请求无效')
@@ -818,7 +826,8 @@ class DesktopSessions:
                         raise ValueError('客户端尚未启动，请在电脑端检查后重试')
             else:
                 self._stop_client(provider, descriptor, inspect_client(descriptor),
-                                  native_confirmation=value.get('quitDesktop') is True)
+                                  native_confirmation=value.get('quitDesktop') is True,
+                                  force=value.get('forceDesktop') is True)
             # Persist only after the native lifecycle operation succeeds.
             self.config.setdefault('enabled', {})[provider] = enabled
             private_json(self.config_path, self.config)
