@@ -227,8 +227,8 @@ class ClaudeKeyboard {
         CheckCancelled();
         CheckInteractiveDesktop();
         var window=GetForegroundWindow();uint pid; GetWindowThreadProcessId(window,out pid);
-        if (!Owned((int)pid)) throw new Exception("焦点已离开 Claude，自动连接已停止，请重试");
-        if(inputWindow!=IntPtr.Zero&&window!=inputWindow)throw new Exception("Claude 窗口已改变，自动连接已停止，请重试");
+        if (!Owned((int)pid)) throw new Exception(quitAction?"Claude 退出窗口未保持在前台，退出请求尚未提交，请重试退出":"焦点已离开 Claude，自动连接已停止，请重试");
+        if(inputWindow!=IntPtr.Zero&&window!=inputWindow)throw new Exception(quitAction?"Claude 退出窗口已改变，退出请求尚未提交，请重试退出":"Claude 窗口已改变，自动连接已停止，请重试");
     }
     static bool PromptName(string name,string id) {
         return id=="console-prompt" || name=="Console prompt" || name=="控制台提示" || name=="控制台提示符";
