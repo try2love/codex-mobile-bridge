@@ -2,6 +2,12 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"Harness 正在退出，请稍后重试":"Harness is quitting. Try again shortly.",
+"Harness 进程已变化，请重新检查后再退出":"The Harness process has changed. Check again before quitting.",
+"当前 Harness 未提供正常退出接口，请在电脑端退出":"This Harness version does not support a normal remote quit. Quit it on your computer.",
+"有任务运行、等待确认或状态未知，请先在电脑端检查后再退出":"Tasks are running, awaiting approval, or have an unknown status. Check on your computer before quitting.",
+"Harness 未确认退出请求，请在电脑端检查后重试":"Harness did not acknowledge the quit request. Check on your computer and try again.",
+"Harness 桌面未连接，无法确认退出状态":"Harness Desktop is not connected, so its quit status cannot be verified.",
 "当前 Claude Desktop 不支持后台退出；请在电脑上从 Claude 菜单或系统托盘选择“退出”，也可以选择“仅停用手机接入”":"This Claude Desktop version does not support quitting in the background. Choose Quit from the Claude menu or system tray on your computer, or choose “Disable phone access only”.",
 "Harness 接入需要更新才能正常退出；请先在电脑端退出 Harness，再重新连接":"Update the Harness connection before quitting normally. Quit Harness on your computer, then reconnect.",
 "Harness 尚未退出，请在电脑端处理退出提示后重试；尚未强制结束进程":"Harness has not quit. Handle its quit prompt on your computer and try again. No processes have been force-quit.",
