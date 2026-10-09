@@ -714,9 +714,24 @@ class ClaudeKeyboard {
             }
         }
     }
+    static List<AppWindow> WaitBackgroundReady(int pid,Func<List<AppWindow>> read,Action check,Action pause,Func<bool> expired) {
+        while(true) {
+            check();var windows=read();check();
+            if(SelectBackgroundDevTools(windows,pid).Count>0||SelectWindow(windows,pid,IntPtr.Zero).Count>0)return windows;
+            if(expired())throw new Exception("Claude 主进程已启动，开发者工具或主窗口尚未就绪，请稍后重试初始化");
+            pause();
+        }
+    }
     static void ConnectBackground(Process process,string text) {
         long started=process.StartTime.ToUniversalTime().Ticks;CheckBackgroundProcess(process,started);
-        var tools=SelectBackgroundDevTools(ReadBackgroundWindows(process.Id),process.Id);
+        // A native cold launch can publish its PID before constructing either
+        // the hidden main renderer or its automatic detached developer tools.
+        // Observe readiness within the operation's overall deadline; never
+        // restore a hidden window or infer success from process existence.
+        var readyTimer=Stopwatch.StartNew();
+        var ready=WaitBackgroundReady(process.Id,()=>ReadBackgroundWindows(process.Id),()=>CheckBackgroundProcess(process,started),
+            ()=>Thread.Sleep(100),()=>readyTimer.Elapsed.TotalSeconds>=8);
+        var tools=SelectBackgroundDevTools(ready,process.Id);
         bool opened=tools.Count==0;
         if(opened){OpenBackgroundDevTools(process,started);tools=SelectBackgroundDevTools(ReadBackgroundWindows(process.Id),process.Id);}
         if(tools.Count!=1||tools.Handle==IntPtr.Zero)throw new Exception("找不到唯一 app://localhost Claude 开发者工具，请在电脑端检查后重试");
@@ -1017,6 +1032,22 @@ class ClaudeKeyboard {
             if(mode=="empty"&&(failed||closes!=1)||mode!="empty"&&(!failed||closes!=0))throw new Exception("Claude 后台工具清理草稿与取消保护自检失败: "+mode);
         }
     }
+    static void CheckBackgroundStartupReadiness() {
+        var hidden=new AppWindow {Handle=new IntPtr(41),Pid=7,Title="Claude"};
+        var main=new AppWindow {Handle=new IntPtr(42),Pid=7,Visible=true,Title="Claude"};
+        var tools=new AppWindow {Handle=new IntPtr(43),Pid=7,Visible=true,Title="Developer Tools - app://localhost/new"};
+        foreach(string mode in new[]{"tools-later","main-later","ready","timeout","cancelled"}) {
+            int reads=0,pauses=0,checks=0;bool failed=false;List<AppWindow> result=null;
+            try {result=WaitBackgroundReady(7,delegate {
+                reads++;return new List<AppWindow>(mode=="ready"||mode=="tools-later"&&reads>=3?new[]{hidden,tools}:mode=="main-later"&&reads>=2?new[]{main}:new[]{hidden});
+            },delegate{if(mode=="cancelled"&&++checks==3)throw new OperationCanceledException();},()=>pauses++,()=>reads>=4);}
+            catch(Exception){failed=true;}
+            if(mode=="tools-later"&&(failed||reads!=3||pauses!=2||SelectBackgroundDevTools(result,7).Handle!=tools.Handle)||
+               mode=="main-later"&&(failed||reads!=2||pauses!=1||SelectWindow(result,7,IntPtr.Zero).Handle!=main.Handle)||
+               mode=="ready"&&(failed||reads!=1||pauses!=0)||mode=="timeout"&&(!failed||reads!=4||pauses!=3)||
+               mode=="cancelled"&&(!failed||reads!=1||pauses!=1))throw new Exception("Claude 后台启动就绪与取消自检失败: "+mode);
+        }
+    }
     static string FailureMessage(Exception error,bool quitting) {
         if(error is System.ComponentModel.Win32Exception)return "无法读取 Claude 窗口，请检查运行权限";
         return !String.IsNullOrWhiteSpace(error.Message)?error.Message:quitting?"Claude 原生退出菜单操作失败，请在电脑端检查后重试":"Claude 原生连接操作失败，请在电脑端检查后重试";
@@ -1038,7 +1069,8 @@ class ClaudeKeyboard {
                 CheckNativeQuit();
                 CheckBackgroundConnection();
                 CheckBackgroundCleanup();
-                Console.WriteLine("keyboard ABI, Console allowlist and contenteditable text fallback OK; window selection and cancellable restore OK; menu navigation OK; packaged launch OK; atomic console submission OK; detached console reuse OK; native menu quit guards OK; background console guards OK; background cleanup guards OK");return 0;
+                CheckBackgroundStartupReadiness();
+                Console.WriteLine("keyboard ABI, Console allowlist and contenteditable text fallback OK; window selection and cancellable restore OK; menu navigation OK; packaged launch OK; atomic console submission OK; detached console reuse OK; native menu quit guards OK; background console guards OK; background cleanup guards OK; background startup readiness OK");return 0;
             }
             if(args.Length!=3 && args.Length!=4) throw new Exception("键盘连接参数无效");
             quitAction=args[1]=="--quit";
