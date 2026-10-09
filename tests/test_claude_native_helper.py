@@ -55,6 +55,7 @@ class WindowsNativeWindowSelectors(unittest.TestCase):
         self.assertIn('atomic console submission OK', result.stdout)
         self.assertIn('detached console reuse OK', result.stdout)
         self.assertIn('native menu quit guards OK', result.stdout)
+        self.assertIn('background console guards OK', result.stdout)
 
     def test_readonly_inspection_finds_owned_window_instead_of_main_window_hint(self):
         source, fixture = self.folder/'fixture.cs', self.folder/'Claude.exe'
@@ -289,7 +290,8 @@ class QuitFixture {
 
         # This desktop is never activated or switched to. All tested apps are
         # disposable fixtures; the real Claude and user's input remain untouched.
-        for mode in ('normal', 'pending', 'dispatch-error', 'native-popup', 'initialize'):
+        for mode in ('normal', 'pending', 'dispatch-error', 'native-popup', 'initialize',
+                     'background-connect', 'background-cancel'):
             with self.subTest(mode=mode):
                 ready, stop, marker = (self.folder/(mode+suffix) for suffix in ('.ready', '.stop', '.invoked'))
                 app = launch([fixture, ready, stop, marker, mode], self.folder/(mode+'.app.log'))
@@ -301,12 +303,17 @@ class QuitFixture {
                     self.assertTrue(ready.exists(), 'inactive-desktop fixture did not initialize')
                     output = self.folder/(mode+'.quit.log')
                     action = '--quit'
-                    if mode == 'initialize':
+                    if mode == 'initialize' or mode.startswith('background-'):
                         script = self.folder/'connector.js'
                         script.write_text('/* codex bridge connector */void 0;', encoding='utf-8')
-                        action = str(script)
+                        action = ('--connect-background=' if mode.startswith('background-') else '')+str(script)
+                    arguments = [self.helper, app.pid, action, fixture]
+                    if mode == 'background-cancel':
+                        cancel = self.folder/'background.cancel'
+                        cancel.write_text('cancel', encoding='utf-8')
+                        arguments.append(cancel)
                     started = time.monotonic()
-                    helper = launch([self.helper, app.pid, action, fixture], output)
+                    helper = launch(arguments, output)
                     code = wait(helper, 15)
                     if mode == 'initialize':
                         self.assertEqual(code, 1, output.read_text(encoding='utf-8-sig'))
@@ -318,6 +325,19 @@ class QuitFixture {
                         continue
                     replies = output.read_text(encoding='utf-8-sig').splitlines()
                     result = json.loads(replies[-1])
+                    if mode.startswith('background-'):
+                        self.assertEqual(code, 1, result)
+                        self.assertEqual(result['setupState'], 'failed')
+                        self.assertEqual(result['submission'], 'none')
+                        self.assertEqual(result['pid'], app.pid)
+                        self.assertTrue(result['reason'].strip())
+                        self.assertFalse(any(json.loads(line).get('connectPhase') == 'dispatching'
+                                             for line in replies))
+                        self.assertLess(time.monotonic()-started, 8)
+                        self.assertFalse(marker.exists())
+                        self.assertFalse(exited(app))
+                        self.assertEqual(user.GetForegroundWindow(), foreground)
+                        continue
                     if mode == 'native-popup':
                         # WPF's standard popup currently does not expose Exit
                         # here. Keep this real provider limitation covered:
