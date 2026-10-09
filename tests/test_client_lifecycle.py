@@ -293,14 +293,14 @@ class ClientLifecycleTests(unittest.TestCase):
         self.stop.assert_not_called()
         self.claude.connect.assert_not_called()
 
-    def test_gateway_start_prepares_selected_claude_without_launching_or_native_input(self):
+    def test_gateway_start_requests_selected_claude_background_launch(self):
         self.manager.config['enabled'] = {'codex': False, 'claude': True, 'deepseek': False}
         with patch.object(self.manager, 'scan'):
             self.manager.start_enabled()
         self.launch.assert_not_called()
         self.launch_dsh.assert_not_called()
         self.claude.connect.assert_not_called()
-        self.claude.reconnect.assert_called_once_with()
+        self.claude.reconnect.assert_called_once_with(launch=True)
 
     def test_one_start_failure_preserves_selection_and_does_not_block_other_apps(self):
         self.manager.config['enabled'] = {'codex': False, 'claude': True, 'deepseek': True}
@@ -471,7 +471,56 @@ class ClientLifecycleTests(unittest.TestCase):
         self.toggle('claude', True)
         self.launch.assert_not_called()
         self.claude.connect.assert_not_called()
-        self.claude.reconnect.assert_called_once_with()
+        self.claude.reconnect.assert_called_once_with(launch=True)
+
+    def test_explicit_mobile_initialization_only_calls_native_setup(self):
+        self.manager.toggle_client({'provider': 'claude', 'enabled': True, 'initializeDesktop': True})
+        self.claude.connect.assert_called_once_with()
+        self.claude.reconnect.assert_not_called()
+        self.launch.assert_not_called()
+        self.stop.assert_not_called()
+
+    def test_mobile_initialization_rejects_invalid_flag_combinations(self):
+        for provider, enabled, initialize in [('claude', True, 1), ('claude', True, 'true'),
+                ('claude', False, True), ('claude', False, False), ('deepseek', True, True), ('codex', True, False)]:
+            with self.subTest(provider=provider, enabled=enabled, initialize=initialize):
+                with self.assertRaisesRegex(ValueError, '初始化请求'):
+                    self.manager.toggle_client({'provider': provider, 'enabled': enabled, 'initializeDesktop': initialize})
+        self.claude.connect.assert_not_called()
+        self.claude.reconnect.assert_not_called()
+        self.launch.assert_not_called()
+        self.stop.assert_not_called()
+
+    def test_explicit_false_initialization_keeps_background_route(self):
+        self.manager.toggle_client({'provider': 'claude', 'enabled': True, 'initializeDesktop': False})
+        self.claude.reconnect.assert_called_once_with(launch=True)
+        self.claude.connect.assert_not_called()
+
+    def test_claude_pending_states_keep_their_reason_and_actual_running_status(self):
+        for phase in ('starting', 'connecting', 'needs-initialization', 'failed'):
+            self.claude.status.return_value = {'connected': False, 'setupState': phase, 'reason': 'current progress'}
+            row = next(r for r in self.manager.clients(refresh=True)['clients'] if r['id'] == 'claude')
+            self.assertEqual(row['connectionState'], 'error' if phase == 'failed' else phase)
+            self.assertEqual(row['reason'], 'current progress')
+            self.assertTrue(row['running'])
+            self.assertEqual(row['retryable'], phase == 'failed')
+
+    def test_claude_pending_cache_expires_in_one_second(self):
+        self.claude.status.return_value = {'connected': False, 'setupState': 'connecting', 'reason': 'waiting'}
+        with patch('bridge.integrations.manager.time.monotonic', return_value=10):
+            self.manager.clients(refresh=True)
+        self.claude.status.return_value = {'connected': False, 'setupState': 'needs-initialization', 'reason': 'initialize'}
+        with patch('bridge.integrations.manager.time.monotonic', return_value=12):
+            row = next(r for r in self.manager.clients()['clients'] if r['id'] == 'claude')
+        self.assertEqual(row['connectionState'], 'needs-initialization')
+
+    def test_claude_stopped_process_does_not_claim_pending_connection(self):
+        self.running = False
+        self.claude.status.return_value = {'connected': False, 'setupState': 'needs-initialization'}
+        row = next(r for r in self.manager.clients(refresh=True)['clients'] if r['id'] == 'claude')
+        self.assertFalse(row['running'])
+        self.assertEqual(row['connectionState'], 'error')
+        self.assertTrue(row['retryable'])
 
     def test_explicit_claude_connect_button_may_launch_and_initialize(self):
         self.running = False
