@@ -379,7 +379,9 @@ def background_running_app(executable, data_home, cancelled=None):
         launcher = app.executable
     check()
     # No explorer fallback: it would activate the window and drop --startup.
+    environment = {key: value for key, value in os.environ.items() if key.upper() != 'ELECTRON_RUN_AS_NODE'}
     process = subprocess.Popen([str(launcher), '--startup'], cwd=app.executable.parent,
+                               env=environment,
                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                creationflags=subprocess.CREATE_NO_WINDOW)
     deadline = time.monotonic() + 20
