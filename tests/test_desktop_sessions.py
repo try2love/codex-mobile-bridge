@@ -120,6 +120,23 @@ class HttpAdapters(unittest.TestCase):
     tearDown = test_bridge.HttpTests.tearDown
     request = test_bridge.HttpTests.request
     login = test_bridge.HttpTests.login
+    def test_explicit_claude_initialization_requires_auth_csrf_and_forwards_choice(self):
+        manager = self.server.desktop_sessions = Mock()
+        manager.toggle_client.return_value = {'clients': []}
+        route = '/api/clients'
+        self.assertEqual(self.request('POST', route)[0], 401)
+        headers = self.login()
+        self.assertEqual(self.request('POST', route, headers={'Cookie': headers['Cookie']})[0], 403)
+        manager.toggle_client.assert_not_called()
+        body = {'provider': 'claude', 'enabled': True, 'initializeDesktop': True}
+        self.assertEqual(self.request('POST', route, body, headers)[0], 200)
+        manager.toggle_client.assert_called_once_with(body)
+        manager.toggle_client.reset_mock()
+        for field, value in (('script', 'alert(1)'), ('force', True), ('action', 'eval')):
+            with self.subTest(field=field):
+                self.assertEqual(self.request('POST', route, {**body, field: value}, headers)[0], 400)
+        manager.toggle_client.assert_not_called()
+
     def test_desktop_notifications_require_auth_csrf_and_keep_provider(self):
         self.server.desktop_sessions = Mock()
         self.server.notifications = Mock()
