@@ -24,6 +24,7 @@ from urllib import error, parse, request
 
 from ..accounts import private_bytes, private_json
 from ..tls import client_context
+from .claude_setup import windows_claude_profile_paths
 
 AUTH_ITEMS = ('Local State', 'Preferences', 'Cookies', 'Cookies-journal', 'Cookies-wal', 'Cookies-shm', 'Network',
               'DIPS', 'DIPS-wal', 'DIPS-shm', 'SharedStorage', 'SharedStorage-wal', 'SharedStorage-shm', 'WebStorage',
@@ -31,6 +32,7 @@ AUTH_ITEMS = ('Local State', 'Preferences', 'Cookies', 'Cookies-journal', 'Cooki
 CONFIG = 'claude_desktop_config.json'
 TOKEN_KEY = 'oauth:tokenCache'
 TTL = 300
+AMBIGUOUS_PROFILE = '检测到多个 Claude 登录目录，无法安全切换账号；请在设置中指定客户端数据目录'
 
 
 def _safe(path):
@@ -246,18 +248,43 @@ def _usage_limits(data):
 
 
 class ClaudeAccounts:
-    def __init__(self, directory, data_home):
+    def __init__(self, directory, data_home, *, executable=None, package_family=None, explicit_home=False):
         self.directory = Path(directory).absolute()
-        self.home = Path(data_home).absolute()
-        if self.home.name == 'Claude-3p':
+        self.mode_home = self.home = Path(data_home).absolute()
+        self._ambiguous_profiles = set()
+        if explicit_home:
             self.threep = self.home
-            self.home = (Path(os.environ['APPDATA'])/'Claude' if sys.platform == 'win32' and os.environ.get('APPDATA') else self.home.with_name('Claude'))
+        elif sys.platform == 'win32':
+            groups = windows_claude_profile_paths(executable, self.home, package_family=package_family)
+            markers = ('Local State', 'Preferences', 'Network/Cookies', 'Cookies',
+                       'config.json', CONFIG, 'developer_settings.json')
+
+            def select(kind):
+                paths = groups[kind]
+                if self.mode_home in paths:
+                    return self.mode_home
+                populated = [path for path in paths if any((path/item).is_file() for item in markers)]
+                if len(populated) > 1:
+                    self._ambiguous_profiles.add(kind)
+                if populated:
+                    return populated[0]
+                # With no profile evidence, retain the canonical Store or
+                # classic official path and the current local 3p default.
+                if kind == 'official':
+                    return next((path for path in paths if path.parent.parent.name == 'LocalCache'), paths[-1])
+                return paths[0]
+
+            self.home = select('official') if groups else self.home
+            self.threep = select('thirdparty') if groups else self.home
+        elif self.home.name == 'Claude-3p':
+            self.threep = self.home
+            self.home = self.home.with_name('Claude')
         elif self.home.name == 'Claude':
-            self.threep = (Path(os.environ['LOCALAPPDATA'])/'Claude-3p' if sys.platform == 'win32' and os.environ.get('LOCALAPPDATA') else self.home.with_name('Claude-3p'))
+            self.threep = self.home.with_name('Claude-3p')
         else:
             # An explicit custom profile stays scoped to that profile.
             self.threep = self.home
-        if any(path.is_symlink() for root in (self.directory, self.home, self.threep) for path in (root, *root.parents)):
+        if any(path.is_symlink() for root in (self.directory, self.mode_home, self.home, self.threep) for path in (root, *root.parents)):
             raise ValueError('Claude 账号目录不能是符号链接')
         self.lock = threading.RLock()
 
@@ -278,9 +305,11 @@ class ClaudeAccounts:
         return row, self.directory/'profiles'/identifier
 
     def _gateway(self):
-        mode = _json(self.home/CONFIG).get('deploymentMode')
+        mode = _json(self.mode_home/CONFIG).get('deploymentMode')
         if mode != '3p':
             return None
+        if 'thirdparty' in self._ambiguous_profiles:
+            raise ValueError(AMBIGUOUS_PROFILE)
         library = self.threep/'configLibrary'
         meta = _json(library/'_meta.json')
         identifier = meta.get('appliedId')
@@ -299,6 +328,8 @@ class ClaudeAccounts:
         if gateway:
             fingerprint = hashlib.sha256(json.dumps(gateway['config'], sort_keys=True, separators=(',', ':')).encode()).hexdigest()
             return 'api', fingerprint, gateway
+        if 'official' in self._ambiguous_profiles:
+            raise ValueError(AMBIGUOUS_PROFILE)
         return 'official', _fingerprint(_cookies(self.home)), None
 
     def public(self):
@@ -428,6 +459,8 @@ class ClaudeAccounts:
     def restore(self, identifier):
         """Apply a saved login only while stopped; return a private rollback ID."""
         with self.lock:
+            if self._ambiguous_profiles:
+                raise ValueError(AMBIGUOUS_PROFILE)
             row, snapshot = self._account(identifier)
             manifest = _json(snapshot/'manifest.json')
             if manifest.get('fingerprint') != row.get('fingerprint') or manifest.get('kind') != row['kind']:
