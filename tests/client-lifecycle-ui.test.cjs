@@ -25,6 +25,18 @@ test('a real close dialog presents three distinct choices and defaults focus to 
   buttons[expected===null?2:expected?1:0].onclick();assert.equal(await result,expected);assert.equal(ui.document.body.children.length,0);
  }
 });
+
+test('connection labels distinguish startup, required action, failure and actual connectivity',()=>{
+ const {connection}=require('../web/client-lifecycle.js'),base={enabled:true,configured:true,installed:true,connected:false};
+ for(const running of [false,true])for(const configured of [false,true]){
+  assert.equal(connection({...base,running,configured,connectionState:'starting'}).label,'正在启动应用…');assert.equal(connection({...base,running,configured,connectionState:'connecting'}).label,'正在连接，请稍候…');
+ }
+ for(const [setupStatus,label] of [['needs-initialization','需要手动初始化'],['needs-permission','等待授权'],['failed','连接失败']])assert.equal(connection({...base,running:false,setupStatus}).label,label);
+ assert.equal(connection({...base,connected:true,connectionState:'connecting'}).label,'已连接');assert.equal(connection({...base,connected:true,connectionState:'connecting'}).waiting,false);
+ assert.equal(connection({...base,connectionState:'timeout',retryable:true}).retryable,true);assert.equal(connection({...base,connectionState:'connecting',retryable:true}).retryable,false);
+ assert.equal(connection({...base,setupStatus:'recovery-required',connectionState:'connecting',backgroundRunning:true,mainRunning:false}).label,'后台运行，桌面未打开');
+ assert.equal(connection({...base,pendingEnable:true,reason:'请手动连接 Claude'}).reason,'正在等待客户端连接，完成后会自动显示聊天。');
+});
 test('Escape and other dialog close events always cancel the desktop exit choice',async()=>{
  for(const escape of [true,false]){
   const ui=fixture(),result=ui.choose({id:'deepseek',name:'DSH'}),dialog=ui.dialog();let prevented=false;
@@ -50,6 +62,7 @@ test('Claude explains its native quit menu while other clients retain the idle r
   if(id==='claude'){
    assert.match(note,language==='en'?/native menu.*may appear briefly/:/原生菜单.*短暂出现/);
    assert.match(note,language==='en'?/task or save confirmation on your computer/:/任务或保存确认.*电脑端处理/);
+   assert.match(note,language==='en'?/After quitting completely, initialize the connection again/:/完全退出后，再次连接需在电脑端初始化/);
    assert.doesNotMatch(note,/only after all tasks finish|仅在所有任务结束/i);
   }else assert.equal(note,language==='en'?'Quit only after all tasks finish and no approvals are pending.':'仅在所有任务结束且没有待确认操作时退出。');
   if(language==='en')assert.doesNotMatch(dialog.textContent,/[\u4e00-\u9fff]/);

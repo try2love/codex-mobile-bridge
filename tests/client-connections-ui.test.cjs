@@ -8,7 +8,7 @@ function fixture({accounts=false}={}){
   const root={hidden:false,querySelector(selector){const provider=selector.includes('deepseek')?'deepseek':'claude';if(selector.includes('.client-auto-setup'))return articles[provider]?.querySelector('.client-auto-setup')||null;if(selector.startsWith('[data-client-config='))return articles[provider]||null;if(selector==='input')return accounts?articles.deepseek.querySelector('input'):input;if(selector==='[data-deepseek-home]')return input;if(selector==='[data-desktop-choose]')return choose;if(selector==='[data-claude-workspace]')return workspace;if(selector==='[data-claude-home]')return claudeHome;if(selector==='[data-claude-data]')return claudeData;return statuses[provider];},querySelectorAll(selector){if(selector==='[data-desktop-status]')return Object.values(statuses);if(selector.includes('data-desktop-action'))return [scan];return Object.values(articles).flatMap(article=>article.querySelectorAll(selector));}};
   const calls=[],errors=[],prompts=[],choices=[];let closeChoice=true,finishChoice,chosen='',confirmed=true,handler=async body=>body.action==='status'?{backends:{},deepseekHome:'/fixture'}:body.action==='accounts'?{accounts:[]}:{clients:[]};
   const listeners={},timers=[];
-  const context=vm.createContext({ClientLifecycle:{chooseDisable(client){choices.push(client.id);return closeChoice==='pending'?new Promise(resolve=>finishChoice=resolve):closeChoice;}},CustomEvent:class{constructor(type){this.type=type;}},document:{documentElement:{},getElementById:id=>nodes[id],createElement:node,querySelector:()=>null,querySelectorAll:selector=>selector==='[data-i18n]'?Object.values(statuses):[],hidden:false,addEventListener(type,fn){listeners[type]=fn;},dispatchEvent(event){listeners[event.type]?.(event);}},setInterval(fn){timers.push(fn);},setTimeout(){},clearTimeout(){},localStorage:{getItem(){return null;},setItem(){}},window:{confirm:message=>{prompts.push(message);return confirmed;},GatewayLayout:{selectClient(){}}}});
+  const context=vm.createContext({ClientLifecycle:{...require('../web/client-lifecycle.js'),chooseDisable(client){choices.push(client.id);return closeChoice==='pending'?new Promise(resolve=>finishChoice=resolve):closeChoice;}},CustomEvent:class{constructor(type){this.type=type;}},document:{documentElement:{},getElementById:id=>nodes[id],createElement:node,querySelector:()=>null,querySelectorAll:selector=>selector==='[data-i18n]'?Object.values(statuses):[],hidden:false,addEventListener(type,fn){listeners[type]=fn;},dispatchEvent(event){listeners[event.type]?.(event);}},setInterval(fn){timers.push(fn);},setTimeout(){},clearTimeout(){},localStorage:{getItem(){return null;},setItem(){}},window:{confirm:message=>{prompts.push(message);return confirmed;},GatewayLayout:{selectClient(){}}}});
   for(const file of ['web/i18n.js',...(accounts?['web/client-accounts.js']:[]),'desktop/desktop-sessions.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
   const Class=vm.runInContext('DesktopConnectionsPanel',context),panel=new Class({root,api:{choose:async()=>chosen,desktopSessions:body=>{calls.push(body);return handler(body);}},feedback:message=>errors.push(message)});
   const all=n=>[n,...n.children.flatMap(all)];
@@ -21,6 +21,20 @@ test('DSH directory refresh targets its field after real account forms are inser
   assert.equal(ui.root.querySelector('input'),name,'the account name precedes the advanced directory in the real layout');
   name.value='Saved access';await ui.panel.refresh();assert.equal(ui.input.value,'/fixture');assert.equal(name.value,'Saved access');
   ui.input.value='/editing';ui.document.activeElement=ui.input;await ui.panel.refresh();assert.equal(ui.input.value,'/editing');
+});
+
+test('desktop progress overrides stale process and configuration snapshots and allows an explicit retry',async()=>{
+ const ui=fixture(),client={id:'deepseek',name:'DSH',enabled:true,installed:true,selectable:true,configured:true,running:false,connected:false,connectionState:'connecting',reason:'Harness 已启动，正在等待桌面连接'};ui.panel.clients=[client];ui.panel.renderClients();
+ assert.match(ui.text(),/正在连接，请稍候/);assert.doesNotMatch(ui.text(),/应用未运行/);assert.equal(ui.all().find(node=>node.attributes.role==='status').attributes['aria-busy'],'true');
+ ui.english();assert.doesNotMatch(ui.text(),/[\u4e00-\u9fff]/);assert.match(ui.text(),/Connecting, please wait/);
+ Object.assign(client,{connectionState:'timeout',retryable:true,reason:'Harness 连接超时，请检查桌面应用后重试接入'});ui.panel.renderClients();assert.match(ui.text(),/Connection timed out/);
+ ui.setHandler(async()=>({clients:[{...client,connectionState:'connecting',retryable:false}]}));await ui.all().find(node=>node.textContent==='Retry connection').onclick();assert.equal(ui.calls[0].action,'toggle-client');assert.equal(ui.calls[0].enabled,true);assert.equal(ui.calls[0].provider,'deepseek');
+});
+
+test('desktop fast polling is limited to visible startup states and deduplicates active reads',async()=>{
+ const ui=fixture();ui.panel.clients=[{id:'deepseek',enabled:true,connectionState:'connecting'}];let finish;ui.setHandler(()=>new Promise(resolve=>finish=resolve));const pending=ui.panel.pollClients(true);const duplicate=ui.panel.pollClients(true);assert.equal(ui.calls.length,1);
+ finish({clients:[{id:'deepseek',enabled:true,connectionState:'connected',connected:true}]});await Promise.all([pending,duplicate]);await ui.panel.pollClients(true);assert.equal(ui.calls.length,1);
+ ui.panel.clients[0].connectionState='starting';ui.panel.clients[0].connected=false;ui.document.hidden=true;await ui.panel.pollClients(true);assert.equal(ui.calls.length,1);ui.document.hidden=false;ui.nodes['clients-page'].hidden=true;await ui.panel.pollClients(true);assert.equal(ui.calls.length,1);
 });
 
 test('DSH directory picker and plugin actions never use the account name field',async()=>{

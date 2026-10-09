@@ -2,6 +2,22 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"正在启动应用…":"Starting the app…",
+"正在连接，请稍候…":"Connecting, please wait…",
+"正在等待客户端连接，完成后会自动显示聊天。":"Waiting for the client to connect. Chats will appear automatically when ready.",
+"连接超时":"Connection timed out",
+"重试连接":"Retry connection",
+"需要完成首次设置":"Initial setup required",
+"需要恢复连接":"Connection recovery required",
+"正在启动 Harness 桌面应用":"Starting the Harness desktop app",
+"Harness 已启动，正在等待桌面连接":"Harness has started. Waiting for the desktop connection.",
+"Harness 连接超时，请检查桌面应用后重试接入":"Harness connection timed out. Check the desktop app, then retry.",
+"Harness 已退出，连接未完成，请重试启动":"Harness exited before connecting. Try starting it again.",
+"Harness 连接已中断，请重试接入":"Harness disconnected. Retry the connection.",
+"Harness 未运行，请重试启动":"Harness is not running. Try starting it again.",
+"通过 Claude 原生菜单退出，菜单可能短暂出现；如有任务或保存确认，请在电脑端处理。完全退出后，再次连接需在电脑端初始化。":"Quit through Claude's native menu. The menu may appear briefly; handle any task or save confirmation on your computer. After quitting completely, initialize the connection again on your computer.",
+"安装和登录请在电脑端完成。关闭接入时可选择保留或退出电脑 App。Claude 退出会短暂打开原生菜单。Claude 完全退出或重新加载后需在电脑端初始化。":"Install and sign in on your computer. When disabling access, choose whether to keep the desktop app running or quit it. Quitting Claude briefly opens its native menu. Initialize Claude on your computer after a complete quit or reload.",
+"选择需要接入的应用；Claude 完全退出或重新加载后需在电脑端初始化。":"Select apps to connect. Initialize Claude on your computer after a complete quit or reload.",
 "通过 Claude 原生菜单退出，菜单可能短暂出现；如有任务或保存确认，请在电脑端处理。":"Quit through Claude's native menu. The menu may appear briefly; handle any task or save confirmation on your computer.",
 "安装和登录请在电脑端完成。关闭接入时可选择保留或退出电脑 App。Claude 退出会短暂打开原生菜单。Claude 首次连接需在电脑端手动初始化。":"Install and sign in on your computer. When disabling access, choose whether to keep the desktop app running or quit it. Quitting Claude briefly opens its native menu. Initialize Claude on your computer before its first connection.",
 "此退出操作仅用于 Claude 桌面端":"This quit action is only available for Claude Desktop.",

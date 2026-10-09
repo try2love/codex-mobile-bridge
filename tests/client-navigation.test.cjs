@@ -1,17 +1,33 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 function fixture(){
-  let mobile=false,choice=true,finishChoice;const choices=[];const context=vm.createContext({ClientLifecycle:{chooseDisable(client){choices.push(client.id);return choice==='pending'?new Promise(resolve=>finishChoice=resolve):choice;}},document:{documentElement:{classList:{contains:()=>mobile}},getElementById:()=>({hidden:false})},localStorage:{setItem(){}},Event:class{},window:{}});
+  let mobile=false,choice=true,finishChoice;const choices=[];const context=vm.createContext({ClientLifecycle:{...require('../web/client-lifecycle.js'),chooseDisable(client){choices.push(client.id);return choice==='pending'?new Promise(resolve=>finishChoice=resolve):choice;}},document:{documentElement:{classList:{contains:()=>mobile}},getElementById:()=>({hidden:false})},localStorage:{setItem(){}},Event:class{},window:{}});
   vm.runInContext(fs.readFileSync('web/client-navigation.js','utf8'),context);
   const C=vm.runInContext('ClientNavigation',context),nav=Object.create(C.prototype),painted=[];
   Object.assign(nav,{clients:[{id:'codex',enabled:true,configured:true},{id:'claude',enabled:true,configured:true},{id:'deepseek',enabled:true,configured:true}],provider:'claude',revision:0,pending:new Set(),notify(){},paint(){painted.push(this.clients.filter(c=>c.enabled).map(c=>c.id));},view:{provider:'claude',choose(id){this.provider=id;return Promise.resolve();}}});
-  return {nav,painted,choices,setChoice:value=>choice=value,decide:value=>finishChoice(value),mobile:value=>mobile=value};
+  return {nav,painted,choices,document:context.document,setChoice:value=>choice=value,decide:value=>finishChoice(value),mobile:value=>mobile=value};
 }
 test('changing provider paints the shell before its slow read resolves',async()=>{
   const {nav,painted}=fixture();let resolve;
   nav.view.choose=()=>new Promise(done=>resolve=done);
   const pending=nav.choose('deepseek');assert.equal(nav.provider,'deepseek');assert.equal(painted.length,1);
   resolve();await pending;
+});
+
+test('mobile connection progress survives launch acknowledgment and fast polls stop at a terminal state',async()=>{
+ const ui=fixture(),nav=ui.nav;nav.clients=[{id:'deepseek',enabled:false,selectable:true,configured:true,running:false,connected:false,reason:'客户端已配置，可开启桌面应用'}];nav.provider='deepseek';nav.gatewayRunning=true;let finish,reads=0;const snapshots=[];
+ nav.view.setClientStates=clients=>snapshots.push(clients);nav.request=(url,body)=>body?new Promise(resolve=>finish=resolve):Promise.resolve({clients:[{...nav.clients[0],connectionState:'connected',connected:true,running:true}]});
+ const starting=nav.toggle('deepseek',true);assert.equal(nav.runtimeState(nav.clients[0]),'正在启动应用…');assert.equal(snapshots.at(-1)[0].pendingEnable,true);assert.equal(nav.clients[0].running,false);
+ finish({clients:[{...nav.clients[0],connectionState:'connecting',reason:'Harness 已启动，正在等待桌面连接'}]});await starting;
+ assert.equal(nav.managementState(nav.clients[0]),'已启用');assert.equal(nav.runtimeState(nav.clients[0]),'正在连接，请稍候…');
+ const read=nav.request;nav.request=(...args)=>{reads++;return read(...args);};await nav.poll(true);assert.equal(reads,1);assert.equal(nav.runtimeState(nav.clients[0]),'已连接');await nav.poll(true);assert.equal(reads,1);
+ nav.clients[0].connected=false;nav.clients[0].connectionState='connecting';ui.document.hidden=true;await nav.poll(true);assert.equal(reads,1);
+});
+
+test('mobile fast polls deduplicate reads and retry sends the same enabled=true request',async()=>{
+ const {nav}=fixture();nav.clients=[{id:'deepseek',enabled:true,selectable:true,configured:true,running:false,connected:false,connectionState:'connecting'}];nav.provider='deepseek';let finish,reads=0;nav.request=()=>{reads++;return new Promise(resolve=>finish=resolve);};
+ const first=nav.poll(true);await nav.poll(true);assert.equal(reads,1);finish({clients:[{...nav.clients[0],connectionState:'timeout',retryable:true}]});await first;await nav.poll(true);assert.equal(reads,1);assert.equal(nav.runtimeState(nav.clients[0]),'连接超时');
+ let body;nav.request=async(url,value)=>{body=value;return {clients:[{...nav.clients[0],connectionState:'connecting',retryable:false}]};};await nav.toggle('deepseek',true);assert.equal(body.enabled,true);assert.equal(body.provider,'deepseek');assert.equal(nav.clients[0].connected,false);
 });
 test('disabling the active client updates the switcher immediately and stale polling cannot restore it',async()=>{
   const {nav}=fixture();let readDone,writeDone;
