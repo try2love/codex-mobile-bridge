@@ -659,5 +659,99 @@ class ClientLifecycleTests(unittest.TestCase):
         self.manager.connect_deepseek(restart=True)
         self.assertEqual(order, ['stop', 'update', 'launch'])
 
+    def dsh_row(self, refresh=True):
+        return next(row for row in self.manager.clients(refresh=refresh)['clients'] if row['id'] == 'deepseek')
+
+    def test_dsh_waiting_connection_explains_progress_despite_remembered_configuration(self):
+        self.dsh.call.side_effect = BridgeUnavailable('endpoint not ready')
+        self.manager._start_deepseek()
+        row = self.dsh_row()
+        self.assertTrue(row['configured'])
+        self.assertFalse(row['connected'])
+        self.assertEqual(row['connectionState'], 'connecting')
+        self.assertEqual(row['setupStatus'], 'connecting')
+        self.assertIn('等待', row['reason'])
+        self.assertFalse(row['retryable'])
+
+    def test_dsh_slow_native_launch_remains_starting_until_process_is_observed(self):
+        self.running = False
+        self.dsh.call.side_effect = BridgeUnavailable('endpoint not ready')
+        self.launch_dsh.side_effect = lambda *_: {'running': False, 'launched': True}
+        self.manager._start_deepseek()
+        self.assertEqual(self.dsh_row()['connectionState'], 'starting')
+        self.running = True
+        self.assertEqual(self.dsh_row()['connectionState'], 'connecting')
+        self.stop.assert_not_called()
+
+    def test_dsh_launch_failure_is_persisted_and_retryable(self):
+        self.running = False
+        self.dsh.call.side_effect = BridgeUnavailable('endpoint not ready')
+        self.launch_dsh.side_effect = lambda *_: {'running': False, 'launched': False}
+        with self.assertRaisesRegex(ValueError, '尚未启动'):
+            self.manager._start_deepseek()
+        row = self.dsh_row()
+        self.assertEqual(row['connectionState'], 'error')
+        self.assertTrue(row['retryable'])
+        self.assertIn('尚未启动', row['reason'])
+        self.assertEqual(json.loads(self.manager.config_path.read_text())['setup']['deepseek']['connectionState'], 'error')
+
+    def test_dsh_connection_timeout_can_retry_and_late_connection_recovers(self):
+        self.dsh.call.side_effect = BridgeUnavailable('endpoint not ready')
+        with patch('bridge.integrations.manager.time.time', return_value=1000):
+            self.manager._start_deepseek()
+        with patch('bridge.integrations.manager.time.time', return_value=1061):
+            row = self.dsh_row()
+            self.assertEqual(row['connectionState'], 'timeout')
+            self.assertTrue(row['retryable'])
+            self.assertIn('重试', row['reason'])
+            self.manager._start_deepseek()
+            self.assertEqual(self.dsh_row()['connectionState'], 'connecting')
+        self.dsh.call.side_effect = lambda *_: {'connected': True, 'configured': True, 'bridgeRevision': 3}
+        row = self.dsh_row()
+        self.assertEqual(row['connectionState'], 'connected')
+        self.assertFalse(row['retryable'])
+        self.assertNotIn('connectionDeadline', self.manager.config['setup']['deepseek'])
+        self.stop.assert_not_called()
+
+    def test_dsh_exit_during_connection_reports_error_without_claiming_connected(self):
+        self.dsh.call.side_effect = BridgeUnavailable('endpoint not ready')
+        self.manager._start_deepseek()
+        self.running = False
+        row = self.dsh_row()
+        self.assertEqual(row['connectionState'], 'error')
+        self.assertFalse(row['connected'])
+        self.assertTrue(row['retryable'])
+        self.assertIn('退出', row['reason'])
+
+    def test_dsh_pending_cache_refreshes_before_the_normal_fifteen_seconds(self):
+        self.dsh.call.side_effect = BridgeUnavailable('endpoint not ready')
+        self.manager._start_deepseek()
+        with patch('bridge.integrations.manager.time.monotonic', return_value=100):
+            self.assertFalse(self.dsh_row()['connected'])
+        self.dsh.call.side_effect = lambda *_: {'connected': True, 'configured': True, 'bridgeRevision': 3}
+        with patch('bridge.integrations.manager.time.monotonic', return_value=101.1):
+            self.assertTrue(self.dsh_row(refresh=False)['connected'])
+
+    def test_dsh_current_connector_clears_stale_restart_even_without_account(self):
+        self.manager.config['setup'] = {'deepseek': {'setupStatus': 'restart-required', 'requiredBridgeRevision': 3}}
+        self.dsh.call.side_effect = lambda *_: {'connected': True, 'configured': False, 'bridgeRevision': 3}
+        row = self.dsh_row()
+        self.assertEqual(row['setupStatus'], 'unconfigured')
+        self.assertEqual(row['connectionState'], 'connected')
+        self.assertFalse(row['configured'])
+        self.assertNotIn('requiredBridgeRevision', self.manager.config['setup']['deepseek'])
+
+    def test_dsh_real_connector_update_is_not_hidden_by_live_transport(self):
+        self.manager.config['setup'] = {'deepseek': {'setupStatus': 'restart-required', 'requiredBridgeRevision': 3}}
+        self.dsh.call.side_effect = lambda *_: {'connected': True, 'configured': True, 'bridgeRevision': 2, 'updateRequired': True}
+        row = self.dsh_row()
+        self.assertEqual(row['setupStatus'], 'restart-required')
+        self.assertFalse(row['configured'])
+        self.assertIn('requiredBridgeRevision', self.manager.config['setup']['deepseek'])
+
+    def test_dsh_only_boolean_live_confirmation_means_connected(self):
+        self.dsh.call.side_effect = lambda *_: {'connected': 'pending', 'configured': True, 'bridgeRevision': 3}
+        self.assertFalse(self.dsh_row()['connected'])
+
 
 if __name__ == '__main__': unittest.main()
