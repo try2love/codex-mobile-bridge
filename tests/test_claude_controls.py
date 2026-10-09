@@ -25,7 +25,7 @@ class ClaudeControls(unittest.TestCase):
         self.snapshot = {'executable': str(fixture.root/'claude'), 'home': str(fixture.root),
                          'state': self.state, 'identities': {11: {'start': 'fixture-start', 'command': 'fixture-hash'}},
                          'unrecognized': []}
-        native = patch('bridge.integrations.deepseek_recovery._snapshot', side_effect=lambda _: copy.deepcopy(self.snapshot))
+        native = patch('bridge.clients.deepseek.recovery._snapshot', side_effect=lambda _: copy.deepcopy(self.snapshot))
         native.start(); self.addCleanup(native.stop)
         platform = patch('sys.platform', 'darwin')
         platform.start(); self.addCleanup(platform.stop)
@@ -117,7 +117,7 @@ class ClaudeControls(unittest.TestCase):
         self.snapshot['identities'][11]['start'] = 'replacement'
         with self.assertRaisesRegex(ValueError, '进程已变化'): self.confirm(preview, acknowledgeUnknown=True)
         preview = self.preview()
-        with patch('bridge.integrations.manager.time.monotonic', return_value=10**12):
+        with patch('bridge.clients.manager.time.monotonic', return_value=10**12):
             with self.assertRaisesRegex(ValueError, '过期'): self.confirm(preview, acknowledgeUnknown=True)
         self.fixture.stop.assert_not_called()
 

@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from bridge.integrations.deepseek_recovery import DeepSeekRecovery, _evidence, _quit, _quitting_snapshot, _snapshot
+from bridge.clients.deepseek.recovery import DeepSeekRecovery, _evidence, _quit, _quitting_snapshot, _snapshot
 
 
 def snapshot(*, gui=True, hosts=(12,), unknown=()):
@@ -26,9 +26,9 @@ class RecoveryConfirmationTests(unittest.TestCase):
         self.adapter = Mock()
         self.state = snapshot(hosts=(12, 13))
         self.evidence = {'busy': False, 'unknown': True, 'verifiedIdle': []}
-        self.native = patch('bridge.integrations.deepseek_recovery._snapshot', side_effect=lambda _: copy.deepcopy(self.state)).start()
-        self.probe = patch('bridge.integrations.deepseek_recovery._evidence', side_effect=lambda *a: dict(self.evidence)).start()
-        self.quit = patch('bridge.integrations.deepseek_recovery._quit').start()
+        self.native = patch('bridge.clients.deepseek.recovery._snapshot', side_effect=lambda _: copy.deepcopy(self.state)).start()
+        self.probe = patch('bridge.clients.deepseek.recovery._evidence', side_effect=lambda *a: dict(self.evidence)).start()
+        self.quit = patch('bridge.clients.deepseek.recovery._quit').start()
         self.addCleanup(patch.stopall)
 
     def preview(self, restart=True):
@@ -106,8 +106,8 @@ class RecoveryEvidenceTests(unittest.TestCase):
             if action == 'status': return {'connected': True}
             if port == 112: return {'bridgeRevision': 3, 'complete': True, 'sessions': []}
             raise ValueError('inactive context')
-        with patch('bridge.integrations.deepseek_recovery._ports', side_effect=lambda pid: [100+pid]), \
-                patch('bridge.integrations.deepseek_recovery._query', side_effect=query):
+        with patch('bridge.clients.deepseek.recovery._ports', side_effect=lambda pid: [100+pid]), \
+                patch('bridge.clients.deepseek.recovery._query', side_effect=query):
             result = _evidence(Mock(), snapshot(hosts=(12, 13)))
         self.assertFalse(result['busy'])
         self.assertTrue(result['unknown'])
@@ -119,18 +119,18 @@ class RecoveryEvidenceTests(unittest.TestCase):
                 if action == 'status': return {'connected': True, 'bridgeRevision': 2}
                 if action == 'lifecycle': raise ValueError('unsupported')
                 return {'sessions': [{'status': status, 'runtimeKnown': True}]}
-            with patch('bridge.integrations.deepseek_recovery._ports', return_value=[112]), \
-                    patch('bridge.integrations.deepseek_recovery._query', side_effect=query):
+            with patch('bridge.clients.deepseek.recovery._ports', return_value=[112]), \
+                    patch('bridge.clients.deepseek.recovery._query', side_effect=query):
                 result = _evidence(Mock(), snapshot())
             self.assertEqual(result['busy'], status == 'active')
             self.assertTrue(result['unknown'])
 
     def test_process_snapshot_rejects_disappearing_identity(self):
         app = Mock(executable=Path('/fixture/app'), home=Path('/fixture/home'))
-        with patch('bridge.integrations.deepseek_recovery.inspect_client', return_value=snapshot()['state']), \
-                patch('bridge.integrations.deepseek_recovery._app', return_value=app), \
-                patch('bridge.integrations.deepseek_recovery._identities', return_value={}), \
-                patch('bridge.integrations.deepseek_recovery._commands', return_value={}):
+        with patch('bridge.clients.deepseek.recovery.inspect_client', return_value=snapshot()['state']), \
+                patch('bridge.clients.deepseek.recovery._app', return_value=app), \
+                patch('bridge.clients.deepseek.recovery._identities', return_value={}), \
+                patch('bridge.clients.deepseek.recovery._commands', return_value={}):
             with self.assertRaisesRegex(ValueError, '进程已变化'):
                 _snapshot({})
 
@@ -144,10 +144,10 @@ class RecoveryQuitSnapshotTests(unittest.TestCase):
         self.app = Mock(executable=Path(self.before['executable']), home=Path(self.before['home']))
 
     def sample(self, states, identities, commands, *, gui_allowed=True):
-        with patch('bridge.integrations.deepseek_recovery._app', return_value=self.app), \
-                patch('bridge.integrations.deepseek_recovery.inspect_client', side_effect=states), \
-                patch('bridge.integrations.deepseek_recovery._identities', side_effect=identities), \
-                patch('bridge.integrations.deepseek_recovery._commands', side_effect=commands):
+        with patch('bridge.clients.deepseek.recovery._app', return_value=self.app), \
+                patch('bridge.clients.deepseek.recovery.inspect_client', side_effect=states), \
+                patch('bridge.clients.deepseek.recovery._identities', side_effect=identities), \
+                patch('bridge.clients.deepseek.recovery._commands', side_effect=commands):
             return _quitting_snapshot({}, self.before, gui_allowed=gui_allowed)
 
     def test_several_confirmed_exits_can_be_resampled(self):
@@ -221,52 +221,52 @@ class RecoveryQuitTests(unittest.TestCase):
         def identities(pids):
             return {pid: {'start': 'same-start', 'parent': 1} for pid in pids if pid in alive}
 
-        with patch('bridge.integrations.deepseek_recovery.sys.platform', 'darwin'), \
-                patch('bridge.integrations.deepseek_recovery._same_processes', return_value=expected), \
-                patch('bridge.integrations.deepseek_recovery.inspect_client', side_effect=inventory), \
-                patch('bridge.integrations.deepseek_recovery._identities', side_effect=identities), \
-                patch('bridge.integrations.deepseek_recovery._commands', side_effect=lambda app, pids: {
+        with patch('bridge.clients.deepseek.recovery.sys.platform', 'darwin'), \
+                patch('bridge.clients.deepseek.recovery._same_processes', return_value=expected), \
+                patch('bridge.clients.deepseek.recovery.inspect_client', side_effect=inventory), \
+                patch('bridge.clients.deepseek.recovery._identities', side_effect=identities), \
+                patch('bridge.clients.deepseek.recovery._commands', side_effect=lambda app, pids: {
                     pid: 'fixture-'+str(pid) for pid in pids if pid in alive}), \
-                patch('bridge.integrations.deepseek_recovery._app', return_value=Mock(
+                patch('bridge.clients.deepseek.recovery._app', return_value=Mock(
                     executable=Path(expected['executable']), home=Path(expected['home']))), \
-                patch('bridge.integrations.deepseek_recovery.subprocess.run'), \
-                patch('bridge.integrations.deepseek_recovery.os.kill', side_effect=lambda pid, sig: alive.remove(pid)) as kill:
+                patch('bridge.clients.deepseek.recovery.subprocess.run'), \
+                patch('bridge.clients.deepseek.recovery.os.kill', side_effect=lambda pid, sig: alive.remove(pid)) as kill:
             _quit({}, expected)
         self.assertEqual([call.args for call in kill.call_args_list], [(12, signal.SIGTERM), (13, signal.SIGTERM)])
         self.assertFalse(alive)
 
     def test_gui_quit_completes_before_background_sigterm(self):
         calls = []
-        with patch('bridge.integrations.deepseek_recovery.sys.platform', 'darwin'), \
-                patch('bridge.integrations.deepseek_recovery._same_processes', return_value=self.before), \
-                patch('bridge.integrations.deepseek_recovery._quitting_snapshot', return_value=self.orphans), \
-                patch('bridge.integrations.deepseek_recovery._app', return_value=self.app), \
-                patch('bridge.integrations.deepseek_recovery.inspect_client', return_value={'running': False}), \
-                patch('bridge.integrations.deepseek_recovery.subprocess.run', side_effect=lambda *a, **kw: calls.append('quit')), \
-                patch('bridge.integrations.deepseek_recovery.os.kill', side_effect=lambda pid, sig: calls.append((pid, sig))):
+        with patch('bridge.clients.deepseek.recovery.sys.platform', 'darwin'), \
+                patch('bridge.clients.deepseek.recovery._same_processes', return_value=self.before), \
+                patch('bridge.clients.deepseek.recovery._quitting_snapshot', return_value=self.orphans), \
+                patch('bridge.clients.deepseek.recovery._app', return_value=self.app), \
+                patch('bridge.clients.deepseek.recovery.inspect_client', return_value={'running': False}), \
+                patch('bridge.clients.deepseek.recovery.subprocess.run', side_effect=lambda *a, **kw: calls.append('quit')), \
+                patch('bridge.clients.deepseek.recovery.os.kill', side_effect=lambda pid, sig: calls.append((pid, sig))):
             _quit({}, self.before)
         self.assertEqual(calls, ['quit', (12, signal.SIGTERM), (13, signal.SIGTERM)])
 
     def test_reopening_gui_or_new_host_before_cleanup_never_signals_old_hosts(self):
         for resumed in (snapshot(hosts=(12, 13)), snapshot(gui=False, hosts=(12, 13, 14))):
-            with patch('bridge.integrations.deepseek_recovery.sys.platform', 'darwin'), \
-                    patch('bridge.integrations.deepseek_recovery._same_processes', return_value=self.before), \
-                    patch('bridge.integrations.deepseek_recovery._quitting_snapshot', side_effect=[self.orphans, resumed]), \
-                    patch('bridge.integrations.deepseek_recovery._app', return_value=self.app), \
-                    patch('bridge.integrations.deepseek_recovery.subprocess.run'), \
-                    patch('bridge.integrations.deepseek_recovery.os.kill') as kill:
+            with patch('bridge.clients.deepseek.recovery.sys.platform', 'darwin'), \
+                    patch('bridge.clients.deepseek.recovery._same_processes', return_value=self.before), \
+                    patch('bridge.clients.deepseek.recovery._quitting_snapshot', side_effect=[self.orphans, resumed]), \
+                    patch('bridge.clients.deepseek.recovery._app', return_value=self.app), \
+                    patch('bridge.clients.deepseek.recovery.subprocess.run'), \
+                    patch('bridge.clients.deepseek.recovery.os.kill') as kill:
                 with self.assertRaisesRegex(ValueError, '进程已变化'):
                     _quit({}, self.before)
                 kill.assert_not_called()
 
     def test_gui_refusing_quit_never_terminates_host(self):
-        with patch('bridge.integrations.deepseek_recovery.sys.platform', 'darwin'), \
-                patch('bridge.integrations.deepseek_recovery._same_processes', return_value=self.before), \
-                patch('bridge.integrations.deepseek_recovery._quitting_snapshot', return_value=self.before), \
-                patch('bridge.integrations.deepseek_recovery._app', return_value=self.app), \
-                patch('bridge.integrations.deepseek_recovery.subprocess.run'), \
-                patch('bridge.integrations.deepseek_recovery.time.monotonic', side_effect=[0, 16]), \
-                patch('bridge.integrations.deepseek_recovery.os.kill') as kill:
+        with patch('bridge.clients.deepseek.recovery.sys.platform', 'darwin'), \
+                patch('bridge.clients.deepseek.recovery._same_processes', return_value=self.before), \
+                patch('bridge.clients.deepseek.recovery._quitting_snapshot', return_value=self.before), \
+                patch('bridge.clients.deepseek.recovery._app', return_value=self.app), \
+                patch('bridge.clients.deepseek.recovery.subprocess.run'), \
+                patch('bridge.clients.deepseek.recovery.time.monotonic', side_effect=[0, 16]), \
+                patch('bridge.clients.deepseek.recovery.os.kill') as kill:
             with self.assertRaisesRegex(ValueError, '未终止后台任务'):
                 _quit({}, self.before)
             kill.assert_not_called()

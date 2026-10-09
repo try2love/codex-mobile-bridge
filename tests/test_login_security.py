@@ -10,10 +10,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from bridge.auth import Auth, LoginRejected
-from bridge.httpd import GatewayServer
-from bridge.notifications import save_settings
-from bridge.security_notifications import SecurityNotifications
+from bridge.features.auth.auth import Auth, LoginRejected
+from bridge.api.httpd import GatewayServer
+from bridge.features.notifications.channels import save_settings
+from bridge.features.notifications.security import SecurityNotifications
 
 ROOT = Path(__file__).resolve().parents[1]
 IP = '192.0.2.7'
@@ -62,7 +62,7 @@ class LoginSecurityTests(unittest.TestCase):
 
     def test_parallel_requests_cannot_hash_more_than_five_passwords(self):
         original = hashlib.pbkdf2_hmac
-        with patch('bridge.auth.hashlib.pbkdf2_hmac', wraps=original) as hashing:
+        with patch('bridge.features.auth.auth.hashlib.pbkdf2_hmac', wraps=original) as hashing:
             with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
                 list(executor.map(lambda _: self.reject_login(), range(12)))
             self.assertEqual(hashing.call_count, 5)
@@ -75,42 +75,42 @@ class LoginSecurityTests(unittest.TestCase):
             token, row = self.auth.login('tester', 'correct-password', IP, agent, remember=False)
             self.assertEqual(row['expires'], 0)
             self.assertEqual(self.auth.login_status(IP)['attemptsRemaining'], 5)
-            with patch('bridge.auth.time.time', return_value=row['created'] + 365 * 86400):
+            with patch('bridge.features.auth.auth.time.time', return_value=row['created'] + 365 * 86400):
                 self.assertIsNotNone(Auth(CONFIG, self.directory).get(token))
             self.auth.manage({'action': 'revoke', 'id': self.auth.key(token)})
             self.assertIsNone(Auth(CONFIG, self.directory).get(token))
 
     def test_remembered_browser_renews_on_use_and_expires_after_inactivity(self):
-        with patch('bridge.auth.time.time', return_value=1000):
+        with patch('bridge.features.auth.auth.time.time', return_value=1000):
             token, _ = self.auth.login('tester', 'correct-password', IP, remember=True)
         client = {'ip': IP, 'peer': IP, 'source': 'direct'}
-        with patch('bridge.auth.time.time', return_value=1000 + 6 * 86400):
+        with patch('bridge.features.auth.auth.time.time', return_value=1000 + 6 * 86400):
             self.auth.get(token, client, 'Safari')
-        with patch('bridge.auth.time.time', return_value=1000 + 8 * 86400):
+        with patch('bridge.features.auth.auth.time.time', return_value=1000 + 8 * 86400):
             self.assertIsNotNone(Auth(CONFIG, self.directory).get(token))
-        with patch('bridge.auth.time.time', return_value=1000 + 13 * 86400):
+        with patch('bridge.features.auth.auth.time.time', return_value=1000 + 13 * 86400):
             self.assertIsNone(Auth(CONFIG, self.directory).get(token))
 
     def test_existing_valid_mobile_session_upgrades_but_expired_one_does_not(self):
-        with patch('bridge.auth.time.time', return_value=1000):
+        with patch('bridge.features.auth.auth.time.time', return_value=1000):
             token, _ = self.auth.new_session(IP)
         client = {'ip': IP, 'peer': IP, 'source': 'direct'}
-        with patch('bridge.auth.time.time', return_value=2000):
+        with patch('bridge.features.auth.auth.time.time', return_value=2000):
             self.assertIsNone(self.auth.get('not-authenticated', client, 'BridgeMobile/0.1-iOS'))
             self.assertEqual(self.auth.get(token, client, 'BridgeMobile/0.1-iOS')['expires'], 0)
-        with patch('bridge.auth.time.time', return_value=3000):
+        with patch('bridge.features.auth.auth.time.time', return_value=3000):
             expired, _ = self.auth.new_session(IP)
-        with patch('bridge.auth.time.time', return_value=3000 + 13 * 3600):
+        with patch('bridge.features.auth.auth.time.time', return_value=3000 + 13 * 3600):
             self.assertIsNone(self.auth.get(expired, client, 'BridgeMobile/0.1-iOS'))
 
     def test_remember_cookie_lasts_seven_days_and_unchecked_is_session_cookie(self):
-        with patch('bridge.auth.time.time', return_value=1000):
+        with patch('bridge.features.auth.auth.time.time', return_value=1000):
             token, row = self.auth.login('tester', 'correct-password', IP, remember=True)
             self.assertEqual(row['expires'], 1000+7*86400)
             self.assertEqual(self.auth.cookie_age(token), 7*86400)
             temporary, _ = self.auth.login('tester', 'correct-password', IP, remember=False)
             self.assertIsNone(self.auth.cookie_age(temporary))
-        with patch('bridge.auth.time.time', return_value=1000+7*86400):
+        with patch('bridge.features.auth.auth.time.time', return_value=1000+7*86400):
             self.assertIsNone(Auth(CONFIG, self.directory).get(token))
         self.assertNotIn('correct-password', (self.directory/'auth-sessions.json').read_text())
         with self.assertRaises(ValueError):
@@ -123,7 +123,7 @@ class LoginSecurityTests(unittest.TestCase):
     def test_security_alert_is_once_per_block_and_never_contains_credentials(self):
         save_settings(self.directory, {'enabled': True, 'topic': 'fixture'})
         self.block()
-        with patch('bridge.security_notifications.publish') as send:
+        with patch('bridge.features.notifications.security.publish') as send:
             SecurityNotifications(self.directory).scan()
             SecurityNotifications(self.directory).scan()
             send.assert_called_once()
@@ -137,7 +137,7 @@ class LoginSecurityTests(unittest.TestCase):
     def test_security_alert_switch_mutes_without_disabling_block(self):
         save_settings(self.directory, {'enabled': True, 'topic': 'fixture', 'securityEnabled': False})
         self.block()
-        with patch('bridge.security_notifications.publish') as send:
+        with patch('bridge.features.notifications.security.publish') as send:
             SecurityNotifications(self.directory).scan()
             self.assertFalse(self.auth.permitted(IP))
             save_settings(self.directory, {'securityEnabled': True})
@@ -147,13 +147,13 @@ class LoginSecurityTests(unittest.TestCase):
     def test_security_alert_retries_failed_delivery_only(self):
         save_settings(self.directory, {'enabled': True, 'topic': 'fixture'})
         self.block()
-        with patch('bridge.security_notifications.publish', side_effect=[OSError('offline'), None]) as send:
+        with patch('bridge.features.notifications.security.publish', side_effect=[OSError('offline'), None]) as send:
             notifier = SecurityNotifications(self.directory)
-            with patch('bridge.security_notifications.time.time', return_value=1000):
+            with patch('bridge.features.notifications.security.time.time', return_value=1000):
                 notifier.scan()
                 notifier.scan()
             self.assertEqual(send.call_count, 1)
-            with patch('bridge.security_notifications.time.time', return_value=1031):
+            with patch('bridge.features.notifications.security.time.time', return_value=1031):
                 notifier.scan()
                 notifier.scan()
             self.assertEqual(send.call_count, 2)
@@ -213,7 +213,7 @@ class LoginHttpTests(unittest.TestCase):
         _, response, _ = self.request('/api/login', {'username': 'tester', 'password': 'correct-password'}, headers)
         cookie = response['Set-Cookie'].split(';')[0]
         self.assertIn('Max-Age=34560000', response['Set-Cookie'])
-        with patch('bridge.auth.time.time', return_value=time.time() + 30 * 86400):
+        with patch('bridge.features.auth.auth.time.time', return_value=time.time() + 30 * 86400):
             status, _, value = self.request('/api/auth', headers={**headers, 'Cookie': cookie})
             self.assertEqual(status, 200)
             self.assertTrue(value['authenticated'])
@@ -226,11 +226,11 @@ class LoginHttpTests(unittest.TestCase):
         start = time.time()
         _, response, _ = self.request('/api/login', {'username': 'tester', 'password': 'correct-password', 'remember': True})
         cookie = response['Set-Cookie'].split(';')[0]
-        with patch('bridge.auth.time.time', return_value=start + 6 * 86400):
+        with patch('bridge.features.auth.auth.time.time', return_value=start + 6 * 86400):
             _, response, value = self.request('/api/auth', headers={'Cookie': cookie})
             self.assertTrue(value['authenticated'])
             self.assertIn('Max-Age=604800', response['Set-Cookie'])
-        with patch('bridge.auth.time.time', return_value=start + 8 * 86400):
+        with patch('bridge.features.auth.auth.time.time', return_value=start + 8 * 86400):
             self.assertTrue(self.request('/api/auth', headers={'Cookie': cookie})[2]['authenticated'])
 
     def test_forwarded_ip_is_counted_but_direct_header_spoof_is_ignored(self):

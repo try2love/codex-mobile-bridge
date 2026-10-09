@@ -8,11 +8,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from bridge.auth import Auth, password_record
-from bridge.desktop import Desktop
-from bridge.httpd import GatewayServer
-from bridge.lifecycle import GatewayControl, read_record, request_pairing
-from bridge.pairing import Pairing, phone_origin
+from bridge.features.auth.auth import Auth, password_record
+from bridge.app.desktop import Desktop
+from bridge.api.httpd import GatewayServer
+from bridge.app.lifecycle import GatewayControl, read_record, request_pairing
+from bridge.features.auth.pairing import Pairing, phone_origin
 
 ROOT = Path(__file__).resolve().parents[1]
 (ROOT / '.tmp').mkdir(exist_ok=True)
@@ -46,7 +46,7 @@ class PairingTests(unittest.TestCase):
         grant = self.grant()
         raw = grant['url'].split('#pair=')[1]
         self.assertNotIn(raw, str(self.pairing.grants))
-        with patch('bridge.pairing.time.time', return_value=grant['expires']+1):
+        with patch('bridge.features.auth.pairing.time.time', return_value=grant['expires']+1):
             with self.assertRaises(PermissionError): self.redeem(grant)
             self.assertEqual(self.pairing.control({'action': 'status', 'id': grant['id']})['state'], 'expired')
         fresh = self.grant()
@@ -102,10 +102,10 @@ class PairingTests(unittest.TestCase):
     def test_desktop_checks_actual_instance_before_minting(self):
         desktop = Desktop(ROOT/'.tmp/pairing-controller-test')
         desktop.snapshot = lambda: {'runtime': {'running': True, 'instanceId': 'expected'}, 'urls': ['https://example.com/']}
-        with patch('bridge.access.read_auth', return_value={'instanceId': 'other'}), patch('bridge.desktop.request_pairing') as request:
+        with patch('bridge.features.network.access.read_auth', return_value={'instanceId': 'other'}), patch('bridge.app.desktop.request_pairing') as request:
             with self.assertRaisesRegex(ValueError, '当前网关'): desktop.pairing({'action': 'create', 'url': 'https://example.com/'})
             request.assert_not_called()
-        with patch('bridge.access.read_auth', return_value={'instanceId': 'expected'}), patch('bridge.desktop.request_pairing', return_value={}) as request:
+        with patch('bridge.features.network.access.read_auth', return_value={'instanceId': 'expected'}), patch('bridge.app.desktop.request_pairing', return_value={}) as request:
             desktop.pairing({'action': 'create', 'url': 'https://example.com/'})
             request.assert_called_once()
 
@@ -151,7 +151,7 @@ class PairingHTTPTests(unittest.TestCase):
                     token = cookie.split('=', 1)[1]
                     created = self.server.auth.get(token)['created']
                     for delay in (12 * 3600 + 1, 30 * 86400, 401 * 86400):
-                        with patch('bridge.auth.time.time', return_value=created + delay):
+                        with patch('bridge.features.auth.auth.time.time', return_value=created + delay):
                             self.server.auth = Auth(self.password, directory)
                             for agent in ('', ua):
                                 code, value, refreshed = self.request('/api/auth', origin=origin, host=host, cookie=cookie, user_agent=agent)
@@ -170,17 +170,17 @@ class PairingHTTPTests(unittest.TestCase):
             token, session = self.server.auth.new_session('127.0.0.1', 'Legacy mobile browser')
             cookie = Auth.COOKIE + '=' + token
             ua = 'Mozilla/5.0 BridgeMobile/0.1-Android'
-            with patch('bridge.auth.time.time', return_value=session['created'] + 11 * 3600):
+            with patch('bridge.features.auth.auth.time.time', return_value=session['created'] + 11 * 3600):
                 self.server.auth = Auth(self.password, directory)
                 _, value, refreshed = self.request('/api/auth', cookie=cookie, user_agent=ua)
                 self.assertTrue(value['trustedDevice'])
                 self.assertIn('Max-Age=34560000', refreshed)
-            with patch('bridge.auth.time.time', return_value=session['created'] + 401 * 86400):
+            with patch('bridge.features.auth.auth.time.time', return_value=session['created'] + 401 * 86400):
                 self.server.auth = Auth(self.password, directory)
                 self.assertTrue(self.request('/api/auth', cookie=cookie, user_agent=ua)[1]['authenticated'])
 
             expired, row = self.server.auth.new_session('127.0.0.1', 'Legacy mobile browser')
-            with patch('bridge.auth.time.time', return_value=row['expires'] + 1):
+            with patch('bridge.features.auth.auth.time.time', return_value=row['expires'] + 1):
                 self.assertFalse(self.request('/api/auth', cookie=Auth.COOKIE+'='+expired, user_agent=ua)[1]['authenticated'])
 
     def test_exchange_cookie_csrf_and_password_path(self):

@@ -4,9 +4,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 import test_bridge as support
-from bridge.catalog import Catalog, CatalogError
-from bridge.model import normalize_state
-from bridge.ipc import IPCError
+from bridge.clients.codex.catalog import Catalog, CatalogError
+from bridge.features.sessions.model import normalize_state
+from bridge.clients.codex.ipc import IPCError
 
 THREAD = support.THREAD
 MODEL = {'id': 'official-model', 'efforts': ['high'], 'fastTier': 'priority', 'defaultServiceTier': 'priority'}

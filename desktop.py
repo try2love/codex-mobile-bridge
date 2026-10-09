@@ -5,12 +5,12 @@ import json
 import sys
 if len(sys.argv) == 3 and sys.argv[1] == '--terminal-child':
     if sys.platform == 'win32':
-        from bridge.windows_terminal import child_main
+        from bridge.platforms.windows.terminal import child_main
     else:
-        from bridge.pty_terminal import child_main
+        from bridge.platforms.posix.terminal import child_main
     child_main(sys.argv[2])
 
-from bridge.desktop import Desktop
+from bridge.app.desktop import Desktop
 
 
 def main():
@@ -60,10 +60,10 @@ def main():
         return
     try:
         if args.action == 'update-prepare':
-            from bridge.updater import prepare
+            from bridge.features.updates.gateway import prepare
             result = prepare(args.data_dir, json.loads(sys.stdin.read(100000) or '{}'))
         elif args.action == 'update-apply':
-            from bridge.updater import apply
+            from bridge.features.updates.gateway import apply
             result = apply(args.plan)
         elif args.action == 'test-notification':
             result = desktop.test_notification(json.loads(sys.stdin.read(100000) or '{}'))

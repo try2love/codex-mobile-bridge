@@ -7,7 +7,7 @@ function fixture(saved=new Map()){
   const select={get value(){return goalOption.value;},set value(value){goalOption.value=value;},disabled:false,title:'',onchange:null,querySelector(){return goalOption;}};
   const storage={getItem:key=>saved.get(key)||null,setItem:(key,value)=>saved.set(key,value),removeItem:key=>saved.delete(key)};
   const ctx=vm.createContext({crypto:require('node:crypto').webcrypto,select,hint,goalRoot,goalToggle,storage,localStorage:storage,window:{},document:{createElement:node}});
-  for(const name of ['i18n.js','modes.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'../web',name),'utf8'),ctx);
+  for(const name of ['shared/i18n.js','features/chat/modes.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'../web',name),'utf8'),ctx);
   const statusCalls=[];const panel=vm.runInContext('new WorkModes({select,hint,goalRoot,goalToggle,storage,onStatus:payload=>{if(payload.status===\'paused\')throw Error(\'offline\')}})',ctx);
   const all=n=>[n,...n.children.flatMap(all)];
   const text=()=>all(goalRoot).map(n=>n.textContent).join('\n');

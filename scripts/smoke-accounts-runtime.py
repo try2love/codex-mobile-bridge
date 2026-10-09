@@ -6,8 +6,8 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
-from bridge.accounts import Accounts, ManagedRPC
-from bridge.catalog import Catalog
+from bridge.features.accounts.accounts import Accounts, ManagedRPC
+from bridge.clients.codex.catalog import Catalog
 
 root = Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(dir=root/'.tmp') as directory:

@@ -1,0 +1,13 @@
+[
+  "bridge/features/sessions/store.py",
+  "bridge/clients/codex/catalog.py",
+  "bridge/features/sessions/create.py",
+  "bridge/features/accounts/models.py",
+  "bridge/features/auth/tls.py",
+  "bridge/features/workspace/workspace.py",
+  "bridge/features/terminals/manager.py",
+  "bridge/platforms/posix/terminal.py",
+  "bridge/clients/claude/connector.js",
+  "bridge/clients/deepseek/host.mjs",
+  "bridge/clients/LICENSE.coding-mobile"
+]

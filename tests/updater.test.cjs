@@ -3,7 +3,7 @@ const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs/promises'),path=require('node:path');
 const {generateKeyPairSync,sign,createHash}=require('node:crypto');
 const {buildManifest}=require('../scripts/sign-update.cjs');
-const {Updater,manifest,compare,assetName,releaseUrl,allowedUrl,allowedMirrorUrl,mirrorUrl,RELEASES,MIRROR,transfer}=require('../desktop/updater.cjs');
+const {Updater,manifest,compare,assetName,releaseUrl,allowedUrl,allowedMirrorUrl,mirrorUrl,RELEASES,MIRROR,transfer}=require('../desktop/features/updates/updater.cjs');
 const keys=generateKeyPairSync('ed25519');
 const current='0.2.0-beta.5',next='0.2.0-beta.6',platform='darwin',arch='arm64';
 function signed(value,key=keys.privateKey){const payload=Buffer.from(JSON.stringify(value));return Buffer.from(JSON.stringify({payload:payload.toString('base64'),signature:sign(null,payload,key).toString('base64')}));}
@@ -15,7 +15,7 @@ test('release signer includes Intel and Apple Silicon ZIPs and clients select th
   const directory=await fs.mkdtemp(path.join(__dirname,'../.tmp/release-manifest-'));
   t.after(()=>fs.rm(directory,{recursive:true,force:true}));
   const sync=require('node:fs'),read=sync.readFileSync;
-  t.mock.method(sync,'readFileSync',(file,...args)=>file===path.resolve(__dirname,'../desktop/update-public-key.pem')?
+  t.mock.method(sync,'readFileSync',(file,...args)=>file===path.resolve(__dirname,'../desktop/features/updates/update-public-key.pem')?
     keys.publicKey.export({type:'spki',format:'pem'}):read(file,...args));
   const version=require('../package.json').version,targets=[['darwin','arm64'],['darwin','x64'],['win32','x64']];
   for(const [platform,arch] of targets)await fs.writeFile(path.join(directory,assetName(version,platform,arch)),Buffer.from(platform+'-'+arch));

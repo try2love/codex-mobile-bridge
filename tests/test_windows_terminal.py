@@ -12,7 +12,7 @@ from unittest.mock import patch
 @unittest.skipUnless(os.name == 'nt', 'ConPTY requires Windows')
 class ConPtyTests(unittest.TestCase):
     def test_persistent_shell_unicode_resize_dedupe_and_close(self):
-        from bridge.windows_terminal import WindowsTerminalSession
+        from bridge.platforms.windows.terminal import WindowsTerminalSession
         directory = Path(__file__).resolve().parents[1] / '.tmp'; directory.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=directory) as folder:
             root=Path(folder); (root/'nested folder').mkdir()

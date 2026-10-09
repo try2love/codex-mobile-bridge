@@ -7,8 +7,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
-from bridge.integrations.deepseek import DeepSeek
-from bridge.integrations.errors import BridgeUnavailable
+from bridge.clients.deepseek.adapter import DeepSeek
+from bridge.clients.errors import BridgeUnavailable
 
 ROOT = Path(__file__).resolve().parents[1]
 

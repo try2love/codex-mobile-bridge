@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import zipfile
-from bridge import updater
+import bridge.features.updates.gateway as updater
 
 
 class ArchiveTests(unittest.TestCase):

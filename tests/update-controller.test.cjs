@@ -22,17 +22,17 @@ function controller({ready='valid',readyAt=0,pending=false,spawnError=false,exit
     setInterval(fn,ms){intervals.push(ms);return {unref(){}};},
     require(name){
       if(name==='electron')return {app};
-      if(name==='./qr.cjs')return {};
+      if(name==='./features/connections/qr.cjs')return {};
       if(name==='node:crypto')return {randomUUID:()=> 'verified-token'};
       if(name==='node:fs')return {mkdirSync(){},writeFileSync(){},openSync:()=>0,closeSync(){},
         readFileSync(file){
-          if(file===path.join(path.dirname(main),'update-public-key.pem'))return fs.readFileSync(file);
+          if(file===path.join(path.dirname(main),'features/updates/update-public-key.pem'))return fs.readFileSync(file);
           if(ready==='missing'||now<readyAt)throw Error('ENOENT');
           return ready==='malformed'?'{':JSON.stringify({token:ready==='valid'?'verified-token':'wrong-token'});
         }};
       if(name==='node:child_process')return {spawn:()=>({pid:456,exitCode:exited?1:null,unref(){},
         on(event,fn){if(spawnError&&event==='error')fn(Error('helper spawn failed'));}})};
-      if(name==='./controller.cjs')return {createSnapshotWorker:()=>({close(){calls.closed++;}}),createManagementWorker:()=>({close(){calls.managementClosed++;}}),workerFor:()=>({}),
+      if(name==='./shared/controller.cjs')return {createSnapshotWorker:()=>({close(){calls.closed++;}}),createManagementWorker:()=>({close(){calls.managementClosed++;}}),workerFor:()=>({}),
         runWorker:async()=>({helper:'/fixture/helper',plan:'/fixture/transaction/plan.json'})};
       return requireMain(name);
     }});
@@ -46,12 +46,12 @@ for(const platform of ['darwin','win32','linux'])for(const packaged of [true,fal
   test(`real updater setup respects ${platform} packaged=${packaged}`,()=>{
     const f=controller({platform,packaged});f.context.setupUpdater();
     const updater=vm.runInContext('updater',f.context),supported=packaged&&platform!=='linux';
-    assert.ok(updater instanceof require('../desktop/updater.cjs').Updater);
+    assert.ok(updater instanceof require('../desktop/features/updates/updater.cjs').Updater);
     assert.equal(updater.supported,supported);
     assert.equal(updater.status().state,supported?'idle':'unsupported');
     assert.equal(updater.current,'2.0.0-preview.3');
     assert.equal(updater.directory,path.join('/fixture/user','updates'));
-    assert.deepEqual(updater.key,fs.readFileSync(path.join(path.dirname(main),'update-public-key.pem')));
+    assert.deepEqual(updater.key,fs.readFileSync(path.join(path.dirname(main),'features/updates/update-public-key.pem')));
     assert.equal(updater.apply,f.context.installUpdate);
     assert.equal(typeof updater.fetch,'function');
     assert.deepEqual(f.timers,[5000]);assert.deepEqual(f.intervals,[6*60*60*1000]);

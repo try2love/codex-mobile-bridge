@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import test_accounts
-from bridge.accounts import private_json
+from bridge.features.accounts.accounts import private_json
 
 
 class InfoTests(unittest.TestCase):
@@ -54,7 +54,7 @@ class InfoTests(unittest.TestCase):
     def test_inactive_official_usage_models_are_isolated_and_sanitized(self):
         row,_=self.official();before=self.manager.snapshot_files();info=self.manager.info
         info.read_identity=Mock(return_value={'kind':'api','name':'other','key':'unrelated','baseUrl':'https://other.test'})
-        with patch('bridge.accounts.ManagedRPC') as rpc:
+        with patch('bridge.features.accounts.accounts.ManagedRPC') as rpc:
             rpc.return_value.__enter__.return_value=self.rpc()
             info.read(row,'usage');info.read(row,'models')
         result=self.manager.public();data=result['accounts'][0]['details']
@@ -68,7 +68,7 @@ class InfoTests(unittest.TestCase):
         row,auth=self.official();auth['tokens']['refresh_token']='new-refresh'
         private_json(self.home/'auth.json',auth);info=self.manager.info
         info.read_identity=Mock(return_value={'kind':'chatgpt','owner':row['tokenOwner'],'name':row['email']})
-        with patch('bridge.accounts.ManagedRPC') as rpc:
+        with patch('bridge.features.accounts.accounts.ManagedRPC') as rpc:
             rpc.return_value.__enter__.return_value=self.rpc()
             info.read(row,'usage')
             self.assertEqual(rpc.call_args.args[0],self.home)
@@ -77,22 +77,22 @@ class InfoTests(unittest.TestCase):
 
     def test_errors_do_not_expose_upstream_body_and_api_has_models_without_usage(self):
         row,_=self.official();info=self.manager.info;info.read_identity=Mock(return_value={'kind':'signedOut','name':''})
-        with patch('bridge.accounts.ManagedRPC') as rpc:
+        with patch('bridge.features.accounts.accounts.ManagedRPC') as rpc:
             rpc.return_value.__enter__.return_value=self.rpc(rate_error=True);info.read(row,'usage')
         self.assertEqual(info.entries[row['id']]['usage']['status'],'error')
         self.assertNotIn('raw private',json.dumps(self.manager.public()))
         api=self.manager.add_api({'name':'API','baseUrl':'https://fixture.test/v1','apiKey':'key','model':'m'})['accounts'][-1]
         with self.assertRaises(ValueError):info.request({'id':api['id'],'section':'usage'})
-        with patch('bridge.accounts.model_ids',return_value=['m1','m2']):info.read(api,'models')
+        with patch('bridge.features.accounts.accounts.model_ids',return_value=['m1','m2']):info.read(api,'models')
         self.assertEqual(len(info.entries[api['id']]['models']['models']),2)
 
     def test_detail_cache_suppresses_duplicate_queries(self):
         row,_=self.official();info=self.manager.info
         info.entries[row['id']]={'usage':{'status':'loading'}}
-        with patch('bridge.account_info.threading.Thread') as worker:
+        with patch('bridge.features.accounts.info.threading.Thread') as worker:
             info.request({'id':row['id'],'section':'usage'});worker.assert_not_called()
         info.entries[row['id']]['usage']={'status':'ready','checkedAt':time.time()}
-        with patch('bridge.account_info.threading.Thread') as worker:
+        with patch('bridge.features.accounts.info.threading.Thread') as worker:
             info.request({'id':row['id'],'section':'usage'});worker.assert_not_called()
             info.request({'id':row['id'],'section':'usage','refresh':True});worker.assert_called_once()
 
@@ -101,14 +101,14 @@ class InfoTests(unittest.TestCase):
         previous={'status':'ready','checkedAt':123,'limits':[{'name':'Codex','windows':[]}],
                   'resetCredits':{'availableCount':2},'updatedAt':123}
         info.entries[row['id']]={'usage':previous.copy()}
-        with patch('bridge.account_info.threading.Thread'):
+        with patch('bridge.features.accounts.info.threading.Thread'):
             info.request({'id':row['id'],'section':'usage','refresh':True})
         pending=info.entries[row['id']]['usage']
         self.assertEqual(pending['status'],'loading')
         self.assertEqual(pending['limits'],previous['limits'])
         self.assertEqual(pending['updatedAt'],123)
         info.read_identity=Mock(return_value={'kind':'signedOut','name':''})
-        with patch('bridge.accounts.ManagedRPC') as rpc:
+        with patch('bridge.features.accounts.accounts.ManagedRPC') as rpc:
             rpc.return_value.__enter__.return_value=self.rpc(rate_error=True)
             info.read(row,'usage',True)
         failed=info.entries[row['id']]['usage']
@@ -120,7 +120,7 @@ class InfoTests(unittest.TestCase):
     def test_usage_cache_lasts_five_minutes_but_explicit_read_bypasses_it(self):
         row,_=self.official();info=self.manager.info
         info.entries[row['id']]={'usage':{'status':'ready','checkedAt':time.time()-299}}
-        with patch('bridge.account_info.threading.Thread') as worker:
+        with patch('bridge.features.accounts.info.threading.Thread') as worker:
             info.request({'id':row['id'],'section':'usage'});worker.assert_not_called()
             info.entries[row['id']]['usage']['checkedAt']=time.time()-301
             info.request({'id':row['id'],'section':'usage'});worker.assert_called_once()

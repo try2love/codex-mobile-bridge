@@ -6,10 +6,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from bridge.auth import password_record
-from bridge.httpd import GatewayServer
-from bridge.mobile_events import MobileEvents
-from bridge.notifications import Notifications, save_settings
+from bridge.features.auth.auth import password_record
+from bridge.api.httpd import GatewayServer
+from bridge.features.notifications.events import MobileEvents
+from bridge.features.notifications.channels import Notifications, save_settings
 
 ROOT = Path(__file__).resolve().parents[1]
 THREAD = '00000000-0000-4000-8000-000000000001'

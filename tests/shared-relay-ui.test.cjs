@@ -19,7 +19,7 @@ async function fixture(){
   const context=vm.createContext({document,localStorage:{getItem:()=> 'en',setItem(){}},CustomEvent:class{constructor(type){this.type=type;}},
     window:{bridgeDesktop:{sharedRelay:async value=>{calls.push(value);return state;}}},setInterval(){},clearInterval(){},setTimeout(){},clearTimeout(){},confirm:()=>true});
   const run=code=>vm.runInContext(code,context);
-  for(const file of ['web/i18n.js','desktop/shared-relay.js'])run(fs.readFileSync(path.join(__dirname,'..',file),'utf8'));
+  for(const file of ['web/shared/i18n.js','desktop/features/connections/shared-relay.js'])run(fs.readFileSync(path.join(__dirname,'..',file),'utf8'));
   await new Promise(setImmediate);
   const root=panel.children[0],all=()=>[root,...walk(root)];
   function walk(node){return node.children.flatMap(n=>[n,...walk(n)]);}

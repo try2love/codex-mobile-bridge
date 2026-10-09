@@ -14,7 +14,7 @@ function fixture({ reply = 'copied', late = false, frame = false } = {}) {
   };
   context.window = context; context.top = frame ? {} : context;
   vm.createContext(context);
-  const loadWeb = () => vm.runInContext(fs.readFileSync(path.join(root, 'web/message-actions.js'), 'utf8'), context);
+  const loadWeb = () => vm.runInContext(fs.readFileSync(path.join(root, 'web/features/chat/message-actions.js'), 'utf8'), context);
   if (!late) loadWeb();
   vm.runInContext(script.replace('__BRIDGE_CLIPBOARD_TOKEN__', 'test-token'), context);
   if (late) { loadWeb(); events.DOMContentLoaded(); }

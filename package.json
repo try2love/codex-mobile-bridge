@@ -9,7 +9,7 @@
   "main": "desktop/main.cjs",
   "scripts": {
     "desktop": "electron .",
-    "test:desktop": "node --test tests/downloads.test.cjs tests/localization.test.cjs tests/accounts-ui.test.cjs tests/network.test.cjs tests/desktop.test.cjs tests/notifications-ui.test.cjs tests/account-ui.test.cjs tests/account-startup.test.cjs tests/presentation.test.cjs tests/modes-ui.test.cjs tests/watches-ui.test.cjs tests/attachments-activity.test.cjs tests/fast-mode-ui.test.cjs tests/message-actions-ui.test.cjs tests/gateway-language.test.cjs tests/operation-i18n.test.cjs tests/preview-accounts.test.cjs mobile/tests/clipboard.test.cjs mobile/tests/computer-name.test.cjs mobile/tests/session.test.cjs tests/client-connections-ui.test.cjs tests/harness-ui.test.cjs",
+    "test:desktop": "node scripts/test-frontend.cjs",
     "test:windows-app": "node scripts/smoke-windows.cjs",
     "icons:desktop": "electron scripts/build-icons.cjs",
     "pack:desktop": "electron-builder --dir --publish never",
@@ -36,11 +36,11 @@
     },
     "files": [
       "desktop/**",
-      "web/i18n.js",
-      "web/account.js",
-      "web/accounts.js",
-      "web/client-accounts.js",
-      "web/account.css",
+      "web/shared/i18n.js",
+      "web/features/accounts/account.js",
+      "web/features/accounts/accounts.js",
+      "web/features/accounts/client-accounts.js",
+      "web/features/accounts/account.css",
       "web/client-icons/**",
       "package.json",
       "LICENSE"

@@ -8,7 +8,7 @@ function fixture(desktop=false){
   class Clock extends Date{static now(){return now;}}
   const context=vm.createContext({document:{createElement:node,body:node('body'),hidden:false,activeElement:null},root,Date:Clock,crypto:{randomUUID:()=> '11111111-1111-4111-8111-111111111111'},
     setTimeout:fn=>{timers.push(fn);return timers.length;},clearTimeout(){},localStorage:{getItem(){return null;},setItem(){}},window:{confirm:message=>{prompts.push(message);return confirmed;},prompt:()=>null}});
-  for(const f of ['web/i18n.js','web/account.js','web/accounts.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',f),'utf8'),context);
+  for(const f of ['web/shared/i18n.js','web/features/accounts/account.js','web/features/accounts/accounts.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',f),'utf8'),context);
   const Class=vm.runInContext('AccountsPanel',context),panel=new Class({root,desktop,read:()=>read(),request:v=>{requests.push(v);return request(v);}});
   const all=(n=root)=>[n,...n.children.flatMap(all)];
   return {panel,root,requests,prompts,all,now:()=>now,advance:ms=>now+=ms,hidden:value=>context.document.hidden=value,noRandomUUID:()=>{context.crypto={getRandomValues:bytes=>require("node:crypto").randomFillSync(bytes)};},text:()=>all().map(n=>n.textContent).join('\n'),setValue:v=>value=v,value:()=>value,setRequest:v=>request=v,setRead:v=>read=v,confirm:v=>confirmed=v,

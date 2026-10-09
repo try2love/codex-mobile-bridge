@@ -12,10 +12,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from bridge.integrations.claude_accounts import ClaudeAccounts, CONFIG, _decrypt_cookie, _NoRedirect, _web_json
+from bridge.clients.claude.accounts import ClaudeAccounts, CONFIG, _decrypt_cookie, _NoRedirect, _web_json
 
 ROOT = Path(__file__).resolve().parents[1]
-MODULE = 'bridge.integrations.claude_accounts.'
+MODULE = 'bridge.clients.claude.accounts.'
 
 
 class ClaudeAccountSnapshots(unittest.TestCase):
@@ -105,7 +105,7 @@ class ClaudeAccountSnapshots(unittest.TestCase):
         first = self.save()
         self.login('second')
         second = self.save()
-        from bridge.integrations.claude_accounts import private_json
+        from bridge.clients.claude.accounts import private_json
         failed = False
         def fail_once(path, value):
             nonlocal failed

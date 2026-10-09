@@ -1,8 +1,8 @@
 import copy
 from unittest.mock import patch
 import test_bridge as support
-from bridge.model import permission_mode
-from bridge.ipc import IPCError
+from bridge.features.sessions.model import permission_mode
+from bridge.clients.codex.ipc import IPCError
 
 
 class PermissionsTests(support.IntegrationTests):
@@ -28,7 +28,7 @@ class PermissionsTests(support.IntegrationTests):
         self.assertEqual(session.owner,'owner')
 
     def test_side_fork_inherits_latest_permission_selection(self):
-        from bridge.service import Bridge
+        from bridge.app.service import Bridge
         state = {'modelProvider':'custom', 'latestModel':'fixture',
                  'currentPermissions':{'approvalPolicy':'never', 'approvalsReviewer':'user'},
                  'latestThreadSettings':{'approvalPolicy':'on-request','approvalsReviewer':'auto_review',

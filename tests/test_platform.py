@@ -12,12 +12,12 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
-from bridge.catalog import Catalog
-from bridge.ipc import DesktopIPC, IPCError
-from bridge.lifecycle import GatewayControl, request_stop
-from bridge.remote import AppHosts
-from bridge.store import SessionStore
-from bridge.transport import connect_stream, ipc_endpoint
+from bridge.clients.codex.catalog import Catalog
+from bridge.clients.codex.ipc import DesktopIPC, IPCError
+from bridge.app.lifecycle import GatewayControl, request_stop
+from bridge.clients.codex.remote import AppHosts
+from bridge.features.sessions.store import SessionStore
+from bridge.clients.codex.transport import connect_stream, ipc_endpoint
 from test_bridge import DesktopFixture, ROOT, THREAD
 
 
@@ -180,7 +180,7 @@ class LifecycleTests(unittest.TestCase):
                     reads += 1
                     return record if reads == 1 else None
                 return record
-            with patch('bridge.lifecycle.read_record', side_effect=read), patch.object(Path, 'unlink', side_effect=PermissionError('Windows delete pending')) as unlink:
+            with patch('bridge.app.lifecycle.read_record', side_effect=read), patch.object(Path, 'unlink', side_effect=PermissionError('Windows delete pending')) as unlink:
                 request_stop(folder)
                 unlink.assert_not_called()
             self.assertEqual(json.loads(request.read_text()), record)

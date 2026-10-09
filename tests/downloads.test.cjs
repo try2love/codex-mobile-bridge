@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test'), assert = require('node:assert/strict');
 const {createHash} = require('node:crypto');
-const {Task, eligible, native, filename} = require('../web/downloads.js');
+const {Task, eligible, native, filename} = require('../web/features/workspace/downloads.js');
 const MB = 1024 * 1024, tag = '"sha256-original"';
 const payload = Uint8Array.from({length:2 * MB + 723}, (_, i) => i % 251);
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -149,8 +149,8 @@ test('only same-origin known file routes are intercepted; both native Apps keep 
   assert.equal(filename('attachment; filename="../../hello.zip"', 'fallback'), 'hello.zip');
 });
 test('all download interface and error messages have English translations', () => {
-  const fs = require('node:fs'), i18n = require('../web/i18n.js');
+  const fs = require('node:fs'), i18n = require('../web/shared/i18n.js');
   i18n.setLanguage('en');
-  for (const match of fs.readFileSync(require.resolve('../web/downloads.js'),'utf8').matchAll(/'([^'\n]*[\u4e00-\u9fff][^'\n]*)'/g)) assert.doesNotMatch(i18n.t(match[1]), /[\u4e00-\u9fff]/, match[1]);
+  for (const match of fs.readFileSync(require.resolve('../web/features/workspace/downloads.js'),'utf8').matchAll(/'([^'\n]*[\u4e00-\u9fff][^'\n]*)'/g)) assert.doesNotMatch(i18n.t(match[1]), /[\u4e00-\u9fff]/, match[1]);
   i18n.setLanguage('zh');
 });

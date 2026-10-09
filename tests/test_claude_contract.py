@@ -4,11 +4,11 @@ import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
-from bridge.integrations.claude import Claude
-from bridge.integrations import claude_model
-from bridge.integrations.errors import BridgeUnavailable
-from bridge.integrations.manager import DesktopSessions
-from bridge.integrations.mailbox import FileDesktop, MAX_REQUEST
+from bridge.clients.claude.adapter import Claude
+import bridge.clients.claude.model as claude_model
+from bridge.clients.errors import BridgeUnavailable
+from bridge.clients.manager import DesktopSessions
+from bridge.clients.claude.mailbox import FileDesktop, MAX_REQUEST
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -180,9 +180,9 @@ class DesktopActionContract(unittest.IsolatedAsyncioTestCase):
         original = path.read_bytes()
         request = {'type': 'request', 'args': ['文字' * 32]}
         exact_size = len(desktop.pack(request).encode('utf-8'))
-        with patch('bridge.integrations.mailbox.MAX_REQUEST', exact_size - 1):
+        with patch('bridge.clients.claude.mailbox.MAX_REQUEST', exact_size - 1):
             with self.assertRaisesRegex(ValueError, '10 MiB'): desktop.write(request)
         self.assertEqual(path.read_bytes(), original)
-        with patch('bridge.integrations.mailbox.MAX_REQUEST', exact_size): desktop.write(request)
+        with patch('bridge.clients.claude.mailbox.MAX_REQUEST', exact_size): desktop.write(request)
         self.assertEqual(len(path.read_bytes()), exact_size)
         self.assertEqual(MAX_REQUEST, 10485760)

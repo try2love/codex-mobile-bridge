@@ -1,6 +1,6 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict');
-const {HarnessPanel}=require('../desktop/harness.js');
+const {HarnessPanel}=require('../desktop/features/clients/harness.js');
 function fixture(){
   const node=()=>({value:'',disabled:false,textContent:'',addEventListener(){}});
   const inputs=['executable','workspace','home'].map(name=>({...node(),name,value:'/fixture/'+name}));

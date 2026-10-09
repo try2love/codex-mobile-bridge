@@ -9,10 +9,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock, call
 
-from bridge import access, connection_secrets, server_connection
-from bridge.desktop import Desktop
-from bridge.address_notifications import entry_urls
-from bridge.notifications import read_json, write_json
+import bridge.features.network.access as access
+import bridge.features.accounts.secrets as connection_secrets
+import bridge.features.network.server_connection as server_connection
+from bridge.app.desktop import Desktop
+from bridge.features.notifications.addresses import entry_urls
+from bridge.features.notifications.channels import read_json, write_json
 
 ROOT = Path(__file__).resolve().parents[1]
 try:
@@ -42,7 +44,7 @@ class ConnectionSetupTests(unittest.TestCase):
                                     cloudflared=__import__('sys').executable,
                                     connections=[entry(accessMode='cloudflare')])
         desktop.save(value)
-        with patch('bridge.desktop.socket.socket'), patch('bridge.desktop.subprocess.Popen') as spawn:
+        with patch('bridge.app.desktop.socket.socket'), patch('bridge.app.desktop.subprocess.Popen') as spawn:
             spawn.return_value.pid = 123
             result = desktop.start({'connectionSecrets': {'test-server': {'tunnelToken': 'synthetic-token'}}})
         self.assertTrue(result['started'])
@@ -92,7 +94,7 @@ class ConnectionSetupTests(unittest.TestCase):
             value['preferences'].update(codexHome=str(self.directory), lan=False,
                                         cloudflared=__import__('sys').executable, connections=rows)
             desktop.save(value)
-            with patch('bridge.desktop.socket.socket'), patch('bridge.desktop.subprocess.Popen'):
+            with patch('bridge.app.desktop.socket.socket'), patch('bridge.app.desktop.subprocess.Popen'):
                 self.assertTrue(desktop.start({'connectionSecrets': {'cf': {'tunnelToken': 'fixture-token'}}})['started'])
 
     def test_new_fields_roundtrip_and_secrets_not_serialized(self):
@@ -317,7 +319,7 @@ class SSHIntegrationTests(unittest.TestCase):
                 result = desktop.server_setup({'id': self.row['id'], 'action': 'inspect'})
             self.assertIn('SSH 登录通过', result['message'])
             self.assertTrue(self.authenticated.is_set())
-            with patch('bridge.desktop.socket.socket'), patch('bridge.desktop.subprocess.Popen') as spawn:
+            with patch('bridge.app.desktop.socket.socket'), patch('bridge.app.desktop.subprocess.Popen') as spawn:
                 self.assertTrue(desktop.start()['started'])
             sent = json.loads(spawn.return_value.stdin.write.call_args.args[0])
             self.assertEqual(sent[self.row['id']]['password'], 'correct-secret')
@@ -368,7 +370,7 @@ class SSHIntegrationTests(unittest.TestCase):
 
 class NamedTunnelTests(unittest.TestCase):
     def test_token_stays_out_of_argv_and_status_and_stop_closes_process(self):
-        from bridge.named_tunnel import NamedTunnel
+        from bridge.features.network.named_tunnel import NamedTunnel
         with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as directory:
             tunnel = NamedTunnel('/fixture/cloudflared', entry(accessMode='cloudflare'), directory, 'secret-fixture-token')
             process = MagicMock()
@@ -382,7 +384,7 @@ class NamedTunnelTests(unittest.TestCase):
                 def close(self):
                     pass
             process.stdout = Output()
-            with patch('bridge.named_tunnel.subprocess.Popen', return_value=process) as spawn:
+            with patch('bridge.features.network.named_tunnel.subprocess.Popen', return_value=process) as spawn:
                 tunnel._run()
             call = spawn.call_args
             self.assertNotIn('secret-fixture-token', ' '.join(call.args[0]))

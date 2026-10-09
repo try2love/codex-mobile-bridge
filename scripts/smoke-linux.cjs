@@ -3,7 +3,7 @@
 // All gateway data, ports and credentials are synthetic and isolated.
 const assert=require('node:assert/strict'),fs=require('node:fs/promises'),path=require('node:path'),net=require('node:net');
 const {spawn}=require('node:child_process');
-const {runWorker}=require('../desktop/controller.cjs');
+const {runWorker}=require('../desktop/shared/controller.cjs');
 const root=path.resolve(__dirname,'..'),delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function freePort(){
   const server=net.createServer();await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));

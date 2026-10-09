@@ -9,9 +9,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from bridge.integrations.claude import Claude
-from bridge.integrations.errors import BridgeUnavailable
-from bridge.integrations.mailbox import CONNECTOR_REVISION
+from bridge.clients.claude.adapter import Claude
+from bridge.clients.errors import BridgeUnavailable
+from bridge.clients.claude.mailbox import CONNECTOR_REVISION
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -43,7 +43,7 @@ class ClaudeConnectionProbe(unittest.TestCase):
                     return
                 time.sleep(.01)
         worker = threading.Thread(target=respond); worker.start()
-        with patch('bridge.integrations.claude.native_action') as native, patch.object(self.adapter, 'prepare') as prepare:
+        with patch('bridge.clients.claude.adapter.native_action') as native, patch.object(self.adapter, 'prepare') as prepare:
             self.adapter.check_connection()
         worker.join(3)
         self.assertEqual([(row['surface'], row['method'], row['args']) for row in seen], [('code', 'mobileList', [])])
@@ -54,7 +54,7 @@ class ClaudeConnectionProbe(unittest.TestCase):
         self.assertTrue(self.desktop.connected)
         generation = self.desktop.generation
         started = time.monotonic()
-        with patch('bridge.integrations.claude.native_action') as native, patch.object(self.adapter, 'prepare') as prepare:
+        with patch('bridge.clients.claude.adapter.native_action') as native, patch.object(self.adapter, 'prepare') as prepare:
             with self.assertRaisesRegex(BridgeUnavailable, '暂未响应'):
                 self.adapter.check_connection()
         self.assertLess(time.monotonic() - started, 5.5)
@@ -94,7 +94,7 @@ class ClaudeConnectionProbe(unittest.TestCase):
             submitted.append(future)
             return future
         with patch.object(self.desktop, 'write', side_effect=slow_write), \
-             patch('bridge.integrations.claude.asyncio.run_coroutine_threadsafe', side_effect=shortened):
+             patch('bridge.clients.claude.adapter.asyncio.run_coroutine_threadsafe', side_effect=shortened):
             try:
                 with self.assertRaisesRegex(BridgeUnavailable, '暂未响应'):
                     self.adapter.check_connection()
@@ -124,7 +124,7 @@ class ClaudeConnectionProbe(unittest.TestCase):
             submitted.append(future)
             return future
         with patch.object(self.adapter, 'dispatch', side_effect=dispatch), \
-             patch('bridge.integrations.claude.asyncio.run_coroutine_threadsafe', side_effect=shortened):
+             patch('bridge.clients.claude.adapter.asyncio.run_coroutine_threadsafe', side_effect=shortened):
             with self.assertRaises(FutureTimeoutError): self.adapter.call('send')
         try:
             self.assertFalse(self.desktop.lock.locked(), 'Fixture is between RPCs')
@@ -144,7 +144,7 @@ class ClaudeConnectionProbe(unittest.TestCase):
         asyncio.run_coroutine_threadsafe(occupy(), self.adapter.loop).result(timeout=1)
         try:
             with patch.object(self.adapter, 'prepare') as prepare, \
-                 patch.object(self.desktop, 'close') as close, patch('bridge.integrations.claude.native_action') as native:
+                 patch.object(self.desktop, 'close') as close, patch('bridge.clients.claude.adapter.native_action') as native:
                 with self.assertRaisesRegex(ValueError, '未确认的请求'):
                     self.adapter.connect(existing_only=True)
             prepare.assert_not_called(); close.assert_not_called(); native.assert_not_called()
@@ -159,8 +159,8 @@ class ClaudeConnectionProbe(unittest.TestCase):
             asyncio.run_coroutine_threadsafe(occupy(), self.adapter.loop).result(timeout=1)
             return {'setupState': 'ready'}
         try:
-            with patch('bridge.integrations.claude.native_action', side_effect=action), \
-                 patch('bridge.integrations.claude.running_app') as running, \
+            with patch('bridge.clients.claude.adapter.native_action', side_effect=action), \
+                 patch('bridge.clients.claude.adapter.running_app') as running, \
                  patch.object(self.adapter, 'prepare') as prepare, \
                  patch.object(self.adapter.setup_cancel, 'wait', return_value=False):
                 self.adapter._connect_native(False, self.adapter.directory/'cancel', existing_only=True)
@@ -210,10 +210,10 @@ class ClaudeConnectionProbe(unittest.TestCase):
                         self.reply({'seq': 0, 'done': True, 'result': None})
                         return {'setupState': 'submitted'}
                     return {'setupState': 'connected' if name == 'close-devtools' else 'ready'}
-                with patch('bridge.integrations.claude.native_action', side_effect=native), \
-                     patch('bridge.integrations.claude.running_app', return_value=42), \
-                     patch('bridge.integrations.claude.claude_data_home', return_value='/fixture/profile'), \
-                     patch('bridge.integrations.claude.developer_mode_enabled', return_value=True), \
+                with patch('bridge.clients.claude.adapter.native_action', side_effect=native), \
+                     patch('bridge.clients.claude.adapter.running_app', return_value=42), \
+                     patch('bridge.clients.claude.adapter.claude_data_home', return_value='/fixture/profile'), \
+                     patch('bridge.clients.claude.adapter.developer_mode_enabled', return_value=True), \
                      patch.object(self.desktop, 'close') as close, \
                      patch.object(self.adapter.setup_cancel, 'wait', return_value=False):
                     self.adapter._connect_native(False, self.adapter.directory/'cancel', existing_only=True)

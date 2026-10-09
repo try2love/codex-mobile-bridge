@@ -21,7 +21,7 @@ const window={'claude.web':{LocalSessions:surface('code'),LocalAgentModeSessions
     ]})},
     getLoginDesktop3pStatus:async()=>({enabled:true,thirdPartyConfigured:true,provider:'gateway',hybridOrganizationName:'Fixture API',secret:'DO_NOT_EXPORT'}),
   }}};
-const source=fs.readFileSync('bridge/integrations/claude-connector.js','utf8').replace('__BRIDGE_CONFIG__',JSON.stringify(config));
+const source=fs.readFileSync('bridge/clients/claude/connector.js','utf8').replace('__BRIDGE_CONFIG__',JSON.stringify(config));
 (async()=>{
   await vm.runInNewContext(source,{window,crypto:webcrypto,TextEncoder,Uint8Array,console,setTimeout,clearTimeout});
   let seq=0;

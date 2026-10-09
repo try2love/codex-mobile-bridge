@@ -4,7 +4,7 @@ import subprocess
 from unittest.mock import patch, Mock
 
 import test_accounts
-from bridge.desktop_updates import appcast, SPARKLE
+from bridge.features.updates.codex import appcast, SPARKLE
 
 
 class UpdateTests(unittest.TestCase):
@@ -27,7 +27,7 @@ class UpdateTests(unittest.TestCase):
         payload={'requestId':str(uuid.uuid4()),'confirmed':True,'tasksConfirmed':True,'currentBuild':'1'}
         with self.assertRaises(ValueError):updater.request({**payload,'confirmed':False})
         updater.value={'state':'available','canRequest':True}
-        with patch('bridge.desktop_updates.installed',return_value={'build':'2'}),patch('bridge.desktop_updates.sys.platform','darwin'):
+        with patch('bridge.features.updates.codex.installed',return_value={'build':'2'}),patch('bridge.features.updates.codex.sys.platform','darwin'):
             with self.assertRaises(ValueError):updater.request(payload)
         with patch.object(self.manager,'idle',side_effect=ValueError('task active')):
             with self.assertRaisesRegex(ValueError,'task active'):updater.request(payload)
@@ -35,12 +35,12 @@ class UpdateTests(unittest.TestCase):
     def test_duplicate_authorization_is_not_replayed(self):
         updater=self.manager.updates;updater.value={'state':'available','canRequest':True}
         value={'requestId':str(uuid.uuid4()),'confirmed':True,'tasksConfirmed':True,'currentBuild':'1'}
-        with patch('bridge.desktop_updates.installed',return_value={'build':'1','bundle':'/fixture.app'}),patch('bridge.desktop_updates.sys.platform','darwin'),patch('bridge.desktop_updates.threading.Thread') as worker:
+        with patch('bridge.features.updates.codex.installed',return_value={'build':'1','bundle':'/fixture.app'}),patch('bridge.features.updates.codex.sys.platform','darwin'),patch('bridge.features.updates.codex.threading.Thread') as worker:
             updater.request(value);updater.request(value);worker.assert_called_once()
 
     def test_native_handoff_never_reports_installation_complete(self):
         updater=self.manager.updates
-        with patch('bridge.desktop_updates.sys.platform','darwin'), patch('bridge.desktop_updates.subprocess.run') as run, patch('bridge.desktop_updates.DesktopApp') as app:
+        with patch('bridge.features.updates.codex.sys.platform','darwin'), patch('bridge.features.updates.codex.subprocess.run') as run, patch('bridge.features.updates.codex.DesktopApp') as app:
             app.return_value.processes.return_value=[1234]
             run.return_value.stdout='opened\n'
             updater._request({'bundle':'/fixture.app'})
@@ -49,7 +49,7 @@ class UpdateTests(unittest.TestCase):
             self.assertEqual(run.call_args.kwargs['timeout'],180)
         self.assertEqual(updater.status()['state'],'needsDesktop')
         self.assertNotIn('kill',str(run.call_args))
-        with patch('bridge.desktop_updates.sys.platform','darwin'), patch('bridge.desktop_updates.subprocess.run',side_effect=OSError('private path')) as run, patch('bridge.desktop_updates.DesktopApp') as app:
+        with patch('bridge.features.updates.codex.sys.platform','darwin'), patch('bridge.features.updates.codex.subprocess.run',side_effect=OSError('private path')) as run, patch('bridge.features.updates.codex.DesktopApp') as app:
             app.return_value.processes.return_value=[1234]
             updater._request({'bundle':'/fixture.app'})
             run.assert_called_once()
@@ -65,7 +65,7 @@ class UpdateTests(unittest.TestCase):
             (subprocess.CalledProcessError(1,'osascript',stderr='BRIDGE_UPDATE_MENU_MISSING (-2700)'),'menuUnavailable'),
             (subprocess.CalledProcessError(1,'osascript',stderr='BRIDGE_UPDATE_MENU_DISABLED (-2700)'),'menuDisabled'),
             (OSError('private path'),'handoffFailed')]:
-            with self.subTest(reason=reason),patch('bridge.desktop_updates.sys.platform','darwin'),patch('bridge.desktop_updates.DesktopApp') as app,patch('bridge.desktop_updates.subprocess.run',side_effect=error):
+            with self.subTest(reason=reason),patch('bridge.features.updates.codex.sys.platform','darwin'),patch('bridge.features.updates.codex.DesktopApp') as app,patch('bridge.features.updates.codex.subprocess.run',side_effect=error):
                 app.return_value.processes.return_value=[1234]
                 updater._request({'bundle':'/fixture.app'})
                 self.assertEqual(updater.status()['failureReason'],reason)
@@ -74,7 +74,7 @@ class UpdateTests(unittest.TestCase):
 
     def test_retry_uses_new_authorization_and_success_requires_menu_click_acknowledgment(self):
         updater=self.manager.updates
-        with patch('bridge.desktop_updates.sys.platform','darwin'),patch('bridge.desktop_updates.DesktopApp') as app,patch('bridge.desktop_updates.subprocess.run') as run:
+        with patch('bridge.features.updates.codex.sys.platform','darwin'),patch('bridge.features.updates.codex.DesktopApp') as app,patch('bridge.features.updates.codex.subprocess.run') as run:
             app.return_value.processes.return_value=[1234]
             run.return_value.stdout=''
             updater._request({'bundle':'/fixture.app'})
@@ -85,7 +85,7 @@ class UpdateTests(unittest.TestCase):
             self.assertIsNone(updater.status().get('failureReason'))
         updater.value.update(canRequest=True)
         payload={'requestId':str(uuid.uuid4()),'confirmed':True,'tasksConfirmed':True,'currentBuild':'1'}
-        with patch('bridge.desktop_updates.installed',return_value={'build':'1','bundle':'/fixture.app'}),patch('bridge.desktop_updates.sys.platform','darwin'),patch('bridge.desktop_updates.threading.Thread') as worker:
+        with patch('bridge.features.updates.codex.installed',return_value={'build':'1','bundle':'/fixture.app'}),patch('bridge.features.updates.codex.sys.platform','darwin'),patch('bridge.features.updates.codex.threading.Thread') as worker:
             updater.request(payload)
             updater.value.update(state='needsDesktop',canRequest=True)
             updater.request(payload)
@@ -95,7 +95,7 @@ class UpdateTests(unittest.TestCase):
 
     def test_check_failure_is_not_up_to_date_and_does_not_run_installer(self):
         updater=self.manager.updates
-        with patch('bridge.desktop_updates.installed',side_effect=OSError('private path')),patch('bridge.desktop_updates.subprocess.run') as run:
+        with patch('bridge.features.updates.codex.installed',side_effect=OSError('private path')),patch('bridge.features.updates.codex.subprocess.run') as run:
             updater._check();run.assert_not_called()
         self.assertEqual(updater.status()['state'],'error')
         self.assertNotIn('private path',str(updater.status()))
@@ -105,12 +105,12 @@ class UpdateTests(unittest.TestCase):
         meta={'version':'1.0','build':'1.0.0.0','codexBuildFlavor':'prod','storeProductId':'9PLM9XGG6VKS','packageIdentity':'OpenAI.Fixture'}
         import json
         manifest={'buildVersion':'2.0.0.0','storeProductId':meta['storeProductId'],'packageIdentity':meta['packageIdentity']}
-        with patch('bridge.desktop_updates.sys.platform','win32'),patch('bridge.desktop_updates.installed',return_value=meta),patch.object(updater,'fetch',return_value=json.dumps(manifest).encode()),patch('bridge.desktop_updates.os.startfile',create=True) as launch:
+        with patch('bridge.features.updates.codex.sys.platform','win32'),patch('bridge.features.updates.codex.installed',return_value=meta),patch.object(updater,'fetch',return_value=json.dumps(manifest).encode()),patch('bridge.features.updates.codex.os.startfile',create=True) as launch:
             updater._check();self.assertEqual(updater.status()['state'],'available');launch.assert_not_called()
             updater._request(meta);launch.assert_called_once_with('ms-windows-store://pdp/?PRODUCTID=9PLM9XGG6VKS')
             self.assertEqual(updater.status()['state'],'needsDesktop')
         manifest['packageIdentity']='Other.App'
-        with patch('bridge.desktop_updates.sys.platform','win32'),patch('bridge.desktop_updates.installed',return_value=meta),patch.object(updater,'fetch',return_value=json.dumps(manifest).encode()):
+        with patch('bridge.features.updates.codex.sys.platform','win32'),patch('bridge.features.updates.codex.installed',return_value=meta),patch.object(updater,'fetch',return_value=json.dumps(manifest).encode()):
             updater._check();self.assertEqual(updater.status()['state'],'error')
 
 

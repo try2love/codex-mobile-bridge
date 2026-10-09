@@ -2,7 +2,7 @@
 // Packaged-runtime login and access-control checks. Isolated data, synthetic
 // credentials and loopback requests only; no Codex chat is opened or executed.
 const assert=require('node:assert/strict'),fs=require('node:fs/promises'),path=require('node:path'),net=require('node:net');
-const {runWorker}=require('../desktop/controller.cjs');
+const {runWorker}=require('../desktop/shared/controller.cjs');
 const root=path.resolve(__dirname,'..'),delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function main(){
   const executable=process.argv[2]||path.join(root,'dist/desktop',process.platform==='darwin'?

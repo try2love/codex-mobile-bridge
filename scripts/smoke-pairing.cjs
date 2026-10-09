@@ -2,7 +2,7 @@
 'use strict';
 const {app,BrowserWindow}=require('electron');
 const fs=require('node:fs'),path=require('node:path'),net=require('node:net'),assert=require('node:assert/strict');
-const {runWorker,workerFor}=require('../desktop/controller.cjs');
+const {runWorker,workerFor}=require('../desktop/shared/controller.cjs');
 const {PNG}=require('pngjs'),decode=require('jsqr');
 const root=path.resolve(__dirname,'..');
 fs.mkdirSync(path.join(root,'.tmp'),{recursive:true});

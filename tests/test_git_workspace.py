@@ -10,9 +10,9 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from bridge.workspace import Workspace, GitWorkspace, operate, MAX_PREVIEW
-from bridge.service import Bridge
-from bridge.remote import RemoteStore
+from bridge.features.workspace.workspace import Workspace, GitWorkspace, operate, MAX_PREVIEW
+from bridge.app.service import Bridge
+from bridge.clients.codex.remote import RemoteStore
 import test_bridge as support
 
 
@@ -117,7 +117,7 @@ class GitWorkspaceTests(unittest.TestCase):
         # Stop discovery at this fixture rather than finding the enclosing source repo.
         subprocess.run(['git', 'init', '--bare', '-q', str(plain)], check=True)
         self.assertFalse(GitWorkspace(Workspace(plain)).status()['available'])
-        with patch('bridge.workspace.subprocess.Popen', side_effect=FileNotFoundError):
+        with patch('bridge.features.workspace.workspace.subprocess.Popen', side_effect=FileNotFoundError):
             with self.assertRaisesRegex(ValueError, '未安装 Git'): self.status()
 
     def test_remote_routing_does_not_activate_owner(self):
@@ -128,7 +128,7 @@ class GitWorkspaceTests(unittest.TestCase):
             self.assertEqual(alias, 'fixture-host'); output = io.StringIO()
             with contextlib.redirect_stdout(output): exec(compile(source, '<remote-git>', 'exec'), {})
             return json.loads(output.getvalue())
-        with patch('bridge.service.ssh_read', side_effect=execute):
+        with patch('bridge.app.service.ssh_read', side_effect=execute):
             self.assertEqual(Bridge.workspace(bridge, support.THREAD, 'git-status', {})['branch'], 'main')
             self.assertIn('+remote change', Bridge.workspace(bridge, support.THREAD, 'git-diff', {'path': 'hello.txt', 'section': 'unstaged'})['text'])
 
@@ -160,7 +160,7 @@ class GitWorkspaceTests(unittest.TestCase):
         self.mutate('stage-all'); self.mutate('commit', message='Folder')
         (self.root / 'folder/a.txt').unlink(); (self.root / 'folder').rmdir()
         # Exercise the Windows path-walking fallback on every CI platform.
-        with patch('bridge.workspace.os.supports_dir_fd', set()):
+        with patch('bridge.features.workspace.workspace.os.supports_dir_fd', set()):
             self.mutate('stage', path='folder/a.txt')
         self.assertEqual(self.status()['entries'][0]['index'], 'D')
 
@@ -237,7 +237,7 @@ class GitWorkspaceTests(unittest.TestCase):
             self.assertEqual(alias, 'fixture-host'); output = io.StringIO()
             with contextlib.redirect_stdout(output): exec(compile(source, '<remote-git>', 'exec'), {})
             return json.loads(output.getvalue())
-        with patch('bridge.service.ssh_read', side_effect=execute):
+        with patch('bridge.app.service.ssh_read', side_effect=execute):
             state = Bridge.workspace(bridge, support.THREAD, 'git-status', {})
             staged = Bridge.workspace(bridge, support.THREAD, 'git-action', {'action':'stage-all', 'version':state['version']})
             committed = Bridge.workspace(bridge, support.THREAD, 'git-action', {'action':'commit', 'version':staged['state']['version'], 'message':'Remote fixture commit'})

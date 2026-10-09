@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import test_bridge
-from bridge.integrations.uploads import DesktopUploads
+from bridge.clients.uploads import DesktopUploads
 
 ROOT = Path(__file__).resolve().parents[1]
 PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a8XcAAAAASUVORK5CYII=')

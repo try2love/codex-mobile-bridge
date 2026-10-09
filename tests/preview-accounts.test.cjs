@@ -1,6 +1,6 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
-const {seedPreviewAccounts}=require('../desktop/preview-accounts.cjs');
+const {seedPreviewAccounts}=require('../desktop/features/accounts/preview-accounts.cjs');
 const base=path.join(__dirname,'../.tmp');fs.mkdirSync(base,{recursive:true});
 function fixture(t){
   const root=fs.mkdtempSync(path.join(base,'preview-accounts-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));

@@ -6,8 +6,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
-from bridge.account import Account, AccountError, AccountRPC, normalize_limits
-from bridge.lifecycle import GatewayControl, request_pairing
+from bridge.features.accounts.account import Account, AccountError, AccountRPC, normalize_limits
+from bridge.app.lifecycle import GatewayControl, request_pairing
 
 ROOT = Path(__file__).resolve().parents[1]
 

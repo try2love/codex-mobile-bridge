@@ -2,9 +2,9 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock
-from bridge.mobile_events import MobileEvents
-from bridge.mobile_push import MobilePush, InvalidPushToken, payload
-from bridge.notifications import write_json
+from bridge.features.notifications.events import MobileEvents
+from bridge.features.notifications.push import MobilePush, InvalidPushToken, payload
+from bridge.features.notifications.channels import write_json
 
 ROOT = Path(__file__).resolve().parents[1]
 THREAD = '00000000-0000-4000-8000-000000000001'
@@ -47,9 +47,9 @@ class NativePushTests(unittest.TestCase):
 
     def test_http_registration_needs_csrf_and_trusted_origin(self):
         import http.client,json,threading
-        from bridge.httpd import GatewayServer
-        from bridge.auth import password_record
-        from bridge.notifications import Notifications
+        from bridge.api.httpd import GatewayServer
+        from bridge.features.auth.auth import password_record
+        from bridge.features.notifications.channels import Notifications
         server=GatewayServer(('127.0.0.1',0),object(),{'auth':{'mode':'password','username':'test',**password_record('long-password')},'origins':['https://gateway.example']},ROOT/'web')
         server.notifications=Notifications(None,self.path)
         token,session=server.auth.new_session('127.0.0.1')
@@ -70,7 +70,7 @@ class NativePushTests(unittest.TestCase):
     def test_provider_uses_fixed_https_endpoints_and_does_not_follow_redirects(self):
         import sys,types
         from unittest.mock import patch
-        from bridge.mobile_push import send_provider
+        from bridge.features.notifications.push import send_provider
         self.event();event=self.feed.read()['events'][0];device={'kind':'apns','token':'ab'*32,'origin':'https://codex.try2love.com'}
         key=self.path/'dummy-key';key.write_text('TEST ONLY')
         client=Mock();client.post.return_value.status_code=200

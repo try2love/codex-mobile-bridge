@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from bridge.integrations.discovery import BUNDLE_IDS, _candidate, discover_clients
-from bridge.integrations.deepseek import DeepSeek, MARKER
+from bridge.clients.discovery import BUNDLE_IDS, _candidate, discover_clients
+from bridge.clients.deepseek.adapter import DeepSeek, MARKER
 
 
 class DiscoveryTests(unittest.TestCase):
@@ -94,7 +94,7 @@ class DiscoveryTests(unittest.TestCase):
         entries.mkdir(parents=True)
         (entries/'deepseek.desktop').write_text(
             '[Desktop Entry]\nName=DeepSeek Harness\nType=Application\nExec="'+str(executable)+'" %U\n')
-        with patch('bridge.integrations.discovery.shutil.which', return_value=None):
+        with patch('bridge.platforms.linux.discovery.shutil.which', return_value=None):
             rows = discover_clients(platform='linux', home=self.home,
                                     env={'PATH': '', 'XDG_DATA_DIRS': str(self.root/'empty')})
         self.assertEqual(rows['deepseek']['executable'], str(executable))
@@ -217,7 +217,7 @@ class DeepSeekSetupTests(unittest.TestCase):
         previous = b'// recognized prior connector fixture\n'
         source.write_bytes(previous)
         # Stand in for an explicitly allowlisted release, never arbitrary edits.
-        with patch('bridge.integrations.deepseek_setup.PREVIOUS_SOURCE', hashlib.sha256(previous).hexdigest()):
+        with patch('bridge.clients.deepseek.setup.PREVIOUS_SOURCE', hashlib.sha256(previous).hexdigest()):
             discovered = self.adapter.ensure_installed()
             self.assertTrue(discovered['updateRequired'])
             self.assertFalse(discovered['changed'])
@@ -242,7 +242,7 @@ class DeepSeekSetupTests(unittest.TestCase):
         self.assertEqual(before, {path: path.read_bytes() for path in before})
 
     def test_blank_environment_uses_existing_default_home(self):
-        with patch.dict(os.environ, {'DSH_HOME': '  '}), patch('bridge.integrations.deepseek.Path.home', return_value=self.root):
+        with patch.dict(os.environ, {'DSH_HOME': '  '}), patch('bridge.clients.deepseek.adapter.Path.home', return_value=self.root):
             self.assertEqual(DeepSeek(self.root/'gateway').home, self.root/'.dsh')
 
 

@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from bridge.desktop import Desktop
+from bridge.app.desktop import Desktop
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,7 +28,7 @@ class OfflineManagement(unittest.TestCase):
         self.addCleanup(self.desktop.close_local)
         self.discovered = {name: {'id': name, 'installed': False, 'dataDirectory': str(self.root/name)}
                            for name in ('codex', 'claude', 'deepseek')}
-        discovery = patch('bridge.integrations.discovery.discover_clients', return_value=self.discovered)
+        discovery = patch('bridge.clients.discovery.discover_clients', return_value=self.discovered)
         self.scan = discovery.start()
         self.addCleanup(discovery.stop)
 
@@ -39,7 +39,7 @@ class OfflineManagement(unittest.TestCase):
 
     def test_add_and_list_work_without_gateway_or_network_listener_and_survive_reopen(self):
         with patch('socket.socket.bind', side_effect=AssertionError('offline setup opened a listener')), \
-                patch('bridge.desktop.subprocess.Popen', side_effect=AssertionError('offline setup launched a child')):
+                patch('bridge.app.desktop.subprocess.Popen', side_effect=AssertionError('offline setup launched a child')):
             result = self.add_api()
             identifier = result['accounts'][0]['id']
             first_owner = self.desktop.local_bridge
@@ -87,7 +87,7 @@ class OfflineManagement(unittest.TestCase):
         (self.root/'gateway-control.json').write_text(json.dumps({'accountsManagement': True,
                                                                  'desktopSessionsManagement': True}))
         with patch.object(self.desktop, 'status', return_value={'running': True}), \
-                patch('bridge.desktop.request_pairing', return_value={'fromGateway': True}) as forward, \
+                patch('bridge.app.desktop.request_pairing', return_value={'fromGateway': True}) as forward, \
                 patch.object(self.desktop, 'local_services', side_effect=AssertionError('duplicate owner')):
             self.assertEqual(self.desktop.accounts({'action': 'list'}), {'fromGateway': True})
             forward.assert_called_once_with(self.root, {'action': 'accounts', 'value': {'action': 'list'}}, timeout=100)
@@ -108,7 +108,7 @@ class OfflineManagement(unittest.TestCase):
         self.add_api()
         owner = self.desktop.local_bridge
         with patch.object(self.desktop, 'status', return_value={'running': False}), \
-                patch('bridge.desktop.subprocess.Popen') as launch:
+                patch('bridge.app.desktop.subprocess.Popen') as launch:
             owner.accounts.enrollment = {'phase': 'waiting'}
             with self.assertRaisesRegex(ValueError, '登录'):
                 self.desktop.start()
@@ -133,7 +133,7 @@ class OfflineManagement(unittest.TestCase):
             release.wait(3)
             return False
         rpc.login_finished.side_effect = finish
-        with patch('bridge.accounts.ManagedRPC', return_value=rpc):
+        with patch('bridge.features.accounts.accounts.ManagedRPC', return_value=rpc):
             self.desktop.accounts({'action': 'login', 'name': 'Official fixture'})
             self.assertTrue(entered.wait(2))
             owner = self.desktop.local_bridge

@@ -7,9 +7,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from bridge.integrations.manager import DesktopSessions
-from bridge.integrations.errors import BridgeUnavailable
-from bridge.integrations.discovery import discover_clients
+from bridge.clients.manager import DesktopSessions
+from bridge.clients.errors import BridgeUnavailable
+from bridge.clients.discovery import discover_clients
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -26,7 +26,7 @@ class ClaudeProfileDiscovery(unittest.TestCase):
         self.third = self.default.with_name('Claude-3p')
 
     def scan(self, profiles, preferences=None):
-        with patch('bridge.integrations.claude_setup._running_profiles', return_value=set(profiles), create=True):
+        with patch('bridge.clients.claude.setup._running_profiles', return_value=set(profiles), create=True):
             return discover_clients(preferences, platform='darwin', home=self.home, env={}, applications=[self.apps])['claude']
 
     def test_live_third_party_profile_is_used_in_scan_output(self):
@@ -94,13 +94,13 @@ class ClientScanTests(unittest.TestCase):
         self.claude.status.return_value = {'connected': False}
         self.running = False
         self.connect_on_launch = False
-        self.launch = self.patch('bridge.integrations.client_launch.launch_deepseek', side_effect=self.launch_app)
-        self.patch('bridge.integrations.client_launch.inspect_client', side_effect=lambda _: {'running': self.running, 'pids': [221, 222] if self.running else [], 'mainPids': [221] if self.running else [], 'runtimePids': [222] if self.running else [], 'unknown': False})
-        self.patch('bridge.integrations.client_launch.stop_client', side_effect=lambda *args, **kwargs: setattr(self, 'running', False))
-        self.patch('bridge.integrations.manager.DeepSeek', return_value=self.deepseek)
-        self.patch('bridge.integrations.manager.Claude', return_value=self.claude)
-        self.discovery = self.patch('bridge.integrations.discovery.discover_clients', side_effect=lambda _: self.discovered)
-        self.patch('bridge.desktop.Desktop.preferences', return_value={})
+        self.launch = self.patch('bridge.clients.lifecycle.launch_deepseek', side_effect=self.launch_app)
+        self.patch('bridge.clients.lifecycle.inspect_client', side_effect=lambda _: {'running': self.running, 'pids': [221, 222] if self.running else [], 'mainPids': [221] if self.running else [], 'runtimePids': [222] if self.running else [], 'unknown': False})
+        self.patch('bridge.clients.lifecycle.stop_client', side_effect=lambda *args, **kwargs: setattr(self, 'running', False))
+        self.patch('bridge.clients.manager.DeepSeek', return_value=self.deepseek)
+        self.patch('bridge.clients.manager.Claude', return_value=self.claude)
+        self.discovery = self.patch('bridge.clients.discovery.discover_clients', side_effect=lambda _: self.discovered)
+        self.patch('bridge.app.desktop.Desktop.preferences', return_value={})
         self.manager = DesktopSessions(self.root, self.bridge)
         self.addCleanup(self.manager.close)
 

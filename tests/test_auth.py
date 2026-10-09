@@ -7,10 +7,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from bridge.auth import Auth, access_policy, session_hours
-from bridge.desktop import Desktop
-from bridge.lifecycle import GatewayControl
-from bridge.pairing import Pairing
+from bridge.features.auth.auth import Auth, access_policy, session_hours
+from bridge.app.desktop import Desktop
+from bridge.app.lifecycle import GatewayControl
+from bridge.features.auth.pairing import Pairing
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -34,7 +34,7 @@ class AuthTests(unittest.TestCase):
         self.assertEqual(session['expires'], 0)
         raw = (self.directory / 'auth-sessions.json').read_text()
         self.assertNotIn(token, raw)
-        with patch('bridge.auth.time.time', return_value=session['created'] + 50 * 365 * 86400):
+        with patch('bridge.features.auth.auth.time.time', return_value=session['created'] + 50 * 365 * 86400):
             restarted = self.auth()
             self.assertEqual(restarted.get(token)['csrf'], session['csrf'])
             self.assertEqual(restarted.cookie_age(token), 400 * 86400)
@@ -48,15 +48,15 @@ class AuthTests(unittest.TestCase):
 
     def test_finite_deadline_does_not_slide_on_visit_or_restart(self):
         self.config['sessionHours'] = 2
-        with patch('bridge.auth.time.time', return_value=1000):
+        with patch('bridge.features.auth.auth.time.time', return_value=1000):
             token, session = self.auth().new_session('192.0.2.1')
             self.assertEqual(session['expires'], 8200)
-        with patch('bridge.auth.time.time', return_value=4000):
+        with patch('bridge.features.auth.auth.time.time', return_value=4000):
             auth = self.auth()
             auth.get(token, {'ip': '192.0.2.2', 'peer': '192.0.2.2', 'source': 'direct'}, 'Safari')
             self.assertEqual(auth.cookie_age(token), 4200)
             self.assertEqual(auth.get(token)['expires'], 8200)
-        with patch('bridge.auth.time.time', return_value=8200):
+        with patch('bridge.features.auth.auth.time.time', return_value=8200):
             self.assertIsNone(self.auth().get(token))
 
     def test_default_and_invalid_durations(self):
@@ -163,14 +163,14 @@ class AuthTests(unittest.TestCase):
 
     def test_last_seen_is_persisted_at_most_once_per_minute(self):
         auth = self.auth()
-        with patch('bridge.auth.time.time', return_value=1000):
+        with patch('bridge.features.auth.auth.time.time', return_value=1000):
             token, _ = auth.new_session('192.0.2.7', 'Safari')
         client = {'ip': '192.0.2.7', 'peer': '192.0.2.7', 'source': 'direct'}
         with patch.object(auth, 'persist', wraps=auth.persist) as write:
-            with patch('bridge.auth.time.time', return_value=1030):
+            with patch('bridge.features.auth.auth.time.time', return_value=1030):
                 auth.get(token, client, 'Safari')
                 write.assert_not_called()
-            with patch('bridge.auth.time.time', return_value=1061):
+            with patch('bridge.features.auth.auth.time.time', return_value=1061):
                 auth.get(token, client, 'Safari')
                 write.assert_called_once()
         self.assertEqual(self.auth().manage({})['sessions'][0]['lastSeen'], 1061)

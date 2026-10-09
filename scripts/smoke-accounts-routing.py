@@ -11,8 +11,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from bridge.accounts import Accounts, ManagedRPC
-from bridge.catalog import Catalog
+from bridge.features.accounts.accounts import Accounts, ManagedRPC
+from bridge.clients.codex.catalog import Catalog
 
 
 class TurnRPC(ManagedRPC):

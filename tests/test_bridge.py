@@ -13,13 +13,13 @@ import uuid
 from contextlib import closing
 from pathlib import Path, PureWindowsPath
 
-from bridge.auth import Auth, password_record
-from bridge.files import artifact_paths
-from bridge.httpd import GatewayServer
-from bridge.ipc import DesktopIPC, IPCError
-from bridge.model import apply_patches, normalize_state, normalize_request
-from bridge.service import Bridge, LiveSession, validate_form
-from bridge.catalog import Catalog
+from bridge.features.auth.auth import Auth, password_record
+from bridge.features.workspace.files import artifact_paths
+from bridge.api.httpd import GatewayServer
+from bridge.clients.codex.ipc import DesktopIPC, IPCError
+from bridge.features.sessions.model import apply_patches, normalize_state, normalize_request
+from bridge.app.service import Bridge, LiveSession, validate_form
+from bridge.clients.codex.catalog import Catalog
 
 ROOT = Path(__file__).resolve().parents[1]
 (ROOT / ".tmp").mkdir(exist_ok=True)
@@ -154,7 +154,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue(call['params']['turnStart']['context']['inheritThreadSettings'])
 
     def test_external_provider_change_does_not_use_stale_managed_account_to_block_send(self):
-        from bridge.accounts import Accounts
+        from bridge.features.accounts.accounts import Accounts
         manager = Accounts(self.bridge)
         self.bridge.accounts = manager
         config = self.root / 'config.toml'
@@ -172,7 +172,7 @@ class IntegrationTests(unittest.TestCase):
 
     def test_local_database_failure_keeps_other_hosts_in_list(self):
         from types import SimpleNamespace
-        from bridge.store import StoreUnavailable
+        from bridge.features.sessions.store import StoreUnavailable
         def unavailable(**kwargs):
             raise StoreUnavailable('Database temporarily unavailable')
         self.bridge.store.list = unavailable
@@ -202,7 +202,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(changes['rows'], [])
 
     def test_legacy_desktop_threads_visible_but_subagents_excluded(self):
-        from bridge.store import SessionStore
+        from bridge.features.sessions.store import SessionStore
         legacy, untagged, child, cli, mobile = (str(uuid.uuid4()) for _ in range(5))
         with closing(sqlite3.connect(str(self.root / 'state_5.sqlite'))) as db, db:
             for tid, origin, source in [(legacy, 'codex_work_desktop', 'vscode'),
@@ -272,7 +272,7 @@ class IntegrationTests(unittest.TestCase):
         def attach(target):
             target.state = {**state(), 'turnsPagination': {'hasLoadedOldest':False}}
             target.connected = True
-        with patch('bridge.service.threading.Thread', InlineThread), patch.object(self.bridge, '_attach', side_effect=attach), patch.object(self.bridge.store, 'history', return_value=saved) as read:
+        with patch('bridge.app.service.threading.Thread', InlineThread), patch.object(self.bridge, '_attach', side_effect=attach), patch.object(self.bridge.store, 'history', return_value=saved) as read:
             self.bridge._refresh_async(session)
         read.assert_called_once_with(THREAD, turn_limit=20)
         self.assertEqual(session.view()['turns'][0]['id'], 'old')
@@ -282,7 +282,7 @@ class IntegrationTests(unittest.TestCase):
         from unittest.mock import patch
         self.fixture.loaded = False
         self.bridge.store.history = lambda tid, **kwargs: {**state(), 'title': 'Saved history'}
-        with patch('bridge.service.open_in_desktop') as opened:
+        with patch('bridge.app.service.open_in_desktop') as opened:
             session = self.bridge.session(THREAD, background=True)
             with session.condition:
                 self.assertTrue(session.condition.wait_for(lambda: not session.connecting, timeout=3))
@@ -298,7 +298,7 @@ class IntegrationTests(unittest.TestCase):
         from unittest.mock import patch
         self.fixture.loaded = False
         self.bridge.store.history = lambda tid, **kwargs: state()
-        with patch('bridge.service.open_in_desktop', side_effect=lambda *args: setattr(self.fixture, 'loaded', True)) as opened:
+        with patch('bridge.app.service.open_in_desktop', side_effect=lambda *args: setattr(self.fixture, 'loaded', True)) as opened:
             session = self.bridge.activate(THREAD)
             self.assertTrue(session.connected)
             opened.assert_called_once_with(THREAD, 'local')
@@ -308,7 +308,7 @@ class IntegrationTests(unittest.TestCase):
 
     def test_existing_owner_needs_no_desktop_navigation(self):
         from unittest.mock import patch
-        with patch('bridge.service.open_in_desktop') as opened:
+        with patch('bridge.app.service.open_in_desktop') as opened:
             self.assertTrue(self.bridge.activate(THREAD).connected)
             opened.assert_not_called()
 
@@ -317,7 +317,7 @@ class IntegrationTests(unittest.TestCase):
         self.fixture.loaded = False
         self.bridge.host = self.fixture.host = 'remote:test'
         self.bridge.store.history = lambda tid, **kwargs: state()
-        with patch('bridge.service.open_in_desktop', side_effect=lambda *args: setattr(self.fixture, 'loaded', True)) as opened:
+        with patch('bridge.app.service.open_in_desktop', side_effect=lambda *args: setattr(self.fixture, 'loaded', True)) as opened:
             self.bridge.send(THREAD, 'hello', str(uuid.uuid4()))
             opened.assert_called_once_with(THREAD, 'remote:test')
         call = next(r for r in self.fixture.requests if r['method'] == 'thread-follower-start-turn')
@@ -330,7 +330,7 @@ class IntegrationTests(unittest.TestCase):
         from unittest.mock import patch
         self.fixture.loaded = False
         self.bridge.store.history = lambda tid, **kwargs: state()
-        with patch('bridge.service.open_in_desktop', side_effect=OSError('handler unavailable')):
+        with patch('bridge.app.service.open_in_desktop', side_effect=OSError('handler unavailable')):
             with self.assertRaisesRegex(IPCError, '未发送'):
                 self.bridge.send(THREAD, 'hello', str(uuid.uuid4()))
         self.assertFalse(self.bridge.submissions)
@@ -340,7 +340,7 @@ class IntegrationTests(unittest.TestCase):
         from concurrent.futures import TimeoutError
         from unittest.mock import patch
         ipc = DesktopIPC('unused')
-        with patch.object(ipc, '_send'), patch('bridge.ipc.Future.result', side_effect=TimeoutError):
+        with patch.object(ipc, '_send'), patch('bridge.clients.codex.ipc.Future.result', side_effect=TimeoutError):
             with self.assertRaisesRegex(IPCError, '桌面读取超时'):
                 ipc.request('thread-owner-discovery', {}, timeout=0)
             with self.assertRaisesRegex(IPCError, '操作可能已提交'):
@@ -529,7 +529,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertNotEqual(session.revision, 90)
 
     def test_project_grouping_recency_and_host_identity(self):
-        from bridge.remote import AppHosts
+        from bridge.clients.codex.remote import AppHosts
         hosts = AppHosts(self.root)
         hosts.state = lambda: {'remote-projects': [{'id': 'p', 'hostId': 'remote', 'label': 'Work', 'remotePath': '/work'}]}
         rows = hosts.decorate([{'id': THREAD, 'cwd': '/work/sub', 'recency_at': 5, 'updated_at': 20}], 'remote', 'Server')
@@ -540,7 +540,7 @@ class IntegrationTests(unittest.TestCase):
             self.bridge.for_host('unconfigured-host')
 
     def test_remote_sources_merge_before_pagination_and_surface_failures(self):
-        from bridge.remote import RemoteUnavailable
+        from bridge.clients.codex.remote import RemoteUnavailable
         from unittest.mock import Mock
         remote = Mock()
         remote.host = 'remote'
@@ -598,7 +598,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertFalse(any(r['method'] == 'thread-follower-start-turn' for r in self.fixture.requests))
 
     def test_account_switch_keeps_old_custom_chat_on_its_desktop_owner(self):
-        from bridge.accounts import Accounts
+        from bridge.features.accounts.accounts import Accounts
         manager = Accounts(self.bridge)
         self.bridge.accounts = manager
         (self.root / 'config.toml').write_text('model_provider="bridge_api"\n')
@@ -634,7 +634,7 @@ class ModelTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == 'nt', 'Windows drive path syntax')
     def test_reference_path_accepts_windows_drive_paths(self):
-        from bridge.files import reference_path
+        from bridge.features.workspace.files import reference_path
         path = reference_path('D:\\workspace\\report.txt')
         self.assertTrue(path.is_absolute())
         self.assertEqual(path, PureWindowsPath('D:/workspace/report.txt'))
@@ -767,7 +767,7 @@ class HttpTests(unittest.TestCase):
 
     def test_computer_identity_is_only_available_after_login(self):
         from unittest.mock import patch
-        with patch('bridge.httpd.socket.gethostname', return_value='demo-workstation'):
+        with patch('bridge.api.httpd.socket.gethostname', return_value='demo-workstation'):
             status, _, public = self.request('GET', '/api/auth')
             self.assertEqual(status, 200)
             self.assertNotIn('computer', public)
@@ -828,7 +828,7 @@ class HttpTests(unittest.TestCase):
                 self.assertEqual(self.request(method, path, headers=headers)[0], 403)
 
     def test_pushplus_configuration_requires_login_and_csrf_and_hides_token(self):
-        from bridge.notifications import Notifications, settings
+        from bridge.features.notifications.channels import Notifications, settings
         from unittest.mock import patch
         with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as directory:
             self.server.notifications = Notifications(None, directory)
@@ -842,7 +842,7 @@ class HttpTests(unittest.TestCase):
             self.assertEqual(result, {'pushplusEnabled': True, 'hasPushplusToken': True})
             self.assertNotIn('private-pushplus', json.dumps(self.request('GET', path, headers=headers)))
             self.assertEqual(settings(directory)['pushplusToken'], 'private-pushplus')
-            with patch('bridge.httpd.publish_pushplus') as send:
+            with patch('bridge.api.httpd.publish_pushplus') as send:
                 self.assertEqual(self.request('POST', path+'/test', {}, headers)[0], 200)
                 send.assert_called_once()
             self.assertEqual(self.request('POST', path, {'server':'https://other.example'}, headers)[0], 400)
@@ -878,14 +878,15 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(self.request('GET', '/api/sessions/'+THREAD+'/catalog?kind=skills&offset=bad', headers=headers)[0], 400)
 
     def test_web_appearance_assets_are_served_with_correct_types(self):
-        for name, content_type in [('presentation.js', 'text/javascript'), ('presentation.css', 'text/css')]:
+        for name, physical, content_type in [('presentation.js', 'features/settings/presentation.js', 'text/javascript'),
+                                              ('presentation.css', 'shared/presentation.css', 'text/css')]:
             conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=3)
             self.addCleanup(conn.close)
             conn.request('GET', '/' + name, headers={'Origin': self.origin})
             response = conn.getresponse()
             self.assertEqual(response.status, 200)
             self.assertTrue(response.getheader('Content-Type').startswith(content_type))
-            self.assertEqual(response.read(), (ROOT / 'web' / name).read_bytes())
+            self.assertEqual(response.read(), (ROOT / 'web' / physical).read_bytes())
 
     def test_saved_account_reset_route_requires_login_csrf_and_same_origin(self):
         from unittest.mock import Mock
@@ -922,7 +923,7 @@ class HttpTests(unittest.TestCase):
 
     def test_mobile_pairing_persists_as_revocable_device_across_restart(self):
         from unittest.mock import patch
-        from bridge.pairing import Pairing
+        from bridge.features.auth.pairing import Pairing
         for platform in ('Android', 'iOS'):
             with self.subTest(platform=platform):
                 config = {'mode': 'none', 'sessionHours': 1}
@@ -938,7 +939,7 @@ class HttpTests(unittest.TestCase):
                 ua = 'Mozilla/5.0 BridgeMobile/0.1-' + platform
                 token, row = pairing.exchange(grant['url'].split('#pair=')[1], origin, '127.0.0.1', ua)
                 headers = {'Cookie': Auth.COOKIE + '=' + token, 'User-Agent': ua}
-                with patch('bridge.auth.time.time', return_value=row['created'] + 30 * 86400):
+                with patch('bridge.features.auth.auth.time.time', return_value=row['created'] + 30 * 86400):
                     self.server.auth = Auth(config, directory)
                     status, response, body = self.request('GET', '/api/auth', headers=headers)
                     self.assertEqual(status, 200)
@@ -1017,7 +1018,7 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(calls, [THREAD])
 
     def test_database_read_failure_has_actionable_http_error(self):
-        from bridge.store import StoreUnavailable
+        from bridge.features.sessions.store import StoreUnavailable
         def unavailable(*args, **kwargs):
             raise StoreUnavailable('Database temporarily unavailable; retry')
         self.server.bridge.timeline_read = unavailable

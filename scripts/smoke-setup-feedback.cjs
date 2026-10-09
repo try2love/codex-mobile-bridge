@@ -3,7 +3,7 @@
 const {app,dialog,shell}=require('electron');
 const openedGuides=[];shell.openExternal=async url=>{openedGuides.push(url);};
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
-const {runWorker}=require('../desktop/controller.cjs');
+const {runWorker}=require('../desktop/shared/controller.cjs');
 const root=path.resolve(__dirname,'..');
 const data=fs.mkdtempSync(path.join(root,'.tmp','setup-feedback-'));
 process.env.CMB_DATA_DIR=data;

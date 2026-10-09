@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-from bridge.desktop import Desktop
-from bridge.notifications import settings
+from bridge.app.desktop import Desktop
+from bridge.features.notifications.channels import settings
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -89,14 +89,14 @@ class DesktopTests(unittest.TestCase):
         self.assertFalse(settings(self.directory)['barkKey'])
 
     def test_notification_tests_use_selected_channel_and_hide_service_errors(self):
-        with patch('bridge.desktop.publish') as ntfy, patch('bridge.desktop.publish_bark') as bark:
+        with patch('bridge.app.desktop.publish') as ntfy, patch('bridge.app.desktop.publish_bark') as bark:
             self.assertIn('Bark', self.desktop.test_notification({'channel': 'bark'})['message'])
             self.assertFalse(ntfy.called)
             bark.assert_called_once()
             self.desktop.test_notification()
             ntfy.assert_called_once()
             with self.assertRaises(ValueError): self.desktop.test_notification({'channel': 'unknown'})
-        with patch('bridge.desktop.publish_bark', side_effect=RuntimeError('private-bark-key')):
+        with patch('bridge.app.desktop.publish_bark', side_effect=RuntimeError('private-bark-key')):
             with self.assertRaisesRegex(ValueError, '^Bark 测试失败') as error:
                 self.desktop.test_notification({'channel': 'bark'})
             self.assertNotIn('private-bark-key', str(error.exception))
@@ -143,14 +143,14 @@ class DesktopTests(unittest.TestCase):
 
 class CloudflareSetupTests(unittest.TestCase):
     def test_blank_saved_path_rediscovers_and_missing_program_never_spawns(self):
-        from bridge.notifications import write_json
+        from bridge.features.notifications.channels import write_json
         with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as directory:
             data = Path(directory)
             desktop = Desktop(data)
             desktop.status = lambda: {'running': False}
             write_json(data/'desktop.json', {'cloudflared': '', 'codexHome': directory, 'tunnel': True})
-            with patch('bridge.desktop.shutil.which', return_value=''), patch('bridge.desktop.sys.platform', 'fixture'), patch('bridge.desktop.sys._MEIPASS', str(data/'absent-bundle'), create=True):
-                with patch('bridge.desktop.subprocess.Popen') as spawn:
+            with patch('bridge.app.desktop.shutil.which', return_value=''), patch('bridge.app.desktop.sys.platform', 'fixture'), patch('bridge.app.desktop.sys._MEIPASS', str(data/'absent-bundle'), create=True):
+                with patch('bridge.app.desktop.subprocess.Popen') as spawn:
                     with self.assertRaisesRegex(ValueError, '一键安装'): desktop.start()
                     spawn.assert_not_called()
                 (data/'bin').mkdir()
@@ -159,7 +159,7 @@ class CloudflareSetupTests(unittest.TestCase):
                 self.assertEqual(desktop.preferences()['cloudflared'], str(executable))
 
     def test_quick_tunnel_status_is_scoped_to_running_gateway(self):
-        from bridge.notifications import write_json
+        from bridge.features.notifications.channels import write_json
         with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as directory:
             data = Path(directory);desktop = Desktop(data)
             desktop.status = lambda: {'running': True, 'pid': 100}
@@ -171,7 +171,7 @@ class CloudflareSetupTests(unittest.TestCase):
             self.assertEqual(desktop.snapshot()['quickTunnel'], {})
 
     def test_quick_tunnel_url_is_hidden_when_tunnel_is_reconnecting(self):
-        from bridge.notifications import write_json
+        from bridge.features.notifications.channels import write_json
         with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as directory:
             data = Path(directory)
             desktop = Desktop(data)

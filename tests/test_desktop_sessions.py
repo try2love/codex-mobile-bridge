@@ -5,8 +5,8 @@ import uuid
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from bridge.integrations.manager import DesktopSessions
-from bridge.integrations.deepseek import DeepSeek, MARKER
+from bridge.clients.manager import DesktopSessions
+from bridge.clients.deepseek.adapter import DeepSeek, MARKER
 import test_bridge
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -216,7 +216,7 @@ class HttpAdapters(unittest.TestCase):
             {'sessions': [{'id': 'native-session', 'cwd': str(root)}]} if action == 'list' else {'models': [{'id':'upstream/model'}]})
         manager.adapters['deepseek'] = adapter
         manager._start_deepseek = Mock()
-        inspector = patch('bridge.integrations.client_launch.inspect_client', return_value={'running': False})
+        inspector = patch('bridge.clients.lifecycle.inspect_client', return_value={'running': False})
         inspector.start(); self.addCleanup(inspector.stop)
         self.assertEqual(self.request('GET', '/api/clients')[0], 401)
         headers = self.login()

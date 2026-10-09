@@ -114,7 +114,7 @@ try:
     import aiohttp
     from aiohttp.test_utils import TestServer, TestClient
     from relay.server import create_app, COOKIE, STATE
-    from bridge.shared_relay import Connector, Controller, save_config
+    from bridge.features.network.shared_relay import Connector, Controller, save_config
 except ImportError:
     aiohttp = None
 
@@ -280,7 +280,7 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     uploads.append(base64.b64decode(body['encoded']))
                     return {'ok': True}
                 if action == 'download-stream':
-                    from bridge.workspace import operate
+                    from bridge.features.workspace.workspace import operate
                     return operate(root, action, body)
                 return {'data': base64.b64encode(data).decode(), 'name': 'example.bin'}
             return SimpleNamespace(identifier=THREAD, workspace=files,
@@ -403,7 +403,7 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.state.buffered,0)
 
     async def test_real_range_resume_changed_content_and_empty_file(self):
-        from bridge.workspace import operate
+        from bridge.features.workspace.workspace import operate
         a = await self.device('Alice'); connector = await self.real_connector(a); p = await self.phone(a)
         root = Path(self.temp.name) / 'download-workspace'; root.mkdir()
         file = root / 'example.bin'

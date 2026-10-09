@@ -1,6 +1,6 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs'),path=require('node:path');
-const {SessionActivity}=require('../web/activity.js');
+const {SessionActivity}=require('../web/features/chat/activity.js');
 const storage=()=>{const values=new Map();return {getItem:k=>values.get(k),setItem:(k,v)=>values.set(k,v),removeItem:k=>values.delete(k)};};
 const status=(id,host,state,turn='one',result=state==='active'?'inProgress':'completed')=>({id,host,connected:true,status:state,turnId:turn,turnStatus:result});
 
@@ -32,7 +32,7 @@ function fixture(){
  const node=tag=>({tag,children:[],dataset:{},append(...values){this.children.push(...values);},replaceChildren(){this.children=[];},setAttribute(){},addEventListener(type,handler){(events.get(type)||events.set(type,new Set()).get(type)).add(handler);}});
  const root=node('div'),button=node('button'),input=node('input'),paste=node('textarea'),drop=node('form');
  const ctx=vm.createContext({document:{createElement:node},sessionStorage:saved,root,button,input,paste,drop,uuid:()=>String(++count),BridgeI18n:{t:v=>v},preview:(key,id)=>key+'/preview/'+id,thumbnail:async(key,id,f)=>{thumbCalls.push([key,id,f.name]);return {id,thumb:'image/webp',thumbWidth:6,thumbHeight:6};},upload:(...args)=>{calls.push(args);return upload(...args);}});
- vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/attachments.js'),'utf8'),ctx);
+ vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/features/chat/attachments.js'),'utf8'),ctx);
  const panel=vm.runInContext('new ChatAttachments({root,button,input,upload,paste,drop,preview,thumbnail})',ctx);panel.open('local|one');
  return {panel,calls,saved,root,button,input,events,thumbCalls,setUpload:f=>upload=f};
 }

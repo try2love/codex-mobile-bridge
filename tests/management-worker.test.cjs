@@ -2,7 +2,7 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const {EventEmitter}=require('node:events');
-const {createManagementWorker}=require('../desktop/controller.cjs');
+const {createManagementWorker}=require('../desktop/shared/controller.cjs');
 const options={executable:'fixture',dataDir:'fixture-profile'};
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));

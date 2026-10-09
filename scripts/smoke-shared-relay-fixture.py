@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from aiohttp import web
 from relay.server import Relay, STATE, create_app
-from bridge.shared_relay import Controller, Connector, read_config
+from bridge.features.network.shared_relay import Controller, Connector, read_config
 
 directory = ROOT/'.tmp/relay-browser'
 directory.mkdir(parents=True, exist_ok=True)
@@ -27,9 +27,9 @@ async def page(self, request):
     if request.path == '/fixture/desktop':
         return web.Response(text='''<!doctype html><html><head><meta charset="utf-8"><title>Shared relay desktop fixture</title><link rel="stylesheet" href="/fixture/style.css"></head><body><main style="margin:20px;max-width:840px"><section data-panel="network"></section></main><script src="/fixture/setup.js"></script><script src="/fixture/desktop.js"></script></body></html>''', content_type='text/html')
     if request.path == '/fixture/style.css':
-        return web.Response(body=(ROOT/'desktop/style.css').read_bytes(), content_type='text/css')
+        return web.Response(body=(ROOT/'desktop/shell/style.css').read_bytes(), content_type='text/css')
     if request.path == '/fixture/desktop.js':
-        return web.Response(body=(ROOT/'desktop/shared-relay.js').read_bytes(), content_type='text/javascript')
+        return web.Response(body=(ROOT/'desktop/features/connections/shared-relay.js').read_bytes(), content_type='text/javascript')
     if request.path == '/fixture/setup.js':
         return web.Response(text="window.BridgeI18n={locale:()=> 'zh'};window.bridgeDesktop={sharedRelay:async value=>{const r=await fetch('/fixture/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(value)});const data=await r.json();if(!r.ok)throw Error(data.error);return data;}};", content_type='text/javascript')
     return await original_page(self, request)

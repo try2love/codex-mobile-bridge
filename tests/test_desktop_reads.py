@@ -7,9 +7,9 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from bridge.integrations import manager as manager_module
-from bridge.integrations.manager import DesktopSessions
-from bridge.integrations.errors import BridgeUnavailable
+import bridge.clients.manager as manager_module
+from bridge.clients.manager import DesktopSessions
+from bridge.clients.errors import BridgeUnavailable
 
 
 class Reads(unittest.TestCase):
@@ -39,7 +39,7 @@ class Reads(unittest.TestCase):
                 raise error
             return {'items': [{'text': 'original'}]}
         self.adapter.call.side_effect = native
-        with patch('bridge.integrations.manager.Future', ObservedFuture), ThreadPoolExecutor(6) as pool:
+        with patch('bridge.clients.manager.Future', ObservedFuture), ThreadPoolExecutor(6) as pool:
             first = pool.submit(self.manager.call, 'deepseek', action, 'one', body)
             self.assertTrue(entered.wait(2))
             rest = [pool.submit(self.manager.call, 'deepseek', action, 'one', body) for _ in range(5)]
@@ -150,7 +150,7 @@ class Reads(unittest.TestCase):
         with patch.object(self.manager, '_account_store', return_value=store), \
              patch.object(self.manager, '_descriptor', return_value={}), \
              patch.object(self.manager, '_stop_client'), \
-             patch('bridge.integrations.client_launch.inspect_client', return_value={'running': False}):
+             patch('bridge.clients.lifecycle.inspect_client', return_value={'running': False}):
             self.manager.client_accounts('deepseek', {'operation': 'switch', 'id': 'new-account'})
 
     def test_account_change_during_result_copy_rejects_old_read(self):

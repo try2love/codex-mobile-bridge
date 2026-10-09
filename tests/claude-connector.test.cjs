@@ -1,4 +1,4 @@
-// Adapted from coding-mobile (MIT); see bridge/integrations/LICENSE.coding-mobile.
+// Adapted from coding-mobile (MIT); see bridge/clients/LICENSE.coding-mobile.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
@@ -29,7 +29,7 @@ const api = {
 const window = {'claude.web':{LocalSessions:api,LocalAgentModeSessions:api}};
 const context = {window,TextEncoder,Uint8Array,crypto:webcrypto,console,
   clearTimeout,setTimeout:(fn,ms)=>setTimeout(fn,ms>=9000?100:Math.min(ms,10))};
-const source=fs.readFileSync(process.env.CONNECTOR_TEMPLATE || 'bridge/integrations/claude-connector.js','utf8').replace('__BRIDGE_CONFIG__',JSON.stringify(config));
+const source=fs.readFileSync(process.env.CONNECTOR_TEMPLATE || 'bridge/clients/claude/connector.js','utf8').replace('__BRIDGE_CONFIG__',JSON.stringify(config));
 const waitFor = async predicate => {
   const deadline=Date.now()+3000;
   while(!predicate()) { if(Date.now()>deadline)throw Error('timeout'); await new Promise(r=>setTimeout(r,10)); }

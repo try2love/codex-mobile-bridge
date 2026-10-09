@@ -11,9 +11,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from bridge.harness import Harness, save, command
-from bridge.desktop import Desktop
-from bridge.lifecycle import GatewayControl, request_pairing
+from bridge.clients.deepseek.legacy_gateway import Harness, save, command
+from bridge.app.desktop import Desktop
+from bridge.app.lifecycle import GatewayControl, request_pairing
 import test_bridge
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,7 +23,7 @@ FIXTURE = ROOT/'tests/fixtures/harness_runtime.py'
 class RuntimeTests(unittest.TestCase):
     def setUp(self):
         original_command = command
-        launcher = patch('bridge.harness.command', side_effect=lambda path: [sys.executable, path] if path == str(FIXTURE) else original_command(path))
+        launcher = patch('bridge.clients.deepseek.legacy_gateway.command', side_effect=lambda path: [sys.executable, path] if path == str(FIXTURE) else original_command(path))
         launcher.start(); self.addCleanup(launcher.stop)
         self.temp = tempfile.TemporaryDirectory(dir=ROOT/'.tmp')
         self.addCleanup(self.temp.cleanup)
@@ -70,7 +70,7 @@ class RuntimeTests(unittest.TestCase):
     def test_failure_validation_and_shutdown(self):
         with self.assertRaises(ValueError): command('untrusted.cmd')
         with self.assertRaises(ValueError): save(self.directory, {**self.config, 'workspace': '/does/not/exist'})
-        with patch('bridge.harness.subprocess.Popen', side_effect=OSError('private value')):
+        with patch('bridge.clients.deepseek.legacy_gateway.subprocess.Popen', side_effect=OSError('private value')):
             with self.assertRaises(ValueError) as error: self.runtime.control({'action': 'start'})
         self.assertNotIn('private value', str(error.exception))
         self.assertEqual(self.runtime.phase, 'failed')
@@ -86,7 +86,7 @@ class ProxyTests(unittest.TestCase):
     def setUp(self):
         test_bridge.HttpTests.setUp(self)
         original_command = command
-        launcher = patch('bridge.harness.command', side_effect=lambda path: [sys.executable, path] if path == str(FIXTURE) else original_command(path))
+        launcher = patch('bridge.clients.deepseek.legacy_gateway.command', side_effect=lambda path: [sys.executable, path] if path == str(FIXTURE) else original_command(path))
         launcher.start(); self.addCleanup(launcher.stop)
         self.temp = tempfile.TemporaryDirectory(dir=ROOT/'.tmp')
         self.runtime = Harness(self.temp.name)

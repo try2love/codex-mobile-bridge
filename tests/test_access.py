@@ -9,11 +9,11 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-from bridge import access
-from bridge.desktop import Desktop
-from bridge.notifications import Notifications, write_json
-from bridge.ssh_tunnel import SSHTunnel, command
-from bridge.tunnel import QuickTunnel
+import bridge.features.network.access as access
+from bridge.app.desktop import Desktop
+from bridge.features.notifications.channels import Notifications, write_json
+from bridge.features.network.ssh_tunnel import SSHTunnel, command
+from bridge.features.network.tunnel import QuickTunnel
 import run
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -123,7 +123,7 @@ class AccessTests(unittest.TestCase):
     def test_probe_checks_current_instance_and_does_not_send_credentials(self):
         preferences = access.select_connection(self.server()['preferences'], {'id':'server'})
         for remote, success in [({'instanceId': 'same'}, True), ({'instanceId': 'another'}, False), ({}, False)]:
-            with patch('bridge.access.read_auth', side_effect=[{'instanceId': 'same'}, remote]) as read:
+            with patch('bridge.features.network.access.read_auth', side_effect=[{'instanceId': 'same'}, remote]) as read:
                 if success:
                     self.assertIn('已连到当前网关', access.check_entry(preferences)['message'])
                 else:
@@ -186,7 +186,7 @@ class AccessTests(unittest.TestCase):
 
 class SSHTests(unittest.TestCase):
     def test_command_uses_private_forward_and_existing_identity(self):
-        with patch('bridge.ssh_tunnel.shutil.which', return_value='/usr/bin/ssh'):
+        with patch('bridge.features.network.ssh_tunnel.shutil.which', return_value='/usr/bin/ssh'):
             args = command('my-server', 18787, 8787)
         self.assertEqual(args[-2:], ['127.0.0.1:18787:127.0.0.1:8787', 'my-server'])
         for value in ['StrictHostKeyChecking=yes', 'BatchMode=yes', 'ExitOnForwardFailure=yes',
@@ -194,7 +194,7 @@ class SSHTests(unittest.TestCase):
             self.assertIn(value, args)
 
     def test_success_close_and_failed_connection_retry(self):
-        with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as folder, patch('bridge.ssh_tunnel.shutil.which', return_value='ssh'):
+        with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as folder, patch('bridge.features.network.ssh_tunnel.shutil.which', return_value='ssh'):
             tunnel = SSHTunnel('test', 18787, 8787, folder)
             seen = []
             ready = threading.Event()
@@ -209,7 +209,7 @@ class SSHTests(unittest.TestCase):
                 stderr = io.StringIO('debug1: remote forward success for: listen 127.0.0.1:18787, connect 127.0.0.1:8787\n')
                 def wait(self, **kwargs): return 255
                 def poll(self): return 255
-            with patch('bridge.ssh_tunnel.subprocess.Popen', return_value=Process()) as spawn:
+            with patch('bridge.features.network.ssh_tunnel.subprocess.Popen', return_value=Process()) as spawn:
                 tunnel.start()
                 self.assertTrue(ready.wait(2))
                 tunnel.close()
@@ -280,7 +280,7 @@ class ConcurrentRuntimeTests(unittest.TestCase):
             def start():
                 try: tunnel.start()
                 except RuntimeError as error: errors.append(str(error))
-            with patch('bridge.tunnel.subprocess.Popen', side_effect=spawn):
+            with patch('bridge.features.network.tunnel.subprocess.Popen', side_effect=spawn):
                 starter = threading.Thread(target=start)
                 starter.start()
                 self.assertTrue(spawning.wait(2))
@@ -317,7 +317,7 @@ class ConcurrentRuntimeTests(unittest.TestCase):
             tunnel = QuickTunnel(executable, 8787, data, MagicMock())
             starter = threading.Thread(target=tunnel.start)
             try:
-                with patch('bridge.tunnel.subprocess.Popen', return_value=process):
+                with patch('bridge.features.network.tunnel.subprocess.Popen', return_value=process):
                     starter.start()
                     # A slow Quick Tunnel must remain explicitly connecting instead
                     # of turning into a false failure while cloudflared retries.
@@ -365,7 +365,7 @@ class ConcurrentRuntimeTests(unittest.TestCase):
                     tunnel.broken.wait(3)
                 return real_is_set()
 
-            with patch('bridge.tunnel.subprocess.Popen', side_effect=[old_process, new_process]), \
+            with patch('bridge.features.network.tunnel.subprocess.Popen', side_effect=[old_process, new_process]), \
                  patch.object(tunnel.ready, 'is_set', side_effect=ready_after_loss):
                 starter = threading.Thread(target=tunnel.start)
                 try:

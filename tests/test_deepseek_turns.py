@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from bridge.integrations.deepseek import DeepSeek
+from bridge.clients.deepseek.adapter import DeepSeek
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -29,7 +29,7 @@ class DeepSeekTurnTests(unittest.TestCase):
                 def open(self, request, timeout):
                     return io.BytesIO(json.dumps({'session': {'id': 'one', 'status': 'idle'},
                                                  'records': records}).encode())
-            with patch('bridge.integrations.deepseek.urllib.request.build_opener', return_value=Opener()):
+            with patch('bridge.clients.deepseek.adapter.urllib.request.build_opener', return_value=Opener()):
                 return adapter.call('detail', 'one')
 
     def test_explicit_turn_end_is_required_even_when_session_is_idle(self):

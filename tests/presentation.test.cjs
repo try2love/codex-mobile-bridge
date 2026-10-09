@@ -1,6 +1,6 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict');
-const {defaults,normalize,colors}=require('../web/presentation.js');
+const {defaults,normalize,colors}=require('../web/features/settings/presentation.js');
 
 test('invalid or older saved appearance values keep the page readable',()=>{
   for(const value of [null,42,'bad',{}, {theme:'unknown',accent:'url(external)',fontSize:100,codeSize:-1,density:'tiny'}])assert.deepEqual(normalize(value),defaults);

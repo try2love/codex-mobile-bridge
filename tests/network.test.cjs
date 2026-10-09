@@ -1,6 +1,6 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict');
-const {interfaces}=require('../desktop/network.cjs');
+const {interfaces}=require('../desktop/features/connections/network.cjs');
 test('IPv4 adapter choices keep virtual adapter names and exclude loopback and IPv6',()=>{
   const rows=interfaces({Ethernet:[{address:'192.168.1.7',family:'IPv4',internal:false}],
     'vEthernet (WSL)':[ {address:'172.20.0.1',family:'IPv4',internal:false}],

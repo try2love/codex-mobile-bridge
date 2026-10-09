@@ -3,11 +3,11 @@
 // The private key belongs in a release secret, never in the repository or app.
 const fs=require('node:fs'),path=require('node:path');
 const {createHash,createPublicKey,sign}=require('node:crypto');
-const {assetName}=require('../desktop/updater.cjs');
+const {assetName}=require('../desktop/features/updates/updater.cjs');
 const root=path.resolve(__dirname,'..');
 function buildManifest(directory,notes,key){
   const version=require('../package.json').version;
-  const trusted=fs.readFileSync(path.join(root,'desktop/update-public-key.pem'),'utf8');
+  const trusted=fs.readFileSync(path.join(root,'desktop/features/updates/update-public-key.pem'),'utf8');
   if(createPublicKey(key).export({type:'spki',format:'pem'})!==trusted)throw Error('Signing key does not match the public key shipped in this release.');
   const assets={};
   for(const [platform,arch] of [['darwin','arm64'],['darwin','x64'],['win32','x64']]){

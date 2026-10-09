@@ -18,7 +18,7 @@ function fixture(){
   const context=vm.createContext({root,button,setTimeout(fn,ms){const id=++timerId;timers.set(id,{fn,at:now+ms});return id;},clearTimeout(id){timers.delete(id);},document:{createElement:node,body},Date:Clock,performance:{now:()=>now},crypto:{randomUUID:()=> '11111111-1111-4111-8111-111111111111'},
     window:{confirm:prompt=>{prompts.push(prompt);return confirmed;}},localStorage:{getItem(){return null;},setItem(){}},
     read:()=>read(),consume:body=>{writes.push(structuredClone(body));return consume(body);},onHidden:()=>hidden++});
-  for(const file of ['web/i18n.js','web/account.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
+  for(const file of ['web/shared/i18n.js','web/features/accounts/account.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
   const panel=vm.runInContext('new AccountPanel({root,button,read,consume,onHidden,visible:()=>true})',context);
   const all=(n=root)=>[n,...n.children.flatMap(all)];
   const confirmButton=()=>body.children[0]?.children.at(-1).children[1];

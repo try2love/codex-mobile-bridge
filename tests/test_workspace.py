@@ -10,9 +10,9 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from bridge.workspace import Workspace, operate, MAX_TRANSFER, MAX_PREVIEW
-from bridge.service import Bridge
-from bridge.remote import RemoteStore
+from bridge.features.workspace.workspace import Workspace, operate, MAX_TRANSFER, MAX_PREVIEW
+from bridge.app.service import Bridge
+from bridge.clients.codex.remote import RemoteStore
 import test_bridge as support
 
 
@@ -63,7 +63,7 @@ class WorkspaceTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.work.upload('folder/new.txt', 'YQ==')
         self.assertEqual((self.root / 'folder/new.txt').read_text(encoding='utf-8'), '文件🙂')
         with self.assertRaises(PermissionError): self.work.upload('.git/config', data)
-        with patch('bridge.workspace.os.link', side_effect=OSError('disk error')):
+        with patch('bridge.features.workspace.workspace.os.link', side_effect=OSError('disk error')):
             with self.assertRaises(ValueError): operate(str(self.root), 'upload', {'path': 'failed', 'encoded': data})
         self.assertFalse((self.root / 'failed').exists()); self.assertEqual(list(self.root.rglob('.bridge-upload-*')), [])
 
@@ -86,7 +86,7 @@ class WorkspaceTests(unittest.TestCase):
             self.assertEqual(alias, 'fixture-host'); output = io.StringIO()
             with contextlib.redirect_stdout(output): exec(compile(source, '<remote-workspace>', 'exec'), {})
             return json.loads(output.getvalue())
-        with patch('bridge.service.ssh_read', side_effect=execute):
+        with patch('bridge.app.service.ssh_read', side_effect=execute):
             self.assertEqual(Bridge.workspace(bridge, support.THREAD, 'preview', {'path': 'remote.txt'})['text'], 'remote')
             with self.assertRaises(ValueError): Bridge.workspace(bridge, support.THREAD, 'preview', {'path': '../project/hello.txt'})
 

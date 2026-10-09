@@ -1,9 +1,9 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict');
 const path=require('node:path');
-const {workerFor,runWorker}=require('../desktop/controller.cjs');
-const {createTray,primaryUrl}=require('../desktop/tray.cjs');
-const i18n=require('../desktop/i18n.js');
+const {workerFor,runWorker}=require('../desktop/shared/controller.cjs');
+const {createTray,primaryUrl}=require('../desktop/shell/tray.cjs');
+const i18n=require('../desktop/shared/i18n.js');
 
 test('language normalization and error translation preserve unknown details',()=>{
   assert.equal(i18n.normalize('en-US'),'en');assert.equal(i18n.normalize('zh-TW'),'zh-CN');
@@ -86,7 +86,7 @@ async function renderer(initialLanguage='zh-CN',{autoStart=false}={}){
   const context=vm.createContext({window:{bridgeDesktop:api},
     localStorage:{getItem(){return null;},setItem(){}},document:{hidden:false,addEventListener(name,fn){this[name]=fn;},documentElement:{},getElementById:id=>nodes.get(id),createElement:node,querySelectorAll:()=>[]},
     URL,Date:class extends Date{static now(){return now;}},setTimeout(){},clearTimeout(){},clearInterval(){},setInterval:(callback,ms)=>{if(callback.name==='refresh')poll=callback;}});
-  for(const name of ['web/i18n.js','desktop/secret-fields.js','desktop/connections.js','desktop/pairing.js','web/account.js','desktop/watches.js','desktop/renderer.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',name),'utf8'),context);
+  for(const name of ['web/shared/i18n.js','desktop/shared/secret-fields.js','desktop/features/connections/connections.js','desktop/features/connections/pairing.js','web/features/accounts/account.js','desktop/features/notifications/watches.js','desktop/shell/renderer.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',name),'utf8'),context);
   await new Promise(setImmediate);
   return {nodes,value,context,api,calls,run:code=>vm.runInContext(code,context),poll:()=>poll(),advance:ms=>{now+=ms;},start:()=>nodes.get('start').onclick()};
 }
@@ -277,7 +277,7 @@ test('opening logs starts at the newest records without changing their contents'
 
 
 test('QR PNG decodes to the exact one-time fragment URL without exposing it in metadata',async()=>{
-  const {pairingImage}=require('../desktop/qr.cjs'),{PNG}=require('pngjs'),decode=require('jsqr');
+  const {pairingImage}=require('../desktop/features/connections/qr.cjs'),{PNG}=require('pngjs'),decode=require('jsqr');
   const url='https://bridge.example.com/#pair='+'x'.repeat(43);
   const result=await pairingImage({id:'test',url,expires:12345,state:'active'});
   assert.equal(result.url,undefined);
@@ -286,7 +286,7 @@ test('QR PNG decodes to the exact one-time fragment URL without exposing it in m
   assert.equal(result.id,'test');assert.equal(result.expires,12345);
 });
 
-const cloudflared=require('../desktop/cloudflared.cjs');
+const cloudflared=require('../desktop/features/connections/cloudflared.cjs');
 test('Linux CI artifact selectors match electron-builder architecture names',()=>{
   const fs=require('node:fs'),yaml=require('js-yaml'),{Arch,getArtifactArchName}=require('builder-util');
   const job=yaml.load(fs.readFileSync(path.join(__dirname,'../.github/workflows/desktop.yml'),'utf8')).jobs.linux;
@@ -557,7 +557,7 @@ test('hidden controller pauses snapshots and unchanged state does not rebuild ad
 });
 
 test('snapshot worker reuses a process and isolates data directory changes',async()=>{
- const {createSnapshotWorker}=require('../desktop/controller.cjs'),{EventEmitter}=require('node:events');
+ const {createSnapshotWorker}=require('../desktop/shared/controller.cjs'),{EventEmitter}=require('node:events');
  let spawned=0;const children=[];
  const launch=()=>{spawned++;const child=new EventEmitter();child.stdout=new EventEmitter();child.stdout.setEncoding=()=>{};child.stderr=new EventEmitter();child.stdin=new EventEmitter();child.kill=()=>{child.killed=true;};child.stdin.write=()=>setImmediate(()=>child.stdout.emit('data',JSON.stringify({ok:true,result:{value:spawned}})+'\n'));children.push(child);return child;};
  const worker=createSnapshotWorker({launch}),a={executable:'fixture',dataDir:'a'};
@@ -578,8 +578,8 @@ test('native window title ignores page changes and only updates when locale chan
   const context=vm.createContext({__dirname:path.resolve(__dirname,'../desktop'),process:{env:{},platform:'darwin'},require(name){
     if(name==='electron')return {app:{requestSingleInstanceLock:()=>true,whenReady:()=>({then(){}}),on(){},getPath:()=>'.tmp'},BrowserWindow:Window,ipcMain:{handle:(name,handler)=>handlers[name]=handler}};
     if(name==='node:fs')return {...fs,mkdirSync(){},writeFileSync(){}};
-    if(name==='./qr.cjs')return {};
-    if(name==='./gateway-language.cjs')return {publishLanguage(){}};
+    if(name==='./features/connections/qr.cjs')return {};
+    if(name==='./shared/gateway-language.cjs')return {publishLanguage(){}};
     return requireMain(name);
   }});
   vm.runInContext(fs.readFileSync(path.resolve(__dirname,'../desktop/main.cjs'),'utf8'),context);

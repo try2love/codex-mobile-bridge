@@ -1,8 +1,8 @@
 // Isolated test bridge. Production uses desktop/preload.cjs and main IPC checks.
 'use strict';
 const {contextBridge}=require('electron');
-const {runWorker}=require('../desktop/controller.cjs');
-const {pairingImage}=require('../desktop/qr.cjs');
+const {runWorker}=require('../desktop/shared/controller.cjs');
+const {pairingImage}=require('../desktop/features/connections/qr.cjs');
 const path=require('node:path');
 const worker=process.env.CMB_TEST_RUNTIME?{executable:process.env.CMB_TEST_RUNTIME,dataDir:process.env.CMB_DATA_DIR}:
   {executable:process.env.CMB_PYTHON||(process.platform==='win32'?'python':'python3'),prefix:['-B',path.resolve(__dirname,'../desktop.py')],dataDir:process.env.CMB_DATA_DIR};

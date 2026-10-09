@@ -7,12 +7,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from bridge.integrations.client_launch import inspect_client, inspect_clients, stop_client
+from bridge.clients.lifecycle import inspect_client, inspect_clients, stop_client
 
 
 class ClientInventoryTests(unittest.TestCase):
     def setUp(self):
-        uid = patch('bridge.desktop_app.os.getuid', return_value=1000, create=True)
+        uid = patch('bridge.clients.desktop_app.os.getuid', return_value=1000, create=True)
         uid.start(); self.addCleanup(uid.stop)
         self.temp = tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]/'.tmp')
         self.addCleanup(self.temp.cleanup)
@@ -40,7 +40,7 @@ class ClientInventoryTests(unittest.TestCase):
         return subprocess.CompletedProcess(args, 0, '\n'.join(f'{pid} {cmd}' for pid, _, cmd in self.records if pid in pids and cmd))
 
     def test_mac_single_inventory_matches_four_fresh_inspections(self):
-        with patch('bridge.desktop_app.sys.platform', 'darwin'), patch('bridge.desktop_app.subprocess.run', side_effect=self.ps) as run:
+        with patch('bridge.clients.desktop_app.sys.platform', 'darwin'), patch('bridge.platforms.macos.desktop.subprocess.run', side_effect=self.ps) as run:
             expected = {row['id']: inspect_client(row) for row in [self.descriptors[0], *self.descriptors]}
             self.assertEqual(run.call_count, 8)
             run.reset_mock(); result = inspect_clients(self.descriptors)
@@ -53,7 +53,7 @@ class ClientInventoryTests(unittest.TestCase):
 
     def test_invalid_descriptor_is_isolated_and_empty_batch_spawns_nothing(self):
         invalid = [None, {}, {**self.descriptors[1], 'executable': str(self.root/'missing')}]
-        with patch('bridge.desktop_app.sys.platform', 'darwin'), patch('bridge.desktop_app.subprocess.run', side_effect=self.ps) as run:
+        with patch('bridge.clients.desktop_app.sys.platform', 'darwin'), patch('bridge.platforms.macos.desktop.subprocess.run', side_effect=self.ps) as run:
             result = inspect_clients([invalid[0], self.descriptors[0], *invalid[1:], self.descriptors[2]])
             self.assertEqual(set(result), {'codex', 'deepseek'}); self.assertEqual(run.call_count, 2)
             run.reset_mock(); self.assertEqual(inspect_clients(invalid), {}); run.assert_not_called()
@@ -61,22 +61,22 @@ class ClientInventoryTests(unittest.TestCase):
     def test_missing_command_and_foreign_host_profile_keep_unknown_state(self):
         self.records = [(pid, exe, '' if pid == 11 else cmd.replace('/profiles/desktop ', '/profiles/desktop-other '))
                         for pid, exe, cmd in self.records]
-        with patch('bridge.desktop_app.sys.platform', 'darwin'), patch('bridge.desktop_app.subprocess.run', side_effect=self.ps):
+        with patch('bridge.clients.desktop_app.sys.platform', 'darwin'), patch('bridge.platforms.macos.desktop.subprocess.run', side_effect=self.ps):
             result = inspect_clients(self.descriptors)
         self.assertTrue(result['codex']['running']); self.assertTrue(result['codex']['unknown'])
         self.assertFalse(result['claude']['unknown']); self.assertEqual(result['deepseek']['runtimePids'], [])
         self.assertTrue(result['deepseek']['unknown'])
 
     def test_second_display_cycle_and_safety_inspection_are_fresh(self):
-        with patch('bridge.desktop_app.sys.platform', 'darwin'), patch('bridge.desktop_app.subprocess.run', side_effect=self.ps) as run:
+        with patch('bridge.clients.desktop_app.sys.platform', 'darwin'), patch('bridge.platforms.macos.desktop.subprocess.run', side_effect=self.ps) as run:
             first = inspect_clients(self.descriptors)
             self.records = [(99 if pid == 11 else pid, exe, cmd) for pid, exe, cmd in self.records]
             second = inspect_clients(self.descriptors)
             self.assertEqual(first['codex']['pids'], [11]); self.assertEqual(second['codex']['pids'], [99])
             self.assertEqual(run.call_count, 4)
-            with patch('bridge.integrations.client_launch.process_inventory', side_effect=AssertionError('Safety must not use display snapshots')):
+            with patch('bridge.clients.lifecycle.process_inventory', side_effect=AssertionError('Safety must not use display snapshots')):
                 self.assertEqual(inspect_client(self.descriptors[0])['pids'], [99])
-                with patch('bridge.desktop_app.DesktopApp.stop') as stop:
+                with patch('bridge.clients.desktop_app.DesktopApp.stop') as stop:
                     with self.assertRaisesRegex(ValueError, '进程已变化'):
                         stop_client(self.descriptors[0], state=first['codex'])
                     stop.assert_not_called()
@@ -85,9 +85,9 @@ class ClientInventoryTests(unittest.TestCase):
     def test_windows_one_cim_call_includes_commands_and_preserves_case_matching(self):
         import ntpath
         rows = [{'ProcessId': pid, 'ExecutablePath': exe.upper(), 'CommandLine': cmd} for pid, exe, cmd in self.records]
-        with patch('bridge.desktop_app.sys.platform', 'win32'), patch('bridge.desktop_app.os.path.normcase', side_effect=ntpath.normcase), \
+        with patch('bridge.clients.desktop_app.sys.platform', 'win32'), patch('bridge.clients.desktop_app.os.path.normcase', side_effect=ntpath.normcase), \
                 patch.object(subprocess, 'CREATE_NO_WINDOW', 0, create=True), \
-                patch('bridge.desktop_app.subprocess.run', return_value=Mock(stdout=json.dumps(rows))) as run:
+                patch('bridge.platforms.windows.desktop.subprocess.run', return_value=Mock(stdout=json.dumps(rows))) as run:
             result = inspect_clients(self.descriptors)
         run.assert_called_once(); command = run.call_args.args[0][-1]
         self.assertIn('SessionId -eq $s', command); self.assertIn('ProcessId,ExecutablePath,CommandLine', command)
@@ -96,8 +96,8 @@ class ClientInventoryTests(unittest.TestCase):
 
     def test_windows_singleton_json_and_absent_command_do_not_break_other_clients(self):
         row = {'ProcessId': 11, 'ExecutablePath': self.executables['codex'], 'CommandLine': None}
-        with patch('bridge.desktop_app.sys.platform', 'win32'), patch.object(subprocess, 'CREATE_NO_WINDOW', 0, create=True), \
-                patch('bridge.desktop_app.subprocess.run', return_value=Mock(stdout=json.dumps(row))):
+        with patch('bridge.clients.desktop_app.sys.platform', 'win32'), patch.object(subprocess, 'CREATE_NO_WINDOW', 0, create=True), \
+                patch('bridge.platforms.windows.desktop.subprocess.run', return_value=Mock(stdout=json.dumps(row))):
             result = inspect_clients(self.descriptors)
         self.assertTrue(result['codex']['unknown']); self.assertFalse(result['claude']['running'])
 
@@ -117,10 +117,10 @@ class ClientInventoryTests(unittest.TestCase):
         entries += [Entry(21, self.executables['codex'], 'other user', os.getuid()+1),
                     Entry(22, self.executables['claude'], PermissionError('unreadable'))]
         proc = Mock(); proc.iterdir.return_value = entries
-        with patch('bridge.desktop_app.sys.platform', 'linux'), \
-                patch('bridge.desktop_app.Path', side_effect=lambda value: proc if str(value) == '/proc' else Path(value)), \
-                patch('bridge.desktop_app.subprocess.run') as run:
-            with patch('bridge.integrations.client_launch._commands', side_effect=lambda app, pids: {pid: cmd for pid, _, cmd in self.records if pid in pids}):
+        with patch('bridge.clients.desktop_app.sys.platform', 'linux'), \
+                patch('bridge.platforms.linux.desktop.Path', side_effect=lambda value: proc if str(value) == '/proc' else Path(value)), \
+                patch('bridge.platforms.macos.desktop.subprocess.run') as run:
+            with patch('bridge.clients.lifecycle._commands', side_effect=lambda app, pids: {pid: cmd for pid, _, cmd in self.records if pid in pids}):
                 before = {row['id']: inspect_client(row) for row in [self.descriptors[0], *self.descriptors]}
             self.assertEqual(proc.iterdir.call_count, 4); proc.iterdir.reset_mock()
             result = inspect_clients(self.descriptors)
@@ -131,8 +131,8 @@ class ClientInventoryTests(unittest.TestCase):
         self.assertEqual(entries[5].reads, 0); self.assertEqual(entries[6].reads, 0)
 
     def test_process_collection_failure_is_not_reported_as_clients_stopped(self):
-        with patch('bridge.desktop_app.sys.platform', 'darwin'), \
-                patch('bridge.desktop_app.subprocess.run', side_effect=subprocess.CalledProcessError(2, 'ps')):
+        with patch('bridge.clients.desktop_app.sys.platform', 'darwin'), \
+                patch('bridge.platforms.macos.desktop.subprocess.run', side_effect=subprocess.CalledProcessError(2, 'ps')):
             with self.assertRaises(subprocess.CalledProcessError): inspect_clients(self.descriptors)
 
 

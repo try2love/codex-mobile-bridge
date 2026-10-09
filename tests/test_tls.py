@@ -9,9 +9,9 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.error import URLError
 
-from bridge.access import read_auth
-from bridge.notifications import publish
-from bridge import tls
+from bridge.features.network.access import read_auth
+from bridge.features.notifications.channels import publish
+import bridge.features.auth.tls as tls
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT/'tests/fixtures/tls'

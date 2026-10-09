@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
-from bridge.catalog import Catalog
+from bridge.clients.codex.catalog import Catalog
 
 
 class Handler(BaseHTTPRequestHandler):

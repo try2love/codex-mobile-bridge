@@ -4,8 +4,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
-from bridge.integrations.claude import Claude
-from bridge.integrations import claude_model
+from bridge.clients.claude.adapter import Claude
+import bridge.clients.claude.model as claude_model
 
 ROOT = Path(__file__).resolve().parents[1]
 

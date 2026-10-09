@@ -9,7 +9,7 @@ from pathlib import Path
 
 def build():
     root = Path(__file__).resolve().parents[1]
-    source = root/'bridge/integrations/native'
+    source = root/'bridge/platforms'
     target = root/'dist/client-helpers'
     target.mkdir(parents=True, exist_ok=True)
     if sys.platform == 'darwin':
@@ -19,7 +19,7 @@ def build():
         cache = root/'.tmp/claude-helper/module-cache'
         cache.mkdir(parents=True, exist_ok=True)
         subprocess.run([compiler, '-O', '-module-cache-path', str(cache),
-                        str(source/'claude-helper.swift'), '-o', str(target/'claude-bridge-helper')], check=True)
+                        str(source/'macos/claude-helper.swift'), '-o', str(target/'claude-bridge-helper')], check=True)
         subprocess.run(['/usr/bin/codesign', '--force', '--sign', '-', str(target/'claude-bridge-helper')], check=True)
         subprocess.run([str(target/'claude-bridge-helper'), '--self-check'], check=True)
     elif sys.platform == 'win32':
@@ -28,7 +28,7 @@ def build():
                         '/out:'+str(target/'claude-bridge-helper.exe'),
                         *['/reference:'+str(framework/'WPF'/name) for name in
                           ['UIAutomationClient.dll', 'UIAutomationTypes.dll', 'WindowsBase.dll']],
-                        str(source/'claude-helper.cs')], check=True)
+                        str(source/'windows/claude-helper.cs')], check=True)
         subprocess.run([str(target/'claude-bridge-helper.exe'), '--self-check'], check=True)
     return target
 

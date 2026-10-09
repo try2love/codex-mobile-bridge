@@ -6,9 +6,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from bridge.integrations.deepseek import DeepSeek, MARKER
-from bridge.integrations.errors import BridgeUnavailable
-from bridge.integrations.deepseek_setup import insertion, legacy_account_configured
+from bridge.clients.deepseek.adapter import DeepSeek, MARKER
+from bridge.clients.errors import BridgeUnavailable
+from bridge.clients.deepseek.setup import insertion, legacy_account_configured
 
 
 class DeepSeekMigrationTests(unittest.TestCase):
@@ -38,7 +38,7 @@ class DeepSeekMigrationTests(unittest.TestCase):
     def legacy(self):
         content = b'// known earlier bridge adapter fixture\n'
         (self.old.directory/'mobile-host.mjs').write_bytes(content)
-        self.hash_patch = patch('bridge.integrations.deepseek_setup.LEGACY_SOURCE', hashlib.sha256(content).hexdigest())
+        self.hash_patch = patch('bridge.clients.deepseek.setup.LEGACY_SOURCE', hashlib.sha256(content).hexdigest())
         self.hash_patch.start()
         self.addCleanup(self.hash_patch.stop)
 
@@ -122,7 +122,7 @@ class DeepSeekMigrationTests(unittest.TestCase):
         class Opener:
             def open(self, request, timeout):
                 return io.BytesIO(json.dumps(responses[json.loads(request.data)['action']]).encode())
-        with patch('bridge.integrations.deepseek.urllib.request.build_opener', return_value=Opener()):
+        with patch('bridge.clients.deepseek.adapter.urllib.request.build_opener', return_value=Opener()):
             status = self.new.call('status')
             self.assertTrue(status['configured'])
             self.assertTrue(status['updateRequired'])
@@ -142,7 +142,7 @@ class DeepSeekMigrationTests(unittest.TestCase):
         class Opener:
             def open(self, request, timeout):
                 return io.BytesIO(json.dumps(responses[json.loads(request.data)['action']]).encode())
-        with patch('bridge.integrations.deepseek.urllib.request.build_opener', return_value=Opener()):
+        with patch('bridge.clients.deepseek.adapter.urllib.request.build_opener', return_value=Opener()):
             self.assertTrue(self.new.call('status')['updateRequired'])
             detail = self.new.call('detail', 'native-one')
             self.assertEqual(detail['messages'][0]['text'], 'old history')
@@ -162,7 +162,7 @@ class DeepSeekMigrationTests(unittest.TestCase):
         self.assertFalse(legacy_account_configured(self.home))
 
     def test_manager_restores_only_a_verified_saved_connector_directory(self):
-        from bridge.integrations.manager import DesktopSessions
+        from bridge.clients.manager import DesktopSessions
         data = self.root/'preview-manager'
         settings = data/'desktop-sessions/settings.json'
         settings.parent.mkdir(parents=True)
@@ -196,7 +196,7 @@ class DeepSeekMigrationTests(unittest.TestCase):
             manager.close()
 
     def test_connected_recovered_scan_skips_all_launch_and_restart_operations(self):
-        from bridge.integrations.manager import DesktopSessions
+        from bridge.clients.manager import DesktopSessions
         self.normalize()
         data = self.root/'scan-manager'
         manager = DesktopSessions(data)
@@ -206,10 +206,10 @@ class DeepSeekMigrationTests(unittest.TestCase):
         manager.config['setup'] = {'deepseek': {'setupStatus': 'restart-required', 'restartConnected': True}}
         manager.deepseek_restore_error = '已有 Harness 接入无法验证，请重新扫描'
         try:
-            with patch('bridge.integrations.discovery.discover_clients', return_value=discovered), \
-                    patch('bridge.desktop.Desktop.preferences', return_value={}), \
+            with patch('bridge.clients.discovery.discover_clients', return_value=discovered), \
+                    patch('bridge.app.desktop.Desktop.preferences', return_value={}), \
                     patch.object(DeepSeek, 'call', return_value={'connected': True, 'configured': True, 'bridgeRevision': 3}), \
-                    patch('bridge.integrations.client_launch.launch_deepseek') as launch:
+                    patch('bridge.clients.lifecycle.launch_deepseek') as launch:
                 result = manager.scan()
             launch.assert_not_called()
             row = next(row for row in result['clients'] if row['id'] == 'deepseek')
@@ -255,7 +255,7 @@ class DeepSeekMigrationTests(unittest.TestCase):
         self.assertTrue(result['changed'])
         self.assertTrue(result['restartRequired'])
         self.assertEqual((self.old.directory/'mobile-host.mjs').read_bytes(),
-                         Path(__file__).resolve().parents[1].joinpath('bridge/integrations/deepseek-host.mjs').read_bytes())
+                         Path(__file__).resolve().parents[1].joinpath('bridge/clients/deepseek/host.mjs').read_bytes())
         self.assertEqual(before, {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in unchanged})
         self.assertEqual(self.new.receipts_path, ledger)
         self.assertFalse(self.new_path.exists())
@@ -272,17 +272,17 @@ class DeepSeekMigrationTests(unittest.TestCase):
         self.assertEqual(target.read_bytes(), before)
 
     def migration_manager(self):
-        from bridge.integrations.manager import DesktopSessions
+        from bridge.clients.manager import DesktopSessions
         manager = DesktopSessions(self.root/'upgrade-manager', gateway_running=True)
         self.addCleanup(manager.close)
         discovered = {provider: {'id': provider, 'installed': provider == 'deepseek',
                                 'dataDirectory': str(self.home), 'executable': '/fixture/Harness',
                                 'desktopProfileReady': True} for provider in ('codex', 'claude', 'deepseek')}
         for target, options in [
-                ('bridge.integrations.discovery.discover_clients', {'return_value': discovered}),
-                ('bridge.desktop.Desktop.preferences', {'return_value': {}}),
-                ('bridge.integrations.client_launch.inspect_client', {'return_value': {'running': True, 'pids': [11, 12], 'mainPids': [11], 'runtimePids': [12], 'unknown': False}}),
-                ('bridge.integrations.client_launch.stop_client', {'return_value': None})]:
+                ('bridge.clients.discovery.discover_clients', {'return_value': discovered}),
+                ('bridge.app.desktop.Desktop.preferences', {'return_value': {}}),
+                ('bridge.clients.lifecycle.inspect_client', {'return_value': {'running': True, 'pids': [11, 12], 'mainPids': [11], 'runtimePids': [12], 'unknown': False}}),
+                ('bridge.clients.lifecycle.stop_client', {'return_value': None})]:
             mocked = patch(target, **options); mocked.start(); self.addCleanup(mocked.stop)
         manager.config['discovered'] = discovered
         manager._deepseek_endpoint = Mock(return_value={'port': 32323, 'pid': 12})
@@ -293,7 +293,7 @@ class DeepSeekMigrationTests(unittest.TestCase):
         manager = self.migration_manager()
         before = (self.old.directory/'mobile-host.mjs').read_bytes()
         with patch.object(DeepSeek, 'call', return_value={'connected': True, 'configured': True}), \
-                patch('bridge.integrations.client_launch.launch_deepseek') as launch:
+                patch('bridge.clients.lifecycle.launch_deepseek') as launch:
             result = manager.scan()
             row = next(row for row in result['clients'] if row['id'] == 'deepseek')
             self.assertEqual(row['setupStatus'], 'restart-required')
@@ -310,13 +310,13 @@ class DeepSeekMigrationTests(unittest.TestCase):
         def call(adapter, action, *args):
             return dict(live) if action == 'status' else {'complete': True, 'bridgeRevision': 3, 'sessions': []}
         with patch.object(DeepSeek, 'call', autospec=True, side_effect=call), \
-                patch('bridge.integrations.client_launch.launch_deepseek') as launch:
+                patch('bridge.clients.lifecycle.launch_deepseek') as launch:
             manager.scan()
             manager.connect_deepseek(restart=True)
             launch.assert_called_once()
             self.assertNotIn('restart', launch.call_args.kwargs)
             self.assertEqual((self.old.directory/'mobile-host.mjs').read_bytes(),
-                             Path(__file__).resolve().parents[1].joinpath('bridge/integrations/deepseek-host.mjs').read_bytes())
+                             Path(__file__).resolve().parents[1].joinpath('bridge/clients/deepseek/host.mjs').read_bytes())
             row = next(row for row in manager.scan()['clients'] if row['id'] == 'deepseek')
             self.assertEqual(row['setupStatus'], 'restart-required')
             self.assertFalse(row['configured'])
@@ -332,7 +332,7 @@ class DeepSeekMigrationTests(unittest.TestCase):
         def call(adapter, action, *args):
             return {'connected': True, 'configured': True, 'updateRequired': True, 'bridgeRevision': 3} if action == 'status' else {'complete': True, 'bridgeRevision': 3, 'sessions': []}
         with patch.object(DeepSeek, 'call', autospec=True, side_effect=call), \
-                patch('bridge.integrations.client_launch.launch_deepseek', side_effect=OSError('fixture launch failed')):
+                patch('bridge.clients.lifecycle.launch_deepseek', side_effect=OSError('fixture launch failed')):
             manager.scan()
             with self.assertRaisesRegex(OSError, 'launch failed'):
                 manager.connect_deepseek(restart=True)
@@ -353,7 +353,7 @@ class DeepSeekMigrationTests(unittest.TestCase):
         before = source.read_bytes()
         for session in [{'status': 'active'}, {'status': 'idle', 'requests': [{'id': 'pending'}]}]:
             with patch.object(self.new, 'call', side_effect=lambda action: {'connected': True, 'bridgeRevision': 3} if action == 'status' else {'complete': True, 'bridgeRevision': 3, 'sessions': [session]}), \
-                    patch('bridge.integrations.client_launch.launch_deepseek') as launch:
+                    patch('bridge.clients.lifecycle.launch_deepseek') as launch:
                 with self.assertRaisesRegex(ValueError, '运行或等待确认'):
                     manager.connect_deepseek(restart=True)
                 launch.assert_not_called()
@@ -363,16 +363,16 @@ class DeepSeekMigrationTests(unittest.TestCase):
     def test_gateway_activation_updates_stopped_legacy_connector_and_loads_on_first_start(self):
         self.legacy()
         manager = self.migration_manager()
-        with patch('bridge.integrations.client_launch.inspect_client', return_value={'running': False, 'pids': [], 'mainPids': [], 'runtimePids': [], 'unknown': False}), \
+        with patch('bridge.clients.lifecycle.inspect_client', return_value={'running': False, 'pids': [], 'mainPids': [], 'runtimePids': [], 'unknown': False}), \
                 patch.object(DeepSeek, 'call', side_effect=BridgeUnavailable('stopped')), \
-                patch('bridge.integrations.client_launch.launch_deepseek', return_value={'running': True}) as launch:
+                patch('bridge.clients.lifecycle.launch_deepseek', return_value={'running': True}) as launch:
             manager.scan()
             launch.assert_not_called()
             manager.connect_deepseek()
             launch.assert_called_once()
             self.assertNotIn('restart', launch.call_args.kwargs)
             self.assertEqual((self.old.directory/'mobile-host.mjs').read_bytes(),
-                             Path(__file__).resolve().parents[1].joinpath('bridge/integrations/deepseek-host.mjs').read_bytes())
+                             Path(__file__).resolve().parents[1].joinpath('bridge/clients/deepseek/host.mjs').read_bytes())
             self.assertEqual(manager.config['setup']['deepseek']['requiredBridgeRevision'], 3)
 
 
@@ -410,13 +410,13 @@ class DeepSeekMigrationTests(unittest.TestCase):
     def test_loaded_current_connector_clears_stale_in_memory_upgrade_flag(self):
         self.legacy(); self.new.use_existing(self.old.directory)
         self.assertTrue(self.new.legacy_protocol)
-        current = Path(__file__).resolve().parents[1]/'bridge/integrations/deepseek-host.mjs'
+        current = Path(__file__).resolve().parents[1]/'bridge/clients/deepseek/host.mjs'
         (self.old.directory/'mobile-host.mjs').write_bytes(current.read_bytes())
         (self.old.directory/'endpoint.json').write_text('{"port":32123,"pid":4321}')
         class Opener:
             def open(self, request, timeout):
                 return io.BytesIO(b'{"connected":true,"configured":true,"bridgeRevision":3}')
-        with patch('bridge.integrations.deepseek.urllib.request.build_opener', return_value=Opener()):
+        with patch('bridge.clients.deepseek.adapter.urllib.request.build_opener', return_value=Opener()):
             self.assertFalse(self.new.call('status')['updateRequired'])
         self.assertFalse(self.new.legacy_protocol)
 

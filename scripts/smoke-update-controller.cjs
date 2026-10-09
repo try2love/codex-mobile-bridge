@@ -39,7 +39,7 @@ async function rewriteAsar(asarPath,mutate){
 }
 async function makeStubUpdater(asarPath){
   await rewriteAsar(asarPath,async source=>{
-    const file=path.join(source,'desktop/updater.cjs');
+    const file=path.join(source,'desktop/features/updates/updater.cjs');
     // Only release discovery/download is stubbed. installUpdate, helper spawn,
     // ready polling, app.exit, gateway ownership and swap remain production.
     await fs.writeFile(file,`'use strict';

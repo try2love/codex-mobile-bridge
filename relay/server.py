@@ -240,7 +240,7 @@ class Relay:
             mime = 'text/html' if name.endswith('.html') else 'text/javascript'
             return web.Response(body=(ROOT/'relay'/'web'/name).read_bytes(), content_type=mime)
         # Serve the same v2 web assets; execution and authentication stay on devices.
-        from bridge.httpd import STATIC, FONT_ROUTE
+        from bridge.api.assets import STATIC, FONT_ROUTE
         if path == '/':
             try:
                 self.phone_auth(request)

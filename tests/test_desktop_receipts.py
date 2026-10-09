@@ -8,7 +8,7 @@ import sqlite3
 from pathlib import Path
 from unittest.mock import Mock
 
-from bridge.integrations.manager import DesktopSessions
+from bridge.clients.manager import DesktopSessions
 
 ROOT = Path(__file__).resolve().parents[1]
 

@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
-from bridge.side_chat import SideChat, SideChats, SideChatError, BOUNDARY
+from bridge.features.sessions.side_chat import SideChat, SideChats, SideChatError, BOUNDARY
 import test_bridge as support
 
 
@@ -154,7 +154,7 @@ class SideChatTests(unittest.TestCase):
             self.addCleanup(manager.close)
             create = {'creationId': str(uuid.uuid4())}
             args = ({'cwd': '/project'}, {'model': 'fixture', 'modelProvider': 'custom'})
-            with patch('bridge.side_chat.check_runtime'):
+            with patch('bridge.features.sessions.side_chat.check_runtime'):
                 view = manager.operate(self.parent, 'create', create, *args)
             # A fresh browser/device has no connection identifier; it finds the same child.
             self.assertEqual(manager.operate(self.parent, 'read', {})['id'], view['id'])
@@ -176,7 +176,7 @@ class SideChatServiceTests(unittest.TestCase):
         bridge.side_chats.factory = lambda *args: SideChat(*args, runtime_factory=RuntimeFixture)
         self.fixture.state['cwd'] = str(self.root)
         before = copy.deepcopy(self.fixture.state)
-        with patch('bridge.side_chat.check_runtime'), patch.object(bridge, 'activate', side_effect=AssertionError('Parent must not activate')):
+        with patch('bridge.features.sessions.side_chat.check_runtime'), patch.object(bridge, 'activate', side_effect=AssertionError('Parent must not activate')):
             view = bridge.side_chat(support.THREAD, 'phone', 'create', {'creationId': str(uuid.uuid4())})
         self.assertTrue(view['connected'])
         self.assertEqual(bridge.side_chat(support.THREAD, 'browser', 'read', {})['id'], view['id'])

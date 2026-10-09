@@ -9,8 +9,8 @@ from unittest.mock import patch
 import test_modes as support
 from test_modes import GoalStub, THREAD
 import test_bridge as bridge_support
-from bridge.goal import GoalUnavailable
-from bridge.ipc import IPCError
+from bridge.features.sessions.goal import GoalUnavailable
+from bridge.clients.codex.ipc import IPCError
 
 
 class GoalControlTests(unittest.TestCase):

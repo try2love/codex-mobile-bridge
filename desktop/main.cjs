@@ -3,16 +3,16 @@ const {app,BrowserWindow,ipcMain,dialog,shell,clipboard,Tray,Menu,net}=require('
 const path=require('node:path');
 const fs=require('node:fs');
 const {pathToFileURL}=require('node:url');
-const {runWorker,workerFor,createSnapshotWorker,createManagementWorker}=require('./controller.cjs');
-const {pairingImage}=require('./qr.cjs');
-const {createTray}=require('./tray.cjs');
-const {normalize,translate}=require('./i18n.js');
-const {publishLanguage}=require('./gateway-language.cjs');
-const cloudflared=require('./cloudflared.cjs');
-const {Updater,allowedMirrorUrl}=require('./updater.cjs');
+const {runWorker,workerFor,createSnapshotWorker,createManagementWorker}=require('./shared/controller.cjs');
+const {pairingImage}=require('./features/connections/qr.cjs');
+const {createTray}=require('./shell/tray.cjs');
+const {normalize,translate}=require('./shared/i18n.js');
+const {publishLanguage}=require('./shared/gateway-language.cjs');
+const cloudflared=require('./features/connections/cloudflared.cjs');
+const {Updater,allowedMirrorUrl}=require('./features/updates/updater.cjs');
 const {spawn}=require('node:child_process');
 const {randomUUID}=require('node:crypto');
-const {interfaces}=require('./network.cjs');
+const {interfaces}=require('./features/connections/network.cjs');
 let language='zh-CN';
 const t=text=>translate(text,language);
 const root=path.resolve(__dirname,'..');
@@ -91,7 +91,7 @@ async function installUpdate(candidate){
   throw Error('无法启动应用更新进程。');
 }
 function setupUpdater(){
-  updater=new Updater({current:app.getVersion(),key:fs.readFileSync(path.join(__dirname,'update-public-key.pem')),
+  updater=new Updater({current:app.getVersion(),key:fs.readFileSync(path.join(__dirname,'features/updates/update-public-key.pem')),
     fetch:cloudflared.electronFetch(net,allowedMirrorUrl),directory:path.join(app.getPath('userData'),'updates'),
     supported:app.isPackaged&&['darwin','win32'].includes(process.platform),install:installUpdate});
   setTimeout(()=>updater.check(),5000).unref();

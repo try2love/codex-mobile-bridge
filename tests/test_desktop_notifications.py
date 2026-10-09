@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from bridge.notifications import Notifications, save_settings, write_json
+from bridge.features.notifications.channels import Notifications, save_settings, write_json
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -97,17 +97,17 @@ class DesktopNotificationTests(unittest.TestCase):
 
     def test_completion_survives_retry_and_gateway_reopen(self):
         save_settings(self.root, {'enabled': True, 'topic': 'fixture'})
-        with patch('bridge.notifications.publish'):
+        with patch('bridge.features.notifications.channels.publish'):
             self.scan()
         self.rows[1]['updatedAt'] = 2
         self.turns['deepseek'].append({'turnId': 'new', 'status': 'completed'})
-        with patch('bridge.notifications.publish', side_effect=OSError('offline')):
+        with patch('bridge.features.notifications.channels.publish', side_effect=OSError('offline')):
             self.scan()
         self.manager.close()
         self.manager = Notifications(self.bridge, self.root, desktop_sessions=self.desktop)
         for record in self.manager.ledger.values():
             record['next'] = 0
-        with patch('bridge.notifications.publish') as publish:
+        with patch('bridge.features.notifications.channels.publish') as publish:
             self.scan()
             self.assertEqual(publish.call_count, 1)
             self.assertEqual(publish.call_args.args[1], 'DSH 运行已完成')

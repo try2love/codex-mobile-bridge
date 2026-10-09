@@ -7,9 +7,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from bridge.address_notifications import AddressNotifications, ready_url, entry_urls
-from bridge.notifications import save_settings, settings, read_json
-from bridge.desktop import Desktop
+from bridge.features.notifications.addresses import AddressNotifications, ready_url, entry_urls
+from bridge.features.notifications.channels import save_settings, settings, read_json
+from bridge.app.desktop import Desktop
 
 ROOT = Path(__file__).resolve().parents[1]
 A = 'https://first-entry.trycloudflare.com'
@@ -38,7 +38,7 @@ class AddressNotificationTests(unittest.TestCase):
                 save_settings(self.directory, value)
 
     def test_first_ready_duplicate_restart_and_changed_url(self):
-        with patch('bridge.address_notifications.publish') as send:
+        with patch('bridge.features.notifications.addresses.publish') as send:
             self.url = ''
             self.manager.scan(); send.assert_not_called()
             self.url = A
@@ -60,28 +60,28 @@ class AddressNotificationTests(unittest.TestCase):
     def test_channels_retry_independently_and_persist_backoff(self):
         save_settings(self.directory, {'barkEnabled': True, 'barkKey': 'bark-secret',
                                       'pushplusEnabled': True, 'pushplusToken': 'push-secret'})
-        with patch('bridge.address_notifications.publish', side_effect=RuntimeError('secret')), \
-             patch('bridge.address_notifications.publish_bark') as bark, \
-             patch('bridge.address_notifications.publish_pushplus') as push, \
-             patch('bridge.address_notifications.time.time', return_value=100):
+        with patch('bridge.features.notifications.addresses.publish', side_effect=RuntimeError('secret')), \
+             patch('bridge.features.notifications.addresses.publish_bark') as bark, \
+             patch('bridge.features.notifications.addresses.publish_pushplus') as push, \
+             patch('bridge.features.notifications.addresses.time.time', return_value=100):
             self.manager.scan();bark.assert_called_once();push.assert_called_once()
         self.assertNotIn('secret', self.manager.path.read_text(encoding='utf-8'))
         self.manager = AddressNotifications(self.directory, lambda: [self.url] if self.url else [], 'instance-1')
-        with patch('bridge.address_notifications.publish') as ntfy, \
-             patch('bridge.address_notifications.publish_bark') as bark, \
-             patch('bridge.address_notifications.publish_pushplus') as push, \
-             patch('bridge.address_notifications.time.time', return_value=105):
+        with patch('bridge.features.notifications.addresses.publish') as ntfy, \
+             patch('bridge.features.notifications.addresses.publish_bark') as bark, \
+             patch('bridge.features.notifications.addresses.publish_pushplus') as push, \
+             patch('bridge.features.notifications.addresses.time.time', return_value=105):
             self.manager.scan();ntfy.assert_not_called()
-        with patch('bridge.address_notifications.publish') as ntfy, \
-             patch('bridge.address_notifications.publish_bark') as bark, \
-             patch('bridge.address_notifications.publish_pushplus') as push, \
-             patch('bridge.address_notifications.time.time', return_value=111):
+        with patch('bridge.features.notifications.addresses.publish') as ntfy, \
+             patch('bridge.features.notifications.addresses.publish_bark') as bark, \
+             patch('bridge.features.notifications.addresses.publish_pushplus') as push, \
+             patch('bridge.features.notifications.addresses.time.time', return_value=111):
             self.manager.scan();ntfy.assert_called_once();bark.assert_not_called();push.assert_not_called()
 
     def test_latest_address_replaces_retry_and_stop_suppresses_delivery(self):
-        with patch('bridge.address_notifications.publish', side_effect=RuntimeError()):self.manager.scan()
+        with patch('bridge.features.notifications.addresses.publish', side_effect=RuntimeError()):self.manager.scan()
         self.url = ''
-        with patch('bridge.address_notifications.publish') as send:
+        with patch('bridge.features.notifications.addresses.publish') as send:
             self.manager.scan();send.assert_not_called()
             self.url = B
             self.manager.scan();self.assertEqual(send.call_args.args[3], B)
@@ -89,9 +89,9 @@ class AddressNotificationTests(unittest.TestCase):
             self.manager.scan();self.assertEqual(send.call_count, 1)
 
     def test_turning_off_or_replacing_destination_cancels_old_retry(self):
-        with patch('bridge.address_notifications.publish', side_effect=RuntimeError()):self.manager.scan()
+        with patch('bridge.features.notifications.addresses.publish', side_effect=RuntimeError()):self.manager.scan()
         save_settings(self.directory, {'addressEnabled': False})
-        with patch('bridge.address_notifications.publish') as send:
+        with patch('bridge.features.notifications.addresses.publish') as send:
             self.manager.scan();send.assert_not_called()
             save_settings(self.directory, {'addressEnabled': True, 'topic': 'replacement'})
             self.manager.scan();send.assert_called_once()
@@ -101,8 +101,8 @@ class AddressNotificationTests(unittest.TestCase):
     def test_address_changes_during_send_no_old_link_to_next_channel(self):
         save_settings(self.directory, {'barkEnabled': True, 'barkKey': 'fixture'})
         def change(*args):self.url = B
-        with patch('bridge.address_notifications.publish', side_effect=change), \
-             patch('bridge.address_notifications.publish_bark') as bark:
+        with patch('bridge.features.notifications.addresses.publish', side_effect=change), \
+             patch('bridge.features.notifications.addresses.publish_bark') as bark:
             self.manager.scan();bark.assert_not_called()
             self.manager.scan();self.assertEqual(bark.call_args.args[3], B)
 
@@ -126,7 +126,7 @@ class AddressNotificationTests(unittest.TestCase):
     def test_manual_test_uses_current_entry_without_touching_delivery_ledger(self):
         desktop = Desktop(self.directory)
         with patch.object(desktop, 'snapshot', return_value={'notificationUrls': [A, 'http://192.168.1.3:8787']}), \
-             patch('bridge.address_notifications.publish') as send:
+             patch('bridge.features.notifications.addresses.publish') as send:
             desktop.test_notification({'channel': 'address'})
             self.assertEqual(send.call_args.args[3], A)
             self.assertIn('http://192.168.1.3:8787', send.call_args.args[2])
@@ -137,7 +137,7 @@ class AddressNotificationTests(unittest.TestCase):
     def test_ready_url_requires_live_tunnel_and_correct_gateway(self):
         tunnel = SimpleNamespace(url=A, ready=threading.Event(), closed=threading.Event(),
                                  broken=threading.Event(), finished=threading.Event())
-        with patch('bridge.address_notifications.http.client.HTTPConnection') as connection:
+        with patch('bridge.features.notifications.addresses.http.client.HTTPConnection') as connection:
             response=connection.return_value.getresponse.return_value
             response.status=200;response.read.return_value=b'{"instanceId":"ours"}'
             self.assertEqual(ready_url(tunnel, 8787, 'ours'), '')
@@ -164,7 +164,7 @@ class AddressNotificationTests(unittest.TestCase):
     def test_lan_and_fixed_addresses_resend_each_start_and_delayed_tunnel_updates(self):
         urls = ['https://server.example', 'http://192.168.1.3:8787']
         current = lambda: urls[:]
-        with patch('bridge.address_notifications.publish') as send:
+        with patch('bridge.features.notifications.addresses.publish') as send:
             manager = AddressNotifications(self.directory, current, 'first-run')
             manager.scan();manager.scan()
             self.assertEqual(send.call_count, 1)
@@ -181,13 +181,13 @@ class AddressNotificationTests(unittest.TestCase):
 
     def test_old_ledger_does_not_suppress_new_start(self):
         self.manager.path.write_text(json.dumps({'url': A, 'deliveries': {}}))
-        with patch('bridge.address_notifications.publish') as send:
+        with patch('bridge.features.notifications.addresses.publish') as send:
             manager = AddressNotifications(self.directory, lambda: [A], 'new-run')
             manager.scan();send.assert_called_once()
 
     def test_manual_lan_only_requires_running_gateway(self):
         desktop = Desktop(self.directory)
         with patch.object(desktop, 'snapshot', return_value={'notificationUrls': ['http://192.168.1.3:8787']}), \
-             patch('bridge.address_notifications.publish') as send:
+             patch('bridge.features.notifications.addresses.publish') as send:
             desktop.test_notification({'channel': 'address'})
             self.assertEqual(send.call_args.args[3], 'http://192.168.1.3:8787')

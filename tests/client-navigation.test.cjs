@@ -3,7 +3,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 function fixture(){
   const element=tag=>({tagName:tag,children:[],dataset:{},attributes:{},append(...nodes){this.children.push(...nodes);},replaceChildren(){this.children=[];},setAttribute(name,value){this.attributes[name]=String(value);}});
   let mobile=false;const document={documentElement:{classList:{contains:()=>mobile}},getElementById:()=>({hidden:false}),createElement:element},context=vm.createContext({document,localStorage:{setItem(){}},BridgeI18n:{t:text=>text},Event:class{},window:{}});
-  vm.runInContext(fs.readFileSync('web/client-navigation.js','utf8'),context);
+  vm.runInContext(fs.readFileSync('web/features/clients/client-navigation.js','utf8'),context);
   const C=vm.runInContext('ClientNavigation',context),nav=Object.create(C.prototype),painted=[];
   Object.assign(nav,{clients:[{id:'codex',enabled:true,configured:true},{id:'claude',enabled:true,configured:true},{id:'deepseek',enabled:true,configured:true}],provider:'claude',revision:0,pending:new Set(),notify(){},paint(){painted.push(this.clients.filter(c=>c.enabled).map(c=>c.id));},view:{provider:'claude',choose(id){this.provider=id;return Promise.resolve();}}});
   return {nav,painted,document,mobile:value=>mobile=value};

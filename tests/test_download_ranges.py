@@ -9,9 +9,9 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from bridge.remote import RemoteStore
-from bridge.service import Bridge
-from bridge.workspace import Workspace, MAX_TRANSFER, operate
+from bridge.clients.codex.remote import RemoteStore
+from bridge.app.service import Bridge
+from bridge.features.workspace.workspace import Workspace, MAX_TRANSFER, operate
 import test_bridge as support
 
 
@@ -41,7 +41,7 @@ class DownloadSnapshotTests(unittest.TestCase):
             if not modified:
                 modified = True
                 with self.path.open('ab') as writer: writer.write(b'x')
-        with patch('bridge.workspace.hashlib.sha256', return_value=SimpleNamespace(update=update, hexdigest=digest.hexdigest)):
+        with patch('bridge.features.workspace.workspace.hashlib.sha256', return_value=SimpleNamespace(update=update, hexdigest=digest.hexdigest)):
             with self.assertRaisesRegex(ValueError, '变化|限制'):
                 with Workspace(self.root).download('example.bin', 'bytes=0-9'): pass
 
@@ -54,7 +54,7 @@ class DownloadSnapshotTests(unittest.TestCase):
             self.assertIn('BatchMode=yes', command)
             self.assertNotIn('capture_output', kwargs)
             return original_run([sys.executable, '-'], **kwargs)
-        with patch('bridge.remote.subprocess.run', side_effect=run):
+        with patch('bridge.clients.codex.remote.subprocess.run', side_effect=run):
             with Bridge.workspace(bridge, support.THREAD, 'download-stream',
                     {'path': 'example.bin', 'range_header': 'bytes=20-39'}) as (meta, stream):
                 etag = meta['etag']

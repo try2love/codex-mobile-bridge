@@ -1,9 +1,9 @@
 import json
 import unittest
 
-from bridge.model import normalize_state
-from bridge.timeline import Timeline, PAGE_BYTES, DETAIL_CHARS
-from bridge.service import LiveSession
+from bridge.features.sessions.model import normalize_state
+from bridge.features.sessions.timeline import Timeline, PAGE_BYTES, DETAIL_CHARS
+from bridge.app.service import LiveSession
 
 
 def view(count=320, sequence=1):
@@ -29,7 +29,7 @@ class TimelineTests(unittest.TestCase):
         self.assertEqual(session.state['turns'][0]['params']['model'],'gemini-pro')
 
     def test_assistant_labels_follow_each_turn_not_latest_chat_settings(self):
-        from bridge.model import normalize_state
+        from bridge.features.sessions.model import normalize_state
         state={'latestModel':'newest-model','latestReasoningEffort':'ultra','turns':[
             {'turnId':'old','params':{'model':'gpt-6-astra','effort':'max'},'items':[{'id':'a','type':'agentMessage','text':'old reply'}]},
             {'turnId':'new','params':{'model':'gemini-fixture','effort':'high'},'items':[{'id':'b','type':'agentMessage','text':'new reply'}]},

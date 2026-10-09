@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from bridge.integrations.deepseek_accounts import DeepSeekAccounts, GRANT_KEY, API_REF, ORIGIN, _document, _request, _balance
+from bridge.clients.deepseek.accounts import DeepSeekAccounts, GRANT_KEY, API_REF, ORIGIN, _document, _request, _balance
 
 
 class DeepSeekAccountsTests(unittest.TestCase):
@@ -193,9 +193,9 @@ class DeepSeekAccountsTests(unittest.TestCase):
         summary = {'normal_wallets': [{'currency': 'CNY', 'balance': '10.10'}, {'currency': 'USD', 'balance': '3.00'}],
                    'bonus_wallets': [{'currency': 'CNY', 'balance': '0.20'}]}
         profile = {'email': 'owner@example.test', 'id': 'opaque-user', 'token': 'never-return-this'}
-        with patch('bridge.integrations.deepseek_accounts._request', side_effect=lambda path, token: summary if 'summary' in path else profile) as request, \
-                patch('bridge.integrations.deepseek_accounts.time.monotonic', return_value=100) as clock, \
-                patch('bridge.integrations.deepseek_accounts.time.time', return_value=1780000000.25):
+        with patch('bridge.clients.deepseek.accounts._request', side_effect=lambda path, token: summary if 'summary' in path else profile) as request, \
+                patch('bridge.clients.deepseek.accounts.time.monotonic', return_value=100) as clock, \
+                patch('bridge.clients.deepseek.accounts.time.time', return_value=1780000000.25):
             result = self.accounts.details(identifier)
             usage = result['accounts'][0]['usage']
             self.assertEqual(usage['status'], 'ready')
@@ -219,12 +219,12 @@ class DeepSeekAccountsTests(unittest.TestCase):
     def test_quota_failure_is_not_zero_balance_and_api_never_sends_key(self):
         self.write()
         official = self.identifier()
-        with patch('bridge.integrations.deepseek_accounts._request', side_effect=ValueError('Harness 余额查询失败，请稍后重试')):
+        with patch('bridge.clients.deepseek.accounts._request', side_effect=ValueError('Harness 余额查询失败，请稍后重试')):
             usage = self.accounts.details(official)['accounts'][0]['usage']
             self.assertEqual(usage['status'], 'error')
             self.assertNotIn('balance', usage)
         api = self.identifier('API', 'api')
-        with patch('bridge.integrations.deepseek_accounts._request') as request:
+        with patch('bridge.clients.deepseek.accounts._request') as request:
             result = self.accounts.details(api)
             row = next(item for item in result['accounts'] if item['id'] == api)
             self.assertEqual(row['usage']['status'], 'unsupported')
@@ -233,7 +233,7 @@ class DeepSeekAccountsTests(unittest.TestCase):
     def test_profile_failure_retains_valid_balance_and_invalid_amount_fails(self):
         self.write()
         identifier = self.identifier()
-        with patch('bridge.integrations.deepseek_accounts._request', side_effect=[{'normal_wallets': [], 'bonus_wallets': []}, ValueError('unavailable')]):
+        with patch('bridge.clients.deepseek.accounts._request', side_effect=[{'normal_wallets': [], 'bonus_wallets': []}, ValueError('unavailable')]):
             usage = self.accounts.details(identifier)['accounts'][0]['usage']
             self.assertEqual(usage['status'], 'ready')
         for bad in ('NaN', 'Infinity', '1e9999999'):
@@ -244,7 +244,7 @@ class DeepSeekAccountsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '不受支持'):
             _request('https://untrusted.example', 'private-token')
         error = urllib.error.HTTPError(ORIGIN+'/private-token', 401, 'private-token', {}, None)
-        with patch('bridge.integrations.deepseek_accounts.urllib.request.build_opener') as opener:
+        with patch('bridge.clients.deepseek.accounts.urllib.request.build_opener') as opener:
             opener.return_value.open.side_effect = error
             with self.assertRaisesRegex(ValueError, '登录已失效') as context:
                 _request('/api/v0/users/get_user_summary', 'private-token')
@@ -256,7 +256,7 @@ class DeepSeekAccountsTests(unittest.TestCase):
     def test_legacy_iso_cached_timestamp_is_exposed_as_epoch_without_refetch(self):
         self.write()
         summary = {'normal_wallets': [], 'bonus_wallets': []}
-        with patch('bridge.integrations.deepseek_accounts._request', side_effect=[summary, {}]) as request:
+        with patch('bridge.clients.deepseek.accounts._request', side_effect=[summary, {}]) as request:
             self.accounts.details('current-official')
             for timestamp in ('2026-10-09T00:00:00+00:00', '2026-10-09T00:00:00Z'):
                 self.accounts.cache['current-official'][1]['checkedAt'] = timestamp
@@ -268,9 +268,9 @@ class DeepSeekAccountsTests(unittest.TestCase):
         context, handler = object(), object()
         response = Mock()
         response.read.return_value = b'{"code":0,"data":{"biz_code":0,"biz_data":{}}}'
-        with patch('bridge.integrations.deepseek_accounts.client_context', return_value=context) as trust, \
-                patch('bridge.integrations.deepseek_accounts.urllib.request.HTTPSHandler', return_value=handler) as https, \
-                patch('bridge.integrations.deepseek_accounts.urllib.request.build_opener') as opener:
+        with patch('bridge.clients.deepseek.accounts.client_context', return_value=context) as trust, \
+                patch('bridge.clients.deepseek.accounts.urllib.request.HTTPSHandler', return_value=handler) as https, \
+                patch('bridge.clients.deepseek.accounts.urllib.request.build_opener') as opener:
             opener.return_value.open.return_value.__enter__.return_value = response
             self.assertEqual(_request('/api/v0/users/get_user_summary', 'fixture-token'), {})
             trust.assert_called_once_with()
@@ -286,7 +286,7 @@ class DeepSeekAccountsTests(unittest.TestCase):
         self.assertEqual(current['activeIds'], ['current-official', 'current-api'])
         self.assertTrue(all(row['saved'] is False for row in current['accounts']))
         summary = {'normal_wallets': [{'currency': 'CNY', 'balance': '4.00'}], 'bonus_wallets': []}
-        with patch('bridge.integrations.deepseek_accounts._request', side_effect=[summary, {'email': 'current@example.test'}]):
+        with patch('bridge.clients.deepseek.accounts._request', side_effect=[summary, {'email': 'current@example.test'}]):
             row = self.accounts.details('current-official')['accounts'][0]
             self.assertEqual(row['usage']['balance']['wallets'][0]['remaining'], '4.00')
             self.assertEqual(row['email'], 'current@example.test')
@@ -301,7 +301,7 @@ class DeepSeekAccountsTests(unittest.TestCase):
             if 'summary' in path:
                 return {'normal_wallets': [{'currency': 'CNY', 'balance': '4.00' if token == 'first-token' else '9.00'}], 'bonus_wallets': []}
             return {'email': 'first@example.test' if token == 'first-token' else 'second@example.test'}
-        with patch('bridge.integrations.deepseek_accounts._request', side_effect=query) as request:
+        with patch('bridge.clients.deepseek.accounts._request', side_effect=query) as request:
             row = self.accounts.details('current-official')['accounts'][0]
             self.assertEqual(row['email'], 'first@example.test')
             self.accounts.details('current-official')

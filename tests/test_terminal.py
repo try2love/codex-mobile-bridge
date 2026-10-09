@@ -10,7 +10,7 @@ import unittest
 import uuid
 from unittest.mock import patch
 
-from bridge.terminal import CommandJob, RemoteCommandJob, TerminalManager, MAX_OUTPUT
+from bridge.features.terminals.manager import CommandJob, RemoteCommandJob, TerminalManager, MAX_OUTPUT
 
 
 class TerminalTests(unittest.TestCase):
@@ -56,27 +56,27 @@ class TerminalTests(unittest.TestCase):
         for _ in range(4):self.manager.start('owner','thread',self.identifier(),self.root,command)
         with self.assertRaises(ValueError):self.manager.start('owner','thread',self.identifier(),self.root,'echo no')
     def test_timeout(self):
-        with patch('bridge.terminal.MAX_SECONDS',.05):
+        with patch('bridge.features.terminals.manager.MAX_SECONDS',.05):
             job=CommandJob(self.root,self.python_command('import time;time.sleep(90)'));self.assertTrue(job.done.wait(4));self.assertIn('上限',job.read()['message'])
     def test_remote_protocol_output_and_stop(self):
         original=subprocess.Popen
         def launch(args,**kwargs):
             self.assertEqual(args[:2],['ssh','-T']);self.assertIn('StrictHostKeyChecking=yes',args)
             return original([sys.executable,'-u','-c',shlex.split(args[-1])[-1]],**kwargs)
-        with patch('bridge.terminal.subprocess.Popen',side_effect=launch):
+        with patch('bridge.features.terminals.manager.subprocess.Popen',side_effect=launch):
             job=RemoteCommandJob('fixture',self.root,self.python_command("import time;print('remote',flush=True);time.sleep(90)"))
             deadline=time.monotonic()+5
             while not job.read()['output'] and time.monotonic()<deadline:time.sleep(.02)
             self.assertIn('remote',job.read()['output']);job.stop();self.assertTrue(job.done.wait(5))
     def test_remote_normal_exit_reaps_transport_cleanly(self):
         original=subprocess.Popen
-        with patch('bridge.terminal.subprocess.Popen', side_effect=lambda args,**kwargs:original([sys.executable,'-u','-c',shlex.split(args[-1])[-1]],**kwargs)):
+        with patch('bridge.features.terminals.manager.subprocess.Popen', side_effect=lambda args,**kwargs:original([sys.executable,'-u','-c',shlex.split(args[-1])[-1]],**kwargs)):
             job=RemoteCommandJob('fixture',self.root,self.python_command("import sys;sys.stdout.write('completed')"))
             self.assertTrue(job.done.wait(5));self.assertEqual(job.code,0)
             self.assertEqual(job.process.returncode,0);self.assertEqual(job.read()['output'],'completed')
 
     def test_remote_disconnect_cleans_command(self):
-        from bridge import terminal
+        import bridge.features.terminals.manager as terminal
         source=Path(terminal.__file__).read_text(encoding='utf-8')+"\nserve_remote("+repr(str(self.root))+", "+repr(self.python_command('import time;time.sleep(90)'))+")"
         process=subprocess.Popen([sys.executable,'-u','-c',source],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
         event=json.loads(process.stdout.readline());self.assertTrue(event['running']);process.stdin.close()

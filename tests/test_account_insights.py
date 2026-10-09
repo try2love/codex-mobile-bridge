@@ -5,9 +5,9 @@ import unittest
 from unittest.mock import patch
 
 import test_accounts
-from bridge.account import subscription_period, normalize_limits
-from bridge.account_monitor import events, DEFAULTS
-from bridge.notifications import save_settings
+from bridge.features.accounts.account import subscription_period, normalize_limits
+from bridge.features.accounts.monitor import events, DEFAULTS
+from bridge.features.notifications.channels import save_settings
 
 
 class InsightsTests(unittest.TestCase):
@@ -46,9 +46,9 @@ class InsightsTests(unittest.TestCase):
         save_settings(self.root,{'barkEnabled':True,'barkKey':'fixture'})
         monitor.configure({'lowQuota':True})
         event=('lowQuota','window:123','title','body')
-        with patch('bridge.account_monitor.publish_bark') as send:
+        with patch('bridge.features.accounts.monitor.publish_bark') as send:
             monitor.deliver('account1',event);monitor.deliver('account1',event)
-            from bridge.account_monitor import AccountMonitor
+            from bridge.features.accounts.monitor import AccountMonitor
             restored=AccountMonitor(self.manager);restored.deliver('account1',event)
             self.assertEqual(send.call_count,1)
             restored.deliver('account2',event);self.assertEqual(send.call_count,2)
@@ -63,7 +63,7 @@ class InsightsTests(unittest.TestCase):
         monitor=self.manager.monitor;monitor.configure({'resetExpiry':True})
         save_settings(self.root,{'barkEnabled':True,'barkKey':'fixture'})
         event=('resetExpiry','card','title','body')
-        with patch('bridge.account_monitor.publish_bark',side_effect=ValueError('private-key')) as send:
+        with patch('bridge.features.accounts.monitor.publish_bark',side_effect=ValueError('private-key')) as send:
             monitor.deliver('account',event);monitor.deliver('account',event)
             send.assert_called_once()
         self.assertNotIn('private-key',monitor.last_error)

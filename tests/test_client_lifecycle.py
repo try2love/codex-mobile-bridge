@@ -6,8 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from bridge.integrations.manager import DesktopSessions
-from bridge.integrations.errors import BridgeUnavailable
+from bridge.clients.manager import DesktopSessions
+from bridge.clients.errors import BridgeUnavailable
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -35,7 +35,7 @@ class ClientLifecycleTests(unittest.TestCase):
         self.bridge = SimpleNamespace(accounts=self.accounts, assert_desktop_idle=Mock())
         self.bridge.for_host = lambda _: self.bridge
         for name, value in [('Claude', self.claude), ('DeepSeek', self.dsh)]:
-            patcher = patch('bridge.integrations.manager.'+name, return_value=value)
+            patcher = patch('bridge.clients.manager.'+name, return_value=value)
             patcher.start(); self.addCleanup(patcher.stop)
         self.manager = DesktopSessions(self.root, self.bridge, gateway_running=True)
         self.addCleanup(self.manager.close)
@@ -57,7 +57,7 @@ class ClientLifecycleTests(unittest.TestCase):
         self.manager.clients(refresh=True)
 
     def patch(self, name, **kwargs):
-        patcher = patch('bridge.integrations.client_launch.'+name, create=True, **kwargs)
+        patcher = patch('bridge.clients.lifecycle.'+name, create=True, **kwargs)
         value = patcher.start(); self.addCleanup(patcher.stop); return value
 
     def start(self, descriptor, **kwargs):
@@ -390,7 +390,7 @@ class ClientLifecycleTests(unittest.TestCase):
 
 
     def test_codex_gateway_operation_rechecks_enabled_inside_account_gate(self):
-        from bridge.accounts import operation
+        from bridge.features.accounts.accounts import operation
         self.accounts.check_ready = Mock()
         submitted = Mock()
         @operation

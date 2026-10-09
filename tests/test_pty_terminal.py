@@ -11,8 +11,8 @@ import unittest
 import uuid
 from unittest.mock import patch
 
-from bridge.pty_terminal import TerminalSession, RemoteTerminalSession, default_shell, dimensions
-from bridge.terminal import TerminalManager
+from bridge.platforms.posix.terminal import TerminalSession, RemoteTerminalSession, default_shell, dimensions
+from bridge.features.terminals.manager import TerminalManager
 
 
 @unittest.skipIf(os.name == 'nt', 'POSIX PTY requires Unix')
@@ -42,7 +42,7 @@ class PtyTests(unittest.TestCase):
         import pwd
         from types import SimpleNamespace
         for actual, inherited in (('/bin/zsh', '/bin/bash'), ('/bin/bash', '/bin/zsh')):
-            with self.subTest(actual=actual), patch.object(pwd,'getpwuid',return_value=SimpleNamespace(pw_shell=actual)), patch.dict(os.environ,{'SHELL':inherited}), patch('bridge.pty_terminal.os.access',return_value=True):
+            with self.subTest(actual=actual), patch.object(pwd,'getpwuid',return_value=SimpleNamespace(pw_shell=actual)), patch.dict(os.environ,{'SHELL':inherited}), patch('bridge.platforms.posix.terminal.os.access',return_value=True):
                 self.assertEqual(default_shell(),actual)
     def test_real_tty_startup_cd_environment_and_interactive_read(self):
         shell = shutil.which('zsh') or shutil.which('bash')
@@ -53,7 +53,7 @@ class PtyTests(unittest.TestCase):
             launcher.write_text('#!/bin/sh\nexec '+shlex.quote(shell)+' --noprofile --rcfile '+shlex.quote(str(self.root/'.bashrc'))+' -i\n')
             launcher.chmod(0o700)
             shell = str(launcher)
-        with patch('bridge.pty_terminal.default_shell',return_value=shell): s=self.session()
+        with patch('bridge.platforms.posix.terminal.default_shell',return_value=shell): s=self.session()
         self.send(s,"printf 'STARTUP:%s\\n' \"$BRIDGE_STARTUP_TEST\"; test -t 0 && echo PTY_OK\r")
         self.wait_output(s,'STARTUP:loaded'); self.wait_output(s,'PTY_OK\r\n')
         (self.root/'nested').mkdir()
@@ -88,7 +88,7 @@ class PtyTests(unittest.TestCase):
         def launch(args,**kwargs):
             self.assertEqual(args[:2],['ssh','-T'])
             return original([sys.executable,'-u','-c',shlex.split(args[-1])[-1]],**kwargs)
-        with patch('bridge.pty_terminal.subprocess.Popen',side_effect=launch): s=RemoteTerminalSession('fixture',self.root)
+        with patch('bridge.platforms.posix.terminal.subprocess.Popen',side_effect=launch): s=RemoteTerminalSession('fixture',self.root)
         self.sessions.append(s)
         self.send(s,'export REMOTE_VALUE=kept\r')
         self.send(s,"printf 'REMOTE:%s\\n' \"$REMOTE_VALUE\"\r")

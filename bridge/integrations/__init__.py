@@ -1,1 +1,0 @@
-"""Local desktop session adapters."""

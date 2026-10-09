@@ -8,8 +8,8 @@ from unittest.mock import patch
 from types import SimpleNamespace
 
 import test_bridge as support
-from bridge.service import Bridge
-from bridge.remote import RemoteStore
+from bridge.app.service import Bridge
+from bridge.clients.codex.remote import RemoteStore
 
 
 class SubagentTests(unittest.TestCase):

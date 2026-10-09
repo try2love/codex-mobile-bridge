@@ -13,10 +13,10 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
-from bridge import network
-from bridge.desktop import Desktop
-from bridge.httpd import GatewayServer
-from bridge.lifecycle import request_stop
+import bridge.features.network.addresses as network
+from bridge.app.desktop import Desktop
+from bridge.api.httpd import GatewayServer
+from bridge.app.lifecycle import request_stop
 import run
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,7 +39,7 @@ class SelectionTests(unittest.TestCase):
             legacy.read.return_value = b'{"authenticated":false,"passwordless":false,"instanceId":"legacy","notifications":true}'
             unknown = MagicMock(status=401)
             unknown.read.return_value = b'{"error":"login"}'
-            with patch('bridge.desktop.http.client.HTTPConnection') as connect, patch('bridge.desktop.read_record', return_value={'pid': 42, 'instanceId': 'legacy'}):
+            with patch('bridge.app.desktop.http.client.HTTPConnection') as connect, patch('bridge.app.desktop.read_record', return_value={'pid': 42, 'instanceId': 'legacy'}):
                 connect.return_value.getresponse.side_effect = [unknown, legacy]
                 self.assertTrue(desktop.status()['running'])
                 self.assertEqual([call.args for call in connect.return_value.request.call_args_list], [('GET', '/api/health'), ('GET', '/api/auth')])
@@ -54,7 +54,7 @@ class SelectionTests(unittest.TestCase):
             self.assertEqual(saved['urls'], ['http://192.0.2.7:8787/'])
             self.assertEqual(desktop.config()['lanAddresses'], ['192.0.2.7'])
             self.assertFalse(desktop.config()['localAccess'])
-            with patch('bridge.desktop.socket.socket') as sock, patch('bridge.desktop.subprocess.Popen') as spawn:
+            with patch('bridge.app.desktop.socket.socket') as sock, patch('bridge.app.desktop.subprocess.Popen') as spawn:
                 sock.return_value.bind.side_effect = OSError('address unavailable')
                 with self.assertRaisesRegex(ValueError, '不会自动开放'):
                     desktop.start()

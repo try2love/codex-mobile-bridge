@@ -9,10 +9,10 @@ from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from bridge.account import Account
-from bridge.accounts import Accounts, ManagedRPC, operation, private_bytes, private_json
-from bridge.desktop_app import DesktopApp
-from bridge.service import Bridge
+from bridge.features.accounts.account import Account
+from bridge.features.accounts.accounts import Accounts, ManagedRPC, operation, private_bytes, private_json
+from bridge.clients.desktop_app import DesktopApp
+from bridge.app.service import Bridge
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -51,7 +51,7 @@ class AccountsTests(unittest.TestCase):
 
     def switch(self, row, **values):
         value={'id':row['id'],'requestId':str(uuid.uuid4()),'confirmed':True,'tasksConfirmed':True,**values}
-        with patch('bridge.accounts.DesktopApp',return_value=self.app):
+        with patch('bridge.features.accounts.accounts.DesktopApp',return_value=self.app):
             self.manager.switch(value)
         return value
 
@@ -63,7 +63,7 @@ class AccountsTests(unittest.TestCase):
     def test_chat_catalog_and_account_details_use_the_same_selected_upstream(self):
         row=self.api(name='Gemini access');self.manager.mark_active(row['id'])
         self.manager.info.entries={}
-        with patch('bridge.accounts.model_ids', return_value=['gemini-flash','gemini-pro']) as upstream:
+        with patch('bridge.features.accounts.accounts.model_ids', return_value=['gemini-flash','gemini-pro']) as upstream:
             details=self.manager.api_models(row, refresh=True)
             chat=self.manager.current_models()
         self.assertEqual(chat['models'],details)
@@ -74,12 +74,12 @@ class AccountsTests(unittest.TestCase):
     def test_changed_live_api_credentials_do_not_query_saved_account_models(self):
         row=self.api();self.manager.mark_active(row['id'])
         private_json(self.home/'auth.json',{'OPENAI_API_KEY':'changed-fixture-key'})
-        with patch('bridge.accounts.model_ids') as upstream:
+        with patch('bridge.features.accounts.accounts.model_ids') as upstream:
             self.assertIsNone(self.manager.current_models(refresh=True))
         upstream.assert_not_called()
 
     def test_account_switch_invalidates_split_model_catalog(self):
-        from bridge.catalog import Catalog
+        from bridge.clients.codex.catalog import Catalog
         reader = Catalog(self.home, executable=self.root/'runtime')
         self.bridge.catalog_reader = reader
         raw = {'models': [{'model':'gpt-6-astra'}], 'modelSource':'api'}
@@ -139,7 +139,7 @@ class AccountsTests(unittest.TestCase):
         self.assertNotIn('fixture failure',json.dumps(self.manager.public()))
 
     def test_switch_and_failed_switch_do_not_load_saved_chats_or_query_models(self):
-        from bridge.notifications import read_json
+        from bridge.features.notifications.channels import read_json
         for failure in (False, True):
             with self.subTest(failure=failure):
                 row=self.api(name='Target '+str(failure));self.manager.prepare=self.prepare
@@ -160,7 +160,7 @@ class AccountsTests(unittest.TestCase):
                     events.append('start')
                 self.app.start.side_effect=start
                 self.manager.wait_ready=Mock(side_effect=[ValueError('fixture failure'),None] if failure else None)
-                with patch.object(self.manager,'api_models',side_effect=AssertionError('switch must not request upstream models')), patch('bridge.thread_access.ThreadAccessRPC') as runtime:
+                with patch.object(self.manager,'api_models',side_effect=AssertionError('switch must not request upstream models')), patch('bridge.features.sessions.access.ThreadAccessRPC') as runtime:
                     self.switch(row);self.manager.thread.join(3)
                 self.assertEqual(self.manager.state['phase'],'restored' if failure else 'complete')
                 self.assertEqual(events,['stop','start','stop','start'] if failure else ['stop','start'])
@@ -187,7 +187,7 @@ class AccountsTests(unittest.TestCase):
         def restore(saved):
             self.assertEqual(saved,records);self.assertEqual(self.manager.snapshot_files(),self.original)
             events.append('restore')
-        with patch('bridge.accounts.DesktopApp',return_value=self.app), patch('bridge.thread_access.ThreadAccess') as migration:
+        with patch('bridge.features.accounts.accounts.DesktopApp',return_value=self.app), patch('bridge.features.sessions.access.ThreadAccess') as migration:
             migration.return_value.restore.side_effect=restore
             self.manager.recover({'confirmed':True});self.manager.thread.join(3)
         self.assertEqual(events,['restore','start']);self.assertEqual(self.manager.state['phase'],'restored')
@@ -206,7 +206,7 @@ class AccountsTests(unittest.TestCase):
             self.assertFalse(self.bridge.account.lock.acquire(blocking=False))
             original_restore(snapshot)
         self.manager.restore_files=restore
-        with patch('bridge.accounts.DesktopApp',return_value=self.app):
+        with patch('bridge.features.accounts.accounts.DesktopApp',return_value=self.app):
             self.manager.recover({'confirmed':True});self.manager.thread.join(3)
         self.assertEqual(self.manager.state['phase'],'restored')
         self.assertEqual(self.manager.snapshot_files(),self.original)
@@ -301,7 +301,7 @@ class AccountsTests(unittest.TestCase):
             'config/batchWrite':{'status':'ok'},
             'account/read':{'account':{'type':'chatgpt','email':row['email']}}
         }[method]
-        with patch('bridge.accounts.ManagedRPC') as runtime:
+        with patch('bridge.features.accounts.accounts.ManagedRPC') as runtime:
             runtime.return_value.__enter__.return_value=rpc
             prepared=self.manager.prepare(row,self.original)
         edits=next(call.args[1]['edits'] for call in rpc.request.call_args_list if call.args[0]=='config/batchWrite')
@@ -339,7 +339,7 @@ class DesktopAppTests(unittest.TestCase):
         app = DesktopApp.__new__(DesktopApp)
         app.executable = PurePosixPath('/Applications/Fixture Codex.app/Contents/MacOS/Fixture')
         app.home = PurePosixPath('/fixture/codex home')
-        with patch('bridge.desktop_app.sys.platform', 'darwin'), patch('bridge.desktop_app.subprocess.run') as run, patch('bridge.desktop_app.subprocess.Popen') as direct:
+        with patch('bridge.clients.desktop_app.sys.platform', 'darwin'), patch('bridge.platforms.macos.desktop.subprocess.run') as run, patch('bridge.platforms.macos.desktop.subprocess.Popen') as direct:
             app.start()
         args = run.call_args.args[0]
         self.assertEqual(args, ['/usr/bin/open', '-a', '/Applications/Fixture Codex.app', '--env', 'CODEX_HOME=/fixture/codex home'])
@@ -355,7 +355,7 @@ class DesktopAppTests(unittest.TestCase):
             app=DesktopApp(bundle,folder);app.validate(Path(folder)/'runtime')
             self.assertEqual(app.executable,path.resolve())
             app.validate(None)
-            with patch('bridge.desktop_app.DesktopApp.discover', return_value=str(path)):
+            with patch('bridge.clients.desktop_app.DesktopApp.discover', return_value=str(path)):
                 self.assertEqual(DesktopApp.scan(None,folder),str(path.resolve()))
 
     def test_macos_bundle_discovery_uses_plist_executable(self):
@@ -370,7 +370,7 @@ class DesktopAppTests(unittest.TestCase):
     def test_linux_runtime_is_never_discovered_as_gui(self):
         with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as folder:
             runtime=Path(folder)/'resources/codex';runtime.parent.mkdir();runtime.touch()
-            with patch('bridge.desktop_app.sys.platform','linux'):
+            with patch('bridge.clients.desktop_app.sys.platform','linux'):
                 self.assertEqual(DesktopApp.discover(runtime),'')
                 gui=Path(folder)/'chatgpt';gui.touch()
                 self.assertEqual(DesktopApp.discover(runtime),str(gui))
@@ -394,7 +394,7 @@ class EnrollmentTests(unittest.TestCase):
                 token='e30.'+base64.urlsafe_b64encode(json.dumps({'sub':'fixture-user','email':'fixture@example.test'}).encode()).decode().rstrip('=')+'.fixture'
                 private_json(self.home/'auth.json',{'tokens':{'account_id':'fixture-id','refresh_token':'never-display','id_token':token}})
                 return True
-        with patch('bridge.accounts.ManagedRPC',RPC):
+        with patch('bridge.features.accounts.accounts.ManagedRPC',RPC):
             manager.login({'name':'Official'})
             self.assertTrue(finished.wait(2))
         self.assertEqual(manager.desktop_status()['enrollment']['phase'],'complete')
@@ -415,7 +415,7 @@ class EnrollmentTests(unittest.TestCase):
                 raise AssertionError(method)
             def login_finished(self,cancel):
                 entered.set();cancel.wait(2);return False
-        with patch('bridge.accounts.ManagedRPC',RPC):
+        with patch('bridge.features.accounts.accounts.ManagedRPC',RPC):
             manager.login({'name':'Cancel'})
             self.assertTrue(entered.wait(2))
             folder=manager.directory(manager.enrollment['id'])

@@ -16,15 +16,15 @@ import threading
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from bridge.auth import password_record
-from bridge.httpd import GatewayServer
-from bridge.lifecycle import GatewayControl
-from bridge.service import Bridge
-from bridge.tunnel import QuickTunnel
-from bridge.ssh_tunnel import SSHTunnel
-from bridge.address_notifications import AddressNotifications, ready_url, gateway_ready, entry_urls
-from bridge.notifications import Notifications
-from bridge import network
+from bridge.features.auth.auth import password_record
+from bridge.api.httpd import GatewayServer
+from bridge.app.lifecycle import GatewayControl
+from bridge.app.service import Bridge
+from bridge.features.network.tunnel import QuickTunnel
+from bridge.features.network.ssh_tunnel import SSHTunnel
+from bridge.features.notifications.addresses import AddressNotifications, ready_url, gateway_ready, entry_urls
+from bridge.features.notifications.channels import Notifications
+import bridge.features.network.addresses as network
 
 ROOT = Path(__file__).resolve().parent
 
@@ -97,7 +97,7 @@ def main(connections=None, connection_secrets=None):
     if not 1 <= args.port <= 65535:
         parser.error("端口必须为 1–65535")
     if args.ssh_target:
-        from bridge.access import validate
+        from bridge.features.network.access import validate
         validate({'sshTarget': args.ssh_target, 'sshRemotePort': args.ssh_remote_port})
     os.umask(0o077)
     args.config.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -123,7 +123,7 @@ def main(connections=None, connection_secrets=None):
         parser.error("auth.mode 只能为 password 或 none")
     if args.no_auth:
         config["auth"]["mode"] = "none"
-    from bridge.access import validate_connections, public_urls, public_url
+    from bridge.features.network.access import validate_connections, public_urls, public_url
     preferences = {'connections': config.get('connections', []) if connections is None else connections,
                    'lan': args.lan, 'port': args.port, 'lanAddresses': network.selected_addresses(config.get('lanAddresses'))}
     entries = validate_connections(preferences)
@@ -165,7 +165,7 @@ def main(connections=None, connection_secrets=None):
     def notification_urls():
         if not gateway_ready(args.port, server.instance_id):
             return []
-        from bridge.notifications import read_json
+        from bridge.features.notifications.channels import read_json
         external = {}
         for entry in entries:
             status = read_json(args.config.parent/('ssh-status-'+entry['id']+'.json'), {})
@@ -197,18 +197,18 @@ def main(connections=None, connection_secrets=None):
         if args.ssh_target:
             forwards.append({'sshTarget': args.ssh_target, 'sshRemotePort': args.ssh_remote_port, 'id': 'cli'})
         for entry in forwards:
-            from bridge.server_connection import managed
+            from bridge.features.network.server_connection import managed
             if not managed(entry, args.config.parent):
                 ssh_tunnel = SSHTunnel(entry['sshTarget'], entry['sshRemotePort'], args.port, args.config.parent, entry['id'])
             else:
-                from bridge.server_connection import ManagedForward
+                from bridge.features.network.server_connection import ManagedForward
                 ssh_tunnel = ManagedForward(entry, args.port, args.config.parent, connection_secrets.get(entry['id']))
             ssh_tunnels.append(ssh_tunnel)
             ssh_tunnel.start()
         for entry in entries:
             if entry['enabled'] and entry['accessMode'] == 'cloudflare':
-                from bridge.named_tunnel import NamedTunnel
-                from bridge.server_connection import credentials
+                from bridge.features.network.named_tunnel import NamedTunnel
+                from bridge.features.network.server_connection import credentials
                 secret = credentials(entry, args.config.parent, connection_secrets.get(entry['id']))
                 named = NamedTunnel(args.cloudflared, entry, args.config.parent, secret.get('tunnelToken', ''))
                 ssh_tunnels.append(named)
@@ -240,7 +240,7 @@ def main(connections=None, connection_secrets=None):
                     print(str(exc), flush=True)
             tunnel_thread = threading.Thread(target=connect_tunnel, daemon=True)
             tunnel_thread.start()
-        from bridge.shared_relay import start as start_shared_relay
+        from bridge.features.network.shared_relay import start as start_shared_relay
         shared_relay = start_shared_relay(args.config.parent, server)
         notifications.start()
         address_notifications.start()

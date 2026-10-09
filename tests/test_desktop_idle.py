@@ -8,9 +8,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from bridge.ipc import IPCError
-from bridge.service import Bridge
-from bridge.store import SessionStore, StoreUnavailable
+from bridge.clients.codex.ipc import IPCError
+from bridge.app.service import Bridge
+from bridge.features.sessions.store import SessionStore, StoreUnavailable
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -50,7 +50,7 @@ class DesktopIdle(unittest.TestCase):
                                           'change': {'type': 'snapshot', 'revision': 1, 'conversationState': copy.deepcopy(state)}}}))
                 parent.after_follow(sid, self)
             def close(self): self.closed = True
-        self.factory = patch('bridge.service.DesktopIPC', Follower)
+        self.factory = patch('bridge.app.service.DesktopIPC', Follower)
         self.factory.start(); self.addCleanup(self.factory.stop)
 
     def test_unfollowed_desktop_busy_thread_prevents_shutdown(self):

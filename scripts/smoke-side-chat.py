@@ -15,9 +15,9 @@ import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from bridge.uploads import Uploads
-from bridge.catalog import Catalog
-from bridge.side_chat import SideChat, SideRuntime, check_runtime
+from bridge.features.workspace.uploads import Uploads
+from bridge.clients.codex.catalog import Catalog
+from bridge.features.sessions.side_chat import SideChat, SideRuntime, check_runtime
 
 ROOT = Path(__file__).resolve().parents[1]
 captured = []

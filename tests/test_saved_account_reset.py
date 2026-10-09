@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import test_accounts
 from test_account import FakeRPC
-from bridge.accounts import token_owner
+from bridge.features.accounts.accounts import token_owner
 
 class SavedResetTests(unittest.TestCase):
     setUp = test_accounts.AccountsTests.setUp
@@ -25,7 +25,7 @@ class SavedResetTests(unittest.TestCase):
     def test_saved_reset_never_switches_or_changes_active_credentials(self):
         identifier,folder=self.setup_saved();before={n:(self.home/n).read_bytes() for n in ['auth.json','config.toml']}
         rpc=FakeRPC();native=FakeRPC()
-        with patch('bridge.accounts.ManagedRPC',return_value=native),patch('bridge.account.Account.rpc',return_value=rpc):
+        with patch('bridge.features.accounts.accounts.ManagedRPC',return_value=native),patch('bridge.features.accounts.account.Account.rpc',return_value=rpc):
             first=self.manager.control({'action':'account','id':identifier,'operation':'read'})
             attempt={'action':'account','operation':'consume','id':identifier,'accountKey':first['accountKey'],'creditId':'card-1','requestId':str(uuid.uuid4()),'confirmed':True}
             result=self.manager.control(attempt)
@@ -38,7 +38,7 @@ class SavedResetTests(unittest.TestCase):
 
     def test_identity_expiry_and_permission_are_checked_for_saved_account(self):
         identifier,folder=self.setup_saved();rpc=FakeRPC();native=FakeRPC()
-        with patch('bridge.accounts.ManagedRPC',return_value=native),patch('bridge.account.Account.rpc',return_value=rpc):
+        with patch('bridge.features.accounts.accounts.ManagedRPC',return_value=native),patch('bridge.features.accounts.account.Account.rpc',return_value=rpc):
             first=self.manager.account({'id':identifier})
             attempt={'operation':'consume','id':identifier,'accountKey':first['accountKey'],'creditId':'card-1','requestId':str(uuid.uuid4()),'confirmed':True}
             rpc.limits['rateLimitResetCredits']['credits'][0]['expiresAt']=1
@@ -51,7 +51,7 @@ class SavedResetTests(unittest.TestCase):
         identifier,folder=self.setup_saved();rpc=FakeRPC();native=FakeRPC()
         native.config['desktop']['agent-usage-reset-enabled']=False
         rpc.config['desktop']['agent-usage-reset-enabled']=False
-        with patch('bridge.accounts.ManagedRPC',return_value=native),patch('bridge.account.Account.rpc',return_value=rpc):
+        with patch('bridge.features.accounts.accounts.ManagedRPC',return_value=native),patch('bridge.features.accounts.account.Account.rpc',return_value=rpc):
             first=self.manager.account({'id':identifier})
             self.assertTrue(first['canReset'])
             self.assertNotIn('agent-usage-reset-enabled', (folder/'config.toml').read_text())

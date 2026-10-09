@@ -7,9 +7,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from bridge.notifications import Notifications, save_settings
-from bridge.service import LiveSession
-from bridge.store import SessionStore
+from bridge.features.notifications.channels import Notifications, save_settings
+from bridge.app.service import LiveSession
+from bridge.features.sessions.store import SessionStore
 import test_bridge as support
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -53,7 +53,7 @@ class ActiveNotificationsTests(unittest.TestCase):
         self.manager.discovery_at = 0
 
     def test_idle_retires_and_new_run_rejoins_then_completes_once(self):
-        with patch('bridge.notifications.publish') as send:
+        with patch('bridge.features.notifications.channels.publish') as send:
             self.manager.scan()
             self.assertEqual(self.source.releases, 1)
             for _ in range(20):self.manager.scan()
@@ -72,7 +72,7 @@ class ActiveNotificationsTests(unittest.TestCase):
         self.session.state['turns'][-1]['status'] = 'inProgress'
         self.manager.scan()
         self.session.state['threadRuntimeStatus']['type'] = 'idle'
-        with patch('bridge.notifications.publish') as send:
+        with patch('bridge.features.notifications.channels.publish') as send:
             self.manager.scan()
             self.assertEqual(self.source.releases, 0)
             self.session.state['turns'][-1]['status'] = 'completed'
@@ -83,7 +83,7 @@ class ActiveNotificationsTests(unittest.TestCase):
     def test_pending_approval_stays_attached_when_runtime_is_idle(self):
         self.session.state['threadRuntimeStatus'] = {'type': 'idle'}
         self.session.state['requests'] = [{'id': 'approval', 'method': 'item/commandExecution/requestApproval', 'params': {}}]
-        with patch('bridge.notifications.publish') as send:
+        with patch('bridge.features.notifications.channels.publish') as send:
             self.manager.scan();send.assert_called_once()
             self.assertEqual(self.source.releases, 0)
             self.session.state['requests'] = []
@@ -93,24 +93,24 @@ class ActiveNotificationsTests(unittest.TestCase):
         self.session.state['turns'][-1]['status'] = 'inProgress'
         self.manager.scan()
         self.session.state['turns'][-1]['status'] = 'completed'
-        with patch('bridge.notifications.publish', side_effect=OSError()):self.manager.scan()
+        with patch('bridge.features.notifications.channels.publish', side_effect=OSError()):self.manager.scan()
         calls = self.source.calls
         self.assertEqual(self.source.releases, 1)
         for value in self.manager.ledger.values():value['next'] = 0
-        with patch('bridge.notifications.publish') as send:
+        with patch('bridge.features.notifications.channels.publish') as send:
             self.manager.scan();send.assert_called_once()
         self.assertEqual(self.source.calls, calls)
         # A failed completion is retained independently of subscriptions.
         for value in self.manager.ledger.values():value.update(delivered=False, next=0)
-        from bridge.notifications import write_json
+        from bridge.features.notifications.channels import write_json
         write_json(self.directory/'notification-delivery.json', self.manager.ledger)
         restarted = Notifications(self.source, self.directory)
-        with patch('bridge.notifications.publish') as send:
+        with patch('bridge.features.notifications.channels.publish') as send:
             restarted.scan();send.assert_called_once()
         self.assertEqual(self.source.calls, calls)
 
     def test_live_event_rejoins_without_waiting_for_metadata_discovery(self):
-        with patch('bridge.notifications.publish') as send:
+        with patch('bridge.features.notifications.channels.publish') as send:
             self.manager.scan()
             self.session.state['turns'].append({'turnId': 'event', 'status': 'inProgress'})
             self.source.notification_updates = lambda: [{'host': 'local', 'id': THREAD}]
@@ -133,10 +133,10 @@ class ActiveNotificationsTests(unittest.TestCase):
         self.session.state['turns'][-1]['status'] = 'inProgress'
         self.manager.scan()
         self.session.state['turns'][-1]['status'] = 'completed'
-        with patch('bridge.notifications.publish', side_effect=OSError()):self.manager.scan()
+        with patch('bridge.features.notifications.channels.publish', side_effect=OSError()):self.manager.scan()
         self.manager.defaults({'requests': True, 'completion': False})
         for value in self.manager.ledger.values():value['next'] = 0
-        with patch('bridge.notifications.publish') as send:
+        with patch('bridge.features.notifications.channels.publish') as send:
             self.manager.scan();send.assert_not_called()
 
 

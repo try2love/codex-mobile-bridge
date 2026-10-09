@@ -1,6 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const {webcrypto,createHmac}=require('node:crypto');
-const source=fs.readFileSync('bridge/integrations/claude-connector.js','utf8');
+const source=fs.readFileSync('bridge/clients/claude/connector.js','utf8');
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function until(predicate){for(let i=0;i<50&&!predicate();i++)await sleep(5);assert.ok(predicate(),'operation must complete without advancing another idle polling timer');}
 

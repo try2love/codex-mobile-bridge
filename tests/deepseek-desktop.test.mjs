@@ -1,8 +1,8 @@
-// Adapted from coding-mobile (MIT); see bridge/integrations/LICENSE.coding-mobile.
+// Adapted from coding-mobile (MIT); see bridge/clients/LICENSE.coding-mobile.
 import assert from 'node:assert/strict';
 import {mkdir,mkdtemp,writeFile,readFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
-import {apply} from '../bridge/integrations/deepseek-host.mjs';
+import {apply} from '../bridge/clients/deepseek/host.mjs';
 
 await mkdir('.tmp',{recursive:true});
 const folder=await mkdtemp(join('.tmp','mobile-harness-test-')),endpoint=join(folder,'endpoint.json'),configPath=join(folder,'config.json');
