@@ -228,6 +228,12 @@ test('reads started before and during a write never replace its completion refre
  pending[2]({session:{id:'a',title:'After',status:'idle'},messages:[{id:'new',role:'assistant',text:'after write'}]});await new Promise(setImmediate);assert.match(ui.view.messages.textContent,/after write/);assert.equal(ui.view.send.disabled,false);
 });
 
+test('an old account write cannot invalidate the new account list refresh',async()=>{
+ const ui=await opened();let accept,finishList;ui.setHandler((url,body)=>body?new Promise(resolve=>accept=resolve):Promise.resolve({sessions:[]}));const writing=ui.view.mutate('settings',{model:'new'});
+ ui.setHandler(()=>new Promise(resolve=>finishList=resolve));const changing=ui.view.accountChanged('claude',{activeId:'old'},{activeId:'new'});accept({status:'accepted'});await writing;
+ finishList({sessions:[{id:'b',title:'New account list',backend:'code'}]});await changing;assert.match(ui.view.rowsRoot.textContent,/New account list/);assert.equal(ui.view.listStatus.textContent,'已连接桌面');
+});
+
 test('provider return paints cached list and selected history before either network response',async()=>{
  const ui=fixture();ui.setHandler(async url=>url.includes('/detail')?{session:{id:'a',title:'Cached chat',status:'idle'},capabilities:{attachments:true,skills:true},messages:[{id:'m',role:'assistant',text:'cached answer'}]}:{sessions:[{id:'a',title:'Cached chat',backend:'code'}]});await ui.view.choose('claude');await ui.view.open('a');ui.view.input.value='unfinished';ui.view.input.oninput();ui.view.selectedSkills().set('review',{id:'review',name:'Review'});ui.view.attachments.add([{name:'draft.png',type:'image/png',size:16}]);await new Promise(setImmediate);await ui.view.choose('deepseek');
  const pending=[];ui.setHandler(url=>new Promise(resolve=>pending.push({url,resolve})));const returning=ui.view.choose('claude');assert.match(ui.view.rowsRoot.textContent,/Cached chat/);assert.equal(ui.view.sid,'a');assert.match(ui.view.messages.textContent,/cached answer/);assert.equal(ui.view.input.value,'unfinished');assert.match(ui.view.skillPills.textContent,/Review/);assert.equal(ui.view.attachments.rows.length,1);assert.equal(ui.view.attachments.rows[0].status,'ready');assert.equal(ui.view.send.disabled,true);
