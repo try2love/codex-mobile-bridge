@@ -561,7 +561,8 @@ class ClaudeKeyboard {
         readonly object gate=new object();bool cancelled;
         public void Check(){lock(gate){if(cancelled)throw new OperationCanceledException("已取消 Claude 后台连接");}}
         public bool Cancel(){lock(gate){cancelled=true;return Started;}}
-        public void Dispatch(int pid){lock(gate){if(cancelled||(cancelFile!=null&&File.Exists(cancelFile)))throw new OperationCanceledException("已取消 Claude 后台连接");Started=true;backgroundSubmission="uncertain";Stage("{\"connectPhase\":\"dispatching\",\"pid\":"+pid+"}");}}
+        public void ClaimDispatch(Action submitting){lock(gate){if(cancelled||Started||(cancelFile!=null&&File.Exists(cancelFile)))throw new OperationCanceledException("已取消 Claude 后台连接");Started=true;submitting();}}
+        public void Dispatch(int pid){ClaimDispatch(delegate{backgroundSubmission="uncertain";Stage("{\"connectPhase\":\"dispatching\",\"pid\":"+pid+"}");});}
         public void Start(Process process,string text){var thread=new Thread(delegate(){try{ConnectBackground(process,text);}catch(Exception e){Error=e;}finally{Finished=true;}});thread.IsBackground=true;thread.SetApartmentState(ApartmentState.MTA);thread.Start();}
     }
     static void RunBackgroundConnection(Process process,string text) {
@@ -927,6 +928,44 @@ class ClaudeKeyboard {
            ObserveQuit(()=>false,()=>true,()=>{},3)!="pending"||
            ObserveQuit(()=>false,()=>false,()=>{},3)!="submitted")throw new Exception("Claude 退出结果自检失败");
     }
+    static void CheckBackgroundConnection() {
+        foreach(string title in new[]{"DevTools - app://localhost","Developer Tools - app://localhost/new?example=1","开发者工具 - app://localhost/"})
+            if(!AppDevToolsTitle(title))throw new Exception("Claude 后台来源允许列表自检失败");
+        foreach(string title in new[]{"DevTools - app://localhost.evil","DevTools - app://user@localhost","DevTools - app://localhost:80","DevTools - https://localhost","Developer Tools - file:///C:/Claude/.vite/renderer/main_window/index.html","Claude"})
+            if(AppDevToolsTitle(title))throw new Exception("Claude 后台来源拒绝列表自检失败");
+        var content=new AppWindow {Handle=new IntPtr(31),Pid=7,Visible=true,Title="Developer Tools - app://localhost/new"};
+        var shell=new AppWindow {Handle=new IntPtr(32),Pid=7,Visible=true,Title="Developer Tools - file:///C:/Claude/.vite/renderer/main_window/index.html"};
+        var foreign=new AppWindow {Handle=new IntPtr(33),Pid=8,Visible=true,Title=content.Title};
+        if(SelectBackgroundDevTools(new[]{content,shell,foreign},7).Handle!=content.Handle||!ShellDevToolsTitle(shell.Title))throw new Exception("Claude 后台内容与外壳隔离自检失败");
+        var duplicate=new AppWindow {Handle=new IntPtr(34),Pid=7,Visible=true,Title=content.Title};
+        if(SelectBackgroundDevTools(new[]{content,duplicate},7).Handle!=IntPtr.Zero)throw new Exception("Claude 后台来源歧义自检失败");
+        content.Visible=false;if(SelectBackgroundDevTools(new[]{content,shell},7).Count!=0)throw new Exception("Claude 后台隐藏窗口拒绝自检失败");
+        bool rejected=false;try{VerifiedDevToolsTitle(content.Title,shell.Title);}catch(Exception){rejected=true;}
+        if(!rejected||VerifiedDevToolsTitle("Developer Tools",content.Title)!=content.Title)throw new Exception("Claude 后台来源交叉核验自检失败");
+        const string text="/* codex bridge connector */void 0;";
+        foreach(string mode in new[]{"ready","blank-first","partial","draft","interrupted","submit-error","cancelled","always-blank"}) {
+            int writes=0,submits=0,resets=0,retries=0;bool failed=false;
+            Func<string> read=()=>mode=="draft"?"user draft":mode=="partial"&&writes>0?"partial":mode=="interrupted"&&retries>=2?"new user draft":"";
+            try {SubmitBackgroundVerifiedConsole(text,read,value=>writes++,()=>mode=="ready"||mode=="submit-error"||mode=="blank-first"&&writes==2?text:mode=="partial"?"partial":"",()=>{},()=>{},()=>true,()=>resets++,
+                delegate{retries++;if(mode=="cancelled")throw new OperationCanceledException();return true;},delegate{submits++;if(mode=="submit-error")throw new Exception("lost callback");});}
+            catch(Exception){failed=true;}
+            if(mode=="ready"&&(failed||writes!=1||submits!=1)||mode=="blank-first"&&(failed||writes!=2||submits!=1)||
+               mode=="draft"&&(!failed||writes!=0||submits!=0)||mode=="submit-error"&&(!failed||writes!=1||submits!=1)||
+               mode=="always-blank"&&(!failed||writes!=2||submits!=0)||
+               (mode=="partial"||mode=="interrupted"||mode=="cancelled")&&(!failed||writes!=1||submits!=0))
+                throw new Exception("Claude 后台整段提交与有界空白重试自检失败: "+mode);
+        }
+        int dispatches=0;var cancelled=new BackgroundOperation();cancelled.Cancel();rejected=false;
+        try{cancelled.ClaimDispatch(()=>dispatches++);}catch(OperationCanceledException){rejected=true;}
+        if(!rejected||dispatches!=0)throw new Exception("Claude 后台取消与提交互斥自检失败");
+        var dispatched=new BackgroundOperation();dispatched.ClaimDispatch(()=>dispatches++);if(!dispatched.Cancel()||dispatches!=1)throw new Exception("Claude 后台提交不确定状态自检失败");
+        rejected=false;try{dispatched.ClaimDispatch(()=>dispatches++);}catch(OperationCanceledException){rejected=true;}
+        if(!rejected||dispatches!=1||String.IsNullOrWhiteSpace(FailureMessage(new COMException(""),true)))throw new Exception("Claude 后台重复提交与空错误保护自检失败");
+    }
+    static string FailureMessage(Exception error,bool quitting) {
+        if(error is System.ComponentModel.Win32Exception)return "无法读取 Claude 窗口，请检查运行权限";
+        return !String.IsNullOrWhiteSpace(error.Message)?error.Message:quitting?"Claude 原生退出菜单操作失败，请在电脑端检查后重试":"Claude 原生连接操作失败，请在电脑端检查后重试";
+    }
     [STAThread] static int Main(string[] args) {
         Console.OutputEncoding=new UTF8Encoding(false);
         try {
@@ -942,7 +981,8 @@ class ClaudeKeyboard {
                 CheckDirectSubmission();
                 CheckDetachedReuse();
                 CheckNativeQuit();
-                Console.WriteLine("keyboard ABI, Console allowlist and contenteditable text fallback OK; window selection and cancellable restore OK; menu navigation OK; packaged launch OK; atomic console submission OK; detached console reuse OK; native menu quit guards OK");return 0;
+                CheckBackgroundConnection();
+                Console.WriteLine("keyboard ABI, Console allowlist and contenteditable text fallback OK; window selection and cancellable restore OK; menu navigation OK; packaged launch OK; atomic console submission OK; detached console reuse OK; native menu quit guards OK; background console guards OK");return 0;
             }
             if(args.Length!=3 && args.Length!=4) throw new Exception("键盘连接参数无效");
             quitAction=args[1]=="--quit";
@@ -1001,8 +1041,7 @@ class ClaudeKeyboard {
             FocusPrompt(prompt);WriteConsoleOnce(prompt,text);Thread.Sleep(700);
             Console.WriteLine("脚本已输入，等待连接回执");return 0;
         } catch(Exception e) {
-            string message=e is System.ComponentModel.Win32Exception?"无法读取 Claude 窗口，请检查运行权限":e.Message;
-            if(String.IsNullOrWhiteSpace(message))message=quitAction?"Claude 原生退出菜单操作失败，请在电脑端检查后重试":"Claude 原生连接操作失败，请在电脑端检查后重试";
+            string message=FailureMessage(e,quitAction);
             if(quitAction)QuitResult("failed",message,quitPid);else if(backgroundAction)ConnectResult("failed",backgroundSubmission,quitPid,message);else Console.WriteLine(message);
             return 1;
         }
