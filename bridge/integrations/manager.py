@@ -459,7 +459,7 @@ class DesktopSessions:
     def _begin_deepseek_connection(self):
         now = time.time()
         self._deepseek_connection('starting', '正在启动 Harness 桌面应用',
-                                  connectionStartedAt=now, connectionDeadline=now + 60)
+                                  connectionStartedAt=now, connectionDeadline=now + (120 if sys.platform == 'win32' else 60))
 
     def _deepseek_launched(self, result, *, first_launch=False):
         if not result.get('running') and result.get('launched') is not True:
@@ -742,7 +742,7 @@ class DesktopSessions:
         if phase in ('starting', 'connecting'):
             deadline = setup.get('connectionDeadline')
             if not isinstance(deadline, (int, float)):
-                deadline = time.time() + 60
+                deadline = time.time() + (120 if sys.platform == 'win32' else 60)
                 self._deepseek_connection(phase, reason, connectionDeadline=deadline)
             if time.time() >= deadline:
                 phase, reason = 'timeout', 'Harness 连接超时，请检查桌面应用后重试接入'

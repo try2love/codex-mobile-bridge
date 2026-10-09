@@ -773,6 +773,41 @@ class ClientLifecycleTests(unittest.TestCase):
         self.assertTrue(row['retryable'])
         self.assertIn('退出', row['reason'])
 
+    def test_windows_dsh_cold_start_allows_seventy_seconds_then_retry_and_late_connection(self):
+        self.running = False
+        self.dsh.call.side_effect = BridgeUnavailable('endpoint not ready')
+        with patch('bridge.integrations.manager.sys', SimpleNamespace(platform='win32')), \
+             patch('bridge.integrations.manager.windows_session.status', return_value={'state': 'locked', 'interactive': False, 'reason': 'fixture'}):
+            with patch('bridge.integrations.manager.time.time', return_value=1000):
+                self.manager._start_deepseek()
+            self.assertEqual(self.manager.config['setup']['deepseek']['connectionDeadline'], 1120)
+            with patch('bridge.integrations.manager.time.time', return_value=1070):
+                row = self.dsh_row()
+                self.assertEqual(row['connectionState'], 'connecting')
+                self.assertFalse(row['retryable']); self.assertFalse(row['connected'])
+                self.launch_dsh.assert_called_once()
+            with patch('bridge.integrations.manager.time.time', return_value=1121):
+                row = self.dsh_row()
+                self.assertEqual(row['connectionState'], 'timeout'); self.assertTrue(row['retryable'])
+                self.manager._start_deepseek()
+                self.assertEqual(self.dsh_row()['connectionState'], 'connecting')
+                self.assertEqual(self.manager.config['setup']['deepseek']['connectionDeadline'], 1241)
+            self.dsh.call.side_effect = lambda *_: {'connected': True, 'configured': False, 'bridgeRevision': 3}
+            row = self.dsh_row()
+            self.assertEqual(row['connectionState'], 'connected')
+            self.assertEqual(row['setupStatus'], 'unconfigured'); self.assertFalse(row['retryable'])
+            self.assertNotIn('connectionDeadline', self.manager.config['setup']['deepseek'])
+        self.stop.assert_not_called()
+
+    def test_windows_dsh_resumed_wait_without_deadline_uses_same_budget(self):
+        self.dsh.call.side_effect = BridgeUnavailable('endpoint not ready')
+        self.manager.config['setup'] = {'deepseek': {'setupStatus': 'connecting', 'connectionState': 'connecting'}}
+        with patch('bridge.integrations.manager.sys', SimpleNamespace(platform='win32')), \
+             patch('bridge.integrations.manager.windows_session.status', return_value={'state': 'locked', 'interactive': False, 'reason': 'fixture'}), \
+             patch('bridge.integrations.manager.time.time', return_value=1000):
+            self.assertEqual(self.dsh_row()['connectionState'], 'connecting')
+        self.assertEqual(self.manager.config['setup']['deepseek']['connectionDeadline'], 1120)
+
     def test_dsh_pending_cache_refreshes_before_the_normal_fifteen_seconds(self):
         self.dsh.call.side_effect = BridgeUnavailable('endpoint not ready')
         self.manager._start_deepseek()
