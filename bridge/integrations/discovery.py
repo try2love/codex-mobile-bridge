@@ -8,12 +8,13 @@ import sys
 from pathlib import Path
 
 from .claude_setup import claude_data_home
+from .windows_discovery import registered_candidates, windows_installations
 
 NAMES = {'codex': 'Codex', 'claude': 'Claude Desktop', 'deepseek': 'DeepSeek Harness'}
 BUNDLE_IDS = {'codex': 'com.openai.codex', 'claude': 'com.anthropic.claudefordesktop',
               'deepseek': 'com.deepseek.dsh'}
 APP_NAMES = {'codex': ('Codex', 'ChatGPT'), 'claude': ('Claude', 'Claude Desktop'),
-             'deepseek': ('DeepSeek Harness', 'DeepSeekHarness', 'deepseek-harness')}
+             'deepseek': ('DSH Desktop', 'DeepSeek Harness', 'DeepSeekHarness', 'deepseek-harness')}
 
 
 def _path(value, home):
@@ -129,15 +130,20 @@ def _runtime(executable, platform):
     return ''
 
 
-def discover_clients(preferences=None, *, platform=None, home=None, env=None, applications=None):
+def discover_clients(preferences=None, *, platform=None, home=None, env=None, applications=None, windows_inventory=None):
     """Return safe installation metadata; absence never creates a new data home.
 
     ``applications`` overrides macOS application roots for packaged smoke tests.
+    An explicit ``env`` isolates filesystem discovery from the host; tests can
+    supply ``windows_inventory`` separately to model native registrations.
     Saved application paths take precedence. A rescan performs fresh filesystem
     checks so a client installed since gateway startup is discovered immediately.
     """
     preferences = preferences or {}
+    native_windows = env is None
     platform, home, env = platform or sys.platform, Path(home or Path.home()).resolve(), os.environ if env is None else env
+    if platform == 'win32' and windows_inventory is None:
+        windows_inventory = windows_installations() if native_windows else {}
     roots = [Path(p) for p in applications] if applications is not None else [Path('/Applications'), home/'Applications']
     homes = {'codex': _path(preferences.get('codexHome') or env.get('CODEX_HOME'), home) or home/'.codex',
              'deepseek': _path(preferences.get('deepseekHome') or env.get('DSH_HOME'), home) or home/'.dsh'}
@@ -154,6 +160,7 @@ def discover_clients(preferences=None, *, platform=None, home=None, env=None, ap
             override = override or preferences.get('desktopExecutable')
         explicit = _path(override, home)
         candidates = [explicit] if explicit else []
+        metadata = {}
         if platform == 'darwin':
             for root in roots:
                 candidates += [root/(name+'.app') for name in APP_NAMES[provider]]
@@ -163,10 +170,15 @@ def discover_clients(preferences=None, *, platform=None, home=None, env=None, ap
                 except OSError:
                     pass
         elif platform == 'win32':
+            for row in registered_candidates(provider, windows_inventory or {}):
+                path = Path(row['executable'])
+                candidates.append(path)
+                metadata[path] = {key: value for key, value in row.items() if key != 'executable'}
             candidates += list(_windows_candidates(provider, home, env))
         elif platform == 'linux':
             candidates += list(_linux_candidates(provider, home, env))
-        found = next((row for path in dict.fromkeys(candidates) if (row := _candidate(path, provider, platform))), {})
+        found = next(({**row, **metadata.get(path, {})} for path in dict.fromkeys(candidates)
+                      if (row := _candidate(path, provider, platform))), {})
         if provider == 'claude':
             explicit_home = _path(preferences.get('claudeHome'), home)
             homes['claude'] = explicit_home or (claude_data_home(found['executable'], homes['claude'], platform)
