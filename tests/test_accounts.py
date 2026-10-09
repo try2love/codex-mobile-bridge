@@ -60,6 +60,23 @@ class AccountsTests(unittest.TestCase):
             self.manager.switch(value)
         return value
 
+    def test_scan_desktop_action_finds_store_gui_with_separate_cached_cli(self):
+        runtime = self.root/'Local/OpenAI/Codex/bin/version/codex.exe'
+        runtime.parent.mkdir(parents=True); runtime.write_bytes(b'MZ-runtime'); runtime.chmod(0o700)
+        gui = self.root/'Store/OpenAI.Codex_1/app/ChatGPT.exe'
+        gui.parent.mkdir(parents=True); gui.write_bytes(b'MZ-desktop'); gui.chmod(0o700)
+        self.bridge.catalog_reader.executable = runtime
+        environment = {'LOCALAPPDATA': str(self.root/'Local'), 'APPDATA': str(self.root/'Roaming'),
+                       'ProgramFiles': str(self.root/'Program Files'), 'USERPROFILE': str(self.home)}
+        inventory = {'packages': [{'Name': 'OpenAI.Codex', 'InstallLocation': str(gui.parent.parent)}]}
+        with patch('bridge.desktop_app.sys.platform', 'win32'), patch.dict(os.environ, environment, clear=True), \
+                patch('bridge.integrations.discovery.windows_installations', return_value=inventory) as scan:
+            result = self.manager.control({'action': 'scanDesktop'})
+        scan.assert_called_once_with()
+        self.assertEqual(result['desktopExecutable'], str(gui.resolve()))
+        self.assertEqual(json.loads((self.manager.root/'index.json').read_text())['desktopExecutable'], str(gui.resolve()))
+        self.assertEqual(self.manager.snapshot_files(), self.original)
+
     def prepare(self, row, before):
         folder=self.manager.root/'prepared';folder.mkdir(exist_ok=True)
         private_bytes(folder/'config.toml',b'model_provider="bridge_api"\nmodel="test-model"\n')
@@ -333,6 +350,16 @@ class AccountsTests(unittest.TestCase):
 
 
 class DesktopAppTests(unittest.TestCase):
+    def test_windows_native_scan_still_rejects_runtime_as_desktop(self):
+        with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as folder:
+            runtime = Path(folder)/'bin/version/codex.exe'
+            runtime.parent.mkdir(parents=True); runtime.write_bytes(b'MZ-runtime'); runtime.chmod(0o700)
+            with patch('bridge.desktop_app.sys.platform', 'win32'), \
+                    patch('bridge.integrations.discovery.discover_clients', return_value={
+                        'codex': {'installed': True, 'executable': str(runtime)}}):
+                with self.assertRaisesRegex(ValueError, '命令行运行时'):
+                    DesktopApp.scan(runtime, folder)
+
     def test_runtime_and_script_cannot_be_used_as_gui(self):
         with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as folder:
             path=Path(folder)/'launcher';path.write_bytes(b'#!/bin/sh\n');path.chmod(0o700)
