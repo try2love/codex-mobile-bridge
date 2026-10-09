@@ -59,6 +59,7 @@ class WindowsNativeWindowSelectors(unittest.TestCase):
         self.assertIn('background console guards OK', result.stdout)
         self.assertIn('background cleanup guards OK', result.stdout)
         self.assertIn('background startup readiness OK', result.stdout)
+        self.assertIn('background Console readiness OK', result.stdout)
 
     def test_readonly_inspection_finds_owned_window_instead_of_main_window_hint(self):
         source, fixture = self.folder/'fixture.cs', self.folder/'Claude.exe'
