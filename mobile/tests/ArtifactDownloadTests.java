@@ -18,7 +18,7 @@ public class ArtifactDownloadTests {
    String query=e.getRequestURI().getQuery();
    if("redirect".equals(query)){e.getResponseHeaders().set("Location",base+"/redirect-target");e.sendResponseHeaders(302,-1);e.close();return;}
    if("unauthorized".equals(query)||!"fixture=session".equals(e.getRequestHeaders().getFirst("Cookie"))){e.sendResponseHeaders(401,-1);e.close();return;}
-   if("oversize".equals(query)){e.sendResponseHeaders(200,51L*1024*1024);e.close();return;}
+   if("oversize".equals(query)){e.sendResponseHeaders(200,9007199254740992L);e.close();return;}
    e.getResponseHeaders().set("Content-Disposition","attachment; filename*=UTF-8''Bridge%20Preview.apk");
    e.sendResponseHeaders(200,payload.length);e.getResponseBody().write(payload);e.close();
   });

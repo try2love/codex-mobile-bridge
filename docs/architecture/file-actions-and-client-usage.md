@@ -61,3 +61,15 @@ DSH **0.2.0-rc.2** 的 `contextPressure` 投影区分 `pressureTokens`、`projec
 - Android/iOS 原生下载器去除旧本地上限需要后续重新构建安装，当前已安装的旧 App 不会因本轮源码编辑自动获得该能力。
 - 当前主机是 macOS；没有执行 Windows/Linux 桌面实机、Android/iOS 新版原生包、真实 Claude/DSH 会话或睡眠/锁屏回归。手机宿主 CSS 模拟不等同真机验证。
 - 尚无设备功耗测量，不宣称具体续航提升。没有证明完全免 Console/免解锁初始化。
+
+## 后续本地构建验证（2026-10-10）
+
+用户授权构建后，生成 macOS ARM64 网关 App、Android APK、iOS Release ARM64 未签名 IPA 和 Debug ARM64/x86_64 模拟器包。产品版本未变，未推送或发布。
+
+实际网关 App 启动检查发现桌面 `runWorker` 白名单漏掉 `transfer-settings`，导致保存设置返回“未知操作”；补齐该动作，并新增经过真实子进程的回归。修复后桌面 51 项测试通过，实际签名包在隔离目录启动并保存阈值成功；197 个打包资源与当前源码一致，签名校验通过。
+
+Android 原生下载器通过基础及 Range 测试，新增 55 MiB 工作区下载成功；iOS 实际 Foundation 下载器的 55 MiB 全字节内容、暂停续传、认证刷新、拒绝重定向和清理检查通过。旧 20/50 MiB 拒绝夹具改为安全整数上界，保留非法长度拒绝检查。
+
+iOS 两类 SDK 编译均成功，但没有安装模拟器运行时，本轮未进行 iOS 模拟器或手机真机 UI 测试；IPA 未签名，需用户签名后安装。Android APK 使用现有本地测试签名。macOS App 使用临时签名，无公证。
+
+旧 Integration Test App 及所属网关服务正常停止，两份旧 App 已删除；原 `.local/integration-test-3ad8f0a` 数据保留给新版 Local Preview，正式版不受影响。最终启动检查只使用隔离数据，未启动真实网关及三个客户端。

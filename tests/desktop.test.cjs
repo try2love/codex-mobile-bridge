@@ -60,6 +60,11 @@ test('packaged launch uses bundled runtime and literal data directory',()=>{
   const result=workerFor({packaged:true,resources:'/app resources',root:'/source',dataDir:'/my data'});
   assert.equal(result.dataDir,'/my data');assert.equal(result.executable,path.join('/app resources','gateway',process.platform==='win32'?'codex-mobile-gateway.exe':'codex-mobile-gateway'));
 });
+test('file-transfer settings reach the worker through the IPC allowlist',async()=>{
+  const script="let value='';process.stdin.on('data',data=>value+=data);process.stdin.on('end',()=>console.log(JSON.stringify({ok:true,result:{action:process.argv[1],payload:JSON.parse(value)}})));";
+  const result=await runWorker({executable:process.execPath,prefix:['-e',script],dataDir:'/fixture'},'transfer-settings',{clickDownloadMiB:60});
+  assert.deepEqual(result,{action:'transfer-settings',payload:{clickDownloadMiB:60}});
+});
 test('unknown IPC action cannot become a command',async()=>{await assert.rejects(runWorker({executable:'unused',dataDir:'unused'},'shell'),/未知操作/);});
 test('development launch keeps script as its own argument',()=>{
   const result=workerFor({packaged:false,root:'/source path',dataDir:'/data'});assert.deepEqual(result.prefix,['-B',path.join('/source path','desktop.py')]);

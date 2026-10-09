@@ -47,20 +47,22 @@ class Handler(BaseHTTPRequestHandler):
         if scenario == 'unknown':
             self.send_response(200); self.send_header('Connection', 'close'); self.end_headers()
             self.wfile.write(content[:30000]); self.close_connection = True; return
-        end = min(end, len(content) - 1)
+        payload_size = 55 * 1024 * 1024 if scenario == "large" else len(content)
+        end = min(end, payload_size - 1)
         changed = scenario in ('changed', 'etag') and start > 0
         self.send_response(200 if scenario in ('changed', 'ignored-range') and start else 206)
         if scenario != 'no-etag': self.send_header('ETag', '"new"' if changed else '"fixture"')
-        if scenario == 'oversize': total = 50 * 1024 * 1024 + 1
-        else: total = '*' if scenario == 'unknown-range' else len(content)
+        if scenario == 'oversize': total = 9_007_199_254_740_992
+        else: total = '*' if scenario == 'unknown-range' else payload_size
         self.send_header('Content-Range', f'bytes {start + (scenario == "wrong-range")}-{end}/{total}')
         self.send_header('Content-Length', str(end - start + 1))
         self.send_header('Content-Disposition', 'attachment; filename="fixture.bin"')
         self.end_headers()
         try:
             for offset in range(start, end + 1, 16384):
-                self.wfile.write(content[offset:min(offset + 16384, end + 1)]); self.wfile.flush()
-                time.sleep(.014)
+                chunk = bytes(index % 251 for index in range(offset, min(offset + 16384, end + 1))) if scenario == "large" else content[offset:min(offset + 16384, end + 1)]
+                self.wfile.write(chunk); self.wfile.flush()
+                if scenario != "large": time.sleep(.014)
         except (BrokenPipeError, ConnectionResetError): pass
 
 
@@ -71,7 +73,7 @@ try:
                     str(ROOT/'mobile/ios/BridgePreview/GatewayURL.swift'),
                     str(ROOT/'mobile/ios/BridgePreview/DownloadManager.swift'),
                     str(ROOT/'mobile/tests/DownloadManagerTests.swift'), '-o', str(WORK/'download-tests')], check=True)
-    subprocess.run([str(WORK/'download-tests'), f'http://127.0.0.1:{server.server_port}', str(scratch)], check=True, timeout=40)
+    subprocess.run([str(WORK/'download-tests'), f'http://127.0.0.1:{server.server_port}', str(scratch)], check=True, timeout=60)
     assert not redirected, 'Downloader leaked a request to the redirect target'
     assert all(agent == 'BridgeMobile/0.1-iOS' for _, _, _, _, agent in requests)
     resumed = [row for row in requests if row[0] == 'pause' and row[1] > 0]

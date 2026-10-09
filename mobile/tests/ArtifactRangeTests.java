@@ -32,7 +32,8 @@ public class ArtifactRangeTests {
     e.getResponseHeaders().set("Content-Disposition","attachment; filename=\"range.bin\"");e.getResponseHeaders().set("ETag",tag);
     if(conflict.get()!=null){byte[] body=("{\"code\":\""+conflict.get()+"\",\"error\":\"fixture\"}").getBytes("UTF-8");e.getResponseHeaders().remove("ETag");e.getResponseHeaders().set("Content-Type","application/json");e.sendResponseHeaders(409,body.length);e.getResponseBody().write(body);return;}
     if("empty".equals(scenario)){e.getResponseHeaders().set("Content-Range","bytes */0");e.sendResponseHeaders(416,-1);return;}
-    if("oversize".equals(scenario)){long size=e.getRequestURI().getPath().equals(WORKSPACE)?21L*1024*1024:51L*1024*1024;e.getResponseHeaders().set("Content-Range","bytes 0-1023/"+size);e.sendResponseHeaders(206,1024);return;}
+    if("oversize".equals(scenario)){long size=9007199254740992L;e.getResponseHeaders().set("Content-Range","bytes 0-1023/"+size);e.sendResponseHeaders(206,1024);return;}
+    if("large".equals(scenario)){int size=55*1024*1024;last=Math.min(last,size-1);e.getResponseHeaders().set("Content-Range","bytes "+first+"-"+last+"/"+size);e.sendResponseHeaders(206,last-first+1);e.getResponseBody().write(new byte[last-first+1]);return;}
     if("weak".equals(scenario))e.getResponseHeaders().set("ETag","W/\"fixture\"");
     last=Math.min(last,payload.length-1);
     boolean full=first>0&&(changed.get()||ignoreRange.get());
@@ -78,7 +79,7 @@ public class ArtifactRangeTests {
    for(String query:new String[]{"invalid","weak","oversize"}){
     ArtifactDownload.Task task=new ArtifactDownload.Task(base+ATTACHMENT+"?"+query,base,directory.toFile());task.run(cookies,null);check(task.state==ArtifactDownload.State.FAILED&&task.restartRequired,query+" rejected");task.cancel();clean(directory);
    }
-   ArtifactDownload.Task large=new ArtifactDownload.Task(base+WORKSPACE+"?oversize",base,directory.toFile());large.run(cookies,null);check(large.error.contains("20 MB"),"workspace size limit");large.cancel();clean(directory);
+   ArtifactDownload.Task large=new ArtifactDownload.Task(base+WORKSPACE+"?large",base,directory.toFile());large.run(cookies,null);check(large.state==ArtifactDownload.State.COMPLETE&&large.total==55L*1024*1024&&large.result().file.length()==large.total,"gateway-approved large workspace file streams to disk");large.cancel();clean(directory);
    ArtifactDownload.Task empty=new ArtifactDownload.Task(base+ATTACHMENT+"?empty",base,directory.toFile());empty.run(cookies,null);check(empty.state==ArtifactDownload.State.COMPLETE&&empty.total==0&&empty.result().file.length()==0,"416 empty file completes");empty.cancel();clean(directory);
    ArtifactDownload.Task cancelled=new ArtifactDownload.Task(base+ATTACHMENT+"?slow",base,directory.toFile());cancelled.run(cookies,t->{if(t.downloaded>0)t.cancel();});check(cancelled.state==ArtifactDownload.State.CANCELLED,"cancel active response");clean(directory);cancelled.run(cookies,null);check(cancelled.state==ArtifactDownload.State.CANCELLED,"cancelled task cannot restart");
    if(serverFailure.get()!=null)throw new AssertionError("server assertion",serverFailure.get());

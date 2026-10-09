@@ -15,7 +15,7 @@ import Foundation
         precondition(!DownloadManager.allows(URL(string: origin + "/api/desktop-sessions/claude/send")!, origin: origin))
         precondition(DownloadManager.filename("../folder/hello.txt") == "hello.txt")
         precondition(DownloadManager.filename("..") == "download")
-        for scenario in ["pause", "changed", "changed-409", "offline-409", "etag", "ignored-range", "revoked", "cancel", "wrong-range", "redirect", "unauthorized", "oversize", "no-etag", "unknown", "unknown-range", "empty"] {
+        for scenario in ["pause", "changed", "changed-409", "offline-409", "etag", "ignored-range", "revoked", "cancel", "wrong-range", "redirect", "unauthorized", "oversize", "no-etag", "unknown", "unknown-range", "empty", "large"] {
             let manager = DownloadManager(scratch: scratch)
             var snapshot = DownloadManager.Snapshot(), requestedPause = false, cookie: String? = "codex_mobile_session=fixture"
             var credentialReads = 0, sawUnknownTotal = false
@@ -56,7 +56,7 @@ import Foundation
             } else {
                 precondition(snapshot.phase == .complete && snapshot.file != nil, "Expected a completed file: " + scenario)
                 let data = try Data(contentsOf: snapshot.file!)
-                let expected = scenario == "empty" ? 0 : scenario == "unknown" ? 30000 : 3 * 1024 * 1024 + 301
+                let expected = scenario == "empty" ? 0 : scenario == "unknown" ? 30000 : scenario == "large" ? 55 * 1024 * 1024 : 3 * 1024 * 1024 + 301
                 precondition(data.count == expected)
                 precondition(data.enumerated().allSatisfy { $0.element == UInt8($0.offset % 251) }, "Resumed file bytes differ from source")
                 if scenario == "unknown" { precondition(sawUnknownTotal && snapshot.total == nil, "Unknown total was fabricated") }
