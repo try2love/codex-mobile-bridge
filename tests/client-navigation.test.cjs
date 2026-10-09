@@ -29,6 +29,22 @@ test('an unanswered initialization prompt blocks duplicate operations and stale 
  finishRead({clients:[]});await reading;assert.equal(nav.clients.length,3);ui.decideInitialize(false);await confirming;assert.equal(calls,1);assert.equal(nav.choosing,null);
 });
 
+test('unknown mobile quit requires a successful status read before retry and ignores late replies',async()=>{
+ const ui=fixture(),nav=ui.nav;nav.lifecycleTimeout=5;const client={id:'claude',name:'Claude',enabled:true,configured:true,installed:true,connected:true,running:true};nav.clients=[client];nav.provider='claude';let finish,reads=0,mutations=0,readable=false;
+ nav.request=(url,body)=>{if(body){mutations++;return new Promise(resolve=>finish=resolve);}reads++;return readable?Promise.resolve({clients:[client]}):Promise.reject(Error('status offline'));};
+ await assert.rejects(nav.toggle('claude',false),/尚未确认/);assert.equal(nav.pending.size,0);assert.equal(nav.hasUncertain(),true);assert.equal(nav.clients[0].connected,true);assert.equal(nav.managementState(nav.clients[0]),'结果待确认');
+ const before=reads;await nav.poll();await nav.retryOperation('claude');await nav.toggle('claude',false);assert.equal(reads,before);assert.equal(mutations,1);await nav.refresh();assert.equal(nav.hasUncertain(),true);
+ readable=true;await nav.refresh();assert.equal(nav.hasUncertain(),false);finish({clients:[{...client,enabled:false,running:false,connected:false}]});await Promise.resolve();await Promise.resolve();assert.equal(nav.clients[0].enabled,true);assert.equal(nav.clients[0].connected,true);
+ ui.setChoice(null);await nav.retryOperation('claude');assert.equal(ui.choices.length,2);assert.equal(mutations,1);
+});
+
+test('an explicit quit rejection remains visible without rewriting the connection or replaying on unlock',async()=>{
+ const ui=fixture(),nav=ui.nav,reason='Windows 已锁定；请解锁电脑后重试初始化连接';nav.clients=[{id:'claude',enabled:true,configured:true,installed:true,connected:true,running:true}];nav.provider='claude';let writes=0;
+ nav.request=async(url,body)=>{if(body){writes++;throw Object.assign(Error(reason),{status:409});}return {clients:nav.clients,windowsSession:{state:'locked',interactive:false,reason}};};
+ await assert.rejects(nav.toggle('claude',false),/Windows/);assert.equal(nav.hasUncertain(),false);assert.equal(nav.operationFailures.get('claude').message,reason);assert.equal(nav.runtimeState(nav.clients[0]),'已连接');await nav.refresh();assert.equal(nav.operationFailures.get('claude').message,reason);
+ nav.applyClients({clients:nav.clients,windowsSession:{state:'unlocked',interactive:true}});assert.equal(writes,1);assert.equal(ui.initializations.length,0);
+});
+
 test('mobile connection progress survives launch acknowledgment and fast polls stop at a terminal state',async()=>{
  const ui=fixture(),nav=ui.nav;nav.clients=[{id:'deepseek',enabled:false,selectable:true,configured:true,running:false,connected:false,reason:'客户端已配置，可开启桌面应用'}];nav.provider='deepseek';nav.gatewayRunning=true;let finish,reads=0;const snapshots=[];
  nav.view.setClientStates=clients=>snapshots.push(clients);nav.request=(url,body)=>body?new Promise(resolve=>finish=resolve):Promise.resolve({clients:[{...nav.clients[0],connectionState:'connected',connected:true,running:true}]});

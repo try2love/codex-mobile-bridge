@@ -46,7 +46,7 @@ class DesktopSessionsView {
   }
   renderConnectionStatus(){
     const client=this.clientStates?.find(client=>client.id===this.provider),state=client&&ClientLifecycle.connection(client);
-    const failure=client?.operationFailure,uncertain=client?.operationUncertain||failure?.uncertain,blocked=!!state&&!client.connected&&(state.waiting||state.action||state.retryable||!!failure);
+    const failure=client?.operationFailure,uncertain=!!(client?.operationUncertain||failure?.uncertain),blocked=!!state&&!client.connected&&(state.waiting||state.action||state.retryable||!!failure);
     this.listStatus.setAttribute('aria-busy',String(!!state?.waiting));this.listStatus.classList.toggle('client-connection-waiting',!!state?.waiting);
     this.connectionRetry.hidden=!blocked||!state.retryable||uncertain;this.connectionRetry.disabled=!!this.retryingClient;
     this.connectionInitialize.hidden=!blocked||!state.canInitialize||uncertain;this.connectionInitialize.disabled=!!this.initializingClient;

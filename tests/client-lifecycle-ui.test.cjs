@@ -49,6 +49,23 @@ test('connection labels distinguish startup, required action, failure and actual
  for(const client of [{...base,id:'deepseek',setupStatus:'needs-initialization'},{...base,id:'claude',connected:true,setupStatus:'needs-initialization'},{...base,id:'claude',connectionState:'connecting',setupStatus:'needs-initialization'},{...base,id:'claude',setupStatus:'unsupported'}])assert.equal(connection(client).canInitialize,false);
  assert.equal(connection({...base,setupStatus:'restart-required',retryable:true}).retryable,false);
 });
+
+test('lock and desktop-unavailable states stop waiting without disconnecting an existing client',()=>{
+ const {connection,sessionNotice}=require('../web/client-lifecycle.js');
+ for(const [setupStatus,label] of [['needs-unlock','电脑已锁定'],['needs-desktop','电脑桌面暂不可用']]){
+  const client={id:'claude',enabled:true,installed:true,connected:false,setupStatus,connectionState:'needs-initialization',reason:'Windows 已锁定；请解锁电脑后重试初始化连接'};const state=connection(client);
+  assert.equal(state.label,label);assert.equal(state.waiting,false);assert.equal(state.canInitialize,true);assert.equal(connection({...client,connected:true}).label,'已连接');assert.equal(connection({...client,connected:true}).canInitialize,false);
+ }
+ assert.match(sessionNotice({state:'locked',interactive:false}),/后台服务继续运行/);assert.equal(sessionNotice({state:'unlocked',interactive:true}),'');
+});
+
+test('bounded lifecycle requests abort only their wait and ignore a late result',async()=>{
+ const lifecycle=require('../web/client-lifecycle.js');let finish,signal;
+ const pending=lifecycle.request(value=>{signal=value;return new Promise(resolve=>finish=resolve);},{timeout:5});await assert.rejects(pending,error=>error.uncertain===true&&/尚未确认/.test(error.message));assert.equal(signal.aborted,true);finish('late');await Promise.resolve();await assert.rejects(pending,/尚未确认/);
+ for(const status of [400,401,409,423])assert.equal(lifecycle.failure('quit',Object.assign(Error('rejected'),{status})).uncertain,false);
+ for(const error of [Error('offline'),new SyntaxError('bad response'),Object.assign(Error('server'),{status:500})])assert.equal(lifecycle.failure('quit',error).uncertain,true);
+ assert.equal(lifecycle.failure('quit',Error('本机操作超时，请刷新状态确认结果'),'desktop').uncertain,true);
+});
 test('Escape and other dialog close events always cancel the desktop exit choice',async()=>{
  for(const escape of [true,false]){
   const ui=fixture(),result=ui.choose({id:'deepseek',name:'DSH'}),dialog=ui.dialog();let prevented=false;
@@ -72,7 +89,7 @@ test('Claude explains its native quit menu while other clients retain the idle r
   const ui=fixture(language),result=ui.choose({id,name:id}),dialog=ui.dialog(),buttons=dialog.children.at(-1).children,note=buttons[1].children[1].textContent;
   assert.equal(buttons.length,3);assert.doesNotMatch(dialog.textContent,/强制退出|Force quit/i);
   if(id==='claude'){
-   assert.match(note,language==='en'?/native menu.*may appear briefly/:/原生菜单.*短暂出现/);
+   assert.match(note,language==='en'?/Quit normally through Claude's native menu/:/原生菜单正常退出/);assert.doesNotMatch(note,/may appear briefly|短暂出现/);
    assert.match(note,language==='en'?/task or save confirmation on your computer/:/任务或保存确认.*电脑端处理/);
    assert.match(note,language==='en'?/After quitting completely.*initialization again.*keyboard focus/:/完全退出后需重新初始化连接.*键盘焦点/);
    assert.doesNotMatch(note,/only after all tasks finish|仅在所有任务结束/i);

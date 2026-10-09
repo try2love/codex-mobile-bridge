@@ -12,7 +12,7 @@ function fixture({accounts=false}={}){
   for(const file of ['web/i18n.js',...(accounts?['web/client-accounts.js']:[]),'desktop/desktop-sessions.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
   const Class=vm.runInContext('DesktopConnectionsPanel',context),panel=new Class({root,api:{choose:async()=>chosen,desktopSessions:body=>{calls.push(body);return handler(body);}},feedback:message=>errors.push(message)});
   const all=n=>[n,...n.children.flatMap(all)];
-  return {panel,nodes,calls,errors,scan,prompts,choices,setChoice:value=>closeChoice=value,decide:value=>finishChoice(value),statuses,workspace,claudeHome,claudeData,input,choose,root,document:context.document,setChosen:value=>chosen=value,poll:async()=>{timers[0]();await Promise.resolve();await Promise.resolve();},apply:()=>vm.runInContext('BridgeI18n.apply()',context),confirm:value=>confirmed=value,setHandler:fn=>handler=fn,all:()=>all(nodes['client-overview']),text:()=>all(nodes['client-overview']).map(n=>n.textContent).join('\n'),english:()=>vm.runInContext("BridgeI18n.setLanguage('en')",context)};
+  return {panel,nodes,calls,errors,scan,prompts,choices,setChoice:value=>closeChoice=value,decide:value=>finishChoice(value),statuses,workspace,claudeHome,claudeData,input,choose,root,document:context.document,setChosen:value=>chosen=value,poll:async()=>{await timers[0]();},apply:()=>vm.runInContext('BridgeI18n.apply()',context),confirm:value=>confirmed=value,setHandler:fn=>handler=fn,all:()=>all(nodes['client-overview']),text:()=>all(nodes['client-overview']).map(n=>n.textContent).join('\n'),english:()=>vm.runInContext("BridgeI18n.setLanguage('en')",context)};
 }
 
 test('DSH directory refresh targets its field after real account forms are inserted',async()=>{
@@ -81,7 +81,8 @@ test('Claude setup exposes native permission and developer confirmation without 
   ui.setHandler(async body=>body.action==='status'?{backends:{}}:{clients:[client]});await ui.all().find(n=>n.textContent==='Authorize & connect').onclick();assert.equal(ui.calls[0].action,'connect-claude');
   client.setupStatus='needs-developer-mode';client.reason='请确认 Claude 的开发者模式提示，完成后会继续连接';ui.panel.renderClients();
   assert.match(ui.text(),/Developer mode confirmation required/);assert.doesNotMatch(ui.text(),/[\u4e00-\u9fff]/);
-  await ui.all().find(n=>n.textContent==='Cancel connection').onclick();assert.ok(ui.calls.some(c=>c.action==='cancel-claude'));
+  await ui.all().find(n=>n.textContent==='Retry initialization').onclick();assert.ok(ui.calls.some(c=>c.action==='connect-claude'));
+  client.setupStatus='connecting';ui.panel.renderClients();await ui.all().find(n=>n.textContent==='Cancel connection').onclick();assert.ok(ui.calls.some(c=>c.action==='cancel-claude'));
 });
 
 test('Claude background setup waits for an explicit initialization click and explains foreground use',async()=>{
@@ -145,6 +146,20 @@ test('process quit starts after a choice, excludes duplicates and rolls back a r
   await ui.panel.toggleClient('claude',true);await ui.panel.scan();assert.equal(ui.calls.length,1);
   reject(Error('有任务运行或等待确认'));await pending;
   assert.equal(ui.panel.clients[0].enabled,true);assert.equal(ui.panel.busy,false);assert.equal(ui.all().find(n=>n.tag==='input').disabled,false);assert.deepEqual(ui.errors,['有任务运行或等待确认']);
+});
+
+test('desktop uncertain quit remains blocked after a failed read, then permits a confirmed retry',async()=>{
+ const ui=fixture(),client={id:'claude',name:'Claude',enabled:true,configured:true,installed:true,connected:true,running:true};ui.panel.clients=[client];ui.panel.lifecycleTimeout=5;let finish,readable=false;
+ ui.setHandler(body=>body.action==='toggle-client'?new Promise(resolve=>finish=resolve):readable?Promise.resolve({clients:[client]}):Promise.reject(Error('status offline')));
+ await ui.panel.toggleClient('claude',false);assert.equal(ui.panel.busy,false);assert.equal(ui.panel.hasUncertain(),true);assert.equal(ui.panel.clients[0].connected,true);assert.match(ui.text(),/尚未确认/);assert.ok(ui.all().some(node=>node.textContent==='刷新状态'));const count=ui.calls.length;
+ await ui.panel.retryOperation('claude');await ui.panel.pollClients();assert.equal(ui.calls.length,count);await ui.panel.refreshClients(true);assert.equal(ui.panel.hasUncertain(),true);
+ readable=true;await ui.panel.refreshClients(true);assert.equal(ui.panel.hasUncertain(),false);finish({clients:[{...client,enabled:false,connected:false,running:false}]});await Promise.resolve();await Promise.resolve();assert.equal(ui.panel.clients[0].connected,true);
+ ui.setChoice(null);await ui.all().find(node=>node.textContent==='重试退出').onclick();assert.equal(ui.choices.length,2);assert.equal(ui.calls.filter(call=>call.action==='toggle-client').length,1);
+});
+
+test('desktop lock status provides an explicit initialization retry while keeping existing connections usable',()=>{
+ const ui=fixture();ui.panel.windowsSession={state:'locked',interactive:false};ui.panel.clients=[{id:'claude',name:'Claude',enabled:true,installed:true,configured:true,connected:false,setupStatus:'needs-unlock',connectionState:'needs-initialization'}];ui.panel.renderClients();ui.panel.renderScan();assert.match(ui.text(),/电脑已锁定/);assert.match(ui.nodes['client-scan-status'].textContent,/后台服务继续运行/);assert.ok(ui.all().some(node=>node.textContent==='重试初始化'));
+ ui.panel.clients[0].connected=true;ui.panel.renderClients();assert.equal(ui.all().find(node=>node.attributes.role==='status').textContent,'已连接');ui.panel.windowsSession={state:'unlocked',interactive:true};ui.panel.renderClients();assert.equal(ui.calls.length,0);
 });
 
 test('DSH recovery uses a preview token and explicit acknowledgment for unknown background tasks',async()=>{
