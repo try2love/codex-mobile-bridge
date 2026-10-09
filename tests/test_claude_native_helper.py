@@ -194,16 +194,44 @@ using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Automation;
+using System.Windows.Automation.Peers;
+using System.Windows.Automation.Provider;
 using System.Windows.Threading;
+class InlineItem : Button {
+    public Action Open; public bool Expanded;
+    protected override AutomationPeer OnCreateAutomationPeer(){return new InlinePeer(this);}
+}
+class InlinePeer : ButtonAutomationPeer,IExpandCollapseProvider {
+    readonly InlineItem item;
+    public InlinePeer(InlineItem owner):base(owner){item=owner;}
+    protected override AutomationControlType GetAutomationControlTypeCore(){return AutomationControlType.MenuItem;}
+    public override object GetPattern(PatternInterface pattern){return pattern==PatternInterface.ExpandCollapse?this:base.GetPattern(pattern);}
+    public void Expand(){item.Dispatcher.Invoke(new Action(()=>{item.Expanded=true;if(item.Open!=null)item.Open();}));}
+    public void Collapse(){item.Dispatcher.Invoke(new Action(()=>item.Expanded=false));}
+    public ExpandCollapseState ExpandCollapseState {get{return item.Expanded?ExpandCollapseState.Expanded:ExpandCollapseState.Collapsed;}}
+}
 class QuitFixture {
     [STAThread] static void Main(string[] args) {
         var app=new Application(); var window=new Window {Title="Claude",Width=360,Height=240};
-        var menu=new Menu();var file=new MenuItem {Header="File"};var exit=new MenuItem {Header="Exit"};
-        file.Items.Add(exit);menu.Items.Add(file);window.Content=menu;
+        Action quit=null;
+        if(args[3]=="native-popup") {
+            var menu=new Menu();var file=new MenuItem {Header="File"};var exit=new MenuItem {Header="Exit"};
+            file.Items.Add(exit);menu.Items.Add(file);window.Content=menu;
+            exit.Click+=(sender,eventArgs)=>quit();
+        } else {
+            // Match the product's in-window accessible menu shape. Real UIA
+            // provider methods expand/invoke directly, without key injection.
+            var menu=new StackPanel();var file=new InlineItem {Content="File"};
+            var exit=new InlineItem {Content="Exit",Visibility=Visibility.Collapsed};
+            file.Open=()=>exit.Visibility=Visibility.Visible;
+            menu.Children.Add(file);menu.Children.Add(exit);window.Content=menu;
+            exit.Click+=(sender,eventArgs)=>quit();
+        }
         var timer=new DispatcherTimer {Interval=TimeSpan.FromMilliseconds(100)};
         var deadline=DateTime.UtcNow.AddSeconds(45);
         timer.Tick+=(sender,eventArgs)=>{if(File.Exists(args[1])||DateTime.UtcNow>=deadline)app.Shutdown();};
-        exit.Click+=(sender,eventArgs)=>{
+        quit=()=>{
             File.AppendAllText(args[2],"exit\\n");
             if(args[3]=="pending") {
                 var confirm=new Window {Title="Save changes",Owner=window,Width=260,Height=120};
@@ -212,7 +240,10 @@ class QuitFixture {
                 buttons.Children.Add(keep);confirm.Content=buttons;confirm.ShowDialog();
             } else app.Shutdown();
         };
-        window.Loaded+=(sender,eventArgs)=>File.WriteAllText(args[0],Process.GetCurrentProcess().Id.ToString());
+        window.Loaded+=(sender,eventArgs)=>{
+            if(args[3]=="initialize")window.Hide();
+            File.WriteAllText(args[0],Process.GetCurrentProcess().Id.ToString());
+        };
         timer.Start();app.Run(window);
     }
 }
@@ -220,13 +251,14 @@ class QuitFixture {
         built = subprocess.run([str(self.framework/'csc.exe'), '/nologo', '/target:winexe', '/platform:x64',
             '/out:'+str(fixture), '/reference:System.Xaml.dll',
             *['/reference:'+str(self.framework/'WPF'/dll) for dll in
-              ('PresentationFramework.dll', 'PresentationCore.dll', 'WindowsBase.dll')], str(source)],
+              ('PresentationFramework.dll', 'PresentationCore.dll', 'WindowsBase.dll',
+               'UIAutomationTypes.dll', 'UIAutomationProvider.dll')], str(source)],
             capture_output=True, text=True, timeout=30)
         self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
 
         # This desktop is never activated or switched to. All tested apps are
         # disposable fixtures; the real Claude and user's input remain untouched.
-        for mode in ('normal', 'pending'):
+        for mode in ('normal', 'pending', 'native-popup', 'initialize'):
             with self.subTest(mode=mode):
                 ready, stop, marker = (self.folder/(mode+suffix) for suffix in ('.ready', '.stop', '.invoked'))
                 app = launch([fixture, ready, stop, marker, mode], self.folder/(mode+'.app.log'))
@@ -237,9 +269,36 @@ class QuitFixture {
                         time.sleep(.05)
                     self.assertTrue(ready.exists(), 'inactive-desktop fixture did not initialize')
                     output = self.folder/(mode+'.quit.log')
-                    helper = launch([self.helper, app.pid, '--quit', fixture], output)
-                    self.assertEqual(wait(helper, 15), 0, output.read_text(encoding='utf-8-sig'))
+                    action = '--quit'
+                    if mode == 'initialize':
+                        script = self.folder/'connector.js'
+                        script.write_text('/* codex bridge connector */void 0;', encoding='utf-8')
+                        action = str(script)
+                    started = time.monotonic()
+                    helper = launch([self.helper, app.pid, action, fixture], output)
+                    code = wait(helper, 15)
+                    if mode == 'initialize':
+                        self.assertEqual(code, 1, output.read_text(encoding='utf-8-sig'))
+                        self.assertIn('桌面不可用', output.read_text(encoding='utf-8-sig'))
+                        self.assertLess(time.monotonic()-started, 3, 'initialization must fail before window restore')
+                        self.assertFalse(marker.exists())
+                        self.assertFalse(exited(app))
+                        self.assertEqual(user.GetForegroundWindow(), foreground)
+                        continue
                     result = json.loads(output.read_text(encoding='utf-8-sig'))
+                    if mode == 'native-popup':
+                        # WPF's standard popup currently does not expose Exit
+                        # here. Keep this real provider limitation covered:
+                        # fail fast, no foreground fallback or fabricated exit.
+                        self.assertEqual(code, 1, result)
+                        self.assertEqual(result['quitState'], 'failed', result)
+                        self.assertIn('桌面不可用', result['reason'])
+                        self.assertLess(time.monotonic()-started, 12)
+                        self.assertFalse(marker.exists())
+                        self.assertFalse(exited(app))
+                        self.assertEqual(user.GetForegroundWindow(), foreground)
+                        continue
+                    self.assertEqual(code, 0, result)
                     self.assertEqual(marker.read_text(encoding='utf-8'), 'exit\n')
                     if mode == 'normal':
                         self.assertIn(result['quitState'], ('exited', 'submitted'))
