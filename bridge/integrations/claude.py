@@ -156,10 +156,6 @@ class Claude:
         old_monitor = None
         background_monitor = False
         with self.setup_lock:
-            if self.setup_mode == 'background' and self.setup_thread:
-                self.setup_cancel.set()
-                old_monitor = self.setup_thread
-                background_monitor = True
             if self.setup_cancel.is_set() and self.setup_thread:
                 old_monitor = self.setup_thread
             if self.status()['connected']:
@@ -171,6 +167,10 @@ class Claude:
                 if self.setup_thread and self.setup_thread.is_alive():
                     self.setup_cancel.set()
                     old_monitor = self.setup_thread
+            if self.setup_mode == 'background' and self.setup_thread:
+                self.setup_cancel.set()
+                old_monitor = self.setup_thread
+                background_monitor = True
         # The monitor's final state update takes setup_lock; never join it while
         # holding that lock. This only stops our watcher, not the desktop app.
         if old_monitor:
