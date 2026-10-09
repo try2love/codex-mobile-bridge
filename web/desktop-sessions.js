@@ -46,7 +46,7 @@ class DesktopSessionsView {
     const task={current:()=>epoch===this.readEpoch&&version===(this.providerReadEpochs.get(provider)||0)};
     task.promise=(async()=>{const value=await this.request(this.path(action,sid,provider));if(task.current()){
       if(action==='list')this.providerViews.set(provider,{...this.providerViews.get(provider),rows:value.sessions||[],cachedAt:Date.now()});
-      else if(action==='detail')this.detailCache.set(JSON.stringify([provider,sid]),value);
+      else if(action==='detail'&&value.session)this.detailCache.set(JSON.stringify([provider,sid]),value);
     }return value;})();this.readTasks.set(key,task);
     const done=()=>{if(this.readTasks.get(key)===task)this.readTasks.delete(key);};task.promise.then(done,done);return task;
   }
@@ -56,7 +56,9 @@ class DesktopSessionsView {
     if(provider===this.provider){this.freshDetail=false;this.detailRevision++;this.loading=null;this.refreshPending=null;}
   }
   setClientStates(clients,retry,initialize,refresh){
+    for(const client of clients){const old=this.clientStates?.find(row=>row.id===client.id);if(old&&(old.enabled!==false&&client.enabled===false||old.connected===true&&client.connected===false))this.invalidateReads(client.id);}
     const before=this.clientStates?.find(client=>client.id===this.provider);this.clientStates=clients;this.retryClient=retry;this.initializeClient=initialize;this.refreshClients=refresh;
+    if(this.state&&!this.canMutate())this.staleDetail();else this.updateComposer();
     const current=clients.find(client=>client.id===this.provider),wasWaiting=before&&ClientLifecycle.connection(before).waiting;
     if(!this.renderConnectionStatus()&&before&&(wasWaiting||(!before.connected&&current?.connected))){this.listStatus.textContent=BridgeI18n.t('正在读取聊天…');return this.refresh();}
   }
@@ -132,18 +134,21 @@ class DesktopSessionsView {
   }
   async detail(generation){
     const sid=this.sid,provider=this.provider,revision=this.detailRevision,task=this.sharedRead(provider,'detail',sid),current=()=>task.current()&&generation===this.generation&&provider===this.provider&&sid===this.sid&&revision===this.detailRevision;let value;
-    try{value=await task.promise;}catch(error){if(current())throw error;return;}if(!current())return;this.applyDetail(value);
+    try{value=await task.promise;}catch(error){if(current()){this.staleDetail();throw error;}return;}if(!current())return;this.applyDetail(value);
   }
+  canMutate(){const client=this.clientStates?.find(row=>row.id===this.provider);return !!this.state&&this.freshDetail&&(!client||client.enabled!==false&&client.connected===true);}
+  staleDetail(){this.freshDetail=false;this.renderRequests([]);this.requestStamp='';this.updateComposer();}
   applyDetail(value,cached=false){
-    this.freshDetail=!cached;this.state={...value.session,capabilities:value.capabilities||value.session.capabilities||{},maxRequestBytes:value.maxRequestBytes||value.session.maxRequestBytes||0};this.title.textContent=this.state.title;this.status.textContent=BridgeI18n.t(cached?'正在连接…':this.state.requests?.length?'等待回应':this.state.status==='active'?'运行中':'已连接');this.updateComposer();this.renderMessages(value.messages||[]);
-    const requests=cached?[]:this.state.requests||[],stamp=JSON.stringify([requests,BridgeI18n.language()]);if(stamp!==this.requestStamp){this.renderRequests(requests);this.requestStamp=stamp;}
+    if(!value.session){this.staleDetail();this.status.textContent=BridgeI18n.t('尚未连接');return;}
+    this.freshDetail=!cached&&value.connected!==false;this.state={...value.session,capabilities:value.capabilities||value.session.capabilities||{},maxRequestBytes:value.maxRequestBytes||value.session.maxRequestBytes||0};this.title.textContent=this.state.title;this.status.textContent=BridgeI18n.t(cached?'正在连接…':!this.canMutate()?'尚未连接':this.state.requests?.length?'等待回应':this.state.status==='active'?'运行中':'已连接');this.updateComposer();this.renderMessages(value.messages||[]);
+    const requests=this.canMutate()?this.state.requests||[]:[],stamp=JSON.stringify([requests,BridgeI18n.language()]);if(stamp!==this.requestStamp){this.renderRequests(requests);this.requestStamp=stamp;}
     this.notice.textContent=BridgeI18n.t(value.notice||'');this.notice.hidden=!value.notice;if(!cached)this.updateActivity([this.state]);this.renderIndicators();
   }
   updateComposer(){
-    const state=this.state,caps=state?.capabilities||{},active=state?.status==='active';this.modelName.textContent=state?.model||BridgeI18n.t('模型');delete this.modelName.dataset.i18n;this.modelEffort.textContent=state?.effort?'· '+state.effort:'';this.modelEffort.hidden=!state?.effort;this.modelButton.title=[state?.model||BridgeI18n.t('模型'),state?.effort].filter(Boolean).join(' · ');this.modelButton.disabled=!state||!this.freshDetail||!!this.busy||caps.models===false;
-    const canAttach=caps.attachments===true;this.attachButton.hidden=!canAttach;this.form.classList.toggle('ds-has-attachments',canAttach);if(this.attachments){const locked=!state||!this.freshDetail||!!this.busy||!canAttach;if(this.attachments.locked!==locked)this.attachments.setLocked(locked);this.attachmentList.hidden=!canAttach||(!this.attachments.rows.length&&!this.attachments.error);}
+    const state=this.state,caps=state?.capabilities||{},active=state?.status==='active',ready=this.canMutate();this.modelName.textContent=state?.model||BridgeI18n.t('模型');delete this.modelName.dataset.i18n;this.modelEffort.textContent=state?.effort?'· '+state.effort:'';this.modelEffort.hidden=!state?.effort;this.modelButton.title=[state?.model||BridgeI18n.t('模型'),state?.effort].filter(Boolean).join(' · ');this.modelButton.disabled=!ready||!!this.busy||caps.models===false;
+    const canAttach=caps.attachments===true;this.attachButton.hidden=!canAttach;this.form.classList.toggle('ds-has-attachments',canAttach);if(this.attachments){const locked=!ready||!!this.busy||!canAttach;if(this.attachments.locked!==locked)this.attachments.setLocked(locked);this.attachmentList.hidden=!canAttach||(!this.attachments.rows.length&&!this.attachments.error);}
     this.attachButton.title=BridgeI18n.t('添加文件或图片')+(state?.maxRequestBytes?' · '+BridgeI18n.t('消息和图片编码后合计最多 10 MiB'):'');this.skillsButton.hidden=caps.skills!==true;this.skillsButton.disabled=!state||!!this.busy;this.renderSkillPills();
-    this.send.disabled=!state||!this.freshDetail||!!this.busy||caps.send===false||(canAttach&&(!this.attachments.ready()||this.overRequestLimit(this.attachments.rows)))||[...this.selectedSkills().values()].some(s=>s.invalid);this.stop.disabled=!active||!!this.busy;this.stop.hidden=!active||caps.stop===false;this.permissionsButton.hidden=caps.permissions!==true;this.permissionsButton.disabled=!state||!this.freshDetail||!!this.busy;this.mode.disabled=!state||!!this.busy;
+    this.send.disabled=!ready||!!this.busy||caps.send===false||(canAttach&&(!this.attachments.ready()||this.overRequestLimit(this.attachments.rows)))||[...this.selectedSkills().values()].some(s=>s.invalid);this.stop.disabled=!ready||!active||!!this.busy;this.stop.hidden=!active||caps.stop===false;this.permissionsButton.hidden=caps.permissions!==true;this.permissionsButton.disabled=!ready||!!this.busy;this.mode.disabled=!ready||!!this.busy;
     this.mode.options[1].disabled=caps.queue===false;if(this.mode.options[1].disabled&&this.mode.value==='queue')this.mode.value='send';const steer=this.mode.options[2];steer.disabled=!active||caps.steer===false;if(steer.disabled&&this.mode.value==='steer')this.mode.value='send';
   }
   resizeInput(){if(this.composerBody.hidden)return;this.input.style.height='auto';this.input.style.height=Math.min(160,Math.max(48,this.input.scrollHeight||48))+'px';}
@@ -169,7 +174,7 @@ class DesktopSessionsView {
   }}
   requestId(){if(typeof uuid==='function')return uuid();if(typeof crypto.randomUUID==='function')return crypto.randomUUID();const bytes=crypto.getRandomValues(new Uint8Array(16));bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;const h=[...bytes].map(x=>x.toString(16).padStart(2,'0')).join('');return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);}
   async mutate(action,body,sessionId=action==='create'?null:this.sid){
-    if(this.busy)return null;const provider=this.provider,generation=this.generation,key=provider+':'+sessionId+':'+action+':'+JSON.stringify(body);this.invalidateReads(provider);this.busy=true;this.error.textContent='';this.updateComposer();
+    if(this.busy||sessionId&&(!this.canMutate()||sessionId!==this.sid))return null;const provider=this.provider,generation=this.generation,key=provider+':'+sessionId+':'+action+':'+JSON.stringify(body);this.invalidateReads(provider);this.busy=true;this.error.textContent='';this.updateComposer();
     try{let id=this.pending.get(key);if(!id){id=this.requestId();this.pending.set(key,id);}const result=await this.request(this.path(action,null,provider),{...body,id,sessionId});if(!['accepted','queued','ready'].includes(result.status))throw Error(result.message||'结果待核对，请检查桌面原会话');this.pending.delete(key);return result;}
     catch(error){if(generation===this.generation&&sessionId===this.sid)this.error.textContent=BridgeI18n.t(error.message);this.notify(BridgeI18n.t(error.message));return null;}
     finally{this.invalidateReads(provider);this.busy=false;this.updateComposer();if(generation===this.generation)this.refresh();}
