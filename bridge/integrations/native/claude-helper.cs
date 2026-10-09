@@ -220,7 +220,7 @@ class ClaudeKeyboard {
         Console.WriteLine(json.Append("]}").ToString());
     }
     static void CheckCancelled() {
-        if ((cancelFile!=null && File.Exists(cancelFile)) || (!quitAction&&(GetAsyncKeyState(27)&0x8001)!=0))
+        if ((cancelFile!=null && File.Exists(cancelFile)) || (!quitAction&&!backgroundAction&&(GetAsyncKeyState(27)&0x8001)!=0))
             throw new Exception(quitAction?"已取消 Claude 退出":"已取消键盘连接，点击 Claude 标题选择启动可重试");
     }
     static void CheckForeground() {
@@ -550,6 +550,196 @@ class ClaudeKeyboard {
             "Claude 正在等待电脑端退出确认，请自行确认或取消":uncertain?
             "Claude 退出命令回执中断，正在等待保存和退出完成":"已请求 Claude 正常退出，正在等待保存和退出完成",process.Id);
     }
+    [StructLayout(LayoutKind.Sequential)] struct BackgroundRect {public int left,top,right,bottom;}
+    [StructLayout(LayoutKind.Sequential)] struct BackgroundGui {public int size,flags;public IntPtr active,focus,capture,menuOwner,moveSize,caret;public BackgroundRect caretRect;}
+    [DllImport("user32.dll")] static extern bool GetGUIThreadInfo(uint thread,ref BackgroundGui value);
+    [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr window,EnumWindow callback,IntPtr data);
+    static bool backgroundAction;
+    static BackgroundOperation backgroundWork;
+    sealed class BackgroundOperation {
+        public volatile bool Started,Finished;public Exception Error;
+        readonly object gate=new object();bool cancelled;
+        public void Check(){lock(gate){if(cancelled)throw new OperationCanceledException("已取消 Claude 后台连接");}}
+        public bool Cancel(){lock(gate){cancelled=true;return Started;}}
+        public void Dispatch(int pid){lock(gate){if(cancelled||(cancelFile!=null&&File.Exists(cancelFile)))throw new OperationCanceledException("已取消 Claude 后台连接");Started=true;backgroundSubmission="uncertain";Stage("{\"connectPhase\":\"dispatching\",\"pid\":"+pid+"}");}}
+        public void Start(Process process,string text){var thread=new Thread(delegate(){try{ConnectBackground(process,text);}catch(Exception e){Error=e;}finally{Finished=true;}});thread.IsBackground=true;thread.SetApartmentState(ApartmentState.MTA);thread.Start();}
+    }
+    static void RunBackgroundConnection(Process process,string text) {
+        var operation=new BackgroundOperation();backgroundWork=operation;operation.Start(process,text);var timer=Stopwatch.StartNew();
+        while(!operation.Finished&&timer.Elapsed.TotalSeconds<25){if(cancelFile!=null&&File.Exists(cancelFile)){operation.Cancel();break;}Thread.Sleep(50);}
+        if(!operation.Finished){bool dispatched=operation.Cancel();backgroundSubmission=dispatched?"uncertain":"none";throw new Exception(dispatched?"Claude 连接提交结果待核对，正在等待连接回执":"Claude 后台初始化已取消或超时，连接脚本未提交");}
+        if(operation.Error!=null)throw operation.Error;
+        ConnectResult("submitted",backgroundSubmission,process.Id,"已向 Claude Console 提交连接脚本，正在等待连接回执");
+    }
+    static string VerifiedDevToolsTitle(string native,string accessible) {
+        var first=DevToolsSource(native);var second=DevToolsSource(accessible);
+        if(first!=null&&second!=null&&(AppDevToolsTitle(native)!=AppDevToolsTitle(accessible)||ShellDevToolsTitle(native)!=ShellDevToolsTitle(accessible)))
+            throw new Exception("Claude 开发者工具来源不一致，后台连接已停止");
+        return first!=null?native:second!=null&&DevToolsTitle(native)?accessible:native;
+    }
+    static List<AppWindow> ReadBackgroundWindows(int pid) {
+        var windows=ReadWindows(pid);
+        foreach(var window in windows)if(window.Visible&&!window.Cloaked&&DevToolsTitle(window.Title)) {
+            var root=AutomationElement.FromHandle(window.Handle);if(root.Current.ProcessId!=pid)throw new Exception("Claude 开发者工具进程已改变");
+            window.Title=VerifiedDevToolsTitle(window.Title,root.Current.Name);
+        }
+        return windows;
+    }
+    static string backgroundSubmission="none";
+    static Uri DevToolsSource(string title) {
+        foreach(string prefix in new[]{"DevTools - ","Developer Tools - ","开发者工具 - "})if(title.StartsWith(prefix,StringComparison.Ordinal)) {
+            Uri source;return Uri.TryCreate(title.Substring(prefix.Length),UriKind.Absolute,out source)?source:null;
+        }
+        return null;
+    }
+    static bool AppDevToolsTitle(string title) {
+        var source=DevToolsSource(title);
+        return source!=null&&source.Scheme=="app"&&source.Host.Equals("localhost",StringComparison.OrdinalIgnoreCase)&&source.UserInfo.Length==0&&source.Port==-1;
+    }
+    static bool ShellDevToolsTitle(string title) {
+        var source=DevToolsSource(title);
+        return source!=null&&source.IsFile&&source.AbsolutePath.EndsWith("/main_window/index.html",StringComparison.OrdinalIgnoreCase);
+    }
+    static WindowSelection SelectBackgroundDevTools(IEnumerable<AppWindow> windows,int pid) {
+        var selected=new WindowSelection();
+        foreach(var window in windows)if(window.Pid==pid&&window.Handle!=IntPtr.Zero&&window.Visible&&!window.Cloaked&&AppDevToolsTitle(window.Title)) {
+            selected.Count++;selected.Handle=window.Handle;
+        }
+        if(selected.Count!=1)selected.Handle=IntPtr.Zero;return selected;
+    }
+    static void CheckBackgroundProcess(Process process,long started) {
+        if(backgroundWork!=null)backgroundWork.Check();
+        if(cancelFile!=null&&File.Exists(cancelFile))throw new OperationCanceledException("已取消 Claude 后台连接");
+        if(process.HasExited||!Owned(process.Id)||process.StartTime.ToUniversalTime().Ticks!=started)
+            throw new Exception("Claude 主进程已改变，后台连接已停止");
+    }
+    static void CheckBackgroundWindow(Process process,long started,IntPtr window) {
+        CheckBackgroundProcess(process,started);uint pid;GetWindowThreadProcessId(window,out pid);
+        if(!IsWindow(window)||pid!=process.Id)throw new Exception("Claude 目标窗口已改变，后台连接已停止");
+    }
+    static AutomationElement BackgroundMenuControl(AutomationElement root,ControlType type,int pid,params string[] names) {
+        var items=root.FindAll(TreeScope.Descendants,new PropertyCondition(AutomationElement.ControlTypeProperty,type));
+        AutomationElement match=null;
+        foreach(AutomationElement item in items) {
+            bool name=false;foreach(string expected in names)if(item.Current.Name==expected){name=true;break;}
+            if(!name||item.Current.ProcessId!=pid||!AvailableMenuControl(item))continue;
+            if(match!=null)throw new Exception("Claude 开发者菜单不唯一，后台连接已停止");match=item;
+        }
+        return match;
+    }
+    static void BackgroundMenuAction(AutomationElement item,Action check,bool expand) {
+        check();object pattern;
+        if(item==null||!AvailableMenuControl(item))throw new Exception("请先在 Claude 中启用开发者模式，再重试初始化连接");
+        if(expand&&item.TryGetCurrentPattern(ExpandCollapsePattern.Pattern,out pattern))((ExpandCollapsePattern)pattern).Expand();
+        else if(item.TryGetCurrentPattern(InvokePattern.Pattern,out pattern))((InvokePattern)pattern).Invoke();
+        else throw new Exception("Claude 开发者菜单不支持后台操作，请在电脑端打开开发者工具后重试");
+    }
+    static void OpenBackgroundDevTools(Process process,long started) {
+        CheckBackgroundProcess(process,started);
+        var before=ReadBackgroundWindows(process.Id);var prior=new HashSet<IntPtr>();foreach(var window in before)prior.Add(window.Handle);
+        var selected=SelectWindow(before,process.Id,IntPtr.Zero);
+        if(selected.Count!=1||selected.Handle==IntPtr.Zero)throw new Exception("找不到唯一 Claude 主窗口，请在电脑端打开 Claude 后重试");
+        IntPtr windowHandle=selected.Handle,foreground=GetForegroundWindow();Action check=()=>CheckBackgroundWindow(process,started,windowHandle);
+        var root=AutomationElement.FromHandle(windowHandle);
+        try {
+            var developer=BackgroundMenuControl(root,ControlType.MenuItem,process.Id,"Developer","开发者","開發者");
+            if(developer==null) {
+                var menu=BackgroundMenuControl(root,ControlType.Button,process.Id,"Menu","菜单","選單");BackgroundMenuAction(menu,check,false);
+                developer=WaitMenuEntry(()=>BackgroundMenuControl(root,ControlType.MenuItem,process.Id,"Developer","开发者","開發者"),check,()=>Thread.Sleep(100));
+            }
+            BackgroundMenuAction(developer,check,true);
+            var show=WaitMenuEntry(()=>BackgroundMenuControl(root,ControlType.MenuItem,process.Id,"Show All Dev Tools","显示所有开发者工具","顯示所有開發者工具"),check,()=>Thread.Sleep(100));
+            BackgroundMenuAction(show,check,false);
+            for(int i=0;i<40;i++) {check();if(SelectBackgroundDevTools(ReadBackgroundWindows(process.Id),process.Id).Count!=0)break;Thread.Sleep(100);}
+            // Close only the shell tool created by this invocation. Never close
+            // pre-existing user DevTools or a Claude conversation window.
+            foreach(var created in ReadBackgroundWindows(process.Id))if(!prior.Contains(created.Handle)&&ShellDevToolsTitle(created.Title)) {
+                CheckBackgroundWindow(process,started,created.Handle);object pattern;
+                var tool=AutomationElement.FromHandle(created.Handle);
+                if(!tool.TryGetCurrentPattern(WindowPattern.Pattern,out pattern))throw new Exception("Claude 新建外壳开发者工具无法关闭，请在电脑端处理后重试");
+                ((WindowPattern)pattern).Close();
+                for(int i=0;i<30&&IsWindow(created.Handle);i++){CheckBackgroundProcess(process,started);Thread.Sleep(100);}
+                if(IsWindow(created.Handle))throw new Exception("Claude 新建外壳开发者工具尚未关闭，请稍后重试");
+            }
+        } finally {Stage("{\"connectPhase\":\"tools-navigation\",\"pid\":"+process.Id+",\"foregroundChanged\":"+(foreground!=GetForegroundWindow()?"true":"false")+"}");}
+    }
+    static IntPtr BackgroundRenderer(Process process,long started,IntPtr tools) {
+        CheckBackgroundWindow(process,started,tools);var handles=new List<IntPtr>();
+        EnumChildWindows(tools,delegate(IntPtr window,IntPtr data){uint pid;GetWindowThreadProcessId(window,out pid);var name=new StringBuilder(256);GetClassName(window,name,name.Capacity);if(pid==process.Id&&name.ToString()=="Chrome_RenderWidgetHostHWND")handles.Add(window);return true;},IntPtr.Zero);
+        if(handles.Count!=1)throw new Exception("Claude 开发者工具渲染窗口不唯一，后台输入已停止");return handles[0];
+    }
+    static AutomationElement BackgroundPrompt(Process process,long started,IntPtr tools,IntPtr renderer,bool requireFocus) {
+        CheckBackgroundWindow(process,started,tools);CheckBackgroundWindow(process,started,renderer);
+        var selected=SelectBackgroundDevTools(ReadBackgroundWindows(process.Id),process.Id);
+        if(selected.Count!=1||selected.Handle!=tools||BackgroundRenderer(process,started,tools)!=renderer)
+            throw new Exception("Claude 开发者工具目标已改变，后台输入已停止");
+        var root=AutomationElement.FromHandle(tools);var tabs=root.FindAll(TreeScope.Descendants,new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.TabItem));
+        int consoles=0;bool consoleSelected=false;
+        foreach(AutomationElement tab in tabs)if(tab.Current.ProcessId==process.Id&&!tab.Current.IsOffscreen&&(tab.Current.AutomationId=="tab-console"||tab.Current.Name=="Console"||tab.Current.Name=="控制台")) {
+            consoles++;object pattern;consoleSelected=tab.TryGetCurrentPattern(SelectionItemPattern.Pattern,out pattern)&&((SelectionItemPattern)pattern).Current.IsSelected;
+        }
+        if(consoles!=1||!consoleSelected)throw new Exception("Claude 开发者工具未停留在 Console，请在电脑端选择 Console 后重试");
+        var elements=root.FindAll(TreeScope.Descendants,new OrCondition(new PropertyCondition(AutomationElement.AutomationIdProperty,"console-prompt"),new PropertyCondition(AutomationElement.NameProperty,"Console prompt"),new PropertyCondition(AutomationElement.NameProperty,"控制台提示"),new PropertyCondition(AutomationElement.NameProperty,"控制台提示符")));
+        AutomationElement prompt=null;int count=0;
+        foreach(AutomationElement element in elements)if(IsPrompt(element)&&element.Current.ProcessId==process.Id&&!element.Current.IsOffscreen&&element.Current.IsEnabled){prompt=element;count++;}
+        if(count!=1)throw new Exception("Claude Console 输入框不唯一，后台输入已停止");
+        if(requireFocus) {
+            uint pid;uint thread=GetWindowThreadProcessId(renderer,out pid);var gui=new BackgroundGui();gui.size=Marshal.SizeOf(gui);
+            if(!prompt.Current.HasKeyboardFocus||!GetGUIThreadInfo(thread,ref gui)||gui.focus!=renderer)
+                throw new Exception("Claude Console 内部焦点已改变，后台输入未提交");
+        }
+        return prompt;
+    }
+    static void ConnectResult(string state,string submission,int pid,string reason) {
+        Stage("{\"setupState\":"+JsonString(state)+",\"submission\":"+JsonString(submission)+",\"pid\":"+pid+",\"reason\":"+JsonString(reason)+"}");
+    }
+    static void SelectNewBackgroundConsole(Process process,long started,IntPtr tools) {
+        CheckBackgroundWindow(process,started,tools);var root=AutomationElement.FromHandle(tools);
+        var tab=BackgroundMenuControl(root,ControlType.TabItem,process.Id,"Console","控制台");object pattern;
+        if(tab==null||!tab.TryGetCurrentPattern(SelectionItemPattern.Pattern,out pattern))throw new Exception("Claude Console 标签不可用，请在电脑端选择后重试");
+        CheckBackgroundWindow(process,started,tools);((SelectionItemPattern)pattern).Select();Thread.Sleep(150);
+    }
+    static void SubmitBackgroundVerifiedConsole(string text,Func<string> readDraft,Action<string> replace,Func<string> readDocument,
+        Action check,Action pause,Func<bool> expired,Action reset,Func<bool> retryEmpty,Action submit) {
+        for(int attempt=0;attempt<2;attempt++) {
+            check();reset();check();if(!String.IsNullOrWhiteSpace(readDraft()))throw new Exception("Console 中已有未提交内容，已保留，请处理后重试连接");
+            bool enteredSubmit=false;
+            try {SubmitVerifiedConsole(text,readDraft,replace,readDocument,check,pause,expired,delegate{enteredSubmit=true;submit();});return;}
+            catch {
+                if(attempt!=0||enteredSubmit)throw;
+                check();if(!String.IsNullOrWhiteSpace(readDraft())||!retryEmpty())throw;
+                pause();check();if(!String.IsNullOrWhiteSpace(readDraft())||!retryEmpty())throw;
+            }
+        }
+    }
+    static void ConnectBackground(Process process,string text) {
+        long started=process.StartTime.ToUniversalTime().Ticks;CheckBackgroundProcess(process,started);
+        var tools=SelectBackgroundDevTools(ReadBackgroundWindows(process.Id),process.Id);
+        bool opened=tools.Count==0;
+        if(opened){OpenBackgroundDevTools(process,started);tools=SelectBackgroundDevTools(ReadBackgroundWindows(process.Id),process.Id);}
+        if(tools.Count!=1||tools.Handle==IntPtr.Zero)throw new Exception("找不到唯一 app://localhost Claude 开发者工具，请在电脑端检查后重试");
+        IntPtr window=tools.Handle;if(opened)SelectNewBackgroundConsole(process,started,window);IntPtr renderer=BackgroundRenderer(process,started,window);
+        AutomationElement prompt=null;ValuePattern value=null;TextPattern document=null;var timer=new Stopwatch();
+        Action acquire=delegate {
+            prompt=BackgroundPrompt(process,started,window,renderer,false);object valueObject,textObject;
+            if(!prompt.TryGetCurrentPattern(ValuePattern.Pattern,out valueObject)||((ValuePattern)valueObject).Current.IsReadOnly||!prompt.TryGetCurrentPattern(TextPattern.Pattern,out textObject))
+                throw new Exception("Claude Console 不支持核验后台写入，请在电脑端手动初始化连接");
+            value=(ValuePattern)valueObject;document=(TextPattern)textObject;timer.Restart();
+        };
+        Action check=()=>BackgroundPrompt(process,started,window,renderer,false);
+        SubmitBackgroundVerifiedConsole(text,()=>Contents(prompt),textValue=>value.SetValue(textValue),()=>document.DocumentRange.GetText(-1).TrimEnd('\r','\n'),check,()=>Thread.Sleep(50),()=>timer.Elapsed.TotalSeconds>=6,acquire,
+            delegate {if(backgroundWork!=null&&backgroundWork.Started)return false;var current=BackgroundPrompt(process,started,window,renderer,true);return Automation.Compare(prompt,current);},delegate {
+            var current=BackgroundPrompt(process,started,window,renderer,true);
+            if(!Automation.Compare(prompt,current)||Contents(current)!=text)throw new Exception("Claude Console 内容已改变，后台输入未提交");
+            // This flushed marker precedes the only targeted input operation.
+            // A lost helper response from this point is an uncertain submit.
+            backgroundWork.Dispatch(process.Id);
+            if(!PostMessage(renderer,0x0100,new IntPtr(13),new IntPtr(0x001c0001))){backgroundSubmission="none";throw new Exception("Windows 未接收 Claude Console 提交，请检查权限后重试");}
+            if(!PostMessage(renderer,0x0101,new IntPtr(13),new IntPtr(unchecked((int)0xc01c0001))))throw new Exception("Claude Console 提交回执不完整，请等待连接状态核对");
+            backgroundSubmission="submitted";
+        });
+    }
+
     static string ReadContents(string text,string value) {
         // Chromium contenteditable exposes an empty ValuePattern even when its
         // TextPattern contains the entire CodeMirror document.
@@ -756,6 +946,7 @@ class ClaudeKeyboard {
             }
             if(args.Length!=3 && args.Length!=4) throw new Exception("键盘连接参数无效");
             quitAction=args[1]=="--quit";
+            backgroundAction=args[1].StartsWith("--connect-background=",StringComparison.Ordinal);
             cancelFile=args.Length==4?args[3]:null;
             executable=Path.GetFullPath(args[2]);
             var process=Process.GetProcessById(Int32.Parse(args[0]));
@@ -773,8 +964,10 @@ class ClaudeKeyboard {
                 }
                 Stage("NO_TRUST_ERROR");return 0;
             }
-            string text=File.ReadAllText(args[1],Encoding.UTF8);
+            string script=backgroundAction?args[1].Substring("--connect-background=".Length):args[1];
+            string text=File.ReadAllText(script,Encoding.UTF8);
             if(text.Length>300000||text.Contains("\n")||text.Contains("\r")||!text.StartsWith("/* codex bridge connector */")) throw new Exception("连接脚本格式无效");
+            if(backgroundAction){RunBackgroundConnection(process,text);return 0;}
             Stage("正在等待 Claude 窗口");
             GetAsyncKeyState(27); // Clear an old Escape press, subsequent presses cancel.
             var existingTools=SelectDevTools(ReadWindows(process.Id),process.Id);
@@ -809,7 +1002,8 @@ class ClaudeKeyboard {
             Console.WriteLine("脚本已输入，等待连接回执");return 0;
         } catch(Exception e) {
             string message=e is System.ComponentModel.Win32Exception?"无法读取 Claude 窗口，请检查运行权限":e.Message;
-            if(quitAction)QuitResult("failed",message,quitPid);else Console.WriteLine(message);
+            if(String.IsNullOrWhiteSpace(message))message=quitAction?"Claude 原生退出菜单操作失败，请在电脑端检查后重试":"Claude 原生连接操作失败，请在电脑端检查后重试";
+            if(quitAction)QuitResult("failed",message,quitPid);else if(backgroundAction)ConnectResult("failed",backgroundSubmission,quitPid,message);else Console.WriteLine(message);
             return 1;
         }
     }
