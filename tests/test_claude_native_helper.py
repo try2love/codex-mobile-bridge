@@ -54,6 +54,7 @@ class WindowsNativeWindowSelectors(unittest.TestCase):
         self.assertIn('packaged launch OK', result.stdout)
         self.assertIn('atomic console submission OK', result.stdout)
         self.assertIn('detached console reuse OK', result.stdout)
+        self.assertIn('native menu quit guards OK', result.stdout)
 
     def test_readonly_inspection_finds_owned_window_instead_of_main_window_hint(self):
         source, fixture = self.folder/'fixture.cs', self.folder/'Claude.exe'
