@@ -1,6 +1,24 @@
 'use strict';
 const ClientLifecycle=(()=>{
   let sequence=0;
+  function connection(client={}){
+    const stage=client.connectionState,setup=client.setupStatus;
+    const waiting=['starting','connecting'].includes(stage)||(!stage&&setup==='connecting');
+    const background=client.backgroundRunning&&client.mainRunning===false;
+    let label,reason=client.reason||'',pending=false,action=false;
+    if(setup==='recovery-required'||(background&&!waiting&&!client.pendingEnable))label=background?'后台运行，桌面未打开':'需要恢复连接';
+    else if(client.connected)label='已连接';
+    else if(client.pendingEnable){label='正在启动应用…';reason='正在等待客户端连接，完成后会自动显示聊天。';pending=true;}
+    else if(waiting){label=stage==='starting'?'正在启动应用…':'正在连接，请稍候…';pending=true;}
+    else{
+      label=({'error':'连接失败','timeout':'连接超时','needs-initialization':'需要手动初始化'})[stage]
+        ||({'unsupported':'暂不支持自动接入','needs-initialization':'需要手动初始化','needs-first-launch':'需要完成首次设置','restart-required':'等待重启','needs-permission':'等待授权','needs-developer-mode':'等待开发者模式确认','needs-trust':'等待目录授权','cancelled':'已取消连接','failed':'连接失败','needs-retry':'连接失败'})[setup];
+      action=!!label;
+      label=label||(client.installed===false?'未安装':client.running===true?'应用运行中，尚未连接':client.running===false?'应用未运行':'尚未连接');
+    }
+    const retryable=client.retryable===true&&client.enabled&&!client.connected&&!pending&&setup!=='recovery-required';
+    return {label,reason,waiting:pending,action:action||setup==='recovery-required',retryable:!!retryable,error:!client.connected&&['error','timeout'].includes(stage)||!client.connected&&setup==='failed'};
+  }
   function chooseDisable(client){
     return new Promise(resolve=>{
       const dialog=document.createElement('dialog');dialog.className='client-disable-dialog';
@@ -13,7 +31,7 @@ const ClientLifecycle=(()=>{
       const finish=value=>{choice=value;dialog.close();};
       for(const [label,note,value] of [
         ['仅停用手机接入','保留电脑 App 和现有任务。',false],
-        ['同时退出电脑 App',client.id==='claude'?'通过 Claude 原生菜单退出，菜单可能短暂出现；如有任务或保存确认，请在电脑端处理。':'仅在所有任务结束且没有待确认操作时退出。',true]
+        ['同时退出电脑 App',client.id==='claude'?'通过 Claude 原生菜单退出，菜单可能短暂出现；如有任务或保存确认，请在电脑端处理。完全退出后，再次连接需在电脑端初始化。':'仅在所有任务结束且没有待确认操作时退出。',true]
       ]){
         const button=document.createElement('button');button.type='button';button.dataset.quitDesktop=String(value);
         button.append(node('strong',label),node('small',note));button.onclick=()=>finish(value);actions.append(button);
@@ -25,6 +43,6 @@ const ClientLifecycle=(()=>{
       document.body.append(dialog);dialog.showModal();cancel.focus();
     });
   }
-  return {chooseDisable};
+  return {chooseDisable,connection};
 })();
 if(typeof module!=='undefined')module.exports=ClientLifecycle;
