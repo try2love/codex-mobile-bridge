@@ -899,6 +899,7 @@ class DesktopWorkspace:
 
     def __init__(self, manager, provider, sid, root):
         from ..terminal import TerminalManager
+        self.manager, self.provider = manager, provider
         self.root = root
         self.identifier = str(uuid.uuid5(uuid.NAMESPACE_URL, provider + ':' + sid))
         with manager.client_lock:
@@ -914,8 +915,14 @@ class DesktopWorkspace:
 
     def workspace(self, sid, action, params):
         from ..workspace import operate
-        return operate(self.root, action, params)
+        # HTTP may resolve this object before waiting for an upload body. Check
+        # again under the same gate used by disabling access before any write.
+        with self.manager.locks[self.provider]:
+            self.manager.require_enabled(self.provider)
+            return operate(self.root, action, params)
 
     def terminal(self, sid, owner, action, params):
         from ..service import Bridge
-        return Bridge.terminal(self, self.identifier, owner, action, params)
+        with self.manager.locks[self.provider]:
+            self.manager.require_enabled(self.provider)
+            return Bridge.terminal(self, self.identifier, owner, action, params)
