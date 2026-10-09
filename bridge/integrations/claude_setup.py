@@ -1,5 +1,6 @@
 """Claude discovery and visible native Console bootstrap, independent of CDP."""
 import json
+import os
 import plistlib
 import re
 import struct
@@ -8,7 +9,7 @@ import sys
 import time
 from pathlib import Path
 
-from ..desktop_app import DesktopApp
+from ..desktop_app import DesktopApp, process_inventory
 
 
 def _archive_members(path):
@@ -80,11 +81,25 @@ def helper_path():
 
 
 def _running_profiles(executable, platform):
-    """Locate the selected macOS app's open Chromium profile, without reading it.
+    """Locate the selected app's active Chromium profile, without reading it.
 
     Claude can select Claude-3p internally, so installation paths and another
     profile's developer settings do not establish its active data directory.
     """
+    if platform == 'win32':
+        selected = Path(executable).expanduser().resolve()
+        state = process_inventory([selected]).get(selected, {})
+        profiles = set()
+        # Electron's children report their actual user-data-dir even when the
+        # main process chose a Store-redirected or third-party profile itself.
+        argument = re.compile(r'(?:^|\s)(?:"--user-data-dir=([^"\r\n]+)"|'
+                              r'--user-data-dir(?:=|\s+)(?:"([^"\r\n]+)"|([^\s"]+)))', re.I)
+        for command in state.get('commands', {}).values():
+            for match in argument.finditer(command):
+                path = Path(next(value for value in match.groups() if value is not None))
+                if path.is_absolute():
+                    profiles.add(path.resolve())
+        return profiles
     if platform != 'darwin':
         return set()
     app = DesktopApp(executable, Path.home())
@@ -109,15 +124,74 @@ def _running_profiles(executable, platform):
     return profiles
 
 
-def claude_data_home(executable, fallback, platform=None):
-    """Prefer unique running-profile evidence; keep the platform default otherwise."""
-    try:
-        profiles = _running_profiles(executable, platform or sys.platform)
-        if len(profiles) == 1:
-            return next(iter(profiles))
-    except (OSError, ValueError, subprocess.SubprocessError):
-        pass
-    return Path(fallback)
+def windows_claude_profile_paths(executable, fallback, *, env=None, package_family=None):
+    """Known profiles for this user and selected installation, never arbitrary homes.
+
+    Missing canonical paths are retained for account operations, but a custom
+    fallback is not paired with another user's or installation's configuration.
+    """
+    env = os.environ if env is None else env
+    if not env.get('APPDATA') or not env.get('LOCALAPPDATA'):
+        return {}
+    roaming, local = Path(env['APPDATA']).resolve(), Path(env['LOCALAPPDATA']).resolve()
+    family = package_family if re.fullmatch(r'Claude_[a-z0-9]+', package_family or '', re.I) else None
+    if not family and executable:
+        for folder in Path(executable).resolve().parents:
+            match = re.fullmatch(r'Claude_\d+(?:\.\d+){3}_(?:x64|x86|arm64|neutral)_[^_]*_([a-z0-9]+)', folder.name, re.I)
+            if folder.parent.name.casefold() == 'windowsapps' and match:
+                family = 'Claude_' + match[1]
+                break
+    official = [local/'Claude-Data']
+    if family:
+        official.append(local/'Packages'/family/'LocalCache/Roaming/Claude')
+    official.append(roaming/'Claude')
+    thirdparty = [local/'Claude-3p', roaming/'Claude-3p']
+    if Path(fallback).resolve() not in (*official, *thirdparty):
+        return {}
+    return {'official': official, 'thirdparty': thirdparty}
+
+
+def _windows_stopped_profile(executable, fallback, env, package_family):
+    groups = windows_claude_profile_paths(executable, fallback, env=env, package_family=package_family)
+    if not groups:
+        return fallback
+    candidates = groups['official'] + groups['thirdparty']
+    modes = set()
+    for path in candidates:
+        try:
+            # Only use a bounded mode selector. Never return credentials or
+            # configuration values, and never create or modify native profiles.
+            with (path/'claude_desktop_config.json').open('rb') as stream:
+                content = stream.read(64 * 1024 + 1)
+            if len(content) <= 64 * 1024:
+                value = json.loads(content).get('deploymentMode')
+                if value in ('1p', '3p'):
+                    modes.add(value)
+        except (OSError, ValueError, AttributeError):
+            pass
+    if len(modes) > 1:
+        return fallback
+    if modes:
+        candidates = groups['thirdparty' if '3p' in modes else 'official']
+    markers = ('Local State', 'Preferences', 'Network/Cookies', 'Cookies',
+               'config.json', 'claude_desktop_config.json', 'developer_settings.json')
+    populated = [path for path in candidates if any((path/marker).is_file() for marker in markers)]
+    return populated[0] if len(populated) == 1 else fallback
+
+
+def claude_data_home(executable, fallback, platform=None, *, env=None, package_family=None, inspect_running=True):
+    """Prefer unique live evidence, then a single supported Windows profile."""
+    platform, fallback = platform or sys.platform, Path(fallback)
+    if inspect_running:
+        try:
+            profiles = _running_profiles(executable, platform)
+            if profiles:
+                return next(iter(profiles)) if len(profiles) == 1 else fallback
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+    if platform == 'win32':
+        return _windows_stopped_profile(executable, fallback, env, package_family)
+    return fallback
 
 
 def developer_mode_enabled(data_home):

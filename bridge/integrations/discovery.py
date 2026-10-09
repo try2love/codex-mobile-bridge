@@ -173,7 +173,7 @@ def discover_clients(preferences=None, *, platform=None, home=None, env=None, ap
             for row in registered_candidates(provider, windows_inventory or {}):
                 path = Path(row['executable'])
                 candidates.append(path)
-                metadata[path] = {key: value for key, value in row.items() if key != 'executable'}
+                metadata.setdefault(path, {}).update({key: value for key, value in row.items() if key != 'executable'})
             candidates += list(_windows_candidates(provider, home, env))
         elif platform == 'linux':
             candidates += list(_linux_candidates(provider, home, env))
@@ -181,7 +181,9 @@ def discover_clients(preferences=None, *, platform=None, home=None, env=None, ap
                       if (row := _candidate(path, provider, platform))), {})
         if provider == 'claude':
             explicit_home = _path(preferences.get('claudeHome'), home)
-            homes['claude'] = explicit_home or (claude_data_home(found['executable'], homes['claude'], platform)
+            homes['claude'] = explicit_home or (claude_data_home(found['executable'], homes['claude'], platform,
+                                                env=env, package_family=found.get('packageFamilyName'),
+                                                inspect_running=native_windows or platform != 'win32')
                                                 if found else homes['claude'])
         row = {'id': provider, 'name': name, 'installed': bool(found), 'application': '', 'executable': '',
                'dataDirectory': str(homes[provider]), **found}
