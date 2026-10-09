@@ -24,6 +24,9 @@ class ClaudeKeyboard {
     [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr window);
     [DllImport("user32.dll")] static extern bool AttachThreadInput(uint first,uint second,bool attach);
     [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+    [DllImport("kernel32.dll",SetLastError=true)] static extern IntPtr OpenProcess(uint access,bool inherit,int pid);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll",CharSet=CharSet.Unicode)] static extern int GetApplicationUserModelId(IntPtr process,ref uint length,StringBuilder value);
     [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr window,int mode);
     [DllImport("user32.dll")] static extern short GetAsyncKeyState(int key);
     delegate bool EnumWindow(IntPtr window,IntPtr data);
@@ -115,11 +118,33 @@ class ClaudeKeyboard {
             // Claude's native single-instance launch restores its tray window.
             // Never activate one of its many hidden utility windows directly.
             check();
-            using(var launched=Process.Start(new ProcessStartInfo(executable) {UseShellExecute=false,
-                WorkingDirectory=Path.GetDirectoryName(executable)})) {}
+            using(var launched=Process.Start(NativeLaunch(executable,ApplicationId(process.Id),
+                Environment.GetFolderPath(Environment.SpecialFolder.Windows)))) {}
         }:null;
         return WaitWindow(()=>SelectWindow(ReadWindows(process.Id),process.Id,GetForegroundWindow()),
                           reopen,check,()=>Thread.Sleep(250),48);
+    }
+    static string ApplicationId(int pid) {
+        var handle=OpenProcess(0x1000,false,pid); // Query limited process metadata only.
+        if(handle==IntPtr.Zero)throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        try {
+            uint length=0;int status=GetApplicationUserModelId(handle,ref length,null);
+            if(status==15700||status==15703)return null; // Unpackaged / no application identity.
+            if(status!=122||length==0||length>512)throw new Exception("无法确认 Claude 的原生应用启动入口");
+            var value=new StringBuilder((int)length);
+            status=GetApplicationUserModelId(handle,ref length,value);
+            if(status!=0)throw new System.ComponentModel.Win32Exception(status);
+            return value.ToString();
+        } finally {CloseHandle(handle);}
+    }
+    static ProcessStartInfo NativeLaunch(string path,string applicationId,string windowsDirectory) {
+        if(applicationId==null)return new ProcessStartInfo(path) {UseShellExecute=false,WorkingDirectory=Path.GetDirectoryName(path)};
+        // Registered Store binaries can reject both CreateProcess and direct
+        // ShellExecute. Use the selected process's OS-reported app identity.
+        if(!System.Text.RegularExpressions.Regex.IsMatch(applicationId,@"^[A-Za-z0-9_.-]+_[A-Za-z0-9]+![A-Za-z0-9_.-]+$"))
+            throw new Exception("Claude 的原生应用启动入口格式无效");
+        return new ProcessStartInfo(Path.Combine(windowsDirectory,"explorer.exe"),"shell:AppsFolder\\"+applicationId) {
+            UseShellExecute=false,CreateNoWindow=true,WindowStyle=ProcessWindowStyle.Hidden};
     }
     static string JsonString(string value) {
         return "\""+value.Replace("\\","\\\\").Replace("\"","\\\"").Replace("\r","\\r").Replace("\n","\\n").Replace("\t","\\t")+"\"";
@@ -131,7 +156,9 @@ class ClaudeKeyboard {
         json.Append("{\"processId\":").Append(process.Id).Append(",\"sessionId\":").Append(process.SessionId)
             .Append(",\"helperSessionId\":").Append(session).Append(",\"mainWindowHandle\":").Append(process.MainWindowHandle.ToInt64())
             .Append(",\"selectedWindowHandle\":").Append(selection.Handle.ToInt64()).Append(",\"eligibleCount\":").Append(selection.Count)
-            .Append(",\"windows\":[");
+            .Append(",\"appUserModelId\":");
+        var applicationId=ApplicationId(process.Id);
+        json.Append(applicationId==null?"null":JsonString(applicationId)).Append(",\"windows\":[");
         bool first=true;
         foreach(var window in windows) {
             if(!first)json.Append(',');first=false;
@@ -396,6 +423,19 @@ class ClaudeKeyboard {
         catch(Exception){unavailable=true;}
         if(!unavailable||String.Join(",",actions.ToArray())!="expand:help")throw new Exception("Claude 菜单允许列表自检失败");
     }
+    static void CheckNativeLaunch() {
+        var standalone=NativeLaunch(@"C:\Programs\Claude\Claude.exe",null,@"C:\Windows");
+        if(standalone.FileName!=@"C:\Programs\Claude\Claude.exe"||standalone.Arguments!=""||standalone.UseShellExecute)
+            throw new Exception("Claude 独立应用启动自检失败");
+        var store=NativeLaunch(@"C:\Program Files\WindowsApps\Claude\app\Claude.exe","Claude_fixturepublisher!Claude",@"C:\Windows");
+        if(store.FileName!=@"C:\Windows\explorer.exe"||store.Arguments!=@"shell:AppsFolder\Claude_fixturepublisher!Claude"||
+            store.UseShellExecute||!store.CreateNoWindow||store.WindowStyle!=ProcessWindowStyle.Hidden)
+            throw new Exception("Claude 商店应用启动自检失败");
+        bool rejected=false;
+        try {NativeLaunch(@"C:\Claude.exe","Claude_fixturepublisher!Claude --other",@"C:\Windows");}
+        catch(Exception){rejected=true;}
+        if(!rejected)throw new Exception("Claude 启动入口允许列表自检失败");
+    }
     [STAThread] static int Main(string[] args) {
         Console.OutputEncoding=new UTF8Encoding(false);
         try {
@@ -407,7 +447,8 @@ class ClaudeKeyboard {
                 if(!FocusedWithin("expected-console","editor-child",parent,(a,b)=>a==b)||FocusedWithin("expected-console","other-editor",parent,(a,b)=>a==b)||FocusedWithin("expected-console","other-console",parent,(a,b)=>a==b))throw new Exception("Console 精确焦点自检失败");
                 CheckWindowSelection();
                 CheckMenuNavigation();
-                Console.WriteLine("keyboard ABI, Console allowlist and contenteditable text fallback OK; window selection and cancellable restore OK; menu navigation OK");return 0;
+                CheckNativeLaunch();
+                Console.WriteLine("keyboard ABI, Console allowlist and contenteditable text fallback OK; window selection and cancellable restore OK; menu navigation OK; packaged launch OK");return 0;
             }
             if(args.Length!=3 && args.Length!=4) throw new Exception("键盘连接参数无效");
             cancelFile=args.Length==4?args[3]:null;
