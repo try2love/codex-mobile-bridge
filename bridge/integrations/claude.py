@@ -132,7 +132,7 @@ class Claude:
         try:
             if not data_home:
                 raise ValueError('未找到 Claude 数据目录，请重新扫描')
-            result = background_running_app(executable, data_home, cancelled=cancel)
+            background_running_app(executable, data_home, cancelled=cancel, launch_gate=self.setup_lock)
             if cancel.is_set():
                 return
             self._setup_state('connecting', 'Claude 已启动，正在等待已有桌面连接恢复')
