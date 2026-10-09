@@ -14,6 +14,21 @@
 
 旧版已记录为“创建结果尚不确定”的请求不会自动重放，以免重复创建。更新后先检查已有会话列表，再新建一次测试聊天。
 
+## Windows 客户端扫描修复
+
+客户端页的“重新扫描”现在同时读取当前用户的 Store 包注册信息、安装注册表、App Paths 和当前会话的桌面进程。它不再依赖遍历受保护的 WindowsApps 目录，也支持安装到其他盘符的 `DSH Desktop`。Store 包优先使用清单中声明的桌面入口，避免把 Codex 的启动垫片或命令行运行时当作 GUI。
+
+Claude 优先根据所选应用进程的 `--user-data-dir` 定位活动配置；应用未运行时，检查对应 Store 包目录、`Local/Claude-3p`、`Local/Claude-Data` 和传统 Roaming 目录的配置证据。手动指定的数据目录保持优先。账号模块沿用这些目录；无法确定配置归属时拒绝切换账号，避免向错误目录写入。
+
+扫描只发现应用和配置，不会自动完成 Claude 或 DSH 的连接、修改原生开发者设置或切换账号。“已安装”“正在运行”和“已连接”是不同状态。更新本地测试版后重新打开启动脚本，客户端页会自动重新扫描，也可以手动点击“重新扫描”。
+
+针对这次问题的回归检查：
+
+```powershell
+.\.tmp\build-env\Scripts\python.exe -B -m unittest tests.test_windows_discovery tests.test_desktop_discovery tests.test_claude_setup tests.test_client_scan tests.test_client_inventory tests.test_client_launch tests.test_client_lifecycle tests.test_claude_accounts -v
+node --test tests/client-connections-ui.test.cjs tests/client-accounts-ui.test.cjs
+```
+
 ## 构建
 
 在 Windows x64 上使用原生 Python 3.12 或更高版本、Node.js 24。此工作树已准备好 `.tmp/build-env` 和 `node_modules`。
