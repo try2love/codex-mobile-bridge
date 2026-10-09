@@ -1,6 +1,7 @@
 // Adapted from 2389859005/coding-mobile, MIT, commit 7a8f003. See ../LICENSE.coding-mobile.
 // Product component. Only a verified Claude DevTools Console may receive input.
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -30,10 +31,16 @@ class ClaudeKeyboard {
     [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr window,StringBuilder text,int count);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll")] static extern bool IsWindow(IntPtr window);
+    [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr window,uint command);
+    [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr window,StringBuilder text,int count);
+    [DllImport("user32.dll",EntryPoint="GetWindowLongPtrW")] static extern IntPtr GetWindowLongPtr(IntPtr window,int index);
+    [DllImport("user32.dll",EntryPoint="GetWindowLongW")] static extern int GetWindowLong(IntPtr window,int index);
+    [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr window,uint attribute,out uint value,uint size);
     [DllImport("user32.dll")] static extern bool PostMessage(IntPtr window,uint message,IntPtr wparam,IntPtr lparam);
     static string executable;
     static string cancelFile;
     static IntPtr inputWindow;
+    static int session=Process.GetCurrentProcess().SessionId;
     static void Stage(string text) {Console.WriteLine(text);Console.Out.Flush();}
     static void Activate(IntPtr window) {
         CheckCancelled();
@@ -45,8 +52,95 @@ class ClaudeKeyboard {
         CheckForeground();
     }
     static bool Owned(int pid) {
-        try { var p=Process.GetProcessById(pid); return p.ProcessName.Equals("Claude",StringComparison.OrdinalIgnoreCase) && p.MainModule.FileName.Equals(executable,StringComparison.OrdinalIgnoreCase); }
+        try { using(var p=Process.GetProcessById(pid)) return p.SessionId==session && p.ProcessName.Equals("Claude",StringComparison.OrdinalIgnoreCase) && p.MainModule.FileName.Equals(executable,StringComparison.OrdinalIgnoreCase); }
         catch { return false; }
+    }
+    sealed class AppWindow {
+        public IntPtr Handle,Owner;
+        public int Pid;
+        public bool Visible,ToolWindow,Cloaked;
+        public string Title="",ClassName="";
+    }
+    sealed class WindowSelection {
+        public IntPtr Handle;
+        public int Count;
+    }
+    static bool Eligible(AppWindow window,int pid) {
+        return window.Pid==pid&&window.Handle!=IntPtr.Zero&&window.Visible&&!window.ToolWindow&&!window.Cloaked
+            &&!String.IsNullOrEmpty(window.Title)&&!DevToolsTitle(window.Title);
+    }
+    static WindowSelection SelectWindow(IEnumerable<AppWindow> windows,int pid,IntPtr foreground) {
+        var selected=new WindowSelection();IntPtr only=IntPtr.Zero;
+        foreach(var window in windows) {
+            if(!Eligible(window,pid))continue;
+            selected.Count++;only=window.Handle;
+            if(window.Handle==foreground)selected.Handle=foreground;
+        }
+        if(selected.Count==1)selected.Handle=only;
+        return selected;
+    }
+    static List<AppWindow> ReadWindows(int selectedPid) {
+        var windows=new List<AppWindow>();
+        EnumWindows(delegate(IntPtr handle,IntPtr data) {
+            uint pid;GetWindowThreadProcessId(handle,out pid);
+            if(pid!=selectedPid)return true;
+            var title=new StringBuilder(1024);var name=new StringBuilder(256);
+            GetWindowText(handle,title,title.Capacity);GetClassName(handle,name,name.Capacity);
+            long style=IntPtr.Size==8?GetWindowLongPtr(handle,-20).ToInt64():GetWindowLong(handle,-20);
+            uint cloaked;bool hidden=DwmGetWindowAttribute(handle,14,out cloaked,4)==0&&cloaked!=0;
+            windows.Add(new AppWindow {Handle=handle,Owner=GetWindow(handle,4),Pid=(int)pid,
+                Visible=IsWindowVisible(handle),ToolWindow=(style&0x80)!=0,Cloaked=hidden,
+                Title=title.ToString(),ClassName=name.ToString()});
+            return true;
+        },IntPtr.Zero);
+        return windows;
+    }
+    static IntPtr WaitWindow(Func<WindowSelection> find,Action restore,Action check,Action pause,int attempts) {
+        bool restored=false;
+        for(int attempt=0;attempt<attempts;attempt++) {
+            check();var selected=find();
+            if(selected.Handle!=IntPtr.Zero)return selected.Handle;
+            if(selected.Count>1)throw new Exception("检测到多个 Claude 窗口，请选中要连接的窗口后重试");
+            if(!restored&&restore!=null) {check();restore();restored=true;}
+            if(attempt+1<attempts)pause();
+        }
+        throw new Exception("Claude 窗口尚未准备好，请从系统托盘打开 Claude 后重试");
+    }
+    static IntPtr WaitAppWindow(Process process,bool restore) {
+        Action check=delegate {
+            CheckCancelled();
+            if(!Owned(process.Id))throw new Exception("Claude 主进程已改变，请重试连接");
+        };
+        Action reopen=restore?(Action)delegate {
+            // Claude's native single-instance launch restores its tray window.
+            // Never activate one of its many hidden utility windows directly.
+            check();
+            using(var launched=Process.Start(new ProcessStartInfo(executable) {UseShellExecute=false,
+                WorkingDirectory=Path.GetDirectoryName(executable)})) {}
+        }:null;
+        return WaitWindow(()=>SelectWindow(ReadWindows(process.Id),process.Id,GetForegroundWindow()),
+                          reopen,check,()=>Thread.Sleep(250),48);
+    }
+    static string JsonString(string value) {
+        return "\""+value.Replace("\\","\\\\").Replace("\"","\\\"").Replace("\r","\\r").Replace("\n","\\n").Replace("\t","\\t")+"\"";
+    }
+    static void InspectWindow(Process process) {
+        // Diagnostic only: no native launch, activation, key state or input.
+        var windows=ReadWindows(process.Id);var selection=SelectWindow(windows,process.Id,GetForegroundWindow());
+        var json=new StringBuilder();
+        json.Append("{\"processId\":").Append(process.Id).Append(",\"sessionId\":").Append(process.SessionId)
+            .Append(",\"helperSessionId\":").Append(session).Append(",\"mainWindowHandle\":").Append(process.MainWindowHandle.ToInt64())
+            .Append(",\"selectedWindowHandle\":").Append(selection.Handle.ToInt64()).Append(",\"eligibleCount\":").Append(selection.Count)
+            .Append(",\"windows\":[");
+        bool first=true;
+        foreach(var window in windows) {
+            if(!first)json.Append(',');first=false;
+            json.Append("{\"handle\":").Append(window.Handle.ToInt64()).Append(",\"owner\":").Append(window.Owner.ToInt64())
+                .Append(",\"visible\":").Append(window.Visible?"true":"false").Append(",\"toolWindow\":").Append(window.ToolWindow?"true":"false")
+                .Append(",\"cloaked\":").Append(window.Cloaked?"true":"false").Append(",\"eligible\":").Append(Eligible(window,process.Id)?"true":"false")
+                .Append(",\"devTools\":").Append(DevToolsTitle(window.Title)?"true":"false").Append(",\"className\":").Append(JsonString(window.ClassName)).Append('}');
+        }
+        Console.WriteLine(json.Append("]}").ToString());
     }
     static void CheckCancelled() {
         if ((cancelFile!=null && File.Exists(cancelFile)) || (GetAsyncKeyState(27)&0x8001)!=0) throw new Exception("已取消键盘连接，点击 Claude 标题选择启动可重试");
@@ -142,8 +236,8 @@ class ClaudeKeyboard {
         }
     }
     static void EnableDeveloperMode(Process process) {
-        var window=process.MainWindowHandle;
-        if(window==IntPtr.Zero)throw new Exception("Claude 窗口尚未准备好");
+        var window=WaitAppWindow(process,true);
+        inputWindow=window;
         Activate(window);
         var root=AutomationElement.FromHandle(window);
         var help=root.FindFirst(TreeScope.Descendants,new AndCondition(new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.MenuItem),new OrCondition(new PropertyCondition(AutomationElement.NameProperty,"Help"),new PropertyCondition(AutomationElement.NameProperty,"帮助"))));
@@ -200,6 +294,37 @@ class ClaudeKeyboard {
             Verify(prompt,text.Substring(0,offset+count),path);
         }
     }
+    static void CheckWindowSelection() {
+        var owned=new AppWindow {Handle=new IntPtr(11),Owner=new IntPtr(99),Pid=7,Visible=true,Title="Claude"};
+        var other=new AppWindow {Handle=new IntPtr(12),Pid=7,Visible=true,Title="Claude conversation"};
+        var excluded=new [] {
+            new AppWindow {Handle=new IntPtr(13),Pid=8,Visible=true,Title="Claude"},
+            new AppWindow {Handle=new IntPtr(14),Pid=7,Visible=false,Title="Claude"},
+            new AppWindow {Handle=new IntPtr(15),Pid=7,Visible=true,Title="DevTools - app://localhost"},
+            new AppWindow {Handle=new IntPtr(16),Pid=7,Visible=true,ToolWindow=true,Title="Claude"},
+            new AppWindow {Handle=new IntPtr(17),Pid=7,Visible=true,Cloaked=true,Title="Claude"}};
+        if(SelectWindow(new[]{owned},7,IntPtr.Zero).Handle!=owned.Handle||SelectWindow(excluded,7,IntPtr.Zero).Count!=0)
+            throw new Exception("Claude 窗口范围自检失败");
+        var ambiguous=SelectWindow(new[]{owned,other},7,IntPtr.Zero);
+        if(ambiguous.Count!=2||ambiguous.Handle!=IntPtr.Zero||SelectWindow(new[]{owned,other},7,other.Handle).Handle!=other.Handle)
+            throw new Exception("Claude 多窗口选择自检失败");
+        int scans=0,restores=0,pauses=0;
+        var result=WaitWindow(()=>++scans<3?new WindowSelection():new WindowSelection {Handle=owned.Handle,Count=1},
+            ()=>restores++,()=>{},()=>pauses++,4);
+        if(result!=owned.Handle||restores!=1||pauses!=2)throw new Exception("Claude 托盘恢复自检失败");
+        restores=0;int checks=0;bool cancelled=false;
+        try {WaitWindow(()=>new WindowSelection(),()=>restores++,()=>{if(++checks==3)throw new OperationCanceledException();},()=>{},4);}
+        catch(OperationCanceledException){cancelled=true;}
+        if(!cancelled||restores!=1)throw new Exception("Claude 等待取消自检失败");
+        restores=0;cancelled=false;
+        try {WaitWindow(()=>new WindowSelection(),()=>restores++,()=>{throw new OperationCanceledException();},()=>{},4);}
+        catch(OperationCanceledException){cancelled=true;}
+        if(!cancelled||restores!=0)throw new Exception("Claude 启动前取消自检失败");
+        restores=0;bool rejected=false;
+        try {WaitWindow(()=>ambiguous,()=>restores++,()=>{},()=>{},4);}
+        catch(Exception){rejected=true;}
+        if(!rejected||restores!=0)throw new Exception("Claude 歧义窗口恢复自检失败");
+    }
     [STAThread] static int Main(string[] args) {
         Console.OutputEncoding=new UTF8Encoding(false);
         try {
@@ -209,17 +334,19 @@ class ClaudeKeyboard {
                 if(!DevToolsTitle("Developer Tools - app://localhost/new")||!DevToolsTitle("DevTools - app://localhost")||DevToolsTitle("Claude"))throw new Exception("开发者工具窗口匹配自检失败");
                 Func<string,string> parent=value=>value=="editor-child"?"expected-console":value=="other-editor"?"other-console":null;
                 if(!FocusedWithin("expected-console","editor-child",parent,(a,b)=>a==b)||FocusedWithin("expected-console","other-editor",parent,(a,b)=>a==b)||FocusedWithin("expected-console","other-console",parent,(a,b)=>a==b))throw new Exception("Console 精确焦点自检失败");
-                Console.WriteLine("keyboard ABI, Console allowlist and contenteditable text fallback OK");return 0;
+                CheckWindowSelection();
+                Console.WriteLine("keyboard ABI, Console allowlist and contenteditable text fallback OK; window selection and cancellable restore OK");return 0;
             }
             if(args.Length!=3 && args.Length!=4) throw new Exception("键盘连接参数无效");
             cancelFile=args.Length==4?args[3]:null;
             executable=Path.GetFullPath(args[2]);
             var process=Process.GetProcessById(Int32.Parse(args[0]));
             if(!Owned(process.Id)) throw new Exception("目标不是 Claude");
+            if(args[1]=="--inspect-window") {InspectWindow(process);return 0;}
             if(args[1]=="--close-devtools") {CloseDevTools();return 0;}
-            if(args[1]=="--enable-devtools") {EnableDeveloperMode(process);return 0;}
+            if(args[1]=="--enable-devtools") {GetAsyncKeyState(27);EnableDeveloperMode(process);return 0;}
             if(args[1]=="--inspect-error") {
-                var texts=AutomationElement.FromHandle(process.MainWindowHandle).FindAll(TreeScope.Descendants,new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.Text));
+                var texts=AutomationElement.FromHandle(WaitAppWindow(process,false)).FindAll(TreeScope.Descendants,new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.Text));
                 foreach(AutomationElement item in texts) {
                     string value=item.Current.Name;
                     if((value.StartsWith("Error:")||value.StartsWith("Uncaught"))&&(value.Contains("尚未信任目录")||value.Contains("WorkspaceTrustError")||value.Contains("trust_required"))) {Stage("NEEDS_TRUST");return 0;}
@@ -229,11 +356,8 @@ class ClaudeKeyboard {
             string text=File.ReadAllText(args[1],Encoding.UTF8);
             if(text.Length>300000||text.Contains("\n")||text.Contains("\r")||!text.StartsWith("/* codex bridge connector */")) throw new Exception("连接脚本格式无效");
             Stage("正在等待 Claude 窗口");
-            IntPtr window=process.MainWindowHandle;
-            var readyDeadline=DateTime.UtcNow.AddSeconds(20);
-            while(window==IntPtr.Zero&&DateTime.UtcNow<readyDeadline&&!process.HasExited){Thread.Sleep(250);process.Refresh();window=process.MainWindowHandle;}
-            if(window==IntPtr.Zero) throw new Exception("Claude 窗口尚未准备好");
             GetAsyncKeyState(27); // Clear an old Escape press, subsequent presses cancel.
+            IntPtr window=WaitAppWindow(process,true);
             inputWindow=window;
             Activate(window);
             Stage("已定位 Claude 窗口");
