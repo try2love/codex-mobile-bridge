@@ -1116,6 +1116,43 @@ class ClaudeKeyboard {
                mode=="cancelled"&&(!failed||reads!=1||pauses!=1))throw new Exception("Claude 后台启动就绪与取消自检失败: "+mode);
         }
     }
+    static void CheckBackgroundNativeResume() {
+        var hidden=new AppWindow {Handle=new IntPtr(51),Pid=7,Title="Claude",ClassName="Chrome_WidgetWin_1"};
+        var named=new AppWindow {Handle=new IntPtr(52),Pid=7,Title="Fixture — Claude",ClassName="Chrome_WidgetWin_1"};
+        var utility=new AppWindow {Handle=new IntPtr(53),Pid=7,ClassName="Chrome_WidgetWin_1"};
+        var visible=new AppWindow {Handle=hidden.Handle,Pid=7,Visible=true,Title="Claude",ClassName="Chrome_WidgetWin_1"};
+        var replaced=new AppWindow {Handle=new IntPtr(54),Pid=7,Visible=true,Title="Claude",ClassName="Chrome_WidgetWin_1"};
+        var tools=new AppWindow {Handle=new IntPtr(55),Pid=7,Visible=true,Title="Developer Tools - app://localhost/new"};
+        if(SelectHiddenBackgroundMain(new[]{hidden,utility},7).Handle!=hidden.Handle||
+           SelectHiddenBackgroundMain(new[]{named,utility},7).Handle!=named.Handle||
+           SelectHiddenBackgroundMain(new[]{hidden,named,utility},7).Handle!=IntPtr.Zero)
+            throw new Exception("Claude 隐藏主窗口与辅助窗口隔离自检失败");
+        foreach(string mode in new[]{"visible","owned","tool","cloaked","foreign","class","title"}) {
+            var invalid=new AppWindow {Handle=new IntPtr(56),Pid=mode=="foreign"?8:7,Title=mode=="title"?"Utility":"Claude",
+                ClassName=mode=="class"?"Other":"Chrome_WidgetWin_1",Visible=mode=="visible",Owner=mode=="owned"?new IntPtr(1):IntPtr.Zero,
+                ToolWindow=mode=="tool",Cloaked=mode=="cloaked"};
+            if(SelectHiddenBackgroundMain(new[]{invalid},7).Count!=0)throw new Exception("Claude 隐藏主窗口身份自检失败: "+mode);
+        }
+        foreach(string mode in new[]{"cold-tools","racing-tools","resume","never-ready","ambiguous","missing","cancel-before","cancel-after","identity-before","identity-after","expired-before"}) {
+            int reads=0,reopens=0;bool failed=false;List<AppWindow> result=null;
+            try {result=WaitBackgroundReady(7,delegate {
+                reads++;
+                if(mode=="cold-tools"&&reads>=2||mode=="racing-tools"&&reads>=3)return new List<AppWindow>(new[]{hidden,tools});
+                if(mode=="resume"&&reopens>0)return new List<AppWindow>(new[]{visible});
+                if(mode=="identity-after"&&reopens>0)return new List<AppWindow>(new[]{replaced,tools});
+                return new List<AppWindow>(mode=="ambiguous"?new[]{hidden,named,utility}:mode=="missing"?new[]{utility}:new[]{hidden,utility});
+            },delegate {
+                if(mode=="cancel-before"&&reads>=3||mode=="cancel-after"&&reopens>0)throw new OperationCanceledException();
+                if(mode=="identity-before"&&reads>=3)throw new Exception("changed process");
+            },()=>{},()=>mode=="expired-before"&&reads>=3||reads>=6,
+            delegate(IntPtr window){if(window!=hidden.Handle)throw new Exception("wrong window");reopens++;},()=>reads>=2);}
+            catch(Exception){failed=true;}
+            bool success=mode=="cold-tools"||mode=="racing-tools"||mode=="resume";
+            int expectedReopens=mode=="resume"||mode=="never-ready"||mode=="cancel-after"||mode=="identity-after"?1:0;
+            if(failed==success||reopens!=expectedReopens||success&&result==null)
+                throw new Exception("Claude 隐藏实例单次恢复与取消自检失败: "+mode);
+        }
+    }
     static void CheckBackgroundConsoleReadiness() {
         foreach(string mode in new[]{"ready","delayed","missing-tab","missing-prompt","cancelled","provider-late"}) {
             int tabs=0,prompts=0,selections=0,pauses=0,checks=0;bool failed=false;
@@ -1155,8 +1192,9 @@ class ClaudeKeyboard {
                 CheckBackgroundConnection();
                 CheckBackgroundCleanup();
                 CheckBackgroundStartupReadiness();
+                CheckBackgroundNativeResume();
                 CheckBackgroundConsoleReadiness();
-                Console.WriteLine("keyboard ABI, Console allowlist and contenteditable text fallback OK; window selection and cancellable restore OK; menu navigation OK; packaged launch OK; atomic console submission OK; detached console reuse OK; native menu quit guards OK; background console guards OK; background cleanup guards OK; background startup readiness OK; background Console readiness OK");return 0;
+                Console.WriteLine("keyboard ABI, Console allowlist and contenteditable text fallback OK; window selection and cancellable restore OK; menu navigation OK; packaged launch OK; atomic console submission OK; detached console reuse OK; native menu quit guards OK; background console guards OK; background cleanup guards OK; background startup readiness OK; background native resume OK; background Console readiness OK");return 0;
             }
             if(args.Length!=3 && args.Length!=4) throw new Exception("键盘连接参数无效");
             quitAction=args[1]=="--quit";
