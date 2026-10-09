@@ -86,6 +86,32 @@ class DeepSeekMigrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '无法验证'):
             self.new.use_existing(self.root/'unrelated')
 
+    def test_revision_three_without_quit_is_reused_without_rewriting_live_source(self):
+        source = self.old.directory/'mobile-host.mjs'
+        content = b'// known revision 3 before native quit\n'
+        source.write_bytes(content)
+        credentials = (self.old.directory/'connection.json').read_bytes()
+        (self.old.directory/'endpoint.json').write_text('{"port":32123,"pid":4321}')
+        class Opener:
+            def open(self, request, timeout):
+                return io.BytesIO(json.dumps({'connected': True, 'bridgeRevision': 3,
+                                             'configured': True}).encode())
+        with patch('bridge.integrations.deepseek_setup.PREVIOUS_QUIT_SOURCES',
+                   (hashlib.sha256(content).hexdigest(),)), \
+                patch('bridge.integrations.deepseek.urllib.request.build_opener', return_value=Opener()):
+            for adapter in (self.new, self.old):
+                with self.subTest(directory=adapter.directory):
+                    installed = adapter.ensure_installed()
+                    self.assertTrue(installed['reused'])
+                    self.assertFalse(installed['legacyProtocol'])
+                    self.assertFalse(installed['updateRequired'])
+                    status = adapter.call('status')
+                    self.assertTrue(status['connected'])
+                    self.assertFalse(status['updateRequired'])
+                    self.assertNotIn('nativeQuit', status)
+                    self.assertEqual(source.read_bytes(), content)
+                    self.assertEqual((self.old.directory/'connection.json').read_bytes(), credentials)
+
     def test_changed_or_foreign_source_and_wrong_installation_home_fail_closed(self):
         before = self.profile.read_bytes()
         source = self.old.directory/'mobile-host.mjs'

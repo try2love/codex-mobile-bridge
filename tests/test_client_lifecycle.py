@@ -476,6 +476,18 @@ class ClientLifecycleTests(unittest.TestCase):
         self.launch_dsh.assert_called_once()
         self.stop.assert_not_called()
 
+    def test_stopped_compatible_dsh_connector_updates_before_launch(self):
+        self.running = False; self.dsh.reused = True
+        self.dsh.ensure_installed.return_value = {'installed': True, 'reused': True, 'updateRequired': False}
+        self.dsh.call.side_effect = BridgeUnavailable('stopped')
+        order = []
+        self.dsh.update_existing.side_effect = lambda: order.append('update')
+        self.launch_dsh.side_effect = lambda *args: order.append('launch') or {'running': True}
+        self.manager._start_deepseek()
+        self.assertEqual(order, ['update', 'launch'])
+        self.stop.assert_not_called()
+        self.stop_dsh.assert_not_called()
+
     def test_extra_harness_host_without_authoritative_state_blocks_exit(self):
         self.inspect.return_value = None
         self.inspect.side_effect = lambda _: {'running': True, 'pids': [11, 12, 13], 'mainPids': [11],
