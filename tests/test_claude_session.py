@@ -2,6 +2,7 @@
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -97,6 +98,78 @@ class ClaudeSessionTests(unittest.TestCase):
             manager._claude_progress(row, {'running': True})
             self.assertEqual(row['connectionState'], 'needs-initialization')
             self.assertEqual(row['reason'], state)
+
+    def test_helper_fast_failure_keeps_session_or_focus_reason(self):
+        process = Mock(returncode=1)
+        with patch.object(claude_setup, 'helper_path', return_value=Path(__file__)), \
+             patch.object(claude_setup.subprocess, 'Popen', return_value=process):
+            for action in ('connect', 'inspect-error'):
+                for reason, state in [('Windows 已锁定', 'needs-unlock'), ('Windows 桌面不可用', 'needs-desktop'),
+                                      ('焦点已离开 Claude', 'needs-retry'), ('已取消 Claude 连接', 'cancelled')]:
+                    process.communicate.return_value = (reason, '')
+                    self.assertEqual(claude_setup.native_action(action, pid=42), {'setupState': state, 'reason': reason})
+            process.returncode = 0; process.communicate.return_value = ('NEEDS_TRUST', '')
+            self.assertEqual(claude_setup.native_action('inspect-error', pid=42)['setupState'], 'needs-trust')
+
+    def test_quit_does_not_require_unlocked_desktop(self):
+        self.locked()
+        process = Mock(returncode=0)
+        process.communicate.return_value = ('{"quitState":"submitted","pid":42,"reason":"fixture"}', '')
+        with patch.object(claude_setup, 'helper_path', return_value=Path(__file__)), \
+             patch.object(claude_setup.subprocess, 'Popen', return_value=process):
+            result = claude_setup.native_action('quit', pid=42)
+        self.assertEqual(result['quitState'], 'submitted'); self.snapshot.assert_not_called()
+
+    def test_verified_connection_recovers_while_locked_without_native_input(self):
+        self.locked(); self.adapter.desktop = Mock(connected=True, capabilities={})
+        with patch('bridge.integrations.claude.native_action') as native:
+            self.adapter._connect_native(False, Path(self.temp.name)/'cancel')
+        self.assertTrue(self.adapter.status()['connected']); native.assert_not_called()
+        self.snapshot.assert_not_called()
+
+    def test_cancellation_during_successful_cleanup_cannot_publish_connected(self):
+        for replacement in (False, True):
+            with self.subTest(replacement=replacement):
+                self.adapter.setup_cancel = threading.Event()
+                original = self.adapter.setup_cancel
+                self.adapter.desktop = Mock(connected=False, capabilities={})
+                def native(action, **kwargs):
+                    if action == 'connect':
+                        self.adapter.desktop.connected = True
+                        return {'setupState': 'submitted'}
+                    if action == 'close-devtools':
+                        self.adapter.cancel(persist=False)
+                        if replacement:
+                            self.adapter.setup_cancel = threading.Event()
+                            self.adapter.desktop.connected = False
+                            self.adapter._setup_state('connecting', 'new attempt')
+                        return {'setupState': 'submitted'}
+                    return {'setupState': 'ready'}
+                with patch('bridge.integrations.claude.native_action', side_effect=native), \
+                     patch('bridge.integrations.claude.running_app', return_value=42), \
+                     patch('bridge.integrations.claude.developer_mode_enabled', return_value=True), \
+                     patch.object(self.adapter, 'prepare', return_value={'consolePath': 'fixture'}), \
+                     patch.object(original, 'wait', return_value=False):
+                    self.adapter._connect_native(False, Path(self.temp.name)/'cancel', original)
+                self.assertFalse(self.adapter.status()['connected'])
+                self.assertEqual(self.adapter.status()['setupState'], 'connecting' if replacement else 'cancelled')
+                if replacement:
+                    self.assertEqual(self.adapter.discovery['reason'], 'new attempt')
+                    self.assertFalse(self.adapter.setup_cancel.is_set())
+
+    def test_cached_clients_refresh_session_without_disconnecting_live_clients(self):
+        manager = object.__new__(DesktopSessions); manager.client_lock = threading.RLock()
+        cached = {'clients': [{'id': 'claude', 'connected': True, 'connectionState': 'connected'}]}
+        manager.client_cache = (time.monotonic(), cached)
+        with patch('bridge.integrations.manager.sys', SimpleNamespace(platform='win32')):
+            self.locked()
+            locked = manager.clients()
+            self.snapshot.return_value = {'state': 'unlocked', 'interactive': True, 'reason': 'ready'}
+            unlocked = manager.clients()
+        self.assertEqual(locked['windowsSession']['state'], 'locked')
+        self.assertEqual(unlocked['windowsSession']['state'], 'unlocked')
+        self.assertTrue(locked['clients'][0]['connected'])
+        self.assertNotIn('windowsSession', cached)
 
 
 if __name__ == '__main__':

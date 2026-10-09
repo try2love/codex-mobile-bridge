@@ -335,7 +335,6 @@ class ClaudeNativeConnection(unittest.TestCase):
                 self.adapter.desktop.connected = heartbeat
                 return {'setupState': 'submitted'}
             if action == 'close-devtools':
-                self.adapter.setup_cancel.set()
                 return {'setupState': 'connected'}
             if action == 'inspect-error':
                 return {'setupState': 'needs-trust' if trust else 'failed', 'reason': 'trust required'}
@@ -485,7 +484,6 @@ class ClaudeNativeConnection(unittest.TestCase):
                 self.assertFalse(self.adapter.desktop.connected)
                 heartbeat(CONNECTOR_REVISION)
                 return {'setupState': 'submitted'}
-            if action == 'close-devtools': self.adapter.setup_cancel.set()
             return {'setupState': 'ready'}
         with patch('bridge.integrations.claude.native_action', side_effect=native), \
              patch('bridge.integrations.claude.running_app', return_value=42) as running, \
@@ -632,6 +630,10 @@ class ClaudeNativeConnection(unittest.TestCase):
 
 
 class NativeHelperProcess(unittest.TestCase):
+    def setUp(self):
+        desktop = patch('bridge.integrations.claude_setup.windows_session.require_interactive')
+        desktop.start(); self.addCleanup(desktop.stop)
+
     @patch('bridge.integrations.claude_setup.sys.platform', 'win32')
     def test_native_quit_preserves_explicit_result_states_and_pid(self):
         process = Mock(returncode=0)

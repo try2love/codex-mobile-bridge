@@ -310,14 +310,14 @@ def native_action(action, *, pid=None, executable=None, script=None, cancel_path
             return value
         except (ValueError, IndexError, AttributeError):
             return {'setupState': 'failed', 'reason': 'Claude 连接组件未返回有效状态'}
-    if action == 'inspect-error':
-        return {'setupState': 'needs-trust' if 'NEEDS_TRUST' in stdout else 'failed',
-                'reason': '请在 Claude Code 中确认连接目录信任，然后重新连接'}
     if process.returncode:
         message = stdout.strip().splitlines()[-1] if stdout.strip() else 'Claude 自动连接失败'
         state = ('cancelled' if '已取消' in message else 'needs-unlock' if '锁定' in message
                  else 'needs-desktop' if '桌面不可用' in message else 'needs-retry')
         return {'setupState': state, 'reason': message[:300]}
+    if action == 'inspect-error':
+        return {'setupState': 'needs-trust' if 'NEEDS_TRUST' in stdout else 'failed',
+                'reason': '请在 Claude Code 中确认连接目录信任，然后重新连接'}
     return {'setupState': 'needs-developer-mode' if action == 'enable-devtools' else 'submitted',
             'reason': '请确认 Claude 的开发者模式提示，完成后会继续连接' if action == 'enable-devtools'
                       else '连接脚本已输入，正在等待 Claude 确认'}
