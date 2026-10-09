@@ -11,6 +11,7 @@ from pathlib import Path
 from contextlib import nullcontext
 
 from ..desktop_app import DesktopApp, process_inventory
+from .. import windows_session
 
 
 def _archive_members(path, names=('package.json', '.vite/build/index.pre.js')):
@@ -236,6 +237,16 @@ def native_action(action, *, pid=None, executable=None, script=None, cancel_path
         if action == 'quit':
             return quit_failed('已取消 Claude 退出')
         return {'setupState': 'cancelled', 'reason': '已取消 Claude 连接'}
+    def desktop_blocked():
+        if sys.platform == 'win32' and action != 'quit':
+            try:
+                windows_session.require_interactive()
+            except windows_session.DesktopUnavailable as exc:
+                return {'setupState': exc.setup_state, 'reason': str(exc)}
+        return None
+    blocked = desktop_blocked()
+    if blocked:
+        return blocked
     helper = helper_path()
     if not helper.is_file():
         if action == 'quit':
@@ -260,13 +271,17 @@ def native_action(action, *, pid=None, executable=None, script=None, cancel_path
         if action == 'quit':
             return quit_failed('无法启动 Claude 原生退出组件，请检查网关安装')
         raise
-    deadline = time.monotonic() + (180 if action == 'connect' else 30 if action == 'quit' else 20)
+    timeout = (30 if sys.platform == 'win32' else 180) if action == 'connect' else 30 if action == 'quit' else 20
+    if sys.platform == 'win32' and action in ('inspect-error', 'close-devtools'):
+        timeout = 8
+    deadline = time.monotonic() + timeout
     while True:
         try:
             stdout, _ = process.communicate(timeout=.2)
             break
         except subprocess.TimeoutExpired:
-            if (cancelled and cancelled.is_set()) or time.monotonic() >= deadline:
+            blocked = desktop_blocked()
+            if (cancelled and cancelled.is_set()) or blocked or time.monotonic() >= deadline:
                 # Stop only our input helper, never the Claude desktop process.
                 process.terminate()
                 try: process.communicate(timeout=3)
@@ -275,7 +290,9 @@ def native_action(action, *, pid=None, executable=None, script=None, cancel_path
                 if action == 'quit':
                     return quit_failed('已取消 Claude 退出' if cancelled and cancelled.is_set()
                                        else 'Claude 原生退出请求超时，请在电脑端检查退出状态')
-                return {'setupState': 'cancelled' if cancelled and cancelled.is_set() else 'failed',
+                if blocked and not (cancelled and cancelled.is_set()):
+                    return blocked
+                return {'setupState': 'cancelled' if cancelled and cancelled.is_set() else 'needs-retry',
                         'reason': '已取消 Claude 连接' if cancelled and cancelled.is_set() else 'Claude 自动连接超时，请重试'}
     if action == 'quit':
         try:
@@ -298,7 +315,9 @@ def native_action(action, *, pid=None, executable=None, script=None, cancel_path
                 'reason': '请在 Claude Code 中确认连接目录信任，然后重新连接'}
     if process.returncode:
         message = stdout.strip().splitlines()[-1] if stdout.strip() else 'Claude 自动连接失败'
-        return {'setupState': 'cancelled' if '已取消' in message else 'failed', 'reason': message[:300]}
+        state = ('cancelled' if '已取消' in message else 'needs-unlock' if '锁定' in message
+                 else 'needs-desktop' if '桌面不可用' in message else 'needs-retry')
+        return {'setupState': state, 'reason': message[:300]}
     return {'setupState': 'needs-developer-mode' if action == 'enable-devtools' else 'submitted',
             'reason': '请确认 Claude 的开发者模式提示，完成后会继续连接' if action == 'enable-devtools'
                       else '连接脚本已输入，正在等待 Claude 确认'}
@@ -412,11 +431,13 @@ def background_running_app(executable, data_home, cancelled=None, launch_gate=No
 def running_app(executable, data_home, restart=False, cancelled=None):
     if cancelled and cancelled.is_set():
         raise ValueError('已取消 Claude 连接')
+    windows_session.require_interactive()
     app = DesktopApp(executable, data_home)
     pids = _main_pids(app)
     if cancelled and cancelled.is_set():
         raise ValueError('已取消 Claude 连接')
     if pids and restart:
+        windows_session.require_interactive()
         if len(pids) != 1:
             raise ValueError('无法确认唯一的 Claude 主进程，请检查桌面窗口')
         if sys.platform == 'win32':
@@ -436,6 +457,7 @@ def running_app(executable, data_home, restart=False, cancelled=None):
     if not pids:
         if cancelled and cancelled.is_set():
             raise ValueError('已取消 Claude 连接')
+        windows_session.require_interactive()
         if sys.platform == 'darwin':
             bundle = next((p for p in app.executable.parents if p.suffix == '.app'), None)
             if bundle is None:

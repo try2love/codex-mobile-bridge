@@ -16,6 +16,7 @@ from .claude import Claude
 from .deepseek import DeepSeek, BRIDGE_REVISION, UPDATE_REASON
 from .errors import BridgeUnavailable
 from ..lifecycle import private_json
+from .. import windows_session
 
 READS = {'list', 'detail', 'catalog', 'projects', 'account', 'access'}
 WRITES = {'send', 'stop', 'settings', 'respond', 'create', 'access'}
@@ -575,7 +576,8 @@ class DesktopSessions:
             pending = self.client_cache and any(row.get('connectionState') in ('starting', 'connecting')
                                                for row in self.client_cache[1]['clients'])
             if not refresh and self.client_cache and time.monotonic() - self.client_cache[0] < (1 if pending else 15):
-                return self.client_cache[1]
+                result = self.client_cache[1]
+                return {**result, 'windowsSession': windows_session.status()} if sys.platform == 'win32' else result
             rows = []
             discovered = self.config.get('discovered', {})
             ready = False
@@ -651,7 +653,8 @@ class DesktopSessions:
                 if provider == 'deepseek' and (pending_restart or status.get('updateRequired')):
                     configured = False
                 if not connected and remembered and setup_status not in (
-                        'failed', 'restart-required', 'needs-initialization', 'needs-first-launch', 'starting', 'connecting'):
+                        'failed', 'needs-retry', 'needs-unlock', 'needs-desktop', 'needs-developer-mode', 'needs-trust',
+                        'needs-permission', 'restart-required', 'needs-initialization', 'needs-first-launch', 'starting', 'connecting'):
                     reason = '客户端已配置，可开启桌面应用'
                 if provider == 'deepseek' and setup.get('setupStatus') == 'failed' and not connected:
                     setup_status, reason = 'failed', setup.get('reason', reason)
@@ -695,6 +698,8 @@ class DesktopSessions:
                     row['reason'] = ('已选择，启动网关后在后台启动并连接' if row['id'] == 'claude'
                                      else '已选择，启动网关后自动接入')
             result = {'clients': rows, 'computer': socket.gethostname(), 'gatewayRunning': self.gateway_running}
+            if sys.platform == 'win32':
+                result['windowsSession'] = windows_session.status()
             self.client_cache = (time.monotonic(), result)
             return result
 
@@ -709,7 +714,7 @@ class DesktopSessions:
                 row.update(connectionState='error', reason='Claude 未运行，请重试后台启动', retryable=True)
         elif phase in ('failed', 'needs-retry'):
             row.update(connectionState='error', retryable=True)
-        elif phase in ('needs-developer-mode', 'needs-trust', 'needs-permission'):
+        elif phase in ('needs-developer-mode', 'needs-trust', 'needs-permission', 'needs-unlock', 'needs-desktop'):
             row['connectionState'] = 'needs-initialization'
 
     def _deepseek_progress(self, row, native):
