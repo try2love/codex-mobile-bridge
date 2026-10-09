@@ -572,8 +572,8 @@ class DesktopSessions:
 
     def clients(self, refresh=False):
         with self.client_lock:
-            pending = self.client_cache and any(row.get('id') == 'deepseek' and
-                row.get('connectionState') in ('starting', 'connecting') for row in self.client_cache[1]['clients'])
+            pending = self.client_cache and any(row.get('connectionState') in ('starting', 'connecting')
+                                               for row in self.client_cache[1]['clients'])
             if not refresh and self.client_cache and time.monotonic() - self.client_cache[0] < (1 if pending else 15):
                 return self.client_cache[1]
             rows = []
@@ -650,7 +650,8 @@ class DesktopSessions:
                 configured = ready or remembered
                 if provider == 'deepseek' and (pending_restart or status.get('updateRequired')):
                     configured = False
-                if not connected and remembered and setup_status not in ('failed', 'restart-required', 'needs-initialization'):
+                if not connected and remembered and setup_status not in (
+                        'failed', 'restart-required', 'needs-initialization', 'needs-first-launch', 'starting', 'connecting'):
                     reason = '客户端已配置，可开启桌面应用'
                 if provider == 'deepseek' and setup.get('setupStatus') == 'failed' and not connected:
                     setup_status, reason = 'failed', setup.get('reason', reason)
@@ -686,14 +687,30 @@ class DesktopSessions:
                         pass
                 if row['id'] == 'deepseek':
                     self._deepseek_progress(row, native_states.get('deepseek'))
+                elif row['id'] == 'claude':
+                    self._claude_progress(row, native_states.get('claude'))
                 # Selection is a startup preference; readiness still requires live evidence.
                 row['selectable'] = bool(row['configured'] or row['installed'] and row['setupStatus'] != 'unsupported')
                 if not self.gateway_running and row['enabled'] and row['setupStatus'] != 'recovery-required':
-                    row['reason'] = ('已选择，启动网关后在后台等待连接' if row['id'] == 'claude'
+                    row['reason'] = ('已选择，启动网关后在后台启动并连接' if row['id'] == 'claude'
                                      else '已选择，启动网关后自动接入')
             result = {'clients': rows, 'computer': socket.gethostname(), 'gatewayRunning': self.gateway_running}
             self.client_cache = (time.monotonic(), result)
             return result
+
+    def _claude_progress(self, row, native):
+        row.update(connectionState='connected' if row['connected'] else 'idle', retryable=False)
+        if row['connected'] or not self.gateway_running or not row['enabled']:
+            return
+        phase = row['setupStatus']
+        if phase in ('starting', 'connecting', 'needs-initialization'):
+            row['connectionState'] = phase
+            if phase != 'starting' and native is not None and not native['running']:
+                row.update(connectionState='error', reason='Claude 未运行，请重试后台启动', retryable=True)
+        elif phase in ('failed', 'needs-retry'):
+            row.update(connectionState='error', retryable=True)
+        elif phase in ('needs-developer-mode', 'needs-trust', 'needs-permission'):
+            row['connectionState'] = 'needs-initialization'
 
     def _deepseek_progress(self, row, native):
         """Describe observed startup without relaunching or touching desktop tasks."""
@@ -750,6 +767,9 @@ class DesktopSessions:
             raise ValueError('应用开关无效')
         if 'quitDesktop' in value and (type(value['quitDesktop']) is not bool or enabled):
             raise ValueError('应用开关无效')
+        if 'initializeDesktop' in value and (type(value['initializeDesktop']) is not bool
+                or provider != 'claude' or enabled is not True):
+            raise ValueError('应用初始化请求无效')
         # Older clients use disabling as native quit. New clients choose explicitly.
         quit_desktop = value.get('quitDesktop', True)
         from .client_launch import inspect_client, launch_client
@@ -780,7 +800,10 @@ class DesktopSessions:
                 if provider == 'deepseek':
                     self._start_deepseek()
                 elif provider == 'claude':
-                    self.adapters[provider].reconnect()
+                    if value.get('initializeDesktop') is True:
+                        self.adapters[provider].connect()
+                    else:
+                        self.adapters[provider].reconnect(launch=True)
                 else:
                     result = launch_client(descriptor)
                     if not result.get('running'):
