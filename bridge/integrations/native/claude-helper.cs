@@ -943,14 +943,14 @@ class ClaudeKeyboard {
         bool rejected=false;try{VerifiedDevToolsTitle(content.Title,shell.Title);}catch(Exception){rejected=true;}
         if(!rejected||VerifiedDevToolsTitle("Developer Tools",content.Title)!=content.Title)throw new Exception("Claude 后台来源交叉核验自检失败");
         const string text="/* codex bridge connector */void 0;";
-        foreach(string mode in new[]{"ready","blank-first","partial","draft","interrupted","submit-error","cancelled","always-blank"}) {
-            int writes=0,submits=0,resets=0,retries=0;bool failed=false;
-            Func<string> read=()=>mode=="draft"?"user draft":mode=="partial"&&writes>0?"partial":mode=="interrupted"&&retries>=2?"new user draft":"";
+        foreach(string mode in new[]{"ready","blank-first","partial","draft","raced-draft","interrupted","submit-error","cancelled","always-blank"}) {
+            int writes=0,submits=0,resets=0,retries=0,reads=0;bool failed=false;
+            Func<string> read=()=>mode=="raced-draft"&&++reads>1?"/* codex bridge connector */user draft":mode=="draft"?"user draft":mode=="partial"&&writes>0?"partial":mode=="interrupted"&&retries>=2?"new user draft":"";
             try {SubmitBackgroundVerifiedConsole(text,read,value=>writes++,()=>mode=="ready"||mode=="submit-error"||mode=="blank-first"&&writes==2?text:mode=="partial"?"partial":"",()=>{},()=>{},()=>true,()=>resets++,
                 delegate{retries++;if(mode=="cancelled")throw new OperationCanceledException();return true;},delegate{submits++;if(mode=="submit-error")throw new Exception("lost callback");});}
             catch(Exception){failed=true;}
             if(mode=="ready"&&(failed||writes!=1||submits!=1)||mode=="blank-first"&&(failed||writes!=2||submits!=1)||
-               mode=="draft"&&(!failed||writes!=0||submits!=0)||mode=="submit-error"&&(!failed||writes!=1||submits!=1)||
+               (mode=="draft"||mode=="raced-draft")&&(!failed||writes!=0||submits!=0)||mode=="submit-error"&&(!failed||writes!=1||submits!=1)||
                mode=="always-blank"&&(!failed||writes!=2||submits!=0)||
                (mode=="partial"||mode=="interrupted"||mode=="cancelled")&&(!failed||writes!=1||submits!=0))
                 throw new Exception("Claude 后台整段提交与有界空白重试自检失败: "+mode);
