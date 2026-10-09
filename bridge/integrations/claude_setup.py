@@ -309,7 +309,9 @@ def native_action(action, *, pid=None, executable=None, script=None, cancel_path
                 # Stop only our input helper, never the Claude desktop process.
                 process.terminate()
                 try: stdout, _ = process.communicate(timeout=3)
-                except subprocess.TimeoutExpired:
+                except subprocess.TimeoutExpired as expired:
+                    if action == 'quit':
+                        dispatched = dispatched or quit_dispatched(expired.output)
                     process.kill(); stdout, _ = process.communicate()
                 if action == 'quit':
                     return quit_interrupted('已取消 Claude 退出' if cancelled and cancelled.is_set()
