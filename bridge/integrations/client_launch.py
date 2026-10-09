@@ -163,7 +163,7 @@ def stop_client(descriptor, *, state):
     if current['unknown'] or set(current['pids']) - set(state['pids']):
         raise ValueError('客户端进程已变化，无法确认任务状态，请重新检查后再关闭')
     app = _app(descriptor)
-    app.stop(runtime_pids=current['runtimePids'], gui_pids=current['mainPids'])
+    app.stop(runtime_pids=current['runtimePids'], gui_pids=current['mainPids'], provider=descriptor.get('id'))
 
 
 def stop_claude(descriptor, *, state):

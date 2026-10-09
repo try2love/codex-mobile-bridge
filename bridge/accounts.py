@@ -790,7 +790,7 @@ class Accounts:
             private_json(self.root/'rollback.json', backup)
             self.phase('stopping')
             self.invalidate()
-            app.stop()
+            app.stop(provider='codex')
             stopped = True
             # The GUI may refresh tokens or persist settings while exiting.
             after_stop = self.snapshot_files()
@@ -821,7 +821,7 @@ class Accounts:
             if stopped and before is not None:
                 try:
                     self.phase('restoring')
-                    app.stop()
+                    app.stop(provider='codex')
                     self.restore_files(before)
                     self.invalidate()
                     app.start()
@@ -855,7 +855,7 @@ class Accounts:
                     try:
                         app = DesktopApp(backup['desktopExecutable'], self.home)
                         app.validate(self.runtime)
-                        app.stop()
+                        app.stop(provider='codex')
                         self.restore_files(backup['files'])
                         if backup.get('threadsApplying'):
                             # Only older previews wrote thread migrations to this

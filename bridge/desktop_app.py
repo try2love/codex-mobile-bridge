@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 
-def process_inventory(executables):
+def process_inventory(executables, *, timeout=None):
     """One uncached display snapshot for resolved GUI paths and their commands.
 
     Control operations keep using DesktopApp.processes and fresh command reads.
@@ -28,7 +28,7 @@ def process_inventory(executables):
                   'Get-CimInstance Win32_Process | Where-Object {$_.SessionId -eq $s -and $_.ExecutablePath} | '
                   'Select-Object ProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress')
         response = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
-                                  capture_output=True, text=True, encoding='utf-8', timeout=15,
+                                  capture_output=True, text=True, encoding='utf-8', timeout=15 if timeout is None else timeout,
                                   creationflags=subprocess.CREATE_NO_WINDOW, check=True)
         rows = json.loads(response.stdout or '[]')
         if isinstance(rows, dict): rows = [rows]
@@ -176,7 +176,10 @@ class DesktopApp:
                 result.append(int(fields[0]))
         return result
 
-    def stop(self, *, runtime_pids=(), gui_pids=None):
+    def stop(self, *, runtime_pids=(), gui_pids=None, provider=None):
+        if sys.platform == 'win32' and provider == 'codex':
+            from .windows_codex_quit import stop_codex
+            return stop_codex(self, gui_pids=gui_pids)
         pids = self.processes()
         main = pids if gui_pids is None else [pid for pid in gui_pids if pid in pids]
         if main and sys.platform == 'darwin':
