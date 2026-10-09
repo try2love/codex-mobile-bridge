@@ -123,7 +123,7 @@ class ClaudeKeyboard {
     static IntPtr WaitAppWindow(Process process,bool restore) {
         Action check=delegate {
             CheckCancelled();
-            if(!Owned(process.Id))throw new Exception("Claude 主进程已改变，请重试连接");
+            if(process.HasExited||!Owned(process.Id))throw new Exception("Claude 主进程已改变，请重试连接");
         };
         Action reopen=restore?(Action)delegate {
             // Claude's native single-instance launch restores its tray window.
@@ -413,6 +413,7 @@ class ClaudeKeyboard {
                        (name=="Quit anyway"||name=="仍要退出"||name=="仍要結束"||name=="Wait for Claude"||name=="等待 Claude"))return true;
                 }
             }catch(ElementNotAvailableException) {}
+            catch(ArgumentException) {if(IsWindow(window.Handle))throw;}
         }
         return false;
     }
@@ -435,6 +436,9 @@ class ClaudeKeyboard {
             QuitResult("pending","Claude 有待处理的原生对话框，请在电脑端确认或取消",process.Id);return;
         }
         var window=WaitAppWindow(process,true);
+        CheckCancelled();
+        if(process.HasExited||!Owned(process.Id)||process.StartTime.ToUniversalTime().Ticks!=started)
+            throw new Exception("Claude 主进程已改变，退出请求已停止");
         inputWindow=window;Activate(window);
         var root=AutomationElement.FromHandle(window);
         Action check=()=>CheckQuitNavigation(process,started,window);
