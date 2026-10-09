@@ -26,9 +26,11 @@ command.extend(['--add-data', str(certificate_package.locate_file(license_file))
 for name in ('store.py', 'catalog.py', 'create.py', 'account_models.py', 'tls.py', 'workspace.py', 'terminal.py', 'pty_terminal.py'):
     command.extend(['--add-data', str(root/'bridge'/name)+':bridge'])
 command.extend(['--add-data', str(root/'bridge/integrations')+':bridge/integrations'])
-helper = root/'dist/client-helpers'/('claude-bridge-helper.exe' if sys.platform == 'win32' else 'claude-bridge-helper')
-if helper.is_file():
-    command.extend(['--add-binary', str(helper)+':client-helpers'])
+helpers = ['claude-bridge-helper.exe', 'codex-quit-helper.exe'] if sys.platform == 'win32' else ['claude-bridge-helper']
+for name in helpers:
+    helper = root/'dist/client-helpers'/name
+    if helper.is_file():
+        command.extend(['--add-binary', str(helper)+':client-helpers'])
 command.append(str(root/'desktop.py'))
 subprocess.run(command, cwd=root, check=True)
 source = root/'dist/codex-mobile-gateway'

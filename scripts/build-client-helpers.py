@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the platform's visible Claude Console bootstrap, never run it."""
+"""Build and self-check native client lifecycle helpers without controlling apps."""
 import os
 import shutil
 import subprocess
@@ -24,12 +24,14 @@ def build():
         subprocess.run([str(target/'claude-bridge-helper'), '--self-check'], check=True)
     elif sys.platform == 'win32':
         framework = Path(os.environ.get('WINDIR', 'C:/Windows'))/'Microsoft.NET/Framework64/v4.0.30319'
-        subprocess.run([str(framework/'csc.exe'), '/nologo', '/target:exe', '/platform:x64',
-                        '/out:'+str(target/'claude-bridge-helper.exe'),
-                        *['/reference:'+str(framework/'WPF'/name) for name in
-                          ['UIAutomationClient.dll', 'UIAutomationTypes.dll', 'WindowsBase.dll']],
-                        str(source/'claude-helper.cs')], check=True)
-        subprocess.run([str(target/'claude-bridge-helper.exe'), '--self-check'], check=True)
+        for source_name, output_name in [('claude-helper.cs', 'claude-bridge-helper.exe'),
+                                         ('codex-quit-helper.cs', 'codex-quit-helper.exe')]:
+            subprocess.run([str(framework/'csc.exe'), '/nologo', '/target:exe', '/platform:x64',
+                            '/out:'+str(target/output_name),
+                            *['/reference:'+str(framework/'WPF'/name) for name in
+                              ['UIAutomationClient.dll', 'UIAutomationTypes.dll', 'WindowsBase.dll']],
+                            str(source/source_name)], check=True)
+            subprocess.run([str(target/output_name), '--self-check'], check=True)
     return target
 
 
