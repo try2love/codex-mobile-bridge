@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,7 @@ class PtyTests(unittest.TestCase):
         # Keep distro-wide interactive setup (e.g. compinit prompts) out of the fixture.
         (self.root/'.zshenv').write_text('unsetopt GLOBAL_RCS\n')
         (self.root/'.zshrc').write_text("PROMPT='fixture% '\nexport BRIDGE_STARTUP_TEST=loaded\n")
+        (self.root/'.bashrc').write_text("PS1='fixture$ '\nexport BRIDGE_STARTUP_TEST=loaded\n")
     def tearDown(self):
         for session in self.sessions: session.stop(); self.assertTrue(session.done.wait(5))
         self.env.stop(); self.temp.cleanup()
@@ -40,17 +42,26 @@ class PtyTests(unittest.TestCase):
         import pwd
         from types import SimpleNamespace
         for actual, inherited in (('/bin/zsh', '/bin/bash'), ('/bin/bash', '/bin/zsh')):
-            with self.subTest(actual=actual), patch.object(pwd,'getpwuid',return_value=SimpleNamespace(pw_shell=actual)), patch.dict(os.environ,{'SHELL':inherited}):
+            with self.subTest(actual=actual), patch.object(pwd,'getpwuid',return_value=SimpleNamespace(pw_shell=actual)), patch.dict(os.environ,{'SHELL':inherited}), patch('bridge.pty_terminal.os.access',return_value=True):
                 self.assertEqual(default_shell(),actual)
     def test_real_tty_startup_cd_environment_and_interactive_read(self):
-        with patch('bridge.pty_terminal.default_shell',return_value='/bin/zsh'): s=self.session()
+        shell = shutil.which('zsh') or shutil.which('bash')
+        if not shell:
+            self.skipTest('interactive startup fixture requires zsh or bash')
+        if Path(shell).name == 'bash':
+            launcher = self.root/'fixture-shell'
+            launcher.write_text('#!/bin/sh\nexec '+shlex.quote(shell)+' --noprofile --rcfile '+shlex.quote(str(self.root/'.bashrc'))+' -i\n')
+            launcher.chmod(0o700)
+            shell = str(launcher)
+        with patch('bridge.pty_terminal.default_shell',return_value=shell): s=self.session()
         self.send(s,"printf 'STARTUP:%s\\n' \"$BRIDGE_STARTUP_TEST\"; test -t 0 && echo PTY_OK\r")
         self.wait_output(s,'STARTUP:loaded'); self.wait_output(s,'PTY_OK\r\n')
         (self.root/'nested').mkdir()
         self.send(s,'cd nested; export BRIDGE_VALUE=kept\r')
         self.send(s,"printf 'STATE:%s:%s\\n' \"${PWD##*/}\" \"$BRIDGE_VALUE\"\r")
         self.wait_output(s,'STATE:nested:kept')
-        self.send(s,"read reply; printf 'ANSWER:%s\\n' \"$reply\"\r")
+        self.send(s,"printf 'READ_%s\\n' ready; read reply; printf 'ANSWER:%s\\n' \"$reply\"\r")
+        self.wait_output(s,'READ_ready')
         self.send(s,'hello input\r'); self.wait_output(s,'ANSWER:hello input')
     def test_resize_and_ctrl_c_keep_shell_alive(self):
         s=self.session(); s.resize(93,31)

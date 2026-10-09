@@ -1,5 +1,6 @@
 {
   "name": "codex-mobile-bridge-desktop",
+  "desktopName": "codex-mobile-bridge.desktop",
   "version": "2.0.0-preview.3",
   "description": "Codex App 手机网关桌面启动器",
   "author": "try2love",
@@ -80,6 +81,7 @@
       "icon": "desktop/assets/icon.png",
       "category": "Development",
       "executableName": "codex-mobile-bridge",
+      "syncDesktopName": true,
       "artifactName": "Codex-Mobile-Bridge-${version}-Linux-${arch}.${ext}",
       "maintainer": "try2love <try2love@users.noreply.github.com>"
     },

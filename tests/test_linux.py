@@ -43,7 +43,7 @@ class LinuxTests(unittest.TestCase):
     @unittest.skipIf(os.name == 'nt', 'POSIX executable permissions and symlinks')
     def test_symlinked_launcher_and_executable_permissions(self):
         with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
+            root = Path(folder).resolve()
             launcher = root / 'app/chatgpt'
             launcher.parent.mkdir()
             launcher.touch()
@@ -52,7 +52,10 @@ class LinuxTests(unittest.TestCase):
             runtime = root / 'app/resources/codex'
             runtime.parent.mkdir()
             runtime.touch()
-            with patch('bridge.catalog.shutil.which', side_effect=lambda name: str(link) if name == 'chatgpt' else None):
+            is_file = Path.is_file
+            with patch('bridge.catalog.shutil.which', side_effect=lambda name: str(link) if name == 'chatgpt' else None), \
+                    patch.object(Path, 'is_file', autospec=True,
+                                 side_effect=lambda path: is_file(path) if root in path.parents else False):
                 runtime.chmod(0o600)
                 self.assertIsNone(Catalog.find_linux_runtime())
                 runtime.chmod(0o700)
