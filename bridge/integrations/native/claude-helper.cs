@@ -235,18 +235,68 @@ class ClaudeKeyboard {
             }
         }
     }
+    const string DeveloperMenuUnavailable="请在 Claude 的帮助菜单中启用开发者模式，然后重试连接";
+    static T WaitMenuEntry<T>(Func<T> find,Action check,Action pause) where T:class {
+        for(int attempt=0;attempt<20;attempt++) {
+            check();var item=find();if(item!=null)return item;
+            if(attempt<19)pause();
+        }
+        return null;
+    }
+    static void EnableDeveloperMenu<T>(Func<string,T> find,Action<T> invoke,Action<T> expand,Action check,Action pause) where T:class {
+        check();var help=find("help");
+        if(help==null) {
+            var menu=find("menu");if(menu==null)throw new Exception(DeveloperMenuUnavailable);
+            check();invoke(menu);
+            help=WaitMenuEntry(()=>find("help"),check,pause);
+        }
+        if(help==null)throw new Exception(DeveloperMenuUnavailable);
+        check();expand(help);
+        T enable=null,troubleshooting=null;
+        WaitMenuEntry(delegate {
+            enable=find("enable");troubleshooting=find("troubleshooting");
+            return enable??troubleshooting;
+        },check,pause);
+        if(enable==null&&troubleshooting!=null) {
+            check();expand(troubleshooting);
+            enable=WaitMenuEntry(()=>find("enable"),check,pause);
+        }
+        if(enable==null)throw new Exception(DeveloperMenuUnavailable);
+        check();invoke(enable);
+    }
+    static bool AvailableMenuControl(AutomationElement item) {
+        return item!=null&&Owned(item.Current.ProcessId)&&!item.Current.IsOffscreen&&item.Current.IsEnabled;
+    }
+    static AutomationElement FindMenuControl(AutomationElement root,ControlType type,params string[] names) {
+        var conditions=new Condition[names.Length];
+        for(int i=0;i<names.Length;i++)conditions[i]=new PropertyCondition(AutomationElement.NameProperty,names[i]);
+        var elements=root.FindAll(TreeScope.Descendants,new AndCondition(
+            new PropertyCondition(AutomationElement.ControlTypeProperty,type),new OrCondition(conditions)));
+        foreach(AutomationElement item in elements)if(AvailableMenuControl(item))return item;
+        return null;
+    }
+    static void InvokeMenuControl(AutomationElement item) {
+        CheckForeground();object pattern;
+        if(!AvailableMenuControl(item)||!item.TryGetCurrentPattern(InvokePattern.Pattern,out pattern))throw new Exception(DeveloperMenuUnavailable);
+        ((InvokePattern)pattern).Invoke();
+    }
+    static void ExpandMenuControl(AutomationElement item) {
+        CheckForeground();object pattern;
+        if(!AvailableMenuControl(item)||!item.TryGetCurrentPattern(ExpandCollapsePattern.Pattern,out pattern))throw new Exception(DeveloperMenuUnavailable);
+        ((ExpandCollapsePattern)pattern).Expand();
+    }
     static void EnableDeveloperMode(Process process) {
         var window=WaitAppWindow(process,true);
         inputWindow=window;
         Activate(window);
         var root=AutomationElement.FromHandle(window);
-        var help=root.FindFirst(TreeScope.Descendants,new AndCondition(new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.MenuItem),new OrCondition(new PropertyCondition(AutomationElement.NameProperty,"Help"),new PropertyCondition(AutomationElement.NameProperty,"帮助"))));
-        object pattern;
-        if(help!=null&&help.TryGetCurrentPattern(ExpandCollapsePattern.Pattern,out pattern))((ExpandCollapsePattern)pattern).Expand();
-        Thread.Sleep(300);CheckForeground();
-        var item=root.FindFirst(TreeScope.Descendants,new OrCondition(new PropertyCondition(AutomationElement.NameProperty,"Enable Developer Mode…"),new PropertyCondition(AutomationElement.NameProperty,"Enable Developer Mode..."),new PropertyCondition(AutomationElement.NameProperty,"启用开发者模式…"),new PropertyCondition(AutomationElement.NameProperty,"启用开发者模式...")));
-        if(item==null||!Owned(item.Current.ProcessId)||!item.TryGetCurrentPattern(InvokePattern.Pattern,out pattern))throw new Exception("请在 Claude 的帮助菜单中启用开发者模式，然后重试连接");
-        ((InvokePattern)pattern).Invoke();
+        EnableDeveloperMenu(delegate(string role) {
+            if(role=="menu")return FindMenuControl(root,ControlType.Button,"Menu","菜单");
+            if(role=="help")return FindMenuControl(root,ControlType.MenuItem,"Help","帮助");
+            if(role=="troubleshooting")return FindMenuControl(root,ControlType.MenuItem,"Troubleshooting","故障排除");
+            if(role=="enable")return FindMenuControl(root,ControlType.MenuItem,"Enable Developer Mode…","Enable Developer Mode...","启用开发者模式…","启用开发者模式...");
+            return null;
+        },InvokeMenuControl,ExpandMenuControl,CheckForeground,()=>Thread.Sleep(100));
         // Preserve Claude's native Enable/Don't Enable confirmation.
         Stage("请确认 Claude 的开发者模式提示，完成后会继续连接");
     }
@@ -325,6 +375,27 @@ class ClaudeKeyboard {
         catch(Exception){rejected=true;}
         if(!rejected||restores!=0)throw new Exception("Claude 歧义窗口恢复自检失败");
     }
+    static void CheckMenuNavigation() {
+        var actions=new List<string>();int stage=0;
+        Func<string,string> modern=role=>
+            (role=="menu"&&stage==0||role=="help"&&stage==1||role=="troubleshooting"&&stage==2||role=="enable"&&stage==3)?role:null;
+        Action<string> invoke=item=>{actions.Add("invoke:"+item);stage++;};
+        Action<string> expand=item=>{actions.Add("expand:"+item);stage++;};
+        EnableDeveloperMenu(modern,invoke,expand,()=>{},()=>{});
+        if(String.Join(",",actions.ToArray())!="invoke:menu,expand:help,expand:troubleshooting,invoke:enable")
+            throw new Exception("Claude 自定义菜单导航自检失败");
+        actions.Clear();stage=0;
+        EnableDeveloperMenu(role=>role=="help"||role=="enable"&&stage==1?role:null,invoke,expand,()=>{},()=>{});
+        if(String.Join(",",actions.ToArray())!="expand:help,invoke:enable")throw new Exception("Claude 经典菜单导航自检失败");
+        actions.Clear();stage=0;bool cancelled=false;
+        try {EnableDeveloperMenu(modern,invoke,expand,()=>{if(stage==3)throw new OperationCanceledException();},()=>{});}
+        catch(OperationCanceledException){cancelled=true;}
+        if(!cancelled||actions.Contains("invoke:enable"))throw new Exception("Claude 菜单取消自检失败");
+        actions.Clear();stage=0;bool unavailable=false;
+        try {EnableDeveloperMenu(role=>role=="help"?role:null,invoke,expand,()=>{},()=>{});}
+        catch(Exception){unavailable=true;}
+        if(!unavailable||String.Join(",",actions.ToArray())!="expand:help")throw new Exception("Claude 菜单允许列表自检失败");
+    }
     [STAThread] static int Main(string[] args) {
         Console.OutputEncoding=new UTF8Encoding(false);
         try {
@@ -335,7 +406,8 @@ class ClaudeKeyboard {
                 Func<string,string> parent=value=>value=="editor-child"?"expected-console":value=="other-editor"?"other-console":null;
                 if(!FocusedWithin("expected-console","editor-child",parent,(a,b)=>a==b)||FocusedWithin("expected-console","other-editor",parent,(a,b)=>a==b)||FocusedWithin("expected-console","other-console",parent,(a,b)=>a==b))throw new Exception("Console 精确焦点自检失败");
                 CheckWindowSelection();
-                Console.WriteLine("keyboard ABI, Console allowlist and contenteditable text fallback OK; window selection and cancellable restore OK");return 0;
+                CheckMenuNavigation();
+                Console.WriteLine("keyboard ABI, Console allowlist and contenteditable text fallback OK; window selection and cancellable restore OK; menu navigation OK");return 0;
             }
             if(args.Length!=3 && args.Length!=4) throw new Exception("键盘连接参数无效");
             cancelFile=args.Length==4?args[3]:null;
