@@ -92,6 +92,27 @@ class ClaudeDiscovery(unittest.TestCase):
         self.assertEqual(value['setupState'], 'connected')
         adapter.desktop.close.assert_not_called()
 
+    def test_prepare_reads_utf8_connector_under_windows_legacy_locale(self):
+        adapter = Claude(self.root/'网关 连接', auto_connect=False)
+        self.addCleanup(adapter.close)
+        original_open = Path.open
+
+        def legacy_open(path, mode='r', buffering=-1, encoding=None, errors=None, newline=None):
+            if 'b' not in mode and encoding is None:
+                encoding = 'cp936'
+            return original_open(path, mode, buffering, encoding, errors, newline)
+
+        with patch.object(Path, 'open', legacy_open):
+            prepared = adapter.prepare()
+        source = (ROOT/'bridge/integrations/claude-connector.js').read_text(encoding='utf-8')
+        config = {'transport': 'file', 'cwd': str(adapter.directory), 'token': adapter.desktop.token,
+                  'generation': adapter.desktop.generation, 'reconnect': True, 'connectorRevision': 4,
+                  'request': 'request.json', 'response': 'response.json'}
+        self.assertEqual(Path(prepared['scriptPath']).read_text(encoding='utf-8'),
+                         source.replace('__BRIDGE_CONFIG__', json.dumps(config)))
+        self.assertEqual(Path(prepared['consolePath']).read_text(encoding='utf-8'),
+                         console_source(source, config))
+
 
 class ClaudeProfileEvidence(unittest.TestCase):
     def setUp(self):
@@ -504,16 +525,16 @@ class ClaudeNativeConnection(unittest.TestCase):
         self.assertNotEqual(self.adapter.desktop.generation, old.generation)
         (self.adapter.directory/'response.json').write_text(old_response)
         self.assertFalse(self.adapter.status()['connected'])
-        source = Path(prepared['consolePath']).read_text()
+        source = Path(prepared['consolePath']).read_text(encoding='utf-8')
         self.assertNotIn('\n', source)
         self.assertIn(self.adapter.desktop.generation, source)
 
     def test_transformed_console_script_preserves_file_protocol_behavior(self):
-        source = (ROOT/'bridge/integrations/claude-connector.js').read_text()
+        source = (ROOT/'bridge/integrations/claude-connector.js').read_text(encoding='utf-8')
         config = {'cwd': 'D:/fixture', 'request': 'request.json', 'response': 'response.json',
                   'token': 'test', 'generation': 'run', 'reconnect': True, 'connectorRevision': 4}
         target = self.root/'connector.js'
-        target.write_text(console_source(source, config))
+        target.write_text(console_source(source, config), encoding='utf-8')
         completed = subprocess.run(['node', 'tests/claude-connector.test.cjs'], cwd=ROOT,
                                    env={**os.environ, 'CONNECTOR_TEMPLATE': str(target)},
                                    capture_output=True, text=True, timeout=15)
