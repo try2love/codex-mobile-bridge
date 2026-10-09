@@ -665,6 +665,74 @@ class NativeHelperProcess(unittest.TestCase):
         self.assertIn('取消', result['reason'])
         spawn.assert_not_called()
 
+    @patch('bridge.integrations.claude_setup.sys.platform', 'win32')
+    def test_native_quit_keeps_dispatch_when_final_reply_is_lost(self):
+        phase = json.dumps({'quitPhase': 'dispatching', 'pid': 42}) + '\n'
+        failed = json.dumps({'quitState': 'failed', 'pid': 42, 'reason': 'provider failed after Exit'})
+        for tail, code in (('', 0), ('broken JSON', 0), (failed, 1)):
+            with self.subTest(tail=tail):
+                process = Mock(returncode=code)
+                process.communicate.return_value = (phase + tail, '')
+                with patch('bridge.integrations.claude_setup.helper_path', return_value=Path(__file__)), \
+                     patch('bridge.integrations.claude_setup.subprocess.Popen', return_value=process) as spawn:
+                    result = native_action('quit', pid=42, executable='C:/Claude.exe')
+                self.assertEqual(result['quitState'], 'submitted')
+                self.assertEqual(result['pid'], 42)
+                self.assertIn('回执中断', result['reason'])
+                spawn.assert_called_once()
+                process.terminate.assert_not_called()
+
+    @patch('bridge.integrations.claude_setup.sys.platform', 'win32')
+    def test_native_quit_dispatch_requires_exact_integer_pid(self):
+        for target in (99, True, '42', None):
+            with self.subTest(pid=target):
+                process = Mock(returncode=1)
+                process.communicate.return_value = (json.dumps({'quitPhase': 'dispatching', 'pid': target}), '')
+                with patch('bridge.integrations.claude_setup.helper_path', return_value=Path(__file__)), \
+                     patch('bridge.integrations.claude_setup.subprocess.Popen', return_value=process):
+                    result = native_action('quit', pid=42, executable='C:/Claude.exe')
+                self.assertEqual(result['quitState'], 'failed')
+
+    @patch('bridge.integrations.claude_setup.sys.platform', 'win32')
+    def test_native_quit_timeout_preserves_dispatch_evidence(self):
+        phase = json.dumps({'quitPhase': 'dispatching', 'pid': 42}) + '\n'
+        for evidence in ('partial', 'final', 'shutdown-timeout', 'none'):
+            with self.subTest(evidence=evidence):
+                process = Mock(returncode=1)
+                outputs = [subprocess.TimeoutExpired('helper', .2,
+                           output=phase.encode() if evidence == 'partial' else b'')]
+                if evidence == 'shutdown-timeout':
+                    outputs.append(subprocess.TimeoutExpired('helper', 3, output=phase.encode()))
+                outputs.append((phase if evidence == 'final' else '', ''))
+                process.communicate.side_effect = outputs
+                with patch('bridge.integrations.claude_setup.helper_path', return_value=Path(__file__)), \
+                     patch('bridge.integrations.claude_setup.subprocess.Popen', return_value=process) as spawn, \
+                     patch('bridge.integrations.claude_setup.time.monotonic', side_effect=[0, 31]):
+                    result = native_action('quit', pid=42, executable='C:/Claude.exe')
+                self.assertEqual(result['quitState'], 'failed' if evidence == 'none' else 'submitted')
+                spawn.assert_called_once()
+                process.terminate.assert_called_once()
+                self.assertEqual(process.kill.call_count, int(evidence == 'shutdown-timeout'))
+
+    @patch('bridge.integrations.claude_setup.sys.platform', 'win32')
+    def test_cancel_after_quit_dispatch_still_observes_native_exit(self):
+        cancel = threading.Event()
+        process = Mock(returncode=1)
+        phase = json.dumps({'quitPhase': 'dispatching', 'pid': 42}) + '\n'
+        def communicate(**kwargs):
+            if not cancel.is_set():
+                cancel.set()
+                raise subprocess.TimeoutExpired('helper', .2, output=phase.encode())
+            return '', ''
+        process.communicate.side_effect = communicate
+        with patch('bridge.integrations.claude_setup.helper_path', return_value=Path(__file__)), \
+             patch('bridge.integrations.claude_setup.subprocess.Popen', return_value=process) as spawn:
+            result = native_action('quit', pid=42, executable='C:/Claude.exe', cancelled=cancel)
+        self.assertEqual(result['quitState'], 'submitted')
+        spawn.assert_called_once()
+        process.terminate.assert_called_once()
+        process.kill.assert_not_called()
+
     def test_native_action_rejects_actions_outside_allowlist(self):
         with patch('bridge.integrations.claude_setup.subprocess.Popen') as spawn:
             with self.assertRaisesRegex(ValueError, '不支持'):
