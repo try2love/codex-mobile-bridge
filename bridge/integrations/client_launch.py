@@ -126,6 +126,15 @@ def _process_state(descriptor, app, pids, commands):
     main, hosts = [], []
     unknown = any(not commands.get(pid) for pid in pids)
     for pid, command in commands.items():
+        if (descriptor['id'] == 'deepseek' and sys.platform == 'win32' and
+                re.search(r'(?:^|\s)--type(?:=|\s+)utility(?:$|\s)', command) and
+                re.search(r'(?:^|\s)--utility-sub-type(?:=|\s+)node\.mojom\.NodeService(?:$|\s)', command)):
+            # New DSH releases run the Host in Electron's Node utility process.
+            # Its profile is passed over IPC, not on the command line. This is
+            # only a candidate: quit still requires one Host, matching endpoint
+            # PID and a complete idle snapshot from the selected profile.
+            hosts.append(pid)
+            continue
         if re.search(r'(?:^|\s)--type(?:=|\s)', command):
             continue  # Electron renderer/GPU/utility child, closed by its owner.
         if descriptor['id'] == 'deepseek' and '@deepseek-ai' in command and 'dsh-desktop-host' in command:
