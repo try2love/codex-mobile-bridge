@@ -22,11 +22,18 @@ Claude 优先根据所选应用进程的 `--user-data-dir` 定位活动配置；
 
 扫描只发现应用和配置，不会自动完成 Claude 或 DSH 的连接、修改原生开发者设置或切换账号。“已安装”“正在运行”和“已连接”是不同状态。更新本地测试版后重新打开启动脚本，客户端页会自动重新扫描，也可以手动点击“重新扫描”。
 
+Codex 详情中的“扫描桌面程序”也使用 Windows 原生发现结果，可定位 Store 安装的桌面入口，即使 CLI 位于独立更新目录。
+
+Claude 在系统托盘、没有可见窗口时，连接助手会通过所选 Claude 的原生启动入口恢复窗口，然后等待窗口就绪。窗口识别限定当前 Windows 会话、进程和完整程序路径；若存在多个窗口且无法确定目标，会提示先选中窗口。当前 Windows 版的开发者菜单路径为 `Menu → Help → Troubleshooting → Enable Developer Mode`；助手保留 Claude 自己的确认弹窗，需要在弹窗中确认后继续连接。
+
+DSH 的 **Harness 数据目录**是存放配置、会话和连接插件的数据目录，本机为 `C:\Users\19297\.dsh`，不是 `F:\DSH\DSH Desktop` 程序安装目录。该字段已与账号名称输入框分开绑定，扫描和刷新不会再把路径误写入账号名称。
+
 针对这次问题的回归检查：
 
 ```powershell
 .\.tmp\build-env\Scripts\python.exe -B -m unittest tests.test_windows_discovery tests.test_desktop_discovery tests.test_claude_setup tests.test_client_scan tests.test_client_inventory tests.test_client_launch tests.test_client_lifecycle tests.test_claude_accounts -v
 node --test tests/client-connections-ui.test.cjs tests/client-accounts-ui.test.cjs
+.\.tmp\build-env\Scripts\python.exe -B -m unittest tests.test_claude_native_helper -v
 ```
 
 ## 构建
