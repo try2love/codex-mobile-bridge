@@ -189,8 +189,6 @@ def stop_deepseek(descriptor, adapter, *, state):
     status = adapter.call('status')
     if status.get('connected') is not True:
         raise ValueError('Harness 桌面未连接，无法确认退出状态')
-    if status.get('nativeQuit') is not True:
-        raise ValueError('Harness 接入需要更新才能正常退出；请先在电脑端退出 Harness，再重新连接')
     try:
         endpoint = json.loads((adapter.directory/'endpoint.json').read_bytes())
         if (endpoint['pid'] != current['runtimePids'][0] or
@@ -199,12 +197,31 @@ def stop_deepseek(descriptor, adapter, *, state):
     except (OSError, ValueError, KeyError, TypeError):
         raise ValueError(changed) from None
     app = _app(descriptor)
+    command = None
+    if status.get('nativeQuit') is not True:
+        from .dsh_windows_quit import installer_quit_command, send_installer_quit
+        command = installer_quit_command(app, current, _commands(app, current['pids']))
+        runtime = adapter.call('lifecycle')
+        rows = runtime.get('sessions')
+        if (runtime.get('bridgeRevision') != 3 or runtime.get('complete') is not True or
+                not isinstance(rows, list) or any(not isinstance(row, dict) or
+                    row.get('runtimeKnown') is not True or row.get('status') not in ('idle', 'stopped', 'completed') or
+                    row.get('requests') for row in rows)):
+            raise ValueError('有任务运行、等待确认或状态未知，请先在电脑端检查后再退出')
+        try:
+            if json.loads((adapter.directory/'endpoint.json').read_bytes()) != endpoint:
+                raise ValueError(changed)
+        except (OSError, ValueError):
+            raise ValueError(changed) from None
     current = verify()
-    result = adapter.call('quit', body={'expectedPid': endpoint['pid'],
-                                      'expectedGeneration': endpoint['generation']})
-    if (result.get('status') != 'accepted' or result.get('pid') != endpoint['pid'] or
-            result.get('generation') != endpoint['generation']):
-        raise ValueError('Harness 未确认退出请求，请在电脑端检查后重试')
+    if command is not None:
+        send_installer_quit(command)
+    else:
+        result = adapter.call('quit', body={'expectedPid': endpoint['pid'],
+                                          'expectedGeneration': endpoint['generation']})
+        if (result.get('status') != 'accepted' or result.get('pid') != endpoint['pid'] or
+                result.get('generation') != endpoint['generation']):
+            raise ValueError('Harness 未确认退出请求，请在电脑端检查后重试')
     deadline = time.monotonic() + 25
     while remaining := app.processes():
         if set(remaining) - set(current['pids']):
