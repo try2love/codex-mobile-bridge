@@ -301,7 +301,8 @@ class QuitFixture {
                         self.assertFalse(exited(app))
                         self.assertEqual(user.GetForegroundWindow(), foreground)
                         continue
-                    result = json.loads(output.read_text(encoding='utf-8-sig'))
+                    replies = output.read_text(encoding='utf-8-sig').splitlines()
+                    result = json.loads(replies[-1])
                     if mode == 'native-popup':
                         # WPF's standard popup currently does not expose Exit
                         # here. Keep this real provider limitation covered:
@@ -311,10 +312,13 @@ class QuitFixture {
                         self.assertIn('桌面不可用', result['reason'])
                         self.assertLess(time.monotonic()-started, 12)
                         self.assertFalse(marker.exists())
+                        self.assertEqual(len(replies), 1, 'unsubmitted failure must not report dispatch')
                         self.assertFalse(exited(app))
                         self.assertEqual(user.GetForegroundWindow(), foreground)
                         continue
                     self.assertEqual(code, 0, result)
+                    self.assertEqual([json.loads(line) for line in replies[:-1]],
+                                     [{'quitPhase': 'dispatching', 'pid': app.pid}])
                     if mode == 'dispatch-error':
                         self.assertEqual(result['quitState'], 'submitted', result)
                         self.assertEqual(marker.read_text(encoding='utf-8'), 'exit\nprovider-error\n')
