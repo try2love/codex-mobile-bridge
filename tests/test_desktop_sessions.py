@@ -124,9 +124,9 @@ class HttpAdapters(unittest.TestCase):
         manager = self.server.desktop_sessions = Mock()
         manager.toggle_client.return_value = {'clients': []}
         body = {'provider': 'codex', 'enabled': False, 'quitDesktop': True, 'forceDesktop': True}
-        self.assertEqual(self.request('POST', '/api/clients', body)[0], 401)
+        self.assertEqual(self.request('POST', '/api/clients')[0], 401)
         headers = self.login()
-        self.assertEqual(self.request('POST', '/api/clients', body, {'Cookie': headers['Cookie']})[0], 403)
+        self.assertEqual(self.request('POST', '/api/clients', headers={'Cookie': headers['Cookie']})[0], 403)
         manager.toggle_client.assert_not_called()
         self.assertEqual(self.request('POST', '/api/clients', {**body, 'pid': 123}, headers)[0], 400)
         manager.toggle_client.assert_not_called()
