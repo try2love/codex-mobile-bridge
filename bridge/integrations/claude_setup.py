@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from contextlib import nullcontext
 
 from ..desktop_app import DesktopApp, process_inventory
 
@@ -351,7 +352,7 @@ def background_start_supported(executable):
         return False
 
 
-def background_running_app(executable, data_home, cancelled=None):
+def background_running_app(executable, data_home, cancelled=None, launch_gate=None):
     """Start a verified Windows Claude in its native hidden mode at most once."""
     if sys.platform != 'win32':
         raise ValueError('此系统尚未验证 Claude 后台启动入口')
@@ -377,13 +378,21 @@ def background_running_app(executable, data_home, cancelled=None):
             raise ValueError('无法确认所选 Claude 的后台启动别名，请在电脑端打开应用后重试')
     else:
         launcher = app.executable
-    check()
     # No explorer fallback: it would activate the window and drop --startup.
     environment = {key: value for key, value in os.environ.items() if key.upper() != 'ELECTRON_RUN_AS_NODE'}
-    process = subprocess.Popen([str(launcher), '--startup'], cwd=app.executable.parent,
-                               env=environment,
-                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                               creationflags=subprocess.CREATE_NO_WINDOW)
+    with launch_gate if launch_gate is not None else nullcontext():
+        check()
+        # Discovery can be slow. Never reactivate an app opened in the meantime.
+        pids = _main_pids(app)
+        check()
+        if len(pids) > 1:
+            raise ValueError('无法确认唯一的 Claude 主进程，请在电脑端检查')
+        if pids:
+            return {'pid': pids[0], 'launched': False}
+        process = subprocess.Popen([str(launcher), '--startup'], cwd=app.executable.parent,
+                                   env=environment,
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   creationflags=subprocess.CREATE_NO_WINDOW)
     deadline = time.monotonic() + 20
     while True:
         check()
