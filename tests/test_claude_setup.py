@@ -160,9 +160,89 @@ class ClaudeProfileEvidence(unittest.TestCase):
 
     def test_other_platforms_retain_existing_profile_without_mac_tools(self):
         with patch('bridge.integrations.claude_setup.subprocess.run') as run:
-            for platform in ('win32', 'linux'):
-                self.assertEqual(claude_setup.claude_data_home(self.executable, self.default, platform), self.default)
+            self.assertEqual(claude_setup.claude_data_home(self.executable, self.default, 'linux'), self.default)
         run.assert_not_called()
+
+
+class ClaudeWindowsProfiles(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(dir=ROOT/'.tmp')
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.local, self.roaming = self.root/'Local', self.root/'Roaming'
+        self.env = {'LOCALAPPDATA': str(self.local), 'APPDATA': str(self.roaming)}
+        self.default = self.roaming/'Claude'
+        self.third = self.local/'Claude-3p'
+        self.family = 'Claude_pzs8sxrjxfjjc'
+        self.store = self.local/'Packages'/self.family/'LocalCache/Roaming/Claude'
+        self.executable = self.root/'WindowsApps/Claude_2.31226.0.0_x64__pzs8sxrjxfjjc/app/Claude.exe'
+        self.inventory = patch('bridge.integrations.claude_setup.process_inventory', return_value={}, create=True).start()
+        self.addCleanup(patch.stopall)
+
+    def profile(self, path, mode=None):
+        path.mkdir(parents=True, exist_ok=True)
+        (path/'Local State').write_text('{}', encoding='utf-8')
+        if mode:
+            (path/'claude_desktop_config.json').write_text(json.dumps({'deploymentMode': mode, 'private': 'never-return'}), encoding='utf-8')
+        return path
+
+    def scan(self, fallback=None):
+        return claude_setup.claude_data_home(self.executable, fallback or self.default, 'win32', env=self.env)
+
+    def test_live_exact_executable_commands_select_unicode_profile(self):
+        active = self.root/'Claude 数据/配置'
+        self.inventory.return_value = {self.executable: {'pids': [1, 2, 3], 'commands': {
+            1: f'"{self.executable}"',
+            2: f'"{self.executable}" --type=renderer --user-data-dir="{active}"',
+            3: f'"{self.executable}" --type=utility --user-data-dir "{active}"'}}}
+        self.assertEqual(self.scan(), active)
+        self.inventory.assert_called_once_with([self.executable])
+
+    def test_conflicting_live_profiles_do_not_guess_from_stopped_metadata(self):
+        self.profile(self.third, '3p')
+        self.inventory.return_value = {self.executable: {'pids': [1, 2], 'commands': {
+            1: f'Claude.exe --user-data-dir="{self.third}"',
+            2: f'Claude.exe --user-data-dir="{self.default}"'}}}
+        self.assertEqual(self.scan(), self.default)
+
+    def test_stopped_third_party_mode_beats_populated_store_profile(self):
+        self.profile(self.store, '3p')
+        self.profile(self.third, '3p')
+        self.assertEqual(self.scan(), self.third)
+
+    def test_unique_stopped_store_profile_uses_exact_package_family(self):
+        self.profile(self.store)
+        self.assertEqual(self.scan(), self.store)
+
+    def test_unique_migrated_official_profile_is_discovered(self):
+        migrated = self.profile(self.local/'Claude-Data')
+        self.assertEqual(self.scan(), migrated)
+
+    def test_unrelated_package_and_custom_fallback_stay_isolated(self):
+        self.profile(self.local/'Packages/Claude_otherpublisher/LocalCache/Roaming/Claude')
+        self.assertEqual(self.scan(), self.default)
+        self.profile(self.third, '3p')
+        selected = self.root/'custom/Claude'
+        self.assertEqual(self.scan(selected), selected)
+        self.assertFalse(selected.exists())
+
+    def test_conflicting_stopped_modes_and_profiles_keep_fallback(self):
+        self.profile(self.third, '3p')
+        self.profile(self.store, '1p')
+        self.assertEqual(self.scan(), self.default)
+
+    def test_process_inspection_failure_uses_unique_profile(self):
+        self.profile(self.third)
+        self.inventory.side_effect = PermissionError('fixture')
+        self.assertEqual(self.scan(), self.third)
+
+    def test_profile_pairing_retains_recognized_missing_paths(self):
+        paths = claude_setup.windows_claude_profile_paths(self.executable, self.third, env=self.env)
+        self.assertEqual(paths['thirdparty'], [self.third, self.roaming/'Claude-3p'])
+        self.assertIn(self.store, paths['official'])
+        self.assertIn(self.default, paths['official'])
+        self.assertEqual(claude_setup.windows_claude_profile_paths(self.executable, self.root/'custom/Claude', env=self.env), {})
+        self.assertFalse(self.third.exists())
 
 
 class ClaudeNativeConnection(unittest.TestCase):
