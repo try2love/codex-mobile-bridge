@@ -22,6 +22,8 @@ MAX_REQUEST = 10 * 1024 * 1024
 # Bump when the injected renderer must reload a changed API contract. A new
 # owner generation alone only reconnects the existing JavaScript closure.
 CONNECTOR_REVISION = 4
+MUTATIONS = {'sendMessage', 'interrupt', 'stop', 'respondToToolPermission', 'start', 'archive',
+             'delete', 'updateSession', 'setPermissionMode', 'setModel', 'setEffort', 'setThinkingSummariesWanted'}
 
 
 class FileDesktop:
@@ -34,6 +36,9 @@ class FileDesktop:
         self.cached = {}
         self.stamp = None
         self.message = ''
+        self.unconfirmed_mutations = set()
+        self.stopped = False
+        self.resume_after = 0
         self.write({'generation': self.generation, 'seq': 0, 'type': 'idle'})
         (self.directory / 'response.json').write_text('{}', encoding='utf-8')
 
@@ -77,6 +82,8 @@ class FileDesktop:
             value = json.loads(payload)
             if not isinstance(value, dict) or value.get('generation') != self.generation:
                 return {}
+            if value.get('done') is True and 'error' not in value:
+                self.unconfirmed_mutations.discard(value.get('seq'))
             self.cached, self.stamp = value, stamp
             return value
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
@@ -87,7 +94,8 @@ class FileDesktop:
     def connected(self):
         value = self.read()
         timestamp = value.get('timestamp', 0)
-        return (isinstance(timestamp, (int, float)) and 0 <= time.time() - timestamp < 20
+        return (not self.stopped and isinstance(timestamp, (int, float)) and timestamp >= self.resume_after
+                and 0 <= time.time() - timestamp < 20
                 and value.get('connected') is True and value.get('connectorRevision') == CONNECTOR_REVISION)
 
     @property
@@ -106,13 +114,19 @@ class FileDesktop:
                 raise BridgeUnavailable('Claude Desktop 文件桥接未连接或不支持此操作')
             self.seq += 1
             seq = self.seq
+            if method in MUTATIONS:
+                self.unconfirmed_mutations.add(seq)
             try:
                 await asyncio.to_thread(self.write,
                     {'type': 'request', 'generation': self.generation, 'seq': seq,
                      'expires': time.time() + timeout, 'surface': surface,
                      'method': method, 'args': list(args)})
             except OSError as exc:
+                self.unconfirmed_mutations.discard(seq)
                 raise BridgeUnavailable('无法写入本地桥接文件，请检查文件占用和目录权限') from exc
+            except ValueError:
+                self.unconfirmed_mutations.discard(seq)
+                raise
             while time.monotonic() < deadline:
                 reply = self.read()
                 if reply.get('seq') == seq and reply.get('done') is True:
@@ -128,3 +142,4 @@ class FileDesktop:
 
     def close(self):
         self.write({'generation': self.generation, 'seq': self.seq + 1, 'type': 'stop'})
+        self.stopped = True

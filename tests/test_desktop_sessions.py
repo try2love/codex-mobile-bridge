@@ -120,6 +120,35 @@ class HttpAdapters(unittest.TestCase):
     tearDown = test_bridge.HttpTests.tearDown
     request = test_bridge.HttpTests.request
     login = test_bridge.HttpTests.login
+    def test_claude_reconnect_is_authenticated_fixed_and_csrf_protected(self):
+        manager = self.server.desktop_sessions = Mock()
+        manager.reconnect_claude.return_value = {'clients': [{'id': 'claude', 'connected': False, 'setupStatus': 'connecting'}]}
+        route = '/api/clients/claude/reconnect'
+        self.assertEqual(self.request('POST', route, {})[0], 401)
+        headers = self.login()
+        self.assertEqual(self.request('GET', route, headers=headers)[0], 405)
+        self.assertEqual(self.request('POST', route, {}, {'Cookie': headers['Cookie']})[0], 403)
+        self.assertEqual(self.request('POST', route, {}, {**headers, 'Origin': 'https://foreign.example'})[0], 403)
+        for value in ({'restart': True}, {'provider': 'codex'}, {'path': '/fixture'}, [], None):
+            self.assertEqual(self.request('POST', route, value, headers)[0], 400)
+        manager.reconnect_claude.assert_not_called()
+        status, _, result = self.request('POST', route, {}, headers)
+        self.assertEqual(status, 200); self.assertFalse(result['clients'][0]['connected'])
+        manager.reconnect_claude.assert_called_once_with()
+        manager.control.assert_not_called(); manager.toggle_client.assert_not_called()
+        self.server.auth.config['mode'] = 'none'
+        self.assertEqual(self.request('POST', route, {}, headers)[0], 403)
+        self.assertEqual(manager.reconnect_claude.call_count, 1)
+
+    def test_desktop_claude_quit_confirmation_is_not_exposed_to_web(self):
+        manager = self.server.desktop_sessions = Mock()
+        headers = self.login()
+        for action in ('claude-quit-preview', 'claude-quit-confirm'):
+            self.assertEqual(self.request('POST', '/api/desktop-sessions/claude/'+action, {'confirmed': True}, headers)[0], 404)
+            self.assertEqual(self.request('POST', '/api/clients/claude/'+action, {'confirmed': True}, headers)[0], 404)
+            self.assertEqual(self.request('POST', '/api/clients', {'provider': 'claude', 'enabled': False, 'action': action}, headers)[0], 400)
+        manager.control.assert_not_called(); manager.toggle_client.assert_not_called()
+
     def test_desktop_notifications_require_auth_csrf_and_keep_provider(self):
         self.server.desktop_sessions = Mock()
         self.server.notifications = Mock()

@@ -89,6 +89,12 @@ class ClientNavigation {
     catch(error){this.provider=previous;this.applyClients({clients:before});throw error;}
     finally{this.pending.delete(id);++this.revision;this.paint();}
   }
+  async reconnect(id){
+    const client=this.clients.find(row=>row.id===id);if(this.pending.size||id!=='claude'||!client?.reconnectSupported||!client.canReconnect||client.setupStatus==='connecting')return;
+    this.pending.add(id);this.reconnecting=id;++this.revision;this.paint();
+    try{const data=await this.request('/api/clients/claude/reconnect',{});this.applyClients(data);const connected=data.clients.find(row=>row.id===id)?.connected;this.notify(connected?'Claude 已连接':'已发起重新连接');if(connected&&this.provider===id)await this.view.refresh();}
+    finally{this.pending.delete(id);this.reconnecting=null;++this.revision;this.paint();}
+  }
   paint(){
     const provider=this.provider,row=this.clients.find(c=>c.id===provider);this.badge.replaceChildren();if(provider)this.badge.append(this.icon(provider),document.createTextNode(row?.name||'Codex'));
     const target=provider&&provider!=='codex'?this.view.list:this.sidebar;target.prepend(this.heading);target.append(this.navigation);
@@ -102,6 +108,7 @@ class ClientNavigation {
     let empty=this.sidebar.querySelector('.no-client-message');if(!empty){empty=document.createElement('p');empty.className='no-client-message muted';empty.textContent=BridgeI18n.t('尚未启用应用，请打开应用管理。');this.heading.after(empty);}empty.hidden=!!provider;this.renderManager();
   }
   managementState(client){
+    if(this.reconnecting===client.id)return '正在连接…';
     if(this.pending.has(client.id))return this.gatewayRunning===false?'正在保存…':client.enabled?'开启中…':'关闭中…';
     if(this.gatewayRunning===false)return client.enabled?'已选择，下次启动生效':'未选择，下次启动生效';
     return client.enabled?'已启用':'未启用';
@@ -109,6 +116,7 @@ class ClientNavigation {
   runtimeState(client){
     if(client.backgroundRunning&&client.mainRunning===false)return '后台运行，桌面未打开';
     if(client.connected)return '已连接';
+    if(client.setupStatus==='connecting')return '正在连接…';
     if(client.running===true)return '应用运行中，尚未连接';
     if(client.running===false)return '应用未运行';
     return '尚未连接';
@@ -124,6 +132,7 @@ class ClientNavigation {
       toggle.type='button';toggle.className='client-management-switch';toggle.setAttribute('role','switch');toggle.setAttribute('aria-checked',String(client.enabled));toggle.setAttribute('aria-label',BridgeI18n.t('启用')+' '+client.name);toggle.setAttribute('aria-busy',String(this.pending.has(client.id)));toggle.disabled=!(client.selectable??client.configured)||this.pending.size>0;
       toggle.append(document.createElement('span'));control.append(toggle,label);row.append(this.icon(client.id),text,control);list.append(row);
       toggle.onclick=()=>this.toggle(client.id,!client.enabled).catch(error=>this.notify(error.message));
+      if(client.id==='claude'&&client.reconnectSupported){const reconnect=document.createElement('button');reconnect.type='button';reconnect.className='plain client-reconnect';reconnect.textContent=BridgeI18n.t(this.reconnecting===client.id||client.setupStatus==='connecting'?'正在连接…':'重新连接');reconnect.disabled=!client.canReconnect||this.pending.size>0||client.setupStatus==='connecting';reconnect.setAttribute('aria-busy',String(this.reconnecting===client.id));reconnect.onclick=()=>this.reconnect(client.id).catch(error=>this.notify(error.message));control.append(reconnect);}
     }
     note.textContent=BridgeI18n.t(this.gatewayRunning===false?'网关未启动，开关仅保存下次启动时的选择，不会打开或退出应用。':'安装和登录请在电脑端完成。开启会打开桌面应用，关闭会完全退出；有任务运行或等待确认时无法关闭。');
   }

@@ -14,6 +14,8 @@ from .errors import BridgeUnavailable
 from .mailbox import FileDesktop, MAX_REQUEST, CONNECTOR_REVISION
 from ..lifecycle import private_json
 
+DESKTOP_WAIT_STATES = {'needs-screen-saver', 'needs-unlock', 'needs-desktop'}
+
 
 class Claude:
     def __init__(self, directory, *, auto_connect=True):
@@ -26,6 +28,8 @@ class Claude:
         self.setup_lock = threading.RLock()
         self.setup_thread = None
         self.setup_cancel = threading.Event()
+        self.pending_calls = set()
+        self.reconnecting = False
         discovery_path = self.directory/'discovery.json'
         if discovery_path.exists():
             try:
@@ -91,10 +95,12 @@ class Claude:
         with self.setup_lock:
             self.discovery.update(setupState=state, reason=reason, **values)
 
-    def connect(self, restart=False):
+    def connect(self, restart=False, *, existing_only=False):
         """Start visible native connection setup without a public listener."""
         old_monitor = None
         with self.setup_lock:
+            if existing_only:
+                self._assert_reconnect_idle()
             if self.setup_cancel.is_set() and self.setup_thread:
                 old_monitor = self.setup_thread
             if self.status()['connected']:
@@ -128,11 +134,30 @@ class Claude:
             self._setup_state('connecting', '正在自动连接 Claude', consoleCleanupPending=False)
             if self.desktop is None and (self.directory/'connection.json').exists():
                 self.prepare()
-            self.setup_thread = threading.Thread(target=self._connect_native, args=(restart, cancel_path), daemon=True)
+            self.setup_thread = threading.Thread(target=self._connect_native, args=(restart, cancel_path),
+                                                 kwargs={'existing_only': existing_only}, daemon=True)
             self.setup_thread.start()
             return self.status()
 
-    def _connect_native(self, restart, cancel_path):
+    def _await_desktop(self, state, cancel):
+        self._setup_state(state['setupState'], state.get('reason', 'Claude 连接未就绪'),
+                          **{k: state[k] for k in ('helperPath',) if k in state})
+        result = native_action('wait-desktop', cancelled=cancel,
+                               recovered=lambda: bool(self.desktop and self.desktop.connected))
+        if result.get('setupState') in ('ready', 'connected'):
+            return True
+        self._setup_state(result.get('setupState', 'failed'), result.get('reason', 'Claude 连接未就绪'))
+        return False
+
+    def _assert_reconnect_idle(self):
+        self.pending_calls = {call for call in self.pending_calls if not call.done()}
+        if self.desktop:
+            self.desktop.read()  # A late signed success may settle an earlier write.
+        if (self.pending_calls or self.desktop and
+                (self.desktop.lock.locked() or self.desktop.unconfirmed_mutations)):
+            raise ValueError('Claude 仍有未确认的请求，请先在电脑端检查结果；如需重新建立连接，请在电脑端操作')
+
+    def _connect_native(self, restart, cancel_path, existing_only=False):
         cancel = self.setup_cancel
         asked_permission = False
         developer_prompt_pid = None
@@ -149,8 +174,14 @@ class Claude:
                 if self.desktop and self.desktop.connected and not restart:
                     self._setup_state('connected', '桌面连接可用')
                     return
+                if existing_only:
+                    with self.setup_lock:
+                        self._assert_reconnect_idle()
                 permission = native_action('check', cancelled=cancel)
                 if permission.get('setupState') != 'ready':
+                    if permission.get('setupState') in DESKTOP_WAIT_STATES:
+                        if self._await_desktop(permission, cancel): continue
+                        return
                     self._setup_state(permission.get('setupState', 'failed'), permission.get('reason', 'Claude 连接未就绪'),
                                       **{k: permission[k] for k in ('helperPath',) if k in permission})
                     if permission.get('setupState') != 'needs-permission':
@@ -164,7 +195,7 @@ class Claude:
                 data_home = self.discovery.get('dataHome')
                 if not data_home:
                     raise ValueError('未找到 Claude 数据目录，请重新扫描')
-                pid = running_app(executable, data_home, restart=restart, cancelled=cancel)
+                pid = running_app(executable, data_home, restart=restart, cancelled=cancel, allow_launch=not existing_only)
                 restart = False
                 if cancel.is_set(): return
                 if not self.discovery.get('dataHomeExplicit'):
@@ -179,6 +210,9 @@ class Claude:
                 if not developer_mode_enabled(data_home):
                     if developer_prompt_pid != pid:
                         result = native_action('enable-devtools', pid=pid, executable=executable, cancelled=cancel)
+                        if result.get('setupState') in DESKTOP_WAIT_STATES:
+                            if self._await_desktop(result, cancel): continue
+                            return
                         developer_prompt_pid = pid
                         if result.get('setupState') not in ('needs-developer-mode', 'submitted'):
                             self._setup_state(result.get('setupState', 'failed'), result.get('reason', '请在 Claude 中确认开发者模式'))
@@ -189,7 +223,16 @@ class Claude:
                 self._setup_state('connecting', '正在连接 Claude，请暂时保持 Console 焦点，按 Esc 可取消')
                 with self.setup_lock:
                     if cancel.is_set(): return
-                    prepared = self.prepare(reset=self.desktop is not None)
+                    if existing_only:
+                        self._assert_reconnect_idle()
+                        self.reconnecting = True
+                        if self.desktop and self.desktop.stopped:
+                            # Old cached heartbeats cannot prove a stopped
+                            # connector resumed. Require a newly generated reply.
+                            self.desktop.resume_after = time.time()
+                            self.desktop.write({'generation': self.desktop.generation, 'seq': self.desktop.seq, 'type': 'idle'})
+                            self.desktop.stopped = False
+                    prepared = self.prepare(reset=self.desktop is not None and not existing_only)
                 # Signed reconnect may finish while the app was being located.
                 for _ in range(5):
                     if self.desktop.connected or cancel.wait(.2): break
@@ -198,6 +241,9 @@ class Claude:
                 result = native_action('connect', pid=pid, executable=executable, script=prepared['consolePath'],
                                        cancel_path=cancel_path, cancelled=cancel)
                 if result.get('setupState') != 'submitted':
+                    if result.get('setupState') in DESKTOP_WAIT_STATES:
+                        if self._await_desktop(result, cancel): continue
+                        return
                     self._setup_state('needs-retry', result.get('reason', 'Claude 自动连接未完成，请点击连接重试'))
                     return
                 deadline = time.monotonic() + 18
@@ -215,6 +261,9 @@ class Claude:
                 else:
                     if not cancel.is_set():
                         result = native_action('inspect-error', pid=pid, executable=executable, cancelled=cancel)
+                        if result.get('setupState') in DESKTOP_WAIT_STATES:
+                            if self._await_desktop(result, cancel): continue
+                            return
                         self._setup_state('needs-trust' if result.get('setupState') == 'needs-trust' else 'failed',
                                           result.get('reason') if result.get('setupState') == 'needs-trust'
                                           else '未收到 Claude 连接确认，请检查登录和目录信任后重试')
@@ -223,6 +272,8 @@ class Claude:
             if not cancel.is_set():
                 self._setup_state('failed', str(exc) if isinstance(exc, ValueError) else 'Claude 自动连接未完成，请重试')
         finally:
+            with self.setup_lock:
+                self.reconnecting = False
             if cancel.is_set():
                 self._setup_state('cancelled', '已取消 Claude 连接')
 
@@ -407,7 +458,52 @@ class Claude:
     def call(self, action, sid=None, body=None):
         if self.loop is None:
             raise BridgeUnavailable(self.status()['reason'])
-        return asyncio.run_coroutine_threadsafe(self.dispatch(action, sid, body or {}), self.loop).result(timeout=100)
+        future = self._submit_call(lambda: self.dispatch(action, sid, body or {}))
+        try:
+            return future.result(timeout=100)
+        finally:
+            if future.done():
+                with self.setup_lock:
+                    self.pending_calls.discard(future)
+
+    def _submit_call(self, operation):
+        with self.setup_lock:
+            if self.reconnecting:
+                raise BridgeUnavailable('Claude 正在重新连接，请稍后再试')
+            # Prune on caller threads. A loop-thread done callback taking this
+            # lock could deadlock prepare(), which waits for loop.initialize.
+            self.pending_calls = {call for call in self.pending_calls if not call.done()}
+            future = asyncio.run_coroutine_threadsafe(operation(), self.loop)
+            self.pending_calls.add(future)
+            return future
+
+    def check_connection(self):
+        """Probe the current connector without resetting it or replaying work."""
+        if self.loop is None or self.desktop is None:
+            raise BridgeUnavailable(self.status()['reason'])
+        desktop = self.desktop
+        async def probe():
+            capabilities = desktop.capabilities
+            for surface in ('code', 'cowork'):
+                for method in ('mobileList', 'getAll'):
+                    if method in capabilities.get(surface, []):
+                        await desktop.call(surface, method, timeout=3)
+                        if self.desktop is not desktop or self.setup_cancel.is_set():
+                            raise BridgeUnavailable('Claude Desktop 文件桥接已断开；操作结果可能不确定')
+                        return
+            raise BridgeUnavailable('Claude Desktop 文件桥接未连接或不支持此操作')
+        future = self._submit_call(probe)
+        try:
+            future.result(timeout=5)
+        except Exception as exc:
+            # A timed-out probe may still be writing via to_thread. Keep its
+            # future and mailbox lock until that writer and its bounded RPC
+            # finish, so a late read cannot overwrite the next request.
+            raise BridgeUnavailable('Claude 桌面连接暂未响应，请检查电脑端状态后重试；未重启客户端') from exc
+        finally:
+            if future.done():
+                with self.setup_lock:
+                    self.pending_calls.discard(future)
 
     def close(self):
         # Ownership handoff must preserve explicit connection intent. A user's

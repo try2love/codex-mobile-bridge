@@ -152,6 +152,98 @@ class ClaudeNativeConnection(unittest.TestCase):
                                   'dataHome': str(self.root/'profile'), 'automaticConnection': 'native-console'}
         self.cancel_path = self.root/'cancel'
 
+    def test_inactive_desktop_waits_without_launching_console_and_resumes_once(self):
+        for blocked in ('needs-screen-saver', 'needs-unlock', 'needs-desktop'):
+            with self.subTest(blocked=blocked):
+                self.adapter.desktop = Mock(connected=False, capabilities={})
+                actions = []
+                def action(name, **kwargs):
+                    actions.append(name)
+                    if name == 'check':
+                        return {'setupState': blocked if len(actions) == 1 else 'ready', 'reason': blocked}
+                    if name == 'wait-desktop':
+                        running.assert_not_called(); prepare.assert_not_called()
+                        self.assertEqual(self.adapter.status()['setupState'], blocked)
+                        return {'setupState': 'ready'}
+                    if name == 'connect':
+                        self.adapter.desktop.connected = True
+                        return {'setupState': 'submitted'}
+                    return {'setupState': 'connected'}
+                with patch('bridge.integrations.claude.native_action', side_effect=action), \
+                     patch('bridge.integrations.claude.running_app', return_value=42) as running, \
+                     patch('bridge.integrations.claude.developer_mode_enabled', return_value=True), \
+                     patch.object(self.adapter, 'prepare', return_value={'consolePath': '/fixture'}) as prepare, \
+                     patch.object(self.adapter.setup_cancel, 'wait', return_value=False):
+                    self.adapter._connect_native(False, self.cancel_path)
+                self.assertEqual(actions, ['check', 'wait-desktop', 'check', 'connect', 'close-devtools'])
+                self.assertTrue(self.adapter.status()['connected'])
+
+    def test_existing_connector_can_recover_while_desktop_remains_in_screen_saver(self):
+        self.adapter.desktop = Mock(connected=False, capabilities={})
+        def action(name, **kwargs):
+            if name == 'check': return {'setupState': 'needs-screen-saver', 'reason': 'screen saver'}
+            self.assertEqual(name, 'wait-desktop')
+            self.assertFalse(kwargs['recovered']())
+            self.adapter.desktop.connected = True
+            self.assertTrue(kwargs['recovered']())
+            return {'setupState': 'connected'}
+        with patch('bridge.integrations.claude.native_action', side_effect=action) as native, \
+             patch('bridge.integrations.claude.running_app') as running, \
+             patch.object(self.adapter.setup_cancel, 'wait', return_value=False):
+            self.adapter._connect_native(False, self.cancel_path)
+        self.assertEqual([call.args[0] for call in native.call_args_list], ['check', 'wait-desktop'])
+        running.assert_not_called()
+        self.assertTrue(self.adapter.status()['connected'])
+
+    def test_screen_saver_during_console_setup_is_preserved_until_resume(self):
+        self.adapter.desktop = Mock(connected=False, capabilities={})
+        actions = []
+        def action(name, **kwargs):
+            actions.append(name)
+            if name == 'connect':
+                if actions.count('connect') == 1:
+                    return {'setupState': 'needs-screen-saver', 'reason': 'screen saver'}
+                self.adapter.desktop.connected = True
+                return {'setupState': 'submitted'}
+            if name == 'wait-desktop':
+                self.assertEqual(self.adapter.status()['setupState'], 'needs-screen-saver')
+            return {'setupState': 'ready' if name != 'close-devtools' else 'connected'}
+        with patch('bridge.integrations.claude.native_action', side_effect=action), \
+             patch('bridge.integrations.claude.running_app', return_value=42), \
+             patch('bridge.integrations.claude.developer_mode_enabled', return_value=True), \
+             patch.object(self.adapter, 'prepare', return_value={'consolePath': '/fixture'}), \
+             patch.object(self.adapter.setup_cancel, 'wait', return_value=False):
+            self.adapter._connect_native(False, self.cancel_path)
+        self.assertEqual(actions, ['check', 'connect', 'wait-desktop', 'check', 'connect', 'close-devtools'])
+
+    def test_cancel_during_screen_saver_wait_never_starts_claude(self):
+        self.adapter.desktop = Mock(connected=False, capabilities={})
+        def action(name, **kwargs):
+            if name == 'wait-desktop': self.adapter.setup_cancel.set()
+            return {'setupState': 'needs-unlock', 'reason': 'locked'}
+        with patch('bridge.integrations.claude.native_action', side_effect=action) as native, \
+             patch('bridge.integrations.claude.running_app') as running, \
+             patch.object(self.adapter.setup_cancel, 'wait', return_value=False):
+            self.adapter._connect_native(False, self.cancel_path)
+        self.assertEqual([call.args[0] for call in native.call_args_list], ['check', 'wait-desktop'])
+        running.assert_not_called()
+        self.assertEqual(self.adapter.status()['setupState'], 'cancelled')
+
+    def test_remote_reconnect_does_not_launch_claude_after_screen_saver_wait(self):
+        self.adapter.desktop = Mock(connected=False, capabilities={}, unconfirmed_mutations=set())
+        self.adapter.desktop.lock.locked.return_value = False
+        states = iter([{'setupState': 'needs-screen-saver', 'reason': 'screen saver'},
+                       {'setupState': 'ready'}, {'setupState': 'ready'}])
+        def existing(executable, data_home, **kwargs):
+            self.assertFalse(kwargs['allow_launch'])
+            raise ValueError('请先在电脑端打开 Claude，再重新连接')
+        with patch('bridge.integrations.claude.native_action', side_effect=lambda *a, **k: next(states)), \
+             patch('bridge.integrations.claude.running_app', side_effect=existing), \
+             patch.object(self.adapter.setup_cancel, 'wait', return_value=False):
+            self.adapter._connect_native(False, self.cancel_path, existing_only=True)
+        self.assertEqual(self.adapter.status()['setupState'], 'failed')
+        self.assertEqual(self.adapter.status()['reason'], '请先在电脑端打开 Claude，再重新连接')
+
     def test_permission_prompt_does_not_launch_or_inject_without_permission(self):
         action = Mock(return_value={'setupState': 'needs-permission', 'reason': 'permission required'})
         def wait(_):
@@ -525,6 +617,36 @@ class ClaudeNativeConnection(unittest.TestCase):
 
 
 class NativeHelperProcess(unittest.TestCase):
+    def test_existing_only_refuses_to_launch_a_closed_claude(self):
+        with patch('bridge.integrations.claude_setup.DesktopApp') as app, \
+             patch('bridge.integrations.claude_setup._main_pids', return_value=[]), \
+             patch('bridge.integrations.claude_setup.subprocess.run') as run, \
+             patch('bridge.integrations.claude_setup.subprocess.Popen') as spawn:
+            with self.assertRaisesRegex(ValueError, '请先在电脑端打开 Claude'):
+                running_app('/Claude', '/profile', allow_launch=False)
+        run.assert_not_called(); spawn.assert_not_called(); app.return_value.stop.assert_not_called()
+
+    @patch('bridge.integrations.claude_setup.sys.platform', 'darwin')
+    def test_screen_saver_wait_uses_one_read_only_helper_without_normal_timeout(self):
+        process = Mock()
+        process.communicate.side_effect = [subprocess.TimeoutExpired('helper', 1)] * 3 + [('{"setupState":"ready"}', '')]
+        with patch('bridge.integrations.claude_setup.helper_path', return_value=Path(__file__)), \
+             patch('bridge.integrations.claude_setup.subprocess.Popen', return_value=process) as spawn, \
+             patch('bridge.integrations.claude_setup.time.monotonic', side_effect=AssertionError('Wait must not expire and respawn')):
+            self.assertEqual(native_action('wait-desktop')['setupState'], 'ready')
+        spawn.assert_called_once()
+        self.assertEqual(spawn.call_args.args[0], [__file__, '--wait-desktop'])
+        process.terminate.assert_not_called()
+
+    @patch('bridge.integrations.claude_setup.sys.platform', 'darwin')
+    def test_connector_recovery_stops_only_the_desktop_wait_helper(self):
+        process = Mock()
+        process.communicate.side_effect = [subprocess.TimeoutExpired('helper', 1), ('', '')]
+        with patch('bridge.integrations.claude_setup.helper_path', return_value=Path(__file__)), \
+             patch('bridge.integrations.claude_setup.subprocess.Popen', return_value=process):
+            self.assertEqual(native_action('wait-desktop', recovered=lambda: True)['setupState'], 'connected')
+        process.terminate.assert_called_once(); process.kill.assert_not_called()
+
     @patch('bridge.integrations.claude_setup.sys.platform', 'win32')
     def test_windows_process_discovery_excludes_electron_children(self):
         executable = ROOT/'Claude.exe'

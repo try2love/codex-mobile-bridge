@@ -5,6 +5,54 @@ import Foundation
 
 struct SetupError: Error { let state: String; let reason: String }
 func fail(_ state: String, _ reason: String) throws -> Never { throw SetupError(state: state, reason: reason) }
+func desktopIssue(hasSession: Bool, onConsole: Bool?, loginDone: Bool?, locked: Bool?, foreground: String?, screenSaverWindow: Bool) -> SetupError? {
+    if locked == true {
+        return SetupError(state: "needs-unlock", reason: "Mac 已锁屏，Claude 建立连接需要可交互桌面；解锁后会自动继续连接")
+    }
+    if hasSession && onConsole == true && loginDone == true && (foreground == "com.apple.ScreenSaver.Engine" || screenSaverWindow) {
+        return SetupError(state: "needs-screen-saver", reason: "Mac 正在显示屏幕保护程序，Claude 建立连接需要可交互桌面；退出屏保后会自动继续连接")
+    }
+    if !hasSession || onConsole != true || loginDone != true || foreground == nil || foreground == "com.apple.loginwindow" {
+        return SetupError(state: "needs-desktop", reason: "当前 Mac 会话不可交互，Claude 接入已暂停；返回当前用户桌面后会自动继续连接")
+    }
+    return nil
+}
+func isScreenSaverWindow(bundle: String?, layer: Int, onScreen: Bool, saverLevel: Int) -> Bool {
+    // A background wallpaper service or a normal Screen Saver preview is not
+    // evidence that a screen saver covers the desktop.
+    bundle == "com.apple.ScreenSaver.Engine" && onScreen && layer >= saverLevel
+}
+func currentDesktopIssue(scanWindows: Bool = true) -> SetupError? {
+    let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+    let foreground = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+    func issue(_ screenSaverWindow: Bool) -> SetupError? {
+        desktopIssue(hasSession: session != nil, onConsole: session?[kCGSessionOnConsoleKey as String] as? Bool,
+                     loginDone: session?[kCGSessionLoginDoneKey as String] as? Bool,
+                     // This extra key is not part of Apple's documented session
+                     // contract. Only an explicit true establishes locked; an
+                     // absent key never turns screen saver into "locked".
+                     locked: session?["CGSSessionScreenIsLocked"] as? Bool,
+                     foreground: foreground, screenSaverWindow: screenSaverWindow)
+    }
+    if let blocked = issue(false) { return blocked }
+    // Window dictionaries are relatively expensive. Check them at entry and
+    // before activation/HID submission, not for each Unicode input chunk.
+    if scanWindows, let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] {
+        let saverLevel = Int(CGWindowLevelForKey(.screenSaverWindow))
+        for window in windows {
+            guard let layer = window[kCGWindowLayer as String] as? Int, layer >= saverLevel,
+                  let pid = window[kCGWindowOwnerPID as String] as? Int32 else { continue }
+            if isScreenSaverWindow(bundle: NSRunningApplication(processIdentifier: pid)?.bundleIdentifier,
+                                   layer: layer, onScreen: window[kCGWindowIsOnscreen as String] as? Bool == true, saverLevel: saverLevel) {
+                return issue(true)
+            }
+        }
+    }
+    return nil
+}
+func requireDesktop(scanWindows: Bool = true) throws {
+    if let issue = currentDesktopIssue(scanWindows: scanWindows) { throw issue }
+}
 func output(_ state: String, _ reason: String) {
     let value: [String: Any] = ["setupState": state, "reason": reason, "helperPath": CommandLine.arguments[0]]
     let data = try! JSONSerialization.data(withJSONObject: value)
@@ -77,6 +125,7 @@ final class Connector {
     }
     func check(_ prompt: AXUIElement? = nil, foreground: Bool = true) throws {
         if let cancel = cancel, FileManager.default.fileExists(atPath: cancel.path) { try fail("cancelled", "已取消 Claude 连接") }
+        try requireDesktop(scanWindows: false)
         if CGEventSource.keyState(.combinedSessionState, key: 53) { try fail("cancelled", "已取消 Claude 连接") }
         guard !app.isTerminated, !foreground || NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier else {
             try fail("needs-attention", "焦点已离开 Claude，自动连接已停止，请重试")
@@ -97,6 +146,7 @@ final class Connector {
         }
     }
     func activate() throws {
+        try requireDesktop()
         try check(foreground: false)
         app.activate(options: [.activateAllWindows])
         Thread.sleep(forTimeInterval: 0.3); try check()
@@ -171,6 +221,7 @@ final class Connector {
         // to its PID. Enter the HID stream once, guarded by the actual prompt.
         down.flags = []; up.flags = []
         down.setIntegerValueField(.keyboardEventAutorepeat, value: 0)
+        try requireDesktop()
         try check(prompt)
         down.post(tap: .cghidEventTap)
         Thread.sleep(forTimeInterval: 0.03)
@@ -238,6 +289,7 @@ final class Connector {
                   find(window, matching: { isPrompt($0) || isConsoleTab($0) }) != nil else { continue }
             // AX closes this verified window directly, including in the background.
             // Never activate Claude or send a keyboard shortcut for cleanup.
+            try requireDesktop()
             try check(foreground: false)
             guard let close = child(window, kAXCloseButtonAttribute),
                   AXUIElementGetPid(close, &owner) == .success, owner == app.processIdentifier,
@@ -302,7 +354,15 @@ do {
             throw SetupError(state: "error", reason: "Console submission and window guard self-check failed")
         }
         output("ready", "Native Console selectors, submission and window guards ready")
+    } else if args.first == "--wait-desktop" {
+        // Read-only wait: no activation, permission prompts, AX actions or
+        // keyboard events. The Python owner cancels only this helper process.
+        while currentDesktopIssue() != nil {
+            RunLoop.current.run(until: Date().addingTimeInterval(2))
+        }
+        output("ready", "桌面会话可交互")
     } else {
+        try requireDesktop()
         let prompt = args.first == "--request-permission"
         let trusted = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt] as CFDictionary)
         guard trusted else { try fail("needs-permission", "请在系统设置中允许 Claude 连接组件使用辅助功能，授权后会继续连接") }

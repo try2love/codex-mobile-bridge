@@ -6,6 +6,8 @@ import threading
 import time
 import socket
 import subprocess
+import secrets
+import sys
 import uuid
 from pathlib import Path
 from contextlib import contextmanager, nullcontext
@@ -41,6 +43,7 @@ class DesktopSessions:
         self.account_stores = {}
         self.account_operations = set()
         self.deepseek_recovery = None
+        self.claude_quit = None
         self.directory = Path(directory)/'desktop-sessions'
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.config_path = self.directory/'settings.json'
@@ -509,6 +512,110 @@ class DesktopSessions:
             self.adapters['claude'].connect()
             return self.clients(refresh=True)
 
+    def _claude_reconnect_supported(self):
+        adapter = self.adapters['claude']
+        discovery = adapter.discovery
+        return bool(isinstance(discovery, dict) and discovery.get('installed') and
+                    discovery.get('automaticConnection') == 'native-console' and
+                    (adapter.directory/'connection.json').is_file())
+
+    def reconnect_claude(self):
+        """Reconnect a prepared, running app; never enable, launch or restart it."""
+        from .client_launch import inspect_client
+        with self.client_lock, self._changing('claude'):
+            if not self.gateway_running:
+                raise ValueError('请先启动网关，再重新连接 Claude')
+            self.require_enabled('claude')
+            adapter = self.adapters['claude']
+            if adapter.status().get('connected'):
+                adapter.check_connection()
+                return self.clients(refresh=True)
+            if not self._claude_reconnect_supported():
+                raise ValueError('请先在电脑端配置 Claude 接入，再重新连接')
+            state = inspect_client(self._descriptor('claude'))
+            if not state['running'] or not state['mainPids']:
+                raise ValueError('请先在电脑端打开 Claude，再重新连接')
+            if state['unknown'] or len(state['mainPids']) != 1:
+                raise ValueError('Claude 进程无法确认，请在电脑端检查后重试')
+            adapter.connect(existing_only=True)
+            self.client_cache = None
+            return self.clients(refresh=True)
+
+    def _claude_quit_snapshot(self, descriptor):
+        # Reuse the recovery path's PID/start-time/command identity checks.
+        # This probes processes only; no Harness endpoint or operation is used.
+        from .deepseek_recovery import _snapshot
+        try:
+            return _snapshot(descriptor)
+        except (ValueError, OSError, subprocess.SubprocessError):
+            raise ValueError('Claude 进程已变化，请重新检查后再确认退出') from None
+
+    def _claude_quit_evidence(self):
+        adapter = self.adapters['claude']
+        try:
+            if not adapter.status().get('connected'):
+                return {'busy': False, 'unknown': True}
+            listing = adapter.call('list')  # Fresh safety evidence, never shared.
+            sessions = listing.get('sessions')
+            if not isinstance(sessions, list):
+                return {'busy': False, 'unknown': True}
+            busy = any(isinstance(row, dict) and (row.get('requests') or
+                       row.get('status') in ('active', 'running', 'waiting', 'busy')) for row in sessions)
+            known = listing.get('complete') is True and all(isinstance(row, dict) and
+                row.get('runtimeKnown') is True and row.get('status') in ('idle', 'stopped', 'completed')
+                for row in sessions)
+            return {'busy': bool(busy), 'unknown': not known}
+        except (ValueError, OSError, BridgeUnavailable):
+            return {'busy': False, 'unknown': True}
+
+    def quit_claude(self, value):
+        """Desktop-only, explicitly confirmed native quit without force killing."""
+        from .client_launch import stop_client
+        with self.client_lock:
+            descriptor = self._descriptor('claude')
+            if value.get('action') == 'claude-quit-preview':
+                snapshot = self._claude_quit_snapshot(descriptor)
+                state, evidence = snapshot['state'], self._claude_quit_evidence()
+                allowed = (sys.platform in ('darwin', 'win32') and not state['unknown'] and
+                           not snapshot['unrecognized'] and len(state['mainPids']) == 1 and not state['runtimePids'])
+                token = secrets.token_hex(24)
+                self.claude_quit = {'token': token, 'expires': time.monotonic()+300,
+                                    'snapshot': snapshot, 'allowed': allowed, 'unknown': evidence['unknown']}
+                return {'token': token, 'canQuit': allowed and not evidence['busy'],
+                        'busy': evidence['busy'], 'requiresUnknownConfirmation': evidence['unknown']}
+            with self._changing('claude'):
+                pending = self.claude_quit
+                if (not pending or not isinstance(value.get('token'), str) or
+                        not secrets.compare_digest(value['token'], pending['token']) or time.monotonic() >= pending['expires']):
+                    raise ValueError('Claude 退出确认已过期，请重新检查')
+                if value.get('confirmed') is not True:
+                    raise ValueError('请确认退出 Claude')
+                if sys.platform not in ('darwin', 'win32'):
+                    raise ValueError('请在电脑端退出 Claude；此系统不支持正常退出确认')
+                snapshot = self._claude_quit_snapshot(descriptor)
+                if snapshot != pending['snapshot']:
+                    raise ValueError('Claude 进程已变化，请重新检查后再确认退出')
+                evidence = self._claude_quit_evidence()
+                if evidence['busy']:
+                    raise ValueError('有任务运行或等待确认，请先结束任务再关闭或重启客户端')
+                if not pending['allowed']:
+                    raise ValueError('Claude 进程无法确认，请在电脑端检查后重试')
+                if evidence['unknown'] and (not pending['unknown'] or value.get('acknowledgeUnknown') is not True):
+                    raise ValueError('无法核验 Claude 任务状态，请重新检查并明确确认可能中断任务')
+                self.claude_quit = None
+                adapter = self.adapters['claude']
+                adapter.cancel(persist=False)
+                if self._claude_quit_snapshot(descriptor) != snapshot:
+                    raise ValueError('Claude 进程已变化，请重新检查后再确认退出')
+                # stop_client uses macOS quit / Windows CloseMainWindow. Linux
+                # SIGTERM and the Harness runtime termination path are excluded.
+                stop_client(descriptor, state=snapshot['state'])
+                adapter.cancel()
+                self.config.setdefault('enabled', {})['claude'] = False
+                private_json(self.config_path, self.config)
+                self.client_cache = None
+                return self.clients(refresh=True)
+
     def clients(self, refresh=False):
         with self.client_lock:
             if not refresh and self.client_cache and time.monotonic() - self.client_cache[0] < 15:
@@ -582,7 +689,7 @@ class DesktopSessions:
                 remembered = bool(binding.get('executable') and verified.get(provider) == binding and
                                   discovered.get(provider, {}).get('installed'))
                 configured = ready or remembered
-                if not connected and remembered and setup_status not in ('failed', 'restart-required'):
+                if not connected and remembered and not status.get('reason') and setup_status not in ('failed', 'restart-required'):
                     reason = '客户端已配置，可开启桌面应用'
                 if provider == 'deepseek' and setup.get('setupStatus') == 'failed' and not ready:
                     setup_status, reason = 'failed', setup.get('reason', reason)
@@ -602,6 +709,7 @@ class DesktopSessions:
             except (OSError, subprocess.SubprocessError):
                 native_states = {}
             for row in rows:
+                native = {}
                 row.update(running=False, mainRunning=False, backgroundRunning=False, backgroundCount=0)
                 if row['installed']:
                     try:
@@ -618,6 +726,11 @@ class DesktopSessions:
                         pass
                 # Selection is a startup preference; readiness still requires live evidence.
                 row['selectable'] = bool(row['configured'] or row['installed'] and row['setupStatus'] != 'unsupported')
+                if row['id'] == 'claude':
+                    row['reconnectSupported'] = self._claude_reconnect_supported()
+                    row['canReconnect'] = bool(row['reconnectSupported'] and self.gateway_running and row['enabled'] and
+                                               row['mainRunning'] and not native.get('unknown', True))
+                    row['canConfirmQuit'] = bool(sys.platform in ('darwin', 'win32') and row['mainRunning'])
                 if not self.gateway_running and row['enabled'] and row['setupStatus'] != 'recovery-required':
                     row['reason'] = '已选择，启动网关后自动接入'
             result = {'clients': rows, 'computer': socket.gethostname(), 'gatewayRunning': self.gateway_running}
@@ -797,6 +910,8 @@ class DesktopSessions:
 
     def control(self, value):
         action = value.get('action', 'status')
+        if action in ('claude-quit-preview', 'claude-quit-confirm'):
+            return self.quit_claude(value)
         if action in ('deepseek-recovery-preview', 'deepseek-recovery-confirm'):
             return self.recover_deepseek(value)
         if action == 'accounts':

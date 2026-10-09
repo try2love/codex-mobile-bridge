@@ -19,6 +19,27 @@ test('scan discovers clients without connecting apps and ignores duplicate scans
   const pending=ui.panel.scan();await ui.panel.scan();assert.equal(ui.calls.length,1);assert.equal(ui.calls[0].action,'scan');assert.equal(ui.calls[0].setup,false);assert.ok(ui.nodes['refresh-clients'].disabled);
   finish({clients:[]});await pending;assert.equal(ui.nodes['refresh-clients'].disabled,false);assert.deepEqual(ui.calls.map(c=>c.action),['scan','clients','status']);
 });
+test('Claude unknown-state quit is a separate explicitly confirmed desktop action',async()=>{
+  const ui=fixture(),client={id:'claude',name:'Claude',installed:true,configured:true,connected:false,enabled:true,running:true,canConfirmQuit:true,reason:'连接已断开'};
+  ui.panel.clients=[client];ui.panel.renderClients();
+  ui.setHandler(async body=>body.action==='claude-quit-preview'?{token:'fixture-preview',canQuit:true,requiresUnknownConfirmation:true}:body.action==='status'?{backends:{}}:{clients:[client]});
+  ui.confirm(false);await ui.all().find(n=>n.textContent==='退出 Claude…').onclick();
+  assert.ok(ui.prompts[0].includes('可能中断'));assert.equal(ui.calls.some(c=>c.action==='claude-quit-confirm'),false);assert.equal(client.enabled,true);
+  ui.confirm(true);await ui.all().find(n=>n.textContent==='退出 Claude…').onclick();
+  const value=ui.calls.find(c=>c.action==='claude-quit-confirm');assert.equal(value.token,'fixture-preview');assert.equal(value.confirmed,true);assert.equal(value.acknowledgeUnknown,true);
+  assert.equal(ui.calls.some(c=>['toggle-client','restart-claude','connect-claude'].includes(c.action)),false);
+});
+test('Claude known busy tasks never receive the unknown-state quit confirmation',async()=>{
+  const ui=fixture();ui.panel.clients=[{id:'claude',name:'Claude',installed:true,connected:false,enabled:true,running:true,canConfirmQuit:true}];ui.panel.renderClients();
+  ui.setHandler(async body=>body.action==='claude-quit-preview'?{token:'fixture-preview',canQuit:false,busy:true}:body.action==='status'?{backends:{}}:{clients:ui.panel.clients});
+  await ui.all().find(n=>n.textContent==='退出 Claude…').onclick();assert.equal(ui.prompts.length,0);assert.equal(ui.calls.some(c=>c.action==='claude-quit-confirm'),false);assert.ok(ui.errors.some(x=>x.includes('任务运行')));
+});
+test('Claude desktop blockers retain their own labels and allow cancelling pending connection',async()=>{
+  for(const [setupStatus,label] of [['needs-screen-saver','等待退出屏保'],['needs-unlock','等待解锁'],['needs-desktop','等待桌面恢复']])for(const running of [true,false]){
+    const ui=fixture(),client={id:'claude',name:'Claude',installed:true,configured:true,connected:false,enabled:true,running,setupStatus,reason:'waiting reason'};ui.panel.clients=[client];ui.panel.renderClients();
+    assert.match(ui.text(),new RegExp(label));ui.setHandler(async body=>body.action==='status'?{backends:{}}:{clients:[client]});await ui.all().find(n=>n.textContent==='取消连接').onclick();assert.equal(ui.calls[0].action,'cancel-claude');
+  }
+});
 test('installed but unsupported Claude is never shown as connected or switchable; original icons remain',()=>{
   const ui=fixture();ui.english();ui.panel.clients=[{id:'claude',name:'Claude',installed:true,configured:false,connected:false,enabled:false,setupStatus:'unsupported',reason:'此版本 Claude Desktop 限制自动接入，暂时无法连接'}];ui.panel.renderClients();
   assert.match(ui.text(),/Automatic access unavailable/);assert.doesNotMatch(ui.text(),/[\u4e00-\u9fff]/);assert.match(ui.text(),/restricts automatic access/);assert.ok(ui.all().find(n=>n.tag==='input').disabled);assert.equal(ui.all().find(n=>n.tag==='img').src,'../web/client-icons/claude.png');

@@ -190,3 +190,15 @@ test('every saved official account opens its own reset dialog without switching'
  assert.equal(ui.requests.some(r=>r.action==='switch'),false);
  ui.panel.resetDialog.close();assert.equal(ui.panel.resetPanel,null);
 });
+
+test('desktop updates distinguish remote version checks from computer-side installation',async()=>{
+ for(const desktop of [false,true]){
+  const ui=fixture(desktop);ui.setValue({...ui.value(),desktopUpdate:{state:'available',canRequest:true,currentBuild:'1',currentVersion:'1',targetVersion:'2'}});await ui.panel.refresh();
+  assert.match(ui.text(),/下载和安装仍需在电脑端确认/);
+  await ui.all().find(n=>n.textContent==='查看 Codex 新版本').onclick();
+  assert.deepEqual(JSON.parse(JSON.stringify(ui.requests)),[{action:'checkDesktopUpdate'}]);assert.equal(ui.prompts.length,0);
+  ui.confirm(false);await ui.all().find(n=>n.textContent==='打开电脑端更新窗口').onclick();assert.equal(ui.requests.length,1);
+  ui.confirm(true);await ui.all().find(n=>n.textContent==='打开电脑端更新窗口').onclick();assert.equal(ui.requests[1].action,'requestDesktopUpdate');assert.equal(ui.requests[1].tasksConfirmed,true);
+  ui.language();assert.match(ui.text(),/installing still require confirmation on the computer/);
+ }
+});

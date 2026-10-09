@@ -152,7 +152,7 @@ def console_source(source, config):
     return script.replace('__BRIDGE_CONFIG__', json.dumps(config, ensure_ascii=True))
 
 
-def native_action(action, *, pid=None, executable=None, script=None, cancel_path=None, cancelled=None):
+def native_action(action, *, pid=None, executable=None, script=None, cancel_path=None, cancelled=None, recovered=None):
     if cancelled and cancelled.is_set():
         return {'setupState': 'cancelled', 'reason': '已取消 Claude 连接'}
     helper = helper_path()
@@ -172,18 +172,23 @@ def native_action(action, *, pid=None, executable=None, script=None, cancel_path
             args += [str(script), str(cancel_path)]
     options = {'creationflags': subprocess.CREATE_NO_WINDOW} if sys.platform == 'win32' else {}
     process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', **options)
-    deadline = time.monotonic() + (180 if action == 'connect' else 20)
+    # One read-only helper waits through screen saver/lock instead of repeatedly
+    # activating Claude or launching a fresh helper on every poll.
+    deadline = None if action == 'wait-desktop' else time.monotonic() + (180 if action == 'connect' else 20)
     while True:
         try:
-            stdout, _ = process.communicate(timeout=.2)
+            stdout, _ = process.communicate(timeout=1 if action == 'wait-desktop' else .2)
             break
         except subprocess.TimeoutExpired:
-            if (cancelled and cancelled.is_set()) or time.monotonic() >= deadline:
+            connected = bool(action == 'wait-desktop' and recovered and recovered())
+            if connected or (cancelled and cancelled.is_set()) or (deadline is not None and time.monotonic() >= deadline):
                 # Stop only our input helper, never the Claude desktop process.
                 process.terminate()
                 try: process.communicate(timeout=3)
                 except subprocess.TimeoutExpired:
                     process.kill(); process.communicate()
+                if connected and not (cancelled and cancelled.is_set()):
+                    return {'setupState': 'connected', 'reason': '桌面连接可用'}
                 return {'setupState': 'cancelled' if cancelled and cancelled.is_set() else 'failed',
                         'reason': '已取消 Claude 连接' if cancelled and cancelled.is_set() else 'Claude 自动连接超时，请重试'}
     if sys.platform != 'win32':
@@ -221,13 +226,15 @@ def _main_pids(app):
             and not re.search(r'(?:^|\s)--type(?:=|\s)', row.get('CommandLine') or '')]
 
 
-def running_app(executable, data_home, restart=False, cancelled=None):
+def running_app(executable, data_home, restart=False, cancelled=None, allow_launch=True):
     if cancelled and cancelled.is_set():
         raise ValueError('已取消 Claude 连接')
     app = DesktopApp(executable, data_home)
     pids = _main_pids(app)
     if cancelled and cancelled.is_set():
         raise ValueError('已取消 Claude 连接')
+    if not allow_launch and (not pids or restart):
+        raise ValueError('请先在电脑端打开 Claude，再重新连接')
     if pids and restart:
         if len(pids) != 1:
             raise ValueError('无法确认唯一的 Claude 主进程，请检查桌面窗口')

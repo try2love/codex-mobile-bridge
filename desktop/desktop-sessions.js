@@ -89,8 +89,9 @@ class DesktopConnectionsPanel {
       const img=node('img');img.src='../web/client-icons/'+client.id+'.png';img.alt='';logo.append(img);
       const label=node('div');label.append(node('strong',client.name),node('small',({codex:'Codex Desktop',claude:'Claude Desktop',deepseek:'DeepSeek Harness'})[client.id]));name.append(logo,label);identity.append(name);
       const access=node('td'),toggle=node('input');toggle.type='checkbox';toggle.className='client-toggle';toggle.checked=client.enabled;toggle.disabled=!(client.selectable??client.configured)||this.scanning||this.busy;toggle.setAttribute('aria-label',t('启用')+' '+client.name);toggle.title=t(client.reason);toggle.onchange=()=>this.toggleClient(client.id,toggle.checked);access.append(toggle,node('small',this.pendingClient?.id===client.id?(this.gatewayRunning===false?'正在保存…':this.pendingClient.enabled?'正在打开应用…':'正在退出应用…'):client.setupStatus==='unsupported'?'暂不可用':client.enabled?(this.gatewayRunning===false?'随网关启动':'已启用'):!client.installed&&!client.configured?'待配置':'未启用'));
-      const statusLabel=({'unsupported':'暂不支持自动接入','connecting':'连接中','restart-required':'等待重启','needs-permission':'等待授权','needs-developer-mode':'等待开发者模式确认','needs-trust':'等待目录授权','cancelled':'已取消连接','failed':'连接失败'})[client.setupStatus]||'待接入';
-      const status=node('td');status.append(node('span',client.backgroundRunning&&client.mainRunning===false?'后台运行，桌面未打开':client.connected?'已连接':client.installed===false?'未安装':client.running===false?'应用未运行':client.configured?'已配置':statusLabel,client.connected?'state-ready':client.setupStatus==='failed'?'state-error':['unsupported','needs-permission','needs-developer-mode','needs-trust'].includes(client.setupStatus)?'state-pending':''),node('small',client.reason));
+      const waiting=['connecting','needs-permission','needs-developer-mode','needs-trust','needs-screen-saver','needs-unlock','needs-desktop'].includes(client.setupStatus);
+      const statusLabel=({'unsupported':'暂不支持自动接入','connecting':'连接中','restart-required':'等待重启','needs-permission':'等待授权','needs-developer-mode':'等待开发者模式确认','needs-trust':'等待目录授权','needs-screen-saver':'等待退出屏保','needs-unlock':'等待解锁','needs-desktop':'等待桌面恢复','cancelled':'已取消连接','failed':'连接失败'})[client.setupStatus]||'待接入';
+      const status=node('td');status.append(node('span',client.backgroundRunning&&client.mainRunning===false?'后台运行，桌面未打开':client.connected?'已连接':client.installed===false?'未安装':waiting?statusLabel:client.running===false?'应用未运行':client.configured?'已配置':statusLabel,client.connected?'state-ready':client.setupStatus==='failed'?'state-error':waiting||client.setupStatus==='unsupported'?'state-pending':''),node('small',client.reason));
       const account=node('td');account.dataset.clientAccount=client.id;
       if(client.id!=='codex')account.append(node('span',client.configured?'已配置':'待配置'),node('small',client.id==='claude'?'在 Claude 中管理账号':'在 Harness 中管理账号 / API'));
       const actions=node('td'),buttons=node('div',undefined,'connection-actions'),manage=node('button',client.setupStatus==='unsupported'?'查看详情':client.configured?'管理':'配置');
@@ -100,9 +101,12 @@ class DesktopConnectionsPanel {
         const restart=client.setupStatus==='restart-required',connect=node('button',restart?'重启并接入':'打开并接入','primary');connect.type='button';connect.disabled=!!this.busy||!!this.scanning;connect.onclick=()=>this.action(restart?'restart-deepseek':'connect-deepseek');buttons.append(connect);manage.textContent=t('管理');manage.className='connection-secondary';
       }
       if(this.gatewayRunning!==false&&client.id==='claude'&&client.installed&&!client.connected&&client.setupStatus!=='unsupported'){
-        const restart=client.setupStatus==='restart-required',pending=['connecting','needs-developer-mode'].includes(client.setupStatus);
+        const restart=client.setupStatus==='restart-required',pending=['connecting','needs-developer-mode','needs-screen-saver','needs-unlock','needs-desktop'].includes(client.setupStatus);
         const connect=node('button',pending?'取消连接':restart?'重启并接入':client.setupStatus==='needs-permission'?'授权并连接':'连接 Claude',pending?'':'primary');
         connect.type='button';connect.disabled=!!this.busy||!!this.scanning;connect.onclick=()=>this.action(pending?'cancel-claude':restart?'restart-claude':'connect-claude');buttons.append(connect);manage.textContent=t('查看详情');manage.className='connection-secondary';
+      }
+      if(client.id==='claude'&&!client.connected&&client.canConfirmQuit){
+        const quit=node('button','退出 Claude…');quit.type='button';quit.disabled=!!this.busy||!!this.scanning;quit.onclick=()=>this.quitClaude();buttons.append(quit);
       }
       manage.type='button';manage.onclick=()=>window.GatewayLayout.selectClient(client.id);buttons.append(manage);actions.append(buttons);row.append(identity,access,status,account,actions);body.append(row);
     }
@@ -140,6 +144,18 @@ class DesktopConnectionsPanel {
       if(!window.confirm(prompt))return;
       const value=await this.api.desktopSessions({action:'deepseek-recovery-confirm',token:preview.token,confirmed:true,...(preview.requiresUnknownConfirmation?{acknowledgeUnknown:true}:{})});
       if(value.clients){this.clients=value.clients;this.gatewayRunning=value.gatewayRunning??this.gatewayRunning;}this.feedback(restart?(value.clients?.find(row=>row.id==='deepseek')?.connected?'DSH 已重新接入':'正在等待 Harness 连接'):'DSH 已完整退出');
+    }catch(error){this.feedback(error.message,true);}
+    finally{this.busy=false;this.renderClients();this.renderScan();await this.refreshClients(true);await this.refresh();}
+  }
+  async quitClaude(){
+    if(this.busy||this.scanning)return;this.busy=true;this.clientsRevision++;this.statusRevision++;this.renderClients();this.renderScan();
+    try{
+      const preview=await this.api.desktopSessions({action:'claude-quit-preview'}),t=BridgeI18n.t;
+      if(!preview.canQuit)throw Error(t(preview.busy?'有任务运行或等待确认，请先结束任务再关闭或重启客户端':'Claude 进程无法确认，请在电脑端检查后重试'));
+      const prompt=t(preview.requiresUnknownConfirmation?'无法核验 Claude 的任务状态，退出可能中断正在执行的任务。请确认已检查 Claude 并保存工作。':'退出 Claude 会关闭桌面应用。请确认已保存工作。');
+      if(!window.confirm(prompt))return;
+      const value=await this.api.desktopSessions({action:'claude-quit-confirm',token:preview.token,confirmed:true,...(preview.requiresUnknownConfirmation?{acknowledgeUnknown:true}:{})});
+      if(value.clients){this.clients=value.clients;this.gatewayRunning=value.gatewayRunning??this.gatewayRunning;}this.feedback('Claude 已退出');
     }catch(error){this.feedback(error.message,true);}
     finally{this.busy=false;this.renderClients();this.renderScan();await this.refreshClients(true);await this.refresh();}
   }

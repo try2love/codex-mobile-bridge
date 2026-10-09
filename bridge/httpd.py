@@ -355,6 +355,18 @@ class Handler(BaseHTTPRequestHandler):
             auth = self.authorized(write)
             if not auth:
                 return
+            if path == '/api/clients/claude/reconnect':
+                if not write:
+                    return self.output(405, {'error': '请求方式无效'})
+                value = self.read_json()
+                if value != {}:
+                    raise ValueError('重新连接请求无效')
+                if self.server.auth.config.get('mode') == 'none':
+                    raise PermissionError('请启用密码保护后再重新连接客户端')
+                manager = self.server.desktop_sessions
+                if manager is None:
+                    return self.output(503, {'error': '应用管理不可用'})
+                return self.output(200, manager.reconnect_claude())
             if path == '/api/clients':
                 manager = self.server.desktop_sessions
                 if manager is None:

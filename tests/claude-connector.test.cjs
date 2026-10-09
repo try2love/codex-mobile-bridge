@@ -35,7 +35,7 @@ const waitFor = async predicate => {
   while(!predicate()) { if(Date.now()>deadline)throw Error('timeout'); await new Promise(r=>setTimeout(r,10)); }
 };
 (async()=>{
-  const running=vm.runInNewContext(source,context,{codeGeneration:{strings:false,wasm:false}});
+  let running=vm.runInNewContext(source,context,{codeGeneration:{strings:false,wasm:false}});
   await waitFor(()=>response?.connected);
   assert.equal(response.connectorRevision,config.connectorRevision);
   request=pack({type:'request',seq:1,surface:'code',method:'sendMessage',args:['local_test','hello'],expires:Date.now()/1000+10});
@@ -43,6 +43,10 @@ const waitFor = async predicate => {
   assert.deepEqual(calls,[['local_test','hello']]);
   await new Promise(r=>setTimeout(r,100));
   assert.equal(calls.length,1,'same sequence must not execute again');
+  window.__claudeMobileBridge.stop();await running;
+  running=vm.runInNewContext(source,context,{codeGeneration:{strings:false,wasm:false}});
+  await waitFor(()=>response?.connected);await new Promise(r=>setTimeout(r,100));
+  assert.equal(calls.length,1,'same-generation reinjection must not replay the completed unexpired send');
   request=pack({type:'request',seq:2,surface:'code',method:'sendMessage',args:['local_test','expired'],expires:0});
   await waitFor(()=>response.seq===2 && response.done);
   assert.ok(response.error); assert.equal(calls.length,1);
@@ -89,5 +93,5 @@ const waitFor = async predicate => {
   }
   window.__claudeMobileBridge.stop(); await running;
   assert.equal(response.connected,false);
-  console.log('Desktop file connector: handshake, original session dispatch, deduplication, expiry, allowlist, redaction, restart, replay rejection, stop passed.');
+  console.log('Desktop file connector: handshake, original session dispatch, deduplication, same-generation reinjection without replay, expiry, allowlist, redaction, restart, replay rejection, stop passed.');
 })().catch(e=>{window.__claudeMobileBridge?.stop();console.error(e);process.exitCode=1;});

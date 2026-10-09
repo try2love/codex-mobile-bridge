@@ -1,11 +1,12 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 function fixture(){
-  let mobile=false;const context=vm.createContext({document:{documentElement:{classList:{contains:()=>mobile}},getElementById:()=>({hidden:false})},localStorage:{setItem(){}},Event:class{},window:{}});
+  const element=tag=>({tagName:tag,children:[],dataset:{},attributes:{},append(...nodes){this.children.push(...nodes);},replaceChildren(){this.children=[];},setAttribute(name,value){this.attributes[name]=String(value);}});
+  let mobile=false;const document={documentElement:{classList:{contains:()=>mobile}},getElementById:()=>({hidden:false}),createElement:element},context=vm.createContext({document,localStorage:{setItem(){}},BridgeI18n:{t:text=>text},Event:class{},window:{}});
   vm.runInContext(fs.readFileSync('web/client-navigation.js','utf8'),context);
   const C=vm.runInContext('ClientNavigation',context),nav=Object.create(C.prototype),painted=[];
   Object.assign(nav,{clients:[{id:'codex',enabled:true,configured:true},{id:'claude',enabled:true,configured:true},{id:'deepseek',enabled:true,configured:true}],provider:'claude',revision:0,pending:new Set(),notify(){},paint(){painted.push(this.clients.filter(c=>c.enabled).map(c=>c.id));},view:{provider:'claude',choose(id){this.provider=id;return Promise.resolve();}}});
-  return {nav,painted,mobile:value=>mobile=value};
+  return {nav,painted,document,mobile:value=>mobile=value};
 }
 test('changing provider paints the shell before its slow read resolves',async()=>{
   const {nav,painted}=fixture();let resolve;
@@ -62,4 +63,22 @@ test('installed selectable clients can be enabled without pretending they are co
 
 test('the computer-list shortcut exists only in the native mobile shell',()=>{
  const ui=fixture();ui.nav.home={};ui.nav.syncHome();assert.equal(ui.nav.home.hidden,true);ui.mobile(true);ui.nav.syncHome();assert.equal(ui.nav.home.hidden,false);ui.mobile(false);ui.nav.syncHome();assert.equal(ui.nav.home.hidden,true);
+});
+test('Claude reconnect preserves preferences, blocks concurrent actions, and ignores stale polling',async()=>{
+ const {nav}=fixture(),calls=[],notices=[];nav.gatewayRunning=true;Object.assign(nav.clients[1],{reconnectSupported:true,canReconnect:true,configured:false,running:true});nav.notify=text=>notices.push(text);let readDone,reconnectDone;nav.request=(url,body)=>{calls.push({url,body});return new Promise(resolve=>body?reconnectDone=resolve:readDone=resolve);};
+ const read=nav.refresh(),pending=nav.reconnect('claude');assert.equal(nav.managementState(nav.clients[1]),'正在连接…');assert.equal(nav.clients[1].enabled,true);assert.equal(nav.provider,'claude');await nav.toggle('claude',false);await nav.reconnect('claude');assert.equal(calls.length,2);assert.equal(calls[1].url,'/api/clients/claude/reconnect');assert.deepEqual(Object.keys(calls[1].body),[]);
+ readDone({clients:[{id:'codex',enabled:true}]});await read;assert.equal(nav.clients.length,3);reconnectDone({clients:nav.clients.map(row=>row.id==='claude'?{...row,setupStatus:'connecting'}:row),gatewayRunning:true});await pending;assert.equal(nav.runtimeState(nav.clients[1]),'正在连接…');assert.equal(nav.provider,'claude');assert.deepEqual(notices,['已发起重新连接']);assert.equal(nav.pending.size,0);assert.equal(nav.reconnecting,null);
+});
+test('Claude reconnect only uses the advertised capability and reports actual connection separately',async()=>{
+ const {nav}=fixture(),calls=[],notices=[];let refreshed=0;nav.view.refresh=async()=>refreshed++;nav.notify=text=>notices.push(text);nav.request=async(url,body)=>{calls.push({url,body});return {clients:nav.clients.map(row=>row.id==='claude'?{...row,connected:true,canReconnect:false}:row)};};
+ for(const state of [{reconnectSupported:false,canReconnect:true},{reconnectSupported:true,canReconnect:false},{reconnectSupported:true,canReconnect:true,setupStatus:'connecting'}]){Object.assign(nav.clients[1],state);await nav.reconnect('claude');}await nav.reconnect('deepseek');assert.equal(calls.length,0);
+ Object.assign(nav.clients[1],{reconnectSupported:true,canReconnect:true,setupStatus:'failed'});await nav.reconnect('claude');assert.equal(calls.length,1);assert.deepEqual(notices,['Claude 已连接']);assert.equal(refreshed,1);
+ nav.clients[1].canReconnect=true;await nav.choose('deepseek');await nav.reconnect('claude');assert.equal(nav.provider,'deepseek');assert.equal(refreshed,1);
+});
+test('reconnect control is shared by web/mobile, disabled while unavailable, and displays failures',async()=>{
+ for(const mobile of [false,true]){const ui=fixture(),{nav,document}=ui,notices=[];ui.mobile(mobile);nav.icon=()=>document.createElement('span');nav.manager={dialog:{open:true},list:document.createElement('div'),note:document.createElement('p')};nav.notify=text=>notices.push(text);nav.request=async()=>{throw Error('请在电脑端完成连接');};
+  const reconnect=()=>nav.manager.list.children[1].children[2].children.find(node=>node.className==='plain client-reconnect');nav.renderManager();assert.equal(reconnect(),undefined);
+  Object.assign(nav.clients[1],{reconnectSupported:true,canReconnect:false});nav.renderManager();assert.equal(reconnect().disabled,true);Object.assign(nav.clients[1],{canReconnect:true});nav.renderManager();assert.equal(reconnect().disabled,false);await reconnect().onclick();assert.deepEqual(notices,['请在电脑端完成连接']);assert.equal(nav.pending.size,0);assert.equal(nav.reconnecting,null);assert.equal(nav.clients[1].enabled,true);
+  nav.clients[1].setupStatus='connecting';nav.renderManager();assert.equal(reconnect().textContent,'正在连接…');assert.equal(reconnect().disabled,true);
+ }
 });
