@@ -646,7 +646,11 @@ class ClaudeKeyboard {
         try {
             var developer=BackgroundMenuControl(root,ControlType.MenuItem,process.Id,"Developer","开发者","開發者");
             if(developer==null) {
-                var menu=BackgroundMenuControl(root,ControlType.Button,process.Id,"Menu","菜单","選單");BackgroundMenuAction(menu,check,false);
+                // Native resume publishes visibility before its renderer toolbar.
+                var menuTimer=Stopwatch.StartNew();
+                var menu=WaitBackgroundControl(()=>BackgroundMenuControl(root,ControlType.Button,process.Id,"Menu","菜单","選單"),
+                    check,()=>Thread.Sleep(100),()=>menuTimer.Elapsed.TotalSeconds>=4,"Claude 主窗口菜单尚未就绪，请稍后重试初始化");
+                BackgroundMenuAction(menu,check,false);
                 developer=WaitMenuEntry(()=>BackgroundMenuControl(root,ControlType.MenuItem,process.Id,"Developer","开发者","開發者"),check,()=>Thread.Sleep(100));
             }
             BackgroundMenuAction(developer,check,true);
@@ -739,23 +743,62 @@ class ClaudeKeyboard {
             }
         }
     }
-    static List<AppWindow> WaitBackgroundReady(int pid,Func<List<AppWindow>> read,Action check,Action pause,Func<bool> expired) {
+    static WindowSelection SelectHiddenBackgroundMain(IEnumerable<AppWindow> windows,int pid) {
+        var selected=new WindowSelection();
+        foreach(var window in windows)if(window.Pid==pid&&window.Handle!=IntPtr.Zero&&!window.Visible&&!window.Cloaked&&!window.ToolWindow&&
+            window.Owner==IntPtr.Zero&&window.ClassName=="Chrome_WidgetWin_1"&&
+            (window.Title=="Claude"||window.Title.EndsWith(" — Claude",StringComparison.Ordinal))) {
+            selected.Count++;selected.Handle=window.Handle;
+        }
+        if(selected.Count!=1)selected.Handle=IntPtr.Zero;return selected;
+    }
+    static void ReopenBackgroundMain(Process process,long started,IntPtr main) {
+        CheckBackgroundWindow(process,started,main);
+        string applicationId=ApplicationId(process.Id);
+        var launch=NativeLaunch(executable,applicationId,Environment.GetFolderPath(Environment.SpecialFolder.Windows));
+        launch.CreateNoWindow=true;launch.WindowStyle=ProcessWindowStyle.Hidden;
+        launch.EnvironmentVariables.Remove("ELECTRON_RUN_AS_NODE");launch.EnvironmentVariables.Remove("CLAUDE_DEV_TOOLS");
+        CheckBackgroundWindow(process,started,main);
+        IntPtr foreground=GetForegroundWindow();
+        try {
+            // Let the exact app's native second-instance handler release its
+            // deferred renderer. Raw ShowWindow does not initialize that UI.
+            // This normal launch can activate Claude; it sends no global input.
+            using(var launched=Process.Start(launch)) {}
+            CheckBackgroundWindow(process,started,main);
+        } finally {Stage("{\"connectPhase\":\"native-reopen\",\"pid\":"+process.Id+",\"foregroundChanged\":"+(foreground!=GetForegroundWindow()?"true":"false")+"}");}
+    }
+    static List<AppWindow> WaitBackgroundReady(int pid,Func<List<AppWindow>> read,Action check,Action pause,Func<bool> expired,
+        Action<IntPtr> reopen=null,Func<bool> reopenDue=null) {
+        IntPtr resumed=IntPtr.Zero;
         while(true) {
             check();var windows=read();check();
+            if(resumed!=IntPtr.Zero&&!windows.Exists(window=>window.Pid==pid&&window.Handle==resumed))
+                throw new Exception("Claude 主窗口已改变，后台连接已停止");
             if(SelectBackgroundDevTools(windows,pid).Count>0||SelectWindow(windows,pid,IntPtr.Zero).Count>0)return windows;
             if(expired())throw new Exception("Claude 主进程已启动，开发者工具或主窗口尚未就绪，请稍后重试初始化");
+            if(resumed==IntPtr.Zero&&reopen!=null&&reopenDue()) {
+                // Re-read at the boundary: a cold launch's tools can appear
+                // just as the grace period ends. They always take priority.
+                check();windows=read();check();
+                if(SelectBackgroundDevTools(windows,pid).Count>0||SelectWindow(windows,pid,IntPtr.Zero).Count>0)return windows;
+                var hidden=SelectHiddenBackgroundMain(windows,pid);
+                if(hidden.Count!=1||hidden.Handle==IntPtr.Zero)throw new Exception("找不到唯一隐藏 Claude 主窗口，请在电脑端打开 Claude 后重试");
+                check();if(expired())throw new Exception("Claude 后台初始化等待超时，尚未恢复主窗口");
+                resumed=hidden.Handle;reopen(resumed);check();
+            }
             pause();
         }
     }
     static void ConnectBackground(Process process,string text) {
         long started=process.StartTime.ToUniversalTime().Ticks;CheckBackgroundProcess(process,started);
-        // A native cold launch can publish its PID before constructing either
-        // the hidden main renderer or its automatic detached developer tools.
-        // Observe readiness within the operation's overall deadline; never
-        // restore a hidden window or infer success from process existence.
+        // Give native --startup's automatic detached tools first priority.
+        // An existing hidden instance needs one native second-instance resume
+        // to release its deferred main renderer before targeted menu navigation.
         var readyTimer=Stopwatch.StartNew();
         var ready=WaitBackgroundReady(process.Id,()=>ReadBackgroundWindows(process.Id),()=>CheckBackgroundProcess(process,started),
-            ()=>Thread.Sleep(100),()=>readyTimer.Elapsed.TotalSeconds>=8);
+            ()=>Thread.Sleep(100),()=>readyTimer.Elapsed.TotalSeconds>=12,
+            main=>ReopenBackgroundMain(process,started,main),()=>readyTimer.Elapsed.TotalSeconds>=8);
         var tools=SelectBackgroundDevTools(ready,process.Id);
         bool opened=tools.Count==0;
         if(opened){OpenBackgroundDevTools(process,started);tools=SelectBackgroundDevTools(ReadBackgroundWindows(process.Id),process.Id);}
