@@ -839,15 +839,17 @@ class ClaudeKeyboard {
             pause();
         }
     }
+    static double BackgroundColdGrace(TimeSpan age) {return age.TotalSeconds>=30?0:8;}
     static void ConnectBackground(Process process,string text) {
         long started=process.StartTime.ToUniversalTime().Ticks;CheckBackgroundProcess(process,started);
         // Give native --startup's automatic detached tools first priority.
         // An existing hidden instance needs one native second-instance resume
         // to release its deferred main renderer before targeted menu navigation.
+        double grace=BackgroundColdGrace(DateTime.UtcNow-new DateTime(started,DateTimeKind.Utc));
         var readyTimer=Stopwatch.StartNew();
         var ready=WaitBackgroundReady(process.Id,()=>ReadBackgroundWindows(process.Id),()=>CheckBackgroundProcess(process,started),
-            ()=>Thread.Sleep(100),()=>readyTimer.Elapsed.TotalSeconds>=12,
-            main=>ReopenBackgroundMain(process,started,main),()=>readyTimer.Elapsed.TotalSeconds>=8);
+            ()=>Thread.Sleep(100),()=>readyTimer.Elapsed.TotalSeconds>=grace+4,
+            main=>ReopenBackgroundMain(process,started,main),()=>readyTimer.Elapsed.TotalSeconds>=grace);
         var tools=SelectBackgroundDevTools(ready,process.Id);
         bool opened=tools.Count==0;
         if(opened){OpenBackgroundDevTools(process,started);tools=SelectBackgroundDevTools(ReadBackgroundWindows(process.Id),process.Id);}
@@ -1202,6 +1204,21 @@ class ClaudeKeyboard {
                 throw new Exception("Claude 隐藏实例单次恢复与取消自检失败: "+mode);
         }
     }
+    static void CheckBackgroundWindowRestore() {
+        var main=new AppWindow {Handle=new IntPtr(61),Pid=7,Visible=true,Title="Claude",ClassName="Chrome_WidgetWin_1"};
+        var tool=new AppWindow {Handle=new IntPtr(62),Owner=main.Handle,Pid=7,Visible=true,Title="Developer Tools - app://localhost/new"};
+        var modal=new AppWindow {Handle=new IntPtr(63),Owner=main.Handle,Pid=7,Visible=true,Title="Confirmation"};
+        var native=new AppWindow {Handle=new IntPtr(64),Pid=7,Visible=true,ClassName="#32770"};
+        foreach(string mode in new[]{"tools","other-foreground","no-foreground","user-input","disabled","main-foreground","owned-modal","native-dialog","missing-main","changed-shape"}) {
+            main.ClassName=mode=="changed-shape"?"Other":"Chrome_WidgetWin_1";
+            var windows=mode=="owned-modal"?new[]{main,tool,modal}:mode=="native-dialog"?new[]{main,tool,native}:mode=="missing-main"?new[]{tool}:new[]{main,tool};
+            IntPtr foreground=mode=="main-foreground"?main.Handle:mode=="no-foreground"?IntPtr.Zero:mode=="other-foreground"?new IntPtr(65):tool.Handle;
+            bool result=CanRestoreBackgroundMain(windows,7,main.Handle,foreground,mode!="user-input",mode!="disabled");
+            if(result!=(mode=="tools"||mode=="other-foreground"||mode=="no-foreground"))throw new Exception("Claude 隐藏主窗口保守还原自检失败: "+mode);
+        }
+        foreach(double age in new[]{-1,0,8,29.999,30,600})
+            if(BackgroundColdGrace(TimeSpan.FromSeconds(age))!=(age>=30?0:8))throw new Exception("Claude 冷启动宽限与已有实例自检失败");
+    }
     static void CheckBackgroundConsoleReadiness() {
         foreach(string mode in new[]{"ready","delayed","missing-tab","missing-prompt","cancelled","provider-late"}) {
             int tabs=0,prompts=0,selections=0,pauses=0,checks=0;bool failed=false;
@@ -1242,8 +1259,9 @@ class ClaudeKeyboard {
                 CheckBackgroundCleanup();
                 CheckBackgroundStartupReadiness();
                 CheckBackgroundNativeResume();
+                CheckBackgroundWindowRestore();
                 CheckBackgroundConsoleReadiness();
-                Console.WriteLine("keyboard ABI, Console allowlist and contenteditable text fallback OK; window selection and cancellable restore OK; menu navigation OK; packaged launch OK; atomic console submission OK; detached console reuse OK; native menu quit guards OK; background console guards OK; background cleanup guards OK; background startup readiness OK; background native resume OK; background Console readiness OK");return 0;
+                Console.WriteLine("keyboard ABI, Console allowlist and contenteditable text fallback OK; window selection and cancellable restore OK; menu navigation OK; packaged launch OK; atomic console submission OK; detached console reuse OK; native menu quit guards OK; background console guards OK; background cleanup guards OK; background startup readiness OK; background native resume OK; background window restore OK; background Console readiness OK");return 0;
             }
             if(args.Length!=3 && args.Length!=4) throw new Exception("键盘连接参数无效");
             quitAction=args[1]=="--quit";
