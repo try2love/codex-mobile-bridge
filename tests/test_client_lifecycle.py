@@ -524,6 +524,7 @@ class ClientLifecycleTests(unittest.TestCase):
 
     def test_explicit_claude_connect_button_may_launch_and_initialize(self):
         self.running = False
+        self.claude.status.return_value = {'connected': False, 'setupState': 'needs-initialization'}
         self.manager.control({'action': 'connect-claude'})
         self.launch.assert_called_once()
         self.claude.connect.assert_called_once_with()
