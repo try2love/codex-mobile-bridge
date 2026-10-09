@@ -120,7 +120,10 @@ else {
       stopping = state.mode !== 'pending';
       app.quit();
     });
-    ipcMain.on('fixture-expanded', () => fs.appendFileSync(path.join(base, 'expands.log'), 'expand\n'));
+    ipcMain.on('fixture-expanded', () => {
+      fs.appendFileSync(path.join(base, 'expands.log'), 'expand\n');
+      if (state.mode === 'late-cancel') fs.writeFileSync(path.join(base, 'cancel'), 'cancel');
+    });
     await window.loadFile(path.join(__dirname, 'index.html'));
     fs.writeFileSync(path.join(base, 'ready.json'), JSON.stringify({pid: process.pid, handle: window.getNativeWindowHandle().readBigUInt64LE().toString()}));
     const deadline = Date.now() + 40000;
@@ -137,10 +140,14 @@ const file=document.querySelector('button'), content=document.querySelector('[ro
 const mode=MODE, label=LABEL, accelerator=mode==='wrong-accelerator'?'Ctrl+W':'Ctrl+Q';
 function open(){
   file.setAttribute('aria-expanded','true');content.hidden=false;
+  window.fixture.expanded();
+  if(mode==='late-cancel'){setTimeout(render,500);return;}
+  render();
+}
+function render(){
   content.innerHTML='<div role="menuitem" tabindex="0">退出登录</div><div role="menuitem" tabindex="0" class="quit"><span>'+label+'</span> <span>'+accelerator+'</span></div>';
   if(mode==='duplicate')content.innerHTML+='<div role="menuitem" tabindex="0" class="quit">'+label+' '+accelerator+'</div>';
   for(const item of document.querySelectorAll('.quit'))item.addEventListener('click',()=>window.fixture.quit());
-  window.fixture.expanded();
 }
 file.addEventListener('click',()=>file.getAttribute('aria-expanded')==='false'?open():close());
 function close(){file.setAttribute('aria-expanded','false');content.hidden=true;content.replaceChildren();}
@@ -193,7 +200,7 @@ class CodexNativeQuit(unittest.TestCase):
         (app/'main.js').write_text(MAIN, encoding='utf-8')
         (app/'preload.js').write_text(PRELOAD, encoding='utf-8')
         state = target/'resources'
-        for mode in ('normal', 'hidden', 'pending', 'duplicate', 'wrong-accelerator', 'cancelled'):
+        for mode in ('normal', 'hidden', 'pending', 'duplicate', 'wrong-accelerator', 'cancelled', 'late-cancel'):
             with self.subTest(mode=mode):
                 for name in ('stop', 'ready.json', 'dispatches.log', 'reopens.log', 'expands.log'):
                     (state/name).unlink(missing_ok=True)
@@ -237,6 +244,8 @@ class CodexNativeQuit(unittest.TestCase):
                         self.assertIsNone(desktop.wait(app_process, 0), 'unverified command closed the app')
                     reopens = (state/'reopens.log').read_text().splitlines() if (state/'reopens.log').exists() else []
                     self.assertEqual(len(reopens), int(mode == 'hidden'), output)
+                    if mode == 'late-cancel':
+                        self.assertEqual((state/'expands.log').read_text().splitlines(), ['expand'])
                     self.assertEqual(desktop.user.GetForegroundWindow(), desktop.foreground)
                 finally:
                     (state/'stop').write_text('stop', encoding='utf-8')
