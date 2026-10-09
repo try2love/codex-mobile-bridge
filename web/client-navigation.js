@@ -70,6 +70,7 @@ class ClientNavigation {
   syncViewClients(){this.view.setClientStates?.(this.clients.map(client=>({...client,operationFailure:this.operationFailures?.get(client.id),operationUncertain:this.hasUncertain(),pendingEnable:this.gatewayRunning!==false&&this.pending.has(client.id)&&client.enabled})),id=>this.toggle(id,true),id=>this.initialize(id),()=>this.refresh());}
   retryOperation(id){const failure=this.operationFailures?.get(id);if(!failure||this.hasUncertain())return;return failure.action==='initialize'?this.initialize(id):this.toggle(id,failure.action==='enable');}
   async choose(id){
+    if(id===this.provider&&this.view.provider===(id||'codex'))return;
     this.provider=id;if(id)localStorage.setItem('bridge-client',id);
     const ready=this.view.choose(id||'codex');this.paint();await ready;
   }
