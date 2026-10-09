@@ -24,10 +24,14 @@ class ClaudeAccountSnapshots(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(dir=ROOT/'.tmp')
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        environment = patch.dict(os.environ, {'APPDATA': str(self.root), 'LOCALAPPDATA': str(self.root)})
+        environment.start(); self.addCleanup(environment.stop)
         self.home = self.root/'Claude'
         self.home.mkdir()
         self.threep = self.root/'Claude-3p'
         self.accounts = ClaudeAccounts(self.root/'accounts', self.home)
+        self.assertEqual(self.accounts.home, self.home)
+        self.assertEqual(self.accounts.threep, self.threep)
         self.login('first')
 
     def write(self, path, value):
