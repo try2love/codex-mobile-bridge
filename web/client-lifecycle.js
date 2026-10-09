@@ -32,11 +32,11 @@ const ClientLifecycle=(()=>{
     return {action,message:error.message,uncertain};
   }
   function failureMessage(value){return value.uncertain?'操作结果尚未确认，请刷新状态后再重试。':value.message;}
-  function retryLabel(action){return ({enable:'重试开启',quit:'重试退出',disable:'重试停用',initialize:'重试初始化'})[action]||'重试连接';}
+  function retryLabel(action){return ({enable:'重试开启',quit:'重试退出',disable:'重试停用',initialize:'重试初始化'})[action]||'重试操作';}
   function reconcile(failures,clients){
     for(const [id,value] of failures||[]){
       if(!value.uncertain)continue;const client=clients.find(row=>row.id===id);
-      const completed=client&&(value.action==='quit'?client.enabled===false&&client.running===false:value.action==='disable'?client.enabled===false:value.action==='initialize'?client.connected||connection(client).waiting:client.enabled&&(client.running||client.connected||connection(client).waiting));
+      const completed=client&&(value.action==='quit'?client.enabled===false&&client.running===false:value.action==='disable'?client.enabled===false:value.action==='initialize'?client.connected||connection(client).waiting:value.action==='enable'?client.enabled&&(client.running||client.connected||connection(client).waiting):false);
       if(completed)failures.delete(id);else failures.set(id,{...value,uncertain:false,message:client?.reason||'状态已刷新，可重试上次操作。'});
     }
   }

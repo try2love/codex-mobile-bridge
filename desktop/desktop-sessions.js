@@ -37,8 +37,8 @@ class DesktopConnectionsPanel {
     if(container){
       let actions=container.querySelector('.deepseek-recovery-actions');if(!actions){actions=document.createElement('div');actions.className='actions deepseek-recovery-actions';container.append(actions);}actions.replaceChildren();
       const client=this.clients?.find(row=>row.id==='deepseek');
-      if(client?.backgroundRunning){const reconnect=document.createElement('button');reconnect.type='button';reconnect.textContent=BridgeI18n.t('恢复并重新接入');reconnect.disabled=this.busy||this.scanning||!!this.choosingClient;reconnect.onclick=()=>this.recoverDeepseek(true);actions.append(reconnect);}
-      if(client?.running){const quit=document.createElement('button');quit.type='button';quit.textContent=BridgeI18n.t('完整退出');quit.disabled=this.busy||this.scanning||!!this.choosingClient;quit.onclick=()=>this.recoverDeepseek(false);actions.append(quit);}
+      if(client?.backgroundRunning){const reconnect=document.createElement('button');reconnect.type='button';reconnect.textContent=BridgeI18n.t('恢复并重新接入');reconnect.disabled=this.busy||this.scanning||!!this.choosingClient||this.hasUncertain();reconnect.onclick=()=>this.recoverDeepseek(true);actions.append(reconnect);}
+      if(client?.running){const quit=document.createElement('button');quit.type='button';quit.textContent=BridgeI18n.t('完整退出');quit.disabled=this.busy||this.scanning||!!this.choosingClient||this.hasUncertain();quit.onclick=()=>this.recoverDeepseek(false);actions.append(quit);}
     }
   }
   async refresh(){
@@ -61,7 +61,7 @@ class DesktopConnectionsPanel {
   }
   connection(client){return ClientLifecycle.connection({...client,pendingEnable:this.gatewayRunning!==false&&this.pendingClient?.id===client.id&&this.pendingClient.enabled});}
   hasUncertain(){return [...(this.operationFailures?.values()||[])].some(value=>value.uncertain);}
-  retryOperation(id){const failure=this.operationFailures?.get(id);if(!failure||this.hasUncertain())return;return failure.action==='initialize'?this.action('connect-claude'):this.toggleClient(id,failure.action==='enable');}
+  retryOperation(id){const failure=this.operationFailures?.get(id);if(!failure||this.hasUncertain())return;if(typeof failure.recoveryRestart==='boolean')return this.recoverDeepseek(failure.recoveryRestart);if(failure.desktopAction)return this.action(failure.desktopAction);return failure.action==='initialize'?this.action('connect-claude'):this.toggleClient(id,failure.action==='enable');}
   pollClients(fast=false){
     if(document.hidden||document.getElementById('clients-page').hidden||this.hasUncertain()||(fast&&!this.clients?.some(client=>this.connection(client).waiting)))return;
     return this.refreshClients();
@@ -75,7 +75,7 @@ class DesktopConnectionsPanel {
   renderScan(){
     const node=document.getElementById('client-scan-status');if(node){node.textContent=BridgeI18n.t(this.scanMessage||'选择需要接入的应用；Claude 完全退出或重新加载后需初始化连接，初始化会使用电脑前台和键盘焦点。')+' '+BridgeI18n.t(ClientLifecycle.sessionNotice(this.windowsSession));node.classList.toggle('error',!!this.scanError);}
     const button=document.getElementById('refresh-clients');if(button){button.disabled=!!this.scanning||!!this.busy||!!this.choosingClient;button.textContent=BridgeI18n.t(this.scanning?'正在扫描…':'重新扫描');}
-    this.root.querySelectorAll('[data-desktop-action="scan"]').forEach(button=>button.disabled=!!this.scanning||!!this.choosingClient);
+    this.root.querySelectorAll('[data-desktop-action]').forEach(button=>button.disabled=!!this.scanning||!!this.busy||!!this.choosingClient||(button.dataset.desktopAction!=='scan'&&this.hasUncertain()));
   }
   async toggleClient(id,enabled){
     const client=this.clients?.find(row=>row.id===id);
@@ -113,10 +113,10 @@ class DesktopConnectionsPanel {
       const actions=node('td'),buttons=node('div',undefined,'connection-actions'),manage=node('button',client.setupStatus==='unsupported'?'查看详情':client.configured?'管理':'配置');
       if(failure){const retry=node('button',failure.uncertain?'刷新状态':ClientLifecycle.retryLabel(failure.action),'primary');retry.type='button';retry.disabled=this.busy||this.scanning||!!this.choosingClient||!!this.clientsLoading||(!failure.uncertain&&this.hasUncertain());retry.onclick=()=>failure.uncertain?this.refreshClients(true):this.retryOperation(client.id);buttons.append(retry);}
       if(!failure&&state.retryable&&this.gatewayRunning!==false){const retry=node('button','重试连接','primary');retry.type='button';retry.disabled=this.busy||this.scanning||!!this.choosingClient||this.hasUncertain();retry.onclick=()=>this.toggleClient(client.id,true);buttons.append(retry);}
-      if(client.id==='deepseek'&&client.backgroundRunning&&(!client.mainRunning||['restart-required','failed'].includes(client.setupStatus))){
-        const recover=node('button','恢复并重新接入','primary');recover.type='button';recover.disabled=this.busy||this.scanning||!!this.choosingClient;recover.onclick=()=>this.recoverDeepseek(true);buttons.append(recover);
-      }else if(this.gatewayRunning!==false&&client.id==='deepseek'&&['restart-required','needs-first-launch'].includes(client.setupStatus)){
-        const restart=client.setupStatus==='restart-required',connect=node('button',restart?'重启并接入':'打开并接入','primary');connect.type='button';connect.disabled=!!this.busy||!!this.scanning||!!this.choosingClient;connect.onclick=()=>this.action(restart?'restart-deepseek':'connect-deepseek');buttons.append(connect);manage.textContent=t('管理');manage.className='connection-secondary';
+      if(!failure&&client.id==='deepseek'&&client.backgroundRunning&&(!client.mainRunning||['restart-required','failed'].includes(client.setupStatus))){
+        const recover=node('button','恢复并重新接入','primary');recover.type='button';recover.disabled=this.busy||this.scanning||!!this.choosingClient||this.hasUncertain();recover.onclick=()=>this.recoverDeepseek(true);buttons.append(recover);
+      }else if(!failure&&this.gatewayRunning!==false&&client.id==='deepseek'&&['restart-required','needs-first-launch'].includes(client.setupStatus)){
+        const restart=client.setupStatus==='restart-required',connect=node('button',restart?'重启并接入':'打开并接入','primary');connect.type='button';connect.disabled=!!this.busy||!!this.scanning||!!this.choosingClient||this.hasUncertain();connect.onclick=()=>this.action(restart?'restart-deepseek':'connect-deepseek');buttons.append(connect);manage.textContent=t('管理');manage.className='connection-secondary';
       }
       if(!failure&&this.gatewayRunning!==false&&client.id==='claude'&&client.installed&&!client.connected&&client.setupStatus!=='unsupported'){
         const restart=client.setupStatus==='restart-required',pending=state.waiting;
@@ -150,23 +150,24 @@ class DesktopConnectionsPanel {
     const refresh=document.createElement('button');refresh.type='button';refresh.className='quota-link';refresh.textContent=t('查看剩余额度');refresh.disabled=usage?.status==='loading';refresh.onclick=async()=>{refresh.disabled=true;try{this.renderAccount(await this.api.accounts({action:'details',id:row.id,section:'usage',refresh:true}));}catch(error){this.feedback(error.message,true);refresh.disabled=false;}};cell.append(refresh);
   }
   async recoverDeepseek(restart){
-    if(this.busy||this.scanning||this.choosingClient||this.hasUncertain())return;this.busy=true;this.clientsRevision++;this.statusRevision++;this.renderClients();this.renderScan();
+    if(this.busy||this.scanning||this.choosingClient||this.hasUncertain())return;this.busy=true;this.clientsRevision++;this.statusRevision++;this.renderClients();this.renderScan();let attempted=false;
     try{
-      const preview=await this.api.desktopSessions({action:'deepseek-recovery-preview',restart});
+      const preview=await ClientLifecycle.request(()=>this.api.desktopSessions({action:'deepseek-recovery-preview',restart}),{timeout:this.statusTimeout??10000,uncertain:false,message:'客户端状态读取超时，请重试。'});
       if(preview.busy)throw Error(preview.message||'DSH 仍有任务运行或等待确认，请先在桌面结束任务');
       if(!preview.canRecover)throw Error(preview.message||'当前 DSH 进程无法安全恢复，请在桌面检查后重新扫描');
       const t=BridgeI18n.t,prompt=[t(restart?'将完整退出 DSH 的桌面和后台进程，更新接入后重新打开。':'将完整退出 DSH 的桌面和后台进程。'),t('桌面进程：')+(preview.guiCount||0)+' · '+t('后台进程：')+(preview.backgroundCount||0),preview.requiresUnknownConfirmation?t('部分后台进程无法核验任务状态。确认继续表示你已检查并结束任务、保存工作。'):t('请确认已保存工作。')].join('\n\n');
       if(!window.confirm(prompt))return;
-      const value=await this.api.desktopSessions({action:'deepseek-recovery-confirm',token:preview.token,confirmed:true,...(preview.requiresUnknownConfirmation?{acknowledgeUnknown:true}:{})});
+      attempted=true;this.operationFailures??=new Map();this.operationFailures.delete('deepseek');
+      const value=await ClientLifecycle.request(()=>this.api.desktopSessions({action:'deepseek-recovery-confirm',token:preview.token,confirmed:true,...(preview.requiresUnknownConfirmation?{acknowledgeUnknown:true}:{})}),{timeout:this.lifecycleTimeout??45000});
       if(value.clients){this.clients=value.clients;this.gatewayRunning=value.gatewayRunning??this.gatewayRunning;}this.feedback(restart?(value.clients?.find(row=>row.id==='deepseek')?.connected?'DSH 已重新接入':'正在等待 Harness 连接'):'DSH 已完整退出');
-    }catch(error){this.feedback(error.message,true);}
+    }catch(error){if(attempted)this.operationFailures.set('deepseek',{...ClientLifecycle.failure('recover',error,'desktop'),recoveryRestart:restart});this.feedback(error.message,true);}
     finally{this.busy=false;this.renderClients();this.renderScan();await this.refreshClients(true);await this.refresh();}
   }
   async action(action){
     if(this.busy||this.scanning||this.choosingClient||this.hasUncertain())return;
     if(action==='restart-deepseek'&&!window.confirm(BridgeI18n.t('重启 Harness 会断开当前会话。请先在 Harness 中结束所有任务并保存工作，再确认重启并接入。')))return;
     if(action==='restart-claude'&&!window.confirm(BridgeI18n.t('重启 Claude 会断开当前会话。请先结束任务并保存工作，再确认重启并接入。')))return;
-    const provider=action.endsWith('-claude')?'claude':action.endsWith('-deepseek')?'deepseek':null,operation=['connect-claude','restart-claude'].includes(action)?'initialize':action==='connect-deepseek'?'enable':null;this.operationFailures??=new Map();if(provider)this.operationFailures.delete(provider);
+    const provider=action.endsWith('-claude')?'claude':action.endsWith('-deepseek')?'deepseek':null,operation=['connect-claude','restart-claude'].includes(action)?'initialize':action==='connect-deepseek'?'enable':action;this.operationFailures??=new Map();if(provider)this.operationFailures.delete(provider);
     this.busy=true;this.clientsRevision++;this.statusRevision++;const buttons=this.root.querySelectorAll('button');buttons.forEach(button=>button.disabled=true);this.renderClients();this.renderScan();let rescan=false;
     try{
       const value=await ClientLifecycle.request(()=>this.api.desktopSessions({action,...(['install-deepseek','remove-deepseek'].includes(action)?{home:this.deepseekHome.value.trim()}:{})}),{timeout:this.lifecycleTimeout??45000});
@@ -174,7 +175,7 @@ class DesktopConnectionsPanel {
       if(['connect-deepseek','restart-deepseek'].includes(action))this.feedback('正在等待 Harness 连接');
       rescan=action==='connect-deepseek'||action==='install-deepseek';
       await this.refreshClients(true);await this.refresh();
-    }catch(error){if(provider&&operation)this.operationFailures.set(provider,ClientLifecycle.failure(operation,error,'desktop'));this.feedback(error.message,true);}
+    }catch(error){if(provider)this.operationFailures.set(provider,{...ClientLifecycle.failure(operation,error,'desktop'),desktopAction:action});this.feedback(error.message,true);}
     finally{this.busy=false;buttons.forEach(button=>button.disabled=false);this.renderClients();this.renderScan();if(provider&&this.operationFailures.has(provider))await this.refreshClients(true);}
     if(rescan)await this.scan();
   }

@@ -162,6 +162,32 @@ test('desktop lock status provides an explicit initialization retry while keepin
  ui.panel.clients[0].connected=true;ui.panel.renderClients();assert.equal(ui.all().find(node=>node.attributes.role==='status').textContent,'已连接');ui.panel.windowsSession={state:'unlocked',interactive:true};ui.panel.renderClients();assert.equal(ui.calls.length,0);
 });
 
+test('desktop restart, cancel and plugin timeouts require reconciliation and retry the original action',async()=>{
+ for(const action of ['restart-deepseek','cancel-claude','install-deepseek','remove-deepseek']){
+  const ui=fixture(),id=action.endsWith('-claude')?'claude':'deepseek',client={id,name:id,enabled:true,installed:true,configured:true,running:true,connected:true};ui.panel.clients=[client];ui.panel.lifecycleTimeout=5;let finish,readable=false;
+  ui.setHandler(body=>body.action===action?new Promise(resolve=>finish=resolve):readable?Promise.resolve(body.action==='status'?{backends:{}}:{clients:[client]}):Promise.reject(Error('status offline')));
+  await ui.panel.action(action);assert.equal(ui.panel.hasUncertain(),true,action);assert.equal(ui.panel.operationFailures.get(id).desktopAction,action);const count=ui.calls.length;
+  await ui.panel.action(action);await ui.panel.recoverDeepseek(true);await ui.panel.retryOperation(id);assert.equal(ui.calls.length,count);assert.equal(ui.panel.clients[0].connected,true);
+  readable=true;await ui.panel.refreshClients(true);assert.equal(ui.panel.hasUncertain(),false);assert.ok(ui.panel.operationFailures.has(id),'an already-running client does not prove the operation succeeded');
+  finish({clients:[{...client,connected:false}]});await Promise.resolve();await Promise.resolve();assert.equal(ui.panel.clients[0].connected,true);
+  if(action==='restart-deepseek'){ui.confirm(false);await ui.panel.retryOperation(id);assert.equal(ui.calls.filter(row=>row.action===action).length,1);ui.confirm(true);}
+  ui.setHandler(async body=>body.action==='status'?{backends:{}}:{clients:[client]});await ui.panel.retryOperation(id);assert.equal(ui.calls.filter(row=>row.action===action).length,2);assert.equal(ui.calls.filter(row=>row.action==='toggle-client').length,0);
+ }
+});
+
+test('timed-out DSH recovery requires a fresh preview and confirmation before retry',async()=>{
+ const ui=fixture(),client={id:'deepseek',name:'DSH',enabled:true,installed:true,configured:true,running:true,connected:true};ui.panel.clients=[client];ui.panel.lifecycleTimeout=5;let finish,readable=false,previews=0;
+ ui.setHandler(body=>body.action==='deepseek-recovery-preview'?Promise.resolve({token:'preview-'+(++previews),canRecover:true}):body.action==='deepseek-recovery-confirm'?new Promise(resolve=>finish=resolve):readable?Promise.resolve(body.action==='status'?{backends:{}}:{clients:[client]}):Promise.reject(Error('status offline')));
+ await ui.panel.recoverDeepseek(true);assert.equal(ui.panel.hasUncertain(),true);const count=ui.calls.length;await ui.panel.retryOperation('deepseek');assert.equal(ui.calls.length,count);
+ readable=true;await ui.panel.refreshClients(true);assert.equal(ui.panel.hasUncertain(),false);finish({clients:[{...client,connected:false}]});await Promise.resolve();await Promise.resolve();assert.equal(ui.panel.clients[0].connected,true);
+ ui.confirm(false);await ui.panel.retryOperation('deepseek');assert.equal(previews,2);assert.equal(ui.calls.filter(row=>row.action==='deepseek-recovery-confirm').length,1);
+ ui.confirm(true);ui.setHandler(async body=>body.action==='deepseek-recovery-preview'?{token:'fresh-preview',canRecover:true}:body.action==='status'?{backends:{}}:{clients:[client]});await ui.panel.retryOperation('deepseek');const confirms=ui.calls.filter(row=>row.action==='deepseek-recovery-confirm');assert.equal(confirms.length,2);assert.equal(confirms[1].token,'fresh-preview');assert.equal(ui.prompts.length,3);
+});
+
+test('DSH recovery preview timeout never submits a mutation or marks its outcome unknown',async()=>{
+ const ui=fixture();ui.panel.clients=[];ui.panel.statusTimeout=5;ui.setHandler(body=>body.action==='deepseek-recovery-preview'?new Promise(()=>{}):Promise.resolve(body.action==='status'?{backends:{}}:{clients:[]}));await ui.panel.recoverDeepseek(true);assert.equal(ui.panel.hasUncertain(),false);assert.equal(ui.panel.busy,false);assert.equal(ui.calls.filter(row=>row.action==='deepseek-recovery-confirm').length,0);assert.equal(ui.prompts.length,0);
+});
+
 test('DSH recovery uses a preview token and explicit acknowledgment for unknown background tasks',async()=>{
  const ui=fixture();ui.english();const clients=[{id:'deepseek',name:'DSH',enabled:true,configured:true,connected:false,running:true,mainRunning:false,backgroundRunning:true,reason:'客户端已配置，可开启桌面应用'}];ui.panel.clients=clients;
  ui.setHandler(async body=>body.action==='deepseek-recovery-preview'?{token:'review-token',canRecover:true,busy:false,requiresUnknownConfirmation:true,guiCount:0,backgroundCount:2}:body.action==='status'?{backends:{}}:{clients});

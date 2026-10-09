@@ -14,6 +14,7 @@ const en={
 "重试退出":"Retry quitting",
 "重试停用":"Retry disabling",
 "重试初始化":"Retry initialization",
+"重试操作":"Retry operation",
 "刷新状态":"Refresh status",
 "通过 Claude 原生菜单正常退出；如有任务或保存确认，请在电脑端处理。完全退出后需重新初始化连接，初始化会使用电脑前台和键盘焦点。":"Quit normally through Claude's native menu; handle any task or save confirmation on your computer. After quitting completely, the connection requires initialization again, using the computer's foreground window and keyboard focus.",
 "安装和登录请在电脑端完成。关闭接入时可选择保留或退出电脑 App。Claude 通过原生菜单正常退出。完全退出或重新加载后需初始化连接，初始化会使用电脑前台和键盘焦点。":"Install and sign in on your computer. When disabling access, choose whether to keep the desktop app running or quit it. Claude quits normally through its native menu. After a complete quit or reload, initialize the connection again using the computer's foreground window and keyboard focus.",
