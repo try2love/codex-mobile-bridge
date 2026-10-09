@@ -175,6 +175,18 @@ class HttpAdapters(unittest.TestCase):
         self.server.desktop_sessions.call.assert_not_called()
         self.server.desktop_sessions.toggle_client.assert_not_called()
 
+    def test_client_disable_choice_is_forwarded_with_auth_and_csrf(self):
+        self.server.desktop_sessions = Mock()
+        self.server.desktop_sessions.toggle_client.return_value = {'clients': []}
+        headers = self.login()
+        for quit_desktop in (False, True):
+            body = {'provider': 'claude', 'enabled': False, 'quitDesktop': quit_desktop}
+            self.assertEqual(self.request('POST', '/api/clients', body, {'Cookie': headers['Cookie']})[0], 403)
+            self.assertEqual(self.request('POST', '/api/clients', body, headers)[0], 200)
+            self.server.desktop_sessions.toggle_client.assert_called_with(body)
+        self.assertEqual(self.request('POST', '/api/clients', {
+            'provider': 'claude', 'enabled': False, 'quitDesktop': False, 'force': True}, headers)[0], 400)
+
 
     def test_client_management_and_workspace_http_are_authenticated_and_scoped(self):
         temp = tempfile.TemporaryDirectory(dir=ROOT/'.tmp'); self.addCleanup(temp.cleanup)

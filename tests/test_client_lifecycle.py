@@ -1,5 +1,6 @@
 """Native app lifecycle uses isolated process and desktop-state fixtures only."""
 import tempfile
+import json
 import threading
 import unittest
 from pathlib import Path
@@ -53,6 +54,7 @@ class ClientLifecycleTests(unittest.TestCase):
         self.launch = self.patch('launch_client', side_effect=self.start)
         self.launch_dsh = self.patch('launch_deepseek', side_effect=self.start)
         self.stop = self.patch('stop_client', side_effect=self.finish)
+        self.stop_dsh = self.patch('stop_deepseek', side_effect=lambda descriptor, adapter, **kwargs: self.stop(descriptor, **kwargs))
         self.manager._deepseek_endpoint = Mock(return_value={'port': 31313, 'pid': 12})
         self.manager.clients(refresh=True)
 
@@ -104,6 +106,59 @@ class ClientLifecycleTests(unittest.TestCase):
 
     def toggle(self, provider, enabled):
         return self.manager.toggle_client({'provider': provider, 'enabled': enabled})
+
+    def test_disable_access_keeps_desktop_and_terminal_tasks_running(self):
+        process = Mock()
+        self.manager.workspace_roots[('claude', 'one')] = str(self.root)
+        import uuid
+        thread = str(uuid.uuid5(uuid.NAMESPACE_URL, 'claude:one'))
+        self.manager.terminals = SimpleNamespace(lock=threading.RLock(),
+            sessions={('local', thread, 'term'): process}, jobs={}, close=Mock())
+        self.claude.status.return_value = {'connected': False}
+        self.dsh.call.side_effect = BridgeUnavailable('disconnected')
+        with patch.object(self.manager, '_assert_idle') as idle, patch.object(self.manager, '_descriptor', side_effect=ValueError('missing app')):
+            for provider in ('codex', 'claude', 'deepseek'):
+                self.manager.toggle_client({'provider': provider, 'enabled': False, 'quitDesktop': False})
+                self.assertFalse(self.manager.enabled(provider))
+                with self.assertRaisesRegex(ValueError, '应用已关闭'):
+                    self.manager.require_enabled(provider)
+        idle.assert_not_called()
+        self.accounts.assert_editable.assert_not_called()
+        self.accounts.idle.assert_not_called()
+        self.stop.assert_not_called()
+        self.stop_dsh.assert_not_called()
+        self.launch.assert_not_called()
+        self.launch_dsh.assert_not_called()
+        process.stop.assert_not_called()
+        self.claude.cancel.assert_called_once_with()
+        self.assertTrue(self.running)
+        saved = json.loads(self.manager.config_path.read_text())
+        self.assertEqual(saved['enabled'], dict.fromkeys(('codex', 'claude', 'deepseek'), False))
+
+    def test_explicit_quit_keeps_busy_guard_and_enabled_preference(self):
+        self.claude.call.side_effect = lambda *args: {'complete': True, 'sessions': [
+            {'status': 'running', 'runtimeKnown': True, 'requests': []}]}
+        with self.assertRaisesRegex(ValueError, '任务运行或等待'):
+            self.manager.toggle_client({'provider': 'claude', 'enabled': False, 'quitDesktop': True})
+        self.assertTrue(self.manager.enabled('claude'))
+        self.stop.assert_not_called()
+        self.claude.cancel.assert_not_called()
+
+    def test_invalid_quit_choice_never_changes_state(self):
+        for value in (None, 'false', 0, 1, []):
+            with self.assertRaisesRegex(ValueError, '应用开关无效'):
+                self.manager.toggle_client({'provider': 'claude', 'enabled': False, 'quitDesktop': value})
+        with self.assertRaisesRegex(ValueError, '应用开关无效'):
+            self.manager.toggle_client({'provider': 'claude', 'enabled': True, 'quitDesktop': False})
+        self.assertTrue(self.manager.enabled('claude'))
+        self.stop.assert_not_called()
+
+    def test_windows_dsh_exit_uses_native_host_quit(self):
+        with patch('sys.platform', 'win32'):
+            self.manager.toggle_client({'provider': 'deepseek', 'enabled': False, 'quitDesktop': True})
+        self.stop_dsh.assert_called_once()
+        self.assertIs(self.stop_dsh.call_args.args[1], self.dsh)
+        self.assertFalse(self.manager.enabled('deepseek'))
 
     def test_offline_selection_never_launches_or_quits_clients(self):
         self.manager.gateway_running = False
