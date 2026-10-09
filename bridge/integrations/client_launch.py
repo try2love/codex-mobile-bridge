@@ -46,8 +46,8 @@ def launch_deepseek(descriptor, restart=False):
         # On first launch Harness itself initializes its home and desktop profile.
         # Do not manufacture a second profile merely to give Popen a working dir.
         working = next((p for p in [app.home, *app.home.parents] if p.is_dir()), Path.home())
-        subprocess.Popen([str(app.executable)], cwd=working, env={**os.environ, 'DSH_HOME': str(app.home)},
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **options)
+        app.launch(cwd=working, env={**os.environ, 'DSH_HOME': str(app.home)},
+                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **options)
     # GUI startup is asynchronous. Report observed process state, not a claim that
     # the adapter has connected or upstream authentication has succeeded.
     deadline = time.monotonic() + 2

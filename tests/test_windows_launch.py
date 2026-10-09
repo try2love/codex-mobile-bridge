@@ -1,5 +1,5 @@
-import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -90,7 +90,7 @@ class WindowsDesktopLaunchTests(unittest.TestCase):
                 self.snapshot.return_value = inventory
                 with patch('subprocess.Popen', side_effect=self.denied) as spawn:
                     with self.assertRaises(PermissionError):
-                        running_app_error = DesktopApp(self.executable, self.root).start()
+                        DesktopApp(self.executable, self.root).start()
                 self.assertEqual(spawn.call_count, 1)
 
     def test_other_launch_errors_are_not_retried(self):
@@ -100,6 +100,17 @@ class WindowsDesktopLaunchTests(unittest.TestCase):
                 DesktopApp(self.executable, self.root).start()
         spawn.assert_called_once()
         self.snapshot.assert_not_called()
+
+    def test_cancellation_during_registration_lookup_prevents_activation(self):
+        cancelled = threading.Event()
+        def inventory():
+            cancelled.set()
+            return self.inventory
+        self.snapshot.side_effect = inventory
+        with patch('subprocess.Popen', side_effect=self.denied) as spawn:
+            with self.assertRaisesRegex(ValueError, '已取消'):
+                DesktopApp(self.executable, self.root).launch(cancelled=cancelled)
+        self.assertEqual(spawn.call_count, 1)
 
 
 if __name__ == '__main__':

@@ -91,7 +91,7 @@ def _electron(path):
             (path.parent/'resources/app/package.json').is_file())
 
 
-def _package_executables(folder, binaries):
+def _package_entries(folder, binaries):
     """Prefer a package's visible GUI entry over adjacent launch shims/helpers."""
     try:
         with (folder/'AppxManifest.xml').open('rb') as stream:
@@ -110,9 +110,51 @@ def _package_executables(folder, binaries):
                 continue
             candidate = folder.joinpath(*relative.parts)
             if _electron(candidate):
-                yield candidate
+                yield candidate, app.get('Id', '')
     except (OSError, ValueError, ET.ParseError):
         return
+
+
+def _package_executables(folder, binaries):
+    return (path for path, _ in _package_entries(folder, binaries))
+
+
+def application_user_model_id(executable):
+    """Resolve only the selected GUI's registered package and manifest entry."""
+    executable = Path(executable).resolve()
+    if not any((folder/'AppxManifest.xml').is_file() for folder in executable.parents):
+        return ''
+    matches = set()
+    for row in _rows(windows_installations(), 'packages'):
+        provider = PACKAGE_NAMES.get(str(row.get('Name', '')).casefold())
+        folder, family = _path(row.get('InstallLocation')), row.get('PackageFamilyName')
+        if not provider or not folder or not isinstance(family, str) or not re.fullmatch(r'[A-Za-z0-9._-]+', family):
+            continue
+        if not executable.is_relative_to(folder.resolve()):
+            continue
+        for candidate, identifier in _package_entries(folder, tuple(name+'.exe' for name in PRODUCT_NAMES[provider])):
+            if candidate.resolve() == executable and re.fullmatch(r'[A-Za-z0-9._-]+', identifier):
+                matches.add(family+'!'+identifier)
+    return next(iter(matches)) if len(matches) == 1 else ''
+
+
+def launch_windows_desktop(executable, *, cancelled=None, **options):
+    """Preserve direct-launch environments, falling back for protected Store apps."""
+    def check_cancelled():
+        if cancelled is not None and cancelled.is_set():
+            raise ValueError('已取消桌面程序启动')
+    check_cancelled()
+    try:
+        return subprocess.Popen([str(executable)], **options)
+    except OSError as exc:
+        if getattr(exc, 'winerror', None) != 5:
+            raise
+        app_id = application_user_model_id(executable)
+        if not app_id:
+            raise
+        check_cancelled()
+        explorer = Path(os.environ.get('WINDIR') or os.environ.get('SystemRoot') or 'C:/Windows')/'explorer.exe'
+        return subprocess.Popen([str(explorer), 'shell:AppsFolder\\'+app_id], **options)
 
 
 def registered_candidates(provider, inventory):

@@ -219,6 +219,12 @@ class DesktopApp:
                 raise ValueError('桌面程序尚未退出，请在电脑上关闭后重试；尚未强制结束进程')
             time.sleep(.25)
 
+    def launch(self, *, cancelled=None, **options):
+        if sys.platform == 'win32':
+            from .integrations.windows_discovery import launch_windows_desktop
+            return launch_windows_desktop(self.executable, cancelled=cancelled, **options)
+        return subprocess.Popen([str(self.executable)], **options)
+
     def start(self):
         if sys.platform == 'darwin':
             bundle = next((p for p in self.executable.parents if p.suffix == '.app'), None)
@@ -230,7 +236,6 @@ class DesktopApp:
             return
         options = ({'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP, 'close_fds': True}
                    if sys.platform == 'win32' else {'start_new_session': True})
-        self.child = subprocess.Popen([str(self.executable)], cwd=self.home,
-                                     env={**os.environ, 'CODEX_HOME': str(self.home)},
-                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                     stderr=subprocess.DEVNULL, **options)
+        self.child = self.launch(cwd=self.home, env={**os.environ, 'CODEX_HOME': str(self.home)},
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, **options)

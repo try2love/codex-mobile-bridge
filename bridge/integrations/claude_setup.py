@@ -330,8 +330,8 @@ def running_app(executable, data_home, restart=False, cancelled=None):
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
             # Native startup arguments only. Claude's user profile remains its own.
-            subprocess.Popen([str(app.executable)], stdin=subprocess.DEVNULL,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            app.launch(cancelled=cancelled, stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         deadline = time.monotonic() + 15
         while not pids and time.monotonic() < deadline:
             if cancelled and cancelled.is_set():
