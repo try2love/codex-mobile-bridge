@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from bridge.integrations.manager import DesktopSessions
+from bridge.integrations.manager import DesktopSessions, DesktopWorkspace
 from bridge.integrations.errors import BridgeUnavailable
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -145,6 +145,66 @@ class ClientLifecycleTests(unittest.TestCase):
         self.assertTrue(self.manager.enabled('claude'))
         self.stop.assert_not_called()
         self.claude.cancel.assert_not_called()
+
+    def test_disable_rejects_workspaces_resolved_before_request_body_arrives(self):
+        for provider in ('claude', 'deepseek'):
+            with self.subTest(provider=provider):
+                workspace = DesktopWorkspace(self.manager, provider, 'one', str(self.root))
+                self.manager.toggle_client({'provider': provider, 'enabled': False, 'quitDesktop': False})
+                with patch('bridge.workspace.operate') as operate, patch('bridge.service.Bridge.terminal') as terminal:
+                    for action in ('upload', 'git-action'):
+                        with self.assertRaisesRegex(ValueError, '应用已关闭'):
+                            workspace.workspace(workspace.identifier, action, {})
+                    for action in ('start', 'open', 'input', 'resize', 'close', 'stop'):
+                        with self.assertRaisesRegex(ValueError, '应用已关闭'):
+                            workspace.terminal(workspace.identifier, 'fixture', action, {})
+                    operate.assert_not_called()
+                    terminal.assert_not_called()
+
+    def test_disable_waits_for_accepted_workspace_mutation(self):
+        workspace = DesktopWorkspace(self.manager, 'claude', 'one', str(self.root))
+        entered, release, toggling, disabled = (threading.Event() for _ in range(4))
+        failures = []
+
+        def mutate():
+            entered.set()
+            if not release.wait(3):
+                raise TimeoutError('fixture mutation was not released')
+            return {'saved': True}
+
+        def run_write():
+            try:
+                workspace.workspace(workspace.identifier, 'upload', {})
+            except Exception as error:
+                failures.append(error)
+
+        def disable():
+            toggling.set()
+            try:
+                self.manager.toggle_client({'provider': 'claude', 'enabled': False, 'quitDesktop': False})
+            except Exception as error:
+                failures.append(error)
+            finally:
+                disabled.set()
+
+        with patch('bridge.workspace.operate', side_effect=lambda *_: mutate()):
+            writer = threading.Thread(target=run_write)
+            toggler = threading.Thread(target=disable)
+            writer.start()
+            try:
+                self.assertTrue(entered.wait(2))
+                toggler.start()
+                self.assertTrue(toggling.wait(2))
+                self.assertFalse(disabled.wait(.15))
+            finally:
+                release.set()
+                writer.join(3)
+                if toggler.ident is not None:
+                    toggler.join(3)
+        self.assertFalse(writer.is_alive())
+        self.assertFalse(toggler.is_alive())
+        self.assertEqual(failures, [])
+        self.assertFalse(self.manager.enabled('claude'))
 
     def test_invalid_quit_choice_never_changes_state(self):
         for value in (None, 'false', 0, 1, []):
