@@ -67,6 +67,41 @@ class ClientLifecycleTests(unittest.TestCase):
     def finish(self, descriptor, **kwargs):
         self.running = False
 
+    def test_codex_cached_runtime_reuses_scanned_gui_for_readiness_and_launch(self):
+        self.accounts.index['desktopExecutable'] = ''
+        self.accounts.runtime = self.root/'cache/hash/codex.exe'
+        self.running = False
+        with patch('bridge.desktop_app.DesktopApp.discover', return_value=''):
+            rows = self.manager.toggle_client({'provider': 'codex', 'enabled': True})['clients']
+        descriptor = self.launch.call_args.args[0]
+        self.assertEqual(descriptor['executable'], self.manager.config['discovered']['codex']['executable'])
+        self.assertTrue(descriptor['installed'])
+        self.assertEqual(descriptor['dataDirectory'], str(self.accounts.home))
+        codex = next(row for row in rows if row['id'] == 'codex')
+        self.assertTrue(codex['configured'])
+        self.assertTrue(codex['connected'])
+
+    def test_explicit_codex_gui_keeps_precedence_even_when_missing(self):
+        selected = self.root/'selected.exe'
+        selected.write_bytes(b'fixture')
+        self.accounts.index['desktopExecutable'] = str(selected)
+        with patch('bridge.desktop_app.DesktopApp.discover') as discover:
+            self.assertEqual(self.manager._descriptor('codex')['executable'], str(selected))
+            selected.unlink()
+            descriptor = self.manager._descriptor('codex')
+            self.assertEqual(descriptor['executable'], str(selected))
+            self.assertFalse(descriptor['installed'])
+            discover.assert_not_called()
+
+    def test_missing_scanned_codex_gui_does_not_report_configured(self):
+        self.accounts.index['desktopExecutable'] = ''
+        self.manager.config['discovered']['codex']['executable'] = str(self.root/'missing.exe')
+        with patch('bridge.desktop_app.DesktopApp.discover', return_value=''):
+            self.assertFalse(self.manager._descriptor('codex')['installed'])
+            codex = next(row for row in self.manager.clients(refresh=True)['clients'] if row['id'] == 'codex')
+        self.assertFalse(codex['configured'])
+        self.assertFalse(codex['connected'])
+
     def toggle(self, provider, enabled):
         return self.manager.toggle_client({'provider': provider, 'enabled': enabled})
 
