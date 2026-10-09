@@ -54,7 +54,7 @@ class ClientNavigation {
     else this.paint();
   }
   async refresh(){
-    if(this.loading||this.pending.size||document.getElementById('app').hidden)return;
+    if(this.loading||this.pending.size||this.choosing||document.getElementById('app').hidden)return;
     this.loading=true;const revision=this.revision;
     try{const data=await this.request('/api/clients');if(revision===this.revision)this.applyClients(data);}
     catch(error){this.notify(error.message);}finally{this.loading=false;}
@@ -81,13 +81,20 @@ class ClientNavigation {
     return true;
   }
   async toggle(id,enabled){
-    const client=this.clients.find(row=>row.id===id);if(this.pending.size||!client||!(client.selectable??client.configured))return;
+    const client=this.clients.find(row=>row.id===id);if(this.pending.size||this.choosing||!client||(enabled&&!(client.selectable??client.configured)))return;
+    let quitDesktop=false;
+    if(!enabled&&this.gatewayRunning!==false){
+      this.choosing=id;++this.revision;this.paint();
+      try{quitDesktop=await ClientLifecycle.chooseDisable(client);}
+      finally{this.choosing=null;this.paint();}
+      if(quitDesktop===null)return;
+    }
     const before=this.clients.map(c=>({...c})),previous=this.provider;
-    this.pending.add(id);++this.revision;
+    this.pending.add(id);this.pendingQuitDesktop=quitDesktop;++this.revision;
     this.applyClients({clients:this.clients.map(c=>c.id===id?{...c,enabled}:c)});
-    try{const data=await this.request('/api/clients',{provider:id,enabled});this.applyClients(data);}
+    try{const data=await this.request('/api/clients',{provider:id,enabled,...(!enabled?{quitDesktop}:{})});this.applyClients(data);}
     catch(error){this.provider=previous;this.applyClients({clients:before});throw error;}
-    finally{this.pending.delete(id);++this.revision;this.paint();}
+    finally{this.pending.delete(id);this.pendingQuitDesktop=false;++this.revision;this.paint();}
   }
   paint(){
     const provider=this.provider,row=this.clients.find(c=>c.id===provider);this.badge.replaceChildren();if(provider)this.badge.append(this.icon(provider),document.createTextNode(row?.name||'Codex'));
@@ -102,7 +109,7 @@ class ClientNavigation {
     let empty=this.sidebar.querySelector('.no-client-message');if(!empty){empty=document.createElement('p');empty.className='no-client-message muted';empty.textContent=BridgeI18n.t('尚未启用应用，请打开应用管理。');this.heading.after(empty);}empty.hidden=!!provider;this.renderManager();
   }
   managementState(client){
-    if(this.pending.has(client.id))return this.gatewayRunning===false?'正在保存…':client.enabled?'开启中…':'关闭中…';
+    if(this.pending.has(client.id))return this.gatewayRunning===false?'正在保存…':client.enabled?'开启中…':this.pendingQuitDesktop?'正在退出应用…':'正在停用接入…';
     if(this.gatewayRunning===false)return client.enabled?'已选择，下次启动生效':'未选择，下次启动生效';
     return client.enabled?'已启用':'未启用';
   }
@@ -121,11 +128,11 @@ class ClientNavigation {
       const text=document.createElement('span'),name=document.createElement('strong'),status=document.createElement('small'),reason=document.createElement('small'),control=document.createElement('span'),label=document.createElement('span'),toggle=document.createElement('button');
       name.textContent=client.name;status.textContent=BridgeI18n.t(this.runtimeState(client));reason.textContent=BridgeI18n.t(client.reason||'');reason.hidden=!client.reason||reason.textContent===status.textContent;text.append(name,status,reason);
       control.className='client-management-control';label.className='client-toggle-status';label.setAttribute('role','status');label.textContent=BridgeI18n.t(this.managementState(client));
-      toggle.type='button';toggle.className='client-management-switch';toggle.setAttribute('role','switch');toggle.setAttribute('aria-checked',String(client.enabled));toggle.setAttribute('aria-label',BridgeI18n.t('启用')+' '+client.name);toggle.setAttribute('aria-busy',String(this.pending.has(client.id)));toggle.disabled=!(client.selectable??client.configured)||this.pending.size>0;
+      toggle.type='button';toggle.className='client-management-switch';toggle.setAttribute('role','switch');toggle.setAttribute('aria-checked',String(client.enabled));toggle.setAttribute('aria-label',BridgeI18n.t('启用')+' '+client.name);toggle.setAttribute('aria-busy',String(this.pending.has(client.id)));toggle.disabled=(!client.enabled&&!(client.selectable??client.configured))||this.pending.size>0||!!this.choosing;
       toggle.append(document.createElement('span'));control.append(toggle,label);row.append(this.icon(client.id),text,control);list.append(row);
       toggle.onclick=()=>this.toggle(client.id,!client.enabled).catch(error=>this.notify(error.message));
     }
-    note.textContent=BridgeI18n.t(this.gatewayRunning===false?'网关未启动，开关仅保存下次启动时的选择，不会打开或退出应用。':'安装和登录请在电脑端完成。开启会打开桌面应用，关闭会完全退出；有任务运行或等待确认时无法关闭。');
+    note.textContent=BridgeI18n.t(this.gatewayRunning===false?'网关未启动，开关仅保存下次启动时的选择，不会打开或退出应用。':'安装和登录请在电脑端完成。关闭接入时可选择保留电脑 App，或在所有任务结束后同时退出。Claude 首次连接需在电脑端手动初始化。');
   }
   openManager(){
     if(this.manager?.dialog.open)return;

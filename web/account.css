@@ -46,9 +46,11 @@
 .reset-confirmation::backdrop{background:#0007}.reset-confirmation h2{margin:0 0 20px;font-size:19px}.reset-confirmation p{line-height:1.6;overflow-wrap:anywhere}.reset-confirmation strong{overflow-wrap:anywhere}
 .reset-confirm-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:24px}.reset-confirm-actions button{padding:10px 16px;border:1px solid var(--line,#dfe3eb);border-radius:8px;font:inherit;cursor:pointer}.reset-confirm-actions button:disabled{opacity:.5;cursor:default}.reset-confirm-actions .primary{background:var(--accent,#4664ed);color:var(--accent-ink,#fff);border-color:var(--accent,#4664ed)}
 
-.account-reset-dialog{box-sizing:border-box;width:min(520px,calc(100vw - 32px));max-height:85dvh;overflow:auto;padding:20px;border:1px solid var(--line,#dfe3eb);border-radius:16px;background:var(--raised,#fff);color:var(--text,#202124)}
-.account-reset-dialog::backdrop{background:#0006}.account-reset-dialog .picker-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}.account-reset-dialog .picker-head h2{margin:0;font-size:18px;overflow-wrap:anywhere}
+.account-reset-dialog,.client-disable-dialog{box-sizing:border-box;width:min(520px,calc(100vw - 32px));max-height:85dvh;overflow:auto;padding:20px;border:1px solid var(--line,#dfe3eb);border-radius:16px;background:var(--raised,#fff);color:var(--text,#202124)}
+.account-reset-dialog::backdrop,.client-disable-dialog::backdrop{background:#0006}.account-reset-dialog .picker-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}.account-reset-dialog .picker-head h2{margin:0;font-size:18px;overflow-wrap:anywhere}
 
-.account-reset-dialog button{font:inherit;padding:9px 13px;border:1px solid var(--line,#dfe3eb);border-radius:8px;background:var(--raised,#fff);color:inherit;cursor:pointer}.account-reset-dialog button:disabled{opacity:.5;cursor:default}.account-reset-dialog .picker-head>button{flex:none}
+.account-reset-dialog button,.client-disable-dialog button{font:inherit;padding:9px 13px;border:1px solid var(--line,#dfe3eb);border-radius:8px;background:var(--raised,#fff);color:inherit;cursor:pointer}.account-reset-dialog button:disabled{opacity:.5;cursor:default}.account-reset-dialog .picker-head>button{flex:none}
 
 .accounts-panel .accounts-import-name{max-width:320px}
+
+.client-disable-dialog h2{margin:0 0 12px;font-size:20px}.client-disable-dialog p{line-height:1.6;overflow-wrap:anywhere}.client-disable-options{display:grid;gap:10px;margin-top:20px}.client-disable-options button{width:100%;text-align:left;white-space:normal;padding:12px 14px}.client-disable-options strong,.client-disable-options small{display:block}.client-disable-options small{margin-top:6px;color:var(--muted,#626d7e);font-size:12px;line-height:1.6}

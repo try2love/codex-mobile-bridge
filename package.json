@@ -36,6 +36,7 @@
     "files": [
       "desktop/**",
       "web/i18n.js",
+      "web/client-lifecycle.js",
       "web/account.js",
       "web/accounts.js",
       "web/client-accounts.js",

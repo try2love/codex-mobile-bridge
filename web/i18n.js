@@ -2,6 +2,16 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"停用手机接入":"Disable phone access",
+"选择是否同时退出电脑上的应用。":"Choose whether to also quit the app on your computer.",
+"仅停用手机接入":"Disable phone access only",
+"保留电脑 App 和现有任务。":"Keep the desktop app and its current tasks running.",
+"同时退出电脑 App":"Also quit the desktop app",
+"仅在所有任务结束且没有待确认操作时退出。":"Quit only after all tasks finish and no approvals are pending.",
+"正在停用接入…":"Disabling access…",
+"安装和登录请在电脑端完成。关闭接入时可选择保留电脑 App，或在所有任务结束后同时退出。Claude 首次连接需在电脑端手动初始化。":"Install and sign in on your computer. When disabling access, choose to keep the desktop app running or also quit it after all tasks finish. Initialize Claude on your computer before its first connection.",
+"无法确认客户端所有任务均已结束；可选择“仅停用手机接入”保留电脑 App，或在电脑端退出后重试":"Cannot confirm that all app tasks have ended. Choose “Disable phone access only” to keep the desktop app running, or quit it on your computer and try again.",
+"客户端尚未连接，无法确认任务状态；可选择“仅停用手机接入”，或在电脑端退出 App 后重试":"The client is not connected, so task status cannot be verified. Choose “Disable phone access only”, or quit the app on your computer and try again.",
 "放大图片":"Zoom in",
 "缩小图片":"Zoom out",
 "适应屏幕":"Fit to screen",
