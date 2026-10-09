@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from bridge.integrations.discovery import BUNDLE_IDS, discover_clients
+from bridge.integrations.discovery import BUNDLE_IDS, _candidate, discover_clients
 from bridge.integrations.deepseek import DeepSeek, MARKER
 
 
@@ -89,6 +89,7 @@ class DiscoveryTests(unittest.TestCase):
         executable = self.root/'My applications/Harness.AppImage'
         executable.parent.mkdir()
         executable.write_bytes(b'appimage')
+        executable.chmod(0o700)
         entries = self.home/'.local/share/applications'
         entries.mkdir(parents=True)
         (entries/'deepseek.desktop').write_text(
@@ -98,6 +99,39 @@ class DiscoveryTests(unittest.TestCase):
                                     env={'PATH': '', 'XDG_DATA_DIRS': str(self.root/'empty')})
         self.assertEqual(rows['deepseek']['executable'], str(executable))
         self.assertEqual(rows['deepseek']['dataDirectory'], str(self.home/'.dsh'))
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX executable permissions and symlinks')
+    def test_linux_launcher_resolves_real_gui_without_executing_script(self):
+        app = self.root/'custom ChatGPT'
+        app.mkdir()
+        executable = app/'ChatGPT'
+        executable.write_bytes(b'\x7fELFdesktop-fixture')
+        executable.chmod(0o700)
+        launcher = app/'codex-launcher'
+        launcher.write_text('#!/bin/sh\nexit 99\n')
+        launcher.chmod(0o700)
+        link = self.root/'chatgpt'
+        link.symlink_to(launcher)
+        runtime = app/'resources/codex'
+        runtime.parent.mkdir()
+        runtime.write_bytes(b'cli')
+        rows = discover_clients({'codexApplication': str(link)}, platform='linux', home=self.home, env={})
+        self.assertEqual(rows['codex']['executable'], str(executable))
+        self.assertEqual(rows['codex']['runtime'], str(runtime))
+        executable.chmod(0o600)
+        self.assertIsNone(_candidate(link, 'codex', 'linux'))
+
+    def test_linux_does_not_mistake_cli_or_unknown_script_for_desktop(self):
+        executable = self.root/'codex'
+        executable.write_bytes(b'\x7fELFcli-fixture')
+        executable.chmod(0o700)
+        self.assertIsNone(_candidate(executable, 'codex', 'linux'))
+        resources = self.root/'resources'
+        resources.mkdir()
+        (resources/'app.asar').touch()
+        self.assertEqual(_candidate(executable, 'codex', 'linux')['executable'], str(executable))
+        executable.write_text('#!/bin/sh\nexit 99\n')
+        self.assertIsNone(_candidate(executable, 'codex', 'linux'))
 
 
 class DeepSeekSetupTests(unittest.TestCase):

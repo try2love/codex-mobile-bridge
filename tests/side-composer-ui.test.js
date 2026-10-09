@@ -15,8 +15,8 @@ async function runSideComposerTests(){
  check(dialog.textContent.includes('Review a change and explain the findings.'),'Skill picker shows descriptions');
  const checkbox=dialog.querySelector('input[type=checkbox]');checkbox.click();dialog.close();
  check(panel.skillPills.textContent.includes('Review')&&panel.skillsButton.textContent.includes('(1)'),'Selected Skill is visible in the composer');
- const mainPermission=state.permissionMode;panel.permissions();dialog=[...document.querySelectorAll('dialog[open]')].at(-1);
- [...dialog.querySelectorAll('.skill-option')].find(button=>button.textContent.includes(BridgeI18n.t('帮我批准'))).click();await wait(()=>!dialog.open);
+ const mainPermission=state.permissionMode;await panel.permissions();dialog=[...document.querySelectorAll('dialog[open]')].at(-1);
+ [...dialog.querySelectorAll('.permission-option')].find(button=>button.textContent.includes(BridgeI18n.t('帮我批准'))).click();await wait(()=>!dialog.open);
  check(panel.state.permissionMode==='auto-review'&&state.permissionMode===mainPermission,'Side permissions update independently of main chat');
  panel.input.value='side draft';panel.collapse(true);check(panel.composerBody.hidden&&panel.input.value==='side draft','Collapse preserves side draft');panel.collapse(false);
  panel.workMode.value='plan';panel.workMode.dispatchEvent(new Event('change'));panel.sendMode.value='queue';panel.sendMode.dispatchEvent(new Event('change'));await panel.send();

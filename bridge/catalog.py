@@ -18,6 +18,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .account_models import model_ids
+from .permissions import read_permission_facts
 
 logger = logging.getLogger(__name__)
 SKILL_CACHE = 'skill-cache.json'
@@ -250,7 +251,8 @@ class SkillStore:
 
 
 class Catalog:
-    METHODS = {"initialize", "model/list", "skills/list", "config/read", "account/read", "configRequirements/read"}
+    METHODS = {"initialize", "model/list", "skills/list", "config/read", "account/read", "configRequirements/read",
+               "permissionProfile/list", "experimentalFeature/list"}
 
     def __init__(self, codex_home, executable=None, allow_background_refresh=True):
         self.home = Path(codex_home)
@@ -323,6 +325,10 @@ class Catalog:
         executable = shutil.which('codex')
         return Path(executable) if executable else None
 
+    def permission_capabilities(self, cwd):
+        # Fetch on picker open and before writes; never cache positive permissions.
+        return self._fetch(cwd, kind='permissions', request_timeout=5)
+
     def _fetch(self, cwd, provider=None, kind='catalog', request_timeout=90):
         if not self.executable:
             raise CatalogError("找不到桌面 App 的 Codex 运行时")
@@ -373,6 +379,8 @@ class Catalog:
                                    'capabilities': {'experimentalApi': True}})
             process.stdin.write('{"method":"initialized"}\n')
             process.stdin.flush()
+            if kind == 'permissions':
+                return read_permission_facts(request, cwd)
             if kind == 'models':
                 phase = time.monotonic();catalog = self.read_models(request, cwd, provider)
                 logger.info('catalog models elapsed=%.3fs source=%s count=%d error=%r',

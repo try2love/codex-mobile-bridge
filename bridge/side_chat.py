@@ -17,6 +17,9 @@ from pathlib import Path
 
 from .model import normalize_state, normalize_request
 from .uploads import Uploads
+from .permissions import read_permission_facts, desktop_permission_preferences, permission_options, permission_settings, require_permission
+
+PERMISSION_CONFIRM_TIMEOUT = 5
 
 
 BOUNDARY = """You are in a temporary side conversation, separate from the main thread.
@@ -151,6 +154,9 @@ class SideChat:
         self.parent, self.id = parent, None
         self.lock = threading.RLock()
         self.actions = threading.Lock()
+        self.permission_condition = threading.Condition(self.lock)
+        self.permission_revision = 0
+        self.home = home
         self.closed = False
         self.ready = False
         self.error = None
@@ -206,6 +212,7 @@ class SideChat:
             if method == 'bridge/disconnected':
                 self.error = '侧边聊天已失效，请关闭后新建'
                 self.state['requests'] = []
+                self.permission_condition.notify_all()
                 return
             if 'id' in message:
                 # No automatic approvals, credential refresh, or unknown tool dispatch.
@@ -219,6 +226,24 @@ class SideChat:
             if method == 'thread/closed':
                 self.error = '侧边聊天已关闭或失效'
                 self.state['requests'] = []
+                self.permission_condition.notify_all()
+            elif method == 'thread/settings/updated':
+                settings = params.get('threadSettings')
+                if not isinstance(settings, dict):
+                    return
+                # The notification is authoritative; an empty RPC response is not.
+                settings = copy.deepcopy(settings)
+                profile = settings.get('activePermissionProfile') or {}
+                # Explicitly clear a prior profile when the runtime switches to
+                # a sandbox policy, so old turn params cannot mask the event.
+                settings['permissions'] = profile.get('id') or settings.get('permissions')
+                self.state['latestThreadSettings'] = settings
+                for key in ('permissions', 'approvalPolicy', 'approvalsReviewer'):
+                    self.turn_permissions.pop(key, None)
+                    if settings.get(key) is not None:
+                        self.turn_permissions[key] = settings[key]
+                self.permission_revision += 1
+                self.permission_condition.notify_all()
             elif method in ('turn/started', 'turn/completed'):
                 source = params['turn']
                 turn = self._turn(source['id'])
@@ -302,22 +327,37 @@ class SideChat:
             self.state['latestReasoningEffort'] = effort
             return self.view()
 
+    def _permission_options(self):
+        view = self.view()
+        if not view['connected']:
+            raise SideChatError('侧边聊天已失效，请关闭后新建')
+        facts = read_permission_facts(lambda method, params: self.runtime.request(method, params, timeout=5), view['cwd'])
+        preferences = desktop_permission_preferences(self.home)
+        return facts, permission_options(facts, preferences, view.get('permissionMode'), native=False)
+
+    def permission_options(self):
+        with self.actions:
+            return self._permission_options()[1]
+
     def permissions(self, preset, confirmed=False):
         if preset not in ('ask', 'auto-review', 'full-access'):
             raise ValueError('权限设置无效')
         if preset == 'full-access' and confirmed is not True:
             raise ValueError('请确认完全访问权限')
-        settings = {'permissions': ':danger-full-access' if preset == 'full-access' else ':workspace',
-                    'approvalPolicy': 'never' if preset == 'full-access' else 'on-request',
-                    'approvalsReviewer': 'auto_review' if preset == 'auto-review' else 'user'}
         with self.actions:
-            if not self.view()['connected']:
-                raise SideChatError('侧边聊天已失效，请关闭后新建')
-            self.runtime.request('thread/settings/update', {'threadId': self.id, **settings})
+            facts, options = self._permission_options()
+            require_permission(options, preset)
+            settings = permission_settings(preset, facts)
             with self.lock:
-                self.turn_permissions.update(settings)
-                self.state['latestThreadSettings'].update(settings)
-            return self.view()
+                revision = self.permission_revision
+            self.runtime.request('thread/settings/update', {'threadId': self.id, **settings})
+            with self.permission_condition:
+                self.permission_condition.wait_for(lambda: self.error or self.closed or
+                    (self.permission_revision > revision and self.view()['permissionMode'] == preset),
+                    timeout=PERMISSION_CONFIRM_TIMEOUT)
+                if self.error or self.closed or self.permission_revision <= revision or self.view()['permissionMode'] != preset:
+                    raise SideChatError('权限设置尚未获运行时确认，请刷新状态后重试。')
+                return self.view()
 
     @staticmethod
     def _skills(identifiers, catalog_reader, cwd):
@@ -568,6 +608,8 @@ class SideChats:
             return catalog_reader.get_kind('skills', chat.state['cwd'], query=body.get('query', ''), offset=body.get('offset', 0), limit=200, refresh=body.get('refresh') is True, ids=body.get('selected', []))
         if action == 'permissions':
             return chat.permissions(body.get('preset'), body.get('confirmed'))
+        if action == 'permission-options':
+            return chat.permission_options()
         if action == 'cancel-queued':
             return chat.cancel_queued(body.get('submissionId'))
         if action in ('catalog', 'settings'):

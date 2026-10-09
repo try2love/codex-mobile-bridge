@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from bridge.side_chat import SideChat, SideChats, SideChatError, BOUNDARY
 import test_bridge as support
+from test_permissions import permission_response
 
 
 class RuntimeFixture:
@@ -20,8 +21,14 @@ class RuntimeFixture:
     def start(self):
         pass
 
-    def request(self, method, params):
+    def request(self, method, params, timeout=30):
         self.calls.append((method, copy.deepcopy(params)))
+        if method in ('config/read', 'configRequirements/read', 'permissionProfile/list', 'experimentalFeature/list'):
+            return permission_response(method, params)
+        if method == 'thread/settings/update':
+            self.emit('thread/settings/updated', threadSettings={
+                'activePermissionProfile': {'id': params['permissions']},
+                'approvalPolicy': params['approvalPolicy'], 'approvalsReviewer': params['approvalsReviewer']})
         if method == 'thread/fork':
             return {'thread': {'id': self.child, 'ephemeral': True}, 'modelProvider': params['modelProvider'], 'model': params['model'], 'cwd': self.cwd}
         if method == 'turn/start':
@@ -315,6 +322,9 @@ class SideAttachmentTests(unittest.TestCase):
 
 class SideComposerTests(unittest.TestCase):
     def setUp(self):
+        preferences = patch('bridge.side_chat.desktop_permission_preferences', return_value={'fullAccess': True})
+        preferences.start()
+        self.addCleanup(preferences.stop)
         self.chat = SideChat('runtime', '/home', str(uuid.uuid4()), '/project',
             {'model': 'fixture', 'modelProvider': 'custom', 'permissions': ':workspace',
              'approvalPolicy': 'on-request', 'approvalsReviewer': 'user'}, RuntimeFixture)
@@ -353,10 +363,65 @@ class SideComposerTests(unittest.TestCase):
 
     def test_rejected_permission_never_changes_displayed_setting(self):
         error = SideChatError('blocked');error.rpc_error = {'code': -1}
-        with patch.object(self.chat.runtime, 'request', side_effect=error):
+        request = self.chat.runtime.request
+        def reject(method, params, **kwargs):
+            if method == 'thread/settings/update': raise error
+            return request(method, params, **kwargs)
+        with patch.object(self.chat.runtime, 'request', side_effect=reject):
             with self.assertRaises(SideChatError): self.chat.permissions('full-access', True)
         self.assertEqual(self.chat.view()['permissionMode'], 'ask')
         self.assertEqual(self.chat.turn_permissions['permissions'], ':workspace')
+
+    def test_ignored_or_normalized_update_does_not_optimistically_succeed(self):
+        request = self.chat.runtime.request
+        for normalized in (False, True):
+            def ignore(method, params, **kwargs):
+                if method == 'thread/settings/update':
+                    if normalized:
+                        self.chat.runtime.emit('thread/settings/updated', threadSettings={
+                            'activePermissionProfile': {'id': ':workspace'},
+                            'approvalPolicy': 'on-request', 'approvalsReviewer': 'user'})
+                    return {}
+                return request(method, params, **kwargs)
+            with patch.object(self.chat.runtime, 'request', side_effect=ignore), patch('bridge.side_chat.PERMISSION_CONFIRM_TIMEOUT', .01):
+                with self.assertRaisesRegex(SideChatError, '尚未获运行时确认'):
+                    self.chat.permissions('full-access', True)
+            self.assertEqual(self.chat.view()['permissionMode'], 'ask')
+            self.assertEqual(self.chat.turn_permissions['permissions'], ':workspace')
+
+    def test_parent_notification_cannot_confirm_child_permissions(self):
+        request = self.chat.runtime.request
+        def wrong_thread(method, params, **kwargs):
+            if method == 'thread/settings/update':
+                self.chat.runtime.emit('thread/settings/updated', threadId=self.chat.parent, threadSettings={
+                    'permissions': ':danger-full-access', 'approvalPolicy': 'never'})
+                return {}
+            return request(method, params, **kwargs)
+        with patch.object(self.chat.runtime, 'request', side_effect=wrong_thread), patch('bridge.side_chat.PERMISSION_CONFIRM_TIMEOUT', .01):
+            with self.assertRaises(SideChatError): self.chat.permissions('full-access', True)
+        self.assertEqual(self.chat.view()['permissionMode'], 'ask')
+
+    def test_notification_after_response_confirms_without_blocking_reader(self):
+        import threading
+        request = self.chat.runtime.request
+        timers = []
+        def delayed(method, params, **kwargs):
+            if method == 'thread/settings/update':
+                timer = threading.Timer(.02, lambda: self.chat.runtime.emit('thread/settings/updated', threadSettings={
+                    'activePermissionProfile': {'id': ':workspace'}, 'approvalPolicy': 'on-request',
+                    'approvalsReviewer': 'auto_review'}))
+                timers.append(timer)
+                timer.start()
+                return {}
+            return request(method, params, **kwargs)
+        with patch.object(self.chat.runtime, 'request', side_effect=delayed):
+            self.assertEqual(self.chat.permissions('auto-review')['permissionMode'], 'auto-review')
+        for timer in timers: timer.join()
+
+    def test_missing_capabilities_prevent_permission_write(self):
+        with patch.object(self.chat.runtime, 'request', return_value={}) as request:
+            with self.assertRaisesRegex(ValueError, '无法确认'): self.chat.permissions('auto-review')
+            self.assertNotIn('thread/settings/update', [call.args[0] for call in request.call_args_list])
 
     def test_queue_waits_cancels_and_is_sent_once_after_completion(self):
         self.chat.send('running', str(uuid.uuid4()))

@@ -32,6 +32,29 @@ installations can set the runtime path explicitly in Advanced settings or with
 Linux uses `xdg-open` for desktop links and `ip -j -4 address show up` for IPv4
 enumeration; the existing hostname fallback remains available if `ip` fails.
 
+Preview 3 discovery resolves symlinked shell launchers to an executable sibling
+GUI, including the Ubuntu `codex-launcher` / `ChatGPT` layout. It never executes
+launch scripts during discovery, and ignores non-executable files and standalone
+`codex` / `claude` CLI binaries. Claude's native Console auto-connection helper
+currently supports macOS and Windows only; Linux reports that limitation.
+
+## Session permission options
+
+The main and side-chat pickers read runtime profiles, workspace/administrator
+requirements and the desktop's Full access visibility setting each time they
+open, and recheck before saving. Disabled choices explain the missing capability
+or setting. Enable Full access in Codex desktop settings first if it is hidden,
+then refresh the picker. Bridge never edits those desktop preferences.
+
+Approve for me is not assumed available based on OS or the runtime's enum alone.
+For native chats, Bridge needs evidence from the current chat, the desktop's
+saved default selection, or explicit Codex configuration. If availability is
+unconfirmed, choose the mode on the desktop first and reopen the picker. A side
+chat uses its own runtime's feature availability. Both obey policy restrictions;
+older runtimes that cannot report capabilities require changing permissions on
+the desktop. Custom permission policies remain custom until explicitly changed.
+Side chats display a permission change only after the runtime confirms it.
+
 ## Build on the Target Architecture
 
 Use Ubuntu 22.04 or a compatible build environment, Node.js 24, Python 3.9+
@@ -66,6 +89,22 @@ AppImage filenames. Both ARM64 package formats use `arm64`.
 The existing release workflow collects both architectures and includes these
 files in `SHA256SUMS.txt`. Linux is deliberately excluded from the macOS/Windows
 signed in-app update manifest until a Linux update/recovery strategy is tested.
+
+To test the local build without installing it over an existing package:
+
+```sh
+./start-linux.sh
+```
+
+This opens the compiled desktop with separate preferences and login credentials
+in `.local/linux-preview`; its controller log is `desktop.log` in that directory.
+The directory persists across restarts. Set `CMB_DATA_DIR` to choose another
+location. Start/stop the HTTP gateway using the desktop controls. Its default
+port is 8787; change it in Network settings if another gateway uses that port.
+The original Codex/ChatGPT data remains at its existing location.
+
+The terminal tests use zsh when installed and otherwise exercise Bash with an
+isolated startup file. A minimal Ubuntu desktop does not need zsh for testing.
 
 ## Install and Launch
 

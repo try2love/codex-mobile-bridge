@@ -14,6 +14,9 @@ BUNDLE_IDS = {'codex': 'com.openai.codex', 'claude': 'com.anthropic.claudefordes
               'deepseek': 'com.deepseek.dsh'}
 APP_NAMES = {'codex': ('Codex', 'ChatGPT'), 'claude': ('Claude', 'Claude Desktop'),
              'deepseek': ('DeepSeek Harness', 'DeepSeekHarness', 'deepseek-harness')}
+LINUX_BINARIES = {'codex': ('ChatGPT', 'chatgpt', 'Codex', 'codex-desktop', 'codex'),
+                  'claude': ('claude-desktop', 'Claude', 'claude'),
+                  'deepseek': ('deepseek-harness', 'DeepSeek Harness', 'DeepSeekHarness', 'dsh-desktop')}
 
 
 def _path(value, home):
@@ -44,6 +47,30 @@ def _candidate(path, provider, platform):
     if platform == 'darwin':
         bundle = path if path.suffix == '.app' else next((p for p in path.parents if p.suffix == '.app'), None)
         return _bundle(bundle, provider) if bundle else None
+    if platform == 'linux':
+        # PATH and desktop entries often point at a shell launcher. Match the
+        # actual GUI binary so /proc process detection and lifecycle agree.
+        try:
+            path = path.resolve()
+            if not path.is_file() or not os.access(path, os.X_OK):
+                return None
+            with path.open('rb') as stream:
+                script = stream.read(2) == b'#!'
+            if script:
+                for name in LINUX_BINARIES[provider]:
+                    sibling = path.parent/name
+                    if sibling.resolve() == path or not sibling.is_file() or not os.access(sibling, os.X_OK):
+                        continue
+                    with sibling.open('rb') as stream:
+                        if stream.read(4) == b'\x7fELF':
+                            return _candidate(sibling, provider, platform)
+                return None
+            # A PATH codex/claude command can be a standalone CLI. Only accept
+            # these ambiguous names when an Electron desktop package is present.
+            if path.name in ('codex', 'claude') and not (path.parent/'resources/app.asar').is_file():
+                return None
+        except (OSError, RuntimeError):
+            return None
     if path.is_file():
         return {'application': str(path), 'executable': str(path), 'version': ''}
     return None
@@ -80,9 +107,7 @@ def _windows_candidates(provider, home, env):
 
 
 def _linux_candidates(provider, home, env):
-    names = {'codex': ('codex-desktop', 'ChatGPT', 'chatgpt'),
-             'claude': ('claude-desktop', 'Claude'),
-             'deepseek': ('deepseek-harness', 'DeepSeek Harness', 'dsh-desktop')}[provider]
+    names = LINUX_BINARIES[provider]
     for folder in ('/opt', '/usr/lib', '/usr/local/lib', str(home/'.local/share')):
         for name in (*APP_NAMES[provider], *names):
             for binary in names:

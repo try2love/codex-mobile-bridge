@@ -23,7 +23,7 @@ certificate_package = distribution('certifi')
 license_file = next(p for p in certificate_package.files if p.name == 'LICENSE')
 command.extend(['--add-data', str(certificate_package.locate_file(license_file))+':licenses/certifi'])
 # The SSH adapter intentionally injects these source modules into remote Python.
-for name in ('store.py', 'catalog.py', 'create.py', 'account_models.py', 'tls.py', 'workspace.py', 'terminal.py', 'pty_terminal.py'):
+for name in ('store.py', 'catalog.py', 'permissions.py', 'create.py', 'account_models.py', 'tls.py', 'workspace.py', 'terminal.py', 'pty_terminal.py'):
     command.extend(['--add-data', str(root/'bridge'/name)+':bridge'])
 command.extend(['--add-data', str(root/'bridge/integrations')+':bridge/integrations'])
 helper = root/'dist/client-helpers'/('claude-bridge-helper.exe' if sys.platform == 'win32' else 'claude-bridge-helper')

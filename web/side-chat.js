@@ -108,17 +108,15 @@ class SideChatPanel {
     dialog.append(n('p','muted',BridgeI18n.t('选择后随下一条消息一起发送，最多 8 个。')),search,list,more,error,actions);
     search.oninput=()=>{revision++;clearTimeout(timer);timer=setTimeout(()=>load(),200);};dialog.addEventListener('close',()=>{revision++;clearTimeout(timer);});await load();
   }
-  permissions(){
-    const child=this.state.id,n=(...a)=>this.workbench.node(...a),dialog=this.dialog('会话权限'),error=n('p','error');
+  async permissions(){
+    const child=this.state.id,n=(...a)=>this.workbench.node(...a),dialog=this.dialog('会话权限');
     dialog.append(n('p','muted',BridgeI18n.t('仅影响此侧边聊天，从下一轮生效。')));
-    for(const [preset,label,help] of [['ask','请求批准','需要额外权限时询问你。'],['auto-review','帮我批准','由 Codex 审核需要额外权限的操作。'],['full-access','完全访问权限','允许访问工作区外的文件和网络，无需逐次批准。']]){
-      const button=this.workbench.button('',async()=>{
-        if(preset==='full-access'&&!confirm(BridgeI18n.t('允许此会话完全访问电脑文件和网络？请仅在信任任务内容时开启。')))return;
-        dialog.querySelectorAll('button').forEach(b=>b.disabled=true);
-        try{const state=await this.request({action:'permissions',id:child,preset,confirmed:preset==='full-access'});if(this.state?.id===child)this.apply(state);dialog.close();}
-        catch(e){error.textContent=BridgeI18n.t(e.message);}finally{dialog.querySelectorAll('button').forEach(b=>b.disabled=false);}
-      },BridgeI18n.t(label));permissionOption(button,preset,label,help,this.state.permissionMode===preset);dialog.append(button);
-    }dialog.append(error);
+    await permissionPicker(dialog,{
+      load:()=>this.request({action:'permission-options',id:child}),
+      save:async preset=>({confirmed:true,state:await this.request({action:'permissions',id:child,preset,confirmed:preset==='full-access'})}),
+      isCurrent:()=>!this.disposed&&this.state?.id===child&&this.state.connected,
+      onSaved:result=>this.apply(result.state)
+    });
   }
   async modelSettings(){
     const child=this.state.id,n=(...args)=>this.workbench.node(...args),b=(...args)=>this.workbench.button(...args);

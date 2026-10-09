@@ -2,6 +2,15 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"正在读取权限选项…":"Reading permission options…",
+"无法确认当前权限能力，请在桌面检查设置后重新打开此面板。":"Permission capabilities could not be confirmed. Check desktop settings, then reopen this panel.",
+"当前工作区或管理员策略不允许此权限模式。":"This workspace or administrator policy does not allow this permission mode.",
+"请先在 Codex 桌面设置中开启“完全访问权限”选项，再重新打开此面板。":"Enable the Full access option in Codex desktop settings, then reopen this panel.",
+"尚未确认桌面已开放“帮我批准”；请先在桌面选择此模式，再重新打开此面板。":"Approve for me availability is unconfirmed. Select this mode on the desktop first, then reopen this panel.",
+"当前 Codex 运行时或配置未启用“帮我批准”。":"Approve for me is disabled in the current Codex runtime or configuration.",
+"当前运行时未提供此权限配置，请在桌面检查或更新 Codex。":"This permission profile is unavailable. Check or update Codex on your desktop.",
+"权限设置尚未获运行时确认，请刷新状态后重试。":"The runtime has not confirmed the permission change. Refresh the state before trying again.",
+
 "放大图片":"Zoom in",
 "缩小图片":"Zoom out",
 "适应屏幕":"Fit to screen",

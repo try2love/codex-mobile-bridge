@@ -129,11 +129,16 @@ class RemoteCatalog:
     def _source(self):
         source = Path(__file__).with_name('tls.py').read_text(encoding='utf-8') + '\n'
         source += Path(__file__).with_name('account_models.py').read_text(encoding='utf-8').replace('from .tls import client_context', '') + '\n'
-        source += Path(__file__).with_name('catalog.py').read_text(encoding='utf-8').replace('from .account_models import model_ids', '')
+        source += Path(__file__).with_name('permissions.py').read_text(encoding='utf-8') + '\n'
+        source += Path(__file__).with_name('catalog.py').read_text(encoding='utf-8').replace('from .account_models import model_ids', '').replace('from .permissions import read_permission_facts', '')
         source += '\nimport shutil\nhome=Path(os.environ.get("CODEX_HOME", str(Path.home()/".codex")))\n'
         source += 'runtime=shutil.which("codex") or str(Path.home()/".local/bin/codex")\n'
         source += 'reader=Catalog(home, runtime, allow_background_refresh=False)\n'
         return source
+
+    def permission_capabilities(self, cwd):
+        source = self._source() + 'print(json.dumps(reader.permission_capabilities(' + payload(cwd) + ')))\n'
+        return ssh_read(self.alias, source, timeout=60)
 
     def get(self, cwd, refresh=False, provider=None):
         with self.lock:

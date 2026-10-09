@@ -638,17 +638,13 @@ $('permissions-button').onclick=()=>{
   if(!currentId||!state?.connected)return;
   const id=currentId,host=currentHost,dialog=el('dialog','picker'),head=el('div','picker-head');
   head.append(el('h2','',t('会话权限')));const close=el('button','icon-button','×');close.type='button';close.setAttribute('aria-label',t('关闭'));close.onclick=()=>dialog.close();head.append(close);dialog.append(head,el('p','muted',t('保存后从下一轮生效')));
-  const error=el('p','error');
-  for(const [preset,label,help] of [['ask','请求批准','需要额外权限时询问你。'],['auto-review','帮我批准','由 Codex 审核需要额外权限的操作。'],['full-access','完全访问权限','允许访问工作区外的文件和网络，无需逐次批准。']]){
-    const button=permissionOption(el('button'),preset,label,help,state.permissionMode===preset);
-    button.onclick=async()=>{
-      if(preset==='full-access'&&!confirm(t('允许此会话完全访问电脑文件和网络？请仅在信任任务内容时开启。')))return;
-      dialog.querySelectorAll('button').forEach(b=>b.disabled=true);
-      try{const result=await api(sessionUrl(id,'permissions',host),{preset,confirmed:preset==='full-access'});if(result.confirmed){dialog.close();toast('权限已更新');}else error.textContent=t('已提交权限设置，等待桌面确认。');}
-      catch(e){error.textContent=t(e.message);}finally{dialog.querySelectorAll('button').forEach(b=>b.disabled=false);}
-    };dialog.append(button);
-  }
-  dialog.append(error);document.body.append(dialog);dialog.addEventListener('close',()=>dialog.remove());dialog.showModal();
+  document.body.append(dialog);dialog.addEventListener('close',()=>dialog.remove());dialog.showModal();
+  return permissionPicker(dialog,{
+    load:()=>api(sessionUrl(id,'permissions',host)),
+    save:preset=>api(sessionUrl(id,'permissions',host),{preset,confirmed:preset==='full-access'}),
+    isCurrent:()=>currentId===id&&currentHost===host&&state?.connected,
+    onSaved:()=>toast('权限已更新')
+  });
 };
 
 if(accountsPanel){accountsPanel.current.after($('account-details'));}

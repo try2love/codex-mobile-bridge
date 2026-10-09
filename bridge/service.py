@@ -22,6 +22,7 @@ from .store import SessionStore, StoreUnavailable
 from .files import artifact_paths, referenced_model_images
 from .workspace import operate as workspace_operation
 from .catalog import Catalog
+from .permissions import desktop_permission_preferences, permission_options, permission_settings, require_permission
 from .remote import AppHosts, RemoteStore, RemoteCatalog, RemoteUnavailable, ssh_read, ssh_download, payload
 from .create import rename_thread, create_empty, fork_copy, open_in_desktop, CreationError, ForkUnavailable
 from .timeline import Timeline
@@ -1567,6 +1568,21 @@ class Bridge:
                 session.changed()
         return {'id': thread_id, 'host': self.host, 'title': title}
 
+    def _permission_options(self, session):
+        with session.condition:
+            cwd = session.state.get('cwd') or str(self.codex_home)
+            current = session.view().get('permissionMode')
+        try:
+            facts = self.catalog_reader.permission_capabilities(cwd)
+        except Exception:
+            facts = {}
+        preferences = desktop_permission_preferences(self.codex_home, self.host)
+        return facts, permission_options(facts, preferences, current)
+
+    @operation
+    def permission_options(self, thread_id):
+        return self._permission_options(self._target(thread_id))[1]
+
     @operation
     def permissions(self, thread_id, preset, confirmed=False):
         if preset not in ('ask', 'auto-review', 'full-access'):
@@ -1575,10 +1591,10 @@ class Bridge:
             raise ValueError('请确认完全访问权限')
         session = self._target(thread_id)
         with session.action_lock:
-            profile = ':danger-full-access' if preset == 'full-access' else ':workspace'
-            settings = {'approvalPolicy': 'never' if preset == 'full-access' else 'on-request',
-                        'approvalsReviewer': 'auto_review' if preset == 'auto-review' else 'user',
-                        'permissions': profile, 'activePermissionProfile': {'id': profile, 'extends': None}}
+            facts, options = self._permission_options(session)
+            require_permission(options, preset)
+            settings = permission_settings(preset, facts)
+            settings['activePermissionProfile'] = {'id': settings['permissions'], 'extends': None}
             # Desktop owner validates feature/policy support. Never silently fall back.
             result = self._call(session, 'thread-follower-update-thread-settings', {'threadSettings': settings})
             if not result.get('applied'):

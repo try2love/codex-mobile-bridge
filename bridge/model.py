@@ -162,7 +162,7 @@ def permission_mode(state):
         return 'full-access' if values.get('approvalPolicy') == 'never' else 'custom'
     if profile_id == ':workspace' or (not profile_id and policy.get('type') == 'workspaceWrite'):
         if values.get('approvalPolicy') == 'on-request':
-            return 'auto-review' if values.get('approvalsReviewer') == 'auto_review' else 'ask'
+            return 'auto-review' if values.get('approvalsReviewer') in ('auto_review', 'guardian_subagent') else 'ask'
     return 'custom'
 
 
