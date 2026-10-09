@@ -49,20 +49,24 @@ node --test tests/client-connections-ui.test.cjs tests/client-accounts-ui.test.c
 手机“应用管理”和网关客户端开关现在提供三个明确选项：
 
 - **仅停用手机接入**：保存停用状态，保留电脑 App、正在运行的任务和已有终端；即使尚未连接、任务状态未知或程序路径失效也可停用。停用后到达的聊天、文件和终端操作会被阻止。
-- **同时退出电脑 App**：仅在支持原生退出且任务状态可完整核对时执行；运行中或等待确认的任务仍会阻止退出。
+- **同时退出电脑 App**：请求客户端正常退出；已知正在运行或等待确认的任务仍会阻止退出。Claude 通过原生菜单处理自己的退出与保存确认，具体行为见下文。
 - **取消**：不发送停用请求，开关保持原状。按 Escape 也会取消。
 
-Windows DSH 2.0.17 的 Host 是 Electron Node utility 进程，已修复此前把它当作普通子进程过滤的问题。原生退出会核对唯一 Host、连接实例与完整任务状态，再通过 DSH 自己的 `appExit` 完成清理；窗口隐藏不再算作退出。
+Windows DSH 2.0.17 的 Host 是 Electron Node utility 进程，已修复此前把它当作普通子进程过滤的问题。原生退出会核对唯一 Host、连接实例与完整任务状态；新连接器使用 DSH 自己的 `appExit` 完成清理。
 
-已有 revision 3 连接器仍可继续使用。若提示接入需要更新才能退出，请先在电脑端完整退出 DSH，再在网关重新开启接入；新连接器在应用已停止时更新，不会为了升级退出能力而自动结束现有任务。
+正在运行的 revision 3 连接器也可正常退出：网关先核对所选 DSH 安装包内的原生安装器退出逻辑、进程和数据目录，再调用应用自带的 `--dsh-installer-quit` 通道。它使用 DSH 的正常退出流程，不显示窗口。本机已对 DSH 2.0.17 与 revision 3 连接器实测：发起请求后约 **10.3 秒**相关进程全部消失，前台窗口未改变。这个时间是本机测试结果，实际耗时取决于客户端清理工作。新连接器仍只在应用已停止后更新，无需为了本次退出先重启升级插件。
 
-当前安装的 Windows Claude Desktop 没有向连接器提供后台退出接口，其关闭窗口操作只是隐藏到托盘。选择“同时退出”会明确说明限制；可选择“仅停用手机接入”，需要退出 App 时从 Claude 菜单或系统托盘选择“退出”。
+Windows Claude 通过原生菜单 `Menu → File → Exit` 请求正常退出，可能短暂恢复 Claude 窗口并显示菜单，不模拟键盘、不强杀进程。助手保留 Claude 的任务与保存确认，不会替用户点击“仍要退出”等按钮；如有提示，请在电脑端确认或取消。
+
+只有用户显式选择“同时退出电脑 App”（`quitDesktop: true`）时，尚未连接或任务证据不完整的 Claude 才可把退出确认交给原生客户端。若网关已读到任务正在运行或等待确认，仍会拒绝退出；账号切换和自动重连不使用这一例外。
+
+两种退出方式都必须等所选应用的全部相关进程消失后才报告成功；窗口隐藏、菜单已点击或请求已提交都不算完成。取消或退出失败时，接入开关保持原状。
 
 刷新手机页面即可加载新的关闭选项。相关回归命令：
 
 ```powershell
 $env:PYTHONPATH='tests'
-.\.tmp\build-env\Scripts\python.exe -B -m unittest test_client_lifecycle test_client_launch test_dsh_utility_host test_deepseek_migration test_deepseek_recovery -v
+.\.tmp\build-env\Scripts\python.exe -B -m unittest test_client_lifecycle test_client_launch test_dsh_windows_quit test_dsh_utility_host test_deepseek_migration test_deepseek_recovery test_claude_native_helper test_claude_setup -v
 node --test tests/client-lifecycle-ui.test.cjs tests/client-navigation.test.cjs tests/client-connections-ui.test.cjs tests/deepseek-native-quit.test.mjs
 ```
 

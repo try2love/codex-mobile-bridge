@@ -13,7 +13,7 @@ const ClientLifecycle=(()=>{
       const finish=value=>{choice=value;dialog.close();};
       for(const [label,note,value] of [
         ['仅停用手机接入','保留电脑 App 和现有任务。',false],
-        ['同时退出电脑 App','仅在所有任务结束且没有待确认操作时退出。',true]
+        ['同时退出电脑 App',client.id==='claude'?'通过 Claude 原生菜单退出，菜单可能短暂出现；如有任务或保存确认，请在电脑端处理。':'仅在所有任务结束且没有待确认操作时退出。',true]
       ]){
         const button=document.createElement('button');button.type='button';button.dataset.quitDesktop=String(value);
         button.append(node('strong',label),node('small',note));button.onclick=()=>finish(value);actions.append(button);

@@ -132,7 +132,7 @@ class ClientNavigation {
       toggle.append(document.createElement('span'));control.append(toggle,label);row.append(this.icon(client.id),text,control);list.append(row);
       toggle.onclick=()=>this.toggle(client.id,!client.enabled).catch(error=>this.notify(error.message));
     }
-    note.textContent=BridgeI18n.t(this.gatewayRunning===false?'网关未启动，开关仅保存下次启动时的选择，不会打开或退出应用。':'安装和登录请在电脑端完成。关闭接入时可选择保留电脑 App，或在所有任务结束后同时退出。Claude 首次连接需在电脑端手动初始化。');
+    note.textContent=BridgeI18n.t(this.gatewayRunning===false?'网关未启动，开关仅保存下次启动时的选择，不会打开或退出应用。':'安装和登录请在电脑端完成。关闭接入时可选择保留或退出电脑 App。Claude 退出会短暂打开原生菜单。Claude 首次连接需在电脑端手动初始化。');
   }
   openManager(){
     if(this.manager?.dialog.open)return;
