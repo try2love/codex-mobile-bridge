@@ -2,6 +2,14 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"此系统尚未验证 Claude 后台启动入口":"Claude's background launch entry has not been verified on this system.",
+"已取消 Claude 后台启动":"Claude background launch cancelled.",
+"无法确认唯一的 Claude 主进程，请在电脑端检查":"A unique Claude main process could not be confirmed. Check it on your computer.",
+"此 Claude 版本尚未验证后台启动，请在电脑端打开应用后重试":"Background launch has not been verified for this Claude version. Open the app on your computer, then retry.",
+"无法确认所选 Claude 的后台启动别名，请在电脑端打开应用后重试":"The selected Claude app's background launch alias could not be verified. Open it on your computer, then retry.",
+"Claude 启动后出现多个主进程，请在电脑端检查":"Multiple Claude main processes appeared after launch. Check them on your computer.",
+"Claude 后台启动未完成，请检查桌面应用后重试":"Claude could not finish starting in the background. Check the desktop app, then retry.",
+"选择需要接入的应用；Claude 完全退出或重新加载后需初始化连接，初始化会使用电脑前台和键盘焦点。":"Select apps to connect. After a complete quit or reload, Claude needs connection initialization, using the computer's foreground window and keyboard focus.",
 "需要初始化连接":"Connection initialization required",
 "初始化连接":"Initialize connection",
 "开始初始化":"Start initialization",

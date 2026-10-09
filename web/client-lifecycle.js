@@ -16,7 +16,7 @@ const ClientLifecycle=(()=>{
       action=!!label;
       label=label||(client.installed===false?'未安装':client.running===true?'应用运行中，尚未连接':client.running===false?'应用未运行':'尚未连接');
     }
-    const canInitialize=client.id==='claude'&&client.enabled&&client.installed!==false&&!client.connected&&!pending&&(['needs-initialization','needs-retry','needs-developer-mode','needs-trust','needs-permission','cancelled'].includes(setup)||stage==='needs-initialization');
+    const canInitialize=client.id==='claude'&&client.enabled&&client.installed!==false&&!client.connected&&!pending&&(['needs-initialization','needs-retry','needs-developer-mode','needs-trust','needs-permission','cancelled','failed'].includes(setup)||stage==='needs-initialization');
     const retryable=client.retryable===true&&client.enabled&&!client.connected&&!pending&&!canInitialize&&!['recovery-required','restart-required'].includes(setup);
     return {label,reason,waiting:pending,action:action||setup==='recovery-required',retryable:!!retryable,canInitialize:!!canInitialize,error:!client.connected&&['error','timeout'].includes(stage)||!client.connected&&setup==='failed'};
   }

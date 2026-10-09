@@ -87,11 +87,11 @@ test('Claude setup exposes native permission and developer confirmation without 
 test('Claude background setup waits for an explicit initialization click and explains foreground use',async()=>{
   const ui=fixture();const client={id:'claude',name:'Claude',installed:true,configured:true,connected:false,running:false,enabled:true,setupStatus:'needs-initialization',reason:'请手动连接 Claude；初始化会短暂使用前台窗口，之后在后台保持连接。'};
   ui.panel.clients=[client];ui.panel.renderClients();ui.panel.renderScan();
-  assert.match(ui.text(),/需要手动初始化/);assert.match(ui.text(),/短暂使用前台窗口/);assert.doesNotMatch(ui.text(),/连接失败/);
+  assert.match(ui.text(),/需要初始化连接/);assert.match(ui.text(),/短暂使用前台窗口/);assert.doesNotMatch(ui.text(),/连接失败/);
   ui.setHandler(async body=>body.action==='status'?{backends:{}}:{clients:[client]});await ui.poll();
   assert.equal(ui.calls.some(call=>call.action==='connect-claude'),false);
   await ui.all().find(node=>node.tag==='button'&&node.textContent==='手动连接').onclick();assert.ok(ui.calls.some(call=>call.action==='connect-claude'));
-  ui.english();assert.match(ui.text(),/Manual initialization required/);assert.match(ui.text(),/foreground window briefly/);assert.doesNotMatch(ui.text(),/[\u4e00-\u9fff]/);
+  ui.english();assert.match(ui.text(),/Connection initialization required/);assert.match(ui.text(),/foreground window briefly/);assert.doesNotMatch(ui.text(),/[\u4e00-\u9fff]/);
 });
 
 test('Claude restart requires confirmation and connected clients no longer offer setup actions',async()=>{

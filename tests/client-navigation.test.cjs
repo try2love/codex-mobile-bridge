@@ -3,15 +3,30 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 function fixture(){
   let mobile=false,choice=true,finishChoice;const choices=[];const context=vm.createContext({ClientLifecycle:{...require('../web/client-lifecycle.js'),chooseDisable(client){choices.push(client.id);return choice==='pending'?new Promise(resolve=>finishChoice=resolve):choice;}},document:{documentElement:{classList:{contains:()=>mobile}},getElementById:()=>({hidden:false})},localStorage:{setItem(){}},Event:class{},window:{}});
   vm.runInContext(fs.readFileSync('web/client-navigation.js','utf8'),context);
+  let initializeChoice=false,finishInitialize;const initializations=[];context.ClientLifecycle.chooseInitialize=client=>{initializations.push(client.id);return initializeChoice==='pending'?new Promise(resolve=>finishInitialize=resolve):initializeChoice;};
   const C=vm.runInContext('ClientNavigation',context),nav=Object.create(C.prototype),painted=[];
   Object.assign(nav,{clients:[{id:'codex',enabled:true,configured:true},{id:'claude',enabled:true,configured:true},{id:'deepseek',enabled:true,configured:true}],provider:'claude',revision:0,pending:new Set(),notify(){},paint(){painted.push(this.clients.filter(c=>c.enabled).map(c=>c.id));},view:{provider:'claude',choose(id){this.provider=id;return Promise.resolve();}}});
-  return {nav,painted,choices,document:context.document,setChoice:value=>choice=value,decide:value=>finishChoice(value),mobile:value=>mobile=value};
+  return {nav,painted,choices,document:context.document,setChoice:value=>choice=value,decide:value=>finishChoice(value),mobile:value=>mobile=value,initializations,setInitializeChoice:value=>initializeChoice=value,decideInitialize:value=>finishInitialize(value)};
 }
 test('changing provider paints the shell before its slow read resolves',async()=>{
   const {nav,painted}=fixture();let resolve;
   nav.view.choose=()=>new Promise(done=>resolve=done);
   const pending=nav.choose('deepseek');assert.equal(nav.provider,'deepseek');assert.equal(painted.length,1);
   resolve();await pending;
+});
+
+test('phone initialization sends foreground intent only after an explicit confirmation',async()=>{
+ for(const accepted of [false,true]){
+  const ui=fixture(),nav=ui.nav,calls=[];ui.setInitializeChoice(accepted);Object.assign(nav.clients[1],{installed:true,connected:false,setupStatus:'needs-initialization'});nav.request=async(url,body)=>{calls.push(body);return {clients:nav.clients.map(client=>client.id==='claude'?{...client,connectionState:'connecting'}:client)};};
+  await nav.initialize('claude');assert.deepEqual(ui.initializations,['claude']);assert.equal(calls.length,accepted?1:0);if(accepted){assert.equal(calls[0].initializeDesktop,true);assert.equal(calls[0].enabled,true);assert.equal(calls[0].provider,'claude');}
+ }
+ const {nav}=fixture();let body;nav.request=async(url,value)=>{body=value;return {clients:nav.clients};};await nav.toggle('claude',true);assert.equal(Object.hasOwn(body,'initializeDesktop'),false);
+});
+
+test('an unanswered initialization prompt blocks duplicate operations and stale polling',async()=>{
+ const ui=fixture(),nav=ui.nav;ui.setInitializeChoice('pending');Object.assign(nav.clients[1],{installed:true,setupStatus:'needs-initialization'});let finishRead,calls=0;nav.request=()=>{calls++;return new Promise(resolve=>finishRead=resolve);};
+ const reading=nav.refresh(),confirming=nav.initialize('claude');await nav.initialize('claude');await nav.toggle('deepseek',false);await nav.refresh();assert.equal(ui.initializations.length,1);assert.equal(calls,1);
+ finishRead({clients:[]});await reading;assert.equal(nav.clients.length,3);ui.decideInitialize(false);await confirming;assert.equal(calls,1);assert.equal(nav.choosing,null);
 });
 
 test('mobile connection progress survives launch acknowledgment and fast polls stop at a terminal state',async()=>{

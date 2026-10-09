@@ -14,7 +14,7 @@ function fixture(language='zh'){
  document.createElement=element;document.body=element('body');
  const context=vm.createContext({document,localStorage:{getItem:()=>language,setItem(){}}});
  for(const file of ['web/i18n.js','web/client-lifecycle.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
- return {document,choose:client=>vm.runInContext('ClientLifecycle',context).chooseDisable(client),dialog:()=>document.body.children[0]};
+ return {document,choose:client=>vm.runInContext('ClientLifecycle',context).chooseDisable(client),initialize:client=>vm.runInContext('ClientLifecycle',context).chooseInitialize(client),dialog:()=>document.body.children[0]};
 }
 test('a real close dialog presents three distinct choices and defaults focus to cancel',async()=>{
  for(const expected of [false,true,null]){
@@ -26,16 +26,28 @@ test('a real close dialog presents three distinct choices and defaults focus to 
  }
 });
 
+test('initialization requires an explicit foreground confirmation and defaults to cancel',async()=>{
+ for(const language of ['zh','en'])for(const accepted of [false,true]){
+  const ui=fixture(language),result=ui.initialize({id:'claude',name:'Claude'}),dialog=ui.dialog(),buttons=dialog.children.at(-1).children;
+  assert.equal(buttons.length,2);assert.equal(ui.document.activeElement,buttons[1]);assert.match(dialog.textContent,language==='en'?/developer tools.*keyboard focus.*Pause your work/:/开发者工具.*键盘焦点.*暂停电脑端操作/);if(language==='en')assert.doesNotMatch(dialog.textContent,/[\u4e00-\u9fff]/);
+  buttons[accepted?0:1].onclick();assert.equal(await result,accepted);
+ }
+ for(const escape of [false,true]){const ui=fixture(),result=ui.initialize({id:'claude'}),dialog=ui.dialog();if(escape)dialog.emit('cancel',{preventDefault(){}});else dialog.close();assert.equal(await result,false);}
+});
+
 test('connection labels distinguish startup, required action, failure and actual connectivity',()=>{
  const {connection}=require('../web/client-lifecycle.js'),base={enabled:true,configured:true,installed:true,connected:false};
  for(const running of [false,true])for(const configured of [false,true]){
   assert.equal(connection({...base,running,configured,connectionState:'starting'}).label,'正在启动应用…');assert.equal(connection({...base,running,configured,connectionState:'connecting'}).label,'正在连接，请稍候…');
  }
- for(const [setupStatus,label] of [['needs-initialization','需要手动初始化'],['needs-permission','等待授权'],['failed','连接失败']])assert.equal(connection({...base,running:false,setupStatus}).label,label);
+ for(const [setupStatus,label] of [['needs-initialization','需要初始化连接'],['needs-permission','等待授权'],['failed','连接失败']])assert.equal(connection({...base,running:false,setupStatus}).label,label);
  assert.equal(connection({...base,connected:true,connectionState:'connecting'}).label,'已连接');assert.equal(connection({...base,connected:true,connectionState:'connecting'}).waiting,false);
  assert.equal(connection({...base,connectionState:'timeout',retryable:true}).retryable,true);assert.equal(connection({...base,connectionState:'connecting',retryable:true}).retryable,false);
  assert.equal(connection({...base,setupStatus:'recovery-required',connectionState:'connecting',backgroundRunning:true,mainRunning:false}).label,'后台运行，桌面未打开');
  assert.equal(connection({...base,pendingEnable:true,reason:'请手动连接 Claude'}).reason,'正在等待客户端连接，完成后会自动显示聊天。');
+ for(const setupStatus of ['needs-initialization','needs-retry','needs-developer-mode','needs-trust','needs-permission','failed'])assert.equal(connection({...base,id:'claude',setupStatus}).canInitialize,true);
+ for(const client of [{...base,id:'deepseek',setupStatus:'needs-initialization'},{...base,id:'claude',connected:true,setupStatus:'needs-initialization'},{...base,id:'claude',connectionState:'connecting',setupStatus:'needs-initialization'},{...base,id:'claude',setupStatus:'unsupported'}])assert.equal(connection(client).canInitialize,false);
+ assert.equal(connection({...base,setupStatus:'restart-required',retryable:true}).retryable,false);
 });
 test('Escape and other dialog close events always cancel the desktop exit choice',async()=>{
  for(const escape of [true,false]){
@@ -62,7 +74,7 @@ test('Claude explains its native quit menu while other clients retain the idle r
   if(id==='claude'){
    assert.match(note,language==='en'?/native menu.*may appear briefly/:/原生菜单.*短暂出现/);
    assert.match(note,language==='en'?/task or save confirmation on your computer/:/任务或保存确认.*电脑端处理/);
-   assert.match(note,language==='en'?/After quitting completely, initialize the connection again/:/完全退出后，再次连接需在电脑端初始化/);
+   assert.match(note,language==='en'?/After quitting completely.*initialization again.*keyboard focus/:/完全退出后需重新初始化连接.*键盘焦点/);
    assert.doesNotMatch(note,/only after all tasks finish|仅在所有任务结束/i);
   }else assert.equal(note,language==='en'?'Quit only after all tasks finish and no approvals are pending.':'仅在所有任务结束且没有待确认操作时退出。');
   if(language==='en')assert.doesNotMatch(dialog.textContent,/[\u4e00-\u9fff]/);

@@ -71,7 +71,7 @@ class DesktopConnectionsPanel {
     finally{this.scanning=false;this.renderScan();await this.refreshClients(true);await this.refresh();}
   }
   renderScan(){
-    const node=document.getElementById('client-scan-status');if(node){node.textContent=BridgeI18n.t(this.scanMessage||'选择需要接入的应用；Claude 完全退出或重新加载后需在电脑端初始化。');node.classList.toggle('error',!!this.scanError);}
+    const node=document.getElementById('client-scan-status');if(node){node.textContent=BridgeI18n.t(this.scanMessage||'选择需要接入的应用；Claude 完全退出或重新加载后需初始化连接，初始化会使用电脑前台和键盘焦点。');node.classList.toggle('error',!!this.scanError);}
     const button=document.getElementById('refresh-clients');if(button){button.disabled=!!this.scanning||!!this.busy||!!this.choosingClient;button.textContent=BridgeI18n.t(this.scanning?'正在扫描…':'重新扫描');}
     this.root.querySelectorAll('[data-desktop-action="scan"]').forEach(button=>button.disabled=!!this.scanning||!!this.choosingClient);
   }
