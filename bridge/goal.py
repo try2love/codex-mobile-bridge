@@ -240,7 +240,7 @@ class GoalRPC:
     @property
     def executable(self):
         value = self.executable_getter() if self.executable_getter else self._executable
-        return Path(value) if value else None
+        return value if isinstance(value, Path) else Path(value) if value else None
 
     def start(self):
         with self.lock:
