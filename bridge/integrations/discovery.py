@@ -74,8 +74,8 @@ def _windows_candidates(provider, home, env):
         root = Path(env.get('ProgramFiles') or 'C:/Program Files')/'WindowsApps'
         try:
             for folder in sorted(root.glob('OpenAI.Codex_*'), reverse=True):
-                yield folder/'app/Codex.exe'
                 yield folder/'app/ChatGPT.exe'
+                yield folder/'app/Codex.exe'
         except OSError:
             pass
 

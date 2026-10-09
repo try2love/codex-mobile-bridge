@@ -104,7 +104,8 @@ class DesktopApp:
         candidates = []
         for parent in list(runtime.parents)[:4]:
             if sys.platform == 'win32':
-                candidates += [parent/'Codex.exe', parent/'ChatGPT.exe']
+                # Store installs may keep Codex.exe as a launcher beside the GUI.
+                candidates += [parent/'ChatGPT.exe', parent/'Codex.exe']
             elif sys.platform == 'linux':
                 candidates += [parent/'chatgpt', parent/'ChatGPT', parent/'codex-desktop', parent/'codex']
         return next((str(p) for p in candidates if p.is_file() and p.resolve() != runtime), '')
