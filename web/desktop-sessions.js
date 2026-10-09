@@ -99,10 +99,10 @@ class DesktopSessionsView {
     clearTimeout(this.timer);const generation=this.generation,provider=this.provider;if(provider==='codex'||document.hidden||this.root.hidden)return;
     if(this.renderConnectionStatus()){this.updateActivity(this.rows,false);this.renderIndicators();this.freshDetail=false;this.updateComposer();return;}
     if(this.loading===generation){this.refreshPending=generation;return;}this.loading=generation;
-    const detail=this.sid?this.detail(generation).catch(error=>{if(generation===this.generation){this.error.textContent=BridgeI18n.t(error.message);this.status.textContent=BridgeI18n.t('连接失败');}}):Promise.resolve();
+    if(this.sid)this.detail(generation).catch(error=>{if(generation===this.generation){this.error.textContent=BridgeI18n.t(error.message);this.status.textContent=BridgeI18n.t('连接失败');}});
     try{const task=this.sharedRead(provider,'list'),value=await task.promise;if(!task.current()||generation!==this.generation)return;this.rows=value.sessions||[];this.updateActivity(this.rows,value.connected!==false);this.listStatus.textContent=BridgeI18n.t(value.connected===false?'尚未连接':this.rows.length?'已连接桌面':'已连接，桌面还没有会话');this.renderConnectionStatus();this.renderList();this.rememberView();}
     catch(error){if(generation===this.generation){this.updateActivity(this.rows,false);this.renderIndicators();if(!this.renderConnectionStatus())this.listStatus.textContent=BridgeI18n.t(error.message);if(this.sid&&!this.state)this.error.textContent=this.listStatus.textContent;}}
-    finally{await detail;if(this.loading===generation)this.loading=null;if(generation===this.generation){if(this.refreshPending===generation){this.refreshPending=null;this.refresh();}else this.timer=setTimeout(()=>this.refresh(),this.sid||ClientLifecycle.connection(this.clientStates?.find(client=>client.id===provider)).waiting?2000:5000);}}
+    finally{if(this.loading===generation)this.loading=null;if(generation===this.generation){if(this.refreshPending===generation){this.refreshPending=null;this.refresh();}else this.timer=setTimeout(()=>this.refresh(),this.sid||ClientLifecycle.connection(this.clientStates?.find(client=>client.id===provider)).waiting?2000:5000);}}
   }
   visibleActivity(){return this.isChatOpen&&!document.hidden&&!this.workbench.isFileVisible?this.provider+'|'+this.sid:null;}
   updateActivity(rows,connected=true){this.activity.update(rows.map(row=>({id:row.id,host:this.provider,connected,status:row.status,turnId:row.turnId,turnStatus:row.turnStatus})),this.visibleActivity());}
