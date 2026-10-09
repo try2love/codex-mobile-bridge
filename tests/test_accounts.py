@@ -17,6 +17,13 @@ from bridge.service import Bridge
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def wait_for_account_worker(test):
+    if test.manager.thread:
+        # Windows durable file writes can outlast the former three-second bound.
+        test.manager.thread.join(30)
+        test.assertFalse(test.manager.thread.is_alive(), 'account worker did not finish within 30 seconds')
+
+
 class AccountsTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(dir=ROOT/'.tmp')
@@ -40,9 +47,7 @@ class AccountsTests(unittest.TestCase):
         self.original = self.manager.snapshot_files()
 
     def tearDown(self):
-        if self.manager.thread:
-            self.manager.thread.join(3)
-            self.assertFalse(self.manager.thread.is_alive())
+        wait_for_account_worker(self)
         self.tmp.cleanup()
 
     def api(self, **changes):
@@ -113,7 +118,7 @@ class AccountsTests(unittest.TestCase):
 
     def test_success_preserves_history_and_duplicate_request_never_restarts(self):
         row=self.api();self.manager.prepare=self.prepare
-        value=self.switch(row);self.manager.thread.join(3)
+        value=self.switch(row);wait_for_account_worker(self)
         self.assertEqual(self.manager.state['phase'],'complete')
         self.assertEqual(self.manager.public()['activeId'],row['id'])
         self.assertFalse((self.home/'auth.json').exists())
@@ -132,7 +137,7 @@ class AccountsTests(unittest.TestCase):
             original_restore(snapshot)
         self.manager.restore_files=restore
         self.manager.wait_ready=Mock(side_effect=[ValueError('fixture failure'),None])
-        self.switch(row);self.manager.thread.join(3)
+        self.switch(row);wait_for_account_worker(self)
         self.assertEqual(self.manager.state['phase'],'restored')
         self.assertEqual(self.manager.snapshot_files(),self.original)
         self.assertIsNone(self.manager.index['activeId'])
@@ -161,7 +166,7 @@ class AccountsTests(unittest.TestCase):
                 self.app.start.side_effect=start
                 self.manager.wait_ready=Mock(side_effect=[ValueError('fixture failure'),None] if failure else None)
                 with patch.object(self.manager,'api_models',side_effect=AssertionError('switch must not request upstream models')), patch('bridge.thread_access.ThreadAccessRPC') as runtime:
-                    self.switch(row);self.manager.thread.join(3)
+                    self.switch(row);wait_for_account_worker(self)
                 self.assertEqual(self.manager.state['phase'],'restored' if failure else 'complete')
                 self.assertEqual(events,['stop','start','stop','start'] if failure else ['stop','start'])
                 self.assertNotIn('migrating',phases)
@@ -189,13 +194,13 @@ class AccountsTests(unittest.TestCase):
             events.append('restore')
         with patch('bridge.accounts.DesktopApp',return_value=self.app), patch('bridge.thread_access.ThreadAccess') as migration:
             migration.return_value.restore.side_effect=restore
-            self.manager.recover({'confirmed':True});self.manager.thread.join(3)
+            self.manager.recover({'confirmed':True});wait_for_account_worker(self)
         self.assertEqual(events,['restore','start']);self.assertEqual(self.manager.state['phase'],'restored')
 
     def test_failed_recovery_stays_blocked_across_gateway_restart(self):
         row=self.api();self.manager.prepare=self.prepare
         self.manager.wait_ready=Mock(side_effect=ValueError('failed'))
-        self.switch(row);self.manager.thread.join(3)
+        self.switch(row);wait_for_account_worker(self)
         self.assertEqual(self.manager.state['phase'],'interrupted')
         restarted=Accounts(self.bridge)
         with self.assertRaises(ValueError):restarted.check_ready()
@@ -207,7 +212,7 @@ class AccountsTests(unittest.TestCase):
             original_restore(snapshot)
         self.manager.restore_files=restore
         with patch('bridge.accounts.DesktopApp',return_value=self.app):
-            self.manager.recover({'confirmed':True});self.manager.thread.join(3)
+            self.manager.recover({'confirmed':True});wait_for_account_worker(self)
         self.assertEqual(self.manager.state['phase'],'restored')
         self.assertEqual(self.manager.snapshot_files(),self.original)
 
@@ -255,7 +260,7 @@ class AccountsTests(unittest.TestCase):
                 private_bytes(self.home/'config.toml',b'# saved during exit\n')
         self.app.stop.side_effect=stop
         self.manager.wait_ready=Mock(side_effect=[ValueError(),None])
-        self.switch(row);self.manager.thread.join(3)
+        self.switch(row);wait_for_account_worker(self)
         self.assertEqual((self.home/'config.toml').read_bytes(),b'# saved during exit\n')
         self.assertEqual(self.manager.prepare.call_count,2)
 
@@ -286,7 +291,7 @@ class AccountsTests(unittest.TestCase):
 
     def test_preparation_failure_leaves_live_files_and_gui_untouched(self):
         row=self.api();self.manager.prepare=Mock(side_effect=ValueError('private upstream error'))
-        self.switch(row);self.manager.thread.join(3)
+        self.switch(row);wait_for_account_worker(self)
         self.assertEqual(self.manager.state['phase'],'failed')
         self.app.stop.assert_not_called()
         self.assertEqual(self.manager.snapshot_files(),self.original)
