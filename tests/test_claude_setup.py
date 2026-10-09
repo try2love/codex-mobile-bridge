@@ -633,6 +633,43 @@ class ClaudeNativeConnection(unittest.TestCase):
 
 class NativeHelperProcess(unittest.TestCase):
     @patch('bridge.integrations.claude_setup.sys.platform', 'win32')
+    def test_native_quit_preserves_explicit_result_states_and_pid(self):
+        process = Mock(returncode=0)
+        with patch('bridge.integrations.claude_setup.helper_path', return_value=Path(__file__)), \
+             patch('bridge.integrations.claude_setup.subprocess.Popen', return_value=process) as spawn:
+            for state in ('exited', 'pending', 'submitted', 'failed'):
+                expected = {'quitState': state, 'pid': 42, 'reason': 'fixture'}
+                process.communicate.return_value = (json.dumps(expected), '')
+                self.assertEqual(native_action('quit', pid=42, executable='C:/Claude.exe'), expected)
+            self.assertEqual(spawn.call_args.args[0], [__file__, '42', '--quit', 'C:/Claude.exe'])
+
+    @patch('bridge.integrations.claude_setup.sys.platform', 'win32')
+    def test_native_quit_rejects_unverified_helper_results(self):
+        process = Mock(returncode=0)
+        with patch('bridge.integrations.claude_setup.helper_path', return_value=Path(__file__)), \
+             patch('bridge.integrations.claude_setup.subprocess.Popen', return_value=process):
+            for value in ('submitted', {'quitState': 'exited', 'pid': 99},
+                          {'quitState': 'ready', 'pid': 42}, {'quitState': 'exited', 'pid': 42, 'reason': []}):
+                process.communicate.return_value = (json.dumps(value), '')
+                result = native_action('quit', pid=42, executable='C:/Claude.exe')
+                self.assertEqual(result['quitState'], 'failed')
+                self.assertEqual(result['pid'], 42)
+
+    def test_cancelled_native_quit_does_not_spawn(self):
+        cancel = threading.Event(); cancel.set()
+        with patch('bridge.integrations.claude_setup.subprocess.Popen') as spawn:
+            result = native_action('quit', pid=42, executable='C:/Claude.exe', cancelled=cancel)
+        self.assertEqual(result['quitState'], 'failed')
+        self.assertIn('取消', result['reason'])
+        spawn.assert_not_called()
+
+    def test_native_action_rejects_actions_outside_allowlist(self):
+        with patch('bridge.integrations.claude_setup.subprocess.Popen') as spawn:
+            with self.assertRaisesRegex(ValueError, '不支持'):
+                native_action('force-quit', pid=42, executable='C:/Claude.exe')
+        spawn.assert_not_called()
+
+    @patch('bridge.integrations.claude_setup.sys.platform', 'win32')
     def test_windows_process_discovery_excludes_electron_children(self):
         executable = ROOT/'Claude.exe'
         rows = [{'ProcessId': 42, 'ExecutablePath': str(executable), 'CommandLine': 'Claude.exe'},
