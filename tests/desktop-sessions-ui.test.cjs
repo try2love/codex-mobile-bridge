@@ -148,6 +148,16 @@ test('Claude Code and Cowork groups remember their collapsed state across refres
 test('composer has no redundant file button while Workbench retains files and split tabs',async()=>{
  const ui=await opened();assert.equal(ui.view.tools.querySelectorAll('button').some(n=>n.textContent==='文件'),false);ui.view.workbench.files();await Promise.resolve();assert.ok(ui.view.workbench.current.files.some(n=>n.id==='files'));ui.view.workbench.split('files');assert.equal(ui.view.workbench.current.splitTab,'files');
 });
+test('opening a chat and polling share one detail read and show its first successful response',async()=>{
+ for(const provider of ['claude','deepseek']){
+  const ui=fixture();ui.setHandler(async()=>({sessions:[{id:'a',title:'First response',backend:'code'}]}));await ui.view.choose(provider);
+  const pending=[];ui.setHandler(url=>url.includes('/detail')?new Promise(resolve=>pending.push(resolve)):Promise.resolve({sessions:ui.view.rows}));
+  const opening=ui.view.open('a'),polling=ui.view.refresh();assert.equal(pending.length,1,'polling must join the opening read');
+  pending[0]({session:{id:'a',title:'First response',status:'idle'},capabilities:{send:true},messages:[{id:'first',role:'assistant',text:'first successful history'}]});await Promise.all([opening,polling]);
+  assert.match(ui.view.messages.textContent,/first successful history/);assert.equal(ui.view.send.disabled,false);
+ }
+});
+
 test('provider return paints cached list and selected history before either network response',async()=>{
  const ui=fixture();ui.setHandler(async url=>url.includes('/detail')?{session:{id:'a',title:'Cached chat',status:'idle'},capabilities:{attachments:true,skills:true},messages:[{id:'m',role:'assistant',text:'cached answer'}]}:{sessions:[{id:'a',title:'Cached chat',backend:'code'}]});await ui.view.choose('claude');await ui.view.open('a');ui.view.input.value='unfinished';ui.view.input.oninput();ui.view.selectedSkills().set('review',{id:'review',name:'Review'});ui.view.attachments.add([{name:'draft.png',type:'image/png',size:16}]);await new Promise(setImmediate);await ui.view.choose('deepseek');
  const pending=[];ui.setHandler(url=>new Promise(resolve=>pending.push({url,resolve})));const returning=ui.view.choose('claude');assert.match(ui.view.rowsRoot.textContent,/Cached chat/);assert.equal(ui.view.sid,'a');assert.match(ui.view.messages.textContent,/cached answer/);assert.equal(ui.view.input.value,'unfinished');assert.match(ui.view.skillPills.textContent,/Review/);assert.equal(ui.view.attachments.rows.length,1);assert.equal(ui.view.attachments.rows[0].status,'ready');assert.equal(ui.view.send.disabled,true);
