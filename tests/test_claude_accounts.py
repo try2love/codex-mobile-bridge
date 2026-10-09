@@ -314,6 +314,25 @@ class ClaudeAccountSnapshots(unittest.TestCase):
         self.assertEqual(before, {home: (home/CONFIG).read_bytes() for home in before})
         self.assertFalse((self.root/'accounts/transactions').exists())
 
+    def test_missing_scan_fallback_never_creates_a_phantom_official_profile(self):
+        self.windows_store_profiles()
+        self.gateway()
+        self.write(self.root/'Local/Claude-Data'/CONFIG, {'deploymentMode': '3p'})
+        fallback = self.root/'Roaming/Claude'
+        accounts = ClaudeAccounts(self.root/'accounts', fallback, executable=self.executable)
+        self.assertIsNone(accounts.public()['current'])
+        with self.assertRaisesRegex(ValueError, '多个.*目录'):
+            accounts.restore('f'*32)
+        self.assertFalse(fallback.exists())
+        self.assertFalse((self.root/'accounts/transactions').exists())
+
+    def test_non_windows_thirdparty_profile_preserves_official_mode_selector(self):
+        self.gateway()
+        (self.threep/CONFIG).unlink()
+        with patch(MODULE+'sys.platform', 'darwin'):
+            accounts = ClaudeAccounts(self.root/'accounts', self.threep)
+            self.assertEqual(accounts.public()['current']['kind'], 'api')
+
     def test_windows_modern_official_profile_pairs_with_local_thirdparty(self):
         self.windows_store_profiles()
         self.home = self.root/'Local/Claude-Data'
