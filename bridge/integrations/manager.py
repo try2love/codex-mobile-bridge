@@ -442,10 +442,10 @@ class DesktopSessions:
         if provider == 'claude':
             self.adapters[provider].cancel()
 
-    def _deepseek_connection(self, phase, reason, **values):
+    def _deepseek_connection(self, phase, message, **values):
         setup = self.config.setdefault('setup', {}).setdefault('deepseek', {})
         previous = dict(setup)
-        setup.update(connectionState=phase, connectionReason=reason, **values)
+        setup.update(connectionState=phase, connectionReason=message, **values)
         if phase not in ('starting', 'connecting'):
             for key in ('connectionStartedAt', 'connectionDeadline'):
                 setup.pop(key, None)
