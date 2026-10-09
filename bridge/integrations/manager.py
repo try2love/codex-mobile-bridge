@@ -442,9 +442,11 @@ class DesktopSessions:
         if provider == 'claude':
             self.adapters[provider].cancel()
 
-    def _deepseek_connection(self, phase, message, **values):
+    def _deepseek_connection(self, phase, message, *, clear=(), **values):
         setup = self.config.setdefault('setup', {}).setdefault('deepseek', {})
         previous = dict(setup)
+        for key in clear:
+            setup.pop(key, None)
         setup.update(connectionState=phase, connectionReason=message, **values)
         if phase not in ('starting', 'connecting'):
             for key in ('connectionStartedAt', 'connectionDeadline'):
@@ -702,9 +704,8 @@ class DesktopSessions:
             return
         if row['connected']:
             if row['setupStatus'] != 'restart-required':
-                for key in ('requiredBridgeRevision', 'restartEndpoint', 'restartConnected', 'pendingFirstLaunch'):
-                    setup.pop(key, None)
-                self._deepseek_connection('connected', row['reason'], setupStatus=row['setupStatus'], reason=row['reason'])
+                self._deepseek_connection('connected', row['reason'], setupStatus=row['setupStatus'], reason=row['reason'],
+                    clear=('requiredBridgeRevision', 'restartEndpoint', 'restartConnected', 'pendingFirstLaunch'))
             else:
                 self._deepseek_connection('connected', row['reason'])
             return
