@@ -135,6 +135,18 @@ class Desktop:
             pass
         record = read_record(self.data_dir/'gateway-control.json')
         managed = connected and bool(record) and (not record.get('instanceId') or record['instanceId'] == instance)
+        if not managed and record and record.get('instanceId'):
+            # A specific loopback listener (for example an SSH forward) can
+            # shadow our wildcard listener. Verify the live owner through its
+            # existing authenticated local channel, never merely a saved PID.
+            try:
+                reply = request_pairing(self.data_dir, {'action': 'status', 'ids': []}, timeout=1)
+                if reply == {'states': {}} and read_record(self.data_dir/'gateway-control.json') == record:
+                    managed = True
+                    instance = record['instanceId']
+                    supports = bool(record.get('notificationManagement'))
+            except (OSError, ValueError):
+                pass
         return {'running': managed, 'portOccupied': connected and not managed, 'supportsNotifications': supports,
                 'pid': record.get('pid') if managed else None, 'instanceId': instance if managed else None}
 
