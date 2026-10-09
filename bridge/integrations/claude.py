@@ -177,7 +177,8 @@ class Claude:
             if not data_home:
                 raise ValueError('未找到 Claude 数据目录，请重新扫描')
             app = background_running_app(executable, data_home, cancelled=cancel,
-                                         launch_gate=self.setup_lock, initialize_console=True)
+                                         launch_gate=self.setup_lock, initialize_console=True,
+                                         explicit_home=bool(self.discovery.get('dataHomeExplicit')))
             if not self._background_state(cancel, 'connecting', 'Claude 已启动，正在等待已有桌面连接恢复'):
                 return
             for _ in range(5):

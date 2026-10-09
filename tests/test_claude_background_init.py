@@ -191,7 +191,7 @@ class BackgroundAccountRestart(unittest.TestCase):
              patch.object(claude_setup, 'background_running_app', side_effect=lambda *args, **kwargs: order.append('running')) as launch:
             manager._launch_account_client('claude', descriptor)
             self.assertEqual(order, ['running', 'reconnect'])
-            launch.assert_called_once_with('fixture.exe', 'fixture-profile', initialize_console=True)
+            launch.assert_called_once_with('fixture.exe', 'fixture-profile', initialize_console=True, explicit_home=False)
             manager.adapters['claude'].reconnect.assert_called_once_with(launch=True)
             foreground.assert_not_called()
             launch.side_effect = ValueError('startup failed')
@@ -207,7 +207,7 @@ class BackgroundAccountRestart(unittest.TestCase):
             with patch('bridge.integrations.manager.sys', SimpleNamespace(platform='win32')), \
                  patch.object(claude_setup, 'background_running_app') as launch:
                 manager._launch_account_client('claude', {'executable': 'fixture.exe', 'dataDirectory': 'fixture-profile'})
-                launch.assert_called_once_with('fixture.exe', 'fixture-profile', initialize_console=False)
+                launch.assert_called_once_with('fixture.exe', 'fixture-profile', initialize_console=False, explicit_home=False)
                 manager.adapters['claude'].reconnect.assert_not_called()
 
 

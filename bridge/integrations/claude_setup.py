@@ -491,7 +491,7 @@ def background_console_supported(executable):
         return False
 
 
-def background_running_app(executable, data_home, cancelled=None, launch_gate=None, *, initialize_console=False):
+def background_running_app(executable, data_home, cancelled=None, launch_gate=None, *, initialize_console=False, explicit_home=False):
     """Start a verified Windows Claude in its native hidden mode at most once."""
     if sys.platform != 'win32':
         raise ValueError('此系统尚未验证 Claude 后台启动入口')
@@ -520,10 +520,7 @@ def background_running_app(executable, data_home, cancelled=None, launch_gate=No
     # No explorer fallback: it would activate the window and drop --startup.
     environment = {key: value for key, value in os.environ.items()
                    if key.upper() not in ('ELECTRON_RUN_AS_NODE', 'CLAUDE_DEV_TOOLS')}
-    # This native switch still respects the application's restricted-mode gate.
-    # Require the selected profile's prior developer choice; never edit it here.
-    if initialize_console and developer_mode_enabled(data_home) and background_console_supported(app.executable):
-        environment['CLAUDE_DEV_TOOLS'] = 'undocked'
+    console_supported = initialize_console and background_console_supported(app.executable)
     with launch_gate if launch_gate is not None else nullcontext():
         check()
         # Discovery can be slow. Never reactivate an app opened in the meantime.
@@ -533,6 +530,14 @@ def background_running_app(executable, data_home, cancelled=None, launch_gate=No
             raise ValueError('无法确认唯一的 Claude 主进程，请在电脑端检查')
         if pids:
             return {'pid': pids[0], 'launched': False}
+        if console_supported:
+            # Account switches can change the selected profile after discovery.
+            # Honor explicit overrides; otherwise resolve stopped mode evidence
+            # immediately before launch, without borrowing the old profile's choice.
+            profile = data_home if explicit_home else claude_data_home(app.executable, data_home, inspect_running=False)
+            if developer_mode_enabled(profile):
+                environment['CLAUDE_DEV_TOOLS'] = 'undocked'
+        check()
         process = subprocess.Popen([str(launcher), '--startup'], cwd=app.executable.parent,
                                    env=environment,
                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

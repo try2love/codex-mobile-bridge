@@ -871,7 +871,8 @@ class DesktopSessions:
             # Account transactions require a confirmed main process before
             # committing restored credentials; reconnect alone is asynchronous.
             background_running_app(descriptor['executable'], descriptor['dataDirectory'],
-                                   initialize_console=reconnect)
+                                   initialize_console=reconnect,
+                                   explicit_home=bool(descriptor.get('dataDirectoryExplicit')))
             if reconnect:
                 self.adapters[provider].reconnect(launch=True)
         else:
