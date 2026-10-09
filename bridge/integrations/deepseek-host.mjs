@@ -105,7 +105,14 @@ export async function apply(ctx,config){
       for(const question of questions.values())if(!sessions.some(s=>s.id===question.sid))sessions.push({id:question.sid,status:'waiting',runtimeKnown:true,requests:[question.public]});
       return {connected:true,bridgeRevision:3,complete:sessions.every(s=>typeof s.id==='string'&&s.id.length>0),sessions};
     }
-    if(action==='status')return {connected:true,bridgeRevision:3,configured:(await account()).status==='configured'};
+    if(action==='quit'){
+      if(body.expectedPid!==process.pid||body.expectedGeneration!==generation)throw Error('Harness 进程已变化，请重新检查后再退出');
+      if(typeof ctx.get?.('appExit')!=='function')throw Error('当前 Harness 未提供正常退出接口，请在电脑端退出');
+      const runtime=await dispatch('lifecycle');
+      if(!runtime.complete||runtime.sessions.some(s=>!s.runtimeKnown||s.status!=='idle'||s.requests.length))throw Error('有任务运行、等待确认或状态未知，请先在电脑端检查后再退出');
+      return {status:'accepted',pid:process.pid,generation};
+    }
+    if(action==='status')return {connected:true,bridgeRevision:3,nativeQuit:typeof ctx.get?.('appExit')==='function',configured:(await account()).status==='configured'};
     if(action==='account')return account(sid);
     if(action==='list')return {connected:true,sessions:(await list()).filter(r=>!r.parentSessionId).map(r=>({...normalize(r),archived:(ctx.workspaceRegistry.archivedSessionIds||[]).includes(r.sessionId)})).sort((a,b)=>Number(a.archived)-Number(b.archived))};
     if(action==='projects'){const seen=new Map();for(const row of await list())if(row.cwd)seen.set(row.cwd,{key:row.cwd,cwd:row.cwd,name:row.cwd.replaceAll('\\','/').split('/').pop()});for(const w of ctx.workspaceRegistry.list())seen.set(w.path,{key:w.path,cwd:w.path,name:w.name||w.path});return {projects:[...seen.values()]};}
@@ -136,7 +143,9 @@ export async function apply(ctx,config){
     const credential=String(req.headers.authorization||'').replace(/^Bearer /,'');const a=Buffer.from(credential),b=Buffer.from(token);
     if(req.method!=='POST'||req.url!=='/mobile'||req.headers.origin||a.length!==b.length||!timingSafeEqual(a,b)){res.writeHead(403);res.end();return;}
     let size=0,chunks=[];for await(const chunk of req){size+=chunk.length;if(size>maxRequestBytes)throw Error('请求过大');chunks.push(chunk);}const {action,sid,body={}}=JSON.parse(Buffer.concat(chunks));
-    const result=await dispatch(action,sid,body);res.writeHead(200,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify(result));
+    const result=await dispatch(action,sid,body);res.writeHead(200,{'content-type':'application/json','cache-control':'no-store'});
+    // Flush acceptance before native teardown disposes this connector's server.
+    res.end(JSON.stringify(result),action==='quit'?()=>{Promise.resolve().then(()=>ctx.get('appExit')(0)).catch(error=>ctx.logger?.error?.('Harness native quit failed: '+String(error.message||error)));}:undefined);
   }catch(error){res.writeHead(400,{'content-type':'application/json'});res.end(JSON.stringify({error:String(error.message||error)}));}});
   await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});
   const port=server.address().port,generation=randomUUID();await writeFile(endpoint+'.tmp',JSON.stringify({port,pid:process.pid,generation}),{mode:0o600});await rename(endpoint+'.tmp',endpoint);

@@ -165,6 +165,50 @@ def stop_client(descriptor, *, state):
     app.stop(runtime_pids=current['runtimePids'], gui_pids=current['mainPids'])
 
 
+def stop_deepseek(descriptor, adapter, *, state):
+    """Request DSH's native teardown; closing its window only hides the app."""
+    import json
+    if descriptor.get('id') != 'deepseek':
+        raise ValueError('此退出操作仅用于 Harness 桌面端')
+    changed = 'Harness 进程已变化，请重新检查后再退出'
+
+    def verify():
+        current = inspect_client(descriptor)
+        if (current.get('unknown') or set(current['pids']) - set(state['pids']) or
+                len(current.get('runtimePids', [])) != 1 or
+                current['runtimePids'] != state.get('runtimePids')):
+            raise ValueError(changed)
+        return current
+
+    current = verify()
+    status = adapter.call('status')
+    if status.get('connected') is not True:
+        raise ValueError('Harness 桌面未连接，无法确认退出状态')
+    if status.get('nativeQuit') is not True:
+        raise ValueError('Harness 接入需要更新才能正常退出；请先在电脑端退出 Harness，再重新连接')
+    try:
+        endpoint = json.loads((adapter.directory/'endpoint.json').read_bytes())
+        if (endpoint['pid'] != current['runtimePids'][0] or
+                not isinstance(endpoint['generation'], str) or not endpoint['generation']):
+            raise ValueError(changed)
+    except (OSError, ValueError, KeyError, TypeError):
+        raise ValueError(changed) from None
+    app = _app(descriptor)
+    current = verify()
+    result = adapter.call('quit', body={'expectedPid': endpoint['pid'],
+                                      'expectedGeneration': endpoint['generation']})
+    if (result.get('status') != 'accepted' or result.get('pid') != endpoint['pid'] or
+            result.get('generation') != endpoint['generation']):
+        raise ValueError('Harness 未确认退出请求，请在电脑端检查后重试')
+    deadline = time.monotonic() + 25
+    while remaining := app.processes():
+        if set(remaining) - set(current['pids']):
+            raise ValueError(changed)
+        if time.monotonic() >= deadline:
+            raise ValueError('Harness 尚未退出，请在电脑端处理退出提示后重试；尚未强制结束进程')
+        time.sleep(.25)
+
+
 def launch_client(descriptor):
     if descriptor.get('id') == 'deepseek':
         return launch_deepseek(descriptor)
