@@ -128,28 +128,33 @@ class Claude:
             private_json(self.directory/'discovery.json', self.discovery)
             return self.status()
 
+    def _background_state(self, cancel, state, reason):
+        with self.setup_lock:
+            if cancel is not self.setup_cancel or cancel.is_set():
+                return False
+            self._setup_state(state, reason)
+            return True
+
     def _connect_background(self, cancel, executable, data_home):
         try:
             if not data_home:
                 raise ValueError('未找到 Claude 数据目录，请重新扫描')
             background_running_app(executable, data_home, cancelled=cancel, launch_gate=self.setup_lock)
-            if cancel.is_set():
+            if not self._background_state(cancel, 'connecting', 'Claude 已启动，正在等待已有桌面连接恢复'):
                 return
-            self._setup_state('connecting', 'Claude 已启动，正在等待已有桌面连接恢复')
             for _ in range(30):
                 if cancel.is_set():
                     return
                 if self.desktop and self.desktop.connected:
-                    self._setup_state('connected', '桌面连接可用')
+                    self._background_state(cancel, 'connected', '桌面连接可用')
                     return
                 if cancel.wait(.2):
                     return
-            self._setup_state('needs-initialization',
+            self._background_state(cancel, 'needs-initialization',
                 'Claude 已在后台运行；完全退出或重新加载后需要初始化连接，可从手机发起，过程会使用电脑前台。')
         except Exception as exc:
-            if not cancel.is_set():
-                self._setup_state('failed', str(exc) if isinstance(exc, (ValueError, OSError))
-                                  else 'Claude 后台启动未完成，请重试')
+            self._background_state(cancel, 'failed', str(exc) if isinstance(exc, (ValueError, OSError))
+                                   else 'Claude 后台启动未完成，请重试')
 
     def connect(self, restart=False):
         """Start visible native connection setup without a public listener."""
