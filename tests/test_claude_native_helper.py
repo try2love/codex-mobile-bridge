@@ -200,13 +200,23 @@ using System.Windows.Automation.Provider;
 using System.Windows.Threading;
 class InlineItem : Button {
     public Action Open; public bool Expanded;
+    public string ErrorMarker;
+    public void Submit(){OnClick();}
     protected override AutomationPeer OnCreateAutomationPeer(){return new InlinePeer(this);}
 }
-class InlinePeer : ButtonAutomationPeer,IExpandCollapseProvider {
+class InlinePeer : ButtonAutomationPeer,IExpandCollapseProvider,IInvokeProvider {
     readonly InlineItem item;
     public InlinePeer(InlineItem owner):base(owner){item=owner;}
     protected override AutomationControlType GetAutomationControlTypeCore(){return AutomationControlType.MenuItem;}
-    public override object GetPattern(PatternInterface pattern){return pattern==PatternInterface.ExpandCollapse?this:base.GetPattern(pattern);}
+    public override object GetPattern(PatternInterface pattern){return pattern==PatternInterface.ExpandCollapse||pattern==PatternInterface.Invoke?this:base.GetPattern(pattern);}
+    public void Invoke(){
+        if(item.ErrorMarker!=null) {
+            item.Dispatcher.Invoke(new Action(item.Submit));
+            File.AppendAllText(item.ErrorMarker,"provider-error\\n");
+            throw new InvalidOperationException("Exit accepted, provider acknowledgement lost");
+        }
+        item.Dispatcher.BeginInvoke(new Action(item.Submit));
+    }
     public void Expand(){item.Dispatcher.Invoke(new Action(()=>{item.Expanded=true;if(item.Open!=null)item.Open();}));}
     public void Collapse(){item.Dispatcher.Invoke(new Action(()=>item.Expanded=false));}
     public ExpandCollapseState ExpandCollapseState {get{return item.Expanded?ExpandCollapseState.Expanded:ExpandCollapseState.Collapsed;}}
@@ -224,6 +234,7 @@ class QuitFixture {
             // provider methods expand/invoke directly, without key injection.
             var menu=new StackPanel();var file=new InlineItem {Content="File"};
             var exit=new InlineItem {Content="Exit",Visibility=Visibility.Collapsed};
+            if(args[3]=="dispatch-error")exit.ErrorMarker=args[2];
             file.Open=()=>exit.Visibility=Visibility.Visible;
             menu.Children.Add(file);menu.Children.Add(exit);window.Content=menu;
             exit.Click+=(sender,eventArgs)=>quit();
@@ -233,7 +244,12 @@ class QuitFixture {
         timer.Tick+=(sender,eventArgs)=>{if(File.Exists(args[1])||DateTime.UtcNow>=deadline)app.Shutdown();};
         quit=()=>{
             File.AppendAllText(args[2],"exit\\n");
-            if(args[3]=="pending") {
+            if(args[3]=="dispatch-error") {
+                // Keep the app alive beyond the helper's observation window,
+                // like native asynchronous session saving after app.quit().
+                var saving=new DispatcherTimer {Interval=TimeSpan.FromSeconds(6)};
+                saving.Tick+=(s,e)=>{saving.Stop();app.Shutdown();};saving.Start();
+            } else if(args[3]=="pending") {
                 var confirm=new Window {Title="Save changes",Owner=window,Width=260,Height=120};
                 var buttons=new StackPanel();var keep=new Button {Content="Wait for Claude"};
                 keep.Click+=(s,e)=>{File.AppendAllText(args[2],"answered\\n");confirm.Close();};
@@ -258,7 +274,7 @@ class QuitFixture {
 
         # This desktop is never activated or switched to. All tested apps are
         # disposable fixtures; the real Claude and user's input remain untouched.
-        for mode in ('normal', 'pending', 'native-popup', 'initialize'):
+        for mode in ('normal', 'pending', 'dispatch-error', 'native-popup', 'initialize'):
             with self.subTest(mode=mode):
                 ready, stop, marker = (self.folder/(mode+suffix) for suffix in ('.ready', '.stop', '.invoked'))
                 app = launch([fixture, ready, stop, marker, mode], self.folder/(mode+'.app.log'))
@@ -299,6 +315,13 @@ class QuitFixture {
                         self.assertEqual(user.GetForegroundWindow(), foreground)
                         continue
                     self.assertEqual(code, 0, result)
+                    if mode == 'dispatch-error':
+                        self.assertEqual(result['quitState'], 'submitted', result)
+                        self.assertEqual(marker.read_text(encoding='utf-8'), 'exit\nprovider-error\n')
+                        self.assertFalse(exited(app), 'must wait for native saving after an uncertain Invoke')
+                        self.assertEqual(wait(app, 8), 0)
+                        self.assertEqual(user.GetForegroundWindow(), foreground)
+                        continue
                     self.assertEqual(marker.read_text(encoding='utf-8'), 'exit\n')
                     if mode == 'normal':
                         self.assertIn(result['quitState'], ('exited', 'submitted'))
