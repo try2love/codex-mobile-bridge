@@ -20,20 +20,27 @@ class CreationError(RuntimeError):
     pass
 
 
-class ForkUnavailable(CreationError):
+class CreationUnavailable(CreationError):
+    """The runtime never started, so no thread mutation could have happened."""
+
+
+class ForkUnavailable(CreationUnavailable):
     """The capability check failed before any thread could be created."""
 
 
 def _runtime_operation(executable, codex_home, cwd, operation):
     if not executable:
-        raise CreationError('找不到 Codex 运行时，请在电脑启动器的运行配置中指定路径')
+        raise CreationUnavailable('找不到 Codex 运行时，请在电脑启动器的运行配置中指定路径')
     if not Path(cwd).is_dir():
-        raise CreationError('项目目录不存在，请先在电脑 App 中检查项目')
+        raise CreationUnavailable('项目目录不存在，请先在电脑 App 中检查项目')
     env = dict(os.environ, CODEX_HOME=str(codex_home))
     kwargs = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
-    process = subprocess.Popen([str(executable), 'app-server', '--listen', 'stdio://'],
-                               cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                               stderr=subprocess.DEVNULL, text=True, encoding='utf-8', **kwargs)
+    try:
+        process = subprocess.Popen([str(executable), 'app-server', '--listen', 'stdio://'],
+                                   cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.DEVNULL, text=True, encoding='utf-8', **kwargs)
+    except OSError as exc:
+        raise CreationUnavailable('无法启动 Codex 运行时，请检查运行配置中的程序路径、项目目录和访问权限后重试') from exc
     messages = queue.Queue()
 
     def read():
@@ -116,8 +123,11 @@ def fork_copy(executable, codex_home, cwd, source_id, turn_id, title, settings):
     # ignore unknown fields; that must never copy later turns or start a goal.
     kwargs = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
     with tempfile.TemporaryDirectory(prefix='fork-schema-') as folder:
-        result = subprocess.run([str(executable), 'app-server', 'generate-json-schema', '--experimental', '--out', folder],
-                                capture_output=True, timeout=30, **kwargs)
+        try:
+            result = subprocess.run([str(executable), 'app-server', 'generate-json-schema', '--experimental', '--out', folder],
+                                    capture_output=True, timeout=30, **kwargs)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ForkUnavailable('无法检查 Codex 运行时，请检查运行配置中的程序路径后重试') from exc
         paths = list(Path(folder).rglob('ThreadForkParams.json'))
         if result.returncode or not paths:
             raise ForkUnavailable('此 Codex 版本暂不支持安全分支，请更新电脑 Codex App')

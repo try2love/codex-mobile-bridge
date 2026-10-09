@@ -23,7 +23,7 @@ from .files import artifact_paths, referenced_model_images
 from .workspace import operate as workspace_operation
 from .catalog import Catalog
 from .remote import AppHosts, RemoteStore, RemoteCatalog, RemoteUnavailable, ssh_read, ssh_download, payload
-from .create import rename_thread, create_empty, fork_copy, open_in_desktop, CreationError, ForkUnavailable
+from .create import rename_thread, create_empty, fork_copy, open_in_desktop, CreationError, CreationUnavailable, ForkUnavailable
 from .timeline import Timeline
 from .account import Account
 from .accounts import Accounts, operation
@@ -398,7 +398,14 @@ class Bridge:
                 self.creations[request_id] = entry
                 self._save_creations()
                 if project['host'] == 'local':
-                    thread_id = create_empty(self.catalog_reader.executable, self.codex_home, project['cwd'], title)
+                    try:
+                        thread_id = create_empty(self.catalog_reader.executable, self.codex_home, project['cwd'], title)
+                    except CreationUnavailable:
+                        # No process started: retrying this request cannot create
+                        # a duplicate. Keep uncertain post-start results recorded.
+                        del self.creations[request_id]
+                        self._save_creations()
+                        raise
                 else:
                     host = self.hosts.hosts()[project['host']]
                     source = Path(__file__).with_name('create.py').read_text(encoding='utf-8')
