@@ -2,6 +2,9 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"当前 Claude Desktop 不支持后台退出；请在电脑上从 Claude 菜单或系统托盘选择“退出”，也可以选择“仅停用手机接入”":"This Claude Desktop version does not support quitting in the background. Choose Quit from the Claude menu or system tray on your computer, or choose “Disable phone access only”.",
+"Harness 接入需要更新才能正常退出；请先在电脑端退出 Harness，再重新连接":"Update the Harness connection before quitting normally. Quit Harness on your computer, then reconnect.",
+"Harness 尚未退出，请在电脑端处理退出提示后重试；尚未强制结束进程":"Harness has not quit. Handle its quit prompt on your computer and try again. No processes have been force-quit.",
 "停用手机接入":"Disable phone access",
 "选择是否同时退出电脑上的应用。":"Choose whether to also quit the app on your computer.",
 "仅停用手机接入":"Disable phone access only",

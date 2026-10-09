@@ -6,13 +6,13 @@ function fixture({accounts=false}={}){
   const input=node('input'),workspace=node('pre'),claudeHome=node('pre'),claudeData=node('div'),statuses={deepseek:node('p'),claude:node('p')},choose=node('button'),scan=node('button');scan.dataset.desktopAction='scan';claudeData.hidden=true;for(const status of Object.values(statuses))status.dataset.i18n='正在检查接入…';
   const articles={};if(accounts)for(const provider of ['deepseek','claude']){const article=node('article'),automatic=node('div');automatic.className='client-auto-setup';article.append(automatic);if(provider==='deepseek'){const details=node('details'),label=node('label');label.append(input);details.append(label);article.append(details);}articles[provider]=article;}
   const root={hidden:false,querySelector(selector){const provider=selector.includes('deepseek')?'deepseek':'claude';if(selector.includes('.client-auto-setup'))return articles[provider]?.querySelector('.client-auto-setup')||null;if(selector.startsWith('[data-client-config='))return articles[provider]||null;if(selector==='input')return accounts?articles.deepseek.querySelector('input'):input;if(selector==='[data-deepseek-home]')return input;if(selector==='[data-desktop-choose]')return choose;if(selector==='[data-claude-workspace]')return workspace;if(selector==='[data-claude-home]')return claudeHome;if(selector==='[data-claude-data]')return claudeData;return statuses[provider];},querySelectorAll(selector){if(selector==='[data-desktop-status]')return Object.values(statuses);if(selector.includes('data-desktop-action'))return [scan];return Object.values(articles).flatMap(article=>article.querySelectorAll(selector));}};
-  const calls=[],errors=[],prompts=[];let chosen='',confirmed=true,handler=async body=>body.action==='status'?{backends:{},deepseekHome:'/fixture'}:body.action==='accounts'?{accounts:[]}:{clients:[]};
+  const calls=[],errors=[],prompts=[],choices=[];let closeChoice=true,finishChoice,chosen='',confirmed=true,handler=async body=>body.action==='status'?{backends:{},deepseekHome:'/fixture'}:body.action==='accounts'?{accounts:[]}:{clients:[]};
   const listeners={},timers=[];
-  const context=vm.createContext({CustomEvent:class{constructor(type){this.type=type;}},document:{documentElement:{},getElementById:id=>nodes[id],createElement:node,querySelector:()=>null,querySelectorAll:selector=>selector==='[data-i18n]'?Object.values(statuses):[],hidden:false,addEventListener(type,fn){listeners[type]=fn;},dispatchEvent(event){listeners[event.type]?.(event);}},setInterval(fn){timers.push(fn);},setTimeout(){},clearTimeout(){},localStorage:{getItem(){return null;},setItem(){}},window:{confirm:message=>{prompts.push(message);return confirmed;},GatewayLayout:{selectClient(){}}}});
+  const context=vm.createContext({ClientLifecycle:{chooseDisable(client){choices.push(client.id);return closeChoice==='pending'?new Promise(resolve=>finishChoice=resolve):Promise.resolve(closeChoice);}},CustomEvent:class{constructor(type){this.type=type;}},document:{documentElement:{},getElementById:id=>nodes[id],createElement:node,querySelector:()=>null,querySelectorAll:selector=>selector==='[data-i18n]'?Object.values(statuses):[],hidden:false,addEventListener(type,fn){listeners[type]=fn;},dispatchEvent(event){listeners[event.type]?.(event);}},setInterval(fn){timers.push(fn);},setTimeout(){},clearTimeout(){},localStorage:{getItem(){return null;},setItem(){}},window:{confirm:message=>{prompts.push(message);return confirmed;},GatewayLayout:{selectClient(){}}}});
   for(const file of ['web/i18n.js',...(accounts?['web/client-accounts.js']:[]),'desktop/desktop-sessions.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
   const Class=vm.runInContext('DesktopConnectionsPanel',context),panel=new Class({root,api:{choose:async()=>chosen,desktopSessions:body=>{calls.push(body);return handler(body);}},feedback:message=>errors.push(message)});
   const all=n=>[n,...n.children.flatMap(all)];
-  return {panel,nodes,calls,errors,scan,prompts,statuses,workspace,claudeHome,claudeData,input,choose,root,document:context.document,setChosen:value=>chosen=value,poll:async()=>{timers[0]();await Promise.resolve();await Promise.resolve();},apply:()=>vm.runInContext('BridgeI18n.apply()',context),confirm:value=>confirmed=value,setHandler:fn=>handler=fn,all:()=>all(nodes['client-overview']),text:()=>all(nodes['client-overview']).map(n=>n.textContent).join('\n'),english:()=>vm.runInContext("BridgeI18n.setLanguage('en')",context)};
+  return {panel,nodes,calls,errors,scan,prompts,choices,setChoice:value=>closeChoice=value,decide:value=>finishChoice(value),statuses,workspace,claudeHome,claudeData,input,choose,root,document:context.document,setChosen:value=>chosen=value,poll:async()=>{timers[0]();await Promise.resolve();await Promise.resolve();},apply:()=>vm.runInContext('BridgeI18n.apply()',context),confirm:value=>confirmed=value,setHandler:fn=>handler=fn,all:()=>all(nodes['client-overview']),text:()=>all(nodes['client-overview']).map(n=>n.textContent).join('\n'),english:()=>vm.runInContext("BridgeI18n.setLanguage('en')",context)};
 }
 
 test('DSH directory refresh targets its field after real account forms are inserted',async()=>{
@@ -123,10 +123,10 @@ test('older status response cannot restore a stale diagnostic directory',async()
   const ui=fixture(),pending=[];ui.setHandler(()=>new Promise(resolve=>pending.push(resolve)));const old=ui.panel.refresh(),latest=ui.panel.refresh();
   pending[1]({backends:{},claudeWorkspace:'/new/claude'});await latest;pending[0]({backends:{},claudeWorkspace:'/old/claude'});await old;assert.equal(ui.workspace.textContent,'/new/claude');
 });
-test('process toggle is pending immediately, excludes duplicate operations and rolls back a refused quit',async()=>{
+test('process quit starts after a choice, excludes duplicates and rolls back a refused quit',async()=>{
   const ui=fixture(),client={id:'claude',name:'Claude',configured:true,enabled:true,connected:true,reason:'桌面连接可用'};let reject;
   ui.panel.clients=[client];ui.setHandler(body=>body.action==='toggle-client'?new Promise((_,failed)=>reject=failed):Promise.resolve({clients:[client]}));
-  const pending=ui.panel.toggleClient('claude',false);
+  const pending=ui.panel.toggleClient('claude',false);await Promise.resolve();
   assert.equal(ui.panel.clients[0].enabled,false);assert.match(ui.text(),/正在退出应用/);assert.ok(ui.all().find(n=>n.tag==='input').disabled);
   await ui.panel.toggleClient('claude',true);await ui.panel.scan();assert.equal(ui.calls.length,1);
   reject(Error('有任务运行或等待确认'));await pending;
@@ -146,4 +146,44 @@ test('busy DSH tasks prevent recovery and cancelling the preview never quits a c
 });
 test('background-only Harness exposes recovery instead of the legacy restart path',()=>{
  const ui=fixture();ui.panel.clients=[{id:'deepseek',name:'DSH',installed:true,configured:true,enabled:true,connected:true,running:true,mainRunning:false,backgroundRunning:true,setupStatus:'restart-required',reason:'接入配置已就绪'}];ui.panel.renderClients();assert.match(ui.text(),/后台运行，桌面未打开/);assert.ok(ui.all().some(row=>row.tag==='button'&&row.textContent==='恢复并重新接入'));assert.ok(!ui.all().some(row=>row.tag==='button'&&row.textContent==='重启并接入'));
+});
+
+
+test('desktop close choices pass explicit quit intent and distinguish pending status',async()=>{
+ for(const quitDesktop of [false,true]){
+  const ui=fixture();ui.setChoice(quitDesktop);const client={id:'claude',name:'Claude',enabled:true,configured:true,running:true,connected:true};ui.panel.clients=[client];ui.panel.gatewayRunning=true;let finish;
+  const result={...client,enabled:false,running:!quitDesktop,connected:false};
+  ui.setHandler(body=>body.action==='toggle-client'?new Promise(resolve=>finish=resolve):Promise.resolve({clients:[result]}));
+  const pending=ui.panel.toggleClient('claude',false);assert.equal(ui.panel.clients[0].enabled,true);await Promise.resolve();
+  assert.equal(ui.calls[0].quitDesktop,quitDesktop);assert.match(ui.text(),quitDesktop?/正在退出应用/:/正在停用接入/);
+  finish({clients:[result]});await pending;assert.equal(ui.panel.clients[0].running,!quitDesktop);assert.equal(ui.panel.clients[0].enabled,false);
+ }
+});
+test('cancelling the desktop close choice restores the checkbox without any API request',async()=>{
+ const ui=fixture();ui.setChoice(null);ui.panel.clients=[{id:'claude',name:'Claude',enabled:true,configured:true}];ui.panel.renderClients();
+ const checkbox=ui.all().find(node=>node.tag==='input');checkbox.checked=false;await checkbox.onchange();
+ assert.equal(ui.calls.length,0);assert.equal(ui.panel.clients[0].enabled,true);assert.equal(ui.all().find(node=>node.tag==='input').checked,true);assert.equal(ui.panel.choosingClient,null);
+});
+test('desktop close choice blocks duplicate lifecycle actions and stale client reads',async()=>{
+ const ui=fixture();ui.setChoice('pending');ui.panel.clients=[{id:'claude',name:'Claude',enabled:true,configured:true}];let finishRead;
+ ui.setHandler(()=>new Promise(resolve=>finishRead=resolve));const read=ui.panel.refreshClients(),pending=ui.panel.toggleClient('claude',false);
+ await ui.panel.toggleClient('claude',false);await ui.panel.scan();await ui.panel.action('connect-claude');assert.equal(ui.choices.length,1);assert.equal(ui.calls.length,1);
+ finishRead({clients:[]});await read;assert.equal(ui.panel.clients.length,1);ui.decide(null);await pending;assert.equal(ui.panel.clients[0].enabled,true);assert.equal(ui.calls.length,1);
+});
+test('desktop can disable an enabled client after discovery becomes unavailable',async()=>{
+ const ui=fixture();ui.setChoice(false);const client={id:'claude',name:'Claude',enabled:true,configured:false,selectable:false,installed:false};ui.panel.clients=[client];ui.panel.renderClients();
+ assert.equal(!!ui.all().find(node=>node.tag==='input').disabled,false);
+ ui.setHandler(async()=>({clients:[{...client,enabled:false}]}));await ui.panel.toggleClient('claude',false);assert.equal(ui.calls[0].quitDesktop,false);assert.equal(ui.panel.clients[0].enabled,false);
+ const count=ui.calls.length;await ui.panel.toggleClient('claude',true);assert.equal(ui.calls.length,count);
+});
+test('desktop only-disable failure restores enabled state and the running app',async()=>{
+ const ui=fixture();ui.setChoice(false);const client={id:'claude',name:'Claude',enabled:true,configured:true,running:true};ui.panel.clients=[client];
+ ui.setHandler(async body=>{if(body.action==='toggle-client')throw Error('cannot save');return {clients:[client]};});await ui.panel.toggleClient('claude',false);
+ assert.equal(ui.panel.clients[0].enabled,true);assert.equal(ui.panel.clients[0].running,true);assert.deepEqual(ui.errors,['cannot save']);
+});
+test('desktop stopped-gateway switches save preferences without a quit choice',async()=>{
+ const ui=fixture(),client={id:'claude',name:'Claude',enabled:true,configured:true};ui.panel.clients=[client];ui.panel.gatewayRunning=false;
+ ui.setHandler(async body=>({clients:body.action==='toggle-client'?[{...client,enabled:body.enabled}]:ui.panel.clients}));
+ await ui.panel.toggleClient('claude',false);assert.equal(ui.choices.length,0);assert.equal(ui.calls[0].quitDesktop,false);
+ await ui.panel.toggleClient('claude',true);const enable=ui.calls.find(call=>call.action==='toggle-client'&&call.enabled);assert.equal(Object.hasOwn(enable,'quitDesktop'),false);
 });
