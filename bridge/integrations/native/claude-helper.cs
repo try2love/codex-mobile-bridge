@@ -450,7 +450,12 @@ class ClaudeKeyboard {
                 CheckQuitNavigation(process,started,window);
             };
             Action submitting=delegate {
-                lock(gate) {if(cancelled)throw new OperationCanceledException();Started=true;}
+                lock(gate) {
+                    if(cancelled)throw new OperationCanceledException();Started=true;
+                    // A timeout or lost final reply cannot prove that Exit was
+                    // not delivered. Flush this evidence before invoking it.
+                    Stage("{\"quitPhase\":\"dispatching\",\"pid\":"+process.Id+"}");
+                }
             };
             // Any menu provider call can block. Keep the entire navigation on
             // an MTA worker; only this worker can submit Exit, exactly once.
@@ -536,10 +541,14 @@ class ClaudeKeyboard {
         // Normal teardown changes focus and can take time to flush sessions.
         // Never repeat Exit or accept a native busy-work confirmation.
         if(state==null)state=ObserveQuit(()=>process.HasExited,()=>HasNativeDialog(process),()=>Thread.Sleep(200),16);
-        if(state=="submitted"&&(!submission.Started||submission.Finished&&submission.Error!=null))
+        if(state=="submitted"&&!submission.Started)
             throw submission.Error??new Exception("Claude 尚未接收退出请求，请重试");
+        // An Invoke exception after dispatch may only mean its acknowledgement
+        // was lost. The parent must keep observing the real process shutdown.
+        bool uncertain=submission.Started&&submission.Finished&&submission.Error!=null;
         QuitResult(state,state=="exited"?"Claude 已正常退出":state=="pending"?
-            "Claude 正在等待电脑端退出确认，请自行确认或取消":"已请求 Claude 正常退出，正在等待保存和退出完成",process.Id);
+            "Claude 正在等待电脑端退出确认，请自行确认或取消":uncertain?
+            "Claude 退出命令回执中断，正在等待保存和退出完成":"已请求 Claude 正常退出，正在等待保存和退出完成",process.Id);
     }
     static string ReadContents(string text,string value) {
         // Chromium contenteditable exposes an empty ValuePattern even when its
