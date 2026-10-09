@@ -26,6 +26,8 @@ Codex 详情中的“扫描桌面程序”也使用 Windows 原生发现结果�
 
 Claude 在系统托盘、没有可见窗口时，连接助手会通过所选 Claude 的原生启动入口恢复窗口，然后等待窗口就绪。窗口识别限定当前 Windows 会话、进程和完整程序路径；若存在多个窗口且无法确定目标，会提示先选中窗口。当前 Windows 版的开发者菜单路径为 `Menu → Help → Troubleshooting → Enable Developer Mode`；助手保留 Claude 自己的确认弹窗，需要在弹窗中确认后继续连接。
 
+Store 应用禁止直接运行安装目录中的 EXE 时，使用已注册的应用入口启动。运行中的 Claude 从目标进程读取应用身份；首次启动则核对安装注册信息和清单中的准确入口，不要求手工填写包名或更改 WindowsApps 权限。
+
 DSH 的 **Harness 数据目录**是存放配置、会话和连接插件的数据目录，本机为 `C:\Users\19297\.dsh`，不是 `F:\DSH\DSH Desktop` 程序安装目录。该字段已与账号名称输入框分开绑定，扫描和刷新不会再把路径误写入账号名称。
 
 针对这次问题的回归检查：
@@ -34,6 +36,7 @@ DSH 的 **Harness 数据目录**是存放配置、会话和连接插件的数据
 .\.tmp\build-env\Scripts\python.exe -B -m unittest tests.test_windows_discovery tests.test_desktop_discovery tests.test_claude_setup tests.test_client_scan tests.test_client_inventory tests.test_client_launch tests.test_client_lifecycle tests.test_claude_accounts -v
 node --test tests/client-connections-ui.test.cjs tests/client-accounts-ui.test.cjs
 .\.tmp\build-env\Scripts\python.exe -B -m unittest tests.test_claude_native_helper -v
+.\.tmp\build-env\Scripts\python.exe -B -m unittest tests.test_windows_launch -v
 ```
 
 ## 构建
