@@ -57,6 +57,7 @@ class WindowsNativeWindowSelectors(unittest.TestCase):
         self.assertIn('detached console reuse OK', result.stdout)
         self.assertIn('native menu quit guards OK', result.stdout)
         self.assertIn('background console guards OK', result.stdout)
+        self.assertIn('background cleanup guards OK', result.stdout)
 
     def test_readonly_inspection_finds_owned_window_instead_of_main_window_hint(self):
         source, fixture = self.folder/'fixture.cs', self.folder/'Claude.exe'
@@ -275,6 +276,10 @@ class QuitFixture {
         };
         window.Loaded+=(sender,eventArgs)=>{
             if(args[3]=="initialize")window.Hide();
+            if(args[3]=="background-cleanup-foreign") {
+                var other=new Window {Title="Developer Tools - file:///C:/Claude/main_window/index.html",Owner=window,Width=260,Height=120};
+                other.Closing+=(s,e)=>File.AppendAllText(args[2],"foreign-closed\\n");other.Show();
+            }
             File.WriteAllText(args[0],Process.GetCurrentProcess().Id.ToString());
         };
         timer.Start();app.Run(window);
@@ -292,7 +297,8 @@ class QuitFixture {
         # This desktop is never activated or switched to. All tested apps are
         # disposable fixtures; the real Claude and user's input remain untouched.
         for mode in ('normal', 'pending', 'dispatch-error', 'native-popup', 'initialize',
-                     'background-connect', 'background-cancel'):
+                     'background-connect', 'background-cancel', 'background-cleanup',
+                     'background-cleanup-cancel', 'background-cleanup-foreign'):
             with self.subTest(mode=mode):
                 ready, stop, marker = (self.folder/(mode+suffix) for suffix in ('.ready', '.stop', '.invoked'))
                 app = launch([fixture, ready, stop, marker, mode], self.folder/(mode+'.app.log'))
@@ -308,8 +314,10 @@ class QuitFixture {
                         script = self.folder/'connector.js'
                         script.write_text('/* codex bridge connector */void 0;', encoding='utf-8')
                         action = ('--connect-background=' if mode.startswith('background-') else '')+str(script)
+                    if mode.startswith('background-cleanup'):
+                        action = '--close-background-devtools'
                     arguments = [self.helper, app.pid, action, fixture]
-                    if mode == 'background-cancel':
+                    if mode in ('background-cancel', 'background-cleanup-cancel'):
                         cancel = self.folder/'background.cancel'
                         cancel.write_text('cancel', encoding='utf-8')
                         arguments.append(cancel)
@@ -325,6 +333,16 @@ class QuitFixture {
                         self.assertEqual(user.GetForegroundWindow(), foreground)
                         continue
                     replies = output.read_text(encoding='utf-8-sig').splitlines()
+                    if mode.startswith('background-cleanup'):
+                        self.assertEqual(code, 1 if mode.endswith('-cancel') else 0, replies)
+                        self.assertTrue(replies)
+                        if not mode.endswith('-cancel'):
+                            self.assertEqual(replies, ['Background DevTools closed'])
+                        self.assertLess(time.monotonic()-started, 8)
+                        self.assertFalse(marker.exists(), 'main and foreign DevTools must remain open')
+                        self.assertFalse(exited(app))
+                        self.assertEqual(user.GetForegroundWindow(), foreground)
+                        continue
                     result = json.loads(replies[-1])
                     if mode.startswith('background-'):
                         self.assertEqual(code, 1, result)
