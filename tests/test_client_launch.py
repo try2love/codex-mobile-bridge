@@ -62,10 +62,11 @@ class ClientLaunchTests(unittest.TestCase):
 
     def test_linux_launch_uses_gui_and_selected_existing_home(self):
         self.app.processes.side_effect = [[], [123]]
-        with patch('bridge.integrations.client_launch.sys.platform', 'linux'), patch('bridge.integrations.client_launch.subprocess.Popen') as popen:
+        with patch('bridge.integrations.client_launch.sys.platform', 'linux'):
             result = launch_deepseek(self.descriptor)
-        args, kwargs = popen.call_args
-        self.assertEqual(args[0], [str(self.executable)])
+        args, kwargs = self.app.launch.call_args
+        self.assertEqual(args, ())
+        self.factory.assert_called_with(str(self.executable), str(self.home))
         self.assertEqual(kwargs['env']['DSH_HOME'], str(self.home))
         self.assertEqual(kwargs['cwd'], self.home)
         self.assertTrue(kwargs['start_new_session'])
@@ -73,10 +74,10 @@ class ClientLaunchTests(unittest.TestCase):
 
     def test_windows_launch_detaches_only_the_selected_gui(self):
         self.app.processes.side_effect = [[], [123]]
-        with patch('bridge.integrations.client_launch.sys.platform', 'win32'), patch.object(subprocess, 'CREATE_NEW_PROCESS_GROUP', 512, create=True), patch('bridge.integrations.client_launch.subprocess.Popen') as popen:
+        with patch('bridge.integrations.client_launch.sys.platform', 'win32'), patch.object(subprocess, 'CREATE_NEW_PROCESS_GROUP', 512, create=True):
             result = launch_deepseek(self.descriptor)
-        self.assertEqual(popen.call_args.kwargs['creationflags'], 512)
-        self.assertTrue(popen.call_args.kwargs['close_fds'])
+        self.assertEqual(self.app.launch.call_args.kwargs['creationflags'], 512)
+        self.assertTrue(self.app.launch.call_args.kwargs['close_fds'])
         self.assertTrue(result['launched'])
 
     def test_never_launches_codex(self):
@@ -87,15 +88,25 @@ class ClientLaunchTests(unittest.TestCase):
     def test_first_launch_lets_actual_desktop_initialize_its_home(self):
         self.home.rmdir()
         self.app.processes.side_effect = [[], [123]]
-        with patch('bridge.integrations.client_launch.sys.platform', 'linux'), patch('bridge.integrations.client_launch.subprocess.Popen') as popen:
+        with patch('bridge.integrations.client_launch.sys.platform', 'linux'):
             result = launch_deepseek(self.descriptor)
         self.assertTrue(result['launched'])
-        self.assertEqual(popen.call_args.kwargs['cwd'], self.root)
-        self.assertEqual(popen.call_args.kwargs['env']['DSH_HOME'], str(self.home))
+        self.assertEqual(self.app.launch.call_args.kwargs['cwd'], self.root)
+        self.assertEqual(self.app.launch.call_args.kwargs['env']['DSH_HOME'], str(self.home))
         self.assertFalse(self.home.exists())
 
 
 class ProcessLifecycleTests(unittest.TestCase):
+    def test_windows_claude_cannot_be_quit_by_closing_its_window(self):
+        from bridge.integrations.client_launch import stop_client
+        with patch('bridge.integrations.client_launch.sys.platform', 'win32'), \
+                patch('bridge.integrations.client_launch._app') as factory, \
+                patch('bridge.integrations.client_launch.inspect_client') as inspect:
+            with self.assertRaisesRegex(ValueError, 'Claude Desktop 不支持后台退出'):
+                stop_client({'id': 'claude'}, state={})
+        factory.assert_not_called()
+        inspect.assert_not_called()
+
     def test_dsh_multiple_or_wrong_profile_hosts_fail_closed(self):
         from bridge.integrations.client_launch import inspect_client
         with tempfile.TemporaryDirectory() as folder:

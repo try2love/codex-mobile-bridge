@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class ClientLifecycleTests(unittest.TestCase):
     def setUp(self):
+        platform = patch('bridge.integrations.manager.sys', SimpleNamespace(platform='darwin'))
+        platform.start(); self.addCleanup(platform.stop)
         self.temp = tempfile.TemporaryDirectory(dir=ROOT/'.tmp')
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -137,7 +139,7 @@ class ClientLifecycleTests(unittest.TestCase):
 
     def test_explicit_quit_keeps_busy_guard_and_enabled_preference(self):
         self.claude.call.side_effect = lambda *args: {'complete': True, 'sessions': [
-            {'status': 'running', 'runtimeKnown': True, 'requests': []}]}
+            {'id': 'one', 'status': 'running', 'runtimeKnown': True, 'requests': []}]}
         with self.assertRaisesRegex(ValueError, '任务运行或等待'):
             self.manager.toggle_client({'provider': 'claude', 'enabled': False, 'quitDesktop': True})
         self.assertTrue(self.manager.enabled('claude'))
@@ -154,11 +156,22 @@ class ClientLifecycleTests(unittest.TestCase):
         self.stop.assert_not_called()
 
     def test_windows_dsh_exit_uses_native_host_quit(self):
-        with patch('sys.platform', 'win32'):
+        with patch('bridge.integrations.manager.sys.platform', 'win32'):
             self.manager.toggle_client({'provider': 'deepseek', 'enabled': False, 'quitDesktop': True})
         self.stop_dsh.assert_called_once()
         self.assertIs(self.stop_dsh.call_args.args[1], self.dsh)
         self.assertFalse(self.manager.enabled('deepseek'))
+
+    def test_windows_claude_exit_reports_native_limit_even_when_disconnected(self):
+        self.claude.status.return_value = {'connected': False}
+        with patch('bridge.integrations.manager.sys.platform', 'win32'), \
+                patch.object(self.manager, '_assert_idle') as idle:
+            with self.assertRaisesRegex(ValueError, 'Claude Desktop 不支持后台退出'):
+                self.manager.toggle_client({'provider': 'claude', 'enabled': False, 'quitDesktop': True})
+        idle.assert_not_called()
+        self.claude.cancel.assert_not_called()
+        self.stop.assert_not_called()
+        self.assertTrue(self.manager.enabled('claude'))
 
     def test_offline_selection_never_launches_or_quits_clients(self):
         self.manager.gateway_running = False
