@@ -152,6 +152,21 @@ class Claude:
                 self._connect_native(False, cancel_path, cancel)
             else:
                 self._background_state(cancel, state, reason)
+        def finish_connection(submission, pid):
+            if not current():
+                return
+            if submission not in ('submitted', 'uncertain'):
+                self._background_state(cancel, 'connected', '桌面连接可用')
+                return
+            try:
+                cleanup = native_action('close-background-devtools', pid=pid, executable=executable,
+                                        cancel_path=cancel_path, cancelled=cancel)
+                pending = cleanup.get('setupState') not in ('connected', 'submitted')
+            except Exception:
+                pending = True
+            self._attempt_state(cancel, 'connected',
+                'Claude 已连接；开发者工具未自动关闭，请手动关闭' if pending else '桌面连接可用',
+                consoleCleanupPending=pending)
         native_started = False
         try:
             if not current():
@@ -201,7 +216,7 @@ class Claude:
             if not current():
                 return
             if self.desktop and self.desktop.connected:
-                self._background_state(cancel, 'connected', '桌面连接可用')
+                finish_connection(result.get('submission'), app['pid'])
                 return
             if result.get('submission') == 'none':
                 unavailable(result.get('setupState', 'needs-initialization'),
@@ -213,7 +228,7 @@ class Claude:
                 if not current():
                     return
                 if self.desktop and self.desktop.connected:
-                    self._background_state(cancel, 'connected', '桌面连接可用')
+                    finish_connection(result.get('submission'), app['pid'])
                     return
                 if cancel.wait(.25):
                     return

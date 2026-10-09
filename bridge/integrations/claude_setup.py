@@ -229,7 +229,7 @@ def console_source(source, config):
 
 
 def native_action(action, *, pid=None, executable=None, script=None, cancel_path=None, cancelled=None):
-    if action not in ('check', 'request-permission', 'connect', 'connect-background', 'close-devtools', 'enable-devtools', 'inspect-error', 'quit'):
+    if action not in ('check', 'request-permission', 'connect', 'connect-background', 'close-devtools', 'close-background-devtools', 'enable-devtools', 'inspect-error', 'quit'):
         raise ValueError('不支持的 Claude 本机操作')
     background = action == 'connect-background'
     if background and sys.platform != 'win32':
@@ -281,7 +281,7 @@ def native_action(action, *, pid=None, executable=None, script=None, cancel_path
             return connection_result('已取消 Claude 连接', state='cancelled')
         return {'setupState': 'cancelled', 'reason': '已取消 Claude 连接'}
     def desktop_blocked():
-        if sys.platform == 'win32' and action not in ('quit', 'connect-background'):
+        if sys.platform == 'win32' and action not in ('quit', 'connect-background', 'close-background-devtools'):
             try:
                 windows_session.require_interactive()
             except windows_session.DesktopUnavailable as exc:
@@ -322,6 +322,8 @@ def native_action(action, *, pid=None, executable=None, script=None, cancel_path
     timeout = (30 if sys.platform == 'win32' else 180) if action in ('connect', 'connect-background') else 30 if action == 'quit' else 20
     if sys.platform == 'win32' and action in ('inspect-error', 'close-devtools'):
         timeout = 8
+    if sys.platform == 'win32' and action == 'close-background-devtools':
+        timeout = 12
     deadline = time.monotonic() + timeout
     dispatched = False
     while True:

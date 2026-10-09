@@ -43,6 +43,16 @@ class BackgroundHelperContract(unittest.TestCase):
                          [str(Path(__file__)), '42', '--connect-background=fixture.js', 'fixture.exe', 'cancel'])
         claude_setup.windows_session.require_interactive.assert_not_called()
 
+    def test_locked_cleanup_uses_same_native_contract_and_twelve_second_timeout(self):
+        self.process.communicate.side_effect = [subprocess.TimeoutExpired('helper', .2), ('', '')]
+        with patch.object(claude_setup.time, 'monotonic', side_effect=[0, 13]):
+            result = claude_setup.native_action('close-background-devtools', pid=42,
+                                               executable='fixture.exe', cancel_path='cancel')
+        self.assertEqual(result['setupState'], 'needs-retry')
+        self.assertEqual(claude_setup.subprocess.Popen.call_args.args[0],
+                         [str(Path(__file__)), '42', '--close-background-devtools', 'fixture.exe', 'cancel'])
+        claude_setup.windows_session.require_interactive.assert_not_called()
+        self.process.terminate.assert_called_once()
 
     def test_timeout_requires_matching_dispatch_pid_to_be_uncertain(self):
         for marker_pid, submission in ((42, 'uncertain'), (43, 'none')):
@@ -211,7 +221,50 @@ class BackgroundInitializationWorker(unittest.TestCase):
                 self.assertEqual(self.adapter.status()['setupState'], 'connected' if valid else 'needs-retry')
         self.foreground.assert_not_called()
 
+    def test_cleanup_only_follows_current_submission_and_verified_heartbeat(self):
+        for submission in ('submitted', 'uncertain', 'none'):
+            with self.subTest(submission=submission):
+                self.adapter.prepare(reset=True)
+                self.mocks['native_action'].reset_mock()
+                def native(action, **kwargs):
+                    if action == 'connect-background':
+                        self.heartbeat()
+                        return {'setupState': 'submitted', 'submission': submission}
+                    return {'setupState': 'submitted'}
+                self.mocks['native_action'].side_effect = native
+                self.run_worker()
+                actions = [call.args[0] for call in self.mocks['native_action'].call_args_list]
+                self.assertEqual(actions, ['connect-background', 'close-background-devtools']
+                                 if submission != 'none' else ['connect-background'])
+                self.assertTrue(self.adapter.status()['connected'])
+        self.mocks['native_action'].reset_mock()
+        self.run_worker()
+        self.mocks['native_action'].assert_not_called()
 
+    def test_cleanup_failure_keeps_connection_and_cancellation_cannot_publish_success(self):
+        for outcome in ('failed', 'exception', 'cancelled'):
+            with self.subTest(outcome=outcome):
+                self.adapter.prepare(reset=True)
+                def native(action, **kwargs):
+                    if action == 'connect-background':
+                        self.heartbeat()
+                        return {'setupState': 'submitted', 'submission': 'submitted'}
+                    if outcome == 'exception':
+                        raise OSError('cleanup failed')
+                    if outcome == 'cancelled':
+                        self.adapter.cancel(persist=False)
+                        return {'setupState': 'submitted'}
+                    return {'setupState': 'needs-retry'}
+                self.mocks['native_action'].side_effect = native
+                self.run_worker()
+                if outcome == 'cancelled':
+                    self.assertFalse(self.adapter.status()['connected'])
+                    self.assertEqual(self.adapter.discovery['setupState'], 'cancelled')
+                else:
+                    self.assertTrue(self.adapter.status()['connected'])
+                    self.assertTrue(self.adapter.discovery['consoleCleanupPending'])
+                    self.assertIn('开发者工具未自动关闭', self.adapter.discovery['reason'])
+        self.foreground.assert_not_called()
 
     def test_none_falls_back_only_for_explicit_interactive_attempt(self):
         self.mocks['native_action'].return_value = {'setupState': 'failed', 'submission': 'none', 'reason': 'no prompt'}
