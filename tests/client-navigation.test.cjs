@@ -117,15 +117,25 @@ test('the computer-list shortcut exists only in the native mobile shell',()=>{
 
 
 test('mobile close choices send an explicit desktop quit intent and distinct pending labels',async()=>{
- for(const quitDesktop of [false,true]){
-  const ui=fixture(),nav=ui.nav,calls=[];ui.setChoice(quitDesktop);nav.gatewayRunning=true;nav.clients[1].running=true;let finish;
+ for(const choice of [false,true,'force']){
+  const quitDesktop=choice!==false,forceDesktop=choice==='force';
+  const ui=fixture(),nav=ui.nav,calls=[];ui.setChoice(choice);nav.gatewayRunning=true;Object.assign(nav.clients[1],{running:true,canForceQuit:true});let finish;
   nav.request=(url,body)=>{calls.push(body);return new Promise(resolve=>finish=resolve);};
   const pending=nav.toggle('claude',false);assert.equal(nav.clients[1].enabled,true);await Promise.resolve();
   assert.equal(calls.length,1);assert.equal(calls[0].quitDesktop,quitDesktop);assert.equal(calls[0].enabled,false);
-  assert.equal(nav.managementState(nav.clients[1]),quitDesktop?'正在退出应用…':'正在停用接入…');
+  assert.equal(Object.hasOwn(calls[0],'forceDesktop'),forceDesktop);if(forceDesktop)assert.equal(calls[0].forceDesktop,true);
+  assert.equal(nav.managementState(nav.clients[1]),forceDesktop?'正在后台强制结束…':quitDesktop?'正在退出应用…':'正在停用接入…');
   finish({clients:nav.clients.map(row=>row.id==='claude'?{...row,connected:false,running:!quitDesktop}:row)});await pending;
-  assert.equal(nav.clients[1].enabled,false);assert.equal(nav.clients[1].running,!quitDesktop);assert.equal(nav.pending.size,0);
+  assert.equal(nav.clients[1].enabled,false);assert.equal(nav.clients[1].running,!quitDesktop);assert.equal(nav.pending.size,0);assert.equal(nav.pendingForceDesktop,false);
  }
+});
+test('a mobile force quit retry requires a new choice and can fall back to normal quit',async()=>{
+ const ui=fixture(),nav=ui.nav,calls=[];ui.setChoice('force');nav.clients[1].canForceQuit=true;
+ nav.request=async(url,body)=>{if(body){calls.push(body);throw Object.assign(Error('rejected'),{status:409});}return {clients:nav.clients};};
+ await assert.rejects(nav.toggle('claude',false),/rejected/);assert.equal(nav.operationFailures.get('claude').action,'force');assert.equal(nav.clients[1].enabled,true);
+ ui.setChoice(null);await nav.retryOperation('claude');assert.equal(ui.choices.length,2);assert.equal(calls.length,1);
+ ui.setChoice(true);nav.request=async(url,body)=>{calls.push(body);return {clients:nav.clients};};await nav.retryOperation('claude');
+ assert.equal(ui.choices.length,3);assert.equal(calls[1].quitDesktop,true);assert.equal(Object.hasOwn(calls[1],'forceDesktop'),false);
 });
 test('cancelling a mobile close choice sends no request and keeps the current client',async()=>{
  const ui=fixture(),nav=ui.nav;ui.setChoice(null);let requests=0;nav.request=async()=>{requests++;};
@@ -151,4 +161,5 @@ test('mobile startup preferences skip the close dialog and enabling omits quit i
  const ui=fixture(),nav=ui.nav,calls=[];nav.gatewayRunning=false;nav.request=async(url,body)=>{calls.push(body);return {clients:nav.clients};};
  await nav.toggle('claude',false);assert.equal(ui.choices.length,0);assert.equal(calls[0].quitDesktop,false);
  await nav.toggle('claude',true);assert.equal(Object.hasOwn(calls[1],'quitDesktop'),false);
+ assert.equal(calls.some(call=>Object.hasOwn(call,'forceDesktop')),false);
 });

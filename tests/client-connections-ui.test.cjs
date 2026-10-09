@@ -205,14 +205,24 @@ test('background-only Harness exposes recovery instead of the legacy restart pat
 
 
 test('desktop close choices pass explicit quit intent and distinguish pending status',async()=>{
- for(const quitDesktop of [false,true]){
-  const ui=fixture();ui.setChoice(quitDesktop);const client={id:'claude',name:'Claude',enabled:true,configured:true,running:true,connected:true};ui.panel.clients=[client];ui.panel.gatewayRunning=true;let finish;
+ for(const choice of [false,true,'force']){
+  const quitDesktop=choice!==false,forceDesktop=choice==='force';
+  const ui=fixture();ui.setChoice(choice);const client={id:'claude',name:'Claude',enabled:true,configured:true,running:true,connected:true,canForceQuit:true};ui.panel.clients=[client];ui.panel.gatewayRunning=true;let finish;
   const result={...client,enabled:false,running:!quitDesktop,connected:false};
   ui.setHandler(body=>body.action==='toggle-client'?new Promise(resolve=>finish=resolve):Promise.resolve({clients:[result]}));
   const pending=ui.panel.toggleClient('claude',false);assert.equal(ui.panel.clients[0].enabled,true);await Promise.resolve();
-  assert.equal(ui.calls[0].quitDesktop,quitDesktop);assert.match(ui.text(),quitDesktop?/正在退出应用/:/正在停用接入/);
+  assert.equal(ui.calls[0].quitDesktop,quitDesktop);assert.equal(Object.hasOwn(ui.calls[0],'forceDesktop'),forceDesktop);if(forceDesktop)assert.equal(ui.calls[0].forceDesktop,true);
+  assert.match(ui.text(),forceDesktop?/正在后台强制结束/:quitDesktop?/正在退出应用/:/正在停用接入/);
   finish({clients:[result]});await pending;assert.equal(ui.panel.clients[0].running,!quitDesktop);assert.equal(ui.panel.clients[0].enabled,false);
  }
+});
+test('a desktop force quit retry requires a new choice and can fall back to normal quit',async()=>{
+ const ui=fixture(),client={id:'claude',name:'Claude',enabled:true,configured:true,running:true,canForceQuit:true};ui.panel.clients=[client];ui.setChoice('force');
+ ui.setHandler(async body=>{if(body.action==='toggle-client')throw Error('rejected');return {clients:[client]};});await ui.panel.toggleClient('claude',false);
+ assert.equal(ui.panel.operationFailures.get('claude').action,'force');assert.equal(ui.panel.clients[0].enabled,true);
+ ui.setChoice(null);await ui.panel.retryOperation('claude');assert.equal(ui.choices.length,2);assert.equal(ui.calls.filter(call=>call.action==='toggle-client').length,1);
+ ui.setChoice(true);ui.setHandler(async()=>({clients:[{...client,enabled:false,running:false}]}));await ui.panel.retryOperation('claude');
+ const calls=ui.calls.filter(call=>call.action==='toggle-client');assert.equal(ui.choices.length,3);assert.equal(calls.length,2);assert.equal(calls[1].quitDesktop,true);assert.equal(Object.hasOwn(calls[1],'forceDesktop'),false);
 });
 test('cancelling the desktop close choice restores the checkbox without any API request',async()=>{
  const ui=fixture();ui.setChoice(null);ui.panel.clients=[{id:'claude',name:'Claude',enabled:true,configured:true}];ui.panel.renderClients();
@@ -241,4 +251,5 @@ test('desktop stopped-gateway switches save preferences without a quit choice',a
  ui.setHandler(async body=>({clients:body.action==='toggle-client'?[{...client,enabled:body.enabled}]:ui.panel.clients}));
  await ui.panel.toggleClient('claude',false);assert.equal(ui.choices.length,0);assert.equal(ui.calls[0].quitDesktop,false);
  await ui.panel.toggleClient('claude',true);const enable=ui.calls.find(call=>call.action==='toggle-client'&&call.enabled);assert.equal(Object.hasOwn(enable,'quitDesktop'),false);
+ assert.equal(ui.calls.some(call=>Object.hasOwn(call,'forceDesktop')),false);
 });

@@ -26,6 +26,34 @@ test('a real close dialog presents three distinct choices and defaults focus to 
  }
 });
 
+test('background force quit requires an explicit capability and fresh choice with a translated warning',async()=>{
+ for(const language of ['zh','en'])for(const id of ['codex','claude','deepseek']){
+  const ui=fixture(language),client={id,name:id,canForceQuit:true};
+  for(const expected of ['force',null]){
+   const result=ui.choose(client),dialog=ui.dialog(),buttons=dialog.children.at(-1).children;
+   assert.equal(buttons.length,4);assert.equal(ui.document.activeElement,buttons[3]);
+   assert.equal(buttons[2].dataset.quitDesktop,'true');assert.equal(buttons[2].dataset.forceDesktop,'true');
+   assert.match(buttons[2].textContent,language==='en'?/Force quit in background.*Unsaved content may be lost.*tasks may be interrupted.*locked/:/后台强制结束.*可能丢失未保存内容或中断任务.*锁屏时也可使用/);
+   if(language==='en')assert.doesNotMatch(dialog.textContent,/[\u4e00-\u9fff]/);
+   if(expected==='force')buttons[2].onclick();else dialog.emit('cancel',{preventDefault(){}});
+   assert.equal(await result,expected);
+  }
+ }
+ for(const canForceQuit of [undefined,false,'true',1]){
+  const ui=fixture(),result=ui.choose({id:'claude',canForceQuit}),dialog=ui.dialog();
+  assert.equal(dialog.children.at(-1).children.length,3);assert.doesNotMatch(dialog.textContent,/后台强制结束/);dialog.close();assert.equal(await result,null);
+ }
+});
+
+test('an uncertain force quit needs a stopped app as well as disabled access before it is complete',()=>{
+ const lifecycle=require('../web/client-lifecycle.js');assert.equal(lifecycle.retryLabel('force'),'重试后台强制结束');
+ for(const running of [true,false]){
+  const failures=new Map([['claude',{action:'force',uncertain:true}]]);
+  lifecycle.reconcile(failures,[{id:'claude',enabled:false,running}]);
+  assert.equal(failures.has('claude'),running);if(running)assert.equal(failures.get('claude').uncertain,false);
+ }
+});
+
 test('initialization requires an explicit foreground confirmation and defaults to cancel',async()=>{
  for(const language of ['zh','en'])for(const accepted of [false,true]){
   const ui=fixture(language),result=ui.initialize({id:'claude',name:'Claude'}),dialog=ui.dialog(),buttons=dialog.children.at(-1).children;
