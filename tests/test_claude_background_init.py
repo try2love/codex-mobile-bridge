@@ -131,8 +131,54 @@ class BackgroundConsoleCapability(unittest.TestCase):
                     self.assertNotIn('ELECTRON_RUN_AS_NODE', environment)
                     self.assertEqual(environment.get('CLAUDE_DEV_TOOLS'), 'undocked' if initialize and developer and supported else None)
 
+    def test_cold_start_resolves_current_profile_before_reading_developer_choice(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); executable = root/'Claude.exe'; executable.write_bytes(b'fixture')
+            official, thirdparty = root/'Local/Claude-Data', root/'Local/Claude-3p'
+            for home in (official, thirdparty):
+                home.mkdir(parents=True)
+                (home/'claude_desktop_config.json').write_text('{"deploymentMode":"3p"}')
+            for old_enabled, current_enabled in ((True, False), (False, True)):
+                (official/'developer_settings.json').write_text(json.dumps({'allowDevTools': old_enabled}))
+                (thirdparty/'developer_settings.json').write_text(json.dumps({'allowDevTools': current_enabled}))
+                with self.subTest(old=old_enabled, current=current_enabled), \
+                     patch('bridge.integrations.claude_setup.sys', SimpleNamespace(platform='win32')), \
+                     patch.dict(os.environ, {'LOCALAPPDATA': str(root/'Local'), 'APPDATA': str(root/'Roaming')}), \
+                     patch.object(claude_setup, '_main_pids', side_effect=[[], [], [42]]), \
+                     patch.object(claude_setup, 'background_start_supported', return_value=True), \
+                     patch.object(claude_setup, 'background_console_supported', return_value=True), \
+                     patch.object(claude_setup.subprocess, 'Popen') as spawn:
+                    claude_setup.background_running_app(executable, official, initialize_console=True)
+                    self.assertEqual(spawn.call_args.kwargs['env'].get('CLAUDE_DEV_TOOLS'),
+                                     'undocked' if current_enabled else None)
+
+    def test_explicit_profile_is_not_replaced_by_stopped_profile_detection(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); executable = root/'Claude.exe'; executable.write_bytes(b'fixture')
+            with patch('bridge.integrations.claude_setup.sys', SimpleNamespace(platform='win32')), \
+                 patch.object(claude_setup, '_main_pids', side_effect=[[], [], [42]]), \
+                 patch.object(claude_setup, 'background_start_supported', return_value=True), \
+                 patch.object(claude_setup, 'background_console_supported', return_value=True), \
+                 patch.object(claude_setup, 'claude_data_home') as detect, \
+                 patch.object(claude_setup, 'developer_mode_enabled', return_value=True) as enabled, \
+                 patch.object(claude_setup.subprocess, 'Popen') as spawn:
+                claude_setup.background_running_app(executable, root, initialize_console=True, explicit_home=True)
+                detect.assert_not_called(); enabled.assert_called_once_with(root)
+                self.assertEqual(spawn.call_args.kwargs['env'].get('CLAUDE_DEV_TOOLS'), 'undocked')
+
 
 class BackgroundAccountRestart(unittest.TestCase):
+    def test_account_restart_preserves_explicit_profile_selection(self):
+        manager = object.__new__(DesktopSessions)
+        manager.gateway_running = True; manager.enabled = Mock(return_value=True)
+        manager.adapters = {'claude': Mock()}
+        for explicit in (False, True):
+            with patch('bridge.integrations.manager.sys', SimpleNamespace(platform='win32')), \
+                 patch.object(claude_setup, 'background_running_app') as launch:
+                manager._launch_account_client('claude', {'executable': 'fixture.exe',
+                    'dataDirectory': 'fixture-profile', 'dataDirectoryExplicit': explicit})
+                self.assertIs(launch.call_args.kwargs.get('explicit_home'), explicit)
+
     def test_account_restart_waits_for_confirmed_main_process_before_reconnect(self):
         manager = object.__new__(DesktopSessions)
         manager.gateway_running = True; manager.enabled = Mock(return_value=True)
@@ -191,6 +237,13 @@ class BackgroundInitializationWorker(unittest.TestCase):
 
     def run_worker(self, foreground=False):
         self.adapter._connect_background(self.cancel, 'fixture.exe', self.adapter.discovery['dataHome'], foreground=foreground)
+
+    def test_background_worker_preserves_explicit_profile_selection(self):
+        for explicit in (False, True):
+            self.adapter.discovery['dataHomeExplicit'] = explicit
+            with patch('bridge.integrations.claude.claude_data_home', return_value=self.adapter.discovery['dataHome']):
+                self.run_worker()
+            self.assertIs(self.mocks['background_running_app'].call_args.kwargs.get('explicit_home'), explicit)
 
     def heartbeat(self, *, valid=True):
         desktop = self.adapter.desktop
