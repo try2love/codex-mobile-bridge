@@ -2,10 +2,11 @@
 class DesktopConnectionsPanel {
   constructor({root,api,feedback}) {
     Object.assign(this,{root,api,feedback,clientsRevision:0,statusRevision:0});
+    this.deepseekHome=root.querySelector('[data-deepseek-home]');
     const refresh=document.getElementById('refresh-clients');if(refresh)refresh.onclick=()=>this.scan(true);
     setInterval(()=>{if(!document.hidden&&!document.getElementById('clients-page').hidden)this.refreshClients();},15000);
     root.querySelectorAll('[data-desktop-action]').forEach(button=>button.onclick=()=>button.dataset.desktopAction==='scan'?this.scan(true):this.action(button.dataset.desktopAction));
-    root.querySelector('[data-desktop-choose]').onclick=async()=>{try{const path=await api.choose('folder');if(path)root.querySelector('input').value=path;}catch(error){feedback(error.message,true);}};
+    root.querySelector('[data-desktop-choose]').onclick=async()=>{try{const path=await api.choose('folder');if(path)this.deepseekHome.value=path;}catch(error){feedback(error.message,true);}};
     document.addEventListener('bridge-language',()=>{this.renderClients();this.renderScan();});
     this.accountPanels={};
     if(typeof DesktopClientAccountsPanel!=='undefined')for(const provider of ['claude','deepseek']){
@@ -43,7 +44,7 @@ class DesktopConnectionsPanel {
     const revision=++this.statusRevision;
     try{
       const value=await this.api.desktopSessions({action:'status'});if(revision!==this.statusRevision)return;
-      this.connectionValue=value;this.statusError='';if(document.activeElement!==this.root.querySelector('input'))this.root.querySelector('input').value=value.deepseekHome||'';
+      this.connectionValue=value;this.statusError='';if(document.activeElement!==this.deepseekHome)this.deepseekHome.value=value.deepseekHome||'';
       this.renderDetails();
     }catch(error){if(revision!==this.statusRevision)return;this.statusError=error.message;this.scanMessage=error.message;this.scanError=true;this.renderScan();this.renderDetails();}
   }
@@ -149,7 +150,7 @@ class DesktopConnectionsPanel {
     if(action==='restart-claude'&&!window.confirm(BridgeI18n.t('重启 Claude 会断开当前会话。请先结束任务并保存工作，再确认重启并接入。')))return;
     this.busy=true;this.clientsRevision++;this.statusRevision++;const buttons=this.root.querySelectorAll('button');buttons.forEach(button=>button.disabled=true);this.renderClients();this.renderScan();let rescan=false;
     try{
-      const value=await this.api.desktopSessions({action,...(['install-deepseek','remove-deepseek'].includes(action)?{home:this.root.querySelector('input').value.trim()}:{})});
+      const value=await this.api.desktopSessions({action,...(['install-deepseek','remove-deepseek'].includes(action)?{home:this.deepseekHome.value.trim()}:{})});
       if(value.clients){this.clients=value.clients;this.gatewayRunning=value.gatewayRunning??this.gatewayRunning;this.renderClients();}
       if(['connect-deepseek','restart-deepseek'].includes(action))this.feedback('正在等待 Harness 连接');
       rescan=action==='connect-deepseek'||action==='install-deepseek';

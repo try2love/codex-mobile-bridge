@@ -620,6 +620,7 @@ const en={
 "工作目录":"Working directory",
 "选择工作目录":"Choose working directory",
 "Harness 数据目录":"Harness data directory",
+"使用 Harness 已有的数据目录，通常为用户目录下的 .dsh；用于读取账号、模型和会话，并管理接入插件。":"Use the existing Harness data directory, usually .dsh in your user folder, to read accounts, models and sessions and manage the integration plugin.",
 "选择数据目录":"Choose data directory",
 "模型、凭据和聊天记录保存在此目录。请勿让其他 Harness 实例同时使用。":"Models, credentials and chat history are saved here. Do not share this directory with another running Harness instance.",
 "保存 Harness 配置":"Save Harness configuration",

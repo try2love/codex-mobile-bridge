@@ -16,6 +16,7 @@ function fixture({accounts=false}={}){
 }
 
 test('DSH directory refresh targets its field after real account forms are inserted',async()=>{
+  assert.match(fs.readFileSync(path.join(__dirname,'../desktop/index.html'),'utf8'),/<input[^>]*data-deepseek-home/);
   const ui=fixture({accounts:true}),name=ui.panel.accountPanels.deepseek.nameInput;
   assert.equal(ui.root.querySelector('input'),name,'the account name precedes the advanced directory in the real layout');
   name.value='Saved access';await ui.panel.refresh();assert.equal(ui.input.value,'/fixture');assert.equal(name.value,'Saved access');
