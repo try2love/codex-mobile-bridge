@@ -7,9 +7,6 @@ from pathlib import Path
 
 from ..desktop_app import DesktopApp, process_inventory
 
-WINDOWS_CLAUDE_QUIT_REASON = '当前 Claude Desktop 不支持后台退出；请在电脑上从 Claude 菜单或系统托盘选择“退出”，也可以选择“仅停用手机接入”'
-
-
 def launch_deepseek(descriptor, restart=False):
     """Never replace a running desktop during an automatic scan.
 
@@ -160,14 +157,39 @@ def _process_state(descriptor, app, pids, commands):
 
 def stop_client(descriptor, *, state):
     if sys.platform == 'win32' and descriptor.get('id') == 'claude':
-        # CloseMainWindow minimizes this build to its tray; it is not app quit.
-        raise ValueError(WINDOWS_CLAUDE_QUIT_REASON)
+        return stop_claude(descriptor, state=state)
     # Revalidate process identities immediately before sending native quit.
     current = inspect_client(descriptor)
     if current['unknown'] or set(current['pids']) - set(state['pids']):
         raise ValueError('客户端进程已变化，无法确认任务状态，请重新检查后再关闭')
     app = _app(descriptor)
     app.stop(runtime_pids=current['runtimePids'], gui_pids=current['mainPids'])
+
+
+def stop_claude(descriptor, *, state):
+    """Invoke Claude's normal menu once, then observe its asynchronous cleanup."""
+    from .claude_setup import native_action
+    if descriptor.get('id') != 'claude':
+        raise ValueError('此退出操作仅用于 Claude 桌面端')
+    changed = 'Claude 进程已变化，请重新检查后再退出'
+    current = inspect_client(descriptor)
+    if not current['running']:
+        return
+    if (current.get('unknown') or set(current['pids']) - set(state['pids']) or
+            len(current.get('mainPids', [])) != 1 or current['mainPids'] != state.get('mainPids')):
+        raise ValueError(changed)
+    app = _app(descriptor)
+    # The connection monitor's cancellation file must not cancel native quit.
+    result = native_action('quit', pid=current['mainPids'][0], executable=str(app.executable))
+    if result.get('quitState') not in ('submitted', 'exited'):
+        raise ValueError(result.get('reason') or '请在电脑端处理 Claude 的任务或保存提示后重试')
+    deadline = time.monotonic() + 75
+    while remaining := app.processes():
+        if set(remaining) - set(current['pids']):
+            raise ValueError(changed)
+        if time.monotonic() >= deadline:
+            raise ValueError('Claude 尚未退出，请在电脑端处理任务或保存提示后重试')
+        time.sleep(.25)
 
 
 def stop_deepseek(descriptor, adapter, *, state):

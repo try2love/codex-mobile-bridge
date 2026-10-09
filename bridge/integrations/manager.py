@@ -21,6 +21,10 @@ READS = {'list', 'detail', 'catalog', 'projects', 'account', 'access'}
 WRITES = {'send', 'stop', 'settings', 'respond', 'create', 'access'}
 
 
+class TaskStateUnavailable(ValueError):
+    """No task evidence; distinct from known busy tasks or ambiguous processes."""
+
+
 def _copy_read(value):
     # Native responses are JSON; only containers need copying, not large strings.
     if isinstance(value, dict):
@@ -365,7 +369,7 @@ class DesktopSessions:
         unknown = '无法确认客户端所有任务均已结束；可选择“仅停用手机接入”保留电脑 App，或在电脑端退出后重试'
         if provider == 'deepseek' and len(state.get('runtimePids', [])) > 1:
             raise ValueError('检测到多个 Harness 后台实例，无法确认全部任务状态；请在电脑上结束多余实例后重试')
-        if state.get('unknown'):
+        if state.get('unknown') or len(state.get('mainPids', [])) > 1:
             raise ValueError(unknown)
         if provider == 'codex':
             self.bridge.accounts.idle()
@@ -375,9 +379,9 @@ class DesktopSessions:
         try:
             status = adapter.call('status') if provider == 'deepseek' else adapter.status()
         except (ValueError, OSError, BridgeUnavailable):
-            raise ValueError(unknown) from None
+            raise TaskStateUnavailable(unknown) from None
         if not status.get('connected'):
-            raise ValueError('客户端尚未连接，无法确认任务状态；可选择“仅停用手机接入”，或在电脑端退出 App 后重试')
+            raise TaskStateUnavailable('客户端尚未连接，无法确认任务状态；可选择“仅停用手机接入”，或在电脑端退出 App 后重试')
         if provider == 'deepseek':
             hosts = state.get('runtimePids', [])
             endpoint = self._deepseek_endpoint(adapter)
@@ -387,28 +391,34 @@ class DesktopSessions:
                 raise ValueError('当前 Harness 接入版本无法核对任务状态，请在电脑端退出 Harness 后再连接')
         try:
             listing = adapter.call('lifecycle' if provider == 'deepseek' else 'list')
-            sessions = listing.get('sessions')
-            if not isinstance(sessions, list) or listing.get('complete') is not True:
-                raise ValueError(unknown)
-            if provider == 'deepseek' and listing.get('bridgeRevision') != BRIDGE_REVISION:
-                raise ValueError(unknown)
         except (ValueError, OSError, BridgeUnavailable):
-            raise ValueError(unknown) from None
-        if any(row.get('requests') or row.get('status') in ('active', 'running', 'waiting', 'busy') for row in sessions):
+            raise TaskStateUnavailable(unknown) from None
+        sessions = listing.get('sessions')
+        if not isinstance(sessions, list):
+            raise TaskStateUnavailable(unknown)
+        # An incomplete list may still prove a task busy; check that evidence first.
+        if any(isinstance(row, dict) and (row.get('requests') or
+               row.get('status') in ('active', 'running', 'waiting', 'busy')) for row in sessions):
             raise ValueError('有任务运行或等待确认，请先结束任务再关闭或重启客户端')
-        if any(row.get('status') not in ('idle', 'stopped', 'completed') or
-               row.get('runtimeKnown') is not True for row in sessions):
-            raise ValueError(unknown)
+        if (listing.get('complete') is not True or
+                provider == 'deepseek' and listing.get('bridgeRevision') != BRIDGE_REVISION or
+                any(not isinstance(row, dict) or row.get('status') not in ('idle', 'stopped', 'completed') or
+                    row.get('runtimeKnown') is not True for row in sessions)):
+            raise TaskStateUnavailable(unknown)
 
-    def _stop_client(self, provider, descriptor, state):
-        from .client_launch import WINDOWS_CLAUDE_QUIT_REASON, stop_client, stop_deepseek
+    def _stop_client(self, provider, descriptor, state, *, native_confirmation=False):
+        from .client_launch import stop_client, stop_deepseek
         if not state['running']:
             if provider == 'claude':
                 self.adapters[provider].cancel()
             return
-        if provider == 'claude' and sys.platform == 'win32':
-            raise ValueError(WINDOWS_CLAUDE_QUIT_REASON)
-        self._assert_idle(provider, state)
+        try:
+            self._assert_idle(provider, state)
+        except TaskStateUnavailable:
+            # Only explicit user-requested quit can defer unavailable task evidence
+            # to Claude's own normal exit confirmation. Account changes cannot.
+            if not (native_confirmation and provider == 'claude' and sys.platform == 'win32'):
+                raise
         if provider == 'claude':
             # Cancel the monitor before native quit, so it cannot relaunch Claude.
             self.adapters[provider].cancel(persist=False)
@@ -676,7 +686,8 @@ class DesktopSessions:
                     if not result.get('running'):
                         raise ValueError('客户端尚未启动，请在电脑端检查后重试')
             else:
-                self._stop_client(provider, descriptor, inspect_client(descriptor))
+                self._stop_client(provider, descriptor, inspect_client(descriptor),
+                                  native_confirmation=value.get('quitDesktop') is True)
             # Persist only after the native lifecycle operation succeeds.
             self.config.setdefault('enabled', {})[provider] = enabled
             private_json(self.config_path, self.config)

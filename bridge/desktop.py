@@ -72,7 +72,8 @@ class Desktop:
                 raise ValueError('请重新启动网关以启用客户端管理')
             self.close_local(check_busy=True)
             self.starting_until = 0
-            return request_pairing(self.data_dir, {'action': action, 'value': value}, timeout=100)
+            # Claude's normal exit can spend 75 seconds saving after menu dispatch.
+            return request_pairing(self.data_dir, {'action': action, 'value': value}, timeout=140)
         bridge, sessions = self.local_services()
         if action == 'desktop-sessions':
             return sessions.control(value)
