@@ -3,7 +3,7 @@
 class DesktopSessionsView {
   constructor({root,select,request,notify,onSelect,csrf,onUnauthorized}) {
     Object.assign(this,{root,select,request,notify,onSelect,csrf,onUnauthorized});this.provider='codex';this.generation=0;this.detailRevision=0;this.drafts=new Map();this.accountDrafts=new Map();this.skillSelections=new Map();this.pending=new Map();this.rows=[];this.messageNodes=new Map();this.providerViews=new Map();this.detailCache=new Map();this.activity=new SessionActivity({key:'bridge-desktop-session-activity'});try{this.collapsedGroups=new Set(JSON.parse(localStorage.getItem('bridge-desktop-session-groups')||'[]'));}catch{this.collapsedGroups=new Set();}
-    this.readTasks=new Map();this.readEpoch=0;this.providerReadEpochs=new Map();this.listPrefetchAt=new Map();
+    this.readTasks=new Map();this.readEpoch=0;this.providerReadEpochs=new Map();this.listPrefetchAt=new Map();this.detailCacheSizes=new Map();this.detailCacheBytes=0;
     this.container=this.node('section','desktop-sessions');root.append(this.container);this.container.hidden=true;
     this.list=this.node('aside','ds-list');this.main=this.node('main','ds-main');this.container.append(this.list,this.main);
     this.search=this.node('input','search');this.search.placeholder=BridgeI18n.t('搜索聊天或项目');this.label(this.search,'搜索聊天或项目');this.search.oninput=()=>this.renderList();
@@ -46,9 +46,15 @@ class DesktopSessionsView {
     const task={current:()=>epoch===this.readEpoch&&version===(this.providerReadEpochs.get(provider)||0)};
     task.promise=(async()=>{const value=await this.request(this.path(action,sid,provider));if(task.current()){
       if(action==='list')this.providerViews.set(provider,{...this.providerViews.get(provider),rows:value.sessions||[],cachedAt:Date.now()});
-      else if(action==='detail'&&value.session)this.detailCache.set(JSON.stringify([provider,sid]),value);
+      else if(action==='detail'&&value.session)this.cacheDetail(JSON.stringify([provider,sid]),value);
     }return value;})();this.readTasks.set(key,task);
     const done=()=>{if(this.readTasks.get(key)===task)this.readTasks.delete(key);};task.promise.then(done,done);return task;
+  }
+  forgetDetail(key){this.detailCache.delete(key);this.detailCacheBytes-=this.detailCacheSizes.get(key)||0;this.detailCacheSizes.delete(key);}
+  cacheDetail(key,value){
+    const bytes=JSON.stringify(value).length*2,limit=8*1024*1024;this.forgetDetail(key);if(bytes>limit)return;
+    this.detailCache.set(key,value);this.detailCacheSizes.set(key,bytes);this.detailCacheBytes+=bytes;
+    while(this.detailCache.size>12||this.detailCacheBytes>limit)this.forgetDetail(this.detailCache.keys().next().value);
   }
   invalidateReads(provider){
     this.providerReadEpochs.set(provider,(this.providerReadEpochs.get(provider)||0)+1);for(const key of this.readTasks.keys())if(JSON.parse(key)[0]===provider)this.readTasks.delete(key);
@@ -103,14 +109,14 @@ class DesktopSessionsView {
     const jsonKey=key=>{try{return JSON.parse(key)[0]===provider;}catch{return false;}};
     this.providerViews.delete(provider);for(const key of this.drafts.keys())if(key.startsWith(provider+':'))this.drafts.delete(key);
     for(const [key,text] of this.accountDrafts.get(identity(next))||[])this.drafts.set(key,text);
-    for(const map of [this.detailCache,this.skillSelections])for(const key of map.keys())if(jsonKey(key))map.delete(key);
+    for(const key of this.detailCache.keys())if(jsonKey(key))this.forgetDetail(key);for(const key of this.skillSelections.keys())if(jsonKey(key))this.skillSelections.delete(key);
     for(const key of this.pending.keys())if(key.startsWith(provider+':'))this.pending.delete(key);
     for(const key of Object.keys(this.activity.rows))if(key.startsWith(provider+'|'))delete this.activity.rows[key];this.activity.save();
     this.workbench.reset(provider);this.attachments.forget(jsonKey);
     if(provider!==this.provider)return;
     this.rows=[];this.listStamp='';this.lastMessages=[];this.requestStamp='';this.messageNodes.clear();this.messages.replaceChildren();this.requests.replaceChildren();this.showSelection(false);this.renderList();this.updateComposer();await this.refresh();
   }
-  clear(){this.readEpoch++;this.readTasks.clear();this.providerReadEpochs.clear();this.listPrefetchAt.clear();this.clientStates=[];this.workbench.reset();clearTimeout(this.timer);this.generation++;this.detailRevision++;this.provider='codex';this.select.value='codex';this.select.hidden=true;this.container.hidden=true;this.root.classList.remove('desktop-mode');this.sid=null;this.state=null;this.showSelection(false);this.drafts.clear();this.accountDrafts.clear();this.skillSelections.clear();this.providerViews.clear();this.detailCache.clear();this.activity.clear();this.freshDetail=false;this.rows=[];this.listStamp='';this.rowsRoot.replaceChildren();this.lastMessages=[];this.requestStamp='';this.pending.clear();this.attachments.reset();this.messages.replaceChildren();this.requests.replaceChildren();this.messageNodes.clear();}
+  clear(){this.readEpoch++;this.readTasks.clear();this.providerReadEpochs.clear();this.listPrefetchAt.clear();this.detailCacheSizes.clear();this.detailCacheBytes=0;this.clientStates=[];this.workbench.reset();clearTimeout(this.timer);this.generation++;this.detailRevision++;this.provider='codex';this.select.value='codex';this.select.hidden=true;this.container.hidden=true;this.root.classList.remove('desktop-mode');this.sid=null;this.state=null;this.showSelection(false);this.drafts.clear();this.accountDrafts.clear();this.skillSelections.clear();this.providerViews.clear();this.detailCache.clear();this.activity.clear();this.freshDetail=false;this.rows=[];this.listStamp='';this.rowsRoot.replaceChildren();this.lastMessages=[];this.requestStamp='';this.pending.clear();this.attachments.reset();this.messages.replaceChildren();this.requests.replaceChildren();this.messageNodes.clear();}
   async refresh(){
     clearTimeout(this.timer);const generation=this.generation,provider=this.provider;if(provider==='codex'||document.hidden||this.root.hidden)return;
     if(this.renderConnectionStatus()){this.updateActivity(this.rows,false);this.renderIndicators();this.freshDetail=false;this.updateComposer();return;}
