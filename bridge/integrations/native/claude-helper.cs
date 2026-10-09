@@ -694,7 +694,7 @@ class ClaudeKeyboard {
     static void ConnectResult(string state,string submission,int pid,string reason) {
         Stage("{\"setupState\":"+JsonString(state)+",\"submission\":"+JsonString(submission)+",\"pid\":"+pid+",\"reason\":"+JsonString(reason)+"}");
     }
-    static void SelectNewBackgroundConsole(Process process,long started,IntPtr tools) {
+    static void SelectBackgroundConsole(Process process,long started,IntPtr tools) {
         CheckBackgroundWindow(process,started,tools);var root=AutomationElement.FromHandle(tools);
         var tab=BackgroundMenuControl(root,ControlType.TabItem,process.Id,"Console","控制台");object pattern;
         if(tab==null||!tab.TryGetCurrentPattern(SelectionItemPattern.Pattern,out pattern))throw new Exception("Claude Console 标签不可用，请在电脑端选择后重试");
@@ -705,7 +705,7 @@ class ClaudeKeyboard {
         for(int attempt=0;attempt<2;attempt++) {
             check();reset();check();if(!String.IsNullOrWhiteSpace(readDraft()))throw new Exception("Console 中已有未提交内容，已保留，请处理后重试连接");
             bool enteredSubmit=false;
-            try {SubmitVerifiedConsole(text,readDraft,replace,readDocument,check,pause,expired,delegate{enteredSubmit=true;submit();});return;}
+            try {SubmitVerifiedConsole(text,readDraft,replace,readDocument,check,pause,expired,delegate{enteredSubmit=true;submit();},false);return;}
             catch {
                 if(attempt!=0||enteredSubmit)throw;
                 check();if(!String.IsNullOrWhiteSpace(readDraft())||!retryEmpty())throw;
@@ -719,7 +719,7 @@ class ClaudeKeyboard {
         bool opened=tools.Count==0;
         if(opened){OpenBackgroundDevTools(process,started);tools=SelectBackgroundDevTools(ReadBackgroundWindows(process.Id),process.Id);}
         if(tools.Count!=1||tools.Handle==IntPtr.Zero)throw new Exception("找不到唯一 app://localhost Claude 开发者工具，请在电脑端检查后重试");
-        IntPtr window=tools.Handle;if(opened)SelectNewBackgroundConsole(process,started,window);IntPtr renderer=BackgroundRenderer(process,started,window);
+        IntPtr window=tools.Handle;SelectBackgroundConsole(process,started,window);IntPtr renderer=BackgroundRenderer(process,started,window);
         AutomationElement prompt=null;ValuePattern value=null;TextPattern document=null;var timer=new Stopwatch();
         Action acquire=delegate {
             prompt=BackgroundPrompt(process,started,window,renderer,false);object valueObject,textObject;
@@ -757,10 +757,10 @@ class ClaudeKeyboard {
         return ReadContents(text,value).TrimEnd('\r','\n');
     }
     static void SubmitVerifiedConsole(string text,Func<string> readDraft,Action<string> replace,
-        Func<string> readDocument,Action check,Action pause,Func<bool> expired,Action submit) {
+        Func<string> readDocument,Action check,Action pause,Func<bool> expired,Action submit,bool allowConnectorDraft=true) {
         check();
         string pending=readDraft().Trim('\r','\n',' ','\t','\u200b','\ufeff');
-        if(!String.IsNullOrWhiteSpace(pending)&&!pending.StartsWith("/* codex bridge connector */"))
+        if(!String.IsNullOrWhiteSpace(pending)&&(!allowConnectorDraft||!pending.StartsWith("/* codex bridge connector */")))
             throw new Exception("Console 中已有未提交内容，已保留，请处理后重试连接");
         check();replace(text);
         // Chromium applies accessibility edits asynchronously. ValuePattern may

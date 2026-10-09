@@ -47,7 +47,8 @@ class WindowsNativeWindowSelectors(unittest.TestCase):
             raise AssertionError(built.stdout + built.stderr)
 
     def test_real_helper_self_checks_window_selection_and_cancellable_restore(self):
-        result = subprocess.run([str(self.helper), '--self-check'], capture_output=True, text=True, timeout=10)
+        result = subprocess.run([str(self.helper), '--self-check'], capture_output=True,
+                                text=True, encoding='utf-8-sig', timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('window selection and cancellable restore OK', result.stdout)
         self.assertIn('menu navigation OK', result.stdout)
