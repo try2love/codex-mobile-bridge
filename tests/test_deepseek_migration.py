@@ -308,6 +308,7 @@ class DeepSeekMigrationTests(unittest.TestCase):
                 ('bridge.integrations.discovery.discover_clients', {'return_value': discovered}),
                 ('bridge.desktop.Desktop.preferences', {'return_value': {}}),
                 ('bridge.integrations.client_launch.inspect_client', {'return_value': {'running': True, 'pids': [11, 12], 'mainPids': [11], 'runtimePids': [12], 'unknown': False}}),
+                ('bridge.integrations.client_launch.stop_deepseek', {'return_value': None}),
                 ('bridge.integrations.client_launch.stop_client', {'return_value': None})]:
             mocked = patch(target, **options); mocked.start(); self.addCleanup(mocked.stop)
         manager.config['discovered'] = discovered
