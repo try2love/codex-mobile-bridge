@@ -39,7 +39,6 @@ def ssh_read(alias, source, timeout=18):
 @contextmanager
 def ssh_download(alias, source):
     """Keep remote binary output on disk, including full-response fallbacks."""
-    from bridge.features.workspace.workspace import MAX_TRANSFER
     command = ssh_command(alias)
     with tempfile.TemporaryFile(prefix='bridge-ssh-download-') as stream:
         try:
@@ -56,7 +55,7 @@ def ssh_download(alias, source):
             if 'error' in metadata:
                 if metadata.get('permission'): raise PermissionError(metadata['error'])
                 raise ValueError(metadata['error'])
-            if (type(metadata.get('length')) is not int or not 0 <= metadata['length'] <= MAX_TRANSFER
+            if (type(metadata.get('length')) is not int or not 0 <= metadata['length'] <= 2**53 - 1
                     or length - len(header) != metadata['length']):
                 raise ValueError('SSH 下载中断，请重试')
         except PermissionError:

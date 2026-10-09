@@ -45,7 +45,8 @@
       "web/features/accounts/account.css",
       "web/client-icons/**",
       "package.json",
-      "LICENSE"
+      "LICENSE",
+      "web/features/workspace/file-actions.js"
     ],
     "extraResources": [
       {

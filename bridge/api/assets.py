@@ -6,7 +6,8 @@ from pathlib import Path, PurePosixPath
 
 from bridge.resources import project_root
 
-STATIC = {"/host.js": ("hosts/environment.js", "text/javascript; charset=utf-8"),
+STATIC = {"/file-actions.js": ("file-actions.js", "text/javascript; charset=utf-8"),
+"/host.js": ("hosts/environment.js", "text/javascript; charset=utf-8"),
           "/layout.js": ("layouts/viewport.js", "text/javascript; charset=utf-8"),
           "/permissions.js": ("permissions.js", "text/javascript; charset=utf-8"),
           "/downloads.js": ("downloads.js", "text/javascript; charset=utf-8"),

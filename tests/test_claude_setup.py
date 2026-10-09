@@ -121,7 +121,7 @@ class ClaudeDiscovery(unittest.TestCase):
             prepared = adapter.prepare()
         source = (ROOT/'bridge/clients/claude/connector.js').read_text(encoding='utf-8')
         config = {'transport': 'file', 'cwd': str(adapter.directory), 'token': adapter.desktop.token,
-                  'generation': adapter.desktop.generation, 'reconnect': True, 'connectorRevision': 4,
+                  'generation': adapter.desktop.generation, 'reconnect': True, 'connectorRevision': 5,
                   'request': 'request.json', 'response': 'response.json'}
         self.assertEqual(Path(prepared['scriptPath']).read_text(encoding='utf-8'),
                          source.replace('__BRIDGE_CONFIG__', json.dumps(config)))
@@ -725,7 +725,7 @@ class ClaudeNativeConnection(unittest.TestCase):
     def test_transformed_console_script_preserves_file_protocol_behavior(self):
         source = (ROOT/'bridge/clients/claude/connector.js').read_text(encoding='utf-8')
         config = {'cwd': 'D:/fixture', 'request': 'request.json', 'response': 'response.json',
-                  'token': 'test', 'generation': 'run', 'reconnect': True, 'connectorRevision': 4}
+                  'token': 'test', 'generation': 'run', 'reconnect': True, 'connectorRevision': 5}
         target = self.root/'connector.js'
         target.write_text(console_source(source, config), encoding='utf-8')
         completed = subprocess.run(['node', 'tests/claude-connector.test.cjs'], cwd=ROOT,

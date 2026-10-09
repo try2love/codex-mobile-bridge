@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const {webcrypto, createHmac} = require('node:crypto');
-const config = {cwd:'D:/fixture', request:'request.json', response:'response.json', token:'test', generation:'run', reconnect:true,connectorRevision:4};
+const config = {cwd:'D:/fixture', request:'request.json', response:'response.json', token:'test', generation:'run', reconnect:true,connectorRevision:5};
 const pack = value => {
   const payload = JSON.stringify({generation:'run', ...value});
   return JSON.stringify({payload,signature:createHmac('sha256','test').update(payload).digest('hex')});
@@ -15,6 +15,7 @@ const api = {
   async writeSessionFile(sid,path,text) { if(failWrites>0){failWrites--;throw Error('temporary write failure');}response=JSON.parse(JSON.parse(text).payload); return {hash:'ok'}; },
   async getAll() { if(catalogHung)return new Promise(()=>{});return [{sessionId:'local_test',cwd:'D:/fixture',title:'Codex Bridge Connector',oauthToken:'SECRET'}]; },
   async getSupportedCommands(options) {assert.ok(options && typeof options==='object' && !Array.isArray(options));return options;},
+  async getContextUsageSummary() {return {totalTokens:42000,rawMaxTokens:200000,categories:[],private:'SECRET'};},
   async getSession(id) { return {sessionId:id, oauthToken:'SECRET'}; },
   async sendMessage(...args) { calls.push(args); },
   async getTranscript() {return [
@@ -91,6 +92,13 @@ const waitFor = async predicate => {
     const current=++seq;request=pack({generation:'next',type:'request',seq:current,surface,method:'getSupportedCommands',args,expires:Date.now()/1000+10});
     await waitFor(()=>response.seq===current && response.done);assert.equal(response.error,undefined);assert.equal(response.result.sessionId,args.length?'local_test':undefined);
   }
+  request=pack({generation:'next',type:'request',seq:++seq,surface:'code',method:'mobileDetail',args:['local_test'],expires:Date.now()/1000+10});
+  await waitFor(()=>response.seq===seq&&response.done);
+  assert.deepEqual(response.result.contextUsage,{usedTokens:42000,contextWindow:200000});
+  assert.ok(!JSON.stringify(response).includes('SECRET'));
+  api.getContextUsageSummary=async()=>({totalTokens:NaN,rawMaxTokens:200000});
+  request=pack({generation:'next',type:'request',seq:++seq,surface:'code',method:'mobileDetail',args:['local_test'],expires:Date.now()/1000+10});
+  await waitFor(()=>response.seq===seq&&response.done);assert.equal(response.result.contextUsage,null);
   window.__claudeMobileBridge.stop(); await running;
   assert.equal(response.connected,false);
   console.log('Desktop file connector: handshake, original session dispatch, deduplication, same-generation reinjection without replay, expiry, allowlist, redaction, restart, replay rejection, stop passed.');

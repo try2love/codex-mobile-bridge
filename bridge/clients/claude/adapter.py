@@ -550,6 +550,7 @@ class Claude:
         if row['id'] != sid:
             raise BridgeUnavailable('桌面返回的会话标识不一致')
         if action == 'detail':
+            row['contextUsage'] = detail.get('contextUsage') if detail is not None else None
             raw = detail['transcript'] if detail is not None else await self.desktop.call(kind, 'getTranscript', native)
             return {'connected': True, 'session': row, 'messages': model.transcript(raw), 'turns': model.turns(raw), 'notice': model.transcript_notice(raw),
                     'capabilities': self.session_capabilities(kind), 'maxRequestBytes': MAX_REQUEST}

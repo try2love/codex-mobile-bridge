@@ -22,7 +22,13 @@ try{
   ctx.agents.list=()=>[{id:'hidden-child',status:'running'}];runtime=await(await request('lifecycle')).json();assert.equal(runtime.sessions[0].status,'active');assert.equal(runtime.sessions[0].runtimeKnown,true);
   ctx.agents.list=()=>[{id:'unknown-child'}];runtime=await(await request('lifecycle')).json();assert.equal(runtime.sessions[0].status,'unknown');assert.equal(runtime.sessions[0].runtimeKnown,false);
   delete ctx.agents.list;assert.equal((await(await request('lifecycle')).json()).complete,false);ctx.agents.list=()=>[];
-  const initialStatus=await(await request('status')).json();assert.equal(initialStatus.configured,false);assert.equal(initialStatus.bridgeRevision,3);
+  row.projections.values.permissions={currentValue:'full-access'};
+  row.projections.values.contextPressure={projectedTokens:120,pressureTokens:100,contextWindow:1000};
+  const session=(await(await request('detail')).json()).session;
+  assert.equal(session.permissionMode,'full-access');assert.equal(session.permissionLabel,'Full access');
+  assert.deepEqual(session.contextUsage,{usedTokens:120,contextWindow:1000,estimated:true});
+  delete row.projections.values.contextPressure;delete row.projections.values.permissions;
+  const initialStatus=await(await request('status')).json();assert.equal(initialStatus.configured,false);assert.equal(initialStatus.bridgeRevision,4);
   const services={settings:{describe:options=>{assert.deepEqual(options,{redactSecrets:true});return [{ns:'provider',value:{apiKeyEnv:'FIXTURE_KEY',private:'DO-NOT-EXPOSE'}}];}},credentials:{describe:async ref=>{assert.equal(ref,'FIXTURE_KEY');return {configured:true};},resolve:()=>{throw Error('Must not resolve credentials');}},llm:{listConfigurableProviders:()=>[{provider:'deepseek',settingsNs:'provider',settingsPath:[]}]}};
   ctx.get=name=>services[name];
   assert.equal((await(await request('status')).json()).configured,true);

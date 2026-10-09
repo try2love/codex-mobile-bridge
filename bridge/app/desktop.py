@@ -490,6 +490,10 @@ class Desktop:
                 raise ValueError('此地址未指向当前网关，请检查连接配置')
         return request_pairing(self.data_dir, value)
 
+    def transfer_settings(self, value=None):
+        from bridge.features.workspace.preferences import transfer_settings
+        return transfer_settings(self.data_dir, value or None)
+
     def logs(self):
         # Reverse complete timestamped records, keeping traceback lines readable.
         import re

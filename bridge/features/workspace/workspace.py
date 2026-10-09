@@ -11,6 +11,9 @@ import subprocess
 import tempfile
 import threading
 import uuid
+import zipfile
+import time
+import atexit
 
 MAX_TRANSFER = 20 * 1024 * 1024
 MAX_PREVIEW = 512 * 1024
@@ -39,6 +42,67 @@ def download_range(size, etag, range_header='', if_range=''):
         return {**result, 'status': 416, 'length': 0, 'contentRange': 'bytes */' + str(size)}
     return {**result, 'status': 206, 'offset': start, 'length': end - start + 1,
             'contentRange': 'bytes %d-%d/%d' % (start, end, size)}
+
+
+# At most two large-file/directory snapshots; private temporary handles, never public paths.
+# Keep an immutable ZIP across Range requests rather than repacking every chunk.
+_ARCHIVES = {}
+_ARCHIVE_LOCK = threading.RLock()
+
+
+def _expire_archives(all_entries=False):
+    with _ARCHIVE_LOCK:
+        for key, entry in list(_ARCHIVES.items()):
+            if all_entries or time.monotonic() - entry['used'] > 1800:
+                with entry['lock']:
+                    entry['context'].__exit__(None, None, None)
+                del _ARCHIVES[key]
+        if _ARCHIVES and not all_entries:
+            timer = threading.Timer(1800, _expire_archives); timer.daemon = True; timer.start()
+
+
+atexit.register(_expire_archives, True)
+
+
+class _RangeReader:
+    def __init__(self, stream, remaining):
+        self.stream, self.remaining = stream, remaining
+
+    def read(self, size=-1):
+        value = self.stream.read(self.remaining if size < 0 else min(size, self.remaining))
+        self.remaining -= len(value)
+        return value
+
+
+@contextmanager
+def _cached_transfer(key, create, range_header, if_range):
+    with _ARCHIVE_LOCK:
+        entry = _ARCHIVES.get(key)
+        if not if_range or entry is None:
+            first = not _ARCHIVES
+            context = create()
+            metadata, stream = context.__enter__()
+            entry = {'context': context, 'metadata': metadata, 'stream': stream,
+                     'used': time.monotonic(), 'lock': threading.RLock()}
+            old = _ARCHIVES.pop(key, None)
+            if old:
+                with old['lock']: old['context'].__exit__(None, None, None)
+            while len(_ARCHIVES) >= 2:
+                oldest = min(_ARCHIVES, key=lambda k: _ARCHIVES[k]['used'])
+                old = _ARCHIVES.pop(oldest)
+                with old['lock']: old['context'].__exit__(None, None, None)
+            _ARCHIVES[key] = entry
+            if first:
+                timer = threading.Timer(1800, _expire_archives); timer.daemon = True; timer.start()
+        entry['used'] = time.monotonic()
+        entry['lock'].acquire()
+    try:
+        metadata = entry['metadata']
+        result = {**download_range(metadata['size'], metadata['etag'], range_header, if_range), 'name': metadata['name']}
+        entry['stream'].seek(result['offset'])
+        yield result, _RangeReader(entry['stream'], result['length'])
+    finally:
+        entry['lock'].release()
 
 
 class Workspace:
@@ -114,6 +178,68 @@ class Workspace:
         return {'project': self.root.name, 'path': path, 'entries': rows[offset:offset + 200],
                 'total': len(rows), 'nextOffset': offset + 200 if len(rows) > offset + 200 else None}
 
+    def info(self, path):
+        parts = self.parts(path)
+        if not parts: raise ValueError('请选择文件')
+        with self.directory(parts[:-1]) as (directory, fd):
+            handle = self.open_file(directory, fd, parts[-1], os.O_RDONLY)
+            with os.fdopen(handle, 'rb') as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode): raise ValueError('仅支持普通文件')
+                return {'name': parts[-1], 'path': path, 'size': info.st_size}
+
+    @contextmanager
+    def archive(self, path, range_header='', if_range='', limit=None):
+        parts = self.parts(path)
+        with self.directory(parts): pass
+        with _cached_transfer(('directory', str(self.root), path), lambda: self._archive_snapshot(path), range_header, if_range) as value:
+            yield value
+
+    @contextmanager
+    def _archive_snapshot(self, path):
+        """Snapshot ZIP64 members on disk, without following links."""
+        parts = self.parts(path)
+        if not parts: raise ValueError('请选择文件夹')
+        with tempfile.TemporaryFile(prefix='bridge-archive-') as snapshot:
+            with zipfile.ZipFile(snapshot, 'w', compression=zipfile.ZIP_STORED, allowZip64=True) as archive:
+                def walk(current, archive_path):
+                    with self.directory(current) as (directory, fd):
+                        archive.writestr(archive_path + '/', b'')
+                        with os.scandir(fd if fd is not None else directory) as entries:
+                            names = sorted(entry.name for entry in entries)
+                        for name in names:
+                            if name.startswith('.bridge-upload-'): continue
+                            self.parts('/'.join(current + [name]))
+                            target = directory / name
+                            info = os.stat(name, dir_fd=fd, follow_symlinks=False) if fd is not None else target.lstat()
+                            if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400) or getattr(target, 'is_junction', lambda: False)():
+                                raise PermissionError('文件夹含链接或特殊文件，无法下载')
+                            if stat.S_ISDIR(info.st_mode):
+                                walk(current + [name], archive_path + '/' + name)
+                            elif stat.S_ISREG(info.st_mode):
+                                handle = self.open_file(directory, fd, name, os.O_RDONLY)
+                                with os.fdopen(handle, 'rb') as source:
+                                    before = os.fstat(source.fileno())
+                                    if not stat.S_ISREG(before.st_mode): raise PermissionError('文件类型已变化')
+                                    with archive.open(archive_path + '/' + name, 'w', force_zip64=True) as destination:
+                                        while True:
+                                            chunk = source.read(65536)
+                                            if not chunk: break
+                                            destination.write(chunk)
+                                    after = os.fstat(source.fileno())
+                                    if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                                        raise ValueError('源文件已变化，请重新下载。')
+                            else: raise PermissionError('文件夹含链接或特殊文件，无法下载')
+                walk(parts, parts[-1])
+            size = snapshot.tell(); snapshot.seek(0)
+            digest = hashlib.sha256()
+            while True:
+                chunk = snapshot.read(65536)
+                if not chunk: break
+                digest.update(chunk)
+            snapshot.seek(0)
+            yield {**download_range(size, '"' + digest.hexdigest() + '"'), 'name': parts[-1] + '.zip'}, snapshot
+
     def read(self, path, download=False):
         parts = self.parts(path)
         if not parts: raise ValueError('请选择文件')
@@ -143,8 +269,23 @@ class Workspace:
     @contextmanager
     def download(self, path, range_header='', if_range='', limit=MAX_TRANSFER):
         try:
-            with self._download(path, range_header, if_range, limit) as value:
-                yield value
+            # Large local files are hashed once, then served from their immutable
+            # disk snapshot. Revalidate path/type/version before every range.
+            parts = self.parts(path)
+            if not parts: raise ValueError('请选择文件')
+            with self.directory(parts[:-1]) as (directory, fd):
+                handle = self.open_file(directory, fd, parts[-1], os.O_RDONLY)
+                try: info = os.fstat(handle)
+                finally: os.close(handle)
+            if not stat.S_ISREG(info.st_mode): raise ValueError('仅支持普通文件')
+            if limit is not None and info.st_size > limit: raise ValueError('文件超过 %d MB 下载限制' % (limit // 1024 // 1024))
+            if info.st_size > MAX_TRANSFER:
+                stamp = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+                with _cached_transfer(('file', str(self.root), path, stamp), lambda: self._download(path, '', '', limit), range_header, if_range) as value:
+                    yield value
+            else:
+                with self._download(path, range_header, if_range, limit) as value:
+                    yield value
         except PermissionError:
             raise
         except OSError as error:
@@ -162,7 +303,7 @@ class Workspace:
                 with os.fdopen(handle, 'rb') as stream:
                     before = os.fstat(stream.fileno())
                     if not stat.S_ISREG(before.st_mode): raise ValueError('仅支持普通文件')
-                    if before.st_size > limit: raise ValueError('文件超过 %d MB 下载限制' % (limit // 1024 // 1024))
+                    if limit is not None and before.st_size > limit: raise ValueError('文件超过 %d MB 下载限制' % (limit // 1024 // 1024))
                     def copy_range(selection):
                         digest, size = hashlib.sha256(), 0
                         stream.seek(0); snapshot.seek(0); snapshot.truncate()
@@ -170,7 +311,7 @@ class Workspace:
                             chunk = stream.read(65536)
                             if not chunk: break
                             end = size + len(chunk)
-                            if end > limit: raise ValueError('文件超过 %d MB 下载限制' % (limit // 1024 // 1024))
+                            if limit is not None and end > limit: raise ValueError('文件超过 %d MB 下载限制' % (limit // 1024 // 1024))
                             digest.update(chunk)
                             left = max(size, selection['offset'])
                             right = min(end, selection['offset'] + selection['length'])
@@ -529,6 +670,8 @@ def operate(root, action, params):
         if action == 'git-branches': return GitWorkspace(workspace).branches()
         if action == 'git-action': return GitWorkspace(workspace).mutate(**params)
         if action == 'list': return workspace.listing(**params)
+        if action == 'info': return workspace.info(params['path'])
+        if action == 'archive-stream': return workspace.archive(**params)
         if action == 'preview': return workspace.read(params['path'])
         if action == 'download': return workspace.read(params['path'], download=True)
         if action == 'download-stream': return workspace.download(**params)

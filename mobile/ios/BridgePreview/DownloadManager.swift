@@ -18,7 +18,7 @@ final class DownloadManager: NSObject, URLSessionDataDelegate, @unchecked Sendab
         var busy: Bool { ![.idle, .cancelled, .saved].contains(phase) }
     }
     struct TransferError: Error { let message: String; var restart = false }
-    static let limit: Int64 = 50 * 1024 * 1024
+    static let limit: Int64 = 9_007_199_254_740_991 // Gateway policy; the native transfer streams to disk.
     static let chunk: Int64 = 1024 * 1024
     var onChange: ((Snapshot) -> Void)?
     // Return only a current, matching authenticated cookie, never a cached login.
@@ -223,7 +223,7 @@ final class DownloadManager: NSObject, URLSessionDataDelegate, @unchecked Sendab
                       let end = Int64(source.substring(with: match.range(at: 2))),
                       start == value.received, end >= start, end <= requestedEnd else { throw TransferError(message: "下载响应格式不正确，请重新下载", restart: true) }
                 let total = Int64(source.substring(with: match.range(at: 3)))
-                if let total, total <= end || total > Self.limit { throw TransferError(message: total > Self.limit ? "附件超过 50 MB 下载限制" : "下载响应格式不正确，请重新下载", restart: true) }
+                if let total, total <= end || total > Self.limit { throw TransferError(message: "下载响应格式不正确，请重新下载", restart: true) }
                 if let prior = value.total, total != prior { throw TransferError(message: "文件已变化，请重新下载", restart: true) }
                 expectedBytes = end - start + 1; value.total = total
                 guard response.expectedContentLength < 0 || response.expectedContentLength == expectedBytes else { throw TransferError(message: "下载响应格式不正确，请重新下载", restart: true) }
@@ -231,7 +231,7 @@ final class DownloadManager: NSObject, URLSessionDataDelegate, @unchecked Sendab
             } else if response.statusCode == 200 && value.received == 0 {
                 wholeResponse = true; expectedBytes = response.expectedContentLength >= 0 ? response.expectedContentLength : nil
                 value.total = expectedBytes; canContinue = tag != nil
-                if let total = value.total, total > Self.limit { throw TransferError(message: "附件超过 50 MB 下载限制", restart: true) }
+                if let total = value.total, total > Self.limit { throw TransferError(message: "下载响应格式不正确，请重新下载", restart: true) }
             } else { throw TransferError(message: value.received > 0 ? "文件已变化或服务器不支持续传，请重新下载" : "下载失败，请检查网络后重试", restart: value.received > 0) }
             etag = tag
             accepted = true; value.phase = .downloading; publish(); completionHandler(.allow)
@@ -247,7 +247,7 @@ final class DownloadManager: NSObject, URLSessionDataDelegate, @unchecked Sendab
         guard accepted else { return }
         let count = Int64(data.count)
         guard value.received + count <= Self.limit, expectedBytes == nil || responseBytes + count <= expectedBytes! else {
-            fail(value.received + count > Self.limit ? "附件超过 50 MB 下载限制" : "下载响应格式不正确，请重新下载", restart: true); return
+            fail("下载响应格式不正确，请重新下载", restart: true); return
         }
         do { try handle?.write(contentsOf: data); value.received += count; responseBytes += count }
         catch { fail("无法保存下载文件，请检查剩余空间", restart: true) }
@@ -263,7 +263,7 @@ final class DownloadManager: NSObject, URLSessionDataDelegate, @unchecked Sendab
         }
         guard error == nil, accepted, expectedBytes == nil || responseBytes == expectedBytes else { fail("下载中断，可继续下载"); return }
         if wholeResponse || value.total == value.received { finish(); return }
-        guard value.received < Self.limit else { fail("附件超过 50 MB 下载限制", restart: true); return }
+        guard value.received < Self.limit else { fail("下载响应格式不正确，请重新下载", restart: true); return }
         fetch()
     }
 }

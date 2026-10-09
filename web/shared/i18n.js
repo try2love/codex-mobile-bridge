@@ -2,6 +2,29 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"文件传输":"File transfers",
+"点击下载阈值（MiB）":"Click-to-download limit (MiB)",
+"超过阈值仅显示定位；文件标签页中长按或右键下载不限此大小。":"Larger files offer Locate only. Long-press or right-click downloads in the Files tab are exempt.",
+"已保存，立即生效":"Saved. Applies immediately.",
+"下载到本地":"Download to this device",
+"定位并打开所在文件夹":"Locate in Files",
+"文件夹将打包为 ZIP，准备完成后显示下载总量。":"The folder will be prepared as a ZIP. The total size appears when ready.",
+"文件超过点击下载阈值，请在文件标签页中定位后长按下载。":"This file exceeds the click-to-download limit. Locate it in Files, then long-press to download.",
+"此文件位于聊天项目之外，无法在当前文件标签页中定位。":"This file is outside the chat workspace and cannot be located in this Files tab.",
+"浏览器存储不可用，无法暂存大文件；请使用手机 App 下载。":"Browser storage is unavailable for large files. Use the mobile app to download.",
+"无法暂存下载文件，请检查浏览器存储空间。":"Unable to store the download. Check browser storage space.",
+"下载阈值须为 1–1048576 MiB 的整数":"Enter a whole number from 1 to 1048576 MiB.",
+"文件传输设置暂不可用":"File transfer settings are unavailable.",
+"文件夹含链接或特殊文件，无法下载":"The folder contains links or special files and cannot be downloaded.",
+"文件类型已变化":"The file type has changed.",
+"上下文使用量":"Context usage",
+"暂未提供":"Unavailable",
+"已用 Token":"Tokens used",
+"上下文容量":"Context capacity",
+"使用占比":"Context used",
+"当前客户端尚未提供此会话的上下文用量。":"This client has not provided context usage for this session.",
+"包含客户端对尚未发送内容的估算。":"Includes the client estimate of content not yet sent.",
+"当前为缓存数据，连接恢复后更新。":"Cached data. It will update when the connection resumes.",
 "电脑已锁定":"Computer locked",
 "电脑桌面暂不可用":"Computer desktop unavailable",
 "将在电脑端打开 Claude 并引导完成连接；如遇屏保或锁屏，请恢复桌面后继续。":"Claude will open on your computer to guide connection setup. If the screen saver or lock screen appears, return to the desktop to continue.",
@@ -2506,6 +2529,8 @@ const zh=Object.fromEntries(Object.entries(en).filter(([,value])=>value!=='').ma
 function translateEnglish(source){
   if(typeof source==='string')source=source.replace(/^Error invoking remote method '[^']+': (?:Error: )?/,'');
   if(Object.hasOwn(en,source))return en[source];
+  const fileLimit=/^文件超过 (\d+) MB 下载限制$/.exec(source);
+  if(fileLimit)return 'The file exceeds the '+fileLimit[1]+' MiB click-to-download limit.';
   const failed=/^部分通道发送失败：(.+)；请在手机确认其他通道是否收到。$/.exec(source);
   if(failed)return 'Some channels failed: '+failed[1]+'. Check your phone for messages from the other channels.';
   return source;

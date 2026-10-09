@@ -17,6 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from bridge.features.workspace.uploads import MAX_FILE
 from bridge.features.workspace.workspace import MAX_TRANSFER, Workspace
+from bridge.features.workspace.preferences import transfer_settings
 from bridge.features.notifications.channels import settings as notification_settings, save_settings as save_notification_settings, publish_pushplus
 from socketserver import TCPServer
 from urllib.parse import parse_qs, urlsplit, quote
@@ -52,6 +53,7 @@ class GatewayServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
     def __init__(self, address, bridge, config, web_dir, data_dir=None, shared=None):
+        self.transfer_directory = data_dir if shared is None else shared.transfer_directory
         self.local_access = config.get('localAccess', True)
         if shared is None:
             self.bridge = bridge
@@ -322,6 +324,8 @@ class Handler(BaseHTTPRequestHandler):
                 if manager is None:
                     return self.output(503, {'error': '应用管理不可用'})
                 return self.output(200, manager.reconnect_claude())
+            if path == '/api/file-transfer':
+                return self.output(200, transfer_settings(self.server.transfer_directory, self.read_json() if write else None))
             if path == '/api/clients':
                 manager = self.server.desktop_sessions
                 if manager is None:
@@ -565,7 +569,7 @@ class Handler(BaseHTTPRequestHandler):
                 identifier = query.get('id', [''])[0]
                 return self.output(200, bridge.terminal(terminal_match[1], owner, ('poll' if query.get('mode') == ['pty'] else 'read') if identifier else 'info',
                                    {'id': identifier, 'after': int(query.get('after', ['0'])[0])}))
-            workspace_match = re.fullmatch(r"/api/sessions/([0-9a-f-]{36})/workspace(?:/(preview|download|upload|git-status|git-diff|git-history|git-commit|git-history-diff|git-branches|git-action))?", path)
+            workspace_match = re.fullmatch(r"/api/sessions/([0-9a-f-]{36})/workspace(?:/(info|preview|download|upload|git-status|git-diff|git-history|git-commit|git-history-diff|git-branches|git-action))?", path)
             if workspace_match:
                 thread_id, operation = workspace_match.groups()
                 relative = query.get('path', [''])[0]
@@ -598,13 +602,19 @@ class Handler(BaseHTTPRequestHandler):
                     return self.output(200, bridge.workspace(thread_id, 'list', {'path': relative, 'hidden': query.get('hidden') == ['true'],
                         'search': query.get('search', [''])[0], 'offset': int(query.get('offset', ['0'])[0])}))
                 if operation == 'download':
-                    with bridge.workspace(thread_id, 'download-stream', {'path': relative, **self.download_request()}) as (metadata, stream):
+                    policy = transfer_settings(self.server.transfer_directory)
+                    if query.get('info') == ['1']:
+                        return self.output(200, {**bridge.workspace(thread_id, 'info', {'path': relative}), **policy, 'locatable': True})
+                    explicit = query.get('explicit') == ['1']
+                    params = {'path': relative, 'limit': None if explicit else policy['clickDownloadMiB'] * 1024 * 1024, **self.download_request()}
+                    action = 'archive-stream' if explicit and query.get('archive') == ['1'] else 'download-stream'
+                    with bridge.workspace(thread_id, action, params) as (metadata, stream):
                         return self.download_response(metadata, stream)
                 result = bridge.workspace(thread_id, operation, {'path': relative})
                 return self.output(200, result)
             file_match = re.fullmatch(r"/api/sessions/([0-9a-f-]{36})/files/([a-f0-9]{64})", path)
             if not write and file_match:
-                return self.download(bridge, *file_match.groups())
+                return self.download(bridge, *file_match.groups(), info=query.get('info') == ['1'])
             preview_match = UPLOAD_PREVIEW_ROUTE.fullmatch(path)
             if not write and preview_match:
                 return self.upload_preview(bridge, *preview_match.groups(), variant=query.get('variant', ['thumb'])[0], side=side)
@@ -748,13 +758,23 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
             self.output(500, {"error": "网关操作失败，请查看本机日志"})
 
-    def download(self, bridge, thread_id, artifact_id):
+    def download(self, bridge, thread_id, artifact_id, info=False):
         artifact = bridge.artifact(thread_id, artifact_id)
         path = artifact['path']
+        policy = transfer_settings(self.server.transfer_directory)
+        workspace = Workspace(path.anchor)
+        relative = path.relative_to(path.anchor).as_posix()
+        if info:
+            result = workspace.info(relative)
+            cwd = bridge.store.get(thread_id).get('cwd')
+            root = Path(cwd).resolve() if cwd else None
+            result['locatable'] = root is not None and root in path.parents
+            result['path'] = path.relative_to(root).as_posix() if result['locatable'] else None
+            return self.output(200, {**result, **policy})
         # Walk the authorized absolute path without following replaced parent
-        # symlinks; retain the established 50 MiB artifact limit.
+        # symlinks. Inline images retain their independent preview size bound.
         with Workspace(path.anchor).download(path.relative_to(path.anchor).as_posix(),
-                limit=50 * 1024 * 1024, **self.download_request()) as (metadata, stream):
+                limit=50 * 1024 * 1024 if artifact['image'] else policy['clickDownloadMiB'] * 1024 * 1024, **self.download_request()) as (metadata, stream):
             mime = mimetypes.guess_type(artifact['name'])[0] if artifact['image'] else None
             return self.download_response(metadata, stream, mime or 'application/octet-stream',
                                           'inline' if artifact['image'] else 'attachment')

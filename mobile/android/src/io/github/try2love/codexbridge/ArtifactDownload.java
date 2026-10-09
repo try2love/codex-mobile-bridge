@@ -42,7 +42,7 @@ public final class ArtifactDownload {
   private long lastSample,lastBytes;
   public Task(String url,String origin,File directory)throws IOException {
    if(!accepts(url,origin))throw new IOException("下载地址不是当前电脑的附件");
-   this.url=url;this.origin=origin;this.directory=directory;limit=url.contains("/workspace/download")?20L*1024*1024:50L*1024*1024;
+   this.url=url;this.origin=origin;this.directory=directory;limit=9007199254740991L; // Policy is enforced by the authenticated gateway; stream to disk.
   }
   public synchronized boolean resumable(){return !restartRequired&&(downloaded==0||etag!=null);}
   public void pause(){HttpURLConnection active;synchronized(this){if(state!=State.RUNNING)return;pause=true;state=State.PAUSING;active=connection;}if(active!=null)active.disconnect();}
@@ -93,7 +93,7 @@ public final class ArtifactDownload {
      if(start>0)throw new Failure("当前网关不支持续传，请重新下载",true);
      total=active.getContentLengthLong();expected=total;etag=strong?tag:null;
     }else throw new Failure("下载失败，请检查网络后重试",false);
-    if(total>limit)throw new Failure(limit==20L*1024*1024?"工作区文件超过 20 MB 下载限制":"附件超过 50 MB 下载限制",true);
+    if(total>limit)throw new Failure("下载响应格式不正确，请重新下载",true);
     long length=active.getContentLengthLong();if(status==206&&length>=0&&length!=expected)throw new Failure("网关返回的续传信息无效，请重新下载",true);
     if(file==null)file=File.createTempFile("bridge-download-",".part",directory);
     name=filename(active.getHeaderField("Content-Disposition"));update(true);

@@ -652,3 +652,5 @@ $('permissions-button').onclick=()=>{
 };
 
 if(accountsPanel){accountsPanel.current.after($('account-details'));}
+
+window.BridgeFileActions?.mountSettings($('appearance-dialog'),value=>api('/api/file-transfer',value));

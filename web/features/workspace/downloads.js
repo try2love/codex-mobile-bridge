@@ -1,7 +1,7 @@
 'use strict';
 // One foreground transfer, independent of the selected chat and workbench tabs.
 const BridgeDownload = (() => {
-  const CHUNK = 1024 * 1024, LIMIT = 50 * 1024 * 1024;
+  const CHUNK = 1024 * 1024, LIMIT = Number.MAX_SAFE_INTEGER, MEMORY_LIMIT = 50 * 1024 * 1024;
   const changed = '源文件已变化，请重新下载。';
   const invalid = '下载响应不完整或格式不正确，请重试。';
   function eligible(value, base) {
@@ -22,6 +22,19 @@ const BridgeDownload = (() => {
     return name.split(/[\\/]/).pop().replace(/[\x00-\x1f\x7f]/g, '').slice(0, 240) || 'download';
   }
   function strongTag(value) { return /^"[^"\r\n]+"$/.test(value || '') ? value : null; }
+  class DiskParts {
+    constructor(){
+      this.name='bridge-transfer-'+Date.now()+'-'+Math.random().toString(36).slice(2);this.closed=false;
+      this.ready=new Promise((resolve,reject)=>{const request=indexedDB.open(this.name,1);
+        request.onupgradeneeded=()=>request.result.createObjectStore('chunks');request.onerror=()=>reject(Error('无法暂存下载文件，请检查浏览器存储空间。'));
+        request.onsuccess=()=>{this.db=request.result;if(this.closed){this.db.close();indexedDB.deleteDatabase(this.name);reject(Error('Cancelled'));}else resolve(this.db);};});
+      this.ready.catch(()=>{});
+    }
+    async append(value,key){const db=await this.ready;if(this.closed)throw Error('Cancelled');
+      return new Promise((resolve,reject)=>{const tx=db.transaction('chunks','readwrite');tx.objectStore('chunks').put(new Blob([value]),key);tx.oncomplete=resolve;tx.onerror=tx.onabort=()=>reject(Error('无法暂存下载文件，请检查浏览器存储空间。'));});}
+    async blob(){const db=await this.ready;return new Promise((resolve,reject)=>{const tx=db.transaction('chunks','readonly'),request=tx.objectStore('chunks').getAll();tx.oncomplete=()=>resolve(new Blob(request.result,{type:'application/octet-stream'}));tx.onerror=tx.onabort=()=>reject(Error('无法暂存下载文件，请检查浏览器存储空间。'));});}
+    clear(){this.closed=true;if(this.db)this.db.close();indexedDB.deleteDatabase(this.name);}
+  }
   class Task {
     constructor({fetcher = (...args) => fetch(...args), onChange = () => {}, clock = () => performance.now()} = {}) {
       this.fetcher = fetcher; this.onChange = onChange; this.clock = clock;
@@ -32,10 +45,12 @@ const BridgeDownload = (() => {
       this.cancel(false);
       Object.assign(this, {url, name:filename('', name), parts:[], bytes:0, total:null, etag:null,
         ranged:false, restartRequired:false, error:'', speed:0});
+      this.storage=typeof indexedDB!=='undefined'?new DiskParts():null;
       return this.resume();
     }
     cancel(notify = true) {
       this.version++; this.controller?.abort(); this.controller = null;
+      this.storage?.clear();this.storage=null;
       this.parts = []; this.bytes = 0; this.total = null; this.speed = 0; this.status = 'idle';
       if (notify) this.emit();
     }
@@ -97,7 +112,8 @@ const BridgeDownload = (() => {
             this.total = length === null ? null : Number(length);
             expected = this.total; this.ranged = false;
           }
-          if (this.total > LIMIT) throw Error('文件超过 50 MB 下载限制。');
+          if (this.total!==null&&(!Number.isSafeInteger(this.total)||this.total<0))throw Error(invalid);
+          if(!this.storage&&this.total>MEMORY_LIMIT)throw Error('浏览器存储不可用，无法暂存大文件；请使用手机 App 下载。');
           this.etag = etag;
           this.name = filename(response.headers.get('Content-Disposition'), this.name);
           // Partial data can only be retained across requests with a strong validator.
@@ -111,9 +127,11 @@ const BridgeDownload = (() => {
             if (version !== this.version) { await reader.cancel(); return; }
             if (done) break;
             received += value.byteLength;
-            if (this.bytes + value.byteLength > LIMIT) throw Error('文件超过 50 MB 下载限制。');
+            if(this.bytes+value.byteLength>LIMIT)throw Error(invalid);
+            if(!this.storage&&this.bytes+value.byteLength>MEMORY_LIMIT)throw Error('浏览器存储不可用，无法暂存大文件；请使用手机 App 下载。');
             if (expected !== null && received > expected) throw Error(invalid);
-            this.parts.push(value); this.bytes += value.byteLength;
+            if(this.storage)await this.storage.append(value,this.bytes);else this.parts.push(value);
+            if(version!==this.version){await reader.cancel();return;}this.bytes += value.byteLength;
             const now = this.clock(), elapsed = now - sampleTime;
             if (elapsed >= 200) {
               const current = (this.bytes - sampleBytes) * 1000 / elapsed;
@@ -131,14 +149,14 @@ const BridgeDownload = (() => {
         controller.abort(); this.controller = null; this.status = 'error'; this.speed = 0;
         this.error = error.message === 'Failed to fetch' ? '下载中断，请继续下载。' : error.message;
         if (![changed, invalid, '登录已失效，请重新登录后继续下载。', '下载中断，请继续下载。',
-          '下载失败，请检查连接后重试。', '文件超过 50 MB 下载限制。', '此连接不支持断点续传，请重新下载。'].includes(this.error)) this.error = '下载中断，请继续下载。';
-        this.restartRequired = [changed, invalid, '文件超过 50 MB 下载限制。'].includes(this.error) || Boolean(this.bytes && (!this.ranged || !this.etag));
+          '下载失败，请检查连接后重试。', '浏览器存储不可用，无法暂存大文件；请使用手机 App 下载。', '无法暂存下载文件，请检查浏览器存储空间。', '此连接不支持断点续传，请重新下载。'].includes(this.error)) this.error = '下载中断，请继续下载。';
+        this.restartRequired = [changed, invalid, '浏览器存储不可用，无法暂存大文件；请使用手机 App 下载。', '无法暂存下载文件，请检查浏览器存储空间。'].includes(this.error) || Boolean(this.bytes && (!this.ranged || !this.etag));
         this.emit();
       }
     }
     blob() {
       if (!['complete', 'exported'].includes(this.status)) throw Error('下载尚未完成。');
-      return new Blob(this.parts, {type:'application/octet-stream'});
+      return this.storage?this.storage.blob():new Blob(this.parts, {type:'application/octet-stream'});
     }
   }
   return {Task, eligible, native, filename};
@@ -202,8 +220,9 @@ if (typeof document !== 'undefined') (() => {
     note = element('p', 'download-note', details); note.setAttribute('role', 'status');
     const actions = element('div', 'download-actions', details);
     pause = button(actions, () => task.status === 'downloading' ? task.pause() : task.restartRequired ? task.restart() : task.resume());
-    save = button(actions, () => {
-      const url = URL.createObjectURL(task.blob()); objectURLs.add(url);
+    save = button(actions, async () => {
+      const version=task.version;save.disabled=true;let blob;try{blob=await task.blob();}catch(error){note.hidden=false;note.textContent=t(error.message);return;}finally{save.disabled=false;}if(version!==task.version)return;
+      const url = URL.createObjectURL(blob); objectURLs.add(url);
       const link = document.createElement('a'); link.href = url; link.download = task.name;
       document.body.append(link); link.click(); link.remove();
       task.status = 'exported'; task.emit();
@@ -285,5 +304,6 @@ if (typeof document !== 'undefined') (() => {
     if (records.some(record => !panel?.contains(record.target))) schedulePlace();
   }).observe(document.body, {childList:true, subtree:true, attributes:true, attributeFilter:['hidden', 'class']});
   // Logout invalidates the source session; chat/list navigation deliberately does not.
+  window.addEventListener('pagehide',event=>{if(event.persisted)task.pause();else task.cancel(false);});
   window.BridgeDownloads = {clear};
 })();

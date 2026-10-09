@@ -295,3 +295,23 @@ test('account switch isolates drafts and clears only that client history, permis
  assert.equal(view.drafts.get('deepseek:same'),'other client draft');assert.equal(view.detailCache.has('["deepseek","same"]'),true);assert.equal(view.workbench.sessions.has('deepseek|local|same'),true);assert.equal(view.attachments.drafts.has('["deepseek","same"]'),true);assert.equal(ui.run('sessionStorage.getItem(\'attachments:["claude","a"]\')'),undefined);
  assert.equal(view.accountDrafts.get('["claude",["first"]]').get('claude:a'),'old account draft');await view.accountChanged('claude',{activeId:'second'},{activeId:'first'});assert.equal(view.drafts.get('claude:a'),'old account draft');
 });
+
+test('permission label and context follow the selected session, including external changes',async()=>{
+ const ui=await opened();ui.view.applyDetail({session:{id:'a',title:'Chat',permissionMode:'acceptEdits',contextUsage:{usedTokens:40000,contextWindow:200000}},capabilities:{permissions:true},messages:[]});
+ assert.equal(ui.view.permissionsButton.textContent,'允许文件编辑');assert.match(ui.view.contextButton.title,/20%/);
+ ui.view.applyDetail({session:{id:'a',title:'Chat',permissionMode:'plan',contextUsage:null},capabilities:{permissions:true},messages:[]});
+ assert.equal(ui.view.permissionsButton.textContent,'计划模式');assert.doesNotMatch(ui.view.contextButton.title,/20%/);
+});
+
+
+test('accepted permission change updates label before polling and ignores an old session',async()=>{
+ const ui=await opened();ui.view.refresh=()=>{};
+ ui.setHandler(async()=>({status:'accepted',mode:'plan'}));
+ await ui.view.mutate('access',{mode:'plan'});
+ assert.equal(ui.view.permissionsButton.textContent,'计划模式');
+ let finish;ui.view.freshDetail=true;ui.setHandler(()=>new Promise(resolve=>finish=resolve));
+ const changing=ui.view.mutate('access',{mode:'acceptEdits'});
+ ui.view.sid='b';ui.view.state={id:'b',permissionMode:'default'};
+ finish({status:'accepted',mode:'acceptEdits'});await changing;
+ assert.equal(ui.view.state.permissionMode,'default');
+});

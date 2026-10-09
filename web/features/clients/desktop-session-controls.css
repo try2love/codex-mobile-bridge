@@ -3,3 +3,5 @@
 .ds-question{min-width:0;margin:12px 0;padding:0;border:0}.ds-question legend{font-size:13px;line-height:1.6}.ds-requests .ds-answer-option{display:flex;align-items:flex-start;gap:8px}.ds-answer-option input[type=radio],.ds-answer-option input[type=checkbox]{width:auto;flex:none;margin-top:3px}
 
 .ds-list .session-indicator.awaiting{background:#d97706}
+
+.ds-context{margin-left:auto;display:inline-flex;align-items:center;justify-content:center}.ds-context-ring{display:block;width:20px;height:20px;border-radius:50%;background:conic-gradient(var(--accent,var(--green)) var(--context-percent,0%),var(--line) 0);mask:radial-gradient(circle,transparent 48%,#000 52%)}.ds-context-ring.unknown{opacity:.5}

@@ -133,7 +133,11 @@ class DesktopSessions:
                     self.reads[key] = future
         if owner:
             try:
-                future.set_result(adapter.call(action, sid, body))
+                value = adapter.call(action, sid, body)
+                if action == 'detail' and isinstance(value, dict):
+                    from bridge.features.workspace.files import workspace_references
+                    value['files'] = workspace_references(value.get('messages', []), value.get('session', {}).get('cwd'))
+                future.set_result(value)
             except BaseException as exc:
                 future.set_exception(exc)
             finally:

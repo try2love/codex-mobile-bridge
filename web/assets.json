@@ -71,5 +71,6 @@
     "hosts/mobile-footer.css"
   ],
   "/host.js": "hosts/environment.js",
-  "/layout.js": "layouts/viewport.js"
+  "/layout.js": "layouts/viewport.js",
+  "/file-actions.js": "features/workspace/file-actions.js"
 }

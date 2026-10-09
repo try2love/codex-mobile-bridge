@@ -141,7 +141,7 @@ class DownloadHttpTests(unittest.TestCase):
         status, headers, data = self.get({**auth, 'Range': 'bytes=0-1048575'})
         self.assertEqual((status, headers['Content-Range'], data), (416, 'bytes */0', b''))
 
-    def test_auth_host_path_symlink_and_original_size_limits_remain_enforced(self):
+    def test_auth_host_path_symlink_and_live_size_limits_remain_enforced(self):
         self.assertEqual(self.get({'Range': 'bytes=0-9'})[0], 401)
         auth = self.login()
         self.assertEqual(self.get({**auth, 'Host': 'evil.test', 'Range': 'bytes=0-9'})[0], 403)
@@ -152,10 +152,14 @@ class DownloadHttpTests(unittest.TestCase):
         self.assertEqual(self.get({**auth, 'Range': 'bytes=0-9'})[0], 400)
         self.server.bridge.artifact = lambda thread, identifier: {'path': self.file, 'name': 'example.bin', 'image': False}
         artifact = '/api/sessions/' + support.THREAD + '/files/' + 'a' * 64
+        self.assertEqual(self.get({**auth, 'Range': 'bytes=0-9'}, artifact)[0], 400)
+        from bridge.features.workspace.preferences import transfer_settings
+        self.server.transfer_directory = self.root / 'policy'
+        transfer_settings(self.server.transfer_directory, {'clickDownloadMiB': 60})
         status, headers, data = self.get({**auth, 'Range': 'bytes=0-9'}, artifact)
         self.assertEqual((status, data), (206, b'\0' * 10))
         self.assertIn(str(MAX_TRANSFER + 1), headers['Content-Range'])
-        with self.file.open('wb') as stream: stream.truncate(50 * 1024 * 1024 + 1)
+        with self.file.open('wb') as stream: stream.truncate(61 * 1024 * 1024)
         self.assertEqual(self.get({**auth, 'Range': 'bytes=0-9'}, artifact)[0], 400)
 
     def test_artifact_parent_symlink_swap_cannot_escape(self):
@@ -171,3 +175,109 @@ class DownloadHttpTests(unittest.TestCase):
                 '/api/sessions/' + support.THREAD + '/files/' + 'a' * 64)
         self.assertEqual(status, 400)
         self.assertNotIn(b'forbidden', body)
+
+class FileActionsTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(dir=support.ROOT / '.tmp')
+        self.root = Path(self.temp.name)
+        self.workspace = Workspace(self.root)
+
+    def tearDown(self):
+        from bridge.features.workspace.workspace import _expire_archives
+        _expire_archives(True)
+        self.temp.cleanup()
+
+    def test_large_file_explicit_download_and_live_threshold(self):
+        from bridge.features.workspace.preferences import transfer_settings
+        path = self.root / 'large.bin'
+        with path.open('wb') as handle: handle.truncate(MAX_TRANSFER + 10)
+        self.assertEqual(transfer_settings(self.root)['clickDownloadMiB'], 20)
+        with self.assertRaisesRegex(ValueError, '限制'):
+            with self.workspace.download('large.bin'): pass
+        transfer_settings(self.root, {'clickDownloadMiB': 30})
+        self.assertEqual(transfer_settings(self.root)['clickDownloadMiB'], 30)
+        with self.workspace.download('large.bin', 'bytes=0-2', limit=None) as (meta, stream):
+            self.assertEqual(stream.read(), b'\0' * 3); tag = meta['etag']
+        with patch.object(self.workspace, '_download', side_effect=AssertionError('must reuse snapshot')):
+            with self.workspace.download('large.bin', 'bytes=3-5', tag, limit=None) as (meta, stream):
+                self.assertEqual(stream.read(), b'\0' * 3)
+        with self.assertRaisesRegex(ValueError, '限制'):
+            with self.workspace.download('large.bin', 'bytes=3-5', tag, limit=1): pass
+        for value in ({'clickDownloadMiB': True}, {'clickDownloadMiB': 0}, {'clickDownloadMiB': 2, 'extra': True}):
+            with self.assertRaises(ValueError): transfer_settings(self.root, value)
+
+    def test_directory_archive_is_resumable_and_keeps_snapshot(self):
+        import io, zipfile
+        folder = self.root / 'reports'; folder.mkdir()
+        (folder / 'empty').mkdir(); (folder / 'data.txt').write_text('contents')
+        with self.workspace.archive('reports', 'bytes=0-31') as (meta, stream):
+            data = stream.read(); tag = meta['etag']; size = meta['size']
+        (folder / 'data.txt').write_text('new contents')
+        with patch.object(self.workspace, '_archive_snapshot', side_effect=AssertionError('must not rebuild')):
+            with self.workspace.archive('reports', 'bytes=32-', tag) as (meta, stream): data += stream.read()
+        self.assertEqual(len(data), size)
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            self.assertEqual(archive.read('reports/data.txt'), b'contents')
+            self.assertIn('reports/empty/', archive.namelist())
+
+    def test_archive_rejects_windows_reparse_attributes(self):
+        folder = self.root / 'folder'; folder.mkdir(); (folder / 'file').write_text('test')
+        original = os.stat
+        def reparse(path, *args, **kwargs):
+            result = original(path, *args, **kwargs)
+            if path == 'file' and kwargs.get('follow_symlinks') is False:
+                return SimpleNamespace(st_mode=result.st_mode, st_file_attributes=0x400)
+            return result
+        with patch('bridge.features.workspace.workspace.os.stat', side_effect=reparse):
+            with self.assertRaises(PermissionError):
+                with self.workspace.archive('folder'): pass
+
+    def test_archive_and_info_reject_links_and_outside_paths(self):
+        (self.root / 'folder').mkdir(); (self.root / 'folder' / 'link').symlink_to(self.root.parent)
+        with self.assertRaises(PermissionError):
+            with self.workspace.archive('folder'): pass
+        with self.assertRaises(PermissionError): self.workspace.info('../file')
+        (self.root / 'linked').symlink_to(self.root / 'folder', target_is_directory=True)
+        with self.assertRaises(OSError):
+            with self.workspace.archive('linked'): pass
+
+class WorkspaceReferenceTests(unittest.TestCase):
+    def test_relative_large_references_stay_inside_own_workspace(self):
+        from bridge.features.workspace.files import workspace_references
+        with tempfile.TemporaryDirectory(dir=support.ROOT / '.tmp') as directory:
+            root = Path(directory); project = root / 'project'; project.mkdir()
+            large = project / 'large.bin'
+            with large.open('wb') as stream: stream.truncate(55 * 1024 * 1024)
+            outside = root / 'outside.txt'; outside.write_text('private')
+            (project / 'escape').symlink_to(outside)
+            messages = [{'role': 'assistant', 'text': '[large](large.bin) [outside](../outside.txt) [link](escape) [remote](https://example.com/data)'}]
+            rows = workspace_references(messages, str(project))
+            self.assertEqual([row['path'] for row in rows], ['large.bin'])
+            self.assertEqual(workspace_references(messages, ''), [])
+            self.assertEqual(workspace_references([{'role': 'user', 'text': '[large](large.bin)'}], str(project)), [])
+
+
+class TransferPolicyHttpTests(unittest.TestCase):
+    setUpClass = classmethod(support.HttpTests.setUpClass.__func__)
+    request = support.HttpTests.request
+    login = support.HttpTests.login
+    setUp = DownloadHttpTests.setUp
+    tearDown = DownloadHttpTests.tearDown
+    get = DownloadHttpTests.get
+
+    def test_live_policy_requires_auth_csrf_and_applies_without_restart(self):
+        import json
+        self.server.transfer_directory = self.root / 'policy'
+        self.assertEqual(self.request('GET', '/api/file-transfer')[0], 401)
+        auth = self.login()
+        self.assertEqual(self.request('GET', '/api/file-transfer', headers=auth)[2]['clickDownloadMiB'], 20)
+        self.assertEqual(self.request('POST', '/api/file-transfer', {'clickDownloadMiB': 1}, {'Cookie': auth['Cookie']})[0], 403)
+        self.assertEqual(self.request('POST', '/api/file-transfer', {'clickDownloadMiB': 1}, auth)[0], 200)
+        self.assertEqual(self.request('GET', '/api/file-transfer', headers=auth)[2]['clickDownloadMiB'], 1)
+        self.assertEqual(self.get(auth)[0], 400)
+        self.assertEqual(self.get({**auth, 'Range': 'bytes=0-9'}, self.url+'&explicit=1')[0], 206)
+        status, _, payload = self.get(auth, self.url+'&info=1')
+        value = json.loads(payload)
+        self.assertEqual(status, 200); self.assertTrue(value['locatable']); self.assertEqual(value['size'], len(self.data))
+        self.assertEqual(value['clickDownloadMiB'], 1)
+        self.assertEqual(self.get(auth, self.url.replace('example.bin', '../escape')+'&explicit=1')[0], 403)

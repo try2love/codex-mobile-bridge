@@ -122,9 +122,13 @@
       'lifecycleState', 'error', 'pendingToolPermissions', 'permissionMode', 'effort', 'effortLevel', 'userSelectedFolders'].filter(k => k in row).map(k => [k, row[k]]));
   }
   function sanitize(method, result) {
-    if (method === 'getContextUsageSummary') return result && typeof result === 'object'
-      ? Object.fromEntries(['usedTokens','totalTokens','total_tokens','contextWindow','maxTokens','max_tokens']
-          .filter(k => typeof result[k] === 'number' && Number.isFinite(result[k])).map(k => [k, result[k]])) : null;
+    if (method === 'getContextUsageSummary') {
+      if(!result||typeof result!=='object')return null;
+      // Desktop's summary uses totalTokens/rawMaxTokens, not billing totals.
+      const used=result.totalTokens,limit=result.rawMaxTokens;
+      return Number.isFinite(used)&&used>=0&&Number.isFinite(limit)&&limit>0
+        ? {usedTokens:used,contextWindow:limit} : null;
+    }
     if (method === 'getAll' && Array.isArray(result)) return result.map(publicSession);
     if (method === 'getSession') return publicSession(result);
     if (method === 'getTranscript' && Array.isArray(result)) return result
@@ -180,8 +184,9 @@
     return Object.fromEntries(rows);
   }
   async function mobileDetail(target,id){
-    const [session,transcript]=await Promise.all([target.getSession(id),target.getTranscript(id)]);
-    return {session:sanitize('getSession',session),transcript:sanitize('getTranscript',transcript)};
+    const [session,transcript,contextUsage]=await Promise.all([target.getSession(id),target.getTranscript(id),
+      typeof target.getContextUsageSummary==='function'?bounded(target.getContextUsageSummary(id),1500,'Context unavailable').then(value=>sanitize('getContextUsageSummary',value)).catch(()=>null):null]);
+    return {session:sanitize('getSession',session),transcript:sanitize('getTranscript',transcript),contextUsage};
   }
   if (config.transport === 'cdp') {
     let stopped = false, highWater = 0;

@@ -3,6 +3,7 @@
 class Workbench {
   constructor({chat, request, csrf, notify, onUnauthorized, openChat}) {
     Object.assign(this, {chat, request, csrf, notify, onUnauthorized, openChat});
+    window.BridgeFileActions?.register(chat,this);
     this.sessions = new Map();
     this.scrollPositions = new WeakMap();
     this.strip = this.node('nav', 'workbench-tabs'); this.strip.dataset.i18nAriaLabel='工作台标签';this.strip.setAttribute("data-i18n-aria-label",'工作台标签');this.strip.setAttribute('aria-label', BridgeI18n.t('工作台标签'));
@@ -205,6 +206,18 @@ class Workbench {
     }
     this.select('files');
   }
+  async locate(session,path) {
+    if(session!==this.current)return;
+    session.search='';session.hidden=true;
+    let tab=session.files.find(t=>t.id==='files');
+    if(!tab){tab={id:'files',name:BridgeI18n.t('文件'),body:this.node('div','wb-browser')};session.files.unshift(tab);}
+    this.select('files');
+    await this.directory(session,tab,path.split('/').slice(0,-1).join('/'));
+    while(session===this.current&&Number.isInteger(tab.next)&&!Array.from(tab.list.children).some(row=>row.dataset.path===path)){const next=tab.next;await this.directory(session,tab,session.directory,true);if(tab.next===next)break;}
+    if(session!==this.current)return;
+    const row=Array.from(tab.list.children).find(row=>row.dataset.path===path);
+    if(row){row.classList.add('selected');row.scrollIntoView({block:'nearest'});row.focus({preventScroll:true});}
+  }
   newTab() {
     if (!this.current) return;
     const dialog = this.node('dialog', 'picker wb-new-tab'), head = this.node('div', 'picker-head');
@@ -278,6 +291,7 @@ class Workbench {
       tab.body.querySelector('.wb-load-more')?.remove();
       for (const entry of result.entries) {
         const row = this.raw(this.button('', () => { if (entry.kind === 'directory') { session.search = ''; this.directory(session, tab, entry.path); } else this.preview(session, entry); }, entry.name));
+        row.dataset.path=entry.path;window.BridgeFileActions?.bindRow(row,this,session,entry);
         row.className = 'wb-file'; row.disabled = entry.kind === 'blocked';
         row.append(this.fileIcon(entry), this.raw(this.node('span', 'wb-file-name', entry.name)), this.node('span', 'wb-file-meta', entry.kind === 'directory' ? BridgeI18n.t('文件夹') : entry.kind === 'blocked' ? BridgeI18n.t('链接或特殊文件') : this.size(entry.size)));
         tab.list.append(row);
@@ -300,13 +314,13 @@ class Workbench {
       const head = this.node('div', 'wb-preview-head'), title = this.node('div');
       title.append(this.raw(this.node('strong', '', result.name)), this.node('small', '', this.size(result.size) + ' · ' + entry.path));
       head.append(title);
-      if (result.size <= 20 * 1024 * 1024) { const download = this.node('a', 'wb-download', BridgeI18n.t('下载')); download.href = this.url(session, 'download', entry.path); download.download = result.name; head.append(download); }
+      { const download = this.node('a', 'wb-download', BridgeI18n.t('下载')); download.href = this.url(session, 'download', entry.path); download.download = result.name; head.append(download); }
       const content = this.node('div', 'wb-preview-content');
       if (result.kind === 'image') { const image = this.node('img'); image.src = 'data:' + result.mime + ';base64,' + result.data; image.alt = result.name; window.BridgeImageViewer?.registerWorkspaceImage(image, result); content.append(image); }
       else if (result.kind === 'text') {
         if (/\.md$/i.test(result.name)) renderMarkdown(content, result.text);
         else { const pre = this.node('pre'); pre.append(this.node('code', '', result.text)); content.append(pre); }
-      } else content.append(this.node('p', 'wb-empty', result.size > 20 * 1024 * 1024 ? BridgeI18n.t('文件超过 20 MB，请在电脑上处理。') : BridgeI18n.t('此文件暂不支持在线预览，可下载后打开。')));
+      } else content.append(this.node('p', 'wb-empty', BridgeI18n.t('此文件暂不支持在线预览，可下载后打开。')));
       tab.body.replaceChildren(head, content);
     } catch (error) { if (error.name !== 'AbortError') tab.body.replaceChildren(this.node('p', 'wb-status error', error.message), this.button(BridgeI18n.t('重试'), () => { this.close(id); this.preview(session, entry); })); }
   }

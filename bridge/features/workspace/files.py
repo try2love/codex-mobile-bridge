@@ -24,7 +24,7 @@ def path_identity(value):
         return Path(os.path.normcase(os.path.abspath(str(path))))
 
 
-def reference_path(value):
+def reference_path(value, allow_relative=False):
     """Resolve a local file reference without allowing remote URL access."""
     if not isinstance(value, str) or not value:
         return None
@@ -52,7 +52,7 @@ def reference_path(value):
         if parsed.scheme:
             return None
         path = Path(unquote(parsed.path or value))
-        return path if path.is_absolute() else None
+        return path if path.is_absolute() or allow_relative and not parsed.netloc else None
     except (ValueError, OSError):
         return None
 
@@ -105,7 +105,7 @@ def referenced_model_images(state, image_views_only=False):
 
 
 def artifact_paths(state, codex_home):
-    roots = [Path(codex_home) / 'visualizations']
+    roots = [Path(codex_home) / 'visualizations'] if codex_home else []
     if state.get('cwd'):
         roots.append(Path(state['cwd']))
     roots = [root.resolve() for root in roots]
@@ -126,12 +126,12 @@ def artifact_paths(state, codex_home):
         # Model-authored Markdown and response attachments remain bound to the
         # workspace/visualization roots even when they name an image suffix.
         value = re.sub(r':\d+$', '', raw)
-        path = reference_path(value)
+        path = reference_path(value, allow_relative=bool(state.get('cwd')))
         if not path:
             continue
         try:
-            path = path.resolve(strict=True)
-            if not any(root in path.parents for root in roots) or not path.is_file() or path.stat().st_size > 50 * 1024 * 1024:
+            path = ((Path(state['cwd']) / path) if not path.is_absolute() and state.get('cwd') else path).resolve(strict=True)
+            if not any(root in path.parents for root in roots) or not path.is_file():
                 continue
         except OSError:
             continue
@@ -146,7 +146,7 @@ def artifact_paths(state, codex_home):
         if path not in trusted_views:
             continue
         try:
-            if not path.is_file() or path.stat().st_size > 50 * 1024 * 1024:
+            if not path.is_file():
                 continue
         except OSError:
             continue
@@ -160,3 +160,14 @@ def artifact_paths(state, codex_home):
         result[key] = {'path': path, 'reference': reference, 'name': path.name,
                        'image': path.suffix.lower() in IMAGE_SUFFIXES}
     return result
+
+
+def workspace_references(messages, cwd):
+    """Expose only file links inside this client's own workspace."""
+    if not cwd or not Path(cwd).is_absolute(): return []
+    state = {'cwd': cwd, 'turns': [{'items': [{'type': 'agentMessage', 'text': row.get('text', '')}
+             for row in messages if row.get('role') == 'assistant']} ]}
+    root = Path(cwd).resolve()
+    return [{'id': key, 'name': value['name'], 'reference': value['reference'],
+             'path': value['path'].relative_to(root).as_posix(), 'image': False}
+            for key, value in artifact_paths(state, None).items()]

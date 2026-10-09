@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('bridgeDesktop',{
   language:()=>ipcRenderer.invoke('bridge:language'),
   setLanguage:value=>ipcRenderer.invoke('bridge:set-language',value),
   notificationWatches:value=>ipcRenderer.invoke('bridge:notification-watches',value),
+  transferSettings:value=>ipcRenderer.invoke('bridge:transfer-settings',value),
   devices:value=>ipcRenderer.invoke('bridge:devices',value),
   sharedRelay:value=>ipcRenderer.invoke('bridge:shared-relay',value),
   pairing:value=>ipcRenderer.invoke('bridge:pairing',value),

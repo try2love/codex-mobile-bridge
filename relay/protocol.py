@@ -10,7 +10,7 @@ THREAD = re.compile(r'/api/sessions/' + UUID + r'(?:/(.*))?')
 DESKTOP = re.compile(r'/api/desktop-sessions/(?:deepseek|claude)/(.*)')
 READ = {'', 'catalog', 'poll', 'timeline', 'detail', 'changes', 'notifications',
         'side-chat', 'terminal', 'subagents', 'workspace', 'workspace/preview',
-        'workspace/download', 'workspace/git-status', 'workspace/git-diff',
+        'workspace/download', 'workspace/info', 'workspace/git-status', 'workspace/git-diff',
         'workspace/git-history', 'workspace/git-commit', 'workspace/git-history-diff',
         'workspace/git-branches'}
 WRITE = {'send', 'stop', 'history', 'respond', 'reconnect', 'queue', 'settings',
@@ -48,7 +48,7 @@ def validate(method, path, size=0):
     # /api/clients permits explicit disable, native quit, and confirmed Windows
     # forceDesktop; the gateway still enforces auth, CSRF and target verification.
     # Discovery, installation, account configuration and DSH recovery stay local.
-    if p.path == '/api/clients':
+    if p.path in ('/api/clients', '/api/file-transfer'):
         return
     desktop = DESKTOP.fullmatch(p.path)
     if desktop:
