@@ -215,6 +215,72 @@ class ClientLifecycleTests(unittest.TestCase):
         self.assertTrue(self.manager.enabled('claude'))
         self.stop.assert_not_called()
 
+    def test_explicit_force_bypasses_tasks_but_not_native_identity_checks(self):
+        native = Mock(side_effect=self.finish)
+        self.claude.status.return_value = {'connected': False}
+        self.dsh.call.side_effect = BridgeUnavailable('offline')
+        with patch.dict('sys.modules', {'bridge.windows_force_exit': SimpleNamespace(force_stop_client=native)}), \
+                patch('bridge.integrations.manager.sys.platform', 'win32'), \
+                patch.object(self.manager, 'clients', return_value={'clients': []}), \
+                patch.object(self.manager, '_assert_idle', side_effect=AssertionError('force is an explicit task interruption')) as idle:
+            for provider in ('codex', 'claude', 'deepseek'):
+                self.running = True
+                self.manager.toggle_client({'provider': provider, 'enabled': False, 'quitDesktop': True, 'forceDesktop': True})
+                self.assertFalse(self.manager.enabled(provider))
+                self.assertEqual(native.call_args.args[0]['id'], provider)
+                self.assertIn('state', native.call_args.kwargs)
+        self.assertEqual(native.call_count, 3)
+        self.assertTrue(self.manager.gateway_running)
+        self.assertFalse(self.manager.closed.is_set())
+        idle.assert_not_called(); self.stop.assert_not_called(); self.stop_dsh.assert_not_called()
+        self.claude.cancel.assert_any_call(persist=False)
+        self.claude.cancel.assert_any_call()
+
+    def test_force_failure_keeps_enabled_state_and_reports_original_error(self):
+        native = Mock(side_effect=ValueError('fixture identity changed'))
+        with patch.dict('sys.modules', {'bridge.windows_force_exit': SimpleNamespace(force_stop_client=native)}), \
+                patch('bridge.integrations.manager.sys.platform', 'win32'), \
+                patch('bridge.integrations.manager.private_json') as save:
+            with self.assertRaisesRegex(ValueError, 'fixture identity changed'):
+                self.manager.toggle_client({'provider': 'claude', 'enabled': False, 'quitDesktop': True, 'forceDesktop': True})
+        self.assertTrue(self.manager.enabled('claude'))
+        save.assert_not_called(); self.stop.assert_not_called()
+        self.claude.reconnect.assert_called_once_with()
+
+    def test_force_requires_explicit_disabled_windows_desktop_choice(self):
+        base = {'provider': 'claude', 'enabled': False, 'quitDesktop': True, 'forceDesktop': True}
+        cases = [{**base, 'forceDesktop': value} for value in (None, 'true', 1, 0, [])]
+        cases += [{**base, 'enabled': True}, {**base, 'quitDesktop': False},
+                  {'provider': 'claude', 'enabled': False, 'forceDesktop': True}]
+        with patch('bridge.integrations.manager.sys.platform', 'win32'):
+            for value in cases:
+                with self.subTest(value=value), self.assertRaises(ValueError):
+                    self.manager.toggle_client(value)
+            self.manager.gateway_running = False
+            with self.assertRaisesRegex(ValueError, '强制结束请求无效'):
+                self.manager.toggle_client(base)
+            self.manager.gateway_running = True
+        with self.assertRaisesRegex(ValueError, '强制结束请求无效'):
+            self.manager.toggle_client(base)
+        self.assertTrue(self.manager.enabled('claude'))
+        self.stop.assert_not_called()
+
+    def test_normal_quit_never_uses_force_path(self):
+        native = Mock(side_effect=AssertionError('normal quit must not force'))
+        with patch.dict('sys.modules', {'bridge.windows_force_exit': SimpleNamespace(force_stop_client=native)}), \
+                patch('bridge.integrations.manager.sys.platform', 'win32'), \
+                patch.object(self.manager, 'clients', return_value={'clients': []}):
+            self.manager.toggle_client({'provider': 'codex', 'enabled': False, 'quitDesktop': True})
+        native.assert_not_called(); self.stop.assert_called_once()
+
+    def test_force_choice_only_advertised_for_windows_running_gateway(self):
+        self.assertTrue(all(not row.get('canForceQuit') for row in self.manager.clients(refresh=True)['clients']))
+        with patch('bridge.integrations.manager.sys.platform', 'win32'), \
+                patch('bridge.integrations.manager.windows_session.status', return_value={'state': 'locked', 'interactive': False}):
+            self.assertTrue(all(row['canForceQuit'] for row in self.manager.clients(refresh=True)['clients']))
+            self.manager.gateway_running = False
+            self.assertTrue(all(not row['canForceQuit'] for row in self.manager.clients(refresh=True)['clients']))
+
     def test_windows_dsh_exit_uses_native_host_quit(self):
         with patch('bridge.integrations.manager.sys.platform', 'win32'):
             self.manager.toggle_client({'provider': 'deepseek', 'enabled': False, 'quitDesktop': True})

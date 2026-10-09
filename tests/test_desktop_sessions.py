@@ -120,6 +120,19 @@ class HttpAdapters(unittest.TestCase):
     tearDown = test_bridge.HttpTests.tearDown
     request = test_bridge.HttpTests.request
     login = test_bridge.HttpTests.login
+    def test_force_desktop_choice_requires_auth_csrf_and_exact_payload(self):
+        manager = self.server.desktop_sessions = Mock()
+        manager.toggle_client.return_value = {'clients': []}
+        body = {'provider': 'codex', 'enabled': False, 'quitDesktop': True, 'forceDesktop': True}
+        self.assertEqual(self.request('POST', '/api/clients', body)[0], 401)
+        headers = self.login()
+        self.assertEqual(self.request('POST', '/api/clients', body, {'Cookie': headers['Cookie']})[0], 403)
+        manager.toggle_client.assert_not_called()
+        self.assertEqual(self.request('POST', '/api/clients', {**body, 'pid': 123}, headers)[0], 400)
+        manager.toggle_client.assert_not_called()
+        self.assertEqual(self.request('POST', '/api/clients', body, headers)[0], 200)
+        manager.toggle_client.assert_called_once_with(body)
+
     def test_explicit_claude_initialization_requires_auth_csrf_and_forwards_choice(self):
         manager = self.server.desktop_sessions = Mock()
         manager.toggle_client.return_value = {'clients': []}
