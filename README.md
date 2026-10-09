@@ -1,4 +1,6 @@
 <p align="center">
+
+开发与定向修改请先阅读 [代码架构导航](docs/architecture/README.md)，按功能、客户端和操作系统定位实现；测试入口见 [验证指南](tests/README.md)。
   <img src="site/assets/icon.png" alt="Codex Mobile Bridge" width="112" height="112">
 </p>
 

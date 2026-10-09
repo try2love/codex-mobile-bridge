@@ -21,7 +21,7 @@ macOS 更新签名与 Apple Developer ID、公证是不同机制；该功能不�
 ## 发布流程
 
 1. 修改 `package.json` / `package-lock.json` 版本和 `RELEASE_NOTES.md`。
-2. 在仓库 Actions Secret 中配置 `UPDATE_SIGNING_KEY`，值为与 `desktop/update-public-key.pem` 对应的 Ed25519 PKCS#8 PEM 私钥。私钥不提交、不放入构建产物，离线保存备份。不要重新生成公钥覆盖现有更新身份。
+2. 在仓库 Actions Secret 中配置 `UPDATE_SIGNING_KEY`，值为与 `desktop/features/updates/update-public-key.pem` 对应的 Ed25519 PKCS#8 PEM 私钥。私钥不提交、不放入构建产物，离线保存备份。不要重新生成公钥覆盖现有更新身份。
 3. 运行单元测试及 Desktop builds 的五个目标：macOS arm64、macOS x64、Windows x64、Ubuntu x64 和 Ubuntu ARM64。Mac 网关与 Electron 在对应架构的 runner 上分别构建。验证 DMG 挂载、Applications 快捷方式、复制安装、ZIP 解压、架构及完整性签名、真实 App/网关重启、失败恢复和配置保留。
 4. 推送与版本匹配的 `v…` tag。`Signed desktop release` 验证版本及签名身份，构建上述五个目标，上传完整的草稿 Release，最后发布。手动运行时须选择已存在的版本 tag；`publish=false` 只创建草稿。
 5. 发布资产包括 macOS arm64 DMG/ZIP、macOS x64 DMG/ZIP、Windows x64 ZIP/Setup、Linux x64/ARM64 的 `.deb` / AppImage、`SHA256SUMS.txt` 和 `bridge-update.json`。DMG 为 Mac 首选安装包，ZIP 继续用于应用内更新；签名清单必须包含全部三个目标的 ZIP，校验文件同时包含 DMG、ZIP、EXE、DEB 和 AppImage。验证 Release 内容及 App 检测结果。工作流不会覆写同名 Release；失败的草稿需检查原因后由维护者处理。

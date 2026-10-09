@@ -28,7 +28,7 @@ Harness 自动调整配置文件的换行和排版不会影响接入识别。只
 
 自动检查覆盖：macOS、Windows、Linux 安装位置发现，后续安装重扫，网关停止时的配置与账号管理，插件幂等安装、认证与 CSRF、请求去重、权限回答及中继转发。平台模拟检查不替代对应系统的真实桌面联调；模型回复、工具执行和客户端版本兼容性需要分别验收。Claude 原生组件已在 macOS 编译并通过焦点保护自检，完整接入仍需本机系统权限和真实连接回执验证；Windows 原生操作尚待真机验证。
 
-Claude 连接器及部分 Harness 插件代码参考 MIT 项目 [2389859005/coding-mobile](https://github.com/2389859005/coding-mobile/tree/7a8f003dcb88bb28c6a043b7c8531e337c6b8c9b)。归属及许可保留在 `bridge/integrations/LICENSE.coding-mobile`。
+Claude 连接器及部分 Harness 插件代码参考 MIT 项目 [2389859005/coding-mobile](https://github.com/2389859005/coding-mobile/tree/7a8f003dcb88bb28c6a043b7c8531e337c6b8c9b)。归属及许可保留在 `bridge/clients/LICENSE.coding-mobile`。
 
 ## 可选：Harness 官方 Web 转发
 

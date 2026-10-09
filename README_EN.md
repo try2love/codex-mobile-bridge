@@ -1,4 +1,6 @@
 <p align="center">
+
+For feature and platform-specific changes, start with the [code architecture guide](docs/architecture/README.md) and [test guide](tests/README.md).
   <img src="site/assets/icon.png" alt="Codex Mobile Bridge" width="112" height="112">
 </p>
 

@@ -1,5 +1,7 @@
 # 实现说明
 
+代码目录、修改入口及平台边界见 [开发架构与修改导航](docs/architecture/README.md)。本文继续记录运行机制和安全约束。
+
 ## 目标与执行边界
 
 手机网页控制 Codex App 聊天，并可在已保存项目中新建空聊天。网关不拥有模型执行器，不替换已有聊天。已有聊天的执行与审批操作绑定 `hostId + conversationId + ownerClientId`，由 App 中相应 owner 执行。重命名是独立的元数据操作，使用所选主机的短期官方运行时调用 `thread/name/set`，不加载执行任务、不调用 `turn/start`，也不改变 provider、认证或审批策略。
@@ -34,7 +36,7 @@ SSH 参数包含非交互认证、严格主机指纹检查和禁用额外转发�
 
 登录后的 `GET /api/projects` 返回 App 已保存的本机及 SSH 项目；`POST /api/sessions` 接受项目键、名称和请求 UUID。服务端重新解析已保存项目，不接受客户端任意目录、主机、程序路径或配置覆盖。创建接口沿用 Host、Origin、登录和 CSRF 校验。
 
-`bridge/create.py` 使用所选主机的官方运行时完成 `initialize → thread/start → thread/name/set → thread/read(includeTurns=true)`，随后关闭 stdio 并等待进程退出。读取完整空历史是必需步骤：仅设置名称会留下目录元数据，却未必落盘可恢复的 rollout。整个辅助进程不调用 `turn/start`，不会发送模型任务。新线程使用该主机、工作目录的运行时默认配置；不克隆已有聊天的临时设置。
+`bridge/features/sessions/create.py` 使用所选主机的官方运行时完成 `initialize → thread/start → thread/name/set → thread/read(includeTurns=true)`，随后关闭 stdio 并等待进程退出。读取完整空历史是必需步骤：仅设置名称会留下目录元数据，却未必落盘可恢复的 rollout。整个辅助进程不调用 `turn/start`，不会发送模型任务。新线程使用该主机、工作目录的运行时默认配置；不克隆已有聊天的临时设置。
 
 创建结果按 UUID 写入网关自己的 `creations.json`，重试复用同一聊天；请求可能提交但结果未知时不自动重放。辅助进程退出后，通过 `codex://threads/<id>?hostId=...` 打开原桌面 App，桌面接管后才允许发送和审批。此步骤会切换桌面当前页面；打开失败保留已创建 ID。SSH 创建借助已有非交互 SSH 通道执行相同辅助代码，不在远端安装网关。
 
@@ -96,44 +98,44 @@ Windows 自动发现用户目录中的 App 运行时、常见安装目录、MSIX
 
 桌面控制器通过白名单 Electron IPC 调用 `desktop.py` 的独立 JSON 工作进程；网关启停、更新和网络配置管理不监听网络。PushPlus 全局配置与测试允许通过手机 HTTP 操作，必须经过 Host、Origin、登录及写入 CSRF 校验，仅接受 PushPlus 字段，不返回 Token。该配置影响整个网关的关注聊天，不按登录设备隔离。打包版本执行随包提供的 PyInstaller 运行时，网关以独立后台进程运行，退出控制器不会停止网关。Windows 使用 NSIS 安装包或完整 ZIP 目录，避免临时自解压目录随控制器退出被删除而破坏后台运行时。
 
-Windows `desktop/tray.cjs` 管理托盘状态、手机地址和两种退出动作；仅显式停止才调用网关的协作停止协议。主窗口关闭时隐藏，第二次启动恢复原窗口；退出前销毁托盘并允许窗口关闭。状态请求合并，菜单操作避免重复提交；停止失败保留控制器并显示错误。macOS 不创建此托盘，保留原窗口生命周期。
+Windows `desktop/shell/tray.cjs` 管理托盘状态、手机地址和两种退出动作；仅显式停止才调用网关的协作停止协议。主窗口关闭时隐藏，第二次启动恢复原窗口；退出前销毁托盘并允许窗口关闭。状态请求合并，菜单操作避免重复提交；停止失败保留控制器并显示错误。macOS 不创建此托盘，保留原窗口生命周期。
 
 网关停止使用带随机实例令牌的本地控制文件，由服务主动调用 `shutdown`，再关闭隧道、IPC 和 HTTP。`stop.py --config` 与启动配置对应，不依赖 Unix 信号或 Windows PID 强制终止。文件统一使用 UTF-8；Windows 权限继承目录 ACL。
 
 | 模块 | 职责 |
 | --- | --- |
 | `run.py` / `stop.py` | 启动参数、进程记录、停止 |
-| `bridge/ipc.py` | 原生帧传输、请求白名单和事件分发 |
-| `bridge/transport.py` | Unix socket / Windows 命名管道字节流 |
-| `bridge/lifecycle.py` | 跨平台停止请求与实例令牌校验 |
-| `bridge/service.py` | 会话同步、操作路由、去重和队列 |
-| `bridge/store.py` / `remote.py` | 只读发现、SSH、项目与主机映射 |
-| `bridge/model.py` | 历史和请求的规范化 |
-| `bridge/catalog.py` | 模型与 Skill 元数据 |
-| `bridge/create.py` | 创建并持久化空聊天，退出辅助运行时，交给桌面接管 |
+| `bridge/clients/codex/ipc.py` | 原生帧传输、请求白名单和事件分发 |
+| `bridge/clients/codex/transport.py` | Unix socket / Windows 命名管道字节流 |
+| `bridge/app/lifecycle.py` | 跨平台停止请求与实例令牌校验 |
+| `bridge/app/service.py` | 会话同步、操作路由、去重和队列 |
+| `bridge/features/sessions/store.py` / `remote.py` | 只读发现、SSH、项目与主机映射 |
+| `bridge/features/sessions/model.py` | 历史和请求的规范化 |
+| `bridge/clients/codex/catalog.py` | 模型与 Skill 元数据 |
+| `bridge/features/sessions/create.py` | 创建并持久化空聊天，退出辅助运行时，交给桌面接管 |
 | `deploy/nas/` | NAS HTTPS 反代教程及可选 Docker 入口 |
-| `bridge/auth.py` / `httpd.py` | 登录、同源校验、HTTP、SSE、轮询 |
-| `bridge/files.py` | 引用文件的范围校验与解析 |
-| `bridge/tunnel.py` | 临时 HTTPS 隧道生命周期 |
+| `bridge/features/auth/auth.py` / `httpd.py` | 登录、同源校验、HTTP、SSE、轮询 |
+| `bridge/features/workspace/files.py` | 引用文件的范围校验与解析 |
+| `bridge/features/network/tunnel.py` | 临时 HTTPS 隧道生命周期 |
 | `web/` | 手机浏览器界面 |
 | `tests/` | 合成数据与模拟 App IPC 回归 |
 
 ## 固定 HTTPS 入口
 
-桌面 `connections` 保存可独立启用的 Quick Tunnel、自有服务器 SSH 和 NAS 配置，局域网监听由 `lan` 控制，`lanAddresses: null` 保持所有 IPv4 网卡监听，数组仅绑定选中地址，空数组只保留回环。各监听器共享同一个认证、配对、通知和会话状态。`localAccess: false` 关闭本机网页入口，回环仅允许无会话信息的私有 `/api/health` 检查和保留 Host 的已授权 HTTPS 隧道；停机关闭全部监听器。桌面用系统网卡名称和 IPv4 地址呈现选择，地址不可绑定时失败，不回退至全网卡。旧单入口配置在读取时转换，保存前不改写文件。`bridge/access.py` 验证地址，生成不含凭据的 Caddy/Nginx Compose 部署包；所有启用的固定 URL 自动加入允许源，第一个启用的固定 URL 优先用于通知链接（显式 clickBase 仍优先）。停用或删除配置时移除对应托管固定源，保留其他手动 HTTPS 源。
+桌面 `connections` 保存可独立启用的 Quick Tunnel、自有服务器 SSH 和 NAS 配置，局域网监听由 `lan` 控制，`lanAddresses: null` 保持所有 IPv4 网卡监听，数组仅绑定选中地址，空数组只保留回环。各监听器共享同一个认证、配对、通知和会话状态。`localAccess: false` 关闭本机网页入口，回环仅允许无会话信息的私有 `/api/health` 检查和保留 Host 的已授权 HTTPS 隧道；停机关闭全部监听器。桌面用系统网卡名称和 IPv4 地址呈现选择，地址不可绑定时失败，不回退至全网卡。旧单入口配置在读取时转换，保存前不改写文件。`bridge/features/network/access.py` 验证地址，生成不含凭据的 Caddy/Nginx Compose 部署包；所有启用的固定 URL 自动加入允许源，第一个启用的固定 URL 优先用于通知链接（显式 clickBase 仍优先）。停用或删除配置时移除对应托管固定源，保留其他手动 HTTPS 源。
 
-`bridge/ssh_tunnel.py` 管理独立 OpenSSH 子进程，复用已有 SSH 目标和身份，以 `-R 127.0.0.1:服务器端口:127.0.0.1:电脑端口` 回程。启用 BatchMode、StrictHostKeyChecking、ExitOnForwardFailure 与保活，不复用 ControlMaster。失败后台退避重连，不阻塞 LAN 服务。各 SSH 配置独立保存状态与日志，状态关联当前网关 PID；服务器 GatewayPorts 应使用 no/clientspecified，不能强制公网绑定。
+`bridge/features/network/ssh_tunnel.py` 管理独立 OpenSSH 子进程，复用已有 SSH 目标和身份，以 `-R 127.0.0.1:服务器端口:127.0.0.1:电脑端口` 回程。启用 BatchMode、StrictHostKeyChecking、ExitOnForwardFailure 与保活，不复用 ControlMaster。失败后台退避重连，不阻塞 LAN 服务。各 SSH 配置独立保存状态与日志，状态关联当前网关 PID；服务器 GatewayPorts 应使用 no/clientspecified，不能强制公网绑定。
 
 `/api/auth` 返回非秘密的本次运行 instanceId。固定入口检测仅从本机管理进程请求本机与已保存 HTTPS 地址，核对实例一致，不携带登录凭据，不跟随重定向。配置包导出、剪贴板和入口检测仅经受保护的本机 Electron IPC 提供，手机 HTTP 不提供这些操作。
 
 临时 Cloudflare 握手在后台进行，避免等待外网隧道拖延 LAN 和其他入口的服务。关闭网关时停止各隧道。
 
-`web/i18n.js` 是电脑与手机共享的简体中文 / English 文案表，无外部翻译服务。静态节点通过 data-i18n 标记，动态界面显式翻译；聊天正文、命令、用户输入及外部模型/Skill 描述不进入翻译流程。语言保存在各界面的 localStorage，切换不重载会话或提交表单。日志按源展示最新记录优先，保留多行错误记录的内部顺序。
+`web/shared/i18n.js` 是电脑与手机共享的简体中文 / English 文案表，无外部翻译服务。静态节点通过 data-i18n 标记，动态界面显式翻译；聊天正文、命令、用户输入及外部模型/Skill 描述不进入翻译流程。语言保存在各界面的 localStorage，切换不重载会话或提交表单。日志按源展示最新记录优先，保留多行错误记录的内部顺序。
 
 
 ## 一次性扫码登录
 
-`bridge/pairing.py` 为每个允许源保存一个有效的内存授权：32 字节随机值的 SHA-256 摘要、随机 ID、5 分钟过期时间与消费状态。刷新替换同源旧授权，消费在锁内完成，正确源且未过期的授权只生成一次标准 12 小时登录会话。网关重启不恢复授权和会话。失败兑换限速独立于密码登录。
+`bridge/features/auth/pairing.py` 为每个允许源保存一个有效的内存授权：32 字节随机值的 SHA-256 摘要、随机 ID、5 分钟过期时间与消费状态。刷新替换同源旧授权，消费在锁内完成，正确源且未过期的授权只生成一次标准 12 小时登录会话。网关重启不恢复授权和会话。失败兑换限速独立于密码登录。
 
 签发只走本机 stdio/Electron IPC 与 `GatewayControl` 的私有文件通道：每实例随机 `.pairing-*` 目录，独立请求/响应文件和控制令牌，响应读取后删除、服务正常退出时清理目录。Windows 继承本机目录 ACL；数据目录不能放在共享公共目录。HTTP 没有签发接口。桌面签发前检查地址属于当前显示入口，并从该入口读取 `/api/auth` 核对本机 instanceId；公网探测不携带凭据、不跟随重定向。
 
@@ -143,9 +145,9 @@ Electron 主进程使用 qrcode 本地生成 PNG，渲染器接收图片、授�
 
 ## 桌面应用更新
 
-`desktop/updater.cjs` 从固定 GitHub Release 源获取签名清单，使用内置 Ed25519 公钥验证原始载荷，再流式下载并核对长度与 SHA-256。自动检查不自动安装；安装按钮只通过受来源校验的桌面 IPC 调用，HTTP 网关无更新管理接口。
+`desktop/features/updates/updater.cjs` 从固定 GitHub Release 源获取签名清单，使用内置 Ed25519 公钥验证原始载荷，再流式下载并核对长度与 SHA-256。自动检查不自动安装；安装按钮只通过受来源校验的桌面 IPC 调用，HTTP 网关无更新管理接口。
 
-`bridge/updater.py` 负责原安装目录旁的准备、替换与恢复。准备阶段拒绝路径穿越和危险链接，核对包版本、平台、macOS 签名和内置运行时。独立复制的旧运行时等控制面板退出、协作停止原网关后替换目录，再等待新面板确认加载并恢复此前运行的网关。失败时尝试回滚；配置目录保持独立。发布签名身份和事务恢复操作见 [桌面更新文档](docs/desktop-updates.md)。
+`bridge/features/updates/gateway.py` 负责原安装目录旁的准备、替换与恢复。准备阶段拒绝路径穿越和危险链接，核对包版本、平台、macOS 签名和内置运行时。独立复制的旧运行时等控制面板退出、协作停止原网关后替换目录，再等待新面板确认加载并恢复此前运行的网关。失败时尝试回滚；配置目录保持独立。发布签名身份和事务恢复操作见 [桌面更新文档](docs/desktop-updates.md)。
 
 
 ## PR8 验收反馈调整
