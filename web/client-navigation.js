@@ -59,7 +59,7 @@ class ClientNavigation {
     if(this.loading||this.pending.size||this.choosing||document.getElementById('app').hidden)return;
     this.loading=true;const revision=this.revision;
     try{const data=await ClientLifecycle.request(signal=>this.request('/api/clients',undefined,signal),{timeout:this.statusTimeout??10000,uncertain:false,message:'客户端状态读取超时，请重试。'});if(revision===this.revision){ClientLifecycle.reconcile(this.operationFailures,data.clients);this.applyClients(data);}}
-    catch(error){this.notify(error.message);}finally{this.loading=false;}
+    catch(error){this.notify(error.message);}finally{this.loading=false;this.paint();}
   }
   poll(fast=false){
     if(document.hidden||document.getElementById('app').hidden||this.hasUncertain()||(fast&&!this.clients.some(client=>ClientLifecycle.connection(client).waiting)))return;

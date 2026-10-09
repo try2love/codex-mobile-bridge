@@ -10,7 +10,8 @@ class DesktopSessionsView {
     const archive=this.node('label','archive');this.archived=this.node('input');this.archived.type='checkbox';this.archived.onchange=()=>this.renderList();archive.append(this.archived,this.translated('span','已归档'));filters.append(display,archive);
     this.surface=this.node('select','ds-surface');this.label(this.surface,'会话类型');for(const [id,title] of [['all','全部会话'],['code','Code'],['cowork','Cowork']])this.surface.add(new Option(BridgeI18n.t(title),id));this.surface.onchange=()=>this.renderList();
     this.listStatus=this.node('p','muted ds-list-status');this.listStatus.setAttribute('role','status');this.connectionRetry=this.button('重试连接',async()=>{const provider=this.provider;if(this.retryingClient||!this.retryClient)return;this.retryingClient=provider;this.renderConnectionStatus();try{await this.retryClient(provider);}finally{this.retryingClient=null;this.renderConnectionStatus();}});this.connectionRetry.hidden=true;
-    this.connectionInitialize=this.button('初始化连接',async()=>{const provider=this.provider;if(this.initializingClient||!this.initializeClient)return;this.initializingClient=provider;this.renderConnectionStatus();try{await this.initializeClient(provider);}finally{this.initializingClient=null;this.renderConnectionStatus();}});this.connectionInitialize.hidden=true;this.rowsRoot=this.node('div','sessions');this.list.append(this.search,filters,this.surface,this.listStatus,this.connectionRetry,this.connectionInitialize,this.rowsRoot);
+    this.connectionInitialize=this.button('初始化连接',async()=>{const provider=this.provider;if(this.initializingClient||!this.initializeClient)return;this.initializingClient=provider;this.renderConnectionStatus();try{await this.initializeClient(provider);}finally{this.initializingClient=null;this.renderConnectionStatus();}});this.connectionInitialize.hidden=true;
+    this.connectionNotice=this.node('p','muted');this.connectionNotice.hidden=true;this.connectionRefresh=this.button('刷新状态',async()=>{if(this.refreshingClient||!this.refreshClients)return;this.refreshingClient=true;this.renderConnectionStatus();try{await this.refreshClients();}finally{this.refreshingClient=false;this.renderConnectionStatus();}});this.connectionRefresh.hidden=true;this.rowsRoot=this.node('div','sessions');this.list.append(this.search,filters,this.surface,this.listStatus,this.connectionNotice,this.connectionRetry,this.connectionInitialize,this.connectionRefresh,this.rowsRoot);
     this.welcome=this.node('div','welcome ds-welcome');const logo=this.node('img','mark large');logo.src='/icon.png';logo.alt='';logo.width=72;logo.height=72;this.welcome.append(logo,this.translated('h1','从一条聊天继续'),this.translated('p','选择电脑上的聊天，查看进度或发送消息。','muted'));
     this.conversation=this.node('section','ds-conversation chat');this.conversation.hidden=true;this.main.append(this.welcome,this.conversation);
     this.back=this.iconButton('返回聊天列表','m15 5-7 7 7 7',()=>{if(!this.workbench.back())this.backToList();});this.back.classList.add('ds-back');
@@ -38,17 +39,18 @@ class DesktopSessionsView {
   button(text,fn){const n=this.translated('button',text,'plain');n.type='button';n.onclick=async()=>{try{return await fn();}catch(e){this.notify(BridgeI18n.t(e.message));}};return n;}
   iconButton(text,path,fn){const button=this.button('',fn);button.className='icon-button';this.label(button,text);button.title=BridgeI18n.t(text);const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('class','header-icon');svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('aria-hidden','true');const shape=document.createElementNS(svg.namespaceURI,'path');shape.setAttribute('d',path);svg.append(shape);button.append(svg);return button;}
   path(action,sid=this.sid,provider=this.provider){return '/api/desktop-sessions/'+provider+'/'+action+(sid?'?sessionId='+encodeURIComponent(sid):'');}
-  setClientStates(clients,retry,initialize){
-    const before=this.clientStates?.find(client=>client.id===this.provider);this.clientStates=clients;this.retryClient=retry;this.initializeClient=initialize;
+  setClientStates(clients,retry,initialize,refresh){
+    const before=this.clientStates?.find(client=>client.id===this.provider);this.clientStates=clients;this.retryClient=retry;this.initializeClient=initialize;this.refreshClients=refresh;
     const current=clients.find(client=>client.id===this.provider),wasWaiting=before&&ClientLifecycle.connection(before).waiting;
     if(!this.renderConnectionStatus()&&before&&(wasWaiting||(!before.connected&&current?.connected))){this.listStatus.textContent=BridgeI18n.t('正在读取聊天…');return this.refresh();}
   }
   renderConnectionStatus(){
     const client=this.clientStates?.find(client=>client.id===this.provider),state=client&&ClientLifecycle.connection(client);
-    const blocked=!!state&&!client.connected&&(state.waiting||state.action||state.retryable);
+    const failure=client?.operationFailure,uncertain=client?.operationUncertain||failure?.uncertain,blocked=!!state&&!client.connected&&(state.waiting||state.action||state.retryable||!!failure);
     this.listStatus.setAttribute('aria-busy',String(!!state?.waiting));this.listStatus.classList.toggle('client-connection-waiting',!!state?.waiting);
-    this.connectionRetry.hidden=!blocked||!state.retryable;this.connectionRetry.disabled=!!this.retryingClient;
-    this.connectionInitialize.hidden=!blocked||!state.canInitialize;this.connectionInitialize.disabled=!!this.initializingClient;
+    this.connectionRetry.hidden=!blocked||!state.retryable||uncertain;this.connectionRetry.disabled=!!this.retryingClient;
+    this.connectionInitialize.hidden=!blocked||!state.canInitialize||uncertain;this.connectionInitialize.disabled=!!this.initializingClient;
+    this.connectionNotice.hidden=!failure;this.connectionNotice.textContent=failure?BridgeI18n.t(ClientLifecycle.failureMessage(failure)):'';this.connectionRefresh.hidden=!uncertain;this.connectionRefresh.disabled=!!this.refreshingClient;
     if(blocked)this.listStatus.textContent=BridgeI18n.t(state.label)+(state.reason&&state.reason!==state.label?' · '+BridgeI18n.t(state.reason):'');
     return blocked;
   }
