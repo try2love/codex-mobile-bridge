@@ -25,7 +25,7 @@ from bridge.features.workspace.files import artifact_paths, referenced_model_ima
 from bridge.features.workspace.workspace import operate as workspace_operation
 from bridge.clients.codex.catalog import Catalog
 from bridge.clients.codex.remote import AppHosts, RemoteStore, RemoteCatalog, RemoteUnavailable, ssh_read, ssh_download, payload
-from bridge.features.sessions.create import rename_thread, create_empty, fork_copy, open_in_desktop, CreationError, ForkUnavailable
+from bridge.features.sessions.create import rename_thread, create_empty, fork_copy, open_in_desktop, CreationError, CreationUnavailable, ForkUnavailable
 from bridge.features.sessions.timeline import Timeline
 from bridge.features.accounts.account import Account
 from bridge.features.accounts.accounts import Accounts, operation
@@ -119,17 +119,18 @@ class Bridge:
         self.catalog_reader = RemoteCatalog(alias) if alias else Catalog(codex_home, codex_bin)
         self.terminals = TerminalManager()
         self.uploads = Uploads(data_dir, (lambda *args: upload_file(alias, *args)) if alias else None)
-        self.account = Account(codex_home, data_dir, codex_bin) if host == 'local' else None
+        executable_getter = (lambda: self.catalog_reader.executable) if host == 'local' else None
+        self.account = Account(codex_home, data_dir, codex_bin, executable_getter=executable_getter) if host == 'local' else None
         self.accounts = Accounts(self) if host == "local" else None
-        self.goal = goal_rpc or (GoalRPC(codex_home, codex_bin or Catalog.find_runtime()) if host == 'local' else None)
+        self.goal = goal_rpc or (GoalRPC(codex_home, codex_bin, executable_getter=executable_getter) if host == 'local' else None)
         self.owner_goal = owner_goal
         self.goal_transport = 'owner' if owner_goal else 'sidecar'
         self._open_desktop = open_in_desktop
         self.live = {}
         self.lock = threading.RLock()
         self.ipc = DesktopIPC(ipc_path or ipc_endpoint(codex_home), self._event, self._disconnected)
-        self.side_chats = SideChats(self.catalog_reader.executable if host == 'local' else None,
-                                    self.codex_home, self.data_dir, host)
+        self.side_chats = SideChats(codex_bin, self.codex_home, self.data_dir, host,
+                                   executable_getter=executable_getter)
         self.closed = threading.Event()
         Path(data_dir).mkdir(parents=True, exist_ok=True, mode=0o700)
         self.ledger_path = Path(data_dir) / "submissions.json"
@@ -400,7 +401,14 @@ class Bridge:
                 self.creations[request_id] = entry
                 self._save_creations()
                 if project['host'] == 'local':
-                    thread_id = create_empty(self.catalog_reader.executable, self.codex_home, project['cwd'], title)
+                    try:
+                        thread_id = create_empty(self.catalog_reader.executable, self.codex_home, project['cwd'], title)
+                    except CreationUnavailable:
+                        # No process started: retrying this request cannot create
+                        # a duplicate. Keep uncertain post-start results recorded.
+                        del self.creations[request_id]
+                        self._save_creations()
+                        raise
                 else:
                     host = self.hosts.hosts()[project['host']]
                     source = source_text('features/sessions/create.py')
@@ -510,12 +518,12 @@ class Bridge:
                             source += '\nimport shutil\nhome=Path(os.environ.get("CODEX_HOME", str(Path.home()/".codex")))\n'
                             source += 'runtime=shutil.which("codex") or str(Path.home()/".local/bin/codex")\n'
                             source += 'try:\n print(json.dumps({"id":fork_copy(runtime, home, **' + payload(args) + ')}))\n'
-                            source += 'except ForkUnavailable as exc:\n print(json.dumps({"unavailable":str(exc)}))\n'
+                            source += 'except CreationUnavailable as exc:\n print(json.dumps({"unavailable":str(exc)}))\n'
                             result = ssh_read(host['alias'], source, timeout=120)
                             if 'unavailable' in result:
                                 raise ForkUnavailable(result['unavailable'])
                             child = result['id']
-                    except ForkUnavailable:
+                    except CreationUnavailable:
                         del self.message_actions[identifier]
                         self._save_actions()
                         raise

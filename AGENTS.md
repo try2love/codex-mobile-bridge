@@ -9,6 +9,6 @@
 - 停止应用、切换账号、恢复接入前即时核验进程身份和任务；展示缓存不能作为安全判断。认证、配对、CSRF、文件边界、重定向限制不能为了某系统适配而放宽。
 - 旧 Python 模块路径不再是入口；用明确的新 import，不要加全局模块别名。对照表：`docs/architecture/path-map.json`。
 - 迁移网页资源时保持公开 URL 与脚本顺序，同步 `web/assets.json`、固定资源白名单和桌面资源清单。SSH 注入的源模块必须保持远端独立可执行，同步 `scripts/gateway-resources.json`。
-- 验证入口见 [tests/README.md](tests/README.md)。`python -B scripts/test-backend.py --source-only` 不执行 Swift 编译/解释夹具；`npm run test:desktop` 自动发现真正的 Node 测试。浏览器夹具单独运行，不可将加载或空跑算作通过。
+- 验证入口见 [tests/README.md](tests/README.md)。`python -B scripts/test-backend.py --source-only` 不执行 Swift 或 Windows 原生编译/执行夹具；`npm run test:desktop` 自动发现真正的 Node 测试。浏览器夹具单独运行，不可将加载或空跑算作通过。
 - 真实客户端操作、构建、安装、推送、版本号及发布按本次用户授权范围执行。源码整理不隐含这些授权。
 - `.tmp/` 放临时测试文件；`.local/` 放本机运行数据与本地归档；二者均不提交。不要提交凭据、聊天数据、安装包或测试截图。

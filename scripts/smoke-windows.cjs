@@ -107,7 +107,7 @@ async function main(){
     assert.equal(await client.evaluate('snapshot.preferences.lan'),false);
     await client.evaluate("tab('overview')");
     await client.evaluate("document.getElementById('start').click()");started=true;
-    await until(()=>client.evaluate('snapshot.runtime.running'),'Bundled gateway startup');
+    await until(()=>client.evaluate('snapshot.runtime.running'),'Bundled gateway startup',90000);
     assert.equal(await client.evaluate("document.getElementById('port').disabled"),true);
     const base='http://127.0.0.1:'+port;
     assert.equal((await get(base+'/api/sessions')).status,401);
@@ -123,7 +123,7 @@ async function main(){
     const screenshots=[await screenshot('overview')];
     await client.evaluate("document.querySelector('[data-tab=notifications]').click();document.getElementById('ntfy-topic').value='unsaved-topic';document.getElementById('ntfy-topic').dispatchEvent(new Event('input',{bubbles:true}));document.getElementById('language').value='en';document.getElementById('language').dispatchEvent(new Event('change'))");
     await until(()=>client.evaluate("document.documentElement.lang==='en'&&!document.getElementById('language').disabled"),'English switch');
-    assert.equal(await client.evaluate("document.getElementById('page-title').textContent"),require('../web/shared/i18n.js').dictionary['手机通知']);
+    assert.equal(await client.evaluate("document.getElementById('page-title').textContent"),require('../web/shared/i18n.js').dictionary['消息通知']);
     assert.equal(await client.evaluate("document.getElementById('status').textContent"),'Running');
     assert.equal(await client.evaluate("document.getElementById('ntfy-topic').value"),'unsaved-topic');
     assert.equal(await client.evaluate('dirty'),true);

@@ -1,12 +1,13 @@
 """Native app lifecycle uses isolated process and desktop-state fixtures only."""
 import tempfile
+import json
 import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from bridge.clients.manager import DesktopSessions
+from bridge.clients.manager import DesktopSessions, DesktopWorkspace
 from bridge.clients.errors import BridgeUnavailable
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class ClientLifecycleTests(unittest.TestCase):
     def setUp(self):
+        platform = patch('bridge.clients.manager.sys', SimpleNamespace(platform='darwin'))
+        platform.start(); self.addCleanup(platform.stop)
         self.temp = tempfile.TemporaryDirectory(dir=ROOT/'.tmp')
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -53,6 +56,7 @@ class ClientLifecycleTests(unittest.TestCase):
         self.launch = self.patch('launch_client', side_effect=self.start)
         self.launch_dsh = self.patch('launch_deepseek', side_effect=self.start)
         self.stop = self.patch('stop_client', side_effect=self.finish)
+        self.stop_dsh = self.patch('stop_deepseek', side_effect=lambda descriptor, adapter, **kwargs: self.stop(descriptor, **kwargs))
         self.manager._deepseek_endpoint = Mock(return_value={'port': 31313, 'pid': 12})
         self.manager.clients(refresh=True)
 
@@ -67,8 +71,281 @@ class ClientLifecycleTests(unittest.TestCase):
     def finish(self, descriptor, **kwargs):
         self.running = False
 
+    def test_codex_cached_runtime_reuses_scanned_gui_for_readiness_and_launch(self):
+        self.accounts.index['desktopExecutable'] = ''
+        self.accounts.runtime = self.root/'cache/hash/codex.exe'
+        self.running = False
+        with patch('bridge.clients.desktop_app.DesktopApp.discover', return_value=''):
+            rows = self.manager.toggle_client({'provider': 'codex', 'enabled': True})['clients']
+        descriptor = self.launch.call_args.args[0]
+        self.assertEqual(descriptor['executable'], self.manager.config['discovered']['codex']['executable'])
+        self.assertTrue(descriptor['installed'])
+        self.assertEqual(descriptor['dataDirectory'], str(self.accounts.home))
+        codex = next(row for row in rows if row['id'] == 'codex')
+        self.assertTrue(codex['configured'])
+        self.assertTrue(codex['connected'])
+
+    def test_explicit_codex_gui_keeps_precedence_even_when_missing(self):
+        selected = self.root/'selected.exe'
+        selected.write_bytes(b'fixture')
+        self.accounts.index['desktopExecutable'] = str(selected)
+        with patch('bridge.clients.desktop_app.DesktopApp.discover') as discover:
+            self.assertEqual(self.manager._descriptor('codex')['executable'], str(selected))
+            selected.unlink()
+            descriptor = self.manager._descriptor('codex')
+            self.assertEqual(descriptor['executable'], str(selected))
+            self.assertFalse(descriptor['installed'])
+            discover.assert_not_called()
+
+    def test_missing_scanned_codex_gui_does_not_report_configured(self):
+        self.accounts.index['desktopExecutable'] = ''
+        self.manager.config['discovered']['codex']['executable'] = str(self.root/'missing.exe')
+        with patch('bridge.clients.desktop_app.DesktopApp.discover', return_value=''):
+            self.assertFalse(self.manager._descriptor('codex')['installed'])
+            codex = next(row for row in self.manager.clients(refresh=True)['clients'] if row['id'] == 'codex')
+        self.assertFalse(codex['configured'])
+        self.assertFalse(codex['connected'])
+
     def toggle(self, provider, enabled):
         return self.manager.toggle_client({'provider': provider, 'enabled': enabled})
+
+    def test_disable_access_keeps_desktop_and_terminal_tasks_running(self):
+        process = Mock()
+        self.manager.workspace_roots[('claude', 'one')] = str(self.root)
+        import uuid
+        thread = str(uuid.uuid5(uuid.NAMESPACE_URL, 'claude:one'))
+        self.manager.terminals = SimpleNamespace(lock=threading.RLock(),
+            sessions={('local', thread, 'term'): process}, jobs={}, close=Mock())
+        self.claude.status.return_value = {'connected': False}
+        self.dsh.call.side_effect = BridgeUnavailable('disconnected')
+        with patch.object(self.manager, '_assert_idle') as idle, patch.object(self.manager, '_descriptor', side_effect=ValueError('missing app')):
+            for provider in ('codex', 'claude', 'deepseek'):
+                self.manager.toggle_client({'provider': provider, 'enabled': False, 'quitDesktop': False})
+                self.assertFalse(self.manager.enabled(provider))
+                with self.assertRaisesRegex(ValueError, '应用已关闭'):
+                    self.manager.require_enabled(provider)
+        idle.assert_not_called()
+        self.accounts.assert_editable.assert_not_called()
+        self.accounts.idle.assert_not_called()
+        self.stop.assert_not_called()
+        self.stop_dsh.assert_not_called()
+        self.launch.assert_not_called()
+        self.launch_dsh.assert_not_called()
+        process.stop.assert_not_called()
+        self.claude.cancel.assert_called_once_with()
+        self.assertTrue(self.running)
+        saved = json.loads(self.manager.config_path.read_text())
+        self.assertEqual(saved['enabled'], dict.fromkeys(('codex', 'claude', 'deepseek'), False))
+
+    def test_explicit_quit_keeps_busy_guard_and_enabled_preference(self):
+        self.claude.call.side_effect = lambda *args: {'complete': True, 'sessions': [
+            {'id': 'one', 'status': 'running', 'runtimeKnown': True, 'requests': []}]}
+        with self.assertRaisesRegex(ValueError, '任务运行或等待'):
+            self.manager.toggle_client({'provider': 'claude', 'enabled': False, 'quitDesktop': True})
+        self.assertTrue(self.manager.enabled('claude'))
+        self.stop.assert_not_called()
+        self.claude.cancel.assert_not_called()
+
+    def test_disable_rejects_workspaces_resolved_before_request_body_arrives(self):
+        for provider in ('claude', 'deepseek'):
+            with self.subTest(provider=provider):
+                workspace = DesktopWorkspace(self.manager, provider, 'one', str(self.root))
+                self.manager.toggle_client({'provider': provider, 'enabled': False, 'quitDesktop': False})
+                with patch('bridge.features.workspace.workspace.operate') as operate, patch('bridge.app.service.Bridge.terminal') as terminal:
+                    for action in ('upload', 'git-action'):
+                        with self.assertRaisesRegex(ValueError, '应用已关闭'):
+                            workspace.workspace(workspace.identifier, action, {})
+                    for action in ('start', 'open', 'input', 'resize', 'close', 'stop'):
+                        with self.assertRaisesRegex(ValueError, '应用已关闭'):
+                            workspace.terminal(workspace.identifier, 'fixture', action, {})
+                    operate.assert_not_called()
+                    terminal.assert_not_called()
+
+    def test_disable_waits_for_accepted_workspace_mutation(self):
+        workspace = DesktopWorkspace(self.manager, 'claude', 'one', str(self.root))
+        entered, release, toggling, disabled = (threading.Event() for _ in range(4))
+        failures = []
+
+        def mutate():
+            entered.set()
+            if not release.wait(3):
+                raise TimeoutError('fixture mutation was not released')
+            return {'saved': True}
+
+        def run_write():
+            try:
+                workspace.workspace(workspace.identifier, 'upload', {})
+            except Exception as error:
+                failures.append(error)
+
+        def disable():
+            toggling.set()
+            try:
+                self.manager.toggle_client({'provider': 'claude', 'enabled': False, 'quitDesktop': False})
+            except Exception as error:
+                failures.append(error)
+            finally:
+                disabled.set()
+
+        with patch('bridge.features.workspace.workspace.operate', side_effect=lambda *_: mutate()):
+            writer = threading.Thread(target=run_write)
+            toggler = threading.Thread(target=disable)
+            writer.start()
+            try:
+                self.assertTrue(entered.wait(2))
+                toggler.start()
+                self.assertTrue(toggling.wait(2))
+                self.assertFalse(disabled.wait(.15))
+            finally:
+                release.set()
+                writer.join(3)
+                if toggler.ident is not None:
+                    toggler.join(3)
+        self.assertFalse(writer.is_alive())
+        self.assertFalse(toggler.is_alive())
+        self.assertEqual(failures, [])
+        self.assertFalse(self.manager.enabled('claude'))
+
+    def test_invalid_quit_choice_never_changes_state(self):
+        for value in (None, 'false', 0, 1, []):
+            with self.assertRaisesRegex(ValueError, '应用开关无效'):
+                self.manager.toggle_client({'provider': 'claude', 'enabled': False, 'quitDesktop': value})
+        with self.assertRaisesRegex(ValueError, '应用开关无效'):
+            self.manager.toggle_client({'provider': 'claude', 'enabled': True, 'quitDesktop': False})
+        self.assertTrue(self.manager.enabled('claude'))
+        self.stop.assert_not_called()
+
+    def test_explicit_force_bypasses_tasks_but_not_native_identity_checks(self):
+        native = Mock(side_effect=self.finish)
+        self.claude.status.return_value = {'connected': False}
+        self.dsh.call.side_effect = BridgeUnavailable('offline')
+        with patch.dict('sys.modules', {'bridge.platforms.windows.force_exit': SimpleNamespace(force_stop_client=native)}), \
+                patch('bridge.clients.manager.sys.platform', 'win32'), \
+                patch.object(self.manager, 'clients', return_value={'clients': []}), \
+                patch.object(self.manager, '_assert_idle', side_effect=AssertionError('force is an explicit task interruption')) as idle:
+            for provider in ('codex', 'claude', 'deepseek'):
+                self.running = True
+                self.manager.toggle_client({'provider': provider, 'enabled': False, 'quitDesktop': True, 'forceDesktop': True})
+                self.assertFalse(self.manager.enabled(provider))
+                self.assertEqual(native.call_args.args[0]['id'], provider)
+                self.assertIn('state', native.call_args.kwargs)
+        self.assertEqual(native.call_count, 3)
+        self.assertTrue(self.manager.gateway_running)
+        self.assertFalse(self.manager.closed.is_set())
+        idle.assert_not_called(); self.stop.assert_not_called(); self.stop_dsh.assert_not_called()
+        self.claude.cancel.assert_any_call(persist=False)
+        self.claude.cancel.assert_any_call()
+
+    def test_force_failure_keeps_enabled_state_and_reports_original_error(self):
+        native = Mock(side_effect=ValueError('fixture identity changed'))
+        with patch.dict('sys.modules', {'bridge.platforms.windows.force_exit': SimpleNamespace(force_stop_client=native)}), \
+                patch('bridge.clients.manager.sys.platform', 'win32'), \
+                patch('bridge.clients.manager.private_json') as save:
+            with self.assertRaisesRegex(ValueError, 'fixture identity changed'):
+                self.manager.toggle_client({'provider': 'claude', 'enabled': False, 'quitDesktop': True, 'forceDesktop': True})
+        self.assertTrue(self.manager.enabled('claude'))
+        save.assert_not_called(); self.stop.assert_not_called()
+        self.claude.reconnect.assert_called_once_with()
+
+    def test_force_requires_explicit_disabled_windows_desktop_choice(self):
+        base = {'provider': 'claude', 'enabled': False, 'quitDesktop': True, 'forceDesktop': True}
+        cases = [{**base, 'forceDesktop': value} for value in (None, 'true', 1, 0, [])]
+        cases += [{**base, 'enabled': True}, {**base, 'quitDesktop': False},
+                  {'provider': 'claude', 'enabled': False, 'forceDesktop': True}]
+        with patch('bridge.clients.manager.sys.platform', 'win32'):
+            for value in cases:
+                with self.subTest(value=value), self.assertRaises(ValueError):
+                    self.manager.toggle_client(value)
+            self.manager.gateway_running = False
+            with self.assertRaisesRegex(ValueError, '强制结束请求无效'):
+                self.manager.toggle_client(base)
+            self.manager.gateway_running = True
+        with self.assertRaisesRegex(ValueError, '强制结束请求无效'):
+            self.manager.toggle_client(base)
+        self.assertTrue(self.manager.enabled('claude'))
+        self.stop.assert_not_called()
+
+    def test_normal_quit_never_uses_force_path(self):
+        native = Mock(side_effect=AssertionError('normal quit must not force'))
+        with patch.dict('sys.modules', {'bridge.platforms.windows.force_exit': SimpleNamespace(force_stop_client=native)}), \
+                patch('bridge.clients.manager.sys.platform', 'win32'), \
+                patch.object(self.manager, 'clients', return_value={'clients': []}):
+            self.manager.toggle_client({'provider': 'codex', 'enabled': False, 'quitDesktop': True})
+        native.assert_not_called(); self.stop.assert_called_once()
+
+    def test_force_choice_only_advertised_for_windows_running_gateway(self):
+        self.assertTrue(all(not row.get('canForceQuit') for row in self.manager.clients(refresh=True)['clients']))
+        with patch('bridge.clients.manager.sys.platform', 'win32'), \
+                patch('bridge.clients.manager.windows_session.status', return_value={'state': 'locked', 'interactive': False}):
+            self.assertTrue(all(row['canForceQuit'] for row in self.manager.clients(refresh=True)['clients']))
+            self.manager.gateway_running = False
+            self.assertTrue(all(not row['canForceQuit'] for row in self.manager.clients(refresh=True)['clients']))
+
+    def test_windows_dsh_exit_uses_native_host_quit(self):
+        with patch('bridge.clients.manager.sys.platform', 'win32'):
+            self.manager.toggle_client({'provider': 'deepseek', 'enabled': False, 'quitDesktop': True})
+        self.stop_dsh.assert_called_once()
+        self.assertIs(self.stop_dsh.call_args.args[1], self.dsh)
+        self.assertFalse(self.manager.enabled('deepseek'))
+
+    def test_windows_claude_explicit_quit_uses_native_confirmation_when_disconnected(self):
+        self.claude.status.return_value = {'connected': False}
+        with patch('bridge.clients.manager.sys.platform', 'win32'):
+            self.manager.toggle_client({'provider': 'claude', 'enabled': False, 'quitDesktop': True})
+        self.stop.assert_called_once()
+        self.claude.cancel.assert_any_call(persist=False)
+        self.assertFalse(self.manager.enabled('claude'))
+
+    def test_windows_claude_implicit_quit_and_account_stop_still_need_idle_evidence(self):
+        self.claude.status.return_value = {'connected': False}
+        with patch('bridge.clients.manager.sys.platform', 'win32'):
+            with self.assertRaisesRegex(ValueError, '无法确认'):
+                self.toggle('claude', False)
+            with self.assertRaisesRegex(ValueError, '无法确认'):
+                self.manager._stop_client('claude', self.manager._descriptor('claude'), self.inspect(None))
+        self.stop.assert_not_called()
+        self.assertTrue(self.manager.enabled('claude'))
+
+    def test_windows_claude_incomplete_list_cannot_hide_known_busy_tasks(self):
+        self.claude.call.side_effect = lambda *args, **kwargs: {'complete': False, 'sessions': [
+            {'id': 'one', 'status': 'running', 'runtimeKnown': True}]}
+        with patch('bridge.clients.manager.sys.platform', 'win32'):
+            with self.assertRaisesRegex(ValueError, '任务运行或等待'):
+                self.manager.toggle_client({'provider': 'claude', 'enabled': False, 'quitDesktop': True})
+        self.stop.assert_not_called()
+        self.assertTrue(self.manager.enabled('claude'))
+
+    def test_windows_claude_exit_probe_timeout_uses_native_confirmation_without_readiness_scan(self):
+        def call(action, *args, **kwargs):
+            self.assertEqual(action, 'list')
+            self.assertEqual(kwargs, {'timeout': 8})
+            raise TimeoutError('stale connector')
+        self.claude.call.side_effect = call
+        with patch('bridge.clients.manager.sys.platform', 'win32'), \
+                patch.object(self.manager, 'clients', return_value={'clients': []}) as clients:
+            self.manager.toggle_client({'provider': 'claude', 'enabled': False, 'quitDesktop': True})
+        self.stop.assert_called_once()
+        clients.assert_called_once_with()
+        self.assertFalse(self.manager.enabled('claude'))
+
+    def test_windows_claude_unknown_processes_block_native_confirmation(self):
+        self.claude.status.return_value = {'connected': False}
+        state = {**self.inspect(None), 'unknown': True}
+        self.inspect.side_effect = lambda _: state
+        with patch('bridge.clients.manager.sys.platform', 'win32'):
+            with self.assertRaisesRegex(ValueError, '无法确认'):
+                self.manager.toggle_client({'provider': 'claude', 'enabled': False, 'quitDesktop': True})
+        self.stop.assert_not_called()
+
+    def test_windows_claude_pending_native_confirmation_preserves_enabled(self):
+        self.claude.status.return_value = {'connected': False}
+        self.stop.side_effect = ValueError('请在电脑端处理 Claude 的任务或保存提示后重试')
+        with patch('bridge.clients.manager.sys.platform', 'win32'):
+            with self.assertRaisesRegex(ValueError, '任务或保存提示'):
+                self.manager.toggle_client({'provider': 'claude', 'enabled': False, 'quitDesktop': True})
+        self.assertTrue(self.manager.enabled('claude'))
+        self.claude.reconnect.assert_called_once_with()
+        self.claude.connect.assert_not_called()
 
     def test_offline_selection_never_launches_or_quits_clients(self):
         self.manager.gateway_running = False
@@ -82,19 +359,19 @@ class ClientLifecycleTests(unittest.TestCase):
         self.stop.assert_not_called()
         self.claude.connect.assert_not_called()
 
-    def test_gateway_start_only_launches_selected_clients(self):
+    def test_gateway_start_requests_selected_claude_background_launch(self):
         self.manager.config['enabled'] = {'codex': False, 'claude': True, 'deepseek': False}
-        with patch.object(self.manager, 'scan'):
+        with patch.object(self.manager, 'scan'), patch('bridge.clients.manager.sys.platform', 'win32'):
             self.manager.start_enabled()
-        self.launch.assert_called_once()
-        self.assertEqual(self.launch.call_args.args[0]['id'], 'claude')
+        self.launch.assert_not_called()
         self.launch_dsh.assert_not_called()
-        self.claude.connect.assert_called_once()
+        self.claude.connect.assert_not_called()
+        self.claude.reconnect.assert_called_once_with(launch=True)
 
     def test_one_start_failure_preserves_selection_and_does_not_block_other_apps(self):
         self.manager.config['enabled'] = {'codex': False, 'claude': True, 'deepseek': True}
-        self.launch.side_effect = ValueError('launch rejected')
-        with patch.object(self.manager, 'scan'):
+        self.claude.reconnect.side_effect = ValueError('launch rejected')
+        with patch.object(self.manager, 'scan'), patch('bridge.clients.manager.sys.platform', 'win32'):
             self.manager.start_enabled()
         self.launch_dsh.assert_called_once()
         self.assertTrue(self.manager.enabled('claude'))
@@ -253,13 +530,97 @@ class ClientLifecycleTests(unittest.TestCase):
         self.stop.assert_called_once()
         self.assertFalse(self.manager.enabled('claude'))
 
-    def test_stopped_verified_claude_can_be_enabled_and_launched(self):
+    def test_stopped_verified_claude_enable_does_not_open_its_window(self):
         self.toggle('claude', False)
         self.claude.status.return_value = {'connected': False}
         self.assertTrue(next(r for r in self.manager.clients(refresh=True)['clients'] if r['id'] == 'claude')['configured'])
-        self.toggle('claude', True)
+        with patch('bridge.clients.manager.sys.platform', 'win32'):
+            self.toggle('claude', True)
+        self.launch.assert_not_called()
+        self.claude.connect.assert_not_called()
+        self.claude.reconnect.assert_called_once_with(launch=True)
+
+    def test_macos_stopped_claude_enable_launches_before_connecting(self):
+        self.running = False
+        self.manager.toggle_client({'provider': 'claude', 'enabled': True})
         self.launch.assert_called_once()
         self.claude.connect.assert_called_once_with()
+        self.claude.reconnect.assert_not_called()
+
+    def test_macos_gateway_start_launches_selected_claude(self):
+        self.running = False
+        self.manager.config['enabled'] = {'codex': False, 'claude': True, 'deepseek': False}
+        with patch.object(self.manager, 'scan'):
+            self.manager.start_enabled()
+        self.launch.assert_called_once()
+        self.claude.connect.assert_called_once_with()
+        self.claude.reconnect.assert_not_called()
+
+    def test_linux_claude_enable_does_not_claim_supported_connection(self):
+        with patch('bridge.clients.manager.sys.platform', 'linux'):
+            with self.assertRaisesRegex(ValueError, '不支持 Claude'):
+                self.manager.toggle_client({'provider': 'claude', 'enabled': True})
+        self.launch.assert_not_called()
+        self.claude.connect.assert_not_called()
+        self.claude.reconnect.assert_not_called()
+
+    def test_explicit_mobile_initialization_only_calls_native_setup(self):
+        self.manager.toggle_client({'provider': 'claude', 'enabled': True, 'initializeDesktop': True})
+        self.claude.connect.assert_called_once_with()
+        self.claude.reconnect.assert_not_called()
+        self.launch.assert_not_called()
+        self.stop.assert_not_called()
+
+    def test_mobile_initialization_rejects_invalid_flag_combinations(self):
+        for provider, enabled, initialize in [('claude', True, 1), ('claude', True, 'true'),
+                ('claude', False, True), ('claude', False, False), ('deepseek', True, True), ('codex', True, False)]:
+            with self.subTest(provider=provider, enabled=enabled, initialize=initialize):
+                with self.assertRaisesRegex(ValueError, '初始化请求'):
+                    self.manager.toggle_client({'provider': provider, 'enabled': enabled, 'initializeDesktop': initialize})
+        self.claude.connect.assert_not_called()
+        self.claude.reconnect.assert_not_called()
+        self.launch.assert_not_called()
+        self.stop.assert_not_called()
+
+    def test_explicit_false_initialization_keeps_background_route(self):
+        with patch('bridge.clients.manager.sys.platform', 'win32'):
+            self.manager.toggle_client({'provider': 'claude', 'enabled': True, 'initializeDesktop': False})
+        self.claude.reconnect.assert_called_once_with(launch=True)
+        self.claude.connect.assert_not_called()
+
+    def test_claude_pending_states_keep_their_reason_and_actual_running_status(self):
+        for phase in ('starting', 'connecting', 'needs-initialization', 'failed'):
+            self.claude.status.return_value = {'connected': False, 'setupState': phase, 'reason': 'current progress'}
+            row = next(r for r in self.manager.clients(refresh=True)['clients'] if r['id'] == 'claude')
+            self.assertEqual(row['connectionState'], 'error' if phase == 'failed' else phase)
+            self.assertEqual(row['reason'], 'current progress')
+            self.assertTrue(row['running'])
+            self.assertEqual(row['retryable'], phase == 'failed')
+
+    def test_claude_pending_cache_expires_in_one_second(self):
+        self.claude.status.return_value = {'connected': False, 'setupState': 'connecting', 'reason': 'waiting'}
+        with patch('bridge.clients.manager.time.monotonic', return_value=10):
+            self.manager.clients(refresh=True)
+        self.claude.status.return_value = {'connected': False, 'setupState': 'needs-initialization', 'reason': 'initialize'}
+        with patch('bridge.clients.manager.time.monotonic', return_value=12):
+            row = next(r for r in self.manager.clients()['clients'] if r['id'] == 'claude')
+        self.assertEqual(row['connectionState'], 'needs-initialization')
+
+    def test_claude_stopped_process_does_not_claim_pending_connection(self):
+        self.running = False
+        self.claude.status.return_value = {'connected': False, 'setupState': 'needs-initialization'}
+        row = next(r for r in self.manager.clients(refresh=True)['clients'] if r['id'] == 'claude')
+        self.assertFalse(row['running'])
+        self.assertEqual(row['connectionState'], 'error')
+        self.assertTrue(row['retryable'])
+
+    def test_explicit_claude_connect_button_may_launch_and_initialize(self):
+        self.running = False
+        self.claude.status.return_value = {'connected': False, 'setupState': 'needs-initialization'}
+        self.manager.control({'action': 'connect-claude'})
+        self.launch.assert_called_once()
+        self.claude.connect.assert_called_once_with()
+        self.claude.reconnect.assert_not_called()
 
     def test_pending_interaction_blocks_stop_and_preserves_preference(self):
         self.claude.call.side_effect = lambda action, *args: ({'connected': True, 'complete': True,
@@ -305,6 +666,18 @@ class ClientLifecycleTests(unittest.TestCase):
         self.launch_dsh.assert_called_once()
         self.stop.assert_not_called()
 
+    def test_stopped_compatible_dsh_connector_updates_before_launch(self):
+        self.running = False; self.dsh.reused = True
+        self.dsh.ensure_installed.return_value = {'installed': True, 'reused': True, 'updateRequired': False}
+        self.dsh.call.side_effect = BridgeUnavailable('stopped')
+        order = []
+        self.dsh.update_existing.side_effect = lambda: order.append('update')
+        self.launch_dsh.side_effect = lambda *args: order.append('launch') or {'running': True}
+        self.manager._start_deepseek()
+        self.assertEqual(order, ['update', 'launch'])
+        self.stop.assert_not_called()
+        self.stop_dsh.assert_not_called()
+
     def test_extra_harness_host_without_authoritative_state_blocks_exit(self):
         self.inspect.return_value = None
         self.inspect.side_effect = lambda _: {'running': True, 'pids': [11, 12, 13], 'mainPids': [11],
@@ -328,12 +701,13 @@ class ClientLifecycleTests(unittest.TestCase):
         def reconnect():
             self.claude.status.return_value = {'connected': True}
         self.claude.cancel.side_effect = cancel
-        self.claude.connect.side_effect = reconnect
+        self.claude.reconnect.side_effect = reconnect
         self.stop.side_effect = ValueError('native refused exit')
         with self.assertRaisesRegex(ValueError, 'native refused'):
             self.toggle('claude', False)
         self.claude.cancel.assert_called_once_with(persist=False)
-        self.claude.connect.assert_called_once_with()
+        self.claude.reconnect.assert_called_once_with()
+        self.claude.connect.assert_not_called()
         self.assertTrue(self.manager.enabled('claude'))
         self.assertTrue(self.claude.discovery['autoConnect'])
         self.assertTrue(self.claude.status()['connected'])
@@ -342,21 +716,23 @@ class ClientLifecycleTests(unittest.TestCase):
         self.claude.discovery = {'autoConnect': True}
         original = ValueError('native refused exit')
         self.stop.side_effect = original
-        self.claude.connect.side_effect = RuntimeError('connection restore failed')
+        self.claude.reconnect.side_effect = RuntimeError('connection restore failed')
         with self.assertRaises(ValueError) as raised:
             self.toggle('claude', False)
         self.assertIs(raised.exception, original)
         self.claude.cancel.assert_called_once_with(persist=False)
-        self.claude.connect.assert_called_once_with()
+        self.claude.reconnect.assert_called_once_with()
+        self.claude.connect.assert_not_called()
         self.assertTrue(self.manager.enabled('claude'))
         self.assertTrue(self.claude.discovery['autoConnect'])
 
-    def test_failed_start_keeps_disabled(self):
+    def test_failed_background_preparation_keeps_disabled(self):
         self.manager.config['enabled']['claude'] = False
         self.running = False
-        self.launch.side_effect = None; self.launch.return_value = {'running': False}
-        with self.assertRaisesRegex(ValueError, '尚未启动'):
-            self.toggle('claude', True)
+        self.claude.reconnect.side_effect = ValueError('mailbox unavailable')
+        with patch('bridge.clients.manager.sys.platform', 'win32'):
+            with self.assertRaisesRegex(ValueError, 'mailbox unavailable'):
+                self.toggle('claude', True)
         self.assertFalse(self.manager.enabled('claude'))
 
     def test_live_auth_loss_invalidates_remembered_configuration(self):
@@ -425,6 +801,135 @@ class ClientLifecycleTests(unittest.TestCase):
         self.launch_dsh.side_effect = lambda *args, **kwargs: (order.append('launch') or self.start(*args, **kwargs))
         self.manager.connect_deepseek(restart=True)
         self.assertEqual(order, ['stop', 'update', 'launch'])
+
+    def dsh_row(self, refresh=True):
+        return next(row for row in self.manager.clients(refresh=refresh)['clients'] if row['id'] == 'deepseek')
+
+    def test_dsh_waiting_connection_explains_progress_despite_remembered_configuration(self):
+        self.dsh.call.side_effect = BridgeUnavailable('endpoint not ready')
+        self.manager._start_deepseek()
+        row = self.dsh_row()
+        self.assertTrue(row['configured'])
+        self.assertFalse(row['connected'])
+        self.assertEqual(row['connectionState'], 'connecting')
+        self.assertEqual(row['setupStatus'], 'connecting')
+        self.assertIn('等待', row['reason'])
+        self.assertFalse(row['retryable'])
+
+    def test_dsh_slow_native_launch_remains_starting_until_process_is_observed(self):
+        self.running = False
+        self.dsh.call.side_effect = BridgeUnavailable('endpoint not ready')
+        self.launch_dsh.side_effect = lambda *_: {'running': False, 'launched': True}
+        self.manager._start_deepseek()
+        self.assertEqual(self.dsh_row()['connectionState'], 'starting')
+        self.running = True
+        self.assertEqual(self.dsh_row()['connectionState'], 'connecting')
+        self.stop.assert_not_called()
+
+    def test_dsh_launch_failure_is_persisted_and_retryable(self):
+        self.running = False
+        self.dsh.call.side_effect = BridgeUnavailable('endpoint not ready')
+        self.launch_dsh.side_effect = lambda *_: {'running': False, 'launched': False}
+        with self.assertRaisesRegex(ValueError, '尚未启动'):
+            self.manager._start_deepseek()
+        row = self.dsh_row()
+        self.assertEqual(row['connectionState'], 'error')
+        self.assertTrue(row['retryable'])
+        self.assertIn('尚未启动', row['reason'])
+        self.assertEqual(json.loads(self.manager.config_path.read_text())['setup']['deepseek']['connectionState'], 'error')
+
+    def test_dsh_connection_timeout_can_retry_and_late_connection_recovers(self):
+        self.dsh.call.side_effect = BridgeUnavailable('endpoint not ready')
+        with patch('bridge.clients.manager.time.time', return_value=1000):
+            self.manager._start_deepseek()
+        with patch('bridge.clients.manager.time.time', return_value=1061):
+            row = self.dsh_row()
+            self.assertEqual(row['connectionState'], 'timeout')
+            self.assertTrue(row['retryable'])
+            self.assertIn('重试', row['reason'])
+            self.manager._start_deepseek()
+            self.assertEqual(self.dsh_row()['connectionState'], 'connecting')
+        self.dsh.call.side_effect = lambda *_: {'connected': True, 'configured': True, 'bridgeRevision': 3}
+        row = self.dsh_row()
+        self.assertEqual(row['connectionState'], 'connected')
+        self.assertFalse(row['retryable'])
+        self.assertNotIn('connectionDeadline', self.manager.config['setup']['deepseek'])
+        self.stop.assert_not_called()
+
+    def test_dsh_exit_during_connection_reports_error_without_claiming_connected(self):
+        self.dsh.call.side_effect = BridgeUnavailable('endpoint not ready')
+        self.manager._start_deepseek()
+        self.running = False
+        row = self.dsh_row()
+        self.assertEqual(row['connectionState'], 'error')
+        self.assertFalse(row['connected'])
+        self.assertTrue(row['retryable'])
+        self.assertIn('退出', row['reason'])
+
+    def test_windows_dsh_cold_start_allows_seventy_seconds_then_retry_and_late_connection(self):
+        self.running = False
+        self.dsh.call.side_effect = BridgeUnavailable('endpoint not ready')
+        with patch('bridge.clients.manager.sys', SimpleNamespace(platform='win32')), \
+             patch('bridge.clients.manager.windows_session.status', return_value={'state': 'locked', 'interactive': False, 'reason': 'fixture'}):
+            with patch('bridge.clients.manager.time.time', return_value=1000):
+                self.manager._start_deepseek()
+            self.assertEqual(self.manager.config['setup']['deepseek']['connectionDeadline'], 1120)
+            with patch('bridge.clients.manager.time.time', return_value=1070):
+                row = self.dsh_row()
+                self.assertEqual(row['connectionState'], 'connecting')
+                self.assertFalse(row['retryable']); self.assertFalse(row['connected'])
+                self.launch_dsh.assert_called_once()
+            with patch('bridge.clients.manager.time.time', return_value=1121):
+                row = self.dsh_row()
+                self.assertEqual(row['connectionState'], 'timeout'); self.assertTrue(row['retryable'])
+                self.manager._start_deepseek()
+                self.assertEqual(self.dsh_row()['connectionState'], 'connecting')
+                self.assertEqual(self.manager.config['setup']['deepseek']['connectionDeadline'], 1241)
+            self.dsh.call.side_effect = lambda *_: {'connected': True, 'configured': False, 'bridgeRevision': 3}
+            row = self.dsh_row()
+            self.assertEqual(row['connectionState'], 'connected')
+            self.assertEqual(row['setupStatus'], 'unconfigured'); self.assertFalse(row['retryable'])
+            self.assertNotIn('connectionDeadline', self.manager.config['setup']['deepseek'])
+        self.stop.assert_not_called()
+
+    def test_windows_dsh_resumed_wait_without_deadline_uses_same_budget(self):
+        self.dsh.call.side_effect = BridgeUnavailable('endpoint not ready')
+        self.manager.config['setup'] = {'deepseek': {'setupStatus': 'connecting', 'connectionState': 'connecting'}}
+        with patch('bridge.clients.manager.sys', SimpleNamespace(platform='win32')), \
+             patch('bridge.clients.manager.windows_session.status', return_value={'state': 'locked', 'interactive': False, 'reason': 'fixture'}), \
+             patch('bridge.clients.manager.time.time', return_value=1000):
+            self.assertEqual(self.dsh_row()['connectionState'], 'connecting')
+        self.assertEqual(self.manager.config['setup']['deepseek']['connectionDeadline'], 1120)
+
+    def test_dsh_pending_cache_refreshes_before_the_normal_fifteen_seconds(self):
+        self.dsh.call.side_effect = BridgeUnavailable('endpoint not ready')
+        self.manager._start_deepseek()
+        with patch('bridge.clients.manager.time.monotonic', return_value=100):
+            self.assertFalse(self.dsh_row()['connected'])
+        self.dsh.call.side_effect = lambda *_: {'connected': True, 'configured': True, 'bridgeRevision': 3}
+        with patch('bridge.clients.manager.time.monotonic', return_value=101.1):
+            self.assertTrue(self.dsh_row(refresh=False)['connected'])
+
+    def test_dsh_current_connector_clears_stale_restart_even_without_account(self):
+        self.manager.config['setup'] = {'deepseek': {'setupStatus': 'restart-required', 'requiredBridgeRevision': 3}}
+        self.dsh.call.side_effect = lambda *_: {'connected': True, 'configured': False, 'bridgeRevision': 3}
+        row = self.dsh_row()
+        self.assertEqual(row['setupStatus'], 'unconfigured')
+        self.assertEqual(row['connectionState'], 'connected')
+        self.assertFalse(row['configured'])
+        self.assertNotIn('requiredBridgeRevision', self.manager.config['setup']['deepseek'])
+
+    def test_dsh_real_connector_update_is_not_hidden_by_live_transport(self):
+        self.manager.config['setup'] = {'deepseek': {'setupStatus': 'restart-required', 'requiredBridgeRevision': 3}}
+        self.dsh.call.side_effect = lambda *_: {'connected': True, 'configured': True, 'bridgeRevision': 2, 'updateRequired': True}
+        row = self.dsh_row()
+        self.assertEqual(row['setupStatus'], 'restart-required')
+        self.assertFalse(row['configured'])
+        self.assertIn('requiredBridgeRevision', self.manager.config['setup']['deepseek'])
+
+    def test_dsh_only_boolean_live_confirmation_means_connected(self):
+        self.dsh.call.side_effect = lambda *_: {'connected': 'pending', 'configured': True, 'bridgeRevision': 3}
+        self.assertFalse(self.dsh_row()['connected'])
 
 
 if __name__ == '__main__': unittest.main()

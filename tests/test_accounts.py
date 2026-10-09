@@ -17,6 +17,13 @@ from bridge.app.service import Bridge
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def wait_for_account_worker(test):
+    if test.manager.thread:
+        # Windows durable file writes can outlast the former three-second bound.
+        test.manager.thread.join(30)
+        test.assertFalse(test.manager.thread.is_alive(), 'account worker did not finish within 30 seconds')
+
+
 class AccountsTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(dir=ROOT/'.tmp')
@@ -40,9 +47,7 @@ class AccountsTests(unittest.TestCase):
         self.original = self.manager.snapshot_files()
 
     def tearDown(self):
-        if self.manager.thread:
-            self.manager.thread.join(3)
-            self.assertFalse(self.manager.thread.is_alive())
+        wait_for_account_worker(self)
         self.tmp.cleanup()
 
     def api(self, **changes):
@@ -54,6 +59,23 @@ class AccountsTests(unittest.TestCase):
         with patch('bridge.features.accounts.accounts.DesktopApp',return_value=self.app):
             self.manager.switch(value)
         return value
+
+    def test_scan_desktop_action_finds_store_gui_with_separate_cached_cli(self):
+        runtime = self.root/'Local/OpenAI/Codex/bin/version/codex.exe'
+        runtime.parent.mkdir(parents=True); runtime.write_bytes(b'MZ-runtime'); runtime.chmod(0o700)
+        gui = self.root/'Store/OpenAI.Codex_1/app/ChatGPT.exe'
+        gui.parent.mkdir(parents=True); gui.write_bytes(b'MZ-desktop'); gui.chmod(0o700)
+        self.bridge.catalog_reader.executable = runtime
+        environment = {'LOCALAPPDATA': str(self.root/'Local'), 'APPDATA': str(self.root/'Roaming'),
+                       'ProgramFiles': str(self.root/'Program Files'), 'USERPROFILE': str(self.home)}
+        inventory = {'packages': [{'Name': 'OpenAI.Codex', 'InstallLocation': str(gui.parent.parent)}]}
+        with patch('bridge.clients.desktop_app.sys.platform', 'win32'), patch.dict(os.environ, environment, clear=True), \
+                patch('bridge.clients.discovery.windows_installations', return_value=inventory) as scan:
+            result = self.manager.control({'action': 'scanDesktop'})
+        scan.assert_called_once_with()
+        self.assertEqual(result['desktopExecutable'], str(gui.resolve()))
+        self.assertEqual(json.loads((self.manager.root/'index.json').read_text())['desktopExecutable'], str(gui.resolve()))
+        self.assertEqual(self.manager.snapshot_files(), self.original)
 
     def prepare(self, row, before):
         folder=self.manager.root/'prepared';folder.mkdir(exist_ok=True)
@@ -113,7 +135,7 @@ class AccountsTests(unittest.TestCase):
 
     def test_success_preserves_history_and_duplicate_request_never_restarts(self):
         row=self.api();self.manager.prepare=self.prepare
-        value=self.switch(row);self.manager.thread.join(3)
+        value=self.switch(row);wait_for_account_worker(self)
         self.assertEqual(self.manager.state['phase'],'complete')
         self.assertEqual(self.manager.public()['activeId'],row['id'])
         self.assertFalse((self.home/'auth.json').exists())
@@ -132,7 +154,7 @@ class AccountsTests(unittest.TestCase):
             original_restore(snapshot)
         self.manager.restore_files=restore
         self.manager.wait_ready=Mock(side_effect=[ValueError('fixture failure'),None])
-        self.switch(row);self.manager.thread.join(3)
+        self.switch(row);wait_for_account_worker(self)
         self.assertEqual(self.manager.state['phase'],'restored')
         self.assertEqual(self.manager.snapshot_files(),self.original)
         self.assertIsNone(self.manager.index['activeId'])
@@ -152,7 +174,7 @@ class AccountsTests(unittest.TestCase):
                 def record_phase(name,**values):
                     phases.append(name);phase(name,**values)
                 self.manager.phase=record_phase
-                self.app.stop.side_effect=lambda: events.append('stop')
+                self.app.stop.side_effect=lambda **kwargs: events.append('stop')
                 def start():
                     backup=read_json(self.manager.root/'rollback.json',{})
                     self.assertNotIn('threads',backup)
@@ -161,9 +183,10 @@ class AccountsTests(unittest.TestCase):
                 self.app.start.side_effect=start
                 self.manager.wait_ready=Mock(side_effect=[ValueError('fixture failure'),None] if failure else None)
                 with patch.object(self.manager,'api_models',side_effect=AssertionError('switch must not request upstream models')), patch('bridge.features.sessions.access.ThreadAccessRPC') as runtime:
-                    self.switch(row);self.manager.thread.join(3)
+                    self.switch(row);wait_for_account_worker(self)
                 self.assertEqual(self.manager.state['phase'],'restored' if failure else 'complete')
                 self.assertEqual(events,['stop','start','stop','start'] if failure else ['stop','start'])
+                self.assertTrue(all(call.kwargs == {'provider': 'codex'} for call in self.app.stop.call_args_list))
                 self.assertNotIn('migrating',phases)
                 self.bridge.store.list.assert_not_called();self.bridge.store.history.assert_not_called()
                 self.bridge.catalog_reader.get_kind.assert_not_called();runtime.assert_not_called()
@@ -189,13 +212,13 @@ class AccountsTests(unittest.TestCase):
             events.append('restore')
         with patch('bridge.features.accounts.accounts.DesktopApp',return_value=self.app), patch('bridge.features.sessions.access.ThreadAccess') as migration:
             migration.return_value.restore.side_effect=restore
-            self.manager.recover({'confirmed':True});self.manager.thread.join(3)
+            self.manager.recover({'confirmed':True});wait_for_account_worker(self)
         self.assertEqual(events,['restore','start']);self.assertEqual(self.manager.state['phase'],'restored')
 
     def test_failed_recovery_stays_blocked_across_gateway_restart(self):
         row=self.api();self.manager.prepare=self.prepare
         self.manager.wait_ready=Mock(side_effect=ValueError('failed'))
-        self.switch(row);self.manager.thread.join(3)
+        self.switch(row);wait_for_account_worker(self)
         self.assertEqual(self.manager.state['phase'],'interrupted')
         restarted=Accounts(self.bridge)
         with self.assertRaises(ValueError):restarted.check_ready()
@@ -207,7 +230,7 @@ class AccountsTests(unittest.TestCase):
             original_restore(snapshot)
         self.manager.restore_files=restore
         with patch('bridge.features.accounts.accounts.DesktopApp',return_value=self.app):
-            self.manager.recover({'confirmed':True});self.manager.thread.join(3)
+            self.manager.recover({'confirmed':True});wait_for_account_worker(self)
         self.assertEqual(self.manager.state['phase'],'restored')
         self.assertEqual(self.manager.snapshot_files(),self.original)
 
@@ -250,12 +273,12 @@ class AccountsTests(unittest.TestCase):
 
     def test_native_exit_edits_are_retained_before_switch_and_rollback(self):
         row=self.api();self.manager.prepare=Mock(side_effect=self.prepare)
-        def stop():
+        def stop(**kwargs):
             if self.app.stop.call_count==1:
                 private_bytes(self.home/'config.toml',b'# saved during exit\n')
         self.app.stop.side_effect=stop
         self.manager.wait_ready=Mock(side_effect=[ValueError(),None])
-        self.switch(row);self.manager.thread.join(3)
+        self.switch(row);wait_for_account_worker(self)
         self.assertEqual((self.home/'config.toml').read_bytes(),b'# saved during exit\n')
         self.assertEqual(self.manager.prepare.call_count,2)
 
@@ -286,7 +309,7 @@ class AccountsTests(unittest.TestCase):
 
     def test_preparation_failure_leaves_live_files_and_gui_untouched(self):
         row=self.api();self.manager.prepare=Mock(side_effect=ValueError('private upstream error'))
-        self.switch(row);self.manager.thread.join(3)
+        self.switch(row);wait_for_account_worker(self)
         self.assertEqual(self.manager.state['phase'],'failed')
         self.app.stop.assert_not_called()
         self.assertEqual(self.manager.snapshot_files(),self.original)
@@ -328,6 +351,16 @@ class AccountsTests(unittest.TestCase):
 
 
 class DesktopAppTests(unittest.TestCase):
+    def test_windows_native_scan_still_rejects_runtime_as_desktop(self):
+        with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as folder:
+            runtime = Path(folder)/'bin/version/codex.exe'
+            runtime.parent.mkdir(parents=True); runtime.write_bytes(b'MZ-runtime'); runtime.chmod(0o700)
+            with patch('bridge.clients.desktop_app.sys.platform', 'win32'), \
+                    patch('bridge.clients.discovery.discover_clients', return_value={
+                        'codex': {'installed': True, 'executable': str(runtime)}}):
+                with self.assertRaisesRegex(ValueError, '命令行运行时'):
+                    DesktopApp.scan(runtime, folder)
+
     def test_runtime_and_script_cannot_be_used_as_gui(self):
         with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as folder:
             path=Path(folder)/'launcher';path.write_bytes(b'#!/bin/sh\n');path.chmod(0o700)

@@ -14,6 +14,8 @@ STATIC = {"/host.js": ("hosts/environment.js", "text/javascript; charset=utf-8")
           "/client-icons/codex.png": ("client-icons/codex.png", "image/png"),
           "/client-icons/claude.png": ("client-icons/claude.png", "image/png"),
           "/client-icons/deepseek.png": ("client-icons/deepseek.png", "image/png"),
+          "/client-lifecycle.css": ("client-lifecycle.css", "text/css; charset=utf-8"),
+          "/client-lifecycle.js": ("client-lifecycle.js", "text/javascript; charset=utf-8"),
           "/client-navigation.js": ("client-navigation.js", "text/javascript; charset=utf-8"),
           "/client-navigation.css": ("client-navigation.css", "text/css; charset=utf-8"),
           "/desktop-sessions.js": ("desktop-sessions.js", "text/javascript; charset=utf-8"),

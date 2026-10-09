@@ -3,13 +3,16 @@
 class DesktopSessionsView {
   constructor({root,select,request,notify,onSelect,csrf,onUnauthorized}) {
     Object.assign(this,{root,select,request,notify,onSelect,csrf,onUnauthorized});this.provider='codex';this.generation=0;this.detailRevision=0;this.drafts=new Map();this.accountDrafts=new Map();this.skillSelections=new Map();this.pending=new Map();this.rows=[];this.messageNodes=new Map();this.providerViews=new Map();this.detailCache=new Map();this.activity=new SessionActivity({key:'bridge-desktop-session-activity'});try{this.collapsedGroups=new Set(JSON.parse(localStorage.getItem('bridge-desktop-session-groups')||'[]'));}catch{this.collapsedGroups=new Set();}
+    this.readTasks=new Map();this.readEpoch=0;this.providerReadEpochs=new Map();this.listPrefetchAt=new Map();this.detailCacheSizes=new Map();this.detailCacheBytes=0;
     this.container=this.node('section','desktop-sessions');root.append(this.container);this.container.hidden=true;
     this.list=this.node('aside','ds-list');this.main=this.node('main','ds-main');this.container.append(this.list,this.main);
     this.search=this.node('input','search');this.search.placeholder=BridgeI18n.t('搜索聊天或项目');this.label(this.search,'搜索聊天或项目');this.search.oninput=()=>this.renderList();
     const filters=this.node('div','list-filters');const display=this.node('label','list-mode');display.append(this.translated('span','显示方式'));this.listMode=this.node('select');this.label(this.listMode,'聊天列表显示方式');for(const [id,title] of [['recent','最近交互'],['project','按项目']])this.listMode.add(new Option(BridgeI18n.t(title),id));this.listMode.onchange=()=>this.renderList();display.append(this.listMode);
     const archive=this.node('label','archive');this.archived=this.node('input');this.archived.type='checkbox';this.archived.onchange=()=>this.renderList();archive.append(this.archived,this.translated('span','已归档'));filters.append(display,archive);
     this.surface=this.node('select','ds-surface');this.label(this.surface,'会话类型');for(const [id,title] of [['all','全部会话'],['code','Code'],['cowork','Cowork']])this.surface.add(new Option(BridgeI18n.t(title),id));this.surface.onchange=()=>this.renderList();
-    this.listStatus=this.node('p','muted ds-list-status');this.listStatus.setAttribute('role','status');this.rowsRoot=this.node('div','sessions');this.list.append(this.search,filters,this.surface,this.listStatus,this.rowsRoot);
+    this.listStatus=this.node('p','muted ds-list-status');this.listStatus.setAttribute('role','status');this.connectionRetry=this.button('重试连接',async()=>{const provider=this.provider;if(this.retryingClient||!this.retryClient)return;this.retryingClient=provider;this.renderConnectionStatus();try{await this.retryClient(provider);}finally{this.retryingClient=null;this.renderConnectionStatus();}});this.connectionRetry.hidden=true;
+    this.connectionInitialize=this.button('初始化连接',async()=>{const provider=this.provider;if(this.initializingClient||!this.initializeClient)return;this.initializingClient=provider;this.renderConnectionStatus();try{await this.initializeClient(provider);}finally{this.initializingClient=null;this.renderConnectionStatus();}});this.connectionInitialize.hidden=true;
+    this.connectionNotice=this.node('p','muted');this.connectionNotice.hidden=true;this.connectionRefresh=this.button('刷新状态',async()=>{if(this.refreshingClient||!this.refreshClients)return;this.refreshingClient=true;this.renderConnectionStatus();try{await this.refreshClients();}finally{this.refreshingClient=false;this.renderConnectionStatus();}});this.connectionRefresh.hidden=true;this.rowsRoot=this.node('div','sessions');this.list.append(this.search,filters,this.surface,this.listStatus,this.connectionNotice,this.connectionRetry,this.connectionInitialize,this.connectionRefresh,this.rowsRoot);
     this.welcome=this.node('div','welcome ds-welcome');const logo=this.node('img','mark large');logo.src='/icon.png';logo.alt='';logo.width=72;logo.height=72;this.welcome.append(logo,this.translated('h1','从一条聊天继续'),this.translated('p','选择电脑上的聊天，查看进度或发送消息。','muted'));
     this.conversation=this.node('section','ds-conversation chat');this.conversation.hidden=true;this.main.append(this.welcome,this.conversation);
     this.back=this.iconButton('返回聊天列表','m15 5-7 7 7 7',()=>{if(!this.workbench.back())this.backToList();});this.back.classList.add('ds-back');
@@ -27,7 +30,7 @@ class DesktopSessionsView {
     this.attachments=new ChatAttachments({root:this.attachmentList,button:this.attachButton,input:this.attachmentInput,paste:this.input,drop:this.form,onChange:()=>this.updateComposer(),upload:(key,id,file)=>this.uploadAttachment(key,id,file),preview:(key,id)=>this.attachmentUrl(key,id,'preview'),thumbnail:async(key,id,file)=>{const image=await this.attachments.thumbnailBlob(file);return this.uploadBinary(this.attachmentUrl(key,id,'thumb')+'&width='+image.width+'&height='+image.height,image.data,image.mime);}});
     const addAttachments=this.attachments.add.bind(this.attachments);this.attachments.add=files=>{if(!this.attachments.key||this.attachments.locked)return;if(this.overRequestLimit([...this.attachments.rows,...files])){this.attachments.error=this.requestLimitMessage();this.attachments.render();return;}if(files.some(file=>!file.type?.startsWith('image/'))){this.attachments.error='此应用的消息附件仅支持图片；其他文件请使用文件传输。';this.attachments.render();return;}addAttachments(files);};
     this.conversation.append(head,this.notice,this.messages,this.requests,this.form);this.workbench=new Workbench({chat:this.conversation,request,csrf,notify,onUnauthorized});select.onchange=()=>this.choose(select.value);
-    document.addEventListener('bridge-language',()=>this.relabel());document.addEventListener('visibilitychange',()=>{clearTimeout(this.timer);if(!document.hidden&&this.provider!=='codex')this.refresh();});
+    document.addEventListener('bridge-language',()=>this.relabel());document.addEventListener('visibilitychange',()=>{clearTimeout(this.timer);if(!document.hidden){this.prefetchLists();if(this.provider!=='codex')this.refresh();}});
     this.appearanceObserver=new MutationObserver(()=>{this.renderMessages(this.lastMessages||[]);this.workbench.setThumbnails(document.documentElement.dataset.showFileThumbnails==='true');});this.appearanceObserver.observe(document.documentElement,{attributes:true,attributeFilter:['data-show-reasoning','data-show-process','data-show-file-thumbnails']});
     this.updateComposer();
   }
@@ -37,19 +40,68 @@ class DesktopSessionsView {
   button(text,fn){const n=this.translated('button',text,'plain');n.type='button';n.onclick=async()=>{try{return await fn();}catch(e){this.notify(BridgeI18n.t(e.message));}};return n;}
   iconButton(text,path,fn){const button=this.button('',fn);button.className='icon-button';this.label(button,text);button.title=BridgeI18n.t(text);const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('class','header-icon');svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('aria-hidden','true');const shape=document.createElementNS(svg.namespaceURI,'path');shape.setAttribute('d',path);svg.append(shape);button.append(svg);return button;}
   path(action,sid=this.sid,provider=this.provider){return '/api/desktop-sessions/'+provider+'/'+action+(sid?'?sessionId='+encodeURIComponent(sid):'');}
+  sharedRead(provider,action,sid=null){
+    const epoch=this.readEpoch,version=this.providerReadEpochs.get(provider)||0,key=JSON.stringify([provider,action,sid,epoch,version]);
+    if(this.readTasks.has(key))return this.readTasks.get(key);
+    const task={current:()=>epoch===this.readEpoch&&version===(this.providerReadEpochs.get(provider)||0)};
+    task.promise=(async()=>{const value=await this.request(this.path(action,sid,provider));if(task.current()){
+      if(action==='list')this.providerViews.set(provider,{...this.providerViews.get(provider),rows:value.sessions||[],cachedAt:Date.now()});
+      else if(action==='detail'&&value.session)this.cacheDetail(JSON.stringify([provider,sid]),value);
+    }return value;})();this.readTasks.set(key,task);
+    const done=()=>{if(this.readTasks.get(key)===task)this.readTasks.delete(key);};task.promise.then(done,done);return task;
+  }
+  forgetDetail(key){this.detailCache.delete(key);this.detailCacheBytes-=this.detailCacheSizes.get(key)||0;this.detailCacheSizes.delete(key);}
+  cacheDetail(key,value){
+    const bytes=JSON.stringify(value).length*2,limit=8*1024*1024;this.forgetDetail(key);if(bytes>limit)return;
+    this.detailCache.set(key,value);this.detailCacheSizes.set(key,bytes);this.detailCacheBytes+=bytes;
+    while(this.detailCache.size>12||this.detailCacheBytes>limit)this.forgetDetail(this.detailCache.keys().next().value);
+  }
+  invalidateReads(provider){
+    this.providerReadEpochs.set(provider,(this.providerReadEpochs.get(provider)||0)+1);for(const key of this.readTasks.keys())if(JSON.parse(key)[0]===provider)this.readTasks.delete(key);
+    this.listPrefetchAt.delete(provider);const saved=this.providerViews.get(provider);if(saved)saved.cachedAt=0;
+    if(provider===this.provider){this.freshDetail=false;this.detailRevision++;this.loading=null;this.refreshPending=null;}
+  }
+  prefetchLists(){
+    if(document.hidden||this.root.hidden)return;
+    const now=Date.now();for(const client of this.clientStates||[]){
+      if(!['claude','deepseek'].includes(client.id)||client.id===this.provider||!client.enabled||!client.connected||client.operationUncertain)continue;
+      if(now-Math.max(this.providerViews.get(client.id)?.cachedAt||0,this.listPrefetchAt.get(client.id)||0)<30000)continue;
+      this.listPrefetchAt.set(client.id,now);this.sharedRead(client.id,'list').promise.catch(()=>{});
+    }
+  }
+  setClientStates(clients,retry,initialize,refresh){
+    for(const client of clients){const old=this.clientStates?.find(row=>row.id===client.id);if(old&&(old.enabled!==false&&client.enabled===false||old.connected===true&&client.connected===false))this.invalidateReads(client.id);}
+    const before=this.clientStates?.find(client=>client.id===this.provider);this.clientStates=clients;this.retryClient=retry;this.initializeClient=initialize;this.refreshClients=refresh;
+    if(this.state&&!this.canMutate())this.staleDetail();else this.updateComposer();
+    const current=clients.find(client=>client.id===this.provider),wasWaiting=before&&ClientLifecycle.connection(before).waiting;
+    this.prefetchLists();
+    if(!this.renderConnectionStatus()&&before&&(wasWaiting||(!before.connected&&current?.connected))){this.listStatus.textContent=BridgeI18n.t('正在读取聊天…');return this.refresh();}
+  }
+  renderConnectionStatus(){
+    const client=this.clientStates?.find(client=>client.id===this.provider),state=client&&ClientLifecycle.connection(client);
+    const failure=client?.operationFailure,uncertain=!!(client?.operationUncertain||failure?.uncertain),blocked=!!state&&!client.connected&&(state.waiting||state.action||state.retryable||!!failure);
+    this.listStatus.setAttribute('aria-busy',String(!!state?.waiting));this.listStatus.classList.toggle('client-connection-waiting',!!state?.waiting);
+    this.connectionRetry.hidden=!blocked||!state.retryable||uncertain;this.connectionRetry.disabled=!!this.retryingClient;
+    this.connectionInitialize.hidden=!blocked||!state.canInitialize||uncertain;this.connectionInitialize.disabled=!!this.initializingClient;
+    this.connectionNotice.hidden=!failure;this.connectionNotice.textContent=failure?BridgeI18n.t(ClientLifecycle.failureMessage(failure)):'';this.connectionRefresh.hidden=!uncertain;this.connectionRefresh.disabled=!!this.refreshingClient;
+    if(blocked)this.listStatus.textContent=BridgeI18n.t(state.label)+(state.reason&&state.reason!==state.label?' · '+BridgeI18n.t(state.reason):'');
+    return blocked;
+  }
   get isChatOpen(){return this.provider!=='codex'&&!!this.sid&&!this.conversation.hidden;}
   saveDraft(){if(this.sid)this.drafts.set(this.provider+':'+this.sid,this.input.value);}
   showSelection(open){this.conversation.hidden=!open;this.welcome.hidden=open;this.container.classList.toggle('ds-open',open);this.root.classList.toggle('chat-open',open);document.body.classList.toggle('chat-detail',open);}
   rememberView(){
-    if(this.provider==='codex')return;this.saveDraft();this.workbench.rememberScroll();this.providerViews.set(this.provider,{rows:this.rows,sid:this.sid,query:this.search.value,surface:this.surface.value,archived:this.archived.checked,listMode:this.listMode.value,scroll:this.rowsRoot.scrollTop});
+    if(this.provider==='codex')return;this.saveDraft();this.workbench.rememberScroll();this.providerViews.set(this.provider,{...this.providerViews.get(this.provider),rows:this.rows,sid:this.sid,query:this.search.value,surface:this.surface.value,archived:this.archived.checked,listMode:this.listMode.value,scroll:this.rowsRoot.scrollTop});
   }
   async choose(provider){
+    if(provider===this.provider)return;
     this.rememberView();clearTimeout(this.timer);this.generation++;this.detailRevision++;this.provider=provider;this.select.value=provider;this.workbench.provider=provider;this.workbench.current=null;this.workbench.panel.hidden=true;this.workbench.tabs.replaceChildren();this.conversation.classList.remove('workbench-active','wb-split');this.sid=null;this.state=null;this.freshDetail=false;const saved=this.providerViews.get(provider);this.rows=saved?.rows||[];this.listStamp='';this.search.value=saved?.query||'';this.surface.value=saved?.surface||'all';this.archived.checked=saved?.archived||false;if(saved?.listMode)this.listMode.value=saved.listMode;this.surface.hidden=provider!=='claude';this.showSelection(false);
     this.container.hidden=provider==='codex';this.root.classList.toggle('desktop-mode',provider!=='codex');this.clientIcon.replaceChildren();if(provider!=='codex'){const img=this.node('img');img.src='/client-icons/'+provider+'.png';img.alt='';this.clientIcon.append(img);}this.clientIcon.className='client-icon client-'+provider;this.listStatus.textContent=BridgeI18n.t('正在读取聊天…');this.renderList();this.rowsRoot.scrollTop=saved?.scroll||0;this.updateComposer();if(saved?.sid)this.prepareChat(saved.sid);this.onSelect(provider);
-    if(provider!=='codex')await this.refresh();
+    this.renderConnectionStatus();if(provider!=='codex')await this.refresh();
   }
   backToList(){if(!this.isChatOpen)return false;this.saveDraft();this.workbench.rememberScroll();this.sid=null;this.state=null;this.freshDetail=false;this.detailRevision++;this.showSelection(false);this.renderList();this.updateComposer();this.rememberView();return true;}
   async accountChanged(provider,previous={},next={}){
+    this.invalidateReads(provider);
     const identity=value=>JSON.stringify([provider,[...(value.activeIds||[value.activeId].filter(Boolean))].sort()]);
     if(provider===this.provider)this.saveDraft();
     const drafts=new Map([...this.drafts].filter(([key])=>key.startsWith(provider+':')));this.accountDrafts.set(identity(previous),drafts);
@@ -57,21 +109,23 @@ class DesktopSessionsView {
     const jsonKey=key=>{try{return JSON.parse(key)[0]===provider;}catch{return false;}};
     this.providerViews.delete(provider);for(const key of this.drafts.keys())if(key.startsWith(provider+':'))this.drafts.delete(key);
     for(const [key,text] of this.accountDrafts.get(identity(next))||[])this.drafts.set(key,text);
-    for(const map of [this.detailCache,this.skillSelections])for(const key of map.keys())if(jsonKey(key))map.delete(key);
+    for(const key of this.detailCache.keys())if(jsonKey(key))this.forgetDetail(key);for(const key of this.skillSelections.keys())if(jsonKey(key))this.skillSelections.delete(key);
     for(const key of this.pending.keys())if(key.startsWith(provider+':'))this.pending.delete(key);
     for(const key of Object.keys(this.activity.rows))if(key.startsWith(provider+'|'))delete this.activity.rows[key];this.activity.save();
     this.workbench.reset(provider);this.attachments.forget(jsonKey);
     if(provider!==this.provider)return;
     this.rows=[];this.listStamp='';this.lastMessages=[];this.requestStamp='';this.messageNodes.clear();this.messages.replaceChildren();this.requests.replaceChildren();this.showSelection(false);this.renderList();this.updateComposer();await this.refresh();
   }
-  clear(){this.workbench.reset();clearTimeout(this.timer);this.generation++;this.detailRevision++;this.provider='codex';this.select.value='codex';this.select.hidden=true;this.container.hidden=true;this.root.classList.remove('desktop-mode');this.sid=null;this.state=null;this.showSelection(false);this.drafts.clear();this.accountDrafts.clear();this.skillSelections.clear();this.providerViews.clear();this.detailCache.clear();this.activity.clear();this.freshDetail=false;this.rows=[];this.listStamp='';this.rowsRoot.replaceChildren();this.lastMessages=[];this.requestStamp='';this.pending.clear();this.attachments.reset();this.messages.replaceChildren();this.requests.replaceChildren();this.messageNodes.clear();}
+  clear(){this.readEpoch++;this.readTasks.clear();this.providerReadEpochs.clear();this.listPrefetchAt.clear();this.detailCacheSizes.clear();this.detailCacheBytes=0;this.clientStates=[];this.workbench.reset();clearTimeout(this.timer);this.generation++;this.detailRevision++;this.provider='codex';this.select.value='codex';this.select.hidden=true;this.container.hidden=true;this.root.classList.remove('desktop-mode');this.sid=null;this.state=null;this.showSelection(false);this.drafts.clear();this.accountDrafts.clear();this.skillSelections.clear();this.providerViews.clear();this.detailCache.clear();this.activity.clear();this.freshDetail=false;this.rows=[];this.listStamp='';this.rowsRoot.replaceChildren();this.lastMessages=[];this.requestStamp='';this.pending.clear();this.attachments.reset();this.messages.replaceChildren();this.requests.replaceChildren();this.messageNodes.clear();}
   async refresh(){
     clearTimeout(this.timer);const generation=this.generation,provider=this.provider;if(provider==='codex'||document.hidden||this.root.hidden)return;
-    if(this.loading===generation){this.refreshPending=generation;return;}this.loading=generation;
-    const detail=this.sid?this.detail(generation).catch(error=>{if(generation===this.generation){this.error.textContent=BridgeI18n.t(error.message);this.status.textContent=BridgeI18n.t('连接失败');}}):Promise.resolve();
-    try{const value=await this.request(this.path('list',null,provider));if(generation!==this.generation)return;this.rows=value.sessions||[];this.updateActivity(this.rows,value.connected!==false);this.listStatus.textContent=BridgeI18n.t(this.rows.length?'已连接桌面':'已连接，桌面还没有会话');this.renderList();this.rememberView();}
-    catch(error){if(generation===this.generation){this.updateActivity(this.rows,false);this.renderIndicators();this.listStatus.textContent=BridgeI18n.t(error.message);if(this.sid&&!this.state)this.error.textContent=BridgeI18n.t(error.message);}}
-    finally{await detail;if(this.loading===generation)this.loading=null;if(generation===this.generation){if(this.refreshPending===generation){this.refreshPending=null;this.refresh();}else this.timer=setTimeout(()=>this.refresh(),this.sid?2000:5000);}}
+    if(this.renderConnectionStatus()){this.updateActivity(this.rows,false);this.renderIndicators();this.freshDetail=false;this.updateComposer();return;}
+    if(this.loading?.generation===generation){this.refreshPending=generation;return;}const loading={generation};this.loading=loading;
+    if(this.sid)this.detail(generation).catch(error=>{if(generation===this.generation){this.error.textContent=BridgeI18n.t(error.message);this.status.textContent=BridgeI18n.t('连接失败');}});
+    const task=this.sharedRead(provider,'list');
+    try{const value=await task.promise;if(!task.current()||generation!==this.generation)return;this.rows=value.sessions||[];this.updateActivity(this.rows,value.connected!==false);this.listStatus.textContent=BridgeI18n.t(value.connected===false?'尚未连接':this.rows.length?'已连接桌面':'已连接，桌面还没有会话');this.renderConnectionStatus();this.renderList();this.rememberView();}
+    catch(error){if(task.current()&&generation===this.generation){this.updateActivity(this.rows,false);this.renderIndicators();if(!this.renderConnectionStatus())this.listStatus.textContent=BridgeI18n.t(error.message);if(this.sid&&!this.state)this.error.textContent=this.listStatus.textContent;}}
+    finally{if(this.loading===loading){this.loading=null;if(generation===this.generation){if(this.refreshPending===generation){this.refreshPending=null;this.refresh();}else this.timer=setTimeout(()=>this.refresh(),this.sid||ClientLifecycle.connection(this.clientStates?.find(client=>client.id===provider)).waiting?2000:5000);}}}
   }
   visibleActivity(){return this.isChatOpen&&!document.hidden&&!this.workbench.isFileVisible?this.provider+'|'+this.sid:null;}
   updateActivity(rows,connected=true){this.activity.update(rows.map(row=>({id:row.id,host:this.provider,connected,status:row.status,turnId:row.turnId,turnStatus:row.turnStatus})),this.visibleActivity());}
@@ -95,19 +149,22 @@ class DesktopSessionsView {
     try{await this.detail(generation);}catch(error){if(generation===this.generation&&sid===this.sid){this.error.textContent=BridgeI18n.t(error.message);this.status.textContent=BridgeI18n.t('连接失败');this.updateComposer();}}
   }
   async detail(generation){
-    const sid=this.sid,provider=this.provider,revision=++this.detailRevision,current=()=>generation===this.generation&&provider===this.provider&&sid===this.sid&&revision===this.detailRevision;let value;
-    try{value=await this.request(this.path('detail',sid,provider));}catch(error){if(current())throw error;return;}if(!current())return;this.detailCache.set(JSON.stringify([provider,sid]),value);this.applyDetail(value);
+    const sid=this.sid,provider=this.provider,revision=this.detailRevision,task=this.sharedRead(provider,'detail',sid),current=()=>task.current()&&generation===this.generation&&provider===this.provider&&sid===this.sid&&revision===this.detailRevision;let value;
+    try{value=await task.promise;}catch(error){if(current()){this.staleDetail();throw error;}return;}if(!current())return;this.applyDetail(value);
   }
+  canMutate(){const client=this.clientStates?.find(row=>row.id===this.provider);return !!this.state&&this.freshDetail&&(!client||client.enabled!==false&&client.connected===true);}
+  staleDetail(){this.freshDetail=false;this.renderRequests([]);this.requestStamp='';this.updateComposer();}
   applyDetail(value,cached=false){
-    this.freshDetail=!cached;this.state={...value.session,capabilities:value.capabilities||value.session.capabilities||{},maxRequestBytes:value.maxRequestBytes||value.session.maxRequestBytes||0};this.title.textContent=this.state.title;this.status.textContent=BridgeI18n.t(cached?'正在连接…':this.state.requests?.length?'等待回应':this.state.status==='active'?'运行中':'已连接');this.updateComposer();this.renderMessages(value.messages||[]);
-    const requests=cached?[]:this.state.requests||[],stamp=JSON.stringify([requests,BridgeI18n.language()]);if(stamp!==this.requestStamp){this.renderRequests(requests);this.requestStamp=stamp;}
+    if(!value.session){this.staleDetail();this.status.textContent=BridgeI18n.t('尚未连接');return;}
+    this.freshDetail=!cached&&value.connected!==false;this.state={...value.session,capabilities:value.capabilities||value.session.capabilities||{},maxRequestBytes:value.maxRequestBytes||value.session.maxRequestBytes||0};this.title.textContent=this.state.title;this.status.textContent=BridgeI18n.t(cached?'正在连接…':!this.canMutate()?'尚未连接':this.state.requests?.length?'等待回应':this.state.status==='active'?'运行中':'已连接');this.updateComposer();this.renderMessages(value.messages||[]);
+    const requests=this.canMutate()?this.state.requests||[]:[],stamp=JSON.stringify([requests,BridgeI18n.language()]);if(stamp!==this.requestStamp){this.renderRequests(requests);this.requestStamp=stamp;}
     this.notice.textContent=BridgeI18n.t(value.notice||'');this.notice.hidden=!value.notice;if(!cached)this.updateActivity([this.state]);this.renderIndicators();
   }
   updateComposer(){
-    const state=this.state,caps=state?.capabilities||{},active=state?.status==='active';this.modelName.textContent=state?.model||BridgeI18n.t('模型');delete this.modelName.dataset.i18n;this.modelEffort.textContent=state?.effort?'· '+state.effort:'';this.modelEffort.hidden=!state?.effort;this.modelButton.title=[state?.model||BridgeI18n.t('模型'),state?.effort].filter(Boolean).join(' · ');this.modelButton.disabled=!state||!this.freshDetail||!!this.busy||caps.models===false;
-    const canAttach=caps.attachments===true;this.attachButton.hidden=!canAttach;this.form.classList.toggle('ds-has-attachments',canAttach);if(this.attachments){const locked=!state||!this.freshDetail||!!this.busy||!canAttach;if(this.attachments.locked!==locked)this.attachments.setLocked(locked);this.attachmentList.hidden=!canAttach||(!this.attachments.rows.length&&!this.attachments.error);}
+    const state=this.state,caps=state?.capabilities||{},active=state?.status==='active',ready=this.canMutate();this.modelName.textContent=state?.model||BridgeI18n.t('模型');delete this.modelName.dataset.i18n;this.modelEffort.textContent=state?.effort?'· '+state.effort:'';this.modelEffort.hidden=!state?.effort;this.modelButton.title=[state?.model||BridgeI18n.t('模型'),state?.effort].filter(Boolean).join(' · ');this.modelButton.disabled=!ready||!!this.busy||caps.models===false;
+    const canAttach=caps.attachments===true;this.attachButton.hidden=!canAttach;this.form.classList.toggle('ds-has-attachments',canAttach);if(this.attachments){const locked=!ready||!!this.busy||!canAttach;if(this.attachments.locked!==locked)this.attachments.setLocked(locked);this.attachmentList.hidden=!canAttach||(!this.attachments.rows.length&&!this.attachments.error);}
     this.attachButton.title=BridgeI18n.t('添加文件或图片')+(state?.maxRequestBytes?' · '+BridgeI18n.t('消息和图片编码后合计最多 10 MiB'):'');this.skillsButton.hidden=caps.skills!==true;this.skillsButton.disabled=!state||!!this.busy;this.renderSkillPills();
-    this.send.disabled=!state||!this.freshDetail||!!this.busy||caps.send===false||(canAttach&&(!this.attachments.ready()||this.overRequestLimit(this.attachments.rows)))||[...this.selectedSkills().values()].some(s=>s.invalid);this.stop.disabled=!active||!!this.busy;this.stop.hidden=!active||caps.stop===false;this.permissionsButton.hidden=caps.permissions!==true;this.permissionsButton.disabled=!state||!this.freshDetail||!!this.busy;this.mode.disabled=!state||!!this.busy;
+    this.send.disabled=!ready||!!this.busy||caps.send===false||(canAttach&&(!this.attachments.ready()||this.overRequestLimit(this.attachments.rows)))||[...this.selectedSkills().values()].some(s=>s.invalid);this.stop.disabled=!ready||!active||!!this.busy;this.stop.hidden=!active||caps.stop===false;this.permissionsButton.hidden=caps.permissions!==true;this.permissionsButton.disabled=!ready||!!this.busy;this.mode.disabled=!ready||!!this.busy;
     this.mode.options[1].disabled=caps.queue===false;if(this.mode.options[1].disabled&&this.mode.value==='queue')this.mode.value='send';const steer=this.mode.options[2];steer.disabled=!active||caps.steer===false;if(steer.disabled&&this.mode.value==='steer')this.mode.value='send';
   }
   resizeInput(){if(this.composerBody.hidden)return;this.input.style.height='auto';this.input.style.height=Math.min(160,Math.max(48,this.input.scrollHeight||48))+'px';}
@@ -133,10 +190,10 @@ class DesktopSessionsView {
   }}
   requestId(){if(typeof uuid==='function')return uuid();if(typeof crypto.randomUUID==='function')return crypto.randomUUID();const bytes=crypto.getRandomValues(new Uint8Array(16));bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;const h=[...bytes].map(x=>x.toString(16).padStart(2,'0')).join('');return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);}
   async mutate(action,body,sessionId=action==='create'?null:this.sid){
-    if(this.busy)return null;const provider=this.provider,generation=this.generation,key=provider+':'+sessionId+':'+action+':'+JSON.stringify(body);this.busy=true;this.error.textContent='';this.updateComposer();
+    if(this.busy||sessionId&&(!this.canMutate()||sessionId!==this.sid))return null;const provider=this.provider,generation=this.generation,key=provider+':'+sessionId+':'+action+':'+JSON.stringify(body);this.invalidateReads(provider);const epoch=this.readEpoch,providerEpoch=this.providerReadEpochs.get(provider),currentWrite=()=>epoch===this.readEpoch&&providerEpoch===this.providerReadEpochs.get(provider);this.busy=true;this.error.textContent='';this.updateComposer();
     try{let id=this.pending.get(key);if(!id){id=this.requestId();this.pending.set(key,id);}const result=await this.request(this.path(action,null,provider),{...body,id,sessionId});if(!['accepted','queued','ready'].includes(result.status))throw Error(result.message||'结果待核对，请检查桌面原会话');this.pending.delete(key);return result;}
     catch(error){if(generation===this.generation&&sessionId===this.sid)this.error.textContent=BridgeI18n.t(error.message);this.notify(BridgeI18n.t(error.message));return null;}
-    finally{this.busy=false;this.updateComposer();if(generation===this.generation)this.refresh();}
+    finally{const current=currentWrite();if(current)this.invalidateReads(provider);this.busy=false;this.updateComposer();if(current&&provider===this.provider)this.refresh();}
   }
   attachmentUrl(key,id,action){const [provider,sid]=JSON.parse(key);return this.path('uploads/'+encodeURIComponent(id)+'/'+action,sid,provider);}
   async uploadBinary(url,data,type){const response=await fetch(url,{method:'POST',credentials:'same-origin',headers:{'Content-Type':type||'application/octet-stream','X-CSRF-Token':this.csrf()},body:data});const result=await response.json();if(!response.ok){if(response.status===401)this.onUnauthorized();throw Error(result.error||BridgeI18n.t('附件上传失败，请重试'));}return result;}
@@ -198,6 +255,6 @@ class DesktopSessionsView {
       form.append(this.node('p','muted',BridgeI18n.t(projects.length?'沿用桌面项目的配置':'请先在桌面客户端创建一个项目会话')),error,create);form.onsubmit=async event=>{event.preventDefault();if(generation!==this.generation)return dialog.close();if(!title.value.trim()||message.required&&!message.value.trim()){error.textContent=BridgeI18n.t(message.required?'请填写聊天名称和首条消息':'请输入聊天名称');return;}create.disabled=true;const body={projectKey:project.value,title:title.value.trim()};if(message.required)body.firstMessage=message.value.trim();const result=await this.mutate('create',body,null);if(result?.result?.id&&generation===this.generation){dialog.close();await this.open(result.result.id);}else{error.textContent=BridgeI18n.t('结果待核对，请检查桌面原会话');create.disabled=false;}};dialog.append(form);
     }catch(error){if(dialog.open){loading.textContent=BridgeI18n.t(error.message);loading.className='error';}}
   }
-  relabel(){this.listStamp='';this.requestStamp='';this.search.placeholder=BridgeI18n.t('搜索聊天或项目');this.input.placeholder=BridgeI18n.t('继续这条聊天…');[...this.mode.options].forEach((option,i)=>option.textContent=BridgeI18n.t(['发送新消息','完成后发送','补充当前任务'][i]));this.listMode.options[0].textContent=BridgeI18n.t('最近交互');this.listMode.options[1].textContent=BridgeI18n.t('按项目');this.surface.options[0].textContent=BridgeI18n.t('全部会话');this.renderList();this.attachments.render();this.updateComposer();this.renderMessages(this.lastMessages||[]);this.collapseComposer(this.composerBody.hidden);this.workbench.relabel();if(this.sid)this.renderRequests(this.freshDetail?this.state?.requests||[]:[]);}
+  relabel(){this.renderConnectionStatus();this.listStamp='';this.requestStamp='';this.search.placeholder=BridgeI18n.t('搜索聊天或项目');this.input.placeholder=BridgeI18n.t('继续这条聊天…');[...this.mode.options].forEach((option,i)=>option.textContent=BridgeI18n.t(['发送新消息','完成后发送','补充当前任务'][i]));this.listMode.options[0].textContent=BridgeI18n.t('最近交互');this.listMode.options[1].textContent=BridgeI18n.t('按项目');this.surface.options[0].textContent=BridgeI18n.t('全部会话');this.renderList();this.attachments.render();this.updateComposer();this.renderMessages(this.lastMessages||[]);this.collapseComposer(this.composerBody.hidden);this.workbench.relabel();if(this.sid)this.renderRequests(this.freshDetail?this.state?.requests||[]:[]);}
 }
 if(typeof module!=='undefined')module.exports={DesktopSessionsView};

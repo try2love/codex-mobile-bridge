@@ -523,13 +523,15 @@ class SideChat:
 
 
 class SideChats:
-    def __init__(self, executable, home, directory, host, factory=SideChat):
+    def __init__(self, executable, home, directory, host, factory=SideChat, *, executable_getter=None):
         self.executable, self.home, self.directory, self.host = executable, home, directory, host
+        self.executable_getter = executable_getter
         self.factory = factory
         self.lock = threading.RLock()
         self.chats = {}
         self.creations = {}
         self.checked = False
+        self._checked_executable = executable
 
     def operate(self, parent, action, body, snapshot=None, settings=None, catalog_reader=None):
         with self.lock:
@@ -549,10 +551,14 @@ class SideChats:
                     raise ValueError('此预览暂支持网关电脑上的聊天，SSH 远程工作区尚未接入侧边聊天')
                 if len(self.chats) >= 8 or len(self.creations) >= 1000:
                     raise ValueError('临时侧边聊天数量已达上限，请关闭不用的聊天；必要时重启网关')
-                if not self.checked:
-                    check_runtime(self.executable, self.directory)
+                executable = self.executable_getter() if self.executable_getter else self.executable
+                if not executable:
+                    raise SideChatError('找不到桌面 App 的 Codex 运行时')
+                if not self.checked or executable != self._checked_executable:
+                    check_runtime(executable, self.directory)
                     self.checked = True
-                chat = self.factory(self.executable, self.home, parent, snapshot['cwd'], settings)
+                    self._checked_executable = executable
+                chat = self.factory(executable, self.home, parent, snapshot['cwd'], settings)
                 chat.file_directory = tempfile.TemporaryDirectory(prefix='side-files-', dir=self.directory)
                 chat.uploads = Uploads(chat.file_directory.name)
                 self.chats[parent] = chat

@@ -123,7 +123,6 @@ class Accounts:
     def __init__(self, bridge):
         self.bridge = bridge
         self.home = bridge.codex_home
-        self.runtime = bridge.catalog_reader.executable
         self.root = bridge.data_dir/'accounts'
         if self.root.is_symlink():
             raise ValueError('账号目录不能是符号链接')
@@ -143,6 +142,10 @@ class Accounts:
         self.monitor = AccountMonitor(self)
         self.login_cancel = threading.Event()
         self.thread = None
+
+    @property
+    def runtime(self):
+        return self.bridge.catalog_reader.executable
 
     def directory(self, identifier):
         if not isinstance(identifier, str) or not re.fullmatch(r'[0-9a-f]{32}', identifier):
@@ -787,7 +790,7 @@ class Accounts:
             private_json(self.root/'rollback.json', backup)
             self.phase('stopping')
             self.invalidate()
-            app.stop()
+            app.stop(provider='codex')
             stopped = True
             # The GUI may refresh tokens or persist settings while exiting.
             after_stop = self.snapshot_files()
@@ -818,7 +821,7 @@ class Accounts:
             if stopped and before is not None:
                 try:
                     self.phase('restoring')
-                    app.stop()
+                    app.stop(provider='codex')
                     self.restore_files(before)
                     self.invalidate()
                     app.start()
@@ -852,7 +855,7 @@ class Accounts:
                     try:
                         app = DesktopApp(backup['desktopExecutable'], self.home)
                         app.validate(self.runtime)
-                        app.stop()
+                        app.stop(provider='codex')
                         self.restore_files(backup['files'])
                         if backup.get('threadsApplying'):
                             # Only older previews wrote thread migrations to this

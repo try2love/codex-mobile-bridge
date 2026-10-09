@@ -120,34 +120,35 @@ class HttpAdapters(unittest.TestCase):
     tearDown = test_bridge.HttpTests.tearDown
     request = test_bridge.HttpTests.request
     login = test_bridge.HttpTests.login
-    def test_claude_reconnect_is_authenticated_fixed_and_csrf_protected(self):
+    def test_force_desktop_choice_requires_auth_csrf_and_exact_payload(self):
         manager = self.server.desktop_sessions = Mock()
-        manager.reconnect_claude.return_value = {'clients': [{'id': 'claude', 'connected': False, 'setupStatus': 'connecting'}]}
-        route = '/api/clients/claude/reconnect'
-        self.assertEqual(self.request('POST', route, {})[0], 401)
+        manager.toggle_client.return_value = {'clients': []}
+        body = {'provider': 'codex', 'enabled': False, 'quitDesktop': True, 'forceDesktop': True}
+        self.assertEqual(self.request('POST', '/api/clients')[0], 401)
         headers = self.login()
-        self.assertEqual(self.request('GET', route, headers=headers)[0], 405)
-        self.assertEqual(self.request('POST', route, {}, {'Cookie': headers['Cookie']})[0], 403)
-        self.assertEqual(self.request('POST', route, {}, {**headers, 'Origin': 'https://foreign.example'})[0], 403)
-        for value in ({'restart': True}, {'provider': 'codex'}, {'path': '/fixture'}, [], None):
-            self.assertEqual(self.request('POST', route, value, headers)[0], 400)
-        manager.reconnect_claude.assert_not_called()
-        status, _, result = self.request('POST', route, {}, headers)
-        self.assertEqual(status, 200); self.assertFalse(result['clients'][0]['connected'])
-        manager.reconnect_claude.assert_called_once_with()
-        manager.control.assert_not_called(); manager.toggle_client.assert_not_called()
-        self.server.auth.config['mode'] = 'none'
-        self.assertEqual(self.request('POST', route, {}, headers)[0], 403)
-        self.assertEqual(manager.reconnect_claude.call_count, 1)
+        self.assertEqual(self.request('POST', '/api/clients', headers={'Cookie': headers['Cookie']})[0], 403)
+        manager.toggle_client.assert_not_called()
+        self.assertEqual(self.request('POST', '/api/clients', {**body, 'pid': 123}, headers)[0], 400)
+        manager.toggle_client.assert_not_called()
+        self.assertEqual(self.request('POST', '/api/clients', body, headers)[0], 200)
+        manager.toggle_client.assert_called_once_with(body)
 
-    def test_desktop_claude_quit_confirmation_is_not_exposed_to_web(self):
+    def test_explicit_claude_initialization_requires_auth_csrf_and_forwards_choice(self):
         manager = self.server.desktop_sessions = Mock()
+        manager.toggle_client.return_value = {'clients': []}
+        route = '/api/clients'
+        self.assertEqual(self.request('POST', route)[0], 401)
         headers = self.login()
-        for action in ('claude-quit-preview', 'claude-quit-confirm'):
-            self.assertEqual(self.request('POST', '/api/desktop-sessions/claude/'+action, {'confirmed': True}, headers)[0], 404)
-            self.assertEqual(self.request('POST', '/api/clients/claude/'+action, {'confirmed': True}, headers)[0], 404)
-            self.assertEqual(self.request('POST', '/api/clients', {'provider': 'claude', 'enabled': False, 'action': action}, headers)[0], 400)
-        manager.control.assert_not_called(); manager.toggle_client.assert_not_called()
+        self.assertEqual(self.request('POST', route, headers={'Cookie': headers['Cookie']})[0], 403)
+        manager.toggle_client.assert_not_called()
+        body = {'provider': 'claude', 'enabled': True, 'initializeDesktop': True}
+        self.assertEqual(self.request('POST', route, body, headers)[0], 200)
+        manager.toggle_client.assert_called_once_with(body)
+        manager.toggle_client.reset_mock()
+        for field, value in (('script', 'alert(1)'), ('force', True), ('action', 'eval')):
+            with self.subTest(field=field):
+                self.assertEqual(self.request('POST', route, {**body, field: value}, headers)[0], 400)
+        manager.toggle_client.assert_not_called()
 
     def test_desktop_notifications_require_auth_csrf_and_keep_provider(self):
         self.server.desktop_sessions = Mock()
@@ -203,6 +204,20 @@ class HttpAdapters(unittest.TestCase):
         self.server.desktop_sessions.control.assert_not_called()
         self.server.desktop_sessions.call.assert_not_called()
         self.server.desktop_sessions.toggle_client.assert_not_called()
+
+    def test_client_disable_choice_is_forwarded_with_auth_and_csrf(self):
+        self.server.desktop_sessions = Mock()
+        self.server.desktop_sessions.toggle_client.return_value = {'clients': []}
+        headers = self.login()
+        for quit_desktop in (False, True):
+            body = {'provider': 'claude', 'enabled': False, 'quitDesktop': quit_desktop}
+            # Auth rejects before reading a body. Avoid a Windows TCP reset from
+            # unread request bytes obscuring the expected CSRF response.
+            self.assertEqual(self.request('POST', '/api/clients', headers={'Cookie': headers['Cookie']})[0], 403)
+            self.assertEqual(self.request('POST', '/api/clients', body, headers)[0], 200)
+            self.server.desktop_sessions.toggle_client.assert_called_with(body)
+        self.assertEqual(self.request('POST', '/api/clients', {
+            'provider': 'claude', 'enabled': False, 'quitDesktop': False, 'force': True}, headers)[0], 400)
 
 
     def test_client_management_and_workspace_http_are_authenticated_and_scoped(self):

@@ -12,7 +12,8 @@ from bridge.clients.deepseek.recovery import DeepSeekRecovery, _evidence, _quit,
 def snapshot(*, gui=True, hosts=(12,), unknown=()):
     main = [11] if gui else []
     pids = main+list(hosts)+list(unknown)
-    return {'executable': '/Applications/Fixture.app/Contents/MacOS/Fixture', 'home': '/fixture/home',
+    return {'executable': str(Path('/Applications/Fixture.app/Contents/MacOS/Fixture')),
+            'home': str(Path('/fixture/home')),
             'state': {'running': bool(pids), 'pids': pids, 'mainPids': main, 'runtimePids': list(hosts),
                       'unknown': len(hosts) > 1 or bool(unknown)},
             'identities': {pid: {'start': 'same-start', 'parent': 11 if pid in hosts and gui else 1,

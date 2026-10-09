@@ -141,5 +141,12 @@
   "tests/workbench-adaptive-ui.test.js": "tests/browser/workbench-adaptive-ui.browser.js",
   "tests/workbench-settings-ui.test.js": "tests/browser/workbench-settings-ui.browser.js",
   "tests/workbench-split-ui.test.js": "tests/browser/workbench-split-ui.browser.js",
-  "tests/workbench-ui.test.js": "tests/browser/workbench-ui.browser.js"
+  "tests/workbench-ui.test.js": "tests/browser/workbench-ui.browser.js",
+  "bridge/integrations/dsh_windows_quit.py": "bridge/platforms/windows/dsh_quit.py",
+  "bridge/integrations/native/codex-quit-helper.cs": "bridge/platforms/windows/codex-quit-helper.cs",
+  "bridge/integrations/windows_discovery.py": "bridge/platforms/windows/discovery_ext.py",
+  "bridge/windows_codex_quit.py": "bridge/platforms/windows/codex_quit.py",
+  "bridge/windows_force_exit.py": "bridge/platforms/windows/force_exit.py",
+  "bridge/windows_session.py": "bridge/platforms/windows/session.py",
+  "web/client-lifecycle.js": "web/features/clients/client-lifecycle.js"
 }

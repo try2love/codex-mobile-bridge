@@ -7,6 +7,8 @@
   "bridge/features/workspace/workspace.py",
   "bridge/features/terminals/manager.py",
   "bridge/platforms/posix/terminal.py",
+  "bridge/platforms/windows/claude-helper.cs",
+  "bridge/platforms/windows/codex-quit-helper.cs",
   "bridge/clients/claude/connector.js",
   "bridge/clients/deepseek/host.mjs",
   "bridge/clients/LICENSE.coding-mobile"

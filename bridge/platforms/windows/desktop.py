@@ -2,15 +2,16 @@
 import json
 import os
 import subprocess
+from pathlib import Path
 
 
-def _rows(commands=False):
+def _rows(commands=False, timeout=15):
     fields = 'ProcessId,ExecutablePath' + (',CommandLine' if commands else '')
     script = ('[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new(); $s=(Get-Process -Id $PID).SessionId; '
               'Get-CimInstance Win32_Process | Where-Object {$_.SessionId -eq $s -and $_.ExecutablePath} | '
               'Select-Object '+fields+' | ConvertTo-Json -Compress')
     response = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
-                              capture_output=True, text=True, encoding='utf-8', timeout=15,
+                              capture_output=True, text=True, encoding='utf-8', timeout=timeout,
                               creationflags=subprocess.CREATE_NO_WINDOW, check=True)
     rows = json.loads(response.stdout or '[]')
     return [rows] if isinstance(rows, dict) else rows
@@ -22,6 +23,22 @@ def inventory(result, match):
         if state is not None:
             pid = int(row['ProcessId']); state['pids'].append(pid)
             state['commands'][pid] = row.get('CommandLine') or ''
+
+
+def process_inventory(executables, *, timeout=None):
+    """One same-session snapshot for exact Windows executables."""
+    result = {Path(path): {'pids': [], 'commands': {}} for path in executables}
+    targets = {os.path.normcase(str(path.resolve())): state for path, state in result.items()}
+    for row in _rows(commands=True, timeout=15 if timeout is None else timeout):
+        try:
+            state = targets.get(os.path.normcase(str(Path(row['ExecutablePath']).resolve())))
+            if state is not None:
+                pid = int(row['ProcessId'])
+                state['pids'].append(pid)
+                state['commands'][pid] = row.get('CommandLine') or ''
+        except (KeyError, TypeError, ValueError, OSError):
+            continue
+    return result
 
 
 def processes(matches):

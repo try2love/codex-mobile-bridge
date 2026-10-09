@@ -1,5 +1,6 @@
 """Control only the selected GUI executable, never the bundled agent runtime."""
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -47,11 +48,17 @@ class DesktopApp:
             candidates = native_discovery('win32').codex_candidates(runtime)
         elif sys.platform == 'linux':
             candidates = native_discovery('linux').codex_candidates(runtime)
-        return next((str(p) for p in candidates if p.is_file() and p.resolve() != runtime), '')
+        return next((str(p) for p in candidates if p.is_file() and
+                     (str(p.resolve()).casefold() != str(runtime).casefold() if sys.platform == 'win32'
+                      else p.resolve() != runtime)), '')
 
     @staticmethod
     def scan(runtime, home):
         candidate = DesktopApp.discover(runtime)
+        if not candidate and sys.platform == 'win32':
+            from bridge.clients.discovery import discover_clients
+            desktop = discover_clients({'codexHome': str(home)})['codex']
+            candidate = desktop.get('executable', '') if desktop.get('installed') else ''
         if candidate:
             app = DesktopApp(candidate, home)
             app.validate(runtime)
@@ -66,7 +73,8 @@ class DesktopApp:
     def validate(self, runtime):
         if not self.executable.is_file() or not os.access(self.executable, os.X_OK):
             raise ValueError('请选择已安装的 Codex / ChatGPT 桌面程序')
-        if runtime and self.executable == Path(runtime).resolve():
+        if runtime and (str(self.executable).casefold() == str(Path(runtime).resolve()).casefold()
+                        if sys.platform == 'win32' else self.executable == Path(runtime).resolve()):
             raise ValueError('桌面程序不能选择内置 Codex 命令行运行时')
         # Launch scripts cannot be matched reliably to the resulting GUI process.
         with self.executable.open('rb') as stream:
@@ -78,7 +86,10 @@ class DesktopApp:
         expected = os.path.normcase(str(self.executable))
         return _native().processes(lambda path: os.path.normcase(str(Path(path).resolve())) == expected)
 
-    def stop(self, *, runtime_pids=(), gui_pids=None):
+    def stop(self, *, runtime_pids=(), gui_pids=None, provider=None):
+        if sys.platform == 'win32' and provider == 'codex':
+            from bridge.platforms.windows.codex_quit import stop_codex
+            return stop_codex(self, gui_pids=gui_pids)
         pids = self.processes()
         main = pids if gui_pids is None else [pid for pid in gui_pids if pid in pids]
         native = _native()
@@ -102,13 +113,23 @@ class DesktopApp:
                 raise ValueError('桌面程序尚未退出，请在电脑上关闭后重试；尚未强制结束进程')
             time.sleep(.25)
 
+    def launch(self, *, cancelled=None, **options):
+        if sys.platform == 'win32':
+            from bridge.platforms.windows.discovery_ext import launch_windows_desktop
+            return launch_windows_desktop(self.executable, cancelled=cancelled, **options)
+        return subprocess.Popen([str(self.executable)], **options)
+
     def start(self):
         environment = {'CODEX_HOME': str(self.home)}
         if sys.platform == 'darwin':
             _native().start(self.executable, self.home, environment)
             return
         if sys.platform == 'win32':
-            native = _native()
+            self.child = self.launch(cwd=self.home, env={**os.environ, **environment},
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL,
+                                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP, close_fds=True)
+            return
         else:
             from bridge.platforms.posix import desktop as native
         self.child = native.start(self.executable, self.home, environment)

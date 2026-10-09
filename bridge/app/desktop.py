@@ -18,6 +18,7 @@ from bridge.app.lifecycle import read_record, request_stop, request_pairing
 from bridge.features.notifications.channels import Notifications, read_json, write_json, settings, save_settings, publish, publish_bark, publish_pushplus
 from bridge.features.sessions.store import SessionStore, StoreUnavailable
 from bridge.clients.codex.remote import AppHosts
+from bridge.clients.codex.catalog import Catalog
 import bridge.features.network.access as access
 import bridge.features.network.addresses as network
 from bridge.api.validation import FieldError, at_field
@@ -55,7 +56,11 @@ class Desktop:
             from bridge.clients.discovery import discover_clients
             p = self.preferences()
             discovered = discover_clients(p)
-            runtime = p.get('codexBin') or discovered['codex'].get('runtime')
+            runtime = p.get('codexBin')
+            # Keep ordinary Windows installations automatic across App updates.
+            # Preserve discovery's fallback for nonstandard desktop bundles.
+            if not runtime and (os.name != 'nt' or not Catalog.find_runtime()):
+                runtime = discovered['codex'].get('runtime')
             self.local_bridge = Bridge(Path(p['codexHome']).expanduser(), self.data_dir,
                                        ipc_path=p.get('ipcPath') or None, codex_bin=runtime or None)
             self.local_sessions = DesktopSessions(self.data_dir, self.local_bridge)
@@ -70,7 +75,8 @@ class Desktop:
                 raise ValueError('请重新启动网关以启用客户端管理')
             self.close_local(check_busy=True)
             self.starting_until = 0
-            return request_pairing(self.data_dir, {'action': action, 'value': value}, timeout=100)
+            # Claude's normal exit can spend 75 seconds saving after menu dispatch.
+            return request_pairing(self.data_dir, {'action': action, 'value': value}, timeout=140)
         bridge, sessions = self.local_services()
         if action == 'desktop-sessions':
             return sessions.control(value)

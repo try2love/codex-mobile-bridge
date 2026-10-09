@@ -152,7 +152,7 @@ class ClaudeControls(unittest.TestCase):
         self.assertFalse(self.preview()['canQuit'])
         with self.assertRaisesRegex(ValueError, '进程'): self.confirm(self.preview(), acknowledgeUnknown=True)
         self.state['unknown'] = False
-        with patch('sys.platform', 'linux'):
+        with patch('bridge.clients.manager.sys.platform', 'linux'):
             self.assertFalse(self.preview()['canQuit'])
             with self.assertRaisesRegex(ValueError, '电脑端退出'):
                 self.confirm(self.preview(), acknowledgeUnknown=True)

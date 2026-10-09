@@ -111,9 +111,11 @@ class DeepSeek:
         block = insertion(text)
         owned = bool(block and block[0] == json.loads(line[2:]) and len(PLUGIN_ID.findall(text)) == 1)
         verified = verified_directory(block[0], self.home) if block and len(PLUGIN_ID.findall(text)) == 1 else None
+        source = Path(__file__).with_name('host.mjs')
         # A previous preview may own an active Host. Reuse its verified transport
         # and receipt ledger without replacing its loaded source or credentials.
-        if verified and (not owned or self.reused or verified[1]):
+        if verified and (not owned or self.reused or verified[1] or
+                         (verified[0]/'mobile-host.mjs').read_bytes() != source.read_bytes()):
             return self.use_existing()
         if (MARKER in text or PLUGIN_ID.search(text)) and not verified:
             raise ValueError('已有 Harness 接入无法验证，尚未修改配置')

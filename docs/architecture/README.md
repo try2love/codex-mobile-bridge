@@ -80,6 +80,10 @@ flowchart TD
 
 **扫描与启停：**`clients/discovery.py` 调用选中系统的 `discovery.py` 并补充账号、接入和能力信息；`desktop_app.py`/`lifecycle.py` 保留任务及进程归属规则，平台 `desktop.py` 只执行原生查询或启动退出。展示刷新可以共用一次进程清单；关闭、恢复和账号切换必须重新核验。
 
+**客户端启停交互：**`web/features/clients/client-lifecycle.js` 统一 Web、手机和桌面网关的退出选择；客户端页面负责进度与结果展示。`clients/manager.py` 区分关闭接入、正常退出和明确确认的 Windows 强制退出。强制退出不作为正常退出失败后的自动回退，原生实现仍核验目标身份和当前桌面会话。
+
+**Windows 原生入口：**`platforms/windows/discovery_ext.py` 读取注册安装信息；`session.py` 核验桌面可交互状态；`claude.py` 管理原生助手回执和 profile 发现，`claude-helper.cs` 操作指定窗口；`codex_quit.py` / `codex-quit-helper.cs` 与 `dsh_quit.py` 实现客户端正常退出；`force_exit.py` 负责显式强制退出的进程核验。连接重试、取消和任务规则仍在客户端层，不能移入原生助手。
+
 **SSH 工作区：**`app/service.py` 通过 `clients/codex/remote.py` 发送实际 Python 源码到所选远端。远端没有安装本项目包；`source_text()` 读取的模块必须仍可独立运行。Windows 网关连接 Linux 主机时，不能根据本机 Windows 选择远端终端实现。
 
 ## 在单个系统上针对性开发
@@ -112,7 +116,7 @@ flowchart TD
 
 一次性命令执行的 `CommandJob` 仍在终端功能模块内保留系统分支，以保持 SSH 源码自包含；桌面 Electron 主进程内也保留窗口/系统菜单的现有分支。目录划分并不意味着所有 `sys.platform`/`process.platform` 判断已消失。移动端已合并共同注入脚本并分离原生资源加载职责；原生控制器仍保留既有导航和安全回调，避免为了目录分类扩大行为改动。
 
-初次整理的归档、可比结果与未验证范围见 [目录重组验证记录](refactor-verification.md)；后续 iOS/Android 与宽窄布局区分见 [界面分层验证记录](surface-verification.md)。
+初次整理的归档、可比结果与未验证范围见 [目录重组验证记录](refactor-verification.md)；后续 iOS/Android 与宽窄布局区分见 [界面分层验证记录](surface-verification.md)；Windows 分支整合见 [合并验证记录](windows-integration.md)。
 
 ## 四种访问界面的修改边界
 

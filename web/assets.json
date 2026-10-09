@@ -23,6 +23,7 @@
   "/account.js": "features/accounts/account.js",
   "/accounts.js": "features/accounts/accounts.js",
   "/client-accounts.js": "features/accounts/client-accounts.js",
+  "/client-lifecycle.css": "features/clients/client-lifecycle.css",
   "/client-navigation.css": [
     "features/clients/client-navigation.css",
     "hosts/mobile-navigation.css",
@@ -33,6 +34,7 @@
     "hosts/mobile-navigation-menu.css",
     "features/clients/client-management.css"
   ],
+  "/client-lifecycle.js": "features/clients/client-lifecycle.js",
   "/client-navigation.js": "features/clients/client-navigation.js",
   "/desktop-sessions.css": [
     "features/clients/desktop-sessions.css",

@@ -7,7 +7,7 @@ function runWorker({executable,prefix=[],dataDir},action,payload){
   return new Promise((resolve,reject)=>{
     const child=spawn(executable,[...prefix,action,'--data-dir',dataDir],{stdio:['pipe','pipe','pipe'],windowsHide:true});
     let output='',error='';
-    const timer=setTimeout(()=>{child.kill();reject(Error('本地操作超时，请检查运行日志'));},action==='server-setup'?300000:action==='connection-credentials'?60000:action==='update-prepare'?180000:['account','accounts','harness','desktop-sessions'].includes(action)?110000:action==='notification-watches'?45000:25000);
+    const timer=setTimeout(()=>{child.kill();reject(Error('本地操作超时，请检查运行日志'));},action==='server-setup'?300000:action==='connection-credentials'?60000:action==='update-prepare'?180000:['account','accounts','harness','desktop-sessions'].includes(action)?150000:action==='notification-watches'?45000:25000);
     child.stdout.setEncoding('utf8');child.stdout.on('data',data=>{output+=data;});
     child.stderr.setEncoding('utf8');child.stderr.on('data',data=>{error+=data;});
     child.on('error',err=>{clearTimeout(timer);reject(Error('无法启动网关运行时：'+err.message));});
@@ -60,7 +60,7 @@ function createSnapshotWorker({launch=spawn,timeout=25000}={}){
 
 // Separate from snapshots: serialize private mutations and keep login state
 // alive across requests. The worker hands ownership to the public gateway.
-function createManagementWorker({launch=spawn,timeout=110000}={}){
+function createManagementWorker({launch=spawn,timeout=150000}={}){
   let owner,pending,queue=Promise.resolve(),generation=0;
   function finish(error,result){
     const request=pending;if(!request)return;

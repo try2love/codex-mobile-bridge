@@ -1,5 +1,6 @@
 """Windows user, Squirrel and Store installation paths."""
 from pathlib import Path
+from .discovery_ext import registered_candidates, windows_installations, launch_windows_desktop
 
 
 def candidates(provider, app_names, home, env):
@@ -26,16 +27,17 @@ def candidates(provider, app_names, home, env):
         root = Path(env.get('ProgramFiles') or 'C:/Program Files')/'WindowsApps'
         try:
             for folder in sorted(root.glob('OpenAI.Codex_*'), reverse=True):
-                yield folder/'app/Codex.exe'
                 yield folder/'app/ChatGPT.exe'
+                yield folder/'app/Codex.exe'
         except OSError:
             pass
 
 
 def codex_candidates(runtime):
     for parent in list(runtime.parents)[:4]:
-        yield parent/'Codex.exe'
         yield parent/'ChatGPT.exe'
+    for parent in list(runtime.parents)[:4]:
+        yield parent/'Codex.exe'
 
 
 def runtime_candidates(executable):

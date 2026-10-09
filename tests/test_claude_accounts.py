@@ -9,10 +9,11 @@ import time
 import unittest
 import uuid
 from datetime import datetime, timezone
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from bridge.clients.claude.accounts import ClaudeAccounts, CONFIG, _decrypt_cookie, _NoRedirect, _web_json
+from bridge.clients.claude.accounts import ClaudeAccounts, CONFIG, _cookies, _decrypt_cookie, _NoRedirect, _web_json
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE = 'bridge.clients.claude.accounts.'
@@ -23,10 +24,14 @@ class ClaudeAccountSnapshots(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(dir=ROOT/'.tmp')
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        environment = patch.dict(os.environ, {'APPDATA': str(self.root), 'LOCALAPPDATA': str(self.root)})
+        environment.start(); self.addCleanup(environment.stop)
         self.home = self.root/'Claude'
         self.home.mkdir()
         self.threep = self.root/'Claude-3p'
         self.accounts = ClaudeAccounts(self.root/'accounts', self.home)
+        self.assertEqual(self.accounts.home, self.home)
+        self.assertEqual(self.accounts.threep, self.threep)
         self.login('first')
 
     def write(self, path, value):
@@ -36,7 +41,7 @@ class ClaudeAccountSnapshots(unittest.TestCase):
     def login(self, identifier):
         self.write(self.home/CONFIG, {'deploymentMode': '1p', 'nativeSetting': identifier})
         self.write(self.home/'config.json', {'oauth:tokenCache': 'TOKEN-'+identifier, 'theme': identifier})
-        with sqlite3.connect(self.home/'Cookies') as db:
+        with closing(sqlite3.connect(self.home/'Cookies')) as db, db:
             db.execute('CREATE TABLE IF NOT EXISTS cookies (host_key TEXT,name TEXT,value TEXT,encrypted_value BLOB,expires_utc INTEGER)')
             db.execute('DELETE FROM cookies')
             db.executemany('INSERT INTO cookies VALUES (?,?,?,?,?)', [
@@ -67,13 +72,35 @@ class ClaudeAccountSnapshots(unittest.TestCase):
         snapshot = self.root/'accounts'/'profiles'/identifier
         self.assertEqual((self.home/'Cookies').read_bytes(), before)
         self.assertFalse((snapshot/'local-sessions').exists())
-        self.assertEqual(json.loads((snapshot/'auth.json').read_text()), {'oauth:tokenCache': 'TOKEN-first'})
+        self.assertEqual(json.loads((snapshot/'auth.json').read_text(encoding='utf-8')), {'oauth:tokenCache': 'TOKEN-first'})
         self.assertFalse((snapshot/'config.json').exists())
         self.assertTrue(self.accounts.public()['accounts'][0]['active'])
         self.assertEqual(self.save(), identifier, 'saving the same login must update its existing slot')
         if os.name != 'nt':
             self.assertEqual((snapshot/'Cookies').stat().st_mode & 0o777, 0o600)
             self.assertEqual((self.root/'accounts').stat().st_mode & 0o777, 0o700)
+
+    def test_cookie_read_closes_database_before_profile_move(self):
+        opened = []
+        connect = sqlite3.connect
+
+        def capture(*args, **kwargs):
+            db = connect(*args, **kwargs)
+            opened.append(db)
+            return db
+
+        try:
+            with patch(MODULE+'sqlite3.connect', side_effect=capture):
+                self.assertEqual(len(_cookies(self.home)), 2)
+            self.assertEqual(len(opened), 1)
+            with self.assertRaises(sqlite3.ProgrammingError):
+                opened[0].execute('SELECT 1')
+            moved = self.home.with_name('Claude-moved')
+            self.home.rename(moved)
+            moved.rename(self.home)
+        finally:
+            for db in opened:
+                db.close()
 
     def test_manual_native_login_change_clears_saved_current_identity(self):
         first = self.save()
@@ -92,8 +119,8 @@ class ClaudeAccountSnapshots(unittest.TestCase):
         token = self.accounts.restore(first)
         self.assertEqual(self.accounts.public()['activeId'], first)
         self.assertFalse((self.home/'Session Storage').exists(), 'missing target auth store must remove the previous login store')
-        self.assertEqual(json.loads((self.home/'config.json').read_text()), {'oauth:tokenCache': 'TOKEN-first', 'theme': 'second'})
-        self.assertEqual(json.loads((self.home/'local-sessions'/'conversation.json').read_text()), {'history': 'DO-NOT-COPY'})
+        self.assertEqual(json.loads((self.home/'config.json').read_text(encoding='utf-8')), {'oauth:tokenCache': 'TOKEN-first', 'theme': 'second'})
+        self.assertEqual(json.loads((self.home/'local-sessions'/'conversation.json').read_text(encoding='utf-8')), {'history': 'DO-NOT-COPY'})
         self.accounts.rollback(token)
         self.assertEqual(self.accounts.public()['activeId'], second)
         self.assertTrue((self.home/'Session Storage'/'only-second').is_file())
@@ -132,12 +159,12 @@ class ClaudeAccountSnapshots(unittest.TestCase):
         self.write(library/(other_id+'.json'), {'untouched': True})
         self.write(library/'_meta.json', {'entries': [{'id': other_id, 'name': 'Other'}], 'nativeMeta': True})
         token = self.accounts.restore(api)
-        meta = json.loads((library/'_meta.json').read_text())
+        meta = json.loads((library/'_meta.json').read_text(encoding='utf-8'))
         self.assertEqual(meta['appliedId'], config_id)
         self.assertTrue(meta['nativeMeta'])
         self.assertEqual(len(meta['entries']), 2)
-        self.assertEqual(json.loads((self.home/CONFIG).read_text())['deploymentMode'], '3p')
-        self.assertEqual(json.loads((self.threep/CONFIG).read_text())['deploymentMode'], '3p')
+        self.assertEqual(json.loads((self.home/CONFIG).read_text(encoding='utf-8'))['deploymentMode'], '3p')
+        self.assertEqual(json.loads((self.threep/CONFIG).read_text(encoding='utf-8'))['deploymentMode'], '3p')
         self.assertEqual(self.accounts.public()['activeId'], api)
         self.accounts.rollback(token)
         self.assertEqual(self.accounts.public()['activeId'], official)
@@ -157,10 +184,15 @@ class ClaudeAccountSnapshots(unittest.TestCase):
                 action('../outside')
         outside = self.root/'outside'
         outside.write_text('untouched')
-        (self.home/'Preferences').symlink_to(outside)
+        try:
+            (self.home/'Preferences').symlink_to(outside)
+        except OSError as exc:
+            if getattr(exc, 'winerror', None) == 1314:
+                self.skipTest('Windows symbolic-link privilege unavailable')
+            raise
         with self.assertRaises(ValueError):
             self.accounts.restore(identifier)
-        self.assertEqual(outside.read_text(), 'untouched')
+        self.assertEqual(outside.read_text(encoding='utf-8'), 'untouched')
 
     def test_stale_or_missing_login_is_not_imported(self):
         (self.home/'Cookies').unlink()
@@ -198,7 +230,7 @@ class ClaudeAccountSnapshots(unittest.TestCase):
             self.assertEqual(usage['status'], 'error')
             self.assertTrue(usage['checkedAt'])
             self.assertNotIn('PRIVATE', json.dumps(result))
-            index = json.loads((self.root/'accounts'/'index.json').read_text())
+            index = json.loads((self.root/'accounts'/'index.json').read_text(encoding='utf-8'))
             index['accounts'][0]['usage']['checkedAt'] = '2000-01-01T00:00:00+00:00'
             self.write(self.root/'accounts'/'index.json', index)
             self.accounts.details(identifier)
@@ -223,6 +255,118 @@ class ClaudeAccountSnapshots(unittest.TestCase):
         detected = ClaudeAccounts(self.root/'accounts', self.threep)
         self.assertEqual(detected.home, self.home)
         self.assertEqual(detected.public()['activeId'], api)
+
+    def windows_store_profiles(self):
+        environment = patch.dict(os.environ, {'APPDATA': str(self.root/'Roaming'), 'LOCALAPPDATA': str(self.root/'Local')})
+        environment.start(); self.addCleanup(environment.stop)
+        platform = patch(MODULE+'sys.platform', 'win32')
+        platform.start(); self.addCleanup(platform.stop)
+        self.family = 'Claude_fixturepublisher'
+        self.executable = self.root/'WindowsApps/Claude_1.0.0.0_x64__fixturepublisher/app/Claude.exe'
+        self.home = self.root/'Local/Packages'/self.family/'LocalCache/Roaming/Claude'
+        self.threep = self.root/'Local/Claude-3p'
+        self.home.mkdir(parents=True)
+        self.login('store')
+
+    def test_windows_store_thirdparty_mode_switch_and_rollback_use_same_profiles(self):
+        self.windows_store_profiles()
+        self.accounts = ClaudeAccounts(self.root/'accounts', self.home, executable=self.executable)
+        official = self.save('Official')
+        self.gateway()
+        self.accounts = ClaudeAccounts(self.root/'accounts', self.threep, executable=self.executable)
+        api = self.save('Gateway')
+        self.assertEqual(self.accounts.home, self.home)
+        self.assertEqual(self.accounts.threep, self.threep)
+        token = self.accounts.restore(official)
+        self.assertEqual(self.accounts.public()['activeId'], official)
+        for home in (self.home, self.threep):
+            self.assertEqual(json.loads((home/CONFIG).read_text(encoding='utf-8'))['deploymentMode'], '1p')
+        self.accounts.rollback(token)
+        self.assertEqual(self.accounts.public()['activeId'], api)
+        self.assertFalse((self.root/'Roaming/Claude').exists())
+        self.assertFalse((self.root/'Local/Claude-Data').exists())
+
+    def test_windows_detected_active_mode_beats_stale_official_selector(self):
+        self.windows_store_profiles()
+        self.gateway()
+        self.write(self.home/CONFIG, {'deploymentMode': '1p'})
+        accounts = ClaudeAccounts(self.root/'accounts', self.threep, executable=self.executable)
+        self.assertEqual(accounts.public()['current']['kind'], 'api')
+        self.assertEqual(json.loads((self.home/CONFIG).read_text(encoding='utf-8')), {'deploymentMode': '1p'})
+
+    def test_windows_empty_migration_directory_does_not_override_store_profile(self):
+        self.windows_store_profiles()
+        (self.root/'Local/Claude-Data').mkdir()
+        self.gateway()
+        accounts = ClaudeAccounts(self.root/'accounts', self.threep, executable=self.executable)
+        self.assertEqual(accounts.home, self.home)
+
+    def test_windows_ambiguous_counterpart_is_readable_but_never_written(self):
+        self.windows_store_profiles()
+        self.gateway()
+        modern = self.root/'Local/Claude-Data'
+        self.write(modern/CONFIG, {'deploymentMode': '3p', 'fixture': 'other profile'})
+        accounts = ClaudeAccounts(self.root/'accounts', self.threep, executable=self.executable)
+        saved = accounts.import_current()['activeId']
+        before = {home: (home/CONFIG).read_bytes() for home in (self.home, self.threep, modern)}
+        with self.assertRaisesRegex(ValueError, '多个.*目录'):
+            accounts.restore(saved)
+        self.assertEqual(before, {home: (home/CONFIG).read_bytes() for home in before})
+        self.assertFalse((self.root/'accounts/transactions').exists())
+
+    def test_missing_scan_fallback_never_creates_a_phantom_official_profile(self):
+        self.windows_store_profiles()
+        self.gateway()
+        self.write(self.root/'Local/Claude-Data'/CONFIG, {'deploymentMode': '3p'})
+        fallback = self.root/'Roaming/Claude'
+        accounts = ClaudeAccounts(self.root/'accounts', fallback, executable=self.executable)
+        self.assertIsNone(accounts.public()['current'])
+        with self.assertRaisesRegex(ValueError, '多个.*目录'):
+            accounts.restore('f'*32)
+        self.assertFalse(fallback.exists())
+        self.assertFalse((self.root/'accounts/transactions').exists())
+
+    def test_non_windows_thirdparty_profile_preserves_official_mode_selector(self):
+        self.gateway()
+        (self.threep/CONFIG).unlink()
+        with patch(MODULE+'sys.platform', 'darwin'):
+            accounts = ClaudeAccounts(self.root/'accounts', self.threep)
+            self.assertEqual(accounts.public()['current']['kind'], 'api')
+
+    def test_windows_modern_official_profile_pairs_with_local_thirdparty(self):
+        self.windows_store_profiles()
+        self.home = self.root/'Local/Claude-Data'
+        self.home.mkdir()
+        self.login('modern')
+        accounts = ClaudeAccounts(self.root/'accounts', self.home, executable=self.executable)
+        self.assertEqual(accounts.home, self.home)
+        self.assertEqual(accounts.threep, self.threep)
+        self.assertEqual(accounts.public()['current']['kind'], 'official')
+
+    def test_explicit_and_unrelated_profiles_never_pair_by_basename(self):
+        self.windows_store_profiles()
+        for home, explicit in ((self.threep, True), (self.home, True), (self.root/'custom/Claude', False)):
+            with self.subTest(home=home, explicit=explicit):
+                accounts = ClaudeAccounts(self.root/'accounts', home, executable=self.executable, explicit_home=explicit)
+                self.assertEqual(accounts.home, home)
+                self.assertEqual(accounts.threep, home)
+                self.assertEqual({root for _, root, _ in accounts._targets()}, {home})
+
+    def test_manager_preserves_installation_and_explicit_profile_selection(self):
+        from bridge.clients.manager import DesktopSessions
+        self.windows_store_profiles()
+        manager = DesktopSessions.__new__(DesktopSessions)
+        manager.directory, manager.adapters, manager.account_stores = self.root/'manager', {'claude': object()}, {}
+        descriptor = {'installed': True, 'dataDirectory': str(self.threep),
+                      'executable': str(self.root/'Claude.exe'), 'packageFamilyName': self.family}
+        manager.config = {'discovered': {'claude': descriptor}}
+        paired = manager._account_store('claude')
+        self.assertEqual(paired.home, self.home)
+        descriptor['dataDirectoryExplicit'] = True
+        explicit = manager._account_store('claude')
+        self.assertIsNot(paired, explicit)
+        self.assertEqual(explicit.home, self.threep)
+        self.assertEqual(explicit.threep, self.threep)
 
     def test_unknown_usage_payload_never_implies_full_remaining_quota(self):
         identifier = self.save()
@@ -264,7 +408,7 @@ class ClaudeAccountSnapshots(unittest.TestCase):
         identifier = self.save()
         old_usage = {'status': 'ready', 'checkedAt': datetime.now(timezone.utc).isoformat(),
                      'limits': [{'name': '5h', 'windows': [{'remainingPercent': 80, 'resetsAt': '2026-10-09T12:00:00Z'}]}]}
-        index = json.loads((self.root/'accounts'/'index.json').read_text())
+        index = json.loads((self.root/'accounts'/'index.json').read_text(encoding='utf-8'))
         index['accounts'][0]['usage'] = old_usage
         self.write(self.root/'accounts'/'index.json', index)
         with patch(MODULE+'_web_json') as fetch:
@@ -306,7 +450,7 @@ class ClaudeAccountSnapshots(unittest.TestCase):
 
     def test_expired_login_never_sends_a_quota_request(self):
         identifier = self.save()
-        with sqlite3.connect(self.home/'Cookies') as db:
+        with closing(sqlite3.connect(self.home/'Cookies')) as db, db:
             db.execute('UPDATE cookies SET expires_utc=1')
         with patch(MODULE+'_web_json') as fetch:
             result = self.accounts.details(identifier)

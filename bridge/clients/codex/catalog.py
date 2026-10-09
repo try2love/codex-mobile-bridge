@@ -254,7 +254,8 @@ class Catalog:
 
     def __init__(self, codex_home, executable=None, allow_background_refresh=True):
         self.home = Path(codex_home)
-        self.executable = Path(executable) if executable else self.find_runtime()
+        self._automatic_runtime = not executable
+        self._executable = Path(executable) if executable else self.find_runtime()
         self.cache = {}
         self.lock = threading.Lock()
         self.kind_locks = {'models': threading.Lock(), 'skills': threading.Lock()}
@@ -262,6 +263,19 @@ class Catalog:
         self.skill_store = SkillStore(self.home)
         self.skill_refreshing = set()
         self.allow_background_refresh = allow_background_refresh
+
+    @property
+    def executable(self):
+        # Desktop updates remove versioned Windows runtimes while the gateway
+        # stays running. Refresh automatic selection before the next operation.
+        if self._automatic_runtime and (not self._executable or not self._executable.is_file()):
+            self._executable = self.find_runtime()
+        return self._executable
+
+    @executable.setter
+    def executable(self, value):
+        self._automatic_runtime = not value
+        self._executable = Path(value) if value else None
 
     def invalidate_models(self):
         with self.lock:
@@ -275,8 +289,13 @@ class Catalog:
             return Catalog.find_linux_runtime()
         if os.name == 'nt':
             local = Path(os.environ.get('LOCALAPPDATA', str(Path.home() / 'AppData/Local')))
-            candidates = sorted((local / 'OpenAI/Codex/bin').glob('*/codex.exe'),
-                                key=lambda path: path.stat().st_mtime, reverse=True)
+            versions = []
+            for path in (local / 'OpenAI/Codex/bin').glob('*/codex.exe'):
+                try:
+                    versions.append((path.stat().st_mtime, path))
+                except OSError:
+                    continue  # An update can remove a candidate during discovery.
+            candidates = [path for _, path in sorted(versions, reverse=True)]
             candidates += [local / 'Programs/Codex/resources/codex.exe',
                            local / 'Programs/ChatGPT/resources/codex.exe']
             for candidate in candidates:
@@ -324,13 +343,18 @@ class Catalog:
         return Path(executable) if executable else None
 
     def _fetch(self, cwd, provider=None, kind='catalog', request_timeout=90):
-        if not self.executable:
+        executable = self.executable
+        if not executable:
             raise CatalogError("找不到桌面 App 的 Codex 运行时")
         env = dict(os.environ)
         env['CODEX_HOME'] = str(self.home)
-        process = subprocess.Popen([str(self.executable), 'app-server', '--listen', 'stdio://'], cwd=cwd, env=env,
-                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                   text=True, encoding='utf-8')
+        options = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
+        try:
+            process = subprocess.Popen([str(executable), 'app-server', '--listen', 'stdio://'], cwd=cwd, env=env,
+                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                       text=True, encoding='utf-8', **options)
+        except OSError as exc:
+            raise CatalogError('无法启动 Codex 运行时，请检查运行配置中的程序路径、项目目录和访问权限') from exc
         messages = queue.Queue()
         def read():
             try:
@@ -367,7 +391,7 @@ class Catalog:
                     raise CatalogError(value['error'].get('message', '目录读取失败'))
                 return value['result']
         started = time.monotonic()
-        logger.info('catalog fetch start kind=%s executable=%s cwd=%s provider=%s', kind, self.executable, cwd, provider)
+        logger.info('catalog fetch start kind=%s executable=%s cwd=%s provider=%s', kind, executable, cwd, provider)
         try:
             request('initialize', {'clientInfo': {'name': 'codex_mobile_catalog', 'title': 'Mobile catalog', 'version': '0.2'},
                                    'capabilities': {'experimentalApi': True}})

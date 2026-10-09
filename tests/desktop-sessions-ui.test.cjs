@@ -24,14 +24,40 @@ function fixture(){
  const root=new Node('div');root.className='app';document.body.append(root);const select=new Node('select'),calls=[],notices=[];let uploadHandler=async()=>({ok:true,status:200,json:async()=>({image:true,size:16,name:'image.png'})}),handler=async(url,body)=>body?{status:'accepted'}:url.includes('/detail')?{session:{id:'a',title:'Chat',model:'model-a',effort:'high',status:'idle',capabilities:{}},messages:[]}:url.includes('/workspace')?{entries:[],total:0,project:'/project'}:{sessions:[]};
  const context=vm.createContext({document,window:{},navigator:{},location:{pathname:'/'},history:{replaceState(){}},localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},sessionStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},crypto:{getRandomValues:array=>webcrypto.getRandomValues(array)},Uint8Array,TextEncoder,Option:class extends Node{constructor(text,value){super('option');this.textContent=text;this.value=value;}},ResizeObserver:class{observe(){}},MutationObserver:class{observe(){}},AbortController,requestAnimationFrame:fn=>fn(),getComputedStyle:()=>({getPropertyValue:()=>8}),setTimeout(){return 1;},clearTimeout(){},fetch:async(url,options)=>{calls.push({url,upload:options});return uploadHandler(url,options);},renderMarkdown:(node,text)=>node.textContent=text,CustomEvent:class{constructor(type,options){this.type=type;Object.assign(this,options);}}});
  vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/shell/app.js'),'utf8').match(/^function uuid\(\).*$/m)[0],context);
- for(const file of ['web/layouts/viewport.js','web/features/chat/activity.js','web/features/chat/attachments.js','web/shared/i18n.js','web/features/chat/message-actions.js','web/features/chat/permissions.js','web/features/workspace/workbench.js','web/features/clients/desktop-sessions.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
+ for(const file of ['web/layouts/viewport.js','web/features/chat/activity.js','web/features/chat/attachments.js','web/shared/i18n.js','web/features/clients/client-lifecycle.js','web/features/chat/message-actions.js','web/features/chat/permissions.js','web/features/workspace/workbench.js','web/features/clients/desktop-sessions.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
  const View=vm.runInContext('DesktopSessionsView',context),view=new View({root,select,request:(url,body)=>{calls.push({url,body});return handler(url,body);},notify:text=>notices.push(text),onSelect(){},csrf:()=>'csrf-test',onUnauthorized(){}});
  return {view,root,document,calls,notices,setHandler:fn=>handler=fn,setUploadHandler:fn=>uploadHandler=fn,run:s=>vm.runInContext(s,context),text:n=>n.textContent};
 }
 async function opened(){const ui=fixture();await ui.view.choose('claude');await ui.view.open('a');return ui;}
+
+test('session list explains a pending connection and offers retry only after timeout',async()=>{
+ const ui=fixture(),client={id:'deepseek',enabled:true,configured:true,running:false,connected:false,connectionState:'starting',reason:'正在启动 Harness 桌面应用'},retries=[];
+ ui.view.setClientStates([client],async id=>retries.push(id));ui.setHandler(async()=>{throw Error('客户端连接不可用，请在电脑端检查');});await ui.view.choose('deepseek');
+ assert.match(ui.view.listStatus.textContent,/正在启动/);assert.doesNotMatch(ui.view.listStatus.textContent,/请在电脑端检查/);assert.equal(ui.view.listStatus.attributes['aria-busy'],'true');assert.equal(ui.view.connectionRetry.hidden,true);assert.equal(ui.calls.length,0);
+ ui.view.setClientStates([{...client,connectionState:'timeout',retryable:true,reason:'Harness 连接超时，请检查桌面应用后重试接入'}],async id=>retries.push(id));await ui.view.refresh();assert.match(ui.view.listStatus.textContent,/连接超时/);assert.equal(ui.view.listStatus.attributes['aria-busy'],'false');assert.equal(ui.view.connectionRetry.hidden,false);await ui.view.connectionRetry.click();assert.deepEqual(retries,['deepseek']);
+ ui.setHandler(async()=>({connected:true,sessions:[]}));await ui.view.setClientStates([{...client,connectionState:'connected',connected:true}]);assert.match(ui.view.listStatus.textContent,/已连接/);assert.equal(ui.view.connectionRetry.hidden,true);
+});
+
+test('Claude session list exposes the confirmed initialization flow without running chat RPCs',async()=>{
+ const ui=fixture(),client={id:'claude',name:'Claude',enabled:true,installed:true,connected:false,setupStatus:'needs-initialization'},initialized=[];
+ ui.view.setClientStates([client],undefined,async id=>initialized.push(id));await ui.view.choose('claude');assert.match(ui.view.listStatus.textContent,/需要初始化连接/);assert.equal(ui.view.connectionInitialize.hidden,false);assert.equal(ui.calls.length,0);
+ await ui.view.connectionInitialize.click();assert.deepEqual(initialized,['claude']);ui.run("BridgeI18n.setLanguage('en')");assert.match(ui.view.listStatus.textContent,/Connection initialization required/);assert.doesNotMatch(ui.view.listStatus.textContent,/[\u4e00-\u9fff]/);
+ ui.view.setClientStates([{...client,connectionState:'connecting'}]);assert.equal(ui.view.connectionInitialize.hidden,true);await ui.view.refresh();assert.equal(ui.calls.length,0);
+});
+
+test('unknown operations offer refresh only and a failed quit does not block connected chats',async()=>{
+ const ui=fixture(),client={id:'claude',enabled:true,installed:true,connected:false,initializationMode:'background',setupStatus:'needs-unlock',connectionState:'needs-initialization',operationFailure:{action:'initialize',message:'timeout',uncertain:true}},refreshes=[];
+ ui.view.setClientStates([client],()=>{throw Error('no replay');},()=>{throw Error('no initialization');},async()=>refreshes.push(true));await ui.view.choose('claude');assert.match(ui.view.listStatus.textContent,/电脑已锁定/);assert.match(ui.view.connectionNotice.textContent,/尚未确认/);assert.equal(ui.view.connectionInitialize.hidden,true);assert.equal(ui.view.connectionRetry.hidden,true);assert.equal(ui.view.connectionRefresh.hidden,false);await ui.view.connectionRefresh.click();assert.equal(refreshes.length,1);assert.equal(ui.calls.length,0);
+ await ui.view.setClientStates([{...client,connected:true,connectionState:'connected',operationFailure:{action:'quit',message:'退出未完成',uncertain:false}}]);assert.ok(ui.calls.some(call=>call.url.includes('/list')));assert.match(ui.view.listStatus.textContent,/已连接/);assert.equal(ui.view.connectionNotice.textContent,'退出未完成');assert.equal(ui.view.connectionInitialize.hidden,true);
+});
+
+test('session list surfaces genuine failures outside startup and never claims disconnected data is connected',async()=>{
+ const ui=fixture();ui.view.setClientStates([{id:'deepseek',enabled:true,connected:false,connectionState:'idle'}]);ui.setHandler(async()=>{throw Error('real failure');});await ui.view.choose('deepseek');assert.equal(ui.view.listStatus.textContent,'real failure');
+ ui.setHandler(async()=>({connected:false,sessions:[]}));await ui.view.refresh();assert.equal(ui.view.listStatus.textContent,'尚未连接');
+});
 test('LAN HTTP send creates a secure id and retries the same unconfirmed operation',async()=>{
  const ui=await opened();ui.run('uuid=undefined');let attempt=0;ui.setHandler(async(url,body)=>{if(body){if(++attempt===1)throw Error('connection lost');return {status:'accepted'};}return url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},messages:[]}:{sessions:[]};});
- ui.view.input.value='hello';await ui.view.submit();assert.equal(ui.view.input.value,'hello');await ui.view.submit();const writes=ui.calls.filter(c=>c.body);assert.equal(writes.length,2);assert.match(writes[0].body.id,/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);assert.equal(writes[0].body.id,writes[1].body.id);assert.equal(ui.view.input.value,'');
+ ui.view.input.value='hello';await ui.view.submit();assert.equal(ui.view.input.value,'hello');await ui.view.detail(ui.view.generation);await ui.view.submit();const writes=ui.calls.filter(c=>c.body);assert.equal(writes.length,2);assert.match(writes[0].body.id,/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);assert.equal(writes[0].body.id,writes[1].body.id);assert.equal(ui.view.input.value,'');
 });
 test('client shell and welcome appear before the first list response',async()=>{
  const ui=fixture();let finish;ui.setHandler(()=>new Promise(resolve=>finish=resolve));const reading=ui.view.choose('claude');assert.equal(ui.view.container.hidden,false);assert.equal(ui.view.welcome.hidden,false);assert.match(ui.view.welcome.textContent,/从一条聊天继续/);assert.equal(ui.view.conversation.hidden,true);assert.match(ui.view.listStatus.textContent,/读取|加载|连接/);finish({sessions:[]});await reading;
@@ -132,10 +158,105 @@ test('Claude Code and Cowork groups remember their collapsed state across refres
 test('composer has no redundant file button while Workbench retains files and split tabs',async()=>{
  const ui=await opened();assert.equal(ui.view.tools.querySelectorAll('button').some(n=>n.textContent==='文件'),false);ui.view.workbench.files();await Promise.resolve();assert.ok(ui.view.workbench.current.files.some(n=>n.id==='files'));ui.view.workbench.split('files');assert.equal(ui.view.workbench.current.splitTab,'files');
 });
+test('opening a chat and polling share one detail read and show its first successful response',async()=>{
+ for(const provider of ['claude','deepseek']){
+  const ui=fixture();ui.setHandler(async()=>({sessions:[{id:'a',title:'First response',backend:'code'}]}));await ui.view.choose(provider);
+  const pending=[];ui.setHandler(url=>url.includes('/detail')?new Promise(resolve=>pending.push(resolve)):Promise.resolve({sessions:ui.view.rows}));
+  const opening=ui.view.open('a'),polling=ui.view.refresh();assert.equal(pending.length,1,'polling must join the opening read');
+  pending[0]({session:{id:'a',title:'First response',status:'idle'},capabilities:{send:true},messages:[{id:'first',role:'assistant',text:'first successful history'}]});await Promise.all([opening,polling]);
+  assert.match(ui.view.messages.textContent,/first successful history/);assert.equal(ui.view.send.disabled,false);
+ }
+});
+
+test('selecting the current provider keeps the live conversation without starting new reads',async()=>{
+ const ui=await opened();ui.view.input.value='keep typing';const count=ui.calls.length,message=ui.view.messages.textContent;ui.setHandler(()=>new Promise(()=>{}));
+ const selected=ui.view.choose('claude');assert.equal(ui.calls.length,count);assert.equal(ui.view.messages.textContent,message);assert.equal(ui.view.input.value,'keep typing');assert.equal(ui.view.send.disabled,false);await selected;
+});
+
+test('a pending history read does not block subsequent session list refreshes',async()=>{
+ const ui=await opened();let finish,listReads=0,detailReads=0;ui.setHandler(url=>url.includes('/detail')?(detailReads++,new Promise(resolve=>finish=resolve)):Promise.resolve({sessions:[{id:'a',title:'List '+(++listReads),backend:'code'}]}));
+ const first=ui.view.refresh();await new Promise(setImmediate);const second=ui.view.refresh();await new Promise(setImmediate);
+ assert.equal(listReads,2);assert.match(ui.view.rowsRoot.textContent,/List 2/);assert.equal(detailReads,1,'list polling must keep joining the pending detail');
+ finish({session:{id:'a',title:'Finished',status:'idle'},messages:[]});await Promise.all([first,second]);
+});
+
+test('a completed mutation cannot reuse an earlier history read as fresh state',async()=>{
+ const ui=await opened(),pending=[];ui.setHandler((url,body)=>body?Promise.resolve({status:'accepted'}):url.includes('/detail')?new Promise(resolve=>pending.push(resolve)):Promise.resolve({sessions:[]}));
+ const old=ui.view.detail(ui.view.generation);await ui.view.mutate('settings',{model:'new-model'});assert.equal(pending.length,2,'write completion must start a new detail read');
+ pending[0]({session:{id:'a',title:'Obsolete',model:'obsolete-model',status:'idle'},messages:[{id:'old',role:'assistant',text:'obsolete history'}]});await old;
+ assert.doesNotMatch(ui.view.messages.textContent,/obsolete history/);assert.equal(ui.view.send.disabled,true);
+ pending[1]({session:{id:'a',title:'Current',model:'new-model',status:'idle'},messages:[{id:'new',role:'assistant',text:'current history'}]});await new Promise(setImmediate);assert.match(ui.view.messages.textContent,/current history/);assert.equal(ui.view.send.disabled,false);
+});
+
+test('cached, failed and disconnected details remain readable without allowing task mutations',async()=>{
+ for(const mode of ['cache','failure','disconnected','inventory']){
+  const ui=fixture(),value={session:{id:'a',title:'Active chat',status:'active',requests:[{id:'approval',tool:'Write',input:{}}]},capabilities:{send:true,stop:true},messages:[{id:'m',role:'assistant',text:'readable history'}]};
+  ui.setHandler(async url=>url.includes('/detail')?value:{sessions:[{id:'a',title:'Active chat',backend:'code'}]});await ui.view.choose('claude');await ui.view.open('a');assert.equal(ui.view.stop.disabled,false);
+  let opening,finish;if(mode==='cache'){ui.view.backToList();ui.setHandler(()=>new Promise(resolve=>finish=resolve));opening=ui.view.open('a');}
+  else if(mode==='inventory')ui.view.setClientStates([{id:'claude',enabled:true,connected:false,connectionState:'idle'}]);
+  else{ui.setHandler(async url=>{if(url.includes('/detail')){if(mode==='failure')throw Error('offline');return {...value,connected:false};}return {sessions:ui.view.rows};});await ui.view.refresh();await new Promise(setImmediate);}
+  assert.match(ui.view.messages.textContent,/readable history/);assert.equal(ui.view.send.disabled,true,mode);assert.equal(ui.view.stop.disabled,true,mode);const writes=ui.calls.filter(c=>c.body).length;
+  await ui.view.stop.click();await ui.view.mutate('respond',{requestId:'approval',decision:'accept'});assert.equal(ui.calls.filter(c=>c.body).length,writes,mode);
+  if(finish){finish(value);await opening;}
+ }
+});
+
+test('visible connected providers prefetch only their lists and reuse the cache on first selection',async()=>{
+ const ui=fixture(),clients=[{id:'codex',enabled:true,connected:true},{id:'claude',enabled:true,connected:true},{id:'deepseek',enabled:false,connected:true}];ui.setHandler(async()=>({sessions:[{id:'a',title:'Prefetched list',backend:'code'}]}));
+ ui.document.hidden=true;ui.view.setClientStates(clients);assert.equal(ui.calls.length,0);ui.document.hidden=false;ui.document.dispatchEvent({type:'visibilitychange'});await new Promise(setImmediate);
+ assert.deepEqual(ui.calls.map(c=>c.url),['/api/desktop-sessions/claude/list']);ui.view.setClientStates(clients);ui.document.dispatchEvent({type:'visibilitychange'});await new Promise(setImmediate);assert.equal(ui.calls.length,1);
+ let finish;ui.setHandler(()=>new Promise(resolve=>finish=resolve));const selecting=ui.view.choose('claude');assert.match(ui.view.rowsRoot.textContent,/Prefetched list/);assert.equal(ui.calls.some(c=>c.url.includes('/detail')),false);finish({sessions:[]});await selecting;
+});
+
+test('history caching evicts older chats and does not retain an oversized transcript',async()=>{
+ const ui=fixture();ui.setHandler(async url=>url.includes('/detail')?{session:{id:new URL(url,'http://fixture').searchParams.get('sessionId'),title:'Chat',status:'idle'},messages:[{id:'m',role:'assistant',text:'cached '+new URL(url,'http://fixture').searchParams.get('sessionId')}]}:{sessions:[]});await ui.view.choose('claude');
+ for(let i=0;i<13;i++)await ui.view.open(String(i));ui.view.backToList();let finish;ui.setHandler(()=>new Promise(resolve=>finish=resolve));const old=ui.view.open('0');assert.equal(ui.view.messages.textContent.includes('cached 0'),false);finish({session:{id:'0',title:'Chat',status:'idle'},messages:[]});await old;
+ ui.view.backToList();const recent=ui.view.open('12');assert.match(ui.view.messages.textContent,/cached 12/);finish({session:{id:'12',title:'Chat',status:'idle'},messages:[]});await recent;
+ ui.setHandler(async()=>({session:{id:'huge',title:'Large',status:'idle'},messages:[{id:'m',role:'assistant',text:'oversized marker '+('x'.repeat(4*1024*1024))}]}));await ui.view.open('huge');ui.view.backToList();ui.setHandler(()=>new Promise(resolve=>finish=resolve));const huge=ui.view.open('huge');assert.equal(ui.view.messages.textContent.includes('oversized marker'),false);finish({session:{id:'huge',title:'Large',status:'idle'},messages:[]});await huge;
+});
+
+test('an invalidated list failure cannot replace the status of a newer successful read',async()=>{
+ const ui=await opened();let rejectOld,reads=0;ui.setHandler((url,body)=>body?Promise.resolve({status:'accepted'}):url.includes('/list')?++reads===1?new Promise((_,reject)=>rejectOld=reject):Promise.resolve({sessions:[{id:'a',title:'Fresh list',backend:'code'}]}):Promise.resolve({session:{id:'a',title:'Fresh',status:'idle'},messages:[]}));
+ const stale=ui.view.refresh();await new Promise(setImmediate);await ui.view.mutate('settings',{model:'new'});await new Promise(setImmediate);rejectOld(Error('obsolete list failure'));await stale;
+ assert.match(ui.view.rowsRoot.textContent,/Fresh list/);assert.equal(ui.view.listStatus.textContent,'已连接桌面');
+});
+
+test('account changes, disabling and logout reject old background list and history replies',async()=>{
+ for(const mode of ['account','disable','logout']){
+  const ui=fixture(),client={id:'claude',enabled:true,connected:true},pending=[];ui.setHandler(url=>new Promise(resolve=>pending.push({url,resolve})));ui.view.setClientStates([client]);const listing=ui.view.choose('claude'),opening=ui.view.open('a');await ui.view.choose('codex');
+  if(mode==='account')await ui.view.accountChanged('claude',{activeId:'old'},{activeId:'new'});else if(mode==='disable')ui.view.setClientStates([{...client,enabled:false}]);else ui.view.clear();
+  for(const call of pending)call.resolve(call.url.includes('/detail')?{session:{id:'a',title:'Old identity',status:'idle'},messages:[{id:'secret',role:'assistant',text:'old identity history'}]}:{sessions:[{id:'a',title:'Old identity list',backend:'code'}]});await Promise.all([listing,opening]);
+  const current=[];ui.setHandler(url=>new Promise(resolve=>current.push({url,resolve})));ui.view.setClientStates([client]);const selecting=ui.view.choose('claude');assert.equal(ui.view.rowsRoot.textContent.includes('Old identity'),false,mode);assert.equal(ui.view.messages.textContent.includes('old identity history'),false,mode);
+  for(const call of current)call.resolve(call.url.includes('/detail')?{session:{id:'a',title:'Current identity',status:'idle'},messages:[]}:{sessions:[]});await selecting;
+ }
+});
+
+test('reads started before and during a write never replace its completion refresh',async()=>{
+ const ui=await opened(),pending=[];let accept;ui.setHandler((url,body)=>body?new Promise(resolve=>accept=resolve):url.includes('/detail')?new Promise(resolve=>pending.push(resolve)):Promise.resolve({sessions:[]}));
+ const old=ui.view.detail(ui.view.generation),writing=ui.view.mutate('settings',{model:'new'}),during=ui.view.refresh();pending[0]({session:{id:'a',title:'Before',status:'idle'},messages:[{id:'old',role:'assistant',text:'before write'}]});await old;assert.equal(ui.view.messages.textContent.includes('before write'),false);
+ accept({status:'accepted'});await writing;assert.equal(pending.length,3);pending[1]({session:{id:'a',title:'During',status:'idle'},messages:[{id:'mid',role:'assistant',text:'during write'}]});await during;await new Promise(setImmediate);assert.equal(ui.view.messages.textContent.includes('during write'),false);assert.equal(ui.view.send.disabled,true);
+ pending[2]({session:{id:'a',title:'After',status:'idle'},messages:[{id:'new',role:'assistant',text:'after write'}]});await new Promise(setImmediate);assert.match(ui.view.messages.textContent,/after write/);assert.equal(ui.view.send.disabled,false);
+});
+
+test('an old account write cannot invalidate the new account list refresh',async()=>{
+ const ui=await opened();let accept,finishList;ui.setHandler((url,body)=>body?new Promise(resolve=>accept=resolve):Promise.resolve({sessions:[]}));const writing=ui.view.mutate('settings',{model:'new'});
+ ui.setHandler(()=>new Promise(resolve=>finishList=resolve));const changing=ui.view.accountChanged('claude',{activeId:'old'},{activeId:'new'});accept({status:'accepted'});await writing;
+ finishList({sessions:[{id:'b',title:'New account list',backend:'code'}]});await changing;assert.match(ui.view.rowsRoot.textContent,/New account list/);assert.equal(ui.view.listStatus.textContent,'已连接桌面');
+});
+
 test('provider return paints cached list and selected history before either network response',async()=>{
  const ui=fixture();ui.setHandler(async url=>url.includes('/detail')?{session:{id:'a',title:'Cached chat',status:'idle'},capabilities:{attachments:true,skills:true},messages:[{id:'m',role:'assistant',text:'cached answer'}]}:{sessions:[{id:'a',title:'Cached chat',backend:'code'}]});await ui.view.choose('claude');await ui.view.open('a');ui.view.input.value='unfinished';ui.view.input.oninput();ui.view.selectedSkills().set('review',{id:'review',name:'Review'});ui.view.attachments.add([{name:'draft.png',type:'image/png',size:16}]);await new Promise(setImmediate);await ui.view.choose('deepseek');
  const pending=[];ui.setHandler(url=>new Promise(resolve=>pending.push({url,resolve})));const returning=ui.view.choose('claude');assert.match(ui.view.rowsRoot.textContent,/Cached chat/);assert.equal(ui.view.sid,'a');assert.match(ui.view.messages.textContent,/cached answer/);assert.equal(ui.view.input.value,'unfinished');assert.match(ui.view.skillPills.textContent,/Review/);assert.equal(ui.view.attachments.rows.length,1);assert.equal(ui.view.attachments.rows[0].status,'ready');assert.equal(ui.view.send.disabled,true);
  for(const call of pending)call.resolve(call.url.includes('/detail')?{session:{id:'a',title:'Fresh chat',status:'idle'},capabilities:{attachments:true,skills:true},messages:[{id:'m',role:'assistant',text:'fresh answer'}]}:{sessions:[{id:'a',title:'Fresh chat',backend:'code'}]});await returning;assert.match(ui.view.messages.textContent,/fresh answer/);assert.equal(ui.view.input.value,'unfinished');assert.equal(ui.view.send.disabled,false);
+});
+
+test('reads finishing after a provider switch warm only their own list and history cache',async()=>{
+ const ui=fixture(),pending=[];ui.setHandler(url=>new Promise(resolve=>pending.push({url,resolve})));const first=ui.view.choose('claude');await ui.view.choose('codex');pending[0].resolve({sessions:[{id:'a',title:'Background list',backend:'code'}]});await first;
+ const returning=ui.view.choose('claude');assert.match(ui.view.rowsRoot.textContent,/Background list/);pending[1].resolve({sessions:[{id:'a',title:'Background list',backend:'code'}]});await returning;
+ const opening=ui.view.open('a'),history=pending[2];ui.setHandler(async()=>({sessions:[{id:'b',title:'DSH list'}]}));await ui.view.choose('deepseek');history.resolve({session:{id:'a',title:'Background list',status:'idle'},capabilities:{send:true},messages:[{id:'m',role:'assistant',text:'Background history'}]});await opening;
+ assert.match(ui.view.rowsRoot.textContent,/DSH list/);assert.doesNotMatch(ui.view.messages.textContent,/Background history/);
+ const fresh=[];ui.setHandler(url=>new Promise(resolve=>fresh.push({url,resolve})));const back=ui.view.choose('claude');assert.match(ui.view.messages.textContent,/Background history/);assert.equal(ui.view.send.disabled,true);
+ for(const call of fresh)call.resolve(call.url.includes('/detail')?{session:{id:'a',title:'Fresh',status:'idle'},messages:[]}:{sessions:[]});await back;
 });
 test('cached history survives refresh failure and late errors cannot cross providers sharing an id',async()=>{
  const ui=await opened();ui.view.renderMessages([{id:'saved',role:'assistant',text:'saved'}]);let fail;ui.setHandler(()=>new Promise((_,reject)=>fail=reject));const old=ui.view.open('a');const rejectOld=fail;ui.setHandler(async url=>url.includes('/detail')?{session:{id:'a',title:'DSH chat',status:'idle'},messages:[{id:'new',role:'assistant',text:'DSH answer'}]}:{sessions:[]});await ui.view.choose('deepseek');await ui.view.open('a');rejectOld(Error('Claude late failure'));await old;assert.doesNotMatch(ui.view.error.textContent,/Claude late failure/);assert.match(ui.view.messages.textContent,/DSH answer/);

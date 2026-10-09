@@ -6,7 +6,6 @@ from pathlib import Path
 from bridge.clients.desktop_app import DesktopApp, process_inventory
 from bridge.platforms import desktop as native_desktop
 
-
 def launch_deepseek(descriptor, restart=False):
     """Never replace a running desktop during an automatic scan.
 
@@ -97,6 +96,15 @@ def _process_state(descriptor, app, pids, commands):
     main, hosts = [], []
     unknown = any(not commands.get(pid) for pid in pids)
     for pid, command in commands.items():
+        if (descriptor['id'] == 'deepseek' and sys.platform == 'win32' and
+                re.search(r'(?:^|\s)--type(?:=|\s+)utility(?:$|\s)', command) and
+                re.search(r'(?:^|\s)--utility-sub-type(?:=|\s+)node\.mojom\.NodeService(?:$|\s)', command)):
+            # New DSH releases run the Host in Electron's Node utility process.
+            # Its profile is passed over IPC, not on the command line. This is
+            # only a candidate: quit still requires one Host, matching endpoint
+            # PID and a complete idle snapshot from the selected profile.
+            hosts.append(pid)
+            continue
         if re.search(r'(?:^|\s)--type(?:=|\s)', command):
             continue  # Electron renderer/GPU/utility child, closed by its owner.
         if descriptor['id'] == 'deepseek' and '@deepseek-ai' in command and 'dsh-desktop-host' in command:
@@ -119,12 +127,101 @@ def _process_state(descriptor, app, pids, commands):
 
 
 def stop_client(descriptor, *, state):
+    if sys.platform == 'win32' and descriptor.get('id') == 'claude':
+        return stop_claude(descriptor, state=state)
     # Revalidate process identities immediately before sending native quit.
     current = inspect_client(descriptor)
     if current['unknown'] or set(current['pids']) - set(state['pids']):
         raise ValueError('客户端进程已变化，无法确认任务状态，请重新检查后再关闭')
     app = _app(descriptor)
-    app.stop(runtime_pids=current['runtimePids'], gui_pids=current['mainPids'])
+    app.stop(runtime_pids=current['runtimePids'], gui_pids=current['mainPids'], provider=descriptor.get('id'))
+
+
+def stop_claude(descriptor, *, state):
+    """Invoke Claude's normal menu once, then observe its asynchronous cleanup."""
+    from bridge.clients.claude.setup import native_action
+    if descriptor.get('id') != 'claude':
+        raise ValueError('此退出操作仅用于 Claude 桌面端')
+    changed = 'Claude 进程已变化，请重新检查后再退出'
+    current = inspect_client(descriptor)
+    if not current['running']:
+        return
+    if (current.get('unknown') or set(current['pids']) - set(state['pids']) or
+            len(current.get('mainPids', [])) != 1 or current['mainPids'] != state.get('mainPids')):
+        raise ValueError(changed)
+    app = _app(descriptor)
+    # The connection monitor's cancellation file must not cancel native quit.
+    result = native_action('quit', pid=current['mainPids'][0], executable=str(app.executable))
+    if result.get('quitState') not in ('submitted', 'exited'):
+        raise ValueError(result.get('reason') or '请在电脑端处理 Claude 的任务或保存提示后重试')
+    deadline = time.monotonic() + 75
+    while remaining := app.processes():
+        if set(remaining) - set(current['pids']):
+            raise ValueError(changed)
+        if time.monotonic() >= deadline:
+            raise ValueError('Claude 尚未退出，请在电脑端处理任务或保存提示后重试')
+        time.sleep(.25)
+
+
+def stop_deepseek(descriptor, adapter, *, state):
+    """Request DSH's native teardown; closing its window only hides the app."""
+    import json
+    if descriptor.get('id') != 'deepseek':
+        raise ValueError('此退出操作仅用于 Harness 桌面端')
+    changed = 'Harness 进程已变化，请重新检查后再退出'
+
+    def verify():
+        current = inspect_client(descriptor)
+        if (current.get('unknown') or set(current['pids']) - set(state['pids']) or
+                len(current.get('runtimePids', [])) != 1 or
+                current['runtimePids'] != state.get('runtimePids')):
+            raise ValueError(changed)
+        return current
+
+    current = verify()
+    status = adapter.call('status')
+    if status.get('connected') is not True:
+        raise ValueError('Harness 桌面未连接，无法确认退出状态')
+    try:
+        endpoint = json.loads((adapter.directory/'endpoint.json').read_bytes())
+        if (endpoint['pid'] != current['runtimePids'][0] or
+                not isinstance(endpoint['generation'], str) or not endpoint['generation']):
+            raise ValueError(changed)
+    except (OSError, ValueError, KeyError, TypeError):
+        raise ValueError(changed) from None
+    app = _app(descriptor)
+    command = None
+    if status.get('nativeQuit') is not True:
+        from bridge.platforms.windows.dsh_quit import installer_quit_command, send_installer_quit
+        command = installer_quit_command(app, current, _commands(app, current['pids']))
+        runtime = adapter.call('lifecycle')
+        rows = runtime.get('sessions')
+        if (runtime.get('bridgeRevision') != 3 or runtime.get('complete') is not True or
+                not isinstance(rows, list) or any(not isinstance(row, dict) or
+                    row.get('runtimeKnown') is not True or row.get('status') not in ('idle', 'stopped', 'completed') or
+                    row.get('requests') for row in rows)):
+            raise ValueError('有任务运行、等待确认或状态未知，请先在电脑端检查后再退出')
+        try:
+            if json.loads((adapter.directory/'endpoint.json').read_bytes()) != endpoint:
+                raise ValueError(changed)
+        except (OSError, ValueError):
+            raise ValueError(changed) from None
+    current = verify()
+    if command is not None:
+        send_installer_quit(command)
+    else:
+        result = adapter.call('quit', body={'expectedPid': endpoint['pid'],
+                                          'expectedGeneration': endpoint['generation']})
+        if (result.get('status') != 'accepted' or result.get('pid') != endpoint['pid'] or
+                result.get('generation') != endpoint['generation']):
+            raise ValueError('Harness 未确认退出请求，请在电脑端检查后重试')
+    deadline = time.monotonic() + 25
+    while remaining := app.processes():
+        if set(remaining) - set(current['pids']):
+            raise ValueError(changed)
+        if time.monotonic() >= deadline:
+            raise ValueError('Harness 尚未退出，请在电脑端处理退出提示后重试；尚未强制结束进程')
+        time.sleep(.25)
 
 
 def launch_client(descriptor):

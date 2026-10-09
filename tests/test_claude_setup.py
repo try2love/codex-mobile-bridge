@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 
 from bridge.clients.claude.adapter import Claude
 import bridge.clients.claude.setup as claude_setup
+from bridge.platforms.windows import claude as windows_claude
 from bridge.clients.claude.setup import _main_pids, console_source, inspect_installation, native_action, running_app
 
 
@@ -106,6 +107,27 @@ class ClaudeDiscovery(unittest.TestCase):
         self.assertEqual(value['setupState'], 'connected')
         adapter.desktop.close.assert_not_called()
 
+    def test_prepare_reads_utf8_connector_under_windows_legacy_locale(self):
+        adapter = Claude(self.root/'网关 连接', auto_connect=False)
+        self.addCleanup(adapter.close)
+        original_open = Path.open
+
+        def legacy_open(path, mode='r', buffering=-1, encoding=None, errors=None, newline=None):
+            if 'b' not in mode and encoding in (None, 'locale'):
+                encoding = 'cp936'
+            return original_open(path, mode, buffering, encoding, errors, newline)
+
+        with patch.object(Path, 'open', legacy_open):
+            prepared = adapter.prepare()
+        source = (ROOT/'bridge/clients/claude/connector.js').read_text(encoding='utf-8')
+        config = {'transport': 'file', 'cwd': str(adapter.directory), 'token': adapter.desktop.token,
+                  'generation': adapter.desktop.generation, 'reconnect': True, 'connectorRevision': 4,
+                  'request': 'request.json', 'response': 'response.json'}
+        self.assertEqual(Path(prepared['scriptPath']).read_text(encoding='utf-8'),
+                         source.replace('__BRIDGE_CONFIG__', json.dumps(config)))
+        self.assertEqual(Path(prepared['consolePath']).read_text(encoding='utf-8'),
+                         console_source(source, config))
+
 
 class ClaudeProfileEvidence(unittest.TestCase):
     def setUp(self):
@@ -114,15 +136,20 @@ class ClaudeProfileEvidence(unittest.TestCase):
         self.executable = self.root/'Applications/Claude.app/Contents/MacOS/Claude'
         self.default = self.root/'Library/Application Support/Claude'
         self.third = self.default.with_name('Claude-3p')
+        self.posix_default = self.default.as_posix()[len(self.default.drive):]
+        self.posix_third = self.third.as_posix()[len(self.third.drive):]
+        for patcher in (patch.object(Path, 'home', return_value=self.root),
+                        patch('bridge.clients.desktop_app.os.getuid', return_value=1000, create=True)):
+            patcher.start(); self.addCleanup(patcher.stop)
 
     @patch('bridge.clients.claude.setup.sys.platform', 'darwin')
     def test_only_selected_executable_open_storage_establishes_profile(self):
         other = self.root/'Other/Claude.app/Contents/MacOS/Claude'
         processes = Mock(stdout=f' 42 {self.executable}\n 51 {other}\n')
-        files = Mock(stdout=f'p42\nn{self.third}/Local Storage/leveldb/LOCK\n'
-                            f'n{self.third}/Session Storage/LOCK\n'
-                            f'n{self.default}/claude_desktop_config.json\n')
-        with patch('bridge.platforms.macos.claude.subprocess.run', side_effect=[processes, files]) as run:
+        files = Mock(stdout=f'p42\nn{self.posix_third}/Local Storage/leveldb/LOCK\n'
+                            f'n{self.posix_third}/Session Storage/LOCK\n'
+                            f'n{self.posix_default}/claude_desktop_config.json\n')
+        with patch('bridge.clients.claude.setup.subprocess.run', side_effect=[processes, files]) as run:
             self.assertEqual(claude_setup.claude_data_home(self.executable, self.default), self.third)
         self.assertEqual(run.call_args.args[0], ['/usr/sbin/lsof', '-a', '-p', '42', '-Fn'])
 
@@ -135,9 +162,9 @@ class ClaudeProfileEvidence(unittest.TestCase):
 
     @patch('bridge.clients.claude.setup.sys.platform', 'darwin')
     def test_conflicting_storage_roots_do_not_guess(self):
-        files = Mock(stdout=f'p42\nn{self.third}/Session Storage/LOCK\nn{self.default}/Local Storage/leveldb/LOCK\n')
+        files = Mock(stdout=f'p42\nn{self.posix_third}/Session Storage/LOCK\nn{self.posix_default}/Local Storage/leveldb/LOCK\n')
         with patch('bridge.clients.claude.setup.DesktopApp.processes', return_value=[42]), \
-             patch('bridge.platforms.macos.claude.subprocess.run', return_value=files):
+             patch('bridge.clients.claude.setup.subprocess.run', return_value=files):
             self.assertEqual(claude_setup.claude_data_home(self.executable, self.default), self.default)
 
     def test_unavailable_process_inspection_retains_default(self):
@@ -148,9 +175,91 @@ class ClaudeProfileEvidence(unittest.TestCase):
 
     def test_other_platforms_retain_existing_profile_without_mac_tools(self):
         with patch('bridge.clients.claude.setup.subprocess.run') as run:
-            for platform in ('win32', 'linux'):
-                self.assertEqual(claude_setup.claude_data_home(self.executable, self.default, platform), self.default)
+            self.assertEqual(claude_setup.claude_data_home(self.executable, self.default, 'linux'), self.default)
         run.assert_not_called()
+
+
+class ClaudeWindowsProfiles(unittest.TestCase):
+    def setUp(self):
+        flags = patch.object(subprocess, 'CREATE_NO_WINDOW', 0x08000000, create=True)
+        flags.start(); self.addCleanup(flags.stop)
+        self.temp = tempfile.TemporaryDirectory(dir=ROOT/'.tmp')
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.local, self.roaming = self.root/'Local', self.root/'Roaming'
+        self.env = {'LOCALAPPDATA': str(self.local), 'APPDATA': str(self.roaming)}
+        self.default = self.roaming/'Claude'
+        self.third = self.local/'Claude-3p'
+        self.family = 'Claude_pzs8sxrjxfjjc'
+        self.store = self.local/'Packages'/self.family/'LocalCache/Roaming/Claude'
+        self.executable = self.root/'WindowsApps/Claude_2.31226.0.0_x64__pzs8sxrjxfjjc/app/Claude.exe'
+        self.inventory = patch('bridge.platforms.windows.claude.process_inventory', return_value={}).start()
+        self.addCleanup(patch.stopall)
+
+    def profile(self, path, mode=None):
+        path.mkdir(parents=True, exist_ok=True)
+        (path/'Local State').write_text('{}', encoding='utf-8')
+        if mode:
+            (path/'claude_desktop_config.json').write_text(json.dumps({'deploymentMode': mode, 'private': 'never-return'}), encoding='utf-8')
+        return path
+
+    def scan(self, fallback=None):
+        return claude_setup.claude_data_home(self.executable, fallback or self.default, 'win32', env=self.env)
+
+    def test_live_exact_executable_commands_select_unicode_profile(self):
+        active = self.root/'Claude 数据/配置'
+        self.inventory.return_value = {self.executable: {'pids': [1, 2, 3], 'commands': {
+            1: f'"{self.executable}"',
+            2: f'"{self.executable}" --type=renderer --user-data-dir="{active}"',
+            3: f'"{self.executable}" --type=utility --user-data-dir "{active}"'}}}
+        self.assertEqual(self.scan(), active)
+        self.inventory.assert_called_once_with([self.executable])
+
+    def test_conflicting_live_profiles_do_not_guess_from_stopped_metadata(self):
+        self.profile(self.third, '3p')
+        self.inventory.return_value = {self.executable: {'pids': [1, 2], 'commands': {
+            1: f'Claude.exe --user-data-dir="{self.third}"',
+            2: f'Claude.exe --user-data-dir="{self.default}"'}}}
+        self.assertEqual(self.scan(), self.default)
+
+    def test_stopped_third_party_mode_beats_populated_store_profile(self):
+        self.profile(self.store, '3p')
+        self.profile(self.third, '3p')
+        self.assertEqual(self.scan(), self.third)
+
+    def test_unique_stopped_store_profile_uses_exact_package_family(self):
+        self.profile(self.store)
+        self.assertEqual(self.scan(), self.store)
+
+    def test_unique_migrated_official_profile_is_discovered(self):
+        migrated = self.profile(self.local/'Claude-Data')
+        self.assertEqual(self.scan(), migrated)
+
+    def test_unrelated_package_and_custom_fallback_stay_isolated(self):
+        self.profile(self.local/'Packages/Claude_otherpublisher/LocalCache/Roaming/Claude')
+        self.assertEqual(self.scan(), self.default)
+        self.profile(self.third, '3p')
+        selected = self.root/'custom/Claude'
+        self.assertEqual(self.scan(selected), selected)
+        self.assertFalse(selected.exists())
+
+    def test_conflicting_stopped_modes_and_profiles_keep_fallback(self):
+        self.profile(self.third, '3p')
+        self.profile(self.store, '1p')
+        self.assertEqual(self.scan(), self.default)
+
+    def test_process_inspection_failure_uses_unique_profile(self):
+        self.profile(self.third)
+        self.inventory.side_effect = PermissionError('fixture')
+        self.assertEqual(self.scan(), self.third)
+
+    def test_profile_pairing_retains_recognized_missing_paths(self):
+        paths = windows_claude.windows_claude_profile_paths(self.executable, self.third, env=self.env)
+        self.assertEqual(paths['thirdparty'], [self.third, self.roaming/'Claude-3p'])
+        self.assertIn(self.store, paths['official'])
+        self.assertIn(self.default, paths['official'])
+        self.assertEqual(windows_claude.windows_claude_profile_paths(self.executable, self.root/'custom/Claude', env=self.env), {})
+        self.assertFalse(self.third.exists())
 
 
 class ClaudeNativeConnection(unittest.TestCase):
@@ -335,7 +444,6 @@ class ClaudeNativeConnection(unittest.TestCase):
                 self.adapter.desktop.connected = heartbeat
                 return {'setupState': 'submitted'}
             if action == 'close-devtools':
-                self.adapter.setup_cancel.set()
                 return {'setupState': 'connected'}
             if action == 'inspect-error':
                 return {'setupState': 'needs-trust' if trust else 'failed', 'reason': 'trust required'}
@@ -394,10 +502,11 @@ class ClaudeNativeConnection(unittest.TestCase):
             self.adapter.connect()
         # Use the real owner thread for close; the setup monitor is mocked.
         self.adapter.close()
-        with patch.object(Claude, 'connect') as resume:
+        with patch.object(Claude, 'connect') as native, patch.object(Claude, 'reconnect', create=True) as resume:
             other = Claude(self.adapter.directory)
         self.addCleanup(other.close)
         resume.assert_called_once_with()
+        native.assert_not_called()
         self.assertTrue(other.discovery['autoConnect'])
         self.assertIsNotNone(other.desktop)
 
@@ -484,7 +593,6 @@ class ClaudeNativeConnection(unittest.TestCase):
                 self.assertFalse(self.adapter.desktop.connected)
                 heartbeat(CONNECTOR_REVISION)
                 return {'setupState': 'submitted'}
-            if action == 'close-devtools': self.adapter.setup_cancel.set()
             return {'setupState': 'ready'}
         with patch('bridge.clients.claude.adapter.native_action', side_effect=native), \
              patch('bridge.clients.claude.adapter.running_app', return_value=42) as running, \
@@ -610,19 +718,19 @@ class ClaudeNativeConnection(unittest.TestCase):
         self.assertNotEqual(self.adapter.desktop.generation, old.generation)
         (self.adapter.directory/'response.json').write_text(old_response)
         self.assertFalse(self.adapter.status()['connected'])
-        source = Path(prepared['consolePath']).read_text()
+        source = Path(prepared['consolePath']).read_text(encoding='utf-8')
         self.assertNotIn('\n', source)
         self.assertIn(self.adapter.desktop.generation, source)
 
     def test_transformed_console_script_preserves_file_protocol_behavior(self):
-        source = (ROOT/'bridge/clients/claude/connector.js').read_text()
+        source = (ROOT/'bridge/clients/claude/connector.js').read_text(encoding='utf-8')
         config = {'cwd': 'D:/fixture', 'request': 'request.json', 'response': 'response.json',
                   'token': 'test', 'generation': 'run', 'reconnect': True, 'connectorRevision': 4}
         target = self.root/'connector.js'
-        target.write_text(console_source(source, config))
+        target.write_text(console_source(source, config), encoding='utf-8')
         completed = subprocess.run(['node', 'tests/claude-connector.test.cjs'], cwd=ROOT,
                                    env={**os.environ, 'CONNECTOR_TEMPLATE': str(target)},
-                                   capture_output=True, text=True, timeout=15)
+                                   capture_output=True, text=True, encoding='utf-8', timeout=15)
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
     def test_console_transform_preserves_configuration_string_whitespace(self):
@@ -631,45 +739,115 @@ class ClaudeNativeConnection(unittest.TestCase):
 
 
 class NativeHelperProcess(unittest.TestCase):
-    def test_helper_resource_paths_follow_source_and_frozen_roots(self):
-        for platform, name in (('darwin', 'claude-bridge-helper'), ('win32', 'claude-bridge-helper.exe')):
-            for frozen in (False, True):
-                with self.subTest(platform=platform, frozen=frozen), \
-                     patch('bridge.clients.claude.setup.sys.platform', platform), \
-                     patch('bridge.clients.claude.setup.sys.frozen', frozen, create=True), \
-                     patch('bridge.clients.claude.setup.project_root', return_value=ROOT):
-                    expected = ROOT if frozen else ROOT/'dist'
-                    self.assertEqual(claude_setup.helper_path(), expected/'client-helpers'/name)
+    def setUp(self):
+        desktop = patch('bridge.clients.claude.setup.windows_session.require_interactive')
+        desktop.start(); self.addCleanup(desktop.stop)
 
-    def test_existing_only_refuses_to_launch_a_closed_claude(self):
-        with patch('bridge.clients.claude.setup.DesktopApp') as app, \
-             patch('bridge.clients.claude.setup._main_pids', return_value=[]), \
-             patch('bridge.clients.claude.setup.subprocess.run') as run, \
-             patch('bridge.clients.claude.setup.subprocess.Popen') as spawn:
-            with self.assertRaisesRegex(ValueError, '请先在电脑端打开 Claude'):
-                running_app('/Claude', '/profile', allow_launch=False)
-        run.assert_not_called(); spawn.assert_not_called(); app.return_value.stop.assert_not_called()
-
-    @patch('bridge.clients.claude.setup.sys.platform', 'darwin')
-    def test_screen_saver_wait_uses_one_read_only_helper_without_normal_timeout(self):
-        process = Mock()
-        process.communicate.side_effect = [subprocess.TimeoutExpired('helper', 1)] * 3 + [('{"setupState":"ready"}', '')]
+    @patch('bridge.clients.claude.setup.sys.platform', 'win32')
+    def test_native_quit_preserves_explicit_result_states_and_pid(self):
+        process = Mock(returncode=0)
         with patch('bridge.clients.claude.setup.helper_path', return_value=Path(__file__)), \
-             patch('bridge.clients.claude.setup.subprocess.Popen', return_value=process) as spawn, \
-             patch('bridge.clients.claude.setup.time.monotonic', side_effect=AssertionError('Wait must not expire and respawn')):
-            self.assertEqual(native_action('wait-desktop')['setupState'], 'ready')
-        spawn.assert_called_once()
-        self.assertEqual(spawn.call_args.args[0], [__file__, '--wait-desktop'])
-        process.terminate.assert_not_called()
+             patch('bridge.clients.claude.setup.subprocess.Popen', return_value=process) as spawn:
+            for state in ('exited', 'pending', 'submitted', 'failed'):
+                expected = {'quitState': state, 'pid': 42, 'reason': 'fixture'}
+                process.communicate.return_value = (json.dumps(expected), '')
+                self.assertEqual(native_action('quit', pid=42, executable='C:/Claude.exe'), expected)
+            self.assertEqual(spawn.call_args.args[0], [__file__, '42', '--quit', 'C:/Claude.exe'])
 
-    @patch('bridge.clients.claude.setup.sys.platform', 'darwin')
-    def test_connector_recovery_stops_only_the_desktop_wait_helper(self):
-        process = Mock()
-        process.communicate.side_effect = [subprocess.TimeoutExpired('helper', 1), ('', '')]
+    @patch('bridge.clients.claude.setup.sys.platform', 'win32')
+    def test_native_quit_rejects_unverified_helper_results(self):
+        process = Mock(returncode=0)
         with patch('bridge.clients.claude.setup.helper_path', return_value=Path(__file__)), \
              patch('bridge.clients.claude.setup.subprocess.Popen', return_value=process):
-            self.assertEqual(native_action('wait-desktop', recovered=lambda: True)['setupState'], 'connected')
-        process.terminate.assert_called_once(); process.kill.assert_not_called()
+            for value in ('submitted', {'quitState': 'exited', 'pid': 99},
+                          {'quitState': 'ready', 'pid': 42}, {'quitState': 'exited', 'pid': 42, 'reason': []}):
+                process.communicate.return_value = (json.dumps(value), '')
+                result = native_action('quit', pid=42, executable='C:/Claude.exe')
+                self.assertEqual(result['quitState'], 'failed')
+                self.assertEqual(result['pid'], 42)
+
+    @patch('bridge.clients.claude.setup.sys.platform', 'win32')
+    def test_cancelled_native_quit_does_not_spawn(self):
+        cancel = threading.Event(); cancel.set()
+        with patch('bridge.clients.claude.setup.subprocess.Popen') as spawn:
+            result = native_action('quit', pid=42, executable='C:/Claude.exe', cancelled=cancel)
+        self.assertEqual(result['quitState'], 'failed')
+        self.assertIn('取消', result['reason'])
+        spawn.assert_not_called()
+
+    @patch('bridge.clients.claude.setup.sys.platform', 'win32')
+    def test_native_quit_keeps_dispatch_when_final_reply_is_lost(self):
+        phase = json.dumps({'quitPhase': 'dispatching', 'pid': 42}) + '\n'
+        failed = json.dumps({'quitState': 'failed', 'pid': 42, 'reason': 'provider failed after Exit'})
+        for tail, code in (('', 0), ('broken JSON', 0), (failed, 1)):
+            with self.subTest(tail=tail):
+                process = Mock(returncode=code)
+                process.communicate.return_value = (phase + tail, '')
+                with patch('bridge.clients.claude.setup.helper_path', return_value=Path(__file__)), \
+                     patch('bridge.clients.claude.setup.subprocess.Popen', return_value=process) as spawn:
+                    result = native_action('quit', pid=42, executable='C:/Claude.exe')
+                self.assertEqual(result['quitState'], 'submitted')
+                self.assertEqual(result['pid'], 42)
+                self.assertIn('回执中断', result['reason'])
+                spawn.assert_called_once()
+                process.terminate.assert_not_called()
+
+    @patch('bridge.clients.claude.setup.sys.platform', 'win32')
+    def test_native_quit_dispatch_requires_exact_integer_pid(self):
+        for target in (99, True, '42', None):
+            with self.subTest(pid=target):
+                process = Mock(returncode=1)
+                process.communicate.return_value = (json.dumps({'quitPhase': 'dispatching', 'pid': target}), '')
+                with patch('bridge.clients.claude.setup.helper_path', return_value=Path(__file__)), \
+                     patch('bridge.clients.claude.setup.subprocess.Popen', return_value=process):
+                    result = native_action('quit', pid=42, executable='C:/Claude.exe')
+                self.assertEqual(result['quitState'], 'failed')
+
+    @patch('bridge.clients.claude.setup.sys.platform', 'win32')
+    def test_native_quit_timeout_preserves_dispatch_evidence(self):
+        phase = json.dumps({'quitPhase': 'dispatching', 'pid': 42}) + '\n'
+        for evidence in ('partial', 'final', 'shutdown-timeout', 'none'):
+            with self.subTest(evidence=evidence):
+                process = Mock(returncode=1)
+                outputs = [subprocess.TimeoutExpired('helper', .2,
+                           output=phase.encode() if evidence == 'partial' else b'')]
+                if evidence == 'shutdown-timeout':
+                    outputs.append(subprocess.TimeoutExpired('helper', 3, output=phase.encode()))
+                outputs.append((phase if evidence == 'final' else '', ''))
+                process.communicate.side_effect = outputs
+                with patch('bridge.clients.claude.setup.helper_path', return_value=Path(__file__)), \
+                     patch('bridge.clients.claude.setup.subprocess.Popen', return_value=process) as spawn, \
+                     patch('bridge.clients.claude.setup.time.monotonic', side_effect=[0, 31]):
+                    result = native_action('quit', pid=42, executable='C:/Claude.exe')
+                self.assertEqual(result['quitState'], 'failed' if evidence == 'none' else 'submitted')
+                spawn.assert_called_once()
+                process.terminate.assert_called_once()
+                self.assertEqual(process.kill.call_count, int(evidence == 'shutdown-timeout'))
+
+    @patch('bridge.clients.claude.setup.sys.platform', 'win32')
+    def test_cancel_after_quit_dispatch_still_observes_native_exit(self):
+        cancel = threading.Event()
+        process = Mock(returncode=1)
+        phase = json.dumps({'quitPhase': 'dispatching', 'pid': 42}) + '\n'
+        def communicate(**kwargs):
+            if not cancel.is_set():
+                cancel.set()
+                raise subprocess.TimeoutExpired('helper', .2, output=phase.encode())
+            return '', ''
+        process.communicate.side_effect = communicate
+        with patch('bridge.clients.claude.setup.helper_path', return_value=Path(__file__)), \
+             patch('bridge.clients.claude.setup.subprocess.Popen', return_value=process) as spawn:
+            result = native_action('quit', pid=42, executable='C:/Claude.exe', cancelled=cancel)
+        self.assertEqual(result['quitState'], 'submitted')
+        spawn.assert_called_once()
+        process.terminate.assert_called_once()
+        process.kill.assert_not_called()
+
+    def test_native_action_rejects_actions_outside_allowlist(self):
+        with patch('bridge.clients.claude.setup.subprocess.Popen') as spawn:
+            with self.assertRaisesRegex(ValueError, '不支持'):
+                native_action('force-quit', pid=42, executable='C:/Claude.exe')
+        spawn.assert_not_called()
 
     @patch('bridge.clients.claude.setup.sys.platform', 'win32')
     def test_windows_process_discovery_excludes_electron_children(self):

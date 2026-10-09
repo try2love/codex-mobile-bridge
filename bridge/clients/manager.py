@@ -17,9 +17,14 @@ from bridge.clients.claude.adapter import Claude
 from bridge.clients.deepseek.adapter import DeepSeek, BRIDGE_REVISION, UPDATE_REASON
 from bridge.clients.errors import BridgeUnavailable
 from bridge.app.lifecycle import private_json
+from bridge.platforms.windows import session as windows_session
 
 READS = {'list', 'detail', 'catalog', 'projects', 'account', 'access'}
 WRITES = {'send', 'stop', 'settings', 'respond', 'create', 'access'}
+
+
+class TaskStateUnavailable(ValueError):
+    """No task evidence; distinct from known busy tasks or ambiguous processes."""
 
 
 def _copy_read(value):
@@ -335,7 +340,10 @@ class DesktopSessions:
                 try:
                     self.toggle_client({'provider': provider, 'enabled': True})
                 except (ValueError, OSError, subprocess.SubprocessError) as exc:
-                    self.config.setdefault('setup', {})[provider] = {'setupStatus': 'failed', 'reason': str(exc)}
+                    setup = self.config.setdefault('setup', {})
+                    previous = setup.get(provider, {}) if provider == 'deepseek' else {}
+                    setup[provider] = {**previous, 'setupStatus': (
+                        'restart-required' if previous.get('requiredBridgeRevision') else 'failed'), 'reason': str(exc)}
                     private_json(self.config_path, self.config)
                     self.client_cache = None
 
@@ -349,20 +357,26 @@ class DesktopSessions:
         if provider == 'codex' and self.bridge:
             from bridge.clients.desktop_app import DesktopApp
             accounts = self.bridge.for_host('local').accounts
-            executable = accounts.index.get('desktopExecutable') or DesktopApp.discover(accounts.runtime)
+            executable = self._codex_executable(accounts)
             row.update(id='codex', executable=executable, dataDirectory=str(accounts.home),
                        installed=bool(executable and Path(executable).is_file()))
         return row
+
+    def _codex_executable(self, accounts):
+        from bridge.clients.desktop_app import DesktopApp
+        # Windows may cache the CLI outside its Store-installed desktop bundle.
+        return (accounts.index.get('desktopExecutable') or DesktopApp.discover(accounts.runtime)
+                or self.config.get('discovered', {}).get('codex', {}).get('executable', ''))
 
     def _verified(self, provider):
         row = self.config.get('discovered', {}).get(provider, {})
         return {key: row.get(key) for key in ('executable', 'dataDirectory')}
 
-    def _assert_idle(self, provider, state):
-        unknown = '无法确认客户端所有任务均已结束，请在电脑端检查后重试'
+    def _assert_idle(self, provider, state, *, native_confirmation=False):
+        unknown = '无法确认客户端所有任务均已结束；可选择“仅停用手机接入”保留电脑 App，或在电脑端退出后重试'
         if provider == 'deepseek' and len(state.get('runtimePids', [])) > 1:
             raise ValueError('检测到多个 Harness 后台实例，无法确认全部任务状态；请在电脑上结束多余实例后重试')
-        if state.get('unknown'):
+        if state.get('unknown') or len(state.get('mainPids', [])) > 1:
             raise ValueError(unknown)
         if provider == 'codex':
             self.bridge.accounts.idle()
@@ -372,9 +386,9 @@ class DesktopSessions:
         try:
             status = adapter.call('status') if provider == 'deepseek' else adapter.status()
         except (ValueError, OSError, BridgeUnavailable):
-            raise ValueError(unknown) from None
+            raise TaskStateUnavailable(unknown) from None
         if not status.get('connected'):
-            raise ValueError(unknown)
+            raise TaskStateUnavailable('客户端尚未连接，无法确认任务状态；可选择“仅停用手机接入”，或在电脑端退出 App 后重试')
         if provider == 'deepseek':
             hosts = state.get('runtimePids', [])
             endpoint = self._deepseek_endpoint(adapter)
@@ -383,43 +397,102 @@ class DesktopSessions:
             if status.get('bridgeRevision') != BRIDGE_REVISION:
                 raise ValueError('当前 Harness 接入版本无法核对任务状态，请在电脑端退出 Harness 后再连接')
         try:
-            listing = adapter.call('lifecycle' if provider == 'deepseek' else 'list')
-            sessions = listing.get('sessions')
-            if not isinstance(sessions, list) or listing.get('complete') is not True:
-                raise ValueError(unknown)
-            if provider == 'deepseek' and listing.get('bridgeRevision') != BRIDGE_REVISION:
-                raise ValueError(unknown)
+            listing = (adapter.call('list', timeout=8) if native_confirmation else
+                       adapter.call('lifecycle' if provider == 'deepseek' else 'list'))
         except (ValueError, OSError, BridgeUnavailable):
-            raise ValueError(unknown) from None
-        if any(row.get('requests') or row.get('status') in ('active', 'running', 'waiting', 'busy') for row in sessions):
+            raise TaskStateUnavailable(unknown) from None
+        sessions = listing.get('sessions')
+        if not isinstance(sessions, list):
+            raise TaskStateUnavailable(unknown)
+        # An incomplete list may still prove a task busy; check that evidence first.
+        if any(isinstance(row, dict) and (row.get('requests') or
+               row.get('status') in ('active', 'running', 'waiting', 'busy')) for row in sessions):
             raise ValueError('有任务运行或等待确认，请先结束任务再关闭或重启客户端')
-        if any(row.get('status') not in ('idle', 'stopped', 'completed') or
-               row.get('runtimeKnown') is not True for row in sessions):
-            raise ValueError(unknown)
+        if (listing.get('complete') is not True or
+                provider == 'deepseek' and listing.get('bridgeRevision') != BRIDGE_REVISION or
+                any(not isinstance(row, dict) or row.get('status') not in ('idle', 'stopped', 'completed') or
+                    row.get('runtimeKnown') is not True for row in sessions)):
+            raise TaskStateUnavailable(unknown)
 
-    def _stop_client(self, provider, descriptor, state):
-        from bridge.clients.lifecycle import stop_client
-        if not state['running']:
+    def _stop_client(self, provider, descriptor, state, *, native_confirmation=False, force=False):
+        from bridge.clients.lifecycle import stop_client, stop_deepseek
+        native_confirmation = native_confirmation and provider == 'claude' and sys.platform == 'win32'
+        if not state['running'] and not force:
             if provider == 'claude':
                 self.adapters[provider].cancel()
             return
-        self._assert_idle(provider, state)
+        try:
+            if not force:
+                self._assert_idle(provider, state, native_confirmation=native_confirmation)
+        except TaskStateUnavailable:
+            # Only explicit user-requested quit can defer unavailable task evidence
+            # to Claude's own normal exit confirmation. Account changes cannot.
+            if not (native_confirmation and provider == 'claude' and sys.platform == 'win32'):
+                raise
         if provider == 'claude':
             # Cancel the monitor before native quit, so it cannot relaunch Claude.
             self.adapters[provider].cancel(persist=False)
         try:
-            stop_client(descriptor, state=state)
+            if force:
+                from bridge.platforms.windows.force_exit import force_stop_client
+                force_stop_client(descriptor, state=state)
+            elif provider == 'deepseek' and sys.platform == 'win32':
+                stop_deepseek(descriptor, self.adapters[provider], state=state)
+            else:
+                stop_client(descriptor, state=state)
         except Exception:
             if provider == 'claude':
                 try:
-                    self.adapters[provider].connect()
+                    self.adapters[provider].reconnect()
                 except Exception:
                     pass  # A recovery failure must not hide the native quit error.
             raise
         if provider == 'claude':
             self.adapters[provider].cancel()
 
+    def _deepseek_connection(self, phase, message, *, clear=(), **values):
+        setup = self.config.setdefault('setup', {}).setdefault('deepseek', {})
+        previous = dict(setup)
+        for key in clear:
+            setup.pop(key, None)
+        setup.update(connectionState=phase, connectionReason=message, **values)
+        if phase not in ('starting', 'connecting'):
+            for key in ('connectionStartedAt', 'connectionDeadline'):
+                setup.pop(key, None)
+        if previous != setup:
+            private_json(self.config_path, self.config)
+            self.client_cache = None
+
+    def _begin_deepseek_connection(self):
+        now = time.time()
+        self._deepseek_connection('starting', '正在启动 Harness 桌面应用',
+                                  connectionStartedAt=now, connectionDeadline=now + (120 if sys.platform == 'win32' else 60))
+
+    def _deepseek_launched(self, result, *, first_launch=False):
+        if not result.get('running') and result.get('launched') is not True:
+            raise ValueError('客户端尚未启动，请在电脑端检查后重试')
+        setup = self.config['setup']['deepseek']
+        if first_launch and result.get('running'):
+            reason = 'Harness 已打开，请完成首次设置后点击接入'
+            self._deepseek_connection('idle', reason, setupStatus='needs-first-launch', reason=reason)
+            return
+        phase = 'connecting' if result.get('running') else 'starting'
+        reason = 'Harness 已启动，正在等待桌面连接' if result.get('running') else '正在启动 Harness 桌面应用'
+        values = {'pendingFirstLaunch': first_launch}
+        if not setup.get('requiredBridgeRevision'):
+            values.update(setupStatus=phase, reason=reason)
+        self._deepseek_connection(phase, reason, **values)
+
     def _start_deepseek(self, restart=False):
+        try:
+            return self._prepare_deepseek(restart)
+        except (ValueError, OSError, subprocess.SubprocessError) as exc:
+            setup = self.config.setdefault('setup', {}).get('deepseek', {})
+            values = {} if setup.get('requiredBridgeRevision') else {'setupStatus': 'failed', 'reason': str(exc)}
+            self._deepseek_connection('error', str(exc), **values)
+            raise
+
+    def _prepare_deepseek(self, restart=False):
         from bridge.clients.lifecycle import inspect_client, launch_deepseek
         if self.deepseek_restore_error:
             raise BridgeUnavailable(self.deepseek_restore_error)
@@ -431,12 +504,9 @@ class DesktopSessions:
         if state['running'] and not state.get('mainPids'):
             raise ValueError('检测到残留 Harness 后台实例且无法核对任务状态，请在电脑端退出 Harness 后重试')
         if not (adapter.home/'profiles/desktop/cordis.patch.yml').is_file():
+            self._begin_deepseek_connection()
             result = launch_deepseek(row)
-            if not result.get('running'):
-                raise ValueError('客户端尚未启动，请在电脑端检查后重试')
-            setup['deepseek'] = {'setupStatus': 'needs-first-launch',
-                                'reason': 'Harness 已打开，请完成首次设置后点击接入'}
-            private_json(self.config_path, self.config)
+            self._deepseek_launched(result, first_launch=True)
             return
         installed = adapter.ensure_installed()
         if installed.get('reused'):
@@ -450,18 +520,14 @@ class DesktopSessions:
         needs_reload = needs_update or previous.get('setupStatus') == 'restart-required' and not status.get('connected')
         if state['running'] and (restart or needs_reload):
             self._stop_client('deepseek', row, state)
-        if needs_update or restart and getattr(adapter, 'reused', False):
+        if needs_update or getattr(adapter, 'reused', False) and (restart or not state['running']):
             adapter.update_existing()
             setup['deepseek'] = {'setupStatus': 'restart-required', 'reason': UPDATE_REASON,
                                  'requiredBridgeRevision': BRIDGE_REVISION}
             private_json(self.config_path, self.config)
+        self._begin_deepseek_connection()
         result = launch_deepseek(row)
-        if not result.get('running'):
-            raise ValueError('客户端尚未启动，请在电脑端检查后重试')
-        if not setup.get('deepseek', {}).get('requiredBridgeRevision'):
-            setup['deepseek'] = {'setupStatus': 'connecting', 'reason': '正在等待 Harness 连接'}
-        self.client_cache = None
-        private_json(self.config_path, self.config)
+        self._deepseek_launched(result)
 
     def connect_deepseek(self, restart=False):
         if not self.gateway_running:
@@ -503,12 +569,15 @@ class DesktopSessions:
             return self.toggle_client({'provider': 'claude', 'enabled': True})
         from bridge.clients.lifecycle import inspect_client, launch_client
         with self.client_lock, self._changing('claude'):
+            if not restart and self.adapters['claude'].status().get('connected') is True:
+                return self.clients(refresh=True)
             descriptor = self._descriptor('claude')
             if restart:
                 self._stop_client('claude', descriptor, inspect_client(descriptor))
-            result = launch_client(descriptor)
-            if not result.get('running'):
-                raise ValueError('客户端尚未启动，请在电脑端检查后重试')
+            if sys.platform != 'win32':
+                result = launch_client(descriptor)
+                if not result.get('running'):
+                    raise ValueError('客户端尚未启动，请在电脑端检查后重试')
             self.adapters['claude'].connect()
             return self.clients(refresh=True)
 
@@ -618,8 +687,11 @@ class DesktopSessions:
 
     def clients(self, refresh=False):
         with self.client_lock:
-            if not refresh and self.client_cache and time.monotonic() - self.client_cache[0] < 15:
-                return self.client_cache[1]
+            pending = self.client_cache and any(row.get('connectionState') in ('starting', 'connecting')
+                                               for row in self.client_cache[1]['clients'])
+            if not refresh and self.client_cache and time.monotonic() - self.client_cache[0] < (1 if pending else 15):
+                result = self.client_cache[1]
+                return {**result, 'windowsSession': windows_session.status()} if sys.platform == 'win32' else result
             rows = []
             discovered = self.config.get('discovered', {})
             ready = False
@@ -629,7 +701,7 @@ class DesktopSessions:
                     from bridge.clients.desktop_app import DesktopApp
                     accounts = self.bridge.for_host('local').accounts
                     current = accounts.info.current()
-                    installed = accounts.index.get('desktopExecutable') or DesktopApp.discover(accounts.runtime)
+                    installed = self._codex_executable(accounts)
                     ready = bool(installed and Path(installed).is_file() and current.get('status') == 'ready' and current.get('kind') in ('chatgpt', 'api'))
                     if ready and current.get('kind') == 'api':
                         ready = bool((accounts.info.identity or {}).get('key') or accounts.active_matches())
@@ -654,7 +726,7 @@ class DesktopSessions:
                     if provider == 'claude':
                         setup_status = status.get('setupState', setup_status)
                         reason = status.get('reason') or reason
-                    connected = bool(status.get('connected'))
+                    connected = status.get('connected') is True if provider == 'deepseek' else bool(status.get('connected'))
                     if connected:
                         if provider == 'deepseek':
                             ready = status.get('configured') is True and not status.get('updateRequired')
@@ -677,6 +749,10 @@ class DesktopSessions:
                     reason = UPDATE_REASON
                 elif pending_restart:
                     reason = setup.get('reason') or '请结束当前任务后重启 Harness 完成接入'
+                elif provider == 'deepseek' and connected:
+                    # Transport readiness and account setup are separate. A live
+                    # current connector also clears stale restart/failure labels.
+                    setup_status = 'recovered' if ready and setup_status == 'recovered' else 'ready' if ready else 'unconfigured'
                 verified = self.config.setdefault('verified', {})
                 binding = self._verified(provider)
                 if invalid and provider in verified:
@@ -689,9 +765,13 @@ class DesktopSessions:
                 remembered = bool(binding.get('executable') and verified.get(provider) == binding and
                                   discovered.get(provider, {}).get('installed'))
                 configured = ready or remembered
-                if not connected and remembered and not status.get('reason') and setup_status not in ('failed', 'restart-required'):
+                if provider == 'deepseek' and (pending_restart or status.get('updateRequired')):
+                    configured = False
+                if not connected and remembered and setup_status not in (
+                        'failed', 'needs-retry', 'needs-unlock', 'needs-desktop', 'needs-developer-mode', 'needs-trust',
+                        'needs-permission', 'needs-screen-saver', 'restart-required', 'needs-initialization', 'needs-first-launch', 'starting', 'connecting'):
                     reason = '客户端已配置，可开启桌面应用'
-                if provider == 'deepseek' and setup.get('setupStatus') == 'failed' and not ready:
+                if provider == 'deepseek' and setup.get('setupStatus') == 'failed' and not connected:
                     setup_status, reason = 'failed', setup.get('reason', reason)
                 rows.append({'id': provider, 'name': name, 'installed': discovered.get(provider, {}).get('installed', connected),
                              'setupStatus': ('recovered' if provider == 'deepseek' and setup_status == 'recovered' else 'ready') if ready and not pending_restart else setup_status, 'configured': configured, 'connected': connected,
@@ -711,6 +791,7 @@ class DesktopSessions:
             for row in rows:
                 native = {}
                 row.update(running=False, mainRunning=False, backgroundRunning=False, backgroundCount=0)
+                row['canForceQuit'] = bool(sys.platform == 'win32' and self.gateway_running and row['installed'])
                 if row['installed']:
                     try:
                         native = native_states.get(row['id'])
@@ -724,31 +805,122 @@ class DesktopSessions:
                             row.update(setupStatus='recovery-required', reason='Harness 存在残留或多个后台实例，请在桌面使用完整退出并重新接入')
                     except (ValueError, OSError, subprocess.SubprocessError):
                         pass
+                if row['id'] == 'deepseek':
+                    self._deepseek_progress(row, native_states.get('deepseek'))
+                elif row['id'] == 'claude':
+                    self._claude_progress(row, native_states.get('claude'))
                 # Selection is a startup preference; readiness still requires live evidence.
                 row['selectable'] = bool(row['configured'] or row['installed'] and row['setupStatus'] != 'unsupported')
                 if row['id'] == 'claude':
+                    row['initializationMode'] = 'background' if sys.platform == 'win32' else 'foreground'
                     row['reconnectSupported'] = self._claude_reconnect_supported()
                     row['canReconnect'] = bool(row['reconnectSupported'] and self.gateway_running and row['enabled'] and
                                                row['mainRunning'] and not native.get('unknown', True))
                     row['canConfirmQuit'] = bool(sys.platform in ('darwin', 'win32') and row['mainRunning'])
                 if not self.gateway_running and row['enabled'] and row['setupStatus'] != 'recovery-required':
-                    row['reason'] = '已选择，启动网关后自动接入'
+                    row['reason'] = ('已选择，启动网关后在后台启动并连接' if row['id'] == 'claude'
+                                     else '已选择，启动网关后自动接入')
             result = {'clients': rows, 'computer': socket.gethostname(), 'gatewayRunning': self.gateway_running}
+            if sys.platform == 'win32':
+                result['windowsSession'] = windows_session.status()
             self.client_cache = (time.monotonic(), result)
             return result
+
+    def _claude_progress(self, row, native):
+        row.update(connectionState='connected' if row['connected'] else 'idle', retryable=False)
+        if row['connected'] or not self.gateway_running or not row['enabled']:
+            return
+        phase = row['setupStatus']
+        if phase in ('starting', 'connecting', 'needs-initialization'):
+            row['connectionState'] = phase
+            if phase != 'starting' and native is not None and not native['running']:
+                row.update(connectionState='error', reason='Claude 未运行，请重试后台启动', retryable=True)
+        elif phase in ('failed', 'needs-retry'):
+            row.update(connectionState='error', retryable=True)
+        elif phase in ('needs-developer-mode', 'needs-trust', 'needs-permission', 'needs-unlock', 'needs-desktop'):
+            row['connectionState'] = 'needs-initialization'
+
+    def _deepseek_progress(self, row, native):
+        """Describe observed startup without relaunching or touching desktop tasks."""
+        setup = self.config.get('setup', {}).get('deepseek', {})
+        row.update(connectionState='connected' if row['connected'] else 'idle', retryable=False)
+        if row['setupStatus'] == 'recovery-required':
+            row['connectionState'] = 'error'
+            return
+        if row['connected']:
+            if row['setupStatus'] != 'restart-required':
+                self._deepseek_connection('connected', row['reason'], setupStatus=row['setupStatus'], reason=row['reason'],
+                    clear=('requiredBridgeRevision', 'restartEndpoint', 'restartConnected', 'pendingFirstLaunch'))
+            else:
+                self._deepseek_connection('connected', row['reason'])
+            return
+        if not self.gateway_running or not row['enabled']:
+            return
+        phase = setup.get('connectionState') or setup.get('setupStatus')
+        reason = setup.get('connectionReason') or row['reason']
+        if phase in ('starting', 'connecting'):
+            deadline = setup.get('connectionDeadline')
+            if not isinstance(deadline, (int, float)):
+                deadline = time.time() + (120 if sys.platform == 'win32' else 60)
+                self._deepseek_connection(phase, reason, connectionDeadline=deadline)
+            if time.time() >= deadline:
+                phase, reason = 'timeout', 'Harness 连接超时，请检查桌面应用后重试接入'
+            elif native is not None and not native['running'] and phase == 'connecting':
+                phase, reason = 'error', 'Harness 已退出，连接未完成，请重试启动'
+            elif native is not None and native['running']:
+                if setup.get('pendingFirstLaunch'):
+                    reason = 'Harness 已打开，请完成首次设置后点击接入'
+                    self._deepseek_connection('idle', reason, setupStatus='needs-first-launch', reason=reason)
+                    row.update(setupStatus='needs-first-launch', reason=reason, retryable=True)
+                    return
+                phase, reason = 'connecting', 'Harness 已启动，正在等待桌面连接'
+            values = {} if setup.get('requiredBridgeRevision') else {
+                'setupStatus': 'failed' if phase == 'error' else phase, 'reason': reason}
+            self._deepseek_connection(phase, reason, **values)
+            row['setupStatus'] = setup.get('setupStatus', row['setupStatus'])
+        elif phase == 'connected':
+            phase = 'error'
+            reason = ('Harness 连接已中断，请重试接入' if native is None or native['running']
+                      else 'Harness 未运行，请重试启动')
+        elif row['setupStatus'] == 'failed':
+            phase = 'error'
+        if phase in ('starting', 'connecting', 'error', 'timeout'):
+            row.update(connectionState=phase, reason=reason, retryable=phase in ('error', 'timeout'))
+        elif row['setupStatus'] in ('needs-first-launch', 'restart-required'):
+            row['retryable'] = True
 
     def toggle_client(self, value):
         provider, enabled = value.get('provider'), value.get('enabled')
         if provider not in ('codex', 'claude', 'deepseek') or type(enabled) is not bool:
             raise ValueError('应用开关无效')
+        if 'quitDesktop' in value and (type(value['quitDesktop']) is not bool or enabled):
+            raise ValueError('应用开关无效')
+        if 'forceDesktop' in value and (type(value['forceDesktop']) is not bool or enabled
+                or value.get('quitDesktop') is not True or sys.platform != 'win32' or not self.gateway_running):
+            raise ValueError('后台强制结束请求无效')
+        if 'initializeDesktop' in value and (type(value['initializeDesktop']) is not bool
+                or provider != 'claude' or enabled is not True):
+            raise ValueError('应用初始化请求无效')
+        # Older clients use disabling as native quit. New clients choose explicitly.
+        quit_desktop = value.get('quitDesktop', True)
         from bridge.clients.lifecycle import inspect_client, launch_client
         accounts = self.bridge.accounts if provider == 'codex' and self.bridge else None
         with self.client_lock, self._changing(provider), accounts.gate if accounts else nullcontext(), accounts.lock if accounts else nullcontext():
+            if not enabled and not quit_desktop:
+                # Revoke gateway access without inspecting or interrupting tasks.
+                # Keep the same write gate so a queued send sees the new setting.
+                if provider == 'claude':
+                    self.adapters[provider].cancel()
+                self.config.setdefault('enabled', {})[provider] = False
+                private_json(self.config_path, self.config)
+                self.client_cache = None
+                return self.clients()
             if accounts:
                 accounts.assert_editable()
-            row = next(row for row in self.clients(refresh=True)['clients'] if row['id'] == provider)
-            if enabled and not row['selectable']:
-                raise ValueError(row['reason'])
+            if enabled:
+                row = next(row for row in self.clients(refresh=True)['clients'] if row['id'] == provider)
+                if not row['selectable']:
+                    raise ValueError(row['reason'])
             if not self.gateway_running:
                 self.config.setdefault('enabled', {})[provider] = enabled
                 private_json(self.config_path, self.config)
@@ -758,14 +930,26 @@ class DesktopSessions:
             if enabled:
                 if provider == 'deepseek':
                     self._start_deepseek()
+                elif provider == 'claude':
+                    if value.get('initializeDesktop') is True:
+                        self.adapters[provider].connect()
+                    elif sys.platform == 'darwin':
+                        result = launch_client(descriptor)
+                        if not result.get('running'):
+                            raise ValueError('客户端尚未启动，请在电脑端检查后重试')
+                        self.adapters[provider].connect()
+                    elif sys.platform == 'win32':
+                        self.adapters[provider].reconnect(launch=True)
+                    else:
+                        raise ValueError('此系统不支持 Claude 桌面连接')
                 else:
                     result = launch_client(descriptor)
                     if not result.get('running'):
                         raise ValueError('客户端尚未启动，请在电脑端检查后重试')
-                    if provider == 'claude':
-                        self.adapters[provider].connect()
             else:
-                self._stop_client(provider, descriptor, inspect_client(descriptor))
+                self._stop_client(provider, descriptor, inspect_client(descriptor),
+                                  native_confirmation=value.get('quitDesktop') is True,
+                                  force=value.get('forceDesktop') is True)
             # Persist only after the native lifecycle operation succeeds.
             self.config.setdefault('enabled', {})[provider] = enabled
             private_json(self.config_path, self.config)
@@ -789,10 +973,15 @@ class DesktopSessions:
         if not home or not descriptor.get('installed'):
             raise ValueError('尚未安装此客户端')
         key = (provider, home)
+        if provider == 'claude':
+            key += (descriptor.get('executable'), descriptor.get('packageFamilyName'),
+                    bool(descriptor.get('dataDirectoryExplicit')))
         if key not in self.account_stores:
             if provider == 'claude':
                 from bridge.clients.claude.accounts import ClaudeAccounts
-                store = ClaudeAccounts(self.directory/'claude-accounts', home)
+                store = ClaudeAccounts(self.directory/'claude-accounts', home,
+                    executable=descriptor.get('executable'), package_family=descriptor.get('packageFamilyName'),
+                    explicit_home=bool(descriptor.get('dataDirectoryExplicit')))
             else:
                 from bridge.clients.deepseek.accounts import DeepSeekAccounts
                 store = DeepSeekAccounts(self.directory/'deepseek-accounts', home)
@@ -807,12 +996,22 @@ class DesktopSessions:
         from bridge.clients.lifecycle import launch_client
         if provider == 'deepseek':
             self._start_deepseek()
+        elif provider == 'claude' and sys.platform == 'win32':
+            from bridge.clients.claude.setup import background_running_app
+            reconnect = self.gateway_running and self.enabled(provider)
+            # Account transactions require a confirmed main process before
+            # committing restored credentials; reconnect alone is asynchronous.
+            background_running_app(descriptor['executable'], descriptor['dataDirectory'],
+                                   initialize_console=reconnect,
+                                   explicit_home=bool(descriptor.get('dataDirectoryExplicit')))
+            if reconnect:
+                self.adapters[provider].reconnect(launch=True)
         else:
             result = launch_client(descriptor)
             if not result.get('running'):
                 raise ValueError('客户端尚未启动，请在电脑端检查后重试')
             if self.gateway_running and self.enabled(provider):
-                self.adapters[provider].connect()
+                self.adapters[provider].reconnect()
 
     def client_accounts(self, provider, value):
         operation = value.get('operation', 'list')
@@ -985,6 +1184,7 @@ class DesktopWorkspace:
 
     def __init__(self, manager, provider, sid, root):
         from bridge.features.terminals.manager import TerminalManager
+        self.manager, self.provider = manager, provider
         self.root = root
         self.identifier = str(uuid.uuid5(uuid.NAMESPACE_URL, provider + ':' + sid))
         with manager.client_lock:
@@ -1000,8 +1200,14 @@ class DesktopWorkspace:
 
     def workspace(self, sid, action, params):
         from bridge.features.workspace.workspace import operate
-        return operate(self.root, action, params)
+        # HTTP may resolve this object before waiting for an upload body. Check
+        # again under the same gate used by disabling access before any write.
+        with self.manager.locks[self.provider]:
+            self.manager.require_enabled(self.provider)
+            return operate(self.root, action, params)
 
     def terminal(self, sid, owner, action, params):
         from bridge.app.service import Bridge
-        return Bridge.terminal(self, self.identifier, owner, action, params)
+        with self.manager.locks[self.provider]:
+            self.manager.require_enabled(self.provider)
+            return Bridge.terminal(self, self.identifier, owner, action, params)
