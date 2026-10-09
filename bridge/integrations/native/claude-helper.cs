@@ -82,6 +82,15 @@ class ClaudeKeyboard {
         if(selected.Count==1)selected.Handle=only;
         return selected;
     }
+    static WindowSelection SelectDevTools(IEnumerable<AppWindow> windows,int pid) {
+        var selected=new WindowSelection();
+        foreach(var window in windows) {
+            if(window.Pid!=pid||window.Handle==IntPtr.Zero||!window.Visible||window.Cloaked||!DevToolsTitle(window.Title))continue;
+            selected.Count++;selected.Handle=window.Handle;
+        }
+        if(selected.Count!=1)selected.Handle=IntPtr.Zero;
+        return selected;
+    }
     static List<AppWindow> ReadWindows(int selectedPid) {
         var windows=new List<AppWindow>();
         EnumWindows(delegate(IntPtr handle,IntPtr data) {
@@ -471,6 +480,18 @@ class ClaudeKeyboard {
         catch(OperationCanceledException){refused=true;}
         if(!refused||writes!=0||submits!=0)throw new Exception("Console 写入前取消自检失败");
     }
+    static void CheckDetachedReuse() {
+        var tools=new AppWindow {Handle=new IntPtr(21),Pid=7,Visible=true,Title="DevTools - app://localhost"};
+        var main=new AppWindow {Handle=new IntPtr(22),Pid=7,Visible=true,Title="Claude"};
+        var foreign=new AppWindow {Handle=new IntPtr(23),Pid=8,Visible=true,Title="DevTools - app://localhost"};
+        var duplicate=new AppWindow {Handle=new IntPtr(24),Pid=7,Visible=true,Title="Developer Tools - app://localhost"};
+        if(SelectDevTools(new[]{main,foreign,tools},7).Handle!=tools.Handle||SelectDevTools(new[]{main,foreign},7).Count!=0)
+            throw new Exception("Claude 已有开发者工具归属自检失败");
+        var ambiguous=SelectDevTools(new[]{tools,duplicate},7);
+        if(ambiguous.Count!=2||ambiguous.Handle!=IntPtr.Zero)throw new Exception("Claude 开发者工具歧义自检失败");
+        tools.Visible=false;
+        if(SelectDevTools(new[]{tools},7).Count!=0)throw new Exception("Claude 隐藏开发者工具自检失败");
+    }
     [STAThread] static int Main(string[] args) {
         Console.OutputEncoding=new UTF8Encoding(false);
         try {
@@ -484,7 +505,8 @@ class ClaudeKeyboard {
                 CheckMenuNavigation();
                 CheckNativeLaunch();
                 CheckDirectSubmission();
-                Console.WriteLine("keyboard ABI, Console allowlist and contenteditable text fallback OK; window selection and cancellable restore OK; menu navigation OK; packaged launch OK; atomic console submission OK");return 0;
+                CheckDetachedReuse();
+                Console.WriteLine("keyboard ABI, Console allowlist and contenteditable text fallback OK; window selection and cancellable restore OK; menu navigation OK; packaged launch OK; atomic console submission OK; detached console reuse OK");return 0;
             }
             if(args.Length!=3 && args.Length!=4) throw new Exception("键盘连接参数无效");
             cancelFile=args.Length==4?args[3]:null;
@@ -506,14 +528,18 @@ class ClaudeKeyboard {
             if(text.Length>300000||text.Contains("\n")||text.Contains("\r")||!text.StartsWith("/* codex bridge connector */")) throw new Exception("连接脚本格式无效");
             Stage("正在等待 Claude 窗口");
             GetAsyncKeyState(27); // Clear an old Escape press, subsequent presses cancel.
-            IntPtr window=WaitAppWindow(process,true);
+            var existingTools=SelectDevTools(ReadWindows(process.Id),process.Id);
+            if(existingTools.Count>1)throw new Exception("检测到多个 Claude 开发者工具窗口，请关闭多余窗口后重试");
+            bool reuseTools=existingTools.Handle!=IntPtr.Zero;
+            IntPtr window=reuseTools?existingTools.Handle:WaitAppWindow(process,true);
             inputWindow=window;
             Activate(window);
             Stage("已定位 Claude 窗口");
+            if(reuseTools)SelectConsoleTab();
             var prompt=ConsolePrompt();
             var previousWindows=new System.Collections.Generic.HashSet<IntPtr>();
             EnumWindows(delegate(IntPtr handle,IntPtr data){previousWindows.Add(handle);return true;},IntPtr.Zero);
-            if(prompt==null) {Shortcut();inputWindow=IntPtr.Zero;}
+            if(prompt==null&&!reuseTools) {Shortcut();inputWindow=IntPtr.Zero;}
             Stage("等待 Console 输入框");
             var deadline=DateTime.UtcNow.AddSeconds(12);
             while(prompt==null&&DateTime.UtcNow<deadline) {
