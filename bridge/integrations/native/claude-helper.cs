@@ -39,6 +39,9 @@ class ClaudeKeyboard {
     [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindow callback,IntPtr data);
     [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr window,StringBuilder text,int count);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll")] static extern bool IsWindowEnabled(IntPtr window);
+    [StructLayout(LayoutKind.Sequential)] struct LastInput {public uint size,tick;}
+    [DllImport("user32.dll")] static extern bool GetLastInputInfo(ref LastInput value);
     [DllImport("user32.dll")] static extern bool IsWindow(IntPtr window);
     [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr window,uint command);
     [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr window,StringBuilder text,int count);
@@ -558,6 +561,7 @@ class ClaudeKeyboard {
     static BackgroundOperation backgroundWork;
     sealed class BackgroundOperation {
         public volatile bool Started,Finished;public Exception Error;
+        public volatile BackgroundResume Resume;
         readonly object gate=new object();bool cancelled;
         public void Check(){lock(gate){if(cancelled)throw new OperationCanceledException("已取消 Claude 后台连接");}}
         public bool Cancel(){lock(gate){cancelled=true;return Started;}}
@@ -568,9 +572,11 @@ class ClaudeKeyboard {
     }
     static void RunBackgroundConnection(Process process,string text) {
         var operation=new BackgroundOperation();backgroundWork=operation;operation.Start(process,text);var timer=Stopwatch.StartNew();
-        while(!operation.Finished&&timer.Elapsed.TotalSeconds<25){if(cancelFile!=null&&File.Exists(cancelFile)){operation.Cancel();break;}Thread.Sleep(50);}
-        if(!operation.Finished){bool dispatched=operation.Cancel();backgroundSubmission=dispatched?"uncertain":"none";throw new Exception(dispatched?"Claude 连接提交结果待核对，正在等待连接回执":"Claude 后台初始化已取消或超时，连接脚本未提交");}
-        if(operation.Error!=null)throw operation.Error;
+        try {
+            while(!operation.Finished&&timer.Elapsed.TotalSeconds<25){if(cancelFile!=null&&File.Exists(cancelFile)){operation.Cancel();break;}Thread.Sleep(50);}
+            if(!operation.Finished){bool dispatched=operation.Cancel();backgroundSubmission=dispatched?"uncertain":"none";throw new Exception(dispatched?"Claude 连接提交结果待核对，正在等待连接回执":"Claude 后台初始化已取消或超时，连接脚本未提交");}
+            if(operation.Error!=null)throw operation.Error;
+        } finally {RestoreBackgroundMain(operation.Resume);}
         ConnectResult("submitted",backgroundSubmission,process.Id,"已向 Claude Console 提交连接脚本，正在等待连接回执");
     }
     static string VerifiedDevToolsTitle(string native,string accessible) {
@@ -743,14 +749,52 @@ class ClaudeKeyboard {
             }
         }
     }
+    static bool BackgroundMainShape(AppWindow window,int pid) {
+        return window.Pid==pid&&window.Handle!=IntPtr.Zero&&!window.Cloaked&&!window.ToolWindow&&window.Owner==IntPtr.Zero&&
+            window.ClassName=="Chrome_WidgetWin_1"&&(window.Title=="Claude"||window.Title.EndsWith(" — Claude",StringComparison.Ordinal));
+    }
     static WindowSelection SelectHiddenBackgroundMain(IEnumerable<AppWindow> windows,int pid) {
         var selected=new WindowSelection();
-        foreach(var window in windows)if(window.Pid==pid&&window.Handle!=IntPtr.Zero&&!window.Visible&&!window.Cloaked&&!window.ToolWindow&&
-            window.Owner==IntPtr.Zero&&window.ClassName=="Chrome_WidgetWin_1"&&
-            (window.Title=="Claude"||window.Title.EndsWith(" — Claude",StringComparison.Ordinal))) {
+        foreach(var window in windows)if(!window.Visible&&BackgroundMainShape(window,pid)) {
             selected.Count++;selected.Handle=window.Handle;
         }
         if(selected.Count!=1)selected.Handle=IntPtr.Zero;return selected;
+    }
+    sealed class BackgroundResume {
+        public Process Process;public long Started;public IntPtr Main;public uint InputTick;public bool InputKnown;
+    }
+    static bool ReadLastInput(out uint tick) {
+        var input=new LastInput {size=(uint)Marshal.SizeOf(typeof(LastInput))};bool known=GetLastInputInfo(ref input);tick=input.tick;return known;
+    }
+    static bool CanRestoreBackgroundMain(IEnumerable<AppWindow> windows,int pid,IntPtr main,IntPtr foreground,bool unchangedInput,bool enabled) {
+        if(!unchangedInput||!enabled||main==foreground)return false;
+        bool found=false;
+        foreach(var window in windows) {
+            if(window.Handle==main) {if(!BackgroundMainShape(window,pid)||!window.Visible)return false;found=true;continue;}
+            // Unknown owned windows and native dialogs can contain user work.
+            // Do not hide their owner or infer modality through a COM provider.
+            if(window.Pid==pid&&window.Visible&&!window.Cloaked&&(window.Owner!=IntPtr.Zero||window.ClassName=="#32770")&&
+               !AppDevToolsTitle(window.Title)&&!ShellDevToolsTitle(window.Title))return false;
+        }
+        return found;
+    }
+    static void RestoreBackgroundMain(BackgroundResume resume) {
+        if(resume==null)return;
+        bool restored=false;
+        try {
+            var process=resume.Process;uint tick;
+            // Native metadata only, including after cancellation/provider timeout.
+            // Never wait for UIA, activate a window, or touch submission evidence.
+            if(process.HasExited||!Owned(process.Id)||process.StartTime.ToUniversalTime().Ticks!=resume.Started)return;
+            var windows=ReadWindows(process.Id);
+            if(!CanRestoreBackgroundMain(windows,process.Id,resume.Main,GetForegroundWindow(),
+                resume.InputKnown&&ReadLastInput(out tick)&&tick==resume.InputTick,IsWindowEnabled(resume.Main)))return;
+            if(process.HasExited||!Owned(process.Id)||process.StartTime.ToUniversalTime().Ticks!=resume.Started)return;
+            if(!CanRestoreBackgroundMain(ReadWindows(process.Id),process.Id,resume.Main,GetForegroundWindow(),
+                ReadLastInput(out tick)&&tick==resume.InputTick,IsWindowEnabled(resume.Main)))return;
+            ShowWindow(resume.Main,0);restored=!IsWindowVisible(resume.Main);
+        } catch(Exception) {} // Preserving a window must not downgrade a submission.
+        finally {Stage("{\"connectPhase\":\"main-window-restore\",\"restored\":"+(restored?"true":"false")+"}");}
     }
     static void ReopenBackgroundMain(Process process,long started,IntPtr main) {
         CheckBackgroundWindow(process,started,main);
@@ -759,6 +803,11 @@ class ClaudeKeyboard {
         launch.CreateNoWindow=true;launch.WindowStyle=ProcessWindowStyle.Hidden;
         launch.EnvironmentVariables.Remove("ELECTRON_RUN_AS_NODE");launch.EnvironmentVariables.Remove("CLAUDE_DEV_TOOLS");
         CheckBackgroundWindow(process,started,main);
+        var resume=new BackgroundResume {Process=process,Started=started,Main=main};
+        resume.InputKnown=ReadLastInput(out resume.InputTick);
+        var hidden=SelectHiddenBackgroundMain(ReadWindows(process.Id),process.Id);
+        if(hidden.Count!=1||hidden.Handle!=main)throw new Exception("Claude 隐藏主窗口已改变，后台恢复已停止");
+        CheckBackgroundWindow(process,started,main);backgroundWork.Resume=resume;
         IntPtr foreground=GetForegroundWindow();
         try {
             // Let the exact app's native second-instance handler release its
