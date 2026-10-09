@@ -98,7 +98,7 @@ class CodexQuit {
             invoke();
         }
         public void Start(Process process,long started) {
-            var thread=new Thread(delegate {try {Quit(process,started,this);}catch(Exception error){Error=error;}finally{Finished=true;}});
+            var thread=new Thread(delegate() {try {Quit(process,started,this);}catch(Exception error){Error=error;}finally{Finished=true;}});
             thread.IsBackground=true;thread.SetApartmentState(ApartmentState.MTA);thread.Start();
         }
     }
