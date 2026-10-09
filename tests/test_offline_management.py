@@ -90,7 +90,7 @@ class OfflineManagement(unittest.TestCase):
                 patch('bridge.desktop.request_pairing', return_value={'fromGateway': True}) as forward, \
                 patch.object(self.desktop, 'local_services', side_effect=AssertionError('duplicate owner')):
             self.assertEqual(self.desktop.accounts({'action': 'list'}), {'fromGateway': True})
-            forward.assert_called_once_with(self.root, {'action': 'accounts', 'value': {'action': 'list'}}, timeout=100)
+            forward.assert_called_once_with(self.root, {'action': 'accounts', 'value': {'action': 'list'}}, timeout=140)
             self.assertTrue(owner.closed.is_set())
             self.assertIsNone(self.desktop.local_bridge)
             self.desktop.desktop_sessions({'action': 'clients'})
