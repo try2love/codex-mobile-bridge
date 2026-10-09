@@ -164,16 +164,24 @@ class DeepSeekAccountsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '权限'):
                 self.accounts.import_current()
 
-    def test_symlink_and_wrong_issuer_are_rejected(self):
-        data = self.write()
+    def test_symlink_is_rejected(self):
+        self.write()
         identifier = self.identifier()
         target = self.home/'target'
         self.path.rename(target)
-        self.path.symlink_to(target)
+        try:
+            self.path.symlink_to(target)
+        except OSError as exc:
+            if getattr(exc, 'winerror', None) == 1314:
+                self.skipTest('Windows symbolic-link privilege unavailable')
+            raise
         with self.assertRaisesRegex(ValueError, '符号链接'):
             self.accounts.restore(identifier)
         self.path.unlink()
         target.rename(self.path)
+
+    def test_wrong_issuer_is_rejected(self):
+        data = self.write()
         data['records'][GRANT_KEY]['payload']['issuer'] = 'https://untrusted.example'
         self.path.write_text(json.dumps(data))
         with self.assertRaisesRegex(ValueError, '凭据无效'):

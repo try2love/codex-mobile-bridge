@@ -101,7 +101,7 @@ class ProcessLifecycleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             executable = Path(folder)/'Harness'; executable.touch()
             descriptor = {'id': 'deepseek', 'installed': True, 'executable': str(executable), 'dataDirectory': folder}
-            command = str(executable)+' --expose-internals /app/@deepseek-ai/dsh-desktop-host/lib/index.js /dsh '+folder+'/profiles/desktop /runtime'
+            command = str(executable)+' --expose-internals /app/@deepseek-ai/dsh-desktop-host/lib/index.js /dsh '+str(Path(folder)/'profiles/desktop')+' /runtime'
             app = Mock(executable=executable, home=Path(folder))
             app.processes.return_value = [11, 12, 13]
             with patch('bridge.integrations.client_launch.DesktopApp', return_value=app), patch('bridge.integrations.client_launch._commands', return_value={11: str(executable), 12: command, 13: command}):
@@ -109,7 +109,7 @@ class ProcessLifecycleTests(unittest.TestCase):
                 self.assertTrue(result['unknown'])
                 self.assertEqual(result['runtimePids'], [12, 13])
             app.processes.return_value = [11, 12]
-            with patch('bridge.integrations.client_launch.DesktopApp', return_value=app), patch('bridge.integrations.client_launch._commands', return_value={11: str(executable), 12: command.replace('/profiles/desktop ', '/profiles/desktop-other ')}):
+            with patch('bridge.integrations.client_launch.DesktopApp', return_value=app), patch('bridge.integrations.client_launch._commands', return_value={11: str(executable), 12: command.replace(str(Path(folder)/'profiles/desktop')+' ', str(Path(folder)/'profiles/desktop-other')+' ')}):
                 self.assertTrue(inspect_client(descriptor)['unknown'])
 
     def test_windows_electron_children_are_not_additional_main_apps(self):
@@ -142,7 +142,7 @@ class ProcessLifecycleTests(unittest.TestCase):
     def test_mac_process_paths_are_never_truncated_at_terminal_width(self):
         from bridge.desktop_app import DesktopApp
         app = DesktopApp('/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness', '/fixture/home')
-        with patch('bridge.desktop_app.sys.platform', 'darwin'), patch('bridge.desktop_app.subprocess.run', return_value=Mock(stdout='42 '+str(app.executable))) as run:
+        with patch('bridge.desktop_app.sys.platform', 'darwin'), patch('bridge.desktop_app.os.getuid', return_value=1000, create=True), patch('bridge.desktop_app.subprocess.run', return_value=Mock(stdout='42 '+str(app.executable))) as run:
             self.assertEqual(app.processes(), [42])
             self.assertIn('-ww', run.call_args.args[0])
 

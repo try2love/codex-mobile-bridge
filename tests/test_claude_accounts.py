@@ -72,7 +72,7 @@ class ClaudeAccountSnapshots(unittest.TestCase):
         snapshot = self.root/'accounts'/'profiles'/identifier
         self.assertEqual((self.home/'Cookies').read_bytes(), before)
         self.assertFalse((snapshot/'local-sessions').exists())
-        self.assertEqual(json.loads((snapshot/'auth.json').read_text()), {'oauth:tokenCache': 'TOKEN-first'})
+        self.assertEqual(json.loads((snapshot/'auth.json').read_text(encoding='utf-8')), {'oauth:tokenCache': 'TOKEN-first'})
         self.assertFalse((snapshot/'config.json').exists())
         self.assertTrue(self.accounts.public()['accounts'][0]['active'])
         self.assertEqual(self.save(), identifier, 'saving the same login must update its existing slot')
@@ -119,8 +119,8 @@ class ClaudeAccountSnapshots(unittest.TestCase):
         token = self.accounts.restore(first)
         self.assertEqual(self.accounts.public()['activeId'], first)
         self.assertFalse((self.home/'Session Storage').exists(), 'missing target auth store must remove the previous login store')
-        self.assertEqual(json.loads((self.home/'config.json').read_text()), {'oauth:tokenCache': 'TOKEN-first', 'theme': 'second'})
-        self.assertEqual(json.loads((self.home/'local-sessions'/'conversation.json').read_text()), {'history': 'DO-NOT-COPY'})
+        self.assertEqual(json.loads((self.home/'config.json').read_text(encoding='utf-8')), {'oauth:tokenCache': 'TOKEN-first', 'theme': 'second'})
+        self.assertEqual(json.loads((self.home/'local-sessions'/'conversation.json').read_text(encoding='utf-8')), {'history': 'DO-NOT-COPY'})
         self.accounts.rollback(token)
         self.assertEqual(self.accounts.public()['activeId'], second)
         self.assertTrue((self.home/'Session Storage'/'only-second').is_file())
@@ -159,12 +159,12 @@ class ClaudeAccountSnapshots(unittest.TestCase):
         self.write(library/(other_id+'.json'), {'untouched': True})
         self.write(library/'_meta.json', {'entries': [{'id': other_id, 'name': 'Other'}], 'nativeMeta': True})
         token = self.accounts.restore(api)
-        meta = json.loads((library/'_meta.json').read_text())
+        meta = json.loads((library/'_meta.json').read_text(encoding='utf-8'))
         self.assertEqual(meta['appliedId'], config_id)
         self.assertTrue(meta['nativeMeta'])
         self.assertEqual(len(meta['entries']), 2)
-        self.assertEqual(json.loads((self.home/CONFIG).read_text())['deploymentMode'], '3p')
-        self.assertEqual(json.loads((self.threep/CONFIG).read_text())['deploymentMode'], '3p')
+        self.assertEqual(json.loads((self.home/CONFIG).read_text(encoding='utf-8'))['deploymentMode'], '3p')
+        self.assertEqual(json.loads((self.threep/CONFIG).read_text(encoding='utf-8'))['deploymentMode'], '3p')
         self.assertEqual(self.accounts.public()['activeId'], api)
         self.accounts.rollback(token)
         self.assertEqual(self.accounts.public()['activeId'], official)
@@ -184,10 +184,15 @@ class ClaudeAccountSnapshots(unittest.TestCase):
                 action('../outside')
         outside = self.root/'outside'
         outside.write_text('untouched')
-        (self.home/'Preferences').symlink_to(outside)
+        try:
+            (self.home/'Preferences').symlink_to(outside)
+        except OSError as exc:
+            if getattr(exc, 'winerror', None) == 1314:
+                self.skipTest('Windows symbolic-link privilege unavailable')
+            raise
         with self.assertRaises(ValueError):
             self.accounts.restore(identifier)
-        self.assertEqual(outside.read_text(), 'untouched')
+        self.assertEqual(outside.read_text(encoding='utf-8'), 'untouched')
 
     def test_stale_or_missing_login_is_not_imported(self):
         (self.home/'Cookies').unlink()
@@ -225,7 +230,7 @@ class ClaudeAccountSnapshots(unittest.TestCase):
             self.assertEqual(usage['status'], 'error')
             self.assertTrue(usage['checkedAt'])
             self.assertNotIn('PRIVATE', json.dumps(result))
-            index = json.loads((self.root/'accounts'/'index.json').read_text())
+            index = json.loads((self.root/'accounts'/'index.json').read_text(encoding='utf-8'))
             index['accounts'][0]['usage']['checkedAt'] = '2000-01-01T00:00:00+00:00'
             self.write(self.root/'accounts'/'index.json', index)
             self.accounts.details(identifier)
@@ -291,7 +296,7 @@ class ClaudeAccountSnapshots(unittest.TestCase):
         identifier = self.save()
         old_usage = {'status': 'ready', 'checkedAt': datetime.now(timezone.utc).isoformat(),
                      'limits': [{'name': '5h', 'windows': [{'remainingPercent': 80, 'resetsAt': '2026-10-09T12:00:00Z'}]}]}
-        index = json.loads((self.root/'accounts'/'index.json').read_text())
+        index = json.loads((self.root/'accounts'/'index.json').read_text(encoding='utf-8'))
         index['accounts'][0]['usage'] = old_usage
         self.write(self.root/'accounts'/'index.json', index)
         with patch(MODULE+'_web_json') as fetch:

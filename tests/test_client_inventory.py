@@ -59,7 +59,7 @@ class ClientInventoryTests(unittest.TestCase):
             run.reset_mock(); self.assertEqual(inspect_clients(invalid), {}); run.assert_not_called()
 
     def test_missing_command_and_foreign_host_profile_keep_unknown_state(self):
-        self.records = [(pid, exe, '' if pid == 11 else cmd.replace('/profiles/desktop ', '/profiles/desktop-other '))
+        self.records = [(pid, exe, '' if pid == 11 else cmd.replace(str(self.root/'deepseek data/profiles/desktop')+' ', str(self.root/'deepseek data/profiles/desktop-other')+' '))
                         for pid, exe, cmd in self.records]
         with patch('bridge.desktop_app.sys.platform', 'darwin'), patch('bridge.desktop_app.subprocess.run', side_effect=self.ps):
             result = inspect_clients(self.descriptors)
@@ -118,6 +118,7 @@ class ClientInventoryTests(unittest.TestCase):
                     Entry(22, self.executables['claude'], PermissionError('unreadable'))]
         proc = Mock(); proc.iterdir.return_value = entries
         with patch('bridge.desktop_app.sys.platform', 'linux'), \
+                patch('bridge.desktop_app.os.path.normcase', side_effect=lambda value: str(value)), \
                 patch('bridge.desktop_app.Path', side_effect=lambda value: proc if str(value) == '/proc' else Path(value)), \
                 patch('bridge.desktop_app.subprocess.run') as run:
             with patch('bridge.integrations.client_launch._commands', side_effect=lambda app, pids: {pid: cmd for pid, _, cmd in self.records if pid in pids}):
