@@ -242,7 +242,7 @@ class ClientLifecycleTests(unittest.TestCase):
 
     def test_windows_claude_incomplete_list_cannot_hide_known_busy_tasks(self):
         self.claude.call.side_effect = lambda *args: {'complete': False, 'sessions': [
-            {'status': 'running', 'runtimeKnown': True}]}
+            {'id': 'one', 'status': 'running', 'runtimeKnown': True}]}
         with patch('bridge.integrations.manager.sys.platform', 'win32'):
             with self.assertRaisesRegex(ValueError, '任务运行或等待'):
                 self.manager.toggle_client({'provider': 'claude', 'enabled': False, 'quitDesktop': True})
