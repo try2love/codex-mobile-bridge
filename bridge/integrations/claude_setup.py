@@ -227,10 +227,18 @@ def console_source(source, config):
 
 
 def native_action(action, *, pid=None, executable=None, script=None, cancel_path=None, cancelled=None):
+    if action not in ('check', 'request-permission', 'connect', 'close-devtools', 'enable-devtools', 'inspect-error', 'quit'):
+        raise ValueError('不支持的 Claude 本机操作')
+    def quit_failed(reason):
+        return {'quitState': 'failed', 'reason': reason, 'pid': pid}
     if cancelled and cancelled.is_set():
+        if action == 'quit':
+            return quit_failed('已取消 Claude 退出')
         return {'setupState': 'cancelled', 'reason': '已取消 Claude 连接'}
     helper = helper_path()
     if not helper.is_file():
+        if action == 'quit':
+            return quit_failed('缺少 Claude 原生退出组件，请重新构建或安装网关 App')
         return {'setupState': 'failed', 'reason': '缺少 Claude 自动连接组件，请重新构建或安装网关 App'}
     if sys.platform == 'win32':
         if action in ('check', 'request-permission'):
@@ -245,8 +253,13 @@ def native_action(action, *, pid=None, executable=None, script=None, cancel_path
         if action == 'connect':
             args += [str(script), str(cancel_path)]
     options = {'creationflags': subprocess.CREATE_NO_WINDOW} if sys.platform == 'win32' else {}
-    process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', **options)
-    deadline = time.monotonic() + (180 if action == 'connect' else 20)
+    try:
+        process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', **options)
+    except OSError:
+        if action == 'quit':
+            return quit_failed('无法启动 Claude 原生退出组件，请检查网关安装')
+        raise
+    deadline = time.monotonic() + (180 if action == 'connect' else 30 if action == 'quit' else 20)
     while True:
         try:
             stdout, _ = process.communicate(timeout=.2)
@@ -258,8 +271,21 @@ def native_action(action, *, pid=None, executable=None, script=None, cancel_path
                 try: process.communicate(timeout=3)
                 except subprocess.TimeoutExpired:
                     process.kill(); process.communicate()
+                if action == 'quit':
+                    return quit_failed('已取消 Claude 退出' if cancelled and cancelled.is_set()
+                                       else 'Claude 原生退出请求超时，请在电脑端检查退出状态')
                 return {'setupState': 'cancelled' if cancelled and cancelled.is_set() else 'failed',
                         'reason': '已取消 Claude 连接' if cancelled and cancelled.is_set() else 'Claude 自动连接超时，请重试'}
+    if action == 'quit':
+        try:
+            value = json.loads(stdout.strip().splitlines()[-1])
+            if (not isinstance(value, dict) or value.get('quitState') not in ('exited', 'pending', 'submitted', 'failed')
+                    or type(value.get('pid')) is not int or value['pid'] != pid or not isinstance(value.get('reason'), str)
+                    or (process.returncode and value['quitState'] != 'failed')):
+                raise ValueError('invalid native quit result')
+            return {'quitState': value['quitState'], 'pid': pid, 'reason': value['reason'][:300]}
+        except (ValueError, IndexError, AttributeError):
+            return quit_failed('Claude 原生退出组件未返回有效状态，请在电脑端检查退出状态')
     if sys.platform != 'win32':
         try:
             value = json.loads(stdout.strip().splitlines()[-1])
