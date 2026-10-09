@@ -78,11 +78,12 @@ class Claude:
                   'generation': self.desktop.generation, 'reconnect': True,
                   'connectorRevision': CONNECTOR_REVISION,
                   'request': 'request.json', 'response': 'response.json'}
-        script = Path(__file__).with_name('claude-connector.js').read_text().replace('__BRIDGE_CONFIG__', json.dumps(config))
+        source = Path(__file__).with_name('claude-connector.js').read_text(encoding='utf-8')
+        script = source.replace('__BRIDGE_CONFIG__', json.dumps(config))
         target = self.directory/'connect-desktop.js'
         target.write_text(script, encoding='utf-8'); target.chmod(0o600)
         console = self.directory/'console-connect.js'
-        console.write_text(console_source(Path(__file__).with_name('claude-connector.js').read_text(), config), encoding='utf-8')
+        console.write_text(console_source(source, config), encoding='utf-8')
         console.chmod(0o600)
         return {'workspace': str(self.directory), 'scriptPath': str(target), 'script': script,
                 'consolePath': str(console)}
