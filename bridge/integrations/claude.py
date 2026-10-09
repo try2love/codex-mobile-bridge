@@ -26,6 +26,7 @@ class Claude:
         self.discovery = {}
         self.setup_lock = threading.RLock()
         self.setup_thread = None
+        self.setup_mode = None
         self.setup_cancel = threading.Event()
         discovery_path = self.directory/'discovery.json'
         if discovery_path.exists():
@@ -117,12 +118,13 @@ class Claude:
                 return self.status()
             if launch and sys.platform == 'win32':
                 self._setup_state('starting', '正在后台启动 Claude')
+                self.setup_mode = 'background'
                 self.setup_thread = threading.Thread(target=self._connect_background,
                     args=(self.setup_cancel, self.discovery['executable'], self.discovery.get('dataHome')), daemon=True)
                 self.setup_thread.start()
             else:
                 self._setup_state('needs-initialization',
-                    '正在等待已有 Claude 连接；每次完整退出应用后需要重新初始化连接。')
+                    'Claude 完全退出或重新加载后需要初始化连接；可从手机发起，过程会使用电脑前台。')
             private_json(self.directory/'discovery.json', self.discovery)
             return self.status()
 
@@ -143,8 +145,7 @@ class Claude:
                 if cancel.wait(.2):
                     return
             self._setup_state('needs-initialization',
-                ('Claude 已在后台启动' if result['launched'] else 'Claude 正在运行') +
-                '；每次完整退出应用后需要重新初始化连接。')
+                'Claude 已在后台运行；完全退出或重新加载后需要初始化连接，可从手机发起，过程会使用电脑前台。')
         except Exception as exc:
             if not cancel.is_set():
                 self._setup_state('failed', str(exc) if isinstance(exc, (ValueError, OSError))
@@ -153,7 +154,12 @@ class Claude:
     def connect(self, restart=False):
         """Start visible native connection setup without a public listener."""
         old_monitor = None
+        background_monitor = False
         with self.setup_lock:
+            if self.setup_mode == 'background' and self.setup_thread:
+                self.setup_cancel.set()
+                old_monitor = self.setup_thread
+                background_monitor = True
             if self.setup_cancel.is_set() and self.setup_thread:
                 old_monitor = self.setup_thread
             if self.status()['connected']:
@@ -168,7 +174,7 @@ class Claude:
         # The monitor's final state update takes setup_lock; never join it while
         # holding that lock. This only stops our watcher, not the desktop app.
         if old_monitor:
-            old_monitor.join(timeout=5)
+            old_monitor.join(timeout=35 if background_monitor else 5)
         with self.setup_lock:
             if self.setup_thread and self.setup_thread.is_alive():
                 if not restart and not self.setup_cancel.is_set():
@@ -187,6 +193,7 @@ class Claude:
             self._setup_state('connecting', '正在连接 Claude', consoleCleanupPending=False)
             if self.desktop is None and (self.directory/'connection.json').exists():
                 self.prepare()
+            self.setup_mode = 'native'
             self.setup_thread = threading.Thread(target=self._connect_native, args=(restart, cancel_path), daemon=True)
             self.setup_thread.start()
             return self.status()
