@@ -81,6 +81,19 @@ class WindowsDiscoveryTests(unittest.TestCase):
                     (shim.parent.parent/'AppxManifest.xml').write_text(manifest)
                 self.assertEqual(self.scan(inventory)['codex']['executable'], str(gui))
 
+    def test_store_filesystem_fallback_prefers_gui_over_codex_shim(self):
+        self.executable('Program Files/WindowsApps/OpenAI.Codex_1/app/Codex.exe')
+        gui = self.executable('Program Files/WindowsApps/OpenAI.Codex_1/app/ChatGPT.exe')
+        self.assertEqual(self.scan({})['codex']['executable'], str(gui))
+
+    def test_bundled_runtime_discovery_prefers_gui_over_codex_shim(self):
+        from bridge.desktop_app import DesktopApp
+        runtime = self.executable('Store/App/app/resources/codex.exe', electron=False)
+        self.executable('Store/App/app/Codex.exe')
+        gui = self.executable('Store/App/app/ChatGPT.exe')
+        with patch('bridge.desktop_app.sys.platform', 'win32'):
+            self.assertEqual(DesktopApp.discover(runtime), str(gui))
+
     def test_manifest_does_not_escape_package_or_select_runtime(self):
         gui = self.executable('Store/App/app/ChatGPT.exe')
         self.executable('Store/Escape/ChatGPT.exe')
