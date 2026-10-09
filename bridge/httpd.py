@@ -362,7 +362,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.output(503, {'error': '应用管理不可用'})
                 if write:
                     value = self.read_json()
-                    if not isinstance(value, dict) or not {'provider', 'enabled'} <= set(value) or set(value) - {'provider', 'enabled', 'quitDesktop'}:
+                    if not isinstance(value, dict) or not {'provider', 'enabled'} <= set(value) or set(value) - {'provider', 'enabled', 'quitDesktop', 'initializeDesktop'}:
                         raise ValueError('应用开关无效')
                     return self.output(200, manager.toggle_client(value))
                 return self.output(200, manager.clients())
