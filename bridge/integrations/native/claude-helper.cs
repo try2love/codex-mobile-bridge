@@ -24,6 +24,12 @@ class ClaudeKeyboard {
     [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr window);
     [DllImport("user32.dll")] static extern bool AttachThreadInput(uint first,uint second,bool attach);
     [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")] static extern IntPtr OpenInputDesktop(uint flags,bool inherit,uint access);
+    [DllImport("user32.dll")] static extern bool CloseDesktop(IntPtr desktop);
+    [DllImport("user32.dll")] static extern IntPtr GetThreadDesktop(uint thread);
+    [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern bool GetUserObjectInformation(IntPtr handle,int index,StringBuilder value,uint length,out uint needed);
+    [DllImport("wtsapi32.dll",CharSet=CharSet.Unicode)] static extern bool WTSQuerySessionInformation(IntPtr server,int id,int info,out IntPtr buffer,out uint bytes);
+    [DllImport("wtsapi32.dll")] static extern void WTSFreeMemory(IntPtr buffer);
     [DllImport("kernel32.dll",SetLastError=true)] static extern IntPtr OpenProcess(uint access,bool inherit,int pid);
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
     [DllImport("kernel32.dll",CharSet=CharSet.Unicode)] static extern int GetApplicationUserModelId(IntPtr process,ref uint length,StringBuilder value);
@@ -47,8 +53,40 @@ class ClaudeKeyboard {
     static int quitPid;
     static int session=Process.GetCurrentProcess().SessionId;
     static void Stage(string text) {Console.WriteLine(text);Console.Out.Flush();}
+    static string DesktopName(IntPtr desktop) {
+        var value=new StringBuilder(256);uint needed;
+        return desktop!=IntPtr.Zero&&GetUserObjectInformation(desktop,2,value,512,out needed)?value.ToString():null;
+    }
+    static string DesktopUnavailable() {
+        IntPtr buffer=IntPtr.Zero;
+        try {
+            uint bytes;
+            // WTSSessionInfoEx's level-one union starts at byte eight. Query
+            // this process's session, never another user's active console.
+            if(!WTSQuerySessionInformation(IntPtr.Zero,session,25,out buffer,out bytes)||buffer==IntPtr.Zero||bytes<20||
+               Marshal.ReadInt32(buffer,0)!=1||Marshal.ReadInt32(buffer,8)!=session)
+                return "Windows 桌面不可用；无法确认当前会话，请恢复电脑桌面后重试";
+            int connection=Marshal.ReadInt32(buffer,12),flags=Marshal.ReadInt32(buffer,16);
+            var version=Environment.OSVersion.Version;
+            if(version.Major==6&&version.Minor==1&&(flags==0||flags==1))flags=1-flags;
+            if(flags==0)return "Windows 已锁定；请解锁电脑后重试";
+            if(flags!=1||connection!=0||session==0)return "Windows 桌面不可用；请恢复电脑桌面会话后重试";
+        } finally {if(buffer!=IntPtr.Zero)WTSFreeMemory(buffer);}
+        var input=OpenInputDesktop(0,false,1); // Read only; never switch desktops.
+        if(input==IntPtr.Zero)return "Windows 输入桌面不可用；请关闭系统安全提示或恢复桌面后重试";
+        try {
+            string current=DesktopName(GetThreadDesktop(GetCurrentThreadId())),active=DesktopName(input);
+            if(current==null||active==null||!current.Equals(active,StringComparison.Ordinal))
+                return "Windows 输入桌面不可用；请恢复电脑桌面后重试";
+        } finally {CloseDesktop(input);}
+        return null;
+    }
+    static void CheckInteractiveDesktop() {
+        var reason=DesktopUnavailable();if(reason!=null)throw new Exception(reason);
+    }
     static void Activate(IntPtr window) {
         CheckCancelled();
+        CheckInteractiveDesktop();
         uint ignored,current=GetCurrentThreadId(),foreground=GetWindowThreadProcessId(GetForegroundWindow(),out ignored);
         bool attached=foreground!=0&&foreground!=current&&AttachThreadInput(current,foreground,true);
         try {ShowWindow(window,9);BringWindowToTop(window);SetForegroundWindow(window);}
@@ -123,6 +161,7 @@ class ClaudeKeyboard {
     static IntPtr WaitAppWindow(Process process,bool restore) {
         Action check=delegate {
             CheckCancelled();
+            if(restore&&!quitAction)CheckInteractiveDesktop();
             if(process.HasExited||!Owned(process.Id))throw new Exception("Claude 主进程已改变，请重试连接");
         };
         Action reopen=restore?(Action)delegate {
@@ -186,6 +225,7 @@ class ClaudeKeyboard {
     }
     static void CheckForeground() {
         CheckCancelled();
+        CheckInteractiveDesktop();
         var window=GetForegroundWindow();uint pid; GetWindowThreadProcessId(window,out pid);
         if (!Owned((int)pid)) throw new Exception("焦点已离开 Claude，自动连接已停止，请重试");
         if(inputWindow!=IntPtr.Zero&&window!=inputWindow)throw new Exception("Claude 窗口已改变，自动连接已停止，请重试");
@@ -399,11 +439,28 @@ class ClaudeKeyboard {
     sealed class QuitSubmission {
         public volatile bool Started,Finished;
         public Exception Error;
-        public QuitSubmission(AutomationElement item,Action check) {
-            // Invoke may wait for a native modal confirmation. Observe that
-            // dialog from the main thread without accepting or dismissing it.
+        readonly object gate=new object();
+        bool cancelled;
+        public bool CancelBeforeSubmit() {
+            lock(gate) {if(Started)return false;cancelled=true;return true;}
+        }
+        public QuitSubmission(Process process,long started,IntPtr window) {
+            Action check=delegate {
+                lock(gate) {if(cancelled)throw new OperationCanceledException();}
+                CheckQuitNavigation(process,started,window);
+            };
+            Action submitting=delegate {
+                lock(gate) {if(cancelled)throw new OperationCanceledException();Started=true;}
+            };
+            // Any menu provider call can block. Keep the entire navigation on
+            // an MTA worker; only this worker can submit Exit, exactly once.
             var thread=new Thread(delegate() {
-                try {InvokeQuitControl(item,check,false,()=>Started=true);}
+                try {
+                    check();var root=AutomationElement.FromHandle(window);
+                    QuitMenu(role=>FindQuitControl(root,role,process.Id),item=>InvokeQuitControl(item,check,false),
+                        item=>InvokeQuitControl(item,check,true),check,()=>Thread.Sleep(100),
+                        item=>InvokeQuitControl(item,check,false,submitting));
+                }
                 catch(Exception error) {Error=error;}
                 finally {Finished=true;}
             });
@@ -452,14 +509,33 @@ class ClaudeKeyboard {
         CheckCancelled();
         if(process.HasExited||!Owned(process.Id)||process.StartTime.ToUniversalTime().Ticks!=started)
             throw new Exception("Claude 主进程已改变，退出请求已停止");
-        var root=AutomationElement.FromHandle(window);
-        Action check=()=>CheckQuitNavigation(process,started,window);
-        QuitSubmission submission=null;
-        QuitMenu(role=>FindQuitControl(root,role,process.Id),item=>InvokeQuitControl(item,check,false),
-            item=>InvokeQuitControl(item,check,true),check,()=>Thread.Sleep(100),item=>submission=new QuitSubmission(item,check));
+        QuitSubmission submission=null;string state=null;
+        for(int attempt=0;attempt<2;attempt++) {
+            submission=new QuitSubmission(process,started,window);
+            var timer=Stopwatch.StartNew();
+            while(!submission.Started&&!submission.Finished&&timer.Elapsed.TotalSeconds<8) {
+                CheckCancelled();
+                if(process.HasExited) {state="exited";break;}
+                if(HasNativeDialog(process)) {state="pending";break;}
+                Thread.Sleep(100);
+            }
+            if(state!=null) {submission.CancelBeforeSubmit();break;}
+            if(submission.Started)break;
+            bool finished=submission.Finished;
+            if(!submission.CancelBeforeSubmit())break;
+            // Only a completed failure before Exit can receive one foreground
+            // fallback. A stalled provider must never race a second attempt.
+            string unavailable=DesktopUnavailable();
+            if(attempt==0&&finished&&unavailable==null) {
+                CheckQuitNavigation(process,started,window);
+                inputWindow=window;Activate(window);continue;
+            }
+            if(unavailable!=null)throw new Exception(unavailable+"；Claude 未接收退出请求");
+            throw submission.Error??new Exception("Claude 退出菜单操作超时，请重试");
+        }
         // Normal teardown changes focus and can take time to flush sessions.
         // Never repeat Exit or accept a native busy-work confirmation.
-        string state=ObserveQuit(()=>process.HasExited,()=>HasNativeDialog(process),()=>Thread.Sleep(200),16);
+        if(state==null)state=ObserveQuit(()=>process.HasExited,()=>HasNativeDialog(process),()=>Thread.Sleep(200),16);
         if(state=="submitted"&&(!submission.Started||submission.Finished&&submission.Error!=null))
             throw submission.Error??new Exception("Claude 尚未接收退出请求，请重试");
         QuitResult(state,state=="exited"?"Claude 已正常退出":state=="pending"?
