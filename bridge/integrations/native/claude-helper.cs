@@ -695,11 +695,36 @@ class ClaudeKeyboard {
     static void ConnectResult(string state,string submission,int pid,string reason) {
         Stage("{\"setupState\":"+JsonString(state)+",\"submission\":"+JsonString(submission)+",\"pid\":"+pid+",\"reason\":"+JsonString(reason)+"}");
     }
+    sealed class BackgroundConsoleSelection {public AutomationElement Tab;public SelectionItemPattern Pattern;}
+    static T WaitBackgroundControl<T>(Func<T> find,Action check,Action pause,Func<bool> expired,string reason) where T:class {
+        while(true) {
+            check();T value=null;try{value=find();}catch(ElementNotAvailableException){}
+            if(value!=null)return value;if(expired())throw new Exception(reason);pause();
+        }
+    }
+    static void SelectReadyBackgroundConsole<T>(Func<T> find,Action<T> select,Func<T,bool> ready,Action check,Action pause,Func<bool> expired) where T:class {
+        var selection=WaitBackgroundControl(find,check,pause,expired,"Claude Console 标签尚未就绪，请稍后重试初始化");
+        check();select(selection);
+        // Selection is attempted once. If the user changes tabs while the
+        // prompt is appearing, wait/fail without overriding their selection.
+        WaitBackgroundControl(()=>ready(selection)?selection:null,check,pause,expired,"Claude Console 输入框尚未就绪，请稍后重试初始化");
+        check();
+    }
     static void SelectBackgroundConsole(Process process,long started,IntPtr tools) {
-        CheckBackgroundWindow(process,started,tools);var root=AutomationElement.FromHandle(tools);
-        var tab=BackgroundMenuControl(root,ControlType.TabItem,process.Id,"Console","控制台");object pattern;
-        if(tab==null||!tab.TryGetCurrentPattern(SelectionItemPattern.Pattern,out pattern))throw new Exception("Claude Console 标签不可用，请在电脑端选择后重试");
-        CheckBackgroundWindow(process,started,tools);((SelectionItemPattern)pattern).Select();Thread.Sleep(150);
+        var timer=Stopwatch.StartNew();
+        Action check=delegate {
+            CheckBackgroundWindow(process,started,tools);var selected=SelectBackgroundDevTools(ReadBackgroundWindows(process.Id),process.Id);
+            if(selected.Count!=1||selected.Handle!=tools)throw new Exception("Claude 开发者工具目标已改变，后台连接已停止");
+        };
+        SelectReadyBackgroundConsole(delegate {
+            var root=AutomationElement.FromHandle(tools);var tab=BackgroundMenuControl(root,ControlType.TabItem,process.Id,"Console","控制台");object pattern;
+            return tab!=null&&tab.TryGetCurrentPattern(SelectionItemPattern.Pattern,out pattern)?new BackgroundConsoleSelection {Tab=tab,Pattern=(SelectionItemPattern)pattern}:null;
+        },selection=>selection.Pattern.Select(),delegate(BackgroundConsoleSelection selection) {
+            if(!selection.Pattern.Current.IsSelected||!AvailableMenuControl(selection.Tab))return false;
+            var root=AutomationElement.FromHandle(tools);var items=root.FindAll(TreeScope.Descendants,new OrCondition(new PropertyCondition(AutomationElement.AutomationIdProperty,"console-prompt"),new PropertyCondition(AutomationElement.NameProperty,"Console prompt"),new PropertyCondition(AutomationElement.NameProperty,"控制台提示"),new PropertyCondition(AutomationElement.NameProperty,"控制台提示符")));
+            int count=0;foreach(AutomationElement item in items)if(IsPrompt(item)&&item.Current.ProcessId==process.Id&&!item.Current.IsOffscreen&&item.Current.IsEnabled)count++;
+            if(count>1)throw new Exception("Claude Console 输入框不唯一，后台连接已停止");return count==1;
+        },check,()=>Thread.Sleep(100),()=>timer.Elapsed.TotalSeconds>=4);
     }
     static void SubmitBackgroundVerifiedConsole(string text,Func<string> readDraft,Action<string> replace,Func<string> readDocument,
         Action check,Action pause,Func<bool> expired,Action reset,Func<bool> retryEmpty,Action submit) {
@@ -1048,6 +1073,23 @@ class ClaudeKeyboard {
                mode=="cancelled"&&(!failed||reads!=1||pauses!=1))throw new Exception("Claude 后台启动就绪与取消自检失败: "+mode);
         }
     }
+    static void CheckBackgroundConsoleReadiness() {
+        foreach(string mode in new[]{"ready","delayed","missing-tab","missing-prompt","cancelled","provider-late"}) {
+            int tabs=0,prompts=0,selections=0,pauses=0,checks=0;bool failed=false;
+            try {SelectReadyBackgroundConsole(delegate {
+                tabs++;if(mode=="provider-late"&&tabs<3)throw new ElementNotAvailableException();
+                return mode=="missing-tab"||mode=="delayed"&&tabs<3?null:"Console";
+            },tab=>selections++,delegate(string tab){prompts++;return mode!="missing-prompt"&&(mode!="delayed"||prompts>=3);},
+            delegate{checks++;if(mode=="cancelled"&&checks==2)throw new OperationCanceledException();},()=>pauses++,()=>tabs+prompts>=8);}
+            catch(Exception){failed=true;}
+            if(mode=="ready"&&(failed||tabs!=1||prompts!=1||selections!=1||pauses!=0)||
+               mode=="delayed"&&(failed||tabs!=3||prompts!=3||selections!=1||pauses!=4)||
+               mode=="provider-late"&&(failed||tabs!=3||prompts!=1||selections!=1)||
+               mode=="missing-tab"&&(!failed||tabs!=8||selections!=0)||
+               mode=="missing-prompt"&&(!failed||selections!=1)||
+               mode=="cancelled"&&(!failed||tabs!=1||selections!=0))throw new Exception("Claude Console 控件就绪与单次选择自检失败: "+mode);
+        }
+    }
     static string FailureMessage(Exception error,bool quitting) {
         if(error is System.ComponentModel.Win32Exception)return "无法读取 Claude 窗口，请检查运行权限";
         return !String.IsNullOrWhiteSpace(error.Message)?error.Message:quitting?"Claude 原生退出菜单操作失败，请在电脑端检查后重试":"Claude 原生连接操作失败，请在电脑端检查后重试";
@@ -1070,7 +1112,8 @@ class ClaudeKeyboard {
                 CheckBackgroundConnection();
                 CheckBackgroundCleanup();
                 CheckBackgroundStartupReadiness();
-                Console.WriteLine("keyboard ABI, Console allowlist and contenteditable text fallback OK; window selection and cancellable restore OK; menu navigation OK; packaged launch OK; atomic console submission OK; detached console reuse OK; native menu quit guards OK; background console guards OK; background cleanup guards OK; background startup readiness OK");return 0;
+                CheckBackgroundConsoleReadiness();
+                Console.WriteLine("keyboard ABI, Console allowlist and contenteditable text fallback OK; window selection and cancellable restore OK; menu navigation OK; packaged launch OK; atomic console submission OK; detached console reuse OK; native menu quit guards OK; background console guards OK; background cleanup guards OK; background startup readiness OK; background Console readiness OK");return 0;
             }
             if(args.Length!=3 && args.Length!=4) throw new Exception("键盘连接参数无效");
             quitAction=args[1]=="--quit";
