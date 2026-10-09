@@ -344,12 +344,17 @@ class DesktopSessions:
     def _descriptor(self, provider):
         row = dict(self.config.get('discovered', {}).get(provider, {}))
         if provider == 'codex' and self.bridge:
-            from ..desktop_app import DesktopApp
             accounts = self.bridge.for_host('local').accounts
-            executable = accounts.index.get('desktopExecutable') or DesktopApp.discover(accounts.runtime)
+            executable = self._codex_executable(accounts)
             row.update(id='codex', executable=executable, dataDirectory=str(accounts.home),
                        installed=bool(executable and Path(executable).is_file()))
         return row
+
+    def _codex_executable(self, accounts):
+        from ..desktop_app import DesktopApp
+        # Windows may cache the CLI outside its Store-installed desktop bundle.
+        return (accounts.index.get('desktopExecutable') or DesktopApp.discover(accounts.runtime)
+                or self.config.get('discovered', {}).get('codex', {}).get('executable', ''))
 
     def _verified(self, provider):
         row = self.config.get('discovered', {}).get(provider, {})
@@ -519,10 +524,9 @@ class DesktopSessions:
             reason = '请在电脑端安装 Codex 并配置账号或 API'
             if self.bridge is not None:
                 try:
-                    from ..desktop_app import DesktopApp
                     accounts = self.bridge.for_host('local').accounts
                     current = accounts.info.current()
-                    installed = accounts.index.get('desktopExecutable') or DesktopApp.discover(accounts.runtime)
+                    installed = self._codex_executable(accounts)
                     ready = bool(installed and Path(installed).is_file() and current.get('status') == 'ready' and current.get('kind') in ('chatgpt', 'api'))
                     if ready and current.get('kind') == 'api':
                         ready = bool((accounts.info.identity or {}).get('key') or accounts.active_matches())
