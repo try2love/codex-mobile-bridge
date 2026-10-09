@@ -261,9 +261,13 @@ class ClaudeAccounts:
 
             def select(kind):
                 paths = groups[kind]
-                if self.mode_home in paths:
-                    return self.mode_home
                 populated = [path for path in paths if any((path/item).is_file() for item in markers)]
+                if self.mode_home in paths:
+                    # Discovery can return its canonical fallback when stopped
+                    # profiles conflict. An absent fallback is not active proof.
+                    if self.mode_home not in populated and populated:
+                        self._ambiguous_profiles.add(kind)
+                    return self.mode_home
                 if len(populated) > 1:
                     self._ambiguous_profiles.add(kind)
                 if populated:
@@ -284,6 +288,8 @@ class ClaudeAccounts:
         else:
             # An explicit custom profile stays scoped to that profile.
             self.threep = self.home
+        if sys.platform != 'win32':
+            self.mode_home = self.home
         if any(path.is_symlink() for root in (self.directory, self.mode_home, self.home, self.threep) for path in (root, *root.parents)):
             raise ValueError('Claude 账号目录不能是符号链接')
         self.lock = threading.RLock()
