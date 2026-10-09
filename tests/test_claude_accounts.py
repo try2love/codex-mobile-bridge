@@ -9,10 +9,11 @@ import time
 import unittest
 import uuid
 from datetime import datetime, timezone
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from bridge.integrations.claude_accounts import ClaudeAccounts, CONFIG, _decrypt_cookie, _NoRedirect, _web_json
+from bridge.integrations.claude_accounts import ClaudeAccounts, CONFIG, _cookies, _decrypt_cookie, _NoRedirect, _web_json
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE = 'bridge.integrations.claude_accounts.'
@@ -36,7 +37,7 @@ class ClaudeAccountSnapshots(unittest.TestCase):
     def login(self, identifier):
         self.write(self.home/CONFIG, {'deploymentMode': '1p', 'nativeSetting': identifier})
         self.write(self.home/'config.json', {'oauth:tokenCache': 'TOKEN-'+identifier, 'theme': identifier})
-        with sqlite3.connect(self.home/'Cookies') as db:
+        with closing(sqlite3.connect(self.home/'Cookies')) as db, db:
             db.execute('CREATE TABLE IF NOT EXISTS cookies (host_key TEXT,name TEXT,value TEXT,encrypted_value BLOB,expires_utc INTEGER)')
             db.execute('DELETE FROM cookies')
             db.executemany('INSERT INTO cookies VALUES (?,?,?,?,?)', [
@@ -74,6 +75,28 @@ class ClaudeAccountSnapshots(unittest.TestCase):
         if os.name != 'nt':
             self.assertEqual((snapshot/'Cookies').stat().st_mode & 0o777, 0o600)
             self.assertEqual((self.root/'accounts').stat().st_mode & 0o777, 0o700)
+
+    def test_cookie_read_closes_database_before_profile_move(self):
+        opened = []
+        connect = sqlite3.connect
+
+        def capture(*args, **kwargs):
+            db = connect(*args, **kwargs)
+            opened.append(db)
+            return db
+
+        try:
+            with patch(MODULE+'sqlite3.connect', side_effect=capture):
+                self.assertEqual(len(_cookies(self.home)), 2)
+            self.assertEqual(len(opened), 1)
+            with self.assertRaises(sqlite3.ProgrammingError):
+                opened[0].execute('SELECT 1')
+            moved = self.home.with_name('Claude-moved')
+            self.home.rename(moved)
+            moved.rename(self.home)
+        finally:
+            for db in opened:
+                db.close()
 
     def test_manual_native_login_change_clears_saved_current_identity(self):
         first = self.save()
@@ -306,7 +329,7 @@ class ClaudeAccountSnapshots(unittest.TestCase):
 
     def test_expired_login_never_sends_a_quota_request(self):
         identifier = self.save()
-        with sqlite3.connect(self.home/'Cookies') as db:
+        with closing(sqlite3.connect(self.home/'Cookies')) as db, db:
             db.execute('UPDATE cookies SET expires_utc=1')
         with patch(MODULE+'_web_json') as fetch:
             result = self.accounts.details(identifier)
