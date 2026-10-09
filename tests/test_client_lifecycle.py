@@ -222,16 +222,51 @@ class ClientLifecycleTests(unittest.TestCase):
         self.assertIs(self.stop_dsh.call_args.args[1], self.dsh)
         self.assertFalse(self.manager.enabled('deepseek'))
 
-    def test_windows_claude_exit_reports_native_limit_even_when_disconnected(self):
+    def test_windows_claude_explicit_quit_uses_native_confirmation_when_disconnected(self):
         self.claude.status.return_value = {'connected': False}
-        with patch('bridge.integrations.manager.sys.platform', 'win32'), \
-                patch.object(self.manager, '_assert_idle') as idle:
-            with self.assertRaisesRegex(ValueError, 'Claude Desktop 不支持后台退出'):
-                self.manager.toggle_client({'provider': 'claude', 'enabled': False, 'quitDesktop': True})
-        idle.assert_not_called()
-        self.claude.cancel.assert_not_called()
+        with patch('bridge.integrations.manager.sys.platform', 'win32'):
+            self.manager.toggle_client({'provider': 'claude', 'enabled': False, 'quitDesktop': True})
+        self.stop.assert_called_once()
+        self.claude.cancel.assert_any_call(persist=False)
+        self.assertFalse(self.manager.enabled('claude'))
+
+    def test_windows_claude_implicit_quit_and_account_stop_still_need_idle_evidence(self):
+        self.claude.status.return_value = {'connected': False}
+        with patch('bridge.integrations.manager.sys.platform', 'win32'):
+            with self.assertRaisesRegex(ValueError, '无法确认'):
+                self.toggle('claude', False)
+            with self.assertRaisesRegex(ValueError, '无法确认'):
+                self.manager._stop_client('claude', self.manager._descriptor('claude'), self.inspect(None))
         self.stop.assert_not_called()
         self.assertTrue(self.manager.enabled('claude'))
+
+    def test_windows_claude_incomplete_list_cannot_hide_known_busy_tasks(self):
+        self.claude.call.side_effect = lambda *args: {'complete': False, 'sessions': [
+            {'status': 'running', 'runtimeKnown': True}]}
+        with patch('bridge.integrations.manager.sys.platform', 'win32'):
+            with self.assertRaisesRegex(ValueError, '任务运行或等待'):
+                self.manager.toggle_client({'provider': 'claude', 'enabled': False, 'quitDesktop': True})
+        self.stop.assert_not_called()
+        self.assertTrue(self.manager.enabled('claude'))
+
+    def test_windows_claude_unknown_processes_block_native_confirmation(self):
+        self.claude.status.return_value = {'connected': False}
+        state = {**self.inspect(None), 'unknown': True}
+        self.inspect.side_effect = lambda _: state
+        with patch('bridge.integrations.manager.sys.platform', 'win32'):
+            with self.assertRaisesRegex(ValueError, '无法确认'):
+                self.manager.toggle_client({'provider': 'claude', 'enabled': False, 'quitDesktop': True})
+        self.stop.assert_not_called()
+
+    def test_windows_claude_pending_native_confirmation_preserves_enabled(self):
+        self.claude.status.return_value = {'connected': False}
+        self.stop.side_effect = ValueError('请在电脑端处理 Claude 的任务或保存提示后重试')
+        with patch('bridge.integrations.manager.sys.platform', 'win32'):
+            with self.assertRaisesRegex(ValueError, '任务或保存提示'):
+                self.manager.toggle_client({'provider': 'claude', 'enabled': False, 'quitDesktop': True})
+        self.assertTrue(self.manager.enabled('claude'))
+        self.claude.reconnect.assert_called_once_with()
+        self.claude.connect.assert_not_called()
 
     def test_offline_selection_never_launches_or_quits_clients(self):
         self.manager.gateway_running = False

@@ -100,12 +100,9 @@ class ProcessLifecycleTests(unittest.TestCase):
     def test_windows_claude_cannot_be_quit_by_closing_its_window(self):
         from bridge.integrations.client_launch import stop_client
         with patch('bridge.integrations.client_launch.sys.platform', 'win32'), \
-                patch('bridge.integrations.client_launch._app') as factory, \
-                patch('bridge.integrations.client_launch.inspect_client') as inspect:
-            with self.assertRaisesRegex(ValueError, 'Claude Desktop 不支持后台退出'):
-                stop_client({'id': 'claude'}, state={})
-        factory.assert_not_called()
-        inspect.assert_not_called()
+                patch('bridge.integrations.client_launch.stop_claude', create=True) as native:
+            stop_client({'id': 'claude'}, state={})
+        native.assert_called_once_with({'id': 'claude'}, state={})
 
     def test_dsh_multiple_or_wrong_profile_hosts_fail_closed(self):
         from bridge.integrations.client_launch import inspect_client
@@ -156,6 +153,67 @@ class ProcessLifecycleTests(unittest.TestCase):
         with patch('bridge.desktop_app.sys.platform', 'darwin'), patch('bridge.desktop_app.os.getuid', return_value=1000, create=True), patch('bridge.desktop_app.subprocess.run', return_value=Mock(stdout='42 '+str(app.executable))) as run:
             self.assertEqual(app.processes(), [42])
             self.assertIn('-ww', run.call_args.args[0])
+
+
+class ClaudeQuitTests(unittest.TestCase):
+    def setUp(self):
+        self.state = {'running': True, 'pids': [11, 12], 'mainPids': [11], 'runtimePids': [], 'unknown': False}
+        self.descriptor = {'id': 'claude', 'executable': 'C:/Claude/Claude.exe'}
+        self.app = Mock(executable=Path(self.descriptor['executable']))
+        self.app.processes.return_value = []
+        self.inspect = patch('bridge.integrations.client_launch.inspect_client', return_value=self.state).start()
+        patch('bridge.integrations.client_launch._app', return_value=self.app).start()
+        self.native = patch('bridge.integrations.claude_setup.native_action', return_value={
+            'quitState': 'submitted', 'pid': 11, 'reason': ''}).start()
+        self.sleep = patch('bridge.integrations.client_launch.time.sleep').start()
+        self.addCleanup(patch.stopall)
+
+    def stop(self):
+        from bridge.integrations.client_launch import stop_claude
+        stop_claude(self.descriptor, state=self.state)
+
+    def test_submitted_waits_for_all_processes_without_resending_exit(self):
+        self.app.processes.side_effect = [[11, 12], [12], []]
+        self.stop()
+        self.native.assert_called_once_with('quit', pid=11, executable=str(self.app.executable))
+        self.assertEqual(self.sleep.call_count, 2)
+        self.app.stop.assert_not_called()
+
+    def test_native_exited_claim_is_still_checked(self):
+        self.native.return_value['quitState'] = 'exited'
+        self.app.processes.side_effect = [[12], []]
+        self.stop()
+        self.assertEqual(self.app.processes.call_count, 2)
+
+    def test_pending_or_failed_never_reports_success(self):
+        for result in ('pending', 'failed'):
+            with self.subTest(result=result):
+                self.native.return_value.update(quitState=result, reason='原生确认等待处理')
+                with self.assertRaisesRegex(ValueError, '原生确认'):
+                    self.stop()
+        self.app.stop.assert_not_called()
+
+    def test_new_or_ambiguous_process_never_receives_quit(self):
+        for change in ({'pids': [11, 12, 13]}, {'mainPids': [11, 13]}, {'unknown': True}):
+            with self.subTest(change=change):
+                self.inspect.return_value = {**self.state, **change}
+                with self.assertRaisesRegex(ValueError, '进程已变化'):
+                    self.stop()
+        self.native.assert_not_called()
+
+    def test_new_process_during_cleanup_is_not_closed(self):
+        self.app.processes.return_value = [13]
+        with self.assertRaisesRegex(ValueError, '进程已变化'):
+            self.stop()
+        self.app.stop.assert_not_called()
+
+    def test_cleanup_timeout_does_not_force_quit(self):
+        self.app.processes.return_value = [11]
+        with patch('bridge.integrations.client_launch.time.monotonic', side_effect=[0, 76]):
+            with self.assertRaisesRegex(ValueError, '尚未退出'):
+                self.stop()
+        self.native.assert_called_once()
+        self.app.stop.assert_not_called()
 
 
 if __name__ == '__main__':
