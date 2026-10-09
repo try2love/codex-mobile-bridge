@@ -12,7 +12,7 @@ from pathlib import Path
 from ..desktop_app import DesktopApp, process_inventory
 
 
-def _archive_members(path):
+def _archive_members(path, names=('package.json', '.vite/build/index.pre.js')):
     """Read only the bounded Electron package metadata and main startup script."""
     with path.open('rb') as stream:
         header = stream.read(16)
@@ -23,7 +23,7 @@ def _archive_members(path):
             raise ValueError('invalid archive header')
         tree = json.loads(stream.read(json_size))
         base = size + 8
-        for name in ('package.json', '.vite/build/index.pre.js'):
+        for name in names:
             node = tree
             for part in name.split('/'):
                 node = node.get('files', {}).get(part, {})
@@ -319,6 +319,83 @@ def _main_pids(app):
     return [int(row['ProcessId']) for row in rows
             if str(Path(row['ExecutablePath']).resolve()).casefold() == str(app.executable).casefold()
             and not re.search(r'(?:^|\s)--type(?:=|\s)', row.get('CommandLine') or '')]
+
+
+def _native_startup_hidden(source):
+    """Recognize the verified native --startup predicate and hidden-window branch."""
+    symbol = r'[A-Za-z_$][\w$]*'
+    predicate = rf'({symbol})=\(\)=>{symbol}\?\?=![^;]{{1,80}}\.argv\.includes\("--startup"\)'
+    for match in re.finditer(predicate, source):
+        branch = source[match.end():match.end() + 1800]
+        visible = re.search(rf'({symbol})=\({re.escape(match[1])}\(\)\|\|!1\)&&!{symbol};', branch)
+        if (visible and '"background_launch":"os_login"' in branch
+                and re.search(rf'show:{re.escape(visible[1])}&&!', branch)):
+            return True
+    return False
+
+
+def background_start_supported(executable):
+    """Unknown Claude builds must not fall back to a foreground launch."""
+    archive = Path(executable).parent/'resources/app.asar'
+    try:
+        entry = dict(_archive_members(archive, ('package.json', '.vite/build/index.js', '.vite/build/index.pre.js')))
+        if json.loads(entry.get('package.json', '{}')).get('name') != '@ant/desktop':
+            return False
+        sources = [entry.get('.vite/build/index.pre.js', '')]
+        chunks = re.findall(r'require\("\./(index\.chunk-[A-Za-z0-9_-]+\.js)"\)', entry.get('.vite/build/index.js', ''))
+        if len(chunks) > 8:
+            return False
+        sources.extend(source for _, source in _archive_members(archive, ['.vite/build/' + name for name in chunks]))
+        return any(_native_startup_hidden(source) for source in sources)
+    except (OSError, ValueError, TypeError, AttributeError, struct.error):
+        return False
+
+
+def background_running_app(executable, data_home, cancelled=None):
+    """Start a verified Windows Claude in its native hidden mode at most once."""
+    if sys.platform != 'win32':
+        raise ValueError('此系统尚未验证 Claude 后台启动入口')
+    def check():
+        if cancelled is not None and cancelled.is_set():
+            raise ValueError('已取消 Claude 后台启动')
+    check()
+    app = DesktopApp(executable, data_home)
+    pids = _main_pids(app)
+    check()
+    if len(pids) > 1:
+        raise ValueError('无法确认唯一的 Claude 主进程，请在电脑端检查')
+    if pids:
+        return {'pid': pids[0], 'launched': False}
+    if not background_start_supported(app.executable):
+        raise ValueError('此 Claude 版本尚未验证后台启动，请在电脑端打开应用后重试')
+    packaged = any(folder.name.casefold() == 'windowsapps' or (folder/'AppxManifest.xml').is_file()
+                   for folder in app.executable.parents)
+    if packaged:
+        from .windows_discovery import application_execution_alias
+        launcher = application_execution_alias(app.executable)
+        if launcher is None:
+            raise ValueError('无法确认所选 Claude 的后台启动别名，请在电脑端打开应用后重试')
+    else:
+        launcher = app.executable
+    check()
+    # No explorer fallback: it would activate the window and drop --startup.
+    process = subprocess.Popen([str(launcher), '--startup'], cwd=app.executable.parent,
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               creationflags=subprocess.CREATE_NO_WINDOW)
+    deadline = time.monotonic() + 20
+    while True:
+        check()
+        pids = _main_pids(app)
+        if len(pids) == 1:
+            return {'pid': pids[0], 'launched': True}
+        if len(pids) > 1:
+            raise ValueError('Claude 启动后出现多个主进程，请在电脑端检查')
+        if process.poll() not in (None, 0) or time.monotonic() >= deadline:
+            raise ValueError('Claude 后台启动未完成，请检查桌面应用后重试')
+        if cancelled is None:
+            time.sleep(.25)
+        elif cancelled.wait(.25):
+            check()
 
 
 def running_app(executable, data_home, restart=False, cancelled=None):
