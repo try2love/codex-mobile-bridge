@@ -6,6 +6,7 @@ import threading
 import time
 import socket
 import subprocess
+import sys
 import uuid
 from pathlib import Path
 from contextlib import contextmanager, nullcontext
@@ -361,7 +362,7 @@ class DesktopSessions:
         return {key: row.get(key) for key in ('executable', 'dataDirectory')}
 
     def _assert_idle(self, provider, state):
-        unknown = '无法确认客户端所有任务均已结束，请在电脑端检查后重试'
+        unknown = '无法确认客户端所有任务均已结束；可选择“仅停用手机接入”保留电脑 App，或在电脑端退出后重试'
         if provider == 'deepseek' and len(state.get('runtimePids', [])) > 1:
             raise ValueError('检测到多个 Harness 后台实例，无法确认全部任务状态；请在电脑上结束多余实例后重试')
         if state.get('unknown'):
@@ -376,7 +377,7 @@ class DesktopSessions:
         except (ValueError, OSError, BridgeUnavailable):
             raise ValueError(unknown) from None
         if not status.get('connected'):
-            raise ValueError(unknown)
+            raise ValueError('客户端尚未连接，无法确认任务状态；可选择“仅停用手机接入”，或在电脑端退出 App 后重试')
         if provider == 'deepseek':
             hosts = state.get('runtimePids', [])
             endpoint = self._deepseek_endpoint(adapter)
@@ -400,7 +401,7 @@ class DesktopSessions:
             raise ValueError(unknown)
 
     def _stop_client(self, provider, descriptor, state):
-        from .client_launch import stop_client
+        from .client_launch import stop_client, stop_deepseek
         if not state['running']:
             if provider == 'claude':
                 self.adapters[provider].cancel()
@@ -410,7 +411,10 @@ class DesktopSessions:
             # Cancel the monitor before native quit, so it cannot relaunch Claude.
             self.adapters[provider].cancel(persist=False)
         try:
-            stop_client(descriptor, state=state)
+            if provider == 'deepseek' and sys.platform == 'win32':
+                stop_deepseek(descriptor, self.adapters[provider], state=state)
+            else:
+                stop_client(descriptor, state=state)
         except Exception:
             if provider == 'claude':
                 try:
@@ -633,9 +637,22 @@ class DesktopSessions:
         provider, enabled = value.get('provider'), value.get('enabled')
         if provider not in ('codex', 'claude', 'deepseek') or type(enabled) is not bool:
             raise ValueError('应用开关无效')
+        if 'quitDesktop' in value and (type(value['quitDesktop']) is not bool or enabled):
+            raise ValueError('应用开关无效')
+        # Older clients use disabling as native quit. New clients choose explicitly.
+        quit_desktop = value.get('quitDesktop', True)
         from .client_launch import inspect_client, launch_client
         accounts = self.bridge.accounts if provider == 'codex' and self.bridge else None
         with self.client_lock, self._changing(provider), accounts.gate if accounts else nullcontext(), accounts.lock if accounts else nullcontext():
+            if not enabled and not quit_desktop:
+                # Revoke gateway access without inspecting or interrupting tasks.
+                # Keep the same write gate so a queued send sees the new setting.
+                if provider == 'claude':
+                    self.adapters[provider].cancel()
+                self.config.setdefault('enabled', {})[provider] = False
+                private_json(self.config_path, self.config)
+                self.client_cache = None
+                return self.clients()
             if accounts:
                 accounts.assert_editable()
             row = next(row for row in self.clients(refresh=True)['clients'] if row['id'] == provider)

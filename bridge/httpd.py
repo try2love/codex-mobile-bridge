@@ -43,6 +43,7 @@ STATIC = {"/permissions.js": ("permissions.js", "text/javascript; charset=utf-8"
           "/client-icons/claude.png": ("client-icons/claude.png", "image/png"),
           "/client-icons/deepseek.png": ("client-icons/deepseek.png", "image/png"),
           "/client-navigation.js": ("client-navigation.js", "text/javascript; charset=utf-8"),
+          "/client-lifecycle.js": ("client-lifecycle.js", "text/javascript; charset=utf-8"),
           "/client-navigation.css": ("client-navigation.css", "text/css; charset=utf-8"),
           "/desktop-sessions.js": ("desktop-sessions.js", "text/javascript; charset=utf-8"),
           "/client-accounts.js": ("client-accounts.js", "text/javascript; charset=utf-8"),
@@ -361,7 +362,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.output(503, {'error': '应用管理不可用'})
                 if write:
                     value = self.read_json()
-                    if not isinstance(value, dict) or set(value) != {'provider', 'enabled'}:
+                    if not isinstance(value, dict) or not {'provider', 'enabled'} <= set(value) or set(value) - {'provider', 'enabled', 'quitDesktop'}:
                         raise ValueError('应用开关无效')
                     return self.output(200, manager.toggle_client(value))
                 return self.output(200, manager.clients())

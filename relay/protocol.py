@@ -45,8 +45,8 @@ def validate(method, path, size=0):
         raise ValueError('GET body is not allowed')
     if p.path == '/api/sessions' or (p.path in ('/api/projects', '/api/mobile/events') and method == 'GET') or (p.path == '/api/activity' and method == 'POST'):
         return
-    # Remote clients may toggle already configured apps. Discovery, installation,
-    # account configuration and desktop lifecycle remain local desktop controls.
+    # Remote clients may disable access or request a guarded native quit.
+    # Discovery, installation, account configuration and forced recovery stay local.
     if p.path == '/api/clients':
         return
     desktop = DESKTOP.fullmatch(p.path)
