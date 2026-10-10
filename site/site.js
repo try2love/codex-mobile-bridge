@@ -68,7 +68,8 @@ function refreshExperience(){
  const copy=experienceCopy[demoPlatform][language];
  document.getElementById('stage-title').textContent=copy[0];document.getElementById('stage-description').textContent=copy[1];document.getElementById('stage-steps').replaceChildren(...copy[2].map(text=>{const li=document.createElement('li');li.textContent=text;return li;}));document.getElementById('stage-boundary').textContent=copy[3];document.getElementById('device-name').textContent=experienceCopy[demoPlatform].name;
  demoFrame.title=language==='en'?'Bridge '+experienceCopy[demoPlatform].name+' interactive demo':'Bridge '+experienceCopy[demoPlatform].name+' 交互演示';
- demoFrame.contentWindow?.postMessage({type:'bridge-demo-language',lang:language},'*');
+ const demoUrl=new URL(demoFrame.src,location.href);
+ if(demoUrl.searchParams.get('lang')!==language){demoUrl.searchParams.set('lang',language);demoFrame.src=demoUrl.href;}else demoFrame.contentWindow?.postMessage({type:'bridge-demo-language',lang:language},'*');
 }
 window.demoExperienceReady=true;
 function selectDevice(key,scene,focus=false){
