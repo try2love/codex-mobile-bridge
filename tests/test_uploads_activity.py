@@ -229,7 +229,7 @@ class UploadActivityTests(unittest.TestCase):
         self.assertEqual(Path(resolved['path']), image.resolve())
         self.assertTrue(resolved['image'])
 
-    def test_model_markdown_cannot_leave_roots_but_imageview_can(self):
+    def test_cross_project_markdown_artifacts_and_runtime_image_previews(self):
         import tempfile
         from bridge.files import artifact_paths
         with tempfile.TemporaryDirectory(dir=self.root.parent) as directory:
@@ -239,7 +239,8 @@ class UploadActivityTests(unittest.TestCase):
             codex_home = self.root / 'codex-home';codex_home.mkdir(exist_ok=True)
             markdown = {'cwd': str(workspace), 'turns': [{'items': [
                 {'type': 'agentMessage', 'text': f'![outside]({outside})'}]}]}
-            self.assertEqual(artifact_paths(markdown, codex_home), {})
+            markdown_rows = artifact_paths(markdown, codex_home)
+            self.assertEqual([row['path'] for row in markdown_rows.values()], [outside.resolve()])
             evidence = {'cwd': str(workspace), 'turns': [{'items': [
                 {'type': 'agentMessage', 'text': f'![outside]({outside})'},
                 {'type': 'ImageView', 'path': outside.as_uri()}]}]}

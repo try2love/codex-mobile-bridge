@@ -1351,7 +1351,7 @@ class Bridge:
         with session.condition:
             files = artifact_paths(session.state or {}, self.store.home) if self.host == "local" else {}
         if artifact_id not in files:
-            raise KeyError("文件不属于此聊天的工作目录")
+            raise KeyError("文件未在此聊天中引用或已不可用")
         return files[artifact_id]
 
     def _annotate_upload_attachments(self, session, rows):
@@ -1487,8 +1487,8 @@ class Bridge:
             cwd = (session.state or {}).get('cwd')
             media_items = [item for turn in ordered_turns(session.state or {})
                            for item in items_array(turn.get('items')) if item.get('type') in ('ImageView', 'imageView')]
-        # Resolve links in the delivered page, plus ImageView evidence needed by
-        # embedded model screenshots that can live outside workspace roots.
+        # Resolve links in the delivered page, plus runtime ImageView evidence
+        # retained separately from the paged message text.
         file_state = {'cwd': cwd, 'turns': [
             {'items': [{'type': 'agentMessage', 'text': text} for text in texts]},
             {'items': media_items},

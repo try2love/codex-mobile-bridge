@@ -644,7 +644,7 @@ class ModelTests(unittest.TestCase):
                 self.assertEqual(path, PureWindowsPath('D:/workspace/report.txt'))
 
     @unittest.skipUnless(os.name == 'nt', 'Windows drive path syntax')
-    def test_slash_prefixed_windows_artifacts_remain_in_workspace(self):
+    def test_slash_prefixed_windows_artifacts_support_cross_project_paths(self):
         with tempfile.TemporaryDirectory(dir=str(ROOT / '.tmp')) as directory:
             root = Path(directory)
             workspace = root / 'workspace';workspace.mkdir()
@@ -658,10 +658,10 @@ class ModelTests(unittest.TestCase):
                 ]}]}
                 with self.subTest(name=name):
                     files = artifact_paths(value, root / '.codex')
-                    self.assertEqual(len(files), 1)
-                    artifact = next(iter(files.values()))
-                    self.assertEqual(artifact['path'], allowed.resolve())
-                    self.assertEqual(artifact['reference'], reference)
+                    by_path = {item['path']: item for item in files.values()}
+                    self.assertEqual(set(by_path), {allowed.resolve(), outside.resolve()})
+                    self.assertEqual(by_path[allowed.resolve()]['reference'], reference)
+                    self.assertEqual(set(by_path[outside.resolve()]['references']), {'/' + outside.as_posix(), escape})
 
     @unittest.skipIf(os.name == 'nt', 'POSIX path syntax')
     def test_slash_prefixed_drive_is_preserved_on_posix(self):
@@ -669,7 +669,7 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(reference_path('/D:/workspace/report.md'), Path('/D:/workspace/report.md'))
 
     @unittest.skipUnless(os.name == 'nt', 'Windows drive path syntax')
-    def test_windows_drive_markdown_reference_remains_in_workspace(self):
+    def test_windows_drive_markdown_reference_supports_cross_project_paths(self):
         with tempfile.TemporaryDirectory(dir=str(ROOT / '.tmp')) as directory:
             root = Path(directory)
             workspace = root / 'workspace';workspace.mkdir()
@@ -678,7 +678,7 @@ class ModelTests(unittest.TestCase):
             value = state();value['cwd'] = str(workspace)
             value['turns'] = [{'items': [{'type': 'agentMessage', 'text': f'[report]({allowed}) [private]({outside})'}]}]
             files = artifact_paths(value, root / '.codex')
-            self.assertEqual([item['name'] for item in files.values()], ['report.txt'])
+            self.assertEqual({item['name'] for item in files.values()}, {'report.txt', 'private.txt'})
 
     def test_file_uri_image_view_links_plain_markdown_reference(self):
         with tempfile.TemporaryDirectory(dir=str(ROOT / '.tmp')) as directory:
@@ -711,7 +711,7 @@ class ModelTests(unittest.TestCase):
                     self.assertEqual(set(artifact['references']), set(references))
                     self.assertIn(artifact['reference'], references)
 
-    def test_artifacts_only_referenced_workspace_files(self):
+    def test_artifacts_include_only_referenced_files_across_projects(self):
         with tempfile.TemporaryDirectory(dir=str(ROOT / '.tmp')) as directory:
             root = Path(directory)
             workspace = root / 'workspace'
@@ -720,13 +720,18 @@ class ModelTests(unittest.TestCase):
             allowed.write_text('report')
             outside = root / 'private.txt'
             outside.write_text('private')
+            unreferenced = root / 'unreferenced.txt';unreferenced.write_text('private')
+            missing = root / 'missing.txt'
+            oversized = root / 'large.apk'
+            with oversized.open('wb') as stream: stream.truncate(50 * 1024 * 1024 + 1)
             value = state()
             value['cwd'] = str(workspace)
-            value['turns'] = [{'items': [{'type': 'agentMessage', 'text': f'[report]({allowed}) [private]({outside})'}]}]
+            references = [allowed, outside, missing, oversized, workspace]
+            value['turns'] = [{'items': [{'type': 'agentMessage', 'text': ' '.join(f'[file]({path})' for path in references)}]}]
             files = artifact_paths(value, root / '.codex')
-            self.assertEqual([v['name'] for v in files.values()], ['report.txt'])
+            self.assertEqual({v['path'] for v in files.values()}, {allowed.resolve(), outside.resolve()})
 
-    def test_artifact_symlink_cannot_escape_workspace(self):
+    def test_artifact_symlink_resolves_referenced_cross_project_file(self):
         with tempfile.TemporaryDirectory(dir=str(ROOT / '.tmp')) as directory:
             root = Path(directory)
             workspace = root / 'workspace'
@@ -742,7 +747,8 @@ class ModelTests(unittest.TestCase):
                 raise
             value = {**state(), 'cwd': str(workspace), 'turns': [
                 {'items': [{'type': 'agentMessage', 'text': f'[link]({link})'}]}]}
-            self.assertEqual(artifact_paths(value, root / '.codex'), {})
+            files = artifact_paths(value, root / '.codex')
+            self.assertEqual([item['path'] for item in files.values()], [outside.resolve()])
 
     def test_file_approval_includes_actual_pending_diff(self):
         value = state()
