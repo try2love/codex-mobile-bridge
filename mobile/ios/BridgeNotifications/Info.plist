@@ -7,7 +7,7 @@
 <key>CFBundleDisplayName</key><string>Bridge Notifications</string>
 <key>CFBundlePackageType</key><string>XPC!</string>
 <key>CFBundleShortVersionString</key><string>2.0.0</string>
-<key>CFBundleVersion</key><string>26</string>
+<key>CFBundleVersion</key><string>27</string>
 <key>NSExtension</key><dict>
 <key>NSExtensionPointIdentifier</key><string>com.apple.usernotifications.service</string>
 <key>NSExtensionPrincipalClass</key><string>$(PRODUCT_MODULE_NAME).NotificationService</string>
