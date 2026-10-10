@@ -76,10 +76,19 @@ class WindowsNativeWindowSelectors(unittest.TestCase):
         cls.addClassCleanup(cls.temp.cleanup)
         cls.folder = Path(cls.temp.name)
         cls.helper = cls.folder/'claude-bridge-helper.exe'
+        # Preserve the native control flow, adding stack traces only to failed
+        # fixture replies so intermittent provider failures can be located.
+        source = (ROOT/'bridge/platforms/windows/claude-helper.cs').read_text(encoding='utf-8')
+        failure = 'string message=FailureMessage(e,quitAction);'
+        if source.count(failure) != 1:
+            raise AssertionError('native helper failure diagnostic point changed')
+        diagnostic_source = cls.folder/'claude-helper-diagnostic.cs'
+        diagnostic_source.write_text(source.replace(failure, failure+' message += "\\n" + e.ToString();'), encoding='utf-8')
         built = subprocess.run([str(cls.framework/'csc.exe'), '/nologo', '/target:exe', '/platform:x64',
+            '/debug', '/optimize-',
             '/out:'+str(cls.helper), *['/reference:'+str(cls.framework/'WPF'/name) for name in
             ('UIAutomationClient.dll', 'UIAutomationTypes.dll', 'WindowsBase.dll')],
-            str(ROOT/'bridge/platforms/windows/claude-helper.cs')], capture_output=True, text=True, timeout=30)
+            str(diagnostic_source)], capture_output=True, text=True, timeout=30)
         if built.returncode:
             raise AssertionError(built.stdout + built.stderr)
 
@@ -316,6 +325,7 @@ class QuitFixture {
             } else app.Shutdown();
         };
         window.Loaded+=(sender,eventArgs)=>{
+            File.AppendAllText(args[0]+".events","loaded\\n");
             if(args[3]=="initialize")window.Hide();
             if(args[3]=="background-cleanup-foreign") {
                 var other=new Window {Title="Developer Tools - file:///C:/Claude/main_window/index.html",Owner=window,Width=260,Height=120};
@@ -323,6 +333,9 @@ class QuitFixture {
             }
             File.WriteAllText(args[0],Process.GetCurrentProcess().Id.ToString());
         };
+        window.ContentRendered+=(sender,eventArgs)=>File.AppendAllText(args[0]+".events","rendered\\n");
+        window.Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle,
+            new Action(()=>File.AppendAllText(args[0]+".events","dispatcher-idle\\n")));
         timer.Start();app.Run(window);
     }
 }
@@ -337,19 +350,21 @@ class QuitFixture {
 
         # This desktop is never activated or switched to. All tested apps are
         # disposable fixtures; the real Claude and user's input remain untouched.
-        for mode in ('normal', 'pending', 'dispatch-error', 'native-popup', 'initialize',
+        for iteration, mode in enumerate(('normal',) * 10 + ('pending', 'dispatch-error', 'native-popup', 'initialize',
                      'background-connect', 'background-cancel', 'background-cleanup',
-                     'background-cleanup-cancel', 'background-cleanup-foreign'):
-            with self.subTest(mode=mode):
-                ready, stop, marker = (self.folder/(mode+suffix) for suffix in ('.ready', '.stop', '.invoked'))
-                app = launch([fixture, ready, stop, marker, mode], self.folder/(mode+'.app.log'))
+                     'background-cleanup-cancel', 'background-cleanup-foreign')):
+            with self.subTest(mode=mode, iteration=iteration):
+                prefix = str(iteration)+'-'+mode
+                ready, stop, marker = (self.folder/(prefix+suffix) for suffix in ('.ready', '.stop', '.invoked'))
+                app_output = self.folder/(prefix+'.app.log')
+                app = launch([fixture, ready, stop, marker, mode], app_output)
                 helper = None
                 try:
                     deadline = time.monotonic()+10
                     while not ready.exists() and not exited(app) and time.monotonic() < deadline:
                         time.sleep(.05)
                     self.assertTrue(ready.exists(), 'inactive-desktop fixture did not initialize')
-                    output = self.folder/(mode+'.quit.log')
+                    output = self.folder/(prefix+'.quit.log')
                     action = '--quit'
                     if mode == 'initialize' or mode.startswith('background-'):
                         script = self.folder/'connector.js'
@@ -411,7 +426,12 @@ class QuitFixture {
                         self.assertFalse(exited(app))
                         self.assertEqual(user.GetForegroundWindow(), foreground)
                         continue
-                    self.assertEqual(code, 0, result)
+                    events = ready.with_name(ready.name+'.events')
+                    diagnostic = {'replies': replies, 'appExited': exited(app),
+                                  'invoked': marker.read_text(encoding='utf-8') if marker.exists() else None,
+                                  'readiness': events.read_text(encoding='utf-8') if events.exists() else None,
+                                  'appLog': app_output.read_text(encoding='utf-8-sig')}
+                    self.assertEqual(code, 0, diagnostic)
                     self.assertEqual([json.loads(line) for line in replies[:-1]],
                                      [{'quitPhase': 'dispatching', 'pid': app.pid}])
                     if mode == 'dispatch-error':
