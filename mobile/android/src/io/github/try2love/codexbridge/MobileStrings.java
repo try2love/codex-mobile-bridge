@@ -3,6 +3,10 @@ import android.content.Context;
 final class MobileStrings {
  private static final java.util.Map<String,String> values=new java.util.HashMap<>();
  static {
+  values.put("正在打开…","Opening…");
+  values.put("下载完成，可打开或保存","Downloaded · Open or save");
+  values.put("打开失败，请重试或保存文件","Could not open the file. Retry or save it.");
+  values.put("暂无可打开此文件的应用","No app is available to open this file.");
   values.put("未收到所选文件，请重新选择。","No selected file was received. Choose the file again.");
   values.put("无法读取所选文件，请从系统文件选择器重新选择。","Cannot read the selected file. Select it again using the system file picker.");
 

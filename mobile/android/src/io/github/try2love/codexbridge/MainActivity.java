@@ -24,7 +24,7 @@ public final class MainActivity extends Activity {
  private final Runnable homeRefresh=()->checkComputers();
  private long homeBackAt;private Toast exitToast;
  private final ExecutorService downloads=Executors.newSingleThreadExecutor();
- private FrameLayout screen;private DownloadCard downloadCard;private ArtifactDownload.Task downloadTask,choosingDownload;private boolean savingDownload;
+ private FrameLayout screen;private DownloadCard downloadCard;private ArtifactDownload.Task downloadTask,choosingDownload;private boolean savingDownload,openingDownload;
  private ServiceConnection monitor;private ValueCallback<Uri[]> files;private WebView fileView;private int fileGeneration;private int generation;
  String L(String value){return MobileStrings.text(this,value);}
  int dp(int n){return (int)(getResources().getDisplayMetrics().density*n);}
@@ -45,7 +45,7 @@ public final class MainActivity extends Activity {
  @Override public void onCreate(Bundle state){super.onCreate(state);prefs=getSharedPreferences("bridge",0);root=new LinearLayout(this);root.setOrientation(1);root.setBackgroundColor(0xfff5f5f3);screen=new FrameLayout(this);screen.addView(root,new FrameLayout.LayoutParams(-1,-1));setContentView(screen);systemBars=new SystemBars(this,screen,()->{if(downloadCard!=null)downloadCard.post(downloadCard::place);});
   if(Build.VERSION.SDK_INT>=33)getOnBackInvokedDispatcher().registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,this::handleBack);
   bar=new LinearLayout(this);bar.setGravity(Gravity.CENTER_VERTICAL);bar.setPadding(dp(20),dp(4),dp(12),dp(4));root.addView(bar);header(false);
-  downloadCard=new DownloadCard(this,screen,this::downloadAction,this::cancelDownload);
+  downloadCard=new DownloadCard(this,screen,this::downloadAction,this::openDownload,this::cancelDownload);
   status=text("",12);status.setTextColor(0xff6b7075);status.setGravity(Gravity.CENTER);root.addView(status);
   if(!openIntent(getIntent())){String active=prefs.getString("active","");if(saved().contains(active))connect(active+"/");else home();}monitor();
  }
@@ -122,7 +122,7 @@ public final class MainActivity extends Activity {
   web.setDownloadListener((target,agent,disposition,mime,length)->downloadArtifact(target));
   web.loadUrl(url);monitor();
  }catch(Exception e){message(e.getMessage());}}
- void renderDownload(){downloadCard.render(downloadTask,savingDownload||choosingDownload!=null);}
+ void renderDownload(){downloadCard.render(downloadTask,savingDownload||choosingDownload!=null,openingDownload);}
  void downloadArtifact(String target){
   if(downloadTask!=null){downloadCard.showTask();renderDownload();message(L("已有下载任务，请先完成或取消"));return;}
   if(web==null||!GatewayURL.sameOrigin(web.getUrl(),origin)||!ArtifactDownload.accepts(target,origin)){message(L("此下载不是当前电脑的附件，请在浏览器中打开"));return;}
@@ -135,7 +135,7 @@ public final class MainActivity extends Activity {
   task.state=ArtifactDownload.State.READY;renderDownload();downloads.execute(()->task.run(()->CookieManager.getInstance().getCookie(task.url),value->runOnUiThread(()->{if(downloadTask==value&&!isFinishing()&&!isDestroyed())renderDownload();})));
  }
  void downloadAction(){
-  ArtifactDownload.Task task=downloadTask;if(task==null||savingDownload||choosingDownload!=null)return;
+  ArtifactDownload.Task task=downloadTask;if(task==null||savingDownload||choosingDownload!=null||openingDownload)return;
   if(task.state==ArtifactDownload.State.RUNNING){task.pause();renderDownload();}
   else if(task.state==ArtifactDownload.State.PAUSED||task.state==ArtifactDownload.State.FAILED){
    if(task.resumable())runDownload(task);else{String target=task.url,base=task.origin;cancelDownload();startDownload(target,base);}
@@ -143,6 +143,19 @@ public final class MainActivity extends Activity {
    choosingDownload=task;renderDownload();Intent save=new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("application/octet-stream").putExtra(Intent.EXTRA_TITLE,task.name);
    try{startActivityForResult(save,32);}catch(Exception e){choosingDownload=null;renderDownload();message(L("没有可用的文件保存器"));}
   }
+ }
+ void openDownload(){
+  ArtifactDownload.Task task=downloadTask;if(task==null||task.state!=ArtifactDownload.State.COMPLETE||savingDownload||choosingDownload!=null||openingDownload)return;
+  openingDownload=true;renderDownload();downloads.execute(()->{
+   Uri uri=null;try{uri=DownloadProvider.prepare(this,task.result());}catch(java.io.IOException ignored){}
+   final Uri target=uri;runOnUiThread(()->{
+    openingDownload=false;if(isFinishing()||isDestroyed())return;renderDownload();if(task!=downloadTask)return;
+    if(target==null){message(L("打开失败，请重试或保存文件"));return;}
+    Intent view=new Intent(Intent.ACTION_VIEW).setDataAndType(target,getContentResolver().getType(target)).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+    view.setClipData(ClipData.newRawUri("",target));
+    try{startActivity(view);}catch(ActivityNotFoundException e){message(L("暂无可打开此文件的应用"));}catch(Exception e){message(L("打开失败，请重试或保存文件"));}
+   });
+  });
  }
  void cancelDownload(){if(downloadTask!=null){downloadTask.cancel();downloadTask=null;}renderDownload();}
  void saveDownload(int result,Intent data){

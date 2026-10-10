@@ -11,9 +11,9 @@ import java.util.Locale;
 final class DownloadCard extends LinearLayout {
  private final MainActivity activity;private final FrameLayout parent;
  private final TextView title,details;private final ProgressBar progress;private final LinearLayout actions;
- private final Button primary,cancel,toggle;
+ private final Button primary,open,cancel,toggle;
  private boolean collapsed,dragged;private float downX,downY,startX,startY;private boolean moving;
- DownloadCard(MainActivity activity,FrameLayout parent,Runnable action,Runnable dismiss){
+ DownloadCard(MainActivity activity,FrameLayout parent,Runnable action,Runnable openFile,Runnable dismiss){
   super(activity);this.activity=activity;this.parent=parent;
   setOrientation(VERTICAL);setPadding(dp(12),dp(8),dp(12),dp(10));
   android.graphics.drawable.GradientDrawable face=activity.background(0xfff6f9fe,16);face.setStroke(dp(1),0xffd7e1ef);setBackground(face);setElevation(dp(8));
@@ -29,7 +29,8 @@ final class DownloadCard extends LinearLayout {
   }});
   progress=new ProgressBar(activity,null,android.R.attr.progressBarStyleHorizontal);progress.setMax(1000);progress.setProgressTintList(ColorStateList.valueOf(0xff477ccc));progress.setProgressBackgroundTintList(ColorStateList.valueOf(0xffdce6f4));addView(progress,new LinearLayout.LayoutParams(-1,dp(4)));
   details=activity.text("",12);details.setTextColor(0xff63738a);details.setPadding(0,dp(8),0,dp(4));addView(details,new LinearLayout.LayoutParams(-1,-2));
-  actions=new LinearLayout(activity);primary=control("",action);primary.setTextColor(0xff3268b5);cancel=control("",dismiss);LinearLayout.LayoutParams first=new LinearLayout.LayoutParams(0,dp(40),1);first.setMarginEnd(dp(8));actions.addView(primary,first);actions.addView(cancel,new LinearLayout.LayoutParams(0,dp(40),1));addView(actions);
+  actions=new LinearLayout(activity);open=control(L("打开"),openFile);open.setVisibility(GONE);LinearLayout.LayoutParams opening=new LinearLayout.LayoutParams(0,dp(40),1);opening.setMarginEnd(dp(8));actions.addView(open,opening);
+  primary=control("",action);primary.setTextColor(0xff3268b5);cancel=control("",dismiss);LinearLayout.LayoutParams first=new LinearLayout.LayoutParams(0,dp(40),1);first.setMarginEnd(dp(8));actions.addView(primary,first);actions.addView(cancel,new LinearLayout.LayoutParams(0,dp(40),1));addView(actions);
   parent.addView(this,new FrameLayout.LayoutParams(dp(320),-2,Gravity.TOP|Gravity.LEFT));setVisibility(GONE);
   parent.addOnLayoutChangeListener((v,l,t,r,b,ol,ot,or,ob)->place());addOnLayoutChangeListener((v,l,t,r,b,ol,ot,or,ob)->place());
  }
@@ -49,20 +50,23 @@ final class DownloadCard extends LinearLayout {
   float bottom=Math.max(top,parent.getHeight()-parent.getPaddingBottom()-getHeight()-dp(88));
   setX(dragged?Math.max(left,Math.min(right,getX())):right);setY(dragged?Math.max(top,Math.min(bottom,getY())):bottom);
  }
- void render(ArtifactDownload.Task task,boolean saving){
+ void render(ArtifactDownload.Task task,boolean saving,boolean opening){
   if(task==null){setVisibility(GONE);return;}
   if(getVisibility()!=VISIBLE)showTask();
   ArtifactDownload.State state=task.state;boolean active=state==ArtifactDownload.State.RUNNING||state==ArtifactDownload.State.READY||state==ArtifactDownload.State.PAUSING;
   String size=bytes(task.downloaded)+(task.total>=0?" / "+bytes(task.total):"");
-  String phase=state==ArtifactDownload.State.COMPLETE?L("下载完成"):state==ArtifactDownload.State.PAUSED?L("已暂停"):state==ArtifactDownload.State.FAILED?L("下载中断"):state==ArtifactDownload.State.PAUSING?L("正在暂停…"):L("正在下载…");
+  String phase=state==ArtifactDownload.State.COMPLETE?L("下载完成，可打开或保存"):state==ArtifactDownload.State.PAUSED?L("已暂停"):state==ArtifactDownload.State.FAILED?L("下载中断"):state==ArtifactDownload.State.PAUSING?L("正在暂停…"):L("正在下载…");
+  if(opening)phase=L("正在打开…");
+  boolean busy=saving||opening;
   if(saving)phase=L("正在保存…");
   String percent=task.total>0?String.format(Locale.ROOT,"%d%%",Math.min(100,task.downloaded*100/task.total)):state==ArtifactDownload.State.COMPLETE?"100%":"";
   title.setText((collapsed&&!percent.isEmpty()?percent+" · ":"")+task.name);
   title.setContentDescription(task.name+" · "+phase+" · "+size);
   progress.setIndeterminate(active&&task.total<0);progress.setProgress(task.total>0?(int)Math.min(1000,task.downloaded*1000/task.total):state==ArtifactDownload.State.COMPLETE?1000:0);
   details.setText(phase+" · "+size+(state==ArtifactDownload.State.RUNNING?" · "+bytes((long)task.bytesPerSecond)+"/s":"")+(state==ArtifactDownload.State.FAILED&&!task.error.isEmpty()?"\n"+L(task.error):""));
-  primary.setText(L(state==ArtifactDownload.State.COMPLETE?"保存":active?"暂停":task.resumable()?"继续":"重新下载"));primary.setEnabled(!saving&&state!=ArtifactDownload.State.PAUSING&&state!=ArtifactDownload.State.READY);
-  cancel.setText(L(state==ArtifactDownload.State.COMPLETE?"关闭":"取消"));cancel.setEnabled(!saving);
+  primary.setText(L(state==ArtifactDownload.State.COMPLETE?"保存":active?"暂停":task.resumable()?"继续":"重新下载"));primary.setEnabled(!busy&&state!=ArtifactDownload.State.PAUSING&&state!=ArtifactDownload.State.READY);
+  cancel.setText(L(state==ArtifactDownload.State.COMPLETE?"关闭":"取消"));cancel.setEnabled(!busy);
+  open.setText(L("打开"));open.setVisibility(state==ArtifactDownload.State.COMPLETE?VISIBLE:GONE);open.setEnabled(!busy);
   setCollapsed(collapsed);
  }
  private static String bytes(long value){if(value<1024)return value+" B";if(value<1024*1024)return String.format(Locale.ROOT,"%.1f KB",value/1024d);return String.format(Locale.ROOT,"%.1f MB",value/(1024d*1024));}
