@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="description" content="Codex Mobile Bridge 连接配置指南：局域网、Cloudflare 临时与固定隧道、自有服务器 SSH、NAS 反向代理的图解步骤与排查。">
+<meta name="description" content="Codex Mobile Bridge 连接配置指南：局域网、Cloudflare 临时与固定隧道、Tailscale、自有服务器 SSH、NAS 反向代理的图解步骤与排查。">
 <title>连接配置指南 · Codex Mobile Bridge</title>
 <link rel="icon" href="./assets/icon.png">
 <link rel="stylesheet" href="./site.css?v=20261006-setup">
-<link rel="stylesheet" href="./setup.css?v=20261006">
+<link rel="stylesheet" href="./setup.css?v=20261010-tailscale">
 <script defer src="./setup.js?v=20261006">
 </script>
 </head>
@@ -42,6 +42,7 @@
 <strong data-en="Temporary HTTPS · Recommended" >临时 HTTPS · 推荐</strong>
 <span data-en="No server or domain" >没有服务器，也没有域名</span>
 </a>
+<a href="#tailscale" data-method="tailscale"><strong data-en="Tailscale · Source preview">Tailscale · 源码预览</strong><span data-en="Fixed HTTPS, no server">固定 HTTPS，无需服务器</span></a>
 <a href="#cloudflare" data-method="cloudflare">
 <strong data-en="Named Cloudflare Tunnel · Advanced" >Cloudflare 固定域名 · 进阶</strong>
 <span data-en="Domain, without server maintenance" >有域名，希望少管服务器</span>
@@ -161,6 +162,38 @@
 </div>
 </article>
 <p data-en="For a stable address, use a named Cloudflare Tunnel or your own server, rather than repeatedly redirecting a domain to temporary URLs." class="callout">需要长期固定地址时，使用 Cloudflare 固定隧道或自有服务器方案；不要靠域名反复重定向到临时地址。</p>
+</section>
+<section class="setup-panel" id="tailscale" data-setup-panel="tailscale" aria-labelledby="tailscale-title">
+<h2 data-en="Tailscale: keep one HTTPS address" id="tailscale-title">Tailscale：保留一个固定 HTTPS 地址</h2>
+<p class="panel-intro" data-en="No server, domain purchase or invitation required. Install the official client on the work computer and connect it to the gateway.">无需自建服务器、购买域名或邀请码。在工作电脑安装官方客户端，再从网关接入。</p>
+<p class="example-note" data-en="Available in the source preview branch; public app downloads have not changed. Windows and Linux still need validation on the target devices.">本功能已提供于源码预览分支，公开安装包暂未更新。Windows、Linux 仍需在目标设备上实测。</p>
+<p class="actions"><a class="button" data-en="View source preview" href="https://github.com/try2love/codex-mobile-bridge/tree/refactor/platform-feature-layout">查看源码预览</a></p>
+<figure class="network-map"><div class="map-flow">
+<div class="map-node"><span class="map-index">1</span><strong data-en="Phone / browser">手机／浏览器</strong><small data-en="https://device.tailnet.ts.net">https://设备名.网络名.ts.net</small></div>
+<span class="map-arrow" aria-hidden="true">→</span>
+<div class="map-node"><span class="map-index">2</span><strong>Tailscale Funnel</strong><small data-en="Public HTTPS entry">公网 HTTPS 入口</small></div>
+<span class="map-arrow" aria-hidden="true">→</span>
+<div class="map-node"><span class="map-index">3</span><strong data-en="Work computer">工作电脑</strong><small data-en="Gateway → enabled desktop client">网关 → 已启用的桌面客户端</small></div>
+</div><figcaption data-en="Funnel allows public browser access without Tailscale on the phone. Serve is private and requires the visiting device to connect to the same Tailscale network.">Funnel 允许普通浏览器访问，手机不必安装 Tailscale。Serve 为私有访问，访问设备需接入同一 Tailscale 网络。</figcaption></figure>
+<article class="guide-step"><div class="step-head"><span class="step-number">01</span><div><span class="actor" data-en="Work computer · Tailscale">工作电脑 · Tailscale</span><h3 data-en="Install, sign in and connect">安装、登录并开启连接</h3></div></div><div class="step-body">
+<p data-en="Install Tailscale 1.52 or newer from the official source and sign in. On macOS, use the standalone distribution for Funnel and allow its network extension. On Windows or Linux, make sure the official service is running and this user can use the CLI.">从官方来源安装 Tailscale 1.52 或更高版本并登录。macOS 使用官网独立安装包来运行 Funnel，并允许系统网络扩展；Windows、Linux 需确保官方服务运行，且当前用户可以调用命令行客户端。</p>
+<p><a href="https://tailscale.com/download" data-en="Official downloads ↗">官方下载 ↗</a> · <a href="https://tailscale.com/docs/features/tailscale-funnel" data-en="Funnel requirements ↗">Funnel 使用条件 ↗</a></p>
+</div></article>
+<article class="guide-step"><div class="step-head"><span class="step-number">02</span><div><span class="actor" data-en="Work computer · Gateway">工作电脑 · 网关</span><h3 data-en="Detect and save the fixed address">检测并保存固定地址</h3></div></div><div class="step-body">
+<p data-en="In Network access, add Fixed HTTPS · Tailscale, select Public access · Funnel and save. Click Detect Tailscale and read URL, then save again. Keep gateway sign-in enabled. The HTTPS address is supplied by Tailscale; no DNS record or certificate upload is needed.">在“网络访问”添加“固定 HTTPS · Tailscale”，选择“公网访问 · Funnel”并保存。点击“检测 Tailscale 并读取地址”，再保存一次。保留网关登录验证。HTTPS 地址由 Tailscale 提供，无需填写 DNS 解析或上传证书。</p>
+<p class="checkpoint" data-en="Check: the gateway displays your actual .ts.net address. Do not enter the illustrative address above.">确认结果：网关显示属于这台电脑的 .ts.net 地址。不要填写上方图示中的示例地址。</p>
+</div></article>
+<article class="guide-step"><div class="step-head"><span class="step-number">03</span><div><span class="actor" data-en="Work computer · Gateway and browser">工作电脑 · 网关与浏览器</span><h3 data-en="Start and complete first-time authorization">启动并完成首次授权</h3></div></div><div class="step-body">
+<p data-en="Start the gateway. If authorization is requested, click Continue Tailscale authorization and approve HTTPS / Funnel on the official page. Your Tailscale administrator may need to enable these features. First-time public DNS propagation can take up to 10 minutes.">启动网关。如提示授权，点击“继续 Tailscale 授权”，在官方页面启用 HTTPS／Funnel；无权限时需要 Tailscale 网络管理员启用。首次开通的公网 DNS 最多可能需要 10 分钟生效。</p>
+<p data-en="Use port 443 by default. If another Tailscale service owns it, choose 8443 or 10000, then detect and save again. The gateway does not overwrite existing services or log you out of Tailscale.">默认使用 443 端口。若已有 Tailscale 服务占用，可选择 8443 或 10000，再检测并保存。网关不会覆盖原有服务，也不会退出 Tailscale 账号。</p>
+</div></article>
+<article class="guide-step"><div class="step-head"><span class="step-number">04</span><div><span class="actor" data-en="Phone · Browser or app">手机 · 浏览器或 App</span><h3 data-en="Verify over cellular data">用蜂窝网络完成验证</h3></div></div><div class="step-body">
+<p data-en="Check the fixed entry in the gateway, then scan its pairing code or sign in from your phone. Turn off Wi-Fi and disconnect phone Tailscale when testing Funnel, so the test uses the public route. Verify chat loading, sending, downloads and reconnection.">先在网关点击“检测固定入口”，再用手机扫码配对或登录。验证 Funnel 时关闭 Wi-Fi，并断开手机上的 Tailscale，以确认普通公网访问。测试聊天加载、发送、文件下载和重新连接。</p>
+<p class="checkpoint" data-en="Keep the same device identity and name to retain the address after normal restarts. Renaming or removing the device, or changing accounts, requires detecting and saving again.">保留设备身份和名称时，正常重启后地址不变。设备改名、删除或更换账号后，需要重新检测并保存。</p>
+</div></article>
+<aside class="callout"><p data-en="The computer must stay awake and the gateway must keep running. Funnel has bandwidth limits and does not guarantee access speed on mainland Chinese networks; verify both cellular data and Wi-Fi. Its built-in HTTPS entry uses .ts.net rather than your own domain.">电脑需保持唤醒、网关需持续运行。Funnel 存在带宽限制，不保证中国境内网络的访问速度，请分别验证蜂窝流量和 Wi-Fi。内置 HTTPS 入口使用 .ts.net，不是自己的域名。</p></aside>
+<p class="example-note" data-en="Private alternative: choose Private network · Serve. Only authorized devices connected to the same Tailscale network can visit. The mobile app does not include a built-in Tailscale client.">私有访问：选择“私有组网 · Serve”，只有已接入同一 Tailscale 网络并获授权的设备可以访问。手机 App 未内嵌 Tailscale 客户端。</p>
+<p><a href="https://tailscale.com/docs/features/tailscale-serve" data-en="Official Serve guide ↗">Serve 官方说明 ↗</a></p>
 </section>
 <section class="setup-panel" id="cloudflare" data-setup-panel="cloudflare" aria-labelledby="cloudflare-title">
 <h2 data-en="Named Cloudflare Tunnel: a domain is enough" id="cloudflare-title">Cloudflare 固定域名：只有域名也能配置</h2>
@@ -415,6 +448,8 @@
 </tbody>
 </table>
 </div>
+<p class="callout" data-en="Source preview: the phone URL is optional. For a domain, point DNS to the server public IP and configure HTTPS. Leave it blank to use the public IP from the SSH server address (or alias HostName); saving fills in https://public-IP. The server still needs a reverse proxy and a trusted certificate whose Subject Alternative Name includes that IP. SSH alone is not enough. This does not change the public downloads.">源码预览版的“手机访问地址”可留空。使用域名时，需要自行解析到服务器公网 IP 并配置 HTTPS；留空时，从 SSH 服务器地址（或别名的 HostName）中的公网 IP 自动填入 https://公网IP。服务器仍需配置反向代理，以及 Subject Alternative Name 包含该 IP 的受信任证书；仅有 SSH 不能直接访问。公开安装包暂未更新。</p>
+<p class="example-note"><a href="https://github.com/try2love/codex-mobile-bridge/blob/refactor/platform-feature-layout/docs/server-ssh.md" data-en="Read the public IP HTTPS requirements ↗">查看公网 IP HTTPS 的准备条件 ↗</a></p>
 <article class="guide-step" id="server-inspect">
 <div class="step-head">
 <span class="step-number">01</span>
