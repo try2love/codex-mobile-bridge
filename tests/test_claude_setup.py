@@ -313,6 +313,7 @@ class ClaudeWindowsProfiles(unittest.TestCase):
         self.assertFalse(self.third.exists())
 
 
+@patch('bridge.clients.claude.adapter.sys.platform', 'darwin')
 class ClaudeNativeConnection(unittest.TestCase):
     @staticmethod
     def idle_desktop(*, connected):

@@ -103,7 +103,7 @@ class ClientLaunchTests(unittest.TestCase):
 class ProcessLifecycleTests(unittest.TestCase):
     def test_mac_normal_quit_has_no_activation_or_keyboard_automation(self):
         from bridge.platforms.macos.desktop import quit_application
-        executable = Path('/Applications/Fixture.app/Contents/MacOS/Fixture')
+        executable = Path('/Applications/Fixture.app/Contents/MacOS/Fixture').resolve()
         with patch('bridge.platforms.macos.desktop.subprocess.run', return_value=Mock(
                 returncode=0, stdout='{"state":"submitted"}')) as run:
             quit_application(executable, pids=[11])
