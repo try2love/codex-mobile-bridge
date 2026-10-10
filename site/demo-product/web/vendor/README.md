@@ -6,7 +6,7 @@
 - 文件：`dist/browser/markdown-it.umd.min.js`，原样保存为 `markdown-it.min.js`
 - SHA-256：`635972b985228e8af9f0143647c68616b7a3bb09f6946e7e4a52e43dcf5e7be5`
 
-浏览器从网关本机加载，无需 CDN 或前端构建步骤。升级时同时更新版本、许可证和校验值，并运行 `tests/markdown.test.js` 的浏览器检查。
+浏览器从网关本机加载，无需 CDN 或前端构建步骤。升级时同时更新版本、许可证和校验值，并运行 `tests/browser/markdown.browser.js` 的浏览器检查。
 
 ## KaTeX
 
@@ -24,4 +24,4 @@
 - 包完整性：`sha512-4hhkiX8/gus+6e53PLCUmUrsa6ZWGgJW2XCW6O0ASvZUiezIK900ZicinTDtG3kAO2kon7oUA/ReWmpW2FByxg==`
 - `texmath.js` SHA-256：`926e075a1745e1019813b8418b90183feea0c7b3782c85dceb4f246da999edc6`
 
-KaTeX 脚本、样式和字体原样保存到 `katex/`；texmath 原样保存为 `texmath.js`。所有资源由本机网关提供，运行时不访问 CDN。公式升级后运行 `tests/math.test.js`，检查代码隔离、危险 TeX、流式输入和窄屏公式滚动。
+KaTeX 脚本、样式和字体原样保存到 `katex/`；texmath 原样保存为 `texmath.js`。所有资源由本机网关提供，运行时不访问 CDN。公式升级后运行 `tests/browser/math.browser.js`，检查代码隔离、危险 TeX、流式输入和窄屏公式滚动。

@@ -11,7 +11,7 @@
 
 **[Product guide and interactive demos ↗](https://try2love.github.io/codex-mobile-bridge/?lang=en)** · **[Download desktop and mobile apps](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.0.0)**
 
-[![Desktop gateway: clients and access, with demo data](site/assets/desktop-overview.png)](https://try2love.github.io/codex-mobile-bridge/?lang=en)
+[![Desktop gateway: clients and access, with demo data](site/assets/v2-clients.png)](https://try2love.github.io/codex-mobile-bridge/?lang=en)
 
 Continue **Codex, Claude Code / Cowork and DeepSeek Harness** sessions from a phone app or browser. Each client keeps its own chats, accounts and workspaces. Create chats within the selected client, read replies, send attachments, select available models/reasoning and respond to approval requests.
 

@@ -374,6 +374,7 @@ class ClaudeConnectionProbe(unittest.TestCase):
             prepare.assert_not_called(); close.assert_not_called(); native.assert_not_called()
         finally: self.adapter.loop.call_soon_threadsafe(self.desktop.lock.release)
 
+    @patch('bridge.clients.claude.adapter.sys.platform', 'darwin')
     def test_pending_rpc_is_rechecked_after_screen_saver_wait(self):
         self.reply({'connected': False})
         def action(name, **kwargs):

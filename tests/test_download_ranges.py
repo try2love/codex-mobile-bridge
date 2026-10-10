@@ -147,7 +147,10 @@ class DownloadHttpTests(unittest.TestCase):
         self.assertEqual(self.get({**auth, 'Host': 'evil.test', 'Range': 'bytes=0-9'})[0], 403)
         self.assertEqual(self.get(auth, self.url.replace('example.bin', '../outside'))[0], 403)
         link = self.root / 'link'; link.symlink_to(self.file)
-        self.assertEqual(self.get(auth, self.url.replace('example.bin', 'link'))[0], 400)
+        # Windows rejects reparse points explicitly; POSIX rejects O_NOFOLLOW opens.
+        status, _, body = self.get(auth, self.url.replace('example.bin', 'link'))
+        self.assertEqual(status, 403 if os.name == 'nt' else 400)
+        self.assertNotIn(self.data[:32], body)
         with self.file.open('wb') as stream: stream.truncate(MAX_TRANSFER + 1)
         self.assertEqual(self.get({**auth, 'Range': 'bytes=0-9'})[0], 400)
         self.server.bridge.artifact = lambda thread, identifier: {'path': self.file, 'name': 'example.bin', 'image': False}
@@ -173,7 +176,7 @@ class DownloadHttpTests(unittest.TestCase):
         self.server.bridge.artifact = artifact
         status, _, body = self.get({**self.login(), 'Range': 'bytes=0-3'},
                 '/api/sessions/' + support.THREAD + '/files/' + 'a' * 64)
-        self.assertEqual(status, 400)
+        self.assertEqual(status, 403 if os.name == 'nt' else 400)
         self.assertNotIn(b'forbidden', body)
 
 class FileActionsTests(unittest.TestCase):

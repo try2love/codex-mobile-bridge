@@ -3,6 +3,8 @@
 class CommandTerminalPanel {
   constructor(workbench, session, tab) {
     Object.assign(this, {workbench, session, tab}); this.disposed=false; this.cursor=0; this.output='';
+    this.visibility=()=>{clearTimeout(this.timer);if(document.hidden)this.readController?.abort();else if(this.running){if(this.polling)this.resumeRead=true;else this.poll();}};
+    document.addEventListener('visibilitychange',this.visibility);
     this.key='terminal:'+session.key;
     try { this.id=sessionStorage.getItem(this.key); } catch {}
     const n=(...args)=>workbench.node(...args), b=(...args)=>workbench.button(...args);
@@ -17,12 +19,12 @@ class CommandTerminalPanel {
     this.prompt=n('span','wb-terminal-prompt','$');this.prompt.setAttribute('aria-hidden','true');
     this.run=n('button','',BridgeI18n.t('运行 ↵'));this.run.type='submit';this.run.disabled=true;
     this.form.append(this.prompt,this.command,this.run);this.form.onsubmit=e=>{e.preventDefault();this.start();};
-    this.command.onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing&&!document.documentElement.classList.contains('bridge-mobile')&&innerWidth>720){e.preventDefault();this.form.requestSubmit();}};
+    this.command.onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing&&!BridgeHost.hasNativeLayout()&&!BridgeLayout.isCompactViewport(innerWidth)){e.preventDefault();this.form.requestSubmit();}};
     const help=n('details','wb-terminal-help');help.append(n('summary','',BridgeI18n.t('命令终端 · 使用说明')),n('p','',BridgeI18n.t('每条命令从项目目录运行，沿用当前系统用户权限。Enter 运行，Shift+Enter 换行。支持脚本与构建输出，暂不支持 vim、密码输入等交互式程序。单次最多运行 30 分钟。')));
     tab.body.append(head,this.location,this.screen,this.form,this.status,help);
     this.load();
   }
-  url(extra='') {return '/api/sessions/'+this.session.id+'/terminal?host='+encodeURIComponent(this.session.host)+extra;}
+  url(extra='') {return this.workbench.endpoint(this.session,'terminal')+extra;}
   async load() {
     try {
       const info=await this.workbench.request(this.url());if(this.disposed)return;
@@ -51,22 +53,28 @@ class CommandTerminalPanel {
     this.running=result.running;this.run.disabled=this.running;this.stop.disabled=!this.running;
     this.status.textContent=(result.running?BridgeI18n.t('运行中'):result.message||BridgeI18n.t('已结束 · 退出码 ')+result.exitCode)+(result.truncated?BridgeI18n.t(' · 仅保留最近输出'):'');
   }
-  schedule(){clearTimeout(this.timer);if(!this.disposed)this.timer=setTimeout(()=>this.poll(),document.hidden?5000:900);}
+  schedule(){clearTimeout(this.timer);if(!this.disposed&&!document.hidden&&!this.canceling)this.timer=setTimeout(()=>this.poll(),900);}
   async poll() {
+    if(this.disposed||document.hidden||this.polling||!this.running||this.canceling)return;
+    this.polling=true;clearTimeout(this.timer);const id=this.id,controller=this.readController=new AbortController();
     try {
-      const result=await this.workbench.request(this.url('&id='+this.id+'&after='+this.cursor));
-      if(this.disposed)return;this.apply(result);if(this.running)this.schedule();
+      const result=await this.workbench.request(this.url('&id='+this.id+'&after='+this.cursor),undefined,controller.signal);
+      if(this.disposed||controller.signal.aborted||this.id!==id)return;this.apply(result);
     } catch(e){
-      if(this.disposed)return;
+      if(this.disposed||controller.signal.aborted||this.id!==id)return;
       this.status.textContent=e.message;
       if(e.status===404){this.running=false;this.run.disabled=false;this.stop.disabled=true;this.id=null;this.remember();}
-      else this.schedule();
+    } finally {
+      this.polling=false;this.readController=null;
+      const resume=this.resumeRead;this.resumeRead=false;
+      if(resume&&!this.disposed&&!document.hidden&&!this.canceling)this.poll();else if(this.running)this.schedule();
     }
   }
   async cancel() {
-    if(!this.id)return;this.stop.disabled=true;
-    try {const result=await this.workbench.request(this.url(),{action:'stop',id:this.id});if(!this.disposed){this.apply({...result,output:'',cursor:this.cursor});this.schedule();}}
+    if(!this.id||this.canceling)return;this.canceling=true;this.stop.disabled=true;this.readController?.abort();clearTimeout(this.timer);
+    try {const result=await this.workbench.request(this.url(),{action:'stop',id:this.id,after:this.cursor});if(!this.disposed)this.apply(result);}
     catch(e){if(!this.disposed){this.status.textContent=e.message;this.stop.disabled=false;}}
+    finally{this.canceling=false;if(this.running)this.schedule();}
   }
-  dispose(){this.disposed=true;clearTimeout(this.timer);}
+  dispose(){this.disposed=true;document.removeEventListener('visibilitychange',this.visibility);this.readController?.abort();clearTimeout(this.timer);}
 }

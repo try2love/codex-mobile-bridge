@@ -12,7 +12,7 @@ class SideChatPanel {
     this.endButton=b(BridgeI18n.t('结束聊天'),async()=>{if(await this.end())this.load();});this.endButton.hidden=true;
     this.modelButton=b(BridgeI18n.t('模型与思考程度'),()=>this.modelSettings());
     this.skillsButton=b('Skill',()=>this.skills());this.skillsButton.className='tool-button';
-    this.permissionsButton=b(BridgeI18n.t('权限'),()=>this.permissions());this.permissionsButton.className='tool-button';
+    this.permissionsButton=b(BridgeI18n.t('权限'),()=>this.permissions());this.permissionsButton.className='tool-button';this.contextUsage=new ContextUsageControl();
     this.head.append(n('span','wb-side-caption',BridgeI18n.t('临时侧边聊天')),this.endButton);
     this.landing=n('div','wb-side-landing');
     this.help=n('p','wb-side-help',BridgeI18n.t('继承当前会话的上下文，单独讨论一个问题。主会话的任务不会被接续执行。'));
@@ -26,7 +26,7 @@ class SideChatPanel {
     const tools=n('div','composer-tools'),bottom=n('div','compose-bottom'),actions=n('div','compose-actions');
     this.modelButton.className='tool-button wb-side-model';
     this.toggle=b('',()=>this.collapse(!this.collapsed),BridgeI18n.t('收起输入区'));this.toggle.className='composer-toggle';this.toggle.setAttribute('aria-expanded','true');this.toggle.append(document.querySelector('#composer-toggle svg').cloneNode(true));
-    this.stopButton.className='stop';tools.append(this.modelButton,this.skillsButton,this.permissionsButton,this.toggle);
+    this.stopButton.className='stop';tools.append(this.modelButton,this.skillsButton,this.permissionsButton,this.contextUsage.button,this.toggle);
     this.composerBody=n('div','wb-side-composer-body');this.skillPills=n('div','skill-pills');
     this.attachmentList=n('div','attachment-list');this.fileInput=n('input');this.fileInput.type='file';this.fileInput.multiple=true;this.fileInput.hidden=true;
     this.attachButton=b('',()=>{},BridgeI18n.t('添加文件或图片'));this.attachButton.className='attach-button';
@@ -48,7 +48,8 @@ class SideChatPanel {
   resizeInput(){this.input.style.height='auto';this.input.style.height=Math.min(160,Math.max(48,this.input.scrollHeight))+'px';}
   collapse(value){this.collapsed=value;this.composerBody.hidden=value;this.form.classList.toggle('is-collapsed',value);this.toggle.setAttribute('aria-expanded',String(!value));const label=value?'展开输入区':'收起输入区';this.toggle.dataset.i18nTitle=label;this.toggle.dataset.i18nAriaLabel=label;this.toggle.title=BridgeI18n.t(label);this.toggle.setAttribute('aria-label',BridgeI18n.t(label));if(!value)this.resizeInput();}
   uploadUrl(child,id,operation=''){
-    return '/api/sessions/'+this.session.id+'/uploads'+(operation?'/'+encodeURIComponent(id)+'/'+operation:'')+'?host='+encodeURIComponent(this.session.host)+'&side='+encodeURIComponent(child)+(operation?'':'&id='+encodeURIComponent(id));
+    const path='/api/sessions/'+this.session.id+'/uploads'+(operation?'/'+encodeURIComponent(id)+'/'+operation:'')+'?host='+encodeURIComponent(this.session.host)+'&side='+encodeURIComponent(child)+(operation?'':'&id='+encodeURIComponent(id));
+    return window.BridgeRelayURL?.(path)||path;
   }
   async uploadFile(url,file){
     const response=await fetch(url,{method:'POST',credentials:'same-origin',headers:{'Content-Type':file.type||'application/octet-stream','X-CSRF-Token':this.workbench.csrf()},body:file});
@@ -111,6 +112,12 @@ class SideChatPanel {
   permissions(){
     const child=this.state.id,n=(...a)=>this.workbench.node(...a),dialog=this.dialog('会话权限'),error=n('p','error');
     dialog.append(n('p','muted',BridgeI18n.t('仅影响此侧边聊天，从下一轮生效。')));
+    if(this.state.linuxPermissionChecks===true){
+      permissionPicker(dialog,{load:()=>this.request({action:'linux-permission-options',id:child}),
+        save:async preset=>({confirmed:true,state:await this.request({action:'permissions',id:child,preset,confirmed:preset==='full-access'})}),
+        isCurrent:()=>!this.disposed&&this.state?.id===child&&this.state.connected===true,onSaved:result=>this.apply(result.state)});
+      return;
+    }
     for(const [preset,label,help] of [['ask','请求批准','需要额外权限时询问你。'],['auto-review','帮我批准','由 Codex 审核需要额外权限的操作。'],['full-access','完全访问权限','允许访问工作区外的文件和网络，无需逐次批准。']]){
       const button=this.workbench.button('',async()=>{
         if(preset==='full-access'&&!confirm(BridgeI18n.t('允许此会话完全访问电脑文件和网络？请仅在信任任务内容时开启。')))return;
@@ -149,7 +156,7 @@ class SideChatPanel {
   apply(state){
     if(this.disposed)return;
     if(this.state?.id&&this.state.id!==state.id){this.pending=null;this.creationId=uuid();this.input.value='';this.attachments.clear(this.attachments.key,this.attachments.ids());this.attachments.reset();this.selectedSkills.clear();this.skillChips();this.modeSelected=false;this.workMode.value='default';}
-    this.state=state;
+    this.state=state;this.contextUsage.update(state);
     if(state.id&&this.attachments.key!==state.id)this.attachments.open(state.id);
     if(state.id){this.modelButton.textContent=[state.model,state.effort].filter(Boolean).join(' · ')||BridgeI18n.t('模型与思考程度');delete this.modelButton.dataset.i18n;}
     if(!this.modeSelected)this.workMode.value=state.collaborationMode==='plan'?'plan':'default';
@@ -250,5 +257,5 @@ class SideChatPanel {
     catch(e){this.status.textContent=BridgeI18n.t(e.message);return false;}
     finally{this.busy=false;this.controls();}
   }
-  dispose(){this.disposed=true;clearTimeout(this.timer);this.input.value='';this.attachments.reset();this.messages.replaceChildren();}
+  dispose(){this.contextUsage.dispose();this.disposed=true;clearTimeout(this.timer);this.input.value='';this.attachments.reset();this.messages.replaceChildren();}
 }

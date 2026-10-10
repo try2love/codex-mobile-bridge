@@ -3,13 +3,16 @@
 class TerminalPanel {
   constructor(workbench, session, tab) {
     Object.assign(this, {workbench, session, tab});this.disposed=false;this.cursor=0;this.running=false;this.operations=[];
+    this.visibility=()=>{clearTimeout(this.timer);if(document.hidden)this.readController?.abort();else if(this.running){if(this.polling)this.resumeRead=true;else this.poll();}};
+    document.addEventListener('visibilitychange',this.visibility);
     this.key='pty:'+session.key;
     try{this.id=sessionStorage.getItem(this.key);}catch{}
     this.hadId=!!this.id;this.id ||= uuid();this.save();
+    this.tab.name=BridgeI18n.t('终端 · 连接中');this.workbench.paint();
     this.load();
   }
   save(){try{sessionStorage.setItem(this.key,this.id);}catch{}}
-  url(extra=''){return '/api/sessions/'+this.session.id+'/terminal?host='+encodeURIComponent(this.session.host)+'&mode=pty'+extra;}
+  url(extra=''){return this.workbench.endpoint(this.session,'terminal')+'&mode=pty'+extra;}
   async load(){
     try{
       const info=await this.workbench.request(this.url());if(this.disposed)return;
@@ -17,11 +20,11 @@ class TerminalPanel {
         this.fallback=new CommandTerminalPanel(this.workbench,this.session,this.tab);return;
       }
       this.render(info);
-      const result=this.hadId?await this.workbench.request(this.url('&id='+this.id+'&after=0')):
-        await this.workbench.request(this.url(),{action:'open',id:this.id,cols:this.term.cols,rows:this.term.rows});
+      if(this.hadId){this.running=true;await this.poll();return;}
+      const result=await this.workbench.request(this.url(),{action:'open',id:this.id,cols:this.term.cols,rows:this.term.rows});
       if(this.disposed){if(!this.hadId)this.workbench.request(this.url(),{action:'close',id:this.id}).catch(()=>{});return;}
       this.apply(result);this.schedule();
-    }catch(e){if(!this.disposed){if(!this.status)this.render({});this.status.textContent=BridgeI18n.t(e.message);this.reopen.hidden=false;}}
+    }catch(e){if(!this.disposed){if(!this.status)this.render({});this.status.textContent=BridgeI18n.t(e.message);this.reopen.hidden=false;this.tab.name=BridgeI18n.t('终端 · 未连接');this.workbench.paint();}}
   }
   render(info){
     const n=(...a)=>this.workbench.node(...a),b=(...a)=>this.workbench.button(...a);
@@ -29,6 +32,7 @@ class TerminalPanel {
     const head=n('div','wb-terminal-head');this.location=n('strong','',info.shell||BridgeI18n.t('连接终端…'));
     this.reopen=b(BridgeI18n.t('重新打开'),()=>this.restart());this.reopen.hidden=true;
     head.append(this.location,b(BridgeI18n.t('清屏'),()=>this.term.clear()),this.reopen);
+    this.shellHint=n('small','wb-terminal-shell-hint',BridgeI18n.t('CMD 跨盘切换请使用 cd /d。'));this.shellHint.hidden=!/(^|[\\/])cmd(?:\.exe)?$/i.test(info.shell||'');
     this.screen=n('div','wb-terminal-screen');this.screen.setAttribute("data-i18n-aria-label",'交互终端');this.screen.setAttribute('aria-label',BridgeI18n.t('交互终端'));
     this.status=n('p','wb-status');this.status.setAttribute('role','status');
     const keys=n('div','wb-terminal-keys');
@@ -38,7 +42,7 @@ class TerminalPanel {
     this.form.append(this.input,this.send);this.form.onsubmit=e=>{e.preventDefault();this.submit();};
     // Enter in the mobile composer ALWAYS inserts a newline. Submit is explicit.
     this.retry=b(BridgeI18n.t('重试未确认输入'),()=>{this.inputError=false;this.retry.hidden=true;this.flush();});this.retry.hidden=true;
-    this.tab.body.append(head,this.screen,keys,this.form,this.status,this.retry);
+    this.tab.body.append(head,this.shellHint,this.screen,keys,this.form,this.status,this.retry);
     this.term=new Terminal({fontSize:14,fontFamily:'Menlo, Consolas, monospace',cursorBlink:true,scrollback:2000,
       theme:{background:'#11151b',foreground:'#e2e8f0',cursor:'#7ee0b6'},allowProposedApi:false,
       linkHandler:{activate:()=>{}},disableStdin:true});
@@ -49,7 +53,7 @@ class TerminalPanel {
     this.term.onResize(({cols,rows})=>{clearTimeout(this.resizeTimer);this.resizeTimer=setTimeout(()=>{if(this.running&&!this.disposed)this.workbench.request(this.url(),{action:'resize',id:this.id,cols,rows}).catch(e=>this.status.textContent=BridgeI18n.t(e.message));},120);});
     this.observer=new ResizeObserver(()=>this.layout());this.observer.observe(this.screen);this.layout();
   }
-  mobile(){return document.documentElement.classList.contains('bridge-mobile')||matchMedia('(pointer:coarse)').matches||matchMedia('(max-width:720px)').matches;}
+  mobile(){return BridgeHost.hasNativeLayout()||BridgeLayout.prefersTouchInput()||BridgeLayout.isCompactViewport();}
   layout(){
     if(this.disposed||!this.screen?.clientHeight||!this.screen.clientWidth)return;
     this.fit.fit();this.tab.body.classList.toggle('wb-terminal-touch',this.mobile());this.term.options.disableStdin=!this.running||this.mobile()||this.inputError;
@@ -83,28 +87,35 @@ class TerminalPanel {
     if(result.reset)this.term.reset();
     if(result.output)this.term.write(result.output);
     this.cursor=result.cursor;this.running=result.running;
+    const label=BridgeI18n.t(result.running?'终端 · 已连接':'终端 · 已退出');if(this.tab.name!==label){this.tab.name=label;this.workbench.paint();}
     this.location.textContent=result.shell||BridgeI18n.t('终端');this.location.title=result.cwd||'';
     if(!this.inputError)this.status.textContent=result.running?BridgeI18n.t('连续会话 · 关闭标签将结束终端'):result.message||BridgeI18n.t('终端已退出');
     this.send.disabled=!this.running||this.inputError;this.reopen.hidden=this.running;this.layout();
   }
-  schedule(){clearTimeout(this.timer);if(!this.disposed&&this.running)this.timer=setTimeout(()=>this.poll(),document.hidden||!this.workbench.isVisible(this.session,this.tab)?2000:150);}
+  schedule(){clearTimeout(this.timer);if(!this.disposed&&this.running&&!document.hidden&&!this.restarting)this.timer=setTimeout(()=>this.poll(),!this.workbench.isVisible(this.session,this.tab)?2000:150);}
   async poll(){
-    try{const result=await this.workbench.request(this.url('&id='+this.id+'&after='+this.cursor));if(!this.disposed)this.apply(result);}
-    catch(e){if(!this.disposed){this.status.textContent=BridgeI18n.t(e.message);if([401,403,404].includes(e.status)){this.running=false;this.send.disabled=true;this.reopen.hidden=false;}}}
-    this.schedule();
+    if(this.disposed||document.hidden||this.polling||!this.running||this.restarting)return;
+    this.polling=true;clearTimeout(this.timer);const id=this.id,controller=this.readController=new AbortController();
+    try{const result=await this.workbench.request(this.url('&id='+this.id+'&after='+this.cursor),undefined,controller.signal);if(!this.disposed&&!controller.signal.aborted&&this.id===id)this.apply(result);}
+    catch(e){if(!this.disposed&&!controller.signal.aborted&&this.id===id){this.status.textContent=BridgeI18n.t(e.message);if([401,403,404].includes(e.status)){this.running=false;this.send.disabled=true;this.reopen.hidden=false;}}}
+    finally{
+      this.polling=false;this.readController=null;
+      const resume=this.resumeRead;this.resumeRead=false;
+      if(resume&&!this.disposed&&!document.hidden)this.poll();else this.schedule();
+    }
   }
   async restart(){
-    if(this.restarting)return;this.restarting=true;
+    if(this.restarting)return;this.restarting=true;this.readController?.abort();clearTimeout(this.timer);
     try{
       // Close the previous id even after a lost open response; never orphan a shell.
       try{await this.workbench.request(this.url(),{action:'close',id:this.id});}catch(e){if(e.status!==404)throw e;}
       this.id=uuid();this.save();this.cursor=0;this.operations=[];this.inputError=false;this.retry.hidden=true;this.term.reset();
       const result=await this.workbench.request(this.url(),{action:'open',id:this.id,cols:this.term.cols,rows:this.term.rows});if(!this.disposed){this.apply(result);this.schedule();}
     }catch(e){if(!this.disposed)this.status.textContent=BridgeI18n.t(e.message);}
-    finally{this.restarting=false;}
+    finally{this.restarting=false;this.schedule();}
   }
   dispose(){
-    this.disposed=true;clearTimeout(this.timer);clearTimeout(this.resizeTimer);this.observer?.disconnect();this.term?.dispose();this.fallback?.dispose();
+    this.disposed=true;document.removeEventListener('visibilitychange',this.visibility);this.readController?.abort();clearTimeout(this.timer);clearTimeout(this.resizeTimer);this.observer?.disconnect();this.term?.dispose();this.fallback?.dispose();
     if(!this.fallback)this.workbench.request(this.url(),{action:'close',id:this.id}).catch(()=>{});
     try{sessionStorage.removeItem(this.key);}catch{}
   }

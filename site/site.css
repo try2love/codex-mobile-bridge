@@ -25,3 +25,6 @@
 
 .hero-v2 .hero-support{margin-top:18px;font-size:14px;line-height:1.8;color:var(--ink);max-width:650px}
 .hero-v2 h1{text-wrap:balance}
+
+/* Current client marks use the same restrained card treatment as the workbench. */
+.product-client-icon{width:36px;height:36px;object-fit:contain;margin-bottom:16px}

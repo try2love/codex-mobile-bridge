@@ -55,6 +55,7 @@ if(typeof document!=='undefined')(()=>{
     root.dataset.showActivity=String(settings.showActivity);
     root.dataset.showComputer=String(settings.showComputer);get('appearance-computer').checked=settings.showComputer;
     root.dataset.showPushplus=String(settings.showPushplus);root.dataset.showAccounts=String(settings.showAccounts);
+    root.dataset.showFileThumbnails=String(settings.showFileThumbnails);
     get('appearance-file-thumbnails').checked=settings.showFileThumbnails;
     window.BridgeWorkbench?.setThumbnails(settings.showFileThumbnails);
     get('appearance-pushplus').checked=settings.showPushplus;get('appearance-accounts').checked=settings.showAccounts;
@@ -112,7 +113,6 @@ if(typeof document!=='undefined')(()=>{
   document.querySelectorAll('[data-accent]').forEach(button=>button.onclick=()=>change({accent:button.dataset.accent}));
   get('appearance-pushplus').onchange=()=>change({showPushplus:get('appearance-pushplus').checked});
   get('appearance-accounts').onchange=()=>change({showAccounts:get('appearance-accounts').checked});
-  for(const [shortcut,target] of [['settings-pushplus','pushplus-settings'],['settings-accounts','accounts-button']])get(shortcut).onclick=()=>{get('appearance-dialog').close();get(target).click();};
   get('appearance-reset').onclick=()=>change(ChatAppearance.defaults);
   system.addEventListener('change',()=>{if(settings.theme==='system')preserveReading(apply);});
   window.BridgePresentation={resizeMessage,relabel,openChat:()=>{setCollapsed(false);requestAnimationFrame(resizeMessage);},showError:()=>setCollapsed(false)};

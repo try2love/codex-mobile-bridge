@@ -8,14 +8,15 @@ class SessionActivity {
       const key=this.id(row),previous=this.rows[key],terminal=['completed','failed','interrupted'].includes(row.turnStatus);
       if(!row.connected){if(previous)previous.offline=true;continue;}
       const token=terminal&&row.turnId?row.turnId+':'+row.turnStatus:previous?.token||null;
-      const pending=token&&previous&&(token!==previous.token||previous.pending)?token:null;
-      this.rows[key]={status:row.status,turnId:row.turnId||previous?.turnId,turnStatus:row.turnStatus||previous?.turnStatus,token,pending:visible===key?null:pending,offline:false};
+      const pending=token&&previous&&(previous.turnKnown||previous.token||previous.status==='active')&&(token!==previous.token||previous.pending)?token:null;
+      this.rows[key]={status:row.status,turnId:row.turnId||previous?.turnId,turnStatus:row.turnStatus||previous?.turnStatus,turnKnown:!!row.turnStatus||previous?.turnKnown||false,token,pending:visible===key?null:pending,offline:false};
     }
     this.save();
   }
   read(key){if(this.rows[key]){this.rows[key].pending=null;this.save();}}
   indicator(key){
     const row=this.rows[key];if(!row)return null;
+    if(row.offline)return {kind:'unknown',label:'运行状态暂不可用'};
     if(row.status==='active')return {kind:row.offline?'unknown':'running',label:row.offline?'运行状态暂不可用':'运行中'};
     if(row.pending)return {kind:row.turnStatus==='completed'?'completed':'ended',label:row.turnStatus==='completed'?'已完成，未查看':row.turnStatus==='failed'?'运行失败，未查看':'已停止，未查看'};
     return null;

@@ -2,7 +2,7 @@
 (()=>{
 const T=window.demoText,ids=['11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222'];
 const sessions=ids.map((id,i)=>({id,host:'local',hostLabel:T('此电脑','This computer'),title:i?T('整理项目文档','Organize project documentation'):T('优化产品首页','Refine the product homepage'),cwd:'/projects/website',projectName:'website',projectKey:'local|website',recency:Date.now()-i*600000}));
-const base={connected:true,status:'idle',model:'gpt-6.1-sol',provider:'openai',effort:'high',permissionMode:'ask',requests:[],submissions:[],historyComplete:true,serviceTier:'default',collaborationMode:'default'};
+const base={connected:true,status:'idle',model:'gpt-6.1-sol',provider:'openai',effort:'high',permissionMode:'ask',contextUsage:{usedTokens:24800,contextWindow:200000},requests:[],submissions:[],historyComplete:true,serviceTier:'default',collaborationMode:'default'};
 const meta=new Map(ids.map(id=>[id,{...base}]));
 let sequence=1,side={id:null,connected:false,turns:[],requests:[]},branch='feature/homepage',changes=[{path:'README.md',index:' ',worktree:'M',staged:false,unstaged:true,untracked:false,conflict:false},{path:'src/app.py',index:'M',worktree:' ',staged:true,unstaged:false,untracked:false,conflict:false}];
 const rows=new Map(ids.map(id=>[id,[{key:'u1',role:'user',text:T('整理一下首页优化的进度。','Summarize the homepage improvements.')},{key:'a1',role:'assistant',text:T('已经整理了导航和首屏文案。\n\n你可以打开 **文件** 检查源码，在 **Git** 面板审阅改动，或新建 **侧边聊天** 讨论另一个问题。\n\n```python\nprint("Hello, Bridge")\n```','Navigation and hero copy are ready.\n\nOpen **Files** to inspect the source, review changes in **Git**, or start a **side chat** to explore another question.\n\n```python\nprint("Hello, Bridge")\n```')}]]));
@@ -17,6 +17,9 @@ const unsupported=()=>new Response(JSON.stringify({error:T('此操作未在演�
 window.fetch=async(input,options={})=>{
  const url=new URL(input,location.href),p=url.pathname,b=typeof options.body==='string'?JSON.parse(options.body):{},id=/sessions\/([^/]+)/.exec(p)?.[1]||ids[0],m=meta.get(id)||base;
  if(options.signal?.aborted)throw new DOMException('Aborted','AbortError');
+ if(p==='/api/clients'){if(b.provider){const row=demoClients.find(c=>c.id===b.provider);if(row)Object.assign(row,{enabled:b.enabled,running:b.enabled,connected:b.enabled});}return response({clients:demoClients,gatewayRunning:true});}
+ if(p.startsWith('/api/desktop-sessions/')){const [provider,action]=p.slice('/api/desktop-sessions/'.length).split('/');return response(demoClientRequest(provider,action,b,url.searchParams.get('sessionId')));}
+ if(p==='/api/file-transfer')return response({clickDownloadMiB:100});
  if(p==='/api/auth')return response({authenticated:true,csrf:'demo',instanceId:'demo',passwordless:false,transport:'poll',computer:{name:'try2love · Mac',platform:'Darwin'}});
  if(p==='/api/accounts')return response(await fixtureAccountRequest({action:'list'}));
  if(p==='/api/account')return response(fixtureUsage());

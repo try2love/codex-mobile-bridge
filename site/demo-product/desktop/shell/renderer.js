@@ -3,15 +3,17 @@ const $=id=>document.getElementById(id),api=window.bridgeDesktop,t=BridgeI18n.t;
 let connectionDraft=[],savedConnections='[]',lanDraft=[],savedLan='[]';
 let snapshot,dirty=false,loading=false,startingUntil=0,activeTab='overview',savedFields={},feedbackKind='',lastFeedback;
 const busyActions=new Set();
-let saving=false,startPending=false,cloudflaredBusy=false,cloudflaredResult=null,cloudflaredProgress=null;
-const titles={overview:t('连接与状态'),network:t('网络与登录'),devices:t('登录设备'),notifications:t('手机通知'),advanced:t('运行配置'),accounts:t('账号与接入'),account:t('账户与额度'),updates:t('应用更新'),logs:t('运行日志')};
-const accountPanel=new AccountPanel({root:$('account-content'),button:$('account-button'),read:refresh=>api.account({action:'read',refresh}),consume:value=>api.account({action:'consume',...value}),onHidden:()=>{$('account-details').open=false;},visible:()=>activeTab==='accounts'&&!document.hidden&&$('account-details').open});
+let saving=false,startPending=false,stopPending=false,cloudflaredBusy=false,cloudflaredResult=null,cloudflaredProgress=null;
+const titles={'desktop-sessions':'桌面会话',harness:'Harness 官方 Web',overview:t('概览'),network:t('网络访问'),devices:t('登录与设备'),notifications:t('消息通知'),advanced:t('应用与维护'),accounts:t('客户端与接入'),account:t('账户与额度'),updates:t('应用更新'),logs:t('运行日志')};
+const accountPanel=new AccountPanel({root:$('account-content'),button:$('account-button'),read:refresh=>api.account({action:'read',refresh}),consume:value=>api.account({action:'consume',...value}),onConsumed:()=>{const id=accountsPanel?.value?.activeId;if(id)accountsPanel.perform({action:'details',id,section:'usage',refresh:true});},onHidden:()=>{$('account-details').open=false;},visible:()=>activeTab==='accounts'&&!document.hidden&&$('account-details').open});
 const watchPanel=new WatchPanel({root:$('watches'),change:value=>api.notificationWatches(value)});
+const harnessPanel=typeof HarnessPanel==='undefined'?null:new HarnessPanel({root:$('harness-panel'),api,t,feedback});
+const desktopConnections=typeof DesktopConnectionsPanel==='undefined'?null:new DesktopConnectionsPanel({root:$('desktop-connections'),api,feedback});
 function fields(){return [...$('settings').querySelectorAll('input,textarea,select')].filter(node=>!node.closest('#watches')&&!node.closest('#connections')&&!node.closest('#lan-addresses')&&node.id!=='connection-kind');}
 function fieldValues(){return Object.fromEntries(fields().map(node=>[node.id,node.type==='checkbox'?node.checked:node.value]));}
 function updateDirty(){
   const changed=new Set();
-  for(const node of fields())if((node.type==='checkbox'?node.checked:node.value)!==savedFields[node.id])changed.add(node.closest('[data-panel]').dataset.panel);
+  for(const node of fields())if((node.type==='checkbox'?node.checked:node.value)!==savedFields[node.id])changed.add(moduleName(node.closest('[data-panel]').dataset.panel));
   if(JSON.stringify(connectionDraft)!==savedConnections||JSON.stringify(lanDraft)!==savedLan)changed.add('network');
   dirty=changed.size>0;
   for(const button of document.querySelectorAll('[data-tab]')){
@@ -23,8 +25,8 @@ function updateDirty(){
   $('save').disabled=saving||busyActions.size>0;
   $('dirty-dot').hidden=!dirty;
   $('dirty-label').textContent=dirty?t('有未保存的修改'):t('配置已保存');
-  $('save-bar').hidden=!dirty&&!['network','notifications','advanced'].includes(activeTab);
-  document.querySelectorAll('[data-connection-action]').forEach(button=>button.disabled=dirty||busyActions.size>0||(!['inspect','diagnostics','credentials','clearCredentials'].includes(button.dataset.connectionAction)&&!connectionDraft.find(c=>c.id===button.dataset.connection)?.enabled));
+  $('save-bar').hidden=!dirty;
+  document.querySelectorAll('[data-connection-action]').forEach(button=>button.disabled=dirty||busyActions.size>0||(!['inspect','diagnostics','credentials','clearCredentials','tailscaleInspect','tailscaleAuthorize'].includes(button.dataset.connectionAction)&&!connectionDraft.find(c=>c.id===button.dataset.connection)?.enabled));
 }
 let toastTimer;
 function dismissToast(){clearTimeout(toastTimer);$('toast').hidden=true;}
@@ -57,7 +59,14 @@ function showError(error){
   feedback(error.message,true);
 }
 
-function tab(name){if(name==='account')name='accounts';activeTab=name;if(name==='accounts'){accountsPanel?.refresh();}document.querySelectorAll('[data-panel]').forEach(node=>node.hidden=node.dataset.panel!==name);document.querySelectorAll('[data-tab]').forEach(node=>node.classList.toggle('active',node.dataset.tab===name));$('page-title').textContent=t(titles[name]);if(snapshot)updateDirty();if(name==='logs')loadLogs();if(name==='devices')loadDevices();if(snapshot)renderUpdate();}
+function moduleName(name){return ({account:'accounts','desktop-sessions':'accounts',harness:'accounts',updates:'advanced',logs:'advanced'})[name]||name;}
+function tab(name){const requested=name;name=moduleName(name);activeTab=name;
+  if(name==='accounts'){desktopConnections?.refresh();desktopConnections?.refreshClients();harnessPanel?.refresh();accountsPanel?.refresh();}
+  document.querySelectorAll('[data-panel]').forEach(node=>node.hidden=moduleName(node.dataset.panel)!==name);
+  document.querySelectorAll('[data-tab]').forEach(node=>node.classList.toggle('active',node.dataset.tab===name));
+  window.GatewayLayout?.tab(name);$('page-title').textContent=t(titles[name]);if(snapshot)updateDirty();if(name==='advanced')loadLogs();if(name==='devices')loadDevices();if(snapshot)renderUpdate();
+  if(['desktop-sessions','harness'].includes(requested))document.querySelectorAll('[data-panel="'+requested+'"] > details').forEach(node=>node.open=true);
+}
 document.querySelectorAll('[data-tab]').forEach(button=>button.onclick=()=>tab(button.dataset.tab));
 document.querySelectorAll('[data-jump]').forEach(button=>button.onclick=()=>tab(button.dataset.jump));
 $('settings').oninput=$('settings').onchange=()=>{if(snapshot){updateDirty();}};
@@ -81,12 +90,17 @@ function renderLan(){
 $('lan').onchange=()=>{renderLan();updateDirty();};
 $('lan-scope').onchange=()=>{renderLan();updateDirty();};
 function input(id,value){$(id).value=value??'';}
+function renderGatewayActions(){
+  const running=!!snapshot?.runtime.running,starting=startPending||Date.now()<startingUntil;
+  for(const id of ['start','clients-start']){const button=$(id);if(button){button.disabled=!snapshot||running||starting||stopPending||cloudflaredBusy;button.setAttribute('aria-busy',String(startPending));}}
+  for(const id of ['stop','clients-stop']){const button=$(id);if(button){button.disabled=!running||startPending||stopPending;button.setAttribute('aria-busy',String(stopPending));}}
+  if(snapshot)window.GatewayLayout?.update(snapshot,{starting,stopping:stopPending});
+}
 function render(value,watchRevision=watchPanel.revision){
   if(snapshot&&(snapshot.runtime.instanceId!==value.runtime.instanceId||snapshot.dataDir!==value.dataDir))resetPairing();
-  if(snapshot&&snapshot.dataDir!==value.dataDir){resetSecretFields();watchPanel.clear();watchRevision=watchPanel.revision;devicesState=null;devicesDirty=false;$('device-list').replaceChildren();$('auto-blocks').replaceChildren();}
+  if(snapshot&&snapshot.dataDir!==value.dataDir){resetSecretFields();harnessPanel?.clear();if(activeTab==='accounts')harnessPanel?.refresh();watchPanel.clear();watchRevision=watchPanel.revision;devicesState=null;devicesDirty=false;$('device-list').replaceChildren();$('auto-blocks').replaceChildren();}
   if(snapshot&&(snapshot.runtime.instanceId!==value.runtime.instanceId||snapshot.dataDir!==value.dataDir))accountPanel.clear();
   snapshot=value;const running=value.runtime.running;
-  if(!running)accountPanel.clear();
   if(running||value.runtime.portOccupied)startingUntil=0;
   const starting=Date.now()<startingUntil;
   if(feedbackKind==='gateway'){
@@ -98,7 +112,7 @@ function render(value,watchRevision=watchPanel.revision){
   }
   $('status').textContent=running?t('运行中'):starting?t('启动中'):value.runtime.portOccupied?t('端口已占用'):t('未启动');
   $('status').classList.toggle('running',running);$('sidebar-status').textContent=$('status').textContent;
-  $('start').disabled=running||starting||cloudflaredBusy||startPending;$('stop').disabled=!running;
+  renderGatewayActions();
   $('login-summary').textContent=value.auth.mode==='none'?t('免密访问'):t('账号：')+value.auth.username;
   $('credentials').disabled=!value.credentialsAvailable;
   const notificationsEnabled=value.notifications.enabled||value.notifications.barkEnabled||value.notifications.pushplusEnabled;
@@ -145,7 +159,7 @@ function render(value,watchRevision=watchPanel.revision){
   $('network-lock').hidden=!running;
   for(const id of ['lan','local-access','port','connection-kind','add-connection','origins','cloudflared','codex-home','ipc-path','codex-bin'])$(id).disabled=running;
   document.querySelectorAll('[data-connection-field],[data-remove-connection]').forEach(node=>node.disabled=running);
-  for(const node of document.querySelectorAll('[data-connection-status]'))node.textContent=t([connectionSetupState.get(node.dataset.connectionStatus),value.externalStatus?.[node.dataset.connectionStatus]?.message].filter(Boolean).map(t).join(' ')||(!running?t('网关未启动。可先保存配置并导出部署包。'):t('网关正在运行；固定入口是否可用，请点击检测。')));
+  for(const node of document.querySelectorAll('[data-connection-status]'))node.textContent=t([connectionSetupState.get(node.dataset.connectionStatus),value.externalStatus?.[node.dataset.connectionStatus]?.message].filter(Boolean).map(t).join(' ')||(!running?t(connectionDraft.find(c=>c.id===node.dataset.connectionStatus)?.accessMode==='tailscale'?'先保存连接配置，然后检测 Tailscale。':'网关未启动。可先保存配置并导出部署包。'):t('网关正在运行；固定入口是否可用，请点击检测。')));
   document.querySelectorAll('[data-pick]').forEach(button=>button.disabled=running);
   renderLan();
   renderCloudflared();
@@ -167,8 +181,10 @@ $('settings').onsubmit=async event=>{
     feedback(dirty?t('已保存提交的配置，仍有新修改待保存。'):t('配置已保存。通知设置由新版网关自动读取，登录设置在下次启动生效。'));
   }catch(e){showError(e);}finally{saving=false;updateDirty();}
 };
-$('start').onclick=async()=>{if(cloudflaredBusy||startPending)return;if(dirty){feedback(t('请先保存配置，再启动网关。'),true);return;}$('start').disabled=true;startPending=true;try{if(snapshot?.preferences.tunnel){try{await api.checkCloudflared(snapshot.preferences.cloudflared);}catch(error){tab('advanced');$('cloudflared-repair').open=true;throw error;}}await saveAllConnectionCredentials(true);const result=unwrapValidation(await api.start());startingUntil=result.started?Date.now()+70000:0;feedback(result.message,false,'gateway');await refresh();}catch(e){startingUntil=0;showError(e);$('start').disabled=false;}finally{startPending=false;}};
-$('stop').onclick=async()=>{$('stop').disabled=true;try{feedback((await api.stop()).message,false,'gateway');startingUntil=0;await refresh();}catch(e){feedback(e.message,true);$('stop').disabled=false;}};
+async function startGateway(){if(cloudflaredBusy||startPending||stopPending||snapshot?.runtime.running||Date.now()<startingUntil)return;if(dirty){feedback(t('请先保存配置，再启动网关。'),true);return;}startPending=true;renderGatewayActions();try{if(snapshot?.preferences.tunnel){try{await api.checkCloudflared(snapshot.preferences.cloudflared);}catch(error){tab('network');$('cloudflared-repair').open=true;throw error;}}await saveAllConnectionCredentials(true);const result=unwrapValidation(await api.start());startingUntil=result.started?Date.now()+70000:0;feedback(result.message,false,'gateway');await refresh();}catch(e){startingUntil=0;showError(e);}finally{startPending=false;renderGatewayActions();}}
+async function stopGateway(){if(startPending||stopPending||!snapshot?.runtime.running)return;stopPending=true;renderGatewayActions();try{feedback((await api.stop()).message,false,'gateway');startingUntil=0;await refresh();}catch(e){feedback(e.message,true);}finally{stopPending=false;renderGatewayActions();}}
+for(const id of ['start','clients-start'])if($(id))$(id).onclick=startGateway;
+for(const id of ['stop','clients-stop'])if($(id))$(id).onclick=stopGateway;
 for(const [id,channel] of [['test-notification','ntfy'],['test-bark','bark'],['test-pushplus','pushplus'],['test-address','address']])$(id).onclick=async()=>{if(dirty){feedback(t('请先保存通知配置，再发送测试通知。'),true);return;}$(id).disabled=true;try{feedback((await api.testNotification({channel})).message);}catch(e){feedback(e.message,true);}finally{$(id).disabled=false;}};
 $('ntfy-help').onclick=()=>api.open('ntfy-help').catch(e=>feedback(e.message,true));
 $('bark-help').onclick=()=>api.open('bark-help').catch(e=>feedback(e.message,true));
@@ -196,6 +212,7 @@ function renderCloudflared(){
   $('quick-tunnel-state').hidden=!enabled;$('quick-setup').hidden=!enabled;
   $('quick-tunnel-state').textContent=quickTunnelMessage();
   document.querySelectorAll('[data-quick-status]').forEach(node=>node.textContent=quickTunnelMessage());
+  renderGatewayActions();
 }
 async function setupCloudflared(install){
   if(cloudflaredBusy)return;
@@ -213,12 +230,12 @@ async function setupCloudflared(install){
 $('install-cloudflared').onclick=()=>setupCloudflared(true);
 $('check-cloudflared').onclick=()=>setupCloudflared(false);
 $('cloudflare-help').onclick=()=>api.open('cloudflare-help').catch(error=>feedback(error.message,true));
-$('quick-setup').onclick=()=>{tab('advanced');$('cloudflared-repair').open=true;};
+$('quick-setup').onclick=()=>{tab('network');$('cloudflared-repair').open=true;};
 $('cloudflared').oninput=()=>{renderCloudflared();updateDirty();};
 async function loadLogs(){try{$('log-output').textContent=(await api.logs()).text||t('暂无运行日志');$('log-output').scrollTop=0;}catch(e){feedback(e.message,true);}}
 $('refresh-logs').onclick=loadLogs;
 for(const id of ['password','ntfy-token','bark-key','pushplus-token'])secretControl($(id));
-api.language().then(applyLanguage).catch(error=>feedback(error.message,true)).then(()=>refresh()).then(()=>{if(snapshot?.preferences.autoStart&&!snapshot.updateManaged&&!snapshot.runtime.running&&!snapshot.runtime.portOccupied)$('start').click();});
+api.language().then(applyLanguage).catch(error=>feedback(error.message,true)).then(()=>refresh()).then(()=>desktopConnections?.scan()).then(()=>{if(snapshot?.preferences.autoStart&&!snapshot.updateManaged&&!snapshot.runtime.running&&!snapshot.runtime.portOccupied)$('start').click();});
 let refreshTimer=setInterval(refresh,3000);
 document.addEventListener('visibilitychange',()=>{clearInterval(refreshTimer);refreshTimer=null;if(!document.hidden){refresh();refreshTimer=setInterval(refresh,3000);}});
 
@@ -250,7 +267,7 @@ function renderUpdate(){
   $('update-version').textContent=t('当前版本：')+value.current+(value.version?' → '+value.version:'');
   $('update-state').textContent=value.message?t(value.message):t(updateMessages[value.state]||'');
   $('update-badge').hidden=value.state!=='available';
-  $('update-banner').hidden=value.state!=='available'||activeTab==='updates';
+  $('update-banner').hidden=value.state!=='available'||activeTab==='advanced';
   $('update-banner').textContent=t('发现新版本，点击查看：')+(value.version||'');
   $('check-update').disabled=busy||value.state==='checking'||value.state==='unsupported';
   $('install-update').hidden=!value.version||['current','unsupported'].includes(value.state);
@@ -312,12 +329,12 @@ function renderDevices(value){
   for(const session of value.sessions){
     const row=document.createElement('div');row.className='device-row';
     const address=document.createElement('strong');address.textContent=session.ip;
-    const browser=document.createElement('p');browser.textContent=session.userAgent||t('未知浏览器');
+    const browser=document.createElement('p');browser.textContent=(session.trustedDevice?t('已绑定手机')+' · ':'')+(session.userAgent||t('未知浏览器'));
     const detail=document.createElement('p');detail.className='hint';
     detail.textContent=t(session.source==='proxy'?'代理 IP（未提供客户端地址）':session.source==='forwarded'?'经可信代理转发':'直连地址')+' · '+t('登录时间：')+date(session.created)+' · '+t('最近访问：')+date(session.lastSeen)+' · '+t('有效期至：')+(session.expires?date(session.expires):t('不自动过期'));
     const actions=document.createElement('div');actions.className='actions';
     for(const [label,action] of [['撤销登录','revoke'],['封禁此 IP','block'],['加入白名单','allow']]){
-      const button=document.createElement('button');button.type='button';button.textContent=t(label);button.disabled=devicesBusy;
+      const button=document.createElement('button');button.type='button';button.textContent=t(action==='revoke'&&session.trustedDevice?'解除绑定':label);button.disabled=devicesBusy;
       button.onclick=()=>{
         if(action==='allow'){
           input('ip-allowlist',[...new Set([...devicePolicy().allowlist,session.ip])].join('\n'));
@@ -353,6 +370,8 @@ $('refresh-devices').onclick=loadDevices;
 $('device-policy').oninput=$('device-policy').onchange=()=>{devicesDirty=true;$('device-feedback').textContent=t('IP 规则有未保存的修改。');};
 $('device-policy').onsubmit=event=>{event.preventDefault();return changeDevices({action:'save',policy:devicePolicy()});};
 
-const accountsPanel=typeof AccountsPanel==='undefined'?null:new AccountsPanel({root:$('accounts-content'),desktop:true,read:()=>api.accounts({action:'list'}),request:value=>api.accounts(value),onChanged:()=>accountPanel.clear(),onUpdate:value=>{accountPanel.schedule();$('account-button').hidden=value.current?.kind!=='chatgpt';if($('account-button').hidden)$('account-details').open=false;}});
+const accountsPanel=typeof AccountsPanel==='undefined'?null:new AccountsPanel({root:$('accounts-content'),desktop:true,read:()=>api.accounts({action:'list'}),request:value=>api.accounts(value),onReset:async()=>{$('account-details').open=true;await accountPanel.refresh();$('account-content').querySelector('.account-cards')?.scrollIntoView({block:'nearest'});},onChanged:()=>accountPanel.clear(),onUpdate:value=>{desktopConnections?.renderAccount(value);accountPanel.schedule();$('account-button').hidden=value.current?.kind!=='chatgpt';if($('account-button').hidden)$('account-details').open=false;}});
 
 $('account-details').ontoggle=()=>{if($('account-details').open)accountPanel.refresh();};
+
+if(accountsPanel){accountsPanel.current.after($('account-details'));}

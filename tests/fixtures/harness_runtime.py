@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import socket
+import socketserver
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -61,7 +62,13 @@ class Handler(BaseHTTPRequestHandler):
     do_PATCH = do_POST
     do_DELETE = do_POST
 
-server = ThreadingHTTPServer(('127.0.0.1', args.port), Handler)
+class FixtureServer(ThreadingHTTPServer):
+    def server_bind(self):
+        # This loopback fixture must not wait on the runner's reverse DNS.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+server = FixtureServer(('127.0.0.1', args.port), Handler)
 print('API_KEY=should_never_reach_gateway_logs', flush=True)
 print('dsh web: ' + f'http://127.0.0.1:{args.port}/?token=' + TOKEN, flush=True)
 server.serve_forever()

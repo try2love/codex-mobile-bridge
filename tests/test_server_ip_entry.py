@@ -9,6 +9,10 @@ from bridge.features.network import access, server_connection
 from bridge.app.desktop import Desktop
 
 ROOT = Path(__file__).resolve().parents[1]
+try:
+    import paramiko
+except ImportError:
+    paramiko = None
 
 
 def entry(**changes):
@@ -27,6 +31,7 @@ class ServerIPTests(unittest.TestCase):
                 dns.assert_not_called()
                 connect.assert_not_called()
 
+    @unittest.skipUnless(paramiko, 'Optional SSH build dependencies unavailable')
     def test_alias_uses_config_hostname_without_dns(self):
         with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as folder:
             home = Path(folder)

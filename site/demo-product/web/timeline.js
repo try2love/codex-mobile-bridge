@@ -118,7 +118,7 @@ class ChatTimeline {
     const activity=row.role==='activity',node=document.createElement(activity?'details':'div');
     node.className=activity?'activity timeline-row':'message timeline-row '+row.role;
     const heading=document.createElement(activity?'summary':'span');heading.className=activity?'':'who';
-    heading.textContent=activity?(row.title||row.kind)+(row.status==='inProgress'?timelineText(' · 进行中'):''):row.role==='user'?timelineText('你'):row.role==='error'?timelineText('执行错误'):'CODEX';node.append(heading);
+    heading.textContent=activity?(row.title||row.kind)+(row.status==='inProgress'?timelineText(' · 进行中'):''):row.role==='user'?timelineText('你'):row.role==='error'?timelineText('执行错误'):['CODEX',row.model&&[row.model,row.effort].filter(Boolean).join(' ')].filter(Boolean).join(' · ');node.append(heading);
     const body=document.createElement(activity?'pre':'div');body.className=activity?'activity-body':'message-body';
     const more=document.createElement('button');more.className='plain detail-more';more.type='button';
     const cached=this.details.get(row.key);
@@ -202,7 +202,7 @@ class ChatTimeline {
     for(const [key,entry] of this.nodes){
       const row=this.rows.get(key)?.row;if(!row)continue;
       const node=entry.node,heading=node.firstElementChild;
-      if(heading)heading.textContent=row.role==='activity'?(row.title||row.kind)+(row.status==='inProgress'?timelineText(' · 进行中'):''):row.role==='user'?timelineText('你'):row.role==='error'?timelineText('执行错误'):'CODEX';
+      if(heading)heading.textContent=row.role==='activity'?(row.title||row.kind)+(row.status==='inProgress'?timelineText(' · 进行中'):''):row.role==='user'?timelineText('你'):row.role==='error'?timelineText('执行错误'):['CODEX',row.model&&[row.model,row.effort].filter(Boolean).join(' ')].filter(Boolean).join(' · ');
       const more=node.querySelector('.detail-more');
       if(more&&!more.disabled)more.textContent=timelineText(this.details.has(key)?'继续加载正文':'展开完整内容');
       const attachment=node.querySelector('.timeline-attachments small.muted');

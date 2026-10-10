@@ -98,5 +98,5 @@ class PreviewLauncherTest(unittest.TestCase):
    for handle in (thread,parent):
     if handle:k.CloseHandle(handle)
    (folder/'result.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
-   print('Fixture result: '+str(folder/'result.json'),flush=True)
+   print('Fixture result: '+ascii(str(folder/'result.json')),flush=True)
 if __name__=='__main__':unittest.main()

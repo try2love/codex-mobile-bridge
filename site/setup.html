@@ -31,7 +31,7 @@
 <p data-en="SETUP / CONNECTIONS" class="eyebrow">SETUP / 连接配置</p>
 <h1 data-en="Connect every step." >把每一步，连起来。</h1>
 <p data-en="Choose how to connect, then follow the diagrams and steps. Each step explains where to work, the permissions needed and how to check success." class="lead">选好访问方式，照着图示和步骤配置。每一步都说明在哪操作、需要什么权限，以及看到什么才算成功。</p>
-<p data-en="Before starting: open Codex App and the gateway on your work computer and confirm local sign-in works. Named-tunnel controls, bundled cloudflared and staged SSH setup described here are in the local preview and are not yet released. Check which controls your installed version provides; the public download has not changed." class="example-note">准备开始：先在工作电脑打开 Codex App 和网关，确认本机或局域网可以登录。文中的固定隧道入口、内置 cloudflared 与分步 SSH 设置属于尚未发布的本地预览版；请先确认已安装版本具备对应选项。目前公开下载的版本未更新。</p>
+<p class="example-note" data-en="For v2.0.0: install and sign in to your chosen desktop clients, start the gateway and confirm local sign-in works before setting up remote access.">本页对应 v2.0.0：先安装并登录所需桌面客户端，启动网关并确认本机或局域网可以登录，再配置外网入口。</p>
 </div>
 <nav class="method-picker" aria-label="连接方式 / Connection methods">
 <a href="#lan" data-method="lan">
@@ -42,7 +42,7 @@
 <strong data-en="Temporary HTTPS · Recommended" >临时 HTTPS · 推荐</strong>
 <span data-en="No server or domain" >没有服务器，也没有域名</span>
 </a>
-<a href="#tailscale" data-method="tailscale"><strong data-en="Tailscale · Source preview">Tailscale · 源码预览</strong><span data-en="Fixed HTTPS, no server">固定 HTTPS，无需服务器</span></a>
+<a href="#tailscale" data-method="tailscale"><strong data-en="Tailscale · Fixed HTTPS">Tailscale · 固定 HTTPS</strong><span data-en="Fixed HTTPS, no server">固定 HTTPS，无需服务器</span></a>
 <a href="#cloudflare" data-method="cloudflare">
 <strong data-en="Named Cloudflare Tunnel · Advanced" >Cloudflare 固定域名 · 进阶</strong>
 <span data-en="Domain, without server maintenance" >有域名，希望少管服务器</span>
@@ -91,7 +91,7 @@
 </div>
 </div>
 <div class="step-body">
-<p data-en="Open Codex App. Enable LAN access in Network &amp; sign-in, select the network interface you use, save and start the gateway." >先打开 Codex App。在网关的“网络与登录”启用局域网访问，选择实际使用的网卡，保存并启动网关。</p>
+<p data-en="Open Codex App. Enable LAN access in Network access, select the network interface you use, save and start the gateway." >先打开 Codex App。在网关的“网络访问”启用局域网访问，选择实际使用的网卡，保存并启动网关。</p>
 <p data-en="Check: The app shows a LAN address such as http://192.168.1.10:8787." class="checkpoint">确认结果：App 显示类似 http://192.168.1.10:8787 的局域网地址。</p>
 </div>
 </article>
@@ -164,10 +164,10 @@
 <p data-en="For a stable address, use a named Cloudflare Tunnel or your own server, rather than repeatedly redirecting a domain to temporary URLs." class="callout">需要长期固定地址时，使用 Cloudflare 固定隧道或自有服务器方案；不要靠域名反复重定向到临时地址。</p>
 </section>
 <section class="setup-panel" id="tailscale" data-setup-panel="tailscale" aria-labelledby="tailscale-title">
-<h2 data-en="Tailscale: keep one HTTPS address" id="tailscale-title">Tailscale：保留一个固定 HTTPS 地址</h2>
+<h2 data-en="Tailscale: keep one HTTPS address" id="tailscale-title">Tailscale：保留一个固定 HTTPS 地址</h2><p class="example-note" data-en="Tailscale public forwarding or relay traffic may pass through overseas nodes. Direct access from mainland China can be slow or time out; private peer-to-peer routes differ from public Funnel access.">Tailscale 公网转发或中继链路可能经过境外节点，中国大陆直连可能较慢或超时；私有组网直连与公网 Funnel 的访问路径不同。</p>
 <p class="panel-intro" data-en="No server, domain purchase or invitation required. Install the official client on the work computer and connect it to the gateway.">无需自建服务器、购买域名或邀请码。在工作电脑安装官方客户端，再从网关接入。</p>
-<p class="example-note" data-en="Available in the source preview branch; public app downloads have not changed. Windows and Linux still need validation on the target devices.">本功能已提供于源码预览分支，公开安装包暂未更新。Windows、Linux 仍需在目标设备上实测。</p>
-<p class="actions"><a class="button" data-en="View source preview" href="https://github.com/try2love/codex-mobile-bridge/tree/refactor/platform-feature-layout">查看源码预览</a></p>
+<p class="example-note" data-en="Available in v2.0.0. Install and sign in to official Tailscale on the gateway computer, then grant the initial Serve / Funnel authorization.">v2.0.0 已支持。在网关电脑安装并登录官方 Tailscale，首次使用按提示完成 Serve / Funnel 授权。</p>
+<p class="actions"><a class="button" data-en="View stable source" href="https://github.com/try2love/codex-mobile-bridge/tree/v2.0.0">查看正式版源码</a></p>
 <figure class="network-map"><div class="map-flow">
 <div class="map-node"><span class="map-index">1</span><strong data-en="Phone / browser">手机／浏览器</strong><small data-en="https://device.tailnet.ts.net">https://设备名.网络名.ts.net</small></div>
 <span class="map-arrow" aria-hidden="true">→</span>
@@ -196,9 +196,9 @@
 <p><a href="https://tailscale.com/docs/features/tailscale-serve" data-en="Official Serve guide ↗">Serve 官方说明 ↗</a></p>
 </section>
 <section class="setup-panel" id="cloudflare" data-setup-panel="cloudflare" aria-labelledby="cloudflare-title">
-<h2 data-en="Named Cloudflare Tunnel: a domain is enough" id="cloudflare-title">Cloudflare 固定域名：只有域名也能配置</h2>
+<h2 data-en="Named Cloudflare Tunnel: a domain is enough" id="cloudflare-title">Cloudflare 固定域名：只有域名也能配置</h2><p class="example-note" data-en="Cloudflare Tunnel traffic may pass through overseas nodes. Direct access from mainland China can be slow or time out; a stable proxy route may help, depending on the network.">Cloudflare Tunnel 的访问链路可能经过境外节点，中国大陆直连可能较慢或超时；稳定的代理线路可能改善访问体验，实际速度以当前网络为准。</p>
 <p class="callout" data-en="Advanced setups require relevant knowledge of DNS, HTTPS, SSH, server or NAS administration. Commands and configurations are references only and may not suit your environment. Review them, back up your data and obtain the necessary authorization before use. You assume the risks of using, modifying or executing these examples. To the maximum extent permitted by applicable law, the authors and contributors are not liable for resulting data loss, service interruption, security incidents, costs or other loss, except liability that cannot lawfully be excluded or limited.">进阶方案需要具备 DNS、HTTPS、SSH、服务器或 NAS 管理等相关知识。本文命令与配置仅供参考，不保证适合你的环境；执行前请自行核对、备份并取得必要授权。使用、修改或执行这些示例的风险由使用者自行承担。在适用法律允许的最大范围内，项目作者与贡献者不对由此造成的数据丢失、服务中断、安全事件、费用或其他损失承担责任；依法不得排除或限制的责任除外。</p>
-<p class="example-note" data-en="App controls below refer to the unreleased local preview. Server and DNS preparation also apply independently of the app version.">以下 App 操作对应尚未发布的本地预览版；服务器与 DNS 的准备方法不依赖这些新按钮。</p>
+<p class="example-note" data-en="The steps below use the v2.0.0 gateway. Prepare the server and HTTPS endpoint before enabling the connection.">下方步骤对应 v2.0.0 网关。请先准备服务器与 HTTPS 入口，再启用连接。</p>
 <p data-en="Requires your own domain, a Cloudflare account and an online work computer." class="panel-intro">需要自己的域名、Cloudflare 账号，以及保持在线的工作电脑。</p>
 <figure class="network-map">
 <div class="map-flow">
@@ -379,7 +379,7 @@
 <section class="setup-panel" id="server" data-setup-panel="server" aria-labelledby="server-title">
 <h2 data-en="Own server + SSH: prepare the server step by step" id="server-title">自有服务器 + SSH：把服务器准备清楚</h2>
 <p class="callout" data-en="Advanced setups require relevant knowledge of DNS, HTTPS, SSH, server or NAS administration. Commands and configurations are references only and may not suit your environment. Review them, back up your data and obtain the necessary authorization before use. You assume the risks of using, modifying or executing these examples. To the maximum extent permitted by applicable law, the authors and contributors are not liable for resulting data loss, service interruption, security incidents, costs or other loss, except liability that cannot lawfully be excluded or limited.">进阶方案需要具备 DNS、HTTPS、SSH、服务器或 NAS 管理等相关知识。本文命令与配置仅供参考，不保证适合你的环境；执行前请自行核对、备份并取得必要授权。使用、修改或执行这些示例的风险由使用者自行承担。在适用法律允许的最大范围内，项目作者与贡献者不对由此造成的数据丢失、服务中断、安全事件、费用或其他损失承担责任；依法不得排除或限制的责任除外。</p>
-<p class="example-note" data-en="App controls below refer to the unreleased local preview. Server and DNS preparation also apply independently of the app version.">以下 App 操作对应尚未发布的本地预览版；服务器与 DNS 的准备方法不依赖这些新按钮。</p>
+<p class="example-note" data-en="The steps below use the v2.0.0 gateway. Prepare the server and HTTPS endpoint before enabling the connection.">下方步骤对应 v2.0.0 网关。请先准备服务器与 HTTPS 入口，再启用连接。</p>
 <p data-en="The public server provides HTTPS; your work computer initiates the return tunnel." class="panel-intro">公网服务器提供固定 HTTPS 入口，工作电脑主动建立回程隧道。</p>
 <figure class="network-map">
 <div class="map-flow">
@@ -448,7 +448,7 @@
 </tbody>
 </table>
 </div>
-<p class="callout" data-en="Source preview: the phone URL is optional. For a domain, point DNS to the server public IP and configure HTTPS. Leave it blank to use the public IP from the SSH server address (or alias HostName); saving fills in https://public-IP. The server still needs a reverse proxy and a trusted certificate whose Subject Alternative Name includes that IP. SSH alone is not enough. This does not change the public downloads.">源码预览版的“手机访问地址”可留空。使用域名时，需要自行解析到服务器公网 IP 并配置 HTTPS；留空时，从 SSH 服务器地址（或别名的 HostName）中的公网 IP 自动填入 https://公网IP。服务器仍需配置反向代理，以及 Subject Alternative Name 包含该 IP 的受信任证书；仅有 SSH 不能直接访问。公开安装包暂未更新。</p>
+<p class="callout" data-en="The phone URL is optional. For a domain, point DNS to the server public IP and configure HTTPS. Leave it blank to use the public IP from the SSH server address (or alias HostName); saving fills in https://public-IP. The server still needs a reverse proxy and a trusted certificate whose Subject Alternative Name includes that IP. SSH alone is not enough. ">“手机访问地址”可留空。使用域名时，需要自行解析到服务器公网 IP 并配置 HTTPS；留空时，从 SSH 服务器地址（或别名的 HostName）中的公网 IP 自动填入 https://公网IP。服务器仍需配置反向代理，以及 Subject Alternative Name 包含该 IP 的受信任证书；仅有 SSH 不能直接访问。</p>
 <p class="example-note"><a href="https://github.com/try2love/codex-mobile-bridge/blob/refactor/platform-feature-layout/docs/server-ssh.md" data-en="Read the public IP HTTPS requirements ↗">查看公网 IP HTTPS 的准备条件 ↗</a></p>
 <article class="guide-step" id="server-inspect">
 <div class="step-head">

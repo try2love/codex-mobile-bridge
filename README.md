@@ -11,7 +11,7 @@
 
 **[双语介绍与使用演示 ↗](https://try2love.github.io/codex-mobile-bridge/?lang=zh)** · **[下载桌面与手机 App](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.0.0)**
 
-[![桌面网关：客户端与接入（演示数据）](site/assets/desktop-overview.png)](https://try2love.github.io/codex-mobile-bridge/?lang=zh)
+[![桌面网关：客户端与接入（演示数据）](site/assets/v2-clients.png)](https://try2love.github.io/codex-mobile-bridge/?lang=zh)
 
 从手机 App 或浏览器继续电脑上的 **Codex、Claude Code / Cowork、DeepSeek Harness** 会话。三个客户端保留独立聊天列表、账号和工作区；在当前应用下创建会话、查看回复、发送附件、切换可用模型与推理强度、处理权限请求。
 

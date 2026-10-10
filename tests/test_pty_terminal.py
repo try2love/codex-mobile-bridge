@@ -65,8 +65,18 @@ class PtyTests(unittest.TestCase):
         self.send(s,'hello input\r'); self.wait_output(s,'ANSWER:hello input')
     def test_resize_and_ctrl_c_keep_shell_alive(self):
         s=self.session(); s.resize(93,31)
-        self.send(s,"stty size; sleep 90\r"); self.wait_output(s,'31 93')
-        self.send(s,'\x03'); self.send(s,"printf 'AFTER_%s\\n' interrupt\r")
+        self.send(s,"stty size\r"); self.wait_output(s,'31 93')
+        # Wait for the target foreground job, not output from the preceding stty.
+        self.send(s,"sh -c 'echo $$ > interrupt.pid; exec sleep 90'\r")
+        child_file = self.root/'interrupt.pid'; deadline = time.monotonic()+5
+        while (not child_file.exists() or not child_file.read_text().strip()) and time.monotonic()<deadline: time.sleep(.02)
+        child = int(child_file.read_text())
+        self.assertEqual(os.tcgetpgrp(s.master), child)
+        self.send(s,'\x03')
+        deadline = time.monotonic()+5
+        while os.tcgetpgrp(s.master) != s.process.pid and time.monotonic()<deadline: time.sleep(.02)
+        self.assertEqual(os.tcgetpgrp(s.master), s.process.pid)
+        self.send(s,"printf 'AFTER_%s\\n' interrupt\r")
         self.wait_output(s,'AFTER_interrupt'); self.assertFalse(s.done.is_set())
         self.send(s,'exit\r'); self.assertTrue(s.done.wait(5))
     def test_input_retry_is_exactly_once_and_conflicts_rejected(self):
