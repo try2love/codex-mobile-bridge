@@ -52,3 +52,4 @@
 .account-reset-dialog button{font:inherit;padding:9px 13px;border:1px solid var(--line,#dfe3eb);border-radius:8px;background:var(--raised,#fff);color:inherit;cursor:pointer}.account-reset-dialog button:disabled{opacity:.5;cursor:default}.account-reset-dialog .picker-head>button{flex:none}
 
 .accounts-panel .accounts-import-name{max-width:320px}
+.accounts-client-editor{margin-top:18px;padding:18px;border:1px solid var(--line,#dfe3eb);border-radius:12px}.accounts-client-editor label{display:grid;gap:6px;margin:12px 0}.accounts-client-editor input,.accounts-client-editor textarea,.accounts-client-editor select{box-sizing:border-box;width:100%;font:inherit}.accounts-client-editor textarea{resize:vertical;min-height:80px}.accounts-client-editor>button{margin-right:8px}

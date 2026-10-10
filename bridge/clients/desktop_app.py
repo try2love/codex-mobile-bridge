@@ -94,7 +94,7 @@ class DesktopApp:
         main = pids if gui_pids is None else [pid for pid in gui_pids if pid in pids]
         native = _native()
         if main and sys.platform == 'darwin':
-            native.quit_application(self.executable)
+            native.quit_application(self.executable, pids=main)
         for pid in main:
             if sys.platform == 'darwin':
                 continue

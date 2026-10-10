@@ -16,7 +16,7 @@ final class EventClient {
   void cancel(){HttpURLConnection current;synchronized(this){cancelled=true;current=connection;connection=null;}if(current!=null)current.disconnect();}
  }
  static String sessionCookie(String header){if(header!=null)for(String part:header.split(";"))if(part.trim().startsWith("codex_mobile_session="))return part.trim();return "";}
- static synchronized void forget(String origin){CookieManager store=CookieManager.getInstance();store.setCookie(origin+"/","codex_mobile_session=; Path=/; Max-Age=0");store.flush();}
+ static synchronized void forget(String origin){CookieManager store=CookieManager.getInstance();store.setCookie(origin+"/","codex_mobile_session=; Path="+GatewayURL.cookiePath(origin)+"; Max-Age=0");store.flush();}
  static synchronized void renew(HttpURLConnection connection,String origin,String sent){
   CookieManager store=CookieManager.getInstance();String previous=sessionCookie(sent);
   if(previous.isEmpty()||!previous.equals(sessionCookie(store.getCookie(origin+"/"))))return;
@@ -24,7 +24,7 @@ final class EventClient {
   // restore a removed connection or overwrite a newer sign-in.
   for(java.util.Map.Entry<String,java.util.List<String>> field:connection.getHeaderFields().entrySet())if("Set-Cookie".equalsIgnoreCase(field.getKey()))for(String value:field.getValue()){
    if(!previous.equals(value.split(";",2)[0].trim()))continue;
-   try{java.util.List<HttpCookie> parsed=HttpCookie.parse(value);if(parsed.size()!=1||parsed.get(0).getDomain()!=null||!"/".equals(parsed.get(0).getPath()))continue;}catch(IllegalArgumentException invalid){continue;}
+   try{java.util.List<HttpCookie> parsed=HttpCookie.parse(value);if(parsed.size()!=1||parsed.get(0).getDomain()!=null||!GatewayURL.cookiePath(origin).equals(parsed.get(0).getPath()))continue;}catch(IllegalArgumentException invalid){continue;}
    store.setCookie(origin+"/",value);store.flush();return;
   }
  }
@@ -35,7 +35,7 @@ final class EventClient {
   if(!GatewayURL.origin(origin).equals(origin))throw new IOException("连接地址无效");
   String cookie=CookieManager.getInstance().getCookie(origin+"/");if(cookie==null||cookie.isEmpty())throw new IOException("请先登录电脑网关");
   HttpURLConnection c=(HttpURLConnection)new URL(origin+"/api/mobile/events"+(after==null?"":"?after="+Math.max(0,after))).openConnection();
-  c.setInstanceFollowRedirects(false);c.setConnectTimeout(7000);c.setReadTimeout(10000);c.setRequestProperty("Cookie",cookie);c.setRequestProperty("Origin",origin);c.setRequestProperty("User-Agent",USER_AGENT);
+  c.setInstanceFollowRedirects(false);c.setConnectTimeout(7000);c.setReadTimeout(10000);c.setRequestProperty("Cookie",cookie);c.setRequestProperty("Origin",GatewayURL.httpOrigin(origin));c.setRequestProperty("User-Agent",USER_AGENT);
   try{if(pending!=null)pending.attach(c);int code=c.getResponseCode();if(code==401||code==403)throw new IOException("登录已失效，请重新连接电脑");if(code==404)throw new IOException("请使用配套的电脑端 Preview 网关");if(code!=200)throw new IOException("暂时无法读取提醒，请检查连接");
    if(pending!=null)pending.check();
    renew(c,origin,cookie);
@@ -50,13 +50,13 @@ final class EventClient {
   String origin=prefs.getString("active","");if(origin.isEmpty())return;
   JSONObject auth=request(origin,"/api/auth",null,null);if(!auth.optBoolean("authenticated"))return;
   String id=prefs.getString("pushDeviceID",null);if(id==null){id=java.util.UUID.randomUUID().toString();prefs.edit().putString("pushDeviceID",id).apply();}
-  request(origin,"/api/mobile/push",new JSONObject().put("kind","fcm").put("token",token).put("deviceId",id),auth.getString("csrf"));
+  request(origin,"/api/mobile/push",new JSONObject().put("kind","fcm").put("token",token).put("deviceId",id).put("sourceIcon",true),auth.getString("csrf"));
   prefs.edit().putBoolean("pushRegistered:"+origin,true).apply();
  }
  static JSONObject request(String origin,String path,JSONObject body,String csrf)throws Exception {
   if(!GatewayURL.origin(origin).equals(origin))throw new IOException("连接地址无效");
   HttpURLConnection c=(HttpURLConnection)new URL(origin+path).openConnection();c.setInstanceFollowRedirects(false);c.setConnectTimeout(7000);c.setReadTimeout(10000);
-  String cookie=CookieManager.getInstance().getCookie(origin+"/");if(cookie!=null)c.setRequestProperty("Cookie",cookie);c.setRequestProperty("Origin",origin);c.setRequestProperty("User-Agent",USER_AGENT);
+  String cookie=CookieManager.getInstance().getCookie(origin+"/");if(cookie!=null)c.setRequestProperty("Cookie",cookie);c.setRequestProperty("Origin",GatewayURL.httpOrigin(origin));c.setRequestProperty("User-Agent",USER_AGENT);
   try{if(body!=null){c.setRequestMethod("POST");c.setDoOutput(true);c.setRequestProperty("Content-Type","application/json");c.setRequestProperty("X-CSRF-Token",csrf);try(OutputStream out=c.getOutputStream()){out.write(body.toString().getBytes(StandardCharsets.UTF_8));}}
    if(c.getResponseCode()!=200)throw new IOException("电脑未配置系统推送，或登录已失效");
    renew(c,origin,cookie);

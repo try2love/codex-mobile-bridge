@@ -78,3 +78,11 @@ test('pasted and dropped images upload, preview through authenticated endpoint, 
  const remove=ui.root.children[0].children.at(-1);remove.onclick();
  assert.equal(ui.panel.ids().length,1);assert.equal(ui.root.children[0].children.some(n=>n.tag==='img'),true);
 });
+
+test('asynchronous historical baseline is not a new completion, observed running still is',()=>{
+ const a=new SessionActivity({storage:storage()});
+ a.update([{id:'a',host:'claude',connected:true,status:'idle'}]);
+ a.update([status('a','claude','idle','old')]);assert.equal(a.indicator('claude|a'),null);
+ a.update([status('a','claude','active','old')]);a.update([status('a','claude','idle','new')]);assert.equal(a.indicator('claude|a').kind,'completed');
+ a.update([{id:'a',host:'claude',connected:false,status:'idle'}]);assert.equal(a.indicator('claude|a').kind,'unknown');
+});

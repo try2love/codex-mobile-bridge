@@ -46,7 +46,7 @@ def start(executable):
     bundle = next((p for p in executable.parents if p.suffix == '.app'), None)
     if bundle is None:
         raise ValueError('Claude 桌面程序必须位于应用程序包中')
-    subprocess.run(['/usr/bin/open', '-a', str(bundle)], check=True, timeout=20,
+    subprocess.run(['/usr/bin/open', '-g', '-a', str(bundle)], check=True, timeout=20,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 

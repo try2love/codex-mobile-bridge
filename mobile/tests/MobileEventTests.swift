@@ -16,6 +16,7 @@ func control(_ address: String, _ query: String = "") -> [[String: Any]] {
 func metric(_ name: String, _ row: [String: Any]) { print("\(name) request_bytes=\(row["requestBytes"]!) response_body_bytes=\(row["responseBodyBytes"]!) target=\(row["target"]!)") }
 let controller = BridgeController(), notices = UNUserNotificationCenter.current()
 controller.origin = first
+controller.computerNotifications[first] = UILabel()
 controller.defaults.set([first], forKey: "origins")
 controller.defaults.set(true, forKey: "foregroundAlerts")
 controller.foreground(); spin { !controller.loading }
@@ -27,8 +28,9 @@ if baseline {
     controller.background(); print("iOS baseline captured")
 } else {
     precondition(initial[1]["target"] as! String == "/api/mobile/events?after=200", "Incremental poll must use cursor")
-    precondition((initial[1]["responseBodyBytes"] as! Int) < 100)
+    precondition((initial[1]["responseBodyBytes"] as! Int) < 250)
     func poll(_ query: String = "") { if !query.isEmpty { _ = control(first, query) }; controller.poll(); spin { !controller.loading } }
+    precondition(controller.computerNotifications[first]?.text == "200")
     let key = "cursor:" + first
     poll("cursor=201"); precondition(notices.delivered.count == 1); metric("one_new", control(first)[2])
     poll(); precondition(notices.delivered.count == 1, "Repeated poll duplicated notification")
@@ -85,6 +87,16 @@ if baseline {
     controller.defaults.set([], forKey: "origins"); controller.defaults.removeObject(forKey: key); cookies.cookies = []
     _ = control(first, "release=1"); spin { !controller.loading }
     precondition(controller.defaults.object(forKey: key) == nil && cookies.cookies.isEmpty, "Removed connection resurrected")
+    controller.defaults.set([first], forKey: "origins")
+    cookies.cookies = [HTTPCookie(properties: [.name: "codex_mobile_session", .value: "fixture", .domain: "127.0.0.1", .path: "/"])!]
+    controller.defaults.set(false, forKey: "foregroundAlerts"); let delivered = notices.delivered.count
+    controller.foreground(); spin { !controller.loading }; poll("cursor=400")
+    precondition(controller.computerNotifications[first]?.text == "400" && notices.delivered.count == delivered)
+    controller.defaults.set(400, forKey: "cleared:" + first + ":reset-higher"); poll()
+    precondition(controller.computerNotifications[first]?.text == "400", "Local clearing changed the gateway count")
+    poll("unread=0"); precondition(controller.computerNotifications[first]?.text == "0", "Other phone read must update count without a new event")
+    poll("stream=summary-reset&cursor=1&unread=1"); precondition(controller.computerNotifications[first]?.text == "1")
+    poll("status=401"); precondition(controller.computerNotifications[first]?.isHidden == true, "Invalid login leaves a visible summary")
     controller.background()
-    print("iOS event sync: 17 scenarios passed; background subsequent-origin requests=0")
+    print("iOS event sync and computer summaries passed; background subsequent-origin requests=0")
 }

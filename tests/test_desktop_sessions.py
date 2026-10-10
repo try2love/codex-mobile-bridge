@@ -20,6 +20,19 @@ class Adapters(unittest.TestCase):
         self.manager = DesktopSessions(self.root)
         self.addCleanup(self.manager.close)
 
+    def test_claude_preparation_is_available_without_starting_gateway(self):
+        self.manager.gateway_running = False
+        adapter = self.manager.adapters['claude']
+        with patch.object(adapter, 'prerequisites', return_value={'workspace': '/中文', 'connected': False}) as read, \
+             patch.object(adapter, 'prepare') as prepare, patch.object(adapter, 'connect') as connect:
+            value = self.manager.control({'action': 'claude-prerequisites'})
+            self.assertFalse(value['gatewayRunning'])
+            self.assertEqual(value['workspace'], '/中文')
+            read.assert_called_once_with(request_permission=False)
+            self.manager.control({'action': 'claude-prerequisites', 'requestPermission': True})
+            self.assertEqual(read.call_args.kwargs, {'request_permission': True})
+            prepare.assert_not_called(); connect.assert_not_called()
+
     def test_receipts_survive_reopen_and_do_not_replay_uncertain_sends(self):
         adapter = Mock()
         adapter.call.side_effect = TimeoutError('unknown')
@@ -123,7 +136,7 @@ class HttpAdapters(unittest.TestCase):
     def test_force_desktop_choice_requires_auth_csrf_and_exact_payload(self):
         manager = self.server.desktop_sessions = Mock()
         manager.toggle_client.return_value = {'clients': []}
-        body = {'provider': 'codex', 'enabled': False, 'quitDesktop': True, 'forceDesktop': True}
+        body = {'provider': 'codex', 'enabled': False, 'quitDesktop': True, 'forceDesktop': True, 'forceConfirmed': True}
         self.assertEqual(self.request('POST', '/api/clients')[0], 401)
         headers = self.login()
         self.assertEqual(self.request('POST', '/api/clients', headers={'Cookie': headers['Cookie']})[0], 403)
@@ -173,12 +186,18 @@ class HttpAdapters(unittest.TestCase):
         headers = self.login()
         self.assertEqual(self.request('GET', route, headers=headers)[0], 200)
         self.assertEqual(self.request('POST', route, {'action': 'import-current'}, headers)[0], 403)
+        for provider in ('deepseek', 'claude'):
+            for operation in ('edit', 'save-api', 'rename', 'remove'):
+                with self.subTest(provider=provider, operation=operation):
+                    self.assertEqual(self.request('POST', '/api/desktop-sessions/'+provider+'/accounts',
+                                                  {'action': operation, 'id': 'one', 'apiKey': 'private-key'}, headers)[0], 403)
         self.assertEqual(self.request('POST', route, {'action': 'switch', 'id': 'one'}, {'Cookie': headers['Cookie']})[0], 403)
         self.assertEqual(self.request('POST', route, {'action': 'details', 'id': 'one'}, headers)[0], 200)
         self.server.desktop_sessions.client_accounts.assert_called_with('deepseek', {'action': 'details', 'operation': 'details', 'id': 'one'})
     def test_desktop_routes_auth_csrf_and_no_install_or_raw_rpc(self):
         self.server.desktop_sessions = Mock()
         self.server.desktop_sessions.call.return_value = {'connected':True,'sessions':[]}
+        self.server.desktop_sessions.list_with_activity.return_value = {'connected':True,'sessions':[]}
         self.assertEqual(self.request('GET','/api/desktop-sessions/deepseek/list')[0],401)
         headers=self.login()
         self.assertEqual(self.request('GET','/api/desktop-sessions/deepseek/list',headers=headers)[0],200)

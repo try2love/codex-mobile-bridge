@@ -219,6 +219,8 @@ class SideChat:
             if method == 'thread/closed':
                 self.error = '侧边聊天已关闭或失效'
                 self.state['requests'] = []
+            elif method == 'thread/tokenUsage/updated':
+                self.state['latestTokenUsageInfo'] = copy.deepcopy(params.get('tokenUsage'))
             elif method in ('turn/started', 'turn/completed'):
                 source = params['turn']
                 turn = self._turn(source['id'])

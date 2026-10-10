@@ -241,6 +241,10 @@ def main(connections=None, connection_secrets=None):
             tunnel_thread = threading.Thread(target=connect_tunnel, daemon=True)
             tunnel_thread.start()
         from bridge.features.network.shared_relay import start as start_shared_relay
+        from bridge.features.network.discovery import ConnectionDiscovery
+        discovery = ConnectionDiscovery(args.config.parent, server)
+        for listener in servers:
+            listener.connection_discovery = discovery
         shared_relay = start_shared_relay(args.config.parent, server)
         notifications.start()
         address_notifications.start()

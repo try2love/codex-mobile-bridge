@@ -17,8 +17,8 @@ WRITE = {'send', 'stop', 'history', 'respond', 'reconnect', 'queue', 'settings',
          'permissions', 'uploads', 'message-action', 'rename', 'notifications',
          'goal/cancel', 'goal/edit', 'goal/status', 'side-chat', 'terminal',
          'workspace/upload', 'workspace/git-action'}
-DESKTOP_READ = {'list', 'detail', 'catalog', 'projects', 'account', 'access', 'terminal'} | {action for action in READ if action.startswith('workspace')}
-DESKTOP_WRITE = {'send', 'stop', 'settings', 'respond', 'create', 'access', 'uploads', 'terminal', 'workspace/upload', 'workspace/git-action'}
+DESKTOP_READ = {'list', 'detail', 'catalog', 'projects', 'account', 'access', 'terminal', 'notifications'} | {action for action in READ if action.startswith('workspace')}
+DESKTOP_WRITE = {'send', 'stop', 'settings', 'respond', 'create', 'access', 'uploads', 'terminal', 'notifications', 'workspace/upload', 'workspace/git-action'}
 
 
 def origin(value, test_http=False):
@@ -43,12 +43,14 @@ def validate(method, path, size=0):
         raise ValueError('Unsupported request or body too large')
     if method == 'GET' and size:
         raise ValueError('GET body is not allowed')
-    if p.path == '/api/sessions' or (p.path in ('/api/projects', '/api/mobile/events') and method == 'GET') or (p.path == '/api/activity' and method == 'POST'):
+    if p.path == '/api/sessions' or (p.path in ('/api/projects', '/api/mobile/events') and method == 'GET') or (p.path in ('/api/activity', '/api/mobile/events/read') and method == 'POST'):
         return
     # /api/clients permits explicit disable, native quit, and confirmed Windows
     # forceDesktop; the gateway still enforces auth, CSRF and target verification.
     # Discovery, installation, account configuration and DSH recovery stay local.
     if p.path in ('/api/clients', '/api/file-transfer'):
+        return
+    if p.path == '/api/clients/claude/reconnect' and method == 'POST':
         return
     desktop = DESKTOP.fullmatch(p.path)
     if desktop:

@@ -23,6 +23,12 @@ PREVIOUS_CATALOG_SOURCE = 'b2fb9136b07f0734702e9bf26c880aa7af46da5aa340735e39616
 PREVIOUS_QUIT_SOURCES = ('2a9926ace79180be27c248bc68c6c6d9367c58c318c8dd8a8402a9aeac83177c',
                          '68e4f5712d4658bbc1da3767b86c45f6d01c7e34257383cac6f4229a27083192')
 
+# Revision 3 shipped by the Windows integration (3ad8f0a), LF and CRLF.
+# Keep this verified predecessor when changing host.mjs: source equality alone
+# must not strand an existing, otherwise fully owned desktop connection.
+PREVIOUS_CONTEXT_SOURCES = ('c60b404ff5efcadc4329b125ff8524293bc4e4c2e29224393ea9cec5753ea2a1',
+                            '4fdfe35712002fc368a2db8fd4e18ab2cc851bacb31473f583ffde817d564068')
+
 
 def insertion(text):
     """Read only our JSON flow insertion, including Harness's line wrapping.
@@ -125,9 +131,10 @@ def verified_directory(entry, home):
             return None
         digest = hashlib.sha256(source.read_bytes()).hexdigest()
         current = hashlib.sha256(Path(__file__).with_name('host.mjs').read_bytes()).hexdigest()
-        if digest not in (current, LEGACY_SOURCE, PREVIOUS_SOURCE, PREVIOUS_CLEANUP_SOURCE, PREVIOUS_CATALOG_SOURCE, *PREVIOUS_QUIT_SOURCES):
+        if digest not in (current, LEGACY_SOURCE, PREVIOUS_SOURCE, PREVIOUS_CLEANUP_SOURCE, PREVIOUS_CATALOG_SOURCE,
+                          *PREVIOUS_QUIT_SOURCES, *PREVIOUS_CONTEXT_SOURCES):
             return None
-        return directory, digest not in (current, *PREVIOUS_QUIT_SOURCES)
+        return directory, digest != current
     except (OSError, ValueError, KeyError, TypeError, IndexError):
         return None
 

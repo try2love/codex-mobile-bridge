@@ -4,6 +4,7 @@
   "/icon.png": "icon.png",
   "/manifest.webmanifest": "manifest.webmanifest",
   "/app.js": "shell/app.js",
+  "/bootstrap.js": "shared/bootstrap.js",
   "/style.css": [
     "shell/style.css",
     "layouts/wide/shell.css",

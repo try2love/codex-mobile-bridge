@@ -375,7 +375,7 @@ class DesktopAppTests(unittest.TestCase):
         with patch('bridge.clients.desktop_app.sys.platform', 'darwin'), patch('bridge.platforms.macos.desktop.subprocess.run') as run, patch('bridge.platforms.macos.desktop.subprocess.Popen') as direct:
             app.start()
         args = run.call_args.args[0]
-        self.assertEqual(args, ['/usr/bin/open', '-a', '/Applications/Fixture Codex.app', '--env', 'CODEX_HOME=/fixture/codex home'])
+        self.assertEqual(args, ['/usr/bin/open', '-g', '-a', '/Applications/Fixture Codex.app', '--env', 'CODEX_HOME=/fixture/codex home'])
         self.assertTrue(run.call_args.kwargs['check'])
         direct.assert_not_called()
 

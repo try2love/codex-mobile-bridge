@@ -369,6 +369,40 @@ class SSHIntegrationTests(unittest.TestCase):
         self.assertNotIn('correct-secret', ''.join(p.read_text(encoding='utf-8') for p in self.directory.glob('*.json')))
 
 class NamedTunnelTests(unittest.TestCase):
+    def test_icmp_reply_errors_do_not_mark_public_http_tunnel_disconnected(self):
+        from bridge.features.network.named_tunnel import NamedTunnel
+        with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as directory:
+            tunnel = NamedTunnel('/fixture/cloudflared', entry(accessMode='cloudflare'), directory, 'test-token')
+            states = []
+            class Output:
+                def __iter__(self):
+                    yield 'INF Registered tunnel connection connIndex=0\n'
+                    yield 'ERR Failed to send ICMP reply error="datagram unavailable"\n'
+                    yield 'ERR Failed to send ICMP reply error="datagram unavailable"\n'
+                    self_test.assertEqual(states[-1]['state'], 'connected')
+                    yield 'ERR Unregistered tunnel connection connIndex=0\n'
+                    self_test.assertEqual(states[-1]['state'], 'retrying')
+                    tunnel.stopped.set()
+                def close(self):
+                    pass
+            self_test = self
+            with patch('bridge.features.network.named_tunnel.subprocess.Popen', return_value=MagicMock(stdout=Output())), \
+                 patch('bridge.features.network.named_tunnel.write_json', side_effect=lambda _, value: states.append(value)):
+                tunnel._run()
+            self.assertEqual([state['state'] for state in states], ['connecting', 'connected', 'retrying', 'stopped'])
+
+    def test_repeated_status_does_not_rewrite_disk(self):
+        from bridge.features.network.named_tunnel import NamedTunnel
+        with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as directory:
+            tunnel = NamedTunnel('/fixture/cloudflared', entry(accessMode='cloudflare'), directory, 'test-token')
+            with patch('bridge.features.network.named_tunnel.write_json') as write:
+                tunnel.status('connected', 'ready')
+                tunnel.status('connected', 'ready')
+                tunnel.status('retrying', 'connection lost')
+                tunnel.status('retrying', 'connection lost')
+                tunnel.status('connected', 'ready')
+            self.assertEqual(write.call_count, 3)
+
     def test_token_stays_out_of_argv_and_status_and_stop_closes_process(self):
         from bridge.features.network.named_tunnel import NamedTunnel
         with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as directory:

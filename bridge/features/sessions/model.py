@@ -166,6 +166,19 @@ def permission_mode(state):
     return 'custom'
 
 
+def context_usage(state):
+    """Last request occupancy, never the cumulative thread billing counter."""
+    info = state.get('latestTokenUsageInfo')
+    if not isinstance(info, dict): return None
+    last = info.get('last')
+    if not isinstance(last, dict): return None
+    used, window = last.get('totalTokens'), info.get('modelContextWindow')
+    if type(used) is not int or used < 0: return None
+    return {'usedTokens': used,
+            'contextWindow': window if type(window) is int and window > 0 else None,
+            'cached': state.get('tokenUsageFromHistory') is True}
+
+
 def normalize_state(state, connected=True):
     turns = ordered_turns(state)
     result = []
@@ -204,6 +217,7 @@ def normalize_state(state, connected=True):
             "cwd": state.get("cwd"), "model": state.get("latestModel"), "provider": state.get("modelProvider"), "effort": state.get("latestReasoningEffort") or (state.get("latestThreadSettings") or {}).get("effort"),
             "connected": connected, "status": state.get("threadRuntimeStatus", {}).get("type", "idle"),
             "permissionMode": permission_mode(state),
+            "contextUsage": context_usage(state),
             "collaborationMode": (state.get("latestCollaborationMode") or {}).get("mode"),
             **({'serviceTier': tier['serviceTier']} if 'serviceTier' in tier else {}),
             "goal": copy.deepcopy(state.get("threadGoal") or state.get("completedThreadGoal")),

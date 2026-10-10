@@ -80,8 +80,8 @@ class Reads(unittest.TestCase):
                  ('deepseek', 'catalog', 'one', {})]
         with ThreadPoolExecutor(5) as pool:
             futures = [pool.submit(self.manager.call, *case) for case in cases]
-            for future in futures:
-                self.assertEqual(future.result(5), {'ok': True})
+            for case, future in zip(cases, futures):
+                self.assertEqual(future.result(5), {'ok': True, **({'files': []} if case[1] == 'detail' else {})})
         self.assertEqual(self.adapter.call.call_count, 5)
 
     def test_account_or_connector_change_rejects_old_response(self):
@@ -98,7 +98,7 @@ class Reads(unittest.TestCase):
                 fresh = Mock()
                 fresh.call.return_value = {'account': 'new'}
                 self.manager.adapters['deepseek'] = fresh
-            self.assertEqual(self.manager.call('deepseek', 'detail', 'one'), {'account': 'new'})
+            self.assertEqual(self.manager.call('deepseek', 'detail', 'one'), {'account': 'new', 'files': []})
             release.set()
             with self.assertRaises(BridgeUnavailable):
                 pending.result(2)
@@ -117,7 +117,7 @@ class Reads(unittest.TestCase):
         with self.manager._changing('deepseek'), ThreadPoolExecutor(2) as pool:
             futures = [pool.submit(self.manager.call, 'deepseek', 'detail', 'one') for _ in range(2)]
             for future in futures:
-                self.assertEqual(future.result(3), {'ok': True})
+                self.assertEqual(future.result(3), {'ok': True, 'files': []})
         self.assertEqual(self.adapter.call.call_count, 2)
 
     def test_chat_write_keeps_progress_reads_valid_without_joining_old_read(self):
@@ -137,10 +137,10 @@ class Reads(unittest.TestCase):
             self.assertTrue(entered.wait(2))
             try:
                 self.manager.call('deepseek', 'send', 'one', {'id': str(uuid.uuid4()), 'text': 'test'})
-                self.assertEqual(self.manager.call('deepseek', 'detail', 'one'), {'status': 'running'})
+                self.assertEqual(self.manager.call('deepseek', 'detail', 'one'), {'status': 'running', 'files': []})
             finally:
                 release.set()
-            self.assertEqual(pending.result(2), {'status': 'running'})
+            self.assertEqual(pending.result(2), {'status': 'running', 'files': []})
         self.assertEqual(len(reads), 2)
 
     def switch_account(self):

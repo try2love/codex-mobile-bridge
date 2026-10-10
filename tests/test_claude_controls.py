@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 import test_client_lifecycle as lifecycle
+from bridge.clients.errors import BridgeUnavailable
 
 
 class ClaudeControls(unittest.TestCase):
@@ -45,7 +46,8 @@ class ClaudeControls(unittest.TestCase):
 
     def test_reconnect_reuses_existing_setup_without_start_stop_or_enabling(self):
         result = self.manager.reconnect_claude()
-        self.claude.connect.assert_called_once_with(existing_only=True)
+        self.claude.reconnect.assert_called_once_with()
+        self.claude.connect.assert_not_called()
         self.fixture.stop.assert_not_called(); self.fixture.launch.assert_not_called()
         self.claude.cancel.assert_not_called()
         row = next(row for row in result['clients'] if row['id'] == 'claude')
@@ -53,6 +55,13 @@ class ClaudeControls(unittest.TestCase):
         self.assertEqual(row['setupStatus'], 'needs-screen-saver')
         self.assertEqual(row['reason'], self.claude.status()['reason'])
         self.assertTrue(row['reconnectSupported']); self.assertTrue(row['canReconnect'])
+
+    def test_windows_explicit_reconnect_keeps_existing_native_route(self):
+        with patch('bridge.clients.manager.sys.platform', 'win32'):
+            self.manager.reconnect_claude()
+        self.claude.connect.assert_called_once_with(existing_only=True)
+        self.claude.reconnect.assert_not_called()
+        self.fixture.launch.assert_not_called(); self.fixture.stop.assert_not_called()
 
     def test_reconnect_rejects_disabled_stopped_ambiguous_and_unprepared_clients(self):
         self.manager.config['enabled']['claude'] = False
@@ -75,13 +84,23 @@ class ClaudeControls(unittest.TestCase):
         self.claude.check_connection.assert_called_once_with()
         self.claude.connect.assert_not_called(); self.fixture.stop.assert_not_called()
 
-    def test_heartbeat_without_rpc_cannot_report_a_healthy_reconnection(self):
+    def test_heartbeat_without_rpc_retries_signed_recovery_without_initialization(self):
         self.claude.status.return_value = {'connected': True}
-        self.claude.check_connection.side_effect = ValueError('Claude 桌面连接暂未响应，请检查电脑端状态后重试；未重启客户端')
-        with self.assertRaisesRegex(ValueError, '未响应'):
+        self.claude.check_connection.side_effect = BridgeUnavailable('Claude 桌面连接暂未响应')
+        self.manager.reconnect_claude()
+        self.claude.reconnect.assert_called_once_with()
+        self.claude.connect.assert_not_called()
+        self.fixture.stop.assert_not_called(); self.fixture.launch.assert_not_called()
+
+    def test_failed_heartbeat_never_bypasses_unconfirmed_mutation_guard(self):
+        self.claude.status.return_value = {'connected': True}
+        self.claude.check_connection.side_effect = BridgeUnavailable('Claude 桌面连接暂未响应')
+        self.claude.reconnect.side_effect = BridgeUnavailable('已有请求结果尚未确认')
+        with self.assertRaisesRegex(BridgeUnavailable, '尚未确认'):
             self.manager.reconnect_claude()
-        self.claude.connect.assert_not_called(); self.fixture.stop.assert_not_called()
-        self.fixture.launch.assert_not_called()
+        self.claude.reconnect.assert_called_once_with()
+        self.claude.connect.assert_not_called()
+        self.fixture.stop.assert_not_called(); self.fixture.launch.assert_not_called()
 
     def test_gateway_stopped_cannot_accept_web_reconnect(self):
         self.manager.gateway_running = False

@@ -123,8 +123,9 @@
     if (!target.dataset.imagePreview) return null;
     let url; try { url = new URL(target.dataset.imagePreview, location.href); } catch { return null; }
     // Only renderer-identified images from the current gateway; no arbitrary URLs.
-    const codex = /^\/api\/sessions\/[0-9a-f-]{36}\/(?:uploads\/[0-9a-f-]{36}\/preview|desktop-images\/[a-f0-9]{64}|files\/[a-f0-9]{64})$/.test(url.pathname);
-    const desktop = /^\/api\/desktop-sessions\/(?:claude|deepseek)\/uploads\/[0-9a-f-]{36}\/preview$/.test(url.pathname) && !!url.searchParams.get('sessionId');
+    const pathname = window.BridgeRelayPath?.(url.pathname) ?? url.pathname;
+    const codex = /^\/api\/sessions\/[0-9a-f-]{36}\/(?:uploads\/[0-9a-f-]{36}\/preview|desktop-images\/[a-f0-9]{64}|files\/[a-f0-9]{64})$/.test(pathname);
+    const desktop = /^\/api\/desktop-sessions\/(?:claude|deepseek)\/uploads\/[0-9a-f-]{36}\/preview$/.test(pathname) && !!url.searchParams.get('sessionId');
     return url.origin === location.origin && (codex || desktop) ? {url:url.href,name:target.dataset.imageName} : null;
   }
   function open(target, event) {

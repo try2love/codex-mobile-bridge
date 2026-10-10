@@ -48,6 +48,8 @@ class UpdateTests(unittest.TestCase):
             self.assertEqual(run.call_args.args[0][-1],'1234')
             self.assertEqual(run.call_args.kwargs['timeout'],180)
         self.assertEqual(updater.status()['state'],'needsDesktop')
+        self.assertFalse(updater.status()['canInstall'])
+        self.assertNotIn('installation', updater.status())
         self.assertNotIn('kill',str(run.call_args))
         with patch('bridge.features.updates.codex.sys.platform','darwin'), patch('bridge.features.updates.codex.subprocess.run',side_effect=OSError('private path')) as run, patch('bridge.features.updates.codex.DesktopApp') as app:
             app.return_value.processes.return_value=[1234]
@@ -112,6 +114,63 @@ class UpdateTests(unittest.TestCase):
         manifest['packageIdentity']='Other.App'
         with patch('bridge.features.updates.codex.sys.platform','win32'),patch('bridge.features.updates.codex.installed',return_value=meta),patch.object(updater,'fetch',return_value=json.dumps(manifest).encode()):
             updater._check();self.assertEqual(updater.status()['state'],'error')
+
+    def test_installation_is_only_verified_by_newer_build_of_same_selected_app(self):
+        from pathlib import Path
+        import os
+        updater = self.manager.updates
+        executable = '/fixture/Selected.app/Contents/MacOS/Codex'
+        selected = os.path.normcase(str(Path(executable).resolve()))
+        meta = {'version':'2.0','build':'2','codexBuildFlavor':'prod',
+                'codexSparkleFeedUrl':'https://persistent.oaistatic.com/codex-app-prod/appcast.xml'}
+        for current, pending_executable, expected in [('1', selected, False), ('0', selected, False),
+                                                       ('2', selected + '-other', False), ('2', selected, True)]:
+            updater.pending = {'build':'1','executable':pending_executable}
+            updater.value = {'state':'needsDesktop'}
+            with self.subTest(current=current, same_app=pending_executable==selected), \
+                 patch.object(updater, 'executable', return_value=executable), \
+                 patch('bridge.features.updates.codex.installed', return_value={**meta, 'build':current}), \
+                 patch('bridge.features.updates.codex.sys.platform','darwin'), \
+                 patch.object(updater, 'fetch', return_value=self.feed('')), \
+                 patch('bridge.features.updates.codex.subprocess.run') as run:
+                updater._check()
+                self.assertEqual(updater.status().get('installation', {}).get('state') == 'verified', expected)
+                self.assertFalse(updater.status()['canInstall'])
+                self.assertEqual(updater.status()['updateMethod'], 'native-handoff')
+                run.assert_not_called()
+                if expected:
+                    self.assertEqual(updater.pending, {})
+                    self.assertEqual(updater.status()['installation']['previousBuild'], '1')
+                    self.assertEqual(updater.status()['installation']['currentBuild'], '2')
+
+    def test_pending_update_verification_survives_gateway_restart(self):
+        from bridge.features.updates.codex import DesktopUpdates
+        updater = self.manager.updates
+        updater.value = {'state':'available','canRequest':True}
+        value = {'requestId':str(uuid.uuid4()),'confirmed':True,'tasksConfirmed':True,'currentBuild':'1'}
+        with patch.object(updater, 'executable', return_value='/fixture/Codex'), \
+             patch('bridge.features.updates.codex.installed',return_value={'build':'1','bundle':'/fixture.app'}), \
+             patch('bridge.features.updates.codex.sys.platform','darwin'), \
+             patch('bridge.features.updates.codex.threading.Thread'):
+            updater.request(value)
+        other = DesktopUpdates(self.manager)
+        self.assertEqual(other.pending, updater.pending)
+        self.assertEqual(other.pending['build'], '1')
+        self.assertFalse(other.status()['canInstall'])
+        self.assertNotIn('installation', other.status())
+
+    def test_linux_never_advertises_remote_installer(self):
+        updater = self.manager.updates
+        with patch('bridge.features.updates.codex.sys.platform','linux'), \
+             patch('bridge.features.updates.codex.installed',return_value={'version':'1','build':'1','codexBuildFlavor':'prod'}), \
+             patch.object(updater, 'fetch') as fetch, \
+             patch('bridge.features.updates.codex.subprocess.run') as run:
+            updater._check()
+        self.assertEqual(updater.status()['state'], 'unsupported')
+        self.assertEqual(updater.status()['updateMethod'], 'unavailable')
+        self.assertFalse(updater.status()['canRequest'])
+        self.assertFalse(updater.status()['canInstall'])
+        fetch.assert_not_called(); run.assert_not_called()
 
 
 if __name__=='__main__':unittest.main()

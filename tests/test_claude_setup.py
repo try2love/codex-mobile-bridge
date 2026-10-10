@@ -107,6 +107,57 @@ class ClaudeDiscovery(unittest.TestCase):
         self.assertEqual(value['setupState'], 'connected')
         adapter.desktop.close.assert_not_called()
 
+    @patch('bridge.clients.claude.adapter.sys.platform', 'darwin')
+    def test_prerequisites_do_not_prepare_launch_or_change_trust(self):
+        adapter = Claude(self.root/'中文 连接', auto_connect=False)
+        adapter.discovery = {'installed': True, 'dataHome': str(self.root/'profile')}
+        with patch('bridge.clients.claude.adapter.native_action', return_value={'setupState': 'needs-permission'}) as native, \
+             patch.object(adapter, 'prepare') as prepare, patch.object(adapter, 'connect') as connect:
+            value = adapter.prerequisites()
+            native.assert_called_once_with('check')
+            self.assertEqual(value['workspace'], str(adapter.directory))
+            self.assertEqual(value['accessibility']['setupState'], 'needs-permission')
+            self.assertFalse(value['connected'])
+            self.assertFalse(adapter.directory.exists())
+            prepare.assert_not_called(); connect.assert_not_called()
+            native.reset_mock()
+            adapter.prerequisites(request_permission=True)
+            native.assert_called_once_with('request-permission')
+
+    def test_prerequisites_only_request_accessibility_on_supported_installed_mac(self):
+        adapter = Claude(self.root/'adapter', auto_connect=False)
+        with patch('bridge.clients.claude.adapter.native_action') as native:
+            for platform in ('darwin', 'win32', 'linux'):
+                for installed in (False, True):
+                    if platform == 'darwin' and installed:
+                        continue
+                    adapter.discovery = {'installed': installed}
+                    with patch('bridge.clients.claude.adapter.sys.platform', platform):
+                        result = adapter.prerequisites(request_permission=True)
+                        self.assertEqual(result['platform'], platform)
+            native.assert_not_called()
+
+    def test_generated_console_passes_unicode_directory_to_claude_and_trust_error(self):
+        adapter = Claude(self.root/'本地文稿'/'想法 😀', auto_connect=False)
+        self.addCleanup(adapter.close)
+        prepared = adapter.prepare()
+        # Run the actual transformed/injected source; do not just compare JSON text.
+        harness = r'''
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+const cwd=process.argv[2],script=fs.readFileSync(process.argv[1],'utf8');
+const request=fs.readFileSync(cwd+'/request.json','utf8');let start;
+const api={readFileAtCwd:async path=>{assert.equal(path,cwd);return {contents:request};},
+writeSessionFile:async()=>{throw Error('must not write before trust');},getAll:async()=>[],
+start:async value=>{start=value;throw Error('WorkspaceTrustError: trust_required');}};
+(async()=>{await assert.rejects(vm.runInNewContext(script,{window:{'claude.web':{LocalSessions:api}},
+TextEncoder,Uint8Array,crypto:require('node:crypto').webcrypto,console,setTimeout,clearTimeout}),error=>{
+assert.ok(error.message.includes(cwd));assert.ok(error.message.includes('尚未信任目录'));return true;});
+assert.equal(start.cwd,cwd);assert.equal(start.message,'');})();
+'''
+        completed = subprocess.run(['node', '-e', harness, prepared['consolePath'], str(adapter.directory)],
+                                   capture_output=True, text=True, encoding='utf-8', timeout=10)
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
     def test_prepare_reads_utf8_connector_under_windows_legacy_locale(self):
         adapter = Claude(self.root/'网关 连接', auto_connect=False)
         self.addCleanup(adapter.close)
@@ -263,6 +314,12 @@ class ClaudeWindowsProfiles(unittest.TestCase):
 
 
 class ClaudeNativeConnection(unittest.TestCase):
+    @staticmethod
+    def idle_desktop(*, connected):
+        desktop = Mock(connected=connected, capabilities={}, unconfirmed_mutations=set())
+        desktop.lock.locked.return_value = False
+        return desktop
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=ROOT/'.tmp')
         self.addCleanup(self.temp.cleanup)
@@ -278,7 +335,7 @@ class ClaudeNativeConnection(unittest.TestCase):
     def test_inactive_desktop_waits_without_launching_console_and_resumes_once(self):
         for blocked in ('needs-screen-saver', 'needs-unlock', 'needs-desktop'):
             with self.subTest(blocked=blocked):
-                self.adapter.desktop = Mock(connected=False, capabilities={})
+                self.adapter.desktop = self.idle_desktop(connected=False)
                 actions = []
                 def action(name, **kwargs):
                     actions.append(name)
@@ -302,7 +359,7 @@ class ClaudeNativeConnection(unittest.TestCase):
                 self.assertTrue(self.adapter.status()['connected'])
 
     def test_existing_connector_can_recover_while_desktop_remains_in_screen_saver(self):
-        self.adapter.desktop = Mock(connected=False, capabilities={})
+        self.adapter.desktop = self.idle_desktop(connected=False)
         def action(name, **kwargs):
             if name == 'check': return {'setupState': 'needs-screen-saver', 'reason': 'screen saver'}
             self.assertEqual(name, 'wait-desktop')
@@ -319,7 +376,7 @@ class ClaudeNativeConnection(unittest.TestCase):
         self.assertTrue(self.adapter.status()['connected'])
 
     def test_screen_saver_during_console_setup_is_preserved_until_resume(self):
-        self.adapter.desktop = Mock(connected=False, capabilities={})
+        self.adapter.desktop = self.idle_desktop(connected=False)
         actions = []
         def action(name, **kwargs):
             actions.append(name)
@@ -340,7 +397,7 @@ class ClaudeNativeConnection(unittest.TestCase):
         self.assertEqual(actions, ['check', 'connect', 'wait-desktop', 'check', 'connect', 'close-devtools'])
 
     def test_cancel_during_screen_saver_wait_never_starts_claude(self):
-        self.adapter.desktop = Mock(connected=False, capabilities={})
+        self.adapter.desktop = self.idle_desktop(connected=False)
         def action(name, **kwargs):
             if name == 'wait-desktop': self.adapter.setup_cancel.set()
             return {'setupState': 'needs-unlock', 'reason': 'locked'}
@@ -435,7 +492,7 @@ class ClaudeNativeConnection(unittest.TestCase):
         profiles.assert_not_called()
 
     def run_injection(self, heartbeat, trust=False):
-        self.adapter.desktop = Mock(connected=False, capabilities={})
+        self.adapter.desktop = self.idle_desktop(connected=False)
         actions = []
         def native(action, **kwargs):
             actions.append(action)
@@ -476,7 +533,7 @@ class ClaudeNativeConnection(unittest.TestCase):
         self.assertIn('connected', states)
 
     def test_restart_refuses_active_tasks_before_stopping_monitor(self):
-        self.adapter.desktop = Mock(connected=True, capabilities={})
+        self.adapter.desktop = self.idle_desktop(connected=True)
         self.adapter.setup_thread = Mock()
         with patch.object(self.adapter, 'call', return_value={'sessions': [{'status': 'active'}]}):
             with self.assertRaisesRegex(ValueError, '任务运行'):
@@ -485,7 +542,7 @@ class ClaudeNativeConnection(unittest.TestCase):
         self.adapter.setup_thread.join.assert_not_called()
 
     def test_idle_restart_replaces_existing_connection_monitor(self):
-        self.adapter.desktop = Mock(connected=True, capabilities={})
+        self.adapter.desktop = self.idle_desktop(connected=True)
         monitor = self.adapter.setup_thread = Mock()
         monitor.is_alive.side_effect = [True, False]
         with patch.object(self.adapter, 'call', return_value={'sessions': []}), \
@@ -555,7 +612,7 @@ class ClaudeNativeConnection(unittest.TestCase):
         self.assertFalse(other.status()['connected'])
 
     def test_signed_handoff_heartbeat_does_not_invoke_native_ui(self):
-        self.adapter.desktop = Mock(connected=False, capabilities={})
+        self.adapter.desktop = self.idle_desktop(connected=False)
         def wait(seconds):
             if seconds == .2:
                 self.adapter.desktop.connected = True
@@ -623,7 +680,7 @@ class ClaudeNativeConnection(unittest.TestCase):
         native.assert_not_called()
 
     def test_successful_connection_does_not_reopen_console_after_later_heartbeat_loss(self):
-        self.adapter.desktop = Mock(connected=True, capabilities={})
+        self.adapter.desktop = self.idle_desktop(connected=True)
         def wait(_):
             self.adapter.desktop.connected = False
             return False
@@ -642,13 +699,13 @@ class ClaudeNativeConnection(unittest.TestCase):
         prepare.assert_called_once_with()
 
     def test_connected_cleanup_notice_survives_status_rendering(self):
-        self.adapter.desktop = Mock(connected=True, capabilities={})
+        self.adapter.desktop = self.idle_desktop(connected=True)
         reason = 'Claude 已连接；开发者工具未自动关闭，请手动关闭'
         self.adapter._setup_state('connected', reason, consoleCleanupPending=True)
         self.assertEqual(self.adapter.status()['reason'], reason)
 
     def test_cleanup_failure_keeps_verified_connection_with_an_actionable_notice(self):
-        self.adapter.desktop = Mock(connected=False, capabilities={})
+        self.adapter.desktop = self.idle_desktop(connected=False)
         def native(action, **kwargs):
             if action == 'connect':
                 self.adapter.desktop.connected = True
@@ -668,7 +725,7 @@ class ClaudeNativeConnection(unittest.TestCase):
         self.assertIn('手动关闭', self.adapter.status()['reason'])
 
     def test_user_interruption_requires_explicit_retry_without_reopening_console(self):
-        self.adapter.desktop = Mock(connected=False, capabilities={})
+        self.adapter.desktop = self.idle_desktop(connected=False)
         interrupted = {'setupState': 'needs-attention', 'reason': '焦点已离开 Claude，自动连接已停止，请重试'}
         with patch('bridge.clients.claude.adapter.native_action', side_effect=[{'setupState': 'ready'}, interrupted]) as native, \
              patch('bridge.clients.claude.adapter.running_app', return_value=42), \
@@ -881,7 +938,7 @@ class NativeHelperProcess(unittest.TestCase):
              patch('bridge.platforms.macos.claude.subprocess.run') as run, \
              patch('bridge.clients.claude.setup.time.sleep'):
             self.assertEqual(running_app(str(executable), '/profile'), 42)
-        self.assertEqual(run.call_args.args[0], ['/usr/bin/open', '-a', str(ROOT/'Fixture Claude.app')])
+        self.assertEqual(run.call_args.args[0], ['/usr/bin/open', '-g', '-a', str(ROOT/'Fixture Claude.app')])
 
     @patch('bridge.clients.claude.setup.sys.platform', 'win32')
     def test_windows_permission_preflight_never_starts_helper(self):

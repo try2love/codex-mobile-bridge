@@ -31,6 +31,7 @@ class ClaudeConnectionProbe(unittest.TestCase):
             'connectorRevision': CONNECTOR_REVISION, 'surfaces': {'code': ['mobileList', 'getAll']}, **value}))
 
     def test_current_connector_must_answer_a_real_signed_read(self):
+        self.adapter.connection_probe_failed = True
         seen = []
         def respond():
             deadline = time.monotonic() + 2
@@ -48,6 +49,7 @@ class ClaudeConnectionProbe(unittest.TestCase):
         worker.join(3)
         self.assertEqual([(row['surface'], row['method'], row['args']) for row in seen], [('code', 'mobileList', [])])
         self.assertIs(self.adapter.desktop, self.desktop)
+        self.assertTrue(self.adapter.status()['connected'])
         native.assert_not_called(); prepare.assert_not_called()
 
     def test_fresh_heartbeat_without_rpc_response_does_not_report_success(self):
@@ -61,6 +63,228 @@ class ClaudeConnectionProbe(unittest.TestCase):
         self.assertEqual(self.desktop.generation, generation)
         self.assertEqual(self.desktop.seq, 1)
         native.assert_not_called(); prepare.assert_not_called()
+
+    def test_failed_probe_reaches_console_in_one_explicit_reconnect_despite_fresh_heartbeat(self):
+        self.adapter.discovery = {'installed': True, 'automaticConnection': 'native-console',
+                                  'executable': '/fixture/Claude', 'dataHome': '/fixture/profile'}
+        with self.assertRaises(BridgeUnavailable):
+            self.adapter.check_connection()
+        # A renderer can continue heartbeats while its IPC reads are stuck.
+        self.reply({'seq': 1})
+        self.assertFalse(self.adapter.status()['connected'])
+        generation, actions = self.desktop.generation, []
+        requests = []
+        def respond():
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                packet = json.loads((self.adapter.directory/'request.json').read_text())
+                request = json.loads(packet['payload'])
+                if request['type'] == 'request' and request['seq'] > 1:
+                    requests.append(request)
+                    self.reply({'seq': request['seq'], 'done': True, 'result': []})
+                    return
+                time.sleep(.01)
+        worker = threading.Thread(target=respond); worker.start()
+        def native(name, **kwargs):
+            actions.append(name)
+            if name == 'connect':
+                self.assertIs(self.adapter.desktop, self.desktop)
+                self.assertEqual(self.desktop.generation, generation)
+                self.reply({'seq': 1})
+                return {'setupState': 'submitted', 'submission': 'submitted', 'consoleCleanupPending': False}
+            return {'setupState': 'connected' if name == 'close-devtools' else 'ready'}
+        with patch('bridge.clients.claude.adapter.native_action', side_effect=native), \
+             patch('bridge.clients.claude.adapter.running_app', return_value=42), \
+             patch('bridge.clients.claude.adapter.claude_data_home', return_value='/fixture/profile'), \
+             patch('bridge.clients.claude.adapter.developer_mode_enabled', return_value=True), \
+             patch.object(self.adapter.setup_cancel, 'wait', return_value=False):
+            self.adapter.connect(existing_only=True)
+            self.adapter.setup_thread.join(timeout=2)
+        worker.join(3)
+        self.assertFalse(self.adapter.setup_thread.is_alive())
+        self.assertEqual(actions.count('connect'), 1)
+        self.assertEqual([(row['surface'], row['method'], row['args']) for row in requests], [('code', 'mobileList', [])])
+        self.assertTrue(self.adapter.status()['connected'])
+
+    def test_reconnect_heartbeat_cannot_clear_failed_probe_or_trigger_replay(self):
+        self.adapter.discovery = {'installed': True, 'automaticConnection': 'native-console',
+                                  'executable': '/fixture/Claude', 'dataHome': '/fixture/profile',
+                                  'dataHomeExplicit': True}
+        self.adapter.connection_probe_failed = True
+        actions = []
+        def native(name, **kwargs):
+            actions.append(name)
+            if name == 'check': return {'setupState': 'ready'}
+            self.assertEqual(name, 'connect')
+            self.reply({'seq': 0})  # Old renderer heartbeat, not a bootstrap or RPC receipt.
+            return {'setupState': 'submitted'}
+        call = self.desktop.call
+        async def bounded_call(surface, method, *args, **kwargs):
+            return await call(surface, method, *args, timeout=.03)
+        with patch('bridge.clients.claude.adapter.native_action', side_effect=native), \
+             patch('bridge.clients.claude.adapter.running_app', return_value=42), \
+             patch('bridge.clients.claude.adapter.developer_mode_enabled', return_value=True), \
+             patch.object(self.desktop, 'call', side_effect=bounded_call), \
+             patch.object(self.adapter.setup_cancel, 'wait', return_value=False):
+            self.adapter._connect_native(False, self.adapter.directory/'cancel', existing_only=True)
+        self.assertEqual(actions, ['check', 'connect'])
+        self.assertFalse(self.adapter.status()['connected'])
+        self.assertTrue(self.adapter.connection_probe_failed)
+        self.assertEqual(self.adapter.status()['setupState'], 'needs-retry')
+        request = json.loads(json.loads((self.adapter.directory/'request.json').read_text())['payload'])
+        self.assertEqual((request['seq'], request['surface'], request['method'], request['args']), (1, 'code', 'mobileList', []))
+
+    def test_macos_only_explicit_initialization_selects_foreground_path(self):
+        self.adapter.discovery = {'installed': True, 'automaticConnection': 'native-console',
+                                  'executable': '/fixture/Claude', 'dataHome': '/fixture/profile'}
+        self.adapter.connection_probe_failed = True
+        for explicit in (False, True):
+            with self.subTest(explicit=explicit), \
+                 patch('bridge.clients.claude.adapter.sys.platform', 'darwin'), \
+                 patch('bridge.clients.claude.adapter.threading.Thread') as thread:
+                thread.return_value.is_alive.return_value = False
+                if explicit: self.adapter.connect(existing_only=True)
+                else: self.adapter.reconnect()
+            self.assertEqual(thread.call_args.kwargs['target'], self.adapter._connect_native)
+            self.assertEqual(thread.call_args.kwargs['kwargs'], {'existing_only': True, 'foreground': explicit})
+
+    def test_macos_silent_reconnect_never_checks_permissions_or_opens_native_ui(self):
+        self.adapter.discovery = {'installed': True, 'automaticConnection': 'native-console',
+                                  'executable': '/fixture/Claude', 'dataHome': '/fixture/profile'}
+        self.reply({'connected': False})
+        generation = self.desktop.generation
+        with patch('bridge.clients.claude.adapter.sys.platform', 'darwin'), \
+             patch('bridge.clients.claude.adapter.native_action') as native, \
+             patch('bridge.clients.claude.adapter.running_app') as running:
+            self.adapter.reconnect()
+            self.adapter.setup_thread.join(timeout=2)
+        self.assertFalse(self.adapter.setup_thread.is_alive())
+        self.assertEqual(self.adapter.status()['setupState'], 'needs-initialization')
+        self.assertFalse(self.adapter.status()['connected'])
+        self.assertEqual(self.desktop.generation, generation)
+        native.assert_not_called(); running.assert_not_called()
+
+    def test_macos_initial_auto_recovery_creates_mailbox_without_native_ui(self):
+        directory = self.adapter.directory/'auto'
+        directory.mkdir()
+        (directory/'discovery.json').write_text(json.dumps({'installed': True,
+            'automaticConnection': 'native-console', 'autoConnect': True,
+            'executable': '/fixture/Claude', 'dataHome': '/fixture/profile'}))
+        with patch('bridge.clients.claude.adapter.sys.platform', 'darwin'), \
+             patch('bridge.clients.claude.adapter.native_action') as native, \
+             patch('bridge.clients.claude.adapter.running_app') as running:
+            adapter = Claude(directory)
+            self.addCleanup(adapter.close)
+            adapter.setup_thread.join(timeout=2)
+        self.assertFalse(adapter.setup_thread.is_alive())
+        self.assertTrue((directory/'connection.json').is_file())
+        self.assertEqual(adapter.status()['setupState'], 'needs-initialization')
+        native.assert_not_called(); running.assert_not_called()
+
+    def test_macos_silent_recovery_requires_actual_rpc_after_failed_probe(self):
+        self.adapter.discovery = {'installed': True, 'automaticConnection': 'native-console',
+                                  'executable': '/fixture/Claude', 'dataHome': '/fixture/profile'}
+        self.adapter.connection_probe_failed = True
+        seen = []
+        def respond():
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                request = json.loads(json.loads((self.adapter.directory/'request.json').read_text())['payload'])
+                if request['type'] == 'request':
+                    seen.append(request)
+                    self.reply({'seq': request['seq'], 'done': True, 'result': []})
+                    return
+                time.sleep(.01)
+        worker = threading.Thread(target=respond); worker.start()
+        with patch('bridge.clients.claude.adapter.sys.platform', 'darwin'), \
+             patch('bridge.clients.claude.adapter.native_action') as native, \
+             patch('bridge.clients.claude.adapter.running_app') as running:
+            self.adapter.reconnect()
+            self.adapter.setup_thread.join(timeout=2)
+        worker.join(3)
+        self.assertFalse(self.adapter.setup_thread.is_alive())
+        self.assertEqual([(row['surface'], row['method'], row['args']) for row in seen], [('code', 'mobileList', [])])
+        self.assertTrue(self.adapter.status()['connected'])
+        self.assertFalse(self.adapter.connection_probe_failed)
+        native.assert_not_called(); running.assert_not_called()
+
+    def test_macos_silent_heartbeat_cannot_clear_failed_rpc_or_inject_console(self):
+        self.adapter.connection_probe_failed = True
+        call = self.desktop.call
+        async def bounded_call(surface, method, *args, **kwargs):
+            return await call(surface, method, *args, timeout=.03)
+        with patch('bridge.clients.claude.adapter.sys.platform', 'darwin'), \
+             patch('bridge.clients.claude.adapter.native_action') as native, \
+             patch('bridge.clients.claude.adapter.running_app') as running, \
+             patch.object(self.desktop, 'call', side_effect=bounded_call):
+            self.adapter._connect_native(False, self.adapter.directory/'cancel', existing_only=True, foreground=False)
+        self.assertEqual(self.adapter.status()['setupState'], 'needs-initialization')
+        self.assertFalse(self.adapter.status()['connected'])
+        self.assertTrue(self.adapter.connection_probe_failed)
+        self.assertEqual(self.desktop.seq, 1)
+        native.assert_not_called(); running.assert_not_called()
+
+    def test_macos_silent_reconnect_cannot_resume_from_a_pre_stop_heartbeat(self):
+        self.adapter.discovery = {'installed': True, 'automaticConnection': 'native-console',
+                                  'executable': '/fixture/Claude', 'dataHome': '/fixture/profile'}
+        self.desktop.close()
+        generation = self.desktop.generation
+        with patch('bridge.clients.claude.adapter.sys.platform', 'darwin'), \
+             patch('bridge.clients.claude.adapter.native_action') as native:
+            self.adapter.reconnect()
+            self.adapter.setup_thread.join(timeout=2)
+        self.assertEqual(self.adapter.status()['setupState'], 'needs-initialization')
+        self.assertFalse(self.adapter.status()['connected'])
+        self.assertEqual(self.desktop.generation, generation)
+        request = json.loads(json.loads((self.adapter.directory/'request.json').read_text())['payload'])
+        self.assertEqual(request['type'], 'idle')
+        native.assert_not_called()
+        self.reply({'seq': 0})
+        self.assertTrue(self.adapter.status()['connected'])
+
+    def test_macos_silent_reconnect_keeps_unconfirmed_mutation_gate(self):
+        self.desktop.unconfirmed_mutations.add(1)
+        request = (self.adapter.directory/'request.json').read_bytes()
+        with patch('bridge.clients.claude.adapter.sys.platform', 'darwin'), \
+             patch('bridge.clients.claude.adapter.native_action') as native:
+            with self.assertRaisesRegex(ValueError, '未确认的请求'):
+                self.adapter.reconnect()
+        self.assertEqual((self.adapter.directory/'request.json').read_bytes(), request)
+        native.assert_not_called()
+
+    def test_macos_explicit_initialization_cannot_bypass_unconfirmed_mutation_gate(self):
+        self.desktop.unconfirmed_mutations.add(1)
+        request = (self.adapter.directory/'request.json').read_bytes()
+        with patch('bridge.clients.claude.adapter.sys.platform', 'darwin'), \
+             patch('bridge.clients.claude.adapter.native_action') as native, \
+             patch.object(self.adapter, 'prepare') as prepare:
+            with self.assertRaisesRegex(ValueError, '未确认的请求'):
+                self.adapter.connect()
+        self.assertEqual((self.adapter.directory/'request.json').read_bytes(), request)
+        native.assert_not_called(); prepare.assert_not_called()
+
+    def test_recovery_read_probe_does_not_bypass_normal_calls_or_accept_cancelled_owner(self):
+        self.adapter.reconnecting = True
+        with self.assertRaisesRegex(BridgeUnavailable, '正在重新连接'):
+            self.adapter.call('send')
+        with self.assertRaisesRegex(BridgeUnavailable, '正在重新连接'):
+            self.adapter.check_connection()
+        self.assertEqual(self.desktop.seq, 0)
+        for invalidate in ('cancel', 'owner'):
+            with self.subTest(invalidate=invalidate):
+                self.adapter.desktop = self.desktop
+                self.adapter.setup_cancel.clear()
+                async def invalidate_after_reply(*args, **kwargs):
+                    if invalidate == 'cancel': self.adapter.setup_cancel.set()
+                    else: self.adapter.desktop = None
+                    return []
+                with patch.object(self.desktop, 'call', side_effect=invalidate_after_reply):
+                    with self.assertRaisesRegex(BridgeUnavailable, '暂未响应'):
+                        self.adapter.check_connection(_reconnect_probe=True)
+                self.assertTrue(self.adapter.connection_probe_failed)
+        self.adapter.desktop = self.desktop
+        self.adapter.setup_cancel.clear()
+        self.adapter.reconnecting = False
 
     def test_busy_original_operation_is_neither_cancelled_nor_overwritten(self):
         async def occupy(): await self.desktop.lock.acquire()
@@ -167,6 +391,15 @@ class ClaudeConnectionProbe(unittest.TestCase):
             self.assertIn('未确认的请求', self.adapter.status()['reason'])
             running.assert_not_called(); prepare.assert_not_called()
         finally: self.adapter.loop.call_soon_threadsafe(self.desktop.lock.release)
+
+    def test_failed_probe_cannot_treat_heartbeat_as_recovery_during_screen_saver_wait(self):
+        self.adapter.connection_probe_failed = True
+        def native(name, **kwargs):
+            self.assertEqual(name, 'wait-desktop')
+            self.assertFalse(kwargs['recovered']())
+            return {'setupState': 'ready'}
+        with patch('bridge.clients.claude.adapter.native_action', side_effect=native):
+            self.assertTrue(self.adapter._await_desktop({'setupState': 'needs-screen-saver'}, self.adapter.setup_cancel))
 
     def test_unconfirmed_send_survives_failed_call_and_later_read_probe(self):
         self.reply({'surfaces': {'code': ['sendMessage', 'mobileList']}})

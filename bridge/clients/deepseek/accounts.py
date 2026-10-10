@@ -342,6 +342,89 @@ class DeepSeekAccounts:
             self.cache[identifier] = (time.monotonic(), usage, row['fingerprint'], identity)
             return self.public()
 
+    @staticmethod
+    def _name(value):
+        if not isinstance(value, str) or not value.strip() or len(value.strip()) > 100:
+            raise ValueError('Harness 账号名称不能为空且不能超过 100 字')
+        return value.strip()
+
+    def edit(self, identifier):
+        with self.lock:
+            row = self._row(identifier)
+            result = {key: row[key] for key in ('id', 'name', 'kind')}
+            if row['kind'] == 'api':
+                self._snapshot(row)
+                result['api'] = {'hasKey': True}
+            return result
+
+    def rename(self, identifier, name):
+        with self.lock:
+            row = self._row(identifier)
+            name, before = self._name(name), copy.deepcopy(self.index)
+            row['name'] = name
+            try:
+                self._save()
+            except Exception:
+                self.index = before
+                raise
+            return self.public()
+
+    def save_api(self, value):
+        """Save the native official API-key route without changing the client."""
+        with self.lock:
+            name = self._name(value.get('name'))
+            existing = self._row(value['id']) if value.get('id') else None
+            if existing and existing['kind'] != 'api':
+                raise ValueError('官方登录只能在 Harness 中修改')
+            # Arbitrary providers need their own native plugin and route, not
+            # just a credential in DEEPSEEK_API_KEY. Do not silently ignore one.
+            if set(value)-{'operation', 'action', 'provider', 'id', 'name', 'apiKey'}:
+                raise ValueError('此处仅支持 DeepSeek 官方 API Key，自定义接入请在 Harness 中配置')
+            key = value.get('apiKey', '')
+            if key == '' and existing:
+                key = self._snapshot(existing)
+            if not isinstance(key, str) or not re.fullmatch(r'[\x21-\x7e]{1,8192}', key):
+                raise ValueError('请输入有效的 API Key')
+            identifier = existing['id'] if existing else uuid.uuid4().hex
+            path = self.directory/(identifier+'.json')
+            before, old_index = _read(path), copy.deepcopy(self.index)
+            self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            self.directory.chmod(0o700)
+            try:
+                private_json(path, {'kind': 'api', 'credential': key})
+                row = {'id': identifier, 'name': name, 'kind': 'api', 'provider': PROVIDERS['api'],
+                       'fingerprint': _fingerprint('api', key)}
+                self.index['accounts'] = [item for item in self.index['accounts'] if item['id'] != identifier]+[row]
+                self._save()
+            except Exception:
+                self.index = old_index
+                if before is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    private_bytes(path, before)
+                raise
+            self.cache.pop(identifier, None)
+            return self.public()
+
+    def remove(self, identifier):
+        with self.lock:
+            self._row(identifier)
+            path = self.directory/(identifier+'.json')
+            raw, old_index = _read(path), copy.deepcopy(self.index)
+            path.unlink(missing_ok=True)
+            self.index['accounts'] = [item for item in self.index['accounts'] if item['id'] != identifier]
+            if self.index.get('activeId') == identifier:
+                self.index['activeId'] = None
+            try:
+                self._save()
+            except Exception:
+                self.index = old_index
+                if raw is not None:
+                    private_bytes(path, raw)
+                raise
+            self.cache.pop(identifier, None)
+            return self.public()
+
     @contextmanager
     def _writer(self):
         """Use the same exclusive sibling lock as native credentials-local."""

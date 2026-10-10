@@ -38,6 +38,21 @@ class NativePushTests(unittest.TestCase):
         result=payload(device,event);self.assertNotIn('private',str(result));self.assertEqual(result['message']['data']['thread'],THREAD)
         device['kind']='activity';self.assertEqual(payload(device,event)['aps']['content-state']['phase'],'waiting')
         event['kind']='completion';self.assertEqual(payload(device,event)['aps']['event'],'end')
+    def test_source_icon_delivery_keeps_old_android_clients_compatible(self):
+        self.event(); event = self.feed.read()['events'][0]
+        for provider, host in [('codex', 'local'), ('claude', 'desktop:claude'), ('deepseek', 'desktop:deepseek')]:
+            event['host'] = host
+            device = {'origin': 'https://gateway.example', 'kind': 'fcm', 'token': 'sample'}
+            self.assertIn('notification', payload(device, event)['message'])
+            device['sourceIcon'] = True
+            result = payload(device, event)['message']
+            self.assertNotIn('notification', result)
+            self.assertEqual(result['data']['provider'], provider)
+            self.assertNotIn('private', str(result))
+            device['kind'] = 'apns'
+            self.assertEqual(payload(device, event)['aps']['mutable-content'], 1)
+            self.assertEqual(payload(device, event)['provider'], provider)
+
     def test_validation_and_unregister(self):
         with self.assertRaises(ValueError):self.push.register({**self.body,'token':'bad'},'owner','https://codex.try2love.com')
         self.register();self.push.register({**self.body,'enabled':False},'owner','https://codex.try2love.com');self.assertEqual(self.push.devices,{})

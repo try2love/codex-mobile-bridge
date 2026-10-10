@@ -7,9 +7,11 @@ const BridgeDownload = (() => {
   function eligible(value, base) {
     try {
       const url = new URL(value, base);
+      const scope = /^\/d\/[a-f0-9]{32}(?=\/)/.exec(new URL(base).pathname)?.[0] || "";
+      const pathname = scope ? (url.pathname.startsWith(scope+"/") ? url.pathname.slice(scope.length) : "") : url.pathname;
       return url.origin === new URL(base).origin && !url.username && !url.password &&
-        (/^\/api\/sessions\/[0-9a-f-]{36}\/(?:files\/[a-f0-9]{64}|workspace\/download)$/.test(url.pathname) ||
-         /^\/api\/desktop-sessions\/(?:claude|deepseek)\/workspace\/download$/.test(url.pathname));
+        (/^\/api\/sessions\/[0-9a-f-]{36}\/(?:files\/[a-f0-9]{64}|workspace\/download)$/.test(pathname) ||
+         /^\/api\/desktop-sessions\/(?:claude|deepseek)\/workspace\/download$/.test(pathname));
     } catch { return false; }
   }
   const host = typeof module === 'object' && module.exports ? require('../../hosts/environment.js') : BridgeHost;

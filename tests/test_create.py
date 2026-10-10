@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
-from bridge.features.sessions.create import create_empty, rename_thread, open_in_desktop, CreationError
+from bridge.features.sessions.create import CreationUnavailable, create_empty, rename_thread, open_in_desktop, CreationError
 from bridge.clients.codex.remote import AppHosts
 from bridge.app.service import Bridge
 
@@ -74,6 +74,32 @@ class CreationTests(unittest.TestCase):
             self.assertEqual(create.call_count, 1)
             with self.assertRaises(ValueError):self.bridge.create_chat('local|p', 'Other', request)
 
+    def test_independent_chat_needs_no_saved_project_and_is_idempotent(self):
+        self.bridge.hosts.state = lambda: {}
+        request = str(uuid.uuid4())
+        with patch('bridge.app.service.create_empty', return_value=self.tid) as create, patch('bridge.app.service.open_in_desktop'):
+            first = self.bridge.create_chat('local|independent', 'No project', request)
+            second = self.bridge.create_chat('local|independent', 'No project', request)
+            self.assertEqual(first['id'], second['id'])
+            self.assertEqual(create.call_count, 1)
+            directory = Path(create.call_args.args[2])
+            self.assertTrue(directory.is_dir())
+            self.assertEqual(directory, (self.root / 'data/independent-chats' / request).resolve())
+        with patch('bridge.app.service.create_empty', side_effect=CreationError('unknown')) as create:
+            request = str(uuid.uuid4())
+            for _ in range(2):
+                with self.assertRaises(CreationError): self.bridge.create_chat('local|independent', 'Unknown', request)
+            self.assertEqual(create.call_count, 1)
+
+    def test_independent_directory_failure_is_safe_to_retry(self):
+        request = str(uuid.uuid4())
+        with patch('bridge.features.sessions.create.Path.mkdir', side_effect=PermissionError('read only')):
+            with self.assertRaises(CreationUnavailable): self.bridge.create_chat('local|independent', 'Retry', request)
+        self.assertNotIn(request, self.bridge.creations)
+        with patch('bridge.app.service.create_empty', return_value=self.tid) as create, patch('bridge.app.service.open_in_desktop'):
+            self.bridge.create_chat('local|independent', 'Retry', request)
+            self.assertEqual(create.call_count, 1)
+
     def test_unknown_result_is_not_replayed(self):
         request = str(uuid.uuid4())
         with patch('bridge.app.service.create_empty', side_effect=CreationError('timeout')) as create:
@@ -87,6 +113,24 @@ class CreationTests(unittest.TestCase):
             result = self.bridge.create_chat('local|p', 'Test', str(uuid.uuid4()))
             self.assertEqual(result['id'], self.tid)
             self.assertFalse(result['opened'])
+
+    def test_blocked_desktop_open_reuses_created_id_after_retry_and_gateway_restart(self):
+        request = str(uuid.uuid4())
+        with patch('bridge.app.service.create_empty', return_value=self.tid) as create, \
+             patch('bridge.app.service.open_in_desktop', side_effect=CreationError('桌面暂不可交互')) as opened:
+            for _ in range(2):
+                result = self.bridge.create_chat('local|p', 'Test', request)
+                self.assertEqual(result['id'], self.tid)
+                self.assertFalse(result['opened'])
+            self.assertEqual(json.loads(self.bridge.creations_path.read_text())[request]['id'], self.tid)
+            self.bridge.close()
+            self.bridge = Bridge(self.root, self.root/'data')
+            self.bridge.hosts.projects = lambda: [{'key': 'local|p', 'host': 'local', 'cwd': str(self.root)}]
+            opened.side_effect = None
+            result = self.bridge.create_chat('local|p', 'Test', request)
+            self.assertEqual(result['id'], self.tid)
+            self.assertTrue(result['opened'])
+            create.assert_called_once()
 
     def test_only_saved_project_and_valid_title_are_accepted(self):
         with patch('bridge.app.service.create_empty') as create:

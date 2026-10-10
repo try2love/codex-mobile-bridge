@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -421,6 +422,142 @@ class ClaudeAccounts:
                     raise
                 _remove(previous)
             finally:
+                _remove(staged)
+            return self.public()
+
+    def edit(self, identifier):
+        """Desktop-only editor data; never return a saved credential."""
+        with self.lock:
+            row, snapshot = self._account(identifier)
+            result = {key: row[key] for key in ('id', 'name', 'kind')}
+            if row['kind'] == 'api':
+                config = _json(snapshot/'gateway.json').get('config', {})
+                url = parse.urlsplit(config.get('inferenceGatewayBaseUrl', ''))
+                # Interactive/helper credentials remain native-managed. An URL
+                # carrying private query data is not sent back to the editor.
+                if (config.get('inferenceGatewayApiKey') and not url.query and not url.fragment
+                        and not url.username and not url.password
+                        and config.get('inferenceCredentialKind', 'static') == 'static'):
+                    result['api'] = {'baseUrl': config['inferenceGatewayBaseUrl'],
+                        'authScheme': config.get('inferenceGatewayAuthScheme', 'bearer'),
+                        'models': [model if isinstance(model, str) else model.get('name', '')
+                                   for model in config.get('inferenceModels', [])], 'hasKey': True}
+            return result
+
+    def rename(self, identifier, name):
+        with self.lock:
+            self._account(identifier)
+            name = self._name(name)
+            index = self._index()
+            next(row for row in index['accounts'] if row['id'] == identifier)['name'] = name
+            self._save(index)
+            return self.public()
+
+    @staticmethod
+    def _name(value):
+        if not isinstance(value, str) or not value.strip() or len(value.strip()) > 120:
+            raise ValueError('接入名称不能为空且不能超过 120 字')
+        return value.strip()
+
+    def save_api(self, value):
+        """Save a gateway snapshot; applying it still uses the lifecycle gate."""
+        with self.lock:
+            name = self._name(value.get('name'))
+            existing, old = None, None
+            if value.get('id'):
+                existing, snapshot = self._account(value['id'])
+                if existing['kind'] != 'api' or not self.edit(existing['id']).get('api'):
+                    raise ValueError('此接入由客户端管理，仅支持修改名称')
+                old = _json(snapshot/'gateway.json')
+            url = value.get('baseUrl')
+            if (not isinstance(url, str) or len(url) > 2048
+                    or any(c.isspace() or ord(c) < 32 or c in '\\\x7f' for c in url)):
+                raise ValueError('请输入有效的 API 地址')
+            try:
+                parsed = parse.urlsplit(url)
+                valid = (parsed.scheme == 'https' or parsed.scheme == 'http' and parsed.hostname in ('localhost', '127.0.0.1', '::1'))
+                valid = valid and parsed.hostname and not (parsed.username or parsed.password or parsed.query or parsed.fragment)
+                parsed.port
+            except ValueError:
+                valid = False
+            if not valid:
+                raise ValueError('API 地址须使用 HTTPS（本机可使用 HTTP），且不能包含凭据、查询参数或片段')
+            key = value.get('apiKey', '')
+            if key == '' and old:
+                key = old['config'].get('inferenceGatewayApiKey')
+            if not isinstance(key, str) or not re.fullmatch(r'[\x21-\x7e]{1,8192}', key):
+                raise ValueError('请输入有效的 API Key')
+            auth = value.get('authScheme', 'bearer')
+            if auth not in ('bearer', 'x-api-key'):
+                raise ValueError('API 认证方式无效')
+            models = value.get('models')
+            if (not isinstance(models, list) or not 1 <= len(models) <= 200
+                    or any(not isinstance(model, str) or not re.fullmatch(r'[^\s\x00-\x1f\x7f]{1,200}', model) for model in models)):
+                raise ValueError('请填写上游支持的模型 ID，每行一个，最多 200 个')
+            config = copy.deepcopy(old['config']) if old else {}
+            old_models = config.get('inferenceModels', [])
+            by_name = {model if isinstance(model, str) else model.get('name', ''): model for model in old_models}
+            # Reordering/removing models must not erase native metadata on
+            # retained entries. Only newly added IDs use the string shorthand.
+            config['inferenceModels'] = [by_name.get(model, model) for model in dict.fromkeys(models)]
+            config.update(inferenceProvider='gateway', inferenceGatewayBaseUrl=url,
+                          inferenceCredentialKind='static', inferenceGatewayApiKey=key,
+                          inferenceGatewayAuthScheme=auth)
+            gateway = {'id': old['id'] if old else str(uuid.uuid4()), 'name': name, 'config': config}
+            identifier = existing['id'] if existing else uuid.uuid4().hex
+            fingerprint = hashlib.sha256(json.dumps(config, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+            index = self._index()
+            self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            self.directory.chmod(0o700)
+            target = self.directory/'profiles'/identifier
+            staged = self.directory/'staging'/uuid.uuid4().hex
+            _safe(staged)
+            _safe(target)
+            staged.mkdir(parents=True, mode=0o700)
+            previous = target.with_name(identifier+'.previous')
+            _safe(previous)
+            try:
+                private_json(staged/'gateway.json', gateway)
+                private_json(staged/'manifest.json', {'kind': 'api', 'fingerprint': fingerprint})
+                target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                if target.exists():
+                    target.rename(previous)
+                try:
+                    staged.rename(target)
+                    row = {'id': identifier, 'name': name, 'kind': 'api', 'fingerprint': fingerprint,
+                           'baseUrl': parsed.scheme+'://'+parsed.hostname}
+                    index['accounts'] = [item for item in index['accounts'] if item['id'] != identifier]+[row]
+                    self._save(index)
+                except Exception:
+                    _remove(target)
+                    if previous.exists():
+                        previous.rename(target)
+                    raise
+                _remove(previous)
+            finally:
+                _remove(staged)
+            return self.public()
+
+    def remove(self, identifier):
+        """Forget the gateway's copy, leaving the native login untouched."""
+        with self.lock:
+            _, snapshot = self._account(identifier)
+            _safe(snapshot)
+            index = self._index()
+            index['accounts'] = [row for row in index['accounts'] if row['id'] != identifier]
+            # Keep rollback material until the index update has succeeded.
+            staged = snapshot.with_name(identifier+'.removed')
+            _safe(staged)
+            moved = snapshot.exists()
+            if moved:
+                snapshot.rename(staged)
+            try:
+                self._save(index)
+            except Exception:
+                if moved:
+                    staged.rename(snapshot)
+                raise
+            if moved:
                 _remove(staged)
             return self.public()
 

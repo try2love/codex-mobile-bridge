@@ -13,7 +13,7 @@ import urllib.request
 from pathlib import Path
 
 from bridge.clients.lifecycle import _app, _commands, inspect_client
-from bridge.clients.deepseek.adapter import BRIDGE_REVISION
+from bridge.clients.deepseek.adapter import LIFECYCLE_REVISIONS
 from bridge.features.accounts.models import NoRedirect
 
 CHANGED = 'Harness 进程已变化，请重新检查后再确认恢复'
@@ -134,7 +134,7 @@ def _evidence(adapter, snapshot):
                     continue
                 busy = busy or any(not isinstance(row, dict) or row.get('requests') or
                     row.get('status') in ('active', 'running', 'waiting', 'busy') for row in rows)
-                complete = (detail.get('bridgeRevision') == BRIDGE_REVISION and detail.get('complete') is True and
+                complete = (detail.get('bridgeRevision') in LIFECYCLE_REVISIONS and detail.get('complete') is True and
                     all(isinstance(row, dict) and row.get('runtimeKnown') is True and
                         row.get('status') in ('idle', 'stopped', 'completed') and not row.get('requests') for row in rows))
                 unknown = unknown or not complete

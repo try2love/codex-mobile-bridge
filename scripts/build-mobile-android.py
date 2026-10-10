@@ -40,9 +40,11 @@ shutil.copy2(work/'base.apk',work/'unsigned.apk')
 with zipfile.ZipFile(work/'unsigned.apk','a') as archive:
     for path in (work/'dex').glob('*.dex'):
         archive.write(path,path.name)
-    for directory in (ROOT/'mobile/shared/web', source/'assets'):
+    for directory in (ROOT/'mobile/shared/web', source/'assets', ROOT/'web/client-icons'):
         for asset in directory.glob('*.js'):
             archive.write(asset,'assets/'+asset.name)
+    for provider in ('codex', 'claude', 'deepseek'):
+        archive.write(ROOT/'web/client-icons'/f'{provider}.png', 'assets/'+provider+'.png')
     archive.write(ROOT/'mobile/NOTICE.md','assets/NOTICE.md')
     archive.write(ROOT/'mobile/licenses/ZXing-LICENSE.txt','assets/ZXing-LICENSE.txt')
 key = tools/'preview-debug.p12'

@@ -1,1 +1,2 @@
 @media(max-width:720px){.list-heading{min-height:56px}.client-navigation{margin-top:auto}.ds-conversation .ds-head{padding:10px;gap:6px}.ds-head>span.muted{display:none}.ds-list{padding:0 16px}.chat-head>.client-icon{width:20px;height:20px}.client-functions>*{font-size:10px!important}}
+@media(max-width:720px){.chat-list-toolbar>.search{font-size:16px!important}.chat-list-toolbar>.search::placeholder{font-size:12px}}

@@ -282,14 +282,23 @@ class Handler(BaseHTTPRequestHandler):
                     return self.output(200, file.read_bytes(), 'font/'+font[2])
             if not write and path == "/api/auth":
                 session = self.login_session()
+                discovery = getattr(self.server, 'connection_discovery', None)
                 return self.output(200, {"uiLanguage": self.server.ui_language(), "authenticated": bool(session), "trustedDevice": bool(session and session.get("trustedDevice")), "csrf": session["csrf"] if session else None,
                                          "loginStatus": self.server.auth.login_status(self.client()["ip"]),
                                          "instanceId": self.server.instance_id,
                                          **({"computer": {"name": socket.gethostname(), "platform": platform.system()}} if session else {}),
+                                         **({'connection': discovery.descriptor(self.token())} if session and discovery else {}),
                                          "notifications": self.server.notifications is not None,
                                          "passwordless": self.server.auth.config.get("mode") == "none",
                                          "transport": "poll" if self.headers.get("Host", "").endswith(".trycloudflare.com") else "sse"},
                                    cookie=self.cookie(self.token()) if session else None)
+            if not write and path == '/api/connection/prove':
+                discovery = getattr(self.server, 'connection_discovery', None)
+                if discovery is None or not self.server.auth.permitted(self.client()['ip']):
+                    raise PermissionError('Connection discovery unavailable')
+                host = self.headers.get('Host', '')
+                target = ('https://' if host in self.server.secure_hosts else 'http://') + host
+                return self.output(200, discovery.prove(query.get('id', [''])[0], query.get('challenge', [''])[0], target))
             if not self.server.auth.permitted(self.client()['ip']) and path != '/api/login':
                 raise PermissionError('此 IP 已被访问规则禁止')
             if write and path == "/api/login":
@@ -332,7 +341,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.output(503, {'error': '应用管理不可用'})
                 if write:
                     value = self.read_json()
-                    if not isinstance(value, dict) or not {'provider', 'enabled'} <= set(value) or set(value) - {'provider', 'enabled', 'quitDesktop', 'initializeDesktop', 'forceDesktop'}:
+                    if not isinstance(value, dict) or not {'provider', 'enabled'} <= set(value) or set(value) - {'provider', 'enabled', 'quitDesktop', 'initializeDesktop', 'forceDesktop', 'forceConfirmed'}:
                         raise ValueError('应用开关无效')
                     return self.output(200, manager.toggle_client(value))
                 return self.output(200, manager.clients())
@@ -405,7 +414,11 @@ class Handler(BaseHTTPRequestHandler):
                     if self.server.desktop_uploads is None:
                         return self.output(503, {'error': '桌面会话接入不可用'})
                     body['resolvedImages'] = self.server.desktop_uploads.resolve(parts[2], sid, body.pop('attachments'))
-                return self.output(200, manager.call(parts[2], parts[3], sid, body))
+                feed = self.server.notifications.mobile.checkpoint() if parts[3] == 'list' and self.server.notifications else None
+                result = manager.list_with_activity(parts[2]) if parts[3] == 'list' else manager.call(parts[2], parts[3], sid, body)
+                if feed is not None:
+                    result['notificationRead'] = {key: feed[key] for key in ('streamId', 'cursor')}
+                return self.output(200, result)
             if path == '/api/harness' and not write:
                 return self.output(200, self.server.harness.status() if self.server.harness else {'running': False, 'state': 'stopped', 'url': '/harness/'})
             if path == '/api/mobile/push':
@@ -420,6 +433,15 @@ class Handler(BaseHTTPRequestHandler):
                 if origin not in self.server.origins:
                     raise PermissionError('不允许的推送注册来源')
                 return self.output(200, manager.mobile_push.register(self.read_json(), self.server.auth.key(self.token()), origin))
+            if path == '/api/mobile/events/read' and write:
+                manager = self.server.notifications
+                if manager is None:
+                    return self.output(503, {'error': '手机通知暂不可用'})
+                body = self.read_json()
+                if set(body) != {'provider', 'streamId', 'through'}:
+                    raise ValueError('通知已读参数无效')
+                manager.mobile.acknowledge(body['provider'], body['streamId'], body['through'])
+                return self.output(200, manager.mobile_snapshot(manager.mobile.checkpoint()['cursor']))
             if not write and path == '/api/mobile/events':
                 manager = self.server.notifications
                 if manager is None:
@@ -427,11 +449,7 @@ class Handler(BaseHTTPRequestHandler):
                 value = query.get('after', ['0'])[0]
                 if not value.isdigit() or len(value) > 16:
                     raise ValueError('通知游标格式不正确')
-                enabled = notification_settings(manager.data_dir).get('mobileEnabled', False)
-                result = manager.mobile.read(int(value))
-                if not enabled:
-                    result['events'] = []
-                return self.output(200, {**result, 'enabled': enabled})
+                return self.output(200, manager.mobile_snapshot(int(value)))
             if write and path == "/api/logout":
                 self.read_json()
                 self.server.auth.logout(self.token())
@@ -482,8 +500,10 @@ class Handler(BaseHTTPRequestHandler):
             if write and path == '/api/account/reset':
                 return self.output(200, self.server.bridge.account.consume(self.read_json()))
             if not write and path == "/api/sessions":
+                feed = self.server.notifications.mobile.checkpoint() if self.server.notifications else None
                 rows = self.server.bridge.list(query=query.get("q", [""])[0][:200], offset=max(0, int(query.get("offset", [0])[0])), archived=query.get("archived", ["false"])[0] == "true")
-                return self.output(200, {"sessions": rows, "unavailableHosts": self.server.bridge.host_errors})
+                return self.output(200, {"sessions": rows, "unavailableHosts": self.server.bridge.host_errors,
+                                        'notificationRead': {key: feed[key] for key in ('streamId', 'cursor')} if feed else None})
             if not write and path == '/api/projects':
                 return self.output(200, {'projects': self.server.bridge.hosts.projects()})
             if write and path == '/api/activity':

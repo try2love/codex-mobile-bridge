@@ -4,7 +4,7 @@
   const say=zh=>BridgeI18n.t(zh);
   const root=document.createElement('article');root.id='shared-relay';
   const node=(tag,text)=>{const value=document.createElement(tag);if(text){value.textContent=text;const source=BridgeI18n.source(text);if(source)value.dataset.i18n=source;}return value;};
-  root.append(node('h2',say("共享中继 · 内测")),node('p',say("使用管理员提供的 HTTPS 地址和一次性邀请码连接自己的电脑。电脑需要保持唤醒，Codex 和网关需要保持运行。")));
+  root.append(node('h2',say("自建中继 · 内测")),node('p',say("在自己的服务器部署中继，填写 HTTPS 地址和一次性邀请码即可接入。此功能可选；电脑需保持唤醒，网关和所用客户端需保持运行。")));
   const registration=node('div'),controls=node('div'),status=node('p'),phones=node('div'),pair=node('div');
   status.setAttribute('role','status');
   const field=(caption,type,id)=>{const label=node('label',caption),input=node('input');input.type=type;input.id=id;label.append(input);registration.append(label);return input;};
@@ -21,7 +21,7 @@
   function render(value){
     lastStatus=value;
     registration.hidden=!!value.registered;controls.hidden=!value.registered;
-    if(!value.registered){status.textContent=say("尚未连接共享中继。");return;}
+    if(!value.registered){phones.replaceChildren();pair.replaceChildren();phoneSignature='';clearInterval(poll);clearTimeout(expiry);poll=expiry=null;status.textContent=say("尚未注册自建中继。");return;}
     status.textContent=value.error||value.deviceName+' · '+(!value.enabled?say("已暂停"):value.online?say("在线"):say("离线；启用后请重新启动电脑网关。"));
     toggle.textContent=value.enabled?say("暂停中继连接"):say("启用中继连接");toggle.dataset.enabled=String(value.enabled);toggle.dataset.i18n=value.enabled?'暂停中继连接':'启用中继连接';
     const signature=JSON.stringify([BridgeI18n.language(),value.pending,value.phones]);
@@ -33,7 +33,7 @@
   button(say("注册这台电脑"),async()=>{
     if(!consent.checked)throw Error(say("请先确认授权。"));
     await api.sharedRelay({action:'register',url:url.value.trim(),invitation:invitation.value.trim(),name:name.value.trim(),consent:true});
-    invitation.value='';await refresh();status.textContent=say("电脑已注册。请在“连接与状态”重新启动网关，然后生成手机配对。");
+    invitation.value='';await refresh();status.textContent=say("电脑已注册。请在“概览”重新启动网关，然后生成手机配对。");
   },registration);
   button(say("刷新状态"),refresh,root);
   button(say("生成手机配对"),async()=>{

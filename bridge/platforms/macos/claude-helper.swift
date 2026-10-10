@@ -94,6 +94,9 @@ func isConsoleTab(_ element: AXUIElement) -> Bool {
 func submissionAccepted(_ value: String?) -> Bool {
     value?.trimmingCharacters(in: .newlines).isEmpty == true
 }
+func activationMayWait(initial: pid_t?, current: pid_t?, target: pid_t) -> Bool {
+    current != nil && current == initial && current != target
+}
 func devToolsWindow(role: String, title: String, owner: pid_t, expectedOwner: pid_t) -> Bool {
     role == "AXWindow" && owner == expectedOwner &&
         ["Developer Tools", "DevTools", "开发者工具"].contains(where: { title == $0 || title.hasPrefix($0 + " - ") })
@@ -124,6 +127,9 @@ final class Connector {
         cancel = cancelPath.map { URL(fileURLWithPath: $0) }
     }
     func check(_ prompt: AXUIElement? = nil, foreground: Bool = true) throws {
+        // AppKit's dynamic application properties update on the main run loop.
+        // Drain a ready event without sleeping before checking live foreground.
+        _ = RunLoop.current.run(mode: .default, before: Date())
         if let cancel = cancel, FileManager.default.fileExists(atPath: cancel.path) { try fail("cancelled", "已取消 Claude 连接") }
         try requireDesktop(scanWindows: false)
         if CGEventSource.keyState(.combinedSessionState, key: 53) { try fail("cancelled", "已取消 Claude 连接") }
@@ -148,8 +154,22 @@ final class Connector {
     func activate() throws {
         try requireDesktop()
         try check(foreground: false)
+        let initial = NSWorkspace.shared.frontmostApplication?.processIdentifier
         app.activate(options: [.activateAllWindows])
-        Thread.sleep(forTimeInterval: 0.3); try check()
+        let deadline = Date().addingTimeInterval(2)
+        repeat {
+            // Activation is asynchronous; Thread.sleep alone leaves AppKit's
+            // cached foreground stale. Request once and service notifications.
+            RunLoop.current.run(until: Date().addingTimeInterval(0.025))
+            try requireDesktop()
+            try check(foreground: false)
+            let current = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            if current == app.processIdentifier { try check(); return }
+            guard activationMayWait(initial: initial, current: current, target: app.processIdentifier) else {
+                try fail("needs-attention", "焦点已离开 Claude，自动连接已停止，请重试")
+            }
+        } while Date() < deadline
+        try fail("needs-attention", "焦点已离开 Claude，自动连接已停止，请重试")
     }
     func key(_ code: CGKeyCode, flags: CGEventFlags = [], prompt: AXUIElement? = nil) throws {
         for down in [true, false] {
@@ -353,6 +373,14 @@ do {
               !devToolsWindow(role: "AXWindow", title: "Developer Tools", owner: 77, expectedOwner: 42) else {
             throw SetupError(state: "error", reason: "Console submission and window guard self-check failed")
         }
+        guard activationMayWait(initial: 7, current: 7, target: 42),
+              !activationMayWait(initial: 7, current: 42, target: 42),
+              !activationMayWait(initial: 7, current: 9, target: 42),
+              !activationMayWait(initial: 7, current: nil, target: 42),
+              !activationMayWait(initial: nil, current: nil, target: 42),
+              !activationMayWait(initial: 42, current: 7, target: 42) else {
+            throw SetupError(state: "error", reason: "Activation transition guards self-check failed")
+        }
         output("ready", "Native Console selectors, submission and window guards ready")
     } else if args.first == "--wait-desktop" {
         // Read-only wait: no activation, permission prompts, AX actions or
@@ -365,7 +393,7 @@ do {
         try requireDesktop()
         let prompt = args.first == "--request-permission"
         let trusted = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt] as CFDictionary)
-        guard trusted else { try fail("needs-permission", "请在系统设置中允许 Claude 连接组件使用辅助功能，授权后会继续连接") }
+        guard trusted else { try fail("needs-permission", "请在系统设置的辅助功能中授权网关 App（不是 Claude），完成后会继续连接") }
         if args.first == "--check" || prompt { output("ready", "辅助功能已授权") }
         else {
             guard args.count >= 3, let pid = Int32(args[1]) else { try fail("needs-attention", "连接组件参数无效") }

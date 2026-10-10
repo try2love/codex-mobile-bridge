@@ -8,7 +8,7 @@ import java.util.regex.*;
 public final class ArtifactDownload {
  public static final long CHUNK=1024L*1024;
  public static boolean accepts(String url,String origin){
-  try{return GatewayURL.sameOrigin(url,origin)&&new URI(url).getPath().matches("(?:/api/sessions/[0-9a-f-]{36}/(?:files/[a-f0-9]{64}|workspace/download)|/api/desktop-sessions/(?:claude|deepseek)/workspace/download)");}catch(Exception e){return false;}
+  try{return GatewayURL.sameOrigin(url,origin)&&GatewayURL.apiPath(url,origin).matches("(?:/api/sessions/[0-9a-f-]{36}/(?:files/[a-f0-9]{64}|workspace/download)|/api/desktop-sessions/(?:claude|deepseek)/workspace/download)");}catch(Exception e){return false;}
  }
  public static String filename(String disposition){
   String name="download";

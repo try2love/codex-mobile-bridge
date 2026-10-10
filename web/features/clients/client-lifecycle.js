@@ -49,7 +49,7 @@ const ClientLifecycle=(()=>{
       const node=(tag,text)=>{const element=document.createElement(tag);element.dataset.i18n=text;element.textContent=BridgeI18n.t(text);return element;};
       const title=node('h2','初始化连接'),description=node('p',client.initializationMode==='background'
         ?'Windows 上优先后台初始化，无需保持键盘焦点；开发者工具可能短暂出现。后台方式不可用时，仅在桌面可交互时尝试前台引导。'
-        :'将在电脑端打开 Claude 并引导完成连接；如遇屏保或锁屏，请恢复桌面后继续。');
+        :'将在电脑端打开 Claude 和开发者工具，并使用键盘焦点完成连接；如遇屏保或锁屏，请恢复桌面后继续。');
       const identity=document.createElement('p');identity.textContent=client.name||client.id;
       const id='client-initialize-'+(++sequence);title.id=id+'-title';description.id=id+'-description';dialog.setAttribute('aria-labelledby',title.id);dialog.setAttribute('aria-describedby',description.id);
       const actions=document.createElement('div');actions.className='client-disable-options';let choice=false;
@@ -58,8 +58,8 @@ const ClientLifecycle=(()=>{
       dialog.addEventListener('cancel',event=>{event.preventDefault();finish(false);});dialog.addEventListener('close',()=>{dialog.remove();resolve(choice);},{once:true});document.body.append(dialog);dialog.showModal();cancel.focus();
     });
   }
-  function chooseDisable(client){
-    return new Promise(resolve=>{
+  async function chooseDisable(client){
+    const choice=await new Promise(resolve=>{
       const dialog=document.createElement('dialog');dialog.className='client-disable-dialog';
       const node=(tag,text)=>{const element=document.createElement(tag);element.dataset.i18n=text;element.textContent=BridgeI18n.t(text);return element;};
       const title=node('h2','停用手机接入'),description=node('p','选择是否同时退出电脑上的应用。');
@@ -72,7 +72,7 @@ const ClientLifecycle=(()=>{
         ['仅停用手机接入','保留电脑 App 和现有任务。',false],
         ['正常退出电脑 App',client.id==='claude'?'通过 Claude 原生菜单正常退出；如有任务或保存确认，请在电脑端处理。下次开启时会尝试重新连接。':client.id==='codex'&&client.canForceQuit===true?'仅在所有任务结束且没有待确认操作时，通过 Codex 原生菜单正常退出。锁屏时可能不可用；如有退出确认，请在电脑端处理。':'仅在所有任务结束且没有待确认操作时退出。',true]
       ];
-      if(client.canForceQuit===true)options.push(['后台强制结束','结束应用进程，可能丢失未保存内容或中断任务。锁屏时也可使用。','force']);
+      if(client.canForceQuit===true)options.push(['强制关闭 App','结束应用进程，可能丢失未保存内容或中断任务。锁屏时也可使用。','force']);
       for(const [label,note,value] of options){
         const button=document.createElement('button');button.type='button';button.dataset.quitDesktop=String(value!==false);
         if(value==='force')button.dataset.forceDesktop='true';
@@ -84,7 +84,27 @@ const ClientLifecycle=(()=>{
       dialog.addEventListener('close',()=>{dialog.remove();resolve(choice);},{once:true});
       document.body.append(dialog);dialog.showModal();cancel.focus();
     });
+    return choice==='force'?chooseForce(client):choice===true&&client.id==='claude'?confirmQuit(client,false):choice;
   }
-  return {chooseDisable,chooseInitialize,connection,request,failure,failureMessage,retryLabel,reconcile,sessionNotice};
+  function chooseForce(client){
+    if(client.canForceQuit!==true)return Promise.resolve(null);
+    return confirmQuit(client,true);
+  }
+  function confirmQuit(client,force){
+    return new Promise(resolve=>{
+      const dialog=document.createElement('dialog');dialog.className='client-disable-dialog';
+      const node=(tag,text)=>{const element=document.createElement(tag);element.dataset.i18n=text;element.textContent=BridgeI18n.t(text);return element;};
+      const title=node('h2',force?'强制关闭确认':'退出 Claude Desktop 确认'),description=node('p',client.id==='claude'
+        ?force?'这会立即结束 Claude Desktop，可能中断正在运行的会话并丢失未保存内容。重新启动后，初始化连接需要电脑处于解锁状态。是否确认强制退出？':'重新启动 Claude Desktop 后，初始化连接需要电脑处于解锁状态。是否确认退出？'
+        :'这会立即结束电脑上的应用，可能中断正在运行的会话并丢失未保存内容。请确认仍要继续。');
+      const identity=document.createElement('p');identity.textContent=client.name||client.id;
+      const id='client-quit-confirm-'+(++sequence);title.id=id+'-title';description.id=id+'-description';dialog.setAttribute('aria-labelledby',title.id);dialog.setAttribute('aria-describedby',description.id);
+      const actions=document.createElement('div');actions.className='client-disable-options';let choice=null;
+      const finish=value=>{choice=value;dialog.close();};
+      const confirm=node('button',force?'确认强制关闭':'确认退出'),cancel=node('button','取消');confirm.type=cancel.type='button';if(force)confirm.className='client-force-confirm';confirm.onclick=()=>finish(force?'force':true);cancel.onclick=()=>finish(null);actions.append(confirm,cancel);dialog.append(title,identity,description,actions);
+      dialog.addEventListener('cancel',event=>{event.preventDefault();finish(null);});dialog.addEventListener('close',()=>{dialog.remove();resolve(choice);},{once:true});document.body.append(dialog);dialog.showModal();cancel.focus();
+    });
+  }
+  return {chooseDisable,chooseForce,chooseInitialize,connection,request,failure,failureMessage,retryLabel,reconcile,sessionNotice};
 })();
 if(typeof module!=='undefined')module.exports=ClientLifecycle;

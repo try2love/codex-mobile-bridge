@@ -9,13 +9,14 @@ const pack = value => {
   return JSON.stringify({payload,signature:createHmac('sha256','test').update(payload).digest('hex')});
 };
 let request = pack({seq:0,type:'idle'}), response, calls = [];
-let failWrites=0,catalogHung=false;
+let failWrites=0,catalogHung=false,usageCalls=[],realContextBudget=false;
 const api = {
   async readFileAtCwd() { return {contents:request}; },
   async writeSessionFile(sid,path,text) { if(failWrites>0){failWrites--;throw Error('temporary write failure');}response=JSON.parse(JSON.parse(text).payload); return {hash:'ok'}; },
   async getAll() { if(catalogHung)return new Promise(()=>{});return [{sessionId:'local_test',cwd:'D:/fixture',title:'Codex Bridge Connector',oauthToken:'SECRET'}]; },
   async getSupportedCommands(options) {assert.ok(options && typeof options==='object' && !Array.isArray(options));return options;},
-  async getContextUsageSummary() {return {totalTokens:42000,rawMaxTokens:200000,categories:[],private:'SECRET'};},
+  async getContextUsageSummary() {usageCalls.push('summary');return {totalTokens:42000,rawMaxTokens:200000,categories:[],private:'SECRET'};},
+  async getContextUsage() {usageCalls.push('full');return null;},
   async getSession(id) { return {sessionId:id, oauthToken:'SECRET'}; },
   async sendMessage(...args) { calls.push(args); },
   async getTranscript() {return [
@@ -29,7 +30,7 @@ const api = {
 };
 const window = {'claude.web':{LocalSessions:api,LocalAgentModeSessions:api}};
 const context = {window,TextEncoder,Uint8Array,crypto:webcrypto,console,
-  clearTimeout,setTimeout:(fn,ms)=>setTimeout(fn,ms>=9000?100:Math.min(ms,10))};
+  clearTimeout,setTimeout:(fn,ms)=>setTimeout(fn,realContextBudget&&ms>1000?ms:ms>=9000?100:Math.min(ms,10))};
 const source=fs.readFileSync(process.env.CONNECTOR_TEMPLATE || 'bridge/clients/claude/connector.js','utf8').replace('__BRIDGE_CONFIG__',JSON.stringify(config));
 const waitFor = async predicate => {
   const deadline=Date.now()+3000;
@@ -95,10 +96,41 @@ const waitFor = async predicate => {
   request=pack({generation:'next',type:'request',seq:++seq,surface:'code',method:'mobileDetail',args:['local_test'],expires:Date.now()/1000+10});
   await waitFor(()=>response.seq===seq&&response.done);
   assert.deepEqual(response.result.contextUsage,{usedTokens:42000,contextWindow:200000});
+  assert.equal(response.result.contextUsageStatus,'available');
+  assert.deepEqual(usageCalls,['summary'],'valid summary must not trigger the larger getter');
   assert.ok(!JSON.stringify(response).includes('SECRET'));
   api.getContextUsageSummary=async()=>({totalTokens:NaN,rawMaxTokens:200000});
   request=pack({generation:'next',type:'request',seq:++seq,surface:'code',method:'mobileDetail',args:['local_test'],expires:Date.now()/1000+10});
   await waitFor(()=>response.seq===seq&&response.done);assert.equal(response.result.contextUsage,null);
+  assert.equal(response.result.contextUsageStatus,'unavailable');
+  for(const summary of [async()=>null,async()=>{throw Error('older CLI does not support summary');}]){
+    usageCalls=[];
+    api.getContextUsageSummary=async id=>{assert.equal(id,'local_test');usageCalls.push('summary');return summary();};
+    api.getContextUsage=async id=>{assert.equal(id,'local_test');usageCalls.push('full');return {totalTokens:76543,rawMaxTokens:200000,categories:[{name:'PRIVATE'}],token:'SECRET'};};
+    request=pack({generation:'next',type:'request',seq:++seq,surface:'code',method:'mobileDetail',args:['local_test'],expires:Date.now()/1000+10});
+    await waitFor(()=>response.seq===seq&&response.done);
+    assert.deepEqual(response.result.contextUsage,{usedTokens:76543,contextWindow:200000});
+    assert.equal(response.result.contextUsageStatus,'available');
+    assert.deepEqual(usageCalls,['summary','full']);
+    assert.ok(!JSON.stringify(response.result.contextUsage).includes('PRIVATE')&&!JSON.stringify(response).includes('SECRET'));
+  }
+  for(const usage of [null,{totalTokens:12,rawMaxTokens:0},{totalTokens:-1,rawMaxTokens:200000},{totalTokens:12,rawMaxTokens:Infinity}]){
+    api.getContextUsageSummary=async()=>null;api.getContextUsage=async()=>usage;
+    request=pack({generation:'next',type:'request',seq:++seq,surface:'code',method:'mobileDetail',args:['local_test'],expires:Date.now()/1000+10});
+    await waitFor(()=>response.seq===seq&&response.done);
+    assert.equal(response.result.contextUsage,null);assert.equal(response.result.contextUsageStatus,'unavailable');
+  }
+  usageCalls=[];realContextBudget=true;
+  api.getContextUsageSummary=()=>{usageCalls.push('summary');return new Promise(()=>{});};
+  api.getContextUsage=async()=>{usageCalls.push('full');return {totalTokens:12,rawMaxTokens:200000};};
+  request=pack({generation:'next',type:'request',seq:++seq,surface:'code',method:'mobileDetail',args:['local_test'],expires:Date.now()/1000+10});
+  await waitFor(()=>response.seq===seq&&response.done);realContextBudget=false;
+  assert.equal(response.result.contextUsage,null);assert.equal(response.result.contextUsageStatus,'unavailable');
+  assert.deepEqual(usageCalls,['summary'],'a stalled summary exhausts the shared budget; do not start another native request');
+  delete api.getContextUsageSummary;delete api.getContextUsage;
+  request=pack({generation:'next',type:'request',seq:++seq,surface:'cowork',method:'mobileDetail',args:['local_test'],expires:Date.now()/1000+10});
+  await waitFor(()=>response.seq===seq&&response.done);
+  assert.equal(response.result.contextUsage,null);assert.equal(response.result.contextUsageStatus,'unsupported');
   window.__claudeMobileBridge.stop(); await running;
   assert.equal(response.connected,false);
   console.log('Desktop file connector: handshake, original session dispatch, deduplication, same-generation reinjection without replay, expiry, allowlist, redaction, restart, replay rejection, stop passed.');

@@ -128,6 +128,7 @@ function register(){
         await shell.openExternal(url.href);return value;
       }
     }
+    if(action==='desktop-sessions'&&payload?.action==='copy-claude-workspace'){const value=await worker(action,{action:'status'});clipboard.writeText(value.claudeWorkspace);return {copied:true};}
     if(action==='desktop-sessions'&&payload?.action==='prepare-claude'){const value=await worker(action,payload);clipboard.writeText(value.script);delete value.script;return value;}
     try{return await worker(action,payload);}catch(error){if(error.validation)return {validationError:{message:error.message,...error.validation}};throw error;}
   });

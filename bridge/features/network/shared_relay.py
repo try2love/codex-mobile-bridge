@@ -10,6 +10,7 @@ import urllib.request
 from pathlib import Path
 
 from relay.protocol import MAX_BODY, MAX_FRAME, origin, validate, decode, content_type, download_headers
+from relay.stream import CHUNK, WINDOW, frame
 from bridge.features.auth.tls import client_context
 
 
@@ -114,9 +115,12 @@ class Connector:
         from bridge.api.httpd import GatewayServer
         self.directory = Path(directory)
         self.config = read_config(directory)
+        self.gateway = gateway
         self.origin = origin(self.config['url'], test_http)
         config = {'auth': {'mode': 'password', 'sessionHours': 0}, 'origins': [], 'localAccess': True}
         self.server = GatewayServer(('127.0.0.1', 0), gateway.bridge, config, gateway.web_dir)
+        # Share the live file policy while keeping relay authentication private.
+        self.server.transfer_directory = getattr(gateway, 'transfer_directory', None)
         self.server.notifications = gateway.notifications
         self.server.desktop_sessions = getattr(gateway, 'desktop_sessions', None)
         self.local_origin = 'http://127.0.0.1:' + str(self.server.server_port)
@@ -137,8 +141,9 @@ class Connector:
         except (OSError, ValueError):
             return False
 
-    async def forward(self, client, message):
+    async def forward(self, client, message, stream=None):
         identifier = message.get('id', '')
+        streaming = False
         def result(status, body):
             return {'id': identifier, 'status': status, 'body': base64.b64encode(json.dumps(body).encode()).decode(), 'contentType': 'application/json'}
         try:
@@ -167,6 +172,22 @@ class Connector:
                        'Content-Type': mime, 'Accept-Encoding': 'identity', **range_headers}
             async with client.request(message['method'], self.local_origin + message['path'], headers=headers,
                                       data=body if message['method'] == 'POST' else None, allow_redirects=False) as response:
+                if (stream and message.get('stream') is True and message['method'] == 'GET'
+                        and response.status in (200, 206) and response.content_length is not None
+                        and not response.headers.get('Content-Type', '').startswith('application/json')):
+                    ws, credit = stream
+                    await ws.send_json({'type': 'start', 'id': identifier, 'status': response.status,
+                                        'length': response.content_length,
+                                        'contentType': response.headers.get('Content-Type', 'application/octet-stream'),
+                                        'disposition': response.headers.get('Content-Disposition', ''),
+                                        'headers': download_headers({key: response.headers[key] for key in
+                                            ('ETag', 'Content-Range', 'Accept-Ranges') if key in response.headers}, response=True)})
+                    streaming = True
+                    async for chunk in response.content.iter_chunked(CHUNK):
+                        await asyncio.wait_for(credit.acquire(), timeout=90)
+                        await ws.send_bytes(frame(identifier, chunk))
+                    await ws.send_json({'type': 'end', 'id': identifier})
+                    return None
                 if (range_headers.get('Range') and range_headers.get('If-Range') and response.status == 200
                         and response.headers.get('Accept-Ranges') == 'bytes' and response.headers.get('ETag')
                         and response.headers['ETag'] != range_headers['If-Range']
@@ -188,6 +209,9 @@ class Connector:
         except (ValueError, PermissionError, KeyError, TypeError) as exc:
             return result(403, {'error': str(exc)})
         except Exception:
+            if streaming:
+                await stream[0].send_json({'type': 'abort', 'id': identifier})
+                return None
             return result(504, {'error': '电脑网关响应中断，请检查操作结果后再继续。', 'code': 'outcome_unknown'})
 
     async def run(self):
@@ -199,7 +223,7 @@ class Connector:
             raise ValueError('Relay redirects are not permitted')
         trace.on_request_redirect.append(reject_redirect)
         # Local forwarding deliberately ignores proxy environment variables.
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=80), cookie_jar=aiohttp.DummyCookieJar()) as local:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=80), cookie_jar=aiohttp.DummyCookieJar()) as local:
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20),
                                              connector=aiohttp.TCPConnector(ssl=client_context()),
                                              cookie_jar=aiohttp.DummyCookieJar(), trust_env=True,
@@ -207,15 +231,31 @@ class Connector:
                 while self.enabled():
                     pending = set()
                     try:
-                        async with remote.ws_connect(self.origin + '/relay/device/ws',
+                        async with remote.ws_connect(self.origin + '/relay/device/ws?protocol=2',
                                                      headers={'Authorization': 'Bearer ' + self.config['deviceToken']},
                                                      heartbeat=25, max_msg_size=MAX_FRAME, compress=0) as ws:
                             delay = 1
                             seen = set()
+                            streams = {}
+                            async def advertise():
+                                previous = None
+                                while not ws.closed:
+                                    discovery = getattr(self.gateway, 'connection_discovery', None)
+                                    snapshot = discovery.snapshot() if discovery else None
+                                    if snapshot is not None and snapshot != previous:
+                                        await ws.send_json(snapshot)
+                                        previous = snapshot
+                                    await asyncio.sleep(5)
+                            publication = asyncio.create_task(advertise())
+                            pending.add(publication)
                             async def handle(value):
-                                reply = await self.forward(local, value)
-                                if not ws.closed:
-                                    await ws.send_json(reply)
+                                credit = streams[value['id']][1]
+                                try:
+                                    reply = await self.forward(local, value, (ws, credit))
+                                    if reply is not None and not ws.closed:
+                                        await ws.send_json(reply)
+                                finally:
+                                    streams.pop(value['id'], None)
                             while self.enabled():
                                 try:
                                     message = await asyncio.wait_for(ws.receive(), timeout=1)
@@ -225,13 +265,24 @@ class Connector:
                                     break
                                 value = json.loads(message.data)
                                 identifier = value.get('id')
+                                if value.get('type') in ('ack', 'cancel'):
+                                    transfer = streams.get(identifier)
+                                    if transfer:
+                                        if value['type'] == 'cancel':
+                                            # Cancellation only applies to an explicitly streamed read.
+                                            if transfer[2]:
+                                                transfer[0].cancel()
+                                        else:
+                                            transfer[1].release()
+                                    continue
                                 if not isinstance(identifier, str) or len(identifier) > 128 or identifier in seen:
                                     raise ValueError('Invalid or repeated request ID')
                                 # Bounded replay set. Reconnect rather than forget old IDs.
-                                if len(seen) >= 100000 or len(pending) >= 12:
+                                if len(seen) >= 100000 or len(streams) >= 12:
                                     break
                                 seen.add(identifier)
                                 task = asyncio.create_task(handle(value))
+                                streams[identifier] = (task, asyncio.BoundedSemaphore(WINDOW), value.get('stream') is True and value.get('method') == 'GET')
                                 pending.add(task)
                                 def complete(task):
                                     pending.discard(task)
@@ -260,7 +311,17 @@ class Connector:
                 self.loop = asyncio.get_running_loop()
                 self.task = asyncio.current_task()
                 try:
-                    await self.run()
+                    while not self.closed.is_set():
+                        cfg = read_config(self.directory)
+                        if cfg.get('enabled') and cfg.get('deviceToken'):
+                            if cfg.get('deviceToken') != self.config.get('deviceToken') or cfg.get('url') != self.config.get('url'):
+                                for secret, _ in self.sessions.values():
+                                    self.server.auth.logout(secret)
+                                self.sessions.clear()
+                                self.origin = origin(cfg['url'])
+                                self.config = cfg
+                            await self.run()
+                        await asyncio.sleep(1)
                 except asyncio.CancelledError:
                     pass
             asyncio.run(main())
@@ -280,7 +341,7 @@ class Connector:
 
 
 def start(directory, gateway):
-    if not read_config(directory).get('enabled'):
+    if not read_config(directory).get('deviceToken'):
         return None
     connector = Connector(directory, gateway)
     try:

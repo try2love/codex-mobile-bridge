@@ -23,7 +23,7 @@ final class GatewayProbe {
     byte[] buffer=new byte[2048];int n;long deadline=android.os.SystemClock.elapsedRealtime()+4000;
     while((n=in.read(buffer))!=-1){if(cancelled||out.size()+n>16384||android.os.SystemClock.elapsedRealtime()>deadline)return false;out.write(buffer,0,n);}
     JSONObject data=new JSONObject(out.toString("UTF-8"));
-    return !cancelled&&data.opt("authenticated") instanceof Boolean&&data.opt("passwordless") instanceof Boolean&&data.opt("instanceId") instanceof String&&!data.getString("instanceId").isEmpty();
+    return !cancelled&&(!data.optBoolean("relay")||data.optBoolean("online"))&&data.opt("authenticated") instanceof Boolean&&data.opt("passwordless") instanceof Boolean&&data.opt("instanceId") instanceof String&&!data.getString("instanceId").isEmpty();
    }
   }catch(Exception e){return false;}finally{connection=null;if(c!=null)c.disconnect();}
  }

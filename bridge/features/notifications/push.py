@@ -71,6 +71,7 @@ class MobilePush:
             if previous.get('streamId') != feed['streamId'] or (kind == 'activity' and previous.get('token') != token):
                 previous = {}
             self.devices[key] = {**previous, 'owner': owner, 'token': token, 'kind': kind,
+                'sourceIcon': body.get('sourceIcon') is True,
                 'origin': origin, 'thread': thread, 'host': host, 'updated': time.time(),
                 'cursor': previous.get('cursor', feed['cursor']), 'streamId': feed['streamId'], 'next': 0}
             write_json(self.path, self.devices)
@@ -139,13 +140,18 @@ class MobilePush:
 
 
 def payload(device, event):
+    provider = {'desktop:claude': 'claude', 'desktop:deepseek': 'deepseek'}.get(event['host'], 'codex')
     route = {'origin': device['origin'], 'thread': event['threadId'], 'host': event['host'],
+             'provider': provider,
              'sequence': str(event['sequence']), 'streamId': event.get('streamId', '')}
     # Push carries generic state only. Full inbox content stays behind gateway authentication.
     title = '本轮已结束' if event['kind'] == 'completion' else '有任务等待你确认'
-    client = {'desktop:claude': 'Claude', 'desktop:deepseek': 'DSH'}.get(event['host'])
-    heading = client + ' · Codex Bridge' if client else 'Codex Bridge'
+    client = {'claude': 'Claude', 'deepseek': 'DeepSeek Harness', 'codex': 'Codex'}[provider]
+    heading = client + ' · Codex Bridge'
     if device['kind'] == 'fcm':
+        if device.get('sourceIcon'):
+            return {'message': {'token': device['token'], 'data': {**route, 'title': heading, 'body': title},
+                                'android': {'priority': 'high', 'ttl': '3600s'}}}
         return {'message': {'token': device['token'], 'notification': {'title': heading, 'body': title},
                            'data': route, 'android': {'priority': 'high', 'ttl': '3600s', 'notification': {'channel_id': 'tasks', 'tag': 'bridge|'+device['origin']+'|'+str(event['sequence'])}}}}
     if device['kind'] == 'activity':
@@ -154,7 +160,7 @@ def payload(device, event):
                         'content-state': {'phase': event.get('phase', 'ended' if event['kind'] == 'completion' else 'waiting'),
                                           'updatedAt': now-978307200},
                         **({'dismissal-date': now+300} if event['kind'] == 'completion' else {'stale-date': now+300})}}
-    return {'aps': {'alert': {'title': heading, 'body': title}, 'sound': 'default', 'thread-id': event['threadId']}, **route}
+    return {'aps': {'alert': {'title': heading, 'body': title}, 'sound': 'default', 'thread-id': event['threadId'], 'mutable-content': 1}, **route}
 
 
 def send_provider(config, device, event):

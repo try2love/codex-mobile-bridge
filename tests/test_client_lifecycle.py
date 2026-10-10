@@ -219,13 +219,13 @@ class ClientLifecycleTests(unittest.TestCase):
         native = Mock(side_effect=self.finish)
         self.claude.status.return_value = {'connected': False}
         self.dsh.call.side_effect = BridgeUnavailable('offline')
-        with patch.dict('sys.modules', {'bridge.platforms.windows.force_exit': SimpleNamespace(force_stop_client=native)}), \
+        with patch('bridge.clients.lifecycle.force_stop_client', native), \
                 patch('bridge.clients.manager.sys.platform', 'win32'), \
                 patch.object(self.manager, 'clients', return_value={'clients': []}), \
                 patch.object(self.manager, '_assert_idle', side_effect=AssertionError('force is an explicit task interruption')) as idle:
             for provider in ('codex', 'claude', 'deepseek'):
                 self.running = True
-                self.manager.toggle_client({'provider': provider, 'enabled': False, 'quitDesktop': True, 'forceDesktop': True})
+                self.manager.toggle_client({'provider': provider, 'enabled': False, 'quitDesktop': True, 'forceDesktop': True, 'forceConfirmed': True})
                 self.assertFalse(self.manager.enabled(provider))
                 self.assertEqual(native.call_args.args[0]['id'], provider)
                 self.assertIn('state', native.call_args.kwargs)
@@ -238,20 +238,20 @@ class ClientLifecycleTests(unittest.TestCase):
 
     def test_force_failure_keeps_enabled_state_and_reports_original_error(self):
         native = Mock(side_effect=ValueError('fixture identity changed'))
-        with patch.dict('sys.modules', {'bridge.platforms.windows.force_exit': SimpleNamespace(force_stop_client=native)}), \
+        with patch('bridge.clients.lifecycle.force_stop_client', native), \
                 patch('bridge.clients.manager.sys.platform', 'win32'), \
                 patch('bridge.clients.manager.private_json') as save:
             with self.assertRaisesRegex(ValueError, 'fixture identity changed'):
-                self.manager.toggle_client({'provider': 'claude', 'enabled': False, 'quitDesktop': True, 'forceDesktop': True})
+                self.manager.toggle_client({'provider': 'claude', 'enabled': False, 'quitDesktop': True, 'forceDesktop': True, 'forceConfirmed': True})
         self.assertTrue(self.manager.enabled('claude'))
         save.assert_not_called(); self.stop.assert_not_called()
         self.claude.reconnect.assert_called_once_with()
 
-    def test_force_requires_explicit_disabled_windows_desktop_choice(self):
-        base = {'provider': 'claude', 'enabled': False, 'quitDesktop': True, 'forceDesktop': True}
+    def test_force_requires_explicit_confirmed_disabled_desktop_choice(self):
+        base = {'provider': 'claude', 'enabled': False, 'quitDesktop': True, 'forceDesktop': True, 'forceConfirmed': True}
         cases = [{**base, 'forceDesktop': value} for value in (None, 'true', 1, 0, [])]
-        cases += [{**base, 'enabled': True}, {**base, 'quitDesktop': False},
-                  {'provider': 'claude', 'enabled': False, 'forceDesktop': True}]
+        cases += [{**base, 'enabled': True}, {**base, 'quitDesktop': False}, {**base, 'forceConfirmed': False}, {k:v for k,v in base.items() if k != 'forceConfirmed'},
+                  {'provider': 'claude', 'enabled': False, 'forceDesktop': True, 'forceConfirmed': True}]
         with patch('bridge.clients.manager.sys.platform', 'win32'):
             for value in cases:
                 with self.subTest(value=value), self.assertRaises(ValueError):
@@ -260,21 +260,21 @@ class ClientLifecycleTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '强制结束请求无效'):
                 self.manager.toggle_client(base)
             self.manager.gateway_running = True
-        with self.assertRaisesRegex(ValueError, '强制结束请求无效'):
+        with patch('bridge.clients.manager.sys.platform', 'unsupported'), self.assertRaisesRegex(ValueError, '强制结束请求无效'):
             self.manager.toggle_client(base)
         self.assertTrue(self.manager.enabled('claude'))
         self.stop.assert_not_called()
 
     def test_normal_quit_never_uses_force_path(self):
         native = Mock(side_effect=AssertionError('normal quit must not force'))
-        with patch.dict('sys.modules', {'bridge.platforms.windows.force_exit': SimpleNamespace(force_stop_client=native)}), \
+        with patch('bridge.clients.lifecycle.force_stop_client', native), \
                 patch('bridge.clients.manager.sys.platform', 'win32'), \
                 patch.object(self.manager, 'clients', return_value={'clients': []}):
             self.manager.toggle_client({'provider': 'codex', 'enabled': False, 'quitDesktop': True})
         native.assert_not_called(); self.stop.assert_called_once()
 
-    def test_force_choice_only_advertised_for_windows_running_gateway(self):
-        self.assertTrue(all(not row.get('canForceQuit') for row in self.manager.clients(refresh=True)['clients']))
+    def test_force_choice_only_advertised_for_supported_running_gateway(self):
+        self.assertTrue(all(row.get('canForceQuit') for row in self.manager.clients(refresh=True)['clients']))
         with patch('bridge.clients.manager.sys.platform', 'win32'), \
                 patch('bridge.clients.manager.windows_session.status', return_value={'state': 'locked', 'interactive': False}):
             self.assertTrue(all(row['canForceQuit'] for row in self.manager.clients(refresh=True)['clients']))
@@ -496,6 +496,24 @@ class ClientLifecycleTests(unittest.TestCase):
         self.stop.assert_not_called()
         self.launch_dsh.assert_not_called()
 
+    def test_saved_account_crud_does_not_stop_or_reconfigure_native_client(self):
+        store = Mock()
+        store.save_api.return_value = store.rename.return_value = store.remove.return_value = {'accounts': []}
+        store.edit.return_value = {'id': 'saved', 'name': 'Saved', 'kind': 'api', 'api': {'hasKey': True}}
+        self.manager._account_store = Mock(return_value=store)
+        for provider in ('claude', 'deepseek'):
+            draft = {'operation': 'save-api', 'name': 'Saved', 'apiKey': 'private-key'}
+            self.manager.client_accounts(provider, draft)
+            store.save_api.assert_called_with(draft)
+            self.assertTrue(self.manager.client_accounts(provider, {'operation': 'edit', 'id': 'saved'})['api']['hasKey'])
+            self.manager.client_accounts(provider, {'operation': 'rename', 'id': 'saved', 'name': 'Renamed'})
+            store.rename.assert_called_with('saved', 'Renamed')
+            self.manager.client_accounts(provider, {'operation': 'remove', 'id': 'saved'})
+            store.remove.assert_called_with('saved')
+        self.stop.assert_not_called()
+        self.launch.assert_not_called()
+        self.launch_dsh.assert_not_called()
+
     def test_importing_stopped_client_offline_does_not_launch_it(self):
         self.manager.gateway_running = False
         self.running = False
@@ -544,8 +562,8 @@ class ClientLifecycleTests(unittest.TestCase):
         self.running = False
         self.manager.toggle_client({'provider': 'claude', 'enabled': True})
         self.launch.assert_called_once()
-        self.claude.connect.assert_called_once_with()
-        self.claude.reconnect.assert_not_called()
+        self.claude.connect.assert_not_called()
+        self.claude.reconnect.assert_called_once_with()
 
     def test_macos_gateway_start_launches_selected_claude(self):
         self.running = False
@@ -553,8 +571,21 @@ class ClientLifecycleTests(unittest.TestCase):
         with patch.object(self.manager, 'scan'):
             self.manager.start_enabled()
         self.launch.assert_called_once()
-        self.claude.connect.assert_called_once_with()
+        self.claude.connect.assert_not_called()
+        self.claude.reconnect.assert_called_once_with()
+
+    def test_macos_account_recovery_only_restores_existing_connection(self):
+        self.manager._launch_account_client('claude', self.manager._descriptor('claude'))
+        self.launch.assert_called_once()
+        self.claude.reconnect.assert_called_once_with()
+        self.claude.connect.assert_not_called()
+
+    def test_macos_account_recovery_without_enabled_gateway_never_connects(self):
+        self.manager.gateway_running = False
+        self.manager._launch_account_client('claude', self.manager._descriptor('claude'))
+        self.launch.assert_called_once()
         self.claude.reconnect.assert_not_called()
+        self.claude.connect.assert_not_called()
 
     def test_linux_claude_enable_does_not_claim_supported_connection(self):
         with patch('bridge.clients.manager.sys.platform', 'linux'):

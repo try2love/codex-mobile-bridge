@@ -6,7 +6,7 @@
 
 # Codex App 手机网关
 
-> **共享中继源码内测**：支持无 GUI 服务器、终端 / Web 管理后台、邀请码接入与手机配对，见[部署与使用说明](docs/shared-relay.md)。当前预览版暂时隐藏此功能入口。
+> **共享中继源码内测**：支持无 GUI 服务器、终端 / Web 管理后台、邀请码接入与手机配对，见[部署与使用说明](docs/shared-relay.md)。当前开发版可在“网络访问 → 自建中继 · 内测”配置自己的 HTTPS 中继；默认不启用。
 
 > **v2.0.0-preview.3 预览版**：[发布与下载](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.0.0-preview.3) · [Web / App 工作台介绍](https://try2love.github.io/codex-mobile-bridge/#preview) · [手机安装说明](mobile/README.md)。预览版需主动安装，不向正式版用户推送。手机后台通知尚未接通。
 

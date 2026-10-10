@@ -3,3 +3,4 @@
 .client-disable-dialog button{font:inherit;padding:9px 13px;border:1px solid var(--line,#dfe3eb);border-radius:8px;background:var(--raised,#fff);color:inherit;cursor:pointer}
 .client-disable-dialog button:disabled{opacity:.5;cursor:default}
 .client-disable-dialog h2{margin:0 0 12px;font-size:20px}.client-disable-dialog p{line-height:1.6;overflow-wrap:anywhere}.client-disable-options{display:grid;gap:10px;margin-top:20px}.client-disable-options button{width:100%;text-align:left;white-space:normal;padding:12px 14px}.client-disable-options strong,.client-disable-options small{display:block}.client-disable-options small{margin-top:6px;color:var(--muted,#626d7e);font-size:12px;line-height:1.6}
+.client-disable-dialog .client-force-confirm{color:var(--danger,#b42318);border-color:currentColor}

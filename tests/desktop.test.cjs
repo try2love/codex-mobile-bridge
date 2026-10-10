@@ -96,6 +96,14 @@ async function renderer(initialLanguage='zh-CN',{autoStart=false}={}){
   return {nodes,value,context,api,calls,run:code=>vm.runInContext(code,context),poll:()=>poll(),advance:ms=>{now+=ms;},start:()=>nodes.get('start').onclick()};
 }
 
+test('an incomplete optional relay URL does not block or enter ordinary network settings saves',async()=>{
+  const ui=await renderer(),relay={id:'relay-url',value:'https://',disabled:false,validity:{valid:false},closest:selector=>selector==='#shared-relay'?{}:null};
+  ui.nodes.get('settings').querySelectorAll=()=>[relay];let submitted;
+  ui.api.save=async payload=>{submitted=payload;return structuredClone(ui.value);};
+  await ui.nodes.get('settings').onsubmit({preventDefault(){}});
+  assert.ok(submitted);assert.deepEqual(JSON.parse(JSON.stringify(submitted.preferences.connections)),[]);assert.doesNotMatch(JSON.stringify(submitted),/relay-url|"https:\/\/"/);assert.equal(relay.value,'https://');
+});
+
 test('opening the control panel and starting the gateway need no Documents permission API',async()=>{
   const ui=await renderer();
   assert.deepEqual(ui.calls,['snapshot']);

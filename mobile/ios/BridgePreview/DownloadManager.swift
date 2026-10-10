@@ -56,8 +56,8 @@ final class DownloadManager: NSObject, URLSessionDataDelegate, @unchecked Sendab
 
     static func allows(_ url: URL, origin: String) -> Bool {
         guard GatewayURL.same(url, origin), url.fragment == nil else { return false }
-        return url.path.range(of: "^/api/sessions/[0-9a-f-]{36}/(?:files/[a-f0-9]{64}|workspace/download)$", options: .regularExpression) != nil ||
-            url.path.range(of: "^/api/desktop-sessions/(?:claude|deepseek)/workspace/download$", options: .regularExpression) != nil
+        return GatewayURL.apiPath(url, origin).range(of: "^/api/sessions/[0-9a-f-]{36}/(?:files/[a-f0-9]{64}|workspace/download)$", options: .regularExpression) != nil ||
+            GatewayURL.apiPath(url, origin).range(of: "^/api/desktop-sessions/(?:claude|deepseek)/workspace/download$", options: .regularExpression) != nil
     }
 
     func start(_ url: URL, origin: String) {

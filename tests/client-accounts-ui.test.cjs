@@ -38,9 +38,15 @@ test('DSH wallet amounts stay separate from percent quota and never invent missi
 });
 test('Claude enrollment confirms restart while DSH API import remains a read-only native snapshot',async()=>{
   const ui=fixture({desktop:true,provider:'claude'});ui.setValue(snapshot([row('current')]));ui.panel.accept(snapshot([row('current')]));ui.confirm(false);await ui.panel.importCurrent();assert.equal(ui.calls.length,0);
-  ui.confirm(true);ui.panel.nameInput.value='Work account';await ui.panel.importCurrent();assert.equal(ui.calls[0].action,'import-current');assert.equal(ui.calls[0].name,'Work account');assert.equal(ui.panel.nameInput.value,'');assert.ok(ui.prompts[0].includes('短暂重启'));
+  assert.match(ui.prompts[0],/解锁状态/);ui.confirm(true);ui.panel.nameInput.value='Work account';await ui.panel.importCurrent();assert.equal(ui.calls[0].action,'import-current');assert.equal(ui.calls[0].name,'Work account');assert.equal(ui.panel.nameInput.value,'');assert.ok(ui.prompts[0].includes('短暂重启'));
   const dsh=fixture({desktop:true});dsh.setValue(snapshot([]));await dsh.panel.importCurrent('api');assert.equal(dsh.calls[0].kind,'api');assert.equal(dsh.prompts.length,0);
   const web=fixture();await web.panel.importCurrent();assert.equal(web.calls.length,0);assert.equal(web.panel.importButton,undefined);
+});
+test('Claude account switch explains unlock requirement in the same confirmation and cancel submits nothing',async()=>{
+ const ui=fixture({provider:'claude'});ui.panel.accept(snapshot([row('current'),row('other')]));ui.confirm(false);await ui.panel.choose(row('other'));assert.equal(ui.calls.length,0);assert.equal(ui.prompts.length,1);assert.match(ui.prompts[0],/切换会重启/);assert.match(ui.prompts[0],/解锁状态/);
+ ui.english();await ui.panel.choose(row('other'));assert.equal(ui.calls.length,0);assert.match(ui.prompts[1],/unlocked/);assert.doesNotMatch(ui.prompts[1],/[\u4e00-\u9fff]/);
+ ui.confirm(true);await ui.panel.choose(row('other'));assert.equal(ui.calls.length,1);assert.equal(ui.calls[0].action,'switch');assert.equal(ui.prompts.length,3,'each attempt has only one confirmation');
+ const dsh=fixture();dsh.panel.accept(snapshot([row('current'),row('other')]));dsh.confirm(false);await dsh.panel.choose(row('other'));assert.doesNotMatch(dsh.prompts[0],/解锁|Claude/);assert.equal(dsh.calls.length,0);
 });
 test('switch remains pending until the backend finishes and rejects duplicate clicks',async()=>{
   const ui=fixture();ui.panel.accept(snapshot([row('current'),row('other')]));let finish;ui.setHandler(()=>new Promise(resolve=>finish=resolve));const pending=ui.panel.choose(row('other'));assert.equal(ui.panel.busy,true);await ui.panel.choose(row('other'));assert.equal(ui.calls.length,1);
@@ -66,4 +72,21 @@ test('flat model responses are preserved when the backend has no groups',async()
 });
 test('model read errors are retryable and are not presented as a successful empty catalog',async()=>{
  const ui=fixture();ui.setHandler(async()=>{throw Error('model catalog unavailable');});await ui.panel.toggleModels();assert.match(ui.text(),/model catalog unavailable/);assert.doesNotMatch(ui.text(),/未返回可用模型|进入会话/);ui.setHandler(async()=>({models:[{id:'recovered-model'}]}));await ui.all().find(node=>node.tag==='button'&&node.textContent==='重试').onclick();assert.match(ui.text(),/recovered-model/);assert.doesNotMatch(ui.text(),/model catalog unavailable/);
+});
+
+test('API editor exists only in desktop and sends a native gateway draft without applying it',async()=>{
+ const web=fixture();assert.equal(web.panel.editor,undefined);assert.equal(web.panel.addApiButton,undefined);await web.panel.editAccount(row('one'));await web.panel.removeAccount(row('one'));assert.equal(web.calls.length,0);
+ const ui=fixture({desktop:true,provider:'claude'});ui.setValue(snapshot([]));ui.panel.addApiButton.onclick();ui.panel.editName.input.value='Upstream';ui.panel.editUrl.input.value='https://gateway.test';ui.panel.editKey.input.value='private-key';ui.panel.editModels.input.value='model-one\nmodel-two';ui.panel.editAuth.value='x-api-key';await ui.panel.saveEditor();
+ assert.deepEqual(JSON.parse(JSON.stringify(ui.calls)),[{action:'save-api',name:'Upstream',apiKey:'private-key',baseUrl:'https://gateway.test',authScheme:'x-api-key',models:['model-one','model-two']}]);assert.equal(ui.panel.editKey.input.value,'');assert.equal(ui.panel.editor.hidden,true);assert.doesNotMatch(ui.text(),/private-key/);
+});
+test('API edits keep the existing key blank and DSH does not expose unsupported custom URL fields',async()=>{
+ const ui=fixture({desktop:true});ui.panel.accept(snapshot([row('saved','api')]));ui.setHandler(async value=>value.action==='edit'?{id:'saved',name:'Saved API',kind:'api',api:{hasKey:true}}:snapshot([row('saved','api')]));await ui.panel.editAccount(row('saved','api'));
+ assert.equal(ui.panel.editKey.input.value,'');assert.equal(ui.panel.editKey.input.required,false);assert.equal(ui.panel.editUrl.wrap.hidden,true);assert.equal(ui.panel.editModels.wrap.hidden,true);await ui.panel.saveEditor();assert.deepEqual(JSON.parse(JSON.stringify(ui.calls[1])),{action:'save-api',id:'saved',name:'Saved API',apiKey:''});assert.equal(ui.calls.some(call=>call.action==='switch'),false);
+});
+test('official account edit is a name-only operation and deletion requires confirmation',async()=>{
+ const ui=fixture({desktop:true});ui.panel.accept(snapshot([row('saved')]));ui.setHandler(async value=>value.action==='edit'?{id:'saved',name:'Saved',kind:'official'}:snapshot([]));await ui.panel.editAccount(row('saved'));assert.equal(ui.panel.editKey.wrap.hidden,true);ui.panel.editName.input.value='Renamed';await ui.panel.saveEditor();assert.deepEqual(JSON.parse(JSON.stringify(ui.calls[1])),{action:'rename',id:'saved',name:'Renamed'});
+ ui.confirm(false);await ui.panel.removeAccount(row('saved'));assert.equal(ui.calls.length,2);ui.confirm(true);await ui.panel.removeAccount(row('saved'));assert.equal(ui.calls[2].action,'remove');assert.match(ui.prompts.at(-1),/不会退出电脑上的账号/);
+});
+test('closing account panel discards a late edit response and erases typed key',async()=>{
+ const ui=fixture({desktop:true});ui.panel.openEditor({kind:'api',api:{}});ui.panel.editKey.input.value='private-key';ui.panel.closeEditor();assert.equal(ui.panel.editKey.input.value,'');let finish;ui.setHandler(()=>new Promise(resolve=>finish=resolve));const pending=ui.panel.editAccount(row('saved'));ui.panel.dispose();finish({id:'saved',name:'Saved',kind:'api',api:{hasKey:true}});await pending;assert.equal(ui.panel.editor.hidden,true);assert.equal(ui.panel.editing,null);
 });

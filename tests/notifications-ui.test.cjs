@@ -5,8 +5,8 @@ const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 // Run the actual phone handlers with an isolated DOM and notification API.
 async function fixture(){
   const nodes=new Map(),saved=new Map(),writes=[];
-  const node=(tag='')=>({tagName:tag.toUpperCase(),children:[],value:'',checked:false,disabled:false,hidden:false,open:false,textContent:'',dataset:{},options:[],style:{},scrollTop:0,parentElement:{},
-    classList:{add(){},remove(){},toggle(){},contains(){return false;}},addEventListener(){},replaceChildren(...values){this.children=values;},append(...values){this.children.push(...values);},querySelectorAll(){return [];},querySelector(){return {disabled:false};},
+  const node=(tag='')=>({tagName:tag.toUpperCase(),children:[],value:'',checked:false,disabled:false,hidden:false,open:false,textContent:'',dataset:{},options:[],style:{setProperty(k,v){this[k]=v;}},scrollTop:0,parentElement:{},
+    setAttribute(k,v){this[k]=v;},after(child){this.nextSibling=child;},classList:{add(){},remove(){},toggle(){},contains(){return false;}},addEventListener(){},replaceChildren(...values){this.children=values;},append(...values){this.children.push(...values);},querySelectorAll(){return [];},querySelector(){return {disabled:false};},
     showModal(){this.open=true;},close(){this.open=false;}});
   const html=fs.readFileSync(path.join(__dirname,'../web/index.html'),'utf8');
   for(const match of html.matchAll(/\bid="([^"]+)"/g))nodes.set(match[1],node());
@@ -42,7 +42,7 @@ async function fixture(){
       }
       return response(saved.get(url)||{available:true,watching:false,notifyOnCompletion:false,requests:'inherit',completion:'inherit'});
     }});
-  for(const file of ['web/hosts/environment.js','web/shared/i18n.js','web/features/chat/list-sync.js','web/features/accounts/account.js','web/features/chat/modes.js','web/features/chat/attachments.js','web/features/chat/activity.js','web/features/chat/fast-mode.js','web/features/chat/message-actions.js','web/shell/app.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
+  for(const file of ['web/hosts/environment.js','web/shared/i18n.js','web/features/chat/list-sync.js','web/features/accounts/account.js','web/features/chat/modes.js','web/features/chat/attachments.js','web/features/chat/activity.js','web/features/chat/fast-mode.js','web/features/chat/message-actions.js','web/features/chat/permissions.js','web/shell/app.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
   await new Promise(setImmediate);
   const run=code=>vm.runInContext(code,context);
   return {nodes,writes,saved,run,html,response,archiveToggles,setPost:handle=>{nextPost=handle;},

@@ -58,3 +58,7 @@ img[data-image-preview]:focus-visible,img.image-preview-source:focus-visible,#im
 body:has(#app:not([hidden]))>.phone-header{display:none}
 .list-actions{display:flex;align-items:center;gap:4px;margin-left:auto;flex:none}
 .list-actions .appearance-button{width:40px;height:44px;flex:none}
+
+.context-usage{display:inline-flex;align-items:center;justify-content:center;flex:none;padding:7px;min-width:32px}
+.context-usage-ring{display:block;width:17px;height:17px;border-radius:50%;background:conic-gradient(var(--green) var(--context-percent,0%),var(--line) 0);mask:radial-gradient(circle,transparent 46%,#000 50%);-webkit-mask:radial-gradient(circle,transparent 46%,#000 50%)}
+.context-usage-ring.unknown{background:none;border:2px dashed var(--muted);width:13px;height:13px;mask:none;-webkit-mask:none;opacity:.65}

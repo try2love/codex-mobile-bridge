@@ -4,7 +4,7 @@ android {
  compileSdk 35
  buildToolsVersion "35.0.0"
  defaultConfig { applicationId 'io.github.try2love.codexbridge.preview'; minSdk 26; targetSdk 35; versionCode 26; versionName '2.0.0-preview.3' }
- sourceSets { main { manifest.srcFile 'AndroidManifest.xml'; java.srcDirs = ['../android/src', 'src']; res.srcDirs = ['../android/res']; assets.srcDirs = ['../shared/web', '../android/assets'] } }
+ sourceSets { main { manifest.srcFile 'AndroidManifest.xml'; java.srcDirs = ['../android/src', 'src']; res.srcDirs = ['../android/res']; assets.srcDirs = ['../shared/web', '../android/assets', '../../web/client-icons'] } }
  compileOptions { sourceCompatibility JavaVersion.VERSION_1_8; targetCompatibility JavaVersion.VERSION_1_8 }
  signingConfigs { preview { storeFile file('../../.tmp/mobile-tools/preview-debug.p12'); storePassword 'android'; keyAlias 'preview'; keyPassword 'android' } }
  buildTypes { debug { signingConfig signingConfigs.preview } }

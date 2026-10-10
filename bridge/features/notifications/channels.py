@@ -222,6 +222,29 @@ class Notifications:
             result['mobile'] = 'mobile:' + self.mobile.value['streamId']
         return result
 
+    def mobile_snapshot(self, after=0):
+        """One passive snapshot for all phones; reads never attach a desktop chat."""
+        enabled = settings(self.data_dir).get('mobileEnabled', False)
+        policies, legacy = self.policies(), self.watches()
+        cached = getattr(self.desktop_sessions, 'client_cache', None)
+        states = {row['id']: row for row in cached[1].get('clients', [])} if isinstance(cached, tuple) and len(cached) == 2 else {}
+        clients = [{'id': provider, 'connected': states.get(provider, {}).get('connected'), 'enabled': self.desktop_sessions.enabled(provider)
+                    if self.desktop_sessions is not None else provider == 'codex'}
+                   for provider in self.mobile.PROVIDERS]
+        active = {row['id'] for row in clients if row['enabled']}
+        effective = {}
+        def allowed(event):
+            if not enabled or self.mobile.provider(event) not in active:
+                return False
+            key = (event['host'], event['threadId'])
+            if key not in effective:
+                effective[key] = self._effective({'id': event['threadId'], 'host': event['host']}, policies, legacy)
+            policy = effective[key]
+            return policy['notifyOnCompletion' if event['kind'] == 'completion' else 'notifyOnRequest']
+        snapshot = self.mobile.read(after, allowed)
+        return {**snapshot, 'enabled': enabled, 'clients': [
+            {**row, 'unread': snapshot['unread'][row['id']]} for row in clients]}
+
     def start(self):
         self.worker = threading.Thread(target=self._run, daemon=True)
         self.worker.start()

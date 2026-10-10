@@ -87,6 +87,7 @@ Token 相当于这条隧道的连接凭据，只在自己的 App 中填写；不
 | 首页能显示，点击“连接电脑”提示“不允许跨站请求” | 检查地址是否以 `https://` 开头；配置上面的 HTTP → HTTPS 跳转，重新打开登录页后再输入密码 |
 | 从其他页面点击链接进入首页时显示“不允许跨站请求” | 请求已到达网关。使用修复了首页导航校验的网关版本后重启网关；可先在浏览器地址栏直接输入完整 HTTPS 地址，不要关闭跨站保护 |
 | 能打开登录页，但无法登录 | 使用网关账号密码或 App 的扫码登录；不是 Cloudflare 密码或 SSH 密码 |
+| 只看到顶部标志、描述或语言切换，没有登录正文 | HTML 可能已收到，但页面脚本或认证初始化尚未完成。检查静态资源与 `/api/auth` 的加载情况；当前开发版会显示加载状态与重试提示。电脑上单个 API 请求成功不能替代手机蜂窝网络的首屏验证 |
 
 不要仅凭“记录已保存”或“SSH 检查通过”判断手机入口可用；以真实浏览器和手机蜂窝网络的结果为准。
 
@@ -110,3 +111,12 @@ Token 相当于这条隧道的连接凭据，只在自己的 App 中填写；不
 - [Cloudflare：创建远程管理隧道](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel/)
 - [Cloudflare：创建重定向规则](https://developers.cloudflare.com/rules/url-forwarding/single-redirects/create-dashboard/)
 - [OpenSSH：服务器转发权限](https://man.openbsd.org/sshd_config#AllowTcpForwarding)
+
+
+## 访问慢或出现 ICMP 日志
+
+`Failed to send ICMP reply` 来自 cloudflared 的 ICMP 回包路径；单独这条日志不能判断公开 HTTP 页面是否不可用，也不能证明慢速就是 ICMP 导致。当前网关不会再仅凭这条日志将已连接的固定隧道标为连接异常；其他隧道错误和进程退出仍会显示异常。
+
+排查时分别确认本机网关、固定域名的 DNS/TLS/首字节时间和手机蜂窝网络。Cloudflare 显示已连接只说明连接器已注册，不保证手机到边缘节点的路径通畅。不要通过关闭 TLS 校验、开放无认证入口或增加高频重试处理延迟。
+
+如果希望不经过 Cloudflare，可使用[自有服务器 + SSH](server-ssh.md)，或在当前开发版“网络访问 → 自建中继 · 内测”配置[自己的 relay](shared-relay.md)。在阿里云购买域名不会自动使用阿里云服务器线路；需要部署服务器并将子域名解析到该服务器。迁移前保留原入口，用实际手机网络验证新入口再决定是否停用原隧道。

@@ -33,7 +33,7 @@ class Handler(BaseHTTPRequestHandler):
         state = self.server.state
         query = parse_qs(urlsplit(self.path).query)
         if self.path.startswith('/control'):
-            for key in ('cursor', 'status'):
+            for key in ('cursor', 'status', 'unread'):
                 if key in query: state[key] = int(query[key][0])
             if 'stream' in query: state['stream'] = query['stream'][0]
             if 'hold' in query: state['hold'] = True; state['release'].clear()
@@ -50,7 +50,8 @@ class Handler(BaseHTTPRequestHandler):
         events = [{'id': f'event-{i}', 'sequence': i, 'threadId': 'thread', 'host': 'local',
                    'kind': 'request' if i % 2 == 0 else 'completion', 'title': '任务提醒', 'body': '消息内容' * 30}
                   for i in range(max(1, state['cursor'] - 199), state['cursor'] + 1) if i > after]
-        body = json.dumps({'streamId': state['stream'], 'cursor': state['cursor'], 'events': events, 'enabled': True}, ensure_ascii=False).encode()
+        summary = [{'provider': 'claude', 'kind': 'request' if state['cursor'] % 2 == 0 else 'completion', 'sequence': state['cursor']}]
+        body = json.dumps({'clients': [{'id': 'claude', 'enabled': True, 'unread': state.get('unread', state['cursor'])}], 'summary': summary, 'streamId': state['stream'], 'cursor': state['cursor'], 'events': events, 'enabled': True}, ensure_ascii=False).encode()
         row['responseBodyBytes'] = len(body)
         self.send_response(state['status']); self.send_header('Content-Length', str(len(body)))
         self.send_header('Content-Type', 'application/json')
@@ -69,7 +70,7 @@ source = (ROOT / 'mobile/ios/BridgePreview/App.swift').read_text()
 def section(start, end):
     return source[source.index(start):source.index(end, source.index(start))]
 fetch = section('    private func fetch(', '    private func sheet(')
-sync = section('    @objc private func active()', '    private func toggleForegroundAlerts()')
+sync = section('    @objc private func active()', '    private func requestStartupNotifications()').replace('self.computerNotifications[address]?.arrangedSubviews.forEach { $0.removeFromSuperview() }', 'self.computerNotifications[address]?.isHidden = true')
 redirect = section('final class NoRedirect:', '// Foreground-only')
 # OS/platform substitutes only. The production fetch, sync, foreground/background
 # lifecycle and shared URLSession setup remain intact.
@@ -97,15 +98,24 @@ final class MemoryDefaults {
     func removeObject(forKey key: String) { values.removeValue(forKey: key) }
 }
 enum MobileStrings { static func text(_ value: String) -> String { value } }
+enum NotificationSource { static func apply(_ content: UNMutableNotificationContent, provider: String?, host: String?) {} }
 final class UNMutableNotificationContent { var title = "", body = ""; struct Sound { static let `default` = Sound() }; var sound: Sound?; var userInfo: [String: Any] = [:] }
 struct UNNotificationRequest { let identifier: String; let content: UNMutableNotificationContent; let trigger: String? }
 final class UNUserNotificationCenter { static let instance = UNUserNotificationCenter(); static func current() -> UNUserNotificationCenter { instance }; var delivered: [String] = []; func add(_ request: UNNotificationRequest) { delivered.append(request.identifier) } }
 struct Downloads { func pause() {} }
+struct ConnectionDiscovery { func cancel() {} }
 final class LiveActivityController { static let shared = LiveActivityController(); func pause() async {} }
 '''
+platform += "\nfinal class UILabel { var text: String?; var isHidden = false; var alpha = 1.0 }\n"
+platform += section("enum ComputerNotificationSummary {", "enum MobileStrings {")
 fields = '''
+var routeDiscovery: ConnectionDiscovery?
+var routeAttempted = false
+
 final class BridgeController: NSObject {
     var origin = ""
+    var computerNotifications: [String: UILabel] = [:]
+    var computerSnapshots: [String: [String: Any]] = [:]
     var generation = 0
     let defaults = MemoryDefaults()
     var foregroundBaselines = Set<String>()
@@ -129,7 +139,15 @@ methods = '''
 }
 '''
 runner = (ROOT / 'mobile/tests/MobileEventTests.swift').read_text()
-(WORK / 'main.swift').write_text(platform + redirect + fields + fetch + sync + methods + runner)
+(WORK / 'main.swift').write_text(platform + redirect + fields + fetch + sync + """
+    private func updateComputerNotifications(_ data: [String: Any]?, address: String) {
+        guard let data else { computerNotifications[address]?.isHidden = true; return }
+        computerSnapshots[address] = data
+        let rows = ComputerNotificationSummary.clients(data)
+        computerNotifications[address]?.text = rows.map { String(describing: $0["unread"] ?? 0) }.joined(separator: ",")
+        computerNotifications[address]?.isHidden = rows.isEmpty
+    }
+""" + methods + runner)
 try:
     subprocess.run(['xcrun', 'swiftc', '-module-cache-path', str(WORK / 'cache'),
                     str(ROOT / 'mobile/ios/BridgePreview/GatewayURL.swift'), str(WORK / 'main.swift'), '-o', str(WORK / 'events-tests')], check=True)

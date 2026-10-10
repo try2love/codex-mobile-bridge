@@ -315,3 +315,16 @@ test('accepted permission change updates label before polling and ignores an old
  finish({status:'accepted',mode:'acceptEdits'});await changing;
  assert.equal(ui.view.state.permissionMode,'default');
 });
+
+test('context monitor remains discoverable and distinguishes unsupported from missing readings',async()=>{
+ for(const language of ['zh','en']){
+  const ui=await opened();ui.run(`BridgeI18n.setLanguage('${language}')`);
+  const apply=(usage,status)=>ui.view.applyDetail({session:{id:'a',title:'Chat',contextUsage:usage,contextUsageStatus:status},messages:[]});
+  apply({usedTokens:40000,contextWindow:200000},'available');
+  assert.equal(ui.view.contextLabel.textContent,'20%');assert.equal(ui.view.contextButton.hidden,false);
+  ui.view.contextDetails();let dialog=ui.document.querySelector('dialog');assert.match(dialog.textContent,/40,000/);assert.match(dialog.textContent,/20\.0%/);dialog.close();
+  apply(null,'unsupported');assert.equal(ui.view.contextLabel.textContent,language==='en'?'Context':'上下文');assert.doesNotMatch(ui.view.contextButton.title,/0%|20%/);
+  ui.view.contextDetails();dialog=ui.document.querySelector('dialog');assert.match(dialog.textContent,language==='en'?/does not expose context usage/:/未提供上下文用量接口/);dialog.close();
+  apply(null,'unavailable');ui.view.contextDetails();dialog=ui.document.querySelector('dialog');assert.match(dialog.textContent,language==='en'?/update automatically when available/:/有可用数据时会自动更新/);assert.doesNotMatch(dialog.textContent,language==='en'?/does not expose/:/未提供上下文用量接口/);
+ }
+});

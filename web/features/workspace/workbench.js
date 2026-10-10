@@ -148,9 +148,10 @@ class Workbench {
   }
   get isFileVisible() { return !!this.current && !this.splitMode && this.current.active !== 'chat'; }
   endpoint(session, action) {
-    return session.provider && session.provider !== 'codex'
+    const path = session.provider && session.provider !== 'codex'
       ? '/api/desktop-sessions/'+session.provider+'/'+action+'?sessionId='+encodeURIComponent(session.id)
       : '/api/sessions/'+session.id+'/'+action+'?host='+encodeURIComponent(session.host);
+    return window.BridgeRelayURL?.(path)||path;
   }
   url(session, operation = '', path = '') { return this.endpoint(session,'workspace'+(operation?'/'+operation:''))+'&path='+encodeURIComponent(path); }
   rememberScroll() { const timeline=this.chat.querySelector('.timeline');if (this.current && !this.chat.classList.contains('workbench-active') && timeline.clientHeight) this.current.scroll = timeline.scrollTop; }

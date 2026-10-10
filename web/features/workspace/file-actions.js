@@ -30,11 +30,13 @@ window.BridgeFileActions = (() => {
       const url=new URL(anchor.href,location.href);url.searchParams.set('info','1');
       const info=await workbench.request(url.pathname+url.search);
       if(!box.open||session!==workbench.current)return box.close();
-      status.textContent=info.name+' · '+workbench.size(info.size);
+      status.textContent=info.name+(info.kind==='directory'?'':' · '+workbench.size(info.size));
       const locate=node('button',t('定位并打开所在文件夹'),'plain');locate.type='button';locate.disabled=!info.locatable||!info.path;
       locate.onclick=()=>{box.close();workbench.locate(session,info.path).catch(error=>workbench.notify(t(error.message)));};box.append(locate);
-      if(info.size<=info.clickDownloadMiB*1024*1024)download(box,anchor.href,info.name);
-      else box.append(node('p',t('文件超过点击下载阈值，请在文件标签页中定位后长按下载。'),'muted'));
+      if(info.kind!=='directory'){
+        if(info.size<=info.clickDownloadMiB*1024*1024)download(box,anchor.href,info.name);
+        else box.append(node('p',t('文件超过点击下载阈值，请在文件标签页中定位后长按下载。'),'muted'));
+      }
       if(locate.disabled)box.append(node('p',t('此文件位于聊天项目之外，无法在当前文件标签页中定位。'),'muted'));
     }catch(error){status.textContent=t(error.message);status.className='error';}
   }

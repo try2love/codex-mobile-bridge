@@ -14,6 +14,9 @@ from bridge.clients.deepseek.setup import MARKER, insertion, verified_directory,
 
 PLUGIN_ID = re.compile(r'''["']?id["']?\s*:\s*["']?codex-mobile-desktop(?:["'\s,}]|$)''')
 BRIDGE_REVISION = 4
+# Revisions 3 and 4 share the complete native-agent lifecycle schema. Revision
+# 4 only adds presentation fields; a verified revision 3 can prove safe restart.
+LIFECYCLE_REVISIONS = (3, BRIDGE_REVISION)
 UPDATE_REASON = 'Harness 接入需要更新，请结束任务后点击“重启并接入”'
 
 
@@ -241,7 +244,7 @@ def turns(records):
             ending = reason.get('kind') if isinstance(reason, dict) else None
             if ending not in endings:
                 continue
-            value.update(status='completed' if ending == 'completed' else 'failed', endReason=ending)
+            value.update(status='completed' if ending == 'completed' else 'interrupted' if ending in ('aborted', 'interrupted') else 'failed', endReason=ending)
         result[identifier] = value
     return sorted(result.values(), key=lambda value: value['sequence'])
 

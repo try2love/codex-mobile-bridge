@@ -12,9 +12,9 @@ function fixture(language='zh'){
   };
  }
  document.createElement=element;document.body=element('body');
- const context=vm.createContext({document,localStorage:{getItem:()=>language,setItem(){}}});
+ const context=vm.createContext({document,setTimeout,clearTimeout,AbortController,localStorage:{getItem:()=>language,setItem(){}}});
  for(const file of ['web/shared/i18n.js','web/features/clients/client-lifecycle.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
- return {document,choose:client=>vm.runInContext('ClientLifecycle',context).chooseDisable(client),initialize:client=>vm.runInContext('ClientLifecycle',context).chooseInitialize(client),dialog:()=>document.body.children[0]};
+ return {context,document,choose:client=>vm.runInContext('ClientLifecycle',context).chooseDisable(client),initialize:client=>vm.runInContext('ClientLifecycle',context).chooseInitialize(client),dialog:()=>document.body.children[0]};
 }
 test('a real close dialog presents three distinct choices and defaults focus to cancel',async()=>{
  for(const expected of [false,true,null]){
@@ -35,15 +35,47 @@ test('background force quit requires an explicit capability and fresh choice wit
    assert.equal(buttons[2].dataset.quitDesktop,'true');assert.equal(buttons[2].dataset.forceDesktop,'true');
    assert.match(buttons[1].textContent,language==='en'?/Quit the desktop app normally/:/正常退出电脑 App/);
    if(id==='codex')assert.match(buttons[1].textContent,language==='en'?/Codex's native menu.*all tasks finish.*unavailable.*locked.*confirmation on your computer/:/所有任务结束.*Codex 原生菜单正常退出.*锁屏时可能不可用.*退出确认.*电脑端处理/);
-   assert.match(buttons[2].textContent,language==='en'?/Force quit in background.*Unsaved content may be lost.*tasks may be interrupted.*locked/:/后台强制结束.*可能丢失未保存内容或中断任务.*锁屏时也可使用/);
+   assert.match(buttons[2].textContent,language==='en'?/Force quit App.*Unsaved content may be lost.*tasks may be interrupted.*locked/:/强制关闭 App.*可能丢失未保存内容或中断任务.*锁屏时也可使用/);
    if(language==='en')assert.doesNotMatch(dialog.textContent,/[\u4e00-\u9fff]/);
-   if(expected==='force')buttons[2].onclick();else dialog.emit('cancel',{preventDefault(){}});
+   if(expected==='force'){buttons[2].onclick();await Promise.resolve();const confirm=ui.dialog(),actions=confirm.children.at(-1).children;assert.notEqual(confirm,dialog);assert.match(confirm.textContent,language==='en'?/Running sessions may be interrupted.*unsaved content/:/可能中断正在运行的会话并丢失未保存内容/);assert.equal(ui.document.activeElement,actions[1]);actions[0].onclick();}else dialog.emit('cancel',{preventDefault(){}});
    assert.equal(await result,expected);
   }
  }
  for(const canForceQuit of [undefined,false,'true',1]){
   const ui=fixture(),result=ui.choose({id:'claude',canForceQuit}),dialog=ui.dialog();
   assert.equal(dialog.children.at(-1).children.length,3);assert.doesNotMatch(dialog.textContent,/后台强制结束/);dialog.close();assert.equal(await result,null);
+ }
+});
+
+test('the second force confirmation can be cancelled without submitting the exit choice',async()=>{
+ const ui=fixture(),result=ui.choose({id:'deepseek',canForceQuit:true});
+ ui.dialog().children.at(-1).children[2].onclick();await Promise.resolve();
+ ui.dialog().emit('cancel',{preventDefault(){}});assert.equal(await result,null);assert.equal(ui.document.body.children.length,0);
+});
+
+test('Claude normal and force exits require one translated unlock warning before desktop or Web mutations',async()=>{
+ for(const surface of ['desktop','web'])for(const language of ['zh','en'])for(const force of [false,true])for(const choice of ['confirm','cancel','escape','close']){
+  const ui=fixture(language),file=surface==='desktop'?'desktop/features/clients/desktop-sessions.js':'web/features/clients/client-navigation.js';
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),ui.context);
+  const Class=vm.runInContext(surface==='desktop'?'DesktopConnectionsPanel':'ClientNavigation',ui.context),controller=Object.create(Class.prototype),client={id:'claude',name:'Claude Desktop',enabled:true,running:true,canForceQuit:true},calls=[];
+  Object.assign(controller,{clients:[client],clientsRevision:0,statusRevision:0,revision:0,pending:new Set(),provider:'claude',renderClients(){},renderScan(){},paint(){},refreshClients:async()=>{},applyClients(value){this.clients=value.clients;},api:{desktopSessions:async body=>{calls.push(body);return {clients:[{...client,enabled:false,running:false}]};}},request:async(url,body)=>{calls.push(body);return {clients:[{...client,enabled:false,running:false}]};}});
+  const pending=surface==='desktop'?controller.toggleClient('claude',false):controller.toggle('claude',false),first=ui.dialog();
+  first.children.at(-1).children[force?2:1].onclick();await Promise.resolve();
+  const confirm=ui.dialog(),buttons=confirm.children.at(-1).children;
+  assert.notEqual(confirm,first);assert.equal(ui.document.body.children.length,1);assert.equal(calls.length,0);assert.equal(client.enabled,true);assert.equal(ui.document.activeElement,buttons[1]);
+  assert.match(confirm.textContent,language==='en'?/After restarting.*initializing its connection requires the computer to be unlocked/:/重新启动.*初始化连接需要电脑处于解锁状态/);
+  if(force)assert.match(confirm.textContent,language==='en'?/Running sessions may be interrupted and unsaved content may be lost/:/可能中断正在运行的会话并丢失未保存内容/);
+  if(language==='en')assert.doesNotMatch(confirm.textContent,/[\u4e00-\u9fff]/);
+  if(choice==='escape')confirm.emit('cancel',{preventDefault(){}});else if(choice==='close')confirm.close();else buttons[choice==='confirm'?0:1].onclick();
+  await pending;assert.equal(ui.document.body.children.length,0);assert.equal(calls.length,choice==='confirm'?1:0);
+  if(choice==='confirm')assert.deepEqual(JSON.parse(JSON.stringify(calls[0])),{...(surface==='desktop'?{action:'toggle-client'}:{}),provider:'claude',enabled:false,quitDesktop:true,...(force?{forceDesktop:true,forceConfirmed:true}:{})});
+ }
+});
+
+test('disabling only Claude phone access does not ask for an unlock or desktop exit confirmation',async()=>{
+ for(const language of ['zh','en']){
+  const ui=fixture(language),result=ui.choose({id:'claude',name:'Claude',canForceQuit:true});
+  ui.dialog().children.at(-1).children[0].onclick();assert.equal(await result,false);assert.equal(ui.document.body.children.length,0);
  }
 });
 
@@ -56,10 +88,11 @@ test('an uncertain force quit needs a stopped app as well as disabled access bef
  }
 });
 
-test('initialization requires an explicit foreground confirmation and defaults to cancel',async()=>{
- for(const language of ['zh','en'])for(const accepted of [false,true]){
-  const ui=fixture(language),result=ui.initialize({id:'claude',name:'Claude',initializationMode:'background'}),dialog=ui.dialog(),buttons=dialog.children.at(-1).children;
-  assert.equal(buttons.length,2);assert.equal(ui.document.activeElement,buttons[1]);assert.match(dialog.textContent,language==='en'?/Windows.*background initialization.*keyboard focus.*foreground setup/:/Windows.*后台初始化.*键盘焦点.*前台引导/);if(language==='en')assert.doesNotMatch(dialog.textContent,/[\u4e00-\u9fff]/);
+test('initialization distinguishes background attempts from interactive foreground setup and defaults to cancel',async()=>{
+ for(const language of ['zh','en'])for(const accepted of [false,true])for(const initializationMode of ['background','foreground']){
+  const ui=fixture(language),result=ui.initialize({id:'claude',name:'Claude',initializationMode}),dialog=ui.dialog(),buttons=dialog.children.at(-1).children;
+  const pattern=initializationMode==='background'?(language==='en'?/Windows.*background initialization.*keyboard focus.*foreground setup/:/Windows.*后台初始化.*键盘焦点.*前台引导/):(language==='en'?/Claude and its developer tools.*keyboard focus.*screen saver or lock screen/:/打开 Claude 和开发者工具.*键盘焦点.*屏保或锁屏/);
+  assert.equal(buttons.length,2);assert.equal(ui.document.activeElement,buttons[1]);assert.match(dialog.textContent,pattern);if(language==='en')assert.doesNotMatch(dialog.textContent,/[\u4e00-\u9fff]/);
   buttons[accepted?0:1].onclick();assert.equal(await result,accepted);
  }
  for(const escape of [false,true]){const ui=fixture(),result=ui.initialize({id:'claude'}),dialog=ui.dialog();if(escape)dialog.emit('cancel',{preventDefault(){}});else dialog.close();assert.equal(await result,false);}
@@ -87,6 +120,15 @@ test('lock and desktop-unavailable states stop waiting without disconnecting an 
   assert.equal(state.label,label);assert.equal(state.waiting,false);assert.equal(state.canInitialize,true);assert.equal(connection({...client,connected:true}).label,'已连接');assert.equal(connection({...client,connected:true}).canInitialize,false);
  }
  assert.match(sessionNotice({state:'locked',interactive:false}),/后台服务继续运行/);assert.equal(sessionNotice({state:'unlocked',interactive:true}),'');
+});
+
+test('macOS foreground setup keeps explicit desktop waits active until it can resume',()=>{
+ const {connection}=require('../web/features/clients/client-lifecycle.js');
+ for(const [setupStatus,label] of [['needs-screen-saver','等待退出屏保'],['needs-unlock','等待解锁'],['needs-desktop','等待桌面恢复']]){
+  const client={id:'claude',enabled:true,installed:true,connected:false,initializationMode:'foreground',connectionState:'connecting',setupStatus},state=connection(client);
+  assert.equal(state.label,label);assert.equal(state.waiting,true);assert.equal(state.canInitialize,false);assert.equal(state.retryable,false);
+  assert.equal(connection({...client,connected:true}).label,'已连接');
+ }
 });
 
 test('bounded lifecycle requests abort only their wait and ignore a late result',async()=>{

@@ -18,28 +18,6 @@
 	<string>26</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
-	<key>CFBundleIcons</key>
-	<dict>
-		<key>CFBundlePrimaryIcon</key>
-		<dict>
-			<key>CFBundleIconFiles</key>
-			<array>
-				<string>AppIcon60x60</string>
-			</array>
-		</dict>
-	</dict>
-	<key>CFBundleIcons~ipad</key>
-	<dict>
-		<key>CFBundlePrimaryIcon</key>
-		<dict>
-			<key>CFBundleIconFiles</key>
-			<array>
-				<string>AppIcon60x60</string>
-				<string>AppIcon76x76</string>
-				<string>AppIcon83x83</string>
-			</array>
-		</dict>
-	</dict>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>UILaunchScreen</key>

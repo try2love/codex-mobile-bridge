@@ -9,14 +9,26 @@ test('English operation failures and dynamic channel feedback are translated',()
  assert.equal(i18n.t('用户的中文聊天标题'),'用户的中文聊天标题');
  i18n.setLanguage('zh');assert.equal(i18n.t('账号身份已变化'),'账号身份已变化');
 });
-test('shared relay preview entry is not mounted in the desktop UI',()=>{
+test('self-hosted relay preview loads before the network module is compacted',()=>{
  const fs=require('node:fs'),path=require('node:path');const html=fs.readFileSync(path.join(__dirname,'../desktop/index.html'),'utf8');
- assert.doesNotMatch(html,/<script[^>]+shared-relay\.js/);
+ assert.match(html,/<script src="features\/connections\/shared-relay\.js"><\/script>/);
+ assert.ok(html.indexOf('features/connections/shared-relay.js')<html.indexOf('shell/layout.js'));
+});
+
+test('macOS quit receipts translate without dropping diagnostic codes',()=>{
+ const messages=['客户端进程已变化，请重新检查后再关闭（quit: changed）','macOS 退出请求结果未知，请检查客户端状态；尚未强制结束进程（quit: timeout）','无法发送 macOS 退出请求，请检查系统运行环境（quit: unavailable）','macOS 退出请求失败，请检查客户端状态（quit: native-error; code: -1）','客户端未接受退出请求，请检查客户端提示；尚未强制结束进程（quit: rejected）','无法核验 macOS 退出请求结果，请检查客户端状态（quit: invalid-response）'];
+ i18n.setLanguage('en');for(const source of messages){assert.doesNotMatch(i18n.t(source),/[\u4e00-\u9fff]/);assert.match(i18n.t(source),/quit: /);assert.equal(desktop.translate(source,'en'),i18n.t(source));}i18n.setLanguage('zh');
 });
 
 test('background force quit choices, risks and progress translate for desktop and mobile',()=>{
  const messages=['正常退出电脑 App','后台强制结束','结束应用进程，可能丢失未保存内容或中断任务。锁屏时也可使用。','正在后台强制结束…','重试后台强制结束','后台强制结束请求无效','此系统不支持 Windows 客户端强制结束','桌面应用配置不可用，请重新扫描','客户端进程已变化或无法核对，已停止强制结束；请重新扫描后重试','所选应用与网关或其启动进程重叠，不能强制结束','未能结束全部客户端进程，请检查权限或在电脑端处理后重试','等待客户端强制结束超时，请重新扫描并检查电脑端状态'];
  i18n.setLanguage('en');for(const source of messages){assert.doesNotMatch(i18n.t(source),/[\u4e00-\u9fff]/,source);assert.equal(desktop.translate(source,'en'),i18n.t(source));}i18n.setLanguage('zh');
+});
+
+test('macOS background connection recovery and explicit foreground initialization are translated accurately',()=>{
+ const messages=['安装和登录请在电脑端完成。关闭接入可保留或退出电脑 App。macOS Claude 默认后台启动并尝试恢复已有连接；“初始化连接”经确认后使用电脑前台。Windows 优先尝试后台初始化。','选择需要接入的应用。macOS Claude 默认后台启动并尝试恢复已有连接；“初始化连接”经确认后使用电脑前台。Windows 优先尝试后台初始化。','Claude 未恢复已有连接；请点击“初始化连接”。初始化会使用电脑前台，请保持桌面可交互。','已选择，启动网关后在后台打开 Claude 并尝试恢复已有连接；需要初始化时会提示。'];
+ i18n.setLanguage('en');for(const source of messages){assert.doesNotMatch(i18n.t(source),/[\u4e00-\u9fff]/,source);assert.equal(desktop.translate(source,'en'),i18n.t(source));assert.match(i18n.t(source),/restore an existing connection/);}
+ assert.match(i18n.t(messages[0]),/foreground only after confirmation/);assert.match(i18n.t(messages[0]),/Windows attempts background initialization first/);i18n.setLanguage('zh');
 });
 
 

@@ -45,7 +45,7 @@ class ClientLaunchTests(unittest.TestCase):
         with patch('bridge.clients.lifecycle.sys.platform', 'darwin'), patch('bridge.platforms.macos.desktop.subprocess.run') as run:
             result = launch_deepseek(self.descriptor)
         command = run.call_args.args[0]
-        self.assertEqual(command, ['/usr/bin/open', '-a', str(self.root/'DeepSeek Harness.app'), '--env', 'DSH_HOME='+str(self.home)])
+        self.assertEqual(command, ['/usr/bin/open', '-g', '-a', str(self.root/'DeepSeek Harness.app'), '--env', 'DSH_HOME='+str(self.home)])
         self.assertTrue(result['running'])
         self.assertTrue(result['launched'])
         self.assertFalse(result['restarted'])
@@ -101,6 +101,19 @@ class ClientLaunchTests(unittest.TestCase):
 
 
 class ProcessLifecycleTests(unittest.TestCase):
+    def test_mac_normal_quit_has_no_activation_or_keyboard_automation(self):
+        from bridge.platforms.macos.desktop import quit_application
+        executable = Path('/Applications/Fixture.app/Contents/MacOS/Fixture')
+        with patch('bridge.platforms.macos.desktop.subprocess.run', return_value=Mock(
+                returncode=0, stdout='{"state":"submitted"}')) as run:
+            quit_application(executable, pids=[11])
+        command = run.call_args.args[0]
+        self.assertEqual(command[:3], ['/usr/bin/osascript', '-l', 'JavaScript'])
+        self.assertEqual(command[-2:], ['11', str(executable)])
+        self.assertIn('app.terminate', command[4])
+        for forbidden in ('activate', 'keystroke', 'System Events', 'ScreenSaver'):
+            self.assertNotIn(forbidden, command[4])
+
     def test_codex_stop_selects_native_application_quit(self):
         from bridge.clients.lifecycle import stop_client
         state = {'running': True, 'pids': [11], 'mainPids': [11], 'runtimePids': [], 'unknown': False}
@@ -154,9 +167,9 @@ class ProcessLifecycleTests(unittest.TestCase):
         import signal
         from bridge.clients.desktop_app import DesktopApp
         app = DesktopApp('/Applications/Fixture.app/Contents/MacOS/Fixture', '/fixture/home')
-        with patch('bridge.clients.desktop_app.sys.platform', 'darwin'), patch.object(app, 'processes', side_effect=[[11, 12], [12], []]), patch('bridge.platforms.macos.desktop.subprocess.run') as run, patch('bridge.platforms.posix.desktop.os.kill') as kill:
+        with patch('bridge.clients.desktop_app.sys.platform', 'darwin'), patch.object(app, 'processes', side_effect=[[11, 12], [12], []]), patch('bridge.platforms.macos.desktop.subprocess.run', return_value=Mock(returncode=0, stdout='{"state":"submitted"}')) as run, patch('bridge.platforms.posix.desktop.os.kill') as kill:
             app.stop(runtime_pids=[12, 999], gui_pids=[11])
-            run.assert_called_once(); self.assertEqual(run.call_args.args[0][0], 'osascript')
+            run.assert_called_once(); self.assertEqual(run.call_args.args[0][-2:], ['11', str(app.executable)])
             kill.assert_called_once_with(12, signal.SIGTERM)
 
     def test_mac_process_paths_are_never_truncated_at_terminal_width(self):

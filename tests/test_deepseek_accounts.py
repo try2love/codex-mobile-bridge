@@ -12,6 +12,57 @@ from bridge.clients.deepseek.accounts import DeepSeekAccounts, GRANT_KEY, API_RE
 
 
 class DeepSeekAccountsTests(unittest.TestCase):
+    def test_new_api_snapshot_can_be_edited_and_applied_without_secret_response(self):
+        self.write()
+        before = self.path.read_bytes()
+        result = self.accounts.save_api({'name': 'API', 'apiKey': 'private-new-key'})
+        identifier = next(row['id'] for row in result['accounts'] if row.get('saved'))
+        self.assertEqual(self.path.read_bytes(), before)
+        editor = self.accounts.edit(identifier)
+        self.assertEqual(editor['api'], {'hasKey': True})
+        self.assertNotIn('private-new-key', json.dumps([editor, result]))
+        self.accounts.save_api({'id': identifier, 'name': 'Updated', 'apiKey': ''})
+        token = self.accounts.restore(identifier)
+        self.assertEqual(_document(self.path.read_bytes())['refs'][API_REF], 'private-new-key')
+        self.assertIn(GRANT_KEY, _document(self.path.read_bytes())['records'])
+        self.accounts.rollback(token)
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_saved_account_rename_and_delete_preserve_current_native_login(self):
+        self.write()
+        identifier = self.identifier()
+        before = self.path.read_bytes()
+        result = self.accounts.rename(identifier, 'Renamed')
+        self.assertEqual(next(row for row in result['accounts'] if row['id'] == identifier)['name'], 'Renamed')
+        result = self.accounts.remove(identifier)
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertNotIn(identifier, [row['id'] for row in result['accounts']])
+        self.assertIn('current-official', result['activeIds'])
+        self.assertFalse((self.directory/(identifier+'.json')).exists())
+
+    def test_api_editor_does_not_silently_accept_an_unconfigured_custom_route(self):
+        for value in ({'name': 'API', 'apiKey': 'key', 'baseUrl': 'https://custom.test'},
+                      {'name': 'API', 'apiKey': ''}, {'name': 'API', 'apiKey': 'key\nheader'},
+                      {'name': '', 'apiKey': 'key'}):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.accounts.save_api(value)
+        self.assertFalse((self.directory/'index.json').exists())
+
+    def test_failed_api_or_delete_index_save_restores_private_snapshot(self):
+        result = self.accounts.save_api({'name': 'API', 'apiKey': 'private-key'})
+        identifier = result['accounts'][0]['id']
+        path = self.directory/(identifier+'.json')
+        before, index = path.read_bytes(), copy.deepcopy(self.accounts.index)
+        with patch.object(self.accounts, '_save', side_effect=OSError('write failed')):
+            with self.assertRaises(OSError):
+                self.accounts.save_api({'id': identifier, 'name': 'Other', 'apiKey': 'other-key'})
+            self.assertEqual(path.read_bytes(), before)
+            self.assertEqual(self.accounts.index, index)
+            with self.assertRaises(OSError):
+                self.accounts.remove(identifier)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(self.accounts.index, index)
+
     def setUp(self):
         root = Path(__file__).resolve().parents[1]/'.tmp'
         root.mkdir(exist_ok=True)

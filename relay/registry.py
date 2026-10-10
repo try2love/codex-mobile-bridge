@@ -6,6 +6,8 @@ import sqlite3
 import time
 from pathlib import Path
 
+PHONE_LIFETIME = 180 * 86400
+
 
 def token():
     return secrets.token_urlsafe(32)
@@ -157,11 +159,11 @@ class Registry:
             if count != 1:
                 raise PermissionError('Pairing expired or belongs to another device')
 
-    def consume(self, claim):
+    def consume(self, claim, device=None):
         with self.db:
             self.db.execute('BEGIN IMMEDIATE')
             row = self.db.execute('SELECT * FROM pairs WHERE claim=? AND expires>?', (digest(claim), time.time())).fetchone()
-            if row is None or not self.active(row['device']):
+            if row is None or not self.active(row['device']) or (device and row['device'] != device):
                 raise PermissionError('Pairing expired')
             if row['state'] != 'approved':
                 return {'state': row['state']}, None
@@ -170,18 +172,28 @@ class Registry:
                 raise ValueError('Revoke a phone before adding more (limit 16)')
             secret, identifier, csrf = token(), secrets.token_hex(16), token()
             self.db.execute('INSERT INTO phones VALUES(?,?,?,?,?,?,0)',
-                            (identifier, digest(secret), row['device'], row['name'], csrf, time.time() + 30 * 86400))
+                            (identifier, digest(secret), row['device'], row['name'], csrf, time.time() + PHONE_LIFETIME))
             self.db.execute("UPDATE pairs SET state='used' WHERE id=?", (row['id'],))
-        return {'state': 'approved', 'csrf': csrf}, secret
+        return {'state': 'approved', 'csrf': csrf, 'deviceId': row['device']}, secret
 
     def phone(self, secret):
-        row = self.db.execute('SELECT * FROM phones WHERE hash=? AND revoked=0 AND expires>?', (digest(secret), time.time())).fetchone()
+        row = self.db.execute('SELECT p.*, d.name AS computer_name FROM phones p JOIN devices d ON p.device=d.id '
+                              'WHERE p.hash=? AND p.revoked=0 AND d.revoked=0 AND p.expires>?', (digest(secret), time.time())).fetchone()
         if row is None or not self.active(row['device']):
             raise PermissionError('Phone authorization expired or revoked')
         return dict(row)
 
     def phones(self, device):
         return [dict(r) for r in self.db.execute('SELECT id,name,expires FROM phones WHERE device=? AND revoked=0 AND expires>?', (device, time.time()))]
+
+    def renew_phone(self, phone):
+        # At most one write per day; revoked/expired grants cannot be resurrected.
+        if phone['expires'] < time.time() + PHONE_LIFETIME - 86400:
+            with self.db:
+                self.db.execute('UPDATE phones SET expires=? WHERE id=? AND revoked=0 AND expires>?',
+                                (time.time() + PHONE_LIFETIME, phone['id'], time.time()))
+            return True
+        return False
 
     def revoke_phone(self, device, identifier):
         with self.db:

@@ -25,7 +25,7 @@ from bridge.features.workspace.files import artifact_paths, referenced_model_ima
 from bridge.features.workspace.workspace import operate as workspace_operation
 from bridge.clients.codex.catalog import Catalog
 from bridge.clients.codex.remote import AppHosts, RemoteStore, RemoteCatalog, RemoteUnavailable, ssh_read, ssh_download, payload
-from bridge.features.sessions.create import rename_thread, create_empty, fork_copy, open_in_desktop, CreationError, CreationUnavailable, ForkUnavailable
+from bridge.features.sessions.create import rename_thread, independent_directory, create_empty, fork_copy, open_in_desktop, CreationError, CreationUnavailable, ForkUnavailable
 from bridge.features.sessions.timeline import Timeline
 from bridge.features.accounts.account import Account
 from bridge.features.accounts.accounts import Accounts, operation
@@ -74,6 +74,10 @@ class LiveSession:
     def view(self):
         with self.condition:
             result = normalize_state(self.state or {"id": self.id}, self.connected)
+            if self.saved_view and result['contextUsage'] is None:
+                saved_usage = self.saved_view.get('contextUsage')
+                if saved_usage:
+                    result['contextUsage'] = {**saved_usage, 'cached': True}
             if self.saved_view:
                 saved_labels = {turn['id']: turn for turn in self.saved_view['turns'] if turn.get('status') != 'inProgress'}
                 for turn in result['turns']:
@@ -385,6 +389,8 @@ class Bridge:
         if not isinstance(title, str) or not title.strip() or len(title) > 120:
             raise ValueError('请输入 1–120 字的聊天名称')
         project = next((p for p in self.hosts.projects() if p['key'] == project_key), None)
+        if project_key == 'local|independent':
+            project = {'host': 'local', 'cwd': None}
         if project is None:
             raise ValueError('请选择电脑 App 中已保存的项目')
         title = title.strip()
@@ -402,7 +408,8 @@ class Bridge:
                 self._save_creations()
                 if project['host'] == 'local':
                     try:
-                        thread_id = create_empty(self.catalog_reader.executable, self.codex_home, project['cwd'], title)
+                        cwd = project['cwd'] or independent_directory(self.data_dir, request_id)
+                        thread_id = create_empty(self.catalog_reader.executable, self.codex_home, cwd, title)
                     except CreationUnavailable:
                         # No process started: retrying this request cannot create
                         # a duplicate. Keep uncertain post-start results recorded.

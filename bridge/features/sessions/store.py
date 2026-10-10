@@ -237,6 +237,7 @@ class SessionStore:
                 return result
         raw, complete = self._recent_lines(resolved, turn_limit)
         items, turns, current = [], [], None
+        token_usage = None
         for line in raw.splitlines():
             try:
                 record = json.loads(line)
@@ -247,6 +248,11 @@ class SessionStore:
                 current = {"turnId": payload.get("turn_id"), "status": "inProgress", "items": []}
                 turns.append(current)
                 items = current["items"]
+            elif record.get("type") == "event_msg" and payload.get("type") == "token_count":
+                info = payload.get('info')
+                if isinstance(info, dict) and isinstance(info.get('last_token_usage'), dict):
+                    token_usage = {'last': {'totalTokens': info['last_token_usage'].get('total_tokens')},
+                                   'modelContextWindow': info.get('model_context_window')}
             elif record.get("type") == "turn_context" and current is not None:
                 settings = (payload.get('collaboration_mode') or {}).get('settings') or {}
                 current['params'] = {'model':payload.get('model') or settings.get('model'),
@@ -283,6 +289,7 @@ class SessionStore:
                 "latestModel": meta.get('model') or next((t['params']['model'] for t in reversed(turns) if (t.get('params') or {}).get('model')), None),
                 "latestReasoningEffort": next((t['params']['effort'] for t in reversed(turns) if (t.get('params') or {}).get('effort')), None),
                 "modelProvider": meta.get("model_provider"),
+                "latestTokenUsageInfo": token_usage, "tokenUsageFromHistory": True,
                 "turns": turns, "turnsPagination": {"hasLoadedOldest": complete}, "requests": [], "threadRuntimeStatus": {"type": "notLoaded"}}
         with self.history_lock:
             if len(raw) <= 4 * 1024 * 1024:

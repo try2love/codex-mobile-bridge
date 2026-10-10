@@ -182,6 +182,7 @@ class AccountsPanel {
     this.updates.replaceChildren(this.node('h3','Codex Desktop 更新'),this.node('p',update.failureReason?'未能打开更新器':labelsUpdate[update.state]||update.state));
     this.updates.append(this.node('p','可远程查看新版本；下载和安装仍需在电脑端确认。','account-muted'));
     if(update.currentVersion)this.updates.append(this.node('p',this.text('当前版本：')+update.currentVersion+(update.targetVersion?' → '+update.targetVersion:''),'account-muted'));
+    if(update.installation?.state==='verified'){const installed=this.node('p',undefined,'account-muted');installed.textContent=this.text('已核验电脑端安装版本已更新')+' · '+update.installation.previousBuild+' → '+update.installation.currentBuild;this.updates.append(installed);}
     if(update.message)this.updates.append(this.node('p',update.message,'account-muted'));
     if(update.checkedAt)this.updates.append(this.node('small',this.text('检查于：')+new Date(update.checkedAt*1000).toLocaleString(BridgeI18n.locale()),'account-muted'));
     const checking=['checking','requesting'].includes(update.state),denied=!this.desktop&&value.canSwitch===false;

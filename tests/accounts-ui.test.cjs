@@ -202,3 +202,10 @@ test('desktop updates distinguish remote version checks from computer-side insta
   ui.language();assert.match(ui.text(),/installing still require confirmation on the computer/);
  }
 });
+
+
+test('native update completion is shown only after the installed build is verified',async()=>{
+ const ui=fixture();ui.setValue({...ui.value(),desktopUpdate:{state:'needsDesktop',installation:{state:'pending',previousBuild:'100',currentBuild:'101'}}});await ui.panel.refresh();assert.doesNotMatch(ui.text(),/已核验电脑端安装版本已更新/);
+ ui.setValue({...ui.value(),desktopUpdate:{state:'checked',installation:{state:'verified',previousBuild:'100',currentBuild:'101'}}});await ui.panel.refresh();assert.match(ui.text(),/已核验电脑端安装版本已更新 · 100 → 101/);
+ ui.language();assert.match(ui.text(),/verified as updated · 100 → 101/);
+});

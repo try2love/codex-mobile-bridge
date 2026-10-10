@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from bridge.clients.deepseek.adapter import DeepSeek, MARKER
+from bridge.clients.deepseek.adapter import DeepSeek, MARKER, BRIDGE_REVISION
 from bridge.clients.errors import BridgeUnavailable
 from bridge.clients.deepseek.setup import insertion, legacy_account_configured
 
@@ -81,6 +81,23 @@ class DeepSeekMigrationTests(unittest.TestCase):
         self.assertEqual(snapshot, {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in snapshot})
         self.assertTrue(self.new.ensure_installed()['reused'])
 
+    def test_previous_integration_digest_reuses_connection_without_writing(self):
+        from bridge.clients.deepseek import setup
+        original_sha = hashlib.sha256
+        source = self.old.directory/'mobile-host.mjs'
+        content = b'// fixture for the verified 3ad8f0a predecessor'
+        source.write_bytes(content)
+        before = {path: path.read_bytes() for path in self.old.directory.iterdir()}
+        def digest(value):
+            if value == content:
+                return Mock(hexdigest=lambda: 'c60b404ff5efcadc4329b125ff8524293bc4e4c2e29224393ea9cec5753ea2a1')
+            return original_sha(value)
+        with patch.object(setup.hashlib, 'sha256', side_effect=digest):
+            result = self.new.discover_existing()
+        self.assertTrue(result['reused']); self.assertTrue(result['updateRequired'])
+        self.assertEqual(self.new.directory, self.old.directory)
+        self.assertEqual(before, {path: path.read_bytes() for path in before})
+
     def test_restore_saved_directory_is_checked_against_actual_insertion(self):
         self.assertTrue(self.new.use_existing(self.old.directory)['reused'])
         with self.assertRaisesRegex(ValueError, '无法验证'):
@@ -103,11 +120,11 @@ class DeepSeekMigrationTests(unittest.TestCase):
                 with self.subTest(directory=adapter.directory):
                     installed = adapter.ensure_installed()
                     self.assertTrue(installed['reused'])
-                    self.assertFalse(installed['legacyProtocol'])
-                    self.assertFalse(installed['updateRequired'])
+                    self.assertTrue(installed['legacyProtocol'])
+                    self.assertTrue(installed['updateRequired'])
                     status = adapter.call('status')
                     self.assertTrue(status['connected'])
-                    self.assertFalse(status['updateRequired'])
+                    self.assertTrue(status['updateRequired'])
                     self.assertNotIn('nativeQuit', status)
                     self.assertEqual(source.read_bytes(), content)
                     self.assertEqual((self.old.directory/'connection.json').read_bytes(), credentials)
@@ -175,7 +192,7 @@ class DeepSeekMigrationTests(unittest.TestCase):
             self.assertFalse(detail['capabilities']['attachments'])
             self.assertFalse(detail['capabilities']['send'])
             self.assertIn('更新', detail['notice'])
-            responses['status']['bridgeRevision'] = 3
+            responses['status']['bridgeRevision'] = BRIDGE_REVISION
             self.assertFalse(self.new.call('status')['updateRequired'])
 
     def test_credential_metadata_check_never_accepts_empty_foreign_or_executable_yaml(self):
@@ -234,7 +251,7 @@ class DeepSeekMigrationTests(unittest.TestCase):
         try:
             with patch('bridge.clients.discovery.discover_clients', return_value=discovered), \
                     patch('bridge.app.desktop.Desktop.preferences', return_value={}), \
-                    patch.object(DeepSeek, 'call', return_value={'connected': True, 'configured': True, 'bridgeRevision': 3}), \
+                    patch.object(DeepSeek, 'call', return_value={'connected': True, 'configured': True, 'bridgeRevision': BRIDGE_REVISION}), \
                     patch('bridge.clients.lifecycle.launch_deepseek') as launch:
                 result = manager.scan()
             launch.assert_not_called()
@@ -347,7 +364,7 @@ class DeepSeekMigrationTests(unittest.TestCase):
             row = next(row for row in manager.scan()['clients'] if row['id'] == 'deepseek')
             self.assertEqual(row['setupStatus'], 'restart-required')
             self.assertFalse(row['configured'])
-            live.update(bridgeRevision=3, updateRequired=False)
+            live.update(bridgeRevision=BRIDGE_REVISION, updateRequired=False)
             row = next(row for row in manager.clients(refresh=True)['clients'] if row['id'] == 'deepseek')
             self.assertEqual(row['setupStatus'], 'ready')
             self.assertTrue(row['configured'])
@@ -364,7 +381,7 @@ class DeepSeekMigrationTests(unittest.TestCase):
             with self.assertRaisesRegex(OSError, 'launch failed'):
                 manager.connect_deepseek(restart=True)
             state = json.loads(manager.config_path.read_text())['setup']['deepseek']
-            self.assertEqual(state['requiredBridgeRevision'], 3)
+            self.assertEqual(state['requiredBridgeRevision'], BRIDGE_REVISION)
             self.assertEqual(state['setupStatus'], 'restart-required')
             self.assertEqual((self.old.directory/'connection.json').read_bytes(), before)
             row = next(row for row in manager.clients(refresh=True)['clients'] if row['id'] == 'deepseek')
@@ -400,7 +417,7 @@ class DeepSeekMigrationTests(unittest.TestCase):
             self.assertNotIn('restart', launch.call_args.kwargs)
             self.assertEqual((self.old.directory/'mobile-host.mjs').read_bytes(),
                              Path(__file__).resolve().parents[1].joinpath('bridge/clients/deepseek/host.mjs').read_bytes())
-            self.assertEqual(manager.config['setup']['deepseek']['requiredBridgeRevision'], 3)
+            self.assertEqual(manager.config['setup']['deepseek']['requiredBridgeRevision'], BRIDGE_REVISION)
 
 
     def test_passive_discovery_does_not_create_missing_profile_or_connector(self):
@@ -442,7 +459,7 @@ class DeepSeekMigrationTests(unittest.TestCase):
         (self.old.directory/'endpoint.json').write_text('{"port":32123,"pid":4321}')
         class Opener:
             def open(self, request, timeout):
-                return io.BytesIO(b'{"connected":true,"configured":true,"bridgeRevision":3}')
+                return io.BytesIO(json.dumps({'connected': True, 'configured': True, 'bridgeRevision': BRIDGE_REVISION}).encode())
         with patch('bridge.clients.deepseek.adapter.urllib.request.build_opener', return_value=Opener()):
             self.assertFalse(self.new.call('status')['updateRequired'])
         self.assertFalse(self.new.legacy_protocol)

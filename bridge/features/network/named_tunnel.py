@@ -13,10 +13,14 @@ class NamedTunnel:
         self.stopped = threading.Event()
         self.process = None
         self.thread = None
+        self.last_status = None
 
     def status(self, state, message):
+        if self.last_status == (state, message):
+            return
         write_json(self.data_dir/('ssh-status-'+self.entry['id']+'.json'),
                    {'pid': os.getpid(), 'state': state, 'message': message})
+        self.last_status = (state, message)
 
     def start(self):
         self.thread = threading.Thread(target=self._run, daemon=True)
@@ -41,6 +45,10 @@ class NamedTunnel:
                     self.process.terminate()
                 for line in self.process.stdout:
                     # Do not persist raw provider output: it can contain credentials or remote config.
+                    # ICMP echo replies use the private-network packet path;
+                    # their failure alone does not report loss of HTTP ingress.
+                    if 'Failed to send ICMP reply' in line:
+                        continue
                     if 'Registered tunnel connection' in line:
                         delay = 2
                         self.status('connected', '固定隧道已连接；请检测域名是否指向当前网关。')

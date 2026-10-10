@@ -131,13 +131,14 @@ def artifact_paths(state, codex_home):
             continue
         try:
             path = ((Path(state['cwd']) / path) if not path.is_absolute() and state.get('cwd') else path).resolve(strict=True)
-            if not any(root in path.parents for root in roots) or not path.is_file():
+            if not any(root in path.parents for root in roots) or not (path.is_file() or path.is_dir()):
                 continue
         except OSError:
             continue
         key = hashlib.sha256(str(path_identity(path)).encode()).hexdigest()
         result[key] = {'path': path, 'reference': raw, 'name': path.name,
-                       'image': path.suffix.lower() in IMAGE_SUFFIXES}
+                       'kind': 'directory' if path.is_dir() else 'file',
+                       'image': path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES}
     # A path can be shown once as ImageView and embedded later with another text
     # form (usually a plain absolute path versus file://). Only the runtime view
     # grants the outside-workspace exception; collect all references so Markdown
@@ -158,7 +159,8 @@ def artifact_paths(state, codex_home):
         reference = plain[0] if plain else (file_refs[0] if file_refs else next(iter(references)))
         key = hashlib.sha256(str(path).encode()).hexdigest()
         result[key] = {'path': path, 'reference': reference, 'name': path.name,
-                       'image': path.suffix.lower() in IMAGE_SUFFIXES}
+                       'kind': 'directory' if path.is_dir() else 'file',
+                       'image': path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES}
     return result
 
 
@@ -169,5 +171,5 @@ def workspace_references(messages, cwd):
              for row in messages if row.get('role') == 'assistant']} ]}
     root = Path(cwd).resolve()
     return [{'id': key, 'name': value['name'], 'reference': value['reference'],
-             'path': value['path'].relative_to(root).as_posix(), 'image': False}
+             'path': value['path'].relative_to(root).as_posix(), 'kind': value['kind'], 'image': False}
             for key, value in artifact_paths(state, None).items()]

@@ -25,7 +25,7 @@ class ClaudeSessionTests(unittest.TestCase):
             'state': 'unlocked', 'interactive': True, 'reason': 'ready'})
         self.snapshot = self.desktop.start(); self.addCleanup(self.desktop.stop)
         for target in ('bridge.clients.claude.setup.sys', 'bridge.clients.claude.adapter.sys',
-                       'bridge.platforms.windows.session.sys'):
+                       'bridge.platforms.windows.session.sys', 'bridge.clients.manager.sys'):
             patcher = patch(target, SimpleNamespace(platform='win32'))
             patcher.start(); self.addCleanup(patcher.stop)
 

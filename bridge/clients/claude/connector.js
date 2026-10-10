@@ -31,7 +31,7 @@
   const surfaces = {code: 'LocalSessions', cowork: 'LocalAgentModeSessions'};
   const allowed = new Set(['getAll', 'getSession', 'getTranscript', 'sendMessage',
     'interrupt', 'stop', 'respondToToolPermission', 'start', 'getPermissionMode', 'archive', 'delete', 'updateSession',
-    'setPermissionMode', 'setModel', 'setEffort', 'getDefaultEffort', 'getSupportedCommands', 'setThinkingSummariesWanted', 'getContextUsageSummary',
+    'setPermissionMode', 'setModel', 'setEffort', 'getDefaultEffort', 'getSupportedCommands', 'setThinkingSummariesWanted', 'getContextUsageSummary', 'getContextUsage',
     'listSessionDirectory', 'readSessionFile', 'readSessionImageAsDataUrl', 'readSessionPanelDocumentAsDataUrl']);
   const capabilities = Object.fromEntries(Object.entries(surfaces).map(([kind, name]) =>
     [kind, [...allowed].filter(method => typeof api[name]?.[method] === 'function')]));
@@ -122,7 +122,7 @@
       'lifecycleState', 'error', 'pendingToolPermissions', 'permissionMode', 'effort', 'effortLevel', 'userSelectedFolders'].filter(k => k in row).map(k => [k, row[k]]));
   }
   function sanitize(method, result) {
-    if (method === 'getContextUsageSummary') {
+    if (method === 'getContextUsageSummary' || method === 'getContextUsage') {
       if(!result||typeof result!=='object')return null;
       // Desktop's summary uses totalTokens/rawMaxTokens, not billing totals.
       const used=result.totalTokens,limit=result.rawMaxTokens;
@@ -184,9 +184,24 @@
     return Object.fromEntries(rows);
   }
   async function mobileDetail(target,id){
-    const [session,transcript,contextUsage]=await Promise.all([target.getSession(id),target.getTranscript(id),
-      typeof target.getContextUsageSummary==='function'?bounded(target.getContextUsageSummary(id),1500,'Context unavailable').then(value=>sanitize('getContextUsageSummary',value)).catch(()=>null):null]);
-    return {session:sanitize('getSession',session),transcript:sanitize('getTranscript',transcript),contextUsage};
+    const [session,transcript,context]=await Promise.all([target.getSession(id),target.getTranscript(id),mobileContextUsage(target,id)]);
+    return {session:sanitize('getSession',session),transcript:sanitize('getTranscript',transcript),...context};
+  }
+  async function mobileContextUsage(target,id){
+    const methods=['getContextUsageSummary','getContextUsage'].filter(method=>typeof target[method]==='function');
+    if(!methods.length)return {contextUsage:null,contextUsageStatus:'unsupported'};
+    // Desktop's summary is gated by the running CLI version. The older getter
+    // is also read-only and returns null instead of starting a dormant process.
+    // Share one deadline so this optional data never doubles detail latency.
+    const deadline=Date.now()+1500;
+    for(const method of methods){
+      const remaining=deadline-Date.now();if(remaining<=0)break;
+      try{
+        const usage=sanitize(method,await bounded(target[method](id),remaining,'Context unavailable'));
+        if(usage)return {contextUsage:usage,contextUsageStatus:'available'};
+      }catch{}
+    }
+    return {contextUsage:null,contextUsageStatus:'unavailable'};
   }
   if (config.transport === 'cdp') {
     let stopped = false, highWater = 0;
@@ -230,7 +245,7 @@
       title: 'Codex Bridge Connector', useWorktree: false}); }
     catch (error) {
       if (/trust_required|WorkspaceTrustError/.test(String(error)))
-        throw new Error('Claude 尚未信任目录：' + config.cwd + '。请在 Claude Code 页面确认该目录的信任，再通过手机 Claude 标题选择启动以重新连接。');
+        throw new Error('Claude 尚未信任目录：' + config.cwd + '。请在 Claude Code 页面选择此目录并确认信任，再在网关的“Claude 接入准备”中点击“初始化连接”。');
       throw error;
     }
   }

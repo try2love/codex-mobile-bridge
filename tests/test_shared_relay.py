@@ -176,7 +176,8 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
         bridge.create_chat = lambda project, title, identifier: self.created.append((device['deviceName'], identifier)) or {'id': identifier}
         bridge.for_host = lambda host: bridge
         bridge.terminal = lambda thread, owner, action, body: {'owner': owner, 'action': action}
-        gateway = SimpleNamespace(bridge=bridge, web_dir=ROOT/'web', notifications=None, desktop_sessions=desktop_sessions)
+        gateway = SimpleNamespace(bridge=bridge, web_dir=ROOT/'web', notifications=None, desktop_sessions=desktop_sessions,
+                                  transfer_directory=directory/'gateway-settings')
         connector = Connector(directory, gateway, test_http=True)
         connector.start(); self.connectors.append(connector)
         for _ in range(100):
@@ -208,7 +209,7 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.get('/api/sessions', headers={**p, 'Origin':'https://evil.test'})).status, 401)
         self.assertEqual((await self.client.post('/api/sessions', json={}, headers={**p,'X-CSRF-Token':'bad'})).status, 401)
         self.assertEqual((await self.client.get('/api/sessions', headers={**p,'Host':'evil.test'})).status, 401)
-        self.assertEqual((await self.client.get('/api/accounts', headers=p)).status, 401)
+        self.assertEqual((await self.client.get('/api/accounts', headers=p)).status, 403)
         self.assertEqual((await self.client.get('/api/auth', headers=p)).status, 200)
 
     async def test_compressed_control_request_cannot_bypass_four_kib_limit(self):
@@ -286,7 +287,7 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
             return SimpleNamespace(identifier=THREAD, workspace=files,
                                    terminal=lambda thread, owner, action, body: {'owner': owner, 'provider': provider, 'action': action})
         manager = SimpleNamespace(clients=lambda: {'clients': [{'id': 'deepseek', 'enabled': True}]},
-                                  toggle_client=control, require_enabled=require, call=call, workspace_bridge=workspace)
+                                  toggle_client=control, require_enabled=require, call=call, list_with_activity=lambda p: call(p, 'list', None, {}), workspace_bridge=workspace)
         connector = await self.real_connector(a, manager)
         self.assertIs(connector.server.desktop_sessions, manager)
         p, other = await self.phone(a), await self.phone(a)
@@ -324,8 +325,8 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.post('/api/clients', json={'provider': 'deepseek', 'enabled': False}, headers=p)).status, 200)
         self.assertEqual((await self.client.get('/api/desktop-sessions/deepseek/list', headers=p)).status, 400)
         for path in ('/api/clients/scan', '/api/desktop-sessions/deepseek/install', '/api/desktop-sessions/claude/eval'):
-            self.assertEqual((await self.client.post(path, json={}, headers=p)).status, 401)
-        self.assertEqual((await self.client.get('/api/desktop-sessions/deepseek/events', headers=p)).status, 401)
+            self.assertEqual((await self.client.post(path, json={}, headers=p)).status, 403)
+        self.assertEqual((await self.client.get('/api/desktop-sessions/deepseek/events', headers=p)).status, 403)
 
     async def test_wrong_device_cannot_supply_a_response(self):
         a,b = await self.device('Alice'),await self.device('Bob')
@@ -379,13 +380,180 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.to_thread(c.control, {'action':'revoke'})
         self.assertEqual(json.loads((directory/'shared-relay.json').read_text()),{})
 
+    async def test_binary_stream_reduces_wire_bytes_and_static_assets_revalidate(self):
+        self.state.timeout = 5
+        a = await self.device('A'); connector = await self.real_connector(a); p = await self.phone(a)
+        file = Path(self.temp.name) / 'eight-mib.bin'
+        file.write_bytes(b'a' * (8 * 1024 * 1024))
+        connector.server.bridge.artifact = lambda thread, identifier: {'path': file, 'name': file.name, 'image': False}
+        url = '/api/sessions/' + THREAD + '/files/' + 'a' * 64
+        original = connector.forward
+        sizes = []
+        class Meter:
+            def __init__(self, ws): self.ws = ws
+            async def send_bytes(self, value):
+                sizes.append(len(value)); return await self.ws.send_bytes(value)
+            async def send_json(self, value):
+                sizes.append(len(json.dumps(value).encode())); return await self.ws.send_json(value)
+        async def measured(client, message, stream=None):
+            result = await original(client, message, (Meter(stream[0]), stream[1]) if stream else None)
+            if result is not None: sizes.append(len(json.dumps(result).encode()))
+            return result
+        connector.forward = measured
+        measured_sizes = []
+        for streaming in (False, True):
+            self.state.protocols[a['deviceId']] = streaming; sizes.clear()
+            response = await self.client.get(url, headers=p)
+            self.assertEqual(response.status, 200)
+            self.assertEqual(await response.read(), file.read_bytes())
+            measured_sizes.append(sum(sizes))
+            self.assertEqual(self.state.buffered, 0)
+        self.assertLess(measured_sizes[1], measured_sizes[0] * .76)
+        print('relay download 8 MiB wire bytes legacy=%d streaming=%d' % tuple(measured_sizes))
+        first = await self.client.get('/app.js', headers={'Accept-Encoding': 'identity'})
+        raw = await first.read()
+        compressed = await self.client.get('/app.js', headers={'Accept-Encoding': 'gzip'})
+        self.assertEqual(compressed.headers['Content-Encoding'], 'gzip')
+        self.assertEqual(await compressed.read(), raw)
+        cached = await self.client.get('/app.js', headers={'If-None-Match': first.headers['ETag']})
+        self.assertEqual(cached.status, 304); self.assertEqual(await cached.read(), b'')
+        print('relay app.js raw=%d gzip=%s revalidated-body=0' % (len(raw), compressed.headers['Content-Length']))
+
+    async def test_scoped_pairing_two_computers_one_browser_cookie_jar(self):
+        a, b = await self.device('A'), await self.device('B')
+        await self.real_connector(a); await self.real_connector(b)
+        jar = aiohttp.CookieJar(unsafe=True)
+        async with aiohttp.ClientSession(cookie_jar=jar) as browser:
+            for device in (a, b):
+                scope = '/d/' + device['deviceId']
+                pair = await (await self.action(device, 'pair')).json()
+                claim = await (await browser.post(self.url + scope + '/relay/claim', json={'token': pair['url'].split('#pair=')[1], 'name': 'browser'}, headers={'Origin': self.url})).json()
+                await self.action(device, 'approve', id=pair['id'], approved=True)
+                response = await browser.post(self.url + scope + '/relay/claim-status', json=claim, headers={'Origin': self.url})
+                self.assertEqual(response.cookies[COOKIE]['path'], scope + '/')
+                self.assertEqual((await response.json())['base'], scope + '/')
+            self.assertEqual(len(jar), 2)
+            for device in (a, b):
+                url = self.url + '/d/' + device['deviceId']
+                auth = await (await browser.get(url + '/api/auth')).json()
+                self.assertTrue(auth['authenticated']); self.assertTrue(auth['online'])
+                self.assertEqual(auth['instanceId'], 'relay:' + device['deviceId'])
+                self.assertEqual(auth['computer']['name'], device['deviceName'])
+                result = await (await browser.get(url + '/api/sessions')).json()
+                self.assertEqual(result['sessions'][0]['title'], device['deviceName'])
+            legacy = await self.phone(b)
+            a_cookie = jar.filter_cookies(self.server.make_url('/d/' + a['deviceId'] + '/'))[COOKIE].value
+            response = await self.client.get('/d/' + a['deviceId'] + '/api/auth', headers={'Cookie': COOKIE + '=' + a_cookie + '; ' + legacy['Cookie']})
+            self.assertEqual((await response.json())['deviceId'], a['deviceId'])
+            wrong = await self.client.get('/d/' + a['deviceId'] + '/api/sessions', headers=legacy)
+            self.assertEqual(wrong.status, 401)
+            url = self.url + '/d/' + a['deviceId']
+            auth = await (await browser.get(url + '/api/auth')).json()
+            await browser.post(url + '/api/logout', json={}, headers={'Origin': self.url, 'X-CSRF-Token': auth['csrf']})
+            self.assertFalse((await (await browser.get(url + '/api/auth')).json())['authenticated'])
+            self.assertTrue((await (await browser.get(self.url + '/d/' + b['deviceId'] + '/api/auth')).json())['authenticated'])
+
+    async def test_stream_credit_bounds_and_revocation_cancel_upstream(self):
+        import threading
+        from relay.stream import CHUNK, WINDOW
+        self.state.timeout = 5
+        device = await self.device('Stream fixture')
+        connector = await self.real_connector(device)
+        headers = await self.phone(device)
+        file = Path(self.temp.name) / 'credited.bin'
+        file.write_bytes(b'x' * CHUNK * (WINDOW + 10))
+        connector.server.bridge.artifact = lambda thread, identifier: {'path': file, 'name': file.name, 'image': False}
+        cancelled = threading.Event()
+        full, released = threading.Event(), threading.Event()
+        sent = []
+        class Meter:
+            def __init__(self, ws): self.ws = ws
+            async def send_json(self, value): return await self.ws.send_json(value)
+            async def send_bytes(self, value):
+                await self.ws.send_bytes(value)
+                sent.append(len(value) - 43)
+                if len(sent) == WINDOW: full.set()
+                if len(sent) == WINDOW + 1: released.set()
+        original_forward = connector.forward
+        async def observed(client, message, stream=None):
+            try:
+                return await original_forward(client, message, (Meter(stream[0]), stream[1]) if stream else None)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+        connector.forward = observed
+        ws = self.state.devices[device['deviceId']]
+        original_send = ws.send_json
+        acknowledgments = []
+        async def withhold_ack(value, **kwargs):
+            if value.get('type') == 'ack':
+                acknowledgments.append(value)
+            else:
+                await original_send(value, **kwargs)
+        ws.send_json = withhold_ack
+        response = await self.client.get('/api/sessions/' + THREAD + '/files/' + 'a' * 64, headers=headers)
+        self.assertTrue(await asyncio.to_thread(full.wait, 2))
+        first_window = sum(sent)
+        self.assertLessEqual(first_window, CHUNK * WINDOW)
+        self.assertEqual(await response.content.readexactly(first_window), b'x' * first_window)
+        with self.assertRaises(asyncio.TimeoutError):
+            await asyncio.wait_for(response.content.readexactly(1), timeout=.05)
+        self.assertEqual(len(acknowledgments), WINDOW)
+        await original_send(acknowledgments[0])
+        self.assertTrue(await asyncio.to_thread(released.wait, 2))
+        self.assertEqual(await response.content.readexactly(sent[-1]), b'x' * sent[-1])
+        phone = self.state.registry.phone(headers['Cookie'].split('=', 1)[1])
+        await self.action(device, 'revoke-phone', id=phone['id'])
+        with self.assertRaises(aiohttp.ClientPayloadError):
+            await asyncio.wait_for(response.read(), timeout=2)
+        self.assertTrue(await asyncio.to_thread(cancelled.wait, 2))
+        self.assertEqual(self.state.pending, {})
+        self.assertEqual(self.state.buffered, 0)
+
+    async def test_relay_renewal_and_revocation_do_not_restore_grants(self):
+        a = await self.device('A'); p = await self.phone(a)
+        secret = p['Cookie'].split('=', 1)[1]
+        old = self.state.registry.phone(secret)
+        self.state.registry.db.execute('UPDATE phones SET expires=? WHERE id=?', (time.time() + 60, old['id']))
+        self.state.registry.db.commit()
+        response = await self.client.get('/api/auth', headers=p)
+        self.assertIn('Max-Age=15552000', response.headers['Set-Cookie'])
+        self.assertGreater(self.state.registry.phone(secret)['expires'], time.time() + 179 * 86400)
+        self.state.registry.revoke_phone(a['deviceId'], old['id'])
+        response = await self.client.get('/api/auth', headers=p)
+        self.assertFalse((await response.json())['authenticated'])
+        self.assertNotIn('Set-Cookie', response.headers)
+
+    async def test_discovery_capability_is_read_only_and_tracks_tunnel_replacement(self):
+        import hashlib
+        a = await self.device('A'); ws = await self.socket(a)
+        key = 'a' * 64
+        payload = {'type': 'discovery', 'endpoints': ['https://old.example.com'], 'grants': [hashlib.sha256(key.encode()).hexdigest()]}
+        await ws.send_json(payload)
+        # Ordering fence: authenticated device status executes after WS scheduling.
+        for _ in range(50):
+            if a['deviceId'] in self.state.discovery: break
+            await asyncio.sleep(.01)
+        route = '/relay/discover/' + a['deviceId']
+        self.assertEqual((await self.client.get(route)).status, 401)
+        headers = {'X-Discovery-Key': key}
+        self.assertEqual((await (await self.client.get(route, headers=headers)).json())['endpoints'], payload['endpoints'])
+        self.assertEqual((await self.client.get('/d/' + a['deviceId'] + '/api/sessions', headers=headers)).status, 401)
+        payload['endpoints'] = ['https://new.example.com']; await ws.send_json(payload)
+        for _ in range(50):
+            if self.state.discovery[a['deviceId']]['endpoints'] == payload['endpoints']: break
+            await asyncio.sleep(.01)
+        self.assertEqual((await (await self.client.get(route, headers=headers)).json())['endpoints'], payload['endpoints'])
+        await ws.close()
+        self.assertEqual((await self.client.get(route, headers=headers)).status, 401)
+
     async def test_headless_static_app_and_native_compatible_pair_url(self):
         a = await self.device('Alice'); p = await self.phone(a)
         response = await self.client.get('/',headers=p)
         html = await response.text()
         self.assertIn('/relay/mode.js',html); self.assertIn('workbench.js',html)
         pair = await (await self.action(a,'pair')).json()
-        self.assertTrue(pair['url'].startswith(self.url+'/#pair='))
+        self.assertTrue(pair['url'].startswith(self.url+'/d/'+a['deviceId']+'/#pair='))
         self.assertEqual((await self.client.get('/relay/')).status,200)
 
     async def test_binary_forwarding_preserves_download_and_strips_upstream_cookies(self):
@@ -460,14 +628,34 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
         with file.open('wb') as stream: stream.truncate(MAX_BODY + 1)
         connector.server.bridge.artifact = lambda thread, identifier: {'path': file, 'name': file.name, 'image': False}
         url = '/api/sessions/' + THREAD + '/files/' + 'a' * 64
+        # The file exceeds the default click-download policy as well as one
+        # relay frame. Raising only that policy must still preserve bounded
+        # ranges and changed-file restart handling across the relay.
+        response = await self.client.get(url, headers={**p, 'Range': 'bytes=0-1048575'})
+        self.assertEqual(response.status, 400)
+        self.assertIn('下载限制', (await response.json())['error'])
+        policy = {'clickDownloadMiB': MAX_BODY//(1024*1024)+1}
+        response = await self.client.post('/api/file-transfer', json=policy, headers=p)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(await response.json(), policy)
+        self.assertEqual(json.loads((connector.directory/'gateway-settings'/'file-transfer.json').read_text()), policy)
+        from bridge.features.workspace.preferences import transfer_settings
+        main_directory = connector.directory/'gateway-settings'
+        self.assertEqual(transfer_settings(main_directory), policy)
+        updated = {'clickDownloadMiB': policy['clickDownloadMiB']+1}
+        transfer_settings(main_directory, updated)
+        response = await self.client.get('/api/file-transfer', headers=p)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(await response.json(), updated)
         response = await self.client.get(url, headers={**p, 'Range': 'bytes=0-1048575'})
         self.assertEqual(response.status, 206)
         etag = response.headers['ETag']
         self.assertEqual(len(await response.read()), 1048576)
         with file.open('r+b') as stream: stream.write(b'changed')
         response = await self.client.get(url, headers={**p, 'Range': 'bytes=1048576-2097151', 'If-Range': etag})
-        self.assertEqual(response.status, 409)
-        self.assertEqual((await response.json())['code'], 'download_changed')
+        self.assertEqual(response.status, 200)
+        self.assertEqual(len(await response.read()), file.stat().st_size)
+        self.assertEqual(self.state.buffered, 0)
         # Restarting with no old validator still downloads bounded ranges.
         response = await self.client.get(url, headers={**p, 'Range': 'bytes=0-1048575'})
         self.assertEqual(response.status, 206)

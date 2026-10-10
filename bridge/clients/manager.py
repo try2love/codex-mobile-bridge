@@ -14,7 +14,7 @@ from contextlib import contextmanager, nullcontext
 from concurrent.futures import Future
 
 from bridge.clients.claude.adapter import Claude
-from bridge.clients.deepseek.adapter import DeepSeek, BRIDGE_REVISION, UPDATE_REASON
+from bridge.clients.deepseek.adapter import DeepSeek, BRIDGE_REVISION, LIFECYCLE_REVISIONS, UPDATE_REASON
 from bridge.clients.errors import BridgeUnavailable
 from bridge.app.lifecycle import private_json
 from bridge.platforms.windows import session as windows_session
@@ -66,6 +66,8 @@ class DesktopSessions:
         self.locks = {name: threading.RLock() for name in ('codex', *self.adapters)}
         self.read_lock = threading.Lock()
         self.reads = {}
+        self.activity = {}
+        self.activity_pending = set()
         self.read_epochs = dict.fromkeys(self.locks, 0)
         self.read_changes = dict.fromkeys(self.locks, 0)
         self.binding_epochs = dict.fromkeys(self.locks, 0)
@@ -137,6 +139,9 @@ class DesktopSessions:
                 if action == 'detail' and isinstance(value, dict):
                     from bridge.features.workspace.files import workspace_references
                     value['files'] = workspace_references(value.get('messages', []), value.get('session', {}).get('cwd'))
+                    if value.get('turns') and isinstance(value.get('session'), dict):
+                        last = value['turns'][-1]
+                        value['session'].update(turnId=last.get('turnId'), turnStatus=last.get('status'))
                 future.set_result(value)
             except BaseException as exc:
                 future.set_exception(exc)
@@ -152,6 +157,61 @@ class DesktopSessions:
                 raise BridgeUnavailable('客户端状态已变化，请重试')
         # Consumers may annotate rows. Sharing a result object crosses requests.
         return result
+
+    def list_with_activity(self, provider):
+        with self.read_lock:
+            binding, adapter = self.binding_epochs[provider], self.adapters[provider]
+        value = self.call(provider, 'list')
+        if value.get('connected') is not False:
+            self._list_activity(provider, adapter, binding, value.get('sessions', []))
+        with self.read_lock:
+            if self.binding_epochs[provider] != binding or self.adapters[provider] is not adapter:
+                raise BridgeUnavailable('客户端状态已变化，请重试')
+        return value
+
+    def _list_activity(self, provider, adapter, binding, rows):
+        """Enrich list indicators asynchronously; never wait for transcripts on list load."""
+        candidates = []
+        with self.read_lock:
+            if self.closed.is_set() or self.binding_epochs[provider] != binding:
+                return
+            for row in rows:
+                key = (provider, binding, row['id'])
+                signature = (row.get('updatedAt'), row.get('status'))
+                cached = self.activity.get(key)
+                if cached:
+                    row.update(cached[1])
+                if cached is None or cached[0] != signature or (cached[1].get('turnStatus') == 'inProgress' and row.get('status') != 'active'):
+                    candidates.append((key, signature))
+            # Keep only current-account/current-list presentation state.
+            valid = {(provider, binding, row['id']) for row in rows}
+            self.activity = {k: v for k, v in self.activity.items() if k[0] != provider or k in valid}
+            if provider in self.activity_pending or not candidates:
+                return
+            self.activity_pending.add(provider)
+        def refresh():
+            try:
+                # Changed known sessions precede older sessions still awaiting a baseline.
+                candidates.sort(key=lambda item: item[0] not in self.activity)
+                for key, signature in candidates[:8]:
+                    with self.read_lock:
+                        if self.closed.is_set() or self.binding_epochs[provider] != binding or self.adapters[provider] is not adapter:
+                            return
+                    try:
+                        detail = self._read(provider, 'detail', key[2])
+                        if detail.get('connected') is False:
+                            continue
+                        row = detail.get('session') or {}
+                        fields = {name: row[name] for name in ('turnId', 'turnStatus') if name in row}
+                        with self.read_lock:
+                            if not self.closed.is_set() and self.binding_epochs[provider] == binding:
+                                self.activity[key] = (signature, fields)
+                    except (OSError, ValueError):
+                        continue
+            finally:
+                with self.read_lock:
+                    self.activity_pending.discard(provider)
+        threading.Thread(target=refresh, daemon=True, name='desktop-activity-'+provider).start()
 
     def call(self, provider, action, sid=None, body=None):
         if provider not in self.adapters or action not in READS | WRITES:
@@ -398,7 +458,7 @@ class DesktopSessions:
             endpoint = self._deepseek_endpoint(adapter)
             if len(hosts) != 1 or not endpoint or endpoint.get('pid') != hosts[0]:
                 raise ValueError(unknown)
-            if status.get('bridgeRevision') != BRIDGE_REVISION:
+            if status.get('bridgeRevision') not in LIFECYCLE_REVISIONS:
                 raise ValueError('当前 Harness 接入版本无法核对任务状态，请在电脑端退出 Harness 后再连接')
         try:
             listing = (adapter.call('list', timeout=8) if native_confirmation else
@@ -413,7 +473,7 @@ class DesktopSessions:
                row.get('status') in ('active', 'running', 'waiting', 'busy')) for row in sessions):
             raise ValueError('有任务运行或等待确认，请先结束任务再关闭或重启客户端')
         if (listing.get('complete') is not True or
-                provider == 'deepseek' and listing.get('bridgeRevision') != BRIDGE_REVISION or
+                provider == 'deepseek' and listing.get('bridgeRevision') not in LIFECYCLE_REVISIONS or
                 any(not isinstance(row, dict) or row.get('status') not in ('idle', 'stopped', 'completed') or
                     row.get('runtimeKnown') is not True for row in sessions)):
             raise TaskStateUnavailable(unknown)
@@ -438,7 +498,7 @@ class DesktopSessions:
             self.adapters[provider].cancel(persist=False)
         try:
             if force:
-                from bridge.platforms.windows.force_exit import force_stop_client
+                from bridge.clients.lifecycle import force_stop_client
                 force_stop_client(descriptor, state=state)
             elif provider == 'deepseek' and sys.platform == 'win32':
                 stop_deepseek(descriptor, self.adapters[provider], state=state)
@@ -601,8 +661,12 @@ class DesktopSessions:
             self.require_enabled('claude')
             adapter = self.adapters['claude']
             if adapter.status().get('connected'):
-                adapter.check_connection()
-                return self.clients(refresh=True)
+                try:
+                    adapter.check_connection()
+                except BridgeUnavailable:
+                    pass  # One explicit reconnect also repairs a stale heartbeat.
+                else:
+                    return self.clients(refresh=True)
             if not self._claude_reconnect_supported():
                 raise ValueError('请先在电脑端配置 Claude 接入，再重新连接')
             state = inspect_client(self._descriptor('claude'))
@@ -610,7 +674,10 @@ class DesktopSessions:
                 raise ValueError('请先在电脑端打开 Claude，再重新连接')
             if state['unknown'] or len(state['mainPids']) != 1:
                 raise ValueError('Claude 进程无法确认，请在电脑端检查后重试')
-            adapter.connect(existing_only=True)
+            if sys.platform == 'darwin':
+                adapter.reconnect()
+            else:
+                adapter.connect(existing_only=True)
             self.client_cache = None
             return self.clients(refresh=True)
 
@@ -795,7 +862,7 @@ class DesktopSessions:
             for row in rows:
                 native = {}
                 row.update(running=False, mainRunning=False, backgroundRunning=False, backgroundCount=0)
-                row['canForceQuit'] = bool(sys.platform == 'win32' and self.gateway_running and row['installed'])
+                row['canForceQuit'] = bool(sys.platform in ('darwin', 'win32', 'linux') and self.gateway_running and row['installed'])
                 if row['installed']:
                     try:
                         native = native_states.get(row['id'])
@@ -822,8 +889,11 @@ class DesktopSessions:
                                                row['mainRunning'] and not native.get('unknown', True))
                     row['canConfirmQuit'] = bool(sys.platform in ('darwin', 'win32') and row['mainRunning'])
                 if not self.gateway_running and row['enabled'] and row['setupStatus'] != 'recovery-required':
-                    row['reason'] = ('已选择，启动网关后在后台启动并连接' if row['id'] == 'claude'
-                                     else '已选择，启动网关后自动接入')
+                    if row['id'] == 'claude' and sys.platform == 'darwin':
+                        row['reason'] = '已选择，启动网关后在后台打开 Claude 并尝试恢复已有连接；需要初始化时会提示。'
+                    else:
+                        row['reason'] = ('已选择，启动网关后在后台启动并连接' if row['id'] == 'claude'
+                                         else '已选择，启动网关后自动接入')
             result = {'clients': rows, 'computer': socket.gethostname(), 'gatewayRunning': self.gateway_running}
             if sys.platform == 'win32':
                 result['windowsSession'] = windows_session.status()
@@ -835,7 +905,9 @@ class DesktopSessions:
         if row['connected'] or not self.gateway_running or not row['enabled']:
             return
         phase = row['setupStatus']
-        if phase in ('starting', 'connecting', 'needs-initialization'):
+        if sys.platform == 'darwin' and phase in ('needs-screen-saver', 'needs-unlock', 'needs-desktop'):
+            row['connectionState'] = 'connecting'
+        elif phase in ('starting', 'connecting', 'needs-initialization'):
             row['connectionState'] = phase
             if phase != 'starting' and native is not None and not native['running']:
                 row.update(connectionState='error', reason='Claude 未运行，请重试后台启动', retryable=True)
@@ -900,7 +972,8 @@ class DesktopSessions:
         if 'quitDesktop' in value and (type(value['quitDesktop']) is not bool or enabled):
             raise ValueError('应用开关无效')
         if 'forceDesktop' in value and (type(value['forceDesktop']) is not bool or enabled
-                or value.get('quitDesktop') is not True or sys.platform != 'win32' or not self.gateway_running):
+                or value.get('quitDesktop') is not True or value.get('forceConfirmed') is not True
+                or sys.platform not in ('darwin', 'win32', 'linux') or not self.gateway_running):
             raise ValueError('后台强制结束请求无效')
         if 'initializeDesktop' in value and (type(value['initializeDesktop']) is not bool
                 or provider != 'claude' or enabled is not True):
@@ -941,7 +1014,7 @@ class DesktopSessions:
                         result = launch_client(descriptor)
                         if not result.get('running'):
                             raise ValueError('客户端尚未启动，请在电脑端检查后重试')
-                        self.adapters[provider].connect()
+                        self.adapters[provider].reconnect()
                     elif sys.platform == 'win32':
                         self.adapters[provider].reconnect(launch=True)
                     else:
@@ -1024,6 +1097,19 @@ class DesktopSessions:
             return self._accounts_public(provider, store.public())
         if operation == 'details':
             return self._accounts_public(provider, store.details(value.get('id'), refresh=value.get('refresh') is True))
+        if operation == 'edit':
+            return store.edit(value.get('id'))
+        if operation in ('save-api', 'rename', 'remove'):
+            # Desktop IPC only: HTTP exposes list/details/switch. These mutate
+            # saved copies, never the native login or a running conversation.
+            with self.client_lock:
+                if operation == 'save-api':
+                    result = store.save_api(value)
+                elif operation == 'rename':
+                    result = store.rename(value.get('id'), value.get('name'))
+                else:
+                    result = store.remove(value.get('id'))
+                return self._accounts_public(provider, result)
         if operation not in ('import-current', 'switch'):
             raise ValueError('不支持的账号操作')
         from bridge.clients.lifecycle import inspect_client
@@ -1113,6 +1199,9 @@ class DesktopSessions:
 
     def control(self, value):
         action = value.get('action', 'status')
+        if action == 'claude-prerequisites':
+            result = self.adapters['claude'].prerequisites(request_permission=value.get('requestPermission') is True)
+            return {**result, 'gatewayRunning': self.gateway_running}
         if action in ('claude-quit-preview', 'claude-quit-confirm'):
             return self.quit_claude(value)
         if action in ('deepseek-recovery-preview', 'deepseek-recovery-confirm'):

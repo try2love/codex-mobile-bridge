@@ -15,16 +15,16 @@ from bridge.resources import project_root, source_text
 
 ROOT = Path(__file__).resolve().parents[1]
 # Public URLs from the pre-layout source snapshot (21ae09f). Physical directories
-# may change. Only the two explicit host/layout entrypoints are added; physical
+# may change. Explicit host/layout/bootstrap entrypoints are added; physical
 # directories and manifest entries must not become public URLs.
 PUBLIC_URLS = set('''
-/ /host.js /layout.js /permissions.js /downloads.js /downloads.css
+/ /bootstrap.js /host.js /layout.js /permissions.js /downloads.js /downloads.css
 /client-icons/codex.png /client-icons/claude.png /client-icons/deepseek.png
 /client-navigation.js /client-navigation.css /client-lifecycle.js /client-lifecycle.css /desktop-sessions.js
 /client-accounts.js /desktop-sessions.css /vendor/xterm/xterm.js
 /vendor/xterm/addon-fit.js /vendor/xterm/xterm.css /command-terminal-panel.js
 /list-sync.js /agents-panel.js /side-chat.js /terminal-panel.js /floating-panel.js
-/git-panel.js /workbench.js /image-viewer.js /workbench.css /i18n.js /app.js
+/git-panel.js /file-actions.js /workbench.js /image-viewer.js /workbench.css /i18n.js /app.js
 /modes.js /attachments.js /activity.js /fast-mode.js /accounts.js /account.js
 /account.css /presentation.js /presentation.css /markdown.js /message-actions.js
 /timeline.js /vendor/markdown-it.min.js /vendor/texmath.js

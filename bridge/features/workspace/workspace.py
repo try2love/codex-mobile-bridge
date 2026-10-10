@@ -182,11 +182,16 @@ class Workspace:
         parts = self.parts(path)
         if not parts: raise ValueError('请选择文件')
         with self.directory(parts[:-1]) as (directory, fd):
+            info = os.stat(parts[-1], dir_fd=fd, follow_symlinks=False) if fd is not None else (directory / parts[-1]).lstat()
+            if stat.S_ISDIR(info.st_mode):
+                # Re-walk the full directory using the same no-link boundary.
+                with self.directory(parts):
+                    return {'name': parts[-1], 'path': path, 'size': None, 'kind': 'directory'}
             handle = self.open_file(directory, fd, parts[-1], os.O_RDONLY)
             with os.fdopen(handle, 'rb') as stream:
                 info = os.fstat(stream.fileno())
                 if not stat.S_ISREG(info.st_mode): raise ValueError('仅支持普通文件')
-                return {'name': parts[-1], 'path': path, 'size': info.st_size}
+                return {'name': parts[-1], 'path': path, 'size': info.st_size, 'kind': 'file'}
 
     @contextmanager
     def archive(self, path, range_header='', if_range='', limit=None):

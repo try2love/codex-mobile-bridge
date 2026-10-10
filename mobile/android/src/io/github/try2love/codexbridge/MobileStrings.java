@@ -3,6 +3,11 @@ import android.content.Context;
 final class MobileStrings {
  private static final java.util.Map<String,String> values=new java.util.HashMap<>();
  static {
+  values.put("未读通知","Unread notifications");
+  values.put("刷新状态","Refresh status");
+  values.put("最近通知","Recent notifications");
+  values.put("需要你处理","Action requested");
+  values.put("已运行完毕","Completed");
   values.put("未收到所选文件，请重新选择。","No selected file was received. Choose the file again.");
   values.put("无法读取所选文件，请从系统文件选择器重新选择。","Cannot read the selected file. Select it again using the system file picker.");
 
@@ -91,13 +96,15 @@ values.put("请填写完整的 HTTPS 网关地址，或局域网 HTTP 地址，�
   values.put("返回电脑列表","Back to computers");
   values.put("账号与接入","Accounts and connections");
   values.put("外观与显示","Appearance");
+  values.put("隐藏APP","Hide apps");
+  values.put("显示APP","Show apps");
   values.put("刷新页面","Reload page");
   values.put("好","OK");
   values.put("电脑上的工作，\n带在身边。","Your computer’s work,\nalways with you.");
   values.put("继续聊天、查看结果，让电脑替你运行。","Continue chats and view results while your computer does the work.");
   values.put("扫码连接电脑","Scan to connect");
   values.put("输入网关地址","Enter gateway address");
-  values.put("你的电脑","Your computers");
+  values.put("我的电脑","My computers");
   values.put("还没有连接的电脑","No computers connected yet");
   values.put("在电脑网关中展开“扫码登录”，然后用上方按钮扫描。","Open “Scan to sign in” on your computer’s gateway, then scan using the button above.");
   values.put("连接 ","Connect ");

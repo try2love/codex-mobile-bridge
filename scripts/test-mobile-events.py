@@ -30,6 +30,7 @@ public abstract class Context {public abstract SharedPreferences getSharedPrefer
 'android/content/SharedPreferences.java': r'''package android.content;
 import java.util.*;
 public interface SharedPreferences {boolean getBoolean(String k,boolean d);String getString(String k,String d);long getLong(String k,long d);Set<String> getStringSet(String k,Set<String> d);Editor edit();interface Editor{Editor putString(String k,String v);Editor putBoolean(String k,boolean v);Editor putLong(String k,long v);void apply();}}''',
+'io/github/try2love/codexbridge/MobileStrings.java': 'package io.github.try2love.codexbridge;final class MobileStrings {static String text(android.content.Context c,String s){return s;}}',
 'android/content/Intent.java': 'package android.content;public class Intent {}',
 'android/app/Service.java': r'''package android.app;
 public class Service extends android.content.Context {public android.content.SharedPreferences preferences;public android.content.SharedPreferences getSharedPreferences(String n,int m){return preferences;}public void onCreate(){}public void onDestroy(){}}''',
@@ -41,15 +42,17 @@ public class JSONObject {
  private static final Map<String,JSONObject> wire=new java.util.concurrent.ConcurrentHashMap<>();
  private final Map<String,Object> data=new LinkedHashMap<>();
  public JSONObject(){} public JSONObject(String s){JSONObject found=wire.get(s);if(found==null)throw new IllegalArgumentException("Unknown fixture JSON");data.putAll(found.data);}
+ public boolean has(String k){return data.containsKey(k);}
  public JSONObject put(String k,Object v){data.put(k,v);return this;}
  public String getString(String k){return (String)data.get(k);}public long getLong(String k){return ((Number)data.get(k)).longValue();}
  public JSONArray getJSONArray(String k){return (JSONArray)data.get(k);}public boolean optBoolean(String k){return Boolean.TRUE.equals(data.get(k));}
+ public String optString(String k){return data.get(k) instanceof String?(String)data.get(k):"";}public long optLong(String k){return data.get(k) instanceof Number?((Number)data.get(k)).longValue():0;}public JSONArray optJSONArray(String k){return (JSONArray)data.get(k);}
  public String toString(){StringJoiner out=new StringJoiner(", ","{","}");for(Map.Entry<String,Object> e:data.entrySet())out.add(encode(e.getKey())+": "+encode(e.getValue()));String s=out.toString();wire.put(s,this);return s;}
  static String encode(Object o){return o instanceof String ? "\""+((String)o).replace("\\","\\\\").replace("\"","\\\"").replace("\n","\\n")+"\"" : String.valueOf(o);}
 }''',
 'org/json/JSONArray.java': r'''package org.json;
 import java.util.*;
-public class JSONArray {private final List<JSONObject> data=new ArrayList<>();public JSONArray put(JSONObject v){data.add(v);return this;}public int length(){return data.size();}public JSONObject getJSONObject(int i){return data.get(i);}public String toString(){StringJoiner out=new StringJoiner(", ","[","]");for(JSONObject o:data)out.add(o.toString());return out.toString();}}''',
+public class JSONArray {private final List<JSONObject> data=new ArrayList<>();public JSONArray put(JSONObject v){data.add(v);return this;}public int length(){return data.size();}public JSONObject getJSONObject(int i){return data.get(i);}public JSONObject optJSONObject(int i){return i<data.size()?data.get(i):null;}public String toString(){StringJoiner out=new StringJoiner(", ","[","]");for(JSONObject o:data)out.add(o.toString());return out.toString();}}''',
 }
 for name, source in stubs.items():
     path = WORK / name
@@ -69,5 +72,6 @@ subprocess.run([java_tool('javac'), '-d', str(WORK),
                *[str(WORK / name) for name in stubs], str(WORK / 'MonitorService.java'),
                str(ROOT / 'mobile/android/src/io/github/try2love/codexbridge/GatewayURL.java'),
                str(ROOT / 'mobile/android/src/io/github/try2love/codexbridge/EventClient.java'),
+               str(ROOT / 'mobile/android/src/io/github/try2love/codexbridge/ComputerNotifications.java'),
                str(ROOT / 'mobile/tests/MobileEventTests.java')], check=True)
 subprocess.run([java_tool('java'), '-Dsun.net.http.allowRestrictedHeaders=true', '-cp', str(WORK), 'io.github.try2love.codexbridge.MobileEventTests', 'baseline' if args.baseline else 'regression'], check=True)

@@ -43,7 +43,7 @@ class DeepSeekTurnTests(unittest.TestCase):
                               event(8, 'turn/start', 3), event(10, 'turn/end', 3, {'kind': 'error', 'error': {'private': 'do not forward'}})])
         self.assertEqual(detail['turns'], [
             {'turnId': '1', 'status': 'completed', 'sequence': 4, 'endReason': 'completed'},
-            {'turnId': '2', 'status': 'failed', 'sequence': 7, 'endReason': 'aborted'},
+            {'turnId': '2', 'status': 'interrupted', 'sequence': 7, 'endReason': 'aborted'},
             {'turnId': '3', 'status': 'failed', 'sequence': 10, 'endReason': 'error'}])
         self.assertNotIn('do not forward', json.dumps(detail))
 

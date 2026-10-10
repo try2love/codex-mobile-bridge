@@ -137,6 +137,42 @@ def stop_client(descriptor, *, state):
     app.stop(runtime_pids=current['runtimePids'], gui_pids=current['mainPids'], provider=descriptor.get('id'))
 
 
+def force_stop_client(descriptor, *, state):
+    """Explicit interruption; task evidence is bypassed, identity checks are not."""
+    if sys.platform == 'win32':
+        from bridge.platforms.windows.force_exit import force_stop_client as force
+        return force(descriptor, state=state)
+    import re
+    from bridge.platforms.posix.force_exit import force_stop, CHANGED
+    app = _app(descriptor)
+    current = inspect_client(descriptor)
+    if set(current['pids']) != set(state['pids']) or len(current['mainPids']) > 1:
+        raise ValueError(CHANGED)
+    commands = _commands(app, current['pids'])
+    if set(commands) != set(current['pids']):
+        raise ValueError(CHANGED)
+    # Do not reuse the first inventory's profile classification. The command
+    # passed to the native binder must itself still name this exact profile.
+    classified = _process_state(descriptor, app, current['pids'], commands)
+    if len(classified['mainPids']) > 1:
+        raise ValueError(CHANGED)
+    for pid, command in commands.items():
+        prefix = str(app.executable)
+        if command != prefix and not command.startswith(prefix + ' '):
+            raise ValueError(CHANGED)
+        arguments = command[len(prefix):]
+        if re.search(r'(?:^|\s)(?:--(?:eval|print|run|user-data-dir|profile)|-[ep])(?:[=\s]|$)', arguments):
+            raise ValueError(CHANGED)
+        if '--expose-internals' in arguments:
+            # Harness's packaged native Host is eligible only for this profile.
+            if (descriptor['id'] != 'deepseek' or pid not in classified['runtimePids'] or
+                    '/node_modules/@deepseek-ai/dsh-desktop-host/lib/index.js' not in arguments):
+                raise ValueError(CHANGED)
+        elif descriptor['id'] == 'deepseek' and 'dsh-desktop-host' in arguments and pid not in classified['runtimePids']:
+            raise ValueError(CHANGED)
+    force_stop(app.executable, commands)
+
+
 def stop_claude(descriptor, *, state):
     """Invoke Claude's normal menu once, then observe its asynchronous cleanup."""
     from bridge.clients.claude.setup import native_action
@@ -166,6 +202,7 @@ def stop_claude(descriptor, *, state):
 def stop_deepseek(descriptor, adapter, *, state):
     """Request DSH's native teardown; closing its window only hides the app."""
     import json
+    from bridge.clients.deepseek.adapter import LIFECYCLE_REVISIONS
     if descriptor.get('id') != 'deepseek':
         raise ValueError('此退出操作仅用于 Harness 桌面端')
     changed = 'Harness 进程已变化，请重新检查后再退出'
@@ -196,7 +233,7 @@ def stop_deepseek(descriptor, adapter, *, state):
         command = installer_quit_command(app, current, _commands(app, current['pids']))
         runtime = adapter.call('lifecycle')
         rows = runtime.get('sessions')
-        if (runtime.get('bridgeRevision') != 3 or runtime.get('complete') is not True or
+        if (runtime.get('bridgeRevision') not in LIFECYCLE_REVISIONS or runtime.get('complete') is not True or
                 not isinstance(rows, list) or any(not isinstance(row, dict) or
                     row.get('runtimeKnown') is not True or row.get('status') not in ('idle', 'stopped', 'completed') or
                     row.get('requests') for row in rows)):

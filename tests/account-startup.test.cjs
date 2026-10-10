@@ -5,7 +5,7 @@ const official={visible:true,loginType:'chatgpt',accountKey:'a'.repeat(64),limit
 
 async function fixture(read,kind='chatgpt',catalog=null,gatewayLanguage){
   const nodes=new Map(),timers=new Map(),requests=[],intervals=[],events={},responses=[];let timerId=0,delayNextSkill=null,failNextSkill=false;
-  const node=(tag='div')=>({tagName:tag.toUpperCase(),getBoundingClientRect(){return {width:0};},value:'',checked:false,disabled:false,hidden:false,open:false,textContent:'',dataset:{},options:[],children:[],style:{},scrollTop:0,parentElement:{},
+  const node=(tag='div')=>({tagName:tag.toUpperCase(),getBoundingClientRect(){return {width:0};},value:'',checked:false,disabled:false,hidden:false,open:false,textContent:'',dataset:{},options:[],children:[],style:{setProperty(k,v){this[k]=v;}},scrollTop:0,parentElement:{},
     classList:{add(){},remove(){},toggle(){},contains(){return false;}},addEventListener(){},setAttribute(k,v){this[k]=v;},closest(selector){return selector==='dialog'?nodes.get('accounts-dialog'):null;},
     replaceChildren(...children){this.children=children;},append(...children){for(const child of children){child.parentElement=this;this.children.push(child);}},after(child){const parent=this.parentElement;if(parent?.children){parent.children.splice(parent.children.indexOf(this)+1,0,child);child.parentElement=parent;}},querySelectorAll(){return [];},querySelector(){return null;},
     showModal(){this.open=true;},close(){this.open=false;}});
@@ -39,7 +39,7 @@ async function fixture(read,kind='chatgpt',catalog=null,gatewayLanguage){
       if(url.includes('/respond')){responses.push(JSON.parse(options.body));return response({});}
       throw Error('Unexpected request '+url);
     }});
-  for(const file of ['web/hosts/environment.js','web/shared/i18n.js','web/features/chat/list-sync.js','web/features/accounts/account.js','web/features/accounts/accounts.js','web/features/chat/modes.js','web/features/chat/attachments.js','web/features/chat/activity.js','web/features/chat/fast-mode.js','web/features/chat/message-actions.js','web/shell/app.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
+  for(const file of ['web/hosts/environment.js','web/shared/i18n.js','web/features/chat/list-sync.js','web/features/accounts/account.js','web/features/accounts/accounts.js','web/features/chat/modes.js','web/features/chat/attachments.js','web/features/chat/activity.js','web/features/chat/fast-mode.js','web/features/chat/message-actions.js','web/features/chat/permissions.js','web/shell/app.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
   await new Promise(setImmediate);
   return {nodes,requests,timers,intervals,events,responses,run:code=>vm.runInContext(code,context),
     failNextSkill(){failNextSkill=true;},

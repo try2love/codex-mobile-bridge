@@ -168,15 +168,19 @@ class DesktopUpdates:
     def __init__(self, manager):
         self.manager = manager
         self.lock = threading.RLock()
-        self.value = {'state':'idle', 'canRequest':False}
+        self.value = {'state':'idle', 'canRequest':False, 'canInstall':False}
         self.attempts_path = manager.root/'desktop-update-requests.json'
         self.requests = read_json(self.attempts_path, {})
+        self.pending_path = manager.root/'desktop-update-pending.json'
+        self.pending = read_json(self.pending_path, {})
+        self.verified_executable = None
         self.checked_at = 0
         self.worker = None
 
     def status(self):
         with self.lock:
-            return copy.deepcopy(self.value)
+            # Requesting the native updater is distinct from installing an update.
+            return copy.deepcopy({**self.value, 'canInstall':False})
 
     def executable(self):
         return self.manager.index.get('desktopExecutable') or DesktopApp.discover(self.manager.runtime)
@@ -191,12 +195,30 @@ class DesktopUpdates:
             self.worker.start()
 
     def _check(self):
-        result = {'state':'unsupported', 'canRequest':False, 'checkedAt':time.time()}
+        result = {'state':'unsupported', 'canRequest':False, 'canInstall':False, 'checkedAt':time.time(),
+                  'updateMethod':'unavailable'}
         meta = {}
         try:
-            meta = installed(self.executable())
+            executable = self.executable()
+            meta = installed(executable)
             channel = CHANNELS.get(meta['codexBuildFlavor'])
             result.update(currentVersion=meta['version'], currentBuild=meta['build'], channel=meta['codexBuildFlavor'])
+            with self.lock:
+                # The updater runs outside this gateway. Only a newer installed
+                # build at the same selected executable proves a version change.
+                # A different account-selected installation cannot settle it.
+                pending = self.pending
+                selected = os.path.normcase(str(Path(executable).resolve()))
+                if (self.verified_executable == selected and
+                        self.value.get('installation', {}).get('currentBuild') == meta['build']):
+                    result['installation'] = copy.deepcopy(self.value['installation'])
+                if (isinstance(pending, dict) and pending.get('executable') == selected
+                        and version(meta['build']) > version(pending.get('build'))):
+                    result['installation'] = {'state':'verified', 'previousBuild':pending['build'],
+                                              'currentBuild':meta['build'], 'verifiedAt':time.time()}
+                    write_json(self.pending_path, {})
+                    self.pending = {}
+                    self.verified_executable = selected
             if sys.platform == 'win32' and meta.get('storeProductId') and channel:
                 url = 'https://persistent.oaistatic.com/'+channel+'/windows-store-update.json'
                 manifest = json.loads(self.fetch(url))
@@ -204,7 +226,7 @@ class DesktopUpdates:
                     raise ValueError('更新清单与已安装程序不匹配')
                 build = manifest['buildVersion']
                 newer = version(build) > version(meta['build'])
-                result.update(state='available' if newer else 'checked', canRequest=True,
+                result.update(state='available' if newer else 'checked', canRequest=True, updateMethod='store-handoff',
                               message='Microsoft Store 将确认此设备的更新资格，安装可能需要电脑端操作')
                 if newer:
                     result.update(targetBuild=build, targetVersion=build)
@@ -218,13 +240,17 @@ class DesktopUpdates:
                     raise ValueError('桌面更新渠道已变化，请使用原生更新器')
                 raw = self.fetch(url)
                 candidate = appcast(raw, meta['build'], platform.mac_ver()[0])
-                result.update(state='available' if candidate else 'checked', canRequest=True,
+                result.update(state='available' if candidate else 'checked', canRequest=True, updateMethod='native-handoff',
                               message='安装资格、灰度发布和更新策略由 Codex 原生更新器确认')
                 if candidate:
                     result.update(candidate)
         except Exception:
             result.update(state='error', message='无法读取官方更新渠道，请稍后重试或在电脑端检查',
                           canRequest=bool(meta.get('bundle') or meta.get('storeProductId')))
+            if meta.get('bundle') and sys.platform == 'darwin':
+                result['updateMethod'] = 'native-handoff'
+            elif meta.get('storeProductId') and sys.platform == 'win32':
+                result['updateMethod'] = 'store-handoff'
         with self.lock:
             self.value = result
 
@@ -256,6 +282,10 @@ class DesktopUpdates:
                 raise ValueError('当前版本或更新能力已变化，请重新检查')
             self.requests[request_id] = meta['build']
             write_json(self.attempts_path, self.requests)
+            pending = {'build':meta['build'], 'executable':os.path.normcase(str(Path(self.executable()).resolve()))}
+            write_json(self.pending_path, pending)
+            self.pending = pending
+            self.value.pop('installation', None)
             self.value.update(state='requesting', canRequest=False)
             self.value.pop('failureReason', None)
             self.worker = threading.Thread(target=self._request, args=(meta,), daemon=True)

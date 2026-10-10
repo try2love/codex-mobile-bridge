@@ -1,12 +1,13 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 function fixture(){
-  let mobile=false,choice=true,finishChoice;const choices=[];const context=vm.createContext({ClientLifecycle:{...require('../web/features/clients/client-lifecycle.js'),chooseDisable(client){choices.push(client.id);return choice==='pending'?new Promise(resolve=>finishChoice=resolve):choice;}},document:{documentElement:{classList:{contains:()=>mobile}},getElementById:()=>({hidden:false})},localStorage:{setItem(){}},Event:class{},window:{}});
+  let mobile=false,choice=true,finishChoice;const choices=[],preferences=new Map();const context=vm.createContext({ClientLifecycle:{...require('../web/features/clients/client-lifecycle.js'),chooseDisable(client){choices.push(client.id);return choice==='pending'?new Promise(resolve=>finishChoice=resolve):choice;}},document:{documentElement:{classList:{contains:()=>mobile}},getElementById:()=>({hidden:false})},localStorage:{setItem:(key,value)=>preferences.set(key,value),getItem:key=>preferences.get(key)},Event:class{},window:{}});
+  context.BridgeI18n={t:value=>value};
   vm.runInContext(fs.readFileSync('web/hosts/environment.js','utf8'),context);
   vm.runInContext(fs.readFileSync('web/features/clients/client-navigation.js','utf8'),context);
   let initializeChoice=false,finishInitialize;const initializations=[];context.ClientLifecycle.chooseInitialize=client=>{initializations.push(client.id);return initializeChoice==='pending'?new Promise(resolve=>finishInitialize=resolve):initializeChoice;};
   const C=vm.runInContext('ClientNavigation',context),nav=Object.create(C.prototype),painted=[];
-  Object.assign(nav,{clients:[{id:'codex',enabled:true,configured:true},{id:'claude',enabled:true,configured:true},{id:'deepseek',enabled:true,configured:true}],provider:'claude',revision:0,pending:new Set(),notify(){},paint(){painted.push(this.clients.filter(c=>c.enabled).map(c=>c.id));},view:{provider:'claude',choose(id){this.provider=id;return Promise.resolve();}}});
+  Object.assign(nav,{clients:[{id:'codex',enabled:true,configured:true},{id:'claude',enabled:true,configured:true},{id:'deepseek',enabled:true,configured:true}],provider:'claude',revision:0,pending:new Set(),notify(){},rememberSwipeList(){},paint(){painted.push(this.clients.filter(c=>c.enabled).map(c=>c.id));},view:{provider:'claude',choose(id){this.provider=id;return Promise.resolve();}}});
   return {nav,painted,choices,document:context.document,setChoice:value=>choice=value,decide:value=>finishChoice(value),mobile:value=>mobile=value,initializations,setInitializeChoice:value=>initializeChoice=value,decideInitialize:value=>finishInitialize(value)};
 }
 test('changing provider paints the shell before its slow read resolves',async()=>{
@@ -26,6 +27,13 @@ test('phone initialization sends foreground intent only after an explicit confir
   await nav.initialize('claude');assert.deepEqual(ui.initializations,['claude']);assert.equal(calls.length,accepted?1:0);if(accepted){assert.equal(calls[0].initializeDesktop,true);assert.equal(calls[0].enabled,true);assert.equal(calls[0].provider,'claude');}
  }
  const {nav}=fixture();let body;nav.request=async(url,value)=>{body=value;return {clients:nav.clients};};await nav.toggle('claude',true);assert.equal(Object.hasOwn(body,'initializeDesktop'),false);
+});
+
+test('phone enabling, retrying and reconnecting Claude never initialize or prompt automatically',async()=>{
+ const ui=fixture(),nav=ui.nav,calls=[];Object.assign(nav.clients[1],{installed:true,connected:false,initializationMode:'foreground',setupStatus:'needs-initialization',reconnectSupported:true,canReconnect:true});
+ nav.request=async(url,body)=>{calls.push({url,body});return {clients:nav.clients};};await nav.toggle('claude',true);
+ nav.operationFailures=new Map([['claude',{action:'enable',uncertain:false,message:'retry'}]]);await nav.retryOperation('claude');await nav.reconnect('claude');
+ assert.equal(calls.length,3);assert.equal(calls[2].url,'/api/clients/claude/reconnect');assert.ok(calls.every(call=>!Object.hasOwn(call.body,'initializeDesktop')));assert.equal(ui.initializations.length,0);assert.equal(nav.connection(nav.clients[1]).canInitialize,true);
 });
 
 test('an unanswered initialization prompt blocks duplicate operations and stale polling',async()=>{
@@ -163,4 +171,96 @@ test('mobile startup preferences skip the close dialog and enabling omits quit i
  await nav.toggle('claude',false);assert.equal(ui.choices.length,0);assert.equal(calls[0].quitDesktop,false);
  await nav.toggle('claude',true);assert.equal(Object.hasOwn(calls[1],'quitDesktop'),false);
  assert.equal(calls.some(call=>Object.hasOwn(call,'forceDesktop')),false);
+});
+
+
+test('bottom app visibility preferences do not disable clients or change the selected provider',()=>{
+ const {nav}=fixture();assert.deepEqual([...nav.visibleClients()].map(row=>row.id),['codex','claude','deepseek']);
+ nav.preference('switch:claude',false);assert.deepEqual([...nav.visibleClients()].map(row=>row.id),['codex','deepseek']);assert.equal(nav.provider,'claude');assert.equal(nav.clients[1].enabled,true);
+ nav.preference('switch:codex',false);nav.preference('switch:deepseek',false);assert.equal(nav.visibleClients().length,0);assert.equal(nav.clients.filter(row=>row.enabled).length,3);
+ nav.preference('switch:claude',true);assert.deepEqual([...nav.visibleClients()].map(row=>row.id),['claude']);
+});
+
+function managerFixture(){
+ const ui=fixture(),node=tag=>({tag,children:[],attributes:{},dataset:{},classList:{toggle(){}},append(...children){this.children.push(...children);},replaceChildren(...children){this.children=children;},setAttribute(key,value){this.attributes[key]=value;}});
+ ui.document.createElement=node;ui.nav.icon=()=>node('img');ui.nav.manager={dialog:{open:true},list:node('div'),note:node('p')};
+ const all=root=>[root,...root.children.flatMap(all)];ui.controls=()=>all(ui.nav.manager.list);return ui;
+}
+test('app management offers force only through close choices and retains a disabled running app exit',async()=>{
+ for(const id of ['codex','claude','deepseek']){
+  const ui=managerFixture(),nav=ui.nav,client={id,name:id,enabled:true,configured:true,running:true,connected:true,canForceQuit:true};nav.clients=[client];nav.gatewayRunning=true;nav.renderManager();
+  assert.equal(ui.controls().some(node=>node.textContent==='强制关闭 App'),false);assert.equal(ui.controls().some(node=>node.textContent==='关闭电脑 App…'),false);
+  Object.assign(client,{enabled:false,configured:false,selectable:false,connected:false});nav.renderManager();
+  const close=ui.controls().find(node=>node.textContent==='关闭电脑 App…');assert.ok(close);assert.equal(!!close.disabled,false);assert.equal(ui.controls().find(node=>node.attributes.role==='switch').disabled,true);
+  ui.setChoice(null);await close.onclick();assert.deepEqual(ui.choices,[id]);assert.equal(nav.clients[0].enabled,false);
+  let body;ui.setChoice('force');nav.request=async(url,value)=>{body=value;return {clients:[{...client,running:false}]};};await close.onclick();
+  assert.equal(body.enabled,false);assert.equal(body.quitDesktop,true);assert.equal(body.forceDesktop,true);assert.equal(body.forceConfirmed,true);
+  nav.renderManager();assert.equal(ui.controls().some(node=>node.textContent==='关闭电脑 App…'),false);
+  nav.clients=[{...client,running:true}];nav.gatewayRunning=false;nav.renderManager();assert.equal(ui.controls().some(node=>node.textContent==='关闭电脑 App…'),false);
+ }
+});
+
+function touchFixture(){
+ const ui=fixture(),nav=ui.nav,list={};ui.document.querySelector=()=>null;
+ // Provide browser-only globals for the production gesture handlers.
+ const context=vm.createContext({document:ui.document,localStorage:{getItem:()=>null},window:{getSelection:()=>null},innerWidth:390,Date,BridgeI18n:{t:s=>s}});
+ vm.runInContext(fs.readFileSync('web/features/clients/client-navigation.js','utf8'),context);
+ nav.listTouch=vm.runInContext('ClientNavigation.prototype.listTouch',context);
+ const calls=[];nav.dragListSwipe=()=>{};nav.finishListSwipe=(_gesture,_dx,next)=>{if(next)nav.choose(next);};nav.choose=async id=>{calls.push(id);nav.provider=id;};
+ const target={closest:()=>null};
+ const touch=(phase,x,y=100,extra={})=>{const point={identifier:1,clientX:x,clientY:y};let prevented=false;nav.listTouch(phase,{target,touches:phase==='end'?[]:[point],changedTouches:[point],cancelable:true,preventDefault(){prevented=true;},...extra},list);return prevented;};
+ return {...ui,list,touch,calls,target};
+}
+test('list swipes default on, preserve explicit opt-out, use enabled apps even when icons are hidden, and stop at edges',()=>{
+ const f=touchFixture();assert.equal(f.nav.preference('swipe-clients'),true);f.nav.preference('swipe-clients',false);f.touch('start',200);f.touch('move',110);f.touch('end',90);assert.deepEqual(f.calls,[]);
+ f.nav.preference('swipe-clients',true);f.nav.preference('switch:deepseek',false);f.nav.preference('switch-collapsed',true);
+ f.touch('start',200);assert.equal(f.touch('move',110),true);f.touch('end',90);assert.deepEqual(f.calls,['deepseek']);
+ f.touch('start',200);f.touch('end',90);assert.deepEqual(f.calls,['deepseek']);
+ f.nav.clients[1].enabled=false;f.touch('start',100);f.touch('move',180);f.touch('end',210);assert.deepEqual(f.calls,['deepseek','codex']);
+});
+test('vertical scroll, two fingers, edge navigation, controls, modal and short swipes never switch apps',()=>{
+ for(const kind of ['vertical','two','edge','control','modal','short','provider-change']){
+  const f=touchFixture();f.nav.preference('swipe-clients',true);
+  if(kind==='control')f.target.closest=()=>({closest:()=>null});
+  if(kind==='modal')f.document.querySelector=()=>({});
+  f.touch('start',kind==='edge'?10:200);
+  if(kind==='vertical'){assert.equal(f.touch('move',180,145),false);f.touch('end',90,150);}
+  else if(kind==='two'){f.touch('move',150,100,{touches:[{identifier:1,clientX:150,clientY:100},{identifier:2,clientX:200,clientY:100}]});f.touch('end',90);}
+  else if(kind==='short'){f.touch('move',170);f.touch('end',160);}
+  else {if(kind==='provider-change')f.nav.provider='codex';f.touch('move',110);f.touch('end',90);}
+  assert.deepEqual(f.calls,[],kind);
+ }
+});
+
+test('swipe settles before choosing and canceled animations cannot switch later',async()=>{
+ const source=fs.readFileSync('web/features/clients/client-navigation.js','utf8');
+ for(const cancel of [false,true]){
+  const context=vm.createContext({window:{matchMedia:()=>({matches:false})}});vm.runInContext(source,context);
+  const C=vm.runInContext('ClientNavigation',context),nav=Object.create(C.prototype),calls=[],waits=[];
+  const node=()=>({style:{transform:'translate3d(-100px,0,0)'},animate(){let resolve,reject;const finished=new Promise((yes,no)=>{resolve=yes;reject=no;});const animation={finished,cancel(){reject(Object.assign(Error('canceled'),{name:'AbortError'}));}};waits.push({resolve,animation});return animation;}});
+  let removed=false;const preview={current:node(),incoming:node(),root:{remove(){removed=true;}},next:'deepseek',direction:1,width:390};
+  Object.assign(nav,{provider:'claude',clients:[{id:'deepseek',enabled:true}],swipePreview:preview,dragListSwipe(){},choose:async id=>calls.push(id),notify:message=>{throw Error(message);}});
+  const done=nav.finishListSwipe({provider:'claude'},-100,'deepseek');assert.deepEqual(calls,[]);
+  if(cancel)nav.cancelListSwipe();else waits.forEach(wait=>wait.resolve());
+  await done;assert.deepEqual(calls,cancel?[]:['deepseek']);assert.equal(removed,true);assert.equal(nav.swipePreview,null);
+ }
+});
+
+test('reduced-motion swipes commit without animation and recheck enabled state',async()=>{
+ const context=vm.createContext({window:{matchMedia:()=>({matches:true})}});vm.runInContext(fs.readFileSync('web/features/clients/client-navigation.js','utf8'),context);
+ const C=vm.runInContext('ClientNavigation',context);
+ for(const enabled of [true,false]){
+  const nav=Object.create(C.prototype),calls=[];Object.assign(nav,{provider:'claude',clients:[{id:'deepseek',enabled}],swipePreview:{next:'deepseek',direction:1,width:390,root:{remove(){}}},dragListSwipe(){},choose:async id=>calls.push(id),notify:message=>{throw Error(message);}});
+  await nav.finishListSwipe({provider:'claude'},-100,'deepseek');assert.deepEqual(calls,enabled?['deepseek']:[]);assert.equal(nav.swipePreview,null);
+ }
+});
+
+test('list entry acknowledges only the displayed provider snapshot, once per visit',async()=>{
+ const {nav,document}=fixture(),calls=[];nav.request=async(path,body)=>calls.push({path,body});
+ const value={notificationRead:{streamId:'stream',cursor:12}};
+ nav.acknowledgeList('codex',value);nav.acknowledgeList('claude',{...value,connected:false});assert.equal(calls.length,0);
+ document.hidden=true;nav.acknowledgeList('claude',value);assert.equal(calls.length,0);document.hidden=false;
+ nav.acknowledgeList('claude',value);nav.acknowledgeList('claude',{notificationRead:{streamId:'stream',cursor:13}});
+ assert.equal(calls.length,1);assert.equal(calls[0].body.provider,'claude');assert.equal(calls[0].body.through,12);
+ await nav.choose('deepseek');nav.acknowledgeList('deepseek',value);assert.equal(calls.length,2);
 });

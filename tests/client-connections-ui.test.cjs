@@ -1,19 +1,55 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
 function fixture({accounts=false}={}){
-  function node(tag){const value={tag,textContent:'',value:'',hidden:false,disabled:false,children:[],dataset:{},attributes:{},className:'',append(...children){for(const child of children){child.parent=this;this.children.push(child);}},replaceChildren(...children){this.children=[];this.append(...children);},after(...children){const at=this.parent.children.indexOf(this)+1;for(const child of children)child.parent=this.parent;this.parent.children.splice(at,0,...children);},setAttribute(k,v){this.attributes[k]=v;},matches(selector){if(selector.startsWith('.'))return this.className.split(' ').includes(selector.slice(1));const attribute=selector.match(/^\[([^=\]]+)(?:="([^"]+)")?\]$/);if(attribute){const actual=this.attributes[attribute[1]]??this.dataset[attribute[1].replace(/^data-/,'').replace(/-([a-z])/g,(_,letter)=>letter.toUpperCase())];return attribute[2]===undefined?actual!==undefined:actual===attribute[2];}return this.tag===selector;},querySelectorAll(selector){return this.children.flatMap(child=>[...(child.matches(selector)?[child]:[]),...child.querySelectorAll(selector)]);},querySelector(selector){return this.querySelectorAll(selector)[0]||null;},closest(){return null;}};value.classList={toggle(){},add(...names){value.className+=' '+names.join(' ');},contains:name=>value.className.split(' ').includes(name)};return value;}
+  function node(tag){const value={tag,textContent:'',value:'',hidden:false,disabled:false,children:[],dataset:{},attributes:{},className:'',append(...children){for(const child of children){child.parent=this;this.children.push(child);}},replaceChildren(...children){this.children=[];this.append(...children);},after(...children){const at=this.parent.children.indexOf(this)+1;for(const child of children)child.parent=this.parent;this.parent.children.splice(at,0,...children);},setAttribute(k,v){this.attributes[k]=v;},matches(selector){if(selector.startsWith('.'))return this.className.split(' ').includes(selector.slice(1));const attribute=selector.match(/^\[([^=\]]+)(?:="([^"]+)")?\]$/);if(attribute){const actual=this.attributes[attribute[1]]??this.dataset[attribute[1].replace(/^data-/,'').replace(/-([a-z])/g,(_,letter)=>letter.toUpperCase())];return attribute[2]===undefined?actual!==undefined:actual===attribute[2];}return this.tag===selector;},querySelectorAll(selector){return this.children.flatMap(child=>[...(child.matches(selector)?[child]:[]),...child.querySelectorAll(selector)]);},querySelector(selector){return this.querySelectorAll(selector)[0]||null;},closest(){return null;}};const events={};Object.assign(value,{addEventListener(type,fn){events[type]=fn;},showModal(){this.open=true;},close(){this.open=false;events.close?.();},remove(){if(this.parent)this.parent.children=this.parent.children.filter(child=>child!==this);},focus(){}});value.classList={toggle(){},add(...names){value.className+=' '+names.join(' ');},contains:name=>value.className.split(' ').includes(name)};return value;}
   const nodes=Object.fromEntries(['client-overview','client-scan-status','refresh-clients','clients-page'].map(id=>[id,node('div')]));
   const input=node('input'),workspace=node('pre'),claudeHome=node('pre'),claudeData=node('div'),statuses={deepseek:node('p'),claude:node('p')},choose=node('button'),scan=node('button');scan.dataset.desktopAction='scan';claudeData.hidden=true;for(const status of Object.values(statuses))status.dataset.i18n='正在检查接入…';
   const articles={};if(accounts)for(const provider of ['deepseek','claude']){const article=node('article'),automatic=node('div');automatic.className='client-auto-setup';article.append(automatic);if(provider==='deepseek'){const details=node('details'),label=node('label');label.append(input);details.append(label);article.append(details);}articles[provider]=article;}
   const root={hidden:false,querySelector(selector){const provider=selector.includes('deepseek')?'deepseek':'claude';if(selector.includes('.client-auto-setup'))return articles[provider]?.querySelector('.client-auto-setup')||null;if(selector.startsWith('[data-client-config='))return articles[provider]||null;if(selector==='input')return accounts?articles.deepseek.querySelector('input'):input;if(selector==='[data-deepseek-home]')return input;if(selector==='[data-desktop-choose]')return choose;if(selector==='[data-claude-workspace]')return workspace;if(selector==='[data-claude-home]')return claudeHome;if(selector==='[data-claude-data]')return claudeData;return statuses[provider];},querySelectorAll(selector){if(selector==='[data-desktop-status]')return Object.values(statuses);if(selector.includes('data-desktop-action'))return [scan];return Object.values(articles).flatMap(article=>article.querySelectorAll(selector));}};
-  const calls=[],errors=[],prompts=[],choices=[];let closeChoice=true,finishChoice,chosen='',confirmed=true,handler=async body=>body.action==='status'?{backends:{},deepseekHome:'/fixture'}:body.action==='accounts'?{accounts:[]}:{clients:[]};
-  const listeners={},timers=[];
-  const context=vm.createContext({ClientLifecycle:{...require('../web/features/clients/client-lifecycle.js'),chooseDisable(client){choices.push(client.id);return closeChoice==='pending'?new Promise(resolve=>finishChoice=resolve):closeChoice;}},CustomEvent:class{constructor(type){this.type=type;}},document:{documentElement:{},getElementById:id=>nodes[id],createElement:node,querySelector:()=>null,querySelectorAll:selector=>selector==='[data-i18n]'?Object.values(statuses):[],hidden:false,addEventListener(type,fn){listeners[type]=fn;},dispatchEvent(event){listeners[event.type]?.(event);}},setInterval(fn){timers.push(fn);},setTimeout(){},clearTimeout(){},localStorage:{getItem(){return null;},setItem(){}},window:{confirm:message=>{prompts.push(message);return confirmed;},GatewayLayout:{selectClient(){}}}});
+  const calls=[],errors=[],prompts=[],choices=[],initializations=[];let closeChoice=true,finishChoice,initializeChoice=true,finishInitialize,chosen='',confirmed=true,handler=async body=>body.action==='status'?{backends:{},deepseekHome:'/fixture'}:body.action==='accounts'?{accounts:[]}:{clients:[]};
+  const listeners={},timers=[],storage=new Map();
+  const context=vm.createContext({ClientLifecycle:{...require('../web/features/clients/client-lifecycle.js'),chooseDisable(client){choices.push(client.id);return closeChoice==='pending'?new Promise(resolve=>finishChoice=resolve):closeChoice;}},CustomEvent:class{constructor(type){this.type=type;}},document:{body:node('body'),documentElement:{},getElementById:id=>nodes[id],createElement:node,querySelector:()=>null,querySelectorAll:selector=>selector==='[data-i18n]'?Object.values(statuses):[],hidden:false,addEventListener(type,fn){listeners[type]=fn;},dispatchEvent(event){listeners[event.type]?.(event);}},setInterval(fn){timers.push(fn);},setTimeout(){},clearTimeout(){},localStorage:{getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value)},window:{confirm:message=>{prompts.push(message);return confirmed;},GatewayLayout:{selectClient(){}}}});
+  context.ClientLifecycle.chooseInitialize=client=>{initializations.push(client.id);return initializeChoice==='pending'?new Promise(resolve=>finishInitialize=resolve):initializeChoice;};
   for(const file of ['web/shared/i18n.js',...(accounts?['web/features/accounts/client-accounts.js']:[]),'desktop/features/clients/desktop-sessions.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
   const Class=vm.runInContext('DesktopConnectionsPanel',context),panel=new Class({root,api:{choose:async()=>chosen,desktopSessions:body=>{calls.push(body);return handler(body);}},feedback:message=>errors.push(message)});
   const all=n=>[n,...n.children.flatMap(all)];
-  return {panel,nodes,calls,errors,scan,prompts,choices,setChoice:value=>closeChoice=value,decide:value=>finishChoice(value),statuses,workspace,claudeHome,claudeData,input,choose,root,document:context.document,setChosen:value=>chosen=value,poll:async()=>{await timers[0]();},apply:()=>vm.runInContext('BridgeI18n.apply()',context),confirm:value=>confirmed=value,setHandler:fn=>handler=fn,all:()=>all(nodes['client-overview']),text:()=>all(nodes['client-overview']).map(n=>n.textContent).join('\n'),english:()=>vm.runInContext("BridgeI18n.setLanguage('en')",context)};
+  return {panel,nodes,calls,errors,scan,storage,prompts,choices,initializations,setInitializeChoice:value=>initializeChoice=value,decideInitialize:value=>finishInitialize(value),setChoice:value=>closeChoice=value,decide:value=>finishChoice(value),statuses,workspace,claudeHome,claudeData,input,choose,root,document:context.document,setChosen:value=>chosen=value,poll:async()=>{await timers[0]();},apply:()=>vm.runInContext('BridgeI18n.apply()',context),confirm:value=>confirmed=value,setHandler:fn=>handler=fn,all:()=>all(nodes['client-overview']),text:()=>all(nodes['client-overview']).map(n=>n.textContent).join('\n'),english:()=>vm.runInContext("BridgeI18n.setLanguage('en')",context)};
 }
+
+test('first Claude setup guides both permissions without launching, trusting or copying the connector',async()=>{
+  const ui=fixture(),workspace='/Users/fixture/本地文稿/想法/claude';
+  ui.panel.clients=[{id:'claude',installed:true,connected:false}];ui.panel.connectionValue={claudeWorkspace:workspace};
+  let granted=false;
+  ui.setHandler(async body=>body.action==='claude-prerequisites'?{supported:true,platform:'darwin',workspace,gatewayRunning:false,accessibility:{setupState:(granted||=body.requestPermission===true)?'ready':'needs-permission'}}:{copied:true});
+  await ui.panel.showClaudeSetup(true);const dialog=ui.document.body.children[0],buttons=dialog.children.at(-1).children;
+  assert.equal(dialog.open,true);assert.equal(dialog.children[5].textContent,workspace);assert.equal(buttons[3].disabled,true);
+  assert.deepEqual(JSON.parse(JSON.stringify(ui.calls)),[{action:'claude-prerequisites'}]);
+  await ui.panel.showClaudeSetup(true);assert.equal(ui.document.body.children.length,1);
+  await buttons[0].onclick();assert.equal(ui.calls.at(-1).requestPermission,true);assert.match(dialog.children[2].textContent,/已授权/);assert.equal(buttons[3].disabled,true,'public gateway must still be started explicitly');
+  await buttons[1].onclick();assert.equal(ui.calls.at(-1).action,'copy-claude-workspace');
+  buttons[4].onclick();assert.equal(ui.document.body.children.length,0);assert.equal(ui.panel.choosingClient,null);
+  await ui.panel.showClaudeSetup(true);assert.equal(ui.document.body.children.length,0);
+  assert.equal(ui.storage.get('claude:setup-guide:'+workspace),'seen');
+  await ui.panel.showClaudeSetup();assert.equal(ui.document.body.children.length,1,'manual entry remains available');
+  assert.ok(ui.calls.every(call=>['claude-prerequisites','copy-claude-workspace'].includes(call.action)));
+});
+
+test('English Claude preparation stays translated and initialization keeps the foreground confirmation',async()=>{
+  const ui=fixture();ui.english();ui.panel.clients=[{id:'claude',installed:true,connected:false}];ui.panel.connectionValue={claudeWorkspace:'/fixture'};
+  ui.setHandler(async()=>({supported:true,platform:'win32',workspace:'/fixture',gatewayRunning:true,developerMode:true,accessibility:{setupState:'not-required'}}));
+  await ui.panel.showClaudeSetup();const dialog=ui.document.body.children[0],buttons=dialog.children.at(-1).children;
+  assert.equal(buttons[0].hidden,true);assert.equal(buttons[3].disabled,false);
+  for(const child of [...dialog.children,...buttons])assert.doesNotMatch(child.textContent,/[\u4e00-\u9fff]/);
+  ui.setInitializeChoice(false);buttons[3].onclick();await Promise.resolve();
+  assert.deepEqual(ui.initializations,['claude']);assert.equal(ui.calls.some(call=>call.action==='connect-claude'),false);
+});
+
+test('connected and unsupported Claude do not interrupt startup with a setup dialog',async()=>{
+  for(const extra of [{connected:true},{installed:false},{setupStatus:'unsupported'}]){
+    const ui=fixture();ui.panel.clients=[{id:'claude',installed:true,...extra}];ui.panel.connectionValue={claudeWorkspace:'/fixture'};
+    await ui.panel.showClaudeSetup(true);assert.equal(ui.calls.length,0);assert.equal(ui.document.body.children.length,0);
+  }
+});
 
 test('DSH directory refresh targets its field after real account forms are inserted',async()=>{
   assert.match(fs.readFileSync(path.join(__dirname,'../desktop/index.html'),'utf8'),/<input[^>]*data-deepseek-home/);
@@ -54,10 +90,18 @@ test('Claude unknown-state quit is a separate explicitly confirmed desktop actio
   ui.panel.clients=[client];ui.panel.renderClients();
   ui.setHandler(async body=>body.action==='claude-quit-preview'?{token:'fixture-preview',canQuit:true,requiresUnknownConfirmation:true}:body.action==='status'?{backends:{}}:{clients:[client]});
   ui.confirm(false);await ui.all().find(n=>n.textContent==='退出 Claude…').onclick();
-  assert.ok(ui.prompts[0].includes('可能中断'));assert.equal(ui.calls.some(c=>c.action==='claude-quit-confirm'),false);assert.equal(client.enabled,true);
+  assert.ok(ui.prompts[0].includes('可能中断'));assert.match(ui.prompts[0],/重新启动 Claude Desktop 后，初始化连接需要电脑处于解锁状态/);assert.equal(ui.calls.some(c=>c.action==='claude-quit-confirm'),false);assert.equal(client.enabled,true);
   ui.confirm(true);await ui.all().find(n=>n.textContent==='退出 Claude…').onclick();
   const value=ui.calls.find(c=>c.action==='claude-quit-confirm');assert.equal(value.token,'fixture-preview');assert.equal(value.confirmed,true);assert.equal(value.acknowledgeUnknown,true);
   assert.equal(ui.calls.some(c=>['toggle-client','restart-claude','connect-claude'].includes(c.action)),false);
+});
+test('the separate desktop Claude quit confirmation includes the unlock warning in English',async()=>{
+  for(const requiresUnknownConfirmation of [false,true]){
+    const ui=fixture(),client={id:'claude',name:'Claude',installed:true,connected:false,enabled:true,running:true,canConfirmQuit:true};ui.english();ui.panel.clients=[client];ui.panel.renderClients();
+    ui.setHandler(async body=>body.action==='claude-quit-preview'?{token:'fixture-preview',canQuit:true,requiresUnknownConfirmation}:body.action==='status'?{backends:{}}:{clients:[client]});ui.confirm(false);await ui.panel.quitClaude();
+    assert.equal(ui.prompts.length,1);assert.match(ui.prompts[0],/After restarting Claude Desktop.*computer to be unlocked/);assert.doesNotMatch(ui.prompts[0],/[\u4e00-\u9fff]/);assert.equal(ui.calls.some(c=>c.action==='claude-quit-confirm'),false);
+    if(requiresUnknownConfirmation)assert.match(ui.prompts[0],/interrupt/i);
+  }
 });
 test('Claude known busy tasks never receive the unknown-state quit confirmation',async()=>{
   const ui=fixture();ui.panel.clients=[{id:'claude',name:'Claude',installed:true,connected:false,enabled:true,running:true,canConfirmQuit:true}];ui.panel.renderClients();
@@ -106,14 +150,36 @@ test('Claude setup exposes native permission and developer confirmation without 
   client.setupStatus='connecting';ui.panel.renderClients();await ui.all().find(n=>n.textContent==='Cancel connection').onclick();assert.ok(ui.calls.some(c=>c.action==='cancel-claude'));
 });
 
-test('Claude background setup waits for an explicit initialization click and explains foreground use',async()=>{
-  const ui=fixture();const client={id:'claude',name:'Claude',installed:true,configured:true,connected:false,running:false,enabled:true,setupStatus:'needs-initialization',reason:'请手动连接 Claude；初始化会短暂使用前台窗口，之后在后台保持连接。'};
+test('Claude connection recovery waits for an explicit initialization click and explains foreground use',async()=>{
+  const ui=fixture();const client={id:'claude',name:'Claude',installed:true,configured:true,connected:false,running:false,enabled:true,setupStatus:'needs-initialization',reason:'Claude 未恢复已有连接；请点击“初始化连接”。初始化会使用电脑前台，请保持桌面可交互。'};
   ui.panel.clients=[client];ui.panel.renderClients();ui.panel.renderScan();
-  assert.match(ui.text(),/需要初始化连接/);assert.match(ui.text(),/短暂使用前台窗口/);assert.doesNotMatch(ui.text(),/连接失败/);
+  assert.match(ui.text(),/需要初始化连接/);assert.match(ui.text(),/初始化会使用电脑前台/);assert.doesNotMatch(ui.text(),/连接失败/);
   ui.setHandler(async body=>body.action==='status'?{backends:{}}:{clients:[client]});await ui.poll();
   assert.equal(ui.calls.some(call=>call.action==='connect-claude'),false);
-  await ui.all().find(node=>node.tag==='button'&&node.textContent==='手动连接').onclick();assert.ok(ui.calls.some(call=>call.action==='connect-claude'));
-  ui.english();assert.match(ui.text(),/Connection initialization required/);assert.match(ui.text(),/foreground window briefly/);assert.doesNotMatch(ui.text(),/[\u4e00-\u9fff]/);
+  await ui.all().find(node=>node.tag==='button'&&node.textContent==='初始化连接').onclick();assert.ok(ui.calls.some(call=>call.action==='connect-claude'));assert.deepEqual(ui.initializations,['claude']);
+  ui.english();assert.match(ui.text(),/Connection initialization required/);assert.match(ui.text(),/Initialization uses the foreground window/);assert.doesNotMatch(ui.text(),/[\u4e00-\u9fff]/);
+});
+
+test('desktop enabling and retrying Claude never submit initialization intent',async()=>{
+  const ui=fixture(),client={id:'claude',name:'Claude',enabled:false,installed:true,configured:true,initializationMode:'foreground',setupStatus:'needs-initialization',connected:false};ui.panel.clients=[client];
+  ui.setHandler(async()=>({clients:[{...client,enabled:true}]}));await ui.panel.toggleClient('claude',true);
+  ui.panel.operationFailures=new Map([['claude',{action:'enable',uncertain:false,message:'retry'}]]);await ui.panel.retryOperation('claude');
+  const writes=ui.calls.filter(call=>call.action==='toggle-client');assert.equal(writes.length,2);assert.ok(writes.every(call=>call.enabled&&!Object.hasOwn(call,'initializeDesktop')));assert.equal(ui.calls.some(call=>call.action==='connect-claude'),false);assert.equal(ui.initializations.length,0);
+});
+
+test('desktop Claude initialization and restart require a confirmed initialization choice',async()=>{
+  for(const action of ['connect-claude','restart-claude'])for(const accepted of [false,true]){
+    const ui=fixture(),client={id:'claude',name:'Claude',enabled:true,installed:true,configured:true,initializationMode:'foreground',setupStatus:'needs-initialization'};ui.panel.clients=[client];ui.setInitializeChoice(accepted);
+    ui.setHandler(async body=>body.action==='status'?{backends:{}}:{clients:[client]});await ui.panel.action(action);
+    assert.deepEqual(ui.initializations,['claude']);assert.equal(ui.calls.filter(call=>call.action===action).length,accepted?1:0);if(!accepted)assert.equal(ui.calls.length,0);
+  }
+});
+
+test('desktop pending initialization choice blocks duplicate actions and stale status reads',async()=>{
+  const ui=fixture(),client={id:'claude',name:'Claude',enabled:true,installed:true,configured:true,initializationMode:'foreground',setupStatus:'needs-initialization'};ui.panel.clients=[client];ui.setInitializeChoice('pending');let finishRead;
+  ui.setHandler(()=>new Promise(resolve=>finishRead=resolve));const reading=ui.panel.refreshClients(),initializing=ui.panel.action('connect-claude');
+  await ui.panel.action('connect-claude');await ui.panel.toggleClient('claude',true);await ui.panel.scan();await ui.panel.refreshClients();assert.equal(ui.calls.length,1);assert.equal(ui.initializations.length,1);
+  finishRead({clients:[]});await reading;assert.equal(ui.panel.clients.length,1);ui.decideInitialize(false);await initializing;assert.equal(ui.calls.length,1);assert.equal(ui.panel.choosingClient,null);
 });
 
 test('Claude restart requires confirmation and connected clients no longer offer setup actions',async()=>{
@@ -273,4 +339,18 @@ test('desktop stopped-gateway switches save preferences without a quit choice',a
  await ui.panel.toggleClient('claude',false);assert.equal(ui.choices.length,0);assert.equal(ui.calls[0].quitDesktop,false);
  await ui.panel.toggleClient('claude',true);const enable=ui.calls.find(call=>call.action==='toggle-client'&&call.enabled);assert.equal(Object.hasOwn(enable,'quitDesktop'),false);
  assert.equal(ui.calls.some(call=>Object.hasOwn(call,'forceDesktop')),false);
+});
+
+test('desktop offers force only inside close choices and retains a disabled running app exit',async()=>{
+ for(const id of ['codex','claude','deepseek']){
+  const ui=fixture(),client={id,name:id,enabled:true,configured:true,installed:true,running:true,connected:true,canForceQuit:true};ui.panel.clients=[client];ui.panel.gatewayRunning=true;ui.panel.renderClients();
+  assert.equal(ui.all().some(node=>node.textContent==='强制关闭 App'),false);assert.equal(ui.all().some(node=>node.textContent==='关闭电脑 App…'),false);
+  Object.assign(client,{enabled:false,configured:false,selectable:false,connected:false});ui.panel.renderClients();
+  const close=ui.all().find(node=>node.textContent==='关闭电脑 App…');assert.ok(close);assert.equal(!!close.disabled,false);assert.equal(!!ui.all().find(node=>node.tag==='input').disabled,true);
+  ui.setChoice(null);await close.onclick();assert.deepEqual(ui.choices,[id]);assert.equal(ui.calls.length,0);
+  ui.english();assert.ok(ui.all().some(node=>node.textContent==='Close desktop app…'));assert.equal(ui.all().some(node=>node.textContent==='Force quit App'),false);
+  ui.setChoice('force');ui.setHandler(async()=>({clients:[{...client,running:false}]}));await close.onclick();const body=ui.calls.find(call=>call.action==='toggle-client');
+  assert.equal(body.enabled,false);assert.equal(body.quitDesktop,true);assert.equal(body.forceDesktop,true);assert.equal(body.forceConfirmed,true);assert.equal(ui.all().some(node=>node.textContent==='Close desktop app…'),false);
+  ui.panel.clients=[{...client,running:true}];ui.panel.gatewayRunning=false;ui.panel.renderClients();assert.equal(ui.all().some(node=>node.textContent==='Close desktop app…'),false);
+ }
 });

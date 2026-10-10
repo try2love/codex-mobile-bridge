@@ -24,7 +24,7 @@ public final class MobileEventTests {
   final ExecutorService workers=Executors.newCachedThreadPool();
   final List<String> targets=new CopyOnWriteArrayList<>();
   final List<Integer> requestBytes=new CopyOnWriteArrayList<>(),responseBytes=new CopyOnWriteArrayList<>();
-  volatile String stream="fixture-stream";volatile int cursor=200,status=200;volatile boolean enabled=true;
+  volatile String stream="fixture-stream";volatile int cursor=200,status=200,unread=-1;volatile boolean enabled=true;
   volatile CountDownLatch received,release;final AtomicBoolean slow=new AtomicBoolean();
   Gateway()throws Exception {workers.submit(()->{while(!socket.isClosed())try{Socket client=socket.accept();workers.submit(()->serve(client));}catch(IOException ignored){}});}
   String origin(){return "http://127.0.0.1:"+socket.getLocalPort();}
@@ -36,7 +36,8 @@ public final class MobileEventTests {
    if(slow.compareAndSet(true,false)){received.countDown();release.await(5,TimeUnit.SECONDS);}
    long after=target.contains("?after=")?Long.parseLong(target.split("\\?after=")[1]):0;
    JSONArray events=new JSONArray();for(int i=Math.max(1,cursor-199);i<=cursor;i++)if(i>after)events.put(new JSONObject().put("id","event-"+i).put("sequence",i).put("threadId","thread").put("host","local").put("kind",i%2==0?"request":"completion").put("title","任务提醒").put("body","消息内容".repeat(30)));
-   byte[] body=new JSONObject().put("streamId",stream).put("cursor",cursor).put("events",events).put("enabled",enabled).toString().getBytes(StandardCharsets.UTF_8);
+   JSONArray summary=new JSONArray().put(new JSONObject().put("provider","claude").put("kind",cursor%2==0?"request":"completion").put("sequence",cursor));
+   byte[] body=new JSONObject().put("clients",new JSONArray().put(new JSONObject().put("id","claude").put("enabled",true).put("unread",enabled?(unread<0?cursor:unread):0))).put("summary",summary).put("streamId",stream).put("cursor",cursor).put("events",events).put("enabled",enabled).toString().getBytes(StandardCharsets.UTF_8);
    String head="HTTP/1.1 "+status+" OK\r\nContent-Type: application/json\r\nContent-Length: "+body.length+"\r\nConnection: close\r\n\r\n";
    client.getOutputStream().write(head.getBytes(StandardCharsets.UTF_8));client.getOutputStream().write(body);responseBytes.add(body.length);
   }catch(Exception ignored){}}
@@ -56,7 +57,8 @@ public final class MobileEventTests {
    poll(service);check(delivered.isEmpty(),"First foreground baseline never replays history");poll(service);
    metric("initial",first,0);metric("unchanged",first,1);
    if(baseline){check(first.responseBytes.get(0).equals(first.responseBytes.get(1)),"Baseline repeatedly downloads history");System.out.println("Android baseline captured");return;}
-   check(first.targets.get(1).endsWith("?after=200"),"Incremental poll must use persisted cursor");check(first.responseBytes.get(1)<100,"No-change response contains metadata only");
+   check(first.targets.get(1).endsWith("?after=200"),"Incremental poll must use persisted cursor");check(first.responseBytes.get(1)<250,"No-change response contains only bounded metadata");
+   check(ComputerNotifications.clients(service,address).getJSONObject(0).optLong("unread")==first.cursor,"Home summary exists even for unchanged cursor");
    first.cursor=201;poll(service);check(delivered.equals(List.of(address+":201")),"New completion delivered exactly once");metric("one_new",first,2);poll(service);check(delivered.size()==1,"Repeated cursor never duplicates notification");
    prefs.putLong("cleared:"+address+":"+first.stream,202);first.cursor=202;poll(service);check(delivered.size()==1,"Cleared notification suppressed");first.cursor=203;poll(service);check(delivered.size()==2,"New request after clear delivered");
    first.stream="reset-lower";first.cursor=1;poll(service);check(prefs.getLong(key,-1)==1&&delivered.size()==2,"Lower reset cursor rebaselines");first.cursor=2;poll(service);check(delivered.size()==3,"Lower reset does not starve later events");
@@ -76,11 +78,15 @@ public final class MobileEventTests {
    CookieManager cookies=CookieManager.getInstance();cookies.reads=0;cookies.switchAt=4;cookies.afterRead=()->{cookies.value="codex_mobile_session=commit-window";};first.cursor=313;poll(service);cookies.afterRead=null;check(prefs.getLong(key,-1)==312&&delivered.size()==6,"Login change after HTTP read but before commit cannot advance cursor");MonitorService.bindingsChanged();poll(service);check(prefs.getLong(key,-1)==313&&delivered.size()==6,"Commit-window replacement establishes a fresh baseline");
    // Removing a connection while its response is delayed must not restore state.
    first.hold();Thread removed=new Thread(()->{try{poll(service);}catch(Exception e){failure.set(e);}});removed.start();check(first.received.await(2,TimeUnit.SECONDS),"Removal race request started");prefs.values.put("origins",Set.of());prefs.values.remove(key);first.release.countDown();removed.join(2000);check(!prefs.values.containsKey(key),"Removed connection cursor cannot resurrect");
-   visible(false);
+   prefs.values.put("origins",Set.of(address));prefs.putBoolean("alerts",false);MonitorService.bindingsChanged();first.cursor=400;poll(service);int deliveries=delivered.size();
+   check(ComputerNotifications.clients(service,address).getJSONObject(0).optLong("unread")==first.cursor,"Summary works without system alerts");first.cursor=401;poll(service);check(delivered.size()==deliveries&&ComputerNotifications.clients(service,address).getJSONObject(0).optLong("unread")==first.cursor,"Muted alerts still update cards without delivering notifications");
+   first.unread=0;poll(service);check(ComputerNotifications.clients(service,address).getJSONObject(0).optLong("unread")==0,"Another phone read is reflected without advancing the event cursor");first.unread=-1;poll(service);prefs.putLong("cleared:"+address+":"+first.stream,401);check(ComputerNotifications.clients(service,address).getJSONObject(0).optLong("unread")==401,"Local history clearing cannot override the gateway count");first.stream="new-stream";first.cursor=1;poll(service);check(ComputerNotifications.clients(service,address).getJSONObject(0).optLong("unread")==first.cursor,"Summary recovers after stream reset");
+   CookieManager.getInstance().value="codex_mobile_session=another-account";check(ComputerNotifications.clients(service,address).length()==0,"Card cannot show old login snapshot");MonitorService.bindingsChanged();poll(service);first.enabled=false;poll(service);check(ComputerNotifications.clients(service,address).getJSONObject(0).optLong("unread")==0,"Disabled inbox still shows enabled apps without a badge");
+   visible(false);check(!ComputerNotifications.fresh(address),"Background marks cached app state stale");
    MonitorService scheduledService=new MonitorService();scheduledService.preferences=prefs;scheduledService.onCreate();
    var schedule=MonitorService.class.getDeclaredField("scheduled");schedule.setAccessible(true);
    check(schedule.get(scheduledService)==null,"Background service owns no polling timer");visible(true);ScheduledFuture<?> foreground=(ScheduledFuture<?>)schedule.get(scheduledService);check(foreground!=null&&!foreground.isCancelled(),"Foreground starts polling timer");visible(false);check(foreground.isCancelled()&&schedule.get(scheduledService)==null,"Background cancels polling timer");visible(true);check(schedule.get(scheduledService)!=null,"Foreground restores timer");scheduledService.onDestroy();
-   System.out.println("Android event sync: 17 scenarios passed; background subsequent-origin requests=0; background polling timer=none");
+   System.out.println("Android event sync and computer summaries passed; background subsequent-origin requests=0; background polling timer=none");
   }
  }
 }

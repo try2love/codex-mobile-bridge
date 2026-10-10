@@ -40,3 +40,13 @@ test('native account menu routes by current provider and falls back only for old
   assert.ok(account,'iOS account menu must use the same provider navigation');
   assert.equal(JSON.parse(account.slice('evaluateJavaScript('.length,-1)),script);
 });
+
+test('native app-bar menu reads the shared toggle without creating one for old or logged-out gateways',()=>{
+ const script=scripts.find(value=>value.includes("button.getAttribute('aria-expanded')"));assert.ok(script);
+ const swift=fs.readFileSync(path.join(root,'mobile/ios/BridgePreview/App.swift'),'utf8');
+ const match=[...swift.matchAll(/evaluateJavaScript\("((?:\\.|[^"\\])*)"\)/g)].find(value=>value[1].includes("button.getAttribute('aria-expanded')"));
+ assert.ok(match);assert.equal(JSON.parse('"'+match[1]+'"'),script);
+ for(const [app,button,expected] of [[{hidden:false},{hidden:false,getAttribute:()=> 'true'},false],[{hidden:false},{hidden:false,getAttribute:()=> 'false'},true],[{hidden:false},{hidden:true},null],[{hidden:true},{hidden:false},null],[{hidden:false},null,null],[null,null,null]]){
+  assert.equal(vm.runInNewContext(script,{document:{getElementById:id=>id==='app'?app:button}}),expected);
+ }
+});

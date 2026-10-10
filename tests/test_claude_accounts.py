@@ -177,6 +177,100 @@ class ClaudeAccountSnapshots(unittest.TestCase):
         for private in ('COOKIE-', 'TOKEN-', 'API-SECRET', 'private=query', str(self.home), 'fingerprint'):
             self.assertNotIn(private, text)
 
+    def api_options(self, **changes):
+        return {'name': 'Gateway', 'baseUrl': 'https://gateway.test/v1', 'apiKey': 'private-api-key',
+                'models': ['claude-compatible-model'], 'authScheme': 'x-api-key', **changes}
+
+    def test_create_edit_and_apply_api_use_native_schema_without_exposing_key(self):
+        original = (self.home/CONFIG).read_bytes()
+        result = self.accounts.save_api(self.api_options())
+        identifier = next(row['id'] for row in result['accounts'] if row['saved'])
+        self.assertEqual((self.home/CONFIG).read_bytes(), original)
+        self.assertEqual(result['activeId'], 'current', 'saving must not apply credentials')
+        editor = self.accounts.edit(identifier)
+        self.assertEqual(editor['api'], {'baseUrl': 'https://gateway.test/v1', 'authScheme': 'x-api-key',
+                                       'models': ['claude-compatible-model'], 'hasKey': True})
+        self.assertNotIn('private-api-key', json.dumps([result, editor]))
+        self.accounts.save_api(self.api_options(id=identifier, name='Updated', apiKey=''))
+        token = self.accounts.restore(identifier)
+        native = self.accounts._gateway()['config']
+        self.assertEqual(native['inferenceCredentialKind'], 'static')
+        self.assertEqual(native['inferenceGatewayApiKey'], 'private-api-key')
+        self.assertEqual(native['inferenceModels'], ['claude-compatible-model'])
+        self.assertEqual(self.accounts.public()['activeId'], identifier)
+        self.accounts.rollback(token)
+
+    def test_edit_api_preserves_native_model_metadata_and_unrelated_fields(self):
+        self.gateway()
+        gateway = self.accounts._gateway()
+        config = gateway['config']
+        config['inferenceGatewayBaseUrl'] = 'https://gateway.test/v1'
+        config['inferenceModels'] = [{'name': 'claude-compatible-model', 'contextWindow': 200000}]
+        config['nativeSetting'] = {'untouched': True}
+        self.write(self.threep/'configLibrary'/(gateway['id']+'.json'), config)
+        identifier = self.save()
+        self.accounts.save_api(self.api_options(id=identifier, apiKey=''))
+        saved = json.loads((self.root/'accounts'/'profiles'/identifier/'gateway.json').read_text())['config']
+        self.assertEqual(saved['inferenceModels'], config['inferenceModels'])
+        self.assertEqual(saved['nativeSetting'], config['nativeSetting'])
+
+    def test_api_model_add_remove_and_reorder_preserve_retained_native_entries(self):
+        self.gateway()
+        gateway = self.accounts._gateway()
+        config = gateway['config']
+        config['inferenceGatewayBaseUrl'] = 'https://gateway.test/v1'
+        first = {'name': 'model-one', 'contextWindow': 200000, 'capabilities': {'vision': True}}
+        second = {'name': 'model-two', 'contextWindow': 1000000, 'defaultEffort': 'high'}
+        config['inferenceModels'] = [first, second]
+        self.write(self.threep/'configLibrary'/(gateway['id']+'.json'), config)
+        identifier = self.save()
+        snapshot = self.root/'accounts'/'profiles'/identifier/'gateway.json'
+        for requested, expected in ((['model-one', 'model-two', 'model-new'], [first, second, 'model-new']),
+                                    (['model-two', 'model-one', 'model-new'], [second, first, 'model-new']),
+                                    (['model-two', 'model-new'], [second, 'model-new'])):
+            with self.subTest(requested=requested):
+                self.accounts.save_api(self.api_options(id=identifier, apiKey='', models=requested))
+                saved = json.loads(snapshot.read_text())['config']['inferenceModels']
+                self.assertEqual(saved, expected)
+        self.assertEqual(self.accounts._gateway()['config']['inferenceModels'], [first, second],
+                         'editing the saved copy must not modify the active native model list')
+
+    def test_rename_and_remove_active_snapshot_leave_native_login_untouched(self):
+        identifier = self.save()
+        before = (self.home/'Cookies').read_bytes()
+        self.accounts.rename(identifier, 'Renamed')
+        self.assertEqual(self.accounts.public()['current']['name'], 'Renamed')
+        result = self.accounts.remove(identifier)
+        self.assertEqual((self.home/'Cookies').read_bytes(), before)
+        self.assertEqual(result['activeId'], 'current')
+        self.assertFalse((self.root/'accounts'/'profiles'/identifier).exists())
+
+    def test_api_editor_rejects_unsafe_or_unusable_inputs(self):
+        for patch_value in ({'baseUrl': 'http://remote.test'}, {'baseUrl': 'https://u:p@remote.test'},
+                            {'baseUrl': 'https://remote.test/?token=private'}, {'baseUrl': 'file:///tmp/key'},
+                            {'baseUrl': 'https://remote.test:invalid'}, {'models': []},
+                            {'models': ['bad\nmodel']}, {'apiKey': 'key\r\nheader'}, {'authScheme': 'shell'}):
+            with self.subTest(patch_value=patch_value), self.assertRaises(ValueError):
+                self.accounts.save_api(self.api_options(**patch_value))
+        self.assertFalse((self.root/'accounts'/'index.json').exists())
+
+    def test_failed_api_index_save_restores_previous_snapshot(self):
+        result = self.accounts.save_api(self.api_options())
+        identifier = next(row['id'] for row in result['accounts'] if row['saved'])
+        target = self.root/'accounts'/'profiles'/identifier/'gateway.json'
+        before = target.read_bytes()
+        with patch.object(self.accounts, '_save', side_effect=OSError('write failed')):
+            with self.assertRaises(OSError):
+                self.accounts.save_api(self.api_options(id=identifier, apiKey='other-key'))
+        self.assertEqual(target.read_bytes(), before)
+
+    def test_imported_private_or_interactive_gateway_exposes_only_name_editor(self):
+        self.gateway()
+        identifier = self.save()
+        self.assertEqual(set(self.accounts.edit(identifier)), {'id', 'name', 'kind'})
+        with self.assertRaisesRegex(ValueError, '仅支持修改名称'):
+            self.accounts.save_api(self.api_options(id=identifier))
+
     def test_invalid_ids_and_linked_profile_data_are_rejected(self):
         identifier = self.save()
         for action in (self.accounts.restore, self.accounts.details, self.accounts.rollback):

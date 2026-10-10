@@ -105,6 +105,21 @@ def _runtime_operation(executable, codex_home, cwd, operation):
     return result
 
 
+def independent_directory(data_dir, request_id):
+    """A durable per-chat workspace, without registering a desktop project."""
+    uuid.UUID(request_id)
+    root = Path(data_dir) / 'independent-chats'
+    target = root / request_id
+    try:
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if root.is_symlink(): raise CreationUnavailable('独立聊天目录不可用')
+        target.mkdir(mode=0o700, exist_ok=True)
+        if target.is_symlink() or not target.is_dir(): raise CreationUnavailable('独立聊天目录不可用')
+        return str(target.resolve())
+    except OSError as exc:
+        raise CreationUnavailable('独立聊天目录不可用') from exc
+
+
 def create_empty(executable, codex_home, cwd, title):
     def create(request):
         result = request('thread/start', {'cwd': cwd, 'ephemeral': False})
