@@ -1,71 +1,85 @@
 """ConPTY integration tests run on Windows in the existing OS test matrix."""
 import os
-import ctypes
-from ctypes import wintypes
-import json
 from pathlib import Path
-import subprocess
 import tempfile
 import sys
 import threading
 import time
-import traceback
 from types import SimpleNamespace
 import unittest
 import uuid
 from unittest.mock import patch
 
 
-class OwnedTerminalProbe:
-    """CI diagnostics and cleanup restricted to this fixture's retained process handle."""
-    def __init__(self, session):
-        self.session = session
-        self.kernel = kernel = session.kernel
-        kernel.DuplicateHandle.argtypes = [wintypes.HANDLE, wintypes.HANDLE, wintypes.HANDLE,
-            ctypes.POINTER(wintypes.HANDLE), wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-        kernel.DuplicateHandle.restype = wintypes.BOOL
-        kernel.GetProcessId.argtypes = [wintypes.HANDLE]; kernel.GetProcessId.restype = wintypes.DWORD
-        self.handle = wintypes.HANDLE()
-        current = wintypes.HANDLE(-1)
-        if not kernel.DuplicateHandle(current, session.process_handle, current,
-                                      ctypes.byref(self.handle), 0, False, 2):
-            raise ctypes.WinError(ctypes.get_last_error())
-        self.pid = kernel.GetProcessId(self.handle)
+class TerminalStartupTests(unittest.TestCase):
+    def kernel(self, failure=None):
+        calls, next_pipe = [], [20]
+        def job(*args):
+            self.assertEqual(args, (None, None))
+            calls.append(('job',)); return 0 if failure == 'job' else 10
+        def limits(handle, kind, value, size):
+            self.assertEqual((handle, kind, value._obj.basic.flags), (10, 9, 0x2000))
+            calls.append(('limits',)); return failure != 'limits'
+        def pipe(read, write, *args):
+            read._obj.value = next_pipe[0]; write._obj.value = next_pipe[0]+1; next_pipe[0] += 2
+            return True
+        def console(size, read, write, flags, handle):
+            handle._obj.value = 30; return 0
+        def attributes(pointer, count, flags, size):
+            size._obj.value = 256; return True
+        def process(*args):
+            calls.append(('process', args[5]))
+            self.assertFalse(args[4])
+            if failure == 'process': return False
+            args[-1]._obj.hProcess = 40; args[-1]._obj.hThread = 41
+            return True
+        def assign(job, process):
+            calls.append(('assign', job, process)); return failure != 'assign'
+        def resume(thread):
+            calls.append(('resume', thread)); return 0xffffffff if failure == 'resume' else 1
+        kernel = SimpleNamespace(CreateJobObjectW=job, SetInformationJobObject=limits,
+            CreatePipe=pipe, CreatePseudoConsole=console, InitializeProcThreadAttributeList=attributes,
+            UpdateProcThreadAttribute=lambda *args: True, DeleteProcThreadAttributeList=lambda *args: None,
+            CreateProcessW=process, AssignProcessToJobObject=assign, ResumeThread=resume,
+            CloseHandle=lambda handle: calls.append(('close', getattr(handle, 'value', handle))),
+            ClosePseudoConsole=lambda handle: calls.append(('console-close', handle.value)),
+            TerminateProcess=lambda handle, code: calls.append(('terminate', handle)),
+            WaitForSingleObject=lambda handle, timeout: calls.append(('wait', handle)))
+        return kernel, calls
 
-    def report(self):
-        session = self.session
-        code = wintypes.DWORD(); self.kernel.GetExitCodeProcess(self.handle, ctypes.byref(code))
-        stacks = []
-        for frame in sys._current_frames().values():
-            cursor = frame
-            while cursor is not None:
-                if cursor.f_locals.get('self') is session:
-                    stacks.append([f'{row.filename}:{row.lineno}:{row.name}' for row in traceback.extract_stack(frame)[-6:]])
-                    break
-                cursor = cursor.f_back
-        value = {'pid': self.pid, 'root': session.root, 'done': session.done.is_set(),
-            'outputDone': session.output_done.is_set(), 'stopping': session.stopping.is_set(),
-            'console': session.console.value, 'waitResult': self.kernel.WaitForSingleObject(self.handle, 0),
-            'exitCode': code.value, 'output': session.read()['output'][-512:], 'threads': stacks}
-        # Filter before returning data: only our retained PID and its children.
-        command = (f"Get-CimInstance Win32_Process -Filter 'ProcessId = {self.pid} OR ParentProcessId = {self.pid}' | "
-                   'Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress')
-        try:
-            result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', command],
-                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=8)
-            value['processes'] = json.loads(result.stdout) if result.returncode == 0 and result.stdout.strip() else {'queryExit': result.returncode}
-        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
-            value['processes'] = {'queryError': type(exc).__name__}
-        print('Owned terminal diagnostic: ' + json.dumps(value, ensure_ascii=True), flush=True)
+    def create(self, kernel):
+        from bridge.platforms.windows import terminal
+        def checked(value):
+            if not value: raise OSError('fixture Windows API failure')
+        with patch.object(terminal, 'api', return_value=kernel), patch.object(terminal, 'checked', side_effect=checked), \
+             patch.object(terminal, 'default_shell', return_value='fixture-shell'), patch.object(terminal.threading, 'Thread'):
+            return terminal.WindowsTerminalSession(Path(__file__).parent)
 
-    def cleanup(self):
-        try:
-            if self.kernel.WaitForSingleObject(self.handle, 0) == 258:
-                self.kernel.TerminateProcess(self.handle, 1)
-                self.kernel.WaitForSingleObject(self.handle, 5000)
-            self.session.done.wait(5)
-        finally:
-            self.kernel.CloseHandle(self.handle)
+    def test_assigns_suspended_bootstrap_before_resume_and_closes_only_its_job(self):
+        kernel, calls = self.kernel()
+        session = self.create(kernel)
+        self.assertLess(calls.index(('process', 0x80004)), calls.index(('assign', 10, 40)))
+        self.assertLess(calls.index(('assign', 10, 40)), calls.index(('resume', 41)))
+        session._close_console(); session._close_console()
+        self.assertEqual(calls.count(('close', 10)), 1)
+        self.assertLess(calls.index(('close', 10)), calls.index(('console-close', 30)))
+        self.assertIsNone(session.job)
+        self.assertFalse(any(call[0] == 'terminate' for call in calls))
+
+    def test_startup_failures_release_owned_handles_without_running_an_unassigned_child(self):
+        for failure in ('job', 'limits', 'process', 'assign', 'resume'):
+            with self.subTest(failure=failure):
+                kernel, calls = self.kernel(failure)
+                with self.assertRaises(OSError): self.create(kernel)
+                self.assertEqual(calls.count(('close', 10)), 0 if failure == 'job' else 1)
+                if failure in ('assign', 'resume'):
+                    self.assertIn(('terminate', 40), calls)
+                    self.assertIn(('wait', 40), calls)
+                    self.assertEqual(calls.count(('close', 40)), 1)
+                    self.assertEqual(calls.count(('close', 41)), 1)
+                else:
+                    self.assertNotIn(('terminate', 40), calls)
+                if failure != 'resume': self.assertNotIn(('resume', 41), calls)
 
 
 class TerminalCompletionTests(unittest.TestCase):
@@ -131,14 +145,33 @@ class ConPtyTests(unittest.TestCase):
             runtime = os.environ.get('CMB_TEST_RUNTIME')
             with patch.object(sys, 'executable', runtime or sys.executable), patch.object(sys, 'frozen', bool(runtime), create=True):
                 session = WindowsTerminalSession(Path(folder), 80, 24)
-            probe = OwnedTerminalProbe(session)
             try:
                 session.stop()
-                completed = session.done.wait(5)
-                if not completed: probe.report()
-                self.assertTrue(completed, 'Immediate terminal close left its owned bootstrap running')
+                self.assertTrue(session.done.wait(5), 'Immediate terminal close left its owned bootstrap running')
+                self.assertIsNone(session.process_handle)
+                self.assertIsNone(session.job)
             finally:
-                probe.cleanup()
+                session.stop(); session.done.wait(5)
+
+    def test_closing_one_terminal_preserves_another_terminal(self):
+        from bridge.platforms.windows.terminal import WindowsTerminalSession
+        directory = Path(__file__).resolve().parents[1] / '.tmp'; directory.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=directory) as folder:
+            root = Path(folder); sessions = []
+            try:
+                runtime = os.environ.get('CMB_TEST_RUNTIME')
+                with patch.object(sys, 'executable', runtime or sys.executable), patch.object(sys, 'frozen', bool(runtime), create=True):
+                    for _ in range(2): sessions.append(WindowsTerminalSession(root, 80, 24))
+                first, second = sessions
+                first.stop(); self.assertTrue(first.done.wait(5))
+                second.write(str(uuid.uuid4()), 'echo independent> survived.txt\r')
+                deadline = time.monotonic()+10
+                while not (root/'survived.txt').exists() and time.monotonic()<deadline: time.sleep(.05)
+                self.assertEqual((root/'survived.txt').read_text().strip(), 'independent')
+                self.assertFalse(second.done.is_set())
+            finally:
+                for session in sessions: session.stop()
+                for session in sessions: self.assertTrue(session.done.wait(5))
 
     def test_persistent_shell_unicode_resize_dedupe_and_close(self):
         from bridge.platforms.windows.terminal import WindowsTerminalSession

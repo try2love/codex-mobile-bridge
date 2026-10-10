@@ -39,6 +39,22 @@ class PROCESS_INFORMATION(C.Structure):
     _fields_ = [('hProcess', W.HANDLE), ('hThread', W.HANDLE), ('dwProcessId', W.DWORD), ('dwThreadId', W.DWORD)]
 
 
+class JOB_BASIC_LIMITS(C.Structure):
+    _fields_ = [('process_time', C.c_int64), ('job_time', C.c_int64), ('flags', W.DWORD),
+                ('minimum', C.c_size_t), ('maximum', C.c_size_t), ('active', W.DWORD),
+                ('affinity', C.c_size_t), ('priority', W.DWORD), ('scheduling', W.DWORD)]
+
+
+class JOB_IO_COUNTERS(C.Structure):
+    _fields_ = [(name, C.c_uint64) for name in ('reads', 'writes', 'other', 'read_bytes', 'write_bytes', 'other_bytes')]
+
+
+class JOB_EXTENDED_LIMITS(C.Structure):
+    _fields_ = [('basic', JOB_BASIC_LIMITS), ('io', JOB_IO_COUNTERS),
+                ('process_memory', C.c_size_t), ('job_memory', C.c_size_t),
+                ('peak_process_memory', C.c_size_t), ('peak_job_memory', C.c_size_t)]
+
+
 def api():
     kernel = C.WinDLL('kernel32', use_last_error=True)
     signatures = {
@@ -56,6 +72,10 @@ def api():
         'WaitForSingleObject': (W.DWORD, [W.HANDLE, W.DWORD]),
         'GetExitCodeProcess': (W.BOOL, [W.HANDLE, C.POINTER(W.DWORD)]),
         'TerminateProcess': (W.BOOL, [W.HANDLE, W.UINT]), 'CloseHandle': (W.BOOL, [W.HANDLE]),
+        'CreateJobObjectW': (W.HANDLE, [C.c_void_p, W.LPCWSTR]),
+        'SetInformationJobObject': (W.BOOL, [W.HANDLE, C.c_int, C.c_void_p, W.DWORD]),
+        'AssignProcessToJobObject': (W.BOOL, [W.HANDLE, W.HANDLE]),
+        'ResumeThread': (W.DWORD, [W.HANDLE]),
     }
     for name, (restype, argtypes) in signatures.items():
         try: function = getattr(kernel, name)
@@ -93,11 +113,16 @@ class WindowsTerminalSession(TerminalSession):
         self.done = threading.Event(); self.output_done = threading.Event(); self.stopping = threading.Event(); self.touched = time.monotonic()
         self.inputs = collections.OrderedDict(); self.writes = queue.Queue()
         self.shell = default_shell(); self.root = str(root)
-        self.console = W.HANDLE(); self.process_handle = None
+        self.console = W.HANDLE(); self.process_handle = None; self.job = None
         input_read, self.input_write, self.output_read, output_write = (W.HANDLE() for _ in range(4))
         handles = [input_read, self.input_write, self.output_read, output_write]
-        attributes = None; initialized = False
+        attributes = None; initialized = False; process = PROCESS_INFORMATION()
         try:
+            # An unnamed, non-inheritable job owns only this terminal's tree.
+            # Bind the suspended bootstrap before it can create the user's shell.
+            self.job = k.CreateJobObjectW(None, None); checked(self.job)
+            limits = JOB_EXTENDED_LIMITS(); limits.basic.flags = 0x2000  # KILL_ON_JOB_CLOSE
+            checked(k.SetInformationJobObject(self.job, 9, C.byref(limits), C.sizeof(limits)))
             checked(k.CreatePipe(C.byref(input_read), C.byref(self.input_write), None, 0))
             checked(k.CreatePipe(C.byref(self.output_read), C.byref(output_write), None, 0))
             if k.CreatePseudoConsole(COORD(cols, rows), input_read, output_write, 0, C.byref(self.console)) < 0:
@@ -109,20 +134,28 @@ class WindowsTerminalSession(TerminalSession):
             checked(k.UpdateProcThreadAttribute(attributes, 0, 0x00020016, self.console, C.sizeof(self.console), None, None))
             startup = STARTUPINFOEX(); startup.StartupInfo.cb = C.sizeof(startup)
             startup.lpAttributeList = C.cast(attributes, C.c_void_p)
-            process = PROCESS_INFORMATION()
             # The helper reconnects its standard handles before starting the user's shell.
             launcher = [sys.executable]
             if not getattr(sys, 'frozen', False): launcher.append(str(project_root() / 'desktop.py'))
             launcher.extend(['--terminal-child', self.shell])
             command = C.create_unicode_buffer(subprocess.list2cmdline(launcher))
-            checked(k.CreateProcessW(sys.executable, command, None, None, False, 0x00080000, None, self.root, C.byref(startup), C.byref(process)))
-            self.process_handle = process.hProcess; k.CloseHandle(process.hThread)
+            checked(k.CreateProcessW(sys.executable, command, None, None, False, 0x00080004, None, self.root, C.byref(startup), C.byref(process)))
+            self.process_handle = process.hProcess
+            checked(k.AssignProcessToJobObject(self.job, self.process_handle))
+            checked(k.ResumeThread(process.hThread) != 0xffffffff)
         except Exception:
+            if self.process_handle:
+                # Assignment itself may have failed; retain the exact owned handle.
+                k.TerminateProcess(self.process_handle, 1)
+                k.WaitForSingleObject(self.process_handle, 5000)
+                k.CloseHandle(self.process_handle); self.process_handle = None
+            if self.job: k.CloseHandle(self.job); self.job = None
             if self.console.value: k.ClosePseudoConsole(self.console)
             for handle in handles:
                 if handle.value: k.CloseHandle(handle)
             raise
         finally:
+            if process.hThread: k.CloseHandle(process.hThread)
             if initialized: k.DeleteProcThreadAttributeList(attributes)
         k.CloseHandle(input_read); k.CloseHandle(output_write)
         threading.Thread(target=self._read, daemon=True).start()
@@ -158,6 +191,9 @@ class WindowsTerminalSession(TerminalSession):
         with self.close_lock:
             if self.console.value:
                 self.stopping.set(); self.writes.put(None)
+                # Closing ConPTY before the bootstrap attaches can miss its later
+                # shell. The retained job closes that race without PID matching.
+                if self.job: self.kernel.CloseHandle(self.job); self.job = None
                 self.kernel.ClosePseudoConsole(self.console); self.console = W.HANDLE()
 
     def _writer(self):
