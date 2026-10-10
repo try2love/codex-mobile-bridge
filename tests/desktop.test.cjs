@@ -96,6 +96,46 @@ async function renderer(initialLanguage='zh-CN',{autoStart=false}={}){
   return {nodes,value,context,api,calls,run:code=>vm.runInContext(code,context),poll:()=>poll(),advance:ms=>{now+=ms;},start:()=>nodes.get('start').onclick()};
 }
 
+for(const transferFirst of [false,true])test(`independent transfer settings ${transferFirst?'before':'after'} snapshot do not block gateway startup or hide real drafts`,async()=>{
+  const ui=await renderer(),fs=require('node:fs'),vm=require('node:vm');
+  const create=ui.context.document.createElement;
+  ui.context.document.createElement=tag=>{
+    const element=create();element.tagName=tag.toUpperCase();element.id='';
+    element.append=function(...items){this.children=(this.children||[]).concat(items);for(const child of items)child.parentElement=this;};
+    element.closest=function(selector){for(let item=this;item;item=item.parentElement){if(selector==='[data-panel]'&&item.dataset.panel)return item;if(selector==='#'+item.id)return item;}return null;};
+    element.validity={valid:true};element.reportValidity=()=>element.validity.valid;
+    return element;
+  };
+  const panel=ui.context.document.createElement('section');panel.dataset.panel='advanced';
+  const descendants=element=>[element,...(element.children||[]).flatMap(descendants)];
+  const autoStart=ui.nodes.get('auto-start');autoStart.id='auto-start';autoStart.type='checkbox';autoStart.validity={valid:true};autoStart.closest=selector=>selector==='[data-panel]'?panel:null;
+  ui.context.document.querySelector=selector=>selector==='[data-panel=advanced]'?panel:null;
+  ui.nodes.get('settings').querySelectorAll=()=>[autoStart,...descendants(panel).filter(element=>element.tagName==='INPUT')];
+  ui.context.MutationObserver=class {observe(){}};ui.context.window.addEventListener=()=>{};
+  let resolveRead;const writes=[];
+  ui.api.transferSettings=value=>value?(writes.push(value),Promise.resolve(value)):new Promise(resolve=>{resolveRead=resolve;});
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/features/workspace/file-actions.js'),'utf8'),ui.context);
+  ui.context.BridgeFileActions=ui.context.window.BridgeFileActions;
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../desktop/features/files/settings.js'),'utf8'),ui.context);
+  const input=descendants(panel).find(element=>element.tagName==='INPUT');
+  if(transferFirst){resolveRead({clickDownloadMiB:100});await new Promise(setImmediate);}
+  ui.run('dirty=false;render(snapshot)');
+  assert.equal(ui.run('dirty'),false);
+  if(!transferFirst){resolveRead({clickDownloadMiB:100});await new Promise(setImmediate);}
+  ui.run("applyLanguage('en')");
+  assert.equal(ui.run('dirty'),false,'independently loaded transfer limit is not a gateway draft');
+  await ui.start();assert.ok(ui.calls.includes('start'));
+  input.value=200;input.oninput({stopPropagation(){}});ui.run('updateDirty()');
+  assert.equal(ui.run('dirty'),false,'transfer limit has its own save button');
+  await descendants(panel).find(element=>element.tagName==='BUTTON').onclick();
+  assert.equal(writes.at(-1).clickDownloadMiB,200);
+  autoStart.checked=true;ui.run('updateDirty()');
+  assert.equal(ui.run('dirty'),true,'actual gateway drafts must still be protected');
+  input.validity.valid=false;
+  await ui.nodes.get('settings').onsubmit({preventDefault(){}});
+  assert.equal(ui.value.preferences.autoStart,true,'independent validation cannot block saving gateway settings');
+});
+
 test('Tailscale detection fills a read-only URL and preserves its unsaved identity across polls',async()=>{
   const ui=await renderer('en');
   ui.run(`connectionDraft=[{id:'ts',name:'',enabled:true,accessMode:'tailscale',publicUrl:'',tailscaleMode:'funnel',tailscalePort:443,tailscaleNodeId:''}];savedConnections=JSON.stringify(connectionDraft);renderConnections();updateDirty();`);
