@@ -173,6 +173,8 @@ class SideChatServiceTests(unittest.TestCase):
 
     def test_service_creation_preserves_parent_and_shared_identity(self):
         bridge = self.bridge
+        # The fixture runtime also needs an explicit catalog identity; CI has no Codex installation.
+        bridge.catalog_reader.executable = 'fixture-runtime'
         bridge.side_chats.factory = lambda *args: SideChat(*args, runtime_factory=RuntimeFixture)
         self.fixture.state['cwd'] = str(self.root)
         before = copy.deepcopy(self.fixture.state)
