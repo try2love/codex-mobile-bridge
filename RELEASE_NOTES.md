@@ -14,7 +14,7 @@ v2.0.0 将 v1.4.0 的 Codex 手机网关扩展为 **Codex、Claude Desktop、Dee
 - **文件标签**：浏览本机或 Codex SSH 会话的项目文件，预览文本、Markdown 和图片，上传文件，在聊天文件链接与目录之间定位。普通点击先选择定位或下载，默认下载阈值为 20 MiB，可从网关、Web 或手机即时调整。
 - **大文件与目录下载**：文件列表长按、右键或键盘菜单可明确下载文件及目录，不受普通点击阈值限制；目录打包为 ZIP。下载浮窗显示进度、速度和总量，支持暂停、继续、取消；原生手机使用磁盘下载，浏览器仍受站点存储和设备空间限制。
 - **图片缩放**：聊天图片、发送前附件和工作区图片共用查看器。手机双指缩放、放大后拖动；电脑滚轮缩放与拖动；双击切换适应屏幕与两倍，支持 1–8 倍及恢复适应。关闭图片后保留草稿、阅读位置和文件标签。
-- **连续终端**：终端保留工作目录、环境和交互状态，支持多行命令、停止、清屏与尺寸变化。macOS/Linux 使用 PTY，Windows 使用 ConPTY，并补齐跨盘 `cd` 的处理。
+- **连续终端**：终端保留工作目录、环境和交互状态，支持多行命令、停止、清屏与尺寸变化。macOS/Linux 使用 PTY，Windows 使用 ConPTY，并补齐跨盘 `cd` 的处理；关闭刚创建的终端时也回收其所属进程树，避免后台残留。
 - **Git 面板**：查看变更、差异、提交历史图和分支；暂存、提交、切换分支、本地合并与中止合并。保留工作区检查与确认，不提供远程推送或历史重写。
 - **Codex 侧边聊天与子智能体**：在工作台查看子智能体历史，创建临时侧边聊天，独立选择模型、推理、Skill、权限和附件；支持排队、补充任务、普通/计划模式与同网关多设备同步。侧边聊天在结束或网关重启后清除，暂不支持 SSH。
 - **宽屏分屏**：电脑浏览器、平板与折叠屏可将工具标签放到右侧并调整宽度；窄屏恢复单栏，保留标签、草稿和阅读位置。Claude/DSH 按自身协议提供工具能力，不把 Codex 专属功能伪装成全部客户端可用。
@@ -43,7 +43,7 @@ v2.0.0 将 v1.4.0 的 Codex 手机网关扩展为 **Codex、Claude Desktop、Dee
 - **自有服务器 + SSH**：保留普通用户 SSH 反向转发、主机指纹核验及固定入口检测。手机访问地址可留空并使用服务器公网 IP 的 HTTPS 地址，但服务器仍需已有 HTTPS 反代和与 IP 匹配的受信任证书；不会自动降级 HTTP。
 - **保留多种入口**：局域网、内置 Cloudflare 临时 HTTPS、固定 Cloudflare Tunnel、Tailscale、自有服务器与 NAS/已有反代可按需配置。移除桌面端“自建中继 · 内测”邀请码入口，减少普通用户配置负担。
 - **网络提示更准确**：Cloudflare 和 Tailscale 公网转发/中继可能经过境外节点，中国大陆直连可能较慢或超时；固定域名不保证国内速度。首次配置后应在实际 Wi-Fi 与蜂窝网络验证。
-- **设置重新分区**：概览、客户端与接入、网络访问、登录与设备、消息通知、应用与维护各司其职；概览和客户端页均可启停网关。修复网关实际已启动却被界面误报超时的情况。
+- **设置重新分区**：概览、客户端与接入、网络访问、登录与设备、消息通知、应用与维护各司其职；概览和客户端页均可启停网关。修复网关实际已启动却被界面误报超时的情况；文件传输设置独立保存，异步加载不再误报网关配置未保存并阻止启动。
 
 ### 安全、效率与平台维护
 
@@ -85,7 +85,7 @@ v2.0.0 expands the v1.4.0 Codex mobile gateway into **one remote entry for Codex
 - Browse project files, preview text/Markdown/images, upload and locate chat-linked files in their folder. Ordinary downloads use a live configurable threshold, 20 MiB by default; larger links offer location first.
 - Explicit long-press/right-click downloads allow files and ZIP folders above that threshold. A floating panel shows progress, speed and size with pause, resume and cancel. Native apps stream to disk; browser downloads remain subject to browser storage and device space.
 - Zoom chat images, pending attachments and workspace images with pinch, wheel, drag or double-click. Scale from fit-to-screen to 8× and retain drafts, reading position and tabs when closing.
-- Use persistent terminals with interactive shell state, multi-line input and resizing. macOS/Linux use PTY; Windows uses ConPTY with cross-drive `cd` handling.
+- Use persistent terminals with interactive shell state, multi-line input and resizing. macOS/Linux use PTY; Windows uses ConPTY with cross-drive `cd` handling; closing a newly created terminal also reaps its owned process tree.
 - Review Git changes, diffs, commit graphs and branches; stage, commit, switch and locally merge branches. Dirty-worktree checks remain; remote push and history rewriting are not exposed.
 - Codex temporary side chats support independent model/reasoning/Skills/permissions, attachments, queued input and Default/Plan modes. View saved subagent history. Side chats are cleared on end or gateway restart and do not support SSH.
 - Move tool tabs into resizable split panes on wide browsers, tablets and unfolded phones. Smaller layouts retain drafts, tabs and reading position. Claude/DSH expose capabilities their protocols actually support, rather than claiming all Codex-specific tools.
@@ -114,7 +114,7 @@ v2.0.0 expands the v1.4.0 Codex mobile gateway into **one remote entry for Codex
 - **Own server + SSH:** retain ordinary-user reverse forwarding, host-key checks and endpoint verification. A blank phone address may use the server's public IP over HTTPS, provided the server already has HTTPS reverse proxying and a trusted certificate for that IP. No automatic HTTP downgrade.
 - Keep LAN, bundled Cloudflare temporary HTTPS, fixed Cloudflare Tunnel, Tailscale, SSH servers and existing NAS/reverse proxies. Remove the invitation-based experimental relay entry from the desktop UI.
 - Explain that Cloudflare and Tailscale public relay paths may cross overseas nodes and may be slow or time out in mainland China. A fixed hostname is not a performance guarantee; test actual Wi-Fi and cellular networks.
-- Organize the gateway into Overview, Clients and access, Network access, Login and devices, Notifications, and App and maintenance. Both Overview and Clients control gateway start/stop. Fix false startup timeout reporting when the gateway is already reachable.
+- Organize the gateway into Overview, Clients and access, Network access, Login and devices, Notifications, and App and maintenance. Both Overview and Clients control gateway start/stop. Fix false startup timeout reporting when the gateway is already reachable. Independently saved transfer settings no longer create a false gateway draft during asynchronous loading and block startup.
 
 #### Security, efficiency and platforms
 
