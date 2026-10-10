@@ -149,6 +149,30 @@ class LinuxScopeTests(unittest.TestCase):
             self.assertTrue(all(not row['available'] for row in options['options']))
             self.assertFalse(fixture.fixture.requests)
 
+    def test_progressive_pages_and_changes_preserve_linux_permission_metadata(self):
+        fixture = support.IntegrationTests()
+        fixture.setUp(); self.addCleanup(fixture.tearDown)
+        fixture.fixture.state['latestThreadSettings'] = {
+            'permissions': ':workspace', 'approvalPolicy': 'on-request',
+            'approvalsReviewer': 'guardian_subagent'}
+        bridge = fixture.bridge
+        bridge.session(support.THREAD)
+        with patch.object(bridge, '_target', side_effect=AssertionError('must not activate')), \
+                patch.object(bridge.catalog_reader, 'linux_permission_capabilities',
+                             side_effect=AssertionError('passive history must not probe capabilities')):
+            for system, host in (('linux', 'local'), ('darwin', 'local'),
+                                 ('win32', 'local'), ('linux', 'remote-fixture')):
+                with self.subTest(system=system, host=host), \
+                        patch.object(linux_permissions.sys, 'platform', system), patch.object(bridge, 'host', host):
+                    page = bridge.timeline_read(support.THREAD)
+                    older = bridge.timeline_read(support.THREAD, before=page['before'])
+                    changes = bridge.timeline_read(support.THREAD, 'changes', after=page['sequence'],
+                                                   epoch=page['epoch'], start=page['before'])
+                    enabled = system == 'linux' and host == 'local'
+                    for result in (page, older, changes):
+                        self.assertEqual(result['meta'].get('linuxPermissionChecks', False), enabled)
+                        self.assertEqual(result['meta']['permissionMode'], 'auto-review' if enabled else 'ask')
+
 
 class LinuxSidePermissionTests(unittest.TestCase):
     def setUp(self):

@@ -9,7 +9,7 @@ from bridge.platforms.macos import desktop
 
 
 class MacNormalQuitTests(unittest.TestCase):
-    executable = Path('/Applications/Fixture.app/Contents/MacOS/Fixture')
+    executable = Path('/Applications/Fixture.app/Contents/MacOS/Fixture').resolve()
 
     def test_exact_verified_pid_and_path_are_passed_without_appleevent_app_lookup(self):
         with patch.object(desktop.subprocess, 'run', return_value=Mock(

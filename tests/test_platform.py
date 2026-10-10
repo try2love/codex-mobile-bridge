@@ -207,8 +207,13 @@ class LifecycleTests(unittest.TestCase):
                 sock.bind(('127.0.0.1', 0))
                 port = sock.getsockname()[1]
             with (root / 'output.log').open('wb') as log:
+                # This startup test must not discover a real installed runtime
+                # or attach to the user's globally named Windows desktop pipe.
+                isolated_windows = (['--codex-bin', str(root / 'missing-codex.exe'),
+                                     '--ipc-path', r'\\.\pipe\cmb-startup-test-' + uuid.uuid4().hex]
+                                    if os.name == 'nt' else [])
                 process = subprocess.Popen([sys.executable, '-B', str(ROOT / 'run.py'),
-                    '--port', str(port), '--config', str(config), '--codex-home', str(root)],
+                    '--port', str(port), '--config', str(config), '--codex-home', str(root), *isolated_windows],
                     env=dict(os.environ, PYTHONIOENCODING='cp1252'),
                     stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
                 try:

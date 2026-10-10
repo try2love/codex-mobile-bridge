@@ -1497,6 +1497,9 @@ class Bridge:
                 result = projection.changes(**options) if mode == 'changes' else projection.page(**options)
                 result['meta'] = dict(result['meta'], host=self.host,
                                       hostLabel='此电脑' if self.host == 'local' else self.hosts.hosts().get(self.host, {}).get('displayName', self.host))
+                if linux_permissions.enabled(self.host):
+                    result['meta']['linuxPermissionChecks'] = True
+                    result['meta']['permissionMode'] = linux_permissions.current_mode(session.state)
                 texts = [row['text'] for row in result['rows'] if row['role'] == 'assistant']
             cwd = (session.state or {}).get('cwd')
             media_items = [item for turn in ordered_turns(session.state or {})

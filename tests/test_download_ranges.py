@@ -228,7 +228,14 @@ class FileActionsTests(unittest.TestCase):
             if path == 'file' and kwargs.get('follow_symlinks') is False:
                 return SimpleNamespace(st_mode=result.st_mode, st_file_attributes=0x400)
             return result
-        with patch('bridge.features.workspace.workspace.os.stat', side_effect=reparse):
+        original_lstat = Path.lstat
+        def reparse_lstat(path, *args, **kwargs):
+            result = original_lstat(path, *args, **kwargs)
+            if path == folder / 'file':
+                return SimpleNamespace(st_mode=result.st_mode, st_file_attributes=0x400)
+            return result
+        with patch('bridge.features.workspace.workspace.os.stat', side_effect=reparse), \
+                patch.object(Path, 'lstat', reparse_lstat):
             with self.assertRaises(PermissionError):
                 with self.workspace.archive('folder'): pass
 

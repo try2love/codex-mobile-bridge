@@ -670,14 +670,16 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(response.status,(503,504))
         self.assertEqual(self.created,[])
 
-    async def test_cli_admin_and_desktop_private_dispatch_without_gui(self):
+    async def test_cli_admin_without_removed_desktop_registration(self):
         import os
         import subprocess
         import sys
         environment = {**os.environ, 'DISPLAY':'', 'WAYLAND_DISPLAY':''}
         result = await asyncio.to_thread(subprocess.run,[sys.executable,'-B','desktop.py','shared-relay','--data-dir',str(Path(self.temp.name)/'private')],
-                                         input='{"action":"status"}',text=True,capture_output=True,check=True,cwd=ROOT,env=environment)
-        self.assertFalse(json.loads(result.stdout)['result']['registered'])
+                                         input='{"action":"status"}',text=True,capture_output=True,cwd=ROOT,env=environment)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('invalid choice', result.stderr)
+        self.assertFalse((Path(self.temp.name)/'private').exists())
         result = await asyncio.to_thread(subprocess.run,[sys.executable,'-B','-m','relay','--data-dir',str(Path(self.temp.name)/'relay'),'invite','--owner','cli-user'],
                                          text=True,capture_output=True,check=True,cwd=ROOT,env=environment)
         invitation = json.loads(result.stdout)['invitation']
