@@ -79,6 +79,7 @@ function renderConnections(){
       note('无需账号或域名；地址会随隧道重建变化。可在手机通知中配置入口通知。');
     }else if(row.accessMode==='tailscale'){
       note('无需自建服务器。先登录官方 Tailscale 客户端，检测并保存固定地址，再启动网关。');
+      note('Tailscale 公网转发或中继链路可能经过境外节点，中国大陆直连可能较慢或超时；稳定的代理线路可能改善访问体验，实际速度以当前网络为准。');
       for(const [key,label,values] of [
         ['tailscaleMode','访问范围',[['funnel','公网访问 · Funnel'],['serve','私有组网 · Serve']]],
         ['tailscalePort','HTTPS 端口',[[443,'443（默认）'],[8443,'8443'],[10000,'10000']]]
@@ -117,6 +118,7 @@ function renderConnections(){
       note('示例用户名 try2love 和域名 try2love.com 仅用于配置演示，请替换为自己的配置；示例地址不是在线演示站点。');
       if(row.accessMode==='cloudflare'){
         note('没有服务器也可以使用私人域名。先在 Cloudflare 创建固定隧道并配置公开主机名，再填写该隧道的 Token。');
+        note('Cloudflare Tunnel 的访问链路可能经过境外节点，中国大陆直连可能较慢或超时；稳定的代理线路可能改善访问体验，实际速度以当前网络为准。');
         const guide=document.createElement('details'),summary=document.createElement('summary');guide.className='guide-more';summary.textContent=t('首次配置：从购买域名到手机访问');guide.append(summary);
         const steps=document.createElement('ol');steps.className='setup-steps';
         for(const text of ['在 Cloudflare 添加根域名，例如 try2love.com，取得分配给你的两条名称服务器（NS）地址。','在阿里云等域名注册商修改“DNS 服务器”为这两条 NS，等待 Cloudflare 显示 Active。域名仍在原注册商续费；已有网站和邮箱需保留原解析记录。','在 Cloudflare 的 Tunnels / 隧道中创建 Cloudflared 隧道，复制安装命令中的 Tunnel Token。这里只需要 Token，不需要整条命令或 API Key；App 已内置程序，无需重复安装服务。','在本卡片填写 https://codex.try2love.com 和 Token，启用并保存，启动网关；回到 Cloudflare 确认连接器已连接。','在隧道 Routes / 路由中添加 Published application / 公开主机名：子域名 codex，选择自己的域名，路径留空；服务类型 HTTP，服务地址使用下方电脑网关地址。保存时会创建对应 DNS 记录。','点击“检测固定入口”，再用手机关闭 Wi-Fi 后访问域名，验证登录和聊天。隧道显示 Healthy 不代表网页已经可用；电脑、Codex 和网关需要保持在线。']){const li=document.createElement('li');li.textContent=t(text);steps.append(li);}guide.append(steps);
