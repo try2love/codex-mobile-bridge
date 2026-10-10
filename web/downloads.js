@@ -265,7 +265,7 @@ if (typeof document !== 'undefined') (() => {
   }
   document.addEventListener('click', event => {
     const anchor = event.target.closest('a[href]');
-    if (!anchor || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || anchor.hasAttribute('data-image-preview')) return;
+    if (!anchor || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || anchor.hasAttribute('data-image-preview') || anchor.hasAttribute('data-text-preview')) return;
     if (!BridgeDownload.eligible(anchor.href, location.href)) return;
     event.preventDefault();
     collapsed = false;

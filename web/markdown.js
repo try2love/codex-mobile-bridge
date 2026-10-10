@@ -104,6 +104,7 @@
             const destination = target(token.attrGet('href') || '');
             element = destination ? link(destination.url, token.attrGet('title')) : document.createElement('span');
             if (destination?.file?.image) { element.dataset.imagePreview = destination.url; element.dataset.imageName = destination.file.name; }
+            else if (destination?.file) window.BridgeTextViewer?.registerLink(element, destination.file);
           } else if (tags.has(token.tag)) {
             element = document.createElement(token.tag);
             if (token.tag === 'ol' && token.attrGet('start')) element.start = Number(token.attrGet('start'));

@@ -60,6 +60,8 @@ STATIC = {"/permissions.js": ("permissions.js", "text/javascript; charset=utf-8"
           "/git-panel.js": ("git-panel.js", "text/javascript; charset=utf-8"),
           "/workbench.js": ("workbench.js", "text/javascript; charset=utf-8"),
           "/image-viewer.js": ("image-viewer.js", "text/javascript; charset=utf-8"),
+          "/text-viewer.js": ("text-viewer.js", "text/javascript; charset=utf-8"),
+          "/text-viewer.css": ("text-viewer.css", "text/css; charset=utf-8"),
           "/workbench.css": ("workbench.css", "text/css; charset=utf-8"),
           "/": ("index.html", "text/html; charset=utf-8"),
           "/i18n.js": ("i18n.js", "text/javascript; charset=utf-8"),
