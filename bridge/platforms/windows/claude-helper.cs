@@ -475,23 +475,34 @@ class ClaudeKeyboard {
             thread.IsBackground=true;thread.SetApartmentState(ApartmentState.MTA);thread.Start();
         }
     }
+    static bool ProbeNativeDialog(Func<bool> inspect,Func<bool> exited,Func<bool> windowExists) {
+        try {return inspect();}
+        catch(ElementNotAvailableException) {return false;}
+        catch(ArgumentException) {if(windowExists())throw;return false;}
+        catch(COMException) {
+            // UIA can return E_UNEXPECTED while a successfully submitted Exit
+            // destroys the provider. An error on a live target stays an error.
+            if(!exited()&&windowExists())throw;
+            return false;
+        }
+    }
     static bool HasNativeDialog(Process process) {
         foreach(var window in ReadWindows(process.Id)) {
             if(!window.Visible||window.Cloaked||DevToolsTitle(window.Title))continue;
-            try {
+            if(ProbeNativeDialog(delegate {
                 var root=AutomationElement.FromHandle(window.Handle);object pattern;
-                if(root.Current.ProcessId!=process.Id||!Owned(process.Id))continue;
+                if(root.Current.ProcessId!=process.Id||!Owned(process.Id))return false;
                 bool modal=root.TryGetCurrentPattern(WindowPattern.Pattern,out pattern)&&((WindowPattern)pattern).Current.IsModal;
                 if(modal)return true;
-                if(window.ClassName!="#32770")continue;
+                if(window.ClassName!="#32770")return false;
                 var buttons=root.FindAll(TreeScope.Descendants,new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.Button));
                 foreach(AutomationElement button in buttons) {
                     string name=button.Current.Name;
                     if(button.Current.ProcessId==process.Id&&!button.Current.IsOffscreen&&
                        (name=="Quit anyway"||name=="仍要退出"||name=="仍要結束"||name=="Wait for Claude"||name=="等待 Claude"))return true;
                 }
-            }catch(ElementNotAvailableException) {}
-            catch(ArgumentException) {if(IsWindow(window.Handle))throw;}
+                return false;
+            },()=>process.HasExited,()=>IsWindow(window.Handle)))return true;
         }
         return false;
     }
@@ -1106,6 +1117,19 @@ class ClaudeKeyboard {
         if(ObserveQuit(()=>++checks==2,()=>false,()=>{},3)!="exited"||
            ObserveQuit(()=>false,()=>true,()=>{},3)!="pending"||
            ObserveQuit(()=>false,()=>false,()=>{},3)!="submitted")throw new Exception("Claude 退出结果自检失败");
+        var unavailable=new COMException("UIA provider terminated",unchecked((int)0x8000FFFF));
+        Func<bool> failedProbe=()=>{throw unavailable;};
+        if(ProbeNativeDialog(failedProbe,()=>true,()=>true)||ProbeNativeDialog(failedProbe,()=>false,()=>false))
+            throw new Exception("Claude 已销毁对话框探测自检失败");
+        bool propagated=false;
+        try {ProbeNativeDialog(failedProbe,()=>false,()=>true);}
+        catch(COMException error) {propagated=Object.ReferenceEquals(error,unavailable);}
+        if(!propagated)throw new Exception("Claude 存活窗口错误保护自检失败");
+        bool exited=false;
+        if(ObserveQuit(()=>exited,()=>ProbeNativeDialog(()=>{exited=true;throw unavailable;},
+                ()=>exited,()=>false),()=>{},2)!="exited"||
+           ObserveQuit(()=>false,()=>ProbeNativeDialog(failedProbe,()=>false,()=>false),()=>{},2)!="submitted")
+            throw new Exception("Claude 退出期间窗口销毁结果自检失败");
     }
     static void CheckBackgroundConnection() {
         foreach(string title in new[]{"DevTools - app://localhost","Developer Tools - app://localhost/new?example=1","开发者工具 - app://localhost/"})

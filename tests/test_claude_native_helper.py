@@ -76,19 +76,10 @@ class WindowsNativeWindowSelectors(unittest.TestCase):
         cls.addClassCleanup(cls.temp.cleanup)
         cls.folder = Path(cls.temp.name)
         cls.helper = cls.folder/'claude-bridge-helper.exe'
-        # Preserve the native control flow, adding stack traces only to failed
-        # fixture replies so intermittent provider failures can be located.
-        source = (ROOT/'bridge/platforms/windows/claude-helper.cs').read_text(encoding='utf-8')
-        failure = 'string message=FailureMessage(e,quitAction);'
-        if source.count(failure) != 1:
-            raise AssertionError('native helper failure diagnostic point changed')
-        diagnostic_source = cls.folder/'claude-helper-diagnostic.cs'
-        diagnostic_source.write_text(source.replace(failure, failure+' message += "\\n" + e.ToString();'), encoding='utf-8')
         built = subprocess.run([str(cls.framework/'csc.exe'), '/nologo', '/target:exe', '/platform:x64',
-            '/debug', '/optimize-',
             '/out:'+str(cls.helper), *['/reference:'+str(cls.framework/'WPF'/name) for name in
             ('UIAutomationClient.dll', 'UIAutomationTypes.dll', 'WindowsBase.dll')],
-            str(diagnostic_source)], capture_output=True, text=True, timeout=30)
+            str(ROOT/'bridge/platforms/windows/claude-helper.cs')], capture_output=True, text=True, timeout=30)
         if built.returncode:
             raise AssertionError(built.stdout + built.stderr)
 
@@ -325,7 +316,6 @@ class QuitFixture {
             } else app.Shutdown();
         };
         window.Loaded+=(sender,eventArgs)=>{
-            File.AppendAllText(args[0]+".events","loaded\\n");
             if(args[3]=="initialize")window.Hide();
             if(args[3]=="background-cleanup-foreign") {
                 var other=new Window {Title="Developer Tools - file:///C:/Claude/main_window/index.html",Owner=window,Width=260,Height=120};
@@ -333,9 +323,6 @@ class QuitFixture {
             }
             File.WriteAllText(args[0],Process.GetCurrentProcess().Id.ToString());
         };
-        window.ContentRendered+=(sender,eventArgs)=>File.AppendAllText(args[0]+".events","rendered\\n");
-        window.Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle,
-            new Action(()=>File.AppendAllText(args[0]+".events","dispatcher-idle\\n")));
         timer.Start();app.Run(window);
     }
 }
@@ -426,10 +413,8 @@ class QuitFixture {
                         self.assertFalse(exited(app))
                         self.assertEqual(user.GetForegroundWindow(), foreground)
                         continue
-                    events = ready.with_name(ready.name+'.events')
                     diagnostic = {'replies': replies, 'appExited': exited(app),
                                   'invoked': marker.read_text(encoding='utf-8') if marker.exists() else None,
-                                  'readiness': events.read_text(encoding='utf-8') if events.exists() else None,
                                   'appLog': app_output.read_text(encoding='utf-8-sig')}
                     self.assertEqual(code, 0, diagnostic)
                     self.assertEqual([json.loads(line) for line in replies[:-1]],
