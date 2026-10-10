@@ -2,6 +2,7 @@ import copy
 import json
 import tempfile
 import unittest
+from concurrent.futures import Future
 from pathlib import Path
 from unittest.mock import patch, Mock
 import test_bridge as support
@@ -213,21 +214,44 @@ class LinuxSidePermissionTests(unittest.TestCase):
 
     def test_delayed_notification_confirms_and_updates_next_turn(self):
         original = self.chat.runtime.request
-        timers = []
+        waiting = threading.Event()
+        result = Future()
+        wait_for = self.chat.permission_condition.wait_for
         def request(method, params, **kwargs):
             if method == 'thread/settings/update':
-                timer = threading.Timer(.01, lambda: self.chat.runtime.emit('thread/settings/updated',
-                    threadSettings={'activePermissionProfile': {'id': ':workspace'},
-                                    'approvalPolicy': 'on-request', 'approvalsReviewer': 'auto_review'}))
-                timers.append(timer); timer.start(); return {}
+                return {}
             return original(method, params, **kwargs)
-        try:
-            with patch.object(self.chat.runtime, 'request', side_effect=request):
-                self.assertEqual(self.chat.permissions('auto-review')['permissionMode'], 'auto-review')
-            self.chat.send('synthetic message', str(uuid.uuid4()))
-            self.assertEqual(self.chat.runtime.calls[-1][1]['approvalsReviewer'], 'auto_review')
-        finally:
-            for timer in timers: timer.join()
+        def wait_for_notification(predicate, timeout=None):
+            waiting.set()  # The empty RPC acknowledgement has already returned.
+            return wait_for(predicate, timeout=timeout)
+        def change_permission():
+            try:
+                result.set_result(self.chat.permissions('auto-review'))
+            except Exception as error:
+                result.set_exception(error)
+        # Coordinate the success path by events, not the short timeout used by
+        # rejection tests. Outer waits only bound a broken test's lifetime.
+        with patch('bridge.features.sessions.linux_side_chat.PERMISSION_CONFIRM_TIMEOUT', None), \
+                patch.object(self.chat.runtime, 'request', side_effect=request), \
+                patch.object(self.chat.permission_condition, 'wait_for', side_effect=wait_for_notification):
+            thread = threading.Thread(target=change_permission, daemon=True)
+            thread.start()
+            try:
+                self.assertTrue(waiting.wait(5), 'permission call did not reach notification wait')
+                self.assertFalse(result.done(), 'RPC acknowledgement alone must not confirm permissions')
+                self.assertEqual(self.chat.view()['permissionMode'], 'ask')
+                self.assertEqual(self.chat.turn_permissions['approvalsReviewer'], 'user')
+                self.chat.runtime.emit('thread/settings/updated',
+                    threadSettings={'activePermissionProfile': {'id': ':workspace'},
+                                    'approvalPolicy': 'on-request', 'approvalsReviewer': 'auto_review'})
+                self.assertEqual(result.result(timeout=5)['permissionMode'], 'auto-review')
+            finally:
+                if not result.done():
+                    self.chat.runtime.emit('bridge/disconnected')
+                thread.join(5)
+                self.assertFalse(thread.is_alive(), 'permission test worker did not exit')
+        self.chat.send('synthetic message', str(uuid.uuid4()))
+        self.assertEqual(self.chat.runtime.calls[-1][1]['approvalsReviewer'], 'auto_review')
 
     def test_missing_capabilities_and_hidden_full_access_never_write(self):
         with patch.object(self.chat.runtime, 'request', return_value={}) as request:

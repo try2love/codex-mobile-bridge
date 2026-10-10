@@ -128,7 +128,8 @@ class IntegrationTests(unittest.TestCase):
         db.commit()
         db.close()
         db.close()
-        self.bridge = Bridge(self.root, self.root / 'data')
+        # This fixture uses desktop IPC only, never the runner's installed Codex.
+        self.bridge = Bridge(self.root, self.root / 'data', codex_bin=self.root / 'fixture-codex-not-installed')
         self.bridge.ipc.path = self.fixture.path
 
     def tearDown(self):
@@ -233,30 +234,41 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(self.fixture.requests[-1]['method'], 'thread-follower-start-turn')
 
     def test_background_read_shows_history_without_waiting_for_owner(self):
+        from concurrent.futures import Future
         entered, release = threading.Event(), threading.Event()
         attempts = []
         def slow_attach(*args):
             attempts.append(args)
             entered.set()
-            release.wait(2)
+            release.wait()
         self.bridge._attach = slow_attach
         history = {**state(), 'title': 'Saved history'}
         self.bridge.store.history = lambda tid, **kwargs: history
+        result = Future()
+        def read_history():
+            try:
+                self.bridge.view(THREAD, background=True)
+                session = self.bridge.live[THREAD]
+                with session.condition:
+                    self.assertTrue(session.condition.wait_for(lambda: session.saved_view is not None, timeout=5))
+                result.set_result(self.bridge.view(THREAD, background=True))
+            except BaseException as exc:
+                result.set_exception(exc)
+        reader = threading.Thread(target=read_history, daemon=True)
         try:
-            started = time.monotonic()
-            self.bridge.view(THREAD, background=True)
-            self.assertLess(time.monotonic() - started, .5)
-            self.assertTrue(entered.wait(1))
-            session = self.bridge.live[THREAD]
-            with session.condition:
-                self.assertTrue(session.condition.wait_for(lambda: session.saved_view is not None, timeout=1))
-            view = self.bridge.view(THREAD, background=True)
+            reader.start()
+            self.assertTrue(entered.wait(5))
+            # Prove history is returned while the owner is still blocked. The
+            # deadline only bounds a deadlock, not the runner's response time.
+            view = result.result(timeout=5)
+            self.assertFalse(release.is_set())
             self.assertEqual(view['title'], 'Saved history')
             self.assertTrue(view['connecting'])
             self.assertFalse(view['connected'])
             self.assertEqual(len(attempts), 1)
         finally:
             release.set()
+            reader.join(timeout=5)
             session = self.bridge.live.get(THREAD)
             if session:
                 with session.condition:
@@ -787,9 +799,12 @@ class HttpTests(unittest.TestCase):
         self.server.bridge.accounts = SimpleNamespace(ignore_submission=ignore)
         payload = {'threadId': THREAD, 'submissionId': str(uuid.uuid4()), 'host': 'local'}
         path = '/api/accounts/ignore-submission'
-        self.assertEqual(self.request('POST', path, payload)[0], 401)
+        # Auth rejects before reading the body; unread bytes can make Windows
+        # reset the connection before the client receives the denial response.
+        self.assertEqual(self.request('POST', path)[0], 401)
         auth = self.login()
-        self.assertEqual(self.request('POST', path, payload, {'Cookie': auth['Cookie']})[0], 403)
+        self.assertEqual(self.request('POST', path, headers={'Cookie': auth['Cookie']})[0], 403)
+        ignore.assert_not_called()
         self.assertEqual(self.request('POST', path, {**payload, 'extra': True}, auth)[0], 400)
         ignore.assert_not_called()
         self.assertEqual(self.request('POST', path, payload, auth)[0], 200)
