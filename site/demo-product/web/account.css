@@ -1,0 +1,22 @@
+.account-heading,.account-window{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.account-heading strong{overflow-wrap:anywhere}.account-heading button{flex-shrink:0}
+.account-muted{font-size:13px;color:#73756c;line-height:1.6}.account-quota,.account-cards{margin:18px 0}
+.account-quota h3,.account-cards h3{font-size:15px;margin:0 0 12px}.account-quota progress{width:100%;height:9px;accent-color:#677c45}
+.account-window{font-size:14px;margin-bottom:8px}.account-card{padding:14px 0;border-top:1px solid #dedfd5}
+#account-dialog{width:min(480px,calc(100vw - 32px));max-height:85dvh;overflow:auto}
+#account-status{font-size:11px;text-align:center}
+
+.accounts-panel label{display:grid;gap:6px;margin:12px 0}.accounts-panel input,.accounts-panel select{width:100%;min-width:0;box-sizing:border-box}.accounts-panel .account-bucket{overflow-wrap:anywhere}.accounts-panel .account-bucket button{margin:4px 6px 4px 0}.accounts-panel details{margin-top:18px}.accounts-panel summary{cursor:pointer;font-weight:600}.accounts-panel form{margin-top:12px}
+
+.accounts-panel .error:empty{display:none}.accounts-panel form>button{margin:12px 6px 0 0}
+
+.accounts-panel button{border:1px solid var(--line,#dfe3eb);border-radius:8px;padding:9px 13px;background:transparent;color:inherit;font:inherit}.accounts-panel .account-bucket{padding:14px 0;border-bottom:1px solid var(--line,#e3e6df);margin-bottom:12px}.accounts-panel .account-bucket h3{margin:0 0 8px;font-size:15px}.accounts-panel .account-bucket p{margin-bottom:8px}#accounts-dialog{max-height:85dvh;overflow:auto}
+
+.accounts-current{font-weight:650}.accounts-usage{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin:10px 0}.accounts-window{display:grid;grid-template-columns:1fr auto;gap:3px 10px;min-width:160px;max-width:240px;font-size:12px}.accounts-window progress{grid-column:1/-1;width:100%;height:6px;accent-color:#677c45}.accounts-credit{font-size:12px;color:var(--muted,#65705d)}.accounts-usage button{font-size:12px;padding:5px 8px}.accounts-models{max-height:220px;overflow:auto;font-size:13px;line-height:1.7;padding:8px 0}.account-compact{margin:12px 0;padding:12px 18px;border:1px solid var(--line,#dfe3eb);border-radius:12px}.account-compact summary{cursor:pointer;font-weight:600}.account-compact .account-heading{margin-top:10px}.account-compact .account-quota,.account-compact .account-cards{padding:10px;margin:8px 0}.account-compact .account-quota h3,.account-compact .account-cards h3{margin-bottom:6px}.account-compact .account-card{padding:8px 0}.account-compact p{margin:5px 0}.account-compact .account-window{margin-bottom:4px;font-size:13px}
+.account-compact:has(>summary[hidden]){display:none}
+
+.accounts-identity{display:flex;align-items:flex-start;justify-content:space-between;gap:12px 24px;flex-wrap:wrap}.accounts-name{flex:1;min-width:140px}.accounts-identity .accounts-usage{margin:0 0 10px;flex:2;min-width:200px}.accounts-identity .accounts-credit{font-weight:600}
+
+.sidebar-foot>#accounts-button{flex:0 0 7em}
+
+.accounts-name-heading{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}

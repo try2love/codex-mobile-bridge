@@ -1,0 +1,10 @@
+#language{margin:0;font-size:12px;min-height:38px}
+nav button{position:relative;padding-right:24px}
+nav button[data-dirty="true"]::after{position:absolute;right:9px;top:50%;margin:0;transform:translateY(-50%)}
+button{white-space:normal;overflow-wrap:anywhere}
+header{gap:16px}header>div{min-width:0}.badge{flex-shrink:0}
+h1{font-size:25px;overflow-wrap:anywhere}
+.two{grid-template-columns:repeat(2,minmax(0,1fr))}
+.path button{flex:0 0 auto;max-width:42%}
+.actions{flex-wrap:wrap}.save-bar{gap:16px}
+@media(max-width:900px){main{padding:28px 24px 100px}.two{grid-template-columns:1fr}.save-bar{padding:18px 24px}.section-head{gap:12px;align-items:flex-start}}
