@@ -635,12 +635,41 @@ class ModelTests(unittest.TestCase):
     @unittest.skipUnless(os.name == 'nt', 'Windows drive path syntax')
     def test_reference_path_accepts_windows_drive_paths(self):
         from bridge.files import reference_path
-        path = reference_path('D:\\workspace\\report.txt')
-        self.assertTrue(path.is_absolute())
-        self.assertEqual(path, PureWindowsPath('D:/workspace/report.txt'))
+        for reference in ('D:\\workspace\\report.txt', 'D:/workspace/report.txt',
+                          '/D:/workspace/report.txt', '/D:\\workspace\\report.txt',
+                          'file:///D:/workspace/report.txt'):
+            with self.subTest(reference=reference):
+                path = reference_path(reference)
+                self.assertTrue(path.is_absolute())
+                self.assertEqual(path, PureWindowsPath('D:/workspace/report.txt'))
 
     @unittest.skipUnless(os.name == 'nt', 'Windows drive path syntax')
-    def test_windows_drive_markdown_reference_remains_in_workspace(self):
+    def test_slash_prefixed_windows_artifacts_support_cross_project_paths(self):
+        with tempfile.TemporaryDirectory(dir=str(ROOT / '.tmp')) as directory:
+            root = Path(directory)
+            workspace = root / 'workspace';workspace.mkdir()
+            outside = root / 'private.md';outside.write_text('private', encoding='utf-8')
+            for name in ('report.md', 'app.apk'):
+                allowed = workspace / name;allowed.write_bytes(b'test')
+                reference = '/' + allowed.as_posix()
+                escape = '/' + workspace.as_posix() + '/../private.md'
+                value = {**state(), 'cwd': str(workspace), 'turns': [{'items': [
+                    {'type': 'agentMessage', 'text': f'[file]({reference}) [private](/{outside.as_posix()}) [escape]({escape})'},
+                ]}]}
+                with self.subTest(name=name):
+                    files = artifact_paths(value, root / '.codex')
+                    by_path = {item['path']: item for item in files.values()}
+                    self.assertEqual(set(by_path), {allowed.resolve(), outside.resolve()})
+                    self.assertEqual(by_path[allowed.resolve()]['reference'], reference)
+                    self.assertEqual(set(by_path[outside.resolve()]['references']), {'/' + outside.as_posix(), escape})
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX path syntax')
+    def test_slash_prefixed_drive_is_preserved_on_posix(self):
+        from bridge.files import reference_path
+        self.assertEqual(reference_path('/D:/workspace/report.md'), Path('/D:/workspace/report.md'))
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows drive path syntax')
+    def test_windows_drive_markdown_reference_supports_cross_project_paths(self):
         with tempfile.TemporaryDirectory(dir=str(ROOT / '.tmp')) as directory:
             root = Path(directory)
             workspace = root / 'workspace';workspace.mkdir()
@@ -649,7 +678,7 @@ class ModelTests(unittest.TestCase):
             value = state();value['cwd'] = str(workspace)
             value['turns'] = [{'items': [{'type': 'agentMessage', 'text': f'[report]({allowed}) [private]({outside})'}]}]
             files = artifact_paths(value, root / '.codex')
-            self.assertEqual([item['name'] for item in files.values()], ['report.txt'])
+            self.assertEqual({item['name'] for item in files.values()}, {'report.txt', 'private.txt'})
 
     def test_file_uri_image_view_links_plain_markdown_reference(self):
         with tempfile.TemporaryDirectory(dir=str(ROOT / '.tmp')) as directory:
@@ -662,8 +691,27 @@ class ModelTests(unittest.TestCase):
             files = artifact_paths(value, root / '.codex')
             self.assertEqual(len(files), 1)
             self.assertEqual(next(iter(files.values()))['reference'], str(image))
+            self.assertEqual(set(next(iter(files.values()))['references']), {str(image), image.as_uri()})
 
-    def test_artifacts_only_referenced_workspace_files(self):
+    def test_artifact_retains_all_references_to_same_file(self):
+        with tempfile.TemporaryDirectory(dir=str(ROOT / '.tmp')) as directory:
+            root = Path(directory)
+            for name in ('report.md', 'app.apk'):
+                path = root / name;path.write_bytes(b'test')
+                references = [str(path), path.as_uri(), str(path) + ':12']
+                if os.name == 'nt':
+                    references.extend([path.as_posix(), '/' + path.as_posix()])
+                value = {**state(), 'cwd': str(root), 'turns': [{'items': [
+                    {'type': 'agentMessage', 'text': ' '.join(f'[file]({reference})' for reference in references)},
+                ]}]}
+                with self.subTest(name=name):
+                    files = artifact_paths(value, root / '.codex')
+                    self.assertEqual(len(files), 1)
+                    artifact = next(iter(files.values()))
+                    self.assertEqual(set(artifact['references']), set(references))
+                    self.assertIn(artifact['reference'], references)
+
+    def test_artifacts_include_only_referenced_files_across_projects(self):
         with tempfile.TemporaryDirectory(dir=str(ROOT / '.tmp')) as directory:
             root = Path(directory)
             workspace = root / 'workspace'
@@ -672,13 +720,18 @@ class ModelTests(unittest.TestCase):
             allowed.write_text('report')
             outside = root / 'private.txt'
             outside.write_text('private')
+            unreferenced = root / 'unreferenced.txt';unreferenced.write_text('private')
+            missing = root / 'missing.txt'
+            oversized = root / 'large.apk'
+            with oversized.open('wb') as stream: stream.truncate(50 * 1024 * 1024 + 1)
             value = state()
             value['cwd'] = str(workspace)
-            value['turns'] = [{'items': [{'type': 'agentMessage', 'text': f'[report]({allowed}) [private]({outside})'}]}]
+            references = [allowed, outside, missing, oversized, workspace]
+            value['turns'] = [{'items': [{'type': 'agentMessage', 'text': ' '.join(f'[file]({path})' for path in references)}]}]
             files = artifact_paths(value, root / '.codex')
-            self.assertEqual([v['name'] for v in files.values()], ['report.txt'])
+            self.assertEqual({v['path'] for v in files.values()}, {allowed.resolve(), outside.resolve()})
 
-    def test_artifact_symlink_cannot_escape_workspace(self):
+    def test_artifact_symlink_resolves_referenced_cross_project_file(self):
         with tempfile.TemporaryDirectory(dir=str(ROOT / '.tmp')) as directory:
             root = Path(directory)
             workspace = root / 'workspace'
@@ -694,7 +747,8 @@ class ModelTests(unittest.TestCase):
                 raise
             value = {**state(), 'cwd': str(workspace), 'turns': [
                 {'items': [{'type': 'agentMessage', 'text': f'[link]({link})'}]}]}
-            self.assertEqual(artifact_paths(value, root / '.codex'), {})
+            files = artifact_paths(value, root / '.codex')
+            self.assertEqual([item['path'] for item in files.values()], [outside.resolve()])
 
     def test_file_approval_includes_actual_pending_diff(self):
         value = state()
@@ -1047,7 +1101,7 @@ class HttpTests(unittest.TestCase):
             self.assertEqual(response.status, 200)
             scripts = re.findall(r'<script src="([^"]+)"', response.read().decode())
             self.assertEqual([script.split('?', 1)[0] for script in scripts], ['/vendor/markdown-it.min.js', '/vendor/katex/katex.min.js',
-                                       '/vendor/texmath.js', '/message-actions.js', '/markdown.js', '/i18n.js', '/downloads.js', '/image-viewer.js', '/timeline.js', '/account.js', '/modes.js', '/attachments.js', '/activity.js', '/fast-mode.js', '/accounts.js', '/client-accounts.js', '/floating-panel.js', '/git-panel.js', '/vendor/xterm/xterm.js', '/vendor/xterm/addon-fit.js', '/command-terminal-panel.js', '/terminal-panel.js', '/permissions.js', '/side-chat.js', '/agents-panel.js', '/workbench.js', '/list-sync.js', '/desktop-sessions.js', '/client-lifecycle.js', '/client-navigation.js', '/app.js', '/presentation.js'])
+                                       '/vendor/texmath.js', '/message-actions.js', '/markdown.js', '/i18n.js', '/downloads.js', '/text-viewer.js', '/image-viewer.js', '/timeline.js', '/account.js', '/modes.js', '/attachments.js', '/activity.js', '/fast-mode.js', '/accounts.js', '/client-accounts.js', '/floating-panel.js', '/git-panel.js', '/vendor/xterm/xterm.js', '/vendor/xterm/addon-fit.js', '/command-terminal-panel.js', '/terminal-panel.js', '/permissions.js', '/side-chat.js', '/agents-panel.js', '/workbench.js', '/list-sync.js', '/desktop-sessions.js', '/client-lifecycle.js', '/client-navigation.js', '/app.js', '/presentation.js'])
             for script in scripts:
                 conn.request('GET', script)
                 response = conn.getresponse()
@@ -1055,6 +1109,11 @@ class HttpTests(unittest.TestCase):
                 self.assertIn('text/javascript', response.getheader('Content-Type'))
                 self.assertIn("script-src 'self'", response.getheader('Content-Security-Policy'))
                 self.assertTrue(response.read(), script)
+            conn.request('GET', '/text-viewer.css')
+            response = conn.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertIn('text/css', response.getheader('Content-Type'))
+            self.assertTrue(response.read())
         finally:
             conn.close()
 

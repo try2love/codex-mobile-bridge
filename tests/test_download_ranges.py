@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from bridge.files import path_identity
 from bridge.remote import RemoteStore
 from bridge.service import Bridge
 from bridge.workspace import Workspace, MAX_TRANSFER, operate
@@ -157,6 +158,31 @@ class DownloadHttpTests(unittest.TestCase):
         self.assertIn(str(MAX_TRANSFER + 1), headers['Content-Range'])
         with self.file.open('wb') as stream: stream.truncate(50 * 1024 * 1024 + 1)
         self.assertEqual(self.get({**auth, 'Range': 'bytes=0-9'}, artifact)[0], 400)
+
+    def test_cross_project_apk_download_requires_chat_reference_and_login(self):
+        workspace = self.root / 'AstrBot_Plugin'; workspace.mkdir()
+        project = self.root / 'codex-mobile-bridge'; project.mkdir()
+        apk = project / 'Bridge Dev.apk'; apk.write_bytes(b'APK fixture bytes')
+        identifier = hashlib.sha256(str(path_identity(apk)).encode()).hexdigest()
+        url = '/api/sessions/' + support.THREAD + '/files/' + identifier
+        session = SimpleNamespace(condition=support.threading.Condition(), state={'cwd': str(workspace), 'turns': []})
+        bridge = SimpleNamespace(host='local', store=SimpleNamespace(home=self.root / '.codex'),
+                                 session=lambda thread, attach=False: session)
+        self.server.bridge.artifact = lambda thread, key: Bridge.artifact(bridge, thread, key)
+        self.assertEqual(self.get({}, url)[0], 401)
+        auth = self.login()
+        self.assertEqual(self.get(auth, url)[0], 404)
+        references = [str(apk), apk.as_uri()]
+        if os.name == 'nt': references.append('/' + apk.as_posix())
+        for reference in references:
+            with self.subTest(reference=reference):
+                session.state['turns'] = [{'items': [{'type': 'agentMessage', 'text': f'[APK](<{reference}>)'}]}]
+                status, headers, data = self.get(auth, url)
+                self.assertEqual((status, data), (200, apk.read_bytes()))
+                self.assertIn('Bridge', headers['Content-Disposition'])
+                self.assertEqual(self.get({**auth, 'Range': 'bytes=0-2'}, url)[::2], (206, b'APK'))
+        session.state['turns'] = []
+        self.assertEqual(self.get(auth, url)[0], 404)
 
     def test_artifact_parent_symlink_swap_cannot_escape(self):
         folder = self.root / 'folder'; folder.mkdir()

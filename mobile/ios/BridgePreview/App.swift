@@ -65,13 +65,14 @@ final class GatewayReachability: NSObject, URLSessionDataDelegate {
     }
 }
 
-final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelegate, UIDocumentPickerDelegate {
+final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelegate, UIDocumentPickerDelegate, UIDocumentInteractionControllerDelegate {
     private var web: WKWebView?
     private var origin = ""
     private var clipboardToken = ""
     private var downloadState = DownloadManager.Snapshot()
     private let downloadPanel = DownloadPanel()
     private var exportPicker: UIDocumentPickerViewController?
+    private var openDocument: UIDocumentInteractionController?
     private var downloadBottom: NSLayoutConstraint?
     private lazy var downloads: DownloadManager = {
         let manager = DownloadManager()
@@ -270,6 +271,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         }
         downloadPanel.onCancel = { [weak self] in self?.downloads.cancel() }
         downloadPanel.onSave = { [weak self] in self?.saveDownload() }
+        downloadPanel.onOpen = { [weak self] in self?.openDownload() }
         downloadBottom = downloadPanel.bottomAnchor.constraint(equalTo: page.bottomAnchor, constant: -16)
         let downloadWidth = downloadPanel.widthAnchor.constraint(equalToConstant: 360); downloadWidth.priority = .defaultHigh
         NSLayoutConstraint.activate([downloadBottom!, downloadWidth,
@@ -514,6 +516,17 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         guard let url = request.url, isArtifact(url) else { return }
         downloadPanel.expand(); downloads.start(url, origin: origin)
     }
+    private func openDownload() {
+        guard downloadState.phase == .complete, let file = downloadState.file, presentedViewController == nil else { return }
+        let document = UIDocumentInteractionController(url: file)
+        document.delegate = self; openDocument = document
+        // The menu transfers the document to the receiving app; the active task retains its source.
+        if !document.presentOpenInMenu(from: downloadPanel.bounds, in: downloadPanel, animated: true),
+           !document.presentPreview(animated: true) {
+            openDocument = nil; info(MobileStrings.text("暂无可打开此文件的应用"))
+        }
+    }
+    func documentInteractionControllerViewControllerForPreview(_ controller: UIDocumentInteractionController) -> UIViewController { self }
     private func saveDownload() {
         guard downloadState.phase == .complete, let file = downloadState.file, presentedViewController == nil else { return }
         let picker = UIDocumentPickerViewController(forExporting: [file], asCopy: true); picker.delegate = self
@@ -883,6 +896,7 @@ final class DownloadPanel: UIView {
     var onToggle: (() -> Void)?
     var onCancel: (() -> Void)?
     var onSave: (() -> Void)?
+    var onOpen: (() -> Void)?
     private let title = UILabel()
     private let detail = UILabel()
     private let status = UILabel()
@@ -890,6 +904,7 @@ final class DownloadPanel: UIView {
     private let content = UIStackView()
     private let toggle = UIButton(type: .system)
     private let save = UIButton(type: .system)
+    private let open = UIButton(type: .system)
     private let cancel = UIButton(type: .system)
     private let collapse = UIButton(type: .system)
     private var collapsed = false
@@ -915,7 +930,7 @@ final class DownloadPanel: UIView {
         progress.progressTintColor = tintColor; progress.trackTintColor = .tertiarySystemFill
         content.addArrangedSubview(detail); content.addArrangedSubview(progress); content.addArrangedSubview(status)
         let actions = UIStackView(); actions.axis = .horizontal; actions.spacing = 8; actions.distribution = .fillEqually; content.addArrangedSubview(actions)
-        for button in [toggle, save, cancel] {
+        for button in [toggle, open, save, cancel] {
             var config = UIButton.Configuration.tinted(); config.cornerStyle = .medium
             config.baseForegroundColor = tintColor; config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in var output = incoming; output.font = .systemFont(ofSize: 14, weight: .medium); return output }
             button.configuration = config; button.heightAnchor.constraint(greaterThanOrEqualToConstant: 40).isActive = true; actions.addArrangedSubview(button)
@@ -923,13 +938,14 @@ final class DownloadPanel: UIView {
         toggle.addAction(UIAction { [weak self] _ in self?.onToggle?() }, for: .touchUpInside)
         cancel.addAction(UIAction { [weak self] _ in self?.onCancel?() }, for: .touchUpInside)
         save.addAction(UIAction { [weak self] _ in self?.onSave?() }, for: .touchUpInside)
+        open.addAction(UIAction { [weak self] _ in self?.onOpen?() }, for: .touchUpInside)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     func expand() { collapsed = false; render(state) }
     func render(_ state: DownloadManager.Snapshot) {
         self.state = state; isHidden = !state.visible; content.isHidden = collapsed
         let percentage = state.total.map { $0 == 0 ? 100 : min(100, Int(Double(state.received) / Double($0) * 100)) }
-        let phases: [DownloadManager.Phase: String] = [.connecting: "正在连接…", .downloading: "正在下载…", .paused: "已暂停", .failed: "下载未完成", .complete: "下载完成，待保存", .saved: "已保存", .idle: "", .cancelled: "已取消"]
+        let phases: [DownloadManager.Phase: String] = [.connecting: "正在连接…", .downloading: "正在下载…", .paused: "已暂停", .failed: "下载未完成", .complete: "下载完成，可打开或保存", .saved: "已保存", .idle: "", .cancelled: "已取消"]
         let phase = MobileStrings.text(phases[state.phase] ?? "")
         title.text = state.name + (collapsed ? " · " + (state.phase == .downloading ? percentage.map { "\($0)%" } ?? phase : phase) : "")
         title.accessibilityLabel = state.name
@@ -944,7 +960,8 @@ final class DownloadPanel: UIView {
         toggle.isHidden = ![.connecting, .downloading, .paused, .failed].contains(state.phase)
         toggle.configuration?.title = MobileStrings.text([.connecting, .downloading].contains(state.phase) ? "暂停" : state.canResume ? "继续下载" : "重新下载")
         save.isHidden = state.phase != .complete; save.configuration?.title = MobileStrings.text("保存到文件")
-        cancel.configuration?.title = MobileStrings.text(state.phase == .saved ? "关闭" : "取消下载")
+        open.isHidden = state.phase != .complete; open.configuration?.title = MobileStrings.text("打开")
+        cancel.configuration?.title = MobileStrings.text([.complete, .saved].contains(state.phase) ? "关闭" : "取消下载")
     }
 }
 
@@ -973,7 +990,8 @@ enum MobileStrings {
         "正在连接…": "Connecting…",
         "已暂停": "Paused",
         "下载未完成": "Download incomplete",
-        "下载完成，待保存": "Downloaded · ready to save",
+        "下载完成，可打开或保存": "Downloaded · open or save",
+        "暂无可打开此文件的应用": "No app is available to open this file.",
         "已保存": "Saved",
         "已取消": "Cancelled",
         "展开下载": "Expand download",

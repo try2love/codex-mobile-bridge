@@ -67,7 +67,7 @@ test('development launch keeps script as its own argument',()=>{
 
 // Exercise the real renderer's start and polling handlers with a controlled
 // backend and clock. DOM layout and input editing are outside these checks.
-async function renderer(initialLanguage='zh-CN',{autoStart=false}={}){
+async function renderer(initialLanguage='zh-CN',{autoStart=false,hidden=false,loginStartup}={}){
   const fs=require('node:fs'),vm=require('node:vm');
   const nodes=new Map();
   function node(){return {parentNode:{insertBefore(){}},getAnimations(){return [];},animate(){},closest(){return null;},value:'',checked:false,hidden:false,textContent:'',dataset:{},
@@ -75,7 +75,7 @@ async function renderer(initialLanguage='zh-CN',{autoStart=false}={}){
   const html=fs.readFileSync(path.join(__dirname,'../desktop/index.html'),'utf8');
   for(const match of html.matchAll(/\bid="([^"]+)"/g))nodes.set(match[1],node());
   for(const id of ['clients-start','clients-stop'])nodes.set(id,node());
-  const value={runtime:{running:false,portOccupied:false,supportsNotifications:true},
+  const value={loginStartup,runtime:{running:false,portOccupied:false,supportsNotifications:true},
     preferences:{port:8787,lan:true,tunnel:false,autoStart,connections:[]},
     auth:{mode:'password',username:'admin'},notifications:{enabled:false,server:'https://ntfy.sh',topic:''},
     notificationStatus:{},watches:[],origins:[],urls:[],dataDir:'/test',credentialsAvailable:false};
@@ -84,7 +84,7 @@ async function renderer(initialLanguage='zh-CN',{autoStart=false}={}){
   const api={account:async()=>({visible:false}),language:async()=>initialLanguage,setLanguage:async value=>value,snapshot:async()=>{calls.push('snapshot');return structuredClone(value);},start:async()=>{calls.push('start');return {started:true,message:'正在启动网关'};},
     save:async payload=>{value.preferences={...value.preferences,...payload.preferences};return structuredClone(value);},logs:async()=>({text:''})};
   const context=vm.createContext({window:{bridgeDesktop:api},
-    localStorage:{getItem(){return null;},setItem(){}},document:{hidden:false,addEventListener(name,fn){this[name]=fn;},documentElement:{},getElementById:id=>nodes.get(id),createElement:node,querySelectorAll:()=>[]},
+    localStorage:{getItem(){return null;},setItem(){}},document:{hidden,addEventListener(name,fn){this[name]=fn;},documentElement:{},getElementById:id=>nodes.get(id),createElement:node,querySelectorAll:()=>[]},
     URL,Date:class extends Date{static now(){return now;}},setTimeout(){},clearTimeout(){},clearInterval(){},setInterval:(callback,ms)=>{if(callback.name==='refresh')poll=callback;}});
   for(const name of ['web/i18n.js','desktop/secret-fields.js','desktop/connections.js','desktop/pairing.js','web/account.js','desktop/watches.js','desktop/renderer.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',name),'utf8'),context);
   await new Promise(setImmediate);
@@ -599,4 +599,70 @@ test('English toast translates account failures and dynamic operation feedback',
  for(const message of ['请先保存连接配置。', '账号不存在，请刷新列表', '部分通道发送失败：ntfy；请在手机确认其他通道是否收到。']){
   ui.context.feedback(message,true);assert.doesNotMatch(ui.nodes.get('toast-message').textContent,/[\u4e00-\u9fff]/);
  }
+});
+
+
+test('hidden login launch starts the gateway and keeps background polling paused',async()=>{
+  const ui=await renderer('zh-CN',{autoStart:true,hidden:true});
+  assert.deepEqual(ui.calls,['snapshot','start']);
+  await ui.poll();assert.deepEqual(ui.calls,['snapshot','start']);
+});
+
+test('Windows login startup enables gateway startup and preserves it when unchecked',async()=>{
+  const ui=await renderer('zh-CN',{loginStartup:{supported:true,enabled:false}});
+  assert.equal(ui.nodes.get('login-startup-setting').hidden,false);
+  ui.nodes.get('login-startup').checked=true;ui.nodes.get('login-startup').onchange();
+  assert.equal(ui.nodes.get('auto-start').checked,true);
+  assert.equal(ui.nodes.get('auto-start').disabled,true);
+  assert.equal(ui.context.collect().loginStartup,true);
+  ui.nodes.get('login-startup').checked=false;ui.nodes.get('login-startup').onchange();
+  assert.equal(ui.nodes.get('auto-start').checked,true);
+  assert.equal(ui.nodes.get('auto-start').disabled,false);
+});
+
+test('Windows login registration uses matching executable and arguments and reads system approval',()=>{
+  const {createLoginStartup}=require('../desktop/login-startup.cjs');
+  let settings={openAtLogin:false,executableWillLaunchAtLogin:false},readOptions,writeOptions;
+  const app={isPackaged:true,getLoginItemSettings:options=>{readOptions=options;return settings;},setLoginItemSettings:options=>{writeOptions=options;settings={openAtLogin:options.name?false:options.openAtLogin,executableWillLaunchAtLogin:options.openAtLogin,launchItems:options.name&&options.openAtLogin?[{name:options.name,scope:'user',enabled:true}]:[]};}};
+  const startup=createLoginStartup(app,{platform:'win32',executable:'C:/Program Files/Bridge.exe'});
+  startup.set(true);assert.equal(startup.status().enabled,true);
+  assert.deepEqual(readOptions,{path:'C:/Program Files/Bridge.exe',args:['--login-startup'],name:'Codex Mobile Bridge'});
+  assert.deepEqual(writeOptions,{...readOptions,openAtLogin:true});
+  assert.equal(startup.hidden(['app','--login-startup']),true);assert.equal(startup.hidden(['app']),false);
+  settings.launchItems[0].enabled=false;assert.equal(startup.status().enabled,false);
+  startup.set(false);assert.equal(startup.status().enabled,false);
+  for(const platform of ['darwin','linux']){
+    const other=createLoginStartup(app,{platform});assert.equal(other.status().supported,false);assert.equal(other.hidden(['--login-startup']),false);
+    assert.throws(()=>other.set(true));
+  }
+  app.isPackaged=false;
+  const fs=require('node:fs'),os=require('node:os');
+  const devRoot=fs.mkdtempSync(path.join(os.tmpdir(),'bridge startup '));
+  const env={CMB_DATA_DIR:'D:/Project space/dev data',CMB_PYTHON:'D:/Project space/.venv/python.exe'};
+  const dev=createLoginStartup(app,{platform:'win32',executable:'D:/Project space/electron.exe',root:devRoot,env});
+  assert.equal(dev.status().supported,true);dev.set(true);
+  assert.deepEqual(writeOptions.args,[devRoot,'--login-startup']);
+  assert.equal(writeOptions.name,'Codex Mobile Bridge Development');
+  assert.equal(settings.openAtLogin,false);assert.equal(dev.status().enabled,true);
+  settings.launchItems[0].enabled=false;assert.equal(dev.status().enabled,false);
+
+  const {restoreDevelopmentEnvironment}=require('../desktop/login-startup.cjs');
+  const restored={};restoreDevelopmentEnvironment(app,writeOptions.args,restored,'win32',devRoot);
+  assert.deepEqual(restored,{...env,PYTHONUTF8:'1'});
+  const manual={};restoreDevelopmentEnvironment(app,['D:/Project space'],manual,'win32');assert.deepEqual(manual,{});
+  dev.set(false);assert.equal(dev.status().enabled,false);
+  fs.rmSync(devRoot,{recursive:true,force:true});
+});
+
+
+test('Windows startup lookup handles Electron quoted paths with spaces',()=>{
+  const {createLoginStartup}=require('../desktop/login-startup.cjs');
+  const queries=[];
+  const app={isPackaged:true,getLoginItemSettings:options=>{
+    queries.push(options.path);
+    return {launchItems:options.path.startsWith('"')?[{name:'Codex Mobile Bridge',scope:'user',enabled:true}]:[]};
+  }};
+  const startup=createLoginStartup(app,{platform:'win32',executable:'C:/Program Files/Codex Mobile Bridge.exe'});
+  assert.equal(startup.status().enabled,true);
+  assert.deepEqual(queries,['C:/Program Files/Codex Mobile Bridge.exe','"C:/Program Files/Codex Mobile Bridge.exe"']);
 });

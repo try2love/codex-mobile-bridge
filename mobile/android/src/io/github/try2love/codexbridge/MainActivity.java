@@ -13,7 +13,7 @@ import java.util.*;
 import java.util.concurrent.*;
 
 public final class MainActivity extends Activity {
- private LinearLayout root,bar;private WebView web;private String origin="";private TextView status;
+ private LinearLayout root,bar;private WebView web;private String origin="";private TextView status;private SystemBars systemBars;
  private android.content.SharedPreferences prefs;private final ExecutorService worker=Executors.newSingleThreadExecutor();
  private final ExecutorService probes=Executors.newFixedThreadPool(3);
  private final Handler homeHandler=new Handler(Looper.getMainLooper());
@@ -24,7 +24,7 @@ public final class MainActivity extends Activity {
  private final Runnable homeRefresh=()->checkComputers();
  private long homeBackAt;private Toast exitToast;
  private final ExecutorService downloads=Executors.newSingleThreadExecutor();
- private FrameLayout screen;private DownloadCard downloadCard;private ArtifactDownload.Task downloadTask,choosingDownload;private boolean savingDownload;
+ private FrameLayout screen;private DownloadCard downloadCard;private ArtifactDownload.Task downloadTask,choosingDownload;private boolean savingDownload,openingDownload;
  private ServiceConnection monitor;private ValueCallback<Uri[]> files;private WebView fileView;private int fileGeneration;private int generation;
  String L(String value){return MobileStrings.text(this,value);}
  int dp(int n){return (int)(getResources().getDisplayMetrics().density*n);}
@@ -39,18 +39,17 @@ public final class MainActivity extends Activity {
  void webAction(String selector){if(web!=null&&GatewayURL.sameOrigin(web.getUrl(),origin))web.evaluateJavascript("document.querySelector("+JSONObject.quote(selector)+")?.click()",null);}
  void webAccounts(){if(web!=null&&GatewayURL.sameOrigin(web.getUrl(),origin))web.evaluateJavascript("(()=>{if(typeof window.BridgeNavigation?.accounts==='function')return window.BridgeNavigation.accounts();document.getElementById('accounts-button')?.click();return true;})()",null);}
  void gatewayMenu(View anchor){PopupMenu menu=new PopupMenu(this,anchor);menu.getMenu().add(L("返回电脑列表")).setOnMenuItemClickListener(i->{home();return true;});menu.getMenu().add(L("账号与接入")).setOnMenuItemClickListener(i->{webAccounts();return true;});menu.getMenu().add(L("通知收件箱")).setOnMenuItemClickListener(i->{inbox();return true;});menu.getMenu().add(L("外观与显示")).setOnMenuItemClickListener(i->{webAction("[data-open-appearance]");return true;});menu.getMenu().add(L("手机设置")).setOnMenuItemClickListener(i->{settings();return true;});menu.getMenu().add(L("刷新页面")).setOnMenuItemClickListener(i->{if(web!=null)web.reload();return true;});for(int n=0;n<menu.getMenu().size();n++){int[] icons={android.R.drawable.ic_menu_revert,android.R.drawable.ic_menu_myplaces,android.R.drawable.ic_dialog_email,android.R.drawable.ic_menu_edit,android.R.drawable.ic_menu_preferences,android.R.drawable.ic_popup_sync};menu.getMenu().getItem(n).setIcon(icons[n]);}if(Build.VERSION.SDK_INT>=29)menu.setForceShowIcon(true);menu.show();}
- String webAppearance(){try(java.io.ByteArrayOutputStream out=new java.io.ByteArrayOutputStream()){for(String asset:new String[]{"mobile-ui.js","mobile-clipboard.js","mobile-session.js"}){try(java.io.InputStream in=getAssets().open(asset)){byte[] data=new byte[4096];int size;while((size=in.read(data))!=-1)out.write(data,0,size);}}return out.toString("UTF-8");}catch(java.io.IOException e){throw new IllegalStateException("Missing mobile layout",e);}}
+ String webAppearance(){try(java.io.ByteArrayOutputStream out=new java.io.ByteArrayOutputStream()){for(String asset:new String[]{"mobile-ui.js","mobile-clipboard.js","mobile-session.js","mobile-system-bars.js"}){try(java.io.InputStream in=getAssets().open(asset)){byte[] data=new byte[4096];int size;while((size=in.read(data))!=-1)out.write(data,0,size);}}return out.toString("UTF-8");}catch(java.io.IOException e){throw new IllegalStateException("Missing mobile layout",e);}}
  void message(String value){resetExitGesture();new AlertDialog.Builder(this).setMessage(L(value)).setPositiveButton(L("好"),null).show();}
  Set<String> saved(){return new LinkedHashSet<>(prefs.getStringSet("origins",new HashSet<>()));}
- @Override public void onCreate(Bundle state){super.onCreate(state);prefs=getSharedPreferences("bridge",0);root=new LinearLayout(this);root.setOrientation(1);root.setBackgroundColor(0xfff5f5f3);screen=new FrameLayout(this);screen.setFitsSystemWindows(Build.VERSION.SDK_INT<30);screen.addView(root,new FrameLayout.LayoutParams(-1,-1));setContentView(screen);
+ @Override public void onCreate(Bundle state){super.onCreate(state);prefs=getSharedPreferences("bridge",0);root=new LinearLayout(this);root.setOrientation(1);root.setBackgroundColor(0xfff5f5f3);screen=new FrameLayout(this);screen.addView(root,new FrameLayout.LayoutParams(-1,-1));setContentView(screen);systemBars=new SystemBars(this,screen,()->{if(downloadCard!=null)downloadCard.post(downloadCard::place);});
   if(Build.VERSION.SDK_INT>=33)getOnBackInvokedDispatcher().registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,this::handleBack);
-  if(Build.VERSION.SDK_INT>=30){getWindow().setDecorFitsSystemWindows(false);screen.setOnApplyWindowInsetsListener((v,insets)->{android.graphics.Insets i=insets.getInsets(WindowInsets.Type.systemBars()|WindowInsets.Type.displayCutout()|WindowInsets.Type.ime());v.setPadding(i.left,i.top,i.right,i.bottom);if(downloadCard!=null)downloadCard.post(downloadCard::place);return WindowInsets.CONSUMED;});}
   bar=new LinearLayout(this);bar.setGravity(Gravity.CENTER_VERTICAL);bar.setPadding(dp(20),dp(4),dp(12),dp(4));root.addView(bar);header(false);
-  downloadCard=new DownloadCard(this,screen,this::downloadAction,this::cancelDownload);
+  downloadCard=new DownloadCard(this,screen,this::downloadAction,this::openDownload,this::cancelDownload);
   status=text("",12);status.setTextColor(0xff6b7075);status.setGravity(Gravity.CENTER);root.addView(status);
   if(!openIntent(getIntent())){String active=prefs.getString("active","");if(saved().contains(active))connect(active+"/");else home();}monitor();
  }
- void clear(){if(files!=null){files.onReceiveValue(null);files=null;fileView=null;}stopComputerChecks();homeStates.clear();resetExitGesture();generation++;if(web!=null){web.stopLoading();web.destroy();web=null;}while(root.getChildCount()>2)root.removeViewAt(2);}
+ void clear(){if(files!=null){files.onReceiveValue(null);files=null;fileView=null;}stopComputerChecks();homeStates.clear();resetExitGesture();generation++;if(web!=null){web.stopLoading();web.destroy();web=null;}systemBars.update(0xfff5f5f3,0xfff5f5f3);while(root.getChildCount()>2)root.removeViewAt(2);}
  void home(){clear();header(false);status.setVisibility(View.GONE);ScrollView scroll=new ScrollView(this);scroll.setFillViewport(true);LinearLayout content=column();content.setPadding(dp(20),dp(16),dp(20),dp(24));scroll.addView(content);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
   ImageView icon=new ImageView(this);icon.setImageResource(getResources().getIdentifier("ic_computer","drawable",getPackageName()));icon.setScaleType(ImageView.ScaleType.FIT_CENTER);LinearLayout.LayoutParams ip=new LinearLayout.LayoutParams(dp(64),dp(58));ip.gravity=Gravity.CENTER;ip.bottomMargin=dp(24);content.addView(icon,ip);
   TextView headline=text(L("电脑上的工作，\n带在身边。"),30);headline.setTypeface(null,android.graphics.Typeface.BOLD);headline.setGravity(Gravity.CENTER);add(headline,content,10);
@@ -94,6 +93,10 @@ public final class MainActivity extends Activity {
   });
   web.setWebChromeClient(new WebChromeClient(){
    @Override public boolean onJsPrompt(WebView view,String url,String prompt,String value,JsPromptResult result){
+    if(prompt.equals("codexbridge-system-bars:"+clipboardToken)){
+     if(view==web&&GatewayURL.sameOrigin(url,origin)&&GatewayURL.sameOrigin(view.getUrl(),origin)&&value!=null&&value.length()<100){try{JSONObject colors=new JSONObject(value);String top=colors.getString("top"),bottom=colors.getString("bottom");if(top.matches("#[0-9a-fA-F]{6}")&&bottom.matches("#[0-9a-fA-F]{6}")){systemBars.update(android.graphics.Color.parseColor(top),android.graphics.Color.parseColor(bottom));result.confirm("saved");return true;}}catch(Exception ignored){}}
+     result.cancel();return true;
+    }
     if(prompt.equals("codexbridge-computer:"+clipboardToken)){
      if(view==web&&GatewayURL.sameOrigin(url,origin)&&GatewayURL.sameOrigin(view.getUrl(),origin))result.confirm(computerName(origin));else result.cancel();return true;
     }
@@ -119,7 +122,7 @@ public final class MainActivity extends Activity {
   web.setDownloadListener((target,agent,disposition,mime,length)->downloadArtifact(target));
   web.loadUrl(url);monitor();
  }catch(Exception e){message(e.getMessage());}}
- void renderDownload(){downloadCard.render(downloadTask,savingDownload||choosingDownload!=null);}
+ void renderDownload(){downloadCard.render(downloadTask,savingDownload||choosingDownload!=null,openingDownload);}
  void downloadArtifact(String target){
   if(downloadTask!=null){downloadCard.showTask();renderDownload();message(L("已有下载任务，请先完成或取消"));return;}
   if(web==null||!GatewayURL.sameOrigin(web.getUrl(),origin)||!ArtifactDownload.accepts(target,origin)){message(L("此下载不是当前电脑的附件，请在浏览器中打开"));return;}
@@ -132,7 +135,7 @@ public final class MainActivity extends Activity {
   task.state=ArtifactDownload.State.READY;renderDownload();downloads.execute(()->task.run(()->CookieManager.getInstance().getCookie(task.url),value->runOnUiThread(()->{if(downloadTask==value&&!isFinishing()&&!isDestroyed())renderDownload();})));
  }
  void downloadAction(){
-  ArtifactDownload.Task task=downloadTask;if(task==null||savingDownload||choosingDownload!=null)return;
+  ArtifactDownload.Task task=downloadTask;if(task==null||savingDownload||choosingDownload!=null||openingDownload)return;
   if(task.state==ArtifactDownload.State.RUNNING){task.pause();renderDownload();}
   else if(task.state==ArtifactDownload.State.PAUSED||task.state==ArtifactDownload.State.FAILED){
    if(task.resumable())runDownload(task);else{String target=task.url,base=task.origin;cancelDownload();startDownload(target,base);}
@@ -140,6 +143,19 @@ public final class MainActivity extends Activity {
    choosingDownload=task;renderDownload();Intent save=new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("application/octet-stream").putExtra(Intent.EXTRA_TITLE,task.name);
    try{startActivityForResult(save,32);}catch(Exception e){choosingDownload=null;renderDownload();message(L("没有可用的文件保存器"));}
   }
+ }
+ void openDownload(){
+  ArtifactDownload.Task task=downloadTask;if(task==null||task.state!=ArtifactDownload.State.COMPLETE||savingDownload||choosingDownload!=null||openingDownload)return;
+  openingDownload=true;renderDownload();downloads.execute(()->{
+   Uri uri=null;try{uri=DownloadProvider.prepare(this,task.result());}catch(java.io.IOException ignored){}
+   final Uri target=uri;runOnUiThread(()->{
+    openingDownload=false;if(isFinishing()||isDestroyed())return;renderDownload();if(task!=downloadTask)return;
+    if(target==null){message(L("打开失败，请重试或保存文件"));return;}
+    Intent view=new Intent(Intent.ACTION_VIEW).setDataAndType(target,getContentResolver().getType(target)).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+    view.setClipData(ClipData.newRawUri("",target));
+    try{startActivity(view);}catch(ActivityNotFoundException e){message(L("暂无可打开此文件的应用"));}catch(Exception e){message(L("打开失败，请重试或保存文件"));}
+   });
+  });
  }
  void cancelDownload(){if(downloadTask!=null){downloadTask.cancel();downloadTask=null;}renderDownload();}
  void saveDownload(int result,Intent data){

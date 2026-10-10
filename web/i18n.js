@@ -2,6 +2,14 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"关闭文本预览":"Close text preview",
+"正在加载文件…":"Loading file…",
+"文件为空。":"This file is empty.",
+"登录已失效，请重新登录后查看。":"Sign-in expired. Sign in again to view this file.",
+"文件读取失败，请重试或下载。":"Could not read the file. Retry or download it.",
+"文件超过 1 MiB 预览限制，请下载查看。":"File exceeds the 1 MiB preview limit. Download it to view.",
+"文件编码无法预览，请下载查看。":"This file encoding cannot be previewed. Download it to view.",
+"文件内容无法作为文本预览，请下载查看。":"This file cannot be previewed as text. Download it to view.",
 "电脑已锁定":"Computer locked",
 "电脑桌面暂不可用":"Computer desktop unavailable",
 "Windows 上优先后台初始化，无需保持键盘焦点；开发者工具可能短暂出现。后台方式不可用时，仅在桌面可交互时尝试前台引导。":"On Windows, background initialization is attempted first and does not require keyboard focus. Developer tools may appear briefly. If unavailable, foreground setup is attempted only when the desktop is interactive.",
@@ -1574,6 +1582,11 @@ const en={
   "手机访问地址": "Phone access URL",
   "手机通知": "Phone notifications",
   "打开": "Open",
+  "登录 Windows 后自动启动": "Start automatically when signing in to Windows",
+  "自动启动时收起到托盘，并开启网关自动启动。": "Start in the system tray and enable automatic gateway startup.",
+  "Windows 登录自启设置保存失败，请重试。": "Failed to save Windows startup settings. Please try again.",
+  "登录自启开关格式错误": "Invalid login startup setting",
+  "请在 Windows 上设置登录自启。": "Configure login startup on Windows.",
   "打开 App 时自动启动网关": "Start the gateway when the App opens",
   "打开目录": "Open directory",
   "执行错误": "Execution error",
