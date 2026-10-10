@@ -20,6 +20,17 @@ MAX_PREVIEW = 512 * 1024
 IMAGES = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp'}
 
 
+def _windows_reparse_point(path):
+    # Keep this payload self-contained for SSH. Python 3.9-3.11 have no
+    # Path.is_junction(), but lstat exposes Windows reparse attributes.
+    if os.name != 'nt':
+        return False
+    try:
+        return bool(path.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+    except FileNotFoundError:
+        return False  # An upload may be creating a new ordinary file.
+
+
 def download_range(size, etag, range_header='', if_range=''):
     """Only one byte range is supported; unsupported syntax is ignored."""
     result = {'status': 200, 'offset': 0, 'length': size, 'size': size, 'etag': etag}
@@ -139,7 +150,7 @@ class Workspace:
             path = self.root
             for part in parts:
                 path = path / part
-                if path.is_symlink() or getattr(path, 'is_junction', lambda: False)():
+                if path.is_symlink() or getattr(path, 'is_junction', lambda: False)() or _windows_reparse_point(path):
                     raise PermissionError('暂不支持通过符号链接访问文件')
                 if not path.exists():
                     raise FileNotFoundError('目录不存在')
@@ -152,7 +163,7 @@ class Workspace:
         if fd is not None:
             return os.open(name, flags | os.O_NOFOLLOW | os.O_NONBLOCK, mode, dir_fd=fd)
         path = directory / name
-        if path.is_symlink():
+        if path.is_symlink() or _windows_reparse_point(path):
             raise PermissionError('暂不支持通过符号链接访问文件')
         return os.open(path, flags | getattr(os, 'O_BINARY', 0), mode)
 
@@ -169,7 +180,9 @@ class Workspace:
                     try:
                         info = entry.stat(follow_symlinks=False)
                         kind = 'directory' if stat.S_ISDIR(info.st_mode) else 'file' if stat.S_ISREG(info.st_mode) else 'blocked'
-                        if getattr(entry, 'is_junction', lambda: False)(): kind = 'blocked'
+                        if (getattr(entry, 'is_junction', lambda: False)() or
+                                os.name == 'nt' and info.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+                            kind = 'blocked'
                         rows.append({'name': entry.name, 'path': '/'.join(parts + [entry.name]), 'kind': kind,
                                      'size': info.st_size if kind == 'file' else None, 'modified': info.st_mtime})
                     except OSError:
@@ -340,7 +353,8 @@ class Workspace:
 
     def upload(self, path, encoded):
         parts = self.parts(path)
-        if not parts or '.git' in parts: raise PermissionError('请选择项目内的普通文件位置')
+        protected_parts = [part.rstrip(' .').casefold() for part in parts] if os.name == 'nt' else parts
+        if not parts or '.git' in protected_parts: raise PermissionError('请选择项目内的普通文件位置')
         try: data = base64.b64decode(encoded, validate=True)
         except (ValueError, TypeError): raise ValueError('上传内容无效') from None
         if len(data) > MAX_TRANSFER: raise ValueError('每个文件不能超过 20 MB')
