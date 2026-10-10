@@ -123,7 +123,7 @@ An ad-hoc signature checks bundle integrity; it does not identify the publisher 
 
 Download links are in the quick start above. Development artifacts are available from successful **GitHub Actions → Desktop builds** runs, or you can build locally as described below.
 
-On Windows, closing the window hides it to the tray; launching again restores it. The tray offers separate actions to stop the gateway and quit, or quit only the controller. Stop the gateway and exit before manually upgrading or moving the app. Select Chinese or English at the top right; existing Windows language preferences are retained, and tray labels follow the selection. Phone language is independent. Uninstalling does not automatically remove gateway settings or credentials.
+On Windows, closing the window hides it to the tray; launching again restores it. Packaged and source Windows apps offer **Start automatically when signing in to Windows** under **App & maintenance → Startup and data directory**. Saving this option also enables automatic gateway startup. Login launches stay in the tray; manual launches show the control panel. Turning off login startup keeps the gateway startup preference. Source launches preserve the selected Python and data directory in a local development configuration. The tray offers separate actions to stop the gateway and quit, or quit only the controller. Stop the gateway and exit before manually upgrading or moving the app. Select Chinese or English at the top right; existing Windows language preferences are retained, and tray labels follow the selection. Phone language is independent. Uninstalling does not automatically remove gateway settings or credentials.
 
 The App provides:
 

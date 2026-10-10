@@ -50,6 +50,9 @@ async function main(){
   const port=await freePort(),debugPort=await freePort();
   const env={...process.env,CMB_DATA_DIR:data,PATH:path.join(process.env.SystemRoot,'System32')};
   for(const key of ['CMB_PYTHON','PYTHONPATH','PYTHONHOME','ELECTRON_RUN_AS_NODE'])delete env[key];
+  const powershell=path.join(process.env.SystemRoot,'System32/WindowsPowerShell/v1.0/powershell.exe');
+  const startupKey='HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
+  const originalStartup=JSON.parse((await execute(powershell,['-NoProfile','-NonInteractive','-Command',`ConvertTo-Json -Compress -InputObject (Get-Item -LiteralPath '${startupKey}').GetValue('Codex Mobile Bridge')`],{env,windowsHide:true,timeout:15000})).stdout.trim()||'null');
   async function worker(action,payload){
     if(payload===undefined){const {stdout}=await execute(runtime,[action,'--data-dir',data],{env,windowsHide:true,timeout:30000,maxBuffer:4*1024*1024});const value=JSON.parse(stdout);assert.equal(value.ok,true,value.error);return value.result;}
     return new Promise((resolve,reject)=>{
@@ -76,8 +79,8 @@ async function main(){
     assert.equal((await fs.readFile(exported.path)).subarray(0,2).toString(),'PK');
   }
   let stderr='',client,started=false,child,exited;
-  function launch(){
-    child=spawn(executable,['--remote-debugging-address=127.0.0.1','--remote-debugging-port='+debugPort],{env,stdio:['ignore','ignore','pipe']});
+  function launch(extra=[]){
+    child=spawn(executable,['--remote-debugging-address=127.0.0.1','--remote-debugging-port='+debugPort,...extra],{env,stdio:['ignore','ignore','pipe']});
     child.stderr.on('data',value=>stderr+=value);
     exited=new Promise(resolve=>{child.on('exit',resolve);child.on('error',resolve);});
   }
@@ -185,12 +188,34 @@ async function main(){
     assert.equal(await client.evaluate('document.documentElement.lang'),'en');
     assert.equal(await client.evaluate("document.getElementById('language').value"),'en');
     assert.equal(await client.evaluate("document.getElementById('start').textContent"),'Start gateway');
-    console.log(JSON.stringify({ok:true,executable,data,screenshots,checks:['bundled runtime without Python or Node on PATH','Unicode data path','renderer isolation','start and stop','private HTTP routes','local assets','parallel connection settings','server and NAS deployment ZIPs','11 mobile bilingual browser checks','notification settings saved without publishing','close to tray keeps gateway online','second launch restores window','bilingual switch preserves drafts','language survives app restart','English layout at 820x640','no horizontal overflow']}));
+    assert.equal(await client.evaluate('snapshot.loginStartup.supported'),true);
+    assert.equal(await client.evaluate("$('login-startup-setting').hidden"),false);
+    const previousStartup=await client.evaluate('snapshot.loginStartup.enabled');
+    try{
+      await client.evaluate("$('login-startup').checked=true;$('login-startup').onchange();$('settings').requestSubmit()");
+      await until(()=>client.evaluate('!saving&&!dirty&&snapshot.loginStartup.enabled'),'Login startup save');
+      assert.equal(await client.evaluate('snapshot.preferences.autoStart'),true);
+      client.close();child.kill();await exited;launch(['--login-startup']);
+      // Hidden renderer evaluation can pause; gateway readiness is checked independently.
+      await until(async()=>{const value=await worker('snapshot');return value.runtime.running;},'Hidden login gateway startup',60000);started=true;
+      const visibility=await execute(path.join(process.env.SystemRoot,'System32/WindowsPowerShell/v1.0/powershell.exe'),['-NoProfile','-NonInteractive','-Command',`(Get-Process -Id ${child.pid}).MainWindowHandle`],{env,windowsHide:true,timeout:15000});
+      assert.equal(visibility.stdout.trim(),'0','Login launch must stay in tray');
+      await execute(executable,[],{env,timeout:15000});await connectApp();
+      await until(()=>client.evaluate("document.visibilityState==='visible'"),'Manual restore after login launch');
+      await client.evaluate('stopGateway()');started=false;
+    }finally{
+      if(client&&child.exitCode===null){
+        await client.evaluate(`$('login-startup').checked=${previousStartup};$('login-startup').onchange();$('settings').requestSubmit()`);
+        await until(()=>client.evaluate(`!saving&&!dirty&&snapshot.loginStartup.enabled===${previousStartup}`),'Restore login startup preference');
+      }
+    }
+    console.log(JSON.stringify({ok:true,executable,data,screenshots,checks:['login startup save and readback','hidden login launch starts gateway','manual restore after login launch','bundled runtime without Python or Node on PATH','Unicode data path','renderer isolation','start and stop','private HTTP routes','local assets','parallel connection settings','server and NAS deployment ZIPs','11 mobile bilingual browser checks','notification settings saved without publishing','close to tray keeps gateway online','second launch restores window','bilingual switch preserves drafts','language survives app restart','English layout at 820x640','no horizontal overflow']}));
   }finally{
     if(started){try{await worker('stop');}catch(error){console.error('Test cleanup:',error.message);}}
     client?.close();
     if(child.exitCode===null)child.kill();
     await exited;
+    await execute(powershell,['-NoProfile','-NonInteractive','-Command',`if($env:CMB_TEST_STARTUP_EXISTS -eq '1'){Set-ItemProperty -LiteralPath '${startupKey}' -Name 'Codex Mobile Bridge' -Value $env:CMB_TEST_STARTUP_VALUE}elseif($null -ne (Get-Item -LiteralPath '${startupKey}').GetValue('Codex Mobile Bridge')){Remove-ItemProperty -LiteralPath '${startupKey}' -Name 'Codex Mobile Bridge' -ErrorAction Stop}`],{env:{...env,CMB_TEST_STARTUP_EXISTS:originalStartup===null?'0':'1',CMB_TEST_STARTUP_VALUE:originalStartup||''},windowsHide:true,timeout:15000});
   }
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});
