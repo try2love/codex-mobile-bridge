@@ -108,6 +108,16 @@ async function windowBridgeSnapshot(cdp){
   const value=await cdp.call('Runtime.evaluate',{awaitPromise:true,returnByValue:true,expression:'window.bridgeDesktop.snapshot()'});
   return value.result.value;
 }
+async function rendererManagementState(cdp){
+  const value=await cdp.call('Runtime.evaluate',{returnByValue:true,expression:`(()=>{
+    if(typeof desktopConnections==='undefined'||!desktopConnections)return null;
+    return {scanning:desktopConnections.scanning??null,busy:!!desktopConnections.busy,
+      clientsLoading:!!desktopConnections.clientsLoading,choosingClient:desktopConnections.choosingClient??null,
+      statusLoaded:!!desktopConnections.connectionValue,scanError:!!desktopConnections.scanError,
+      scanMessage:desktopConnections.scanMessage??'',statusError:desktopConnections.statusError??''};
+  })()`});
+  return value.result.value;
+}
 
 class CDP{
   constructor(socket){this.socket=socket;this.next=1;this.pending=new Map();
@@ -166,6 +176,14 @@ async function runScenario(gatewayRunning){
     await until(async()=>{const value=await cdp.call('Runtime.evaluate',{returnByValue:true,expression:'Boolean(window.bridgeDesktop)'});return value.result.value===true;},'preload bridge');
     await until(async()=>{const value=await cdp.call('Runtime.evaluate',{returnByValue:true,expression:"typeof document.getElementById('check-update').onclick==='function'"});return value.result.value===true;},'renderer update handlers');
     await until(async()=>{const value=await windowBridgeSnapshot(cdp);return value.runtime.running===gatewayRunning&&(!gatewayRunning||!quickTunnel||value.quickTunnel?.state==='ready');},'renderer gateway and tunnel state match fixture',180000);
+    // The first snapshot renders before automatic client discovery finishes.
+    // Wait for the actual scan (undefined is not finished) and its follow-up
+    // reads; the production controller must still reject concurrent writes.
+    const management=await until(async()=>{
+      const value=await rendererManagementState(cdp);
+      return value?.scanning===false&&!value.busy&&!value.clientsLoading&&!value.choosingClient&&value.statusLoaded?value:null;
+    },'initial client discovery settled',180000);
+    console.log('Initial client management',JSON.stringify(management));
     await cdp.call('Runtime.evaluate',{expression:"document.getElementById('check-update').click()"});
     await until(async()=>{const value=await windowBridgeSnapshot(cdp);return value.update?.state==='available';},'stub update check',30000);
     await until(async()=>{
@@ -220,6 +238,7 @@ async function runScenario(gatewayRunning){
       try{
         const diagnostic=await cdp.call('Runtime.evaluate',{awaitPromise:true,returnByValue:true,expression:'window.bridgeDesktop.snapshot().then(value=>({update:value.update,updateResult:value.updateResult,updateManaged:value.updateManaged,feedback:typeof lastFeedback==="undefined"?null:lastFeedback}))'});
         console.error('UI diagnostic',JSON.stringify(diagnostic.result.value,null,2));
+        console.error('Client management diagnostic',JSON.stringify(await rendererManagementState(cdp),null,2));
       }catch(diagnosticError){console.error('UI diagnostic failed',diagnosticError);}
     }
     console.error(`Preserving failure fixture: ${work}`);

@@ -1,14 +1,71 @@
 """ConPTY integration tests run on Windows in the existing OS test matrix."""
 import os
+import ctypes
+from ctypes import wintypes
+import json
 from pathlib import Path
+import subprocess
 import tempfile
 import sys
 import threading
 import time
+import traceback
 from types import SimpleNamespace
 import unittest
 import uuid
 from unittest.mock import patch
+
+
+class OwnedTerminalProbe:
+    """CI diagnostics and cleanup restricted to this fixture's retained process handle."""
+    def __init__(self, session):
+        self.session = session
+        self.kernel = kernel = session.kernel
+        kernel.DuplicateHandle.argtypes = [wintypes.HANDLE, wintypes.HANDLE, wintypes.HANDLE,
+            ctypes.POINTER(wintypes.HANDLE), wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.DuplicateHandle.restype = wintypes.BOOL
+        kernel.GetProcessId.argtypes = [wintypes.HANDLE]; kernel.GetProcessId.restype = wintypes.DWORD
+        self.handle = wintypes.HANDLE()
+        current = wintypes.HANDLE(-1)
+        if not kernel.DuplicateHandle(current, session.process_handle, current,
+                                      ctypes.byref(self.handle), 0, False, 2):
+            raise ctypes.WinError(ctypes.get_last_error())
+        self.pid = kernel.GetProcessId(self.handle)
+
+    def report(self):
+        session = self.session
+        code = wintypes.DWORD(); self.kernel.GetExitCodeProcess(self.handle, ctypes.byref(code))
+        stacks = []
+        for frame in sys._current_frames().values():
+            cursor = frame
+            while cursor is not None:
+                if cursor.f_locals.get('self') is session:
+                    stacks.append([f'{row.filename}:{row.lineno}:{row.name}' for row in traceback.extract_stack(frame)[-6:]])
+                    break
+                cursor = cursor.f_back
+        value = {'pid': self.pid, 'root': session.root, 'done': session.done.is_set(),
+            'outputDone': session.output_done.is_set(), 'stopping': session.stopping.is_set(),
+            'console': session.console.value, 'waitResult': self.kernel.WaitForSingleObject(self.handle, 0),
+            'exitCode': code.value, 'output': session.read()['output'][-512:], 'threads': stacks}
+        # Filter before returning data: only our retained PID and its children.
+        command = (f"Get-CimInstance Win32_Process -Filter 'ProcessId = {self.pid} OR ParentProcessId = {self.pid}' | "
+                   'Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress')
+        try:
+            result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', command],
+                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=8)
+            value['processes'] = json.loads(result.stdout) if result.returncode == 0 and result.stdout.strip() else {'queryExit': result.returncode}
+        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+            value['processes'] = {'queryError': type(exc).__name__}
+        print('Owned terminal diagnostic: ' + json.dumps(value, ensure_ascii=True), flush=True)
+
+    def cleanup(self):
+        try:
+            if self.kernel.WaitForSingleObject(self.handle, 0) == 258:
+                self.kernel.TerminateProcess(self.handle, 1)
+                self.kernel.WaitForSingleObject(self.handle, 5000)
+            self.session.done.wait(5)
+        finally:
+            self.kernel.CloseHandle(self.handle)
 
 
 class TerminalCompletionTests(unittest.TestCase):
@@ -67,6 +124,22 @@ class TerminalCompletionTests(unittest.TestCase):
 
 @unittest.skipUnless(os.name == 'nt', 'ConPTY requires Windows')
 class ConPtyTests(unittest.TestCase):
+    def test_close_immediately_after_open_reaps_bootstrap(self):
+        from bridge.platforms.windows.terminal import WindowsTerminalSession
+        directory = Path(__file__).resolve().parents[1] / '.tmp'; directory.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=directory) as folder:
+            runtime = os.environ.get('CMB_TEST_RUNTIME')
+            with patch.object(sys, 'executable', runtime or sys.executable), patch.object(sys, 'frozen', bool(runtime), create=True):
+                session = WindowsTerminalSession(Path(folder), 80, 24)
+            probe = OwnedTerminalProbe(session)
+            try:
+                session.stop()
+                completed = session.done.wait(5)
+                if not completed: probe.report()
+                self.assertTrue(completed, 'Immediate terminal close left its owned bootstrap running')
+            finally:
+                probe.cleanup()
+
     def test_persistent_shell_unicode_resize_dedupe_and_close(self):
         from bridge.platforms.windows.terminal import WindowsTerminalSession
         directory = Path(__file__).resolve().parents[1] / '.tmp'; directory.mkdir(exist_ok=True)

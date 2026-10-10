@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 import uuid
@@ -242,7 +243,18 @@ class HttpAdapters(unittest.TestCase):
     def test_client_management_and_workspace_http_are_authenticated_and_scoped(self):
         temp = tempfile.TemporaryDirectory(dir=ROOT/'.tmp'); self.addCleanup(temp.cleanup)
         root = Path(temp.name); (root/'only-here.txt').write_text('desktop workspace')
-        manager = DesktopSessions(root); self.addCleanup(manager.close)
+        manager = DesktopSessions(root)
+        probe = None
+        def close_manager():
+            manager.close()
+            if probe is not None:
+                try:
+                    if not probe.session.done.is_set():
+                        probe.report()
+                        self.fail('Desktop manager did not reap its owned terminal')
+                finally:
+                    probe.cleanup()
+        self.addCleanup(close_manager)
         self.server.desktop_sessions = manager
         self.server.bridge.for_host = lambda host: self.server.bridge
         adapter = Mock()
@@ -267,6 +279,9 @@ class HttpAdapters(unittest.TestCase):
         result = self.request('POST', terminal, {'action':'open','id':identifier,'cols':80,'rows':24}, headers)
         self.assertEqual(result[0], 200)
         self.assertTrue(result[2]['running'])
+        if os.name == 'nt':
+            from test_windows_terminal import OwnedTerminalProbe
+            probe = OwnedTerminalProbe(next(iter(manager.terminals.sessions.values())))
         self.assertEqual(self.request('POST', terminal, {'action':'close','id':identifier}, headers)[0], 200)
         self.assertEqual(self.request('POST', '/api/clients', {'provider':'deepseek','enabled':False}, headers)[0], 200)
         self.assertNotEqual(self.request('GET', path, headers=headers)[0], 200)
