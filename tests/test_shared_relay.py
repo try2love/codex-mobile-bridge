@@ -404,8 +404,9 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
         for streaming in (False, True):
             self.state.protocols[a['deviceId']] = streaming; sizes.clear()
             response = await self.client.get(url, headers=p)
-            self.assertEqual(response.status, 200)
-            self.assertEqual(await response.read(), file.read_bytes())
+            body = await response.read()
+            self.assertEqual(response.status, 200, f'streaming={streaming}, relay response={body[:512]!r}')
+            self.assertEqual(body, file.read_bytes())
             measured_sizes.append(sum(sizes))
             self.assertEqual(self.state.buffered, 0)
         self.assertLess(measured_sizes[1], measured_sizes[0] * .76)

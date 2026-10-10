@@ -29,8 +29,14 @@ const api = {
   ];},
 };
 const window = {'claude.web':{LocalSessions:api,LocalAgentModeSessions:api}};
-const context = {window,TextEncoder,Uint8Array,crypto:webcrypto,console,
-  clearTimeout,setTimeout:(fn,ms)=>setTimeout(fn,realContextBudget&&ms>1000?ms:ms>=9000?100:Math.min(ms,10))};
+let budgetNow=0;
+class FixtureDate extends Date {static now(){return realContextBudget?budgetNow:Date.now();}}
+const context = {window,Date:FixtureDate,TextEncoder,Uint8Array,crypto:webcrypto,console,
+  clearTimeout,setTimeout:(fn,ms)=>realContextBudget&&ms>1000&&ms<2000
+    // A native timer can fire just before the wall-clock deadline. Its timeout
+    // still consumes the budget and must not start another desktop request.
+    ? setTimeout(()=>{budgetNow+=ms-1;fn();},10)
+    : setTimeout(fn,realContextBudget&&ms>1000?ms:ms>=9000?100:Math.min(ms,10))};
 const source=fs.readFileSync(process.env.CONNECTOR_TEMPLATE || 'bridge/clients/claude/connector.js','utf8').replace('__BRIDGE_CONFIG__',JSON.stringify(config));
 const waitFor = async predicate => {
   const deadline=Date.now()+3000;
@@ -120,7 +126,7 @@ const waitFor = async predicate => {
     await waitFor(()=>response.seq===seq&&response.done);
     assert.equal(response.result.contextUsage,null);assert.equal(response.result.contextUsageStatus,'unavailable');
   }
-  usageCalls=[];realContextBudget=true;
+  usageCalls=[];budgetNow=Date.now();realContextBudget=true;
   api.getContextUsageSummary=()=>{usageCalls.push('summary');return new Promise(()=>{});};
   api.getContextUsage=async()=>{usageCalls.push('full');return {totalTokens:12,rawMaxTokens:200000};};
   request=pack({generation:'next',type:'request',seq:++seq,surface:'code',method:'mobileDetail',args:['local_test'],expires:Date.now()/1000+10});

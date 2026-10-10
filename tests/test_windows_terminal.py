@@ -3,10 +3,66 @@ import os
 from pathlib import Path
 import tempfile
 import sys
+import threading
 import time
+from types import SimpleNamespace
 import unittest
 import uuid
 from unittest.mock import patch
+
+
+class TerminalCompletionTests(unittest.TestCase):
+    def session(self):
+        from bridge.platforms.windows.terminal import WindowsTerminalSession
+        session = WindowsTerminalSession.__new__(WindowsTerminalSession)
+        session.done = threading.Event(); session.output_done = threading.Event()
+        session.close_lock = threading.Lock(); session.process_handle = 'process'; session.output_read = 'output'
+        exited, closed = threading.Event(), threading.Event()
+        def wait(handle, timeout):
+            self.assertEqual(handle, 'process')
+            self.assertTrue(exited.wait(1))
+            return 0
+        def close(handle):
+            if handle == 'process': closed.set()
+            return True
+        session.kernel = SimpleNamespace(WaitForSingleObject=wait,
+            GetExitCodeProcess=lambda handle, code: setattr(code._obj, 'value', 0),
+            CloseHandle=close, ReadFile=lambda *args: False)
+        session._close_console = lambda: None
+        session.append = lambda text: None
+        return session, exited, closed
+
+    def test_output_eof_does_not_mark_a_running_process_complete(self):
+        session, exited, _ = self.session()
+        session._read()
+        self.assertTrue(session.output_done.is_set())
+        self.assertFalse(session.done.is_set())
+        exited.set(); session._wait()
+        self.assertTrue(session.done.is_set())
+        self.assertIsNone(session.process_handle)
+
+    def test_process_exit_waits_for_output_drain(self):
+        session, exited, closed = self.session()
+        exited.set()
+        worker = threading.Thread(target=session._wait)
+        worker.start()
+        try:
+            self.assertTrue(closed.wait(1))
+            self.assertFalse(session.done.is_set())
+            session._read()
+        finally:
+            session.output_done.set(); worker.join(1)
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(session.done.is_set())
+
+    def test_read_failure_still_allows_process_cleanup_to_complete(self):
+        session, exited, _ = self.session()
+        with patch.object(session.kernel, 'ReadFile', side_effect=OSError('closed pipe')):
+            with self.assertRaises(OSError): session._read()
+        self.assertTrue(session.output_done.is_set())
+        self.assertFalse(session.done.is_set())
+        exited.set(); session._wait()
+        self.assertTrue(session.done.is_set())
 
 
 @unittest.skipUnless(os.name == 'nt', 'ConPTY requires Windows')
@@ -43,3 +99,4 @@ class ConPtyTests(unittest.TestCase):
                 self.assertFalse(session.done.is_set())
             finally:
                 session.stop();self.assertTrue(session.done.wait(10))
+                self.assertIsNone(session.process_handle)

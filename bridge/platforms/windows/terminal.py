@@ -90,7 +90,7 @@ class WindowsTerminalSession(TerminalSession):
         self.kernel = k = api()
         self.lock = threading.RLock(); self.input_lock = threading.Lock(); self.close_lock = threading.Lock()
         self.text = ''; self.end = 0; self.reason = ''; self.code = None
-        self.done = threading.Event(); self.stopping = threading.Event(); self.touched = time.monotonic()
+        self.done = threading.Event(); self.output_done = threading.Event(); self.stopping = threading.Event(); self.touched = time.monotonic()
         self.inputs = collections.OrderedDict(); self.writes = queue.Queue()
         self.shell = default_shell(); self.root = str(root)
         self.console = W.HANDLE(); self.process_handle = None
@@ -140,7 +140,7 @@ class WindowsTerminalSession(TerminalSession):
             self.append(decoder.decode(b'', final=True))
         finally:
             self.kernel.CloseHandle(self.output_read)
-            self.done.set()
+            self.output_done.set()
 
     def _wait(self):
         self.kernel.WaitForSingleObject(self.process_handle, 0xffffffff)
@@ -148,6 +148,10 @@ class WindowsTerminalSession(TerminalSession):
         self._close_console()
         with self.close_lock:
             self.kernel.CloseHandle(self.process_handle); self.process_handle = None
+        # Pipe EOF can precede process exit. A completed terminal must release
+        # its working directory and drain all output before manager cleanup.
+        self.output_done.wait()
+        self.done.set()
 
     def _close_console(self):
         # ClosePseudoConsole may wait for output to drain; the reader stays alive.

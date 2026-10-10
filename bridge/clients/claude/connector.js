@@ -40,7 +40,7 @@
   const knownSessions = new Map();
   const bounded = (promise, ms, message) => new Promise((resolve, reject) => {
     let settled=false;
-    const timer=setTimeout(()=>{if(!settled){settled=true;reject(new Error(message));}},ms);
+    const timer=setTimeout(()=>{if(!settled){settled=true;reject(message instanceof Error ? message : new Error(message));}},ms);
     Promise.resolve(promise).then(value=>{if(!settled){settled=true;clearTimeout(timer);resolve(value);}},error=>{if(!settled){settled=true;clearTimeout(timer);reject(error);}});
   });
   const restore = [];
@@ -193,13 +193,13 @@
     // Desktop's summary is gated by the running CLI version. The older getter
     // is also read-only and returns null instead of starting a dormant process.
     // Share one deadline so this optional data never doubles detail latency.
-    const deadline=Date.now()+1500;
+    const deadline=Date.now()+1500, timeout=new Error('Context unavailable');
     for(const method of methods){
       const remaining=deadline-Date.now();if(remaining<=0)break;
       try{
-        const usage=sanitize(method,await bounded(target[method](id),remaining,'Context unavailable'));
+        const usage=sanitize(method,await bounded(target[method](id),remaining,timeout));
         if(usage)return {contextUsage:usage,contextUsageStatus:'available'};
-      }catch{}
+      }catch(error){if(error===timeout)break;}
     }
     return {contextUsage:null,contextUsageStatus:'unavailable'};
   }
