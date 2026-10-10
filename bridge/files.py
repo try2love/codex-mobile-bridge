@@ -28,6 +28,9 @@ def reference_path(value):
     """Resolve a local file reference without allowing remote URL access."""
     if not isinstance(value, str) or not value:
         return None
+    # Chat links may prefix Windows drive paths with a URL-style slash.
+    if os.name == 'nt' and re.fullmatch(r'/[A-Za-z]:[\\/].*', value):
+        value = value[1:]
     try:
         parsed = urlsplit(value)
         if parsed.scheme == 'file':
@@ -136,8 +139,9 @@ def artifact_paths(state, codex_home):
         except OSError:
             continue
         key = hashlib.sha256(str(path_identity(path)).encode()).hexdigest()
-        result[key] = {'path': path, 'reference': raw, 'name': path.name,
-                       'image': path.suffix.lower() in IMAGE_SUFFIXES}
+        artifact = result.setdefault(key, {'path': path, 'reference': raw,
+            'references': [], 'name': path.name, 'image': path.suffix.lower() in IMAGE_SUFFIXES})
+        artifact['references'].append(raw)
     # A path can be shown once as ImageView and embedded later with another text
     # form (usually a plain absolute path versus file://). Only the runtime view
     # grants the outside-workspace exception; collect all references so Markdown
@@ -157,6 +161,7 @@ def artifact_paths(state, codex_home):
         file_refs = sorted(ref for ref in references if urlsplit(ref).scheme == 'file')
         reference = plain[0] if plain else (file_refs[0] if file_refs else next(iter(references)))
         key = hashlib.sha256(str(path).encode()).hexdigest()
-        result[key] = {'path': path, 'reference': reference, 'name': path.name,
+        references.update(result.get(key, {}).get('references', []))
+        result[key] = {'path': path, 'reference': reference, 'references': sorted(references), 'name': path.name,
                        'image': path.suffix.lower() in IMAGE_SUFFIXES}
     return result

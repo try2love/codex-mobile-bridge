@@ -9,7 +9,8 @@
   window.renderMarkdown = function(node, text, files = [], fileUrl = () => '', options = {}) {
     const body = document.createElement('div');
     body.className = 'markdown-body';
-    const artifacts = new Map(files.map(file => [markdown.normalizeLink(file.reference), file]));
+    const artifacts = new Map(files.flatMap(file =>
+      [file.reference, ...(file.references || [])].map(reference => [markdown.normalizeLink(reference), file])));
     function target(reference) {
       const file = artifacts.get(reference);
       if (file) return {url:fileUrl(file), file};

@@ -1184,7 +1184,7 @@ class Bridge:
         view["goalActivationIds"] = sorted(self._goal_activation_ids(thread_id))
         with session.condition:
             artifacts = artifact_paths(session.state or {}, self.store.home) if self.host == "local" else {}
-        view["files"] = [{"id": k, "name": v["name"], "reference": v["reference"], "image": v["image"]} for k, v in artifacts.items()]
+        view["files"] = [{"id": k, "name": v["name"], "reference": v["reference"], "references": v["references"], "image": v["image"]} for k, v in artifacts.items()]
         self._overlay_native_goal(session, thread_id, view)
         self._submission_meta(session, view)
         view["forkedFrom"] = self._fork_origin(thread_id)
@@ -1494,7 +1494,7 @@ class Bridge:
             {'items': media_items},
         ]}
         artifacts = artifact_paths(file_state, self.store.home) if self.host == 'local' else {}
-        result['files'] = [{'id': k, 'name': v['name'], 'reference': v['reference'], 'image': v['image']} for k, v in artifacts.items()]
+        result['files'] = [{'id': k, 'name': v['name'], 'reference': v['reference'], 'references': v['references'], 'image': v['image']} for k, v in artifacts.items()]
         if mode != 'detail':
             self._submission_meta(session, result['meta'])
             result['meta']['forkedFrom'] = self._fork_origin(thread_id)

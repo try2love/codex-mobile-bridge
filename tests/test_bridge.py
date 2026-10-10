@@ -635,9 +635,38 @@ class ModelTests(unittest.TestCase):
     @unittest.skipUnless(os.name == 'nt', 'Windows drive path syntax')
     def test_reference_path_accepts_windows_drive_paths(self):
         from bridge.files import reference_path
-        path = reference_path('D:\\workspace\\report.txt')
-        self.assertTrue(path.is_absolute())
-        self.assertEqual(path, PureWindowsPath('D:/workspace/report.txt'))
+        for reference in ('D:\\workspace\\report.txt', 'D:/workspace/report.txt',
+                          '/D:/workspace/report.txt', '/D:\\workspace\\report.txt',
+                          'file:///D:/workspace/report.txt'):
+            with self.subTest(reference=reference):
+                path = reference_path(reference)
+                self.assertTrue(path.is_absolute())
+                self.assertEqual(path, PureWindowsPath('D:/workspace/report.txt'))
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows drive path syntax')
+    def test_slash_prefixed_windows_artifacts_remain_in_workspace(self):
+        with tempfile.TemporaryDirectory(dir=str(ROOT / '.tmp')) as directory:
+            root = Path(directory)
+            workspace = root / 'workspace';workspace.mkdir()
+            outside = root / 'private.md';outside.write_text('private', encoding='utf-8')
+            for name in ('report.md', 'app.apk'):
+                allowed = workspace / name;allowed.write_bytes(b'test')
+                reference = '/' + allowed.as_posix()
+                escape = '/' + workspace.as_posix() + '/../private.md'
+                value = {**state(), 'cwd': str(workspace), 'turns': [{'items': [
+                    {'type': 'agentMessage', 'text': f'[file]({reference}) [private](/{outside.as_posix()}) [escape]({escape})'},
+                ]}]}
+                with self.subTest(name=name):
+                    files = artifact_paths(value, root / '.codex')
+                    self.assertEqual(len(files), 1)
+                    artifact = next(iter(files.values()))
+                    self.assertEqual(artifact['path'], allowed.resolve())
+                    self.assertEqual(artifact['reference'], reference)
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX path syntax')
+    def test_slash_prefixed_drive_is_preserved_on_posix(self):
+        from bridge.files import reference_path
+        self.assertEqual(reference_path('/D:/workspace/report.md'), Path('/D:/workspace/report.md'))
 
     @unittest.skipUnless(os.name == 'nt', 'Windows drive path syntax')
     def test_windows_drive_markdown_reference_remains_in_workspace(self):
@@ -662,6 +691,25 @@ class ModelTests(unittest.TestCase):
             files = artifact_paths(value, root / '.codex')
             self.assertEqual(len(files), 1)
             self.assertEqual(next(iter(files.values()))['reference'], str(image))
+            self.assertEqual(set(next(iter(files.values()))['references']), {str(image), image.as_uri()})
+
+    def test_artifact_retains_all_references_to_same_file(self):
+        with tempfile.TemporaryDirectory(dir=str(ROOT / '.tmp')) as directory:
+            root = Path(directory)
+            for name in ('report.md', 'app.apk'):
+                path = root / name;path.write_bytes(b'test')
+                references = [str(path), path.as_uri(), str(path) + ':12']
+                if os.name == 'nt':
+                    references.extend([path.as_posix(), '/' + path.as_posix()])
+                value = {**state(), 'cwd': str(root), 'turns': [{'items': [
+                    {'type': 'agentMessage', 'text': ' '.join(f'[file]({reference})' for reference in references)},
+                ]}]}
+                with self.subTest(name=name):
+                    files = artifact_paths(value, root / '.codex')
+                    self.assertEqual(len(files), 1)
+                    artifact = next(iter(files.values()))
+                    self.assertEqual(set(artifact['references']), set(references))
+                    self.assertIn(artifact['reference'], references)
 
     def test_artifacts_only_referenced_workspace_files(self):
         with tempfile.TemporaryDirectory(dir=str(ROOT / '.tmp')) as directory:
