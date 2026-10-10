@@ -4,14 +4,14 @@
 
 从 v0.2.0-beta.5 起，桌面 App 启动后及每 6 小时检查一次 GitHub Release。
 在「应用更新」中检查新版、阅读说明，点击「更新并重启」。Beta 用户可接收后续 Beta、RC 和正式版；正式版只接收正式版。
-旧版首次升级需要手动安装支持更新的版本。1.3.0 提供 Mac Apple Silicon（arm64）、Mac Intel（x64）和 Windows x64 安装包。Windows ARM 暂无发布包。Ubuntu x64/ARM64 提供实验性 `.deb` / AppImage，暂不支持应用内更新；升级前停止网关并退出 App，保留数据目录后手动安装。
+旧版首次升级需要手动安装支持更新的版本。v2.0.0 提供 Mac Apple Silicon（arm64）、Mac Intel（x64）和 Windows x64 安装包。Windows ARM 暂无发布包。Ubuntu x64/ARM64 提供实验性 `.deb` / AppImage，暂不支持应用内更新；升级前停止网关并退出 App，保留数据目录后手动安装。
 
 下载阶段网关保持在线。签名、哈希、解压路径和包版本检查通过后，App 才退出并停止网关。
 应用在原位置替换，原本运行的网关随后恢复；原本停止的网关保持停止。
 数据目录独立于应用目录，登录、网络、通知和关注聊天配置保持原样。
-使用临时 Cloudflare HTTPS 时，重启后需使用最新地址。
+使用临时 Cloudflare HTTPS 时，重启后可能需要最新地址；固定入口可避免普通重启导致的地址变化，但仍需网络可达。Tailscale 配置见[说明](tailscale.md)。Android/iOS 更新与签名方式见[手机说明](../mobile/README.md)。
 
-v1.3.2 新增「手机通知 → 网关启动与入口通知」，默认关闭。开启并保存后，每次启动网关都会向已启用的 PushPlus、Bark、ntfy 通道汇总发送访问地址，即使地址与上次相同。覆盖已启用的局域网、NAS / 已有反代固定域名、自有服务器（SSH 转发建立后）和临时 HTTPS（隧道就绪后）；稍晚就绪的入口或地址变化会补发更新。关闭的网卡与回环地址不包含在手机通知中。固定域名仍需用户完成部署，局域网地址需在同一网络访问。可设置网关名称，点击「发送当前入口测试通知」并在手机确认接收后再远程更新。仅配置聊天通知不代表已开启入口通知。
+在「消息通知 → 网关启动与入口通知」检查入口通知；新配置默认开启，升级保留已有选择。开启并保存后，每次启动网关都会向已启用的 PushPlus、Bark、ntfy 通道汇总发送访问地址，即使地址与上次相同。覆盖已启用的局域网、NAS / 已有反代固定域名、自有服务器（SSH 转发建立后）和临时 HTTPS（隧道就绪后）；稍晚就绪的入口或地址变化会补发更新。关闭的网卡与回环地址不包含在手机通知中。固定域名仍需用户完成部署，局域网地址需在同一网络访问。可设置网关名称，点击「发送当前入口测试通知」并在手机确认接收后再远程更新。仅配置聊天通知不代表已开启入口通知。
 
 入口通知独立于聊天订阅；各通道分别记录结果并退避重试，同一次网关运行内去重，重启后重新发送。重试前重新检查当前入口和开关，只发送当前入口列表，不使用聊天通知的固定跳转地址，也不包含密码或登录令牌。通知已被服务接受但本地记录写入前异常退出时，可能重复投递；已在途的通知无法撤回。电脑断网、网关启动失败或通知服务不可用时，无法保证送达。临时入口仍依赖 Cloudflare 分配地址，此功能不提供固定域名。
 
@@ -20,11 +20,12 @@ macOS 更新签名与 Apple Developer ID、公证是不同机制；该功能不�
 
 ## 发布流程
 
-1. 修改 `package.json` / `package-lock.json` 版本和 `RELEASE_NOTES.md`。
-2. 在仓库 Actions Secret 中配置 `UPDATE_SIGNING_KEY`，值为与 `desktop/features/updates/update-public-key.pem` 对应的 Ed25519 PKCS#8 PEM 私钥。私钥不提交、不放入构建产物，离线保存备份。不要重新生成公钥覆盖现有更新身份。
-3. 运行单元测试及 Desktop builds 的五个目标：macOS arm64、macOS x64、Windows x64、Ubuntu x64 和 Ubuntu ARM64。Mac 网关与 Electron 在对应架构的 runner 上分别构建。验证 DMG 挂载、Applications 快捷方式、复制安装、ZIP 解压、架构及完整性签名、真实 App/网关重启、失败恢复和配置保留。
-4. 推送与版本匹配的 `v…` tag。`Signed desktop release` 验证版本及签名身份，构建上述五个目标，上传完整的草稿 Release，最后发布。手动运行时须选择已存在的版本 tag；`publish=false` 只创建草稿。
-5. 发布资产包括 macOS arm64 DMG/ZIP、macOS x64 DMG/ZIP、Windows x64 ZIP/Setup、Linux x64/ARM64 的 `.deb` / AppImage、`SHA256SUMS.txt` 和 `bridge-update.json`。DMG 为 Mac 首选安装包，ZIP 继续用于应用内更新；签名清单必须包含全部三个目标的 ZIP，校验文件同时包含 DMG、ZIP、EXE、DEB 和 AppImage。验证 Release 内容及 App 检测结果。工作流不会覆写同名 Release；失败的草稿需检查原因后由维护者处理。
+1. 同步 `package.json` / `package-lock.json`、Android/iOS 版本与递增的构建号，更新 `RELEASE_NOTES.md`。保留已有 Android 签名和移动端应用身份，不能临时生成新密钥替代覆盖升级。
+2. 仓库 Actions Secret `UPDATE_SIGNING_KEY` 必须对应 `desktop/features/updates/update-public-key.pem` 中的 Ed25519 公钥。私钥不提交、不放入构建产物；不要重新生成公钥覆盖现有更新身份。
+3. 运行源码测试及五个原生 Desktop builds 目标：macOS arm64、macOS x64、Windows x64、Ubuntu x64、Ubuntu ARM64。Mac 网关与 Electron 在对应架构 runner 构建；核验安装、架构、签名、启动、更新交接、失败恢复与配置保留。iOS 可复用构建生成未签名 IPA 与源码 ZIP；Android 用原签名在本地生成 APK。
+4. 推送匹配版本的 tag，或对已有版本 tag 手动运行 **Prepare signed release draft**。流程验证版本和签名身份，等待五个桌面目标及 iOS 构建，始终先生成草稿，不自动发布正式版。
+5. 收齐 13 个安装/源码包：两种 Mac 的 DMG/ZIP、Windows Setup/ZIP、两种 Ubuntu 的 DEB/AppImage、Android APK、iOS IPA 与源码 ZIP，以及 `bridge-update.json`。运行 `node scripts/release-assets.cjs verify <目录> --write-checksums` 验证并生成 `SHA256SUMS.txt`。校验文件覆盖这 14 个文件；更新签名载荷继续认证 macOS arm64/x64 和 Windows x64 的三个 ZIP。
+6. 上传缺失的 Android 包和最终校验文件，再下载草稿全部资产，运行 `node scripts/release-assets.cjs verify <目录>` 重新核验。完整性、签名与所有计划资产通过后才将草稿发布为正式版；失败时保留草稿排查。发布后检查实际下载地址、Latest 与 App 检查更新结果。
 
 `bridge-update.json` 是签名信封：`payload` 为 JSON 原始字节的 Base64，`signature` 为其 Ed25519 签名。载荷包含 schema、版本、说明、平台文件名、大小和 SHA-256。App 内公钥验签后才接受文件信息，下载地址固定到本仓库 Release，拒绝降级与平台不匹配。
 
