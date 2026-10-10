@@ -1,13 +1,13 @@
-name: Signed desktop release
+name: Prepare signed release draft
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
     inputs:
-      publish:
-        description: Publish after verification (run this workflow on an existing version tag)
-        type: boolean
-        default: false
+      source_ref:
+        description: Existing version tag to rebuild with this workflow (leave empty to use the selected tag)
+        type: string
+        default: ''
 permissions:
   contents: read
 concurrency:
@@ -18,31 +18,45 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
       - name: Verify release identity
         env:
           CMB_UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+          RELEASE_TAG: ${{ inputs.source_ref || github.ref_name }}
         run: |
           node - <<'JS'
           const fs=require('fs'),crypto=require('crypto');
-          const expected='refs/tags/v'+require('./package.json').version;
-          if(process.env.GITHUB_REF!==expected)throw Error('Run on the tag matching package.json: '+expected);
+          const expected='v'+require('./package.json').version;
+          if(process.env.RELEASE_TAG!==expected)throw Error('Run on the tag matching package.json: '+expected);
+          const cp=require('child_process');
+          if(cp.execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim()!==cp.execFileSync('git',['rev-list','-n','1',expected],{encoding:'utf8'}).trim())throw Error('Checkout must match the release tag.');
           const key=process.env.CMB_UPDATE_SIGNING_KEY;
           if(!key)throw Error('Configure the UPDATE_SIGNING_KEY release secret first.');
-          if(crypto.createPublicKey(key).export({type:'spki',format:'pem'})!==fs.readFileSync('desktop/update-public-key.pem','utf8'))throw Error('Release signing identity does not match the app.');
+          if(crypto.createPublicKey(key).export({type:'spki',format:'pem'})!==fs.readFileSync('desktop/features/updates/update-public-key.pem','utf8'))throw Error('Release signing identity does not match the app.');
           JS
   build:
     needs: validate
     uses: ./.github/workflows/desktop.yml
+    with:
+      source_ref: ${{ inputs.source_ref || github.ref }}
+  ios:
+    needs: validate
+    uses: ./.github/workflows/mobile.yml
+    with:
+      source_ref: ${{ inputs.source_ref || github.ref }}
   release:
-    needs: build
+    needs: [build, ios]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -51,17 +65,25 @@ jobs:
           pattern: desktop-*
           merge-multiple: true
           path: dist/release
-      - name: Sign complete update manifest
+      - uses: actions/download-artifact@v4
+        with:
+          name: mobile-iOS
+          path: dist/release
+      - name: Extract this release's notes
+        run: node scripts/release-assets.cjs notes RELEASE_NOTES.md .tmp/release-notes.md
+      - name: Sign desktop update manifest
         env:
           CMB_UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
-        run: node scripts/sign-update.cjs dist/release RELEASE_NOTES.md
-      - name: Upload draft then publish complete release
+        run: node scripts/sign-update.cjs dist/release .tmp/release-notes.md
+      - name: Upload release draft for final asset verification
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-          PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
+          TAG: ${{ inputs.source_ref || github.ref_name }}
         run: |
           flags=()
-          if [[ "$TAG" == *-* ]]; then flags+=(--prerelease); fi
-          gh release create "$TAG" dist/release/* --verify-tag --draft --title "$TAG" --notes-file RELEASE_NOTES.md "${flags[@]}"
-          if [[ "$PUBLISH" == true ]]; then gh release edit "$TAG" --draft=false; fi
+          if [[ "$TAG" == *-* ]]; then flags+=(--prerelease --latest=false); fi
+          gh release create "$TAG" dist/release/* --verify-tag --draft --title "$TAG" --notes-file .tmp/release-notes.md "${flags[@]}"
+          # Every release stays draft until the maintainer assembles the mobile
+          # assets, runs release-assets.cjs verify with --write-checksums, uploads
+          # the complete set, then downloads and verifies it again before publish.
+          echo 'Draft created. Complete and verify all desktop/mobile assets before publishing.' >> "$GITHUB_STEP_SUMMARY"

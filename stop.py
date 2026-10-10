@@ -3,7 +3,7 @@
 import argparse
 from pathlib import Path
 
-from bridge.lifecycle import request_stop
+from bridge.app.lifecycle import request_stop
 
 
 def main():

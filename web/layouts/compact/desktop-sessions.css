@@ -1,0 +1,1 @@
+@media(max-width:720px){.desktop-sessions{display:block}.ds-list{height:100%}.desktop-sessions:not(.ds-open)>.ds-main{display:none}.desktop-sessions.ds-open>.ds-list{display:none}.ds-main{display:block}.ds-conversation{height:100%}.ds-requests{padding:0 20px}#desktop-backend{max-width:140px}}

@@ -1,0 +1,2 @@
+# Optional source dependency; bundled in desktop builds for shared relay access.
+aiohttp==3.13.3

@@ -1,0 +1,24 @@
+[Unit]
+Description=Codex Mobile Bridge shared relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=codex-relay
+Group=codex-relay
+WorkingDirectory=/opt/codex-mobile-bridge
+ExecStart=/opt/codex-mobile-bridge/.venv/bin/python -B -m relay --data-dir /var/lib/codex-bridge-relay serve --origin https://relay.example.com
+StateDirectory=codex-bridge-relay
+StateDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/codex-bridge-relay
+
+[Install]
+WantedBy=multi-user.target

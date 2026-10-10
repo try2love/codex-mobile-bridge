@@ -17,7 +17,7 @@ function texmath(md, options) {
     const delimiters = texmath.mergeDelimiters(options && options.delimiters);
     const outerSpace = options && options.outerSpace || false;         // inline rules, effectively `dollars` require surrounding spaces, i.e ` $\psi$ `, to be accepted as inline formulas. This is primarily a guard against misinterpreting single `$`'s in normal markdown text (relevant for inline math only. Default: `false`, for backwards compatibility).
     const katexOptions = options && options.katexOptions || {};
-    katexOptions.throwOnError = katexOptions.throwOnError || false; 
+    katexOptions.throwOnError = katexOptions.throwOnError || false;
     katexOptions.macros = katexOptions.macros || options && options.macros;  // ensure backwards compatibility
 
     if (!texmath.katex) { // else ... deprecated `use` method was used ...
@@ -45,7 +45,7 @@ function texmath(md, options) {
 }
 
 texmath.mergeDelimiters = function(delims) {
-    const delimsArr = Array.isArray(delims) ? delims 
+    const delimsArr = Array.isArray(delims) ? delims
                     : typeof delims === "string" ? [delims]
                     : ['dollars'];
     const delimiters = { inline:[], block:[]};  // target of merge process ...
@@ -61,7 +61,7 @@ texmath.mergeDelimiters = function(delims) {
 
 // texmath.inline = (rule) => dollar;  // just for debugging/testing ..
 
-texmath.inline = (rule) => 
+texmath.inline = (rule) =>
     function(state, silent) {
         const pos = state.pos;
         const str = state.src;
@@ -69,7 +69,7 @@ texmath.inline = (rule) =>
         const match = pre && rule.rex.exec(str);
         const res = !!match && pos < rule.rex.lastIndex && (!rule.post || rule.post(str, rule.outerSpace, rule.rex.lastIndex - 1));
 
-        if (res) { 
+        if (res) {
             if (!silent) {
                 const token = state.push(rule.name, 'math', 0);
                 token.content = match[1];
@@ -80,14 +80,14 @@ texmath.inline = (rule) =>
         return res;
     }
 
-texmath.block = (rule) => 
+texmath.block = (rule) =>
     function block(state, begLine, endLine, silent) {
         const pos = state.bMarks[begLine] + state.tShift[begLine];
         const str = state.src;
         const pre = str.startsWith(rule.tag, rule.rex.lastIndex = pos) && (!rule.pre || rule.pre(str, false, pos));  // valid pre-condition ....
         const match = pre && rule.rex.exec(str);
         const res = !!match
-                 && pos < rule.rex.lastIndex 
+                 && pos < rule.rex.lastIndex
                  && (!rule.post || rule.post(str, false, rule.rex.lastIndex - 1));
 
         if (res && !silent) {    // match and valid post-condition ...
@@ -206,7 +206,7 @@ texmath.$_post = (str,outerSpace,end) => {
 
 texmath.rules = {
     brackets: {
-        inline: [ 
+        inline: [
             {   name: 'math_inline',
                 rex: /\\\((.+?)\\\)/gy,
                 tmpl: '<eq>$1</eq>',
@@ -227,8 +227,8 @@ texmath.rules = {
         ]
     },
     doxygen: {
-        inline: [ 
-            {   name: 'math_inline', 
+        inline: [
+            {   name: 'math_inline',
                 rex: /\\f\$(.+?)\\f\$/gy,
                 tmpl: '<eq>$1</eq>',
                 tag: '\\f$'
@@ -248,7 +248,7 @@ texmath.rules = {
         ]
     },
     gitlab: {
-        inline: [ 
+        inline: [
             {   name: 'math_inline',
                 rex: /\$`(.+?)`\$/gy,
                 tmpl: '<eq>$1</eq>',
@@ -269,8 +269,8 @@ texmath.rules = {
         ]
     },
     julia: {
-        inline: [ 
-            {   name: 'math_inline', 
+        inline: [
+            {   name: 'math_inline',
                 rex: /`{2}([^`]+?)`{2}/gy,
                 tmpl: '<eq>$1</eq>',
                 tag: '``'
@@ -299,8 +299,8 @@ texmath.rules = {
         ]
     },
     kramdown: {
-        inline: [ 
-            {   name: 'math_inline', 
+        inline: [
+            {   name: 'math_inline',
                 rex: /\${2}(.+?)\${2}/gy,
                 tmpl: '<eq>$1</eq>',
                 tag: '$$'

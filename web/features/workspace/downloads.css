@@ -1,0 +1,19 @@
+.download-panel{position:fixed;z-index:85;width:340px;border:1px solid var(--line);border-radius:14px;background:var(--page,#f7f7f2);color:var(--text,#29312b);box-shadow:0 8px 32px #0002;overflow:hidden;font-size:12px;line-height:1.5}
+.download-panel[hidden],.download-panel [hidden]{display:none!important}
+.download-head{display:flex;align-items:center;padding:3px 7px;background:var(--surface,#fff);border-bottom:1px solid var(--line)}
+.download-summary{min-width:0;flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;text-align:left;font-weight:600;cursor:grab;touch-action:none}
+.download-panel button{border:0;background:transparent;color:inherit;font:inherit;border-radius:8px;min-height:36px;padding:6px 10px}
+.download-panel button:hover{background:var(--soft,#e9eee5)}
+.download-panel button:focus-visible{outline:2px solid var(--accent,#4664ed);outline-offset:-2px}
+.download-toggle{font-size:18px!important;min-width:36px;flex:none}
+.download-details{padding:13px 16px 11px}
+.download-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+.download-state{display:block;color:var(--muted);font-size:11px;margin:3px 0 8px}
+.download-progress{appearance:none;-webkit-appearance:none;display:block;width:100%;height:5px;border:0;border-radius:8px;overflow:hidden;accent-color:var(--accent);background:var(--line)}
+.download-progress::-webkit-progress-bar{background:var(--line);border-radius:8px}.download-progress::-webkit-progress-value{background:var(--accent);border-radius:8px}.download-progress::-moz-progress-bar{background:var(--accent);border-radius:8px}
+.download-progress:not([value]){opacity:.5}
+.download-metrics{display:flex;justify-content:space-between;gap:8px;margin:7px 0 6px;color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}
+.download-note{font-size:12px;margin:8px 0;color:var(--muted);overflow-wrap:anywhere}
+.download-actions{display:flex;justify-content:flex-end;gap:4px}.download-actions button:first-child,.download-actions button:nth-child(2){color:var(--accent)}
+.download-compact .download-head{border-bottom:0}
+@media(max-width:720px){.download-panel{border-radius:12px}.download-summary{cursor:pointer;touch-action:auto}.download-panel button{min-height:40px}.download-details{padding:11px 14px 9px}}

@@ -8,11 +8,11 @@ from unittest.mock import patch
 import test_bridge as support
 
 THREAD = support.THREAD
-from bridge.goal import GoalError, GoalUnavailable, GOAL_ACTIVATION_TEXTS, goal_activation, normalize_ui_locale
-from bridge.ipc import IPCError
-from bridge.model import normalize_item, normalize_request, user_display_text
-from bridge.timeline import Timeline
-from bridge.timeline import Timeline
+from bridge.features.sessions.goal import GoalError, GoalUnavailable, GOAL_ACTIVATION_TEXTS, goal_activation, normalize_ui_locale
+from bridge.clients.codex.ipc import IPCError
+from bridge.features.sessions.model import normalize_item, normalize_request, user_display_text
+from bridge.features.sessions.timeline import Timeline
+from bridge.features.sessions.timeline import Timeline
 
 
 class GoalStub:
@@ -95,7 +95,7 @@ Check both screenshots.
     def test_read_native_goal_normalizes_status(self):
         import sqlite3,tempfile
         from pathlib import Path
-        from bridge.goal import read_native_goal
+        from bridge.features.sessions.goal import read_native_goal
         with tempfile.TemporaryDirectory() as d:
             db=Path(d)/'goals_1.sqlite';c=sqlite3.connect(db)
             c.execute('create table thread_goals(thread_id text primary key, goal_id text, objective text, status text, token_budget integer, tokens_used integer, time_used_seconds integer, created_at_ms integer, updated_at_ms integer)')
@@ -109,7 +109,7 @@ class GoalStateTests(unittest.TestCase):
     tearDown = support.IntegrationTests.tearDown
 
     def test_command_transition_matrix_is_single_source_of_truth(self):
-        from bridge.goal import plan_goal_command
+        from bridge.features.sessions.goal import plan_goal_command
         active = {'objective': 'Work', 'status': 'active'}
         paused = {'objective': 'Work', 'status': 'paused'}
         complete = {'objective': 'Work', 'status': 'complete'}
@@ -138,7 +138,7 @@ class GoalRuntimeTests(unittest.TestCase):
     tearDown = support.IntegrationTests.tearDown
 
     def test_missing_local_runtime_is_reported_and_remote_is_always_disabled(self):
-        from bridge.goal import GoalRPC
+        from bridge.features.sessions.goal import GoalRPC
         self.bridge.goal=GoalRPC(self.root,self.root/'missing-codex-runtime')
         self.assertFalse(self.bridge._goal_runtime_available())
         self.assertFalse(self.bridge.view(THREAD)['goalRuntimeAvailable'])
@@ -147,7 +147,7 @@ class GoalRuntimeTests(unittest.TestCase):
         self.assertFalse(self.bridge.view(THREAD)['goalRuntimeAvailable'])
 
     def test_present_local_runtime_is_available(self):
-        from bridge.goal import GoalRPC
+        from bridge.features.sessions.goal import GoalRPC
         executable=self.root/'codex-runtime'
         executable.write_text('#!/bin/sh\n')
         self.bridge.goal=GoalRPC(self.root,executable)
@@ -316,7 +316,7 @@ class ModeTests(unittest.TestCase):
         self.assertEqual(calls[0]['params']['turnStart']['request']['input'][0]['text'],resume_text)
 
     def test_activation_messages_are_hidden_from_mobile_timeline(self):
-        from bridge.model import normalize_item
+        from bridge.features.sessions.model import normalize_item
         goal={'objective':'Keep tests green','status':'active'}
         activation_id,_=goal_activation(THREAD,goal,'create')
         self.bridge.goal_commands[THREAD+':'+activation_id] = {
@@ -486,7 +486,7 @@ class ModeTests(unittest.TestCase):
             'action':'cancel','state':'confirmed','objective':'Keep tests green','at':2,
             'response':{'status':'cancelled','confirmed':True},
         }
-        from bridge.service import LiveSession
+        from bridge.app.service import LiveSession
         other_session=LiveSession(other)
         self.bridge.live[other]=other_session
         with other_session.condition:

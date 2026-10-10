@@ -13,7 +13,7 @@ function fixture(){
     {id:'same-id',host:'remote',hostLabel:'My server',title:'Remote chat',notifyOnCompletion:true}]};
   let change=async body=>({watches:value.watches.flatMap(w=>w.host!==body.host?[w]:body.action==='remove'?[]:[{...w,notifyOnCompletion:body.notifyOnCompletion}])});
   const context=vm.createContext({root,document:{createElement:node},localStorage:{getItem(){},setItem(){}},change:body=>{calls.push({...body});return change(body);}});
-  for(const file of ['web/i18n.js','desktop/watches.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
+  for(const file of ['web/shared/i18n.js','desktop/features/notifications/watches.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
   const panel=vm.runInContext('new WatchPanel({root,change})',context);panel.render(value);
   return {panel,root,value,calls,all:()=>all(root),text:()=>all(root).map(n=>n.textContent).join('\n'),setChange:fn=>change=fn,
     language:()=>{vm.runInContext("BridgeI18n.setLanguage('en')",context);panel.render(panel.value);}};

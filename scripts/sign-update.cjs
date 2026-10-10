@@ -3,11 +3,12 @@
 // The private key belongs in a release secret, never in the repository or app.
 const fs=require('node:fs'),path=require('node:path');
 const {createHash,createPublicKey,sign}=require('node:crypto');
-const {assetName}=require('../desktop/updater.cjs');
+const {assetName}=require('../desktop/features/updates/updater.cjs');
+const {writeChecksums}=require('./release-assets.cjs');
 const root=path.resolve(__dirname,'..');
 function buildManifest(directory,notes,key){
   const version=require('../package.json').version;
-  const trusted=fs.readFileSync(path.join(root,'desktop/update-public-key.pem'),'utf8');
+  const trusted=fs.readFileSync(path.join(root,'desktop/features/updates/update-public-key.pem'),'utf8');
   if(createPublicKey(key).export({type:'spki',format:'pem'})!==trusted)throw Error('Signing key does not match the public key shipped in this release.');
   const assets={};
   for(const [platform,arch] of [['darwin','arm64'],['darwin','x64'],['win32','x64']]){
@@ -22,8 +23,7 @@ if(require.main===module){
   if(!directory||!notesFile||!key)throw Error('Artifact directory, notes file and CMB_UPDATE_SIGNING_KEY are required.');
   const manifest=buildManifest(directory,fs.readFileSync(notesFile,'utf8'),key);
   fs.writeFileSync(path.join(directory,'bridge-update.json'),manifest);
-  const sums=fs.readdirSync(directory).filter(name=>/\.(dmg|zip|exe|deb|AppImage)$/.test(name)).sort().map(name=>createHash('sha256').update(fs.readFileSync(path.join(directory,name))).digest('hex')+'  '+name);
-  fs.writeFileSync(path.join(directory,'SHA256SUMS.txt'),sums.join('\n')+'\n');
+  writeChecksums(directory);
   console.log('Signed update manifest and checksums created.');
 }
 module.exports={buildManifest};

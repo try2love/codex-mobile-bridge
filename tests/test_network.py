@@ -10,12 +10,13 @@ import tempfile
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
-from bridge import network
-from bridge.desktop import Desktop
-from bridge.httpd import GatewayServer
-from bridge.lifecycle import request_stop
+import bridge.features.network.addresses as network
+from bridge.app.desktop import Desktop
+from bridge.api.httpd import GatewayServer
+from bridge.app.lifecycle import request_stop
 import run
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,7 +39,7 @@ class SelectionTests(unittest.TestCase):
             legacy.read.return_value = b'{"authenticated":false,"passwordless":false,"instanceId":"legacy","notifications":true}'
             unknown = MagicMock(status=401)
             unknown.read.return_value = b'{"error":"login"}'
-            with patch('bridge.desktop.http.client.HTTPConnection') as connect, patch('bridge.desktop.read_record', return_value={'pid': 42, 'instanceId': 'legacy'}):
+            with patch('bridge.app.desktop.http.client.HTTPConnection') as connect, patch('bridge.app.desktop.read_record', return_value={'pid': 42, 'instanceId': 'legacy'}):
                 connect.return_value.getresponse.side_effect = [unknown, legacy]
                 self.assertTrue(desktop.status()['running'])
                 self.assertEqual([call.args for call in connect.return_value.request.call_args_list], [('GET', '/api/health'), ('GET', '/api/auth')])
@@ -53,7 +54,7 @@ class SelectionTests(unittest.TestCase):
             self.assertEqual(saved['urls'], ['http://192.0.2.7:8787/'])
             self.assertEqual(desktop.config()['lanAddresses'], ['192.0.2.7'])
             self.assertFalse(desktop.config()['localAccess'])
-            with patch('bridge.desktop.socket.socket') as sock, patch('bridge.desktop.subprocess.Popen') as spawn:
+            with patch('bridge.app.desktop.socket.socket') as sock, patch('bridge.app.desktop.subprocess.Popen') as spawn:
                 sock.return_value.bind.side_effect = OSError('address unavailable')
                 with self.assertRaisesRegex(ValueError, '不会自动开放'):
                     desktop.start()
@@ -73,7 +74,7 @@ class LocalAccessTests(unittest.TestCase):
     def test_local_browser_blocked_but_private_health_and_tunnel_work(self):
         with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as folder:
             config = {'auth': {'mode': 'none'}, 'origins': ['https://phone.example.com'], 'localAccess': False}
-            server = GatewayServer(('127.0.0.1', 0), object(), config, ROOT/'web', Path(folder))
+            server = GatewayServer(('127.0.0.1', 0), SimpleNamespace(accounts=SimpleNamespace()), config, ROOT/'web', Path(folder))
             port = server.server_port
             host = f'127.0.0.1:{port}'
             server.hosts.update([host, f'192.0.2.7:{port}'])
@@ -111,6 +112,7 @@ class LocalAccessTests(unittest.TestCase):
                     other.server_close()
             finally:
                 server.shutdown();thread.join();server.server_close()
+                server.harness.close();server.desktop_sessions.close()
 
     def test_real_gateway_binds_only_selected_address_and_stops_every_listener(self):
         lan = next((ip for ip in run.addresses() if ip not in ('127.0.0.1', 'localhost')), None)

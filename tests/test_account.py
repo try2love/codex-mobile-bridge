@@ -6,8 +6,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
-from bridge.account import Account, AccountError, AccountRPC, normalize_limits
-from bridge.lifecycle import GatewayControl, request_pairing
+from bridge.features.accounts.account import Account, AccountError, AccountRPC, normalize_limits
+from bridge.app.lifecycle import GatewayControl, request_pairing
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -84,6 +84,18 @@ class AccountTests(unittest.TestCase):
         self.assertNotIn('secret', str(result))
         self.assertEqual(self.consumes(), [])
 
+    def test_failed_refresh_keeps_timestamp_and_never_reuses_another_account_snapshot(self):
+        first = self.account.read()
+        self.rpc.fail_read = True
+        failed = self.account.read()
+        self.assertEqual(failed['limits'], first['limits'])
+        self.assertEqual(failed['updatedAt'], first['updatedAt'])
+        self.assertTrue(failed['error'])
+        self.rpc.auth['account']['email'] = 'different@example.test'
+        changed = self.account.read()
+        self.assertEqual(changed['limits'], [])
+        self.assertIsNone(changed['updatedAt'])
+
     def test_api_key_signed_out_custom_provider_and_profile_are_hidden(self):
         for auth, login_type in (({'type': 'apiKey'}, 'api'), (None, 'signedOut'), ({'type': 'unknown'}, 'unknown')):
             self.rpc.auth['account'] = auth
@@ -116,8 +128,7 @@ class AccountTests(unittest.TestCase):
         body = self.attempt()
         with self.assertRaises(ValueError): self.account.consume({**body, 'confirmed': False})
         self.rpc.config['desktop']['agent-usage-reset-enabled'] = False
-        self.assertFalse(self.account.read()['canReset'])
-        with self.assertRaises(PermissionError): self.account.consume(body)
+        self.assertTrue(self.account.read()['canReset'])
         self.rpc.config['desktop']['agent-usage-reset-enabled'] = True
         self.rpc.auth['account']['email'] = 'other@example.test'
         with self.assertRaises(PermissionError): self.account.consume(body)
@@ -129,12 +140,11 @@ class AccountTests(unittest.TestCase):
         self.rpc.on_limits = lambda: self.rpc.auth.update(account=None)
         self.assertEqual(self.account.read(), {'visible': False, 'loginType': 'signedOut'})
 
-    def test_late_permission_change_blocks_reset(self):
+    def test_desktop_agent_permission_does_not_block_manual_reset(self):
         body = self.attempt()
         self.rpc.on_limits = lambda: self.rpc.config['desktop'].update({'agent-usage-reset-enabled': False})
-        with self.assertRaises(PermissionError): self.account.consume(body)
-        self.assertEqual(self.consumes(), [])
-        self.assertFalse(self.account.path.exists())
+        self.assertEqual(self.account.consume(body)['outcome'], 'reset')
+        self.assertEqual(len(self.consumes()), 1)
 
     def test_account_changed_while_validating_card_cannot_consume(self):
         body = self.attempt()

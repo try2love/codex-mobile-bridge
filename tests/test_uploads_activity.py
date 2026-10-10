@@ -10,9 +10,9 @@ import hashlib
 from unittest.mock import patch
 
 import test_bridge as support
-from bridge.uploads import Uploads, MAX_FILE
-from bridge.ipc import IPCError
-from bridge.remote import upload_file
+from bridge.features.workspace.uploads import Uploads, MAX_FILE
+from bridge.clients.codex.ipc import IPCError
+from bridge.clients.codex.remote import upload_file
 
 THREAD = support.THREAD
 PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR7kAAAAASUVORK5CYII=')
@@ -98,14 +98,14 @@ class UploadActivityTests(unittest.TestCase):
         call = self.calls()[0]
         self.assertEqual(call['hostId'], 'remote:test')
         self.assertEqual(call['params']['turnStart']['request']['input'][1]['path'], '/remote/codex/uploads/file.png')
-        with patch('bridge.remote.ssh_read', return_value={'path':'/remote/path'}) as ssh:
+        with patch('bridge.clients.codex.remote.ssh_read', return_value={'path':'/remote/path'}) as ssh:
             self.assertEqual(upload_file('test-host', *received[0]), '/remote/path')
             self.assertEqual(ssh.call_args.args[0], 'test-host')
             compile(ssh.call_args.args[1], '<remote-upload>', 'exec')
 
     def test_activity_follows_visible_chats_without_history_reads_or_activation(self):
         self.bridge.list()
-        with patch.object(self.bridge.store, 'history', side_effect=AssertionError('No history for list')), patch('bridge.service.open_in_desktop', side_effect=AssertionError('No navigation')):
+        with patch.object(self.bridge.store, 'history', side_effect=AssertionError('No history for list')), patch('bridge.app.service.open_in_desktop', side_effect=AssertionError('No navigation')):
             rows = self.bridge.activity([THREAD, str(uuid.uuid4())])
             self.assertEqual(len(rows), 1)
             session = self.bridge.live[THREAD]
@@ -132,7 +132,7 @@ class UploadActivityTests(unittest.TestCase):
         self.fixture.loaded = False
         self.bridge.list();self.bridge.activity([THREAD]);session=self.bridge.live[THREAD]
         session.retry_at = time.monotonic() + 15
-        with patch.object(self.bridge.store, 'history', return_value=support.state()), patch('bridge.service.open_in_desktop', side_effect=AssertionError('No navigation')):
+        with patch.object(self.bridge.store, 'history', return_value=support.state()), patch('bridge.app.service.open_in_desktop', side_effect=AssertionError('No navigation')):
             self.bridge.session(THREAD, background=True)
             with session.condition: self.assertTrue(session.condition.wait_for(lambda: session.saved_view is not None, timeout=2))
         self.assertFalse(session.connected)
@@ -231,7 +231,7 @@ class UploadActivityTests(unittest.TestCase):
 
     def test_model_markdown_cannot_leave_roots_but_imageview_can(self):
         import tempfile
-        from bridge.files import artifact_paths
+        from bridge.features.workspace.files import artifact_paths
         with tempfile.TemporaryDirectory(dir=self.root.parent) as directory:
             outside = Path(directory) / 'desktop-evidence.png'
             outside.write_bytes(PNG)

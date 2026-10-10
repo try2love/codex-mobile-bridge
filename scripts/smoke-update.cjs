@@ -4,7 +4,7 @@
 const assert=require('node:assert/strict'),fs=require('node:fs/promises'),sync=require('node:fs');
 const path=require('node:path'),net=require('node:net'),{spawn}=require('node:child_process');
 const {Readable}=require('node:stream'),{createHash,generateKeyPairSync,sign,randomUUID}=require('node:crypto');
-const {Updater,RELEASES,assetName}=require('../desktop/updater.cjs');
+const {Updater,RELEASES,assetName}=require('../desktop/features/updates/updater.cjs');
 const root=path.resolve(__dirname,'..'),version=require('../package.json').version,mac=process.platform==='darwin';
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function until(callback,label,ms=45000){

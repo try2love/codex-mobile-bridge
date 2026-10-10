@@ -8,6 +8,15 @@ permissions:
   contents: read
 
 jobs:
+  mobile-update-tests:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - run: python3 scripts/test-mobile-releases.py
   test:
     strategy:
       fail-fast: false
@@ -23,6 +32,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+      - name: Install shell used by PTY integration tests
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y zsh
+      - name: Verify Windows continuous terminal before the full suite
+        if: runner.os == 'Windows'
+        run: python -B -m unittest discover -s tests -p test_windows_terminal.py -v
+      - name: Verify Windows native Claude controls before the full suite
+        if: runner.os == 'Windows'
+        run: python -B -m unittest discover -s tests -p test_claude_native_helper.py -v
+      - name: Install optional shared relay transport for integration tests
+        run: python -m pip install -r requirements-relay.txt
       - run: python -B -m unittest discover -s tests -v
 
   desktop-tests:

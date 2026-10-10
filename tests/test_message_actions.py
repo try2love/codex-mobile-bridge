@@ -9,10 +9,10 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
-from bridge.create import CreationError, ForkUnavailable, fork_copy
-from bridge.ipc import IPCError, DesktopIPC
-from bridge.service import Bridge, LiveSession
-from bridge.remote import RemoteStore
+from bridge.features.sessions.create import CreationError, ForkUnavailable, fork_copy
+from bridge.clients.codex.ipc import IPCError, DesktopIPC
+from bridge.app.service import Bridge, LiveSession
+from bridge.clients.codex.remote import RemoteStore
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -33,7 +33,7 @@ class MessageActionTests(unittest.TestCase):
         self.bridge.live[self.source] = self.session
         self.target = patch.object(self.bridge, '_target', return_value=self.session).start()
         self.call = patch.object(self.bridge, '_call', return_value={'ok': True}).start()
-        self.fork = patch('bridge.service.fork_copy', return_value=self.child).start()
+        self.fork = patch('bridge.app.service.fork_copy', return_value=self.child).start()
 
     def tearDown(self):
         patch.stopall()
@@ -136,7 +136,7 @@ class MessageActionTests(unittest.TestCase):
         self.bridge.host = 'remote-ssh-discovered:fixture'
         self.bridge.hosts.hosts = lambda: {self.bridge.host: {'alias': 'fixture'}}
         body = self.body('first', 'fork', 'assistant')
-        with patch('bridge.service.ssh_read', side_effect=[{'unavailable': 'update required'}, {'id': self.child}]):
+        with patch('bridge.app.service.ssh_read', side_effect=[{'unavailable': 'update required'}, {'id': self.child}]):
             with self.assertRaises(ForkUnavailable):
                 self.bridge.message_action(self.source, body)
             self.assertEqual(self.bridge.message_action(self.source, body)['id'], self.child)
@@ -145,7 +145,7 @@ class MessageActionTests(unittest.TestCase):
         self.bridge.host = 'remote-ssh-discovered:fixture'
         self.bridge.hosts.hosts = lambda: {self.bridge.host: {'alias': 'fixture'}}
         self.bridge.store = RemoteStore('fixture')
-        with patch('bridge.service.ssh_read', return_value={'id': self.child}) as ssh:
+        with patch('bridge.app.service.ssh_read', return_value={'id': self.child}) as ssh:
             result = self.bridge.message_action(self.source, self.body('first', 'fork', 'assistant'))
         self.assertEqual(result['host'], self.bridge.host)
         self.assertEqual(ssh.call_args.args[0], 'fixture')
@@ -179,7 +179,7 @@ Path(''' + repr(str(log)) + ''').write_text(json.dumps(calls))
                 Path(argv[-1], 'ThreadForkParams.json').write_text(json.dumps({'properties': {'lastTurnId': {}, 'deferGoalContinuation': {}}}))
                 return subprocess.CompletedProcess(argv, 0)
             real_popen = subprocess.Popen
-            with patch('bridge.create.subprocess.run', side_effect=schema), patch('bridge.create.subprocess.Popen', side_effect=lambda argv, **kwargs: real_popen([sys.executable, str(script)], **kwargs)):
+            with patch('bridge.features.sessions.create.subprocess.run', side_effect=schema), patch('bridge.features.sessions.create.subprocess.Popen', side_effect=lambda argv, **kwargs: real_popen([sys.executable, str(script)], **kwargs)):
                 self.assertEqual(fork_copy('runtime', root, str(root), source, 'selected', 'Branch', {'modelProvider': 'custom'}), child)
             calls = json.loads(log.read_text())
             self.assertEqual([c['method'] for c in calls], ['initialize', 'initialized', 'thread/fork', 'thread/name/set'])
@@ -191,7 +191,7 @@ Path(''' + repr(str(log)) + ''').write_text(json.dumps(calls))
             def schema(argv, **kwargs):
                 Path(argv[-1], 'ThreadForkParams.json').write_text(json.dumps({'properties': {'lastTurnId': {}}}))
                 return subprocess.CompletedProcess(argv, 0)
-            with patch('bridge.create.subprocess.run', side_effect=schema), patch('bridge.create._runtime_operation') as operation:
+            with patch('bridge.features.sessions.create.subprocess.run', side_effect=schema), patch('bridge.features.sessions.create._runtime_operation') as operation:
                 with self.assertRaises(CreationError): fork_copy('runtime', Path(folder), folder, str(uuid.uuid4()), 'turn', 'Branch', {'modelProvider': 'custom'})
                 operation.assert_not_called()
 

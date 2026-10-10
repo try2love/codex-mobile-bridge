@@ -32,6 +32,21 @@ installations can set the runtime path explicitly in Advanced settings or with
 Linux uses `xdg-open` for desktop links and `ip -j -4 address show up` for IPv4
 enumeration; the existing hostname fallback remains available if `ip` fails.
 
+For local Linux Codex chats, the permission picker checks the installed runtime's
+profiles, workspace policy and desktop preferences when opened and again before
+applying a change. Unavailable modes stay disabled with an explanation. A runtime
+supporting guardian approval does not by itself confirm that the desktop has
+enabled that option. Side-chat permission changes wait for a settings notification
+from the matching child thread; an empty RPC acknowledgement is not treated as a
+successful change. These compatibility checks do not change SSH or macOS/Windows
+permission handling.
+
+Preview 3 discovery resolves symlinked shell launchers to an executable sibling
+GUI, including the Ubuntu `codex-launcher` / `ChatGPT` layout. It never executes
+launch scripts during discovery, and ignores non-executable files and standalone
+`codex` / `claude` CLI binaries. Claude's native Console auto-connection helper
+currently supports macOS and Windows only; Linux reports that limitation.
+
 ## Build on the Target Architecture
 
 Use Ubuntu 22.04 or a compatible build environment, Node.js 24, Python 3.9+
@@ -66,6 +81,22 @@ AppImage filenames. Both ARM64 package formats use `arm64`.
 The existing release workflow collects both architectures and includes these
 files in `SHA256SUMS.txt`. Linux is deliberately excluded from the macOS/Windows
 signed in-app update manifest until a Linux update/recovery strategy is tested.
+
+To test the local build without installing it over an existing package:
+
+```sh
+./start-linux.sh
+```
+
+This opens the compiled desktop with separate preferences and login credentials
+in `.local/linux-preview`; its controller log is `desktop.log` in that directory.
+The directory persists across restarts. Set `CMB_DATA_DIR` to choose another
+location. Start/stop the HTTP gateway using the desktop controls. Its default
+port is 8787; change it in Network settings if another gateway uses that port.
+The original Codex/ChatGPT data remains at its existing location.
+
+The terminal tests use zsh when installed and otherwise exercise Bash with an
+isolated startup file. A minimal Ubuntu desktop does not need zsh for testing.
 
 ## Install and Launch
 

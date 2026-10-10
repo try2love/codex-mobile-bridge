@@ -1,0 +1,2 @@
+#desktop-backend{max-width:165px;padding:7px;border:1px solid var(--line);border-radius:8px;color:inherit;background:var(--raised)}
+.app.desktop-mode{display:block}.app.desktop-mode>#sidebar,.app.desktop-mode>main{display:none!important}

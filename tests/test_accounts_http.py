@@ -49,3 +49,17 @@ class AccountsHttpTests(unittest.TestCase):
         self.assertEqual(self.request('POST','/api/accounts/details',{**value,'apiKey':'forbidden'},headers)[0],400)
         self.assertEqual(self.request('POST','/api/accounts/details',value,headers)[0],202)
         manager.info.request.assert_called_once_with(value)
+
+    def test_reminders_and_desktop_updates_require_authenticated_csrf_requests(self):
+        manager=self.manager();manager.monitor=SimpleNamespace(configure=Mock());manager.updates=SimpleNamespace(check=Mock(),request=Mock())
+        paths=[('/api/accounts/reminders',{'preferences':{'lowQuota':True}}),
+               ('/api/accounts/desktop-update',{'action':'checkDesktopUpdate'})]
+        for path,value in paths:self.assertEqual(self.request('POST',path,value)[0],401)
+        headers=self.login()
+        for path,value in paths:
+            self.assertEqual(self.request('POST',path,value,{'Cookie':headers['Cookie']})[0],403)
+            self.assertIn(self.request('POST',path,value,headers)[0],(200,202))
+        manager.monitor.configure.assert_called_once_with({'lowQuota':True});manager.updates.check.assert_called_once()
+        self.server.auth.config['mode']='none'
+        self.assertEqual(self.request('POST','/api/accounts/desktop-update',{'action':'checkDesktopUpdate'},headers)[0],403)
+        manager.updates.request.assert_not_called()

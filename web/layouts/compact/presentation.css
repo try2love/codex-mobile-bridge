@@ -1,0 +1,11 @@
+@media(max-width:720px){
+  body.chat-detail>.phone-header{display:none}
+  .chat-head{padding:max(4px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) 4px max(12px,env(safe-area-inset-left));min-height:52px;gap:6px}
+  #back{margin-left:-4px;width:36px;height:40px;flex:none;padding:0;font-size:29px}
+  .chat-head .appearance-button{width:32px;min-width:32px;height:40px}
+  .timeline{padding:12px max(20px,env(safe-area-inset-right)) 12px max(20px,env(safe-area-inset-left))}
+  .message.user{margin-left:28px;padding:11px 14px}
+  .composer{margin:0 max(14px,env(safe-area-inset-right)) 0 max(14px,env(safe-area-inset-left))}
+  .picker{max-height:90dvh;width:calc(100% - 24px);padding:20px}
+  .newer{right:16px}
+}

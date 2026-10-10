@@ -1,9 +1,9 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict');
 const path=require('node:path');
-const {workerFor,runWorker}=require('../desktop/controller.cjs');
-const {createTray,primaryUrl}=require('../desktop/tray.cjs');
-const i18n=require('../desktop/i18n.js');
+const {workerFor,runWorker}=require('../desktop/shared/controller.cjs');
+const {createTray,primaryUrl}=require('../desktop/shell/tray.cjs');
+const i18n=require('../desktop/shared/i18n.js');
 
 test('language normalization and error translation preserve unknown details',()=>{
   assert.equal(i18n.normalize('en-US'),'en');assert.equal(i18n.normalize('zh-TW'),'zh-CN');
@@ -60,6 +60,11 @@ test('packaged launch uses bundled runtime and literal data directory',()=>{
   const result=workerFor({packaged:true,resources:'/app resources',root:'/source',dataDir:'/my data'});
   assert.equal(result.dataDir,'/my data');assert.equal(result.executable,path.join('/app resources','gateway',process.platform==='win32'?'codex-mobile-gateway.exe':'codex-mobile-gateway'));
 });
+test('file-transfer settings reach the worker through the IPC allowlist',async()=>{
+  const script="let value='';process.stdin.on('data',data=>value+=data);process.stdin.on('end',()=>console.log(JSON.stringify({ok:true,result:{action:process.argv[1],payload:JSON.parse(value)}})));";
+  const result=await runWorker({executable:process.execPath,prefix:['-e',script],dataDir:'/fixture'},'transfer-settings',{clickDownloadMiB:60});
+  assert.deepEqual(result,{action:'transfer-settings',payload:{clickDownloadMiB:60}});
+});
 test('unknown IPC action cannot become a command',async()=>{await assert.rejects(runWorker({executable:'unused',dataDir:'unused'},'shell'),/未知操作/);});
 test('development launch keeps script as its own argument',()=>{
   const result=workerFor({packaged:false,root:'/source path',dataDir:'/data'});assert.deepEqual(result.prefix,['-B',path.join('/source path','desktop.py')]);
@@ -67,27 +72,143 @@ test('development launch keeps script as its own argument',()=>{
 
 // Exercise the real renderer's start and polling handlers with a controlled
 // backend and clock. DOM layout and input editing are outside these checks.
-async function renderer(initialLanguage='zh-CN'){
+async function renderer(initialLanguage='zh-CN',{autoStart=false}={}){
   const fs=require('node:fs'),vm=require('node:vm');
   const nodes=new Map();
   function node(){return {parentNode:{insertBefore(){}},getAnimations(){return [];},animate(){},closest(){return null;},value:'',checked:false,hidden:false,textContent:'',dataset:{},
-    classList:{toggle(){}},append(){},replaceChildren(){},setAttribute(){},removeAttribute(){},querySelectorAll(){return [];}};}
+    classList:{toggle(){}},click(){return this.onclick?.();},append(...items){this.children=(this.children||[]).concat(items);},replaceChildren(...items){this.children=items;},setAttribute(){},removeAttribute(){},querySelectorAll(){return [];}};}
   const html=fs.readFileSync(path.join(__dirname,'../desktop/index.html'),'utf8');
   for(const match of html.matchAll(/\bid="([^"]+)"/g))nodes.set(match[1],node());
+  for(const id of ['clients-start','clients-stop'])nodes.set(id,node());
   const value={runtime:{running:false,portOccupied:false,supportsNotifications:true},
-    preferences:{port:8787,lan:true,tunnel:false,autoStart:false,connections:[]},
+    preferences:{port:8787,lan:true,tunnel:false,autoStart,connections:[]},
     auth:{mode:'password',username:'admin'},notifications:{enabled:false,server:'https://ntfy.sh',topic:''},
     notificationStatus:{},watches:[],origins:[],urls:[],dataDir:'/test',credentialsAvailable:false};
   let now=1000,poll;
-  const api={account:async()=>({visible:false}),language:async()=>initialLanguage,setLanguage:async value=>value,snapshot:async()=>structuredClone(value),start:async()=>({started:true,message:'正在启动网关'}),
+  const calls=[];
+  const api={account:async()=>({visible:false}),language:async()=>initialLanguage,setLanguage:async value=>value,snapshot:async()=>{calls.push('snapshot');return structuredClone(value);},start:async()=>{calls.push('start');return {started:true,message:'正在启动网关'};},
     save:async payload=>{value.preferences={...value.preferences,...payload.preferences};return structuredClone(value);},logs:async()=>({text:''})};
   const context=vm.createContext({window:{bridgeDesktop:api},
     localStorage:{getItem(){return null;},setItem(){}},document:{hidden:false,addEventListener(name,fn){this[name]=fn;},documentElement:{},getElementById:id=>nodes.get(id),createElement:node,querySelectorAll:()=>[]},
     URL,Date:class extends Date{static now(){return now;}},setTimeout(){},clearTimeout(){},clearInterval(){},setInterval:(callback,ms)=>{if(callback.name==='refresh')poll=callback;}});
-  for(const name of ['web/i18n.js','desktop/secret-fields.js','desktop/connections.js','desktop/pairing.js','web/account.js','desktop/watches.js','desktop/renderer.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',name),'utf8'),context);
+  for(const name of ['web/shared/i18n.js','desktop/shared/secret-fields.js','desktop/features/connections/connections.js','desktop/features/connections/pairing.js','web/features/accounts/account.js','desktop/features/notifications/watches.js','desktop/shell/renderer.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',name),'utf8'),context);
   await new Promise(setImmediate);
-  return {nodes,value,context,api,run:code=>vm.runInContext(code,context),poll:()=>poll(),advance:ms=>{now+=ms;},start:()=>nodes.get('start').onclick()};
+  return {nodes,value,context,api,calls,run:code=>vm.runInContext(code,context),poll:()=>poll(),advance:ms=>{now+=ms;},start:()=>nodes.get('start').onclick()};
 }
+
+for(const transferFirst of [false,true])test(`independent transfer settings ${transferFirst?'before':'after'} snapshot do not block gateway startup or hide real drafts`,async()=>{
+  const ui=await renderer(),fs=require('node:fs'),vm=require('node:vm');
+  const create=ui.context.document.createElement;
+  ui.context.document.createElement=tag=>{
+    const element=create();element.tagName=tag.toUpperCase();element.id='';
+    element.append=function(...items){this.children=(this.children||[]).concat(items);for(const child of items)child.parentElement=this;};
+    element.closest=function(selector){for(let item=this;item;item=item.parentElement){if(selector==='[data-panel]'&&item.dataset.panel)return item;if(selector==='#'+item.id)return item;}return null;};
+    element.validity={valid:true};element.reportValidity=()=>element.validity.valid;
+    return element;
+  };
+  const panel=ui.context.document.createElement('section');panel.dataset.panel='advanced';
+  const descendants=element=>[element,...(element.children||[]).flatMap(descendants)];
+  const autoStart=ui.nodes.get('auto-start');autoStart.id='auto-start';autoStart.type='checkbox';autoStart.validity={valid:true};autoStart.closest=selector=>selector==='[data-panel]'?panel:null;
+  ui.context.document.querySelector=selector=>selector==='[data-panel=advanced]'?panel:null;
+  ui.nodes.get('settings').querySelectorAll=()=>[autoStart,...descendants(panel).filter(element=>element.tagName==='INPUT')];
+  ui.context.MutationObserver=class {observe(){}};ui.context.window.addEventListener=()=>{};
+  let resolveRead;const writes=[];
+  ui.api.transferSettings=value=>value?(writes.push(value),Promise.resolve(value)):new Promise(resolve=>{resolveRead=resolve;});
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/features/workspace/file-actions.js'),'utf8'),ui.context);
+  ui.context.BridgeFileActions=ui.context.window.BridgeFileActions;
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../desktop/features/files/settings.js'),'utf8'),ui.context);
+  const input=descendants(panel).find(element=>element.tagName==='INPUT');
+  if(transferFirst){resolveRead({clickDownloadMiB:100});await new Promise(setImmediate);}
+  ui.run('dirty=false;render(snapshot)');
+  assert.equal(ui.run('dirty'),false);
+  if(!transferFirst){resolveRead({clickDownloadMiB:100});await new Promise(setImmediate);}
+  ui.run("applyLanguage('en')");
+  assert.equal(ui.run('dirty'),false,'independently loaded transfer limit is not a gateway draft');
+  await ui.start();assert.ok(ui.calls.includes('start'));
+  input.value=200;input.oninput({stopPropagation(){}});ui.run('updateDirty()');
+  assert.equal(ui.run('dirty'),false,'transfer limit has its own save button');
+  await descendants(panel).find(element=>element.tagName==='BUTTON').onclick();
+  assert.equal(writes.at(-1).clickDownloadMiB,200);
+  autoStart.checked=true;ui.run('updateDirty()');
+  assert.equal(ui.run('dirty'),true,'actual gateway drafts must still be protected');
+  input.validity.valid=false;
+  await ui.nodes.get('settings').onsubmit({preventDefault(){}});
+  assert.equal(ui.value.preferences.autoStart,true,'independent validation cannot block saving gateway settings');
+});
+
+test('Tailscale detection fills a read-only URL and preserves its unsaved identity across polls',async()=>{
+  const ui=await renderer('en');
+  ui.run(`connectionDraft=[{id:'ts',name:'',enabled:true,accessMode:'tailscale',publicUrl:'',tailscaleMode:'funnel',tailscalePort:443,tailscaleNodeId:''}];savedConnections=JSON.stringify(connectionDraft);renderConnections();updateDirty();`);
+  const descendants=node=>[node,...(node.children||[]).flatMap(descendants)];
+  let controls=descendants(ui.nodes.get('connections'));
+  const url=controls.find(node=>node.dataset.connectionField==='publicUrl');
+  assert.equal(url.readOnly,true);assert.equal(url.onfocus,null);
+  let requests=0;
+  ui.api.tailscaleSetup=async payload=>{requests++;assert.equal(payload.id,'ts');return {state:'ready',url:'https://mac.example.ts.net',nodeId:'n123',message:'已读取 Tailscale 固定地址。保存配置后启动网关，再检测固定入口。'};};
+  await controls.find(node=>node.dataset.connectionAction==='tailscaleInspect').click();
+  assert.equal(requests,1);assert.equal(ui.run('dirty'),true);
+  assert.equal(ui.run('connectionDraft[0].tailscaleNodeId'),'n123');
+  await ui.poll();
+  assert.equal(ui.run('connectionDraft[0].publicUrl'),'https://mac.example.ts.net');
+  controls=descendants(ui.nodes.get('connections'));
+  assert.equal(controls.find(node=>node.dataset.connectionAction==='tailscaleInspect').textContent,'Detect Tailscale and read URL');
+});
+
+test('changing the Tailscale HTTPS port invalidates the previously detected URL',async()=>{
+  const ui=await renderer();
+  ui.run(`connectionDraft=[{id:'ts',enabled:true,accessMode:'tailscale',publicUrl:'https://mac.example.ts.net',tailscaleMode:'funnel',tailscalePort:443,tailscaleNodeId:'n123'}];renderConnections();`);
+  const descendants=node=>[node,...(node.children||[]).flatMap(descendants)];
+  const port=descendants(ui.nodes.get('connections')).find(node=>node.dataset.connectionField==='tailscalePort');
+  port.value='8443';port.onchange();
+  assert.equal(ui.run('connectionDraft[0].tailscalePort'),8443);
+  assert.equal(ui.run('connectionDraft[0].publicUrl'),'');
+  assert.equal(ui.run('connectionDraft[0].tailscaleNodeId'),'');
+});
+
+test('opening the control panel and starting the gateway need no Documents permission API',async()=>{
+  const ui=await renderer();
+  assert.deepEqual(ui.calls,['snapshot']);
+  assert.equal(ui.nodes.has('documents-access'),false);
+  await ui.start();
+  assert.deepEqual(ui.calls,['snapshot','start','snapshot']);
+  assert.equal(ui.nodes.get('status').textContent,'启动中');
+});
+
+test('automatic gateway startup works without a Documents permission API',async()=>{
+  const ui=await renderer('zh-CN',{autoStart:true});
+  assert.deepEqual(ui.calls,['snapshot','start','snapshot']);
+  assert.equal(ui.nodes.get('status').textContent,'启动中');
+});
+
+test('overview and client-page gateway controls share pending state and reject duplicate operations',async()=>{
+  const ui=await renderer();let started,stopped,starts=0,stops=0;
+  ui.api.start=()=>{starts++;return new Promise(resolve=>started=resolve);};
+  const start=ui.nodes.get('clients-start').onclick();await new Promise(setImmediate);
+  assert.equal(ui.nodes.get('start').disabled,true);assert.equal(ui.nodes.get('clients-start').disabled,true);
+  await ui.nodes.get('start').onclick();assert.equal(starts,1);
+  started({started:true,message:'正在启动网关'});await start;
+  ui.value.runtime.running=true;await ui.poll();
+  assert.equal(ui.nodes.get('clients-stop').disabled,false);
+  ui.api.stop=()=>{stops++;return new Promise(resolve=>stopped=resolve);};
+  const stop=ui.nodes.get('clients-stop').onclick();
+  assert.equal(ui.nodes.get('stop').disabled,true);assert.equal(ui.nodes.get('clients-stop').disabled,true);
+  await ui.nodes.get('stop').onclick();assert.equal(stops,1);
+  ui.value.runtime.running=false;stopped({message:'网关已停止'});await stop;
+  for(const id of ['start','clients-start'])assert.equal(ui.nodes.get(id).disabled,false);
+  for(const id of ['stop','clients-stop'])assert.equal(ui.nodes.get(id).disabled,true);
+});
+
+test('client-page gateway controls retain save checks and recover both buttons on failure',async()=>{
+  const ui=await renderer();ui.run('dirty=true');await ui.nodes.get('clients-start').onclick();
+  assert.equal(ui.calls.includes('start'),false);assert.match(ui.nodes.get('toast-message').textContent,/请先保存/);
+  ui.run('dirty=false');ui.api.start=async()=>{throw Error('start rejected');};
+  await ui.nodes.get('clients-start').onclick();
+  for(const id of ['start','clients-start'])assert.equal(ui.nodes.get(id).disabled,false);
+  ui.value.runtime.running=true;await ui.poll();ui.api.stop=async()=>{throw Error('stop rejected');};
+  await ui.nodes.get('clients-stop').onclick();
+  for(const id of ['stop','clients-stop'])assert.equal(ui.nodes.get(id).disabled,false);
+  assert.match(ui.nodes.get('toast-message').textContent,/stop rejected/);
+});
 
 test('startup feedback follows readiness, page changes and later shutdown',async()=>{
   const ui=await renderer();await ui.start();
@@ -156,6 +277,7 @@ test('preload forwards the selected notification channel over private IPC',()=>{
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../desktop/preload.cjs'),'utf8'),{require:()=>({
     contextBridge:{exposeInMainWorld:(name,value)=>{api=value;}},ipcRenderer:{invoke:(...args)=>{calls.push(args);}}
   })});
+  assert.equal('documentsAccess' in api,false);
   api.testNotification({channel:'bark'});
   assert.deepEqual(calls,[['bridge:test-notification',{channel:'bark'}]]);
 });
@@ -229,7 +351,7 @@ test('opening logs starts at the newest records without changing their contents'
 
 
 test('QR PNG decodes to the exact one-time fragment URL without exposing it in metadata',async()=>{
-  const {pairingImage}=require('../desktop/qr.cjs'),{PNG}=require('pngjs'),decode=require('jsqr');
+  const {pairingImage}=require('../desktop/features/connections/qr.cjs'),{PNG}=require('pngjs'),decode=require('jsqr');
   const url='https://bridge.example.com/#pair='+'x'.repeat(43);
   const result=await pairingImage({id:'test',url,expires:12345,state:'active'});
   assert.equal(result.url,undefined);
@@ -238,7 +360,7 @@ test('QR PNG decodes to the exact one-time fragment URL without exposing it in m
   assert.equal(result.id,'test');assert.equal(result.expires,12345);
 });
 
-const cloudflared=require('../desktop/cloudflared.cjs');
+const cloudflared=require('../desktop/features/connections/cloudflared.cjs');
 test('Linux CI artifact selectors match electron-builder architecture names',()=>{
   const fs=require('node:fs'),yaml=require('js-yaml'),{Arch,getArtifactArchName}=require('builder-util');
   const job=yaml.load(fs.readFileSync(path.join(__dirname,'../.github/workflows/desktop.yml'),'utf8')).jobs.linux;
@@ -366,7 +488,7 @@ test('missing Cloudflare opens setup before start and installing preserves draft
   const ui=await renderer();let started=0;
   ui.value.preferences.tunnel=true;await ui.poll();ui.api.start=async()=>{started++;};
   ui.api.checkCloudflared=async()=>{throw Error('未找到 cloudflared，请点击一键安装，或选择已下载的程序。');};
-  await ui.start();assert.equal(started,0);assert.equal(ui.run('activeTab'),'advanced');
+  await ui.start();assert.equal(started,0);assert.equal(ui.run('activeTab'),'network');
   for(const id of ['cloudflared','password','ntfy-topic'])ui.nodes.get(id).closest=()=>({dataset:{panel:'advanced'}});
   ui.run("fields=()=>['cloudflared','password','ntfy-topic'].map($);savedFields=fieldValues()");
   ui.nodes.get('password').value='unsaved password';ui.nodes.get('ntfy-topic').value='draft-topic';
@@ -509,7 +631,7 @@ test('hidden controller pauses snapshots and unchanged state does not rebuild ad
 });
 
 test('snapshot worker reuses a process and isolates data directory changes',async()=>{
- const {createSnapshotWorker}=require('../desktop/controller.cjs'),{EventEmitter}=require('node:events');
+ const {createSnapshotWorker}=require('../desktop/shared/controller.cjs'),{EventEmitter}=require('node:events');
  let spawned=0;const children=[];
  const launch=()=>{spawned++;const child=new EventEmitter();child.stdout=new EventEmitter();child.stdout.setEncoding=()=>{};child.stderr=new EventEmitter();child.stdin=new EventEmitter();child.kill=()=>{child.killed=true;};child.stdin.write=()=>setImmediate(()=>child.stdout.emit('data',JSON.stringify({ok:true,result:{value:spawned}})+'\n'));children.push(child);return child;};
  const worker=createSnapshotWorker({launch}),a={executable:'fixture',dataDir:'a'};
@@ -530,7 +652,8 @@ test('native window title ignores page changes and only updates when locale chan
   const context=vm.createContext({__dirname:path.resolve(__dirname,'../desktop'),process:{env:{},platform:'darwin'},require(name){
     if(name==='electron')return {app:{requestSingleInstanceLock:()=>true,whenReady:()=>({then(){}}),on(){},getPath:()=>'.tmp'},BrowserWindow:Window,ipcMain:{handle:(name,handler)=>handlers[name]=handler}};
     if(name==='node:fs')return {...fs,mkdirSync(){},writeFileSync(){}};
-    if(name==='./qr.cjs')return {};
+    if(name==='./features/connections/qr.cjs')return {};
+    if(name==='./shared/gateway-language.cjs')return {publishLanguage(){}};
     return requireMain(name);
   }});
   vm.runInContext(fs.readFileSync(path.resolve(__dirname,'../desktop/main.cjs'),'utf8'),context);
@@ -542,4 +665,30 @@ test('native window title ignores page changes and only updates when locale chan
   handlers['bridge:set-language'](event,'zh-CN');assert.equal(changes,0);
   handlers['bridge:set-language'](event,'en');assert.equal(changes,1);
   handlers['bridge:set-language'](event,'en');assert.equal(changes,1);
+});
+
+
+test('English toast translates account failures and dynamic operation feedback',async()=>{
+ const ui=await renderer('en');
+ for(const message of ['请先保存连接配置。', '账号不存在，请刷新列表', '部分通道发送失败：ntfy；请在手机确认其他通道是否收到。']){
+  ui.context.feedback(message,true);assert.doesNotMatch(ui.nodes.get('toast-message').textContent,/[\u4e00-\u9fff]/);
+ }
+});
+
+test('SSH phone URL can stay blank and explains domain DNS and trusted IP HTTPS in both languages',async()=>{
+  const descendants=node=>[node,...(node.children||[]).flatMap(descendants)];
+  for(const language of ['zh-CN','en']){
+    const ui=await renderer(language);
+    ui.run(`connectionDraft=[{id:'server',name:'',enabled:true,accessMode:'server',publicUrl:'',sshAuth:'password',sshHost:'93.184.216.34',sshUser:'example',sshPort:22,sshRemotePort:18787}];renderConnections();`);
+    const controls=descendants(ui.nodes.get('connections'));
+    const url=controls.find(node=>node.dataset.connectionField==='publicUrl');
+    assert.equal(url.value,'');assert.equal(url.onfocus,null);assert.notEqual(url.required,true);
+    const text=controls.map(node=>node.textContent).join('\n');
+    if(language==='en'){
+      assert.match(text,/Phone access URL \(optional\)/);assert.match(text,/DNS record.*public IP/);
+      assert.match(text,/trusted HTTPS certificate matching that IP/);assert.doesNotMatch(text,/[\u4e00-\u9fff]/);
+    }else{
+      assert.match(text,/手机访问地址（可选）/);assert.match(text,/域名解析到服务器公网 IP/);assert.match(text,/匹配该 IP 的受信任 HTTPS 证书/);
+    }
+  }
 });

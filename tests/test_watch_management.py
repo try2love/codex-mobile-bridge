@@ -7,10 +7,10 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
-from bridge.desktop import Desktop
-from bridge.lifecycle import GatewayControl
-from bridge.notifications import Notifications, read_json, save_settings, write_json
-from bridge.service import LiveSession
+from bridge.app.desktop import Desktop
+from bridge.app.lifecycle import GatewayControl
+from bridge.features.notifications.channels import Notifications, read_json, save_settings, write_json
+from bridge.app.service import LiveSession
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -49,7 +49,7 @@ class WatchManagementTests(unittest.TestCase):
         self.assertEqual((self.data/'state_5.sqlite').read_bytes(), before)
 
     def test_only_existing_watches_can_be_changed_without_connecting(self):
-        with patch('bridge.service.Bridge.for_host', side_effect=AssertionError('No activation or remote connection')):
+        with patch('bridge.app.service.Bridge.for_host', side_effect=AssertionError('No activation or remote connection')):
             self.manager.control(self.action(notifyOnCompletion=True))
             self.manager.control(self.action('remove'))
             with self.assertRaisesRegex(ValueError, '已移除'):
@@ -67,7 +67,7 @@ class WatchManagementTests(unittest.TestCase):
             def for_host(self, host): return self
             def session(self, thread, **kwargs): return session
         self.manager.bridge = Source()
-        with patch('bridge.notifications.publish'):
+        with patch('bridge.features.notifications.channels.publish'):
             self.manager.scan()
         control = GatewayControl(self.data)
         control.start(lambda: None, lambda value: {}, notifications=self.manager.control)
@@ -76,13 +76,13 @@ class WatchManagementTests(unittest.TestCase):
         self.desktop.notification_watches(self.action(notifyOnCompletion=True))
         self.assertTrue(self.manager.completions)
         session.state['turns'][0]['status'] = 'completed'
-        with patch('bridge.notifications.publish', side_effect=OSError('offline')) as send:
+        with patch('bridge.features.notifications.channels.publish', side_effect=OSError('offline')) as send:
             self.manager.scan()
             self.assertEqual(send.call_count, 1)
         self.desktop.notification_watches(self.action(notifyOnCompletion=False))
         self.assertFalse(self.manager.completions)
         for row in self.manager.ledger.values(): row['next'] = 0
-        with patch('bridge.notifications.publish') as send:
+        with patch('bridge.features.notifications.channels.publish') as send:
             self.manager.scan()
             send.assert_not_called()
         rows = self.desktop.notification_watches(self.action('remove'))['watches']
@@ -115,13 +115,13 @@ class WatchManagementTests(unittest.TestCase):
                 return session
         source = Source()
         manager.bridge = source
-        with patch('bridge.notifications.publish'):
+        with patch('bridge.features.notifications.channels.publish'):
             manager.scan()
         self.assertEqual(manager.watches()[0]['title'], 'New title')
         self.assertEqual(manager.watches()[0]['cwd'], '/new/path')
         session.state['requests'][0]['id'] = 'new-question'
         source.remove = True
-        with patch('bridge.notifications.publish') as send:
+        with patch('bridge.features.notifications.channels.publish') as send:
             manager.scan()
             send.assert_not_called()
         self.assertEqual(manager.watches(), [])

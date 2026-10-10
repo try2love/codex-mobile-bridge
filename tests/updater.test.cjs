@@ -3,7 +3,7 @@ const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs/promises'),path=require('node:path');
 const {generateKeyPairSync,sign,createHash}=require('node:crypto');
 const {buildManifest}=require('../scripts/sign-update.cjs');
-const {Updater,manifest,compare,assetName,releaseUrl,allowedUrl,allowedMirrorUrl,mirrorUrl,RELEASES,MIRROR,transfer}=require('../desktop/updater.cjs');
+const {Updater,manifest,compare,assetName,releaseUrl,allowedUrl,allowedMirrorUrl,mirrorUrl,RELEASES,MIRROR,transfer}=require('../desktop/features/updates/updater.cjs');
 const keys=generateKeyPairSync('ed25519');
 const current='0.2.0-beta.5',next='0.2.0-beta.6',platform='darwin',arch='arm64';
 function signed(value,key=keys.privateKey){const payload=Buffer.from(JSON.stringify(value));return Buffer.from(JSON.stringify({payload:payload.toString('base64'),signature:sign(null,payload,key).toString('base64')}));}
@@ -15,7 +15,7 @@ test('release signer includes Intel and Apple Silicon ZIPs and clients select th
   const directory=await fs.mkdtemp(path.join(__dirname,'../.tmp/release-manifest-'));
   t.after(()=>fs.rm(directory,{recursive:true,force:true}));
   const sync=require('node:fs'),read=sync.readFileSync;
-  t.mock.method(sync,'readFileSync',(file,...args)=>file===path.resolve(__dirname,'../desktop/update-public-key.pem')?
+  t.mock.method(sync,'readFileSync',(file,...args)=>file===path.resolve(__dirname,'../desktop/features/updates/update-public-key.pem')?
     keys.publicKey.export({type:'spki',format:'pem'}):read(file,...args));
   const version=require('../package.json').version,targets=[['darwin','arm64'],['darwin','x64'],['win32','x64']];
   for(const [platform,arch] of targets)await fs.writeFile(path.join(directory,assetName(version,platform,arch)),Buffer.from(platform+'-'+arch));
@@ -63,9 +63,32 @@ test('update metadata and packages retry through the signed transport mirror',as
 });
 
 test('versions order beta, rc and stable numerically and reject ambiguous versions',()=>{
+  assert.ok(compare('2.0.0-preview.10','2.0.0-preview.9')>0);
+  assert.ok(compare('2.0.0','2.0.0-preview.99')>0);
   assert.ok(compare('0.2.0-beta.10','0.2.0-beta.9')>0);assert.ok(compare('0.2.0-rc.0','0.2.0-beta.99')>0);
   assert.ok(compare('0.2.0','0.2.0-rc.99')>0);assert.ok(compare('0.3.0-beta.0','0.2.99')>0);
   for(const bad of ['v0.2.0','0.2','0.2.0-beta','0.02.0','0.2.0-beta.01','1.0.0/../../'])assert.throws(()=>compare(bad,current));
+});
+test('v1.4.0 stable users never receive the v2 preview even with misleading release flags',async()=>{
+  for(const version of ['2.0.0-preview.1','2.0.0-preview.2','2.0.0-preview.3'])for(const prerelease of [true,false]){
+    let requests=0;
+    const fetch=async()=>{requests++;return new Response(JSON.stringify([{tag_name:'v'+version,draft:false,prerelease,assets:[{name:'bridge-update.json'}]}]));};
+    const updater=new Updater({current:'1.4.0',platform,arch,key:keys.publicKey,fetch,directory:'.tmp',install:async()=>{throw Error('Must not install');}});
+    assert.equal((await updater.check()).state,'current');assert.equal(requests,1);assert.equal(updater.candidate,null);
+  }
+});
+test('preview.2 discovers signed preview.3 only after it leaves draft',async()=>{
+  const version='2.0.0-preview.3',data=info();data.version=version;data.assets['darwin-arm64'].name=assetName(version,platform,arch);
+  for(const draft of [true,false]){
+    const requests=[];
+    const fetch=async url=>{requests.push(url);return new Response(url===RELEASES?
+      JSON.stringify([{tag_name:'v'+version,draft,prerelease:true,assets:[{name:'bridge-update.json'}]}]):signed(data));};
+    const updater=new Updater({current:'2.0.0-preview.2',platform,arch,key:keys.publicKey,fetch,directory:'.tmp',install:async()=>{throw Error('Must not install');}});
+    const result=await updater.check();
+    assert.equal(result.state,draft?'current':'available');
+    assert.deepEqual(requests,draft?[RELEASES]:[RELEASES,releaseUrl(version,'bridge-update.json')]);
+    assert.equal(updater.candidate?.version??null,draft?null:version);
+  }
 });
 test('signatures authenticate exact payload and reject another release identity',()=>{
   assert.equal(validate(signed(info())).version,next);

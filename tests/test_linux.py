@@ -7,17 +7,17 @@ from pathlib import Path
 from unittest.mock import patch
 
 import run
-from bridge.catalog import Catalog
-from bridge.create import CreationError, open_in_desktop
+from bridge.clients.codex.catalog import Catalog
+from bridge.features.sessions.create import CreationError, open_in_desktop
 
 
 class LinuxTests(unittest.TestCase):
     def test_ubuntu_chatgpt_package_layout(self):
         runtime = Path('/usr/lib/chatgpt/resources/codex')
-        with patch('bridge.catalog.sys.platform', 'linux'), \
-                patch('bridge.catalog.shutil.which', return_value=None), \
+        with patch('bridge.clients.codex.catalog.sys.platform', 'linux'), \
+                patch('bridge.clients.codex.catalog.shutil.which', return_value=None), \
                 patch.object(Path, 'is_file', autospec=True, side_effect=lambda path: path == runtime), \
-                patch('bridge.catalog.os.access', return_value=True):
+                patch('bridge.clients.codex.catalog.os.access', return_value=True):
             self.assertEqual(Catalog.find_runtime(), runtime)
 
     def test_bundled_runtime_precedes_path_cli(self):
@@ -28,22 +28,22 @@ class LinuxTests(unittest.TestCase):
             runtime = root / 'resources/codex-cli/bin/codex'
             runtime.parent.mkdir(parents=True)
             runtime.touch()
-            with patch('bridge.catalog.sys.platform', 'linux'), \
-                    patch('bridge.catalog.shutil.which', side_effect=lambda name: str(launcher) if name == 'chatgpt' else '/cli/codex'), \
-                    patch('bridge.catalog.os.access', return_value=True):
+            with patch('bridge.clients.codex.catalog.sys.platform', 'linux'), \
+                    patch('bridge.clients.codex.catalog.shutil.which', side_effect=lambda name: str(launcher) if name == 'chatgpt' else '/cli/codex'), \
+                    patch('bridge.clients.codex.catalog.os.access', return_value=True):
                 self.assertEqual(Catalog.find_runtime(), runtime.resolve())
 
     def test_runtime_fallback_and_missing_install(self):
-        with patch('bridge.catalog.sys.platform', 'linux'), patch.object(Path, 'is_file', return_value=False):
-            with patch('bridge.catalog.shutil.which', side_effect=lambda name: '/cli/codex' if name == 'codex' else None):
+        with patch('bridge.clients.codex.catalog.sys.platform', 'linux'), patch.object(Path, 'is_file', return_value=False):
+            with patch('bridge.clients.codex.catalog.shutil.which', side_effect=lambda name: '/cli/codex' if name == 'codex' else None):
                 self.assertEqual(Catalog.find_runtime(), Path('/cli/codex'))
-            with patch('bridge.catalog.shutil.which', return_value=None):
+            with patch('bridge.clients.codex.catalog.shutil.which', return_value=None):
                 self.assertIsNone(Catalog.find_runtime())
 
     @unittest.skipIf(os.name == 'nt', 'POSIX executable permissions and symlinks')
     def test_symlinked_launcher_and_executable_permissions(self):
         with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
+            root = Path(folder).resolve()
             launcher = root / 'app/chatgpt'
             launcher.parent.mkdir()
             launcher.touch()
@@ -52,7 +52,10 @@ class LinuxTests(unittest.TestCase):
             runtime = root / 'app/resources/codex'
             runtime.parent.mkdir()
             runtime.touch()
-            with patch('bridge.catalog.shutil.which', side_effect=lambda name: str(link) if name == 'chatgpt' else None):
+            is_file = Path.is_file
+            with patch('bridge.clients.codex.catalog.shutil.which', side_effect=lambda name: str(link) if name == 'chatgpt' else None), \
+                    patch.object(Path, 'is_file', autospec=True,
+                                 side_effect=lambda path: is_file(path) if root in path.parents else False):
                 runtime.chmod(0o600)
                 self.assertIsNone(Catalog.find_linux_runtime())
                 runtime.chmod(0o700)
@@ -60,7 +63,7 @@ class LinuxTests(unittest.TestCase):
 
     def test_desktop_link_is_literal_and_keeps_remote_host(self):
         tid = '11111111-1111-4111-8111-111111111111'
-        with patch('bridge.create.sys.platform', 'linux'), patch('bridge.create.subprocess.run') as opened:
+        with patch('bridge.features.sessions.create.sys.platform', 'linux'), patch('bridge.features.sessions.create.subprocess.run') as opened:
             open_in_desktop(tid, 'remote host&value')
             self.assertEqual(opened.call_args.args[0],
                              ['xdg-open', 'codex://threads/' + tid + '?hostId=remote+host%26value'])
@@ -73,8 +76,8 @@ class LinuxTests(unittest.TestCase):
         tid = '11111111-1111-4111-8111-111111111111'
         for error in (FileNotFoundError(), subprocess.CalledProcessError(3, 'xdg-open'),
                       subprocess.TimeoutExpired('xdg-open', 10)):
-            with self.subTest(error=error), patch('bridge.create.sys.platform', 'linux'), \
-                    patch('bridge.create.subprocess.run', side_effect=error):
+            with self.subTest(error=error), patch('bridge.features.sessions.create.sys.platform', 'linux'), \
+                    patch('bridge.features.sessions.create.subprocess.run', side_effect=error):
                 with self.assertRaisesRegex(CreationError, 'xdg-open'):
                     open_in_desktop(tid, 'local')
 

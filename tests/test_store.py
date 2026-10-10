@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from bridge.store import SessionStore
+from bridge.features.sessions.store import SessionStore
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -50,7 +50,7 @@ class StoreTests(unittest.TestCase):
 
     def test_snapshot_rejects_writer_starting_during_copy(self):
         import shutil
-        from bridge.store import StoreUnavailable
+        from bridge.features.sessions.store import StoreUnavailable
         copy = shutil.copyfile
         writer = None
         def copy_then_write(source, target):
@@ -61,7 +61,7 @@ class StoreTests(unittest.TestCase):
             writer.commit()
             return result
         try:
-            with patch('bridge.store.shutil.copyfile', side_effect=copy_then_write):
+            with patch('bridge.features.sessions.store.shutil.copyfile', side_effect=copy_then_write):
                 with self.assertRaises(StoreUnavailable):
                     self.store.get('test')
             self.assertEqual(self.store.get('test')['title'], 'Concurrent update')
@@ -70,15 +70,15 @@ class StoreTests(unittest.TestCase):
                 writer.close()
 
     def test_missing_database_reports_recoverable_error(self):
-        from bridge.store import StoreUnavailable
+        from bridge.features.sessions.store import StoreUnavailable
         self.path.unlink()
         with self.assertRaises(StoreUnavailable):
             self.store.list()
 
     def test_corruption_does_not_use_snapshot_fallback(self):
-        from bridge.store import StoreUnavailable
+        from bridge.features.sessions.store import StoreUnavailable
         self.path.write_bytes(b'not a database')
-        with patch('bridge.store.shutil.copyfile') as copy:
+        with patch('bridge.features.sessions.store.shutil.copyfile') as copy:
             with self.assertRaises(StoreUnavailable):
                 self.store.list()
             copy.assert_not_called()
@@ -113,6 +113,26 @@ class RecentHistoryTests(unittest.TestCase):
             self.assertEqual(tail['turns'], full['turns'][-limit:])
             self.assertEqual(tail['turnsPagination']['hasLoadedOldest'], limit >= 120)
 
+    def test_turn_context_labels_do_not_follow_later_thread_settings_or_cache(self):
+        import json
+        records=[]
+        for index,model,effort in [('one','gpt-6-astra','max'),('two','gemini-pro','high')]:
+            records.extend([
+                {'type':'event_msg','payload':{'type':'task_started','turn_id':index}},
+                {'type':'turn_context','payload':{'turn_id':index,'model':model,'effort':effort}},
+                {'type':'response_item','payload':{'type':'message','role':'assistant','content':[{'text':index}]}},
+                {'type':'event_msg','payload':{'type':'task_complete','turn_id':index}}])
+        self.path.write_text(''.join(json.dumps(r)+'\n' for r in records))
+        meta={'rollout_path':str(self.path),'cwd':'/fixture','model':'next-model','model_provider':'next-provider'}
+        first=self.store._history('fixture',meta)
+        meta.update(model='changed-without-turn',model_provider='changed-provider')
+        cached=self.store._history('fixture',meta)
+        self.assertEqual(first['latestModel'],'next-model')
+        self.assertEqual(cached['latestModel'],'changed-without-turn')
+        self.assertEqual(cached['modelProvider'],'changed-provider')
+        self.assertEqual([t['params'] for t in cached['turns']],
+                         [{'model':'gpt-6-astra','effort':'max'},{'model':'gemini-pro','effort':'high'}])
+
     def test_saved_imageview_event_is_preserved_for_history_rendering(self):
         import json
         self.path.write_text('\n'.join(json.dumps(record, ensure_ascii=False) for record in [
@@ -124,7 +144,7 @@ class RecentHistoryTests(unittest.TestCase):
         state=self.store.history('fixture')
         kinds=[item.get('type') for item in state['turns'][0]['items']]
         self.assertIn('ImageView',kinds)
-        from bridge.files import artifact_paths, referenced_model_images
+        from bridge.features.workspace.files import artifact_paths, referenced_model_images
         referenced=list(referenced_model_images(state))
         self.assertEqual(len(referenced),1)
         image=self.home/'preview.png';image.write_bytes(b'PNG')
@@ -145,8 +165,8 @@ class RecentHistoryTests(unittest.TestCase):
         self.assertEqual(self.store.history('fixture', 20)['turns'][-1]['turnId'], 'new')
 
     def test_prepend_preserves_cursor_and_existing_order(self):
-        from bridge.model import normalize_state
-        from bridge.timeline import Timeline
+        from bridge.features.sessions.model import normalize_state
+        from bridge.features.sessions.timeline import Timeline
         timeline = Timeline()
         tail = normalize_state(self.store.history('fixture', 20));tail['sequence'] = 1
         timeline.update(tail);page = timeline.page(limit=20)

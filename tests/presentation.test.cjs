@@ -1,6 +1,6 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict');
-const {defaults,normalize,colors}=require('../web/presentation.js');
+const {defaults,normalize,colors}=require('../web/features/settings/presentation.js');
 
 test('invalid or older saved appearance values keep the page readable',()=>{
   for(const value of [null,42,'bad',{}, {theme:'unknown',accent:'url(external)',fontSize:100,codeSize:-1,density:'tiny'}])assert.deepEqual(normalize(value),defaults);
@@ -8,6 +8,10 @@ test('invalid or older saved appearance values keep the page readable',()=>{
   assert.equal(normalize({showReasoning:false,showProcess:false}).showReasoning,false);
   assert.equal(normalize({showReasoning:false,showProcess:false}).showProcess,false);
   assert.deepEqual(normalize({showReasoning:'false',showProcess:null}),defaults);
+  assert.equal(normalize({showFileThumbnails:false}).showFileThumbnails,false);
+  assert.equal(normalize({showComputer:false}).showComputer,false);
+  assert.equal(normalize({showComputer:'false'}).showComputer,true);
+  assert.equal(normalize({showFileThumbnails:'false'}).showFileThumbnails,true);
 });
 
 function luminance(hex){

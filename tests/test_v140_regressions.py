@@ -8,8 +8,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch, Mock
 
-from bridge.catalog import Catalog
-from bridge.remote import RemoteCatalog
+from bridge.clients.codex.catalog import Catalog
+from bridge.clients.codex.remote import RemoteCatalog
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -48,7 +48,7 @@ class CatalogIntegrationTests(unittest.TestCase):
             json.dumps({'id': i, 'result': value}) + '\n' for i, value in enumerate(replies, 1))))
         writes = []
         process.stdin.write = lambda value: writes.append(value)
-        with patch('bridge.catalog.subprocess.Popen', return_value=process):
+        with patch('bridge.clients.codex.catalog.subprocess.Popen', return_value=process):
             value = self.reader.get_kind('models', self.home)
         self.assertTrue(value['fastMode']['allowed'])
         methods = [json.loads(line)['method'] for line in writes]

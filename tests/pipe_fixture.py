@@ -2,7 +2,7 @@
 import socket
 import threading
 
-from bridge.transport import WindowsPipe
+from bridge.clients.codex.transport import WindowsPipe
 
 
 class PipeListener:

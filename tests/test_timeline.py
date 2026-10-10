@@ -1,9 +1,9 @@
 import json
 import unittest
 
-from bridge.model import normalize_state
-from bridge.timeline import Timeline, PAGE_BYTES, DETAIL_CHARS
-from bridge.service import LiveSession
+from bridge.features.sessions.model import normalize_state
+from bridge.features.sessions.timeline import Timeline, PAGE_BYTES, DETAIL_CHARS
+from bridge.app.service import LiveSession
 
 
 def view(count=320, sequence=1):
@@ -13,6 +13,33 @@ def view(count=320, sequence=1):
 
 
 class TimelineTests(unittest.TestCase):
+    def test_desktop_hydration_cannot_relabel_completed_history_with_current_model(self):
+        session=LiveSession('chat')
+        with session.condition:
+            session.set_history({'id':'chat','turns':[
+                {'turnId':'old','status':'completed','params':{'model':'gpt-6-astra','effort':'max'},'items':[]},
+                {'turnId':'unknown','status':'completed','items':[]}]})
+            session.state={'id':'chat','turns':[
+                {'turnId':key,'status':'completed','params':{'model':'gemini-pro','effort':'high'},'items':[]}
+                for key in ('old','unknown','new')]}
+            session.connected=True
+        turns=session.view()['turns']
+        self.assertEqual([(t['model'],t['effort']) for t in turns],
+                         [('gpt-6-astra','max'),(None,None),('gemini-pro','high')])
+        self.assertEqual(session.state['turns'][0]['params']['model'],'gemini-pro')
+
+    def test_assistant_labels_follow_each_turn_not_latest_chat_settings(self):
+        from bridge.features.sessions.model import normalize_state
+        state={'latestModel':'newest-model','latestReasoningEffort':'ultra','turns':[
+            {'turnId':'old','params':{'model':'gpt-6-astra','effort':'max'},'items':[{'id':'a','type':'agentMessage','text':'old reply'}]},
+            {'turnId':'new','params':{'model':'gemini-fixture','effort':'high'},'items':[{'id':'b','type':'agentMessage','text':'new reply'}]},
+            {'turnId':'unknown','items':[{'id':'c','type':'agentMessage','text':'legacy reply'}]}]}
+        timeline=Timeline();timeline.update({**normalize_state(state),'sequence':1})
+        rows=timeline.rows
+        self.assertEqual((rows[0]['model'],rows[0]['effort']),('gpt-6-astra','max'))
+        self.assertEqual((rows[1]['model'],rows[1]['effort']),('gemini-fixture','high'))
+        self.assertNotIn('model',rows[2]);self.assertNotIn('effort',rows[2])
+
     def test_partial_desktop_snapshot_keeps_saved_prefix_without_changing_patch_state(self):
         session = LiveSession('chat')
         saved = {'id': 'chat', 'turns': [

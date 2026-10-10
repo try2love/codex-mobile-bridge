@@ -9,21 +9,28 @@ from importlib.metadata import distribution
 from pathlib import Path
 import certifi
 root = Path(__file__).resolve().parents[1]
+subprocess.run([sys.executable, str(root/'scripts/build-client-helpers.py')], check=True)
 subprocess.run([sys.executable, str(root/'scripts/bundle-cloudflared.py')], check=True)
 command = [sys.executable, '-m', 'PyInstaller', '--noconfirm', '--clean', '--onedir', '--name', 'codex-mobile-gateway',
            '--distpath', str(root/'dist'), '--workpath', str(root/'.tmp/pyinstaller'), '--specpath', str(root/'.tmp'),
            '--add-data', str(root/'web')+':web']
-command.extend(['--add-data', str(root/'dist/cloudflared')+':cloudflared', '--collect-all', 'paramiko', '--collect-all', 'keyring'])
+command.extend(['--add-data', str(root/'dist/cloudflared')+':cloudflared', '--collect-all', 'paramiko', '--collect-all', 'keyring', '--collect-all', 'aiohttp'])
 if sys.platform == 'darwin':
     command.extend(['--target-arch', platform.machine()])
 # Ship roots and their license explicitly; source users still need only stdlib.
-command.extend(['--add-data', certifi.where()+':bridge'])
+command.extend(['--add-data', certifi.where()+':bridge/features/auth'])
 certificate_package = distribution('certifi')
 license_file = next(p for p in certificate_package.files if p.name == 'LICENSE')
 command.extend(['--add-data', str(certificate_package.locate_file(license_file))+':licenses/certifi'])
 # The SSH adapter intentionally injects these source modules into remote Python.
-for name in ('store.py', 'catalog.py', 'create.py', 'account_models.py', 'tls.py'):
-    command.extend(['--add-data', str(root/'bridge'/name)+':bridge'])
+for relative in json.loads((root/'scripts/gateway-resources.json').read_text(encoding='utf-8')):
+    source_file = root/relative
+    command.extend(['--add-data', str(source_file)+':'+str(Path(relative).parent)])
+helpers = ('claude-bridge-helper.exe', 'codex-quit-helper.exe') if sys.platform == 'win32' else ('claude-bridge-helper',)
+for name in helpers:
+    helper = root/'dist/client-helpers'/name
+    if helper.is_file():
+        command.extend(['--add-binary', str(helper)+':client-helpers'])
 command.append(str(root/'desktop.py'))
 subprocess.run(command, cwd=root, check=True)
 source = root/'dist/codex-mobile-gateway'

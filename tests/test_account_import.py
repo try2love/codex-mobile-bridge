@@ -9,8 +9,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import Mock, patch
 
 import test_accounts
-from bridge.account_models import model_ids
-from bridge.accounts import private_json
+from bridge.features.accounts.models import model_ids
+from bridge.features.accounts.accounts import private_json
 
 
 class ImportTests(unittest.TestCase):
@@ -19,7 +19,7 @@ class ImportTests(unittest.TestCase):
 
     def scan(self, config, env=None):
         rpc = Mock();rpc.request.return_value = {'config': config}
-        with patch('bridge.accounts.ManagedRPC') as cls, patch.dict(os.environ, env or {}, clear=True):
+        with patch('bridge.features.accounts.accounts.ManagedRPC') as cls, patch.dict(os.environ, env or {}, clear=True):
             cls.return_value.__enter__.return_value = rpc
             return self.manager.scan({})
 
@@ -77,14 +77,14 @@ class ImportTests(unittest.TestCase):
 
     def test_models_use_saved_or_scanned_secret_but_return_only_model_ids(self):
         row = self.scan(self.config())['discovery']['candidates'][0]
-        with patch('bridge.accounts.model_ids', return_value=['model-a']) as lookup:
+        with patch('bridge.features.accounts.accounts.model_ids', return_value=['model-a']) as lookup:
             result=self.manager.models({'candidateId':row['id']})
             lookup.assert_called_once_with('https://fixture.invalid/v1','fixture-key')
             self.assertEqual(result['models'],['model-a'])
             self.assertNotIn('fixture-key',json.dumps(result))
         self.manager.import_account({'candidateId':row['id']})
         saved=self.manager.index['accounts'][0]
-        with patch('bridge.accounts.model_ids', return_value=['model-a']) as lookup:
+        with patch('bridge.features.accounts.accounts.model_ids', return_value=['model-a']) as lookup:
             self.manager.models({'id':saved['id'],'baseUrl':saved['baseUrl'],'apiKey':''})
             lookup.assert_called_once_with(saved['baseUrl'],'fixture-key')
 

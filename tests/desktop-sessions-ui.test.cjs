@@ -1,0 +1,330 @@
+'use strict';
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path'),{webcrypto}=require('node:crypto');
+function fixture(){
+ const listeners={},storage=new Map();let document;
+ class Node {
+  constructor(tag='div'){this.tagName=tag.toUpperCase();this.children=[];this.parentElement=null;this.dataset={};this.attributes={};this.hidden=false;this.disabled=false;this.value='';this.className='';this._text='';this.style={setProperty(){}};this.scrollHeight=100;this.scrollTop=0;this.clientHeight=100;this.clientWidth=1000;this.open=false;this.options=this.children;this.classList={contains:n=>this.className.split(' ').includes(n),add:(...ns)=>this.className=[...new Set([...this.className.split(' ').filter(Boolean),...ns])].join(' '),remove:(...ns)=>this.className=this.className.split(' ').filter(n=>!ns.includes(n)).join(' '),toggle:(n,v)=>{v=v??!this.classList.contains(n);this.classList[v?'add':'remove'](n);return v;}};}
+  get textContent(){return this._text+this.children.map(n=>n.textContent).join('');}set textContent(v){this._text=String(v??'');this.children=[];this.options=this.children;}
+  get firstElementChild(){return this.children[0];}get lastChild(){return this.children.at(-1);}get childNodes(){return this.children;}get isConnected(){return !!this.parentElement;}
+  append(...nodes){for(let n of nodes){if(typeof n==='string')n=document.createTextNode(n);n.remove();n.parentElement=this;this.children.push(n);}}
+  prepend(...nodes){for(const n of [...nodes].reverse()){n.remove();n.parentElement=this;this.children.unshift(n);}}
+  replaceChildren(...nodes){for(const n of this.children)n.parentElement=null;this.children=[];this.options=this.children;this._text='';this.append(...nodes);}
+  remove(){if(this.parentElement){const p=this.parentElement;p.children.splice(p.children.indexOf(this),1);this.parentElement=null;}}
+  after(...nodes){const p=this.parentElement;if(!p)return;let i=p.children.indexOf(this)+1;for(const n of nodes){n.remove();n.parentElement=p;p.children.splice(i++,0,n);}}
+  insertBefore(n,next){n.remove();n.parentElement=this;const i=this.children.indexOf(next);this.children.splice(i<0?this.children.length:i,0,n);}
+  add(option){this.append(option);if(this.children.length===1)this.value=option.value;}
+  setAttribute(k,v){this.attributes[k]=String(v);if(k==='class')this.className=v;if(k.startsWith('data-'))this.dataset[k.slice(5).replace(/-([a-z])/g,(_,c)=>c.toUpperCase())]=v;}
+  getAttribute(k){return this.attributes[k];}removeAttribute(k){delete this.attributes[k];}addEventListener(type,fn){this['on'+type]=fn;}
+  matches(selector){return selector.split(',').some(s=>{s=s.trim();if(s==='input:checked')return this.tagName==='INPUT'&&this.checked;if(s.startsWith('.'))return this.classList.contains(s.slice(1));if(s.startsWith('#'))return this.id===s.slice(1);const attr=s.match(/^\[([^=\]]+)(?:="?([^"\]]+)"?)?\]$/);if(attr)return attr[2]===undefined?this.attributes[attr[1]]!==undefined:this.attributes[attr[1]]===attr[2];return this.tagName===s.toUpperCase();});}
+  closest(selector){return this.matches(selector)?this:this.parentElement?.closest(selector)||null;}
+  querySelectorAll(selector){return this.children.flatMap(n=>[...(n.matches(selector)?[n]:[]),...n.querySelectorAll(selector)]);}querySelector(selector){return this.querySelectorAll(selector)[0]||null;}
+  showModal(){this.open=true;}close(){this.open=false;this.onclose?.();}focus(){document.activeElement=this;}select(){}setSelectionRange(){}click(){return this.onclick?.({preventDefault(){}});}contains(n){return n===this||this.children.some(c=>c.contains(n));}
+ }
+ document={body:new Node('body'),documentElement:new Node('html'),hidden:false,activeElement:null,createElement:tag=>new Node(tag),createElementNS:(_,tag)=>new Node(tag),createTextNode:text=>{const n=new Node('#text');n.textContent=text;return n;},querySelectorAll:s=>document.body.querySelectorAll(s),querySelector:s=>document.body.querySelector(s),getElementById:id=>document.body.querySelector('#'+id),addEventListener:(type,fn)=>listeners[type]=fn,dispatchEvent:event=>listeners[event.type]?.(event)};
+ const root=new Node('div');root.className='app';document.body.append(root);const select=new Node('select'),calls=[],notices=[];let uploadHandler=async()=>({ok:true,status:200,json:async()=>({image:true,size:16,name:'image.png'})}),handler=async(url,body)=>body?{status:'accepted'}:url.includes('/detail')?{session:{id:'a',title:'Chat',model:'model-a',effort:'high',status:'idle',capabilities:{}},messages:[]}:url.includes('/workspace')?{entries:[],total:0,project:'/project'}:{sessions:[]};
+ const context=vm.createContext({document,window:{},navigator:{},location:{pathname:'/'},history:{replaceState(){}},localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},sessionStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},crypto:{getRandomValues:array=>webcrypto.getRandomValues(array)},Uint8Array,TextEncoder,Option:class extends Node{constructor(text,value){super('option');this.textContent=text;this.value=value;}},ResizeObserver:class{observe(){}},MutationObserver:class{observe(){}},AbortController,requestAnimationFrame:fn=>fn(),getComputedStyle:()=>({getPropertyValue:()=>8}),setTimeout(){return 1;},clearTimeout(){},fetch:async(url,options)=>{calls.push({url,upload:options});return uploadHandler(url,options);},renderMarkdown:(node,text)=>node.textContent=text,CustomEvent:class{constructor(type,options){this.type=type;Object.assign(this,options);}}});
+ vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/shell/app.js'),'utf8').match(/^function uuid\(\).*$/m)[0],context);
+ for(const file of ['web/layouts/viewport.js','web/features/chat/activity.js','web/features/chat/attachments.js','web/shared/i18n.js','web/features/clients/client-lifecycle.js','web/features/chat/message-actions.js','web/features/chat/permissions.js','web/features/workspace/workbench.js','web/features/clients/desktop-sessions.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
+ const View=vm.runInContext('DesktopSessionsView',context),view=new View({root,select,request:(url,body)=>{calls.push({url,body});return handler(url,body);},notify:text=>notices.push(text),onSelect(){},csrf:()=>'csrf-test',onUnauthorized(){}});
+ return {view,root,document,calls,notices,setHandler:fn=>handler=fn,setUploadHandler:fn=>uploadHandler=fn,run:s=>vm.runInContext(s,context),text:n=>n.textContent};
+}
+async function opened(){const ui=fixture();await ui.view.choose('claude');await ui.view.open('a');return ui;}
+
+test('session list explains a pending connection and offers retry only after timeout',async()=>{
+ const ui=fixture(),client={id:'deepseek',enabled:true,configured:true,running:false,connected:false,connectionState:'starting',reason:'正在启动 Harness 桌面应用'},retries=[];
+ ui.view.setClientStates([client],async id=>retries.push(id));ui.setHandler(async()=>{throw Error('客户端连接不可用，请在电脑端检查');});await ui.view.choose('deepseek');
+ assert.match(ui.view.listStatus.textContent,/正在启动/);assert.doesNotMatch(ui.view.listStatus.textContent,/请在电脑端检查/);assert.equal(ui.view.listStatus.attributes['aria-busy'],'true');assert.equal(ui.view.connectionRetry.hidden,true);assert.equal(ui.calls.length,0);
+ ui.view.setClientStates([{...client,connectionState:'timeout',retryable:true,reason:'Harness 连接超时，请检查桌面应用后重试接入'}],async id=>retries.push(id));await ui.view.refresh();assert.match(ui.view.listStatus.textContent,/连接超时/);assert.equal(ui.view.listStatus.attributes['aria-busy'],'false');assert.equal(ui.view.connectionRetry.hidden,false);await ui.view.connectionRetry.click();assert.deepEqual(retries,['deepseek']);
+ ui.setHandler(async()=>({connected:true,sessions:[]}));await ui.view.setClientStates([{...client,connectionState:'connected',connected:true}]);assert.match(ui.view.listStatus.textContent,/已连接/);assert.equal(ui.view.connectionRetry.hidden,true);
+});
+
+test('Claude session list exposes the confirmed initialization flow without running chat RPCs',async()=>{
+ const ui=fixture(),client={id:'claude',name:'Claude',enabled:true,installed:true,connected:false,setupStatus:'needs-initialization'},initialized=[];
+ ui.view.setClientStates([client],undefined,async id=>initialized.push(id));await ui.view.choose('claude');assert.match(ui.view.listStatus.textContent,/需要初始化连接/);assert.equal(ui.view.connectionInitialize.hidden,false);assert.equal(ui.calls.length,0);
+ await ui.view.connectionInitialize.click();assert.deepEqual(initialized,['claude']);ui.run("BridgeI18n.setLanguage('en')");assert.match(ui.view.listStatus.textContent,/Connection initialization required/);assert.doesNotMatch(ui.view.listStatus.textContent,/[\u4e00-\u9fff]/);
+ ui.view.setClientStates([{...client,connectionState:'connecting'}]);assert.equal(ui.view.connectionInitialize.hidden,true);await ui.view.refresh();assert.equal(ui.calls.length,0);
+});
+
+test('unknown operations offer refresh only and a failed quit does not block connected chats',async()=>{
+ const ui=fixture(),client={id:'claude',enabled:true,installed:true,connected:false,initializationMode:'background',setupStatus:'needs-unlock',connectionState:'needs-initialization',operationFailure:{action:'initialize',message:'timeout',uncertain:true}},refreshes=[];
+ ui.view.setClientStates([client],()=>{throw Error('no replay');},()=>{throw Error('no initialization');},async()=>refreshes.push(true));await ui.view.choose('claude');assert.match(ui.view.listStatus.textContent,/电脑已锁定/);assert.match(ui.view.connectionNotice.textContent,/尚未确认/);assert.equal(ui.view.connectionInitialize.hidden,true);assert.equal(ui.view.connectionRetry.hidden,true);assert.equal(ui.view.connectionRefresh.hidden,false);await ui.view.connectionRefresh.click();assert.equal(refreshes.length,1);assert.equal(ui.calls.length,0);
+ await ui.view.setClientStates([{...client,connected:true,connectionState:'connected',operationFailure:{action:'quit',message:'退出未完成',uncertain:false}}]);assert.ok(ui.calls.some(call=>call.url.includes('/list')));assert.match(ui.view.listStatus.textContent,/已连接/);assert.equal(ui.view.connectionNotice.textContent,'退出未完成');assert.equal(ui.view.connectionInitialize.hidden,true);
+});
+
+test('session list surfaces genuine failures outside startup and never claims disconnected data is connected',async()=>{
+ const ui=fixture();ui.view.setClientStates([{id:'deepseek',enabled:true,connected:false,connectionState:'idle'}]);ui.setHandler(async()=>{throw Error('real failure');});await ui.view.choose('deepseek');assert.equal(ui.view.listStatus.textContent,'real failure');
+ ui.setHandler(async()=>({connected:false,sessions:[]}));await ui.view.refresh();assert.equal(ui.view.listStatus.textContent,'尚未连接');
+});
+test('LAN HTTP send creates a secure id and retries the same unconfirmed operation',async()=>{
+ const ui=await opened();ui.run('uuid=undefined');let attempt=0;ui.setHandler(async(url,body)=>{if(body){if(++attempt===1)throw Error('connection lost');return {status:'accepted'};}return url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},messages:[]}:{sessions:[]};});
+ ui.view.input.value='hello';await ui.view.submit();assert.equal(ui.view.input.value,'hello');await ui.view.detail(ui.view.generation);await ui.view.submit();const writes=ui.calls.filter(c=>c.body);assert.equal(writes.length,2);assert.match(writes[0].body.id,/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);assert.equal(writes[0].body.id,writes[1].body.id);assert.equal(ui.view.input.value,'');
+});
+test('client shell and welcome appear before the first list response',async()=>{
+ const ui=fixture();let finish;ui.setHandler(()=>new Promise(resolve=>finish=resolve));const reading=ui.view.choose('claude');assert.equal(ui.view.container.hidden,false);assert.equal(ui.view.welcome.hidden,false);assert.match(ui.view.welcome.textContent,/从一条聊天继续/);assert.equal(ui.view.conversation.hidden,true);assert.match(ui.view.listStatus.textContent,/读取|加载|连接/);finish({sessions:[]});await reading;
+});
+test('returning to list clears selection and prevents an old detail from reopening chat',async()=>{
+ const ui=await opened();ui.view.input.value='draft';let finish;ui.setHandler(()=>new Promise(resolve=>finish=resolve));const reading=ui.view.open('b');assert.equal(ui.view.isChatOpen,true);ui.view.backToList();assert.equal(ui.view.sid,null);assert.equal(ui.view.isChatOpen,false);assert.equal(ui.view.welcome.hidden,false);finish({session:{id:'b',title:'late',status:'idle'},messages:[]});await reading;assert.equal(ui.view.sid,null);assert.equal(ui.view.conversation.hidden,true);assert.equal(ui.view.drafts.get('claude:a'),'draft');
+});
+test('composer and historical replies show their own model and effort without rewriting history',async()=>{
+ const ui=fixture();await ui.view.choose('claude');ui.setHandler(async()=>({session:{id:'a',title:'Chat',model:'new-model',effort:'high',status:'idle',capabilities:{}},messages:[{id:'1',role:'assistant',model:'old-model',effort:'low',text:'answer'},{id:'2',role:'assistant',text:'no metadata'}]}));await ui.view.open('a');assert.match(ui.view.modelButton.textContent,/new-model/);assert.match(ui.view.modelButton.textContent,/high/);assert.match(ui.view.messages.children[0].textContent,/old-model.*low/);assert.doesNotMatch(ui.view.messages.children[1].textContent,/new-model|high/);assert.ok(ui.view.modelButton.classList.contains('tool-button'));assert.equal(ui.view.input.rows,1);ui.view.composerToggle.click();assert.equal(ui.view.composerBody.hidden,true);ui.view.composerToggle.click();assert.equal(ui.view.composerBody.hidden,false);
+});
+test('Claude lists distinguish Code and Cowork and retain archive/project filters',async()=>{
+ const ui=fixture();await ui.view.choose('claude');ui.view.rows=[{id:'a',title:'Code chat',backend:'code',cwd:'/same',updatedAt:1},{id:'b',title:'Cowork chat',backend:'cowork',cwd:'/same',updatedAt:2},{id:'c',title:'Archive',backend:'code',cwd:'/same',archived:true}];ui.view.renderList();assert.match(ui.view.rowsRoot.textContent,/Code/);assert.match(ui.view.rowsRoot.textContent,/Cowork/);assert.doesNotMatch(ui.view.rowsRoot.textContent,/Archive/);ui.view.surface.value='cowork';ui.view.renderList();assert.match(ui.view.rowsRoot.textContent,/Cowork chat/);assert.doesNotMatch(ui.view.rowsRoot.textContent,/Code chat/);ui.view.surface.value='all';ui.view.archived.checked=true;ui.view.listMode.value='project';ui.view.renderList();assert.match(ui.view.rowsRoot.textContent,/Archive/);assert.ok(ui.view.rowsRoot.querySelector('details'));
+});
+test('workspace tabs use the real Workbench provider routes and split behavior',async()=>{
+ const ui=await opened();assert.equal(ui.view.workbench.current.provider,'claude');ui.view.workbench.files();await Promise.resolve();assert.ok(ui.calls.some(c=>c.url.includes('/api/desktop-sessions/claude/workspace?sessionId=a')));ui.view.workbench.split('files');assert.equal(ui.view.workbench.splitMode,true);assert.ok(ui.view.conversation.classList.contains('wb-split'));assert.equal(ui.view.workbench.current.splitTab,'files');
+});
+test('model picker preserves current effort only for compatible models',async()=>{
+ const ui=await opened();ui.setHandler(async()=>({models:[{id:'model-a',efforts:['high','low']},{id:'model-b',efforts:['low'],defaultEffort:'low'}],currentModel:'model-a',currentEffort:'high'}));await ui.view.models();const dialog=ui.document.querySelector('dialog'),selects=dialog.querySelectorAll('select');assert.equal(selects[1].value,'high');selects[0].value='model-b';selects[0].onchange();assert.equal(selects[1].value,'low');
+});
+test('Claude creation selects Code or Cowork explicitly and requires the first message',async()=>{
+ const ui=fixture();await ui.view.choose('claude');ui.setHandler(async()=>({projects:[{key:'code:/project',name:'Project Code',cwd:'/project',surface:'code'},{key:'cowork:/project',name:'Project Cowork',cwd:'/project',surface:'cowork'}],requiresMessage:true}));await ui.view.create();const dialog=ui.document.querySelector('dialog'),selects=dialog.querySelectorAll('select');assert.equal(selects.length,2);assert.deepEqual(selects[0].children.map(n=>n.value),['code','cowork']);assert.equal(dialog.querySelector('textarea').required,true);selects[0].value='cowork';selects[0].onchange();assert.deepEqual(selects[1].children.map(n=>n.value),['cowork:/project']);
+});
+test('late send completion preserves text typed while the request was in flight',async()=>{
+ const ui=await opened();let finish;ui.setHandler((url,body)=>body?new Promise(resolve=>finish=resolve):Promise.resolve({sessions:[]}));ui.view.input.value='sent';const sending=ui.view.submit();ui.view.input.value='next draft';ui.view.input.oninput();finish({status:'accepted'});await sending;assert.equal(ui.view.input.value,'next draft');assert.equal(ui.view.drafts.get('claude:a'),'next draft');
+});
+test('detail capabilities gate actual model, permission and queue actions',async()=>{
+ const ui=fixture();await ui.view.choose('claude');ui.setHandler(async()=>({session:{id:'a',title:'Chat',status:'active'},capabilities:{models:false,permissions:false,queue:false,steer:false},messages:[]}));await ui.view.open('a');assert.equal(ui.view.modelButton.disabled,true);assert.equal(ui.view.permissionsButton.hidden,true);assert.equal(ui.view.mode.options[1].disabled,true);assert.equal(ui.view.mode.options[2].disabled,true);
+});
+test('HTTP clipboard fallback uses the shared selectable copy dialog',async()=>{
+ const ui=fixture();await ui.view.choose('deepseek');ui.setHandler(async()=>({session:{id:'a',title:'Chat',status:'idle'},messages:[{id:'1',role:'assistant',text:'copy me'}]}));await ui.view.open('a');await ui.view.messages.querySelector('button').click();assert.equal(ui.document.querySelector('.copy-dialog').querySelector('textarea').value,'copy me');
+});
+for(const provider of ['claude','deepseek'])test(`${provider} message Copy uses the native clipboard after an actual trusted button click`,async()=>{
+ const ui=fixture(),text='第一行\n\n```js\nconst answer = 42;\n```\n🙂';await ui.view.choose(provider);ui.view.renderMessages([{id:'native-copy',role:'assistant',text}]);
+ ui.run('window.top=window;globalThis.nativeCopies=[];window.prompt=(command,text)=>{if(command.startsWith("codexbridge-copy:")){nativeCopies.push(text);return "copied";}};');ui.run(fs.readFileSync(path.join(__dirname,'../mobile/shared/web/mobile-clipboard.js'),'utf8'));
+ const copy=ui.view.messages.querySelector('button');ui.document.dispatchEvent({type:'click',isTrusted:true,target:copy});await copy.click();assert.deepEqual(Array.from(ui.run('nativeCopies')),[text]);assert.equal(copy.textContent,'已复制');assert.equal(copy.disabled,false);
+});
+test('native Claude message copy rejection surfaces an error and restores the button',async()=>{
+ const ui=await opened(),errors=[];ui.view.renderMessages([{id:'native-failure',role:'assistant',text:'copy fails'}]);ui.document.addEventListener('bridge-message-error',event=>errors.push(event.detail));ui.run('window.top=window;window.prompt=()=>"rejected";');ui.run(fs.readFileSync(path.join(__dirname,'../mobile/shared/web/mobile-clipboard.js'),'utf8'));
+ const copy=ui.view.messages.querySelector('button');ui.document.dispatchEvent({type:'click',isTrusted:true,target:copy});await copy.click();assert.deepEqual(errors,['复制失败，请重试']);assert.equal(copy.textContent,'复制');assert.equal(copy.disabled,false);
+});
+test('permissions render the native catalog choices using shared permissionOption',async()=>{
+ const ui=fixture();await ui.view.choose('claude');ui.setHandler(async()=>({session:{id:'a',title:'Chat',status:'idle'},capabilities:{permissions:true},messages:[]}));await ui.view.open('a');ui.setHandler(async(url,body)=>body?{status:'accepted'}:{mode:'default',options:[{value:'default',label:'Default',description:'Ask first'},{value:'acceptEdits',label:'Accept edits',description:'Edit files'}]});await ui.view.permissions();const buttons=ui.document.querySelectorAll('.permission-option');assert.equal(buttons.length,2);assert.equal(buttons[0].getAttribute('aria-pressed'),'true');await buttons[1].click();assert.equal(ui.calls.find(c=>c.body).body.mode,'acceptEdits');
+});
+test('Claude creation sends the selected surface project and explicit first message only on submit',async()=>{
+ const ui=fixture();await ui.view.choose('claude');ui.setHandler(async(url,body)=>body?{status:'ready',result:{id:'created'}}:url.includes('/projects')?{projects:[{key:'cowork:/p',name:'Project',cwd:'/p',surface:'cowork'}],createRequiresMessage:true}:url.includes('/detail')?{session:{id:'created',title:'Custom title',status:'idle'},messages:[]}:{sessions:[]});await ui.view.create();assert.equal(ui.calls.some(c=>c.body),false);const dialog=ui.document.querySelector('dialog');dialog.querySelector('input').value='Custom title';dialog.querySelector('textarea').value='First instruction';await dialog.querySelector('form').onsubmit({preventDefault(){}});const sent=ui.calls.find(c=>c.body);assert.equal(sent.body.projectKey,'cowork:/p');assert.equal(sent.body.firstMessage,'First instruction');assert.equal(sent.body.title,'Custom title');assert.equal(sent.body.sessionId,null);
+});
+
+test('shared attachments handle paste, block send until upload, and submit only upload ids',async()=>{
+ const ui=fixture();await ui.view.choose('claude');ui.setHandler(async(url,body)=>body?{status:'accepted'}:url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},capabilities:{attachments:true},messages:[]}:{sessions:[]});await ui.view.open('a');let finish;ui.setUploadHandler(()=>new Promise(resolve=>finish=resolve));let prevented=false;ui.view.input.onpaste({clipboardData:{files:[{name:'image.png',type:'image/png',size:16}]},preventDefault(){prevented=true;}});assert.equal(prevented,true);assert.equal(ui.view.send.disabled,true);assert.equal(ui.view.attachments.rows[0].status,'uploading');await ui.view.submit();assert.equal(ui.calls.some(c=>c.body),false);
+ finish({ok:true,status:200,json:async()=>({name:'image.png',size:16,image:true})});await new Promise(setImmediate);assert.equal(ui.view.send.disabled,false);const row=ui.view.attachments.rows[0];assert.equal(row.status,'ready');assert.match(ui.calls.find(c=>c.upload).url,/claude\/uploads\?sessionId=a&id=/);assert.equal(ui.calls.find(c=>c.upload).upload.headers['X-CSRF-Token'],'csrf-test');await ui.view.submit();assert.equal(ui.calls.find(c=>c.body).body.attachments[0],row.id);assert.equal(ui.view.attachments.rows.length,0);
+});
+test('attachment upload remains scoped to its source chat after provider switching',async()=>{
+ const ui=fixture();ui.setHandler(async url=>url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},capabilities:{attachments:true},messages:[]}:{sessions:[]});await ui.view.choose('claude');await ui.view.open('a');let finish;ui.setUploadHandler(()=>new Promise(resolve=>finish=resolve));ui.view.attachments.add([{name:'source.png',type:'image/png',size:16}]);await ui.view.choose('deepseek');await ui.view.open('a');finish({ok:true,status:200,json:async()=>({name:'source.png',size:16,image:true})});await new Promise(setImmediate);assert.equal(ui.view.attachments.rows.length,0);assert.equal(ui.view.attachments.drafts.get('["claude","a"]')[0].status,'ready');assert.ok(ui.calls.filter(c=>c.upload).every(c=>c.url.includes('/claude/')));
+});
+test('unsupported attachment types are explicit and never uploaded',async()=>{
+ const ui=await opened();ui.view.state.capabilities={attachments:true};ui.view.updateComposer();ui.view.attachments.add([{name:'notes.txt',type:'text/plain',size:16}]);assert.match(ui.view.attachments.error,/仅支持图片/);assert.equal(ui.calls.some(c=>c.upload),false);assert.equal(ui.view.attachments.rows.length,0);
+});
+
+test('a send finishing during polling schedules a fresh detail after the stale response',async()=>{
+ const ui=await opened();let finishList,listCalls=0,detailCalls=0;ui.setHandler(async(url,body)=>{if(body)return {status:'accepted'};if(url.includes('/list')){listCalls++;if(listCalls===1)return new Promise(resolve=>finishList=resolve);return {sessions:[]};}return {session:{id:'a',title:'Chat',status:'idle'},messages:[{id:'reply',role:'assistant',text:++detailCalls===1?'old snapshot':'new reply'}]};});
+ const polling=ui.view.refresh();ui.view.input.value='send while polling';await ui.view.submit();finishList({sessions:[]});await polling;await new Promise(setImmediate);assert.equal(listCalls,2);assert.match(ui.view.messages.textContent,/new reply/);
+});
+test('form submission respects the session send capability',async()=>{
+ const ui=await opened();ui.view.state.capabilities.send=false;ui.view.updateComposer();ui.view.input.value='must not send';await ui.view.form.onsubmit({preventDefault(){}});assert.equal(ui.calls.some(c=>c.body),false);
+});
+test('question cards submit exact native question keys and do not invent Harness denial',async()=>{
+ const ui=await opened();ui.view.renderRequests([{id:'q1',tool:'AskUserQuestion',needsInput:true,input:{questions:[{id:'native-id',question:'Choose',options:[{label:'A'},{label:'B'}]}]}}]);const form=ui.view.requests.querySelector('form'),inputs=form.querySelectorAll('input');inputs[1].checked=true;inputs[2].value='custom detail';await form.onsubmit({preventDefault(){}});await Promise.resolve();const body=ui.calls.find(c=>c.body).body;assert.equal(body.requestId,'q1');assert.equal(body.decision,'accept');assert.deepEqual(Array.from(body.answers['native-id'].answers),['B','custom detail']);
+ await ui.view.choose('deepseek');await ui.view.open('a');ui.view.renderRequests([{id:'q2',tool:'Question',needsInput:true,input:{questions:[]}}]);assert.equal(ui.view.requests.querySelectorAll('button').length,1);ui.view.renderRequests([{id:'approval',tool:'Write',needsInput:false,input:{reason:'write a file'}}]);await ui.view.requests.querySelectorAll('button')[1].click();assert.equal(ui.calls.filter(c=>c.body).at(-1).body.decision,'decline');
+});
+test('skills send only selectable installed skills and preserve failed-send selection',async()=>{
+ const ui=fixture();ui.setHandler(async(url,body)=>body?{status:'unknown'}:url.includes('/catalog')?{skills:[{id:'review',name:'Review',kind:'skill',selectable:true},{id:'installed:tools',name:'Tools',kind:'plugin',selectable:false}]}:url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},capabilities:{skills:true},messages:[]}:{sessions:[]});await ui.view.choose('deepseek');await ui.view.open('a');assert.equal(ui.view.skillsButton.hidden,false);await ui.view.skills();const options=ui.document.querySelectorAll('.skill-option'),checks=options.map(n=>n.querySelector('input'));assert.equal(checks[1].disabled,true);checks[0].checked=true;checks[0].onchange();ui.view.input.value='review this';await ui.view.submit();assert.deepEqual(Array.from(ui.calls.find(c=>c.body).body.plugins),['review']);assert.match(ui.view.skillPills.textContent,/Review/);
+ await ui.view.choose('claude');await ui.view.open('a');assert.equal(ui.view.skillPills.textContent,'');await ui.view.choose('deepseek');await ui.view.open('a');assert.match(ui.view.skillPills.textContent,/Review/);
+});
+test('Claude request-size limit stays in attachment help and rejects oversized images before upload',async()=>{
+ const ui=fixture();await ui.view.choose('claude');ui.setHandler(async()=>({session:{id:'a',title:'Chat',status:'idle'},capabilities:{attachments:true},maxRequestBytes:10*1024*1024,messages:[]}));await ui.view.open('a');assert.ok(!ui.view.composerBody.querySelector('.ds-attachment-hint'));assert.match(ui.view.attachButton.title,/10 MiB/);ui.view.attachments.add([{name:'large.png',type:'image/png',size:8*1024*1024}]);assert.equal(ui.calls.some(c=>c.upload),false);assert.match(ui.view.attachments.error,/10 MiB/);
+});
+test('history updates retain expanded activities and honor visibility settings',async()=>{
+ const ui=await opened();ui.view.renderMessages([{id:'step',role:'activity',title:'Write',text:'before'}]);ui.view.messages.children[0].open=true;ui.view.renderMessages([{id:'step',role:'activity',title:'Write',text:'after'},{id:'thought',role:'reasoning',text:'summary'}]);assert.equal(ui.view.messages.children[0].open,true);ui.document.documentElement.dataset.showProcess='false';ui.document.documentElement.dataset.showReasoning='false';ui.view.renderMessages(ui.view.lastMessages);assert.ok(ui.view.messages.children.every(n=>n.hidden));
+});
+
+test('skill selection clears after acceptance and expired choices cannot be submitted',async()=>{
+ const ui=fixture();let available=true;ui.setHandler(async(url,body)=>body?{status:'accepted'}:url.includes('/catalog')?{skills:available?[{id:'review',name:'Review',selectable:true}]:[]}:url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},capabilities:{skills:true},messages:[]}:{sessions:[]});await ui.view.choose('claude');await ui.view.open('a');await ui.view.skills();let dialog=ui.document.querySelector('dialog'),check=dialog.querySelector('input[type=checkbox]')||dialog.querySelector('.skill-option').querySelector('input');check.checked=true;check.onchange();dialog.close();ui.view.input.value='review';await ui.view.submit();assert.equal(ui.view.skillPills.textContent,'');
+ await ui.view.skills();dialog=ui.document.querySelector('dialog');check=dialog.querySelector('.skill-option').querySelector('input');check.checked=true;check.onchange();dialog.close();available=false;await ui.view.skills();assert.ok(ui.view.skillPills.children[0].classList.contains('invalid'));const count=ui.calls.filter(c=>c.body).length;ui.view.input.value='do not submit expired skill';await ui.view.submit();assert.equal(ui.calls.filter(c=>c.body).length,count);assert.match(ui.view.error.textContent,/失效/);
+});
+test('request updates and language changes preserve answers already entered',async()=>{
+ const ui=await opened(),question={id:'q1',tool:'AskUserQuestion',needsInput:true,input:{questions:[{id:'native-id',question:'Choose',options:[{label:'A'},{label:'B'}]}]}};ui.view.renderRequests([question]);let inputs=ui.view.requests.querySelector('form').querySelectorAll('input');inputs[1].checked=true;inputs[2].value='written answer';ui.view.renderRequests([question,{id:'approval',tool:'Write',input:{reason:'write'}}]);inputs=ui.view.requests.querySelector('form').querySelectorAll('input');assert.equal(inputs[1].checked,true);assert.equal(inputs[2].value,'written answer');ui.view.state.requests=[question];ui.view.relabel();inputs=ui.view.requests.querySelector('form').querySelectorAll('input');assert.equal(inputs[1].checked,true);assert.equal(inputs[2].value,'written answer');
+});
+
+
+test('provider activity dots use explicit statuses and never turn ordinary idle into completed',async()=>{
+ const ui=fixture();let rows=[{id:'same',title:'Run',status:'active',backend:'code'},{id:'idle',title:'Idle',status:'idle',backend:'code'},{id:'ask',title:'Ask',status:'active',requests:[{id:'permission'}],backend:'cowork'}];ui.setHandler(async()=>({sessions:rows}));await ui.view.choose('claude');const byId=id=>ui.view.rowsRoot.querySelectorAll('.session').find(n=>n.dataset.id===id);assert.ok(byId('same').querySelector('.session-indicator').classList.contains('running'));assert.equal(byId('idle').querySelector('.session-indicator'),null);assert.ok(byId('ask').querySelector('.session-indicator').classList.contains('awaiting'));
+ rows=[{id:'same',title:'Run',status:'idle',turnId:'native-turn',turnStatus:'completed',backend:'code'}];await ui.view.refresh();assert.ok(byId('same').querySelector('.session-indicator').classList.contains('completed'));await ui.view.choose('deepseek');assert.equal(byId('same').querySelector('.session-indicator'),null);await ui.view.choose('claude');assert.ok(byId('same').querySelector('.session-indicator').classList.contains('completed'));
+ ui.setHandler(async()=>({session:{id:'same',title:'Run',status:'idle',turnId:'native-turn',turnStatus:'completed'},messages:[]}));await ui.view.open('same');assert.equal(byId('same').querySelector('.session-indicator'),null);
+});
+test('Claude Code and Cowork groups remember their collapsed state across refresh and provider switches',async()=>{
+ const ui=fixture();ui.setHandler(async()=>({sessions:[{id:'a',title:'Code chat',backend:'code',cwd:'/code'},{id:'b',title:'Cowork chat',backend:'cowork',cwd:'/cowork'}]}));await ui.view.choose('claude');let group=ui.view.rowsRoot.querySelectorAll('details').find(n=>n.querySelector('summary')?.textContent==='Code');assert.ok(group);group.open=false;group.ontoggle();ui.view.listStamp='';ui.view.renderList();group=ui.view.rowsRoot.querySelectorAll('details').find(n=>n.querySelector('summary')?.textContent==='Code');assert.equal(group.open,false);await ui.view.choose('deepseek');await ui.view.choose('claude');group=ui.view.rowsRoot.querySelectorAll('details').find(n=>n.querySelector('summary')?.textContent==='Code');assert.equal(group.open,false);assert.equal(ui.view.rowsRoot.querySelectorAll('details').find(n=>n.querySelector('summary')?.textContent==='Cowork').open,true);
+});
+test('composer has no redundant file button while Workbench retains files and split tabs',async()=>{
+ const ui=await opened();assert.equal(ui.view.tools.querySelectorAll('button').some(n=>n.textContent==='文件'),false);ui.view.workbench.files();await Promise.resolve();assert.ok(ui.view.workbench.current.files.some(n=>n.id==='files'));ui.view.workbench.split('files');assert.equal(ui.view.workbench.current.splitTab,'files');
+});
+test('opening a chat and polling share one detail read and show its first successful response',async()=>{
+ for(const provider of ['claude','deepseek']){
+  const ui=fixture();ui.setHandler(async()=>({sessions:[{id:'a',title:'First response',backend:'code'}]}));await ui.view.choose(provider);
+  const pending=[];ui.setHandler(url=>url.includes('/detail')?new Promise(resolve=>pending.push(resolve)):Promise.resolve({sessions:ui.view.rows}));
+  const opening=ui.view.open('a'),polling=ui.view.refresh();assert.equal(pending.length,1,'polling must join the opening read');
+  pending[0]({session:{id:'a',title:'First response',status:'idle'},capabilities:{send:true},messages:[{id:'first',role:'assistant',text:'first successful history'}]});await Promise.all([opening,polling]);
+  assert.match(ui.view.messages.textContent,/first successful history/);assert.equal(ui.view.send.disabled,false);
+ }
+});
+
+test('selecting the current provider keeps the live conversation without starting new reads',async()=>{
+ const ui=await opened();ui.view.input.value='keep typing';const count=ui.calls.length,message=ui.view.messages.textContent;ui.setHandler(()=>new Promise(()=>{}));
+ const selected=ui.view.choose('claude');assert.equal(ui.calls.length,count);assert.equal(ui.view.messages.textContent,message);assert.equal(ui.view.input.value,'keep typing');assert.equal(ui.view.send.disabled,false);await selected;
+});
+
+test('a pending history read does not block subsequent session list refreshes',async()=>{
+ const ui=await opened();let finish,listReads=0,detailReads=0;ui.setHandler(url=>url.includes('/detail')?(detailReads++,new Promise(resolve=>finish=resolve)):Promise.resolve({sessions:[{id:'a',title:'List '+(++listReads),backend:'code'}]}));
+ const first=ui.view.refresh();await new Promise(setImmediate);const second=ui.view.refresh();await new Promise(setImmediate);
+ assert.equal(listReads,2);assert.match(ui.view.rowsRoot.textContent,/List 2/);assert.equal(detailReads,1,'list polling must keep joining the pending detail');
+ finish({session:{id:'a',title:'Finished',status:'idle'},messages:[]});await Promise.all([first,second]);
+});
+
+test('a completed mutation cannot reuse an earlier history read as fresh state',async()=>{
+ const ui=await opened(),pending=[];ui.setHandler((url,body)=>body?Promise.resolve({status:'accepted'}):url.includes('/detail')?new Promise(resolve=>pending.push(resolve)):Promise.resolve({sessions:[]}));
+ const old=ui.view.detail(ui.view.generation);await ui.view.mutate('settings',{model:'new-model'});assert.equal(pending.length,2,'write completion must start a new detail read');
+ pending[0]({session:{id:'a',title:'Obsolete',model:'obsolete-model',status:'idle'},messages:[{id:'old',role:'assistant',text:'obsolete history'}]});await old;
+ assert.doesNotMatch(ui.view.messages.textContent,/obsolete history/);assert.equal(ui.view.send.disabled,true);
+ pending[1]({session:{id:'a',title:'Current',model:'new-model',status:'idle'},messages:[{id:'new',role:'assistant',text:'current history'}]});await new Promise(setImmediate);assert.match(ui.view.messages.textContent,/current history/);assert.equal(ui.view.send.disabled,false);
+});
+
+test('cached, failed and disconnected details remain readable without allowing task mutations',async()=>{
+ for(const mode of ['cache','failure','disconnected','inventory']){
+  const ui=fixture(),value={session:{id:'a',title:'Active chat',status:'active',requests:[{id:'approval',tool:'Write',input:{}}]},capabilities:{send:true,stop:true},messages:[{id:'m',role:'assistant',text:'readable history'}]};
+  ui.setHandler(async url=>url.includes('/detail')?value:{sessions:[{id:'a',title:'Active chat',backend:'code'}]});await ui.view.choose('claude');await ui.view.open('a');assert.equal(ui.view.stop.disabled,false);
+  let opening,finish;if(mode==='cache'){ui.view.backToList();ui.setHandler(()=>new Promise(resolve=>finish=resolve));opening=ui.view.open('a');}
+  else if(mode==='inventory')ui.view.setClientStates([{id:'claude',enabled:true,connected:false,connectionState:'idle'}]);
+  else{ui.setHandler(async url=>{if(url.includes('/detail')){if(mode==='failure')throw Error('offline');return {...value,connected:false};}return {sessions:ui.view.rows};});await ui.view.refresh();await new Promise(setImmediate);}
+  assert.match(ui.view.messages.textContent,/readable history/);assert.equal(ui.view.send.disabled,true,mode);assert.equal(ui.view.stop.disabled,true,mode);const writes=ui.calls.filter(c=>c.body).length;
+  await ui.view.stop.click();await ui.view.mutate('respond',{requestId:'approval',decision:'accept'});assert.equal(ui.calls.filter(c=>c.body).length,writes,mode);
+  if(finish){finish(value);await opening;}
+ }
+});
+
+test('visible connected providers prefetch only their lists and reuse the cache on first selection',async()=>{
+ const ui=fixture(),clients=[{id:'codex',enabled:true,connected:true},{id:'claude',enabled:true,connected:true},{id:'deepseek',enabled:false,connected:true}];ui.setHandler(async()=>({sessions:[{id:'a',title:'Prefetched list',backend:'code'}]}));
+ ui.document.hidden=true;ui.view.setClientStates(clients);assert.equal(ui.calls.length,0);ui.document.hidden=false;ui.document.dispatchEvent({type:'visibilitychange'});await new Promise(setImmediate);
+ assert.deepEqual(ui.calls.map(c=>c.url),['/api/desktop-sessions/claude/list']);ui.view.setClientStates(clients);ui.document.dispatchEvent({type:'visibilitychange'});await new Promise(setImmediate);assert.equal(ui.calls.length,1);
+ let finish;ui.setHandler(()=>new Promise(resolve=>finish=resolve));const selecting=ui.view.choose('claude');assert.match(ui.view.rowsRoot.textContent,/Prefetched list/);assert.equal(ui.calls.some(c=>c.url.includes('/detail')),false);finish({sessions:[]});await selecting;
+});
+
+test('history caching evicts older chats and does not retain an oversized transcript',async()=>{
+ const ui=fixture();ui.setHandler(async url=>url.includes('/detail')?{session:{id:new URL(url,'http://fixture').searchParams.get('sessionId'),title:'Chat',status:'idle'},messages:[{id:'m',role:'assistant',text:'cached '+new URL(url,'http://fixture').searchParams.get('sessionId')}]}:{sessions:[]});await ui.view.choose('claude');
+ for(let i=0;i<13;i++)await ui.view.open(String(i));ui.view.backToList();let finish;ui.setHandler(()=>new Promise(resolve=>finish=resolve));const old=ui.view.open('0');assert.equal(ui.view.messages.textContent.includes('cached 0'),false);finish({session:{id:'0',title:'Chat',status:'idle'},messages:[]});await old;
+ ui.view.backToList();const recent=ui.view.open('12');assert.match(ui.view.messages.textContent,/cached 12/);finish({session:{id:'12',title:'Chat',status:'idle'},messages:[]});await recent;
+ ui.setHandler(async()=>({session:{id:'huge',title:'Large',status:'idle'},messages:[{id:'m',role:'assistant',text:'oversized marker '+('x'.repeat(4*1024*1024))}]}));await ui.view.open('huge');ui.view.backToList();ui.setHandler(()=>new Promise(resolve=>finish=resolve));const huge=ui.view.open('huge');assert.equal(ui.view.messages.textContent.includes('oversized marker'),false);finish({session:{id:'huge',title:'Large',status:'idle'},messages:[]});await huge;
+});
+
+test('an invalidated list failure cannot replace the status of a newer successful read',async()=>{
+ const ui=await opened();let rejectOld,reads=0;ui.setHandler((url,body)=>body?Promise.resolve({status:'accepted'}):url.includes('/list')?++reads===1?new Promise((_,reject)=>rejectOld=reject):Promise.resolve({sessions:[{id:'a',title:'Fresh list',backend:'code'}]}):Promise.resolve({session:{id:'a',title:'Fresh',status:'idle'},messages:[]}));
+ const stale=ui.view.refresh();await new Promise(setImmediate);await ui.view.mutate('settings',{model:'new'});await new Promise(setImmediate);rejectOld(Error('obsolete list failure'));await stale;
+ assert.match(ui.view.rowsRoot.textContent,/Fresh list/);assert.equal(ui.view.listStatus.textContent,'已连接桌面');
+});
+
+test('account changes, disabling and logout reject old background list and history replies',async()=>{
+ for(const mode of ['account','disable','logout']){
+  const ui=fixture(),client={id:'claude',enabled:true,connected:true},pending=[];ui.setHandler(url=>new Promise(resolve=>pending.push({url,resolve})));ui.view.setClientStates([client]);const listing=ui.view.choose('claude'),opening=ui.view.open('a');await ui.view.choose('codex');
+  if(mode==='account')await ui.view.accountChanged('claude',{activeId:'old'},{activeId:'new'});else if(mode==='disable')ui.view.setClientStates([{...client,enabled:false}]);else ui.view.clear();
+  for(const call of pending)call.resolve(call.url.includes('/detail')?{session:{id:'a',title:'Old identity',status:'idle'},messages:[{id:'secret',role:'assistant',text:'old identity history'}]}:{sessions:[{id:'a',title:'Old identity list',backend:'code'}]});await Promise.all([listing,opening]);
+  const current=[];ui.setHandler(url=>new Promise(resolve=>current.push({url,resolve})));ui.view.setClientStates([client]);const selecting=ui.view.choose('claude');assert.equal(ui.view.rowsRoot.textContent.includes('Old identity'),false,mode);assert.equal(ui.view.messages.textContent.includes('old identity history'),false,mode);
+  for(const call of current)call.resolve(call.url.includes('/detail')?{session:{id:'a',title:'Current identity',status:'idle'},messages:[]}:{sessions:[]});await selecting;
+ }
+});
+
+test('reads started before and during a write never replace its completion refresh',async()=>{
+ const ui=await opened(),pending=[];let accept;ui.setHandler((url,body)=>body?new Promise(resolve=>accept=resolve):url.includes('/detail')?new Promise(resolve=>pending.push(resolve)):Promise.resolve({sessions:[]}));
+ const old=ui.view.detail(ui.view.generation),writing=ui.view.mutate('settings',{model:'new'}),during=ui.view.refresh();pending[0]({session:{id:'a',title:'Before',status:'idle'},messages:[{id:'old',role:'assistant',text:'before write'}]});await old;assert.equal(ui.view.messages.textContent.includes('before write'),false);
+ accept({status:'accepted'});await writing;assert.equal(pending.length,3);pending[1]({session:{id:'a',title:'During',status:'idle'},messages:[{id:'mid',role:'assistant',text:'during write'}]});await during;await new Promise(setImmediate);assert.equal(ui.view.messages.textContent.includes('during write'),false);assert.equal(ui.view.send.disabled,true);
+ pending[2]({session:{id:'a',title:'After',status:'idle'},messages:[{id:'new',role:'assistant',text:'after write'}]});await new Promise(setImmediate);assert.match(ui.view.messages.textContent,/after write/);assert.equal(ui.view.send.disabled,false);
+});
+
+test('an old account write cannot invalidate the new account list refresh',async()=>{
+ const ui=await opened();let accept,finishList;ui.setHandler((url,body)=>body?new Promise(resolve=>accept=resolve):Promise.resolve({sessions:[]}));const writing=ui.view.mutate('settings',{model:'new'});
+ ui.setHandler(()=>new Promise(resolve=>finishList=resolve));const changing=ui.view.accountChanged('claude',{activeId:'old'},{activeId:'new'});accept({status:'accepted'});await writing;
+ finishList({sessions:[{id:'b',title:'New account list',backend:'code'}]});await changing;assert.match(ui.view.rowsRoot.textContent,/New account list/);assert.equal(ui.view.listStatus.textContent,'已连接桌面');
+});
+
+test('provider return paints cached list and selected history before either network response',async()=>{
+ const ui=fixture();ui.setHandler(async url=>url.includes('/detail')?{session:{id:'a',title:'Cached chat',status:'idle'},capabilities:{attachments:true,skills:true},messages:[{id:'m',role:'assistant',text:'cached answer'}]}:{sessions:[{id:'a',title:'Cached chat',backend:'code'}]});await ui.view.choose('claude');await ui.view.open('a');ui.view.input.value='unfinished';ui.view.input.oninput();ui.view.selectedSkills().set('review',{id:'review',name:'Review'});ui.view.attachments.add([{name:'draft.png',type:'image/png',size:16}]);await new Promise(setImmediate);await ui.view.choose('deepseek');
+ const pending=[];ui.setHandler(url=>new Promise(resolve=>pending.push({url,resolve})));const returning=ui.view.choose('claude');assert.match(ui.view.rowsRoot.textContent,/Cached chat/);assert.equal(ui.view.sid,'a');assert.match(ui.view.messages.textContent,/cached answer/);assert.equal(ui.view.input.value,'unfinished');assert.match(ui.view.skillPills.textContent,/Review/);assert.equal(ui.view.attachments.rows.length,1);assert.equal(ui.view.attachments.rows[0].status,'ready');assert.equal(ui.view.send.disabled,true);
+ for(const call of pending)call.resolve(call.url.includes('/detail')?{session:{id:'a',title:'Fresh chat',status:'idle'},capabilities:{attachments:true,skills:true},messages:[{id:'m',role:'assistant',text:'fresh answer'}]}:{sessions:[{id:'a',title:'Fresh chat',backend:'code'}]});await returning;assert.match(ui.view.messages.textContent,/fresh answer/);assert.equal(ui.view.input.value,'unfinished');assert.equal(ui.view.send.disabled,false);
+});
+
+test('reads finishing after a provider switch warm only their own list and history cache',async()=>{
+ const ui=fixture(),pending=[];ui.setHandler(url=>new Promise(resolve=>pending.push({url,resolve})));const first=ui.view.choose('claude');await ui.view.choose('codex');pending[0].resolve({sessions:[{id:'a',title:'Background list',backend:'code'}]});await first;
+ const returning=ui.view.choose('claude');assert.match(ui.view.rowsRoot.textContent,/Background list/);pending[1].resolve({sessions:[{id:'a',title:'Background list',backend:'code'}]});await returning;
+ const opening=ui.view.open('a'),history=pending[2];ui.setHandler(async()=>({sessions:[{id:'b',title:'DSH list'}]}));await ui.view.choose('deepseek');history.resolve({session:{id:'a',title:'Background list',status:'idle'},capabilities:{send:true},messages:[{id:'m',role:'assistant',text:'Background history'}]});await opening;
+ assert.match(ui.view.rowsRoot.textContent,/DSH list/);assert.doesNotMatch(ui.view.messages.textContent,/Background history/);
+ const fresh=[];ui.setHandler(url=>new Promise(resolve=>fresh.push({url,resolve})));const back=ui.view.choose('claude');assert.match(ui.view.messages.textContent,/Background history/);assert.equal(ui.view.send.disabled,true);
+ for(const call of fresh)call.resolve(call.url.includes('/detail')?{session:{id:'a',title:'Fresh',status:'idle'},messages:[]}:{sessions:[]});await back;
+});
+test('cached history survives refresh failure and late errors cannot cross providers sharing an id',async()=>{
+ const ui=await opened();ui.view.renderMessages([{id:'saved',role:'assistant',text:'saved'}]);let fail;ui.setHandler(()=>new Promise((_,reject)=>fail=reject));const old=ui.view.open('a');const rejectOld=fail;ui.setHandler(async url=>url.includes('/detail')?{session:{id:'a',title:'DSH chat',status:'idle'},messages:[{id:'new',role:'assistant',text:'DSH answer'}]}:{sessions:[]});await ui.view.choose('deepseek');await ui.view.open('a');rejectOld(Error('Claude late failure'));await old;assert.doesNotMatch(ui.view.error.textContent,/Claude late failure/);assert.match(ui.view.messages.textContent,/DSH answer/);
+});
+
+
+test('reopening cached history keeps its scroll and draft when the background connection fails',async()=>{
+ const ui=fixture();ui.setHandler(async url=>url.includes('/detail')?{session:{id:'a',title:'Saved title',status:'idle'},messages:[{id:'saved',role:'assistant',text:'saved history'}]}:{sessions:[{id:'a',title:'Saved title',backend:'code'}]});await ui.view.choose('claude');await ui.view.open('a');ui.view.input.value='saved draft';ui.view.messages.scrollTop=42;ui.view.backToList();ui.setHandler(async()=>{throw Error('offline');});const reopening=ui.view.open('a');assert.match(ui.view.messages.textContent,/saved history/);assert.equal(ui.view.messages.scrollTop,42);assert.equal(ui.view.input.value,'saved draft');await reopening;assert.match(ui.view.messages.textContent,/saved history/);assert.equal(ui.view.send.disabled,true);assert.match(ui.view.error.textContent,/offline/);
+});
+test('logout clears provider history and ignores detail responses arriving after clear',async()=>{
+ const ui=fixture();ui.setHandler(async url=>url.includes('/detail')?{session:{id:'a',title:'Private title',status:'idle'},messages:[{id:'saved',role:'assistant',text:'private history'}]}:{sessions:[{id:'a',title:'Private title',backend:'code'}]});await ui.view.choose('claude');await ui.view.open('a');let complete;ui.setHandler(()=>new Promise(resolve=>complete=resolve));const late=ui.view.detail(ui.view.generation);ui.view.clear();complete({session:{id:'a',title:'Late private title',status:'idle'},messages:[{id:'late',role:'assistant',text:'late private history'}]});await late;assert.equal(ui.view.providerViews.size,0);assert.equal(ui.view.detailCache.size,0);assert.equal(ui.view.messages.textContent,'');assert.equal(ui.view.rowsRoot.textContent,'');ui.setHandler(async()=>({sessions:[]}));await ui.view.choose('claude');assert.equal(ui.view.rows.length,0);assert.equal(ui.view.sid,null);
+});
+test('provider switching retains Workbench file tabs without mixing their session scope',async()=>{
+ const ui=fixture();ui.setHandler(async url=>url.includes('/workspace')?{entries:[],total:0,project:'/project'}:url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},messages:[]}:{sessions:[]});await ui.view.choose('claude');await ui.view.open('a');ui.view.workbench.files();await Promise.resolve();const claude=ui.view.workbench.current;await ui.view.choose('deepseek');await ui.view.open('a');assert.notEqual(ui.view.workbench.current.key,claude.key);assert.equal(ui.view.workbench.current.files.length,0);await ui.view.choose('claude');assert.equal(ui.view.workbench.current,claude);assert.ok(ui.view.workbench.current.files.some(tab=>tab.id==='files'));
+});
+
+
+test('cached permission cards stay hidden until refreshed even when language changes',async()=>{
+ const ui=fixture();ui.setHandler(async url=>url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle',requests:[{id:'old',tool:'Write',input:{}}]},messages:[]}:{sessions:[]});await ui.view.choose('claude');await ui.view.open('a');ui.view.backToList();let finish;ui.setHandler(()=>new Promise(resolve=>finish=resolve));const opening=ui.view.open('a');ui.view.relabel();assert.equal(ui.view.requests.children.length,0);finish({session:{id:'a',title:'Chat',status:'idle',requests:[]},messages:[]});await opening;assert.equal(ui.view.requests.children.length,0);
+});
+
+test('desktop chat notification policies read and save within their provider and session',async()=>{
+ const ui=await opened();ui.setHandler(async(url,body)=>({available:true,requests:'inherit',completion:'off'}));await ui.view.notifications();const dialog=ui.document.querySelector('dialog'),form=dialog.querySelector('form'),selects=form.querySelectorAll('select');assert.equal(selects[0].value,'inherit');assert.equal(selects[1].value,'off');selects[0].value='on';selects[1].value='inherit';await form.onsubmit({preventDefault(){}});const write=ui.calls.filter(c=>c.body).at(-1);assert.match(write.url,/desktop-sessions\/claude\/notifications\?sessionId=a/);assert.deepEqual(JSON.parse(JSON.stringify(write.body)),{requests:'on',completion:'inherit'});assert.equal(dialog.open,false);assert.match(ui.notices.at(-1),/聊天提醒设置已保存/);
+});
+test('notification policy dialogs cannot save into a different selected client',async()=>{
+ const ui=await opened();ui.setHandler(async()=>({available:false,requests:'inherit',completion:'inherit'}));await ui.view.notifications();const dialog=ui.document.querySelector('dialog'),form=dialog.querySelector('form');await ui.view.choose('deepseek');const before=ui.calls.filter(c=>c.body).length;await form.onsubmit({preventDefault(){}});assert.equal(ui.calls.filter(c=>c.body).length,before);assert.equal(dialog.open,false);
+});
+test('late notification-policy reads do not populate a different chat',async()=>{
+ const ui=await opened();let finish;ui.setHandler(()=>new Promise(resolve=>finish=resolve));const read=ui.view.notifications(),dialog=ui.document.querySelector('dialog');ui.view.backToList();finish({requests:'on'});await read;assert.equal(dialog.open,false);assert.equal(dialog.querySelector('form'),null);
+});
+
+test('account switch isolates drafts and clears only that client history, permissions, uploads and workbench',async()=>{
+ const ui=await opened(),view=ui.view;view.input.value='old account draft';view.saveDraft();view.drafts.set('deepseek:same','other client draft');view.detailCache.set('["deepseek","same"]',{messages:[{text:'keep'}]});view.providerViews.set('deepseek',{sid:'same'});view.workbench.sessions.set('deepseek|local|same',{provider:'deepseek',files:[]});view.attachments.drafts.set('["deepseek","same"]',[{id:'keep-upload'}]);
+ view.attachments.open('["claude","a"]');view.attachments.rows.push({id:'old-upload',status:'ready'});view.attachments.save(view.attachments.key,view.attachments.rows);view.selectedSkills().set('old-plugin',{name:'old'});
+ await view.accountChanged('claude',{activeId:'first'},{activeId:'second'});assert.equal(view.sid,null);assert.equal(view.input.value,'');assert.equal(view.drafts.has('claude:a'),false);assert.equal(view.detailCache.has('["claude","a"]'),false);assert.equal(view.skillSelections.has('["claude","a"]'),false);assert.equal(view.attachments.drafts.has('["claude","a"]'),false);assert.equal(view.workbench.sessions.has('claude|local|a'),false);
+ assert.equal(view.drafts.get('deepseek:same'),'other client draft');assert.equal(view.detailCache.has('["deepseek","same"]'),true);assert.equal(view.workbench.sessions.has('deepseek|local|same'),true);assert.equal(view.attachments.drafts.has('["deepseek","same"]'),true);assert.equal(ui.run('sessionStorage.getItem(\'attachments:["claude","a"]\')'),undefined);
+ assert.equal(view.accountDrafts.get('["claude",["first"]]').get('claude:a'),'old account draft');await view.accountChanged('claude',{activeId:'second'},{activeId:'first'});assert.equal(view.drafts.get('claude:a'),'old account draft');
+});
+
+test('permission label and context follow the selected session, including external changes',async()=>{
+ const ui=await opened();ui.view.applyDetail({session:{id:'a',title:'Chat',permissionMode:'acceptEdits',contextUsage:{usedTokens:40000,contextWindow:200000}},capabilities:{permissions:true},messages:[]});
+ assert.equal(ui.view.permissionsButton.textContent,'允许文件编辑');assert.match(ui.view.contextButton.title,/20%/);
+ ui.view.applyDetail({session:{id:'a',title:'Chat',permissionMode:'plan',contextUsage:null},capabilities:{permissions:true},messages:[]});
+ assert.equal(ui.view.permissionsButton.textContent,'计划模式');assert.doesNotMatch(ui.view.contextButton.title,/20%/);
+});
+
+
+test('accepted permission change updates label before polling and ignores an old session',async()=>{
+ const ui=await opened();ui.view.refresh=()=>{};
+ ui.setHandler(async()=>({status:'accepted',mode:'plan'}));
+ await ui.view.mutate('access',{mode:'plan'});
+ assert.equal(ui.view.permissionsButton.textContent,'计划模式');
+ let finish;ui.view.freshDetail=true;ui.setHandler(()=>new Promise(resolve=>finish=resolve));
+ const changing=ui.view.mutate('access',{mode:'acceptEdits'});
+ ui.view.sid='b';ui.view.state={id:'b',permissionMode:'default'};
+ finish({status:'accepted',mode:'acceptEdits'});await changing;
+ assert.equal(ui.view.state.permissionMode,'default');
+});
+
+test('context monitor remains discoverable and distinguishes unsupported from missing readings',async()=>{
+ for(const language of ['zh','en']){
+  const ui=await opened();ui.run(`BridgeI18n.setLanguage('${language}')`);
+  const apply=(usage,status)=>ui.view.applyDetail({session:{id:'a',title:'Chat',contextUsage:usage,contextUsageStatus:status},messages:[]});
+  apply({usedTokens:40000,contextWindow:200000},'available');
+  assert.equal(ui.view.contextLabel.textContent,'20%');assert.equal(ui.view.contextButton.hidden,false);
+  ui.view.contextDetails();let dialog=ui.document.querySelector('dialog');assert.match(dialog.textContent,/40,000/);assert.match(dialog.textContent,/20\.0%/);dialog.close();
+  apply(null,'unsupported');assert.equal(ui.view.contextLabel.textContent,language==='en'?'Context':'上下文');assert.doesNotMatch(ui.view.contextButton.title,/0%|20%/);
+  ui.view.contextDetails();dialog=ui.document.querySelector('dialog');assert.match(dialog.textContent,language==='en'?/does not expose context usage/:/未提供上下文用量接口/);dialog.close();
+  apply(null,'unavailable');ui.view.contextDetails();dialog=ui.document.querySelector('dialog');assert.match(dialog.textContent,language==='en'?/update automatically when available/:/有可用数据时会自动更新/);assert.doesNotMatch(dialog.textContent,language==='en'?/does not expose/:/未提供上下文用量接口/);
+ }
+});

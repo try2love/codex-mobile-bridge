@@ -12,12 +12,12 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
-from bridge.catalog import Catalog
-from bridge.ipc import DesktopIPC, IPCError
-from bridge.lifecycle import GatewayControl, request_stop
-from bridge.remote import AppHosts
-from bridge.store import SessionStore
-from bridge.transport import connect_stream, ipc_endpoint
+from bridge.clients.codex.catalog import Catalog
+from bridge.clients.codex.ipc import DesktopIPC, IPCError
+from bridge.app.lifecycle import GatewayControl, request_stop
+from bridge.clients.codex.remote import AppHosts
+from bridge.features.sessions.store import SessionStore
+from bridge.clients.codex.transport import connect_stream, ipc_endpoint
 from test_bridge import DesktopFixture, ROOT, THREAD
 
 
@@ -180,7 +180,7 @@ class LifecycleTests(unittest.TestCase):
                     reads += 1
                     return record if reads == 1 else None
                 return record
-            with patch('bridge.lifecycle.read_record', side_effect=read), patch.object(Path, 'unlink', side_effect=PermissionError('Windows delete pending')) as unlink:
+            with patch('bridge.app.lifecycle.read_record', side_effect=read), patch.object(Path, 'unlink', side_effect=PermissionError('Windows delete pending')) as unlink:
                 request_stop(folder)
                 unlink.assert_not_called()
             self.assertEqual(json.loads(request.read_text()), record)
@@ -207,8 +207,13 @@ class LifecycleTests(unittest.TestCase):
                 sock.bind(('127.0.0.1', 0))
                 port = sock.getsockname()[1]
             with (root / 'output.log').open('wb') as log:
+                # This startup test must not discover a real installed runtime
+                # or attach to the user's globally named Windows desktop pipe.
+                isolated_windows = (['--codex-bin', str(root / 'missing-codex.exe'),
+                                     '--ipc-path', r'\\.\pipe\cmb-startup-test-' + uuid.uuid4().hex]
+                                    if os.name == 'nt' else [])
                 process = subprocess.Popen([sys.executable, '-B', str(ROOT / 'run.py'),
-                    '--port', str(port), '--config', str(config), '--codex-home', str(root)],
+                    '--port', str(port), '--config', str(config), '--codex-home', str(root), *isolated_windows],
                     env=dict(os.environ, PYTHONIOENCODING='cp1252'),
                     stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
                 try:

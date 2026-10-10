@@ -1,0 +1,9 @@
+
+
+.connected-computer{border:0;background:transparent;border-radius:0}.connected-computer:hover{background:var(--surface)}
+
+.no-enabled-client>#main{visibility:hidden}
+
+#computers-button{text-decoration:none;cursor:pointer;color:var(--accent)}
+
+.ds-messages article{border:0}.client-functions #computers-button{color:var(--accent)}

@@ -1,6 +1,6 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
-const source=name=>fs.readFileSync(require('node:path').join(__dirname,'../web',name),'utf8');
+const source=name=>fs.readFileSync(require('node:path').join(__dirname,'../web/features/chat',name),'utf8');
 function timeline(){
  const context=vm.createContext({BridgeI18n:{t:s=>s}});vm.runInContext(source('timeline.js'),context);
  const row={key:'row',version:'v',text:'preview',truncated:true};

@@ -2,20 +2,20 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
 function fixture(desktop=false){
   function node(tag){return {tag,textContent:'',value:'',hidden:false,disabled:false,children:[],attributes:{},classList:{add(){}},
-    append(...children){this.children.push(...children);},replaceChildren(...children){this.children=children;},setAttribute(k,v){this.attributes[k]=v;},closest(){return null;},reset(){},focus(){}};}
+    append(...children){for(const child of children){child.parent=this;this.children.push(child);}},replaceChildren(...children){this.children=children;},setAttribute(k,v){this.attributes[k]=v;},closest(){return null;},reset(){},focus(){},showModal(){this.open=true;},close(){this.open=false;this.onclose?.();},remove(){if(this.parent)this.parent.children=this.parent.children.filter(n=>n!==this);}};}
   const root=node('div'),requests=[],prompts=[];let confirmed=true,value={accounts:[{id:'a',name:'API <script>',kind:'api',baseUrl:'https://example.test/v1',model:'model'}],activeId:null,switch:{phase:'idle'},canSwitch:true};
   let request=async()=>structuredClone(value),read=async()=>structuredClone(value),timers=[],now=Date.now();
   class Clock extends Date{static now(){return now;}}
-  const context=vm.createContext({document:{createElement:node,hidden:false,activeElement:null},root,Date:Clock,crypto:{randomUUID:()=> '11111111-1111-4111-8111-111111111111'},
+  const context=vm.createContext({document:{createElement:node,body:node('body'),hidden:false,activeElement:null},root,Date:Clock,crypto:{randomUUID:()=> '11111111-1111-4111-8111-111111111111'},
     setTimeout:fn=>{timers.push(fn);return timers.length;},clearTimeout(){},localStorage:{getItem(){return null;},setItem(){}},window:{confirm:message=>{prompts.push(message);return confirmed;},prompt:()=>null}});
-  for(const f of ['web/i18n.js','web/accounts.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',f),'utf8'),context);
+  for(const f of ['web/shared/i18n.js','web/features/accounts/account.js','web/features/accounts/accounts.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',f),'utf8'),context);
   const Class=vm.runInContext('AccountsPanel',context),panel=new Class({root,desktop,read:()=>read(),request:v=>{requests.push(v);return request(v);}});
   const all=(n=root)=>[n,...n.children.flatMap(all)];
   return {panel,root,requests,prompts,all,now:()=>now,advance:ms=>now+=ms,hidden:value=>context.document.hidden=value,noRandomUUID:()=>{context.crypto={getRandomValues:bytes=>require("node:crypto").randomFillSync(bytes)};},text:()=>all().map(n=>n.textContent).join('\n'),setValue:v=>value=v,value:()=>value,setRequest:v=>request=v,setRead:v=>read=v,confirm:v=>confirmed=v,
     language:()=>{vm.runInContext("BridgeI18n.setLanguage('en')",context);panel.render();}};
 }
 test('web exposes saved account selection without enrollment or credential inputs',async()=>{
- const ui=fixture();await ui.panel.refresh();assert.equal(ui.all().some(n=>n.tag==='input'),false);assert.match(ui.text(),/API <script>/);assert.equal(ui.all().some(n=>n.tag==='script'),false);
+ const ui=fixture();await ui.panel.refresh();assert.equal(ui.all().some(n=>n.tag==='input'&&n.type!=='checkbox'),false);assert.match(ui.text(),/API <script>/);assert.equal(ui.all().some(n=>n.tag==='script'),false);
  ui.confirm(false);await ui.panel.choose(ui.value().accounts[0]);assert.equal(ui.requests.length,0);
  ui.confirm(true);await ui.panel.choose(ui.value().accounts[0]);assert.deepEqual(Object.keys(ui.requests[0]).sort(),['action','confirmed','id','requestId','tasksConfirmed']);
  assert.equal(ui.requests[0].tasksConfirmed,true);assert.match(ui.prompts[0],/未在网页显示/);
@@ -142,4 +142,70 @@ test('desktop and web can ignore only the selected unknown submission',async()=>
   ui.confirm(true);await ui.all().find(n=>n.textContent==='忽略').onclick();
   assert.deepEqual(JSON.parse(JSON.stringify(ui.requests[0])),{action:'ignoreSubmission',threadId:'thread',submissionId:'message',host:'local'});
  }
+});
+
+test('loading and failed refresh retain percentages, cards and the last successful time',()=>{
+ const ui=fixture();const usage={status:'ready',updatedAt:1900000000,limits:[{name:'Codex',windows:[{remainingPercent:75,windowDurationMins:300,resetsAt:2000000000}]}],resetCredits:{availableCount:2}};
+ for(const status of ['ready','loading','error']){ui.panel.accept({...ui.value(),accounts:[{id:'official',kind:'chatgpt',name:'Official',details:{usage:{...usage,status,error:status==='error'?'查询失败':undefined}}}]});
+ assert.match(ui.text(),/剩余 75%/);assert.match(ui.text(),/重置卡 · 2/);assert.match(ui.text(),/更新于/);assert.match(ui.text(),/后恢复|等待刷新/);
+ if(status==='loading')assert.match(ui.text(),/查询中/);if(status==='error')assert.match(ui.text(),/保留上次结果/);}
+ ui.panel.accept({...ui.value(),accounts:[{id:'other',kind:'chatgpt',name:'Different',details:{usage:{status:'loading'}}}]});assert.doesNotMatch(ui.text(),/剩余 75%|重置卡 · 2/);
+});
+test('current-account card has a direct reset entry and API cards have no subscription quota',()=>{
+ const ui=fixture();let chosen;ui.panel.onReset=()=>{};ui.panel.openReset=row=>chosen=row.id;
+ ui.panel.accept({...ui.value(),activeId:'official',accounts:[{id:'official',kind:'chatgpt',name:'Official',details:{usage:{status:'ready',limits:[],resetCredits:{availableCount:2}}}}]});
+ ui.all().find(n=>n.tag==='button'&&n.textContent==='使用重置卡'&&!n.hidden).onclick();assert.equal(chosen,'official');
+});
+
+test('active official account exposes reset entry before quota details load',()=>{
+ const ui=fixture();let chosen;ui.panel.onReset=()=>{};ui.panel.openReset=row=>chosen=row.id;
+ ui.panel.accept({...ui.value(),activeId:'official',current:{kind:'chatgpt',status:'ready',id:'official'},accounts:[{id:'official',kind:'chatgpt',name:'Official'}]});
+ const reset=ui.all().find(n=>n.tag==='button'&&n.textContent==='使用重置卡'&&!n.hidden);assert.ok(reset);reset.onclick();assert.equal(chosen,'official');
+});
+
+
+test('both saved-account views treat stale subscription claims as unknown',()=>{
+ for(const desktop of [false,true]){
+  const ui=fixture(desktop);
+  const accounts=[1790147934,1788250708].map((periodEndsAt,i)=>({id:'official-'+i,kind:'chatgpt',name:'Account '+i,details:{usage:{status:'ready',checkedAt:ui.now()/1000,updatedAt:ui.now()/1000,limits:[],subscription:{periodEndsAt,source:'login'}}}}));
+  ui.panel.accept({...ui.value(),accounts});
+  assert.equal(ui.all().filter(n=>n.textContent==='订阅有效期暂未确认').length,2);
+  assert.doesNotMatch(ui.text(),/当前订阅周期|已到记录日期|后结束/);
+  accounts[0].details.usage.subscription.periodEndsAt=ui.now()/1000+86400;ui.panel.render();
+  assert.match(ui.text(),/登录记录中的订阅日期（非实时）：/);assert.match(ui.text(),/请以 ChatGPT 订阅页面为准/);
+  ui.language();assert.match(ui.text(),/Subscription date in login record \(not live\):/);
+  ui.advance(86401000);ui.panel.render();assert.equal(ui.all().filter(n=>n.textContent==='Subscription end date is unconfirmed').length,2);
+ }
+});
+
+test('every saved official account opens its own reset dialog without switching',async()=>{
+ const ui=fixture();ui.panel.onReset=()=>{};
+ const saved={...ui.value(),activeId:'api',current:{kind:'api',status:'ready'},accounts:[...ui.value().accounts,{id:'one',kind:'chatgpt',name:'One'},{id:'two',kind:'chatgpt',name:'Two'}]};
+ ui.panel.accept(saved);
+ assert.equal(ui.all().filter(n=>n.textContent==='使用重置卡').length,2);
+ ui.setRequest(async value=>value.action==='account'?{visible:true,email:value.id+'@test',accountKey:'a'.repeat(64),limits:[],canReset:true,resetCredits:{availableCount:0,credits:[]}}:saved);
+ await ui.panel.openReset(saved.accounts[2]);
+ assert.equal(ui.requests[0].action,'account');assert.equal(ui.requests[0].id,'two');assert.equal(ui.requests[0].operation,'read');
+ assert.equal(ui.panel.resetPanel.value.email,'two@test');assert.ok(ui.panel.resetDialog.open);
+ assert.equal(ui.requests.some(r=>r.action==='switch'),false);
+ ui.panel.resetDialog.close();assert.equal(ui.panel.resetPanel,null);
+});
+
+test('desktop updates distinguish remote version checks from computer-side installation',async()=>{
+ for(const desktop of [false,true]){
+  const ui=fixture(desktop);ui.setValue({...ui.value(),desktopUpdate:{state:'available',canRequest:true,currentBuild:'1',currentVersion:'1',targetVersion:'2'}});await ui.panel.refresh();
+  assert.match(ui.text(),/下载和安装仍需在电脑端确认/);
+  await ui.all().find(n=>n.textContent==='查看 Codex 新版本').onclick();
+  assert.deepEqual(JSON.parse(JSON.stringify(ui.requests)),[{action:'checkDesktopUpdate'}]);assert.equal(ui.prompts.length,0);
+  ui.confirm(false);await ui.all().find(n=>n.textContent==='打开电脑端更新窗口').onclick();assert.equal(ui.requests.length,1);
+  ui.confirm(true);await ui.all().find(n=>n.textContent==='打开电脑端更新窗口').onclick();assert.equal(ui.requests[1].action,'requestDesktopUpdate');assert.equal(ui.requests[1].tasksConfirmed,true);
+  ui.language();assert.match(ui.text(),/installing still require confirmation on the computer/);
+ }
+});
+
+
+test('native update completion is shown only after the installed build is verified',async()=>{
+ const ui=fixture();ui.setValue({...ui.value(),desktopUpdate:{state:'needsDesktop',installation:{state:'pending',previousBuild:'100',currentBuild:'101'}}});await ui.panel.refresh();assert.doesNotMatch(ui.text(),/已核验电脑端安装版本已更新/);
+ ui.setValue({...ui.value(),desktopUpdate:{state:'checked',installation:{state:'verified',previousBuild:'100',currentBuild:'101'}}});await ui.panel.refresh();assert.match(ui.text(),/已核验电脑端安装版本已更新 · 100 → 101/);
+ ui.language();assert.match(ui.text(),/verified as updated · 100 → 101/);
 });

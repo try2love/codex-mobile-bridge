@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from bridge.goal import GoalRPC, native_goal_absent, read_native_goal, sqlite_read_uri
+from bridge.features.sessions.goal import GoalRPC, native_goal_absent, read_native_goal, sqlite_read_uri
 
 
 class FakeStdin:
@@ -112,8 +112,8 @@ class GoalRPCProcessTests(unittest.TestCase):
         fake_subprocess = FakeSubprocess(process)
         home = Path(tempfile.mkdtemp(prefix='goal-rpc-'))
         rpc = GoalRPC(home, Path(__file__))
-        with patch_module('bridge.goal.os.name', os_name), \
-             patch_module('bridge.goal.subprocess', fake_subprocess):
+        with patch_module('bridge.features.sessions.goal.os.name', os_name), \
+             patch_module('bridge.features.sessions.goal.subprocess', fake_subprocess):
             rpc.start()
         return rpc, fake_subprocess, home, process
 
@@ -141,7 +141,7 @@ class GoalRPCProcessTests(unittest.TestCase):
         old_queue = queue.Queue()
         old_queue.put(None)
         rpc.messages = old_queue
-        with patch_module('bridge.goal.subprocess', fake_subprocess):
+        with patch_module('bridge.features.sessions.goal.subprocess', fake_subprocess):
             rpc.start()
         self.assertIsNot(rpc.messages, old_queue)
         self.assertEqual(rpc.get_goal('tid'), {'objective': 'Work', 'status': 'active'})
@@ -158,7 +158,7 @@ if __name__ == '__main__':
 
 class RuntimeDiscoveryTests(unittest.TestCase):
     def test_windows_runtime_discovery_reads_local_app_candidates(self):
-        from bridge.catalog import Catalog
+        from bridge.clients.codex.catalog import Catalog
         from types import SimpleNamespace
         with tempfile.TemporaryDirectory() as directory:
             local=Path(directory)
@@ -166,19 +166,19 @@ class RuntimeDiscoveryTests(unittest.TestCase):
             candidate.parent.mkdir(parents=True);candidate.write_text('fake')
             fake_os=SimpleNamespace(name='nt',environ={'LOCALAPPDATA':str(local)})
             fake_subprocess=SimpleNamespace(CREATE_NO_WINDOW=0x08000000,run=lambda *args,**kwargs:None)
-            with patch('bridge.catalog.os',fake_os), \
-                 patch('bridge.catalog.sys.platform','nt'), \
-                 patch('bridge.catalog.subprocess',fake_subprocess):
+            with patch('bridge.clients.codex.catalog.os',fake_os), \
+                 patch('bridge.clients.codex.catalog.sys.platform','nt'), \
+                 patch('bridge.clients.codex.catalog.subprocess',fake_subprocess):
                 self.assertEqual(Catalog.find_runtime().resolve(),candidate.resolve())
 
     def test_linux_runtime_discovery_follows_bundled_launcher(self):
-        from bridge.catalog import Catalog
+        from bridge.clients.codex.catalog import Catalog
         with tempfile.TemporaryDirectory() as directory:
             launcher=Path(directory)/'codex'
             bundled=Path(directory)/'resources/codex-cli/bin/codex'
             bundled.parent.mkdir(parents=True);bundled.write_text('#!/bin/sh\n');bundled.chmod(0o755)
             launcher.write_text('#!/bin/sh\n');launcher.chmod(0o755)
-            with patch('bridge.catalog.shutil.which',return_value=str(launcher)):
+            with patch('bridge.clients.codex.catalog.shutil.which',return_value=str(launcher)):
                 self.assertTrue(os.path.samefile(Catalog.find_linux_runtime(),bundled))
 
 

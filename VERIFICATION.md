@@ -357,7 +357,7 @@
 - 连接配置改为独立条目；支持局域网、一个临时 Cloudflare 入口及多个固定服务器 / NAS 入口同时启用。旧单入口配置读取时迁移，保存前不改写原文件。额外 HTTPS 地址补充用途、适用条件和自动允许列表说明。
 - Mac 完整 Python 回归 95 项：92 项通过，3 项 Windows 专属测试跳过；9 项 Node 桌面检查通过。新增覆盖多入口保存/停用、端口冲突、旧配置迁移、允许源管理、日志倒序及多行堆栈、两个 SSH 转发与临时隧道同时运行、隧道等待不阻塞服务、关闭与进程创建竞争时清理。
 - 真实 Electron 渲染器连接隔离 Python worker，验证三个连接条目保存、ZIP 导出、检测前置条件、未保存红点、双向语言切换及 820 像素窗口无横向溢出。截图检查了中英文网络页和英文通知教程；没有连接真实 SSH 服务器或发送通知。
-- 手机浏览器 390×844 检查英文登录、聊天列表、审批卡片、消息输入、Markdown 和公式。11 项双语回归通过，覆盖草稿、选择项、自定义回答、自由回答及正文保留，已提交的审批在切换语言后保持禁用，语言切换不发送网络请求。英文模式下 18 项渐进加载回归通过。浏览器检查脚本为 `tests/i18n.test.js` 和 `tests/timeline.test.js`，使用合成聊天，不代表手机硬件实测。
+- 手机浏览器 390×844 检查英文登录、聊天列表、审批卡片、消息输入、Markdown 和公式。11 项双语回归通过，覆盖草稿、选择项、自定义回答、自由回答及正文保留，已提交的审批在切换语言后保持禁用，语言切换不发送网络请求。英文模式下 18 项渐进加载回归通过。浏览器检查脚本为 `tests/browser/i18n.browser.js` 和 `tests/browser/timeline.browser.js`，使用合成聊天，不代表手机硬件实测。
 - 中英文 README、架构说明及导出 ZIP 的英文部署说明已补齐。日志按来源展示，各来源内最新记录在上方，错误堆栈内部顺序保留；原始日志和聊天内容不翻译。
 - Mac App 已完成本地打包；包内桌面语言与连接配置资源存在，独立端口的打包网关可提供手机页面和语言资源。此轮自动检查时 Mac 锁屏，未完成安装后原生窗口目视复核。真实服务器/NAS 的公网并行链路及 Windows 新界面仍需相应环境验收。
 
@@ -471,7 +471,7 @@ python3 -B -m unittest discover -s tests -v
 - 浏览器检查：12 项 Markdown 和 11 项公式检查通过，覆盖代码保持原样、危险 HTML/TeX、文件链接、流式片段、表格与公式在窄屏内滚动。
 - 390px 浏览器实测真实聊天：最后一条回复中的 9 处公式正确显示，本机提供的字体全部成功加载。
 - 真实临时 HTTPS 入口：修复前约 6 MB 聊天响应被截断；启用 gzip 后传输约 1.63 MB，本次完整读取约 3.6 秒。该结果不保证其他网络的相同延迟。
-- 浏览器样例位于 `tests/markdown.test.js` 和 `tests/math.test.js`，可在已加载网关页面的开发者控制台运行；这些前端检查未接入 GitHub Actions。
+- 浏览器样例位于 `tests/browser/markdown.browser.js` 和 `tests/browser/math.browser.js`，可在已加载网关页面的开发者控制台运行；这些前端检查未接入 GitHub Actions。
 
 ### Windows 适配验证（2026-09-30）
 
@@ -655,3 +655,22 @@ One-click deployment is implemented, with shell syntax checking and local tests 
 - Tests: 97 targeted Python tests plus 29 existing HTTP/pairing regressions passed; 44 desktop Node tests passed. Real isolated desktop UI checks covered disabled-profile inspection, prompt copying (mocked clipboard), English PushPlus text, dismiss/expiry timing and the website target (mocked external opening).
 - Real isolated mobile-page and desktop-window checks passed for remaining counts, blocked reload, desktop unblock, seven-day cookie, restart persistence, unchecked session cookie and narrow-screen overflow. Repeated against the packaged gateway runtime. Screenshots inspected for the blocked phone view and desktop unblock controls. No real Codex chat, remote server, DNS setting or production gateway was changed.
 - Updated the local macOS arm64 preview; no commit, push, Release or website publication.
+
+
+## Local v2 preview integration of PRs #15 and #16 — 2026-10-07
+
+- Base: `29bb1c5` (`2.0.0-preview.1`), local branch `local/pr15-16-preview`. No version bump, commit, push, remote merge or publication.
+- PR #15 by `qybgh`, source `f1e9aa298e18c3a63f7791e3b99f657ed66f7390`: adapted controller handoff and packaged UI regression. Only a matching helper-ready token permits immediate `app.exit(0)`; a pending snapshot no longer blocks exit. The unconditional two-second exit was omitted. Missing/malformed/wrong-token readiness, slow readiness and helper failures have controller tests. The packaged test increments preview versions correctly, uses project-local temporary files, and defaults to a local gateway; real Quick Tunnel testing is opt-in with `--quick-tunnel`.
+- PR #16 by `702165405`, model discovery contribution from `5154bd2`: adopted `models/slug` responses and hidden-model filtering while preserving OpenAI `data/id` and array responses. Both formats produce the same public catalog. Web, Android and iOS share that gateway/catalog and web interface, so no native UI, mobile package, credential store, update source or notification behavior was changed.
+- The independent Compose client and its background session polling were not imported. APK self-installation and credential storage changes remain deferred because they require a separate cross-platform design and device acceptance. This is selective local integration, not a claim that all of PR #16 is merged. Preserve the upstream author attribution when creating the eventual commits/PR.
+- Before fixing, controller regressions reproduced stalled-snapshot and non-immediate-exit behavior; upstream `models/slug` tests failed. After fixing: updater suite 24 passed, one Windows-only skip; catalog suite 21 passed; native effective-config/loopback model discovery passed for both upstream formats without real credentials or inference.
+- Real packaged macOS arm64 UI update handoff passed with the gateway stopped and with the local gateway running: install button -> helper ready -> old controller self-exit -> bundle replacement -> new version acknowledgement; gateway running state was restored. Synthetic candidate version: `2.0.0-preview.2`. No real Cloudflare tunnel was started.
+- Java and Swift URL tests each passed 28 checks; both native release-selection suites passed. Shared UI/clipboard checks: 55 passed, one existing text-equality failure caused by clipboard-script indentation. Its test and both native sources are byte-identical to the base commit; all seven clipboard behavior checks passed. Android/iOS real-device interaction and Windows packaged handoff were not run locally.
+- Manual-test package: `dist/pr15-16-preview/mac-arm64/Codex Mobile Bridge PR Preview.app`, with separate bundle identity and project-local data under `.tmp/pr15-16-integration/user-data`. Existing phone apps can connect to this gateway without reinstalling. Detailed build/test logs and selective-integration artifacts remain under `.tmp/pr15-16-integration/` and are not committed.
+- Final manual-test bundle passed ad-hoc signature verification and packaged controller/model-parser source matching. The separate App was launched, its gateway reported running on port 8793, and the local health endpoint returned HTTP 200. Existing Android/iOS apps were not reinstalled; manual device acceptance remains pending.
+
+## v2.0.0-preview.2 release preparation — 2026-10-07
+
+- User accepted the targeted automated verification in place of manual regression and authorized publication. The integration commits credit qybgh and 702165405 with GitHub-linked co-author trailers; the release notes link both contributors and describe the partial scope of PR #16.
+- Desktop, Android and iOS release identifiers are synchronized to 2.0.0-preview.2; Android and iOS build numbers advance from 20 to 21. Native client behavior is unchanged.
+- Post-bump updater and native release-selection tests passed. Android APK signature verification and unsigned iOS Release compilation passed; final multi-platform builds and publication use the existing signed release workflow.

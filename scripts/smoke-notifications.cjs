@@ -2,7 +2,7 @@
 // Exercise each packaged notification channel against a loopback-only server.
 // All credentials and messages are synthetic; no real phone receives a push.
 const assert=require('node:assert/strict'),fs=require('node:fs/promises'),path=require('node:path'),http=require('node:http');
-const {runWorker}=require('../desktop/controller.cjs');
+const {runWorker}=require('../desktop/shared/controller.cjs');
 const root=path.resolve(__dirname,'..');
 async function main(){
   assert.ok(['darwin','win32','linux'].includes(process.platform));

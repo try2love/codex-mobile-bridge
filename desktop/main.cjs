@@ -3,15 +3,16 @@ const {app,BrowserWindow,ipcMain,dialog,shell,clipboard,Tray,Menu,net}=require('
 const path=require('node:path');
 const fs=require('node:fs');
 const {pathToFileURL}=require('node:url');
-const {runWorker,workerFor,createSnapshotWorker}=require('./controller.cjs');
-const {pairingImage}=require('./qr.cjs');
-const {createTray}=require('./tray.cjs');
-const {normalize,translate}=require('./i18n.js');
-const cloudflared=require('./cloudflared.cjs');
-const {Updater,allowedMirrorUrl}=require('./updater.cjs');
+const {runWorker,workerFor,createSnapshotWorker,createManagementWorker}=require('./shared/controller.cjs');
+const {pairingImage}=require('./features/connections/qr.cjs');
+const {createTray}=require('./shell/tray.cjs');
+const {normalize,translate}=require('./shared/i18n.js');
+const {publishLanguage}=require('./shared/gateway-language.cjs');
+const cloudflared=require('./features/connections/cloudflared.cjs');
+const {Updater,allowedMirrorUrl}=require('./features/updates/updater.cjs');
 const {spawn}=require('node:child_process');
 const {randomUUID}=require('node:crypto');
-const {interfaces}=require('./network.cjs');
+const {interfaces}=require('./features/connections/network.cjs');
 let language='zh-CN';
 const t=text=>translate(text,language);
 const root=path.resolve(__dirname,'..');
@@ -20,9 +21,10 @@ if(process.env.CMB_DATA_DIR)app.setPath('userData',path.join(path.resolve(proces
 let window,dataDir,tray,quitting=false,snapshotPending,lastSnapshot,updateQuitting=false;
 let installPending,installStatus={},updater,workerWrites=0;
 const snapshotWorker=createSnapshotWorker();
+const managementWorker=createManagementWorker();
 let connectionSecrets={},setupPending=false;
 const entry=pathToFileURL(path.join(__dirname,'index.html')).href;
-function releaseTray(){snapshotWorker.close();quitting=true;tray?.dispose();tray=null;}
+function releaseTray(){snapshotWorker.close();managementWorker.close();quitting=true;tray?.dispose();tray=null;}
 function loadDataDir(){
   if(process.env.CMB_UPDATE_DATA_DIR)return path.resolve(process.env.CMB_UPDATE_DATA_DIR);
   if(process.env.CMB_DATA_DIR)return path.resolve(process.env.CMB_DATA_DIR);
@@ -45,17 +47,17 @@ function worker(action,payload){
   if(action==='snapshot'&&updateQuitting)return Promise.resolve({...lastSnapshot,update:updater.status()});
   if(setupPending&&['save','start','stop'].includes(action))return Promise.reject(Error('请等待服务器操作完成。'));
   if(action==='start')payload={...payload,connectionSecrets};
-  const writes=['server-setup','connection-credentials','save','start','stop','devices','notification-watches'].includes(action);
+  const writes=(['harness','desktop-sessions'].includes(action)&&!['status','clients','detect'].includes(payload?.action))||['server-setup','connection-credentials','save','start','stop','devices','notification-watches', 'transfer-settings'].includes(action);
   if(writes&&updater?.busy)return Promise.reject(Error('正在更新应用，请稍候。'));
   if(writes)workerWrites++;
   if(action==='snapshot'&&snapshotPending)return snapshotPending;
   const options=workerFor({packaged:app.isPackaged,resources:process.resourcesPath,root,dataDir});
-  const result=(action==='snapshot'&&!updater?.busy?snapshotWorker.read(options):runWorker(options,action,payload)).then(value=>['snapshot','save'].includes(action)?{...value,networkInterfaces:interfaces(),cloudflaredInstall:installStatus,update:updater?.status(),updateResult:updateResult(),updateManaged:updateManaged()}:value).finally(()=>{if(writes)workerWrites--;});
+  const result=(action==='snapshot'&&!updater?.busy?snapshotWorker.read(options):['accounts','account','desktop-sessions','start','stop','save'].includes(action)?managementWorker.call(options,action,payload):runWorker(options,action,payload)).then(value=>['snapshot','save'].includes(action)?{...value,networkInterfaces:interfaces(),cloudflaredInstall:installStatus,update:updater?.status(),updateResult:updateResult(),updateManaged:updateManaged()}:value).finally(()=>{if(writes)workerWrites--;});
   if(action==='snapshot')snapshotPending=result.then(value=>{lastSnapshot=value;return value;}).finally(()=>{snapshotPending=null;});
   return action==='snapshot'?snapshotPending:result;
 }
 async function installUpdate(candidate){
-  snapshotWorker.close();
+  snapshotWorker.close();managementWorker.close();
   const target=process.platform==='darwin'?path.resolve(process.execPath,'../../..'):path.dirname(process.execPath);
   const token=randomUUID();
   const prepared=await worker('update-prepare',{archive:candidate.archive,sha256:candidate.asset.sha256,version:candidate.version,
@@ -75,21 +77,21 @@ async function installUpdate(candidate){
   while(Date.now()<end){
     if(spawnError)throw spawnError;
     if(child.exitCode!==null)throw Error('无法启动应用更新进程。');
-    try{if(JSON.parse(fs.readFileSync(ready,'utf8')).token===token){
-      updateQuitting=true;if(snapshotPending)await snapshotPending;snapshotWorker.close();
-      setTimeout(()=>app.quit(),300);
-      // Some macOS window/extension states can keep a graceful quit alive.
-      // The helper owns the gateway and waits for this PID, so force exit well
-      // before its 45 second parent timeout instead of cancelling the swap.
-      setTimeout(()=>{releaseTray();try{if(typeof app.exit==='function')app.exit(0);}catch{}},10000);
+    let readyToken;
+    try{readyToken=JSON.parse(fs.readFileSync(ready,'utf8')).token;}catch{}
+    if(readyToken===token){
+      updateQuitting=true;snapshotPending?.catch(()=>{});snapshotWorker.close();
+      // The verified helper owns gateway shutdown and the bundle swap. Do not
+      // let a pending snapshot or cancellable quit hook block the handoff.
+      app.exit(0);
       return;
-    }}catch{}
+    }
     await new Promise(resolve=>setTimeout(resolve,100));
   }
   throw Error('无法启动应用更新进程。');
 }
 function setupUpdater(){
-  updater=new Updater({current:app.getVersion(),key:fs.readFileSync(path.join(__dirname,'update-public-key.pem')),
+  updater=new Updater({current:app.getVersion(),key:fs.readFileSync(path.join(__dirname,'features/updates/update-public-key.pem')),
     fetch:cloudflared.electronFetch(net,allowedMirrorUrl),directory:path.join(app.getPath('userData'),'updates'),
     supported:app.isPackaged&&['darwin','win32'].includes(process.platform),install:installUpdate});
   setTimeout(()=>updater.check(),5000).unref();
@@ -112,10 +114,11 @@ function register(){
     authorize(event);
     if(!['zh-CN','en'].includes(value))throw Error('Unsupported language');
     const directory=app.getPath('userData');fs.mkdirSync(directory,{recursive:true});
+    publishLanguage(dataDir,value);
     fs.writeFileSync(path.join(directory,'language.json'),JSON.stringify({language:value}));
     language=value;const title=t('Codex 手机网关');if(window.getTitle()!==title)window.setTitle(title);tray?.relabel();return language;
   });
-  for(const action of ['snapshot','save','start','stop','logs','test-notification','check-entry','devices','account', 'accounts','notification-watches'])ipcMain.handle('bridge:'+action,async(event,payload)=>{
+  for(const action of ['snapshot','save','start','stop','logs','test-notification','check-entry','tailscale-setup','devices','account', 'accounts', 'harness', 'desktop-sessions','notification-watches', 'transfer-settings'])ipcMain.handle('bridge:'+action,async(event,payload)=>{
     authorize(event);
     if(action==='accounts'){
       if(updater?.busy&&payload?.action!=='list')throw Error('正在更新应用，请稍候。');
@@ -125,7 +128,18 @@ function register(){
         await shell.openExternal(url.href);return value;
       }
     }
+    if(action==='desktop-sessions'&&payload?.action==='copy-claude-workspace'){const value=await worker(action,{action:'status'});clipboard.writeText(value.claudeWorkspace);return {copied:true};}
+    if(action==='desktop-sessions'&&payload?.action==='prepare-claude'){const value=await worker(action,payload);clipboard.writeText(value.script);delete value.script;return value;}
     try{return await worker(action,payload);}catch(error){if(error.validation)return {validationError:{message:error.message,...error.validation}};throw error;}
+  });
+  ipcMain.handle('bridge:tailscale-authorize',async(event,value)=>{
+    authorize(event);
+    const current=await worker('snapshot');
+    if(!current.preferences.connections.some(c=>c.id===value?.id&&c.accessMode==='tailscale'))throw Error('请选择 Tailscale 连接。');
+    const address=current.externalStatus?.[value.id]?.authUrl||(await worker('tailscale-setup',{id:value.id})).authUrl;
+    let url;try{url=new URL(address);}catch{throw Error('请在 Tailscale 客户端完成登录；启动入口后如需额外授权，会在这里提示。');}
+    if(url.protocol!=='https:'||url.hostname!=='login.tailscale.com'||url.username||url.password||(url.port&&url.port!=='443'))throw Error('Tailscale 授权地址无效，请重新检测。');
+    await shell.openExternal(url.href);return {message:'已打开 Tailscale 授权页面。'};
   });
   ipcMain.handle('bridge:read-credentials',async(event,value={})=>{
     authorize(event);
@@ -211,11 +225,12 @@ function register(){
     if(result.canceled)return null;
     const selected=result.filePaths[0];
     if(kind==='data'){
+      if(workerWrites)throw Error('请等待当前操作完成。');
       if(updater.busy)throw Error('正在更新应用，请稍候。');
       if(installPending)throw Error('正在安装 cloudflared，请完成后再切换数据目录。');
       if(setupPending)throw Error('请等待服务器操作完成。');
       installStatus={};connectionSecrets={};
-      dataDir=selected;fs.mkdirSync(app.getPath('userData'),{recursive:true});
+      publishLanguage(selected,language);dataDir=selected;fs.mkdirSync(app.getPath('userData'),{recursive:true});
       fs.writeFileSync(path.join(app.getPath('userData'),'bridge-location.json'),JSON.stringify({dataDir}),{mode:0o600});
     }
     return selected;
@@ -228,6 +243,7 @@ function register(){
     if(target==='project-pulls')return shell.openExternal('https://github.com/try2love/codex-mobile-bridge/pulls');
     if(target==='credentials')return shell.openPath(path.join(dataDir,'首次登录.txt'));
     if(target==='data')return shell.openPath(dataDir);
+    if(target==='tailscale-help'||target==='setup-tailscale')return shell.openExternal('https://tailscale.com/docs/how-to/quickstart');
     if(target==='cloudflare-dashboard')return shell.openExternal('https://one.dash.cloudflare.com/');
     if(['setup-lan','setup-quick','setup-cloudflare','setup-server','setup-nas'].includes(target))return shell.openExternal('https://try2love.github.io/codex-mobile-bridge/setup.html?lang='+(language==='en'?'en':'zh')+'#'+target.slice(6));
     if(target==='cloudflare-domain-help')return shell.openExternal('https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel/');
@@ -240,6 +256,11 @@ function register(){
     if(target==='pushplus-verify')return shell.openExternal('https://www.pushplus.plus/center/real-auth?source=push');
     if(target==='pushplus-limits')return shell.openExternal('https://www.pushplus.plus/doc/guide/use.html');
     const snapshot=await worker('snapshot');
+    if(target==='harness'){
+      const state=await worker('harness',{action:'status'});
+      if(!state.running||!snapshot.urls.length)throw Error('请先启动网关和 Harness');
+      return shell.openExternal(new URL('/harness/',snapshot.urls[0]).href);
+    }
     if(!snapshot.urls.includes(target)||!/^https?:\/\//.test(target))throw Error('地址不可用');
     await shell.openExternal(target);
   });
@@ -273,7 +294,7 @@ else{
   app.whenReady().then(()=>{
     language=normalize(app.getLocale());
     try{language=normalize(JSON.parse(fs.readFileSync(path.join(app.getPath('userData'),'language.json'),'utf8')).language);}catch{}
-    dataDir=loadDataDir();setupUpdater();register();
+    dataDir=loadDataDir();publishLanguage(dataDir,language);setupUpdater();register();
     if(process.platform==='win32'){
       app.setAppUserModelId('io.github.try2love.codexmobilebridge');
       tray=createTray({Tray,Menu,icon:path.join(__dirname,'assets/icon.ico'),show:showWindow,worker,t,

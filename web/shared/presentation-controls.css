@@ -1,0 +1,64 @@
+
+@media(max-width:350px){.composer-tools{gap:4px}.tool-button{padding:7px 8px}#model-button{max-width:45%}.composer-toggle{width:32px}.chat-head{gap:4px}.status{font-size:9px;max-width:74px}.accent-options{gap:8px}}
+@media(prefers-reduced-motion:reduce){.composer-toggle svg{transition:none}}
+
+#mode-hint{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.goal-state{position:relative;flex:none;margin:4px max(20px,calc((100% - 790px)/2));padding:9px 38px 9px 12px;border:1px solid var(--line);border-radius:9px;background:var(--raised);font-size:12px;max-height:25dvh;overflow:auto}.goal-state summary{cursor:pointer;color:var(--green);font-weight:600}.goal-state p{white-space:pre-wrap;overflow-wrap:anywhere;margin:7px 0;line-height:1.5}.goal-close{position:absolute;top:2px;right:3px;width:32px;height:32px;padding:0;border:0;border-radius:7px;background:transparent;color:var(--muted);font-size:20px;line-height:1;cursor:pointer}.goal-pending{color:var(--muted)}.plan-approval summary{cursor:pointer;font-size:13px}.plan-content{line-height:1.7;overflow-wrap:anywhere}.plan-content pre{overflow:auto}
+
+.attach-button{display:grid;place-items:center;width:30px;height:36px;padding:5px;border:0;background:transparent;color:var(--muted);border-radius:8px}.attach-button:hover{background:var(--soft)}.attach-button svg{width:21px;height:21px}.attachment-list{display:flex;flex-wrap:wrap;gap:7px;max-height:150px;overflow:auto;padding:6px 0}.attachment-chip{display:flex;align-items:center;gap:5px;max-width:100%;padding:7px 8px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}.attachment-info{min-width:0;display:grid;gap:3px}.attachment-info strong{font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.attachment-info small{font-size:10px;color:var(--muted)}.attachment-remove{border:0;background:none;color:var(--muted);padding:5px;font-size:18px}.session-indicator{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:8px;vertical-align:1px;background:#16a34a}.session-indicator.completed{background:#3b82f6}.session-indicator.ended{background:#d97706}.session-indicator.unknown{background:#94a3b8}html[data-show-activity=false] .session-indicator{display:none}
+@media(max-width:350px){.compose-bottom{gap:4px;grid-template-columns:26px minmax(0,1fr) minmax(0,1fr) auto}.attach-button{width:26px}.compose-bottom:has(.goal-toggle:not([hidden])){gap:4px}.compose-actions{gap:4px}.compose-actions .primary,.compose-actions .stop{padding:8px 7px}.compose-bottom select{font-size:10px}}
+
+.fast-mode-control{padding:12px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}.fast-mode-control p{font-size:12px;line-height:1.6;margin:8px 0 0}.fast-mode-control a{color:var(--green)}
+
+.goal-editor{display:block;width:100%;box-sizing:border-box;resize:vertical;min-height:5rem;margin:.5rem 0;padding:.6rem;font:inherit;color:inherit;background:var(--bg);border:1px solid var(--line);border-radius:8px}
+
+.goal-state:has(.goal-editor){max-height:45dvh}
+
+:root[data-show-pushplus=false] #pushplus-settings,:root[data-show-accounts=false] #accounts-button{display:none}
+@media(max-width:600px){.compose-bottom select{font-size:11px}.compose-actions button{white-space:nowrap}}
+
+.goal-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}.goal-actions button{margin:0;padding:8px;font-size:12px;white-space:nowrap}
+
+.image-preview{position:fixed;inset:0;box-sizing:border-box;width:100%;height:100dvh;max-width:none;max-height:none;margin:0;padding:0;border:0;background:#15171b;color:#fff;overflow:hidden}
+.image-preview[open]{display:flex;flex-direction:column}
+.image-preview::backdrop{background:#15171b}
+.image-preview-toolbar{display:flex;align-items:center;gap:12px;flex:none;padding:max(8px,env(safe-area-inset-top)) max(64px,env(safe-area-inset-right)) 8px max(12px,env(safe-area-inset-left));border-bottom:1px solid #ffffff20}
+#image-preview-close{display:flex;align-items:center;justify-content:center;flex:none;min-width:72px;min-height:44px;margin:0;padding:8px 12px;border:1px solid #ffffff30;border-radius:12px;background:#ffffff12;color:#fff;font:inherit;font-size:16px;cursor:pointer}
+#image-preview-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
+.image-preview-content{position:relative;flex:1;min-height:0;min-width:0;overflow:hidden;touch-action:none;user-select:none;overscroll-behavior:contain}
+.image-preview-content img{position:absolute;left:50%;top:50%;display:block;max-width:none;max-height:none;object-fit:contain;transform:translate(-50%,-50%);pointer-events:none}
+.image-preview-content img[hidden]{display:none}
+.image-preview-content.is-zoomed{cursor:grab}.image-preview-content.is-dragging{cursor:grabbing}
+.image-preview-controls{display:flex;align-items:center;justify-content:center;gap:8px;flex:none;padding:8px max(12px,env(safe-area-inset-right)) 12px max(12px,env(safe-area-inset-left))}
+.image-preview-controls button{min-width:44px;min-height:44px;margin:0;padding:8px 12px;border:1px solid #ffffff30;border-radius:10px;background:#ffffff12;color:#fff;font:inherit;font-size:16px;cursor:pointer}
+.image-preview-controls button:disabled{opacity:.4;cursor:default}
+#image-preview-scale{min-width:52px;text-align:center;font-size:13px;font-variant-numeric:tabular-nums}
+#image-preview-status{flex:none;margin:0;padding:0 20px max(16px,env(safe-area-inset-bottom));text-align:center;font-size:14px;color:#d1d5db}
+#image-preview-status:empty{padding-bottom:env(safe-area-inset-bottom)}
+img[data-image-preview],img.image-preview-source{cursor:zoom-in}
+img[data-image-preview]:focus-visible,img.image-preview-source:focus-visible,#image-preview-close:focus-visible,.image-preview-controls button:focus-visible{outline:2px solid #8bb5ff;outline-offset:3px}
+
+/* Permission cards share the same layout in main and side chats. */
+.permission-option{display:flex;align-items:center;gap:16px;width:100%;padding:18px 16px;margin:10px 0;border:1px solid var(--line);border-radius:14px;background:var(--raised);color:var(--text);text-align:left;}
+.permission-option:hover{background:var(--surface);border-color:var(--muted)}
+.permission-option[aria-pressed=true]{border-color:var(--green);background:var(--soft)}
+.permission-option>svg{flex:none;width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.permission-option>span:not(.permission-check){flex:1;min-width:0}
+.permission-option strong{display:block;font-size:16px;line-height:1.5;font-weight:650}
+.permission-option small{display:block;margin-top:4px;color:var(--muted);font-size:13px;line-height:1.55}
+.permission-check{flex:none;width:18px;color:var(--green);font-size:18px}
+.list-heading h2{flex:none}
+.connected-computer{display:flex;align-items:center;gap:5px;min-width:0;flex:1;color:var(--muted);font-size:11px;justify-content:center}
+.connected-computer svg{width:15px;height:15px;flex:none;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.connected-computer span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.list-heading #new-chat{margin-left:auto;flex:none}
+:root[data-show-computer=false] .connected-computer{display:none}
+
+/* Keep list actions anchored even when the computer label is hidden. */
+body:has(#app:not([hidden]))>.phone-header{display:none}
+.list-actions{display:flex;align-items:center;gap:4px;margin-left:auto;flex:none}
+.list-actions .appearance-button{width:40px;height:44px;flex:none}
+
+.context-usage{display:inline-flex;align-items:center;justify-content:center;flex:none;padding:7px;min-width:32px}
+.context-usage-ring{display:block;width:17px;height:17px;border-radius:50%;background:conic-gradient(var(--green) var(--context-percent,0%),var(--line) 0);mask:radial-gradient(circle,transparent 46%,#000 50%);-webkit-mask:radial-gradient(circle,transparent 46%,#000 50%)}
+.context-usage-ring.unknown{background:none;border:2px dashed var(--muted);width:13px;height:13px;mask:none;-webkit-mask:none;opacity:.65}

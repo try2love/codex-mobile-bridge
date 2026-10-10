@@ -2,7 +2,7 @@
 const test=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs'),path=require('node:path');
 function fixture(){
  const root={},input={},status={},ctx=vm.createContext({root,input,status,BridgeI18n:{t:s=>s}});
- vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/fast-mode.js'),'utf8'),ctx);
+ vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/features/chat/fast-mode.js'),'utf8'),ctx);
  return {root,input,status,control:vm.runInContext('new FastModeControl({root,input,status})',ctx)};
 }
 const model={id:'official-model',fastTier:'priority',defaultServiceTier:'priority'},catalog={models:[model,{id:'local-model'}],fastMode:{allowed:true,defaultServiceTier:'priority'}},view={provider:'openai',connected:true};
