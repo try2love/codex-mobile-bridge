@@ -819,14 +819,14 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
                 button(MobileStrings.text("移除这台电脑"), symbol: "trash") { [weak self, weak sheet] in sheet?.dismiss(animated: true) { self?.confirmRemove() } }
             ]))
         }
-        let current = Bundle.main.object(forInfoDictionaryKey: "BridgeReleaseVersion") as? String ?? "2.0.0-preview.3"
+        let current = Bundle.main.object(forInfoDictionaryKey: "BridgeReleaseVersion") as? String ?? "2.0.0"
         let updateStatus = label("", size: 13, secondary: true)
         let check = button(MobileStrings.text("检查更新"), symbol: "arrow.down.circle") {}
         check.addAction(UIAction { [weak self, weak sheet, weak check, weak updateStatus] _ in
             guard let self, let sheet, let check, let updateStatus else { return }
             self.checkUpdate(current: current, sheet: sheet, check: check, status: updateStatus)
         }, for: .touchUpInside)
-        content.addArrangedSubview(card([label(MobileStrings.text("应用更新"), size: 19, weight: .semibold), label("Bridge Preview · " + current, size: 14), label(MobileStrings.text("预览通道 · 手动检查，不自动安装"), size: 13, secondary: true), check, updateStatus, label(MobileStrings.text("iOS 预览需要使用自己的 Apple 账号重新签名安装，暂不支持 App 内直接覆盖更新。"), size: 13, secondary: true)]))
+        content.addArrangedSubview(card([label(MobileStrings.text("应用更新"), size: 19, weight: .semibold), label("Codex Mobile Bridge · " + current, size: 14), label(MobileStrings.text("手动检查更新，不会自动安装"), size: 13, secondary: true), check, updateStatus, label(MobileStrings.text("iOS App 需要使用自己的 Apple 账号重新签名安装，暂不支持 App 内直接覆盖更新。"), size: 13, secondary: true)]))
     }
     private func checkUpdate(current: String, sheet: UIViewController, check: UIButton, status: UILabel) {
         check.isEnabled = false; status.text = MobileStrings.text("正在检查更新…")
@@ -847,7 +847,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
                 let url = candidate?.page ?? URL(string: MobileRelease.repository + "/releases")!
                 if !failed && candidate == nil { status.text = MobileStrings.text("当前已是此通道最新版本。"); return }
                 status.text = MobileStrings.text(failed ? "检查失败，请检查网络后重试。也可以打开版本页面。" : "发现新版本") + (candidate.map { " · " + $0.version } ?? "")
-                let alert = UIAlertController(title: status.text, message: candidate.map { MobileStrings.text("iOS 预览需要使用自己的 Apple 账号重新签名安装，暂不支持 App 内直接覆盖更新。") + "\n\n" + $0.notes }, preferredStyle: .alert)
+                let alert = UIAlertController(title: status.text, message: candidate.map { MobileStrings.text("iOS App 需要使用自己的 Apple 账号重新签名安装，暂不支持 App 内直接覆盖更新。") + "\n\n" + $0.notes }, preferredStyle: .alert)
                 alert.addAction(UIAlertAction(title: MobileStrings.text("稍后"), style: .cancel))
                 alert.addAction(UIAlertAction(title: MobileStrings.text(failed ? "版本页面" : "查看新版与安装指引"), style: .default) { _ in UIApplication.shared.open(url) })
                 sheet.present(alert, animated: true)
@@ -881,7 +881,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
     }
     private func testNotification() {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert,.sound,.badge]) { allowed, _ in
-            guard allowed else { DispatchQueue.main.async { self.info(MobileStrings.text("请在系统设置允许 Bridge Preview 通知。")) }; return }
+            guard allowed else { DispatchQueue.main.async { self.info(MobileStrings.text("请在系统设置允许 Codex Bridge 通知。")) }; return }
             DispatchQueue.main.async {
                 let content = UNMutableNotificationContent(); content.title = MobileStrings.text("手机通知测试"); content.body = MobileStrings.text("本机通知已开启"); content.sound = .default
                             NotificationSource.apply(content, provider: "codex", host: "local")
@@ -1085,7 +1085,7 @@ enum MobileStrings {
         "通知收件箱": "Notification inbox",
         "手机设置": "Mobile settings",
 "应用更新": "App updates",
-"预览通道 · 手动检查，不自动安装": "Preview channel · Manual checks, no automatic install",
+"手动检查更新，不会自动安装": "Manual update checks, no automatic installation",
 "检查更新": "Check for updates",
 "正在检查更新…": "Checking for updates…",
 "没有可用的浏览器，请在电脑上打开 GitHub Release。": "No browser is available. Open GitHub Releases on your computer.",
@@ -1098,7 +1098,7 @@ enum MobileStrings {
 "更新说明": "Release notes",
 "下载 APK": "Download APK",
 "查看新版与安装指引": "View update and installation guide",
-"iOS 预览需要使用自己的 Apple 账号重新签名安装，暂不支持 App 内直接覆盖更新。": "The iOS preview requires signing the new build with your own Apple account. Direct in-app installation is not available yet.",
+"iOS App 需要使用自己的 Apple 账号重新签名安装，暂不支持 App 内直接覆盖更新。": "The iOS app requires signing the new build with your own Apple account. Direct in-app installation is not available yet.",
 
         "返回电脑列表": "Back to computers",
         "外观与显示": "Appearance",
@@ -1196,7 +1196,7 @@ enum MobileStrings {
         "从电脑菜单选择聊天跟踪。后台显示可能不是最新状态，打开 App 可继续同步。": "Choose a chat to track from the computer menu. Background status may be out of date; open the app to sync.",
         "预览灵动岛": "Preview Live Activity",
         "此预览尚未配置 Apple 推送签名。需要开发者账号和电脑端推送服务后才能启用后台任务提醒。": "Apple push signing is not configured. Background alerts require a developer account and a gateway push service.",
-        "请在系统设置允许 Bridge Preview 通知。": "Allow Bridge Preview notifications in system settings.",
+        "请在系统设置允许 Codex Bridge 通知。": "Allow Codex Bridge notifications in system settings.",
         "10 秒后显示本地测试通知，可以先锁屏。此测试不代表远程推送已经接通。": "A local test notification will appear in 10 seconds. You may lock the screen. This does not verify remote push delivery.",
         "测试通知未能创建，请检查系统通知设置。": "Could not schedule the test. Check system notification settings.",
         "未获得相机权限，请粘贴网关地址。": "Camera access denied. Paste the gateway address instead.",

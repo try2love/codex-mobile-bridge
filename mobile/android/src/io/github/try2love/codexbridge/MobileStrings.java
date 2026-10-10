@@ -39,7 +39,7 @@ final class MobileStrings {
 
 
 values.put("应用更新","App updates");
-values.put("预览通道 · 手动检查，不自动安装","Preview channel \u00b7 Manual checks, no automatic install");
+values.put("手动检查更新，不会自动安装","Manual update checks, no automatic installation");
 values.put("检查更新","Check for updates");
 values.put("正在检查更新…","Checking for updates\u2026");
 values.put("没有可用的浏览器，请在电脑上打开 GitHub Release。","No browser is available. Open GitHub Releases on your computer.");
@@ -52,7 +52,7 @@ values.put("稍后","Later");
 values.put("更新说明","Release notes");
 values.put("下载 APK","Download APK");
 values.put("查看新版与安装指引","View update and installation guide");
-values.put("iOS 预览需要使用自己的 Apple 账号重新签名安装，暂不支持 App 内直接覆盖更新。","The iOS preview requires signing the new build with your own Apple account. Direct in-app installation is not available yet.");
+values.put("iOS App 需要使用自己的 Apple 账号重新签名安装，暂不支持 App 内直接覆盖更新。","The iOS app requires signing the new build with your own Apple account. Direct in-app installation is not available yet.");
 
 values.put("Codex 未完成侧边聊天操作，请检查模型接入和运行时版本","Codex could not complete the side chat operation. Check the model connection and runtime version.");
 values.put("临时侧边聊天数量已达上限，请关闭不用的聊天；必要时重启网关","Too many temporary side chats. End unused chats or restart the gateway.");
@@ -189,7 +189,7 @@ values.put("请填写完整的 HTTPS 网关地址，或局域网 HTTP 地址，�
   values.put("从电脑菜单选择聊天跟踪。后台显示可能不是最新状态，打开 App 可继续同步。","Choose a chat to track from the computer menu. Background status may be out of date; open the app to sync.");
   values.put("预览灵动岛","Preview Live Activity");
   values.put("此预览尚未配置 Apple 推送签名。需要开发者账号和电脑端推送服务后才能启用后台任务提醒。","Apple push signing is not configured. Background alerts require a developer account and a gateway push service.");
-  values.put("请在系统设置允许 Bridge Preview 通知。","Allow Bridge Preview notifications in system settings.");
+  values.put("请在系统设置允许 Codex Bridge 通知。","Allow Codex Bridge notifications in system settings.");
   values.put("10 秒后显示本地测试通知，可以先锁屏。此测试不代表远程推送已经接通。","A local test notification will appear in 10 seconds. You may lock the screen. This does not verify remote push delivery.");
   values.put("测试通知未能创建，请检查系统通知设置。","Could not schedule the test. Check system notification settings.");
   values.put("未获得相机权限，请粘贴网关地址。","Camera access denied. Paste the gateway address instead.");

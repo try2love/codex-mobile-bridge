@@ -1,0 +1,44 @@
+name: iOS unsigned build
+on:
+  workflow_call:
+    inputs:
+      source_ref:
+        type: string
+        default: ''
+  workflow_dispatch:
+  push:
+    branches: [release/v2.0.0]
+    paths: ['mobile/**', 'web/client-icons/**', 'scripts/build-mobile-ios.py', 'tests/test_mobile_ios_build.py', 'package.json', '.github/workflows/mobile.yml']
+permissions:
+  contents: read
+jobs:
+  ios:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Inspect available Xcode platforms
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks
+          xcrun simctl list runtimes
+      - name: Verify mobile resources and archive boundaries
+        run: |
+          node --test mobile/tests/*.test.cjs
+          python -B -m unittest discover -s tests -p test_mobile_ios_build.py -v
+      - name: Build unsigned iPhone app and tracked Xcode source
+        run: python scripts/build-mobile-ios.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mobile-iOS
+          if-no-files-found: error
+          path: |
+            dist/mobile-preview/*-iOS-unsigned.ipa
+            dist/mobile-preview/*-iOS-source.zip
