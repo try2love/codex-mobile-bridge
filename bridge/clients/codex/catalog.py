@@ -342,7 +342,12 @@ class Catalog:
         executable = shutil.which('codex')
         return Path(executable) if executable else None
 
-    def _fetch(self, cwd, provider=None, kind='catalog', request_timeout=90):
+    def linux_permission_capabilities(self, cwd, reader):
+        if sys.platform != 'linux':
+            raise ValueError('Linux permission discovery is unavailable on this host')
+        return self._fetch(cwd, kind='linux-permissions', request_timeout=5, permission_reader=reader)
+
+    def _fetch(self, cwd, provider=None, kind='catalog', request_timeout=90, permission_reader=None):
         executable = self.executable
         if not executable:
             raise CatalogError("找不到桌面 App 的 Codex 运行时")
@@ -370,7 +375,9 @@ class Catalog:
         counter = 0
         def request(method, params, timeout=request_timeout):
             nonlocal counter
-            if method not in self.METHODS:
+            linux_permission_read = (sys.platform == 'linux' and kind == 'linux-permissions' and
+                                     method in ('permissionProfile/list', 'experimentalFeature/list'))
+            if method not in self.METHODS and not linux_permission_read:
                 raise ValueError("目录接口只允许读取模型、Skill 与能力配置")
             counter += 1
             process.stdin.write(json.dumps({'id': counter, 'method': method, 'params': params}) + '\n')
@@ -397,6 +404,8 @@ class Catalog:
                                    'capabilities': {'experimentalApi': True}})
             process.stdin.write('{"method":"initialized"}\n')
             process.stdin.flush()
+            if kind == 'linux-permissions':
+                return permission_reader(request, cwd)
             if kind == 'models':
                 phase = time.monotonic();catalog = self.read_models(request, cwd, provider)
                 logger.info('catalog models elapsed=%.3fs source=%s count=%d error=%r',

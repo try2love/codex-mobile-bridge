@@ -17,6 +17,7 @@ from bridge.resources import source_text
 
 from bridge.features.terminals.manager import TerminalManager
 from bridge.features.sessions.side_chat import SideChats
+from bridge.features.sessions import linux_permissions
 from bridge.clients.codex.ipc import DesktopIPC, IPCError
 from bridge.clients.codex.transport import ipc_endpoint
 from bridge.features.sessions.model import apply_patches, computer_use_approval, items_array, normalize_state, normalize_request, ordered_turns, pending_requests, async_requests, request_id, user_display_text
@@ -1186,6 +1187,10 @@ class Bridge:
     def view(self, thread_id, attach=True, background=False, force=False):
         session = self.session(thread_id, attach=attach, background=background, force=force)
         view = session.view()
+        if linux_permissions.enabled(self.host):
+            view["linuxPermissionChecks"] = True
+            with session.condition:
+                view["permissionMode"] = linux_permissions.current_mode(session.state)
         view["host"] = self.host
         view["hostLabel"] = "此电脑" if self.host == "local" else self.hosts.hosts().get(self.host, {}).get("displayName", self.host)
         view["goalTransport"] = self.goal_transport
@@ -1584,6 +1589,25 @@ class Bridge:
                 session.changed()
         return {'id': thread_id, 'host': self.host, 'title': title}
 
+    def _linux_permission_options(self, session):
+        with session.condition:
+            cwd = (session.state or {}).get('cwd') or str(self.codex_home)
+            current = linux_permissions.current_mode(session.state)
+        try:
+            facts = self.catalog_reader.linux_permission_capabilities(cwd, linux_permissions.read_permission_facts)
+        except Exception:
+            facts = {}
+        preferences = linux_permissions.desktop_permission_preferences(self.codex_home)
+        return facts, linux_permissions.permission_options(facts, preferences, current)
+
+    @operation
+    def linux_permission_options(self, thread_id):
+        if not linux_permissions.enabled(self.host):
+            raise ValueError('此主机未启用 Linux 权限检查')
+        self.store.get(thread_id)
+        # Picker inspection must not activate the desktop or change the owner.
+        return self._linux_permission_options(self.session(thread_id, attach=False, background=True))[1]
+
     @operation
     def permissions(self, thread_id, preset, confirmed=False):
         if preset not in ('ask', 'auto-review', 'full-access'):
@@ -1596,12 +1620,18 @@ class Bridge:
             settings = {'approvalPolicy': 'never' if preset == 'full-access' else 'on-request',
                         'approvalsReviewer': 'auto_review' if preset == 'auto-review' else 'user',
                         'permissions': profile, 'activePermissionProfile': {'id': profile, 'extends': None}}
+            if linux_permissions.enabled(self.host):
+                facts, options = self._linux_permission_options(session)
+                linux_permissions.require_permission(options, preset)
+                settings = linux_permissions.permission_settings(preset, facts)
+                settings['activePermissionProfile'] = {'id': settings['permissions'], 'extends': None}
             # Desktop owner validates feature/policy support. Never silently fall back.
             result = self._call(session, 'thread-follower-update-thread-settings', {'threadSettings': settings})
             if not result.get('applied'):
                 raise IPCError('桌面未应用权限设置，请刷新后重试')
         with session.condition:
-            confirmed = session.condition.wait_for(lambda: session.view().get('permissionMode') == preset, timeout=5)
+            confirmed = session.condition.wait_for(lambda: (linux_permissions.current_mode(session.state)
+                if linux_permissions.enabled(self.host) else session.view().get('permissionMode')) == preset, timeout=5)
         return {'applied': True, 'confirmed': confirmed, 'permissionMode': preset}
 
     @operation

@@ -6,6 +6,18 @@ from bridge.clients.codex.ipc import IPCError
 
 
 class PermissionsTests(support.IntegrationTests):
+    def setUp(self):
+        super().setUp()
+        # Synthetic runtime capabilities; never probe the machine running tests.
+        from test_linux_permissions import permission_response
+        from bridge.features.sessions.linux_permissions import read_permission_facts
+        caps = patch.object(self.bridge.catalog_reader, 'linux_permission_capabilities',
+                            return_value=read_permission_facts(permission_response, '/workspace'))
+        caps.start(); self.addCleanup(caps.stop)
+        prefs = patch('bridge.features.sessions.linux_permissions.desktop_permission_preferences',
+                      return_value={'fullAccess': True, 'autoReview': True})
+        prefs.start(); self.addCleanup(prefs.stop)
+
     # Reuse setup only, not the inherited integration tests.
     def test_permission_presets_use_original_owner(self):
         session = self.bridge.session(support.THREAD)

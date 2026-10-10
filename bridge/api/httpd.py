@@ -566,6 +566,7 @@ class Handler(BaseHTTPRequestHandler):
                 action = body.get('action') if write else 'read'
                 fields = {'create': {'action', 'creationId'}, 'send': {'action', 'id', 'text', 'submissionId', 'attachments', 'skills', 'mode', 'workMode'},
                           'catalog': {'action', 'id'}, 'skills': {'action', 'id', 'query', 'offset', 'refresh', 'selected'},
+                          'linux-permission-options': {'action', 'id'},
                           'permissions': {'action', 'id', 'preset', 'confirmed'}, 'cancel-queued': {'action', 'id', 'submissionId'}, 'settings': {'action', 'id', 'model', 'effort'},
                           'close': {'action', 'id'}, 'stop': {'action', 'id'},
                           'respond': {'action', 'id', 'requestId', 'response'}, 'read': set()}
@@ -687,6 +688,8 @@ class Handler(BaseHTTPRequestHandler):
                 body = self.read_json() if write else {}
                 return self.output(200, self.server.notifications.policy(thread_id, bridge.host, body if write else None))
             if not write:
+                if action == 'permissions':
+                    return self.output(200, bridge.linux_permission_options(thread_id))
                 if action == 'timeline':
                     return self.output(200, bridge.timeline_read(thread_id, limit=int(query.get('limit', ['20'])[0]), before=query.get('before', [None])[0]))
                 if action == 'detail':

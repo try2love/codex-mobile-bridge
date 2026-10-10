@@ -32,6 +32,15 @@ installations can set the runtime path explicitly in Advanced settings or with
 Linux uses `xdg-open` for desktop links and `ip -j -4 address show up` for IPv4
 enumeration; the existing hostname fallback remains available if `ip` fails.
 
+For local Linux Codex chats, the permission picker checks the installed runtime's
+profiles, workspace policy and desktop preferences when opened and again before
+applying a change. Unavailable modes stay disabled with an explanation. A runtime
+supporting guardian approval does not by itself confirm that the desktop has
+enabled that option. Side-chat permission changes wait for a settings notification
+from the matching child thread; an empty RPC acknowledgement is not treated as a
+successful change. These compatibility checks do not change SSH or macOS/Windows
+permission handling.
+
 Preview 3 discovery resolves symlinked shell launchers to an executable sibling
 GUI, including the Ubuntu `codex-launcher` / `ChatGPT` layout. It never executes
 launch scripts during discovery, and ignores non-executable files and standalone

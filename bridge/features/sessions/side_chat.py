@@ -528,6 +528,11 @@ class SideChats:
     def __init__(self, executable, home, directory, host, factory=SideChat, *, executable_getter=None):
         self.executable, self.home, self.directory, self.host = executable, home, directory, host
         self.executable_getter = executable_getter
+        if factory is SideChat:
+            from bridge.features.sessions.linux_permissions import enabled
+            if enabled(host):
+                from bridge.features.sessions.linux_side_chat import LinuxSideChat
+                factory = LinuxSideChat
         self.factory = factory
         self.lock = threading.RLock()
         self.chats = {}
@@ -574,6 +579,11 @@ class SideChats:
                 return {'closed': True}
         if action == 'skills':
             return catalog_reader.get_kind('skills', chat.state['cwd'], query=body.get('query', ''), offset=body.get('offset', 0), limit=200, refresh=body.get('refresh') is True, ids=body.get('selected', []))
+        if action == 'linux-permission-options':
+            from bridge.features.sessions.linux_permissions import enabled
+            if not enabled(self.host):
+                raise ValueError('此主机未启用 Linux 权限检查')
+            return chat.permission_options()
         if action == 'permissions':
             return chat.permissions(body.get('preset'), body.get('confirmed'))
         if action == 'cancel-queued':

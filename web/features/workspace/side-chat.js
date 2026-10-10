@@ -112,6 +112,12 @@ class SideChatPanel {
   permissions(){
     const child=this.state.id,n=(...a)=>this.workbench.node(...a),dialog=this.dialog('会话权限'),error=n('p','error');
     dialog.append(n('p','muted',BridgeI18n.t('仅影响此侧边聊天，从下一轮生效。')));
+    if(this.state.linuxPermissionChecks===true){
+      permissionPicker(dialog,{load:()=>this.request({action:'linux-permission-options',id:child}),
+        save:async preset=>({confirmed:true,state:await this.request({action:'permissions',id:child,preset,confirmed:preset==='full-access'})}),
+        isCurrent:()=>!this.disposed&&this.state?.id===child&&this.state.connected===true,onSaved:result=>this.apply(result.state)});
+      return;
+    }
     for(const [preset,label,help] of [['ask','请求批准','需要额外权限时询问你。'],['auto-review','帮我批准','由 Codex 审核需要额外权限的操作。'],['full-access','完全访问权限','允许访问工作区外的文件和网络，无需逐次批准。']]){
       const button=this.workbench.button('',async()=>{
         if(preset==='full-access'&&!confirm(BridgeI18n.t('允许此会话完全访问电脑文件和网络？请仅在信任任务内容时开启。')))return;

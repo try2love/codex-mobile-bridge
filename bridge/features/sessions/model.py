@@ -149,7 +149,7 @@ def normalize_item(item):
     return row
 
 
-def permission_mode(state):
+def permission_mode(state, *, legacy_reviewer=False):
     turns = ordered_turns(state)
     latest = state.get('latestThreadSettings') or {}
     params = (turns[-1].get('params') or {}) if turns else {}
@@ -162,7 +162,8 @@ def permission_mode(state):
         return 'full-access' if values.get('approvalPolicy') == 'never' else 'custom'
     if profile_id == ':workspace' or (not profile_id and policy.get('type') == 'workspaceWrite'):
         if values.get('approvalPolicy') == 'on-request':
-            return 'auto-review' if values.get('approvalsReviewer') == 'auto_review' else 'ask'
+            reviewer = values.get('approvalsReviewer')
+            return 'auto-review' if reviewer == 'auto_review' or (legacy_reviewer and reviewer == 'guardian_subagent') else 'ask'
     return 'custom'
 
 

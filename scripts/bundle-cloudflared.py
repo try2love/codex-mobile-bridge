@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Fetch exactly one locked upstream binary at build time, never at app startup."""
 import hashlib
+import base64
 import io
 import json
 import platform
@@ -11,6 +12,26 @@ from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def license_data(version, name):
+    url = f'https://raw.githubusercontent.com/cloudflare/cloudflared/{version}/{name}'
+    try:
+        with urlopen(url, timeout=30) as response:
+            return response.read(2*1024*1024)
+    except HTTPError:
+        raise
+    except OSError:
+        # Some Linux build networks reach GitHub but time out on its raw host.
+        # Keep the same repository/tag and certificate validation on fallback.
+        if sys.platform != 'linux':
+            raise
+        url = f'https://api.github.com/repos/cloudflare/cloudflared/contents/{name}?ref={version}'
+        with urlopen(Request(url, headers={'User-Agent': 'Codex-Mobile-Bridge-build'}), timeout=30) as response:
+            item = json.loads(response.read(3*1024*1024))
+        if item.get('name') != name or item.get('encoding') != 'base64':
+            raise ValueError('Unexpected cloudflared license response')
+        return base64.b64decode(item['content'].replace('\n', ''), validate=True)
 
 
 def bundle():
@@ -43,10 +64,8 @@ def bundle():
     for name in ('LICENSE', 'NOTICE'):
         cached = cache/(lock['version']+'-'+name)
         if not cached.exists():
-            url = f'https://raw.githubusercontent.com/cloudflare/cloudflared/{lock["version"]}/{name}'
             try:
-                with urlopen(url, timeout=30) as response:
-                    cached.write_bytes(response.read(2*1024*1024))
+                cached.write_bytes(license_data(lock['version'], name))
             except HTTPError as exc:
                 if name == 'NOTICE' and exc.code == 404:
                     continue
