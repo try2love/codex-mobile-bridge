@@ -226,7 +226,7 @@ class ConcurrentRuntimeTests(unittest.TestCase):
             config = data/'config.json'
             config.write_text(json.dumps({'auth': {'mode': 'none'}, 'origins': []}), encoding='utf-8')
             rows = [
-                {**access.DEFAULTS, 'id': 'a', 'enabled': True, 'accessMode': 'server', 'sshTarget': 'server-a', 'publicUrl': 'https://a.example.com'},
+                {**access.DEFAULTS, 'id': 'a', 'enabled': True, 'accessMode': 'server', 'sshTarget': '93.184.216.34', 'publicUrl': ''},
                 {**access.DEFAULTS, 'id': 'b', 'enabled': True, 'accessMode': 'server', 'sshTarget': 'server-b', 'publicUrl': 'https://b.example.com'},
                 {**access.DEFAULTS, 'id': 'quick', 'enabled': True, 'accessMode': 'quick'},
                 {**access.DEFAULTS, 'id': 'off', 'enabled': False, 'accessMode': 'server'}]
@@ -259,7 +259,8 @@ class ConcurrentRuntimeTests(unittest.TestCase):
                 tunnel.start.assert_called_once()
                 tunnel.close.assert_called_once()
             self.assertTrue(closed.is_set())
-            self.assertIn('https://a.example.com', make_server.call_args.args[2]['origins'])
+            self.assertIn('https://93.184.216.34', make_server.call_args.args[2]['origins'])
+            self.assertEqual(make_server.call_args.args[2]['publicUrl'], 'https://93.184.216.34')
             self.assertIn('https://b.example.com', make_server.call_args.args[2]['origins'])
             self.assertFalse((data/'gateway.pid').exists())
 

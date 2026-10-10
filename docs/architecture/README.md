@@ -16,7 +16,7 @@
 | 文件、图片、上传下载、Git | `bridge/features/workspace/` | `web/features/workspace/`、`web/shared/image-viewer.js` |
 | 终端会话与命令 | `bridge/features/terminals/manager.py` | `bridge/platforms/windows/terminal.py`、`posix/terminal.py` |
 | 通知、后台巡检、事件游标 | `bridge/features/notifications/` | `desktop/features/notifications/`，`mobile/android/`、`mobile/ios/` |
-| 局域网、域名、SSH、中继连接 | `bridge/features/network/` | `desktop/features/connections/`，独立服务 `relay/` |
+| 局域网、域名、SSH、Tailscale、中继连接 | `bridge/features/network/` | `desktop/features/connections/`，独立服务 `relay/` |
 | 网关更新或 Codex 更新 | `bridge/features/updates/` | `desktop/features/updates/`、签名与构建脚本 |
 | 共享聊天功能、应用切换 | `web/features/chat/`、`web/features/clients/` | `web/shell/` |
 | 窄屏、横屏、宽屏分屏 | `web/layouts/` | 工作台自身标签/草稿状态仍归 `web/features/workspace/` |

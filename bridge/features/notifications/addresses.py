@@ -43,7 +43,7 @@ def entry_urls(preferences, hosts, quick_url='', external_status=None):
         if not entry['enabled']:
             continue
         mode = entry['accessMode']
-        if mode == 'nas' or (mode in ('server', 'cloudflare') and
+        if mode == 'nas' or (mode in ('server', 'cloudflare', 'tailscale') and
                 (external_status or {}).get(entry['id'], {}).get('state') == 'connected'):
             urls.append(entry['publicUrl'].rstrip('/'))
     if quick_url:

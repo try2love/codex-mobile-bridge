@@ -76,7 +76,7 @@ async function renderer(initialLanguage='zh-CN',{autoStart=false}={}){
   const fs=require('node:fs'),vm=require('node:vm');
   const nodes=new Map();
   function node(){return {parentNode:{insertBefore(){}},getAnimations(){return [];},animate(){},closest(){return null;},value:'',checked:false,hidden:false,textContent:'',dataset:{},
-    classList:{toggle(){}},click(){return this.onclick?.();},append(){},replaceChildren(){},setAttribute(){},removeAttribute(){},querySelectorAll(){return [];}};}
+    classList:{toggle(){}},click(){return this.onclick?.();},append(...items){this.children=(this.children||[]).concat(items);},replaceChildren(...items){this.children=items;},setAttribute(){},removeAttribute(){},querySelectorAll(){return [];}};}
   const html=fs.readFileSync(path.join(__dirname,'../desktop/index.html'),'utf8');
   for(const match of html.matchAll(/\bid="([^"]+)"/g))nodes.set(match[1],node());
   for(const id of ['clients-start','clients-stop'])nodes.set(id,node());
@@ -96,12 +96,33 @@ async function renderer(initialLanguage='zh-CN',{autoStart=false}={}){
   return {nodes,value,context,api,calls,run:code=>vm.runInContext(code,context),poll:()=>poll(),advance:ms=>{now+=ms;},start:()=>nodes.get('start').onclick()};
 }
 
-test('an incomplete optional relay URL does not block or enter ordinary network settings saves',async()=>{
-  const ui=await renderer(),relay={id:'relay-url',value:'https://',disabled:false,validity:{valid:false},closest:selector=>selector==='#shared-relay'?{}:null};
-  ui.nodes.get('settings').querySelectorAll=()=>[relay];let submitted;
-  ui.api.save=async payload=>{submitted=payload;return structuredClone(ui.value);};
-  await ui.nodes.get('settings').onsubmit({preventDefault(){}});
-  assert.ok(submitted);assert.deepEqual(JSON.parse(JSON.stringify(submitted.preferences.connections)),[]);assert.doesNotMatch(JSON.stringify(submitted),/relay-url|"https:\/\/"/);assert.equal(relay.value,'https://');
+test('Tailscale detection fills a read-only URL and preserves its unsaved identity across polls',async()=>{
+  const ui=await renderer('en');
+  ui.run(`connectionDraft=[{id:'ts',name:'',enabled:true,accessMode:'tailscale',publicUrl:'',tailscaleMode:'funnel',tailscalePort:443,tailscaleNodeId:''}];savedConnections=JSON.stringify(connectionDraft);renderConnections();updateDirty();`);
+  const descendants=node=>[node,...(node.children||[]).flatMap(descendants)];
+  let controls=descendants(ui.nodes.get('connections'));
+  const url=controls.find(node=>node.dataset.connectionField==='publicUrl');
+  assert.equal(url.readOnly,true);assert.equal(url.onfocus,null);
+  let requests=0;
+  ui.api.tailscaleSetup=async payload=>{requests++;assert.equal(payload.id,'ts');return {state:'ready',url:'https://mac.example.ts.net',nodeId:'n123',message:'已读取 Tailscale 固定地址。保存配置后启动网关，再检测固定入口。'};};
+  await controls.find(node=>node.dataset.connectionAction==='tailscaleInspect').click();
+  assert.equal(requests,1);assert.equal(ui.run('dirty'),true);
+  assert.equal(ui.run('connectionDraft[0].tailscaleNodeId'),'n123');
+  await ui.poll();
+  assert.equal(ui.run('connectionDraft[0].publicUrl'),'https://mac.example.ts.net');
+  controls=descendants(ui.nodes.get('connections'));
+  assert.equal(controls.find(node=>node.dataset.connectionAction==='tailscaleInspect').textContent,'Detect Tailscale and read URL');
+});
+
+test('changing the Tailscale HTTPS port invalidates the previously detected URL',async()=>{
+  const ui=await renderer();
+  ui.run(`connectionDraft=[{id:'ts',enabled:true,accessMode:'tailscale',publicUrl:'https://mac.example.ts.net',tailscaleMode:'funnel',tailscalePort:443,tailscaleNodeId:'n123'}];renderConnections();`);
+  const descendants=node=>[node,...(node.children||[]).flatMap(descendants)];
+  const port=descendants(ui.nodes.get('connections')).find(node=>node.dataset.connectionField==='tailscalePort');
+  port.value='8443';port.onchange();
+  assert.equal(ui.run('connectionDraft[0].tailscalePort'),8443);
+  assert.equal(ui.run('connectionDraft[0].publicUrl'),'');
+  assert.equal(ui.run('connectionDraft[0].tailscaleNodeId'),'');
 });
 
 test('opening the control panel and starting the gateway need no Documents permission API',async()=>{
@@ -612,4 +633,22 @@ test('English toast translates account failures and dynamic operation feedback',
  for(const message of ['请先保存连接配置。', '账号不存在，请刷新列表', '部分通道发送失败：ntfy；请在手机确认其他通道是否收到。']){
   ui.context.feedback(message,true);assert.doesNotMatch(ui.nodes.get('toast-message').textContent,/[\u4e00-\u9fff]/);
  }
+});
+
+test('SSH phone URL can stay blank and explains domain DNS and trusted IP HTTPS in both languages',async()=>{
+  const descendants=node=>[node,...(node.children||[]).flatMap(descendants)];
+  for(const language of ['zh-CN','en']){
+    const ui=await renderer(language);
+    ui.run(`connectionDraft=[{id:'server',name:'',enabled:true,accessMode:'server',publicUrl:'',sshAuth:'password',sshHost:'93.184.216.34',sshUser:'example',sshPort:22,sshRemotePort:18787}];renderConnections();`);
+    const controls=descendants(ui.nodes.get('connections'));
+    const url=controls.find(node=>node.dataset.connectionField==='publicUrl');
+    assert.equal(url.value,'');assert.equal(url.onfocus,null);assert.notEqual(url.required,true);
+    const text=controls.map(node=>node.textContent).join('\n');
+    if(language==='en'){
+      assert.match(text,/Phone access URL \(optional\)/);assert.match(text,/DNS record.*public IP/);
+      assert.match(text,/trusted HTTPS certificate matching that IP/);assert.doesNotMatch(text,/[\u4e00-\u9fff]/);
+    }else{
+      assert.match(text,/手机访问地址（可选）/);assert.match(text,/域名解析到服务器公网 IP/);assert.match(text,/匹配该 IP 的受信任 HTTPS 证书/);
+    }
+  }
 });

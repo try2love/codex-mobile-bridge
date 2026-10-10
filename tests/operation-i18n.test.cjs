@@ -9,12 +9,6 @@ test('English operation failures and dynamic channel feedback are translated',()
  assert.equal(i18n.t('用户的中文聊天标题'),'用户的中文聊天标题');
  i18n.setLanguage('zh');assert.equal(i18n.t('账号身份已变化'),'账号身份已变化');
 });
-test('self-hosted relay preview loads before the network module is compacted',()=>{
- const fs=require('node:fs'),path=require('node:path');const html=fs.readFileSync(path.join(__dirname,'../desktop/index.html'),'utf8');
- assert.match(html,/<script src="features\/connections\/shared-relay\.js"><\/script>/);
- assert.ok(html.indexOf('features/connections/shared-relay.js')<html.indexOf('shell/layout.js'));
-});
-
 test('macOS quit receipts translate without dropping diagnostic codes',()=>{
  const messages=['客户端进程已变化，请重新检查后再关闭（quit: changed）','macOS 退出请求结果未知，请检查客户端状态；尚未强制结束进程（quit: timeout）','无法发送 macOS 退出请求，请检查系统运行环境（quit: unavailable）','macOS 退出请求失败，请检查客户端状态（quit: native-error; code: -1）','客户端未接受退出请求，请检查客户端提示；尚未强制结束进程（quit: rejected）','无法核验 macOS 退出请求结果，请检查客户端状态（quit: invalid-response）'];
  i18n.setLanguage('en');for(const source of messages){assert.doesNotMatch(i18n.t(source),/[\u4e00-\u9fff]/);assert.match(i18n.t(source),/quit: /);assert.equal(desktop.translate(source,'en'),i18n.t(source));}i18n.setLanguage('zh');

@@ -127,6 +127,9 @@ def main(connections=None, connection_secrets=None):
     preferences = {'connections': config.get('connections', []) if connections is None else connections,
                    'lan': args.lan, 'port': args.port, 'lanAddresses': network.selected_addresses(config.get('lanAddresses'))}
     entries = validate_connections(preferences)
+    preferences['connections'] = entries
+    if config['auth']['mode'] == 'none' and any(c['enabled'] and c['accessMode'] == 'tailscale' and c['tailscaleMode'] == 'funnel' for c in entries):
+        parser.error('Funnel 公网入口需要启用网关登录验证；手机仍可扫码配对。')
     args.tunnel = args.tunnel or any(c['enabled'] and c['accessMode'] == 'quick' for c in entries)
     if entries:
         config['publicUrl'] = public_url(preferences)
@@ -141,10 +144,17 @@ def main(connections=None, connection_secrets=None):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     bridge = Bridge(args.codex_home, args.config.parent, ipc_path=args.ipc_path, codex_bin=args.codex_bin)
     servers = []
+    tailscale_port = None
     try:
         for address in network.bindings(preferences):
             servers.append(GatewayServer((address, args.port), bridge, config, ROOT / 'web', args.config.parent,
                                          **({'shared': servers[0]} if servers else {})))
+        if any(c['enabled'] and c['accessMode'] == 'tailscale' for c in entries):
+            # A pre-existing loopback SSH forward can shadow a LAN/wildcard
+            # listener on args.port. Give Tailscale an unambiguous local owner.
+            private = GatewayServer(('127.0.0.1', 0), bridge, config, ROOT / 'web', args.config.parent, shared=servers[0])
+            servers.append(private)
+            tailscale_port = private.server_address[1]
     except OSError:
         if servers:
             servers[0].harness.close()
@@ -161,7 +171,6 @@ def main(connections=None, connection_secrets=None):
     tunnel = None
     tunnel_thread = None
     ssh_tunnels = []
-    shared_relay = None
     def notification_urls():
         if not gateway_ready(args.port, server.instance_id):
             return []
@@ -206,6 +215,11 @@ def main(connections=None, connection_secrets=None):
             ssh_tunnels.append(ssh_tunnel)
             ssh_tunnel.start()
         for entry in entries:
+            if entry['enabled'] and entry['accessMode'] == 'tailscale':
+                from bridge.features.network.tailscale import TailscaleTunnel
+                tailscale = TailscaleTunnel(entry, tailscale_port, args.config.parent)
+                ssh_tunnels.append(tailscale)
+                tailscale.start()
             if entry['enabled'] and entry['accessMode'] == 'cloudflare':
                 from bridge.features.network.named_tunnel import NamedTunnel
                 from bridge.features.network.server_connection import credentials
@@ -240,12 +254,10 @@ def main(connections=None, connection_secrets=None):
                     print(str(exc), flush=True)
             tunnel_thread = threading.Thread(target=connect_tunnel, daemon=True)
             tunnel_thread.start()
-        from bridge.features.network.shared_relay import start as start_shared_relay
         from bridge.features.network.discovery import ConnectionDiscovery
         discovery = ConnectionDiscovery(args.config.parent, server)
         for listener in servers:
             listener.connection_discovery = discovery
-        shared_relay = start_shared_relay(args.config.parent, server)
         notifications.start()
         address_notifications.start()
         bridge.accounts.monitor.start()
@@ -262,8 +274,6 @@ def main(connections=None, connection_secrets=None):
         for listener, thread in listener_threads:
             listener.shutdown()
             thread.join()
-        if shared_relay:
-            shared_relay.close()
         server.harness.close()
         server.desktop_sessions.close()
         address_notifications.close()

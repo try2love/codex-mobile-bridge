@@ -91,10 +91,6 @@ class Desktop:
             credentials.chmod(0o600)
         return read_json(self.config_path, {})
 
-    def shared_relay(self, value):
-        from bridge.features.network.shared_relay import Controller
-        return Controller(self.data_dir).control(value)
-
     def preferences(self):
         name = 'cloudflared.exe' if os.name == 'nt' else 'cloudflared'
         executable = self.data_dir/'bin'/name
@@ -216,6 +212,8 @@ class Desktop:
         auth = value['auth']
         if auth.get('mode') not in ('password', 'none') or not isinstance(auth.get('username'), str) or not auth['username'].strip() or len(auth['username']) > 200:
             raise FieldError('请填写有效的登录账号和登录方式', 'username')
+        if auth['mode'] == 'none' and any(c['enabled'] and c['accessMode'] == 'tailscale' and c['tailscaleMode'] == 'funnel' for c in preferences['connections']):
+            raise FieldError('Funnel 公网入口需要启用网关登录验证；手机仍可扫码配对。', 'auth-mode')
         password = auth.get('password', '')
         hours = at_field('session-hours', session_hours, auth.get('sessionHours', config['auth'].get('sessionHours', 12)))
         if not isinstance(password, str) or (password and not 12 <= len(password) <= 1000):
@@ -284,6 +282,9 @@ class Desktop:
         for entry in preferences['connections']:
             if not entry['enabled']:
                 continue
+            if entry['accessMode'] == 'tailscale':
+                from bridge.features.network.tailscale import require_identity
+                require_identity(entry)
             if entry['accessMode'] == 'cloudflare' or (entry['accessMode'] == 'server' and entry.get('sshAuth', 'config') != 'config'):
                 secret = credentials(entry, self.data_dir, temporary.get(entry['id']))
                 if entry['accessMode'] == 'cloudflare' and not secret.get('tunnelToken'):
@@ -472,9 +473,17 @@ class Desktop:
         raise ValueError('App 仅支持 SSH 连接检查；服务器安装与权限配置请手动完成。')
 
     def check_entry(self, value):
-        if not self.status()['running']:
+        status = self.status()
+        if not status['running']:
             raise ValueError('请先启动网关，再检测固定入口')
-        return access.check_entry(access.select_connection(self.preferences(), value))
+        return access.check_entry(access.select_connection(self.preferences(), value), instance_id=status.get('instanceId'))
+
+    def tailscale_setup(self, value):
+        from bridge.features.network.tailscale import inspect
+        entry = access.select_connection(self.preferences(), value, allow_disabled=True)
+        if entry['accessMode'] != 'tailscale':
+            raise ValueError('请选择 Tailscale 连接。')
+        return inspect(entry)
 
     def pairing(self, value):
         if value.get('action') == 'create':

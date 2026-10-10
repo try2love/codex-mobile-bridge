@@ -2,10 +2,10 @@
 const connectionSecretDraft=new Map();
 const connectionSetupState=new Map();
 const connectionExpanded=new Map();
-function connectionLabel(mode){return t({quick:'临时 HTTPS · Cloudflare',cloudflare:'固定域名 · Cloudflare Tunnel',server:'固定域名 · 自有服务器 + SSH',nas:'固定域名 · NAS / 已有反代 / Docker'}[mode]);}
+function connectionLabel(mode){return t({quick:'临时 HTTPS · Cloudflare',cloudflare:'固定域名 · Cloudflare Tunnel',server:'固定域名 · 自有服务器 + SSH',nas:'固定域名 · NAS / 已有反代 / Docker',tailscale:'固定 HTTPS · Tailscale'}[mode]);}
 function setupGuide(link,mode){
   link.className='setup-guide';link.textContent=t('在线指引');
-  link.href='https://try2love.github.io/codex-mobile-bridge/setup.html?lang='+(BridgeI18n.language()==='en'?'en':'zh')+'#'+mode;
+  link.href=mode==='tailscale'?'https://tailscale.com/docs/how-to/quickstart':'https://try2love.github.io/codex-mobile-bridge/setup.html?lang='+(BridgeI18n.language()==='en'?'en':'zh')+'#'+mode;
   link.onclick=event=>{event.preventDefault();api.open('setup-'+mode).catch(e=>feedback(e.message,true));};
 }
 async function saveConnectionCredentials(id){
@@ -77,8 +77,43 @@ function renderConnections(){
       note(snapshot?.cloudflared?.available?'已准备好 Cloudflare 程序。保存配置后启动网关，即可获取临时 HTTPS 地址。':'当前源码环境尚未准备 Cloudflare 程序，请在运行配置中安装。');
       const status=note(quickTunnelMessage());status.dataset.quickStatus='true';
       note('无需账号或域名；地址会随隧道重建变化。可在手机通知中配置入口通知。');
+    }else if(row.accessMode==='tailscale'){
+      note('无需自建服务器。先登录官方 Tailscale 客户端，检测并保存固定地址，再启动网关。');
+      for(const [key,label,values] of [
+        ['tailscaleMode','访问范围',[['funnel','公网访问 · Funnel'],['serve','私有组网 · Serve']]],
+        ['tailscalePort','HTTPS 端口',[[443,'443（默认）'],[8443,'8443'],[10000,'10000']]]
+      ]){
+        const wrap=document.createElement('label'),text=document.createElement('span'),select=document.createElement('select');text.textContent=t(label);select.dataset.connectionField=key;
+        for(const [value,label] of values){const option=document.createElement('option');option.value=value;option.textContent=t(label);select.append(option);}
+        select.value=row[key]??(key==='tailscaleMode'?'funnel':443);select.disabled=!!snapshot?.runtime.running;
+        select.onchange=()=>{row[key]=key==='tailscalePort'?Number(select.value):select.value;if(key==='tailscalePort'){row.publicUrl='';row.tailscaleNodeId='';}connectionSetupState.delete(row.id);renderConnections();updateDirty();};
+        wrap.append(text,select);card.append(wrap);
+      }
+      note(row.tailscaleMode==='serve'?'只有已接入同一 Tailscale 网络的手机或浏览器可以访问。':'手机和普通浏览器无需安装 Tailscale；需开启网关登录验证。首次使用可能需要授权 HTTPS 和 Funnel。');
+      const address=field('publicUrl','固定访问地址','text','检测后自动读取');address.readOnly=true;address.onfocus=null;address.onblur=null;
+      note('保留 Tailscale 设备与名称时，重启后地址不变。国内访问速度取决于实际线路，请用蜂窝网络验证。');
+      if(row.tailscaleMode!=='serve')note('首次启用后，公网 DNS 生效可能需要最多 10 分钟。');
+      const actions=document.createElement('div');actions.className='actions';
+      const help=document.createElement('button');help.type='button';help.textContent=t('安装与登录指引');help.onclick=()=>api.open('tailscale-help').catch(showError);actions.append(help);
+      actions.append(action('检测 Tailscale 并读取地址','tailscaleInspect',async()=>{
+        const result=await api.tailscaleSetup({id:row.id});connectionSetupState.set(row.id,result.message);
+        if(result.state==='ready'){
+          if(snapshot?.runtime.running&&(row.publicUrl!==result.url||row.tailscaleNodeId!==result.nodeId))throw Error(t('请先停止网关，再更新 Tailscale 固定地址。'));
+          row.publicUrl=result.url;row.tailscaleNodeId=result.nodeId;
+        }
+        return result;
+      }));
+      actions.append(action('继续 Tailscale 授权','tailscaleAuthorize',()=>api.tailscaleAuthorize({id:row.id})));
+      actions.append(action('检测固定入口','checkEntry',()=>api.checkEntry({id:row.id})));card.append(actions);
+      const status=note([connectionSetupState.get(row.id),snapshot?.externalStatus?.[row.id]?.message].filter(Boolean).map(t).join(' ')||'先保存连接配置，然后检测 Tailscale。');status.dataset.connectionStatus=row.id;
+      note('入口随网关启停；退出网关不会退出 Tailscale 或修改其他服务。');
     }else{
-      field('publicUrl','手机访问地址','text','https://codex.try2love.com');
+      const publicAddress=field('publicUrl',row.accessMode==='server'?'手机访问地址（可选）':'手机访问地址','text',row.accessMode==='server'?'留空使用服务器公网 IP':'https://codex.try2love.com');
+      if(row.accessMode==='server'){
+        publicAddress.onfocus=null;
+        note('使用域名时，需要自行将域名解析到服务器公网 IP，并配置 HTTPS 证书和反向代理；填写完整地址，例如 https://bridge.example.com。');
+        note('留空时，保存后自动填入 https://服务器公网IP；SSH 服务器地址或别名的 HostName 必须是公网 IP。服务器仍需配置匹配该 IP 的受信任 HTTPS 证书及反向代理，仅有 SSH 不能直接访问。');
+      }
       note('示例用户名 try2love 和域名 try2love.com 仅用于配置演示，请替换为自己的配置；示例地址不是在线演示站点。');
       if(row.accessMode==='cloudflare'){
         note('没有服务器也可以使用私人域名。先在 Cloudflare 创建固定隧道并配置公开主机名，再填写该隧道的 Token。');
@@ -113,7 +148,7 @@ function renderConnections(){
         const guide=document.createElement('details'),guideTitle=document.createElement('summary');guide.className='guide-more';guide.open=true;guideTitle.textContent=t('1. 手动准备服务器（首次配置）');guide.append(guideTitle);
         note('安装服务、修改防火墙和 SSH 权限等管理员操作，请由你或服务器管理员在终端手动完成。App 不接收 sudo 密码，也不执行服务器安装命令。',guide);
         const steps=document.createElement('ol');steps.className='setup-steps';
-        for(const text of ['将自己的域名解析到服务器公网 IP；配置 HTTPS 入口所需的 DNS、防火墙和安全组。','准备普通 SSH 用户，允许远程端口转发；保持 GatewayPorts no，回环端口不要向公网开放。','手动安装并配置 HTTPS 反向代理，或接入已有站点。上游使用下方地址并保留访问域名的 Host；已有网站不要覆盖。']){const li=document.createElement('li');li.textContent=t(text);steps.append(li);}guide.append(steps);
+        for(const text of ['使用域名时先解析到服务器公网 IP；直接使用 IP 时准备受信任的 IP 证书。两种方式都需配置 HTTPS 反向代理、防火墙和安全组。','准备普通 SSH 用户，允许远程端口转发；保持 GatewayPorts no，回环端口不要向公网开放。','手动安装并配置 HTTPS 反向代理，或接入已有站点。上游使用下方地址并保留访问域名的 Host；已有网站不要覆盖。']){const li=document.createElement('li');li.textContent=t(text);steps.append(li);}guide.append(steps);
         note('服务器 HTTPS 反向代理上游（仅服务器内部访问）：',guide);
         const upstream=document.createElement('p');upstream.className='mono';upstream.textContent='http://127.0.0.1:'+row.sshRemotePort;guide.append(upstream);
         const links=document.createElement('div');links.className='actions';guide.append(links);
@@ -149,7 +184,7 @@ function renderConnections(){
 }
 function addConnection(){
   if(snapshot?.runtime.running)return;
-  connectionDraft.push({id:crypto.randomUUID(),name:'',enabled:true,accessMode:$('connection-kind').value,publicUrl:'',sshTarget:'',sshRemotePort:18787,proxyUpstream:'',sshAuth:'password',sshHost:'',sshUser:'',sshPort:22,sshKeyPath:''});
+  connectionDraft.push({id:crypto.randomUUID(),name:'',enabled:true,accessMode:$('connection-kind').value,publicUrl:'',sshTarget:'',sshRemotePort:18787,proxyUpstream:'',sshAuth:'password',sshHost:'',sshUser:'',sshPort:22,sshKeyPath:'',tailscaleMode:'funnel',tailscalePort:443,tailscaleNodeId:''});
   connectionExpanded.set(connectionDraft[connectionDraft.length-1].id,true);
   renderConnections();updateDirty();
 }

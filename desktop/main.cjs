@@ -47,7 +47,7 @@ function worker(action,payload){
   if(action==='snapshot'&&updateQuitting)return Promise.resolve({...lastSnapshot,update:updater.status()});
   if(setupPending&&['save','start','stop'].includes(action))return Promise.reject(Error('请等待服务器操作完成。'));
   if(action==='start')payload={...payload,connectionSecrets};
-  const writes=(['harness','desktop-sessions'].includes(action)&&!['status','clients','detect'].includes(payload?.action))||['shared-relay','server-setup','connection-credentials','save','start','stop','devices','notification-watches', 'transfer-settings'].includes(action);
+  const writes=(['harness','desktop-sessions'].includes(action)&&!['status','clients','detect'].includes(payload?.action))||['server-setup','connection-credentials','save','start','stop','devices','notification-watches', 'transfer-settings'].includes(action);
   if(writes&&updater?.busy)return Promise.reject(Error('正在更新应用，请稍候。'));
   if(writes)workerWrites++;
   if(action==='snapshot'&&snapshotPending)return snapshotPending;
@@ -118,7 +118,7 @@ function register(){
     fs.writeFileSync(path.join(directory,'language.json'),JSON.stringify({language:value}));
     language=value;const title=t('Codex 手机网关');if(window.getTitle()!==title)window.setTitle(title);tray?.relabel();return language;
   });
-  for(const action of ['snapshot','save','start','stop','logs','test-notification','check-entry','devices','account', 'accounts', 'harness', 'desktop-sessions','notification-watches', 'transfer-settings'])ipcMain.handle('bridge:'+action,async(event,payload)=>{
+  for(const action of ['snapshot','save','start','stop','logs','test-notification','check-entry','tailscale-setup','devices','account', 'accounts', 'harness', 'desktop-sessions','notification-watches', 'transfer-settings'])ipcMain.handle('bridge:'+action,async(event,payload)=>{
     authorize(event);
     if(action==='accounts'){
       if(updater?.busy&&payload?.action!=='list')throw Error('正在更新应用，请稍候。');
@@ -131,6 +131,15 @@ function register(){
     if(action==='desktop-sessions'&&payload?.action==='copy-claude-workspace'){const value=await worker(action,{action:'status'});clipboard.writeText(value.claudeWorkspace);return {copied:true};}
     if(action==='desktop-sessions'&&payload?.action==='prepare-claude'){const value=await worker(action,payload);clipboard.writeText(value.script);delete value.script;return value;}
     try{return await worker(action,payload);}catch(error){if(error.validation)return {validationError:{message:error.message,...error.validation}};throw error;}
+  });
+  ipcMain.handle('bridge:tailscale-authorize',async(event,value)=>{
+    authorize(event);
+    const current=await worker('snapshot');
+    if(!current.preferences.connections.some(c=>c.id===value?.id&&c.accessMode==='tailscale'))throw Error('请选择 Tailscale 连接。');
+    const address=current.externalStatus?.[value.id]?.authUrl||(await worker('tailscale-setup',{id:value.id})).authUrl;
+    let url;try{url=new URL(address);}catch{throw Error('请在 Tailscale 客户端完成登录；启动入口后如需额外授权，会在这里提示。');}
+    if(url.protocol!=='https:'||url.hostname!=='login.tailscale.com'||url.username||url.password||(url.port&&url.port!=='443'))throw Error('Tailscale 授权地址无效，请重新检测。');
+    await shell.openExternal(url.href);return {message:'已打开 Tailscale 授权页面。'};
   });
   ipcMain.handle('bridge:read-credentials',async(event,value={})=>{
     authorize(event);
@@ -186,11 +195,6 @@ function register(){
     if(!executable||!path.isAbsolute(executable))throw Error('未找到 cloudflared，请点击一键安装，或选择已下载的程序。');
     return {path:executable,version:await cloudflared.probe(executable)};
   });
-  ipcMain.handle('bridge:shared-relay',async(event,payload)=>{
-    authorize(event);
-    const value=await worker('shared-relay',payload);
-    return payload?.action==='pair'?{...value,...await pairingImage(value)}:value;
-  });
   ipcMain.handle('bridge:pairing',async(event,payload)=>{
     authorize(event);
     const grant=await worker('pairing',payload);
@@ -239,6 +243,7 @@ function register(){
     if(target==='project-pulls')return shell.openExternal('https://github.com/try2love/codex-mobile-bridge/pulls');
     if(target==='credentials')return shell.openPath(path.join(dataDir,'首次登录.txt'));
     if(target==='data')return shell.openPath(dataDir);
+    if(target==='tailscale-help'||target==='setup-tailscale')return shell.openExternal('https://tailscale.com/docs/how-to/quickstart');
     if(target==='cloudflare-dashboard')return shell.openExternal('https://one.dash.cloudflare.com/');
     if(['setup-lan','setup-quick','setup-cloudflare','setup-server','setup-nas'].includes(target))return shell.openExternal('https://try2love.github.io/codex-mobile-bridge/setup.html?lang='+(language==='en'?'en':'zh')+'#'+target.slice(6));
     if(target==='cloudflare-domain-help')return shell.openExternal('https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel/');
