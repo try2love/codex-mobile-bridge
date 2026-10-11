@@ -144,18 +144,24 @@ class ClaudeDiscovery(unittest.TestCase):
         # Run the actual transformed/injected source; do not just compare JSON text.
         harness = r'''
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+console.error('unicode connector harness started');
 const cwd=process.argv[2],script=fs.readFileSync(process.argv[1],'utf8');
 const request=fs.readFileSync(cwd+'/request.json','utf8');let start;
 const api={readFileAtCwd:async path=>{assert.equal(path,cwd);return {contents:request};},
 writeSessionFile:async()=>{throw Error('must not write before trust');},getAll:async()=>[],
-start:async value=>{start=value;throw Error('WorkspaceTrustError: trust_required');}};
+start:async value=>{console.error('workspace trust checked');start=value;throw Error('WorkspaceTrustError: trust_required');}};
 (async()=>{await assert.rejects(vm.runInNewContext(script,{window:{'claude.web':{LocalSessions:api}},
 TextEncoder,Uint8Array,crypto:require('node:crypto').webcrypto,console,setTimeout,clearTimeout}),error=>{
 assert.ok(error.message.includes(cwd));assert.ok(error.message.includes('尚未信任目录'));return true;});
 assert.equal(start.cwd,cwd);assert.equal(start.message,'');})();
 '''
-        completed = subprocess.run(['node', '-e', harness, prepared['consolePath'], str(adapter.directory)],
-                                   capture_output=True, text=True, encoding='utf-8', timeout=10)
+        # Include cold Node/WebCrypto startup in the process budget; the test
+        # asserts the trust rejection, not a ten-second startup guarantee.
+        try:
+            completed = subprocess.run(['node', '-e', harness, prepared['consolePath'], str(adapter.directory)],
+                                       capture_output=True, text=True, encoding='utf-8', timeout=30)
+        except subprocess.TimeoutExpired as exc:
+            self.fail(f'Unicode connector harness timed out: stdout={exc.stdout!r}, stderr={exc.stderr!r}')
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
     def test_prepare_reads_utf8_connector_under_windows_legacy_locale(self):

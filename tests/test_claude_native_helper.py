@@ -282,7 +282,9 @@ class InlinePeer : ButtonAutomationPeer,IExpandCollapseProvider,IInvokeProvider 
 }
 class QuitFixture {
     [STAThread] static void Main(string[] args) {
+        Console.Error.WriteLine("fixture process started");
         var app=new Application(); var window=new Window {Title="Claude",Width=360,Height=240};
+        window.SourceInitialized+=(sender,eventArgs)=>Console.Error.WriteLine("fixture window initialized");
         Action quit=null;
         if(args[3]=="native-popup") {
             var menu=new Menu();var file=new MenuItem {Header="File"};var exit=new MenuItem {Header="Exit"};
@@ -316,6 +318,7 @@ class QuitFixture {
             } else app.Shutdown();
         };
         window.Loaded+=(sender,eventArgs)=>{
+            Console.Error.WriteLine("fixture window loaded");
             if(args[3]=="initialize")window.Hide();
             if(args[3]=="background-cleanup-foreign") {
                 var other=new Window {Title="Developer Tools - file:///C:/Claude/main_window/index.html",Owner=window,Width=260,Height=120};
@@ -347,10 +350,14 @@ class QuitFixture {
                 app = launch([fixture, ready, stop, marker, mode], app_output)
                 helper = None
                 try:
-                    deadline = time.monotonic()+10
+                    # Cold WPF startup is outside the helper's action budget.
+                    deadline = time.monotonic()+30
                     while not ready.exists() and not exited(app) and time.monotonic() < deadline:
                         time.sleep(.05)
-                    self.assertTrue(ready.exists(), 'inactive-desktop fixture did not initialize')
+                    self.assertTrue(ready.exists(), {
+                        'reason': 'inactive-desktop fixture did not initialize',
+                        'appExited': exited(app),
+                        'appLog': app_output.read_text(encoding='utf-8-sig', errors='replace')})
                     output = self.folder/(prefix+'.quit.log')
                     action = '--quit'
                     if mode == 'initialize' or mode.startswith('background-'):

@@ -256,6 +256,9 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response.status, 415)
 
     async def test_native_clients_sessions_files_and_terminal_share_authenticated_manager(self):
+        # This covers routing and authorization, not the deliberate short
+        # timeout used by the disconnected-device tests.
+        self.state.timeout = 5
         a = await self.device('Alice')
         calls, uploads = [], []
         enabled = {'claude': True, 'deepseek': True}
@@ -304,6 +307,7 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status, 200)
             self.assertIn((provider, 'send', 'native-session', {'id': THREAD, 'text': 'hello'}), calls)
             download = await self.client.get(base+'workspace/download?sessionId=native-session&path=example.bin', headers=p)
+            self.assertEqual(download.status, 200, await download.text() if download.status != 200 else '')
             self.assertEqual(await download.read(), data)
             self.assertIn('example.bin', download.headers['Content-Disposition'])
             ranged = await self.client.get(base+'workspace/download?sessionId=native-session&path=example.bin',
