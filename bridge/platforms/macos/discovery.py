@@ -1,6 +1,8 @@
 """macOS bundle identities, executable metadata and installation paths."""
+import logging
 import plistlib
 from pathlib import Path
+from xml.parsers.expat import ExpatError
 
 
 def bundle(path, identifier):
@@ -13,6 +15,9 @@ def bundle(path, identifier):
         if executable.is_file():
             return {'application': str(path), 'executable': str(executable),
                     'version': str(info.get('CFBundleShortVersionString', ''))}
+    except ExpatError as exc:
+        logging.getLogger(__name__).warning('Skipping invalid application plist %s: %s',
+                                            path/'Contents/Info.plist', exc)
     except (OSError, ValueError, KeyError, plistlib.InvalidFileException):
         pass
     return None

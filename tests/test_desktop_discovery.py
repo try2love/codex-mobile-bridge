@@ -56,6 +56,20 @@ class DiscoveryTests(unittest.TestCase):
         self.assertTrue(self.scan_mac()['codex']['installed'])
         self.assertNotEqual(self.scan_mac()['codex']['application'], str(wrong))
 
+    def test_malformed_unrelated_plist_does_not_abort_discovery(self):
+        broken = self.bundle('AAA Broken', 'codex', 'com.example.unrelated')
+        plist = broken/'Contents/Info.plist'
+        plist.write_bytes(b'<?xml version="1.0"?>\n<plist><dict>\x00</dict></plist>')
+        codex = self.bundle('ChatGPT', 'codex')
+        claude = self.bundle('My Claude', 'claude')
+        with self.assertLogs('bridge.platforms.macos.discovery', level='WARNING') as logs:
+            rows = self.scan_mac()
+        self.assertEqual(rows['codex']['application'], str(codex))
+        self.assertEqual(rows['claude']['application'], str(claude))
+        self.assertFalse(rows['deepseek']['installed'])
+        self.assertIn(str(plist), '\n'.join(logs.output))
+        self.assertIn('invalid token', '\n'.join(logs.output))
+
     def test_data_homes_preserve_explicit_and_environment_selection_without_reading_keys(self):
         desktop = self.home/'existing-harness'
         desktop.mkdir()
