@@ -22,7 +22,7 @@ from bridge.clients.codex.ipc import DesktopIPC, IPCError
 from bridge.clients.codex.app_server import AppServerError, AppServerUnavailable
 from bridge.clients.codex.cli_session import CliSessions
 from bridge.clients.codex.transport import ipc_endpoint
-from bridge.features.sessions.model import apply_patches, computer_use_approval, items_array, normalize_state, normalize_request, ordered_turns, pending_requests, async_requests, request_id, user_display_text
+from bridge.features.sessions.model import apply_patches, attachment_prompt, computer_use_approval, items_array, normalize_state, normalize_request, ordered_turns, pending_requests, async_requests, request_id, user_display_text
 from bridge.features.sessions.store import SessionStore, StoreUnavailable
 from bridge.features.workspace.files import artifact_paths, referenced_model_images
 from bridge.features.workspace.workspace import operate as workspace_operation
@@ -2390,6 +2390,8 @@ class Bridge:
         submission_id = key.split(":")[1]
         text = entry["text"]
         files = self.uploads.resolve(session.id, entry.get('attachments', []))
+        # Keep non-image paths in the prompt; context.fileAttachments alone is UI metadata.
+        text = attachment_prompt(text, files)
         request = {"threadId": session.id, "input": [{"type": "text", "text": text, "text_elements": []}], "clientUserMessageId": submission_id}
         request['input'].extend({'type': 'localImage', 'path': f['path']} for f in files if f['image'])
         context = {'attachments': [], 'commentAttachments': []}
