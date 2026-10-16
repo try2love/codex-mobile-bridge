@@ -57,7 +57,7 @@ async function runModeTests(){
     renderState({...meta,goal:{...goal,tokensUsed:10},model:'kimi-k3-local-w8a8',effort:'xhigh'});
     check($('goal-state').hidden&&!$('goal-toggle').hidden,'Goal updates preserve the hidden preference');
     check($('model-name').textContent==='kimi-k3-local-w8a8'&&$('model-effort').textContent==='· xhigh','Model name and reasoning effort render separately');
-    check($('model-button').title==='kimi-k3-local-w8a8 · xhigh'&&$('model-current').textContent.includes('kimi-k3-local-w8a8'),'Full model ID remains available in the tooltip and model panel');
+    check($('model-button').title==='kimi-k3-local-w8a8 · xhigh','Full model ID remains available in the tooltip');
     BridgeI18n.setLanguage('en');BridgeI18n.apply();workModes.render();
     check($('goal-toggle').title==='Goal progress','Hidden-goal restore action translates to English');
     $('goal-toggle').click();

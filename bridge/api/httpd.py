@@ -494,6 +494,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.server.auth.logout(self.token())
                 return self.output(200, {"ok": True}, cookie=self.cookie("", clear=True))
             if not write and path == '/api/accounts':
+                if query.get('resetForecast') in (['1'], ['refresh']):
+                    self.server.bridge.accounts.reset_forecast.request(refresh=query['resetForecast'] == ['refresh'])
                 result = self.server.bridge.accounts.public()
                 result['canSwitch'] = self.server.auth.config.get('mode') != 'none'
                 return self.output(200, result)

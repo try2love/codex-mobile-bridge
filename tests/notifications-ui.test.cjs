@@ -34,11 +34,11 @@ async function fixture(){
           if(nextPost){const handle=nextPost;nextPost=null;return handle(body);}
           if(url.includes('/rename?'))return response({title:body.title});
           if(url.endsWith('/test'))return response({ok:true});
-          if(url.endsWith('/common'))saved.set(url,body);
+          if(url.endsWith('/common'))saved.set(url,{...saved.get(url),...body});
           else {
             const secret=url.endsWith('/bark')?'barkKey':url.endsWith('/ntfy')?'token':'pushplusToken';
             const marker=url.endsWith('/bark')?'hasBarkKey':url.endsWith('/ntfy')?'hasToken':'hasPushplusToken';
-            saved.set(url,{...body,[secret]:undefined,[marker]:!!body[secret]||!body['clear'+secret[0].toUpperCase()+secret.slice(1)]&&!!saved.get(url)?.[marker]});
+            saved.set(url,{...saved.get(url),...body,[secret]:undefined,[marker]:!!body[secret]||!body['clear'+secret[0].toUpperCase()+secret.slice(1)]&&!!saved.get(url)?.[marker]});
           }
         }
         return response(saved.get(url)||{pushplusEnabled:false,hasPushplusToken:false,barkServer:'https://api.day.app',server:'https://ntfy.sh'});
@@ -61,6 +61,16 @@ async function fixture(){
     save:()=>nodes.get('notify-form').onsubmit({preventDefault(){}}),
     settings:()=>nodes.get('notify-button').onclick()};
 }
+
+test('gateway reminders and advanced notification settings are separate expanded groups',async()=>{
+  const {html}=await fixture();
+  const group=id=>html.match(new RegExp('<section[^>]*aria-labelledby="'+id+'"[\\s\\S]*?</section>'))?.[0]||'';
+  const gateway=group('notification-gateway-heading'),advanced=group('notification-advanced-heading');
+  assert.ok(gateway&&advanced);
+  for(const id of ['security-enabled','address-enabled'])assert.ok(gateway.includes('id="notification-'+id+'"'));
+  for(const id of ['address-name','include-title','click-base'])assert.ok(advanced.includes('id="notification-'+id+'"'));
+  assert.doesNotMatch(gateway+advanced,/<details|\bhidden\b/);
+});
 
 test('homepage retains the v1.3 archive checkbox and complete mode labels',async()=>{
   const ui=await fixture();
@@ -156,16 +166,51 @@ test('third-party notification channels save independently, mask secrets and tes
   assert.equal(ui.nodes.get('pushplus-error').textContent,'Network failure');
 });
 
-test('common notification controls save once outside provider detail',async()=>{
+test('notification switches save immediately and advanced fields save separately',async()=>{
   const ui=await fixture();await ui.nodes.get('pushplus-settings').onclick();
-  ui.nodes.get('notification-security-enabled').checked=true;
-  ui.nodes.get('notification-address-enabled').checked=false;
-  ui.nodes.get('notification-address-name').value='Home gateway';
-  ui.nodes.get('notification-include-title').checked=true;
-  ui.nodes.get('notification-click-base').value='https://bridge.example';
-  await ui.nodes.get('notification-common-save').onclick();
-  assert.deepEqual(ui.writes[0].body,{securityEnabled:true,addressEnabled:false,addressName:'Home gateway',includeTitle:true,clickBase:'https://bridge.example'});
+  assert.equal(ui.nodes.has('notification-common-save'),false);
+  ui.nodes.get('notification-address-name').value='Home gateway';ui.nodes.get('notification-click-base').value='https://bridge.example';
+  for(const [id,key,checked] of [['security-enabled','securityEnabled',true],['address-enabled','addressEnabled',false],['include-title','includeTitle',true]]){
+    const input=ui.nodes.get('notification-'+id);input.checked=checked;await input.onchange();
+    assert.deepEqual(ui.writes.at(-1).body,{[key]:checked});assert.equal(input.checked,checked);
+    assert.equal(ui.nodes.get('notification-address-name').value,'Home gateway');assert.equal(ui.nodes.get('notification-click-base').value,'https://bridge.example');
+  }
+  await ui.nodes.get('notification-advanced-save').onclick();
+  assert.deepEqual(ui.writes.at(-1).body,{addressName:'Home gateway',clickBase:'https://bridge.example'});
+  assert.equal(ui.saved.get('/api/notifications/channels/common').securityEnabled,true);
+  assert.equal(ui.saved.get('/api/notifications/channels/common').includeTitle,true);
   assert.equal(ui.nodes.get('notification-channels-dialog').open,true);
+});
+
+test('failed immediate saves restore switches and preserve unsaved text',async()=>{
+  const ui=await fixture();await ui.nodes.get('pushplus-settings').onclick();
+  ui.nodes.get('notification-address-name').value='Unsaved gateway';
+  const input=ui.nodes.get('notification-security-enabled');input.checked=true;
+  ui.setPost(()=>ui.response({error:'Save failed'},500));await input.onchange();
+  assert.equal(input.checked,false);assert.equal(input.disabled,false);assert.equal(ui.writes.length,1);
+  assert.equal(ui.nodes.get('notification-address-name').value,'Unsaved gateway');assert.equal(ui.nodes.get('notification-common-error').textContent,'Save failed');
+  input.checked=true;await input.onchange();assert.equal(input.checked,true);assert.equal(ui.writes.length,2);
+});
+
+test('provider switches save only their enable flag and retain credential drafts',async()=>{
+  const ui=await fixture();await ui.nodes.get('pushplus-settings').onclick();await ui.channelButtons[2].onclick();
+  ui.nodes.get('pushplus-token').value='Unsaved token';const toggle=ui.nodes.get('pushplus-enabled');toggle.checked=true;await toggle.onchange();
+  assert.deepEqual(ui.writes.at(-1).body,{pushplusEnabled:true});assert.equal(ui.nodes.get('pushplus-token').value,'Unsaved token');
+  ui.setPost(()=>ui.response({error:'Save failed'},500));toggle.checked=false;await toggle.onchange();
+  assert.equal(toggle.checked,true);assert.equal(ui.nodes.get('pushplus-token').value,'Unsaved token');assert.equal(ui.nodes.get('pushplus-error').textContent,'Save failed');
+});
+
+for(const channel of ['bark','ntfy','pushplus'])for(const status of [200,500])test(`${channel} controls recover after closing during an immediate save (${status})`,async()=>{
+  const ui=await fixture();await ui.nodes.get('pushplus-settings').onclick();
+  const button=ui.channelButtons.find(button=>button.dataset.notificationChannel===channel);await button.onclick();
+  let finish;ui.setPost(()=>new Promise(resolve=>{finish=resolve;}));
+  ui.nodes.get('pushplus-enabled').checked=true;const saving=ui.nodes.get('pushplus-enabled').onchange();
+  for(const id of ['pushplus-enabled','pushplus-save','pushplus-test'])assert.equal(ui.nodes.get(id).disabled,true);
+  ui.nodes.get('pushplus-dialog').close();finish(ui.response(status===200?{}:{error:'Save failed'},status));await saving;
+  await ui.nodes.get('pushplus-settings').onclick();await button.onclick();
+  assert.equal(ui.nodes.get('pushplus-dialog').open,true);
+  for(const id of ['pushplus-enabled','pushplus-save','pushplus-test'])assert.equal(ui.nodes.get(id).disabled,false,id);
+  await ui.nodes.get('pushplus-test').onclick();assert.equal(ui.writes.at(-1).url,'/api/notifications/channels/'+channel+'/test');
 });
 
 test('provider list reports configured and enabled states',async()=>{
@@ -182,30 +227,30 @@ test('common settings wait for a valid read and ignore late responses after clos
   const ui=await fixture();let finish;
   ui.setGet(url=>url.endsWith('/common')?new Promise(resolve=>{finish=resolve;}):ui.response({}));
   const opening=ui.nodes.get('pushplus-settings').onclick();
-  assert.equal(ui.nodes.get('notification-common-save').disabled,true);
-  await ui.nodes.get('notification-common-save').onclick();
+  assert.equal(ui.nodes.get('notification-advanced-save').disabled,true);
+  await ui.nodes.get('notification-advanced-save').onclick();
   assert.equal(ui.writes.length,0);
   ui.nodes.get('notification-channels-dialog').close();
   finish(ui.response({securityEnabled:false,addressEnabled:false,addressName:'old',includeTitle:false,clickBase:''}));
   await opening;
-  assert.equal(ui.nodes.get('notification-common-save').disabled,true);
+  assert.equal(ui.nodes.get('notification-advanced-save').disabled,true);
   ui.saved.set('/api/notifications/channels/common',{securityEnabled:true,addressEnabled:true,addressName:'new',includeTitle:true,clickBase:''});
   await ui.nodes.get('pushplus-settings').onclick();
   assert.equal(ui.nodes.get('notification-address-name').value,'new');
-  assert.equal(ui.nodes.get('notification-common-save').disabled,false);
+  assert.equal(ui.nodes.get('notification-advanced-save').disabled,false);
 });
 
 test('failed common read blocks save and permits explicit retry',async()=>{
   const ui=await fixture();
   ui.setGet(()=>ui.response({error:'Read failed'},500));
   await ui.nodes.get('pushplus-settings').onclick();
-  assert.equal(ui.nodes.get('notification-common-save').disabled,true);
+  assert.equal(ui.nodes.get('notification-advanced-save').disabled,true);
   assert.equal(ui.nodes.get('notification-common-retry').hidden,false);
   assert.equal(ui.nodes.get('notification-common-error').textContent,'Read failed');
-  await ui.nodes.get('notification-common-save').onclick();
+  await ui.nodes.get('notification-advanced-save').onclick();
   assert.equal(ui.writes.length,0);
   await ui.nodes.get('notification-common-retry').onclick();
-  assert.equal(ui.nodes.get('notification-common-save').disabled,false);
+  assert.equal(ui.nodes.get('notification-advanced-save').disabled,false);
 });
 
 test('rename stays scoped to its original host and cannot overwrite a newly opened chat',async()=>{

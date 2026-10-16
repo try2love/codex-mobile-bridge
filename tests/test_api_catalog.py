@@ -68,6 +68,51 @@ class ApiCatalogTests(unittest.TestCase):
         self.assertNotIn('model/list', [method for method, _ in self.calls])
         self.assertEqual(result['modelSource'], 'api')
 
+    def test_explicit_catalog_uses_runtime_without_api_credentials_and_preserves_routes(self):
+        for catalog_path in ('models.json', str(self.home/'models.json')):
+            with self.subTest(catalog_path=catalog_path):
+                self.config['model_catalog_json'] = catalog_path
+                (self.home/'auth.json').write_text(json.dumps({'auth_mode': 'chatgpt'}))
+                calls = []
+                route = {'model': 'ccs-provider/gpt-fixture', 'displayName': 'Fixture (provider)',
+                         'supportedReasoningEfforts': [{'reasoningEffort': 'high'}],
+                         'defaultReasoningEffort': 'high'}
+                def request(method, params):
+                    calls.append((method, params))
+                    if method == 'config/read':
+                        return {'config': self.config}
+                    self.assertEqual(method, 'model/list')
+                    self.assertFalse(params['includeHidden'])
+                    return ({'data': [route], 'nextCursor': 'page-2'} if params['cursor'] is None
+                            else {'data': [{'model': 'second-model'}], 'nextCursor': None})
+                with patch('bridge.clients.codex.catalog.model_ids') as upstream:
+                    result = self.reader.read_models(request, str(self.home), 'bridge_api')
+                upstream.assert_not_called()
+                self.assertEqual(result['models'], [route, {'model': 'second-model'}])
+                self.assertEqual(result['modelSource'], 'codex')
+                self.assertEqual(result['currentEffort'], 'ultra')
+                self.assertEqual([method for method, _ in calls], ['config/read', 'model/list', 'model/list'])
+
+    def test_explicit_catalog_does_not_replace_a_different_chat_provider(self):
+        self.config['model_catalog_json'] = 'models.json'
+        self.config['model_provider'] = 'other_provider'
+        with patch('bridge.clients.codex.catalog.model_ids', return_value=['provider-fixture']) as upstream:
+            result = self.reader.read_models(self.request, str(self.home), 'bridge_api')
+        upstream.assert_called_once_with('https://fixture.invalid/v1', 'fixture-key')
+        self.assertEqual(result['modelSource'], 'api')
+        self.assertNotIn('model/list', [method for method, _ in self.calls])
+
+    def test_explicit_profile_catalog_failure_stays_visible_without_upstream_fallback(self):
+        self.config.update(profile='routed', profiles={'routed': {'model_catalog_json': 'missing.json'}})
+        def request(method, params):
+            if method == 'config/read':
+                return {'config': self.config}
+            raise CatalogError('Configured model catalog could not be read')
+        with patch('bridge.clients.codex.catalog.model_ids') as upstream:
+            with self.assertRaisesRegex(CatalogError, 'catalog could not be read'):
+                self.reader.read_models(request, str(self.home), 'bridge_api')
+        upstream.assert_not_called()
+
     def test_native_upstream_uses_the_same_public_catalog_as_openai(self):
         results = []
         for payload in ({'data': [{'id': 'provider-fixture'}]},
@@ -272,6 +317,39 @@ class ApiCatalogTests(unittest.TestCase):
         self.reader._fetch=fetch;calls.clear()
         refreshed=self.reader.get_kind('skills',root,refresh=True)
         self.assertEqual(refreshed['cache']['state'],'fresh');self.assertEqual(calls,['skills'])
+
+
+
+    def test_failed_model_results_are_retried_and_successes_share_the_backend_cache(self):
+        for kind in ('models', 'catalog'):
+            with self.subTest(kind=kind):
+                self.reader.invalidate_models()
+                read = (lambda **kw: self.reader.get_kind('models', str(self.home), **kw)) if kind == 'models' else (
+                    lambda **kw: self.reader.get(str(self.home), **kw))
+                with patch.object(self.reader, '_fetch', side_effect=[
+                        {'modelSource': 'api', 'models': [], 'modelError': 'Temporary failure', 'skillEntries': []},
+                        {'modelSource': 'api', 'models': [{'id': 'recovered'}], 'skillEntries': []}]) as fetch:
+                    first, second, third = read(), read(), read()
+                self.assertEqual(first['modelError'], 'Temporary failure')
+                self.assertEqual(second['models'][0]['name'], 'recovered')
+                self.assertEqual(third, second)
+                self.assertEqual(fetch.call_count, 2)
+
+    def test_a_failed_explicit_refresh_discards_the_old_model_cache(self):
+        for kind in ('models', 'catalog'):
+            with self.subTest(kind=kind):
+                self.reader.invalidate_models()
+                read = (lambda **kw: self.reader.get_kind('models', str(self.home), **kw)) if kind == 'models' else (
+                    lambda **kw: self.reader.get(str(self.home), **kw))
+                with patch.object(self.reader, '_fetch', side_effect=[
+                        {'models': [{'model': 'old'}], 'skillEntries': []}, CatalogError('Temporary failure'),
+                        {'models': [{'model': 'new'}], 'skillEntries': []}]) as fetch:
+                    read()
+                    with self.assertRaises(CatalogError):
+                        read(refresh=True)
+                    result = read()
+                self.assertEqual(result['models'][0]['id'], 'new')
+                self.assertEqual(fetch.call_count, 3)
 
 
 class RemoteCatalogTests(unittest.TestCase):

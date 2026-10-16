@@ -25,7 +25,7 @@ PUBLIC_URLS = set('''
 /vendor/xterm/addon-fit.js /vendor/xterm/xterm.css /command-terminal-panel.js
 /list-sync.js /agents-panel.js /side-chat.js /terminal-panel.js /floating-panel.js
 /git-panel.js /file-actions.js /workbench.js /image-viewer.js /workbench.css /i18n.js /app.js
-/modes.js /attachments.js /activity.js /fast-mode.js /accounts.js /account.js
+/modes.js /attachments.js /activity.js /fast-mode.js /accounts.js /account.js /account-settings.js
 /account.css /presentation.js /presentation.css /markdown.js /message-actions.js
 /timeline.js /vendor/markdown-it.min.js /vendor/texmath.js
 /vendor/katex/katex.min.js /vendor/katex/katex.min.css /style.css

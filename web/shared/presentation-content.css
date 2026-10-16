@@ -25,7 +25,6 @@
 #model-button{display:flex;align-items:center;gap:4px;flex:0 1 auto;min-width:0;max-width:55%;color:var(--text)}
 #model-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #model-effort{flex:none;white-space:nowrap}
-.model-current{overflow-wrap:anywhere;font-size:12px;line-height:1.6;color:var(--muted)}
 .composer-toggle{flex:none;margin-left:auto;display:grid;place-items:center;width:36px;height:36px;border:0;background:transparent;color:var(--muted);border-radius:10px;padding:6px}
 .composer-toggle svg{width:20px;height:20px;transition:transform .15s}
 .composer-toggle[aria-expanded=false] svg{transform:rotate(180deg)}

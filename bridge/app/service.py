@@ -1525,17 +1525,16 @@ class Bridge:
             effort = session.state.get("latestReasoningEffort") or (session.state.get("latestThreadSettings") or {}).get("effort")
             provider = session.view().get('provider')
         selected = self.accounts.current_models(refresh) if self.host == 'local' and self.accounts and kind != 'skills' else None
-        if kind == 'models' and selected is not None:
-            return {**selected, 'kind':'models', 'currentModel':model, 'currentEffort':effort}
         if kind in ('models', 'skills'):
-            value = self.catalog_reader.get_kind(kind, cwd, refresh=refresh, provider=provider,
-                                                 **({'query':query, 'offset':offset, 'limit':limit, 'ids':ids} if kind == 'skills' else {}))
+            value = selected if kind == 'models' and selected is not None else self.catalog_reader.get_kind(
+                kind, cwd, refresh=refresh, provider=provider,
+                **({'query':query, 'offset':offset, 'limit':limit, 'ids':ids} if kind == 'skills' else {}))
             if kind == 'models':
                 with session.condition:
                     view = session.view()
                 return {**value, 'kind': 'models', 'currentModel': model or value.get('currentModel'),
                         'currentEffort': effort or value.get('currentEffort'),
-                        'fastMode': {**value.get('fastMode', {}), 'allowed': view.get('provider') == 'openai' and value.get('fastMode', {}).get('allowed') is True},
+                        'fastMode': {**value.get('fastMode', {}), 'allowed': view.get('provider') == value.get('fastMode', {}).get('provider', 'openai') and value.get('fastMode', {}).get('allowed') is True},
                         **({'currentServiceTier': view['serviceTier']} if 'serviceTier' in view else {})}
             return {**value, 'kind': 'skills'}
         catalog = ({**self.catalog_reader.get_kind('skills', cwd, refresh=refresh, provider=provider), **selected}
@@ -1544,7 +1543,7 @@ class Bridge:
             view = session.view()
         return {**catalog, "currentModel": model or catalog.get("currentModel"),
                 "currentEffort": effort or catalog.get("currentEffort"),
-                'fastMode': {**catalog.get('fastMode', {}), 'allowed': view.get('provider') == 'openai' and catalog.get('fastMode', {}).get('allowed') is True},
+                'fastMode': {**catalog.get('fastMode', {}), 'allowed': view.get('provider') == catalog.get('fastMode', {}).get('provider', 'openai') and catalog.get('fastMode', {}).get('allowed') is True},
                 **({'currentServiceTier': view['serviceTier']} if 'serviceTier' in view else {})}
 
     def _resolve_skills(self, session, skills):
@@ -2079,6 +2078,7 @@ class Bridge:
         self.closed.set()
         if self.host == "local" and self.accounts:
             self.accounts.login_cancel.set()
+            self.accounts.reset_forecast.close()
         for bridge in list(self.remote_bridges.values()):
             bridge.close()
         with self.lock:

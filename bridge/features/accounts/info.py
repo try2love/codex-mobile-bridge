@@ -3,8 +3,10 @@ import hashlib
 import threading
 import time
 
-from bridge.features.accounts.account import Account
+from bridge.features.accounts.account import Account, AccountError
 from bridge.features.notifications.channels import read_json
+
+CURRENT_LOGIN_ID = 'current-login'
 
 
 class AccountInfo:
@@ -33,11 +35,20 @@ class AccountInfo:
             custom = provider != 'openai' or effective.get('openai_base_url') or any(definition.get(k) for k in
                 ('base_url','env_key','experimental_bearer_token','http_headers','env_http_headers','auth','gateway_oauth'))
             auth = read_json(manager.home/'auth.json', {})
+            try:
+                native_auth = rpc.request('account/read', {'refreshToken': False})
+                login = Account.login_context(rpc, auth=native_auth)
+            except AccountError:
+                if not custom:
+                    raise
+                login = None
+            login = {'context': login, 'owner': token_owner(auth)} if login else None
             if not custom:
-                account = rpc.request('account/read', {'refreshToken': False}).get('account') or {}
+                account = native_auth.get('account') or {}
                 if account.get('type') == 'chatgpt':
                     return {'kind':'chatgpt', 'name':account.get('email') or 'ChatGPT',
-                            'owner': token_owner(auth) if config.get('cli_auth_credentials_store') != 'keyring' else None}
+                            'owner': token_owner(auth) if config.get('cli_auth_credentials_store') != 'keyring' else None,
+                            'login': login}
                 if account.get('type') != 'apiKey':
                     return {'kind':'signedOut', 'name':''}
             import os
@@ -46,7 +57,28 @@ class AccountInfo:
             if not key and not definition.get('env_key') and (provider == 'openai' or definition.get('requires_openai_auth')):
                 key = auth.get('OPENAI_API_KEY') or os.environ.get('OPENAI_API_KEY', '')
             return {'kind':'api', 'name':'API · '+provider, 'baseUrl':(definition.get('base_url') or (effective.get('openai_base_url') if provider == 'openai' else None) or 'https://api.openai.com/v1').rstrip('/'),
-                    'key':key, 'model':effective.get('model')}
+                    'key':key, 'model':effective.get('model'), 'login': login}
+
+    def current_login(self):
+        try:
+            stamp = self.source_stamp()
+        except OSError:
+            return None
+        if stamp != self.stamp or not self.identity or not self.identity.get('login'):
+            return None
+        login = self.identity['login']
+        context = login['context']
+        saved = self.match({'kind': 'chatgpt', 'owner': login['owner']})
+        if saved:
+            return {**{k: saved[k] for k in ('id','name','kind','email','planType') if k in saved},
+                    'email': context.get('email'), 'planType': context.get('planType'),
+                    'accountKey': context['accountKey'],
+                    'details': self.entries.get(saved['id'], {})}
+        return {'id': CURRENT_LOGIN_ID, 'kind': 'chatgpt', 'name': 'ChatGPT',
+                'email': context.get('email'), 'planType': context.get('planType'),
+                'accountKey': context['accountKey'], 'transient': True,
+                'details': {k: v for k, v in self.entries.get(CURRENT_LOGIN_ID, {}).items()
+                            if v.get('accountKey') == context['accountKey']}}
 
     def match(self, identity):
         if not identity:
@@ -106,40 +138,78 @@ class AccountInfo:
             raise ValueError('账号详情请求无效')
         with manager.lock:
             manager.check_ready()
-            row = dict(manager.row(value.get('id')))
+            row = self.current_login() if value.get('id') == CURRENT_LOGIN_ID else manager.row(value.get('id'))
+            if not row or row['id'] != value.get('id'):
+                raise ValueError('账号身份已变化，请刷新列表')
+            row = dict(row)
+            if row.get('transient') and section != 'usage':
+                raise ValueError('请在聊天模型设置中查看当前接入的模型')
             if section == 'usage' and row['kind'] != 'chatgpt':
                 raise ValueError('API 接入不提供官方额度')
             info = self.entries.setdefault(row['id'], {})
             cached = info.get(section) or {}
+            if row.get('transient') and cached.get('accountKey') != row['accountKey']:
+                cached = {}
             ttl = 0 if value.get('refresh') else 300
             if cached.get('status') == 'loading' or time.time()-cached.get('checkedAt', 0) < ttl:
                 return manager.public()
             info[section] = {**cached, 'status':'loading', 'error':None}
-            threading.Thread(target=self.read, args=(row,section,value.get('refresh',False)), daemon=True).start()
+            if row.get('transient'):
+                info[section]['accountKey'] = row['accountKey']
+            threading.Thread(target=self.read, args=(row,section,value.get('refresh',False),info[section]), daemon=True).start()
             return manager.public()
 
-    def read(self, row, section, refresh=False):
+    def read(self, row, section, refresh=False, pending=None):
+        with self.manager.lock:
+            if pending is None:
+                pending = self.entries.get(row['id'], {}).get(section)
+        if row.get('transient'):
+            try:
+                result = self.manager.account({'id': CURRENT_LOGIN_ID, 'operation': 'read', 'refresh': refresh})
+                if not result.get('visible') or result.get('accountKey') != row['accountKey']:
+                    raise ValueError('账号身份已变化')
+                result.update(status='error' if result.get('error') else 'ready', checkedAt=time.time())
+            except Exception:
+                result = {'status': 'error', 'checkedAt': time.time(), 'accountKey': row['accountKey'],
+                          'error': '额度暂不可用，请检查登录后重试'}
+            with self.manager.lock:
+                info = self.entries.setdefault(CURRENT_LOGIN_ID, {})
+                # A replaced slot belongs to a newer query, even for the same login.
+                if info.get(section) is not pending:
+                    return
+                current = self.current_login()
+                if current and current.get('accountKey') == row['accountKey']:
+                    if result['status'] == 'error':
+                        result = {**info.get(section, {}), **result}
+                    info[section] = result
+                else:
+                    info.pop(section, None)
+            return
         from bridge.features.accounts.accounts import ManagedRPC, token_owner, private_bytes
         manager = self.manager
         result = {}
         try:
-            with manager.bridge.account.lock:
-                with manager.lock:
-                    manager.check_ready()
-                    manager.row(row['id'])
-                if row['kind'] == 'api':
-                    result = {'models':manager.api_models(row, refresh)}
-                else:
+            if row['kind'] == 'api':
+                result = {'models':manager.api_models(row, refresh)}
+            else:
+                with manager.bridge.account.lock:
+                    with manager.lock:
+                        manager.check_ready()
+                        manager.row(row['id'])
                     identity = self.read_identity()
                     active = self.match(identity)
-                    home = manager.home if active and active['id'] == row['id'] else manager.directory(row['id'])
+                    login = identity.get('login')
+                    native_login = bool(section == 'usage' and login and login.get('owner') and
+                                        login['owner'] == row.get('tokenOwner'))
+                    home = manager.home if native_login or active and active['id'] == row['id'] else manager.directory(row['id'])
                     if home != manager.home:
                         private_bytes(home/'config.toml', b'cli_auth_credentials_store = "file"\nmodel_provider = "openai"\n')
                     if token_owner(read_json(home/'auth.json', {})) != row.get('tokenOwner'):
                         raise ValueError('账号身份不匹配')
                     with ManagedRPC(home, manager.runtime) as rpc:
-                        context = Account.context(rpc)
-                        if context.get('loginType') != 'chatgpt' or context.get('email') != row.get('email'):
+                        context = Account.login_context(rpc) if native_login else Account.context(rpc)
+                        if (not context or context.get('loginType') != 'chatgpt' or context.get('email') != row.get('email') or
+                                native_login and context['accountKey'] != login['context']['accountKey']):
                             raise ValueError('账号身份不匹配')
                         if section == 'usage':
                             result = manager.bridge.account.limits(rpc, context, refresh=refresh)
@@ -169,6 +239,8 @@ class AccountInfo:
             result = {'status':'error','checkedAt':time.time(),
                       'error':'额度暂不可用，请检查登录后重试' if section == 'usage' else '模型列表暂不可用，请检查接入后重试'}
         with manager.lock:
+            if self.entries.get(row['id'], {}).get(section) is not pending:
+                return
             if any(r['id'] == row['id'] for r in manager.index['accounts']):
                 if result['status'] == 'error':
                     result = {**self.entries.get(row['id'], {}).get(section, {}), **result}

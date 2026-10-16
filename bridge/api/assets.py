@@ -44,6 +44,7 @@ STATIC = {"/file-actions.js": ("file-actions.js", "text/javascript; charset=utf-
           "/activity.js": ("activity.js", "text/javascript; charset=utf-8"),
           "/fast-mode.js": ("fast-mode.js", "text/javascript; charset=utf-8"),
           "/accounts.js": ("accounts.js", "text/javascript; charset=utf-8"),
+          "/account-settings.js": ("account-settings.js", "text/javascript; charset=utf-8"),
           "/account.js": ("account.js", "text/javascript; charset=utf-8"),
           "/account.css": ("account.css", "text/css; charset=utf-8"),
           "/presentation.js": ("presentation.js", "text/javascript; charset=utf-8"),

@@ -124,3 +124,11 @@ class InfoTests(unittest.TestCase):
             info.request({'id':row['id'],'section':'usage'});worker.assert_not_called()
             info.entries[row['id']]['usage']['checkedAt']=time.time()-301
             info.request({'id':row['id'],'section':'usage'});worker.assert_called_once()
+
+    def test_native_identity_and_connection_share_one_account_snapshot(self):
+        rpc = self.rpc()
+        with patch('bridge.features.accounts.accounts.ManagedRPC') as managed:
+            managed.return_value.__enter__.return_value = rpc
+            identity = self.manager.info.read_identity()
+        self.assertEqual(identity['kind'], 'chatgpt')
+        self.assertEqual([call.args[0] for call in rpc.request.call_args_list].count('account/read'), 1)

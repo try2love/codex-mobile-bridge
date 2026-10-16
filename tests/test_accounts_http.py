@@ -16,7 +16,21 @@ class AccountsHttpTests(unittest.TestCase):
                                   switch=Mock(return_value={'accounts': [], 'switch': {'phase': 'preparing'}}))
         manager.info = SimpleNamespace(request=Mock(return_value={'accounts': [], 'switch': {'phase': 'idle'}}))
         self.server.bridge.accounts = manager
+        manager.reset_forecast = SimpleNamespace(request=Mock())
         return manager
+
+    def test_global_forecast_is_requested_only_by_authenticated_visible_account_reads(self):
+        manager = self.manager()
+        self.assertEqual(self.request('GET', '/api/accounts?resetForecast=1')[0], 401)
+        manager.reset_forecast.request.assert_not_called()
+        headers = self.login()
+        self.assertEqual(self.request('GET', '/api/accounts', headers=headers)[0], 200)
+        manager.reset_forecast.request.assert_not_called()
+        self.assertEqual(self.request('GET', '/api/accounts?resetForecast=1', headers=headers)[0], 200)
+        manager.reset_forecast.request.assert_called_once_with(refresh=False)
+        manager.reset_forecast.request.reset_mock()
+        self.assertEqual(self.request('GET', '/api/accounts?resetForecast=refresh', headers=headers)[0], 200)
+        manager.reset_forecast.request.assert_called_once_with(refresh=True)
 
     def test_switch_requires_auth_csrf_and_exact_payload(self):
         manager = self.manager()

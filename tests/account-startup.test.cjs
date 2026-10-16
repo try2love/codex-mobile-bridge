@@ -3,7 +3,7 @@ const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const official={visible:true,loginType:'chatgpt',accountKey:'a'.repeat(64),limits:[],resetCredits:null,canReset:false,updatedAt:1900000000};
 
-async function fixture(read,kind='chatgpt',catalog=null,gatewayLanguage){
+async function fixture(read,kind='chatgpt',catalog=null,gatewayLanguage,sharedRelay=false){
   const nodes=new Map(),timers=new Map(),requests=[],intervals=[],events={},responses=[];let timerId=0,delayNextSkill=null,failNextSkill=false;
   const node=(tag='div')=>({tagName:tag.toUpperCase(),getBoundingClientRect(){return {width:0};},value:'',checked:false,disabled:false,hidden:false,open:false,textContent:'',dataset:{},options:[],children:[],style:{setProperty(k,v){this[k]=v;}},scrollTop:0,parentElement:{},
     classList:{add(){},remove(){},toggle(){},contains(){return false;}},addEventListener(){},setAttribute(k,v){this[k]=v;},closest(selector){return selector==='dialog'?nodes.get('accounts-dialog'):null;},
@@ -15,8 +15,8 @@ async function fixture(read,kind='chatgpt',catalog=null,gatewayLanguage){
   }
   const storage=()=>({getItem(){return null;},setItem(){},clear(){}});
   const response=(data,status=200)=>({ok:status===200,status,json:async()=>data});
-  const context=vm.createContext({ClientNavigation:class{constructor(){this.provider="codex";}async refresh(){}async openChatLink(hash){assert.equal(hash,'','This fixture enters without a chat deep link');return false;}},DesktopSessionsView:class{clear(){}},Workbench:class{open(){}reset(){}setThumbnails(){}relabel(){}},Event:class{constructor(type){this.type=type;}},navigator:{userAgent:'test'},Date,Option:function(text,value){return {...node('option'),textContent:text,value};},document:{addEventListener(){},dispatchEvent(){},documentElement:{},getElementById:id=>nodes.get(id),querySelector:()=>({classList:{toggle(){}}}),querySelectorAll:()=>[],createElement:node},
-    window:{addEventListener:(name,fn)=>events[name]=fn},localStorage:storage(),sessionStorage:storage(),
+  const context=vm.createContext({ClientNavigation:class{constructor(options){Object.assign(this,options);this.provider="codex";}async refresh(){}async openChatLink(hash){assert.equal(hash,'','This fixture enters without a chat deep link');return false;}},DesktopSessionsView:class{clear(){}},Workbench:class{open(){}reset(){}setThumbnails(){}relabel(){}},Event:class{constructor(type){this.type=type;}},navigator:{userAgent:'test'},Date,Option:function(text,value){return {...node('option'),textContent:text,value};},document:{addEventListener(){},dispatchEvent(){},documentElement:{},getElementById:id=>nodes.get(id),querySelector:()=>({classList:{toggle(){}}}),querySelectorAll:()=>[],createElement:node},
+    window:{BridgeSharedRelay:sharedRelay,addEventListener:(name,fn)=>events[name]=fn},localStorage:storage(),sessionStorage:storage(),
     location:{hash:'',pathname:'/',search:''},history:{replaceState(){}},
     setTimeout(fn,delay){timers.set(++timerId,{fn,delay});return timerId;},clearTimeout(id){timers.delete(id);},setInterval(fn,delay){intervals.push({fn,delay});},
     fetch:async(url,options={})=>{
@@ -24,7 +24,7 @@ async function fixture(read,kind='chatgpt',catalog=null,gatewayLanguage){
       if(url==='/api/auth')return response({authenticated:true,csrf:'fixture',uiLanguage:gatewayLanguage});
       if(url.startsWith('/api/sessions?'))return response({sessions:[]});
       if(url==='/api/account'||url==='/api/account?cached=1')return read(response);
-      if(url==='/api/accounts')return response({accounts:[],activeId:null,current:{kind,status:'ready',name:'Fixture'},switch:{phase:'idle'}});
+      if(url==='/api/accounts'||url.startsWith('/api/accounts?resetForecast='))return response({accounts:[],activeId:null,current:{kind,status:'ready',name:'Fixture'},switch:{phase:'idle'}});
       if(url.includes('/catalog?kind=skills')){
         if(failNextSkill){failNextSkill=false;return response({error:'Skill fixture error'},500);}
         if(delayNextSkill){const wait=delayNextSkill;delayNextSkill=null;await wait.promise;}
@@ -39,7 +39,7 @@ async function fixture(read,kind='chatgpt',catalog=null,gatewayLanguage){
       if(url.includes('/respond')){responses.push(JSON.parse(options.body));return response({});}
       throw Error('Unexpected request '+url);
     }});
-  for(const file of ['web/hosts/environment.js','web/shared/i18n.js','web/features/chat/list-sync.js','web/features/accounts/account.js','web/features/accounts/accounts.js','web/features/chat/modes.js','web/features/chat/attachments.js','web/features/chat/activity.js','web/features/chat/fast-mode.js','web/features/chat/message-actions.js','web/features/chat/permissions.js','web/shell/app.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
+  for(const file of ['web/hosts/environment.js','web/shared/i18n.js','web/features/chat/list-sync.js','web/features/accounts/account.js','web/features/accounts/accounts.js','web/features/accounts/account-settings.js','web/features/chat/modes.js','web/features/chat/attachments.js','web/features/chat/activity.js','web/features/chat/fast-mode.js','web/features/chat/message-actions.js','web/features/chat/permissions.js','web/shell/app.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
   await new Promise(setImmediate);
   return {nodes,requests,timers,intervals,events,responses,run:code=>vm.runInContext(code,context),
     failNextSkill(){failNextSkill=true;},
@@ -47,14 +47,24 @@ async function fixture(read,kind='chatgpt',catalog=null,gatewayLanguage){
     async retry(){const entry=[...timers.entries()].find(([,t])=>t.delay<=5000);assert.ok(entry,'Account read should retry promptly without user input');timers.delete(entry[0]);await entry[1].fn();await new Promise(setImmediate);}};
 }
 
+test('version updates are offered only on hosts with account management',async()=>{
+ for(const sharedRelay of [false,true]){
+  const ui=await fixture(response=>response(official),'chatgpt',null,undefined,sharedRelay);
+  assert.equal(ui.run('typeof clientNavigation.onCodexUpdates'),sharedRelay?'object':'function');
+  if(sharedRelay)assert.equal(ui.run('clientNavigation.onCodexUpdates'),null);
+ }
+});
+
 test('official and API connections share one fixed clickable entry without querying quota on startup',async()=>{
  for(const [kind,label] of [['chatgpt','账号与额度'],['api','API 接入']]){
   const ui=await fixture(r=>r(official),kind);
   assert.equal(ui.nodes.get('accounts-button').textContent,'账号管理');
   assert.equal(ui.nodes.has('account-status'),false);assert.equal(ui.nodes.has('account-dialog'),false);
   assert.equal(ui.requests.filter(url=>url==='/api/account').length,0);
+  assert.equal(ui.requests.includes('/api/accounts?resetForecast=refresh'),false);
   ui.nodes.get('accounts-button').onclick();await new Promise(setImmediate);
   assert.equal(ui.nodes.get('accounts-dialog').open,true);
+  assert.equal(ui.requests.includes('/api/accounts?resetForecast=refresh'),true);
   assert.equal(ui.nodes.get('account-button').hidden,kind!=='chatgpt');
   assert.equal(ui.requests.filter(url=>url==='/api/account').length,0);
  }
@@ -63,13 +73,21 @@ test('quota updates on opening details, and only after five minutes while visibl
  const ui=await fixture(r=>r(official));
  ui.nodes.get('accounts-button').onclick();await new Promise(setImmediate);
  ui.nodes.get('account-details').open=true;ui.nodes.get('account-details').ontoggle();await new Promise(setImmediate);
- const quota=[...ui.timers.values()].find(i=>i.delay>299000);assert.ok(quota);
+ const quota=ui.timers.get(ui.run('accountPanel.timer'));assert.ok(quota&&quota.delay>299000);
  assert.equal(ui.requests.filter(u=>u==='/api/account').length,1);
  ui.run('accountPanel.checkedAt=Date.now()-300001');quota.fn();await new Promise(setImmediate);
  assert.equal(ui.requests.filter(u=>u.startsWith('/api/account')&&!u.startsWith('/api/accounts')).length,2);
  ui.run('accountPanel.checkedAt=0;document.hidden=true');quota.fn();
  ui.run('document.hidden=false');ui.nodes.get('accounts-dialog').open=false;quota.fn();
  ui.events.focus();await new Promise(setImmediate);assert.equal(ui.requests.filter(u=>u.startsWith('/api/account')&&!u.startsWith('/api/accounts')).length,2);
+});
+
+test('saved official accounts use their card while unsaved accounts retain the current-account entry',async()=>{
+ const ui=await fixture(r=>r(official));ui.nodes.get('account-details').open=true;
+ ui.run("accountsPanel.accept({...accountsPanel.value,activeId:'saved',accounts:[{id:'saved',name:'Official',kind:'chatgpt'}]})");
+ assert.equal(ui.nodes.get('account-button').hidden,true);assert.equal(ui.nodes.get('account-details').open,false);
+ assert.equal(ui.requests.filter(url=>url==='/api/account').length,0);
+ ui.run("accountsPanel.accept({...accountsPanel.value,activeId:null})");assert.equal(ui.nodes.get('account-button').hidden,false);
 });
 test('read failure does not start repeated automatic quota queries',async()=>{
  const ui=await fixture(r=>r({error:'offline'},409));
@@ -99,10 +117,14 @@ test('API chat picker shows upstream Gemini models and requires replacing the un
  const select=ui.nodes.get('model-select');assert.ok(select.children.some(o=>o.value==='gemini-fixture'));
  assert.equal(select.children.some(o=>o.value.startsWith('gpt')),false);assert.equal(select.value,'');
  assert.match(ui.nodes.get('model-error').textContent,/当前聊天模型不在上游/);assert.equal(ui.nodes.get('model-save').disabled,true);
- assert.equal(ui.responses.length,0);select.value='gemini-fixture';select.onchange();
+ assert.equal(ui.responses.length,0);
+ const modelChoice=ui.nodes.get('model-options').children.find(row=>row.children[0].value==='gemini-fixture').children[0];
+ modelChoice.checked=true;modelChoice.onchange();assert.equal(select.value,'gemini-fixture');
+ const effortChoice=ui.nodes.get('effort-options').children.find(row=>row.children[0].value==='xhigh').children[0];
+ effortChoice.checked=true;effortChoice.onchange();
  assert.equal(ui.nodes.get('model-save').disabled,false);assert.equal(ui.nodes.get('fast-mode-control').hidden,true);
  await ui.nodes.get('model-form').onsubmit({preventDefault(){}});
- assert.equal(ui.responses[0].model,'gemini-fixture');assert.equal(ui.responses[0].effort,'high');
+ assert.equal(ui.responses[0].model,'gemini-fixture');assert.equal(ui.responses[0].effort,'xhigh');
  assert.equal(ui.responses[0].fastMode,undefined);
 });
 test('API model discovery failure shows its error with manual input instead of stale GPT options',async()=>{
@@ -112,6 +134,21 @@ test('API model discovery failure shows its error with manual input instead of s
  assert.match(ui.nodes.get('model-error').textContent,/上游拒绝/);assert.equal(ui.nodes.get('custom-model-label').hidden,false);
  assert.equal(ui.nodes.get('model-select').children.some(o=>o.value.startsWith('gpt')),false);
  assert.equal(ui.responses.length,0);
+});
+
+test('a native aggregate route exposes Fast and submits the full routed model ID',async()=>{
+ const route='route/gpt-fixture',other='route/other-fixture',catalog={models:[{id:route,name:'GPT fixture',efforts:['high'],fastTier:'priority'},{id:other,name:'Other fixture',efforts:['low']}],modelSource:'codex',fastMode:{allowed:true,provider:'custom'}};
+ const ui=await fixture(r=>r(official),'api',catalog);
+ ui.run("currentId='11111111-1111-4111-8111-111111111111';state={model:'route/gpt-fixture',provider:'custom',connected:true,effort:'high',serviceTier:'default'}");
+ await ui.nodes.get('model-button').onclick();assert.equal(ui.nodes.get('fast-mode-control').hidden,false);assert.equal(ui.nodes.get('fast-mode-enabled').checked,false);
+ const choices=ui.nodes.get('model-options').children;
+ const choose=id=>{const input=choices.find(row=>row.children[0].value===id).children[0];input.checked=true;input.onchange();};
+ choose(other);assert.equal(ui.nodes.get('model-select').value,other);assert.equal(ui.nodes.get('fast-mode-control').hidden,true);
+ choose(route);assert.equal(ui.nodes.get('model-select').value,route);assert.equal(ui.nodes.get('fast-mode-control').hidden,false);
+ assert.equal(ui.nodes.get('effort-options').children[0].children[0].value,'high');
+ ui.nodes.get('fast-mode-enabled').checked=true;ui.nodes.get('fast-mode-enabled').onchange();
+ await ui.nodes.get('model-form').onsubmit({preventDefault(){}});
+ assert.deepEqual(ui.responses[0],{model:route,effort:'high',fastMode:true});
 });
 test('selected skill pills render before the catalog response arrives',async()=>{
   const ui=await fixture(r=>r(official));
@@ -271,14 +308,17 @@ test('account switch discards API model capabilities before opening the official
  await ui.nodes.get('model-form').onsubmit({preventDefault(){}});
  assert.equal(ui.responses.at(-1).effort,'low');
 });
-test('official model with unknown capabilities does not offer every effort or allow saving',async()=>{
- const catalog={models:[{id:'official-missing',name:'Missing',efforts:[]}],modelSource:'codex'};
+test('official model with unknown capabilities explains the disabled save until a supported model is selected',async()=>{
+ const catalog={models:[{id:'official-missing',name:'Missing',efforts:[]},{id:'official-ready',name:'Ready',efforts:['high']}],modelSource:'codex'};
  const ui=await fixture(r=>r(official),'chatgpt',catalog);
  ui.run("currentId='11111111-1111-4111-8111-111111111111';state={connected:true,model:'official-missing',effort:'minimal'}");
  await ui.nodes.get('model-button').onclick();
  assert.equal(ui.nodes.get('effort-select').disabled,true);
  assert.equal(ui.nodes.get('effort-select').children.some(o=>o.value==='none'||o.value==='minimal'),false);
  assert.equal(ui.nodes.get('model-save').disabled,true);
+ assert.match(ui.nodes.get('model-error').textContent,/未能读取此模型/);
+ ui.nodes.get('model-select').value='official-ready';ui.nodes.get('model-select').onchange();
+ assert.equal(ui.nodes.get('model-error').textContent,'');assert.equal(ui.nodes.get('model-save').disabled,false);
 });
 test('model default must belong to its supported efforts',async()=>{
  const catalog={models:[{id:'official-fixture',name:'Fixture',efforts:['low','high'],defaultEffort:'minimal'}],modelSource:'codex'};
@@ -289,16 +329,79 @@ test('model default must belong to its supported efforts',async()=>{
 });
 
 
-test('explicit upstream refresh replaces the list and reports its access name',async()=>{
+test('model picker uses the backend cache on every open and only explicit refresh bypasses it',async()=>{
  const catalog={models:[{id:'gpt-fixture',name:'GPT',efforts:[]}],modelSource:'api',modelAccessName:'Old access'};
  const ui=await fixture(r=>r(official),'api',catalog);
  ui.run("currentId='11111111-1111-4111-8111-111111111111';state={connected:true,model:'gpt-fixture',effort:'high'}");
  await ui.nodes.get('model-button').onclick();
+ const modelReads=()=>ui.requests.filter(r=>r.includes('catalog?kind=models'));
+ assert.equal(modelReads().length,1);assert.equal(modelReads()[0].includes('refresh=true'),false);
+ ui.nodes.get('model-dialog').close();await ui.nodes.get('model-button').onclick();assert.equal(modelReads().length,2);
+ assert.equal(modelReads()[1].includes('refresh=true'),false);
  catalog.models=[{id:'gemini-pro',name:'Gemini',efforts:[]}];catalog.modelAccessName='suopan-antigravity';
  await ui.nodes.get('model-refresh').onclick();
  assert.equal(ui.nodes.get('model-select').children.some(o=>o.value==='gpt-fixture'),false);
  assert.equal(ui.nodes.get('model-select').children.some(o=>o.value==='gemini-pro'),true);
- assert.match(ui.nodes.get('model-access').textContent,/suopan-antigravity/);
  assert.equal(ui.responses.length,0);
- assert.ok(ui.requests.filter(r=>r.includes('catalog?kind=models&refresh=true')).length>=2);
+ assert.equal(modelReads().length,3);assert.equal(modelReads()[2].includes('refresh=true'),true);
+});
+
+test('startup assembles the shared settings module with notification roots',async()=>{
+ const ui=await fixture(r=>r(official));
+ assert.equal(ui.run('accountSettings instanceof AccountSettingsPanel'),true);
+ assert.equal(ui.run('accountSettings.remindersRoot'),ui.nodes.get('notification-account-reminders'));
+});
+
+test('a provider change replaces its model list and discards an old in-flight response',async()=>{
+ const catalog={models:[{id:'old',name:'Old'}],modelSource:'api'},ui=await fixture(r=>r(official),'api',catalog);
+ ui.run("currentId='11111111-1111-4111-8111-111111111111';state={connected:true,provider:'old',model:'old'};var releaseOld;const readApi=api;api=(url,body)=>url.includes('catalog?kind=models')&&state.provider==='old'?new Promise(resolve=>releaseOld=resolve):readApi(url,body)");
+ const pending=ui.nodes.get('model-button').onclick();
+ catalog.models=[{id:'new',name:'New'}];ui.run("state.provider='new';state.model='new'");
+ await ui.nodes.get('model-button').onclick();
+ ui.run("releaseOld({modelSource:'api',models:[{id:'old',name:'Old'}]})");await pending;
+ assert.deepEqual(ui.nodes.get('model-select').children.map(row=>row.value),['','new','__custom__']);
+ assert.equal(ui.nodes.get('model-error').textContent,'');
+});
+
+test('reopening a failed model query reads the recovered backend result',async()=>{
+ const catalog={models:[],modelSource:'api',modelError:'Temporary failure'},ui=await fixture(r=>r(official),'api',catalog);
+ ui.run("currentId='11111111-1111-4111-8111-111111111111';state={connected:true,provider:'api'}");
+ await ui.nodes.get('model-button').onclick();assert.match(ui.nodes.get('model-error').textContent,/Temporary failure/);
+ delete catalog.modelError;catalog.models=[{id:'ready',name:'Ready'}];
+ await ui.nodes.get('model-button').onclick();
+ assert.equal(ui.requests.filter(url=>url.includes('catalog?kind=models')).length,2);
+ assert.ok(ui.nodes.get('model-select').children.some(row=>row.value==='ready'));
+ assert.doesNotMatch(ui.nodes.get('model-error').textContent,/Temporary failure/);
+});
+
+test('legacy model fields are normalized and a failed directory ends the loading state',async()=>{
+ const ui=await fixture(r=>r(official),'api',{modelSource:'api',models:[{model:'legacy',displayName:'Legacy name'},'string-model']});
+ ui.run("currentId='11111111-1111-4111-8111-111111111111';state={connected:true,provider:'api'}");
+ await ui.nodes.get('model-button').onclick();
+ assert.ok(ui.nodes.get('model-select').children.some(row=>row.value==='legacy'&&row.textContent==='Legacy name'));
+ assert.ok(ui.nodes.get('model-select').children.some(row=>row.value==='string-model'));
+ ui.run("api=async()=>{throw Error('Offline')}");await ui.nodes.get('model-refresh').onclick();
+ assert.doesNotMatch(ui.nodes.get('model-options').textContent,/读取模型列表/);
+ assert.match(ui.nodes.get('model-options').textContent,/读取失败/);
+ assert.equal(ui.nodes.get('model-save').disabled,true);assert.equal(ui.nodes.get('model-refresh').disabled,false);
+});
+
+test('a failed model save retains the selected effort and pending Fast preference',async()=>{
+ const ui=await fixture(r=>r(official),'chatgpt',{modelSource:'codex',models:[{id:'model',name:'Model',efforts:['low','high'],fastTier:'priority'}],fastMode:{allowed:true,provider:'openai'}});
+ ui.run("currentId='11111111-1111-4111-8111-111111111111';state={connected:true,provider:'openai',model:'model',effort:'high',serviceTier:'default'}");
+ await ui.nodes.get('model-button').onclick();ui.nodes.get('effort-select').value='low';
+ ui.nodes.get('fast-mode-enabled').checked=true;ui.nodes.get('fast-mode-enabled').onchange();
+ ui.run("api=async()=>{throw Error('Save failed')}");await ui.nodes.get('model-form').onsubmit({preventDefault(){}});
+ assert.equal(ui.nodes.get('effort-select').value,'low');assert.equal(ui.nodes.get('fast-mode-enabled').checked,true);
+ assert.equal(ui.run('fastModeControl.payload().fastMode'),true);assert.match(ui.nodes.get('model-error').textContent,/Save failed/);
+});
+
+test('large model lists resolve display metadata with linear work',async()=>{
+ const catalog={modelSource:'api',models:Array.from({length:1000},(_,i)=>({id:'model-'+i,name:'Model '+i}))};
+ const ui=await fixture(r=>r(official),'api',catalog);
+ ui.run("currentId='11111111-1111-4111-8111-111111111111';state={connected:true,provider:'api'}");
+ await ui.nodes.get('model-button').onclick();
+ const reads=ui.run("var idReads=0;for(const row of catalogData.models){const id=row.id;Object.defineProperty(row,'id',{get(){idReads++;return id;}});}renderModelChoices();idReads");
+ assert.ok(reads<=catalog.models.length*3,'rendering should scale with the model count');
+ assert.equal(ui.nodes.get('model-options').children.length,1001);
 });

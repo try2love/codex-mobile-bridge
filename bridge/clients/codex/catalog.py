@@ -412,7 +412,7 @@ class Catalog:
                             time.monotonic()-phase, catalog.get('modelSource'), len(catalog.get('models', [])), catalog.get('modelError'))
                 logger.info('catalog fetch complete elapsed=%.3fs', time.monotonic()-started)
                 return {**catalog, 'skillEntries': [],
-                        'fastMode': self.fast_mode(request, cwd) if catalog['modelSource'] == 'codex' else {'allowed': False}}
+                        'fastMode': self.fast_mode(request, cwd, provider) if catalog['modelSource'] == 'codex' else {'allowed': False}}
             if kind == 'skills':
                 phase = time.monotonic()
                 # A runtime busy with an active task can stall a Skill scan. Run
@@ -428,7 +428,7 @@ class Catalog:
                         time.monotonic()-phase, catalog.get('modelSource'), len(catalog.get('models', [])), catalog.get('modelError'))
             phase = time.monotonic();skills = request('skills/list', {'cwds': [cwd], 'forceReload': False}, timeout=request_timeout)
             logger.info('catalog skills elapsed=%.3fs count=%d', time.monotonic()-phase, len(skills.get('data', [])))
-            phase = time.monotonic();fast = self.fast_mode(request, cwd) if catalog['modelSource'] == 'codex' else {'allowed': False}
+            phase = time.monotonic();fast = self.fast_mode(request, cwd, provider) if catalog['modelSource'] == 'codex' else {'allowed': False}
             logger.info('catalog fast-mode elapsed=%.3fs allowed=%s', time.monotonic()-phase, fast.get('allowed'))
             logger.info('catalog fetch complete elapsed=%.3fs', time.monotonic()-started)
             return {**catalog, 'kind': kind, 'skillEntries': skills.get('data', []), 'fastMode': fast}
@@ -458,8 +458,10 @@ class Catalog:
         base = definition.get('base_url') or (effective.get('openai_base_url') or os.environ.get('OPENAI_BASE_URL') if provider == 'openai' else None)
         custom = provider != 'openai' or base or any(definition.get(k) for k in
             ('env_key', 'experimental_bearer_token', 'http_headers', 'env_http_headers', 'auth', 'gateway_oauth'))
-        auth = {} if custom else request('account/read', {'refreshToken': False}).get('account') or {}
-        if custom or auth.get('type') == 'apiKey':
+        # The runtime resolves explicit catalog paths and applies model visibility rules.
+        configured_catalog = bool(effective.get('model_catalog_json')) and provider == (effective.get('model_provider') or 'openai')
+        auth = {} if custom or configured_catalog else request('account/read', {'refreshToken': False}).get('account') or {}
+        if not configured_catalog and (custom or auth.get('type') == 'apiKey'):
             result = {'models': [], 'modelSource': 'api', 'currentEffort': effective.get('model_reasoning_effort')}
             try:
                 if any(definition.get(k) for k in ('http_headers', 'env_http_headers', 'auth', 'gateway_oauth', 'query_params', 'aws')):
@@ -495,28 +497,46 @@ class Catalog:
             cursor = response.get('nextCursor')
             if not cursor:
                 break
+        if configured_catalog:
+            by_id = {m.get('model') or m.get('id'): m for m in models if not m.get('hidden')}
+            for index, model in enumerate(models):
+                identifier = model.get('model') or model.get('id') or ''
+                base_model = by_id.get(identifier.rsplit('/', 1)[-1]) if '/' in identifier else None
+                # Routed aliases may omit capability metadata; keep explicit nonempty overrides.
+                if base_model:
+                    inherited = {}
+                    if not model.get('supportedReasoningEfforts') and base_model.get('supportedReasoningEfforts'):
+                        inherited.update(supportedReasoningEfforts=base_model['supportedReasoningEfforts'],
+                                         defaultReasoningEffort=model.get('defaultReasoningEffort', base_model.get('defaultReasoningEffort')))
+                    if not model.get('serviceTiers') and self.fast_tier(base_model):
+                        inherited.update(serviceTiers=base_model['serviceTiers'],
+                                         defaultServiceTier=model.get('defaultServiceTier', base_model.get('defaultServiceTier')))
+                    models[index] = {**model, **inherited}
         return {'models': models, 'modelSource': 'codex', 'currentEffort': effective.get('model_reasoning_effort')}
 
     @staticmethod
-    def fast_mode(request, cwd):
+    def fast_mode(request, cwd, provider=None):
         # Return capability metadata only; credentials/config contents stay in the runtime.
         unavailable = {'allowed': False}
         try:
             config = request('config/read', {'includeLayers': False, 'cwd': cwd}).get('config', {})
             profile = (config.get('profiles') or {}).get(config.get('profile'), {})
             effective = {**config, **profile}
-            provider = effective.get('model_provider') or 'openai'
+            configured_provider = effective.get('model_provider') or 'openai'
+            provider = provider or configured_provider
             definition = (effective.get('model_providers') or {}).get(provider) or {}
-            if provider != 'openai' or effective.get('openai_base_url') or any(definition.get(key) for key in
-                    ('base_url', 'env_key', 'experimental_bearer_token', 'http_headers', 'env_http_headers', 'auth', 'gateway_oauth')):
-                return unavailable
-            auth = request('account/read', {'refreshToken': False})
-            if (auth.get('account') or {}).get('type') != 'chatgpt' or auth.get('requiresOpenaiAuth') is not True:
-                return unavailable
+            configured_catalog = bool(effective.get('model_catalog_json')) and provider == configured_provider
+            if not configured_catalog:
+                if provider != 'openai' or effective.get('openai_base_url') or any(definition.get(key) for key in
+                        ('base_url', 'env_key', 'experimental_bearer_token', 'http_headers', 'env_http_headers', 'auth', 'gateway_oauth')):
+                    return unavailable
+                auth = request('account/read', {'refreshToken': False})
+                if (auth.get('account') or {}).get('type') != 'chatgpt' or auth.get('requiresOpenaiAuth') is not True:
+                    return unavailable
             requirements = request('configRequirements/read', {}).get('requirements') or {}
             features = {**(config.get('features') or {}), **(profile.get('features') or {})}
             allowed = features.get('fast_mode') is not False and (requirements.get('featureRequirements') or {}).get('fast_mode') is not False
-            return {'allowed': allowed, 'defaultServiceTier': effective.get('service_tier')}
+            return {'allowed': allowed, 'provider': provider, 'defaultServiceTier': effective.get('service_tier')}
         except CatalogError:
             # Older/offline runtimes still expose their existing model and Skill list.
             return unavailable
@@ -606,8 +626,12 @@ class Catalog:
                 cached = self.kind_caches[kind].get(key)
                 if cached and not refresh and time.monotonic() - cached[0] < 300:
                     return cached[1]
-                raw = self._fetch(cwd, provider, kind)
-                models = [{'id': m.get('model', m.get('id')), 'name': m.get('displayName', m.get('model')),
+                try:
+                    raw = self._fetch(cwd, provider, kind)
+                except CatalogError:
+                    self.kind_caches[kind].pop(key, None)
+                    raise
+                models = [{'id': m.get('model', m.get('id')), 'name': m.get('displayName') or m.get('name') or m.get('model') or m.get('id'),
                            'description': m.get('description', ''), 'efforts': [e['reasoningEffort'] for e in m.get('supportedReasoningEfforts', [])],
                            'defaultEffort': m.get('defaultReasoningEffort'), 'isDefault': m.get('isDefault', False), 'fastTier': self.fast_tier(m),
                            'defaultServiceTier': m.get('defaultServiceTier')} for m in raw['models'] if not m.get('hidden')]
@@ -615,7 +639,10 @@ class Catalog:
                          'fastMode': raw.get('fastMode', {'allowed': False}),
                          'modelError': raw.get('modelError'), 'currentModel': raw.get('currentModel'),
                          'currentEffort': raw.get('currentEffort')}
-                self.kind_caches[kind][key] = (time.monotonic(), value)
+                if value.get('modelError'):
+                    self.kind_caches[kind].pop(key, None)
+                else:
+                    self.kind_caches[kind][key] = (time.monotonic(), value)
                 return value
 
         bucket = self.skill_store.bucket(cwd)
@@ -692,8 +719,12 @@ class Catalog:
             cached = self.cache.get(key)
             if cached and not refresh and time.monotonic() - cached[0] < 300:
                 return cached[1]
-            raw = self._fetch(cwd, provider)
-            models = [{'id': m.get('model', m.get('id')), 'name': m.get('displayName', m.get('model')),
+            try:
+                raw = self._fetch(cwd, provider)
+            except CatalogError:
+                self.cache.pop(key, None)
+                raise
+            models = [{'id': m.get('model', m.get('id')), 'name': m.get('displayName') or m.get('name') or m.get('model') or m.get('id'),
                        'description': m.get('description', ''), 'efforts': [e['reasoningEffort'] for e in m.get('supportedReasoningEfforts', [])],
                        'defaultEffort': m.get('defaultReasoningEffort'), 'isDefault': m.get('isDefault', False), 'fastTier': self.fast_tier(m),
                        'defaultServiceTier': m.get('defaultServiceTier')} for m in raw['models'] if not m.get('hidden')]
@@ -710,5 +741,8 @@ class Catalog:
             value = {'models': models, 'skills': skills, 'errors': errors, 'fastMode': raw.get('fastMode', {'allowed': False}),
                      'modelSource': raw.get('modelSource', 'codex'), 'modelError': raw.get('modelError'),
                      'currentModel': raw.get('currentModel'), 'currentEffort': raw.get('currentEffort')}
-            self.cache[key] = (time.monotonic(), value)
+            if value.get('modelError'):
+                self.cache.pop(key, None)
+            else:
+                self.cache[key] = (time.monotonic(), value)
             return value

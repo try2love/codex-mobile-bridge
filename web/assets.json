@@ -23,6 +23,7 @@
   "/account.css": "features/accounts/account.css",
   "/account.js": "features/accounts/account.js",
   "/accounts.js": "features/accounts/accounts.js",
+  "/account-settings.js": "features/accounts/account-settings.js",
   "/client-accounts.js": "features/accounts/client-accounts.js",
   "/client-lifecycle.css": "features/clients/client-lifecycle.css",
   "/client-navigation.css": [

@@ -2,7 +2,7 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 
-function fixture(){
+function fixture(resetOnly=false){
   let now=Date.now(),timerId=0;const timers=new Map();
   class Clock extends Date{static now(){return now;}}
   function node(tag){return {tag,textContent:'',hidden:false,disabled:false,children:[],attributes:{},
@@ -17,9 +17,9 @@ function fixture(){
   let confirmed=true,consume=async()=>({outcome:'reset',account:{...value,resetCredits:{availableCount:2,credits:[]}}}),read=async()=>structuredClone(value),hidden=0;
   const context=vm.createContext({root,button,setTimeout(fn,ms){const id=++timerId;timers.set(id,{fn,at:now+ms});return id;},clearTimeout(id){timers.delete(id);},document:{createElement:node,body},Date:Clock,performance:{now:()=>now},crypto:{randomUUID:()=> '11111111-1111-4111-8111-111111111111'},
     window:{confirm:prompt=>{prompts.push(prompt);return confirmed;}},localStorage:{getItem(){return null;},setItem(){}},
-    read:()=>read(),consume:body=>{writes.push(structuredClone(body));return consume(body);},onHidden:()=>hidden++});
+    read:()=>read(),consume:body=>{writes.push(structuredClone(body));return consume(body);},onHidden:()=>hidden++,resetOnly});
   for(const file of ['web/shared/i18n.js','web/features/accounts/account.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
-  const panel=vm.runInContext('new AccountPanel({root,button,read,consume,onHidden,visible:()=>true})',context);
+  const panel=vm.runInContext('new AccountPanel({root,button,read,consume,onHidden,visible:()=>true,resetOnly})',context);
   const all=(n=root)=>[n,...n.children.flatMap(all)];
   const confirmButton=()=>body.children[0]?.children.at(-1).children[1];
   const confirmDialog=()=>{advance(5000);confirmButton()?.onclick();};
@@ -36,6 +36,35 @@ test('official account shows limits, authoritative card count and refresh stays 
   assert.equal(ui.all().find(n=>n.tag==='progress').value,75);
   assert.equal(ui.panel.countdown(2523),'1 天 18 小时 3 分钟');
   ui.language();assert.match(ui.text(),/Remaining 75%/);assert.match(ui.text(),/Shared account limits/);
+});
+
+test('reset-only view retains cards and confirmation while quota and subscription stay in the account card',async()=>{
+ const ui=fixture(true);ui.setValue({...ui.value(),subscription:{source:'online',periodEndsAt:2000000000},limits:[{...ui.value().limits[0],credits:{balance:12}}]});await ui.panel.refresh();
+ assert.match(ui.text(),/test@example.test/);assert.match(ui.text(),/可用数量：3/);assert.match(ui.text(),/Test reset/);assert.match(ui.text(),/未提供到期时间/);assert.equal(ui.all().find(n=>n.textContent==='刷新重置卡').disabled,false);
+ assert.doesNotMatch(ui.text(),/共享额度|剩余 75%|Credits:|订阅|更新于/);assert.equal(ui.all().some(n=>n.tag==='progress'),false);
+ const pending=ui.panel.redeem('card-1');assert.equal(ui.confirmButton().disabled,true);assert.equal(ui.writes.length,0);ui.confirmDialog();await pending;
+ assert.equal(ui.writes.length,1);assert.equal(ui.writes[0].confirmed,true);assert.match(ui.text(),/可用数量：2/);
+ ui.language();assert.match(ui.text(),/Refresh resets/);assert.doesNotMatch(ui.text(),/Shared account limits|Subscription|Updated at:/);
+});
+
+test('reset-only view distinguishes an empty inventory from missing details and retains query errors',async()=>{
+ const ui=fixture(true);ui.setValue({...ui.value(),resetCredits:{availableCount:0,credits:[]}});await ui.panel.refresh();assert.match(ui.text(),/当前没有可用重置卡/);
+ ui.setValue({...ui.value(),resetCredits:null});await ui.panel.refresh();assert.match(ui.text(),/暂未提供重置卡信息/);assert.doesNotMatch(ui.text(),/当前没有可用重置卡/);
+ ui.setRead(()=>{throw Error('unavailable');});await ui.panel.refresh();assert.match(ui.text(),/保留上次结果/);assert.equal(ui.panel.value.canReset,false);
+});
+
+test('reset titles are localized in the list and confirmation while only the welcome message is removed',async()=>{
+ for(const resetOnly of [false,true]){
+  const ui=fixture(resetOnly),welcome="Thanks for using Codex! You've been granted one free rate limit reset.";
+  const card={...ui.value().resetCredits.credits[0],title:'Full reset (Weekly + 5 hr)',description:welcome};
+  ui.setValue({...ui.value(),resetCredits:{availableCount:1,credits:[card]}});await ui.panel.refresh();
+  assert.match(ui.text(),/完全重置（每周＋5 小时）/);assert.doesNotMatch(ui.text(),/Full reset|Thanks for using Codex/);
+  const pending=ui.panel.redeem('card-1');assert.match(ui.all(ui.body).map(n=>n.textContent).join('\n'),/完全重置（每周＋5 小时）/);
+  ui.body.children[0].oncancel({preventDefault(){}});await pending;assert.equal(ui.writes.length,0);
+  ui.setValue({...ui.value(),resetCredits:{availableCount:1,credits:[{...card,description:welcome+' Only resets Codex usage limits.'}]}});await ui.panel.refresh();
+  assert.match(ui.text(),/Only resets Codex usage limits\./);assert.doesNotMatch(ui.text(),/Thanks for using Codex/);
+  ui.language();assert.match(ui.text(),/Full reset \(Weekly \+ 5 hr\)/);assert.doesNotMatch(ui.text(),/Thanks for using Codex/);
+ }
 });
 
 test('API login, failed auth check and logout clear all previous official data',async()=>{

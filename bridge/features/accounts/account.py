@@ -165,6 +165,19 @@ class Account:
         return AccountRPC(self.home, executable)
 
     @staticmethod
+    def login_context(rpc, auth=None):
+        if auth is None:
+            auth = rpc.request('account/read', {'refreshToken': False})
+        account = auth.get('account') or {}
+        # The routing origin proves this is the native login, not proxy-shaped metadata.
+        if (account.get('type') != 'chatgpt' or auth.get('requiresOpenaiAuth') is not True or
+                (auth.get('workspaceRouting') or {}).get('backendOrigin') != 'https://chatgpt.com'):
+            return None
+        identity = json.dumps([account, auth.get('workspaceRouting')], sort_keys=True, separators=(',', ':'))
+        return {'loginType': 'chatgpt', 'accountKey': hashlib.sha256(identity.encode()).hexdigest(),
+                'email': account.get('email'), 'planType': account.get('planType'), 'canReset': True}
+
+    @staticmethod
     def context(rpc):
         config = rpc.request('config/read', {'includeLayers': False}).get('config', {})
         profile = (config.get('profiles') or {}).get(config.get('profile'), {})

@@ -33,7 +33,7 @@
   // Keep device controls visible; connection and notification details stay compact.
   for(const name of ['network','devices','notifications'])for(const article of document.querySelectorAll('[data-panel="'+name+'"] > article'))compact(article).open=name==='devices';
   const notificationPage=document.querySelector('[data-panel="notifications"]');
-  const groups=[['推送通道',['bark-enabled','ntfy-enabled','pushplus-enabled','mobile-enabled']],['通知事件',['security-enabled','address-enabled','watches']],['内容与跳转',['click-base']],['帮助与测试',[]]];
+  const groups=[['推送通道',['bark-enabled','ntfy-enabled','pushplus-enabled','mobile-enabled']],['通知事件',['security-enabled','address-enabled','watches','notification-account-reminders']],['内容与跳转',['click-base']],['帮助与测试',[]]];
   for(const [title,ids] of groups){const group=document.createElement('div');group.className='module-group';group.append(text('h2',title));notificationPage.append(group);for(const id of ids){const setting=$(id)?.closest('.module-setting');if(setting)group.append(setting);}if(!ids.length)for(const setting of notificationPage.querySelectorAll(':scope > .module-setting'))group.append(setting);}
   const maintenance=document.querySelector('[data-panel="advanced"]');const maintenanceTabs=document.createElement('div');maintenanceTabs.className='maintenance-tabs';
   for(const [key,label] of [['general','常规'],['updates','更新'],['logs','日志与诊断']]){const b=text('button',label);b.type='button';b.onclick=()=>maintenanceTab(key);b.dataset.maintenanceTab=key;maintenanceTabs.append(b);}maintenance.before(maintenanceTabs);

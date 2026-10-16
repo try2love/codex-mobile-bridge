@@ -8,7 +8,44 @@
 .attach-button{display:grid;place-items:center;width:30px;height:36px;padding:5px;border:0;background:transparent;color:var(--muted);border-radius:8px}.attach-button:hover{background:var(--soft)}.attach-button svg{width:21px;height:21px}.attachment-list{display:flex;flex-wrap:wrap;gap:7px;max-height:150px;overflow:auto;padding:6px 0}.attachment-chip{display:flex;align-items:center;gap:5px;max-width:100%;padding:7px 8px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}.attachment-info{min-width:0;display:grid;gap:3px}.attachment-info strong{font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.attachment-info small{font-size:10px;color:var(--muted)}.attachment-remove{border:0;background:none;color:var(--muted);padding:5px;font-size:18px}.session-indicator{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:8px;vertical-align:1px;background:#16a34a}.session-indicator.completed{background:#3b82f6}.session-indicator.ended{background:#d97706}.session-indicator.unknown{background:#94a3b8}html[data-show-activity=false] .session-indicator{display:none}
 @media(max-width:350px){.compose-bottom{gap:4px;grid-template-columns:26px minmax(0,1fr) minmax(0,1fr) auto}.attach-button{width:26px}.compose-bottom:has(.goal-toggle:not([hidden])){gap:4px}.compose-actions{gap:4px}.compose-actions .primary,.compose-actions .stop{padding:8px 7px}.compose-bottom select{font-size:10px}}
 
-.fast-mode-control{padding:12px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}.fast-mode-control p{font-size:12px;line-height:1.6;margin:8px 0 0}.fast-mode-control a{color:var(--green)}
+#model-dialog{width:min(94vw,460px)}
+#model-dialog .picker-head{margin-bottom:20px}
+#model-dialog .tool-button{display:inline-flex;align-items:center;gap:6px;max-width:none}
+#model-dialog .tool-button svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+#model-form{display:grid;gap:18px}
+#model-dialog .model-field{min-width:0}
+#model-dialog .model-section-title{margin-bottom:9px;color:var(--muted);font-size:12px;font-weight:650;letter-spacing:.02em}
+#model-dialog #model-list-field{position:relative}
+#model-dialog #model-list-field::after{content:"";position:absolute;inset:auto 1px 1px;height:24px;border-radius:0 0 13px 13px;background:linear-gradient(to bottom,transparent,var(--surface));pointer-events:none;opacity:0;transition:opacity .16s}
+#model-dialog #model-list-field.has-more::after{opacity:1}
+#model-dialog .model-options{position:relative;display:grid;grid-auto-rows:42px;align-content:start;gap:3px;max-height:min(218px,34dvh);overflow-y:auto;overscroll-behavior:contain;padding:5px;border:1px solid var(--line);border-radius:14px;background:var(--surface);scrollbar-width:thin}
+#model-dialog .model-choice{position:relative;display:flex;align-items:center;gap:12px;min-width:0;min-height:42px;margin:0;padding:8px 12px;border-radius:10px;cursor:pointer;color:var(--text);font-size:13px;transition:background .15s,color .15s}
+#model-dialog .model-choice:hover{background:var(--raised)}
+#model-dialog .model-choice:has(input:checked){background:var(--soft);color:var(--green);font-weight:650}
+#model-dialog .model-choice:has(input:focus-visible),#model-dialog .effort-choice:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:-2px}
+#model-dialog .model-choice-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#model-dialog .model-choice-badge{flex:none;padding:2px 6px;border:1px solid var(--line);border-radius:6px;color:var(--muted);font-size:10px;font-weight:500}
+#model-dialog .model-choice-check{flex:none;opacity:0;font-size:16px;line-height:1}
+#model-dialog .model-choice input:checked~.model-choice-check{opacity:1}
+#model-dialog .model-choice input[type=radio],#model-dialog .effort-choice input[type=radio]{position:absolute;width:1px;height:1px;margin:0;padding:0;opacity:0;pointer-events:none}
+#model-dialog .model-choice:has(input:disabled),#model-dialog .effort-choice:has(input:disabled){opacity:.55;cursor:default}
+#model-dialog #custom-model-label{margin:0}
+#model-dialog #custom-model{margin-top:8px}
+#model-dialog .effort-options{display:grid;grid-template-columns:repeat(var(--effort-columns,4),minmax(0,1fr));gap:4px;padding:4px;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
+#model-dialog .effort-choice{position:relative;display:grid;place-items:center;min-width:0;min-height:38px;margin:0;padding:6px 3px;border-radius:9px;cursor:pointer;text-align:center;font-size:12px;line-height:1.2}
+#model-dialog .effort-choice:has(input:checked){background:var(--raised);box-shadow:0 1px 5px #00000014;color:var(--green);font-weight:650}
+#model-dialog .fast-mode-control{padding:13px 2px 0;border-top:1px solid var(--line)}
+#model-dialog .model-fast-label{display:flex;align-items:center;justify-content:space-between;min-height:34px;margin:0;font-size:13px;font-weight:600;cursor:pointer}
+#model-dialog #fast-mode-enabled{appearance:none;position:relative;width:38px;height:22px;margin:0;border:0;border-radius:20px;background:var(--muted);cursor:pointer;transition:background .15s}
+#model-dialog #fast-mode-enabled::before{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 1px 3px #0003;transition:transform .15s}
+#model-dialog #fast-mode-enabled:checked{background:var(--accent)}
+#model-dialog #fast-mode-enabled:checked::before{transform:translateX(16px)}
+#model-dialog #fast-mode-enabled:disabled{opacity:.45;cursor:default}
+#model-dialog #model-error{margin:0}
+#model-dialog #model-save{min-height:44px;border-radius:11px}
+@media(prefers-reduced-motion:reduce){#model-dialog #model-list-field::after,#model-dialog .model-choice,#model-dialog #fast-mode-enabled,#model-dialog #fast-mode-enabled::before{transition:none}}
+@media(max-height:700px){#model-dialog .picker-head{margin-bottom:12px}#model-form{gap:14px}#model-dialog .model-options{max-height:min(173px,24dvh)}}
+@media(max-width:350px){#model-dialog #model-refresh{justify-content:center;width:34px;padding:6px}#model-dialog #model-refresh span{display:none}}
 
 .goal-editor{display:block;width:100%;box-sizing:border-box;resize:vertical;min-height:5rem;margin:.5rem 0;padding:.6rem;font:inherit;color:inherit;background:var(--bg);border:1px solid var(--line);border-radius:8px}
 

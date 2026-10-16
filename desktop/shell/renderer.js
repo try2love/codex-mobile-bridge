@@ -9,7 +9,7 @@ const accountPanel=new AccountPanel({root:$('account-content'),button:$('account
 const watchPanel=new WatchPanel({root:$('watches'),change:value=>api.notificationWatches(value)});
 const harnessPanel=typeof HarnessPanel==='undefined'?null:new HarnessPanel({root:$('harness-panel'),api,t,feedback});
 const desktopConnections=typeof DesktopConnectionsPanel==='undefined'?null:new DesktopConnectionsPanel({root:$('desktop-connections'),api,feedback});
-function fields(){return [...$('settings').querySelectorAll('input,textarea,select')].filter(node=>!node.closest('#watches')&&!node.closest('#connections')&&!node.closest('#lan-addresses')&&!node.closest('#file-transfer-settings')&&node.id!=='connection-kind');}
+function fields(){return [...$('settings').querySelectorAll('input,textarea,select')].filter(node=>!node.closest('#notification-account-reminders')&&!node.closest('#watches')&&!node.closest('#connections')&&!node.closest('#lan-addresses')&&!node.closest('#file-transfer-settings')&&node.id!=='connection-kind');}
 function fieldValues(){return Object.fromEntries(fields().map(node=>[node.id,node.type==='checkbox'?node.checked:node.value]));}
 function updateDirty(){
   const changed=new Set();
@@ -61,9 +61,12 @@ function showError(error){
 
 function moduleName(name){return ({account:'accounts','desktop-sessions':'accounts',harness:'accounts',updates:'advanced',logs:'advanced'})[name]||name;}
 function tab(name){const requested=name;name=moduleName(name);activeTab=name;
-  if(name==='accounts'){desktopConnections?.refresh();desktopConnections?.refreshClients();harnessPanel?.refresh();accountsPanel?.refresh();}
+  if(name==='accounts'){desktopConnections?.refresh();desktopConnections?.refreshClients();harnessPanel?.refresh();}
   document.querySelectorAll('[data-panel]').forEach(node=>node.hidden=moduleName(node.dataset.panel)!==name);
   document.querySelectorAll('[data-tab]').forEach(node=>node.classList.toggle('active',node.dataset.tab===name));
+  if(name==='accounts'&&accountsPanel?.visible())accountsPanel.refresh(true);
+  if(name==='notifications')accountSettings?.refresh();
+  accountsPanel?.schedule();accountSettings?.schedule();
   window.GatewayLayout?.tab(name);$('page-title').textContent=t(titles[name]);if(snapshot)updateDirty();if(name==='advanced')loadLogs();if(name==='devices')loadDevices();if(snapshot)renderUpdate();
   if(['desktop-sessions','harness'].includes(requested))document.querySelectorAll('[data-panel="'+requested+'"] > details').forEach(node=>node.open=true);
 }
@@ -373,8 +376,19 @@ $('refresh-devices').onclick=loadDevices;
 $('device-policy').oninput=$('device-policy').onchange=()=>{devicesDirty=true;$('device-feedback').textContent=t('IP 规则有未保存的修改。');};
 $('device-policy').onsubmit=event=>{event.preventDefault();return changeDevices({action:'save',policy:devicePolicy()});};
 
-const accountsPanel=typeof AccountsPanel==='undefined'?null:new AccountsPanel({root:$('accounts-content'),desktop:true,read:()=>api.accounts({action:'list'}),request:value=>api.accounts(value),onReset:async()=>{$('account-details').open=true;await accountPanel.refresh();$('account-content').querySelector('.account-cards')?.scrollIntoView({block:'nearest'});},onChanged:()=>accountPanel.clear(),onUpdate:value=>{desktopConnections?.renderAccount(value);accountPanel.schedule();$('account-button').hidden=value.current?.kind!=='chatgpt';if($('account-button').hidden)$('account-details').open=false;}});
+const accountStateSync=typeof AccountStateSync==='undefined'?null:new AccountStateSync();
+function readAccountStatus(refresh=false){
+  const resetForecast=refresh?'refresh':!!accountsPanel?.visible(),read=()=>api.accounts({action:'list',resetForecast});
+  return accountStateSync?accountStateSync.read(resetForecast,read):read();
+}
+let accountSettings=null;
+const accountsPanel=typeof AccountsPanel==='undefined'?null:new AccountsPanel({stateSync:accountStateSync,notify:feedback,root:$('accounts-content'),desktop:true,read:readAccountStatus,request:value=>api.accounts(value),onReset:async()=>{$('account-details').open=true;await accountPanel.refresh();$('account-content').querySelector('.account-cards')?.scrollIntoView({block:'nearest'});},onChanged:()=>accountPanel.clear(),onUpdate:value=>{accountSettings?.accept(value);desktopConnections?.renderAccount(value);accountPanel.schedule();$('account-button').hidden=value.current?.kind!=='chatgpt'||!!value.activeId||!!value.loginAccount;if($('account-button').hidden)$('account-details').open=false;}});
 
 $('account-details').ontoggle=()=>{if($('account-details').open)accountPanel.refresh();};
 
+if(accountsPanel&&typeof AccountSettingsPanel!=='undefined')accountSettings=new AccountSettingsPanel({
+  stateSync:accountStateSync,remindersRoot:$('notification-account-reminders'),updatesRoot:$('codex-desktop-updates'),desktop:true,
+  read:()=>readAccountStatus(),request:value=>api.accounts(value),requestId:()=>accountsPanel.requestId(),onUpdate:value=>accountsPanel.acceptReminders(value)
+});
+document.addEventListener('bridge-client-config',event=>{if(event.detail==='codex'&&accountsPanel?.visible())accountsPanel.refresh(true);else{accountsPanel?.schedule();accountSettings?.schedule();}});
 if(accountsPanel){accountsPanel.current.after($('account-details'));}

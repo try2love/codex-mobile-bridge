@@ -39,6 +39,7 @@
       "web/shared/i18n.js",
       "web/features/accounts/account.js",
       "web/features/accounts/accounts.js",
+      "web/features/accounts/account-settings.js",
       "web/features/accounts/client-accounts.js",
       "web/features/clients/client-lifecycle.css",
       "web/features/clients/client-lifecycle.js",

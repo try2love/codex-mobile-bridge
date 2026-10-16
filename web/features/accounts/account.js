@@ -1,8 +1,8 @@
 'use strict';
 // Shared by the phone and desktop; only sanitized account data reaches this view.
 class AccountPanel {
-  constructor({root,button,status=null,read,consume,onHidden=()=>{},onConsumed=()=>{},visible=()=>false}){
-    Object.assign(this,{root,button,status,read,consume,onHidden,onConsumed,visible});
+  constructor({root,button,status=null,read,consume,onHidden=()=>{},onConsumed=()=>{},visible=()=>false,resetOnly=false}){
+    Object.assign(this,{root,button,status,read,consume,onHidden,onConsumed,visible,resetOnly});
     this.value=null;this.generation=0;this.busy=false;this.loading=false;this.checkedAt=0;
     this.timer=null;this.countdownTimer=null;this.pending=null;this.message='';this.error='';
   }
@@ -67,43 +67,48 @@ class AccountPanel {
       this.status.textContent=BridgeI18n.t(this.loading&&!value?.visible?'正在读取登录状态…':
         ({api:'API 接入',signedOut:'Codex 未登录',unknown:'登录状态未识别',unavailable:'登录状态暂不可用'}[value?.loginType]||'登录状态暂不可用'));
     }
-    if(!value?.visible)return;
+    if(!value?.visible){
+      if(!value&&this.resetOnly&&this.loading){const query=this.node('p',BridgeI18n.t('查询中…'),'account-query');query.setAttribute('role','status');this.root.replaceChildren(query);}
+      return;
+    }
     const t=BridgeI18n.t,root=this.root;root.replaceChildren();
-    const heading=this.node('div',undefined,'account-heading'),refresh=this.node('button',t('查看剩余额度'));
+    const heading=this.node('div',undefined,'account-heading'),refresh=this.node('button',t(this.resetOnly?'刷新重置卡':'查看剩余额度'));
     refresh.type='button';refresh.disabled=this.loading||this.busy;
     refresh.onclick=()=>this.refresh();
     heading.append(this.node('strong',value.email||t('ChatGPT 账号')),refresh);root.append(heading);
     if(this.loading){const query=this.node('p',t('查询中…'),'account-query');query.setAttribute('role','status');root.append(query);}
-    root.append(this.node('p',t('此电脑 · 账号共享额度')+(value.planType?' · '+value.planType:''),'account-muted'));
     if(value.error)root.append(this.node('p',t(value.error),'error'));
-    if(!value.limits.length&&!value.error)root.append(this.node('p',t('暂未提供额度信息'),'account-muted'));
-    for(const bucket of value.limits){
-      const card=this.node('section',undefined,'account-quota');card.append(this.node('h3',bucket.name));
-      if(!bucket.windows.length)card.append(this.node('p',t('暂未提供额度信息'),'account-muted'));
-      for(const window of bucket.windows){
-        const row=this.node('div',undefined,'account-window');
-        row.append(this.node('span',this.duration(window.windowDurationMins)),this.node('strong',window.remainingPercent==null?t('暂未提供'):t('剩余 ')+Math.round(window.remainingPercent*10)/10+'%'));
-        card.append(row);
-        if(window.remainingPercent!=null){const progress=this.node('progress');progress.max=100;progress.value=window.remainingPercent;progress.setAttribute('aria-label',t('剩余额度'));card.append(progress);}
-        let reset=t('恢复时间：')+this.time(window.resetsAt);
-        if(typeof window.resetsAt==='number'){
-          const minutes=Math.ceil((window.resetsAt*1000-Date.now())/60000);
-          reset+=' · '+(minutes>0?t('约 ')+this.countdown(minutes)+t('后恢复'):t('等待刷新'));
+    if(!this.resetOnly){
+      root.append(this.node('p',t('此电脑 · 账号共享额度')+(value.planType?' · '+value.planType:''),'account-muted'));
+      if(!value.limits.length&&!value.error)root.append(this.node('p',t('暂未提供额度信息'),'account-muted'));
+      for(const bucket of value.limits){
+        const card=this.node('section',undefined,'account-quota');card.append(this.node('h3',bucket.name));
+        if(!bucket.windows.length)card.append(this.node('p',t('暂未提供额度信息'),'account-muted'));
+        for(const window of bucket.windows){
+          const row=this.node('div',undefined,'account-window');
+          row.append(this.node('span',this.duration(window.windowDurationMins)),this.node('strong',window.remainingPercent==null?t('暂未提供'):t('剩余 ')+Math.round(window.remainingPercent*10)/10+'%'));
+          card.append(row);
+          if(window.remainingPercent!=null){const progress=this.node('progress');progress.max=100;progress.value=window.remainingPercent;progress.setAttribute('aria-label',t('剩余额度'));card.append(progress);}
+          let reset=t('恢复时间：')+this.time(window.resetsAt);
+          if(typeof window.resetsAt==='number'){
+            const minutes=Math.ceil((window.resetsAt*1000-Date.now())/60000);
+            reset+=' · '+(minutes>0?t('约 ')+this.countdown(minutes)+t('后恢复'):t('等待刷新'));
+          }
+          card.append(this.node('p',reset,'account-muted'));
         }
-        card.append(this.node('p',reset,'account-muted'));
+        if(bucket.credits)card.append(this.node('p','Credits: '+(bucket.credits.unlimited?t('不限量'):bucket.credits.balance??t('暂未提供')),'account-muted'));
+        root.append(card);
       }
-      if(bucket.credits)card.append(this.node('p','Credits: '+(bucket.credits.unlimited?t('不限量'):bucket.credits.balance??t('暂未提供')),'account-muted'));
-      root.append(card);
+      const period=value.subscription?.periodEndsAt,online=value.subscription?.source==='online';
+      if(Number.isFinite(period)&&(online||period>Date.now()/1000))root.append(this.node('p',t(online?'查询到的订阅周期截止日期：':'登录记录中的订阅日期（非实时）：')+this.time(period),'account-subscription'));
+      else root.append(this.node('p',t('订阅有效期暂未确认'),'account-subscription'));
+      if(value.subscription?.error)root.append(this.node('p',t(value.subscription.error),'account-muted'));
+      root.append(this.node('p',t(online?'订阅日期来自在线查询，续订与扣费状态请以 ChatGPT 订阅页面为准。':'登录记录可能滞后，请以 ChatGPT 订阅页面为准。'),'account-muted'));
     }
-    const period=value.subscription?.periodEndsAt,online=value.subscription?.source==='online';
-    if(Number.isFinite(period)&&(online||period>Date.now()/1000))root.append(this.node('p',t(online?'查询到的订阅周期截止日期：':'登录记录中的订阅日期（非实时）：')+this.time(period),'account-subscription'));
-    else root.append(this.node('p',t('订阅有效期暂未确认'),'account-subscription'));
-    if(value.subscription?.error)root.append(this.node('p',t(value.subscription.error),'account-muted'));
-    root.append(this.node('p',t(online?'订阅日期来自在线查询，续订与扣费状态请以 ChatGPT 订阅页面为准。':'登录记录可能滞后，请以 ChatGPT 订阅页面为准。'),'account-muted'));
     const cards=value.resetCredits,section=this.node('section',undefined,'account-cards');
-    section.append(this.node('h3',t('重置卡')));
+    if(!this.resetOnly)section.append(this.node('h3',t('重置卡')));
     section.append(this.node('p',cards?.availableCount==null?t('暂未提供重置卡信息'):t('可用数量：')+cards.availableCount));
-    if(!value.canReset&&!value.error)section.append(this.node('p',t('此账号暂不可使用重置卡，请刷新后重试'),'account-muted'));
+    if(!value.canReset&&!value.error&&!this.loading)section.append(this.node('p',t('此账号暂不可使用重置卡，请刷新后重试'),'account-muted'));
     if(this.pending){
       section.append(this.node('p',t('上次重置结果尚未确认，请重试原请求。')));
       const retry=this.node('button',t('重试原请求'));retry.type='button';retry.disabled=this.busy||this.loading||!value.canReset;
@@ -114,22 +119,23 @@ class AccountPanel {
         button.onclick=()=>this.redeem(null);section.append(button);
       }else{
         for(const card of [...(cards.credits||[])].sort((a,b)=>Number(this.canRedeem(b.id))-Number(this.canRedeem(a.id))||(a.expiresAt??Infinity)-(b.expiresAt??Infinity))){
-          const row=this.node('div',undefined,'account-card');
-          row.append(this.node('strong',card.title||t('重置卡')));
-          if(card.description)row.append(this.node('p',card.description,'account-muted'));
-          row.append(this.node('p',card.expiresAt==null?t('未提供到期时间'):t('到期时间：')+this.time(card.expiresAt),'account-muted'));
+          const row=this.node('div',undefined,'account-card'),info=this.node('div',undefined,'account-card-info');
+          info.append(this.node('strong',t(card.title||'重置卡')));
+          const description=String(card.description||'').replace("Thanks for using Codex! You've been granted one free rate limit reset.",'').trim();
+          if(description)info.append(this.node('p',description,'account-muted'));
+          info.append(this.node('p',card.expiresAt==null?t('未提供到期时间'):t('到期时间：')+this.time(card.expiresAt),'account-muted'));
           const expired=card.expiresAt!=null&&card.expiresAt*1000<=Date.now();
           const button=this.node('button',t(expired?'已过期':card.status!=='available'?'不可用':'使用重置卡'));button.type='button';
           button.disabled=this.busy||this.loading||!this.canRedeem(card.id);
-          button.onclick=()=>this.redeem(card.id);row.append(button);section.append(row);
+          button.onclick=()=>this.redeem(card.id);row.append(info,button);section.append(row);
         }
         if(!cards.credits.length)section.append(this.node('p',t('卡片详情暂不可用，请刷新后重试'),'account-muted'));
       }
-    }
+    }else if(cards?.availableCount===0)section.append(this.node('p',t('当前没有可用重置卡'),'account-muted'));
     root.append(section);
     if(this.message){const message=this.node('p',t(this.message));message.setAttribute('role','status');root.append(message);}
     if(this.error){const error=this.node('p',t(this.error),'error');error.setAttribute('role','alert');root.append(error);}
-    root.append(this.node('p',t('更新于：')+this.time(value.updatedAt),'account-muted'));
+    if(!this.resetOnly)root.append(this.node('p',t('更新于：')+this.time(value.updatedAt),'account-muted'));
   }
   requestId(){if(typeof crypto.randomUUID==='function')return crypto.randomUUID();const bytes=crypto.getRandomValues(new Uint8Array(16));bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;const h=[...bytes].map(n=>n.toString(16).padStart(2,'0')).join('');return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);}
   canRedeem(creditId,retry=false){
@@ -151,7 +157,7 @@ class AccountPanel {
     cancel.type=confirm.type='button';cancel.autofocus=true;confirm.disabled=true;
     const actions=this.node('div',undefined,'reset-confirm-actions'),status=this.node('p',undefined,'account-muted');
     status.setAttribute('role','status');
-    dialog.append(title,this.node('strong',value.email||t('ChatGPT 账号')),this.node('p',card?.title||t('重置卡')),
+    dialog.append(title,this.node('strong',value.email||t('ChatGPT 账号')),this.node('p',t(card?.title||'重置卡')),
       this.node('p',card?.expiresAt==null?t('未提供到期时间'):t('到期时间：')+this.time(card.expiresAt),'account-muted'),
       this.node('p',t('成功后会消耗一张卡，重置符合条件的账号额度。')),status,actions);
     actions.append(cancel,confirm);
