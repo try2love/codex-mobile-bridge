@@ -160,7 +160,7 @@ class CliSessions:
             options = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
             result = subprocess.run([executable, 'app-server', 'daemon', 'version'],
                                     env=environment, stdin=subprocess.DEVNULL,
-                                    capture_output=True, text=True, timeout=5, **options)
+                                    capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5, **options)
             if result.returncode == 0:
                 report = json.loads(result.stdout)
                 if isinstance(report, dict) and report.get('status') == 'running':
@@ -247,7 +247,7 @@ class CliSessions:
         try:
             options = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
             result = subprocess.run(command, env=environment, stdin=subprocess.DEVNULL,
-                                    capture_output=True, text=True, timeout=25, **options)
+                                    capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=25, **options)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise AppServerUnavailable('Could not start the existing Codex CLI daemon') from exc
         if result.returncode:
@@ -573,11 +573,7 @@ class CliSessions:
                                          replay_safe=True).get('config') or {}
             profile = (config.get('profiles') or {}).get(config.get('profile')) or {}
             effective = {**config, **profile}
-            definition = (effective.get('model_providers') or {}).get(provider) or {}
-            custom = (provider != 'openai' or effective.get('openai_base_url') or
-                      any(definition.get(key) for key in ('base_url', 'env_key',
-                          'experimental_bearer_token', 'http_headers', 'env_http_headers',
-                          'auth', 'gateway_oauth')))
+            custom = Catalog.custom_provider(effective, provider)
             if not custom:
                 account = self.client.request('account/read', {'refreshToken': False},
                                               replay_safe=True).get('account') or {}

@@ -646,6 +646,23 @@ class CliSessionTests(unittest.TestCase):
         self.assertEqual(result['models'], [])
         self.assertFalse(any(method == 'model/list' for method, _ in self.fake.sent))
 
+    def test_chatgpt_gateway_models_come_from_joined_daemon(self):
+        self.sessions.attach('thread-a', explicit=True)
+        self.sessions.metadata['thread-a']['modelProvider']='openai'
+        self.fake.thread['modelProvider']='openai'
+        original=self.fake.request
+        def request(method,params,**kwargs):
+            if method=='config/read':
+                return {'config':{'openai_base_url':'http://127.0.0.1:3425/backend-api/codex'}}
+            if method=='account/read':
+                return {'account':{'type':'chatgpt'},'requiresOpenaiAuth':True}
+            return original(method,params,**kwargs)
+        self.fake.request=request
+        result=self.sessions.get_kind('thread-a','models')
+        self.assertEqual(result['modelSource'],'codex')
+        self.assertEqual(result['models'][0]['id'],'native-model')
+        self.assertFalse(any(method=='turn/start' for method,_ in self.fake.sent))
+
     def test_native_goal_unknown_result_is_not_replayed(self):
         self.sessions.attach('thread-a', explicit=True)
         original = self.fake.request
@@ -831,6 +848,8 @@ class CliSessionTests(unittest.TestCase):
             self.assertTrue(self.sessions.daemon_may_be_running())
         self.assertEqual(run.call_args.args[0], ['/fixture/codex', 'app-server', 'daemon', 'version'])
         self.assertEqual(run.call_args.kwargs['env']['CODEX_HOME'], str(self.home))
+        self.assertEqual(run.call_args.kwargs['encoding'], 'utf-8')
+        self.assertEqual(run.call_args.kwargs['errors'], 'replace')
 
     def test_local_daemon_status_only_reports_stopped_without_runtime_evidence(self):
         Path(self.fake.socket_path).unlink()

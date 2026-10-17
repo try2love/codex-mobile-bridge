@@ -111,6 +111,18 @@ class AccountTests(unittest.TestCase):
             self.assertEqual(self.account.read(), {'visible': False, 'loginType': 'api'})
             self.assertEqual([m for m, _ in self.rpc.calls], ['config/read'])
 
+    def test_chatgpt_route_override_retains_native_account_context_and_separates_caches(self):
+        direct=self.account.read()
+        for config in ({'openai_base_url':'http://127.0.0.1:3425/backend-api/codex'},
+                       {'profile':'proxy','profiles':{'proxy':{'openai_base_url':'https://proxy.test/backend-api/codex'}}}):
+            self.rpc.config=config
+            result=self.account.read()
+            self.assertTrue(result['visible'])
+            self.assertEqual(result['loginType'],'chatgpt')
+            self.assertNotEqual(result['accountKey'],direct['accountKey'])
+        self.rpc.auth['account']={'type':'apiKey'}
+        self.assertEqual(self.account.read(),{'visible':False,'loginType':'api'})
+
     def test_unknown_quota_and_card_count_are_not_zero(self):
         result = normalize_limits({'rateLimits': {'primary': {}}})
         self.assertIsNone(result['limits'][0]['windows'][0]['remainingPercent'])

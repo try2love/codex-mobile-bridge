@@ -168,11 +168,9 @@ class Account:
     def context(rpc):
         config = rpc.request('config/read', {'includeLayers': False}).get('config', {})
         profile = (config.get('profiles') or {}).get(config.get('profile'), {})
-        provider = profile.get('model_provider', config.get('model_provider')) or 'openai'
-        definition = (config.get('model_providers') or {}).get(provider) or {}
+        effective = {**config, **profile}
         # A custom provider can use ChatGPT-shaped credentials. It is not native login.
-        if provider != 'openai' or profile.get('openai_base_url', config.get('openai_base_url')) or any(definition.get(key) for key in
-                ('base_url', 'env_key', 'experimental_bearer_token', 'http_headers', 'env_http_headers', 'auth', 'gateway_oauth')):
+        if Catalog.custom_provider(effective):
             return {'loginType': 'api'}
         auth = rpc.request('account/read', {'refreshToken': False})
         account = auth.get('account') or {}
@@ -182,7 +180,9 @@ class Account:
             return {'loginType': 'api'}
         if account.get('type') != 'chatgpt' or auth.get('requiresOpenaiAuth') is not True:
             return {'loginType': 'unknown'}
-        identity = json.dumps([account, auth.get('workspaceRouting')], sort_keys=True, separators=(',', ':'))
+        identity = json.dumps([account, auth.get('workspaceRouting'),
+                               effective.get('openai_base_url') or os.environ.get('OPENAI_BASE_URL')],
+                              sort_keys=True, separators=(',', ':'))
         return {'loginType': 'chatgpt', 'accountKey': hashlib.sha256(identity.encode()).hexdigest(),
                 'email': account.get('email'), 'planType': account.get('planType'),
                 'canReset': True}

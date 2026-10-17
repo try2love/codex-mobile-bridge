@@ -51,6 +51,45 @@ class InfoTests(unittest.TestCase):
             raise AssertionError(method)
         result=Mock();result.request.side_effect=request;return result
 
+    def test_chatgpt_route_override_uses_native_identity_and_matches_saved_account(self):
+        row,auth=self.official();private_json(self.home/'auth.json',auth)
+        for config in ({'openai_base_url':'http://127.0.0.1:3425/backend-api/codex'},
+                       {'profile':'gateway','profiles':{'gateway':{'openai_base_url':'https://proxy.test/backend-api/codex'}}}):
+            with self.subTest(config=config):
+                native=self.rpc();request=native.request.side_effect
+                native.request.side_effect=lambda method,params: {'config':config} if method=='config/read' else request(method,params)
+                with patch('bridge.features.accounts.accounts.ManagedRPC') as rpc:
+                    rpc.return_value.__enter__.return_value=native
+                    identity=self.manager.info.read_identity()
+                self.assertEqual(identity,{'kind':'chatgpt','name':row['email'],'owner':row['tokenOwner']})
+                self.assertEqual(self.manager.info.match(identity),row)
+                native.request.assert_any_call('account/read',{'refreshToken':False})
+
+    def test_openai_route_override_keeps_api_key_or_signed_out_identity(self):
+        config={'openai_base_url':'https://proxy.test/v1'}
+        private_json(self.home/'auth.json',{'OPENAI_API_KEY':'fixture-key'})
+        for account,kind in (({'type':'apiKey'},'api'),(None,'signedOut')):
+            native=Mock()
+            native.request.side_effect=lambda method,params: {'config':config} if method=='config/read' else {'account':account}
+            with patch('bridge.features.accounts.accounts.ManagedRPC') as rpc:
+                rpc.return_value.__enter__.return_value=native
+                identity=self.manager.info.read_identity()
+            self.assertEqual(identity['kind'],kind)
+            if kind=='api':
+                self.assertEqual(identity['baseUrl'],'https://proxy.test/v1')
+                self.assertEqual(identity['key'],'fixture-key')
+
+    def test_explicit_api_definition_does_not_use_leftover_chatgpt_identity(self):
+        config={'model_providers':{'openai':{'base_url':'https://api.test/v1','experimental_bearer_token':'fixture-key'}}}
+        native=Mock();native.request.return_value={'config':config}
+        with patch('bridge.features.accounts.accounts.ManagedRPC') as rpc:
+            rpc.return_value.__enter__.return_value=native
+            identity=self.manager.info.read_identity()
+        self.assertEqual(identity['kind'],'api')
+        self.assertEqual(identity['baseUrl'],'https://api.test/v1')
+        self.assertEqual(identity['key'],'fixture-key')
+        native.request.assert_called_once_with('config/read',{'includeLayers':False})
+
     def test_inactive_official_usage_models_are_isolated_and_sanitized(self):
         row,_=self.official();before=self.manager.snapshot_files();info=self.manager.info
         info.read_identity=Mock(return_value={'kind':'api','name':'other','key':'unrelated','baseUrl':'https://other.test'})

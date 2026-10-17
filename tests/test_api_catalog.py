@@ -131,6 +131,44 @@ class ApiCatalogTests(unittest.TestCase):
             result=self.reader.read_models(request,str(self.home),'openai')
         upstream.assert_not_called();self.assertEqual(result['models'][0]['model'],'gpt-fixture')
 
+    def test_chatgpt_with_route_override_keeps_native_gateway_catalog(self):
+        for config,environment in (
+                ({'openai_base_url':'http://127.0.0.1:3425/backend-api/codex'},{}),
+                ({'profile':'gateway','profiles':{'gateway':{'openai_base_url':'https://proxy.test/backend-api/codex'}}},{}),
+                ({},{'OPENAI_BASE_URL':'http://127.0.0.1:3425/backend-api/codex'})):
+            with self.subTest(config=config,environment=environment):
+                self.config=config;self.calls.clear()
+                def request(method,params):
+                    if method=='account/read':
+                        self.calls.append((method,params))
+                        return {'account':{'type':'chatgpt'},'requiresOpenaiAuth':True}
+                    return self.request(method,params)
+                with patch.dict(os.environ,environment),patch('bridge.clients.codex.catalog.model_ids') as upstream:
+                    result=self.reader.read_models(request,str(self.home))
+                upstream.assert_not_called()
+                self.assertEqual(result['modelSource'],'codex')
+                self.assertEqual(result['models'][0]['model'],'gpt-fixture')
+                self.assertNotIn('modelError',result)
+                self.assertIn(('account/read',{'refreshToken':False}),self.calls)
+
+    def test_openai_route_override_with_key_uses_api_catalog_and_never_native_fallback(self):
+        self.config={'openai_base_url':'https://proxy.test/v1'}
+        with patch('bridge.clients.codex.catalog.model_ids',return_value=['provider-fixture']) as upstream:
+            result=self.reader.read_models(self.request,str(self.home))
+        upstream.assert_called_once_with('https://proxy.test/v1','fixture-key')
+        self.assertEqual(result['modelSource'],'api')
+        self.assertNotIn('model/list',[method for method,_ in self.calls])
+
+    def test_explicit_openai_api_definition_keeps_its_catalog_despite_chatgpt_credentials(self):
+        self.config={'model_providers':{'openai':{'base_url':'https://proxy.test/v1','experimental_bearer_token':'gateway-key'}}}
+        def request(method,params):
+            if method=='account/read':raise AssertionError('API route must not use leftover ChatGPT identity')
+            return self.request(method,params)
+        with patch('bridge.clients.codex.catalog.model_ids',return_value=['provider-fixture']) as upstream:
+            result=self.reader.read_models(request,str(self.home))
+        upstream.assert_called_once_with('https://proxy.test/v1','gateway-key')
+        self.assertEqual(result['modelSource'],'api')
+
     def test_missing_env_key_and_extra_auth_do_not_send_partial_credentials(self):
         for definition in ({'env_key':'CMB_ABSENT_FIXTURE_KEY'}, {'http_headers':{'private':'fixture'}}):
             self.config['model_providers']['bridge_api'].update(definition)

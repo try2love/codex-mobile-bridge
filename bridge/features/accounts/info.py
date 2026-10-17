@@ -4,6 +4,7 @@ import threading
 import time
 
 from bridge.features.accounts.account import Account
+from bridge.clients.codex.catalog import Catalog
 from bridge.features.notifications.channels import read_json
 
 
@@ -30,8 +31,7 @@ class AccountInfo:
             effective = {**config, **profile}
             provider = effective.get('model_provider') or 'openai'
             definition = (effective.get('model_providers') or {}).get(provider) or {}
-            custom = provider != 'openai' or effective.get('openai_base_url') or any(definition.get(k) for k in
-                ('base_url','env_key','experimental_bearer_token','http_headers','env_http_headers','auth','gateway_oauth'))
+            custom = Catalog.custom_provider(effective, provider)
             auth = read_json(manager.home/'auth.json', {})
             if not custom:
                 account = rpc.request('account/read', {'refreshToken': False}).get('account') or {}
@@ -45,7 +45,7 @@ class AccountInfo:
                    else definition.get('experimental_bearer_token') or '')
             if not key and not definition.get('env_key') and (provider == 'openai' or definition.get('requires_openai_auth')):
                 key = auth.get('OPENAI_API_KEY') or os.environ.get('OPENAI_API_KEY', '')
-            return {'kind':'api', 'name':'API · '+provider, 'baseUrl':(definition.get('base_url') or (effective.get('openai_base_url') if provider == 'openai' else None) or 'https://api.openai.com/v1').rstrip('/'),
+            return {'kind':'api', 'name':'API · '+provider, 'baseUrl':(definition.get('base_url') or ((effective.get('openai_base_url') or os.environ.get('OPENAI_BASE_URL')) if provider == 'openai' else None) or 'https://api.openai.com/v1').rstrip('/'),
                     'key':key, 'model':effective.get('model')}
 
     def match(self, identity):

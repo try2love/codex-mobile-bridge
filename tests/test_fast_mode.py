@@ -43,6 +43,12 @@ class FastCapabilityTests(unittest.TestCase):
         self.assertFalse(self.capability({'features': {'fast_mode': False}})[0]['allowed'])
         self.assertFalse(self.capability(fail='configRequirements/read')[0]['allowed'])
 
+    def test_chatgpt_route_override_keeps_native_capability_policy(self):
+        config={'openai_base_url':'http://127.0.0.1:3425/backend-api/codex'}
+        self.assertTrue(self.capability(config)[0]['allowed'])
+        self.assertFalse(self.capability(config,requirements={'featureRequirements':{'fast_mode':False}})[0]['allowed'])
+        self.assertFalse(self.capability(config,auth={'account':{'type':'apiKey'}})[0]['allowed'])
+
     def test_catalog_keeps_model_tier_ids_defaults_and_filters_unknown_capabilities(self):
         reader = Catalog('/unused', 'unused')
         reader._fetch = lambda cwd, provider=None: {'models': [

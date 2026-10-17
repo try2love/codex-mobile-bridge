@@ -449,6 +449,16 @@ class Catalog:
             reader.join(timeout=1)
             process.stdout.close()
 
+    @staticmethod
+    def custom_provider(effective, provider=None):
+        provider = provider or effective.get('model_provider') or 'openai'
+        definition = (effective.get('model_providers') or {}).get(provider) or {}
+        # openai_base_url (and OPENAI_BASE_URL) only overrides routing. The
+        # native account still decides whether that route uses ChatGPT or a key.
+        return provider != 'openai' or any(definition.get(key) for key in
+            ('base_url', 'env_key', 'experimental_bearer_token', 'http_headers',
+             'env_http_headers', 'auth', 'gateway_oauth'))
+
     def read_models(self, request, cwd, provider=None):
         config = request('config/read', {'includeLayers': False, 'cwd': cwd}).get('config', {})
         profile = (config.get('profiles') or {}).get(config.get('profile')) or {}
@@ -456,8 +466,7 @@ class Catalog:
         provider = provider or effective.get('model_provider') or 'openai'
         definition = (effective.get('model_providers') or {}).get(provider) or {}
         base = definition.get('base_url') or (effective.get('openai_base_url') or os.environ.get('OPENAI_BASE_URL') if provider == 'openai' else None)
-        custom = provider != 'openai' or base or any(definition.get(k) for k in
-            ('env_key', 'experimental_bearer_token', 'http_headers', 'env_http_headers', 'auth', 'gateway_oauth'))
+        custom = self.custom_provider(effective, provider)
         auth = {} if custom else request('account/read', {'refreshToken': False}).get('account') or {}
         if custom or auth.get('type') == 'apiKey':
             result = {'models': [], 'modelSource': 'api', 'currentEffort': effective.get('model_reasoning_effort')}
@@ -506,9 +515,7 @@ class Catalog:
             profile = (config.get('profiles') or {}).get(config.get('profile'), {})
             effective = {**config, **profile}
             provider = effective.get('model_provider') or 'openai'
-            definition = (effective.get('model_providers') or {}).get(provider) or {}
-            if provider != 'openai' or effective.get('openai_base_url') or any(definition.get(key) for key in
-                    ('base_url', 'env_key', 'experimental_bearer_token', 'http_headers', 'env_http_headers', 'auth', 'gateway_oauth')):
+            if Catalog.custom_provider(effective, provider):
                 return unavailable
             auth = request('account/read', {'refreshToken': False})
             if (auth.get('account') or {}).get('type') != 'chatgpt' or auth.get('requiresOpenaiAuth') is not True:
