@@ -54,6 +54,43 @@ test('HTML provides visible status before the independent CSP-safe bootstrap, wi
   assert.doesNotMatch(html,/<script[^>]*>\s*[^<\s]|\son(?:click|error|load)=/);
 });
 
+function resourceFixture(){
+  const started=[],pending=[],listeners=new Map(),nodes=new Map();let domReady,peak=0;
+  for(const id of ['bootstrap-status','bootstrap-title','bootstrap-message','bootstrap-retry'])nodes.set(id,{style:{},setAttribute(){}});
+  function record(node,url,kind){started.push({url,kind,async:node.async});pending.push(node);peak=Math.max(peak,pending.length);}
+  const styles=[...html.matchAll(/<link[^>]*data-bridge-href="([^"]+)"/g)].map(([,url])=>({getAttribute(){return url;},removeAttribute(){},set href(value){record(this,value,'style');}}));
+  const scripts=[...html.matchAll(/<script[^>]*data-bridge-src="([^"]+)"/g)].map(([,url])=>({getAttribute(){return url;},parentNode:{replaceChild(node){record(node,node.src,'script');}}}));
+  const window={addEventListener(name,fn){listeners.set(name,fn);},removeEventListener(){}};
+  const context=vm.createContext({window,navigator:{userAgent:'resource-fixture'},location:{href:'https://gateway.test/',hash:'',search:''},
+    localStorage:{getItem(){return null;}},setTimeout(){return 1;},clearTimeout(){},
+    document:{readyState:'loading',getElementById:id=>nodes.get(id),createElement(){return {};},
+      querySelectorAll:selector=>selector.startsWith('link')?styles:scripts,addEventListener(name,fn){if(name==='DOMContentLoaded')domReady=fn;}}});
+  vm.runInContext(fs.readFileSync(path.join(root,'web/shared/bootstrap.js'),'utf8'),context);
+  return {started,pending,nodes,styles,scripts,ready(){domReady();},get peak(){return peak;},
+    finish(index=0,failed=false){const node=pending.splice(index,1)[0];node[failed?'onerror':'onload']();}};
+}
+
+test('startup bounds resource concurrency and preserves style and classic-script order',()=>{
+  const ui=resourceFixture();assert.equal(ui.started.length,0);ui.ready();
+  assert.equal(ui.pending.length,4);assert.ok(ui.started.every(row=>row.kind==='style'));
+  while(ui.started.length<ui.styles.length||ui.pending.some(node=>'href' in node))ui.finish(ui.pending.length-1);
+  assert.deepEqual(ui.started.filter(row=>row.kind==='style').map(row=>row.url),[...html.matchAll(/data-bridge-href="([^"]+)"/g)].map(match=>match[1]));
+  while(ui.pending.length)ui.finish(ui.pending.length-1);
+  const loadedScripts=ui.started.filter(row=>row.kind==='script');
+  assert.equal(ui.peak,4);assert.equal(ui.styles.length,9);assert.equal(loadedScripts.length,40);
+  assert.ok(loadedScripts.every(row=>row.async===false));
+  assert.deepEqual(loadedScripts.map(row=>row.url),[...html.matchAll(/data-bridge-src="([^"]+)"/g)].map(match=>match[1]));
+  assert.equal([...html.matchAll(/<script\s+src=/g)].length,1);
+  assert.equal([...html.matchAll(/<link rel="stylesheet" href=/g)].length,1);
+});
+
+test('a failed queued resource is reported once and does not stall or replay the queue',()=>{
+  const ui=resourceFixture();ui.ready();ui.finish(0,true);
+  while(ui.pending.length)ui.finish();
+  assert.equal(ui.started.length,49);assert.equal(new Set(ui.started.map(row=>row.url)).size,49);
+  assert.match(ui.nodes.get('bootstrap-message').textContent,/resource @ \/vendor\/katex\/katex\.min\.css/);
+});
+
 test('missing dependency fails in the real synchronous app chain before auth and produces a visible error',async()=>{
   for(const missing of ['i18n','activity']){
     const ui=await fixture({missing});assert.ok(ui.error);assert.equal(ui.requests.length,0);
@@ -74,6 +111,23 @@ test('auth rejection reports generic localized text without exposing the excepti
   assert.match(ui.nodes.get('bootstrap-message').textContent,/gateway/);
   assert.doesNotMatch(ui.nodes.get('bootstrap-message').textContent,/private-token/);
   assert.equal(ui.nodes.get('login').hidden,true);
+});
+
+test('startup diagnostics show script path and error type without URL secrets or exception text',async()=>{
+  const ui=await fixture({auth:'pending',hash:'#pair=private-pairing-token'});
+  ui.dispatch('error',{target:ui.window,filename:'https://gateway.test/app.js?token=private-query#private-fragment',lineno:17,
+    error:{name:'TypeError',message:'private-exception-text'},message:'private-event-text'});
+  const text=ui.nodes.get('bootstrap-message').textContent;
+  assert.match(text,/启动诊断/);assert.match(text,/TypeError @ \/app\.js:17/);assert.match(text,/auth/);
+  assert.doesNotMatch(text,/private-|gateway\.test/);
+});
+
+test('startup resource and rejection diagnostics do not print untrusted failure messages',async()=>{
+  const ui=await fixture({auth:'pending'});
+  ui.dispatch('error',{target:{tagName:'SCRIPT',src:'https://gateway.test/i18n.js?private-query'}});
+  assert.match(ui.nodes.get('bootstrap-message').textContent,/resource @ \/i18n\.js/);
+  ui.dispatch('unhandledrejection',{reason:{name:'private-error-name',message:'private-rejection'}});
+  assert.doesNotMatch(ui.nodes.get('bootstrap-message').textContent,/private-/);
 });
 
 test('normal login and authenticated workspace hide startup status and cancel its error listeners',async()=>{
@@ -118,7 +172,7 @@ test('unknown pairing writes are not replayed by reload and instead request a ne
   ui.nodes.get('bootstrap-retry').onclick();assert.equal(ui.location.hash,'');assert.equal(ui.writes.length,1);assert.equal(ui.reloads,1);
 });
 
-test('bootstrap failure leaves static status available and does not prevent the main app from revealing login',async()=>{
+test('the standalone app can reveal login without the optional bootstrap API',async()=>{
   const waiting=await fixture({missing:'bootstrap',auth:'pending'});assert.equal(waiting.nodes.get('bootstrap-status').hidden,false);
   const loaded=await fixture({missing:'bootstrap'});assert.equal(loaded.nodes.get('login').hidden,false);assert.equal(loaded.nodes.get('bootstrap-status').hidden,true);
 });
