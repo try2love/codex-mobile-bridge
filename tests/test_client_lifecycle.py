@@ -133,6 +133,36 @@ class ClientLifecycleTests(unittest.TestCase):
         with self.assertRaises(BridgeUnavailable):
             manager.clients_status()
 
+    def test_desktop_client_read_returns_pending_while_native_inspection_is_blocked(self):
+        manager = self.manager
+        previous = manager.client_snapshot
+        entered, release = threading.Event(), threading.Event()
+        original = manager.clients
+        def inspect(refresh=False):
+            entered.set()
+            release.wait(3)
+            return original(refresh=refresh)
+        with patch.object(manager, 'clients', side_effect=inspect) as read:
+            try:
+                started = time.monotonic()
+                result = manager.control({'action': 'clients', 'refresh': True})
+                self.assertLess(time.monotonic() - started, 0.2)
+                self.assertTrue(result['pending'])
+                self.assertEqual(result['clients'], previous['clients'])
+                self.assertTrue(entered.wait(1))
+                repeated = manager.control({'action': 'clients', 'refresh': True})
+                self.assertTrue(repeated['pending'])
+                self.assertEqual(read.call_count, 1)
+            finally:
+                release.set()
+                deadline = time.monotonic() + 3
+                while manager.client_refreshing and time.monotonic() < deadline:
+                    time.sleep(0.01)
+            self.assertFalse(manager.client_refreshing)
+            self.assertFalse(manager.control({'action': 'clients'})['pending'])
+            self.assertEqual(read.call_count, 1)
+            self.assertTrue(read.call_args.kwargs['refresh'])
+
     def test_client_status_does_not_publish_a_refresh_after_close(self):
         manager = self.manager
         manager.client_cache = None

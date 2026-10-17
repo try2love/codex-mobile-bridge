@@ -46,16 +46,16 @@ class DesktopConnectionsPanel {
     try{
       const value=await ClientLifecycle.request(()=>this.api.desktopSessions({action:'status'}),{timeout:this.statusTimeout??10000,uncertain:false,message:'客户端状态读取超时，请重试。'});if(revision!==this.statusRevision)return;
       this.connectionValue=value;this.statusError='';if(document.activeElement!==this.deepseekHome)this.deepseekHome.value=value.deepseekHome||'';
-      this.renderDetails();
-    }catch(error){if(revision!==this.statusRevision)return;this.statusError=error.message;this.scanMessage=error.message;this.scanError=true;this.renderScan();this.renderDetails();}
+      this.renderScan();this.renderDetails();
+    }catch(error){if(revision!==this.statusRevision)return;this.statusError=error.message;this.renderScan();this.renderDetails();}
   }
   async refreshClients(refresh=false){
     const root=document.getElementById('client-overview');if(!root||this.scanning||this.choosingClient||(this.busy&&!refresh))return;
     if(this.clientsLoading){await this.clientsLoading;if(refresh)return this.refreshClients(true);return;}
     const revision=this.clientsRevision;
     const pending=(async()=>{
-      try{const value=await ClientLifecycle.request(()=>this.api.desktopSessions({action:'clients',refresh}),{timeout:this.statusTimeout??10000,uncertain:false,message:'客户端状态读取超时，请重试。'});if(revision!==this.clientsRevision)return;ClientLifecycle.reconcile(this.operationFailures,value.clients);this.clients=value.clients;this.gatewayRunning=value.gatewayRunning??this.gatewayRunning;this.windowsSession=value.windowsSession??this.windowsSession;this.renderClients();this.renderScan();}
-      catch(error){if(revision!==this.clientsRevision)return;this.scanMessage=error.message;this.scanError=true;this.renderScan();}
+      try{const value=await ClientLifecycle.request(()=>this.api.desktopSessions({action:'clients',refresh}),{timeout:this.statusTimeout??10000,uncertain:false,message:'客户端状态读取超时，请重试。'});if(revision!==this.clientsRevision)return;this.statusPending=value.pending===true;if(value.refreshError)throw Error(value.refreshError);this.clientsReadError='';if(!this.statusPending){ClientLifecycle.reconcile(this.operationFailures,value.clients);this.clients=value.clients;this.gatewayRunning=value.gatewayRunning??this.gatewayRunning;this.windowsSession=value.windowsSession??this.windowsSession;this.renderClients();}this.renderScan();}
+      catch(error){if(revision!==this.clientsRevision)return;this.clientsReadError=error.message;this.renderScan();}
     })();
     this.clientsLoading=pending;try{await pending;}finally{if(this.clientsLoading===pending)this.clientsLoading=null;this.renderClients();}
   }
@@ -63,7 +63,7 @@ class DesktopConnectionsPanel {
   hasUncertain(){return [...(this.operationFailures?.values()||[])].some(value=>value.uncertain);}
   retryOperation(id){const failure=this.operationFailures?.get(id);if(!failure||this.hasUncertain())return;if(typeof failure.recoveryRestart==='boolean')return this.recoverDeepseek(failure.recoveryRestart);if(failure.desktopAction)return this.action(failure.desktopAction);return failure.action==='initialize'?this.action('connect-claude'):this.toggleClient(id,failure.action==='enable');}
   pollClients(fast=false){
-    if(document.hidden||document.getElementById('clients-page').hidden||this.hasUncertain()||(fast&&!this.clients?.some(client=>this.connection(client).waiting)))return;
+    if(document.hidden||document.getElementById('clients-page').hidden||(this.hasUncertain()&&!this.statusPending)||(fast&&!this.statusPending&&!this.clients?.some(client=>this.connection(client).waiting)))return;
     return this.refreshClients();
   }
   async scan(manual=false){
@@ -118,7 +118,8 @@ class DesktopConnectionsPanel {
     }catch(error){release();this.feedback(error.message,true);}
   }
   renderScan(){
-    const node=document.getElementById('client-scan-status');if(node){node.textContent=BridgeI18n.t(this.scanMessage||'选择需要接入的应用。macOS Claude 默认后台启动并尝试恢复已有连接；“初始化连接”经确认后使用电脑前台。Windows 优先尝试后台初始化。')+' '+BridgeI18n.t(ClientLifecycle.sessionNotice(this.windowsSession));node.classList.toggle('error',!!this.scanError);}
+    const readError=this.clientsReadError||this.statusError;
+    const node=document.getElementById('client-scan-status');if(node){node.textContent=BridgeI18n.t(readError||this.scanMessage||(this.statusPending?'正在检查接入…':'选择需要接入的应用。macOS Claude 默认后台启动并尝试恢复已有连接；“初始化连接”经确认后使用电脑前台。Windows 优先尝试后台初始化。'))+' '+BridgeI18n.t(ClientLifecycle.sessionNotice(this.windowsSession));node.classList.toggle('error',!!readError||!!this.scanError);}
     const button=document.getElementById('refresh-clients');if(button){button.disabled=!!this.scanning||!!this.busy||!!this.choosingClient;button.textContent=BridgeI18n.t(this.scanning?'正在扫描…':'重新扫描');}
     this.root.querySelectorAll('[data-desktop-action]').forEach(button=>button.disabled=!!this.scanning||!!this.busy||!!this.choosingClient||(button.dataset.desktopAction!=='scan'&&this.hasUncertain()));
   }

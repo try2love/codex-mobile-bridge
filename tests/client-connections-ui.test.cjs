@@ -3,6 +3,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 function fixture({accounts=false}={}){
   function node(tag){const value={tag,textContent:'',value:'',hidden:false,disabled:false,children:[],dataset:{},attributes:{},className:'',append(...children){for(const child of children){child.parent=this;this.children.push(child);}},replaceChildren(...children){this.children=[];this.append(...children);},after(...children){const at=this.parent.children.indexOf(this)+1;for(const child of children)child.parent=this.parent;this.parent.children.splice(at,0,...children);},setAttribute(k,v){this.attributes[k]=v;},matches(selector){if(selector.startsWith('.'))return this.className.split(' ').includes(selector.slice(1));const attribute=selector.match(/^\[([^=\]]+)(?:="([^"]+)")?\]$/);if(attribute){const actual=this.attributes[attribute[1]]??this.dataset[attribute[1].replace(/^data-/,'').replace(/-([a-z])/g,(_,letter)=>letter.toUpperCase())];return attribute[2]===undefined?actual!==undefined:actual===attribute[2];}return this.tag===selector;},querySelectorAll(selector){return this.children.flatMap(child=>[...(child.matches(selector)?[child]:[]),...child.querySelectorAll(selector)]);},querySelector(selector){return this.querySelectorAll(selector)[0]||null;},closest(){return null;}};const events={};Object.assign(value,{addEventListener(type,fn){events[type]=fn;},showModal(){this.open=true;},close(){this.open=false;events.close?.();},remove(){if(this.parent)this.parent.children=this.parent.children.filter(child=>child!==this);},focus(){}});value.classList={toggle(){},add(...names){value.className+=' '+names.join(' ');},contains:name=>value.className.split(' ').includes(name)};return value;}
   const nodes=Object.fromEntries(['client-overview','client-scan-status','refresh-clients','clients-page'].map(id=>[id,node('div')]));
+  for(const value of Object.values(nodes))value.classList.toggle=(name,force)=>{const classes=new Set(value.className.split(' ').filter(Boolean)),enabled=force??!classes.has(name);if(enabled)classes.add(name);else classes.delete(name);value.className=[...classes].join(' ');return enabled;};
   const input=node('input'),workspace=node('pre'),claudeHome=node('pre'),claudeData=node('div'),statuses={deepseek:node('p'),claude:node('p')},choose=node('button'),scan=node('button');scan.dataset.desktopAction='scan';claudeData.hidden=true;for(const status of Object.values(statuses))status.dataset.i18n='正在检查接入…';
   const articles={};if(accounts)for(const provider of ['deepseek','claude']){const article=node('article'),automatic=node('div');automatic.className='client-auto-setup';article.append(automatic);if(provider==='deepseek'){const details=node('details'),label=node('label');label.append(input);details.append(label);article.append(details);}articles[provider]=article;}
   const root={hidden:false,querySelector(selector){const provider=selector.includes('deepseek')?'deepseek':'claude';if(selector.includes('.client-auto-setup'))return articles[provider]?.querySelector('.client-auto-setup')||null;if(selector.startsWith('[data-client-config='))return articles[provider]||null;if(selector==='input')return accounts?articles.deepseek.querySelector('input'):input;if(selector==='[data-deepseek-home]')return input;if(selector==='[data-desktop-choose]')return choose;if(selector==='[data-claude-workspace]')return workspace;if(selector==='[data-claude-home]')return claudeHome;if(selector==='[data-claude-data]')return claudeData;return statuses[provider];},querySelectorAll(selector){if(selector==='[data-desktop-status]')return Object.values(statuses);if(selector.includes('data-desktop-action'))return [scan];return Object.values(articles).flatMap(article=>article.querySelectorAll(selector));}};
@@ -121,6 +122,42 @@ test('installed but unsupported Claude is never shown as connected or switchable
 test('an offline read failure preserves established configuration instead of inventing unconfigured rows',async()=>{
   const ui=fixture(),clients=[{id:'codex',name:'Codex',configured:true,connected:false,enabled:true,reason:'接入配置已就绪'}];ui.panel.clients=clients;ui.panel.renderClients();ui.setHandler(async()=>{throw Error('read unavailable');});await ui.panel.refreshClients();
   assert.equal(ui.panel.clients,clients);assert.match(ui.text(),/Codex/);assert.match(ui.nodes['client-scan-status'].textContent,/read unavailable/);
+});
+test('pending desktop status keeps clients and uncertain writes until a completed fast poll',async()=>{
+  const ui=fixture(),clients=[{id:'codex',name:'Codex',configured:true,connected:true,enabled:true}];ui.panel.clients=clients;
+  ui.panel.operationFailures=new Map([['codex',{action:'quit',uncertain:true,message:'result unknown'}]]);
+  ui.setHandler(async()=>({clients:[],pending:true}));await ui.panel.refreshClients(true);
+  assert.equal(ui.panel.clients,clients);assert.equal(ui.panel.hasUncertain(),true);assert.equal(ui.panel.statusPending,true);
+  assert.equal(ui.nodes['client-scan-status'].classList.contains('error'),false);
+  ui.setHandler(async()=>({clients,pending:false}));await ui.panel.pollClients(true);
+  assert.equal(ui.calls.length,2);assert.equal(ui.panel.statusPending,false);assert.equal(ui.panel.hasUncertain(),false);
+});
+test('successful desktop client read clears a transient error and keeps genuine scan errors',async()=>{
+  const ui=fixture(),clients=[{id:'codex',name:'Codex',configured:true,connected:true,enabled:true}];ui.panel.clients=clients;
+  ui.setHandler(async()=>{throw Error('read unavailable');});await ui.panel.refreshClients();
+  assert.equal(ui.nodes['client-scan-status'].classList.contains('error'),true);
+  ui.setHandler(async()=>({clients,pending:false}));await ui.panel.refreshClients();
+  assert.doesNotMatch(ui.nodes['client-scan-status'].textContent,/read unavailable/);
+  assert.equal(ui.nodes['client-scan-status'].classList.contains('error'),false);
+  ui.panel.scanMessage='scan failed';ui.panel.scanError=true;await ui.panel.refreshClients();
+  assert.match(ui.nodes['client-scan-status'].textContent,/scan failed/);
+  assert.equal(ui.nodes['client-scan-status'].classList.contains('error'),true);
+});
+test('successful diagnostic read clears its own error without masking a client read failure',async()=>{
+  const ui=fixture();ui.setHandler(async()=>{throw Error('diagnostic unavailable');});await ui.panel.refresh();
+  assert.match(ui.nodes['client-scan-status'].textContent,/diagnostic unavailable/);
+  ui.panel.clientsReadError='client unavailable';ui.setHandler(async()=>({backends:{}}));await ui.panel.refresh();
+  assert.match(ui.nodes['client-scan-status'].textContent,/client unavailable/);
+  ui.panel.clientsReadError='';ui.panel.renderScan();
+  assert.doesNotMatch(ui.nodes['client-scan-status'].textContent,/unavailable/);
+  assert.equal(ui.nodes['client-scan-status'].classList.contains('error'),false);
+});
+test('desktop background refresh failure stays visible without replacing clients or confirming writes',async()=>{
+  const ui=fixture(),clients=[{id:'codex',name:'Codex',connected:true,enabled:true}];ui.panel.clients=clients;
+  ui.panel.operationFailures=new Map([['codex',{action:'quit',uncertain:true,message:'result unknown'}]]);
+  ui.setHandler(async()=>({clients:[],pending:false,refreshError:'refresh failed'}));await ui.panel.refreshClients(true);
+  assert.equal(ui.panel.clients,clients);assert.equal(ui.panel.hasUncertain(),true);
+  assert.match(ui.nodes['client-scan-status'].textContent,/refresh failed/);
 });
 test('failed automatic scan reports failure, then can recover through the same rescan control',async()=>{
   const ui=fixture();ui.setHandler(async body=>{if(body.action==='scan')throw Error('setup failed');return body.action==='status'?{backends:{}}:{clients:[]};});await ui.panel.scan(true);

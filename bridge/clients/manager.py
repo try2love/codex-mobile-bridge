@@ -934,7 +934,7 @@ class DesktopSessions:
                     self.client_refresh_retry_at = 0
             return result
 
-    def clients_status(self):
+    def clients_status(self, refresh=False):
         """Return display status without waiting for startup or native inspection."""
         if self.closed.is_set():
             raise BridgeUnavailable('客户端连接已关闭')
@@ -944,7 +944,7 @@ class DesktopSessions:
                 cached = self.client_cache
                 pending = cached and any(row.get('connectionState') in ('starting', 'connecting')
                                          for row in cached[1]['clients'])
-                if cached and time.monotonic() - cached[0] < (1 if pending else 15):
+                if not refresh and cached and time.monotonic() - cached[0] < (1 if pending else 15):
                     with self.client_snapshot_lock:
                         if not self.client_refreshing and not self.client_refresh_error:
                             return {**_copy_read(cached[1]), 'pending': False}
@@ -1341,7 +1341,7 @@ class DesktopSessions:
                 return self.connect_claude(restart=action == 'restart-claude')
             return self.clients(refresh=True)
         if action == 'clients':
-            return self.clients(refresh=value.get('refresh') is True)
+            return self.clients_status(refresh=value.get('refresh') is True)
         if action == 'toggle-client':
             return self.toggle_client(value)
         if action == 'status':
