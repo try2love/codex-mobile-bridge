@@ -1,4 +1,5 @@
 import copy
+import json
 import tempfile
 import unittest
 import uuid
@@ -62,6 +63,17 @@ class SideChatTests(unittest.TestCase):
         self.assertEqual(calls[1][1]['threadId'], self.chat.id)
         self.assertEqual(BOUNDARY, calls[1][1]['items'][0]['content'][0]['text'])
         self.assertFalse(self.chat.view()['turns'])
+
+    def test_tool_screenshots_are_not_sent_as_base64(self):
+        png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR7kAAAAASUVORK5CYII='
+        self.assertEqual(self.chat.send('question', str(uuid.uuid4()))['status'], 'accepted')
+        self.runtime.emit('item/completed', turnId='turn', item={'id': 'shot', 'type': 'mcpToolCall',
+            'result': {'content': [{'type': 'image', 'mimeType': 'image/png', 'data': png}]}})
+        view = self.chat.view()
+        self.assertNotIn(png, json.dumps(view))
+        row = next(m for m in view['turns'][0]['messages'] if m['id'] == 'shot')
+        self.assertEqual(row['attachments'][0]['type'], 'toolImage')
+        self.assertNotIn('data', row['attachments'][0])
 
     def test_streaming_dedupe_stop_and_close(self):
         submission = str(uuid.uuid4())

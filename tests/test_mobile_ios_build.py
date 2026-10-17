@@ -14,6 +14,20 @@ spec.loader.exec_module(builder)
 
 
 class IOSReleaseBuildTests(unittest.TestCase):
+    def test_app_declares_single_window_scene_lifecycle(self):
+        info = plistlib.loads((ROOT/'mobile/ios/BridgePreview/Info.plist').read_bytes())
+        manifest = info['UIApplicationSceneManifest']
+        self.assertFalse(manifest['UIApplicationSupportsMultipleScenes'])
+        configurations = manifest['UISceneConfigurations']['UIWindowSceneSessionRoleApplication']
+        self.assertEqual(len(configurations), 1)
+        self.assertEqual(configurations[0]['UISceneDelegateClassName'], '$(PRODUCT_MODULE_NAME).SceneDelegate')
+
+    def test_cold_launch_notification_is_retried_when_scene_becomes_active(self):
+        source = (ROOT/'mobile/ios/BridgePreview/App.swift').read_text(encoding='utf-8')
+        scene = source[source.index('final class SceneDelegate'):source.index('final class NoRedirect')]
+        active = scene[scene.index('func sceneDidBecomeActive'):]
+        self.assertIn('openPendingNotification()', active[:active.index('\n    }')])
+
     def setUp(self):
         (ROOT/'.tmp').mkdir(exist_ok=True)
         self.temporary = tempfile.TemporaryDirectory(dir=ROOT/'.tmp', prefix='ios-source-test-')

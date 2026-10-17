@@ -1,7 +1,7 @@
 'use strict';
 // Appearance is local to this browser; no desktop or account settings are changed.
 const ChatAppearance=(()=>{
-  const defaults={theme:'system',accent:'#4664ed',fontSize:16,codeSize:13,density:'standard',showReasoning:true,showProcess:true,showActivity:true,showComputer:true,showPushplus:true,showAccounts:true,showFileThumbnails:true};
+  const defaults={theme:'system',accent:'#4664ed',fontSize:16,codeSize:13,density:'standard',showReasoning:true,showProcess:true,showToolImages:true,showActivity:true,showComputer:true,showPushplus:true,showAccounts:true,showFileThumbnails:true};
   function normalize(value={}){
     if(!value||typeof value!=='object')value={};
     return {theme:['system','light','dark'].includes(value.theme)?value.theme:defaults.theme,
@@ -11,6 +11,7 @@ const ChatAppearance=(()=>{
       density:['compact','standard','relaxed'].includes(value.density)?value.density:defaults.density,
       showReasoning:typeof value.showReasoning==='boolean'?value.showReasoning:defaults.showReasoning,
       showProcess:typeof value.showProcess==='boolean'?value.showProcess:defaults.showProcess,
+      showToolImages:typeof value.showToolImages==='boolean'?value.showToolImages:defaults.showToolImages,
       showPushplus:typeof value.showPushplus==='boolean'?value.showPushplus:defaults.showPushplus,
       showAccounts:typeof value.showAccounts==='boolean'?value.showAccounts:defaults.showAccounts,
       showFileThumbnails:typeof value.showFileThumbnails==='boolean'?value.showFileThumbnails:defaults.showFileThumbnails,
@@ -60,6 +61,8 @@ if(typeof document!=='undefined')(()=>{
     window.BridgeWorkbench?.setThumbnails(settings.showFileThumbnails);
     get('appearance-pushplus').checked=settings.showPushplus;get('appearance-accounts').checked=settings.showAccounts;
     root.dataset.showReasoning=String(settings.showReasoning);root.dataset.showProcess=String(settings.showProcess);
+    root.dataset.showToolImages=String(settings.showToolImages);
+    get('appearance-tool-images').checked=settings.showToolImages;
     if(typeof chatTimeline!=='undefined')chatTimeline?.setVisibility(settings);
     root.style.setProperty('--accent',settings.accent);
     root.style.setProperty('--accent-ink',colors.ink);
@@ -110,6 +113,7 @@ if(typeof document!=='undefined')(()=>{
   get('appearance-activity').onchange=()=>change({showActivity:get('appearance-activity').checked});
   get('appearance-file-thumbnails').onchange=()=>change({showFileThumbnails:get('appearance-file-thumbnails').checked});
   get('appearance-process').onchange=()=>change({showProcess:get('appearance-process').checked});
+  get('appearance-tool-images').onchange=()=>change({showToolImages:get('appearance-tool-images').checked});
   document.querySelectorAll('[data-accent]').forEach(button=>button.onclick=()=>change({accent:button.dataset.accent}));
   get('appearance-pushplus').onchange=()=>change({showPushplus:get('appearance-pushplus').checked});
   get('appearance-accounts').onchange=()=>change({showAccounts:get('appearance-accounts').checked});

@@ -6,6 +6,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 from urllib.request import url2pathname
 import ntpath
+from bridge.features.sessions.tool_images import extract_tool_images
 
 
 
@@ -96,7 +97,7 @@ def user_display_text(text):
     return request or text
 
 
-def normalize_item(item):
+def normalize_item(item, *, image_cache=None):
     kind = item.get("type", "unknown")
     row = {"id": item.get("id"), "kind": kind, "status": item.get("status")}
     if kind in ("userMessage", "steeringUserMessage"):
@@ -135,7 +136,11 @@ def normalize_item(item):
     elif kind == "fileChange":
         row.update(role="activity", title="文件变更", text="\n\n".join(str(c.get("path", "")) + "\n" + str(c.get("diff", "")) for c in item.get("changes", [])))
     elif kind in ("mcpToolCall", "dynamicToolCall"):
-        row.update(role="activity", title=" · ".join(str(x) for x in (item.get("server"), item.get("tool", item.get("toolName"))) if x), text=json.dumps(item.get("arguments", {}), ensure_ascii=False, indent=2), output=json.dumps(item.get("result", item.get("contentItems", item.get("error", ""))), ensure_ascii=False, indent=2))
+        extract = image_cache.extract if image_cache is not None else extract_tool_images
+        output, images = extract(item.get("result", item.get("contentItems", item.get("error", ""))))
+        row.update(role="activity", title=" · ".join(str(x) for x in (item.get("server"), item.get("tool", item.get("toolName"))) if x), text=json.dumps(item.get("arguments", {}), ensure_ascii=False, indent=2), output=json.dumps(output, ensure_ascii=False, indent=2))
+        if images:
+            row['attachments'] = images
     elif kind == "error":
         row.update(role="error", text=item.get("message", "执行失败"))
     elif kind == "planImplementation":
@@ -145,7 +150,7 @@ def normalize_item(item):
     # Preserve non-text attachment descriptors. They are not fetched from arbitrary URLs.
     attachments = [x for x in item.get("content", []) if isinstance(x, dict) and x.get("type") not in ("text", "input_text", "output_text")] if isinstance(item.get("content"), list) else []
     if attachments:
-        row["attachments"] = attachments
+        row["attachments"] = row.get('attachments', []) + attachments
     return row
 
 
@@ -180,7 +185,7 @@ def context_usage(state):
             'cached': state.get('tokenUsageFromHistory') is True}
 
 
-def normalize_state(state, connected=True):
+def normalize_state(state, connected=True, *, image_cache=None):
     turns = ordered_turns(state)
     result = []
     for ordinal, turn in enumerate(turns):
@@ -195,10 +200,15 @@ def normalize_state(state, connected=True):
                 calls[message['id']] = message
                 messages.append(message)
             elif kind in ('function_call_output', 'custom_tool_call_output') and item.get('call_id') in calls:
-                output = item.get('output', '')
+                extract = image_cache.extract if image_cache is not None else extract_tool_images
+                output, images = extract(item.get('output', ''))
                 calls[item['call_id']]['output'] = output if isinstance(output, str) else json.dumps(output, ensure_ascii=False)
+                if images:
+                    calls[item['call_id']]['attachments'] = images
+                else:
+                    calls[item['call_id']].pop('attachments', None)
             else:
-                messages.append(normalize_item(item))
+                messages.append(normalize_item(item, image_cache=image_cache))
         if not any(x.get("role") == "user" for x in messages):
             opening = text_content(turn.get("params", {}).get("input", []))
             if opening:

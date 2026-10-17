@@ -53,12 +53,10 @@ final class BridgeNavigationController: UINavigationController {
 
 @main
 final class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterDelegate {
-    var window: UIWindow?
     let controller = BridgeController()
+    private var pendingNotification: UNNotificationResponse?
     func application(_ application: UIApplication, didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         UNUserNotificationCenter.current().delegate = self
-        let window = UIWindow(frame: UIScreen.main.bounds); window.rootViewController = BridgeNavigationController(rootViewController: controller); window.makeKeyAndVisible(); self.window = window
-        if let url = options?[.url] as? URL { DispatchQueue.main.async { self.controller.openLink(url) } }
         return true
     }
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
@@ -66,12 +64,44 @@ final class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationC
         controller.registerNativePush()
     }
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) { controller.info(MobileStrings.text("系统推送注册失败，请检查推送签名与网络。")) }
-    func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool { controller.openLink(url); return true }
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completion: @escaping () -> Void) {
+        pendingNotification = response
+        openPendingNotification()
+        completion()
+    }
+    func openPendingNotification() {
+        guard controller.viewIfLoaded?.window != nil, let response = pendingNotification else { return }
+        pendingNotification = nil
         let data = response.notification.request.content.userInfo
-        if let origin = data["origin"] as? String { controller.openNotification(origin, thread: data["thread"] as? String, host: data["host"] as? String ?? "local") }; completion()
+        if let origin = data["origin"] as? String { controller.openNotification(origin, thread: data["thread"] as? String, host: data["host"] as? String ?? "local") }
     }
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completion: @escaping (UNNotificationPresentationOptions) -> Void) { completion([.banner, .sound]) }
+}
+
+final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
+    var window: UIWindow?
+    func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
+        guard let windowScene = scene as? UIWindowScene,
+              let app = UIApplication.shared.delegate as? AppDelegate else { return }
+        let window = UIWindow(windowScene: windowScene)
+        window.rootViewController = BridgeNavigationController(rootViewController: app.controller)
+        self.window = window
+        window.makeKeyAndVisible()
+        DispatchQueue.main.async {
+            app.openPendingNotification()
+            if let url = connectionOptions.urlContexts.first?.url { app.controller.openLink(url) }
+        }
+    }
+    // A cold-launch tap can arrive before the first layout attaches the
+    // controller; activation is the next point where its window is ready.
+    func sceneDidBecomeActive(_ scene: UIScene) {
+        (UIApplication.shared.delegate as? AppDelegate)?.openPendingNotification()
+    }
+    func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+        guard let url = URLContexts.first?.url,
+              let app = UIApplication.shared.delegate as? AppDelegate else { return }
+        app.controller.openLink(url)
+    }
 }
 
 final class NoRedirect: NSObject, URLSessionTaskDelegate {

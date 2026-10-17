@@ -30,6 +30,7 @@ from bridge.clients.codex.catalog import Catalog
 from bridge.clients.codex.remote import AppHosts, RemoteStore, RemoteCatalog, RemoteUnavailable, ssh_read, ssh_download, payload
 from bridge.features.sessions.create import rename_thread, independent_directory, create_empty, fork_copy, open_in_desktop, CreationError, CreationUnavailable, ForkUnavailable
 from bridge.features.sessions.timeline import Timeline
+from bridge.features.sessions.tool_images import TOOL_IMAGE_CACHE, public_turns
 from bridge.features.accounts.account import Account
 from bridge.features.accounts.accounts import Accounts, operation
 from bridge.features.accounts.cli_access import CliAccess
@@ -39,7 +40,7 @@ from bridge.clients.codex.remote import upload_file
 
 
 class LiveSession:
-    def __init__(self, thread_id):
+    def __init__(self, thread_id, *, image_cache=None):
         self.id = thread_id
         self.owner = None
         self.origin = "desktop"
@@ -77,20 +78,24 @@ class LiveSession:
         self.activation_lock = threading.Lock()
         self.action_lock = threading.RLock()
         self.timeline = Timeline()
+        self.tool_image_cache = image_cache if image_cache is not None else TOOL_IMAGE_CACHE
+        self.tool_images = {}
+        self.tool_images_sequence = -1
 
     def changed(self):
         self.sequence += 1
         self.condition.notify_all()
 
     def set_history(self, state):
-        self.saved_view = normalize_state(state, False)
+        self.saved_view = normalize_state(state, False, image_cache=self.tool_image_cache)
         if self.state is None or not self.connected:
             self.state = state
         self.changed()
 
     def view(self):
         with self.condition:
-            result = normalize_state(self.state or {"id": self.id}, self.connected)
+            result = normalize_state(self.state or {"id": self.id}, self.connected,
+                                     image_cache=self.tool_image_cache)
             if self.runtime == 'cli':
                 result['permissionMode'] = linux_permissions.current_mode(self.state)
             if self.saved_view and result['contextUsage'] is None:
@@ -123,7 +128,22 @@ class LiveSession:
             result["loadingHistory"] = self.state is None
             if self.access is not None:
                 result["access"] = dict(self.access)
+            self.tool_images = {
+                attachment['desktopId']: dict(attachment)
+                for turn in result['turns'] for message in turn['messages']
+                for attachment in message.get('attachments') or []
+                if attachment.get('type') == 'toolImage' and attachment.get('desktopId')
+            }
+            self.tool_images_sequence = self.sequence
+            # Base64 stays in the private index; state, polls and SSE carry ids only.
+            result['turns'] = public_turns(result['turns'])
             return result
+
+    def tool_image(self, image_id):
+        with self.condition:
+            if self.tool_images_sequence != self.sequence:
+                self.view()
+            return self.tool_images.get(image_id)
 
 
 class Bridge:
@@ -1210,7 +1230,7 @@ class Bridge:
         def refresh():
             try:
                 fallback = self._saved_history(session)
-                normalized = normalize_state(fallback, False)
+                normalized = normalize_state(fallback, False, image_cache=session.tool_image_cache)
                 with session.condition:
                     if not session.connected and session.saved_view != normalized:
                         session.set_history(fallback)
@@ -1249,7 +1269,7 @@ class Bridge:
                     try:
                         fallback = self._saved_history(session)
                         with session.condition:
-                            if session.saved_view != normalize_state(fallback, False):
+                            if session.saved_view != normalize_state(fallback, False, image_cache=session.tool_image_cache):
                                 session.set_history(fallback)
                             session.history_retry_at = time.monotonic() + 2
                     except (OSError, ValueError, KeyError, RemoteUnavailable, StoreUnavailable):
@@ -1713,9 +1733,10 @@ class Bridge:
         if not agent_id: return self.store.subagents(thread_id)
         uuid.UUID(agent_id)
         state = self.store.subagent_history(thread_id, agent_id)
-        view = normalize_state(state, False)
+        view = normalize_state(state, False, image_cache=TOOL_IMAGE_CACHE)
         # Saved logs are evidence of the last recorded state, not a live heartbeat.
-        return {'id': agent_id, 'title': view['title'], 'turns': view['turns'],
+        # Subagent screenshots have no preview route, so Base64 is not sent.
+        return {'id': agent_id, 'title': view['title'], 'turns': public_turns(view['turns']),
                 'historyComplete': view['historyComplete'], 'saved': True}
 
     def terminal(self, thread_id, owner, action, params):
@@ -1783,10 +1804,18 @@ class Bridge:
                 attachment.pop('path', None)
 
     def desktop_image_preview(self, thread_id, image_id):
-        """Serve a desktop-side image that is referenced by the saved thread."""
+        """Serve an image evidenced by this thread, without activating its owner."""
         if not re.fullmatch(r'[0-9a-f]{64}', image_id):
             raise ValueError('桌面图片标识无效')
         session = self.session(thread_id, attach=False)
+        attachment = session.tool_image(image_id)
+        if attachment is not None:
+            raw = session.tool_image_cache.preview(attachment)
+            # A patch may have removed/replaced the image while decoding outside
+            # the session lock. Cached bytes alone never authorize a preview.
+            if raw is not None and session.tool_image(image_id) == attachment:
+                return {'previewBytes': raw, 'previewMime': attachment['mime'],
+                        'previewSha256': image_id, 'name': attachment['name']}, 'tool'
         paths = []
         with session.condition:
             for turn in ordered_turns(session.state or {}):

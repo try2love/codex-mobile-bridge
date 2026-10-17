@@ -12,6 +12,9 @@ test('invalid or older saved appearance values keep the page readable',()=>{
   assert.equal(normalize({showComputer:false}).showComputer,false);
   assert.equal(normalize({showComputer:'false'}).showComputer,true);
   assert.equal(normalize({showFileThumbnails:'false'}).showFileThumbnails,true);
+  assert.equal(normalize({}).showToolImages,true);
+  assert.equal(normalize({showToolImages:'false'}).showToolImages,true);
+  assert.equal(normalize({showToolImages:false}).showToolImages,false);
 });
 
 function luminance(hex){

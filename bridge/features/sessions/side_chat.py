@@ -16,6 +16,7 @@ import uuid
 from pathlib import Path
 
 from bridge.features.sessions.model import normalize_state, normalize_request
+from bridge.features.sessions.tool_images import TOOL_IMAGE_CACHE, public_turns
 from bridge.features.workspace.uploads import Uploads
 
 
@@ -260,7 +261,8 @@ class SideChat:
 
     def view(self):
         with self.lock:
-            result = normalize_state(self.state, self.ready and not self.closed and not self.error)
+            result = normalize_state(self.state, self.ready and not self.closed and not self.error,
+                                     image_cache=TOOL_IMAGE_CACHE)
             for turn in result['turns']:
                 submissions = [(key, row) for key, row in self.submissions.items() if row.get('turnId') == turn['id']]
                 primary = next(((key, row) for key, row in submissions if row.get('mode') != 'steer'), None)
@@ -285,7 +287,8 @@ class SideChat:
                 if not request['supported'] or request['method'] in ('item/plan/requestImplementation', 'bridge/requestUserInputAsync'):
                     request['supported'] = False
                     request['params'] = {'message': '此请求暂不支持在侧边聊天处理，请停止本次回复。'}
-            return {**result, 'parentId': self.parent, 'error': self.error,
+            # Side-chat screenshots have no preview route, so Base64 is not sent.
+            return {**result, 'turns': public_turns(result['turns']), 'parentId': self.parent, 'error': self.error,
                     'submissions': [{'id': k, 'status': v['status'], 'text': v['text'], 'mode': v.get('mode', 'send'), 'workMode': v.get('workMode', 'default'), 'attachments': v.get('attachments', []), 'error': v.get('error')} for k, v in self.submissions.items()]}
 
     def settings(self, model, effort, catalog):

@@ -22,6 +22,29 @@ class UploadActivityTests(unittest.TestCase):
     setUp = support.IntegrationTests.setUp
     tearDown = support.IntegrationTests.tearDown
 
+    def test_tool_images_are_thread_scoped_and_read_without_owner_activation(self):
+        session = self.bridge.session(THREAD)
+        with session.condition:
+            session.state = {'turns': [{'turnId': 'tool-turn', 'items': [
+                {'type': 'mcpToolCall', 'id': 'shot', 'result': {'content': [
+                    {'type': 'image', 'mimeType': 'image/png', 'data': base64.b64encode(PNG).decode()}]}}]}]}
+            session.changed()
+        identifier = hashlib.sha256(PNG).hexdigest()
+        with patch.object(self.bridge, 'session', return_value=session) as lookup:
+            result, variant = self.bridge.desktop_image_preview(THREAD, identifier)
+            lookup.assert_called_once_with(THREAD, attach=False)
+        self.assertEqual(result['previewBytes'], PNG)
+        self.assertEqual(result['previewMime'], 'image/png')
+        self.assertEqual(variant, 'tool')
+        with self.assertRaises(KeyError):
+            self.bridge.desktop_image_preview(THREAD, '0' * 64)
+        with session.condition:
+            session.state = {'turns': []}
+            session.changed()
+        with self.assertRaises(KeyError):
+            self.bridge.desktop_image_preview(THREAD, identifier)
+        self.assertEqual(self.calls(), [])
+
     def upload(self, name='报告.txt', data=b'fixture attachment'):
         return self.bridge.upload(THREAD, str(uuid.uuid4()), name, data)
 
@@ -367,6 +390,20 @@ class UploadHttpTests(unittest.TestCase):
             self.assertEqual(status,200);self.assertEqual(body,PNG);self.assertEqual(headers['Content-Type'],'image/png')
             self.assertIn('private',headers['Cache-Control']);self.assertIn('immutable',headers['Cache-Control'])
             self.assertEqual(self.preview(path.replace(image_id,'0'*64),credentials)[0],404)
+
+    def test_inline_tool_image_uses_authenticated_image_route_and_etag(self):
+        identifier = hashlib.sha256(PNG).hexdigest()
+        self.server.bridge.desktop_image_preview = lambda *args: ({
+            'previewBytes': PNG, 'previewMime': 'image/png',
+            'previewSha256': identifier, 'name': 'Image 1.png'}, 'tool')
+        path = '/api/sessions/' + THREAD + '/desktop-images/' + identifier
+        self.assertEqual(self.preview(path, {})[0], 401)
+        credentials = self.login()
+        status, headers, body = self.preview(path, credentials)
+        self.assertEqual((status, body), (200, PNG))
+        self.assertEqual(headers['Content-Type'], 'image/png')
+        self.assertEqual(headers['X-Content-Type-Options'], 'nosniff')
+        self.assertEqual(self.preview(path, {**credentials, 'If-None-Match': headers['ETag']})[0], 304)
 
     def upload_preview(self,path,headers,data=None,method='GET'):
         conn=http.client.HTTPConnection('127.0.0.1',self.port,timeout=3);self.addCleanup(conn.close)
