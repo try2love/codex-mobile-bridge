@@ -96,6 +96,21 @@ async function renderer(initialLanguage='zh-CN',{autoStart=false,hidden=false,lo
   return {nodes,value,context,api,calls,run:code=>vm.runInContext(code,context),poll:()=>poll(),advance:ms=>{now+=ms;},start:()=>nodes.get('start').onclick()};
 }
 
+test('network page names the single next step from choice to phone sign-in',async()=>{
+  const ui=await renderer();await ui.poll();
+  const next=()=>[ui.nodes.get('network-next').textContent,ui.nodes.get('network-next-action').hidden?null:ui.nodes.get('network-next-action').textContent,!ui.nodes.get('network-stop').hidden];
+  ui.nodes.get('lan').checked=false;ui.run('updateDirty()');
+  assert.match(next()[0],/先选择手机怎么连电脑/);assert.equal(next()[1],null);
+  ui.run(`connectionDraft=[{id:'quick',name:'',enabled:true,accessMode:'quick'}];renderConnections();updateDirty();`);
+  assert.deepEqual(next().slice(1),['保存配置',false]);
+  ui.run('savedConnections=JSON.stringify(connectionDraft);updateDirty()');
+  assert.deepEqual(next().slice(1),['启动网关',false]);
+  ui.value.preferences.connections=[{id:'quick',name:'',enabled:true,accessMode:'quick'}];ui.value.preferences.lan=false;ui.value.runtime.running=true;await ui.poll();
+  assert.match(next()[0],/网关运行中，手机现在可以连接/);assert.deepEqual(next().slice(1),['去扫码连接',true]);
+  ui.run(`chooseConnection('quick');chooseConnection('server');`);
+  assert.equal(ui.run('connectionDraft.length'),1,'a running gateway only reveals the existing temporary entry');
+});
+
 test('desktop tab transitions update visibility before Codex account polling resumes',async()=>{
   const events=[],accounts={dataset:{panel:'accounts'},hidden:true},overview={dataset:{panel:'overview'},hidden:false};
   const ui=await renderer('zh-CN',{AccountsPanel:class{

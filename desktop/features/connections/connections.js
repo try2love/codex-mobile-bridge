@@ -31,9 +31,9 @@ function renderConnections(){
     const advanced=card.querySelector?.('details.connection-advanced');if(advanced)connectionAdvancedExpanded.set(card.dataset.connectionId,advanced.open);
   }
   $('connections').replaceChildren();
-  if(!connectionDraft.length){const empty=document.createElement('p');empty.className='hint';empty.textContent=t('尚未添加外网连接。局域网可独立使用。');$('connections').append(empty);}
+  $('connections-heading').hidden=!connectionDraft.length;
   for(const row of connectionDraft){
-    const container=document.createElement('details');container.className='connection-card';container.dataset.connectionId=row.id;container.open=connectionExpanded.get(row.id)===true;
+    const container=document.createElement('details');container.className='connection-card'+(row.enabled?' is-enabled':'');container.dataset.connectionId=row.id;container.open=connectionExpanded.get(row.id)===true;
     const card=document.createElement('div');card.className='connection-body';
     const head=document.createElement('summary');head.className='section-head';
     const heading=document.createElement('h3');heading.textContent=connectionLabel(row.accessMode);
@@ -83,7 +83,7 @@ function renderConnections(){
     }
     field('enabled','启用此连接','checkbox');field('name','连接名称','text',row.accessMode==='external'||row.accessMode==='nas'?'可选，例如家里电脑':'可选，例如家中 NAS');
     if(row.accessMode==='quick'){
-      note(snapshot?.cloudflared?.available?'已准备好 Cloudflare 程序。保存配置后启动网关，即可获取临时 HTTPS 地址。':'当前源码环境尚未准备 Cloudflare 程序，请在运行配置中安装。');
+      if(!snapshot?.cloudflared?.available)note('当前源码环境尚未准备 Cloudflare 程序，请在运行配置中安装。');
       const status=note(quickTunnelMessage());status.dataset.quickStatus='true';
       note('无需账号或域名；地址会随隧道重建变化。可在手机通知中配置入口通知。');
     }else if(row.accessMode==='tailscale'){
@@ -216,6 +216,7 @@ function renderConnections(){
     $('connections').append(container);
   }
   BridgeI18n.apply();
+  renderNetworkStatus();
 }
 document.getElementById('port').addEventListener?.('input',()=>{for(const target of document.querySelectorAll('[data-loopback-target]'))target.textContent='http://127.0.0.1:'+($('port').value||8787);});
 function addConnection(){
@@ -224,3 +225,52 @@ function addConnection(){
   connectionExpanded.set(connectionDraft[connectionDraft.length-1].id,true);
   renderConnections();updateDirty();
 }
+
+// Guided flow: show where the user is and the one action that moves them forward.
+function selectedLanAddresses(){
+  const rows=snapshot?.networkInterfaces||[];
+  return $('lan-scope').value==='selected'?rows.filter(row=>lanDraft.includes(row.address)):rows;
+}
+function renderNetworkStatus(){
+  if(!snapshot||!$('network-next'))return;
+  const running=!!snapshot.runtime.running,starting=startPending||Date.now()<startingUntil,lan=$('lan').checked;
+  const external=connectionDraft.filter(row=>row.enabled),chosen=lan||external.length>0;
+  const step=!chosen?0:running?3:dirty?1:2;
+  ['choose','save','start','pair'].forEach((name,index)=>{const node=$('network-step-'+name);node.classList.toggle('done',index<step);node.classList.toggle('current',index===step);});
+  let message,action=null,stop=false;
+  if(stopPending)message='正在停止网关…';
+  else if(starting&&!running)message='正在启动网关…';
+  else if(running){message=chosen?'网关运行中，手机现在可以连接。到“概览”用手机扫码登录；修改网络设置需先停止网关。':'网关运行中，但没有手机可用的入口。停止网关后，打开局域网或添加一种外网方式。';stop=true;if(chosen)action=['去扫码连接',()=>tab('overview')];}
+  else if(snapshot.runtime.portOccupied)message='端口已被其他网关占用，请检查运行配置。';
+  else if(!chosen)message='先选择手机怎么连电脑：在家打开下方“同一 Wi-Fi”开关；要在外面用，再从下方选一种外网方式。';
+  else if(dirty){message='修改还没有保存，保存后再启动网关。';action=['保存配置',()=>$('save').click()];}
+  else{message='配置已保存。启动网关后，手机即可连接。';action=['启动网关',()=>startGateway()];}
+  let text=t(message);
+  if(running&&external.some(row=>row.accessMode==='quick'))text+=' '+quickTunnelMessage();
+  $('network-next').textContent=text;
+  const next=$('network-next-action');next.hidden=!action;
+  if(action){next.textContent=t(action[0]);next.onclick=action[1];next.disabled=saving||busyActions.size>0||cloudflaredBusy;}
+  $('network-stop').hidden=!stop;$('network-stop').disabled=stopPending||startPending;
+  const addresses=selectedLanAddresses(),port=$('port').value||snapshot.preferences.port||8787;
+  $('lan-summary').textContent=!lan?t('已关闭。只在外面使用时可以保持关闭。'):addresses.length?t('手机可访问：')+addresses.map(row=>row.address+':'+port).join('、'):t('未发现可用的局域网 IPv4 地址');
+  $('lan-summary').classList.toggle('is-on',lan&&addresses.length>0);
+  $('choices-heading').textContent=t(connectionDraft.length?'添加其他方式':'选择一种方式');
+  for(const button of document.querySelectorAll('[data-connection-choice]')){
+    const mode=button.dataset.connectionChoice,count=connectionDraft.filter(row=>row.accessMode===mode||mode==='external'&&row.accessMode==='nas').length;
+    button.textContent=t(!count?'使用此方式':mode==='quick'?'查看配置':'再添加一个');
+    button.disabled=busyActions.size>0||running&&!(mode==='quick'&&count);
+    button.closest('.connection-choice')?.classList.toggle('is-added',connectionDraft.some(row=>row.enabled&&(row.accessMode===mode||mode==='external'&&row.accessMode==='nas')));
+    const badge=document.querySelector('[data-choice-count="'+mode+'"]');if(badge){badge.hidden=!count;badge.textContent=t('已添加')+' '+count;}
+  }
+}
+function chooseConnection(mode){
+  const existing=mode==='quick'?connectionDraft.find(row=>row.accessMode==='quick'):null;
+  if(snapshot?.runtime.running&&!existing){feedback(t('网关运行中。请先停止网关，再添加或修改连接；保存后重新启动。'),true);return;}
+  if(existing){connectionExpanded.set(existing.id,true);renderConnections();}
+  else{$('connection-kind').value=mode;addConnection();}
+  const id=(existing||connectionDraft[connectionDraft.length-1]).id;
+  const card=[...$('connections').querySelectorAll('details.connection-card')].find(node=>node.dataset.connectionId===id);
+  card?.scrollIntoView({block:'start',behavior:'smooth'});card?.querySelector('summary')?.focus({preventScroll:true});
+}
+for(const button of document.querySelectorAll('[data-connection-choice]'))button.onclick=()=>chooseConnection(button.dataset.connectionChoice);
+document.getElementById('network-stop').onclick=()=>stopGateway();

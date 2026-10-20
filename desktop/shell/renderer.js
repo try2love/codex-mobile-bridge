@@ -25,6 +25,7 @@ function updateDirty(){
   $('dirty-dot').hidden=!dirty;
   $('dirty-label').textContent=dirty?t('有未保存的修改'):t('配置已保存');
   $('save-bar').hidden=!dirty;
+  renderNetworkStatus();
   document.querySelectorAll('[data-connection-action]').forEach(button=>button.disabled=dirty||busyActions.size>0||(!['inspect','diagnostics','credentials','clearCredentials','tailscaleInspect','tailscaleAuthorize'].includes(button.dataset.connectionAction)&&!connectionDraft.find(c=>c.id===button.dataset.connection)?.enabled));
 }
 let toastTimer;
@@ -97,6 +98,7 @@ function renderGatewayActions(){
   for(const id of ['start','clients-start']){const button=$(id);if(button){button.disabled=!snapshot||running||starting||stopPending||cloudflaredBusy;button.setAttribute('aria-busy',String(startPending));}}
   for(const id of ['stop','clients-stop']){const button=$(id);if(button){button.disabled=!running||startPending||stopPending;button.setAttribute('aria-busy',String(stopPending));}}
   if(snapshot)window.GatewayLayout?.update(snapshot,{starting,stopping:stopPending});
+  renderNetworkStatus();
 }
 function render(value,watchRevision=watchPanel.revision){
   $('login-startup-setting').hidden=$('login-startup-hint').hidden=!value.loginStartup?.supported;
@@ -159,8 +161,7 @@ function render(value,watchRevision=watchPanel.revision){
   $('bark-key').placeholder=value.notifications.hasBarkKey?t('已保存；留空保留，服务地址变化时清除'):t('填写 Bark App 中的 Device Key');
   $('pushplus-token').placeholder=value.notifications.hasPushplusToken?t('已保存，留空保留'):t('填写 PushPlus Token');
   updateDirty();
-  $('network-lock').hidden=!running;
-  for(const id of ['lan','local-access','port','connection-kind','add-connection','origins','cloudflared','codex-home','ipc-path','codex-bin'])$(id).disabled=running;
+  for(const id of ['lan','local-access','port','connection-kind','origins','cloudflared','codex-home','ipc-path','codex-bin'])$(id).disabled=running;
   document.querySelectorAll('[data-connection-field],[data-remove-connection]').forEach(node=>node.disabled=running);
   for(const node of document.querySelectorAll('[data-connection-status]')){
     const row=connectionDraft.find(c=>c.id===node.dataset.connectionStatus),mode=row?.accessMode;
@@ -188,7 +189,7 @@ $('settings').onsubmit=async event=>{
     feedback(dirty?t('已保存提交的配置，仍有新修改待保存。'):t('配置已保存。通知设置由新版网关自动读取，登录设置在下次启动生效。'));
   }catch(e){showError(e);}finally{saving=false;updateDirty();}
 };
-async function startGateway(){if(cloudflaredBusy||startPending||stopPending||snapshot?.runtime.running||Date.now()<startingUntil)return;if(dirty){feedback(t('请先保存配置，再启动网关。'),true);return;}startPending=true;renderGatewayActions();try{if(snapshot?.preferences.tunnel){try{await api.checkCloudflared(snapshot.preferences.cloudflared);}catch(error){tab('network');$('cloudflared-repair').open=true;throw error;}}await saveAllConnectionCredentials(true);const result=unwrapValidation(await api.start());startingUntil=result.started?Date.now()+70000:0;feedback(result.message,false,'gateway');await refresh();}catch(e){startingUntil=0;showError(e);}finally{startPending=false;renderGatewayActions();}}
+async function startGateway(){if(cloudflaredBusy||startPending||stopPending||snapshot?.runtime.running||Date.now()<startingUntil)return;if(dirty){feedback(t('请先保存配置，再启动网关。'),true);return;}startPending=true;renderGatewayActions();try{if(snapshot?.preferences.tunnel){try{await api.checkCloudflared(snapshot.preferences.cloudflared);}catch(error){tab('network');$('network-advanced').open=$('cloudflared-repair').open=true;throw error;}}await saveAllConnectionCredentials(true);const result=unwrapValidation(await api.start());startingUntil=result.started?Date.now()+70000:0;feedback(result.message,false,'gateway');await refresh();}catch(e){startingUntil=0;showError(e);}finally{startPending=false;renderGatewayActions();}}
 async function stopGateway(){if(startPending||stopPending||!snapshot?.runtime.running)return;stopPending=true;renderGatewayActions();try{feedback((await api.stop()).message,false,'gateway');startingUntil=0;await refresh();}catch(e){feedback(e.message,true);}finally{stopPending=false;renderGatewayActions();}}
 for(const id of ['start','clients-start'])if($(id))$(id).onclick=startGateway;
 for(const id of ['stop','clients-stop'])if($(id))$(id).onclick=stopGateway;
@@ -237,7 +238,7 @@ async function setupCloudflared(install){
 $('install-cloudflared').onclick=()=>setupCloudflared(true);
 $('check-cloudflared').onclick=()=>setupCloudflared(false);
 $('cloudflare-help').onclick=()=>api.open('cloudflare-help').catch(error=>feedback(error.message,true));
-$('quick-setup').onclick=()=>{tab('network');$('cloudflared-repair').open=true;};
+$('quick-setup').onclick=()=>{tab('network');$('network-advanced').open=$('cloudflared-repair').open=true;};
 $('cloudflared').oninput=()=>{renderCloudflared();updateDirty();};
 async function loadLogs(){try{$('log-output').textContent=(await api.logs()).text||t('暂无运行日志');$('log-output').scrollTop=0;}catch(e){feedback(e.message,true);}}
 $('refresh-logs').onclick=loadLogs;
@@ -263,7 +264,6 @@ $('language').onchange=async()=>{
   finally{$('language').disabled=false;}
 };
 BridgeI18n.apply();
-$('add-connection').onclick=addConnection;
 $('connection-kind').onchange=()=>setupGuide($('connection-guide'),$('connection-kind').value);
 
 const updateMessages={idle:'检查是否有新版本。',checking:'正在检查更新…',current:'当前已是最新可用版本。',available:'有新版本可用。',skipped:'已跳过此版本。手动检查仍可更新。',downloading:'正在下载更新…',preparing:'正在验证并准备更新…',restarting:'即将重启应用…',unsupported:'当前系统或运行方式不支持应用内更新，请从发布页面下载新版。'};
