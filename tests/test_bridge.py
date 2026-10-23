@@ -802,6 +802,94 @@ class ModelTests(unittest.TestCase):
 
 
 class HttpTests(unittest.TestCase):
+    def test_explicit_project_directory_requires_auth_csrf_and_selected_host(self):
+        from unittest.mock import Mock
+        target = self.server.bridge
+        target.register_project = Mock(return_value={'key': 'local|directory:fixture', 'cwd': '/fixture'})
+        body = {'path': '/fixture', 'createDirectory': True, 'host': 'local'}
+        self.assertEqual(self.request('POST', '/api/projects', body)[0], 401)
+        headers = self.login()
+        self.assertEqual(self.request('POST', '/api/projects', body, {'Cookie': headers['Cookie']})[0], 403)
+        self.assertEqual(self.request('POST', '/api/projects', body, {**headers, 'Origin': 'https://other.test'})[0], 403)
+        target.register_project.assert_not_called()
+        self.assertEqual(self.request('POST', '/api/projects', body, headers)[0], 200)
+        target.register_project.assert_called_once_with('/fixture', True, 'local')
+        self.assertEqual(self.request('POST', '/api/projects', {**body, 'command': 'unwanted'}, headers)[0], 400)
+        target.project_directories = Mock(return_value={'path': '/fixture', 'directories': []})
+        browse = {'host':'local','path':None,'hidden':False,'name':None,'identity':None}
+        self.assertEqual(self.request('POST', '/api/projects/browse', browse, {'Cookie':headers['Cookie']})[0], 403)
+        target.project_directories.assert_not_called()
+        self.assertEqual(self.request('POST', '/api/projects/browse', browse, headers)[0], 200)
+        target.project_directories.assert_called_once_with(**browse)
+
+    def test_wsl_create_and_connect_require_auth_csrf_and_selected_application(self):
+        from unittest.mock import Mock
+        identifier = 'wsl:' + 'a' * 32
+        target = Mock()
+        target.projects.return_value = [{'key': identifier + '|/fixture', 'cwd': '/fixture'}]
+        target.create_chat.return_value = {'id': THREAD, 'host': identifier}
+        target.connect.return_value = {'ok': True}
+        self.server.bridge.entries = Mock()
+        self.server.bridge.entries.get.return_value = target
+        manager = self.server.desktop_sessions = Mock()
+        body = {'project': identifier + '|independent', 'title': 'Mobile', 'id': str(uuid.uuid4())}
+        path = '/api/sessions?entry=' + identifier
+        self.assertEqual(self.request('POST', path, body)[0], 401)
+        headers = self.login()
+        self.assertEqual(self.request('POST', path, body, {'Cookie': headers['Cookie']})[0], 403)
+        target.create_chat.assert_not_called()
+        self.assertEqual(self.request('GET', '/api/projects?entry=' + identifier, headers=headers)[0], 200)
+        directory = {'path': '~/fixture', 'createDirectory': True, 'host': identifier}
+        target.register_project.return_value = {'key': identifier + '|directory:fixture', 'host': identifier}
+        self.assertEqual(self.request('POST', '/api/projects?entry=' + identifier, directory, {'Cookie': headers['Cookie']})[0], 403)
+        target.register_project.assert_not_called()
+        self.assertEqual(self.request('POST', '/api/projects?entry=' + identifier, directory, headers)[0], 200)
+        target.register_project.assert_called_once_with('~/fixture', True, identifier)
+        self.assertEqual(self.request('POST', path, body, headers)[0], 200)
+        target.create_chat.assert_called_once_with(body['project'], body['title'], body['id'])
+        self.assertEqual(self.request('POST', '/api/codex/entries', {'action': 'connect', 'id': identifier}, headers)[0], 200)
+        target.connect.assert_called_once_with()
+        manager.require_enabled.side_effect = ValueError('Application disabled')
+        target.create_chat.reset_mock(); target.connect.reset_mock()
+        self.assertEqual(self.request('POST', path, body, headers)[0], 400)
+        self.assertEqual(self.request('POST', '/api/projects?entry=' + identifier, directory, headers)[0], 400)
+        self.assertEqual(self.request('POST', '/api/codex/entries', {'action': 'connect', 'id': identifier}, headers)[0], 400)
+        target.create_chat.assert_not_called(); target.connect.assert_not_called()
+
+    def test_wsl_app_discovery_requires_login_and_csrf_in_application_management(self):
+        from unittest.mock import Mock
+        manager = self.server.desktop_sessions = Mock()
+        manager.scan_wsl.return_value = {'clients': [], 'wslSupported': True}
+        self.assertEqual(self.request('POST', '/api/clients', {'action': 'scan-wsl'})[0], 401)
+        headers = self.login()
+        self.assertEqual(self.request('POST', '/api/clients', {'action': 'scan-wsl'}, {'Cookie': headers['Cookie']})[0], 403)
+        manager.scan_wsl.assert_not_called()
+        self.assertEqual(self.request('POST', '/api/clients', {'action': 'scan-wsl'}, headers)[0], 200)
+        manager.scan_wsl.assert_called_once_with()
+
+    def test_wsl_session_routes_require_its_app_instead_of_windows_codex(self):
+        from unittest.mock import Mock
+        identifier = 'wsl:' + 'a' * 32
+        target = Mock()
+        target.host = identifier
+        target.timeline_read.return_value = {'rows': [], 'meta': {}}
+        manager = self.server.desktop_sessions = Mock()
+        def require(provider):
+            if provider != identifier:
+                raise ValueError('此应用已关闭，请在应用管理中开启')
+        manager.require_enabled.side_effect = require
+        self.server.bridge.for_host = lambda host: target if host == identifier else self.server.bridge
+        headers = self.login()
+        self.assertEqual(self.request('GET', '/api/sessions?entry=' + identifier, headers=headers)[0], 200)
+        self.assertEqual(self.request('GET', '/api/sessions?entry=desktop', headers=headers)[0], 400)
+        path = '/api/sessions/' + THREAD + '/timeline?host=' + identifier
+        self.assertEqual(self.request('GET', path, headers=headers)[0], 200)
+        target.timeline_read.assert_called_once()
+        manager.require_enabled.side_effect = ValueError('此应用已关闭，请在应用管理中开启')
+        target.timeline_read.reset_mock()
+        self.assertEqual(self.request('GET', path, headers=headers)[0], 400)
+        target.timeline_read.assert_not_called()
+
     @classmethod
     def setUpClass(cls):
         cls.record = password_record('correct password test')
@@ -887,6 +975,45 @@ class HttpTests(unittest.TestCase):
                 self.assertEqual(status, 200)
                 self.assertFalse(data['authenticated'])
                 self.assertEqual(data['uiLanguage'], expected)
+
+    def test_wsl_registration_is_authenticated_csrf_guarded_and_path_free(self):
+        from unittest.mock import Mock
+        entries = Mock()
+        entries.public.return_value = {'entries': []}
+        entries.scan.return_value = {'entries': []}
+        entries.configure.return_value = {'entries': []}
+        self.server.bridge.entries = entries
+        self.assertEqual(self.request('GET', '/api/codex/entries')[0], 401)
+        self.assertEqual(self.request('POST', '/api/codex/entries', {'action': 'scan'})[0], 401)
+        headers = self.login()
+        self.assertEqual(self.request('GET', '/api/codex/entries', headers=headers)[0], 200)
+        entries.scan.assert_not_called()
+        self.assertEqual(self.request('POST', '/api/codex/entries', {'action': 'scan'},
+                                      {'Cookie': headers['Cookie']})[0], 403)
+        self.assertEqual(self.request('POST', '/api/codex/entries', {'action': 'scan'}, headers)[0], 200)
+        entries.scan.assert_called_once_with()
+        bad = {'action': 'configure', 'id': 'wsl:fixture', 'enabled': True, 'home': '/arbitrary'}
+        self.assertEqual(self.request('POST', '/api/codex/entries', bad, headers)[0], 400)
+        entries.configure.assert_not_called()
+        self.assertEqual(self.request('POST', '/api/codex/entries',
+                        {'action': 'configure', 'id': 'wsl:fixture', 'enabled': True}, headers)[0], 200)
+        entries.configure.assert_called_once_with('wsl:fixture', True)
+
+    def test_wsl_account_scope_cannot_fall_back_to_desktop_account_writes(self):
+        from unittest.mock import Mock
+        target = Mock()
+        target.access_summary.return_value = {'scope': 'wsl', 'accounts': [], 'canSwitch': False}
+        self.server.bridge.accounts = Mock()
+        self.server.bridge.accounts.public.side_effect = AssertionError('must not read desktop account')
+        self.server.bridge.for_host = lambda host: target if host == 'wsl:fixture' else None
+        headers = self.login()
+        status, _, value = self.request('GET', '/api/accounts?entry=wsl%3Afixture', headers=headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(value['scope'], 'wsl')
+        for path in ('/api/accounts/switch', '/api/account/reset', '/api/accounts/desktop-update'):
+            self.assertEqual(self.request('POST', path+'?entry=wsl%3Afixture', {}, headers)[0], 400)
+        self.server.bridge.accounts.switch.assert_not_called()
+        self.server.bridge.accounts.public.assert_not_called()
 
     def test_computer_identity_is_only_available_after_login(self):
         from unittest.mock import patch
@@ -1261,7 +1388,6 @@ class HttpTests(unittest.TestCase):
     def test_create_chat_requires_login_csrf_and_saved_project(self):
         from types import SimpleNamespace
         calls=[]
-        self.server.bridge.hosts=SimpleNamespace(projects=lambda:[{'key':'local|p','name':'Test'}])
         self.server.bridge.projects=lambda:[{'key':'local|p','name':'Test','type':'desktop'}]
         self.server.bridge.create_chat=lambda *args: calls.append(args) or {'id':THREAD,'host':'local'}
         body={'project':'local|p','title':'New chat','id':str(uuid.uuid4())}

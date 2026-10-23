@@ -126,7 +126,7 @@ class DesktopConnectionsPanel {
     const client=this.clients?.find(row=>row.id===id);
     if(this.busy||this.scanning||this.choosingClient||this.hasUncertain()||!client||(enabled&&!(client.selectable??client.configured)))return;
     let quitDesktop=false;
-    if(!enabled&&this.gatewayRunning!==false){
+    if(!enabled&&this.gatewayRunning!==false&&client.canQuitDesktop!==false){
       this.choosingClient=id;this.clientsRevision++;this.statusRevision++;this.renderClients();this.renderScan();
       try{quitDesktop=await ClientLifecycle.chooseDisable(client);}
       finally{this.choosingClient=null;this.renderClients();this.renderScan();}
@@ -150,12 +150,12 @@ class DesktopConnectionsPanel {
     for(const title of ['客户端','应用开关','连接状态','当前接入 / 剩余额度','管理'])tr.append(node('th',title));head.append(tr);table.append(head,body);
     for(const client of this.clients){
       const row=node('tr'),identity=node('td'),name=node('div',undefined,'connection-name'),logo=node('span',undefined,'client-logo');
-      const img=node('img');img.src='../web/client-icons/'+client.id+'.png';img.alt='';logo.append(img);
-      const label=node('div');label.append(node('strong',client.name),node('small',({codex:'Codex Desktop',claude:'Claude Desktop',deepseek:'DeepSeek Harness'})[client.id]));name.append(logo,label);identity.append(name);
+      const img=node('img');img.src='../web/client-icons/'+(client.icon||client.id)+'.png';img.alt='';logo.append(img);
+      const label=node('div');label.append(node('strong',client.name),node('small',client.kind==='wsl-cli'?'WSL Codex CLI':({codex:'Codex Desktop',claude:'Claude Desktop',deepseek:'DeepSeek Harness'})[client.id]));name.append(logo,label);identity.append(name);
       const access=node('td'),toggle=node('input');toggle.type='checkbox';toggle.className='client-toggle';toggle.checked=client.enabled;toggle.disabled=(!client.enabled&&!(client.selectable??client.configured))||this.scanning||this.busy||!!this.choosingClient;toggle.setAttribute('aria-label',t('启用')+' '+client.name);toggle.title=t(client.reason);toggle.onchange=()=>this.toggleClient(client.id,toggle.checked);access.append(toggle,node('small',this.pendingClient?.id===client.id?(this.gatewayRunning===false?'正在保存…':this.pendingClient.enabled?(client.id==='claude'?'正在连接…':'正在打开应用…'):this.pendingClient.forceDesktop?'正在后台强制结束…':this.pendingClient.quitDesktop?'正在退出应用…':'正在停用接入…'):client.setupStatus==='unsupported'?'暂不可用':client.enabled?(this.gatewayRunning===false?'随网关启动':'已启用'):!client.installed&&!client.configured?'待配置':'未启用'));
       toggle.disabled=toggle.disabled||this.hasUncertain();const state=this.connection(client),failure=this.operationFailures?.get(client.id),status=node('td'),stateLabel=node('span',state.label,state.waiting?'state-pending client-connection-waiting':client.connected?'state-ready':state.error?'state-error':state.action?'state-pending':'');stateLabel.setAttribute('role','status');stateLabel.setAttribute('aria-busy',String(state.waiting));status.append(stateLabel,node('small',failure?ClientLifecycle.failureMessage(failure):state.reason));
       const account=node('td');account.dataset.clientAccount=client.id;
-      if(client.id!=='codex')account.append(node('span',client.configured?'已配置':'待配置'),node('small',client.id==='claude'?'在 Claude 中管理账号':'在 Harness 中管理账号 / API'));
+      if(client.id!=='codex')account.append(node('span',client.configured?'已配置':'待配置'),node('small',client.kind==='wsl-cli'?'在 WSL 的原工具中管理接入':client.id==='claude'?'在 Claude 中管理账号':'在 Harness 中管理账号 / API'));
       const actions=node('td'),buttons=node('div',undefined,'connection-actions'),manage=node('button',client.setupStatus==='unsupported'?'查看详情':client.configured?'管理':'配置');
       if(failure){const retry=node('button',failure.uncertain?'刷新状态':ClientLifecycle.retryLabel(failure.action),'primary');retry.type='button';retry.disabled=this.busy||this.scanning||!!this.choosingClient||!!this.clientsLoading||(!failure.uncertain&&this.hasUncertain());retry.onclick=()=>failure.uncertain?this.refreshClients(true):this.retryOperation(client.id);buttons.append(retry);}
       if(!failure&&state.retryable&&this.gatewayRunning!==false){const retry=node('button','重试连接','primary');retry.type='button';retry.disabled=this.busy||this.scanning||!!this.choosingClient||this.hasUncertain();retry.onclick=()=>this.toggleClient(client.id,true);buttons.append(retry);}
@@ -172,12 +172,15 @@ class DesktopConnectionsPanel {
       if(client.id==='claude'&&!client.connected&&client.canConfirmQuit){
         const quit=node('button','退出 Claude…');quit.type='button';quit.disabled=!!this.busy||!!this.scanning;quit.onclick=()=>this.quitClaude();buttons.append(quit);
       }
-      if(!client.enabled&&client.running&&this.gatewayRunning!==false){const quit=node('button','关闭电脑 App…');quit.type='button';quit.disabled=this.busy||this.scanning||!!this.choosingClient||this.hasUncertain();quit.onclick=()=>this.toggleClient(client.id,false);buttons.append(quit);}
-      manage.type='button';manage.onclick=()=>window.GatewayLayout.selectClient(client.id);buttons.append(manage);actions.append(buttons);row.append(identity,access,status,account,actions);body.append(row);
+      if(!client.enabled&&client.running&&client.canQuitDesktop!==false&&this.gatewayRunning!==false){const quit=node('button','关闭电脑 App…');quit.type='button';quit.disabled=this.busy||this.scanning||!!this.choosingClient||this.hasUncertain();quit.onclick=()=>this.toggleClient(client.id,false);buttons.append(quit);}
+      manage.type='button';manage.onclick=()=>client.kind==='wsl-cli'?this.wslDetails(client):window.GatewayLayout.selectClient(client.id);buttons.append(manage);actions.append(buttons);row.append(identity,access,status,account,actions);body.append(row);
     }
     root.replaceChildren(table);this.renderAccount(this.accountValue);
     for(const [provider,panel] of Object.entries(this.accountPanels)){this.renderClientAccount(provider,panel.value);}
     this.resumeAccounts();
+  }
+  wslDetails(client){
+    const dialog=document.createElement('dialog'),title=document.createElement('h2'),text=document.createElement('p'),close=document.createElement('button');title.textContent=client.name;text.textContent=BridgeI18n.t(client.reason);close.type='button';close.textContent=BridgeI18n.t('关闭');close.onclick=()=>dialog.close();dialog.append(title,text,close);dialog.addEventListener('close',()=>dialog.remove());document.body.append(dialog);dialog.showModal();
   }
   resumeAccounts(){for(const panel of Object.values(this.accountPanels))panel.resume();}
   renderClientAccount(provider,value){

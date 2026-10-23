@@ -39,8 +39,10 @@ class RemoteCliModelsTests(unittest.TestCase):
         source += source_text('features/auth/tls.py') + '\n'
         source += source_text('features/accounts/models.py').replace(
             'from bridge.features.auth.tls import client_context', '') + '\n'
+        source += source_text('clients/codex/configuration.py') + '\n'
         source += source_text('clients/codex/catalog.py').replace(
-            'from bridge.features.accounts.models import model_catalog', '') + '\n'
+            'from bridge.features.accounts.models import model_catalog', '').replace(
+            'from bridge.clients.codex.configuration import magpie_managed', '') + '\n'
         source += source_text('clients/codex/remote_models.py') + '\n'
         source += daemon_source + '\n' + catalog_source + '\n'
         source += 'print(json.dumps(remote_model_worker(' + repr({**self.value, **changes, 'operation': operation}) + ')))\n'

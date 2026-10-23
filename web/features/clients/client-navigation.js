@@ -21,9 +21,11 @@ function bindChatListToolbar(toolbar){
   if(typeof ResizeObserver!=='undefined')new ResizeObserver(update).observe(toolbar);
   later();
 }
+function isCodexClient(id){return id==='codex'||typeof id==='string'&&/^wsl:[0-9a-f]{32}$/.test(id);}
+
 class ClientNavigation {
   constructor({view,request,notify}) {
-    Object.assign(this,{view,request,notify});this.clients=[];this.revision=0;this.pending=new Set();this.provider=localStorage.getItem('bridge-client')||'codex';const requested=new URLSearchParams(location.search).get('client');if(['codex','claude','deepseek'].includes(requested))this.provider=requested;
+    Object.assign(this,{view,request,notify});this.clients=[];this.revision=0;this.pending=new Set();this.provider=localStorage.getItem('bridge-client')||'codex';const requested=new URLSearchParams(location.search).get('client');if(['codex','claude','deepseek'].includes(requested)||isCodexClient(requested))this.provider=requested;
     this.heading=document.querySelector('#sidebar .list-heading');this.sidebar=document.getElementById('sidebar');
     this.footer=document.querySelector('.sidebar-foot');this.footer.classList.add('client-functions');
     this.navigation=document.createElement('div');this.navigation.className='client-navigation';this.sidebar.append(this.navigation);this.navigation.append(this.footer);
@@ -38,7 +40,7 @@ class ClientNavigation {
     this.badge=document.createElement('span');this.badge.className='client-badge';this.heading.querySelector('h2').append(this.badge);
     this.computer=document.getElementById('connected-computer');this.computerName=document.getElementById('computer-name');
     const more=this.heading.querySelector('.appearance-button')||make('•••',()=>{});more.textContent='•••';more.className='list-more appearance-button plain';more.dataset.i18nAriaLabel='详细设置';more.setAttribute('aria-label',BridgeI18n.t('详细设置'));more.onclick=()=>{document.getElementById('appearance-dialog').showModal();window.loadNotificationDefaults?.();};this.heading.append(more);
-    this.heading.addEventListener('click',e=>{if(e.target.closest('#new-chat')&&this.provider!=='codex'){e.preventDefault();e.stopImmediatePropagation();if(this.provider)this.view.create().catch(error=>notify(error.message));}},true);
+    this.heading.addEventListener('click',e=>{if(e.target.closest('#new-chat')&&!isCodexClient(this.provider)){e.preventDefault();e.stopImmediatePropagation();if(this.provider)this.view.create().catch(error=>notify(error.message));}},true);
     const preferences=document.getElementById('appearance-activity').closest('fieldset');
     for(const [key,label] of [['clients','应用管理']]){const row=document.createElement('label'),box=document.createElement('input');row.className='display-option';box.type='checkbox';box.id='appearance-'+key;box.checked=this.preference(key);box.onchange=()=>{this.preference(key,box.checked);this.paint();};const caption=document.createElement('span');caption.dataset.i18n=label;caption.textContent=BridgeI18n.t(label);row.append(caption,box);preferences.append(row);}
     const oldShortcuts=document.getElementById('appearance-accounts').closest('fieldset');
@@ -47,7 +49,7 @@ class ClientNavigation {
     oldShortcuts.hidden=true;
     const settings=document.getElementById('appearance-dialog');this.settingsActions=document.createElement('div');this.settingsActions.className='settings-action-row';settings.querySelector('.picker-head').after(this.settingsActions);this.settingsActions.append(this.switchToggle);
     const switchPreferences=document.createElement('fieldset');switchPreferences.className='appearance-section';const switchTitle=document.createElement('legend');switchTitle.dataset.i18n='底部应用切换';switchTitle.textContent=BridgeI18n.t('底部应用切换');switchPreferences.append(switchTitle);
-    for(const [id,name] of [['codex','Codex'],['claude','Claude'],['deepseek','DeepSeek Harness']]){const row=document.createElement('label'),box=document.createElement('input'),caption=document.createElement('span');row.className='display-option';box.type='checkbox';box.id='appearance-switch-'+id;box.checked=this.preference('switch:'+id);box.onchange=()=>{this.preference('switch:'+id,box.checked);this.paint();};caption.textContent=name;row.append(caption,box);switchPreferences.append(row);}const switchHint=document.createElement('p');switchHint.className='muted';switchHint.dataset.i18n='隐藏图标不关闭应用，仍可在应用管理中打开聊天。';switchHint.textContent=BridgeI18n.t('隐藏图标不关闭应用，仍可在应用管理中打开聊天。');switchPreferences.append(switchHint);preferences.after(switchPreferences);
+    for(const [id,name] of [['codex','Codex'],['claude','Claude'],['deepseek','DeepSeek Harness']]){const row=document.createElement('label'),box=document.createElement('input'),caption=document.createElement('span');row.className='display-option';box.type='checkbox';box.id='appearance-switch-'+id;box.checked=this.preference('switch:'+id);box.onchange=()=>{this.preference('switch:'+id,box.checked);this.paint();};caption.textContent=name;row.append(caption,box);switchPreferences.append(row);}const switchHint=document.createElement('p');switchHint.className='muted';switchHint.dataset.i18n='隐藏图标不关闭应用，仍可在应用管理中打开聊天。';switchHint.textContent=BridgeI18n.t('隐藏图标不关闭应用，仍可在应用管理中打开聊天。');switchPreferences.append(switchHint);preferences.after(switchPreferences);this.switchPreferences=switchPreferences;
     const swipeRow=document.createElement('label'),swipeBox=document.createElement('input'),swipeCaption=document.createElement('span');swipeRow.className='display-option';swipeBox.type='checkbox';swipeBox.id='appearance-swipe-clients';swipeBox.checked=this.preference('swipe-clients',undefined,true);swipeBox.onchange=()=>{this.preference('swipe-clients',swipeBox.checked);this.cancelListSwipe();};swipeCaption.dataset.i18n='左右滑动切换应用';swipeCaption.textContent=BridgeI18n.t('左右滑动切换应用');swipeRow.append(swipeCaption,swipeBox);switchPreferences.append(swipeRow);this.bindListGestures();
     const language=document.getElementById('language');if(language)preferences.append(language.closest('label'));
     const applications=make('应用管理',()=>{settings.close();this.openManager();});applications.dataset.i18nAriaLabel='应用管理';applications.setAttribute('aria-label',BridgeI18n.t('应用管理'));this.settingsNotifications=make('第三方通知',()=>{if(window.BridgeSharedRelay)return;settings.close();this.notifications.click();});this.settingsNotifications.removeAttribute('data-i18n');this.settingsNotifications.dataset.i18nAriaLabel='第三方通知';this.settingsNotifications.setAttribute('aria-label',BridgeI18n.t('第三方通知'));this.settingsActions.append(applications,this.settingsNotifications,document.getElementById('open-session-diagnostics'));
@@ -62,7 +64,7 @@ class ClientNavigation {
     new MutationObserver(restore).observe(document.body,{childList:true});
     new MutationObserver(restore).observe(settings,{childList:true});
     document.querySelector('#chat .chat-info').before(this.icon('codex'));
-    document.getElementById('new-chat-form').prepend(Object.assign(document.createElement('p'),{className:'muted',textContent:'Codex'}));
+    document.getElementById('new-chat-form').prepend(Object.assign(document.createElement('p'),{id:'new-chat-client',className:'muted',textContent:'Codex'}));
     new MutationObserver(()=>document.body.classList.toggle('gateway-authenticated',!document.getElementById('app').hidden)).observe(document.getElementById('app'),{attributes:true,attributeFilter:['hidden']});
     document.addEventListener('bridge-language',()=>{this.paint();BridgeI18n.apply();});
     document.addEventListener('visibilitychange',()=>{if(!document.hidden)this.refresh();});
@@ -96,7 +98,7 @@ class ClientNavigation {
       if(settling?.commitTarget&&settling.provider===this.provider&&this.clients.some(client=>client.id===settling.commitTarget&&client.enabled))this.choose(settling.commitTarget).catch(error=>this.notify(error.message));
       this.cancelListSwipe();const touch=event.touches[0],control=event.target.closest('input,select,textarea,button,a,[contenteditable="true"],summary');
       if(event.touches.length!==1||!touch||touch.clientX<28||touch.clientX>innerWidth-28||event.target.closest('.list-heading,.chat-list-toolbar,.client-navigation')||(control&&!control.closest('.session'))||window.getSelection()?.toString())return;
-      this.listGesture={list,paintList:this.provider==='codex'?this.sidebar:this.view.list,provider:this.provider,id:touch.identifier,x:touch.clientX,y:touch.clientY,time:Date.now(),horizontal:false};return;
+      this.listGesture={list,paintList:isCodexClient(this.provider)?this.sidebar:this.view.list,provider:this.provider,id:touch.identifier,x:touch.clientX,y:touch.clientY,time:Date.now(),horizontal:false};return;
     }
     const gesture=this.listGesture;if(!gesture||gesture.list!==list)return;if(gesture.provider!==this.provider){this.cancelListSwipe();return;}
     if(event.touches.length>(phase==='end'?0:1)){this.cancelListSwipe();return;}
@@ -112,7 +114,7 @@ class ClientNavigation {
     const enabled=this.clients.filter(c=>c.enabled),index=enabled.findIndex(c=>c.id===this.provider),next=enabled[index+(dx<0?1:-1)];
     this.finishListSwipe(gesture,dx,Math.abs(dx)>=60?next?.id:null);
   }
-  swipeRows(){return this.provider==='codex'?document.getElementById('sessions'):this.view.rowsRoot;}
+  swipeRows(){return isCodexClient(this.provider)?document.getElementById('sessions'):this.view.rowsRoot;}
   copySwipeRows(source){
     const clone=source.cloneNode(true);clone.classList.add('client-swipe-rows');
     const gutter=source.offsetWidth-source.clientWidth;
@@ -144,13 +146,13 @@ class ClientNavigation {
       const title=document.createElement('div');title.className='client-swipe-caption';
       if(next){
         title.append(this.icon(next.id),document.createTextNode(next.name));incoming.append(title);
-        const snapshot=this.swipeSnapshots.get(next.id),saved=next.id!=='codex'&&this.view.providerViews.has(next.id)&&snapshot?.epoch===this.view.providerReadEpochs.get(next.id)&&snapshot?.language===BridgeI18n.language()?snapshot:null;
+        const snapshot=this.swipeSnapshots.get(next.id),saved=snapshot?.language===BridgeI18n.language()&&(isCodexClient(next.id)||this.view.providerViews.has(next.id)&&snapshot?.epoch===this.view.providerReadEpochs.get(next.id))?snapshot:null;
         if(saved){const rows=saved.clone.cloneNode(true);incoming.append(rows);incoming._rows=rows;incoming._scroll=saved.scroll;}
         else{
           // Use only already-prefetched titles; previewing never starts a request.
           const rows=document.createElement('div');rows.className='sessions client-swipe-rows';
-          const cached=next.id==='codex'?null:this.view.providerViews.get(next.id);
-          if(next.id==='codex'){const savedCodex=this.copySwipeRows(document.getElementById('sessions'));incoming._rows=savedCodex.clone;incoming._scroll=savedCodex.scroll;incoming.append(savedCodex.clone);}
+          const cached=isCodexClient(next.id)?null:this.view.providerViews.get(next.id);
+          if(next.id===this.provider&&isCodexClient(next.id)){const savedCodex=this.copySwipeRows(document.getElementById('sessions'));incoming._rows=savedCodex.clone;incoming._scroll=savedCodex.scroll;incoming.append(savedCodex.clone);}
           else{for(const row of (cached?.rows||[]).filter(row=>!row.archived).slice(0,30)){const item=document.createElement('div'),label=document.createElement('strong');item.className='session';label.textContent=row.title||BridgeI18n.t('新会话');item.append(label);rows.append(item);}incoming.append(rows);}
         }
       }
@@ -176,15 +178,16 @@ class ClientNavigation {
     finally{if(this.swipePreview===preview)this.cancelListSwipe();}
   }
   visibleClients(){return this.clients.filter(client=>client.enabled&&this.preference('switch:'+client.id));}
-  icon(id){const n=document.createElement('span');n.className='client-icon client-'+id;n.setAttribute('aria-hidden','true');const img=document.createElement('img');img.src='/client-icons/'+id+'.png';img.alt='';n.append(img);return n;}
+  icon(id){const n=document.createElement('span');n.className='client-icon client-'+id;n.setAttribute('aria-hidden','true');const img=document.createElement('img');img.src='/client-icons/'+(isCodexClient(id)?'codex':id)+'.png';img.alt='';n.append(img);return n;}
   applyClients(data){
-    this.clients=data.clients;this.gatewayRunning=data.gatewayRunning??this.gatewayRunning;
+    this.clients=data.clients;this.wslSupported=data.wslSupported??this.wslSupported;this.gatewayRunning=data.gatewayRunning??this.gatewayRunning;
     this.windowsSession=data.windowsSession??this.windowsSession;
+    for(const client of this.clients.filter(row=>row.kind==='wsl-cli')){if(document.getElementById('appearance-switch-'+client.id))continue;const row=document.createElement('label'),box=document.createElement('input'),caption=document.createElement('span');row.className='display-option';box.type='checkbox';box.id='appearance-switch-'+client.id;box.checked=this.preference('switch:'+client.id);box.onchange=()=>{this.preference('switch:'+client.id,box.checked);this.paint();};caption.textContent=client.name;row.append(caption,box);this.switchPreferences.append(row);}
     this.syncViewClients();
     if(data.computer){this.computer.dataset.deviceName=data.computer;this.computerName.textContent=data.computer;document.dispatchEvent(new Event('bridge-computer'));}
     const enabled=this.clients.filter(c=>c.enabled);
     const id=enabled.some(c=>c.id===this.provider)?this.provider:enabled[0]?.id||null;
-    if(id!==this.provider||this.view.provider!==(id||'codex'))this.choose(id).catch(error=>this.notify(error.message));
+    if(id!==this.provider||this.view.provider!==(isCodexClient(id)?'codex':id||'codex'))this.choose(id,{activate:false}).catch(error=>this.notify(error.message));
     else{if(id&&this.view.previewOnly)this.view.confirmCachedList();this.paint();}
   }
   async refresh(){
@@ -192,6 +195,14 @@ class ClientNavigation {
     this.loading=true;const revision=this.revision;
     try{const data=await ClientLifecycle.request(signal=>this.request('/api/clients',undefined,signal),{timeout:this.statusTimeout??10000,uncertain:false,message:'客户端状态读取超时，请重试。'});if(revision===this.revision){this.statusPending=data.pending===true;if(data.refreshError)throw Error(data.refreshError);if(!this.statusPending){ClientLifecycle.reconcile(this.operationFailures,data.clients);this.applyClients(data);}}}
     catch(error){this.notify(error.message);}finally{this.loading=false;this.paint();}
+  }
+  clear(){this.revision++;this.clients=[];this.choosing=null;this.pending.clear();this.operationFailures?.clear();this.swipeSnapshots.clear();}
+  async scanWsl(button){
+    if(this.pending.size||this.choosing||this.hasUncertain())return;
+    this.choosing='scan-wsl';const revision=++this.revision;button.disabled=true;this.paint();
+    try{const value=await this.request('/api/clients',{action:'scan-wsl'});if(revision!==this.revision)return;this.applyClients(value);if(value.errors?.length)this.notify(value.errors.map(row=>row.distribution+'：'+row.error).join('\n'));}
+    catch(error){if(revision===this.revision)this.notify(error.message);}
+    finally{if(revision===this.revision){this.choosing=null;this.revision++;button.disabled=false;this.paint();}}
   }
   poll(fast=false){
     if(document.hidden||document.getElementById('app').hidden||this.hasUncertain()||(fast&&!this.statusPending&&!this.clients.some(client=>ClientLifecycle.connection(client).waiting)))return;
@@ -201,18 +212,22 @@ class ClientNavigation {
   hasUncertain(){return [...(this.operationFailures?.values()||[])].some(value=>value.uncertain);}
   syncViewClients(){this.view.setClientStates?.(this.clients.map(client=>({...client,operationFailure:this.operationFailures?.get(client.id),operationUncertain:this.hasUncertain(),pendingEnable:this.gatewayRunning!==false&&this.pending.has(client.id)&&client.enabled})),id=>this.toggle(id,true),id=>this.initialize(id),()=>this.refresh(),id=>this.reconnect(id));}
   retryOperation(id){const failure=this.operationFailures?.get(id);if(!failure||this.hasUncertain())return;return failure.action==='initialize'?this.initialize(id):this.toggle(id,failure.action==='enable');}
-  async choose(id){
+  async choose(id,{activate=true}={}){
     this.cancelListSwipe();
-    if(id===this.provider&&this.view.provider===(id||'codex'))return;
+    if(id===this.provider&&this.view.provider===(isCodexClient(id)?'codex':id||'codex')){
+      if(activate&&id?.startsWith('wsl:'))await this.onApplicationChange?.(id,id,{activate});
+      return;
+    }
     ++this.revision;
     const restoreCodex=id==='codex'&&this.provider===null&&this.view.provider==='codex'&&!this.pending.has('codex');
     this.rememberSwipeList();
-    this.listReadDone=false;this.listVisit=(this.listVisit||0)+1;this.provider=id;if(id)localStorage.setItem('bridge-client',id);
-    const ready=this.view.choose(id||'codex');if(restoreCodex)this.view.onSelect?.('codex');this.paint();await ready;
+    const previous=this.provider;this.listReadDone=false;this.listVisit=(this.listVisit||0)+1;this.provider=id;if(id)localStorage.setItem('bridge-client',id);
+    const ready=this.view.choose(isCodexClient(id)?'codex':id||'codex');if(restoreCodex)this.view.onSelect?.('codex');this.paint();
+    await this.onApplicationChange?.(previous,id,{activate});await ready;
   }
   acknowledgeList(provider,value){
-    if(this.listReadDone||provider!==this.provider||document.hidden||document.getElementById('app').hidden||value.connected===false||value.complete===false||value.unavailableHosts?.length)return;
-    const list=provider==='codex'?this.sidebar:this.view.list;if(list?.getBoundingClientRect().width===0)return;
+    if(provider?.startsWith('wsl:')||this.listReadDone||provider!==this.provider||document.hidden||document.getElementById('app').hidden||value.connected===false||value.complete===false||value.unavailableHosts?.length)return;
+    const list=isCodexClient(provider)?this.sidebar:this.view.list;if(list?.getBoundingClientRect().width===0)return;
     const visit=this.listVisit;const read=value.notificationRead;if(!read||!Number.isSafeInteger(read.cursor))return;
     this.listReadDone=true;
     this.request('/api/mobile/events/read',{provider,streamId:read.streamId,through:read.cursor}).catch(()=>{if(this.provider===provider&&this.listVisit===visit)this.listReadDone=false;});
@@ -223,7 +238,7 @@ class ClientNavigation {
       if(!id||id.length>512||host.length>256||/[\x00-\x1f\x7f]/.test(id+host))return null;
       if(['desktop:claude','desktop:deepseek'].includes(host))return {provider:host.slice(8),id,host};
       if(host.startsWith('desktop:')||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))return null;
-      return {provider:'codex',id,host};
+      return {provider:host.startsWith('wsl:')?host:'codex',id,host};
     }catch{return null;}
   }
   async openChatLink(hash,openCodex){
@@ -231,7 +246,7 @@ class ClientNavigation {
     if(!this.clients.some(client=>client.id===target.provider&&client.enabled)){this.notify('尚未启用应用，请打开应用管理。');return true;}
     const ready=this.choose(target.provider),generation=this.view.generation;await ready;
     if(this.provider!==target.provider||generation!==this.view.generation)return true;
-    if(target.provider==='codex')await openCodex(target.id,target.host);else await this.view.open(target.id);
+    if(isCodexClient(target.provider))await openCodex(target.id,target.host);else await this.view.open(target.id);
     return true;
   }
   async initialize(id){
@@ -243,7 +258,7 @@ class ClientNavigation {
   async toggle(id,enabled,{initializeDesktop=false}={}){
     const client=this.clients.find(row=>row.id===id);if(this.pending.size||this.choosing||this.hasUncertain()||!client||(enabled&&!(client.selectable??client.configured)))return;
     let quitDesktop=false;
-    if(!enabled&&this.gatewayRunning!==false){
+    if(!enabled&&this.gatewayRunning!==false&&client.canQuitDesktop!==false){
       this.choosing=id;++this.revision;this.paint();
       try{quitDesktop=await ClientLifecycle.chooseDisable(client);}
       finally{this.choosing=null;this.paint();}
@@ -268,13 +283,13 @@ class ClientNavigation {
     if((this.listGesture||this.swipePreview)&&(!this.clients.some(c=>c.id===this.provider&&c.enabled)||this.swipePreview&&this.swipePreview.provider!==this.provider))this.cancelListSwipe();
     this.syncViewClients();
     const provider=this.provider,row=this.clients.find(c=>c.id===provider),badgeName=row?.name||'Codex';if(this.badge.dataset.provider!==provider||this.badge.dataset.name!==badgeName){this.badge.replaceChildren();if(provider)this.badge.append(this.icon(provider),document.createTextNode(badgeName));this.badge.dataset.provider=provider||'';this.badge.dataset.name=badgeName;}
-    const target=provider&&provider!=='codex'?this.view.list:this.sidebar;if(this.heading.parentElement!==target)target.prepend(this.heading);if(this.navigation.parentElement!==target)target.append(this.navigation);
-    this.account.classList.toggle('navigation-hidden',!provider||(provider==='codex'&&!!window.BridgeSharedRelay));this.notifications.classList.toggle('navigation-hidden',!provider);this.manage.hidden=!this.preference('clients');
+    const target=provider&&!isCodexClient(provider)?this.view.list:this.sidebar;if(this.heading.parentElement!==target)target.prepend(this.heading);if(this.navigation.parentElement!==target)target.append(this.navigation);
+    this.account.classList.toggle('navigation-hidden',!provider||(isCodexClient(provider)&&!!window.BridgeSharedRelay));this.notifications.classList.toggle('navigation-hidden',!provider);this.manage.hidden=!this.preference('clients');
     this.account.textContent=BridgeI18n.t('账号管理');this.account.removeAttribute('data-i18n');this.notifications.textContent=BridgeI18n.language()==='en'?'Push alerts':'第三方通知';this.notifications.removeAttribute('data-i18n');this.notifications.setAttribute('aria-label',BridgeI18n.t('第三方通知'));this.home.textContent=BridgeI18n.language()==='en'?'Computers':'返回电脑列表';
     this.switcher.replaceChildren();const enabled=this.clients.filter(c=>c.enabled),visible=this.visibleClients();const collapsed=this.preference('switch-collapsed',undefined,false);this.switchToggle.hidden=enabled.length<2||!visible.length;this.paintSettingsActions();this.switchDock.hidden=this.switchToggle.hidden||collapsed;this.navigation.classList.toggle('switch-dock-hidden',this.switchDock.hidden);this.switchToggle.textContent=BridgeI18n.t(collapsed?'显示底部 APP 图标':'隐藏底部 APP 图标');this.switchToggle.setAttribute('aria-expanded',String(!collapsed));this.switchToggle.setAttribute('aria-label',BridgeI18n.t(collapsed?'展开应用图标':'收起应用图标'));this.switchToggle.title=this.switchToggle.getAttribute('aria-label');this.settingsNotifications.textContent=BridgeI18n.language()==='en'?'Push alerts':'第三方通知';
     for(const client of visible){const button=document.createElement('button');button.type='button';button.append(this.icon(client.id),document.createTextNode(client.name));button.classList.toggle('selected',client.id===provider);button.setAttribute('aria-pressed',String(client.id===provider));button.onclick=()=>this.choose(client.id).catch(e=>this.notify(e.message));this.switcher.append(button);}
     document.getElementById('desktop-backend').hidden=true;
-    document.getElementById('new-chat').disabled=!provider||this.view.previewOnly===true;
+    document.getElementById('new-chat').disabled=!provider||this.view.previewOnly===true;document.getElementById('new-chat').hidden=false;
     this.sidebar.classList.toggle('no-client',!provider);document.getElementById('app').classList.toggle('no-enabled-client',!provider);
     let empty=this.sidebar.querySelector('.no-client-message');if(!empty){empty=document.createElement('p');empty.className='no-client-message muted';empty.textContent=BridgeI18n.t('尚未启用应用，请打开应用管理。');this.heading.after(empty);}empty.hidden=!!provider;this.renderManager();
   }
@@ -298,7 +313,7 @@ class ClientNavigation {
       toggle.type='button';toggle.className='client-management-switch';toggle.setAttribute('role','switch');toggle.setAttribute('aria-checked',String(client.enabled));toggle.setAttribute('aria-label',BridgeI18n.t('启用')+' '+client.name);toggle.setAttribute('aria-busy',String(this.pending.has(client.id)));toggle.disabled=(!client.enabled&&!(client.selectable??client.configured))||this.pending.size>0||!!this.choosing||this.hasUncertain();
       toggle.append(document.createElement('span'));control.append(toggle,label);row.append(this.icon(client.id),text,control);list.append(row);
       toggle.onclick=()=>this.toggle(client.id,!client.enabled).catch(error=>this.notify(error.message));
-      if(!client.enabled&&client.running&&this.gatewayRunning!==false){const quit=document.createElement('button');quit.type='button';quit.textContent=BridgeI18n.t('关闭电脑 App…');quit.disabled=this.pending.size>0||!!this.choosing||this.hasUncertain();quit.onclick=()=>this.toggle(client.id,false).catch(error=>this.notify(error.message));control.append(quit);}
+      if(!client.enabled&&client.running&&client.canQuitDesktop!==false&&this.gatewayRunning!==false){const quit=document.createElement('button');quit.type='button';quit.textContent=BridgeI18n.t('关闭电脑 App…');quit.disabled=this.pending.size>0||!!this.choosing||this.hasUncertain();quit.onclick=()=>this.toggle(client.id,false).catch(error=>this.notify(error.message));control.append(quit);}
       if(client.enabled){const open=document.createElement('button');open.type='button';open.textContent=BridgeI18n.t('查看聊天');open.onclick=()=>{manager.dialog.close();this.choose(client.id).catch(error=>this.notify(error.message));};control.append(open);}
       if(failure){const retry=document.createElement('button');retry.type='button';retry.textContent=BridgeI18n.t(failure.uncertain?'刷新状态':ClientLifecycle.retryLabel(failure.action));retry.disabled=this.pending.size>0||!!this.choosing||!!this.loading||(!failure.uncertain&&this.hasUncertain());retry.onclick=()=>Promise.resolve(failure.uncertain?this.refresh():this.retryOperation(client.id)).catch(error=>this.notify(error.message));control.append(retry);}
       if(!failure&&state.retryable&&this.gatewayRunning!==false){const retry=document.createElement('button');retry.type='button';retry.textContent=BridgeI18n.t('重试连接');retry.disabled=this.pending.size>0||!!this.choosing||this.hasUncertain();retry.onclick=()=>this.toggle(client.id,true).catch(error=>this.notify(error.message));control.append(retry);}
@@ -311,6 +326,7 @@ class ClientNavigation {
   openManager(){
     if(this.manager?.dialog.open)return;
     const dialog=this.view.dialog('应用管理'),list=document.createElement('div'),note=document.createElement('p');note.className='muted';
+    if(this.wslSupported){const scan=document.createElement('button');scan.type='button';scan.textContent=BridgeI18n.t('扫描 WSL 应用');scan.onclick=()=>this.scanWsl(scan);dialog.append(scan);}
     const title=dialog.querySelector('.picker-head h2');title.classList.add('dialog-content-start');title.tabIndex=-1;title.autofocus=true;dialog.append(list,note);this.manager={dialog,list,note};
     dialog.addEventListener('close',()=>{if(this.manager?.dialog===dialog)this.manager=null;});dialog.showModal();this.renderManager();this.refresh();
   }

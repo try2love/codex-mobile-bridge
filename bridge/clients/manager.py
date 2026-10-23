@@ -727,6 +727,9 @@ class DesktopSessions:
         return result
 
     def enabled(self, provider):
+        if isinstance(provider, str) and provider.startswith('wsl:'):
+            entries = getattr(self.bridge, 'entries', None)
+            return bool(entries and entries.enabled(provider))
         return self.config.get('enabled', {}).get(provider, provider == 'codex')
 
     def require_enabled(self, provider):
@@ -815,6 +818,9 @@ class DesktopSessions:
                             self.deepseek_restore_error = str(exc)
             private_json(self.config_path, self.config)
             self.client_cache = None
+            entries = getattr(self.bridge, 'entries', None)
+            if entries is not None and sys.platform == 'win32':
+                entries.scan()
             return self.clients(refresh=True)
 
     def start_enabled(self):
@@ -1337,7 +1343,11 @@ class DesktopSessions:
                     else:
                         row['reason'] = ('已选择，启动网关后在后台启动并连接' if row['id'] == 'claude'
                                          else '已选择，启动网关后自动接入')
-            result = {'clients': rows, 'computer': socket.gethostname(), 'gatewayRunning': self.gateway_running}
+            entries = getattr(self.bridge, 'entries', None)
+            if entries is not None:
+                rows.extend(entries.applications())
+            result = {'clients': rows, 'computer': socket.gethostname(), 'gatewayRunning': self.gateway_running,
+                      'wslSupported': entries is not None and sys.platform == 'win32'}
             if sys.platform == 'win32':
                 result['windowsSession'] = windows_session.status()
             self.client_cache = (time.monotonic(), result)
@@ -1459,6 +1469,16 @@ class DesktopSessions:
 
     def toggle_client(self, value):
         provider, enabled = value.get('provider'), value.get('enabled')
+        if isinstance(provider, str) and provider.startswith('wsl:'):
+            entries = getattr(self.bridge, 'entries', None)
+            if entries is None or type(enabled) is not bool or set(value) - {'action', 'provider', 'enabled', 'quitDesktop'}:
+                raise ValueError('WSL 应用开关无效')
+            if value.get('quitDesktop', False) is not False:
+                raise ValueError('请在原 WSL 终端退出 Codex；应用管理只停用手机访问，不会终止原任务')
+            with self.client_lock:
+                entries.configure(provider, enabled)
+                self.client_cache = None
+                return self.clients(refresh=True)
         if provider not in ('codex', 'claude', 'deepseek') or type(enabled) is not bool:
             raise ValueError('应用开关无效')
         if 'quitDesktop' in value and (type(value['quitDesktop']) is not bool or enabled):
@@ -1732,6 +1752,8 @@ class DesktopSessions:
 
     def control(self, value):
         action = value.get('action', 'status')
+        if action == 'scan-wsl':
+            return self.scan_wsl()
         if action == 'claude-prerequisites':
             result = self.adapters['claude'].prerequisites(request_permission=value.get('requestPermission') is True)
             return {**result, 'gatewayRunning': self.gateway_running}
@@ -1782,6 +1804,15 @@ class DesktopSessions:
             if action == 'remove-deepseek':
                 return self.adapters['deepseek'].uninstall()
         raise ValueError('不支持的接入操作')
+
+    def scan_wsl(self):
+        entries = getattr(self.bridge, 'entries', None)
+        if entries is None:
+            raise ValueError('当前电脑不支持 WSL 应用')
+        with self.client_lock:
+            result = entries.scan()
+            self.client_cache = None
+            return {**self.clients(refresh=True), 'errors': result.get('errors', [])}
 
     def close(self):
         self.closed.set()

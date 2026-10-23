@@ -313,7 +313,11 @@ class Workbench {
     for (const [name, description, action] of [[BridgeI18n.t('文件'), BridgeI18n.t('浏览项目文件、上传与下载'), () => this.files()], ['Git', BridgeI18n.t('历史、暂存、提交与分支管理'), () => this.git()], [BridgeI18n.t('终端'), BridgeI18n.t('运行项目命令、构建与查看输出'), () => this.terminal()], [BridgeI18n.t('侧边聊天'), BridgeI18n.t('继承当前上下文，临时讨论并跨设备接续'), () => this.sideChat()], [BridgeI18n.t('子智能体'), BridgeI18n.t('查看派生任务关系与执行记录'), () => this.agents()]]) {
       const button = this.button('', () => { dialog.close(); action(); }, name);
       button.append(this.node('strong', '', name), this.node('span', '', description));
-      if((this.current.provider||this.current.access?.canUseSideChat===false)&&['侧边聊天','子智能体'].map(BridgeI18n.t).includes(name)) {button.disabled=true;button.lastChild.textContent=BridgeI18n.t('当前客户端尚未提供此能力');}
+      const capability=name===BridgeI18n.t('终端')?'terminal':name===BridgeI18n.t('侧边聊天')?'sideChat':null;
+      const unavailable=this.current.provider&&['侧边聊天','子智能体'].map(BridgeI18n.t).includes(name)
+        ||this.current.access?.canUseSideChat===false&&['侧边聊天','子智能体'].map(BridgeI18n.t).includes(name)
+        ||capability&&this.current.capabilities?.[capability]===false;
+      if(unavailable){button.disabled=true;button.lastChild.textContent=BridgeI18n.t('当前客户端尚未提供此能力');}
       choices.append(button);
     }
     dialog.append(head, choices); dialog.addEventListener('close', () => dialog.remove()); document.body.append(dialog); dialog.showModal();

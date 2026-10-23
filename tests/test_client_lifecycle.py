@@ -15,6 +15,33 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ClientLifecycleTests(unittest.TestCase):
+    def test_wsl_is_an_independent_managed_app_and_never_uses_native_desktop_lifecycle(self):
+        from bridge.features.endpoints.registry import Entries
+        from bridge.platforms.windows import wsl
+        entries = self.bridge.entries = Entries(self.root)
+        self.addCleanup(entries.close)
+        self.manager.config.setdefault('enabled', {})['codex'] = False
+        info = {'user': 'fixture', 'homes': [{'home': '/home/fixture/.codex'}]}
+        with patch.object(wsl, 'running_distributions', return_value=['Ubuntu']), patch.object(wsl, 'probe', return_value=info), \
+                patch('bridge.clients.lifecycle.inspect_clients', return_value={}) as inspect, \
+                patch('bridge.clients.lifecycle.launch_client') as launch, patch('bridge.clients.lifecycle.stop_client') as stop:
+            result = self.manager.scan_wsl()
+            row = next(row for row in result['clients'] if row.get('kind') == 'wsl-cli')
+            self.assertFalse(row['enabled'])
+            enabled = self.manager.control({'action': 'toggle-client', 'provider': row['id'], 'enabled': True})
+            self.assertTrue(next(item for item in enabled['clients'] if item['id'] == row['id'])['enabled'])
+            self.manager.require_enabled(row['id'])
+            with self.assertRaises(ValueError):
+                self.manager.require_enabled('codex')
+            with self.assertRaisesRegex(ValueError, '原 WSL 终端'):
+                self.manager.toggle_client({'provider': row['id'], 'enabled': False, 'quitDesktop': True})
+            self.assertTrue(entries.enabled(row['id']))
+            self.manager.toggle_client({'provider': row['id'], 'enabled': False, 'quitDesktop': False})
+            self.assertFalse(entries.enabled(row['id']))
+            self.assertTrue(all(not descriptor['id'].startswith('wsl:') for args in inspect.call_args_list for descriptor in args.args[0]))
+            launch.assert_not_called()
+            stop.assert_not_called()
+
     def setUp(self):
         platform = patch('bridge.clients.manager.sys', SimpleNamespace(platform='darwin'))
         platform.start(); self.addCleanup(platform.stop)

@@ -7,6 +7,7 @@
 | 需求 | 首先查看 | 需要联动时再看 |
 | --- | --- | --- |
 | Windows 客户端安装路径、进程、启动和退出 | `bridge/platforms/windows/` | `bridge/clients/discovery.py`、`desktop_app.py`、`lifecycle.py` |
+| 同一 Windows 的 Codex / WSL Codex 独立应用与 Magpie | `bridge/features/endpoints/`、`bridge/clients/manager.py`、`bridge/platforms/windows/wsl.py` | `web/features/clients/client-navigation.js`、[使用说明](../wsl-codex.md)、[验证记录](windows-wsl-validation.md) |
 | macOS 屏保、辅助功能、Claude 原生助手 | `bridge/platforms/macos/claude.py`、`claude-helper.swift` | `bridge/clients/claude/setup.py` |
 | Ubuntu 安装发现、桌面启动和 IPC | `bridge/platforms/linux/`、`platforms/posix/` | [Linux 说明](../linux.md) |
 | 本机 Linux Codex 权限能力、侧边聊天权限确认 | `bridge/features/sessions/linux_permissions.py`、`linux_side_chat.py` | `bridge/clients/codex/catalog.py`、`web/features/chat/permissions.js` |

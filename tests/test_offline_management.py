@@ -31,6 +31,9 @@ class OfflineManagement(unittest.TestCase):
         discovery = patch('bridge.clients.discovery.discover_clients', return_value=self.discovered)
         self.scan = discovery.start()
         self.addCleanup(discovery.stop)
+        wsl_running = patch('bridge.platforms.windows.wsl.running_distributions', return_value=[])
+        self.wsl_running = wsl_running.start()
+        self.addCleanup(wsl_running.stop)
 
     def add_api(self):
         return self.desktop.accounts({'action': 'addApi', 'name': 'Local fixture API',

@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from bridge.features.sessions.create import CreationUnavailable, create_empty, rename_thread, open_in_desktop, CreationError
+from bridge.features.sessions.create import project_directory, project_directory_listing
 from bridge.clients.codex.remote import AppHosts
 from bridge.app.service import Bridge
 
@@ -16,6 +17,58 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class CreationTests(unittest.TestCase):
+    def test_directory_browser_lists_only_folders_and_creates_inside_fresh_parent(self):
+        root = self.root.resolve()
+        (root/'folder').mkdir(); (root/'.hidden').mkdir(); (root/'file.txt').write_text('keep')
+        listing = project_directory_listing(str(root))
+        self.assertIn('folder', [r['name'] for r in listing['directories']])
+        self.assertNotIn('file.txt', [r['name'] for r in listing['directories']])
+        self.assertNotIn('.hidden', [r['name'] for r in listing['directories']])
+        self.assertIn('.hidden', [r['name'] for r in project_directory_listing(str(root), True)['directories']])
+        child = project_directory_listing(str(root), name='new folder', identity=listing['identity'])
+        self.assertEqual(Path(child['path']), root/'new folder')
+        self.assertEqual(child['parent'], str(root))
+        for name in ('../outside', 'bad/name', 'bad\\name', '..'):
+            with self.assertRaises(ValueError): project_directory_listing(str(root), name=name, identity=listing['identity'])
+        with self.assertRaisesRegex(ValueError, '已变化'):
+            project_directory_listing(str(root), name='never-created', identity={})
+        self.assertFalse((root/'never-created').exists())
+        self.assertEqual((root/'file.txt').read_text(), 'keep')
+
+    def test_explicit_directory_registration_and_chat_creation_survive_restart(self):
+        path = self.root/'chosen-project'
+        project = self.bridge.register_project(str(path.resolve()), True)
+        self.assertTrue(path.is_dir())
+        with patch('bridge.app.service.create_empty', return_value=self.tid) as create, patch('bridge.app.service.open_in_desktop'):
+            self.bridge.create_chat(project['key'], 'Chosen directory', str(uuid.uuid4()))
+            self.assertEqual(Path(create.call_args.args[2]), path.resolve())
+        self.bridge.close()
+        self.bridge = Bridge(self.root, self.root/'data')
+        self.assertEqual(self.bridge.projects()[0]['cwd'], str(path.resolve()))
+
+    def test_directory_validation_never_creates_without_explicit_option_or_overwrites_files(self):
+        path = self.root/'new-project'
+        with self.assertRaises(ValueError): project_directory(str(path.resolve()))
+        self.assertFalse(path.exists())
+        with self.assertRaises(ValueError): project_directory(str((path/'child').absolute()), True)
+        self.assertFalse(path.exists())
+        identity = project_directory(str(path.resolve()), True)
+        file = path/'keep.txt'; file.write_text('preserved')
+        self.assertEqual(project_directory(str(path.resolve()), True), identity)
+        self.assertEqual(file.read_text(), 'preserved')
+        for value in ('relative/path', 'x\x00y', str(file.resolve())):
+            with self.assertRaises(ValueError): project_directory(value, True)
+        with self.assertRaisesRegex(ValueError, '已变化'):
+            project_directory(str(path.resolve()), expected={**identity, 'inode': identity['inode']+1})
+
+    def test_changed_registered_directory_aborts_before_native_creation(self):
+        project = self.bridge.register_project(str(self.root.resolve()))
+        self.bridge.directory_projects.rows[project['key']]['directoryIdentity']['inode'] += 1
+        with patch('bridge.app.service.create_empty') as create:
+            with self.assertRaisesRegex(ValueError, '已变化'):
+                self.bridge.create_chat(project['key'], 'Changed path', str(uuid.uuid4()))
+            create.assert_not_called()
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=ROOT/'.tmp')
         self.root = Path(self.temp.name)

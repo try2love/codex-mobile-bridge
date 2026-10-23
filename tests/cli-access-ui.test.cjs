@@ -5,6 +5,7 @@ const html=fs.readFileSync(path.join(__dirname,'../web/index.html'),'utf8');
 const extract=(start,end)=>app.slice(app.indexOf(start),app.indexOf(end,app.indexOf(start)));
 const accessCode=extract('function sessionAccess(access){','function renderList(){');
 const sourceFilterCode=extract('function renderSourceFilter(){','function sessionAccess(access){');
+const capabilitiesCode=extract('function applyEntryCapabilities(view){','function renderState(view){');
 const listCode=extract('function renderList(){','async function loadList(');
 const stateCode=extract('function renderState(view){',"$('send-mode').onchange");
 const reconnectCode=extract("$('reconnect').onclick=", "document.querySelectorAll('[data-close]')");
@@ -17,18 +18,20 @@ test('CLI creation picker enables only a known CLI folder and uses an accurate a
   $('new-chat-type').value='cli';$('new-chat-type').onchange();
   assert.equal($('new-chat-submit').disabled,true);
   assert.equal($('new-chat-submit').textContent,'Create chat');
+  assert.equal($('new-chat-project').children.some(option=>option.value==='__directory__'),false);
   ctx.newChatProjects=[{type:'cli',host:'local',key:'cli|local|folder',name:'agent_chat',cwd:'/fixture/agent_chat'}];
   $('new-chat-type').onchange();
   assert.equal($('new-chat-project').value,'cli|local|folder');
   assert.equal($('new-chat-submit').disabled,false);
   $('new-chat-type').value='desktop';$('new-chat-type').onchange();
   assert.equal($('new-chat-submit').textContent,'Create and open');
+  assert.equal($('new-chat-project').children.some(option=>option.value==='__directory__'),true);
 });
 function node(){return {hidden:false,disabled:false,value:'',textContent:'',title:'',children:[],scrollTop:0,classList:{toggle(){}},append(...parts){this.children.push(...parts);},replaceChildren(...parts){this.children=parts;},querySelector(){return node();}};}
 function fixture(){
   const nodes=new Map();const $=id=>{if(!nodes.has(id))nodes.set(id,node());return nodes.get(id);};
-  const ctx={$ ,state:null,reconnectFailure:null,listRows:[],availableSources:[],listRenderStamp:'',listComplete:false,listReadFinished:false,currentId:'a',currentHost:'local',sending:false,catalogStarted:false,catalogLoads:0,startCatalog(){ctx.catalogLoads++;},selectedSkills:new Set(),invalidSkills:new Set(),renderSkillPills(){},BridgeI18n:{locale:()=> 'en-US'},t:key=>({'此电脑':'This computer','其他来源':'Other source','历史记录':'History','重新连接':'Reconnect','继续会话':'Continue chat'}[key]||key),localStorage:{getItem:()=>null,setItem(){}},dateText:()=> 'today',el:(tag,cls='',value='')=>Object.assign(node(),{tag,cls,textContent:value,dataset:{}}),renderActivity(){},contextUsageControl:{update(){}},fastModeControl:{sync(){}},visibleChat:()=>false,sessionActivity:{read(){}},attachments:{ready:()=>true},workModes:{render(view){ctx.modesView=view;}},workbench:{current:{}},chatTimeline:{refreshActions(){}},renderApprovals(rows){ctx.approvals=rows;},renderQueue(){},approvalStamp:'',chatKey:()=> 'local|a'};
-  vm.createContext(ctx);vm.runInContext(accessCode+listCode+stateCode,ctx);
+  const ctx={$ ,state:null,reconnectFailure:null,listRows:[],availableSources:[],listRenderStamp:'',listComplete:false,listReadFinished:false,listHasMore:false,currentId:'a',currentHost:'local',sending:false,catalogStarted:false,catalogLoads:0,startCatalog(){ctx.catalogLoads++;},selectedSkills:new Set(),invalidSkills:new Set(),renderSkillPills(){},BridgeI18n:{locale:()=> 'en-US'},t:key=>({'此电脑':'This computer','其他来源':'Other source','历史记录':'History','重新连接':'Reconnect','继续会话':'Continue chat'}[key]||key),localStorage:{getItem:()=>null,setItem(){}},dateText:()=> 'today',el:(tag,cls='',value='')=>Object.assign(node(),{tag,cls,textContent:value,dataset:{}}),renderActivity(){},contextUsageControl:{update(){}},fastModeControl:{sync(){}},visibleChat:()=>false,sessionActivity:{read(){}},attachments:{ready:()=>true},workModes:{render(view){ctx.modesView=view;}},workbench:{current:{}},chatTimeline:{refreshActions(){}},renderApprovals(rows){ctx.approvals=rows;},renderQueue(){},approvalStamp:'',chatKey:()=> 'local|a'};
+  vm.createContext(ctx);vm.runInContext(accessCode+capabilitiesCode+listCode+stateCode,ctx);
   return {ctx,$,nodes};
 }
 const cli={source:'cli',runtime:null,readOnly:true,canSend:false,canInterrupt:false,canApprove:false,canReconnect:false};

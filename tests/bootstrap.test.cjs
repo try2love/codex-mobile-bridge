@@ -36,6 +36,7 @@ async function fixture({missing='',auth='anonymous',hash='',language='zh',pairPe
       if(url.startsWith('/api/sessions?'))return allDisabled?{ok:false,status:400,json:async()=>({error:'此应用已关闭，请在应用管理中开启'})}:response({sessions:[]});
       throw Error('Unexpected fixture request');
     }});
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/features/clients/client-navigation.js'),'utf8').match(/^function isCodexClient.*$/m)[0],context);
   const run=file=>vm.runInContext(fs.readFileSync(path.join(root,file),'utf8'),context,{filename:file});
   if(missing!=='bootstrap')run('web/shared/bootstrap.js');
   const dependencies=['web/hosts/environment.js','web/shared/i18n.js','web/features/chat/list-sync.js','web/features/accounts/account.js','web/features/accounts/accounts.js','web/features/chat/modes.js','web/features/chat/attachments.js','web/features/chat/activity.js','web/features/chat/fast-mode.js','web/features/chat/message-actions.js','web/features/chat/permissions.js'];

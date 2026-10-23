@@ -120,6 +120,82 @@ def independent_directory(data_dir, request_id):
         raise CreationUnavailable('独立聊天目录不可用') from exc
 
 
+def project_directory(value, create=False, expected=None):
+    """Explicit project selection only; return the canonical directory identity."""
+    if not isinstance(value, str) or not value.strip() or len(value) > 4096 or any(ord(c) < 32 for c in value):
+        raise ValueError('请输入完整的项目目录')
+    if type(create) is not bool:
+        raise ValueError('创建目录选项无效')
+    value = value.strip()
+    # UNC/device paths can initiate remote authentication on Windows. Projects
+    # on SSH/WSL must be resolved on that registered host instead.
+    if os.name == 'nt' and (value.startswith(('\\\\', '//')) or ':' in value[2:]):
+        raise ValueError('请使用此电脑的本地绝对路径')
+    path = Path(value).expanduser()
+    if not path.is_absolute() or '..' in path.parts:
+        raise ValueError('请使用绝对路径或 ~/ 开头的目录，不含 ..')
+    try:
+        if create and not path.exists():
+            parent = path.parent.resolve(strict=True)
+            if not parent.is_dir(): raise ValueError('父目录不存在')
+            # Deliberately create only the requested final directory, never a
+            # guessed hierarchy, and never overwrite existing contents.
+            try: (parent/path.name).mkdir(mode=0o700)
+            except FileExistsError: pass
+        canonical = path.resolve(strict=True)
+        if not canonical.is_dir(): raise ValueError('所选路径不是目录')
+        if not os.access(canonical, os.R_OK | os.W_OK | os.X_OK):
+            raise ValueError('项目目录不可读写')
+        st = canonical.stat()
+        identity = {'cwd': str(canonical), 'device': st.st_dev, 'inode': st.st_ino}
+        if expected is not None and identity != expected:
+            raise ValueError('项目目录已变化，请重新选择目录')
+        return identity
+    except OSError as exc:
+        raise ValueError('项目目录不存在或不可访问；新目录请勾选创建，并确保父目录存在') from exc
+
+
+def project_directory_listing(value=None, hidden=False, name=None, identity=None):
+    """Explicit filesystem picker; only directories, never file contents."""
+    if type(hidden) is not bool: raise ValueError('目录显示选项无效')
+    if value is None: value = str(Path.home())
+    if not isinstance(value, str) or len(value) > 4096 or any(ord(c) < 32 for c in value):
+        raise ValueError('目录路径无效')
+    if os.name == 'nt' and (value.startswith(('\\\\', '//')) or ':' in value[2:]):
+        raise ValueError('请使用此电脑的本地目录')
+    try:
+        path = Path(value).expanduser()
+        if not path.is_absolute() or '..' in path.parts: raise ValueError('目录路径无效')
+        path = path.resolve(strict=True)
+        if not path.is_dir() or not os.access(path, os.R_OK | os.X_OK): raise ValueError('目录不可浏览')
+        st = path.stat()
+        current = {'cwd': str(path), 'device': st.st_dev, 'inode': st.st_ino}
+        if name is not None:
+            if (not isinstance(name, str) or not name.strip() or len(name) > 200 or name in ('.', '..')
+                    or any(c in name for c in '/\\:') or any(ord(c) < 32 for c in name)):
+                raise ValueError('请输入有效的文件夹名称，不含路径分隔符')
+            if identity != current: raise ValueError('当前目录已变化，请刷新后新建')
+            path = Path(project_directory(str(path/name.strip()), create=True)['cwd'])
+            st = path.stat(); current = {'cwd': str(path), 'device': st.st_dev, 'inode': st.st_ino}
+        directories = []
+        for child in path.iterdir():
+            if not hidden and child.name.startswith('.'): continue
+            try:
+                if child.is_dir(): directories.append({'name': child.name, 'path': str(child)})
+            except OSError: continue
+        directories.sort(key=lambda item: (item['name'].casefold(), item['name']))
+        roots = [{'name': '/', 'path': '/'}]
+        if os.name == 'nt':
+            import ctypes
+            kernel = ctypes.windll.kernel32
+            roots = [{'name': chr(n)+':', 'path': chr(n)+':\\'} for n in range(65,91)
+                     if kernel.GetDriveTypeW(chr(n)+':\\') in (2,3)]
+        return {'path': str(path), 'parent': str(path.parent) if path.parent != path else None,
+                'home': str(Path.home()), 'roots': roots, 'identity': current, 'directories': directories}
+    except (OSError, RuntimeError) as exc:
+        raise ValueError('无法浏览此目录，请检查访问权限') from exc
+
+
 def create_empty(executable, codex_home, cwd, title):
     def create(request):
         result = request('thread/start', {'cwd': cwd, 'ephemeral': False})

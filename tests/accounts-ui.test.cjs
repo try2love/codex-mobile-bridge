@@ -65,6 +65,14 @@ test('passwordless web disables switching and explains the desktop alternative',
  const ui=fixture();ui.setValue({...ui.value(),canSwitch:false});await ui.panel.refresh();
  assert.equal(ui.all().find(n=>n.textContent==='切换到此接入').disabled,true);assert.match(ui.text(),/免密访问不能切换/);
 });
+
+test('external Magpie management disables configuration replacement on both surfaces',async()=>{
+ for(const desktop of [false,true]){
+  const ui=fixture(desktop);ui.setValue({...ui.value(),management:{mode:'auto',external:true,reason:'由 Magpie 管理'}});await ui.panel.refresh();
+  assert.equal(ui.all().find(n=>n.textContent==='切换到此接入').disabled,true);assert.match(ui.text(),/由 Magpie 管理/);
+  if(desktop){assert.equal(ui.panel.recover.disabled,true);assert.equal(ui.panel.managementMode.value,'auto');}
+ }
+});
 test('switch phases disable repeat actions and recovery only exists on desktop',async()=>{
  const ui=fixture(true);ui.setValue({...ui.value(),switch:{phase:'verifying'}});await ui.panel.refresh();
  assert.equal(ui.all().find(n=>n.textContent==='切换到此接入').disabled,true);assert.equal(ui.panel.submit.disabled,true);assert.equal(ui.panel.recover.disabled,true);

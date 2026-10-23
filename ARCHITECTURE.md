@@ -4,7 +4,7 @@
 
 ## 目标与执行边界
 
-手机网页控制 Codex App 聊天，并可在已保存项目中新建空聊天。网关不拥有模型执行器，不替换已有聊天。已有聊天的执行与审批操作绑定 `hostId + conversationId + ownerClientId`，由 App 中相应 owner 执行。重命名是独立的元数据操作，使用所选主机的短期官方运行时调用 `thread/name/set`，不加载执行任务、不调用 `turn/start`，也不改变 provider、认证或审批策略。
+手机网页控制 Codex App 聊天，并可在已保存项目中新建空聊天。WSL 独立应用支持直接创建及恢复原生线程；明确打开时可用已安装 Codex 的原生 daemon start 启动共享服务。网关不替换已有执行器或聊天。已有聊天的执行与审批操作绑定 `hostId + conversationId + ownerClientId`，由 App 中相应 owner 执行。重命名是独立的元数据操作，使用所选主机的短期官方运行时调用 `thread/name/set`，不加载执行任务、不调用 `turn/start`，也不改变 provider、认证或审批策略。
 
 默认继承已有会话的设置。显式选择模型时更新 `model`、`effort` 或速度档位。账号切换是独立的全局操作：仅桌面端添加凭据，双端选择已保存接入，退出官方桌面后替换本机认证及默认 provider，再启动核验。已有聊天的 provider 和审批策略不直接迁移；详情见 [账号与接入](docs/account-switching.md)。
 
@@ -17,6 +17,8 @@ App 执行的本地聊天，其 Goal 元数据通过受限的官方运行时连�
 修改目标要求 paused，通过官方 set 替换内容，重置统计、保留预算且保持 paused。暂停、修改和关闭撤销未发送的启动消息；队列派发前再次要求匹配的 active 目标。暂停/关闭本身不发送 turn interrupt，用户需要立即中断当前回复时使用独立的停止操作。
 
 ## 会话发现
+
+Windows 可在应用管理中显式扫描并启用独立的 **WSL Codex** 应用，详见 [WSL 说明](docs/wsl-codex.md)。应用 ID 沿用已登记的 `wsl:<摘要>`；原 Codex 与各 WSL 应用分别切换、分别读取列表，底层复用 Codex 聊天界面。桌面入口保留原 IPC owner；WSL 仅连接已核验的原共享服务，以独立路由、连接世代和线程 ID 隔离状态与写入记录。被动读取不恢复线程，未加载的 CLI 历史保持只读。发送/审批前重新核验原线程，不另起执行器。Magpie 由外部管理，WSL 接入页不回退到 Windows 账号；HTTP 仍执行原有登录、Origin、CSRF 和文件边界限制。WSL 应用开关仅停止网关连接，不提供退出原 CLI 进程的操作。
 
 本地通过只读 SQLite 连接读取 `$CODEX_HOME/state_*.sqlite`，筛选桌面聊天并排除子代理。尚无 IPC 快照时，可读取原始会话记录作为历史展示。WAL 模式且 `-wal` 缺失时，先复制到私有临时目录，并核对复制前后主文件的身份、大小和修改时间以及 WAL 仍不存在，再读取副本；并发变化时丢弃副本并等待重试。已有 WAL 时直接只读查询，保留最新提交。发现与历史读取不直接写入原数据库或会话文件；用户新建聊天时由官方运行时持久化新记录。
 
@@ -40,7 +42,7 @@ Codex 列表下拉刷新使用浮层提示与按动画帧更新的位移，不�
 
 ## 新建聊天
 
-登录后的 `GET /api/projects` 返回 App 已保存的本机及 SSH 项目；`POST /api/sessions` 接受项目键、名称和请求 UUID。服务端重新解析已保存项目，不接受客户端任意目录、主机、程序路径或配置覆盖。创建接口沿用 Host、Origin、登录和 CSRF 校验。
+登录后的 `GET /api/projects` 返回 App 已保存的本机及 SSH 项目；`POST /api/sessions` 接受项目键、名称和请求 UUID。服务端重新解析已保存项目，创建线程接口不接受客户端任意目录、主机、程序路径或配置覆盖。用户先用 POST /api/projects/browse 的目录浏览器选择目录或在当前目录中新建，再使用带登录、Origin 和 CSRF 校验的 POST /api/projects 明确登记：主机必须已登记，在目标系统验证绝对路径、可读写性并规范化；勾选创建时仅在已存在的父目录下创建最后一层。网关自己的 projects.json 保存 canonical cwd 与目录身份，创建前再次核对，不修改 App 全局项目配置。创建接口沿用 Host、Origin、登录和 CSRF 校验。
 
 `bridge/features/sessions/create.py` 使用所选主机的官方运行时完成 `initialize → thread/start → thread/name/set → thread/read(includeTurns=true)`，随后关闭 stdio 并等待进程退出。读取完整空历史是必需步骤：仅设置名称会留下目录元数据，却未必落盘可恢复的 rollout。整个辅助进程不调用 `turn/start`，不会发送模型任务。新线程使用该主机、工作目录的运行时默认配置；不克隆已有聊天的临时设置。
 
