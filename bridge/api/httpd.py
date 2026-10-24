@@ -26,6 +26,7 @@ from socketserver import TCPServer
 from urllib.parse import parse_qs, parse_qsl, urlsplit, quote
 
 from bridge.clients.manager import DesktopSessions, READS, WRITES
+from bridge.app.service import SubmissionRejected
 from bridge.clients.uploads import DesktopUploads
 from bridge.clients.deepseek.legacy_gateway import Harness
 from bridge.clients.deepseek.legacy_proxy import proxy as harness_proxy
@@ -1057,6 +1058,9 @@ class Handler(BaseHTTPRequestHandler):
         except KeyError:
             self.close_connection = True
             self.output(404, {"error": "找不到这个会话"})
+        except SubmissionRejected as exc:
+            self.close_connection = True
+            self.output(400, {"error": str(exc), "code": "send_not_submitted"})
         except ValueError as exc:
             self.close_connection = True
             self.output(400, {"error": str(exc)})

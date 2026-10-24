@@ -42,6 +42,10 @@ from bridge.features.workspace.uploads import Uploads, image_type
 from bridge.clients.codex.remote import upload_file
 
 
+class SubmissionRejected(ValueError):
+    """The request was rejected before any submission was recorded or sent."""
+
+
 class LiveSession:
     def __init__(self, thread_id, *, image_cache=None):
         self.id = thread_id
@@ -2612,9 +2616,9 @@ class Bridge:
             with session.condition:
                 active = (session.state or {}).get("threadRuntimeStatus", {}).get("type") == "active"
                 if active and mode == "send":
-                    raise ValueError("Codex 正在执行。请选择「排队发送」或「补充当前任务」。")
+                    raise SubmissionRejected("Codex 正在执行。请选择「排队发送」或「补充当前任务」。")
                 if not active and mode == "steer":
-                    raise ValueError("当前任务已经结束，请使用普通发送")
+                    raise SubmissionRejected("当前任务已经结束，请使用普通发送")
                 if work_mode is not None and not (session.state.get("latestModel") or
                         (session.state.get("latestCollaborationMode") or {}).get("settings", {}).get("model")):
                     raise ValueError("尚未取得模型设置，请重新连接后再切换模式")

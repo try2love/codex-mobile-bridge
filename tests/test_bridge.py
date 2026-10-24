@@ -21,7 +21,7 @@ from bridge.api.httpd import GatewayServer
 from bridge.api.assets import asset_bytes, served_asset_bytes
 from bridge.clients.codex.ipc import DesktopIPC, IPCError
 from bridge.features.sessions.model import apply_patches, normalize_state, normalize_request
-from bridge.app.service import Bridge, LiveSession, validate_form
+from bridge.app.service import Bridge, LiveSession, SubmissionRejected, validate_form
 from bridge.clients.codex.catalog import Catalog
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -616,6 +616,25 @@ class IntegrationTests(unittest.TestCase):
                             'params': {'hostId': 'local', 'conversationId': THREAD, 'change': {'type': 'snapshot', 'revision': 90, 'conversationState': state()}}})
         self.assertNotEqual(session.revision, 90)
 
+    def test_busy_send_rejection_creates_no_submission_and_can_be_queued(self):
+        self.fixture.state['threadRuntimeStatus'] = {'type': 'active'}
+        self.assertTrue(self.bridge.view(THREAD)['connected'])
+        message_id = str(uuid.uuid4())
+        with self.assertRaises(SubmissionRejected):
+            self.bridge.send(THREAD, 'same text', message_id)
+        self.assertNotIn(THREAD + ':' + message_id, self.bridge.submissions)
+        self.assertFalse(any(r['method'] == 'thread-follower-start-turn' for r in self.fixture.requests))
+        result = self.bridge.send(THREAD, 'same text', message_id, 'queue')
+        self.assertEqual(result['status'], 'queued')
+
+    def test_finished_task_rejects_steer_without_recording_and_allows_send(self):
+        self.assertTrue(self.bridge.view(THREAD)['connected'])
+        message_id = str(uuid.uuid4())
+        with self.assertRaises(SubmissionRejected):
+            self.bridge.send(THREAD, 'same text', message_id, 'steer')
+        self.assertNotIn(THREAD + ':' + message_id, self.bridge.submissions)
+        self.assertEqual(self.bridge.send(THREAD, 'same text', message_id)['status'], 'accepted')
+
     def test_project_grouping_recency_and_host_identity(self):
         from bridge.clients.codex.remote import AppHosts
         hosts = AppHosts(self.root)
@@ -845,6 +864,19 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn('HttpOnly', headers['Set-Cookie'])
         return {'Cookie': headers['Set-Cookie'].split(';')[0], 'X-CSRF-Token': body['csrf']}
+
+    def test_only_pre_submission_rejections_have_the_safe_release_code(self):
+        headers = self.login()
+        payload = {'id': str(uuid.uuid4()), 'text': 'fixture', 'mode': 'send'}
+        for error, code in [(SubmissionRejected('busy'), 'send_not_submitted'),
+                            (ValueError('invalid request'), None), (IPCError('unknown delivery'), 'desktop_unavailable')]:
+            with self.subTest(error=type(error).__name__):
+                def reject(*args, **kwargs):
+                    raise error
+                self.server.bridge.send = reject
+                status, _, body = self.request('POST', '/api/sessions/' + THREAD + '/send', payload, headers)
+                self.assertEqual(status, 409 if isinstance(error, IPCError) else 400)
+                self.assertEqual(body.get('code'), code)
 
     def test_session_list_source_contract(self):
         headers = self.login()

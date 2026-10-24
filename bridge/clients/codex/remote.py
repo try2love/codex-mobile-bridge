@@ -3,6 +3,7 @@ import base64
 from contextlib import contextmanager
 import json
 import os
+import re
 import subprocess
 import tempfile
 import threading
@@ -378,9 +379,16 @@ class AppHosts:
             projects = [{'id': p['id'], 'name': p.get('label') or p['remotePath'].rsplit('/', 1)[-1], 'roots': [p['remotePath']]}
                         for p in state.get('remote-projects', []) if p['hostId'] == host]
         assignments = state.get('thread-project-assignments', {})
-        def normalized(path):
-            if host == 'local' and os.name == 'nt':
-                return path.replace('\\', '/').rstrip('/').casefold()
+        def windows_path(path):
+            return bool(re.match(r'^[a-z]:[\\/]|^\\\\|^//[?.]/', path, re.I))
+        def normalized(path, windows=False):
+            if windows or windows_path(path):
+                value = path.replace('\\', '/')
+                if value[:8].casefold() in ('//?/unc/', '//./unc/'):
+                    value = '//' + value[8:]
+                elif re.match(r'^//[?.]/[a-z]:/', value, re.I):
+                    value = value[4:]
+                return value.rstrip('/').casefold()
             return path.rstrip('/')
         for row in rows:
             raw_cwd = row.get('cwd', '')
@@ -388,7 +396,14 @@ class AppHosts:
             assigned = assignments.get(row['id'], {})
             project = next((p for p in projects if p['id'] == assigned.get('projectId') and assigned.get('hostId', host) == host), None)
             if project is None:
-                matches = [(len(normalized(root)), p) for p in projects for root in p['roots'] if cwd == normalized(root) or cwd.startswith(normalized(root) + '/')]
+                matches = []
+                for candidate in projects:
+                    for root in candidate['roots']:
+                        # Infer the target path syntax, never the gateway's OS.
+                        windows = windows_path(root) or windows_path(raw_cwd)
+                        prefix, target = normalized(root, windows), normalized(raw_cwd, windows)
+                        if target == prefix or target.startswith(prefix + '/'):
+                            matches.append((len(prefix), candidate))
                 project = max(matches, key=lambda v: v[0])[1] if matches else None
             row.update(host=host, hostLabel=label,
                        projectKey=host + '|' + (project['id'] if project else cwd or 'unassigned'),

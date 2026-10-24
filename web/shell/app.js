@@ -694,7 +694,15 @@ $('composer').onsubmit=async event=>{
       }
     }
     toast(workMode==='goal'?(result.activation?.status==='queued'?t('目标已创建，启动已排队'):result.activation?t('目标已创建，正在启动'):t('已提交目标请求，等待桌面确认')):result.status==='queued'?t('已加入待发送队列'):t('已发送到会话'));
-  }catch(error){if(currentId===target&&currentHost===targetHost){$('send-error').textContent=t(error.message);window.BridgePresentation?.showError();}}
+  }catch(error){
+    // Only an explicit pre-submission rejection permits changing this request.
+    // Unknown delivery and network failures retain their original pending ID.
+    if(error.status===400&&error.code==='send_not_submitted'){
+      if(usedDurable)composerDrafts.discardPending(scope,pending.id);
+      else {try{if(JSON.parse(sessionStorage.getItem(legacyKey))?.id===pending.id)sessionStorage.removeItem(legacyKey);}catch{}}
+    }
+    if(currentId===target&&currentHost===targetHost){$('send-error').textContent=t(error.message);window.BridgePresentation?.showError();}
+  }
   finally{sending=false;attachments.setLocked(false);workModes.render(state,$('send-mode').value,false);$('send').disabled=!state||state.loadingHistory||state.activating||!attachments.ready()||!currentAccess().canSend;}
 };
 $('message').onkeydown=event=>{if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)){event.preventDefault();$('composer').requestSubmit();}};
