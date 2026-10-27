@@ -1,0 +1,43 @@
+# Runtime state and credentials
+**/.local/
+**/.tmp/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+# Local build outputs
+.venv/
+.build-exe/
+build/
+dist/
+release/
+vendor/bin/
+__pycache__/
+*.py[cod]
+*.exe
+*.log
+*.lnk
+*.sqlite*
+*.db
+*.zip
+.DS_Store
+Thumbs.db
+# Mobile toolchains and local device state
+**/.gradle/
+**/.idea/
+**/local.properties
+**/xcuserdata/
+**/DerivedData/
+mobile/ios/package/
+*.apk
+*.aab
+*.ipa
+*.keystore
+*.jks
+*.mobileprovision
+
+# Include the portable desktop build specification.
+!/*.spec
