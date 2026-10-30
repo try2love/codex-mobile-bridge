@@ -155,6 +155,7 @@ for (const [name, file, invoke] of [
   ['paperclip host reference and native attachment actions', 'host-file-reference', 'runHostFileReferenceChecks'],
   ['agent manual model and reasoning settings', 'agent-model-settings', 'runAgentModelSettingsChecks'],
   ['chat history, list entry and scroll position', 'desktop-history', 'runDesktopHistoryBrowserChecks'],
+  ['shared chat reading state across refreshes', 'chat-reading-state', 'runChatReadingStateChecks'],
   ['account-scoped drafts and late send acknowledgement', 'persistent-drafts', 'runPersistentDraftTests'],
   ['API form labels, layout and upstream model selection', 'api-form', 'runApiFormBrowserChecks'],
   ['shared session menu on desktop and mobile', 'session-menu', 'runSessionMenuBrowserChecks'],

@@ -1,9 +1,9 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 test('chat readiness follows fresh content rendering and excludes pending, cached and history pages',()=>{
- const ctx=vm.createContext({window:{},BridgeI18n:{t:s=>s}});vm.runInContext(fs.readFileSync('web/features/chat/timeline.js','utf8'),ctx);
+ const ctx=vm.createContext({window:{},BridgeI18n:{t:s=>s}});for(const file of ['activity','timeline'])vm.runInContext(fs.readFileSync('web/features/chat/'+file+'.js','utf8'),ctx);
  const Type=vm.runInContext('ChatTimeline',ctx);let ready=0,rendered=0;
- const ui=Object.assign(Object.create(Type.prototype),{cached:false,rows:new Map(),nodes:new Map(),files:new Map(),details:new Map(),container:{firstChild:null,replaceChildren(){}},sequence:0,following:true,abort:new AbortController(),capture(){},renderMeta(){rendered++;},refreshActions(){},historyStatus(){},restore(){},onReady(){assert.ok(rendered>0);ready++;}});
+ const ui=Object.assign(Object.create(Type.prototype),{cached:false,rows:new Map(),nodes:new Map(),files:new Map(),details:new Map(),container:{children:[],firstChild:null,replaceChildren(){}},sequence:0,following:true,abort:new AbortController(),capture(){},renderMeta(){rendered++;},refreshActions(){},historyStatus(){},restore(){},onReady(){assert.ok(rendered>0);ready++;}});
  const page={rows:[],files:[],sequence:1,meta:{loadingHistory:true}};
  ui.apply(page);assert.equal(ready,0);page.meta={loadingHistory:false};ui.apply(page);assert.equal(ready,1);
  ui.apply(page,false,false,true);ui.apply(page,false,true);ui.abort.abort();ui.apply(page);assert.equal(ready,1);

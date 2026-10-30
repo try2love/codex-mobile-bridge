@@ -24,7 +24,7 @@ WEB = ROOT / 'web'
 PAYLOADS = {path: served_asset_bytes(WEB, path) for path in STATIC}
 state = {'case': 'success', 'requests': Counter(), 'writes': []}
 BROWSER_CHECKS = {f'/__browser/{name}': ROOT / 'tests/browser' / name for name in (
-    'desktop-history.browser.js', 'persistent-drafts.browser.js', 'agent-model-settings.browser.js',
+    'desktop-history.browser.js', 'chat-reading-state.browser.js', 'persistent-drafts.browser.js', 'agent-model-settings.browser.js',
     'host-file-reference.browser.js', 'session-menu.browser.js', 'project-creation.browser.js', 'api-form.browser.js', 'composer-quotes.browser.js')}
 PROBE = b"""window.__startupTest={scenario:new URLSearchParams(location.search).get('case'),executed:[],errors:[],rejections:[],blockedScripts:[],visibilitySamples:[],titles:[],shellLoads:0,started:performance.now(),loadClipboard:null};
 addEventListener('error',e=>{if(e.target===window)__startupTest.errors.push(e.error?.name||'Error');});

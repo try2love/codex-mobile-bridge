@@ -27,7 +27,7 @@ function fixture({storage=new Map(),sessionStore=new Map()}={}){
   get textContent(){return this._text+this.children.map(n=>n.textContent).join('');}set textContent(v){this._text=String(v??'');this.children=[];this.options=this.children;}
   getBoundingClientRect(){return {width:this.clientWidth,top:0,bottom:this.clientHeight};}
   get ownerDocument(){return document;}
-  get firstElementChild(){return this.children[0];}get lastChild(){return this.children.at(-1);}get childNodes(){return this.children;}get isConnected(){return !!this.parentElement;}
+  get firstElementChild(){return this.children[0];}get firstChild(){return this.children[0]||null;}get nextSibling(){return this.parentElement?.children[this.parentElement.children.indexOf(this)+1]||null;}get lastChild(){return this.children.at(-1);}get childNodes(){return this.children;}get isConnected(){return !!this.parentElement;}
   append(...nodes){for(let n of nodes){if(typeof n==='string')n=document.createTextNode(n);n.remove();n.parentElement=this;this.children.push(n);}}
   prepend(...nodes){for(const n of [...nodes].reverse()){n.remove();n.parentElement=this;this.children.unshift(n);}}
   replaceChildren(...nodes){for(const n of this.children)n.parentElement=null;this.children=[];this.options=this.children;this._text='';this.append(...nodes);}
