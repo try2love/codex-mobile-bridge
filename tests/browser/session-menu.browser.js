@@ -3,7 +3,7 @@ async function runSessionMenuBrowserChecks(){
   const check=(value,message)=>{if(!value)throw Error(message);};
   const anchor=document.createElement('button');anchor.textContent='Synthetic session';document.body.append(anchor);
   const calls=[],notices=[],menu=new SessionMenu({notify:text=>notices.push(text)});
-  const context=()=>({title:'合成会话',subtitle:'Codex · fixture',pinned:false,nativeOrganization:true,
+  const context=()=>({title:'合成会话',subtitle:'Codex · fixture',pinned:false,nativeOrganization:true,sessionId:'synthetic-session',
     details:[['会话 ID','synthetic-session',true],['工作目录','D:\\Synthetic\\Project',true]],
     pin:value=>calls.push(['pin',value]),rename:title=>calls.push(['rename',title]),
     organization:change=>{if(change)calls.push(['organization',change]);return Promise.resolve({projectId:'project-a',sectionId:null,projects:[{id:'project-a',name:'当前项目'},{id:'project-b',name:'目标项目'}],sections:[{id:'section-b',name:'目标分区'}],status:'confirmed'});},
@@ -12,6 +12,7 @@ async function runSessionMenuBrowserChecks(){
   const click=async label=>{const button=[...menu.box.querySelectorAll('button')].find(node=>node.textContent===label);check(button,'missing action: '+label);button.click();await new Promise(resolve=>setTimeout(resolve,0));};
   try{
     menu.show(context(),{element:anchor,x:innerWidth-1,y:innerHeight-1});
+    await click('复制 Session ID');check(calls.some(row=>row[0]==='copy'&&row[1]==='synthetic-session'),'menu copies native session ID directly');
     const reduced=matchMedia('(prefers-reduced-motion: reduce)').matches;
     check(getComputedStyle(menu.box).animationName===(reduced?'none':innerWidth<=640?'sm-sheet-in':'sm-menu-in'),'menu uses the expected motion preference');
     await Promise.all(menu.box.getAnimations().map(animation=>animation.finished.catch(()=>{})));

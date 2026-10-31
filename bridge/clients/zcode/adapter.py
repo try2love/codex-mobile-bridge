@@ -81,6 +81,10 @@ def project_snapshot(snapshot, workspace):
              'status': {'verified': 'complete', 'verifying': 'active', 'notSatisfied': 'active',
                         'failed': 'blocked'}.get(native_goal['status'], native_goal['status'])}
             if native_goal else None)
+    native_usage = snapshot.get('usage', {}).get('contextWindow')
+    usage = ({'usedTokens': native_usage['usedTokens'], 'contextWindow': native_usage['maxTokens'],
+              'measurement': 'native', 'model': snapshot.get('config', {}).get('model')}
+             if native_usage else None)
     return {'session': {'id': snapshot['sessionId'], 'provider': 'zcode', 'host': 'local',
                         'cwd': workspace, 'title': snapshot.get('meta', {}).get('title', ''),
                         'status': 'active' if active else 'idle', 'backend': 'desktop', 'requests': requests,
@@ -89,7 +93,8 @@ def project_snapshot(snapshot, workspace):
                         'modelDisplayName': snapshot.get('config', {}).get('model'), 'effort': snapshot.get('config', {}).get('thought'),
                         'runtimeKnown': True,
                         'collaborationMode': 'plan' if snapshot.get('config', {}).get('planEnabled') or snapshot.get('config', {}).get('mode') == 'plan' else 'default',
-                        'goal': goal,
+                        'goal': goal, 'contextUsage': usage,
+                        'contextUsageStatus': 'available' if usage else 'unavailable',
                         'stopTarget': {'executionId': foreground[0]} if len(foreground) == 1 else {},
                         'updatedAt': max((row.get('createdAt', 0) for row in snapshot['rows']['window']), default=0)}, 'messages': messages,
             'requests': snapshot['pendingInteractions'], 'control': control, 'turns': turns,

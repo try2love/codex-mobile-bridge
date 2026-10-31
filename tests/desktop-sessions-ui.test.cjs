@@ -977,12 +977,15 @@ test('message quote uses complete text and rejects late results after draft iden
  view.prepareChat('b');view.bindDraftScope({draftAccountIdentity:'account-a'});finish('stale answer');await pending;assert.equal(view.quotes.quotes.length,0);
 });
 
-test('DSH hides quote actions and selection while preserving editable followup prompts',async()=>{
- const ui=await quoteChat('deepseek'),view=ui.view,body=view.messages.querySelector('.message-body');
- assert.equal(view.messages.querySelector('.message-actions').children.length,1);assert.equal(view.quotes.available(),true);
- view.quotes.add('unsupported quote','reply');assert.equal(view.quotes.quotes.length,0);
- ui.document.getSelection=()=>({isCollapsed:false,rangeCount:1,getRangeAt:()=>({startContainer:body,endContainer:body}),toString:()=>'Selected answer'});view.quotes.capture();assert.equal(view.quotes.action.hidden,true);
- const button=ui.document.createElement('button');body.append(button);view.messages['onbridge-compose-prompt']({target:button,detail:{text:'Follow up'}});assert.equal(view.input.value,'Follow up');assert.equal(ui.calls.filter(call=>call.body).length,0);
+test('all desktop clients reuse text quotes and editable followup prompts without sending',async()=>{
+ for(const provider of ['claude','deepseek','zcode']){
+  const ui=await quoteChat(provider),view=ui.view,body=view.messages.querySelector('.message-body');
+  assert.equal(view.messages.querySelector('.message-actions').children.length,2);assert.equal(view.quotes.available(),true);
+  view.quotes.add('quoted answer','reply');assert.equal(view.quotes.quotes.length,1);
+  ui.document.getSelection=()=>({isCollapsed:false,rangeCount:1,getRangeAt:()=>({startContainer:body,endContainer:body}),toString:()=>'Selected answer'});view.quotes.capture();assert.equal(view.quotes.action.hidden,false);
+  const button=ui.document.createElement('button');body.append(button);view.messages['onbridge-compose-prompt']({target:button,detail:{text:'Follow up'}});assert.equal(view.input.value,'Follow up');assert.equal(ui.calls.filter(call=>call.body).length,0);
+  assert.equal(view.quotes.serialize(view.input.value),'> quoted answer\n\nFollow up');
+ }
 });
 
 test('last-prompt counters never become a current context percentage',async()=>{

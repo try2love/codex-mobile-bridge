@@ -341,7 +341,7 @@ function sessionMenuContext(chat,provider='codex'){
   const current=()=>provider==='codex'?clientNavigation.provider==='codex'&&currentId===chat.id&&currentHost===identity.host:
     desktopSessions.provider===provider&&desktopSessions.sid===chat.id;
   const detail=current()?(provider==='codex'?state:desktopSessions.state):null;
-  const view={...chat,...detail},access=sessionAccess(view.access),caps=view.capabilities||{};
+  const view={...chat,...detail},access=sessionAccess(view.access),caps=view.capabilities||{},nativeId=view.nativeId||(provider==='claude'?null:chat.id);
   const ensure=async()=>{
     if(!isCurrent())throw Error('连接或账号已变化，请重新打开会话菜单');
     if(!current()){
@@ -352,7 +352,7 @@ function sessionMenuContext(chat,provider='codex'){
     if(!isCurrent()||!current())throw Error('聊天已切换，请重新打开会话菜单');
   };
   const context={title:view.title,subtitle:[clientNavigation.clients.find(client=>client.id===provider)?.name||provider,view.hostLabel||t('此电脑')].join(' · '),
-    isCurrent,pinned:sessionPins.value(identity,chat.bridgePinned),archived:!!view.archived,
+    isCurrent,sessionId:nativeId,pinned:sessionPins.value(identity,chat.bridgePinned),archived:!!view.archived,
     pin:pinned=>{sessionPins.set(identity,pinned);toast(t('已在此设备保存，等待同步'));},
     link:window.BridgeSessionLinks.text(identity),linkLabel:provider==='deepseek'?'复制 Session ID':'复制深度链接',
     nativeOrganization:true,projectName:view.projectName,
@@ -367,7 +367,7 @@ function sessionMenuContext(chat,provider='codex'){
       if(change)(provider==='codex'?loadList(true):desktopSessions.refresh()).catch(error=>toast(t(error.message)));
       return result;
     },
-    details:[['客户端',clientNavigation.clients.find(client=>client.id===provider)?.name||provider],['会话 ID',chat.id,true],
+    details:[['客户端',clientNavigation.clients.find(client=>client.id===provider)?.name||provider],['会话 ID',nativeId,true],
       ['运行位置',view.hostLabel||t('此电脑')],['会话类型',provider==='codex'?sourceLabel(view.access):(view.backend||view.runtime||'Desktop')],
       ['工作目录',view.cwd,true],['模型',[view.model,view.effort].filter(Boolean).join(' · ')],['提供商',view.provider],['项目',view.projectName]],
     notifications:async()=>{await ensure();if(provider==='codex')return $('notify-button').onclick();return desktopSessions.notifications();},

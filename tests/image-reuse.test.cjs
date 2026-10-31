@@ -40,3 +40,10 @@ test('an old asynchronous add cannot close the preview opened afterwards',async(
  let finish;ui.api.configureComposer({scope:()=> 'same-draft',canReuse:()=>true,add:()=>new Promise(resolve=>finish=resolve)});
  ui.open(first);const pending=ui.node('image-preview-reuse').onclick();ui.open(next);finish();await pending;assert.equal(ui.node('image-preview-dialog').open,true);
 });
+
+test('ZCode history previews share exact same-origin and session-bound URL validation',()=>{
+ for(const url of ['https://other.test/api/desktop-sessions/zcode/images/'+ 'a'.repeat(64)+'?sessionId=sess-test','/api/desktop-sessions/zcode/images/'+ 'a'.repeat(64)]){
+  const ui=fixture(),target=ui.create('img');target.dataset.imagePreview=url;ui.open(target);assert.equal(ui.node('image-preview-dialog'),undefined);
+ }
+ const ui=fixture(),target=ui.create('img');target.dataset.imagePreview='/api/desktop-sessions/zcode/images/'+ 'a'.repeat(64)+'?sessionId=sess-test';target.dataset.imageName='native.png';ui.open(target);assert.equal(ui.node('image-preview-dialog').open,true);assert.equal(ui.node('image-preview-title').textContent,'native.png');
+});

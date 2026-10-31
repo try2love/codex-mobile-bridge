@@ -130,7 +130,7 @@ class SessionMenu {
     }else{
       this.row(c.pinned?'取消置顶':'置顶会话','pin',button=>this.execute(async()=>{await c.pin(!c.pinned);c.pinned=!c.pinned;},button,{close:false}));
       if(c.nativeOrganization){this.row('项目','folder',()=>this.render('project'),{end:true});this.row('分区','section',()=>this.render('section'),{end:true});}
-      this.separator();if(c.link)this.row(c.linkLabel||'复制深度链接','link',button=>this.copy(c.link,button));
+      this.separator();if(c.sessionId)this.row('复制 Session ID','copy',button=>this.copy(c.sessionId,button));if(c.link&&c.link!==c.sessionId)this.row(c.linkLabel||'复制深度链接','link',button=>this.copy(c.link,button));
       if(c.fork)this.row('创建聊天分支','fork',button=>this.execute(()=>{this.close();return c.fork();},button));
       this.separator();if(c.manage)this.row('发送管理','list',()=>{this.close();c.manage();});
       if(c.notifications)this.row('聊天通知设置','info',button=>this.execute(()=>{this.close();return c.notifications();},button));

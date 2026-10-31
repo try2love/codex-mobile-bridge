@@ -19,8 +19,19 @@ test('Codex title delegates to the shared menu with its anchor',()=>{
  button.onclick();assert.equal(calls[0],button);
 });
 test('provider title delegates native ID and provider to the shared renderer',()=>{
- const calls=[],source=read('features/clients/desktop-sessions.js'),method=source.slice(source.indexOf('  chatDetails(){'),source.indexOf('  async notifications(){'));
+ const calls=[],source=read('features/clients/desktop-sessions.js'),method=source.slice(source.indexOf('  chatDetails(){'),source.indexOf('  async loadNotificationPolicy(){'));
  const invoke=vm.runInNewContext('({'+method+'}).chatDetails');
  const view={provider:'deepseek',sid:'native-session',state:{title:'Example'},rows:[],titleButton:{},onOpenSessionMenu:(...args)=>calls.push(args)};
  invoke.call(view);assert.equal(calls[0][0].id,'native-session');assert.equal(calls[0][1],'deepseek');assert.equal(calls[0][2],view.titleButton);
+});
+
+ test('shared menu copies native identity while retaining gateway routing identity',()=>{
+ const source=read('shell/app.js'),start=source.indexOf('function sessionMenuContext('),end=source.indexOf('window.openCodexSessionMenu=',start);
+ for(const provider of ['codex','claude','deepseek','zcode']){
+  const native=provider==='claude'?'native-claude-session':'session-'+provider,chat={id:'session-'+provider,nativeId:native};
+  const c=vm.createContext({listIdentity:'gateway',csrf:'token',sessionAccess:()=>({}),sourceLabel:()=> 'APP',clientNavigation:{provider,clients:[]},currentId:chat.id,currentHost:'local',state:chat,desktopSessions:{provider,sid:chat.id,state:chat},sessionPins:{value:()=>false},window:{BridgeSessionLinks:{text:()=>null}},t:v=>v,uuid:()=> 'request'});
+  vm.runInContext(source.slice(start,end),c);const menu=c.sessionMenuContext(chat,provider);
+  assert.equal(menu.sessionId,native);assert.equal(menu.details.find(row=>row[0]==='会话 ID')[1],native);assert.equal(chat.id,'session-'+provider);
+  if(provider==='claude'){delete chat.nativeId;assert.equal(c.sessionMenuContext(chat,provider).sessionId,null,'legacy cached gateway ID is not advertised as native');}
+ }
 });

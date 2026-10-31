@@ -99,6 +99,22 @@ class ZCodePrototypeTests(unittest.TestCase):
         self.assertEqual(first['messages'][0]['attachments'][0]['nativeRef'], 'native')
         self.assertTrue(first['history']['hasMore'])
 
+    def test_context_usage_uses_current_native_window_not_cumulative_tokens(self):
+        snapshot = {'sessionId': 'sess_test', 'revision': 1, 'seq': 2, 'logEpoch': 'epoch',
+                    'control': {}, 'pendingInteractions': [], 'rows': {'totalCount': 0, 'window': []},
+                    'config': {'model': 'Flash'}, 'usage': {'contextWindow': {
+                        'usedTokens': 28522, 'maxTokens': 1000000}, 'cumulative': {'inputTokens': 9000000}}}
+        session = project_snapshot(snapshot, str(self.project))['session']
+        self.assertEqual(session['contextUsage'], {'usedTokens': 28522, 'contextWindow': 1000000,
+                                                 'measurement': 'native', 'model': 'Flash'})
+        self.assertEqual(session['contextUsageStatus'], 'available')
+        snapshot['usage']['contextWindow'] = None
+        session = project_snapshot(snapshot, str(self.project))['session']
+        self.assertIsNone(session['contextUsage'])
+        self.assertEqual(session['contextUsageStatus'], 'unavailable')
+        snapshot['usage']['contextWindow'] = {'usedTokens': 0, 'maxTokens': 1000000}
+        self.assertEqual(project_snapshot(snapshot, str(self.project))['session']['contextUsage']['usedTokens'], 0)
+
     @patch('bridge.platforms.macos.loopback.Native')
     @patch('bridge.platforms.macos.loopback.subprocess.run')
     def test_endpoint_rejects_non_loopback_or_wrong_process(self, run, native):
