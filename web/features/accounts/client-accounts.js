@@ -72,7 +72,7 @@ class DesktopClientAccountsPanel {
     if(this.disposed||this.loading||this.busy)return;clearTimeout(this.timer);this.loading=true;this.error='';this.render();const generation=this.generation;
     try{
       const value=await this.read();if(generation!==this.generation)return;this.accept(value);
-      if(this.provider!=='claude'&&this.visible())for(const row of this.value.accounts){
+      if(this.provider!=='claude'&&this.value.capabilities?.quota!==false&&this.visible())for(const row of this.value.accounts){
         if(!this.visible()||generation!==this.generation)break;
         const details=await this.request({action:'details',id:row.id,refresh:force});if(generation!==this.generation)return;this.accept(details);
       }

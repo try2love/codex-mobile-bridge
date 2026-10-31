@@ -35,6 +35,12 @@ test('hidden panels do not query quota and resume when overdue',async()=>{
   const ui=fixture();ui.setValue(snapshot([row('current')]));await ui.panel.resume();ui.setVisible(false);await ui.advance(300000);assert.equal(ui.calls.length,2);assert.equal(ui.timers.size,0);
   ui.setVisible(true);await ui.panel.resume();assert.equal(ui.calls.length,4);
 });
+for(const provider of ['zcode','deepseek'])test(`${provider} skips unsupported quota reads on open and refresh`,async()=>{
+  const ui=fixture({provider});ui.setValue({...snapshot([{...row('current'),saved:false},row('saved')]),capabilities:{quota:false}});
+  await ui.panel.resume();await ui.panel.refresh(true);await ui.advance(300000);
+  assert.deepEqual(ui.calls.map(call=>call.action),['list','list','list']);
+  assert.equal(ui.panel.error,'');
+});
 test('Claude list, timer, and return visits only read saved quota snapshots',async()=>{
   const ui=fixture({provider:'claude'});ui.setValue(snapshot([row('current'),row('saved')]));
   await ui.panel.resume();await ui.advance(300000);ui.setVisible(false);await ui.advance(300000);ui.setVisible(true);await ui.panel.resume();

@@ -18,7 +18,7 @@ Skill 来自当前会话冻结目录 getSkillReferenceCatalog，发送前重新�
 
 ### 账号与进程
 
-账号导入仅在桌面网关开放，手机只列出和切换保存的账号。保存原生 `enc:v1` 凭据，不解密复制令牌；这些快照只适用于当前电脑。恢复只替换 OAuth/JWT 与账号域相关设置，清除旧账号派生 project-key，保留独立 API、项目、历史及外观设置。文件使用已有私有原子写入，切换使用共享任务保护、正常退出、备份、恢复、原生身份核对和失败回滚。
+账号导入仅在桌面网关开放，手机只列出和切换保存的账号。共享账号面板按 quota 能力跳过不受支持的额度详情查询，避免对未保存的当前账号逐项请求并误报不存在。保存原生 `enc:v1` 凭据，不解密复制令牌；这些快照只适用于当前电脑。恢复只替换 OAuth/JWT 与账号域相关设置，清除旧账号派生 project-key，保留独立 API、项目、历史及外观设置。文件使用已有私有原子写入，切换使用共享任务保护、正常退出、备份、恢复、原生身份核对和失败回滚。
 
 参考 [Cockpit Tools 账号事务](https://github.com/jlcodes99/cockpit-tools/blob/main/src-tauri/src/commands/zcode.rs) 的保存后重启流程，但不复制旧版 provider 格式。ZCode 3.17 使用 providerFamilyConnectionSelections，与旧 modelProviderFamilyModes 有差异。
 
