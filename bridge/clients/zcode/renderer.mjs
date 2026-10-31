@@ -9,20 +9,21 @@ export async function nativeRequest(request) {
   const findServices = () => {
     const stack = [...document.querySelectorAll('#root,#app')].flatMap(el =>
       Object.keys(el).filter(k => k.startsWith('__reactContainer$') || k.startsWith('__reactFiber$')).map(k => el[k]));
-    const seen = new Set(), found = new Set();
+    const seen = new Set(), found = new Set(), contexts = new Set();
     while (stack.length && seen.size < 20000) {
       const f = stack.pop();
       if (!f || seen.has(f)) continue;
       seen.add(f); stack.push(f.child, f.sibling, f.alternate);
       for (const value of [f.memoizedProps?.value, f.memoizedProps?.services]) {
+        if (value?.layer?.acquire && value?.layer?.entries?.has('conversation/' + request.sessionId)) contexts.add(value);
         const services = value?.zcodeAgentService ? value : value?.services;
         if (services?.zcodeAgentService) found.add(services);
       }
     }
     if (found.size !== 1) throw Error('Original ZCode service accessor is unavailable or ambiguous');
-    return [...found][0];
+    return { services: [...found][0], contexts: [...contexts] };
   };
-  const services = findServices(), agent = services.zcodeAgentService;
+  const { services, contexts } = findServices(), agent = services.zcodeAgentService;
   const target = { workspacePath: request.workspace, sessionId: request.sessionId };
   const identity = async () => {
     const hello = await agent.helloConversationV4();
@@ -39,26 +40,27 @@ export async function nativeRequest(request) {
   if (request.binding && !same(current, request.binding)) throw Error('ZCode owner changed; explicit reattach required');
   const read = () => agent.readSession({ ...target, runtimePolicy: 'existing-only', messageLimit: 100 });
   // Verify the original session/cwd before any subscription or command.
-  const history = await read();
-  if (history.session?.sessionId !== request.sessionId || history.session?.workspace?.workspacePath !== request.workspace)
+  const history = ['attach', 'history'].includes(request.action) ? await read() : null;
+  if (history && (history.session?.sessionId !== request.sessionId || history.session?.workspace?.workspacePath !== request.workspace))
     throw Error('Native session workspace changed');
   let state = window[key];
   if (request.action === 'attach') {
     if (state && state.sessionId !== request.sessionId)
       throw Error('Detach the previous prototype session first');
-    if (state && !same(state.binding, current)) {
+    if (state && (!same(state.binding, current) || state.lease.store.getState().status === 'closed')) {
       // Only this explicit action can adopt a new host generation. Old command IDs
       // remain claimed by DesktopSessions; replacing a subscription never resends them.
-      delete window[key]; state = null;
+      state.lease.release(); delete window[key]; state = null;
     }
     if (!state) {
       checkDeadline();
-      // Explicit attach only. This prototype is limited to a dedicated native test
-      // session: sharing this renderer's subscription with its active UI is not supported.
-      const result = await agent.subscribeConversationV4(target);
-      state = window[key] = { binding: current, sessionId: request.sessionId, subscriptionId: result.ack.subscriptionId };
+      // Reuse the App's ref-counted store, including its delta reducer. A second
+      // subscribe on the renderer connection would evict the desktop subscription.
+      if (contexts.length !== 1) throw Error('请先在 ZCode 打开这条测试聊天，再重新连接');
+      const lease = contexts[0].layer.acquire(request.sessionId);
+      state = window[key] = { binding: current, sessionId: request.sessionId, lease };
     }
-    return { binding: current, subscriptionId: state.subscriptionId };
+    return { binding: current, subscriptionId: state.lease.store.getState().subscriptionId };
   }
   if (request.action === 'receipt') {
     return agent.queryConversationCommandsV4({ workspacePath: request.workspace,
@@ -73,40 +75,22 @@ export async function nativeRequest(request) {
   if (!state || state.sessionId !== request.sessionId || !same(state.binding, current))
     throw Error('Prototype subscription is detached; explicitly attach again');
   if (request.action === 'detach') {
-    await agent.unsubscribeConversationV4({ workspacePath: request.workspace,
-      subscriptionId: state.subscriptionId, runtimePolicy: 'existing-only' });
+    state.lease.release();
     delete window[key];
     return { detached: true };
   }
-  const snapshot = async () => {
-    let dispose, timer;
-    const pending = new Promise((resolve, reject) => {
-      dispose = agent.onDynamicConversationFrame(target)(wire => {
-        const frame = wire.frame;
-        if (wire.kind === 'complete' && frame?.subscriptionId === state.subscriptionId &&
-            frame.payload?.kind === 'snapshot') resolve(frame.payload.snapshot);
-      });
-      timer = setTimeout(() => reject(Error('Native snapshot unavailable; do not replace the App subscription')), 4000);
-    });
-    // Attach rejection handling before awaiting RPC; neither timer nor listener survives this request.
-    pending.catch(() => {});
-    try {
-      const [, result] = await Promise.all([
-        agent.resyncConversationV4({ workspacePath: request.workspace,
-          subscriptionId: state.subscriptionId, base: null, forceSnapshot: true, runtimePolicy: 'existing-only' }),
-        pending,
-      ]);
-      if (result.sessionId !== request.sessionId) throw Error('Wrong native snapshot');
-      return result;
-    } finally { clearTimeout(timer); dispose?.dispose(); }
-  };
-  const before = await snapshot();
+  const projection = state.lease.store.getState();
+  if (!projection.snapshot || projection.status !== 'live')
+    throw Error('ZCode 原生会话连接尚未就绪，请在原 App 核对后重新连接');
+  const before = projection.snapshot;
+  if (before.sessionId !== request.sessionId) throw Error('Wrong native snapshot');
   if (request.action === 'detail') return { binding: current, snapshot: before };
   const body = request.body || {};
   let type, payload;
   if (request.action === 'send') {
     // This first slice deliberately does not implement queue/steer or auto-start a cold owner.
-    if (!before.control.sessionEnded || before.pendingInteractions.length || before.queue.items.length)
+    if (before.inputRouting?.mode !== 'startNow' || before.control.activeWorks.length ||
+        before.pendingInteractions.length || before.queue.items.length)
       throw Error('Native session is busy or awaiting input');
     type = 'sendText'; payload = { text: body.text, requestedDelivery: 'startNow' };
     const attachments = [];

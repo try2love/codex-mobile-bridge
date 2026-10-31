@@ -7,8 +7,10 @@ function fixture() {
   const binding = { clientId: 'original-client', connectionId: 'original-port',
     runtime: { identity: 'original-owner:1', workspaceKey: '/project' } };
   const snapshot = { sessionId: 'sess-test', control: { sessionEnded: true, canStop: false, activeWorks: [] },
-    pendingInteractions: [], queue: { items: [] } };
+    pendingInteractions: [], queue: { items: [] }, inputRouting: { mode: 'startNow' } };
   const calls = [], listeners = new Set();
+  const storeState = {status:'live', snapshot, subscriptionId:'sub'};
+  const layer = {entries:new Map([['conversation/sess-test',{}]]), acquire:()=>{calls.push('acquire');return {store:{getState:()=>storeState},release:()=>calls.push('release')};}};
   const agent = {
     helloConversationV4: async () => ({ protocolVersion: 3, clientMode: 'desktop-continuous', connectionId: binding.connectionId }),
     getWorkspaceRuntimeIdentity: async p => { assert.equal(p.runtimePolicy, 'existing-only'); return structuredClone(binding.runtime); },
@@ -29,11 +31,11 @@ function fixture() {
   };
   globalThis.window = {};
   globalThis.document = { querySelectorAll: () => [{ __reactContainer$test: {
-    memoizedProps: { value: { zcodeAgentService: agent } } } }] };
+    memoizedProps: { value: { zcodeAgentService: agent, layer } } } }] };
   globalThis.localStorage = { getItem: key => { assert.equal(key, 'zcode-v4-client-id:v1'); return binding.clientId; } };
   const request = (action, body = {}, extra = {}) => nativeRequest({ action, body, workspace: '/project',
     sessionId: 'sess-test', binding: structuredClone(binding), expiresAt: Date.now() + 10000, ...extra });
-  return { request, calls, snapshot, binding, agent, listeners };
+  return { request, calls, snapshot, binding, agent, listeners, storeState };
 }
 
 test('passive history never subscribes or starts an executor and hides model-only context', async () => {
@@ -47,7 +49,7 @@ test('reattach is explicit; repeated attach and reads do not replace a native su
   const f = fixture();
   await assert.rejects(f.request('detail'), /detached/);
   await f.request('attach'); await f.request('attach'); await f.request('detail');
-  assert.deepEqual(f.calls, ['subscribe']);
+  assert.deepEqual(f.calls, ['acquire']);
   assert.equal(f.listeners.size, 0);
   await f.request('detach');
   await assert.rejects(f.request('detail'), /detached/);
@@ -58,15 +60,15 @@ test('owner change and expired requests fail before mutation', async () => {
   const old = structuredClone(f.binding); f.binding.runtime.identity = 'different-owner';
   await assert.rejects(f.request('send', { id: 'once', text: 'hello' }, { binding: old }), /owner changed/);
   await assert.rejects(f.request('send', {}, { expiresAt: 1 }), /expired/);
-  assert.deepEqual(f.calls, ['subscribe']);
+  assert.deepEqual(f.calls, ['acquire']);
 });
 
-test('snapshot timeout releases the listener even when the native resync RPC hangs', async () => {
+test('unavailable native projection fails immediately without resync or replacing the desktop subscription', async () => {
   const f = fixture(); await f.request('attach');
-  f.agent.resyncConversationV4 = () => new Promise(() => {});
-  await assert.rejects(f.request('detail'), /snapshot unavailable/);
+  f.storeState.status = 'error';
+  await assert.rejects(f.request('detail'), /尚未就绪/);
   assert.equal(f.listeners.size, 0);
-  assert.deepEqual(f.calls, ['subscribe']);
+  assert.deepEqual(f.calls, ['acquire']);
 });
 
 test('only explicit reattach can adopt a new owner generation, without replaying a command', async () => {
@@ -76,7 +78,7 @@ test('only explicit reattach can adopt a new owner generation, without replaying
   const attached = await f.request('attach', {}, { binding: null });
   assert.equal(attached.binding.runtime.identity, 'new-owner');
   await f.request('detail');
-  assert.deepEqual(f.calls, ['subscribe', 'subscribe']);
+  assert.deepEqual(f.calls, ['acquire', 'release', 'acquire']);
 });
 
 test('stop targets exactly an observed native execution; stale approval never sends', async () => {
@@ -123,4 +125,13 @@ test('CDP rejects redirect-shaped, remote, ambiguous and wrong-App targets', () 
     assert.throws(() => verifiedTarget([{ ...target, webSocketDebuggerUrl: url }], '/Applications/ZCode.app', 17742));
   assert.throws(() => verifiedTarget([target, target], '/Applications/ZCode.app', 17742), /ambiguous/);
   assert.throws(() => verifiedTarget([{ ...target, url: 'file:///wrong/index.html' }], '/Applications/ZCode.app', 17742));
+});
+
+test('a failed turn follows native input routing; only a new explicit send may continue',async()=>{
+  const f=fixture();await f.request('attach');
+  f.snapshot.control={sessionEnded:false,activeWorks:[],phase:'error'};
+  await f.request('send',{id:'new-intent',text:'new message'});
+  f.snapshot.inputRouting.mode='queue';
+  await assert.rejects(f.request('send',{id:'not-allowed',text:'message'}),/busy/);
+  assert.equal(f.calls.filter(c=>c.envelope?.type==='sendText').length,1);
 });

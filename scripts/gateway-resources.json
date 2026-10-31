@@ -244,5 +244,7 @@
   "web/vendor/pdfjs/standard_fonts/LiberationSans-Bold.ttf",
   "web/vendor/pdfjs/standard_fonts/LiberationSans-BoldItalic.ttf",
   "web/vendor/pdfjs/standard_fonts/LiberationSans-Italic.ttf",
-  "web/vendor/pdfjs/standard_fonts/LiberationSans-Regular.ttf"
+  "web/vendor/pdfjs/standard_fonts/LiberationSans-Regular.ttf",
+  "bridge/clients/zcode/renderer.mjs",
+  "bridge/clients/zcode/transport.mjs"
 ]

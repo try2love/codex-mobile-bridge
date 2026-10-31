@@ -1,5 +1,6 @@
 """Bounded, opt-in native-session prototype. No App launch, patch or replacement CLI."""
 import json
+import base64
 import mimetypes
 import subprocess
 import sys
@@ -35,23 +36,55 @@ def project_files(root, paths):
 def project_snapshot(snapshot, workspace):
     messages = []
     for row in snapshot['rows']['window']:
-        if row.get('visibility') != 'visible' or row['kind'] not in ('userInput', 'assistantText'):
+        if row.get('visibility') != 'visible' or row['kind'] not in ('userInput', 'assistantText', 'reasoning', 'toolCall'):
             continue
         message = {'id': 'zcode:%s:%s' % (snapshot['sessionId'], row['rowId']),
-                   'role': 'user' if row['kind'] == 'userInput' else 'assistant', 'text': row.get('text', '')}
+                   'role': {'userInput': 'user', 'assistantText': 'assistant', 'reasoning': 'reasoning',
+                            'toolCall': 'activity'}[row['kind']], 'text': row.get('text', '')}
+        if row['kind'] == 'toolCall':
+            message.update(title=row.get('toolName', '执行过程'), text='\n'.join(
+                value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+                for value in (row.get('inputText') or row.get('input'), row.get('output'), row.get('error')) if value))
         if row.get('attachments'):
             message['attachments'] = [{'name': a['fileName'], 'mime': a['mime'], 'size': a['bytes'],
                                        'nativeRef': a['ref']} for a in row['attachments']]
         messages.append(message)
     control = snapshot['control']
     active = bool(control.get('activeWorks')) or bool(snapshot['pendingInteractions'])
+    error = control.get('lastError') if control.get('phase') == 'error' else None
+    if error:
+        text = error.get('message') or 'ZCode 原生任务执行失败'
+        if error.get('code') == '3009' and error.get('attribution', {}).get('reason') == 'rate_limited':
+            text = 'ZCode 模型服务繁忙（3009）：已达到并发限制。请稍后手动发送，或在 ZCode 中切换模型。'
+        messages.append({'id': 'zcode:%s:error:%s' % (snapshot['sessionId'], error.get('at', 'current')),
+                         'role': 'error', 'text': text})
+    requests = []
+    for interaction in snapshot['pendingInteractions']:
+        payload = interaction['payload']
+        item = {'id': interaction['interactionId'], 'tool': payload.get('toolName', '等待确认'),
+                'input': payload.get('detail') or payload.get('input') or {}}
+        if interaction['kind'] == 'userInput':
+            item.update(needsInput=True, input=payload.get('input') or payload.get('request') or payload)
+        elif interaction['kind'] == 'permission':
+            # Show the native offered choices; never invent an allow vocabulary.
+            item['decisions'] = [{'id': option['optionId'], 'label': option['label']}
+                                 for option in payload.get('options', []) if option['kind'] in ('allowOnce', 'deny')]
+        requests.append(item)
+    foreground = [work['foregroundExecutionId'] for work in control.get('activeWorks', []) if work.get('foregroundExecutionId')]
     return {'session': {'id': snapshot['sessionId'], 'provider': 'zcode', 'host': 'local',
                         'cwd': workspace, 'title': snapshot.get('meta', {}).get('title', ''),
-                        'status': 'active' if active else 'idle'}, 'messages': messages,
+                        'status': 'active' if active else 'idle', 'backend': 'desktop', 'requests': requests,
+                        'turnStatus': 'failed' if error else 'inProgress' if active else 'completed',
+                        'model': snapshot.get('config', {}).get('model'), 'effort': snapshot.get('config', {}).get('thought'),
+                        'stopTarget': {'executionId': foreground[0]} if len(foreground) == 1 else {},
+                        'updatedAt': max((row.get('createdAt', 0) for row in snapshot['rows']['window']), default=0)}, 'messages': messages,
             'requests': snapshot['pendingInteractions'], 'control': control,
             'native': {'revision': snapshot['revision'], 'seq': snapshot['seq'], 'logEpoch': snapshot['logEpoch']},
             'history': {'hasMore': snapshot['rows']['totalCount'] > len(snapshot['rows']['window'])},
-            'capabilities': {'send': True, 'stop': bool(control.get('canStop')), 'attachments': True}}
+            'capabilities': {'send': not active and snapshot.get('inputRouting', {}).get('mode') == 'startNow',
+                             'stop': bool(control.get('canStop')) and len(foreground) == 1,
+                             'attachments': True, 'uploadFiles': True, 'resume': True, 'models': False,
+                             'queue': False, 'steer': False, 'skills': False, 'permissions': False, 'create': False}}
 
 
 class ZCodePrototype:
@@ -77,7 +110,7 @@ class ZCodePrototype:
         request = {**request, 'application': str(application), 'port': self.config['port'],
                    'expiresAt': int(time.time() * 1000) + 12000}
         try:
-            result = subprocess.run(['node', str(Path(__file__).with_name('transport.mjs'))],
+            result = subprocess.run([self.config.get('node', 'node'), str(Path(__file__).with_name('transport.mjs'))],
                                     input=json.dumps(request), text=True, capture_output=True, timeout=15)
         except subprocess.TimeoutExpired:
             raise BridgeUnavailable('ZCode 回执超时，结果待核对；不会自动重放') from None
@@ -86,11 +119,31 @@ class ZCodePrototype:
         return json.loads(result.stdout)
 
     def call(self, action, sid=None, body=None):
+        if action == 'list':
+            detail = self.call('detail', self.sid)
+            return {'sessions': [detail['session']], 'connected': detail.get('connected', True)}
+        if action == 'projects':
+            return {'projects': [], 'capabilities': {'create': False}}
         if sid != self.sid:
             raise ValueError('此原型只能操作显式绑定的测试会话')
-        if action not in ('attach', 'detach', 'history', 'detail', 'receipt', 'send', 'stop', 'respond'):
+        if action not in ('attach', 'detach', 'resume', 'history', 'detail', 'receipt', 'send', 'stop', 'respond'):
             raise ValueError('尚未验证的 ZCode 操作')
         body = dict(body or {})
+        if action == 'resume':
+            # Only an explicit phone action may adopt a new App process/owner.
+            app = bundle(Path(self.config['application']), 'dev.zcode.app')
+            if not app or app['version'] != '3.17.1':
+                raise BridgeUnavailable('ZCode 安装身份或版本不匹配')
+            process = listener_identity(self.config['port'], app['executable'])
+            previous = dict(self.config)
+            try:
+                self.config['process'] = process
+                result = self.call('attach', sid)
+                self.config['binding'] = result['binding']
+            except Exception:
+                self.config = previous
+                raise
+            return {'status': 'ready', 'id': body['id']}
         request = {'action': action, 'workspace': self.workspace, 'sessionId': sid,
                    'binding': None if action == 'attach' else self.config.get('binding')}
         if action in ('send', 'stop', 'respond'):
@@ -100,15 +153,49 @@ class ZCodePrototype:
         if action == 'send':
             if not isinstance(body.get('text'), str) or not 1 <= len(body['text'].strip()) <= 100000:
                 raise ValueError('请输入 1–100000 字的消息')
-            if set(body) - {'id', 'text', 'projectFiles'}:
+            if set(body) - {'id', 'text', 'mode', 'projectFiles', 'resolvedReferences', 'resolvedImages', 'resolvedFiles'}:
                 raise ValueError('原型只接受文字和当前项目文件')
+            if body.pop('mode', 'send') != 'send':
+                raise ValueError('ZCode 原型暂只支持发送新消息')
             body['files'] = project_files(self.workspace, body.pop('projectFiles', []))
+            references = body.pop('resolvedReferences', [])
+            paths = [str(Path(item['path']).relative_to(self.workspace)) for item in references]
+            body['files'].extend(project_files(self.workspace, paths))
+            for item in body.pop('resolvedImages', []):
+                header, data = item['url'].split(',', 1)
+                body['files'].append({'name': item['name'], 'mime': header[5:].split(';')[0], 'data': data})
+            for item in body.pop('resolvedFiles', []):
+                path = Path(item['path'])
+                file = Workspace(path.parent).read(path.name, download=True)
+                body['files'].append({'name': item['name'], 'mime': mimetypes.guess_type(item['name'])[0] or
+                                     'application/octet-stream', 'data': file['data']})
+            if len(body['files']) > 10 or sum(len(base64.b64decode(f['data'], validate=True)) for f in body['files']) > MAX_TRANSFER:
+                raise ValueError('最多 10 个附件，附件总量不能超过 20 MB')
+        if action == 'respond' and 'requestId' in body:
+            body['interactionId'] = body.pop('requestId')
+            decision = body.pop('decision')
+            if decision == 'accept':
+                answers = {key: ', '.join(value['answers']) for key, value in body.pop('answers', {}).items()}
+                body['answer'] = {'action': 'accept', 'content': {'answers': answers}}
+            else:
+                body['answer'] = {'optionId': decision}
         if action == 'receipt':
             request['commandId'] = str(uuid.UUID(body['commandId']))
         request['body'] = body
         result = self.transport(request)
         if action == 'detail':
-            return project_snapshot(result['snapshot'], self.workspace)
+            value = project_snapshot(result['snapshot'], self.workspace)
+            if value['history']['hasMore']:
+                value['notice'] = '当前显示 ZCode 已加载的历史；更早内容请在原 App 中加载。'
+                value['history']['hasMore'] = False
+            return value
         if action in ('send', 'stop', 'respond'):
             return {'id': body['id'], 'status': result['status'], 'nativeAck': result}
         return result
+
+    def status(self):
+        try:
+            self.call('detail', self.sid)
+            return {'connected': True}
+        except (BridgeUnavailable, ValueError, OSError):
+            return {'connected': False}

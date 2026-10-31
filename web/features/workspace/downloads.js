@@ -11,7 +11,7 @@ const BridgeDownload = (() => {
       const pathname = scope ? (url.pathname.startsWith(scope+"/") ? url.pathname.slice(scope.length) : "") : url.pathname;
       return url.origin === new URL(base).origin && !url.username && !url.password &&
         (/^\/api\/sessions\/[0-9a-f-]{36}\/(?:files\/[a-f0-9]{64}|workspace\/download)$/.test(pathname) ||
-         /^\/api\/desktop-sessions\/(?:claude|deepseek)\/workspace\/download$/.test(pathname));
+         /^\/api\/desktop-sessions\/(?:claude|deepseek|zcode)\/workspace\/download$/.test(pathname));
     } catch { return false; }
   }
   const host = typeof module === 'object' && module.exports ? require('../../hosts/environment.js') : BridgeHost;

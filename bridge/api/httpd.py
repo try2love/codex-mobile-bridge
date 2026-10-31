@@ -579,7 +579,7 @@ class Handler(BaseHTTPRequestHandler):
                 provider, identifier = desktop_image.groups()
                 artifact, variant = manager.image_preview(provider, query.get('sessionId', [None])[0], identifier)
                 return self.attachment_preview(artifact, variant, private=True)
-            desktop_upload = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude)/uploads(?:/([0-9a-f-]{36})/(thumb|preview))?', path)
+            desktop_upload = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode)/uploads(?:/([0-9a-f-]{36})/(thumb|preview))?', path)
             if desktop_upload:
                 manager, uploads = self.server.desktop_sessions, self.server.desktop_uploads
                 if manager is None or uploads is None:
@@ -633,7 +633,7 @@ class Handler(BaseHTTPRequestHandler):
                 sid = query.get('sessionId', [''])[0]
                 return self.output(200, self.server.notifications.policy(
                     sid, 'desktop:' + provider, self.read_json() if write else None))
-            desktop_workspace = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude)/(workspace(?:/[a-z-]+)?|terminal)', path)
+            desktop_workspace = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode)/(workspace(?:/[a-z-]+)?|terminal)', path)
             desktop_projects = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude)/projects/(browse|register|trust)', path)
             if desktop_projects:
                 if not write:
@@ -660,7 +660,7 @@ class Handler(BaseHTTPRequestHandler):
                 manager = self.server.desktop_sessions
                 if manager is None:
                     return self.output(503, {'error': '桌面会话接入不可用'})
-                if len(parts) != 4 or parts[2] not in ('deepseek', 'claude') or parts[3] not in (WRITES if write else READS):
+                if len(parts) != 4 or parts[2] not in ('deepseek', 'claude', 'zcode') or parts[3] not in (WRITES if write else READS):
                     return self.output(404, {'error': '接口不存在'})
                 manager.require_enabled(parts[2])
                 body = self.read_json() if write else ({'section': query.get('section', ['all'])[0],
@@ -684,7 +684,7 @@ class Handler(BaseHTTPRequestHandler):
                     session = detail.get('session') or {}
                     local_cli = parts[2] == 'claude' and session.get('backend') == 'cli'
                     images, files = self.server.desktop_uploads.resolve(
-                        parts[2], sid, body.pop('attachments'), local_claude_cli=local_cli)
+                        parts[2], sid, body.pop('attachments'), local_claude_cli=local_cli, native_files=detail.get('capabilities', {}).get('uploadFiles') is True)
                     body['resolvedImages'] = images
                     if files:
                         body['resolvedFiles'] = files

@@ -418,3 +418,14 @@ test('absent unconfigured clients do not occupy the list, but offline configured
  ui.panel.addClient();const dialog=ui.document.body.children[0],buttons=dialog.children[1].children;
  assert.equal(dialog.open,true);assert.deepEqual(buttons.map(button=>button.textContent),['Codex','Claude','DSH / 自定义 Harness','取消']);buttons[2].onclick();assert.equal(ui.document.body.children.length,0);
 });
+
+test('ZCode uses its own logo, shared description and original App account instructions',()=>{
+  const ui=fixture(),client={id:'zcode',name:'ZCode',installed:true,configured:true,connected:true,enabled:true,
+    canQuitDesktop:false,description:'连接 ZCode 原生聊天',accountNotice:'在 ZCode 中管理模型与账号',configurationNotice:'仅接入原生测试聊天'};
+  ui.panel.clients=[client];ui.panel.renderClients();
+  assert.ok(ui.all().some(node=>node.tag==='img'&&node.src==='../web/client-icons/zcode.png'));
+  assert.match(ui.text(),/连接 ZCode 原生聊天/);assert.match(ui.text(),/在 ZCode 中管理模型与账号/);
+  assert.doesNotMatch(ui.text(),/在 Harness 中管理/);
+  ui.all().find(node=>node.tag==='button'&&node.textContent==='管理').onclick();
+  assert.equal(ui.document.body.children.at(-1).open,true);assert.equal(ui.calls.length,0);
+});
