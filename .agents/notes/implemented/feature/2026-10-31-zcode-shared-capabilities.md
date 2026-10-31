@@ -10,7 +10,7 @@ Status: implemented
 
 ZCode 适配器只转换原生协议与数据；聊天继续使用 DesktopSessionsView，账号继续使用 DesktopClientAccountsPanel 和 DesktopSessions 的事务入口。能力来自已核验的原生接口，不以客户端名字复制业务。
 
-模型目录来自原 App 的 modelSelectionService。共享目录缓存包含账号及 provider_config.json 身份；界面只读实际会话 modelSelection，不能把全局 preferredSelection 当作执行模型。切换使用 switchModelConfig，携带原生 revision/logEpoch 做 CAS，任务、待处理交互和队列非空时拒绝。未知写回执继续使用已有幂等记录，不自动重放。
+模型目录来自原 App 的 modelSelectionService。共享目录缓存包含账号及 provider_config.json 身份；界面只读实际会话 modelSelection，不能把全局 preferredSelection 当作执行模型。切换使用 switchModelConfig，携带原生 revision/logEpoch 做 CAS，任务、待处理交互和队列非空时拒绝。原生明确返回 noop/config.unchanged 时，适配器转换为共享 accepted 并保留 nativeAck；这表示目标配置已经一致，不能误报为未知结果。其他回执不套用这一例外，未知写回执继续使用已有幂等记录，不自动重放。
 
 Skill 来自当前会话冻结目录 getSkillReferenceCatalog，发送前重新核验 ID、enabled 和 session authority。按原生 composer 的 美元符号名称与文件路径组成的 Markdown 链接 格式生成引用，不复制 Skill 正文或自造附件提示。共享上传入口按 uploadFiles 能力放行普通文件，删除仅 Claude CLI 可上传普通文件的旧条件。
 

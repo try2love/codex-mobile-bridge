@@ -47,6 +47,18 @@ class MobileContracts(unittest.TestCase):
         self.assertNotIn('zcode', manager.adapters)
         self.assertNotIn('zcode', manager.navigation_clients())
 
+    def test_unchanged_native_model_is_a_confirmed_shared_settings_result(self):
+        ack = {'status': 'noop', 'reasonCode': 'config.unchanged', 'revisionAtDecision': 81}
+        adapter = ZCodePrototype(self.root, self.config, lambda request: ack)
+        result = adapter.call('settings', 'sess_test', {'id': str(uuid.uuid4()),
+            'model': 'account:zai-start-plan/GLM-5.3-Flash', 'effort': 'low'})
+        self.assertEqual(result['status'], 'accepted')
+        self.assertEqual(result['nativeAck'], ack)
+        ack['reasonCode'] = 'other.noop'
+        result = adapter.call('settings', 'sess_test', {'id': str(uuid.uuid4()),
+            'model': 'account:zai-start-plan/GLM-5.3-Flash', 'effort': 'low'})
+        self.assertEqual(result['status'], 'noop')
+
     def test_project_file_uses_native_bytes_without_injected_prompt(self):
         (self.root/'file.md').write_text('native file')
         adapter = ZCodePrototype(self.root, self.config, self.transport)

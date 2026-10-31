@@ -208,7 +208,10 @@ class ZCodePrototype:
                 value['history']['hasMore'] = False
             return value
         if action in ('send', 'stop', 'respond', 'settings'):
-            return {'id': body['id'], 'status': result['status'], 'nativeAck': result}
+            status = result['status']
+            if action == 'settings' and status == 'noop' and result.get('reasonCode') == 'config.unchanged':
+                status = 'accepted'
+            return {'id': body['id'], 'status': status, 'nativeAck': result}
         return result
 
     def account_scope(self):
