@@ -212,7 +212,7 @@ public final class MainActivity extends Activity implements SharedPreferences.On
    LinearLayout apps=entry.getValue();apps.removeAllViews();JSONArray rows=ComputerNotifications.clients(this,entry.getKey());
    for(int i=0;i<rows.length();i++){
     JSONObject row=rows.optJSONObject(i);if(row==null||!row.optBoolean("enabled"))continue;
-    String provider=row.optString("id"),name=provider.equals("codex")?"Codex":provider.equals("claude")?"Claude":provider.equals("deepseek")?"DeepSeek Harness":"";if(name.isEmpty())continue;
+    String provider=row.optString("id"),name=provider.equals("codex")?"Codex":provider.equals("claude")?"Claude":provider.equals("deepseek")?"DeepSeek Harness":provider.equals("zcode")?"ZCode":"";if(name.isEmpty())continue;
     long count=Math.max(0,row.optLong("unread"));FrameLayout slot=new FrameLayout(this);ImageButton app=new ImageButton(ui.context);app.setBackgroundColor(android.graphics.Color.TRANSPARENT);app.setScaleType(ImageView.ScaleType.FIT_CENTER);app.setPadding(dp(11),dp(11),dp(11),dp(11));
     if(!clientIcons.containsKey(provider))try(java.io.InputStream input=getAssets().open(provider+".png")){clientIcons.put(provider,android.graphics.BitmapFactory.decodeStream(input));}catch(java.io.IOException ignored){}
     app.setImageBitmap(clientIcons.get(provider));app.setContentDescription(name+(row.has("connected")&&!row.isNull("connected")&&!row.optBoolean("connected")?" · "+L("尚未连接"):"")+" · "+L("未读通知")+" "+count);app.setOnClickListener(v->connect(entry.getKey()+"/?client="+provider));slot.addView(app,new FrameLayout.LayoutParams(dp(48),dp(48)));

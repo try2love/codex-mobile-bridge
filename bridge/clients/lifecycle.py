@@ -51,7 +51,7 @@ def launch_deepseek(descriptor, restart=False):
 
 
 def _app(descriptor):
-    if descriptor.get('id') not in ('codex', 'claude', 'deepseek') or not descriptor.get('installed'):
+    if descriptor.get('id') not in ('codex', 'claude', 'deepseek', 'zcode') or not descriptor.get('installed'):
         raise ValueError('未找到已配置的桌面应用，请重新扫描')
     executable, home = descriptor.get('executable'), descriptor.get('dataDirectory')
     if not executable or not home or not Path(executable).is_file():

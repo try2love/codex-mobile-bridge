@@ -8,7 +8,7 @@ import java.util.regex.*;
 public final class ArtifactDownload {
  public static final long CHUNK=1024L*1024;
  public static boolean accepts(String url,String origin){
-  try{return GatewayURL.sameOrigin(url,origin)&&(GatewayURL.apiPath(url,origin).matches("(?:/api/sessions/[0-9a-f-]{36}/(?:files/[a-f0-9]{64}|workspace/download)|/api/desktop-sessions/(?:claude|deepseek)/workspace/download)")||diagnostics(url,origin));}catch(Exception e){return false;}
+  try{return GatewayURL.sameOrigin(url,origin)&&(GatewayURL.apiPath(url,origin).matches("(?:/api/sessions/[0-9a-f-]{36}/(?:files/[a-f0-9]{64}|workspace/download)|/api/desktop-sessions/(?:claude|deepseek|zcode)/workspace/download)")||diagnostics(url,origin));}catch(Exception e){return false;}
  }
  static boolean diagnostics(String url,String origin){
   try{URI value=new URI(url);String query=value.getRawQuery();return GatewayURL.sameOrigin(url,origin)&&value.getRawFragment()==null&&GatewayURL.apiPath(url,origin).equals("/api/sessions/diagnostics")&&(query==null||query.matches("thread=[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"));}catch(Exception e){return false;}

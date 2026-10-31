@@ -202,7 +202,8 @@ class DesktopConnectionsPanel {
     const title=document.createElement('h2'),description=document.createElement('p'),notice=document.createElement('p'),close=document.createElement('button');
     title.textContent=client.name;description.textContent=BridgeI18n.t(client.description);notice.textContent=BridgeI18n.t(client.configurationNotice);
     close.type='button';close.textContent=BridgeI18n.t('关闭');close.onclick=()=>dialog.close();dialog.append(title,description,notice,close);
-    dialog.addEventListener('close',()=>dialog.remove(),{once:true});document.body.append(dialog);dialog.showModal();close.focus();
+    let panel;if(client.capabilities?.accounts===true){const content=document.createElement('div');dialog.insertBefore(content,close);const provider=client.id;panel=new DesktopClientAccountsPanel({root:content,provider,desktop:true,read:()=>this.api.desktopSessions({action:'accounts',provider,operation:'list'}),request:({action,...value})=>this.api.desktopSessions({action:'accounts',provider,operation:action,...value}),readModels:refresh=>this.api.desktopSessions({action:'account',provider,refresh}),onChanged:()=>this.refreshClients(true)});}
+    dialog.addEventListener('close',()=>{panel?.dispose();dialog.remove();},{once:true});document.body.append(dialog);dialog.showModal();panel?.refresh();close.focus();
   }
   async wslDetails(client){
     try{if(typeof WslAccountsPanel==='undefined')await window.loadWslAccounts();}

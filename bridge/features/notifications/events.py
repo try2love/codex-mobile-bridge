@@ -1,4 +1,6 @@
 """Authenticated companion inbox. Delivery to an inbox is not OS push delivery."""
+from bridge.features.notifications.providers import PROVIDERS, desktop_provider
+
 import hashlib
 import threading
 import time
@@ -10,11 +12,11 @@ from bridge.features.notifications.channels import read_json, write_json
 
 class MobileEvents:
     LIMIT = 200
-    PROVIDERS = ('codex', 'claude', 'deepseek')
+    PROVIDERS = PROVIDERS
 
     @staticmethod
     def provider(event):
-        return {'desktop:claude': 'claude', 'desktop:deepseek': 'deepseek'}.get(event['host'], 'codex')
+        return desktop_provider(event['host']) or 'codex'
 
     def __init__(self, directory):
         self.path = Path(directory) / 'mobile-events.json'

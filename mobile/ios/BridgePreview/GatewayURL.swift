@@ -35,7 +35,7 @@ enum GatewayURL {
         return httpOrigin(url.absoluteString) == httpOrigin(origin) && c.percentEncodedPath.hasPrefix(cookiePath(origin)) && !c.percentEncodedPath.contains("%") && !c.percentEncodedPath.contains("/../")
     }
     static func chat(_ origin: String, thread: String, host: String) throws -> URL {
-        let desktop = host == "desktop:claude" || host == "desktop:deepseek"
+        let desktop = host == "desktop:claude" || host == "desktop:deepseek" || host == "desktop:zcode"
         guard !thread.isEmpty, thread.utf16.count <= 512, host.utf16.count <= 256,
               !(thread + host).unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }),
               desktop || (!host.hasPrefix("desktop:") && UUID(uuidString: thread) != nil) else { throw InvalidURL() }

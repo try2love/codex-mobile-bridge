@@ -247,7 +247,7 @@ class ClientNavigation {
     try{
       const value=hash.replace(/^#/,''),at=value.indexOf('~'),id=decodeURIComponent(at<0?value:value.slice(0,at)),host=at<0?'local':decodeURIComponent(value.slice(at+1));
       if(!id||id.length>512||host.length>256||/[\x00-\x1f\x7f]/.test(id+host))return null;
-      if(['desktop:claude','desktop:deepseek'].includes(host))return {provider:host.slice(8),id,host};
+      if(['desktop:claude','desktop:deepseek','desktop:zcode'].includes(host))return {provider:host.slice(8),id,host};
       if(host.startsWith('desktop:')||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))return null;
       if(host.startsWith('wsl:')&&!isCodexClient(host))return null;
       return {provider:'codex',id,host};

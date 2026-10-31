@@ -56,3 +56,5 @@ CDP 与 React service accessor 只是短期验证入口。它复用 renderer 的
 ## 相关记录审计
 
 [共用原生任务状态](2026-10-29-shared-chat-progress.md) 部分重叠，继续沿用共享状态入口；[原生项目附件](../bug-fix/2026-10-29-native-project-attachments.md) 部分重叠，继承“模型读到不等于原生 UI 可见”的证据边界。两篇既有决定不变，无完全吸收或需要替换的记录。
+
+模型、Skill、提醒和私有账号快照的后续开放见 [ZCode 共享能力](2026-10-31-zcode-shared-capabilities.md)，该部分由新记录取代；原型 owner、版本和会话范围继续保留。

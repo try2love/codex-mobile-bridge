@@ -491,7 +491,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         apps.arrangedSubviews.forEach { apps.removeArrangedSubview($0); $0.removeFromSuperview() }
         for row in ComputerNotificationSummary.clients(data) {
             guard let provider = row["id"] as? String else { continue }
-            let name = ["codex": "Codex", "claude": "Claude", "deepseek": "DeepSeek Harness"][provider] ?? provider
+            let name = ["codex": "Codex", "claude": "Claude", "deepseek": "DeepSeek Harness", "zcode": "ZCode"][provider] ?? provider
             let count = max(0, row["unread"] as? Int ?? 0)
             let button = UIButton(type: .custom); button.translatesAutoresizingMaskIntoConstraints = false
             button.alpha = row["connected"] as? Bool == false ? 0.5 : 1
@@ -562,7 +562,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         guard saved.contains(address) else { info(MobileStrings.text("请先连接通知对应的电脑。")); return }
         if let thread, let target = try? GatewayURL.chat(address, thread: thread, host: host) { connect(target, address: address) } else { openSaved(address) }
     }
-    func openSaved(_ address: String, provider: String? = nil) { let suffix = provider.flatMap { ["codex", "claude", "deepseek"].contains($0) ? "?client=" + $0 : nil } ?? ""; guard saved.contains(address), let url = URL(string: address + "/" + suffix) else { info(MobileStrings.text("请先扫码保存通知对应的电脑。")); return }; connect(url, address: address) }
+    func openSaved(_ address: String, provider: String? = nil) { let suffix = provider.flatMap { ["codex", "claude", "deepseek", "zcode"].contains($0) ? "?client=" + $0 : nil } ?? ""; guard saved.contains(address), let url = URL(string: address + "/" + suffix) else { info(MobileStrings.text("请先扫码保存通知对应的电脑。")); return }; connect(url, address: address) }
     private func binding(_ address: String, done: @escaping (HTTPCookie?) -> Void) {
         WKWebsiteDataStore.default().httpCookieStore.getAllCookies { cookies in
             done(cookies.first { self.cookieMatches($0, address: address) })
@@ -1485,7 +1485,7 @@ final class Scanner: UIViewController, AVCaptureMetadataOutputObjectsDelegate {
 enum ComputerNotificationSummary {
     static func clients(_ data: [String: Any]) -> [[String: Any]] {
         let rows = data["clients"] as? [[String: Any]] ?? []
-        return ["codex", "claude", "deepseek"].compactMap { provider in rows.first { $0["id"] as? String == provider && $0["enabled"] as? Bool == true } }
+        return ["codex", "claude", "deepseek", "zcode"].compactMap { provider in rows.first { $0["id"] as? String == provider && $0["enabled"] as? Bool == true } }
     }
 }
 

@@ -180,11 +180,12 @@ class DesktopClientAccountsPanel {
   render(){
     const value=this.value;this.refreshButton.disabled=this.busy||this.loading;
     for(const control of [this.addApiButton,this.importButton,this.importApiButton,this.importName])if(control)control.hidden=value?.readOnly===true;
+    if(this.addApiButton)this.addApiButton.hidden=value?.readOnly===true||value?.capabilities?.addApi===false;
     this.status.textContent=this.text(this.busy?'正在处理…':this.loading?'正在读取…':value?.message||(value?.gatewayRunning===false?'网关未启动':''));this.errorNode.textContent=this.text(this.error||'');
     this.current.textContent=this.text('当前接入：')+(value?.current?.name||value?.current?.label||value?.accounts.find(row=>row.id===value.activeId)?.name||this.text('暂未识别'))+(value?.current?.routes?.length?' · '+this.text('已配置接入：')+value.current.routes.map(route=>this.text(({'deepseek-account':'官方账号','deepseek-official':'API 接入'})[route]||route)).join(' / '):'');
     if(value?.cliSync?.status==='verified')this.current.textContent+=' · '+this.text('本机 CLI 已核验');
     else if(value?.cliSync?.status==='failed')this.current.textContent+=' · '+this.text('本机 CLI 同步失败：')+this.text(value.cliSync.error||'请检查接入');
-    this.hint.textContent=this.text(value?.readOnly?'账号和 API 请在已绑定的第三方客户端中管理':this.desktop?'官方账号请先在对应桌面应用登录，再保存当前接入。API 可在此添加；保存后选择切换才会应用。':'添加账号或 API，请在电脑端完成。')+(this.provider==='deepseek'?' '+this.text('现有会话继续使用各自选择的模型接入。'):'');
+    this.hint.textContent=this.text(value?.enrollmentHint|| (value?.readOnly?'账号和 API 请在已绑定的第三方客户端中管理':this.desktop?'官方账号请先在对应桌面应用登录，再保存当前接入。API 可在此添加；保存后选择切换才会应用。':'添加账号或 API，请在电脑端完成。'))+(this.provider==='deepseek'?' '+this.text('现有会话继续使用各自选择的模型接入。'):'');
     this.modelsButton.hidden=!this.readModels;this.modelsButton.textContent=this.text(this.modelsOpen?'收起模型':'查看可用模型');this.modelsButton.disabled=this.busy||this.modelsLoading;this.modelsBox.hidden=!this.modelsOpen;
     if(this.modelsOpen){
       const key=JSON.stringify([this.models,this.modelsError,this.modelsLoading&&!this.models,BridgeI18n.locale()]);
@@ -205,11 +206,11 @@ class DesktopClientAccountsPanel {
       heading.append(this.node('h3',row.name||row.email||row.id));if(active)heading.append(this.node('span','当前接入','accounts-plan'));if(row.saved===false)heading.append(this.node('span','尚未保存','account-muted'));name.append(heading);
       name.append(this.node('p',row.kind==='api'?'API 接入':'官方账号','account-muted'));if(row.email)name.append(this.node('p',row.email,'account-muted'));identity.append(name);
       card.append(identity);
-      if(row.kind!=='api'||(row.usage||row.quota)?.balance){const usage=this.node('div',undefined,'accounts-usage accounts-client-usage');this.usage(usage,row);if(usage.children.length)card.append(usage);}
+      if(value?.capabilities?.quota!==false&&(row.kind!=='api'||(row.usage||row.quota)?.balance)){const usage=this.node('div',undefined,'accounts-usage accounts-client-usage');this.usage(usage,row);if(usage.children.length)card.append(usage);}
       const actions=this.node('div',undefined,'accounts-actions'),switcher=this.button(active?'当前接入':'切换到此接入',()=>this.choose(row));switcher.disabled=active||this.busy||this.loading||value.canSwitch!==true;actions.append(switcher);
       if(this.provider==='claude'&&!active){const label=this.node('label',undefined,'account-reminder'),checkbox=this.node('input');checkbox.type='checkbox';checkbox.checked=row.kind==='api'&&this.syncLocalCliIds.has(row.id);checkbox.disabled=row.kind!=='api'||this.busy||this.loading;checkbox.onchange=()=>{if(checkbox.checked)this.syncLocalCliIds.add(row.id);else this.syncLocalCliIds.delete(row.id);};label.append(checkbox,this.node('span','同时应用到本机 CLI'));actions.append(label);if(row.kind!=='api')actions.append(this.node('small','官方 Claude Desktop 登录不能直接同步到 Claude Code CLI','account-muted'));}
       if(this.desktop&&row.saved!==false){for(const [label,fn] of [['编辑',()=>this.editAccount(row)],['删除',()=>this.removeAccount(row)]]){const button=this.button(label,fn);button.disabled=this.busy||this.loading;actions.append(button);}}
-      card.append(actions);const footer=this.node('div',undefined,'accounts-card-footer');if(active&&!modelsPlaced&&this.readModels){footer.append(this.modelsButton);modelsPlaced=true;modelTargetId=row.id;}if(row.kind!=='api'||(row.usage||row.quota)?.balance)footer.append(this.usageControls(row));if(footer.children.length)card.append(footer);cards.push(card);
+      card.append(actions);const footer=this.node('div',undefined,'accounts-card-footer');if(active&&!modelsPlaced&&this.readModels){footer.append(this.modelsButton);modelsPlaced=true;modelTargetId=row.id;}if(value?.capabilities?.quota!==false&&(row.kind!=='api'||(row.usage||row.quota)?.balance))footer.append(this.usageControls(row));if(footer.children.length)card.append(footer);cards.push(card);
     }
     this.reconcileRows(cards,modelTargetId);
   }

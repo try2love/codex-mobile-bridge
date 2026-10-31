@@ -45,3 +45,5 @@ ZCode logo 沿用原 App 资源，网关和远程管理页显示同一后端描�
 ## 相关记录审计
 
 手动协议原型部分重叠并互链，保留其初始证据与被替换的订阅理由；[共享阅读位置](../bug-fix/2026-10-30-shared-chat-reading-state.md) 和 [共享任务状态](2026-10-29-shared-chat-progress.md) 直接复用，决定不变；[原生项目附件](../bug-fix/2026-10-29-native-project-attachments.md) 保留文件可读、原生引用可见与侧栏预览的不同验收标准。没有需要归档或拒绝的其他提案。
+
+模型、Skill、提醒和私有账号快照的后续开放见 [ZCode 共享能力](2026-10-31-zcode-shared-capabilities.md)，该部分由新记录取代；原型 owner、版本和会话范围继续保留。

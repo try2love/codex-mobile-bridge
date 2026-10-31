@@ -262,7 +262,7 @@ class DesktopSessions:
     def _model_identity(self, provider, sid):
         adapter = self.adapters[provider]
         if provider == 'zcode':
-            return ModelStore.key('desktop', provider, adapter.config.get('binding'))
+            return ModelStore.key('desktop', provider, adapter.config.get('binding'), adapter.account_scope())
         paths = []
         scope = None
         if provider == 'claude':
@@ -315,7 +315,7 @@ class DesktopSessions:
     def _draft_account_identity(self, provider, sid, detail):
         """Use verified account ownership only; unknown routes stay transient."""
         if provider == 'zcode':
-            return ''  # Account stays under the original App; no guessed draft owner.
+            return detail.get('draftAccountIdentity', '')
         adapter = self.adapters[provider]
         if provider == 'claude':
             with adapter.cli.lock, adapter.remote_cli.lock:
@@ -384,6 +384,8 @@ class DesktopSessions:
 
     def _model_live(self, provider, sid):
         adapter = self.adapters[provider]
+        if provider == 'zcode':
+            return adapter.status().get('connected') is True
         if provider == 'deepseek':
             return (adapter.directory/'endpoint.json').is_file()
         with adapter.cli.lock, adapter.remote_cli.lock:
@@ -551,6 +553,8 @@ class DesktopSessions:
 
     def _account_model_identity(self, provider):
         adapter = self.adapters[provider]
+        if provider == 'zcode':
+            return ModelStore.key('desktop-account', provider, adapter.account_scope())
         if provider == 'deepseek' and self.config.get('deepseekManualBinding'):
             if self.deepseek_restore_error:
                 raise BridgeUnavailable(self.deepseek_restore_error)
@@ -582,6 +586,8 @@ class DesktopSessions:
 
     def _account_model_live(self, provider):
         adapter = self.adapters[provider]
+        if provider == 'zcode':
+            return adapter.status().get('connected') is True
         if provider == 'claude':
             try:
                 store = self._account_store(provider)
@@ -608,8 +614,6 @@ class DesktopSessions:
         return value
 
     def _account_models(self, provider, refresh=False):
-        if provider == 'zcode':
-            return {'models': [], 'capabilities': {'models': False}, 'notice': '模型与账号请在 ZCode 中管理'}
         if provider == 'deepseek' and self.config.get('deepseekManualBinding'):
             if self.deepseek_restore_error:
                 raise BridgeUnavailable(self.deepseek_restore_error)
@@ -1066,7 +1070,7 @@ class DesktopSessions:
             return []
         rows = []
         for provider, adapter in self.adapters.items():
-            if provider == 'zcode' or not self.enabled(provider):
+            if not self.enabled(provider):
                 continue
             try:
                 status = adapter.call('status') if provider == 'deepseek' else adapter.status()
@@ -1263,6 +1267,12 @@ class DesktopSessions:
             self.startup_thread.start()
 
     def _descriptor(self, provider):
+        if provider == 'zcode' and provider in self.adapters:
+            adapter = self.adapters[provider]
+            from bridge.platforms.macos.discovery import bundle
+            app = bundle(Path(adapter.config['application']), 'dev.zcode.app')
+            return {'id': provider, 'installed': bool(app and app['version'] == '3.17.1'),
+                    'executable': app['executable'] if app else '', 'dataDirectory': str(adapter.home)}
         if provider == 'deepseek' and self.config.get('deepseekManualBinding'):
             return {'id': provider, 'installed': False, 'executable': '',
                     'dataDirectory': str(self.adapters[provider].home)}
@@ -1813,13 +1823,13 @@ class DesktopSessions:
                 connected = enabled and self.adapters['zcode'].status()['connected']
                 rows.append({'id': 'zcode', 'name': 'ZCode',
                     'description': '连接 ZCode 原生聊天，沿用 App 的模型、账号与项目。',
-                    'accountNotice': '在 ZCode 中管理模型与账号',
+                    'accountNotice': '可切换已保存账号，聊天内选择模型和 Skill',
                     'configurationNotice': 'Mac Test 当前仅接入已绑定的原生测试聊天。请保持 ZCode 和这条聊天打开；连接中断后可手动重试。', 'enabled': enabled, 'installed': True,
                     'configured': True, 'selectable': True, 'connected': connected,
                     'setupStatus': 'ready' if connected else 'needs-retry',
                     'reason': '原生测试聊天已接入' if connected else '请保持 ZCode 测试聊天打开，然后重试连接',
                     'retryable': True, 'canQuitDesktop': False, 'canStartDesktop': False,
-                    'capabilities': {'create': False, 'accounts': False, 'notifications': False}})
+                    'capabilities': {'create': False, 'accounts': True, 'notifications': True}})
             result = {'clients': rows, 'computer': socket.gethostname(), 'gatewayRunning': self.gateway_running,
                       'wslSupported': entries is not None and sys.platform == 'win32'}
             if sys.platform == 'win32':
@@ -2093,7 +2103,7 @@ class DesktopSessions:
             raise ValueError('手动绑定的账号和 API 请在第三方客户端中管理')
         if provider not in self.adapters:
             raise ValueError('不支持的桌面客户端')
-        if provider not in self.config.get('discovered', {}):
+        if provider != 'zcode' and provider not in self.config.get('discovered', {}):
             self.scan(scan_wsl=False)
         descriptor = self._descriptor(provider)
         home = descriptor.get('dataDirectory')
@@ -2104,7 +2114,11 @@ class DesktopSessions:
             key += (descriptor.get('executable'), descriptor.get('packageFamilyName'),
                     bool(descriptor.get('dataDirectoryExplicit')))
         if key not in self.account_stores:
-            if provider == 'claude':
+            if provider == 'zcode':
+                from bridge.clients.zcode.accounts import ZCodeAccounts
+                store = ZCodeAccounts(self.directory/'zcode-accounts', home,
+                                      lambda: self.adapters[provider].call('account')['account'])
+            elif provider == 'claude':
                 from bridge.clients.claude.accounts import ClaudeAccounts
                 store = ClaudeAccounts(self.directory/'claude-accounts', home,
                     executable=descriptor.get('executable'), package_family=descriptor.get('packageFamilyName'),
@@ -2126,7 +2140,11 @@ class DesktopSessions:
 
     def _launch_account_client(self, provider, descriptor):
         from bridge.clients.lifecycle import launch_client
-        if provider == 'deepseek':
+        if provider == 'zcode':
+            self.adapters[provider].launch()
+            self.config['zcodePrototype'] = self.adapters[provider].config
+            private_json(self.config_path, self.config)
+        elif provider == 'deepseek':
             self._start_deepseek()
         elif provider == 'claude' and sys.platform == 'win32':
             from bridge.clients.claude.setup import background_running_app
@@ -2193,8 +2211,9 @@ class DesktopSessions:
                     raise ValueError('官方 Claude Desktop 登录不能同步到本机 CLI')
             # Harness persists one atomic credential file; saving it does not
             # require the multi-file profile snapshot used by Claude.
-            if provider == 'deepseek' and operation == 'import-current':
-                result = store.import_current(name=value.get('name', ''), kind=value.get('kind', ''))
+            if provider in ('deepseek', 'zcode') and operation == 'import-current':
+                options = {'kind': value.get('kind', '')} if provider == 'deepseek' else {}
+                result = store.import_current(name=value.get('name', ''), **options)
                 return self._accounts_public(provider, result)
             descriptor = self._descriptor(provider)
             state = inspect_client(descriptor)
@@ -2217,6 +2236,9 @@ class DesktopSessions:
                         raise ValueError('账号配置尚未生效，请重试')
                 if restart:
                     self._launch_account_client(provider, descriptor)
+                    if provider == 'zcode' and operation == 'switch':
+                        if self.adapters[provider].call('account')['account']['identity'] != store._row(value['id'])['identity']:
+                            raise ValueError('ZCode 原生账号尚未确认切换；不会提交此次操作')
                     if operation == 'switch':
                         result = store.public()
                         active = result.get('activeIds', [result.get('activeId')])

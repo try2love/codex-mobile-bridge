@@ -47,7 +47,7 @@ with zipfile.ZipFile(work/'unsigned.apk','a') as archive:
     for directory in (ROOT/'mobile/shared/web', source/'assets', ROOT/'web/client-icons'):
         for asset in directory.glob('*.js'):
             archive.write(asset,'assets/'+asset.name)
-    for provider in ('codex', 'claude', 'deepseek'):
+    for provider in ('codex', 'claude', 'deepseek', 'zcode'):
         archive.write(ROOT/'web/client-icons'/f'{provider}.png', 'assets/'+provider+'.png')
     archive.write(ROOT/'mobile/NOTICE.md','assets/NOTICE.md')
     archive.write(ROOT/'mobile/licenses/ZXing-LICENSE.txt','assets/ZXing-LICENSE.txt')

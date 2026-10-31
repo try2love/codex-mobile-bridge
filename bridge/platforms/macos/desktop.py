@@ -10,10 +10,24 @@ from bridge.platforms.posix.desktop import terminate
 def _process_rows():
     output = subprocess.run(['ps', '-ww', '-u', str(os.getuid()), '-o', 'pid=,comm='],
                             capture_output=True, text=True, check=True, timeout=10).stdout
+    native = None
     for line in output.splitlines():
         fields = line.strip().split(None, 1)
         if len(fields) == 2:
-            yield int(fields[0]), fields[1]
+            pid, executable = int(fields[0]), fields[1]
+            if not executable.startswith('/'):
+                # Electron may replace ps comm with its display name. Resolve the
+                # same-user kernel image instead of mistaking a running App for closed.
+                from bridge.platforms.macos.force_exit import Native
+                native = native or Native()
+                try:
+                    identity = native.identity(pid)
+                except (OSError, ValueError):
+                    continue  # Process exited during enumeration.
+                if identity['uid'] != os.getuid() or identity['zombie']:
+                    continue
+                executable = identity['image']
+            yield pid, executable
 
 
 def inventory(result, match):
@@ -100,11 +114,13 @@ def quit_application(executable, *, pids=None):
     raise ValueError('无法核验 macOS 退出请求结果，请检查客户端状态（quit: invalid-response）')
 
 
-def start(executable, home, environment):
+def start(executable, home, environment, *, arguments=()):
     # Keep Launch Services' GUI privacy identity without activating the app or
     # stealing focus from the user's current app / screen saver. The client may
     # still present its own first-run, login or system permission prompts.
     args = ['/usr/bin/open', '-g', '-a', str(_bundle(executable))]
     for name, value in environment.items():
         args += ['--env', name+'='+str(value)]
+    if arguments:
+        args += ['--args', *arguments]
     subprocess.run(args, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=25)

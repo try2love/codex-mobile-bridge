@@ -87,7 +87,7 @@ flowchart TD
 
 **Claude/DSH 会话操作：**共享页面模块 `web/features/clients/desktop-sessions.js` 调用 HTTP，`clients/manager.py` 处理客户端启用状态、并发只读合并及写入记录，再调用对应 `adapter.py`。Claude 的 mailbox 与 `connector.js`、DSH 的 `host.mjs` 是实际连接协议边界。某种模型或权限差异应在其客户端适配器内处理。
 
-**新增 Agent 的共用边界：**消息展示、任务状态、附件预览和文件定位优先复用 `web/features/chat/`、`web/shared/` 与 `bridge/features/` 中的现有功能。适配器转换原生数据、报告已核验能力并执行原生操作；共享组件依据能力与规范化数据工作，不按 Agent 名称复制流程。已有共享任务状态入口是 `renderChatProgress`，规则见 [共用原生任务状态提示](../../.agents/notes/implemented/feature/2026-10-29-shared-chat-progress.md)。尚未核验的原生能力必须保留限制，不能由共享层推测实现。
+**新增 Agent 的共用边界：**消息展示、任务状态、附件预览和文件定位优先复用 `web/features/chat/`、`web/shared/` 与 `bridge/features/` 中的现有功能。ZCode Mac Test 接入也遵循这一边界，模型、Skill、提醒与账号事务见 [共享能力记录](../../.agents/notes/implemented/feature/2026-10-31-zcode-shared-capabilities.md)。适配器转换原生数据、报告已核验能力并执行原生操作；共享组件依据能力与规范化数据工作，不按 Agent 名称复制流程。已有共享任务状态入口是 `renderChatProgress`，规则见 [共用原生任务状态提示](../../.agents/notes/implemented/feature/2026-10-29-shared-chat-progress.md)。尚未核验的原生能力必须保留限制，不能由共享层推测实现。
 
 消息排队、旧版未确认记录恢复和各接入支持范围见 [消息管理](../message-management.md)。
 

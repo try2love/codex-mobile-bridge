@@ -1,4 +1,6 @@
 """Opt-in phone notifications. Watching a chat never changes its execution owner."""
+from bridge.features.notifications.providers import PROVIDERS, desktop_provider
+
 import hashlib
 import base64
 import hmac
@@ -728,7 +730,7 @@ class Notifications:
 
     @staticmethod
     def desktop_provider(host):
-        return {'desktop:claude': 'claude', 'desktop:deepseek': 'deepseek'}.get(host)
+        return desktop_provider(host)
 
     def policy(self, thread_id, host, value=None):
         provider = self.desktop_provider(host)
@@ -768,7 +770,7 @@ class Notifications:
         if policies['requests'] or policies['completion']:
             rows.update(self.candidates)
         for key in policies.get('chats', {}):
-            if key.startswith(('desktop:claude|', 'desktop:deepseek|')):
+            if self.desktop_provider(key.rsplit('|', 1)[0]):
                 continue
             host, identifier = key.rsplit('|', 1)
             rows.setdefault((host, identifier), {'id': identifier, 'host': host})
@@ -870,7 +872,7 @@ class Notifications:
             current = self._completion_baseline(turns)
             # DSH sequence numbers survive latest-page truncation. A missing UUID
             # anchor alone is not evidence that a historical turn is new.
-            ordered = row['host'] == 'desktop:deepseek' and all(type(t.get('sequence')) is int for t in turns)
+            ordered = self.desktop_provider(row['host']) and all(type(t.get('sequence')) is int for t in turns)
             if ordered:
                 current['sequence'] = max([t['sequence'] for t in turns] + [(previous or {}).get('sequence', -1)])
             current['title'] = row.get('title') or (previous or {}).get('title') or '聊天'
@@ -919,7 +921,7 @@ class Notifications:
                     self.attention[key] = {'anchor': None, 'turns': {}, 'pending': ''}
                     write_json(self.data_dir/'notification-attention.json', self.attention)
                 return []
-            ordered = row['host'] == 'desktop:deepseek' and all(type(t.get('sequence')) is int for t in turns)
+            ordered = self.desktop_provider(row['host']) and all(type(t.get('sequence')) is int for t in turns)
             anchor = next((i for i, t in enumerate(turns) if t['turnId'] == (previous or {}).get('anchor')), None)
             newer = turns if previous and previous.get('anchor') is None else turns[anchor + 1:] if anchor is not None else []
             if ordered and previous and type(previous.get('sequence')) is int:
@@ -1017,7 +1019,7 @@ class Notifications:
                 record = self.attention.get(self._completion_key(row['host'], row['id'], target), {})
                 if not record.get('pending') or self._delivery_key(row, record['pending'], completion='attention', target=target) not in pending:
                     return False
-            client = {'claude': 'Claude', 'deepseek': 'DSH'}.get(provider, 'Codex')
+            client = {'claude': 'Claude', 'deepseek': 'DSH', 'zcode': 'ZCode'}.get(provider, 'Codex')
             kind = 'attention' if completed == 'attention' else 'completion' if completed else 'request'
             heading = client + (' 需要你处理' if kind == 'attention' else ' 运行已完成' if completed else ' 需要你的确认')
             body = ('本轮运行遇到问题，请打开聊天查看并手动继续或调整模型。' if kind == 'attention' else

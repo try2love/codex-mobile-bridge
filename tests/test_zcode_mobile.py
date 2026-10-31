@@ -24,7 +24,7 @@ class MobileContracts(unittest.TestCase):
 
     def transport(self, request):
         self.calls.append(request)
-        return {'snapshot': self.snapshot} if request['action'] == 'detail' else {'status': 'accepted'}
+        return {'snapshot': self.snapshot} if request['action'] == 'detail' else {'models': [], 'capabilities': {'models': True}} if request['action'] == 'account' else {'status': 'accepted'}
 
     def test_opt_in_registers_in_shared_manager_without_native_activation(self):
         settings = self.root/'desktop-sessions/settings.json'
@@ -39,7 +39,7 @@ class MobileContracts(unittest.TestCase):
         self.assertEqual(detail['draftAccountIdentity'], '')
         self.assertEqual([r['action'] for r in self.calls], ['detail'])
         self.assertEqual(manager.call('zcode', 'list')['sessions'][0]['id'], 'sess_test')
-        self.assertFalse(manager.call('zcode', 'account')['capabilities']['models'])
+        self.assertTrue(manager.call('zcode', 'account')['capabilities']['models'])
 
     def test_default_gateway_does_not_register_or_probe_zcode(self):
         manager = DesktopSessions(self.root)

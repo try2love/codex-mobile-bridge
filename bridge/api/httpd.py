@@ -609,7 +609,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     result = uploads.store.put(scope, query.get('id', [''])[0], query.get('name', [''])[0], data)
                 return self.output(200, result)
-            desktop_accounts = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude)/accounts', path)
+            desktop_accounts = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode)/accounts', path)
             if desktop_accounts:
                 manager = self.server.desktop_sessions
                 if manager is None:
@@ -623,7 +623,7 @@ class Handler(BaseHTTPRequestHandler):
                 if operation == 'switch' and self.server.auth.config.get('mode') == 'none':
                     raise PermissionError('请启用密码保护后再切换账号')
                 return self.output(200, manager.client_accounts(desktop_accounts.group(1), {**value, 'operation': operation}))
-            desktop_notifications = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude)/notifications', path)
+            desktop_notifications = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode)/notifications', path)
             if desktop_notifications:
                 manager = self.server.desktop_sessions
                 if manager is None or self.server.notifications is None:

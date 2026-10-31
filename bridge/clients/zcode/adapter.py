@@ -2,6 +2,7 @@
 import json
 import base64
 import mimetypes
+import hashlib
 import subprocess
 import sys
 import time
@@ -35,6 +36,10 @@ def project_files(root, paths):
 
 def project_snapshot(snapshot, workspace):
     messages = []
+    turns = [{'turnId': row['turnId'], 'sequence': row['rowId'],
+              'status': {'running': 'inProgress', 'completedSuccess': 'completed',
+                         'completedInterrupted': 'interrupted', 'failed': 'failed'}[row['state']]}
+             for row in snapshot['rows']['window'] if row['kind'] == 'turnHeader']
     for row in snapshot['rows']['window']:
         if row.get('visibility') != 'visible' or row['kind'] not in ('userInput', 'assistantText', 'reasoning', 'toolCall'):
             continue
@@ -75,16 +80,18 @@ def project_snapshot(snapshot, workspace):
                         'cwd': workspace, 'title': snapshot.get('meta', {}).get('title', ''),
                         'status': 'active' if active else 'idle', 'backend': 'desktop', 'requests': requests,
                         'turnStatus': 'failed' if error else 'inProgress' if active else 'completed',
-                        'model': snapshot.get('config', {}).get('model'), 'effort': snapshot.get('config', {}).get('thought'),
+                        'model': '/'.join(filter(None, (snapshot.get('config', {}).get('provider'), snapshot.get('config', {}).get('model')))),
+                        'modelDisplayName': snapshot.get('config', {}).get('model'), 'effort': snapshot.get('config', {}).get('thought'),
+                        'runtimeKnown': True,
                         'stopTarget': {'executionId': foreground[0]} if len(foreground) == 1 else {},
                         'updatedAt': max((row.get('createdAt', 0) for row in snapshot['rows']['window']), default=0)}, 'messages': messages,
-            'requests': snapshot['pendingInteractions'], 'control': control,
+            'requests': snapshot['pendingInteractions'], 'control': control, 'turns': turns,
             'native': {'revision': snapshot['revision'], 'seq': snapshot['seq'], 'logEpoch': snapshot['logEpoch']},
             'history': {'hasMore': snapshot['rows']['totalCount'] > len(snapshot['rows']['window'])},
             'capabilities': {'send': not active and snapshot.get('inputRouting', {}).get('mode') == 'startNow',
                              'stop': bool(control.get('canStop')) and len(foreground) == 1,
-                             'attachments': True, 'uploadFiles': True, 'resume': True, 'models': False,
-                             'queue': False, 'steer': False, 'skills': False, 'permissions': False, 'create': False}}
+                             'attachments': True, 'uploadFiles': True, 'resume': True, 'models': True, 'effort': True,
+                             'queue': False, 'steer': False, 'skills': True, 'permissions': False, 'create': False}}
 
 
 class ZCodePrototype:
@@ -93,6 +100,7 @@ class ZCodePrototype:
         self.config = dict(config)
         self.transport = transport or self._native
         self.workspace = str(Path(config['workspace']).resolve(strict=True))
+        self.home = Path(config.get('dataDirectory', Path.home()/'.zcode/v2'))
         self.sid = config['sessionId']
         if not self.sid.startswith('sess_'):
             raise ValueError('必须指定原 App 中的独立测试会话')
@@ -119,6 +127,9 @@ class ZCodePrototype:
         return json.loads(result.stdout)
 
     def call(self, action, sid=None, body=None):
+        if action in ('account', 'lifecycle'):
+            return self.transport({'action': action, 'workspace': self.workspace, 'sessionId': self.sid,
+                                   'expectedRuntime': self.config.get('binding', {}).get('runtime')})
         if action == 'list':
             detail = self.call('detail', self.sid)
             return {'sessions': [detail['session']], 'connected': detail.get('connected', True)}
@@ -126,7 +137,7 @@ class ZCodePrototype:
             return {'projects': [], 'capabilities': {'create': False}}
         if sid != self.sid:
             raise ValueError('此原型只能操作显式绑定的测试会话')
-        if action not in ('attach', 'detach', 'resume', 'history', 'detail', 'receipt', 'send', 'stop', 'respond'):
+        if action not in ('attach', 'detach', 'resume', 'history', 'detail', 'receipt', 'send', 'stop', 'respond', 'catalog', 'settings'):
             raise ValueError('尚未验证的 ZCode 操作')
         body = dict(body or {})
         if action == 'resume':
@@ -146,15 +157,18 @@ class ZCodePrototype:
             return {'status': 'ready', 'id': body['id']}
         request = {'action': action, 'workspace': self.workspace, 'sessionId': sid,
                    'binding': None if action == 'attach' else self.config.get('binding')}
-        if action in ('send', 'stop', 'respond'):
+        if action in ('send', 'stop', 'respond', 'settings'):
             uuid.UUID(body.get('id', ''))
             if not request['binding']:
                 raise BridgeUnavailable('必须先显式接入原生测试会话')
         if action == 'send':
             if not isinstance(body.get('text'), str) or not 1 <= len(body['text'].strip()) <= 100000:
                 raise ValueError('请输入 1–100000 字的消息')
-            if set(body) - {'id', 'text', 'mode', 'projectFiles', 'resolvedReferences', 'resolvedImages', 'resolvedFiles'}:
+            if set(body) - {'id', 'text', 'mode', 'projectFiles', 'resolvedReferences', 'resolvedImages', 'resolvedFiles', 'plugins'}:
                 raise ValueError('原型只接受文字和当前项目文件')
+            skills = body.get('plugins', [])
+            if not isinstance(skills, list) or len(skills) > 8 or any(not isinstance(v, str) for v in skills) or len(set(skills)) != len(skills):
+                raise ValueError('最多选择 8 个有效 Skill')
             if body.pop('mode', 'send') != 'send':
                 raise ValueError('ZCode 原型暂只支持发送新消息')
             body['files'] = project_files(self.workspace, body.pop('projectFiles', []))
@@ -181,17 +195,55 @@ class ZCodePrototype:
                 body['answer'] = {'optionId': decision}
         if action == 'receipt':
             request['commandId'] = str(uuid.UUID(body['commandId']))
+        if action == 'settings' and (set(body) - {'id', 'model', 'effort', 'modelCatalogIdentity'} or
+                                    not isinstance(body.get('model'), str) or not isinstance(body.get('effort', ''), str)):
+            raise ValueError('模型设置格式无效')
         request['body'] = body
         result = self.transport(request)
         if action == 'detail':
             value = project_snapshot(result['snapshot'], self.workspace)
+            value['draftAccountIdentity'] = result.get('account', {}).get('identity', '')
             if value['history']['hasMore']:
                 value['notice'] = '当前显示 ZCode 已加载的历史；更早内容请在原 App 中加载。'
                 value['history']['hasMore'] = False
             return value
-        if action in ('send', 'stop', 'respond'):
+        if action in ('send', 'stop', 'respond', 'settings'):
             return {'id': body['id'], 'status': result['status'], 'nativeAck': result}
         return result
+
+    def account_scope(self):
+        """Invalidate shared catalogs on account/provider changes, not UI settings."""
+        from bridge.clients.zcode.accounts import read, account_key, SETTINGS
+        settings = read(self.home/'setting.json')
+        value = [{k: v for k, v in read(self.home/'credentials.json').items() if account_key(k)},
+                 read(self.home/'provider_config.json'), {k: settings[k] for k in SETTINGS if k in settings}]
+        return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+    def launch(self):
+        """Explicit account transaction only; normal Launch Services, no force quit."""
+        from bridge.platforms.macos.desktop import start
+        app = bundle(Path(self.config['application']), 'dev.zcode.app')
+        if not app or app['version'] != '3.17.1':
+            raise BridgeUnavailable('ZCode 安装身份或版本已变化')
+        start(Path(app['executable']), self.home, {}, arguments=(
+            '--remote-debugging-address=127.0.0.1', '--remote-debugging-port='+str(self.config['port'])))
+        deadline = time.monotonic() + 25
+        while True:
+            try:
+                self.config['process'] = listener_identity(self.config['port'], app['executable'])
+                account = self.call('account')['account']
+                if not account.get('identity'):
+                    raise BridgeUnavailable('ZCode 尚未恢复账号，请在原 App 检查登录')
+                # The account action explicitly authorizes reconnecting the same native chat.
+                try:
+                    self.config['binding'] = self.call('attach', self.sid)['binding']
+                except (OSError, ValueError):
+                    pass  # A cold App stays disconnected until explicit resume; never send a turn.
+                return
+            except (OSError, ValueError):
+                if time.monotonic() >= deadline:
+                    raise BridgeUnavailable('ZCode 启动或登录核验超时；恢复备份已保留') from None
+                time.sleep(.5)
 
     def status(self):
         try:

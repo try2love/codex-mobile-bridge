@@ -7,7 +7,7 @@ function fixture() {
   const binding = { clientId: 'original-client', connectionId: 'original-port',
     runtime: { identity: 'original-owner:1', workspaceKey: '/project' } };
   const snapshot = { sessionId: 'sess-test', control: { sessionEnded: true, canStop: false, activeWorks: [] },
-    pendingInteractions: [], queue: { items: [] }, inputRouting: { mode: 'startNow' } };
+    revision: 7, logEpoch: 'epoch', config: {provider:'account:test',model:'Flash',thought:'low'}, pendingInteractions: [], queue: { items: [] }, inputRouting: { mode: 'startNow' } };
   const calls = [], listeners = new Set();
   const storeState = {status:'live', snapshot, subscriptionId:'sub'};
   const layer = {entries:new Map([['conversation/sess-test',{}]]), acquire:()=>{calls.push('acquire');return {store:{getState:()=>storeState},release:()=>calls.push('release')};}};
@@ -31,7 +31,7 @@ function fixture() {
   };
   globalThis.window = {};
   globalThis.document = { querySelectorAll: () => [{ __reactContainer$test: {
-    memoizedProps: { value: { zcodeAgentService: agent, layer } } } }] };
+    memoizedProps: { value: { zcodeAgentService: agent, oauthService:{getActiveProvider:async()=>'test'}, credentialService:{load:async()=>JSON.stringify({id:'user',name:'tester'})}, modelSelectionService:{getView:async()=>({providers:[{providerId:'account:test',providerName:'Test',models:[{modelId:'Flash',config:{enabled:true,optionSpecs:{reasoningLevel:{values:['low','high']}}}}]}]})}, layer } } } }] };
   globalThis.localStorage = { getItem: key => { assert.equal(key, 'zcode-v4-client-id:v1'); return binding.clientId; } };
   const request = (action, body = {}, extra = {}) => nativeRequest({ action, body, workspace: '/project',
     sessionId: 'sess-test', binding: structuredClone(binding), expiresAt: Date.now() + 10000, ...extra });
@@ -134,4 +134,41 @@ test('a failed turn follows native input routing; only a new explicit send may c
   f.snapshot.inputRouting.mode='queue';
   await assert.rejects(f.request('send',{id:'not-allowed',text:'message'}),/busy/);
   assert.equal(f.calls.filter(c=>c.envelope?.type==='sendText').length,1);
+});
+
+test('model selection uses native catalog, idle guard and revision CAS without starting a turn',async()=>{
+ const f=fixture();await f.request('attach');const catalog=await f.request('catalog',{section:'models'});
+ assert.equal(catalog.currentModel,'account:test/Flash');assert.deepEqual(catalog.models[0].efforts,['low','high']);
+ await assert.rejects(f.request('settings',{id:'bad',model:'unknown',effort:'low'}),/原 App/);
+ await assert.rejects(f.request('settings',{id:'bad',model:'account:test/Flash',effort:'max'}),/原 App/);
+ await f.request('settings',{id:'switch',model:'account:test/Flash',effort:'low'});
+ assert.deepEqual(f.calls.at(-1).envelope.payload,{provider:'account:test',model:'Flash',thought:'low'});
+ assert.equal(f.calls.at(-1).envelope.baseRevision,7);assert.equal(f.calls.at(-1).envelope.baseLogEpoch,'epoch');
+ f.snapshot.queue.items.push({id:'queued'});const n=f.calls.length;
+ await assert.rejects(f.request('settings',{model:'account:test/Flash',effort:'low'}),/任务结束/);assert.equal(f.calls.length,n);
+});
+
+test('Skill selection revalidates session authority and sends native mentions, not copied instructions',async()=>{
+ const f=fixture();await f.request('attach');let catalog={authority:'session',skills:[{id:'skill',name:'my skill',path:'/project/.agents/skills/check/SKILL.md',enabled:true}]};
+ f.agent.getSkillReferenceCatalog=async p=>{assert.equal(p.runtimePolicy,'existing-only');return catalog;};
+ await f.request('send',{id:'skill-send',text:'review this',plugins:['skill']});
+ assert.equal(f.calls.at(-1).envelope.payload.text,'[$my skill](/project/.agents/skills/check/SKILL.md)\n\nreview this');
+ const n=f.calls.length;catalog.skills=[];
+ await assert.rejects(f.request('send',{id:'removed',text:'review',plugins:['skill']}),/已变化/);
+ catalog.authority='workspace';await assert.rejects(f.request('catalog',{section:'skills'}),/尚未就绪/);assert.equal(f.calls.length,n);
+});
+
+test('account restart preflight blocks queued native work and refuses incomplete inventory',async()=>{
+ const f=fixture();await f.request('attach');f.binding.runtime.processId=10;
+ const nodes=document.querySelectorAll();document.querySelectorAll=()=>nodes;const services=nodes[0].__reactContainer$test.memoizedProps.value;
+ services.projectService={readTree:async()=>({tasks:[{taskId:'sess-test',workspacePath:'/project',hostId:'local'}],deletedTasks:[]})};
+ f.agent.collectLocalRuntimeChildProcesses=async()=>[{pid:10}];
+ f.agent.listSessions=async()=>[{sessionId:'sess-test'}];
+ f.agent.readSession=async()=>({runtime:{pendingRequestIds:[]},projection:{status:'idle',pendingPermissions:[],activeToolCalls:[],backgroundJobs:[]}});
+ const extra={expectedRuntime:{processId:10}};
+ assert.equal((await f.request('lifecycle',{},extra)).complete,true);
+ f.snapshot.queue.items.push({id:'held'});assert.equal((await f.request('lifecycle',{},extra)).sessions[0].status,'active');
+ f.snapshot.queue.items=[];f.agent.listSessions=async()=>[{sessionId:'other'}];assert.equal((await f.request('lifecycle',{},extra)).complete,false);
+ f.agent.collectLocalRuntimeChildProcesses=async()=>[{pid:11}];assert.equal((await f.request('lifecycle',{},extra)).complete,false);
+ assert.deepEqual(f.calls,['acquire']);
 });
