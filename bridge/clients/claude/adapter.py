@@ -979,6 +979,26 @@ class Claude:
         return {'status': 'accepted'}
 
     def call(self, action, sid=None, body=None, *, timeout=100):
+        if action == 'work-mode':
+            mode = (body or {}).get('mode')
+            if mode not in ('default', 'plan'):
+                raise ValueError('工作模式无效')
+            current = self._call('detail', sid, timeout=timeout)
+            row = current['session']
+            if current.get('capabilities', {}).get('permissions') is not True:
+                raise ValueError('当前 Claude 接入未提供原生计划模式')
+            if (row.get('permissionMode') == 'plan') == (mode == 'plan'):
+                return {'status': 'accepted'}
+            if row.get('status') != 'idle' or row.get('requests'):
+                raise ValueError('请等待当前任务结束后再切换模式')
+            return self._call('access', sid, {**(body or {}), 'mode': 'plan' if mode == 'plan' else 'default'}, timeout=timeout)
+        result = self._call(action, sid, body, timeout=timeout)
+        if action == 'detail':
+            result.setdefault('capabilities', {}).update(plan=result.get('capabilities', {}).get('permissions') is True, goal=False)
+            result['session']['collaborationMode'] = 'plan' if result['session'].get('permissionMode') == 'plan' else 'default'
+        return result
+
+    def _call(self, action, sid=None, body=None, *, timeout=100):
         if action == 'create' and (body or {}).get('directoryProject', {}).get('surface') == 'cli':
             return self.create_cli(body['directoryProject'], body)
         if self.loop is None:

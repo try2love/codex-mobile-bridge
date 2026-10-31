@@ -76,6 +76,11 @@ def project_snapshot(snapshot, workspace):
                                  for option in payload.get('options', []) if option['kind'] in ('allowOnce', 'deny')]
         requests.append(item)
     foreground = [work['foregroundExecutionId'] for work in control.get('activeWorks', []) if work.get('foregroundExecutionId')]
+    native_goal = snapshot.get('goal')
+    goal = ({'goalId': native_goal['targetId'], 'objective': native_goal['objective'],
+             'status': {'verified': 'complete', 'verifying': 'active', 'notSatisfied': 'active',
+                        'failed': 'blocked'}.get(native_goal['status'], native_goal['status'])}
+            if native_goal else None)
     return {'session': {'id': snapshot['sessionId'], 'provider': 'zcode', 'host': 'local',
                         'cwd': workspace, 'title': snapshot.get('meta', {}).get('title', ''),
                         'status': 'active' if active else 'idle', 'backend': 'desktop', 'requests': requests,
@@ -83,6 +88,8 @@ def project_snapshot(snapshot, workspace):
                         'model': '/'.join(filter(None, (snapshot.get('config', {}).get('provider'), snapshot.get('config', {}).get('model')))),
                         'modelDisplayName': snapshot.get('config', {}).get('model'), 'effort': snapshot.get('config', {}).get('thought'),
                         'runtimeKnown': True,
+                        'collaborationMode': 'plan' if snapshot.get('config', {}).get('planEnabled') or snapshot.get('config', {}).get('mode') == 'plan' else 'default',
+                        'goal': goal,
                         'stopTarget': {'executionId': foreground[0]} if len(foreground) == 1 else {},
                         'updatedAt': max((row.get('createdAt', 0) for row in snapshot['rows']['window']), default=0)}, 'messages': messages,
             'requests': snapshot['pendingInteractions'], 'control': control, 'turns': turns,
@@ -91,7 +98,14 @@ def project_snapshot(snapshot, workspace):
             'capabilities': {'send': not active and snapshot.get('inputRouting', {}).get('mode') == 'startNow',
                              'stop': bool(control.get('canStop')) and len(foreground) == 1,
                              'attachments': True, 'uploadFiles': True, 'resume': True, 'models': True, 'effort': True,
-                             'queue': False, 'steer': False, 'skills': True, 'permissions': False, 'create': False}}
+                             'queue': False, 'steer': False, 'skills': True, 'permissions': False,
+                             'plan': True, 'goal': True, 'goalEdit': False, 'create': True}}
+
+
+def detached_session(row, workspace):
+    return {**row, 'provider': 'zcode', 'host': 'local', 'cwd': workspace, 'backend': 'desktop',
+            'status': 'unknown', 'runtimeKnown': False, 'requests': [], 'connectionState': 'detached',
+            'capabilities': {'send': False, 'resume': True, 'plan': False, 'goal': False}}
 
 
 class ZCodePrototype:
@@ -131,13 +145,27 @@ class ZCodePrototype:
             return self.transport({'action': action, 'workspace': self.workspace, 'sessionId': self.sid,
                                    'expectedRuntime': self.config.get('binding', {}).get('runtime')})
         if action == 'list':
-            detail = self.call('detail', self.sid)
-            return {'sessions': [detail['session']], 'connected': detail.get('connected', True)}
+            result = self.transport({'action': 'list', 'workspace': self.workspace, 'sessionId': self.sid,
+                                     'binding': self.config.get('binding')})
+            return {'sessions': [project_snapshot(row['snapshot'], self.workspace)['session'] if 'snapshot' in row
+                                 else detached_session(row, self.workspace) for row in result['sessions']],
+                    'connected': True}
         if action == 'projects':
-            return {'projects': [], 'capabilities': {'create': False}}
-        if sid != self.sid:
-            raise ValueError('此原型只能操作显式绑定的测试会话')
-        if action not in ('attach', 'detach', 'resume', 'history', 'detail', 'receipt', 'send', 'stop', 'respond', 'catalog', 'settings'):
+            return {'projects': [{'key': self.workspace, 'cwd': self.workspace, 'name': Path(self.workspace).name,
+                                   'surface': 'desktop', 'host': 'local'}], 'browseDirectories': False}
+        if action == 'create':
+            if body.get('projectKey') != self.workspace or body.get('directoryProject'):
+                raise ValueError('请选择已接入的 ZCode 原生项目')
+            uuid.UUID(body.get('id', ''))
+            if not isinstance(body.get('firstMessage'), str) or not 1 <= len(body['firstMessage'].strip()) <= 100000:
+                raise ValueError('请输入首条消息')
+            if not self.config.get('binding'):
+                raise BridgeUnavailable('必须先显式接入原生项目')
+            return self.transport({'action': action, 'workspace': self.workspace, 'sessionId': self.sid,
+                                   'binding': self.config.get('binding'), 'body': body})
+        if not isinstance(sid, str) or not sid.startswith('sess_'):
+            raise ValueError('ZCode 会话标识无效')
+        if action not in ('attach', 'detach', 'resume', 'history', 'detail', 'receipt', 'send', 'stop', 'respond', 'catalog', 'settings', 'work-mode', 'goal'):
             raise ValueError('尚未验证的 ZCode 操作')
         body = dict(body or {})
         if action == 'resume':
@@ -156,8 +184,9 @@ class ZCodePrototype:
                 raise
             return {'status': 'ready', 'id': body['id']}
         request = {'action': action, 'workspace': self.workspace, 'sessionId': sid,
+                   'anchorSessionId': self.sid,
                    'binding': None if action == 'attach' else self.config.get('binding')}
-        if action in ('send', 'stop', 'respond', 'settings'):
+        if action in ('send', 'stop', 'respond', 'settings', 'work-mode', 'goal'):
             uuid.UUID(body.get('id', ''))
             if not request['binding']:
                 raise BridgeUnavailable('必须先显式接入原生测试会话')
@@ -201,15 +230,24 @@ class ZCodePrototype:
         request['body'] = body
         result = self.transport(request)
         if action == 'detail':
+            if result.get('detached'):
+                history = result['history']
+                row = history['session']
+                messages = [{'id': item['info']['messageId'], 'role': item['info']['role'],
+                             'text': '\n'.join(part.get('text', '') for part in item.get('parts', []) if part.get('type') == 'text')}
+                            for item in history['messages'] if item['info'].get('semantics', {}).get('uiVisibility') == 'visible']
+                session = detached_session({'id': row['sessionId'], 'title': row.get('title', '')}, self.workspace)
+                return {'session': session, 'messages': messages, 'capabilities': session['capabilities'],
+                        'notice': '当前显示 ZCode 历史；点击继续会话连接原生运行状态。'}
             value = project_snapshot(result['snapshot'], self.workspace)
             value['draftAccountIdentity'] = result.get('account', {}).get('identity', '')
             if value['history']['hasMore']:
                 value['notice'] = '当前显示 ZCode 已加载的历史；更早内容请在原 App 中加载。'
                 value['history']['hasMore'] = False
             return value
-        if action in ('send', 'stop', 'respond', 'settings'):
+        if action in ('send', 'stop', 'respond', 'settings', 'work-mode', 'goal'):
             status = result['status']
-            if action == 'settings' and status == 'noop' and result.get('reasonCode') == 'config.unchanged':
+            if action in ('settings', 'work-mode') and status == 'noop' and result.get('reasonCode') == 'config.unchanged':
                 status = 'accepted'
             return {'id': body['id'], 'status': status, 'nativeAck': result}
         return result

@@ -541,6 +541,7 @@ const en={
 "桌面连接检查未完成，请稍后重试。":"The desktop connection check did not finish. Try again shortly.",
 "此会话不使用桌面连接，请使用继续会话。":"This chat does not use the desktop connection. Use Continue chat.",
 "可先阅读聊天历史；继续时将恢复原 Claude Code 会话。":"Read the saved history, or continue to resume this Claude Code chat.",
+"可先阅读聊天历史；继续时将恢复原会话。":"Read the saved history, or continue to resume the original chat.",
 "CLI 会话尚未恢复；操作未发送，请重试继续会话。":"The CLI chat has not resumed. Nothing was sent; try Continue chat again.",
 "正在等待原 Codex App 会话快照；未启动 CLI 后台服务。":"Waiting for the original Codex App chat. The CLI daemon was not started.",
 "现有 Codex App 连接与此会话不匹配，未连接":"The current Codex App connection does not match this chat. It was not connected.",

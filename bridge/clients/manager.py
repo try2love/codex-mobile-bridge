@@ -32,7 +32,7 @@ from bridge.clients.codex.remote import ssh_read, payload
 from bridge.resources import source_text
 
 READS = {'list', 'detail', 'catalog', 'projects', 'account', 'access', 'organization'}
-WRITES = {'send', 'stop', 'settings', 'respond', 'create', 'access', 'resume', 'fork', 'pin', 'archive', 'rename', 'organization'}
+WRITES = {'send', 'stop', 'settings', 'respond', 'create', 'access', 'resume', 'fork', 'pin', 'archive', 'rename', 'organization', 'goal'}
 
 
 CLAUDE_HISTORY_NOTICE = '客户端尚未提供当前可选模型，历史模型仅供查看'
@@ -819,7 +819,8 @@ class DesktopSessions:
 
     def _project_environments(self, provider):
         if provider == 'zcode':
-            return []
+            return [{'key': 'desktop|local|zcode', 'host': 'local', 'hostLabel': '此电脑', 'surface': 'desktop',
+                     'name': 'ZCode', 'createRequiresMessage': True, 'createTitle': False}]
         adapter = self.adapters[provider]
         rows = (adapter.remote_cli.wsl.project_environments() if provider == 'claude' and
                 not self.config.get('enabled', {}).get('claude', False) and self._wsl_claude_enabled()
@@ -997,6 +998,16 @@ class DesktopSessions:
             raise ValueError('请输入 1–100000 字的消息')
         if action == 'create' and (not isinstance(body.get('title', ''), str) or len(body.get('title', '')) > 120):
             raise ValueError('聊天名称不能超过 120 字')
+        if action == 'send' and 'workMode' in body:
+            if body['workMode'] not in ('default', 'plan', 'goal') or body.get('mode', 'send') != 'send':
+                raise ValueError('工作模式仅用于发送新消息')
+            if body['workMode'] == 'goal' and any(body.get(key) for key in ('references', 'resolvedImages', 'resolvedFiles', 'plugins')):
+                raise ValueError('请先发送附件和 Skill，再单独设定目标')
+        if action == 'goal':
+            if body.get('operation') not in ('pause', 'resume', 'clear', 'edit') or not isinstance(body.get('expected'), dict):
+                raise ValueError('目标操作无效，请刷新会话后重试')
+            if body['operation'] == 'edit' and (not isinstance(body.get('objective'), str) or not 1 <= len(body['objective'].strip()) <= 4000):
+                raise ValueError('请输入 1–4000 字的目标')
         if action == 'fork' and (set(body) - {'id', 'messageId'} or
                                  not isinstance(body.get('messageId'), str) or
                                  not body['messageId'].strip() or len(body['messageId']) > 512):
@@ -1052,7 +1063,24 @@ class DesktopSessions:
                         environment = self._project_environment(provider, project['environment'])
                         self._project_directory(environment, project['cwd'], expected=project['directoryIdentity'])
                         dispatched = {**body, 'directoryProject': {**environment, **project}}
-                result = self._adapter_call(provider, action, sid, dispatched)
+                work_mode = dispatched.get('workMode') if action == 'send' else None
+                if work_mode is not None:
+                    detail = self._adapter_call(provider, 'detail', sid, {})
+                    caps = detail.get('capabilities', {})
+                    if not caps.get('goal' if work_mode == 'goal' else 'plan'):
+                        raise ValueError('当前客户端未提供此原生工作模式')
+                    if work_mode == 'goal':
+                        if len(dispatched['text']) > 4000:
+                            raise ValueError('目标不能超过 4000 字')
+                        result = self._adapter_call(provider, 'goal', sid, {'id': rid, 'operation': 'set', 'objective': dispatched['text']})
+                    else:
+                        if detail['session'].get('collaborationMode', 'default') != work_mode:
+                            mode_result = self._adapter_call(provider, 'work-mode', sid, {'id': str(uuid.uuid5(uuid.UUID(rid), 'work-mode')), 'mode': work_mode})
+                            if mode_result.get('status') not in ('accepted', 'ready'):
+                                raise BridgeUnavailable('原生模式未确认，消息未发送')
+                        result = self._adapter_call(provider, action, sid, {key: value for key, value in dispatched.items() if key != 'workMode'})
+                else:
+                    result = self._adapter_call(provider, action, sid, dispatched)
             except ResumePreflightBlocked as exc:
                 result = {'status': 'blocked', 'id': rid, 'message': str(exc)}
             except Exception as exc:
@@ -1824,12 +1852,12 @@ class DesktopSessions:
                 rows.append({'id': 'zcode', 'name': 'ZCode',
                     'description': '连接 ZCode 原生聊天，沿用 App 的模型、账号与项目。',
                     'accountNotice': '可切换已保存账号，聊天内选择模型和 Skill',
-                    'configurationNotice': 'Mac Test 当前仅接入已绑定的原生测试聊天。请保持 ZCode 和这条聊天打开；连接中断后可手动重试。', 'enabled': enabled, 'installed': True,
+                    'configurationNotice': 'Mac Test 可在已接入的 ZCode 项目中新建原生聊天。请保持 ZCode 打开；连接中断后可手动重试。', 'enabled': enabled, 'installed': True,
                     'configured': True, 'selectable': True, 'connected': connected,
                     'setupStatus': 'ready' if connected else 'needs-retry',
                     'reason': '原生测试聊天已接入' if connected else '请保持 ZCode 测试聊天打开，然后重试连接',
                     'retryable': True, 'canQuitDesktop': False, 'canStartDesktop': False,
-                    'capabilities': {'create': False, 'accounts': True, 'notifications': True}})
+                    'capabilities': {'create': True, 'accounts': True, 'notifications': True}})
             result = {'clients': rows, 'computer': socket.gethostname(), 'gatewayRunning': self.gateway_running,
                       'wslSupported': entries is not None and sys.platform == 'win32'}
             if sys.platform == 'win32':

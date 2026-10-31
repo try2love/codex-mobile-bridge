@@ -14,6 +14,25 @@ from bridge.clients.claude.mailbox import FileDesktop, MAX_REQUEST
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class ClaudeNativeModes(unittest.TestCase):
+    def test_modes_use_observed_native_permission_and_keep_goal_unsupported(self):
+        adapter = Claude.__new__(Claude)
+        row = {'status': 'idle', 'requests': [], 'permissionMode': 'default'}
+        def call(action, sid=None, body=None, **kwargs):
+            if action == 'detail': return {'session': dict(row), 'capabilities': {'permissions': True}}
+            row['permissionMode'] = body['mode']; return {'status': 'accepted'}
+        adapter._call = Mock(side_effect=call)
+        self.assertTrue(adapter.call('detail', 'session')['capabilities']['plan'])
+        self.assertFalse(adapter.call('detail', 'session')['capabilities']['goal'])
+        adapter.call('work-mode', 'session', {'mode': 'plan'})
+        self.assertEqual(adapter.call('detail', 'session')['session']['collaborationMode'], 'plan')
+        row['status'] = 'active'
+        with self.assertRaises(ValueError): adapter.call('work-mode', 'session', {'mode': 'default'})
+        row['status'] = 'idle'
+        adapter.call('work-mode', 'session', {'mode': 'default'})
+        self.assertEqual(row['permissionMode'], 'default')
+
+
 class ClaudeContract(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=ROOT/'.tmp'); self.addCleanup(self.temp.cleanup)

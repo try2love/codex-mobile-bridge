@@ -44,6 +44,29 @@ class Adapters(unittest.TestCase):
             self.assertEqual(detail['messages'][0]['text'], '')
             self.assertEqual(detail['files'][0]['path'], file.name)
 
+    def test_native_work_mode_routes_once_through_shared_write_receipts(self):
+        adapter = Mock(); adapter.receipts_path = None
+        self.manager.adapters['deepseek'] = adapter
+        def native(action, sid=None, body=None):
+            if action == 'detail':
+                return {'capabilities': {'plan': True, 'goal': True}, 'session': {'collaborationMode': 'default'}}
+            return {'status': 'accepted'}
+        adapter.call.side_effect = native
+        body = {'id': str(uuid.uuid4()), 'text': 'plan this', 'workMode': 'plan'}
+        self.assertEqual(self.manager.call('deepseek', 'send', 'chat', body)['status'], 'accepted')
+        self.manager.call('deepseek', 'send', 'chat', body)
+        self.assertEqual([c.args[0] for c in adapter.call.call_args_list], ['detail', 'work-mode', 'send'])
+        self.assertNotIn('workMode', adapter.call.call_args.args[2])
+        adapter.call.reset_mock()
+        body = {'id': str(uuid.uuid4()), 'text': 'finish this', 'workMode': 'goal'}
+        self.assertEqual(self.manager.call('deepseek', 'send', 'chat', body)['status'], 'accepted')
+        self.assertEqual([c.args[0] for c in adapter.call.call_args_list], ['detail', 'goal'])
+        self.assertEqual(adapter.call.call_args.args[2]['objective'], 'finish this')
+        adapter.call.reset_mock()
+        body.update(id=str(uuid.uuid4()), mode='queue')
+        with self.assertRaises(ValueError): self.manager.call('deepseek', 'send', 'chat', body)
+        adapter.call.assert_not_called()
+
     def test_claude_preparation_is_available_without_starting_gateway(self):
         self.manager.gateway_running = False
         adapter = self.manager.adapters['claude']

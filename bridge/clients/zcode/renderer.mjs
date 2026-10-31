@@ -15,7 +15,7 @@ export async function nativeRequest(request) {
       if (!f || seen.has(f)) continue;
       seen.add(f); stack.push(f.child, f.sibling, f.alternate);
       for (const value of [f.memoizedProps?.value, f.memoizedProps?.services]) {
-        if (value?.layer?.acquire && value?.layer?.entries?.has('conversation/' + request.sessionId)) contexts.add(value);
+        if (value?.layer?.acquire && value?.layer?.entries?.has('conversation/' + (request.anchorSessionId || request.sessionId))) contexts.add(value);
         const services = value?.zcodeAgentService ? value : value?.services;
         if (services?.zcodeAgentService) found.add(services);
       }
@@ -53,7 +53,8 @@ export async function nativeRequest(request) {
     const expected = request.expectedRuntime;
     if (!expected || runtimes.length !== 1 || runtimes[0].pid !== expected.processId)
       return { complete: false, sessions: [] };
-    const loaded = window[key]?.lease.store.getState();
+    const bound = window[key]?.sessions?.get(request.sessionId) || window[key];
+    const loaded = bound?.lease.store.getState();
     if (loaded?.status !== 'live' || loaded.snapshot.sessionId !== request.sessionId)
       return { complete: false, sessions: [] };
     const current = loaded.snapshot;
@@ -61,6 +62,15 @@ export async function nativeRequest(request) {
         current.pendingCommands?.length || current.backgroundWorks?.length)
       return { complete: true, sessions: [{ id: request.sessionId, status: 'active', runtimeKnown: true }] };
     const sessions = [];
+    for (const state of window[key]?.sessions?.values() || [bound]) {
+      const live = state?.lease.store.getState();
+      if (live?.status !== 'live' || JSON.stringify(state.binding.runtime) !== JSON.stringify(expected))
+        return { complete: false, sessions };
+      const snapshot = live.snapshot;
+      const busy = snapshot.queue.items.length || snapshot.pendingInteractions.length || snapshot.control.activeWorks.length ||
+        snapshot.pendingCommands?.length || snapshot.backgroundWorks?.length;
+      sessions.push({ id: snapshot.sessionId, status: busy ? 'active' : 'idle', runtimeKnown: true });
+    }
     for (const workspacePath of new Set([request.workspace, ...tasks.map(task => task.workspacePath)])) {
       checkDeadline();
       const native = await agent.listSessions({ workspacePath, runtimePolicy: 'existing-only', limit: 201 });
@@ -69,7 +79,9 @@ export async function nativeRequest(request) {
         const value = await agent.readSession({ workspacePath, sessionId: row.sessionId, runtimePolicy: 'existing-only', messageLimit: 1 });
         const busy = value.runtime.pendingRequestIds.length || value.projection.status !== 'idle' ||
           value.projection.pendingPermissions.length || value.projection.activeToolCalls.length || value.projection.backgroundJobs.length;
-        sessions.push({ id: row.sessionId, status: busy ? 'active' : 'idle', runtimeKnown: true });
+        const known = sessions.find(item => item.id === row.sessionId);
+        if (known) { if (busy) known.status = 'active'; }
+        else sessions.push({ id: row.sessionId, status: busy ? 'active' : 'idle', runtimeKnown: true });
       }
     }
     const again = await services.projectService.readTree({ includeDeleted: true, includeDeletedTasks: true });
@@ -77,7 +89,15 @@ export async function nativeRequest(request) {
     const still = await agent.collectLocalRuntimeChildProcesses();
     return { complete: stable && still.length === 1 && still[0].pid === expected.processId &&
       tasks.every(task => sessions.some(row => row.id === task.taskId)) &&
-      sessions.every(row => row.id === request.sessionId), sessions };
+      sessions.every(row => {
+        const state = window[key]?.sessions?.get(row.id) || (row.id === request.sessionId ? bound : null);
+        const live = state?.lease.store.getState();
+        if (live?.status !== 'live' || JSON.stringify(state.binding.runtime) !== JSON.stringify(expected)) return false;
+        const snapshot = live.snapshot;
+        if (snapshot.queue.items.length || snapshot.pendingInteractions.length || snapshot.control.activeWorks.length ||
+            snapshot.pendingCommands?.length || snapshot.backgroundWorks?.length) row.status = 'active';
+        return true;
+      }), sessions };
   }
   const target = { workspacePath: request.workspace, sessionId: request.sessionId };
   const identity = async () => {
@@ -93,27 +113,41 @@ export async function nativeRequest(request) {
   const current = await identity();
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   if (request.binding && !same(current, request.binding)) throw Error('ZCode owner changed; explicit reattach required');
+  // Upgrade the original single-session lease without dropping the desktop's store.
+  if (window[key] && !window[key].sessions) window[key].sessions = new Map([[window[key].sessionId, window[key]]]);
+  const states = window[key]?.sessions || new Map();
+  if (request.action === 'list') {
+    const tree = await services.projectService.readTree({});
+    return { sessions: tree.tasks.filter(row => row.workspacePath === request.workspace && (!row.hostId || row.hostId === 'local'))
+      .map(row => {
+        const state = states.get(row.taskId), value = state?.lease.store.getState();
+        return value?.status === 'live' && same(state.binding, current) ? { snapshot: value.snapshot } :
+          { id: row.taskId, title: row.title, cwd: row.workspacePath, model: row.model,
+            effort: row.thoughtLevel, updatedAt: row.updatedAt, archived: row.archived };
+      }) };
+  }
   const read = () => agent.readSession({ ...target, runtimePolicy: 'existing-only', messageLimit: 100 });
   // Verify the original session/cwd before any subscription or command.
-  const history = ['attach', 'history'].includes(request.action) ? await read() : null;
+  const history = ['attach', 'history'].includes(request.action) || request.action === 'detail' &&
+    (!states.has(request.sessionId) || !same(states.get(request.sessionId).binding, current)) ? await read() : null;
   if (history && (history.session?.sessionId !== request.sessionId || history.session?.workspace?.workspacePath !== request.workspace))
     throw Error('Native session workspace changed');
-  let state = window[key];
+  let state = states.get(request.sessionId);
   if (request.action === 'attach') {
-    if (state && state.sessionId !== request.sessionId)
-      throw Error('Detach the previous prototype session first');
     if (state && (!same(state.binding, current) || state.lease.store.getState().status === 'closed')) {
       // Only this explicit action can adopt a new host generation. Old command IDs
       // remain claimed by DesktopSessions; replacing a subscription never resends them.
-      state.lease.release(); delete window[key]; state = null;
+      state.lease.release(); states.delete(request.sessionId); state = null;
     }
     if (!state) {
       checkDeadline();
       // Reuse the App's ref-counted store, including its delta reducer. A second
       // subscribe on the renderer connection would evict the desktop subscription.
-      if (contexts.length !== 1) throw Error('请先在 ZCode 打开这条测试聊天，再重新连接');
-      const lease = contexts[0].layer.acquire(request.sessionId);
-      state = window[key] = { binding: current, sessionId: request.sessionId, lease };
+      const layer = contexts.length === 1 ? contexts[0].layer : window[key]?.layer;
+      if (!layer || layer.disposed) throw Error('请先在 ZCode 打开此项目的一条聊天，再重新连接');
+      const lease = layer.acquire(request.sessionId);
+      state = { binding: current, sessionId: request.sessionId, lease, layer, sessions: states };
+      states.set(request.sessionId, state); window[key] = state;
     }
     return { binding: current, subscriptionId: state.lease.store.getState().subscriptionId };
   }
@@ -127,11 +161,13 @@ export async function nativeRequest(request) {
         m.info?.semantics?.uiVisibility === 'visible' ||
         (!m.info?.synthetic && m.info?.visibility !== 'model-only' && m.info?.semantics?.uiVisibility !== 'hidden')) };
   }
+  if (request.action === 'detail' && (!state || !same(state.binding, current))) return { detached: true, history };
   if (!state || state.sessionId !== request.sessionId || !same(state.binding, current))
     throw Error('Prototype subscription is detached; explicitly attach again');
   if (request.action === 'detach') {
     state.lease.release();
-    delete window[key];
+    states.delete(request.sessionId);
+    if (window[key] === state) { delete window[key]; const remaining = states.values().next().value; if (remaining) window[key] = remaining; }
     return { detached: true };
   }
   const projection = state.lease.store.getState();
@@ -139,6 +175,34 @@ export async function nativeRequest(request) {
     throw Error('ZCode 原生会话连接尚未就绪，请在原 App 核对后重新连接');
   const before = projection.snapshot;
   if (before.sessionId !== request.sessionId) throw Error('Wrong native snapshot');
+  if (request.action === 'create') {
+    const row = (await models()).find(model => model.provider === before.config.provider && model.model === before.config.model);
+    if (!row || !row.efforts.includes(before.config.thought)) throw Error('请先为当前原生会话选择有效模型和思考深度');
+    if (!same(await identity(), current)) throw Error('ZCode owner changed before create');
+    checkDeadline();
+    // Match the native composer: firstInput persists the session and its input in one admission.
+    // A bare draft is not a durable chat and cannot receive native goal/rename commands yet.
+    const body = request.body;
+    if (typeof body.firstMessage !== 'string' || !body.firstMessage.trim() || body.firstMessage.length > 100000)
+      throw Error('请输入首条消息');
+    const sid = 'sess_' + body.id;
+    const ack = await agent.sendConversationCommandV4({ workspacePath: request.workspace, projectId: null,
+      envelope: { commandId: body.id, clientId: current.clientId, sessionId: null, type: 'createSession',
+        payload: { sessionId: sid, workspaceId: request.workspace,
+          config: { provider: row.provider, model: row.model, thought: before.config.thought, mode: 'build' },
+          firstInput: { text: body.firstMessage, modelSelection: { providerId: row.provider, modelId: row.model,
+            options: { reasoningLevel: before.config.thought } }, mode: 'build', planEnabled: false } }, issuedAt: Date.now() } });
+    if (ack.status !== 'accepted' || ack.result?.sessionId !== sid)
+      return { status: ack.status === 'accepted' ? 'unknown' : ack.status, message: ack.message || '原生创建结果待核对，请查看 ZCode 会话列表；不会自动重试', nativeAck: ack };
+    const layer = state.layer || (contexts.length === 1 ? contexts[0].layer : null);
+    let notice;
+    try {
+      if (!layer || layer.disposed) throw Error('原生会话已创建，请点击继续会话完成接入');
+      const lease = layer.acquire(sid);
+      states.set(sid, { binding: current, sessionId: sid, lease, layer, sessions: states });
+    } catch (error) { notice = String(error.message || error); }
+    return { status: 'accepted', result: { id: sid }, ...(notice ? { message: notice } : {}) };
+  }
   if (request.action === 'detail') return { binding: current, snapshot: before, account: await account() };
   const body = request.body || {};
   const skills = async () => {
@@ -200,6 +264,33 @@ export async function nativeRequest(request) {
       }
     }
     if (attachments.length) payload.attachments = attachments;
+  } else if (request.action === 'work-mode') {
+    if (!['default', 'plan'].includes(body.mode)) throw Error('工作模式无效');
+    const planning = before.config.planEnabled || before.config.mode === 'plan';
+    if (planning === (body.mode === 'plan')) return { status: 'accepted' };
+    if (before.control.activeWorks.length || before.pendingInteractions.length || before.queue.items.length)
+      throw Error('请等待当前任务结束后再切换模式');
+    type = 'switchCollaborationMode'; payload = { mode: body.mode === 'plan' ? 'plan' : 'build' };
+  } else if (request.action === 'goal') {
+    if (!['set', 'pause', 'resume', 'clear'].includes(body.operation)) throw Error('目标操作无效');
+    if (body.operation !== 'set' && (!before.goal || body.expected?.goalId !== before.goal.targetId ||
+        body.expected?.objective !== before.goal.objective)) throw Error('目标已变化，请刷新后操作');
+    if (['set', 'resume'].includes(body.operation) && (before.control.activeWorks.length || before.pendingInteractions.length ||
+        before.queue.items.length || before.config.planEnabled || before.config.mode === 'plan'))
+      throw Error('请结束当前任务并退出计划模式后再开启目标');
+    if (body.operation === 'set') {
+      if (before.goal && before.goal.status !== 'verified') throw Error('请先关闭当前目标');
+      type = 'sendGoalCommand'; payload = { text: body.objective };
+    } else if (body.operation === 'clear') {
+      // Use the App's structured native goal operation; never send a slash prompt.
+      if (!same(await identity(), current)) throw Error('ZCode owner changed before dispatch');
+      const latest = await read();
+      if (latest.session.target?.targetId !== before.goal.targetId) throw Error('目标已变化，请刷新后操作');
+      checkDeadline();
+      await services.zcodeTaskService.goalSession({ taskId: request.sessionId, workspacePath: request.workspace,
+        inputId: body.id, action: 'clear', expectedRevision: latest.runtime.stateRevision });
+      return { status: 'accepted' };
+    } else { type = body.operation === 'pause' ? 'pauseGoal' : 'resumeGoal'; payload = {}; }
   } else if (request.action === 'settings') {
     if (before.control.activeWorks.length || before.pendingInteractions.length || before.queue.items.length)
       throw Error('请等待当前任务结束后再切换模型');
@@ -226,6 +317,6 @@ export async function nativeRequest(request) {
   checkDeadline();
   return agent.sendConversationCommandV4({ workspacePath: request.workspace,
     envelope: { commandId: body.id, clientId: current.clientId, sessionId: request.sessionId,
-      ...(type === 'switchModelConfig' ? { baseRevision: before.revision, baseLogEpoch: before.logEpoch } : {}),
+      ...(['switchModelConfig', 'switchCollaborationMode', 'pauseGoal', 'resumeGoal'].includes(type) ? { baseRevision: before.revision, baseLogEpoch: before.logEpoch } : {}),
       type, payload, issuedAt: Date.now() } });
 }

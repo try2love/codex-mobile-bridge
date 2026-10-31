@@ -47,12 +47,12 @@ test('passive history never subscribes or starts an executor and hides model-onl
 
 test('reattach is explicit; repeated attach and reads do not replace a native subscription', async () => {
   const f = fixture();
-  await assert.rejects(f.request('detail'), /detached/);
+  assert.equal((await f.request('detail')).detached,true);
   await f.request('attach'); await f.request('attach'); await f.request('detail');
   assert.deepEqual(f.calls, ['acquire']);
   assert.equal(f.listeners.size, 0);
   await f.request('detach');
-  await assert.rejects(f.request('detail'), /detached/);
+  assert.equal((await f.request('detail')).detached,true);
 });
 
 test('owner change and expired requests fail before mutation', async () => {
@@ -159,16 +159,47 @@ test('Skill selection revalidates session authority and sends native mentions, n
 });
 
 test('account restart preflight blocks queued native work and refuses incomplete inventory',async()=>{
- const f=fixture();await f.request('attach');f.binding.runtime.processId=10;
+ const f=fixture();f.binding.runtime.processId=10;await f.request('attach');
  const nodes=document.querySelectorAll();document.querySelectorAll=()=>nodes;const services=nodes[0].__reactContainer$test.memoizedProps.value;
  services.projectService={readTree:async()=>({tasks:[{taskId:'sess-test',workspacePath:'/project',hostId:'local'}],deletedTasks:[]})};
  f.agent.collectLocalRuntimeChildProcesses=async()=>[{pid:10}];
  f.agent.listSessions=async()=>[{sessionId:'sess-test'}];
  f.agent.readSession=async()=>({runtime:{pendingRequestIds:[]},projection:{status:'idle',pendingPermissions:[],activeToolCalls:[],backgroundJobs:[]}});
- const extra={expectedRuntime:{processId:10}};
+ const extra={expectedRuntime:structuredClone(f.binding.runtime)};
  assert.equal((await f.request('lifecycle',{},extra)).complete,true);
  f.snapshot.queue.items.push({id:'held'});assert.equal((await f.request('lifecycle',{},extra)).sessions[0].status,'active');
  f.snapshot.queue.items=[];f.agent.listSessions=async()=>[{sessionId:'other'}];assert.equal((await f.request('lifecycle',{},extra)).complete,false);
  f.agent.collectLocalRuntimeChildProcesses=async()=>[{pid:11}];assert.equal((await f.request('lifecycle',{},extra)).complete,false);
  assert.deepEqual(f.calls,['acquire']);
+});
+
+test('native plan and goal commands keep original owner, CAS and stale-goal guards',async()=>{
+ const f=fixture();await f.request('attach');f.snapshot.config.mode='build';f.snapshot.goal=null;
+ await f.request('work-mode',{id:'plan',mode:'plan'});
+ assert.equal(f.calls.at(-1).envelope.type,'switchCollaborationMode');assert.equal(f.calls.at(-1).envelope.baseRevision,7);
+ f.snapshot.config.planEnabled=true;await assert.rejects(f.request('goal',{id:'goal',operation:'set',objective:'one'}),/退出计划/);
+ f.snapshot.config.planEnabled=false;await f.request('goal',{id:'goal',operation:'set',objective:'one'});
+ assert.equal(f.calls.at(-1).envelope.type,'sendGoalCommand');assert.deepEqual(f.calls.at(-1).envelope.payload,{text:'one'});
+ f.snapshot.goal={targetId:'target',objective:'one',status:'active'};
+ await assert.rejects(f.request('goal',{id:'old',operation:'pause',expected:{goalId:'old',objective:'one'}}),/目标已变化/);
+ await f.request('goal',{id:'pause',operation:'pause',expected:{goalId:'target',objective:'one'}});
+ assert.equal(f.calls.at(-1).envelope.type,'pauseGoal');assert.equal(f.calls.at(-1).envelope.baseLogEpoch,'epoch');
+ const nodes=document.querySelectorAll();document.querySelectorAll=()=>nodes;
+ nodes[0].__reactContainer$test.memoizedProps.value.zcodeTaskService={goalSession:async p=>{f.calls.push(p);return {status:'accepted'};}};
+ f.agent.readSession=async()=>({session:{target:{targetId:'target'}},runtime:{stateRevision:21}});
+ await f.request('goal',{id:'clear',operation:'clear',expected:{goalId:'target',objective:'one'}});
+ assert.equal(f.calls.at(-1).expectedRevision,21,'legacy goal API uses its native revision, not V4 revision');
+});
+
+test('new native chat uses atomic firstInput and independent shared lease without inference defaults',async()=>{
+ const f=fixture();await f.request('attach');const nodes=document.querySelectorAll();document.querySelectorAll=()=>nodes;
+ const layer=nodes[0].__reactContainer$test.memoizedProps.value.layer;
+ layer.acquire=sid=>{f.calls.push(['acquire',sid]);return {store:{getState:()=>({status:'live',snapshot:{...f.snapshot,sessionId:sid}})},release:()=>f.calls.push(['release',sid])};};
+ f.agent.sendConversationCommandV4=async p=>{f.calls.push(p);return {status:'accepted',result:{type:'createSession',sessionId:p.envelope.payload.sessionId}};};
+ const result=await f.request('create',{id:'new',firstMessage:'first message'});
+ assert.equal(result.result.id,'sess_new');const create=f.calls.find(v=>v.envelope?.type==='createSession');
+ assert.equal(create.envelope.clientId,'original-client');assert.equal(create.envelope.sessionId,null);
+ assert.equal(create.envelope.payload.firstInput.text,'first message');assert.equal(create.envelope.payload.config.model,'Flash');assert.equal(create.envelope.payload.config.thought,'low');
+ assert.equal(window.__codexMobileZCodePrototypeV1.sessions.size,2);
+ const before=f.calls.length;await assert.rejects(f.request('create',{id:'empty',firstMessage:''}),/首条消息/);assert.equal(f.calls.length,before);
 });
