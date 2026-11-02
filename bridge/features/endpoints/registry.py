@@ -4,8 +4,12 @@ import json
 import threading
 import os
 import re
-import tomllib
 from pathlib import Path, PureWindowsPath
+
+try:
+    from tomllib import loads as load_toml
+except ModuleNotFoundError:  # Python 3.9 and 3.10 gateway builds
+    from bridge.vendor.wsl_tomli import loads as load_toml
 
 from bridge.app.lifecycle import private_json
 from bridge.platforms.windows import wsl
@@ -38,7 +42,7 @@ def local_home(value):
     config = path/'config.toml'
     if config.is_file():
         try:
-            settings = tomllib.loads(config.read_text(encoding='utf-8'))
+            settings = load_toml(config.read_text(encoding='utf-8'))
         except (ValueError, OSError) as exc:
             raise ValueError('无法读取所选目录的 config.toml') from exc
         sqlite = settings.get('sqlite_home')
