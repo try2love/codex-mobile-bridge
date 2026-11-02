@@ -80,6 +80,10 @@ def _remove(path):
         path.unlink()
 
 
+class ClaudeLoginDatabaseUnavailable(ValueError):
+    """The Desktop account identity cannot be verified from its cookie store."""
+
+
 def _cookies(home):
     for name in ('Network/Cookies', 'Cookies'):
         path = home/name
@@ -87,7 +91,7 @@ def _cookies(home):
             if path.is_symlink() or any(parent.is_symlink() for parent in path.parents):
                 raise ValueError('Claude 登录目录不能是符号链接')
             try:
-                with closing(sqlite3.connect(path.as_uri()+'?mode=ro', uri=True, timeout=2)) as db:
+                with closing(sqlite3.connect(path.as_uri()+'?mode=ro', uri=True, timeout=0)) as db:
                     rows = db.execute("SELECT host_key,name,value,encrypted_value,expires_utc FROM cookies WHERE name IN ('sessionKey','lastActiveOrg')").fetchall()
                 valid = [(host, name, value or '', bytes(encrypted or b''), expiry)
                          for host, name, value, encrypted, expiry in rows
@@ -95,7 +99,7 @@ def _cookies(home):
                 if {row[1] for row in valid} >= {'sessionKey', 'lastActiveOrg'}:
                     return valid
             except sqlite3.Error:
-                raise ValueError('Claude 登录数据库暂不可读，请退出客户端后重试') from None
+                raise ClaudeLoginDatabaseUnavailable('Claude 登录数据库暂不可读，账号操作暂不可用') from None
     raise ValueError('没有找到已登录的 Claude Desktop 账号，请先在客户端登录')
 
 
@@ -393,8 +397,12 @@ class ClaudeAccounts:
     def public(self):
         with self.lock:
             index = self._index()
+            identity_error = None
             try:
                 kind, fingerprint, gateway = self._current()
+            except ClaudeLoginDatabaseUnavailable as error:
+                identity_error = str(error)
+                kind, fingerprint, gateway = None, None, None
             except (OSError, ValueError, sqlite3.Error):
                 kind, fingerprint, gateway = None, None, None
             accounts = []
@@ -424,7 +432,7 @@ class ClaudeAccounts:
             value = {'provider': 'claude', 'accounts': accounts, 'activeId': active, 'current': current,
                      'canManage': True, 'readOnly': False}
             if fingerprint is None:
-                value['notice'] = '无法确认 Claude 当前登录，请在客户端登录后重试'
+                value['notice'] = identity_error or '无法确认 Claude 当前登录，请在客户端登录后重试'
             return value
 
     def import_current(self, name=''):

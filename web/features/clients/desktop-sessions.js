@@ -165,7 +165,7 @@ class DesktopSessionsView {
     return copied;
   }
   bindDraftScope(value){
-    const account=value?.draftAccountIdentity||value?.session?.draftAccountIdentity||'';
+    const account=value?.draftAccountIdentity??value?.session?.draftAccountIdentity??'';
     if(!account&&this.draftScope){this.saveDraft();this.drafts.delete(this.provider+':'+this.sid);this.draftScope=null;this.draftTouched=false;this.quotes?.reset();this.input.value='';this.selectedSkills().clear();this.updateComposer();return;}
     if(!this.draftGateway||!account||!this.sid||!this.composerDrafts)return;
     const scope={gateway:this.draftGateway,provider:this.provider,account,host:'local',session:this.sid};
@@ -290,7 +290,7 @@ class DesktopSessionsView {
   staleDetail(){this.freshDetail=false;this.renderRequests([]);this.requestStamp='';this.updateComposer();}
   applyDetail(value,cached=false){
     if(!value.session){this.staleDetail();this.status.textContent=BridgeI18n.t('尚未连接');return;}
-    this.freshDetail=!cached&&value.connected!==false;if(!cached)this.bindDraftScope(value);this.state={...value.session,modelCatalogIdentity:value.modelCatalogIdentity||value.session.modelCatalogIdentity||'',capabilities:value.capabilities||value.session.capabilities||{},maxRequestBytes:value.maxRequestBytes||value.session.maxRequestBytes||0};this.title.textContent=this.state.title;this.status.textContent=BridgeI18n.t(cached?'正在连接…':!this.canMutate()?(this.state.backend==='cli'?'历史记录':'尚未连接'):this.state.requests?.length?'等待回应':this.state.status==='active'?'运行中':'已连接');this.updateComposer();this.applyHistory(value,cached);
+    this.freshDetail=!cached&&value.connected!==false;if(!cached)this.bindDraftScope(value);this.state={...value.session,modelCatalogIdentity:value.modelCatalogIdentity??value.session.modelCatalogIdentity??'',capabilities:value.capabilities||value.session.capabilities||{},maxRequestBytes:value.maxRequestBytes||value.session.maxRequestBytes||0};this.title.textContent=this.state.title;this.status.textContent=BridgeI18n.t(cached?'正在连接…':!this.canMutate()?(this.state.backend==='cli'?'历史记录':'尚未连接'):this.state.requests?.length?'等待回应':this.state.status==='active'?'运行中':'已连接');this.updateComposer();this.applyHistory(value,cached);
     const requests=this.canMutate()?this.state.requests||[]:[],stamp=JSON.stringify([requests,BridgeI18n.language()]);if(stamp!==this.requestStamp){this.renderRequests(requests);this.requestStamp=stamp;}
     if(this.workbench.current)this.workbench.current.capabilities={...this.workbench.current.capabilities,tasks:this.state.capabilities.tasks===true};
     this.detailNotice=value.notice||'';this.renderNotice();if(!cached)this.updateActivity([this.state]);this.renderIndicators();

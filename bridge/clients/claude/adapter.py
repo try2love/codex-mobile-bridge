@@ -107,8 +107,10 @@ class Claude:
                 self._assert_reconnect_idle()
                 self.desktop.close()
             async def initialize():
-                self.desktop = FileDesktop(self.directory, token)
+                self.desktop = FileDesktop(self.directory, token, self.discovery.get('dataHome'))
             asyncio.run_coroutine_threadsafe(initialize(), self.loop).result(timeout=5)
+        else:
+            self.desktop.set_profile(self.discovery.get('dataHome'))
         config = {'transport': 'file', 'cwd': str(self.directory), 'token': token,
                   'generation': self.desktop.generation, 'reconnect': True,
                   'inspectionMarker': secrets.token_hex(8),

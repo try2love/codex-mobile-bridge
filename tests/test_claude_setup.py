@@ -148,14 +148,15 @@ class ClaudeDiscovery(unittest.TestCase):
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 console.error('unicode connector harness started');
 const cwd=process.argv[2],script=fs.readFileSync(process.argv[1],'utf8');
-const request=fs.readFileSync(cwd+'/request.json','utf8');let start;
+const request=fs.readFileSync(cwd+'/request.json','utf8');let checked;
 const api={readFileAtCwd:async path=>{assert.equal(path,cwd);return {contents:request};},
 writeSessionFile:async()=>{throw Error('must not write before trust');},getAll:async()=>[],
-start:async value=>{console.error('workspace trust checked');start=value;throw Error('WorkspaceTrustError: trust_required');}};
+checkTrust:async path=>{checked=path;return {trusted:false};},
+start:async()=>{throw Error('must not start a model turn');}};
 (async()=>{await assert.rejects(vm.runInNewContext(script,{window:{'claude.web':{LocalSessions:api}},
 TextEncoder,Uint8Array,crypto:require('node:crypto').webcrypto,console,setTimeout,clearTimeout}),error=>{
 assert.ok(error.message.includes(cwd));assert.ok(error.message.includes('尚未信任目录'));return true;});
-assert.equal(start.cwd,cwd);assert.equal(start.message,'');})();
+assert.equal(checked,cwd);})();
 '''
         # Include cold Node/WebCrypto startup in the process budget; the test
         # asserts the trust rejection, not a ten-second startup guarantee.

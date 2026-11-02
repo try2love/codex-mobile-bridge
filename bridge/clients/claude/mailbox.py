@@ -13,6 +13,7 @@ import secrets
 import time
 from pathlib import Path
 
+from bridge.clients.claude.staged_reply import StagedReply
 from bridge.clients.errors import BridgeUnavailable
 
 MAX_PACKET = 32 * 1024 * 1024
@@ -22,7 +23,7 @@ MAX_PACKET = 32 * 1024 * 1024
 MAX_REQUEST = 10 * 1024 * 1024
 # Bump when the injected renderer must reload a changed API contract. A new
 # owner generation alone only reconnects the existing JavaScript closure.
-CONNECTOR_REVISION = 14
+CONNECTOR_REVISION = 15
 MUTATIONS = {'sendMessage', 'interrupt', 'stop', 'respondToToolPermission', 'start', 'archive', 'unarchive', 'mobileArchive',
              'delete', 'updateSession', 'setPermissionMode', 'setModel', 'setEffort', 'setThinkingSummariesWanted', 'mobileFork', 'mobileRename'}
 
@@ -42,9 +43,11 @@ class FileDesktop:
                 and request.get('seq') == reply.get('seq') and reply.get('done') is True
                 and workspace_trust_rejection(reply.get('error')))
 
-    def __init__(self, directory, token):
+    def __init__(self, directory, token, profile=None):
         self.directory = Path(directory).resolve()
+        self.staged_reply = None
         self.token = token
+        self.set_profile(profile)
         self.generation = secrets.token_hex(16)
         self.seq = 0
         self.lock = asyncio.Lock()
@@ -60,6 +63,12 @@ class FileDesktop:
             self.monitor = asyncio.get_running_loop().create_task(self._watch_handoff())
         except RuntimeError:
             self.monitor = None
+
+    def set_profile(self, profile):
+        if not profile:
+            self.staged_reply = None
+        elif not self.staged_reply or self.staged_reply.root != Path(profile) / 'pending-uploads':
+            self.staged_reply = StagedReply(profile, self.token)
 
     async def _watch_handoff(self):
         """Fence this writer before acknowledging an idle renderer handoff."""
@@ -163,6 +172,8 @@ class FileDesktop:
 
     def read(self):
         path = self.directory / 'response.json'
+        if self.staged_reply and (self.cached.get('receipt') or time.time() - self.cached.get('timestamp', 0) >= 20):
+            self.staged_reply.collect(path, self.generation, MAX_PACKET, self.pack)
         try:
             stat = path.stat()
             stamp = (stat.st_mtime_ns, stat.st_size)

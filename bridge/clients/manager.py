@@ -15,6 +15,7 @@ from contextlib import closing, contextmanager, nullcontext
 from concurrent.futures import Future
 
 from bridge.clients.claude.adapter import Claude
+from bridge.clients.claude.accounts import ClaudeLoginDatabaseUnavailable
 from bridge.clients.claude.remote_worker import draft_account_identity as claude_draft_account_identity
 from bridge.clients.deepseek.adapter import DeepSeek, BRIDGE_REVISION, LIFECYCLE_REVISIONS, UPDATE_REASON
 from bridge.clients.errors import BridgeUnavailable, TaskStateUnavailable, ResumePreflightBlocked
@@ -983,7 +984,18 @@ class DesktopSessions:
                 result['projects'] = result.get('projects', []) + registered
                 result['environments'] = [self._public_project(row) for row in environments]
             if action == 'detail' and result.get('session'):
-                result['modelCatalogIdentity'] = self._model_identity(provider, sid)
+                try:
+                    result['modelCatalogIdentity'] = self._model_identity(provider, sid)
+                except ClaudeLoginDatabaseUnavailable:
+                    # History was read from its native owner. Only account-bound
+                    # capabilities require the unreadable Desktop fingerprint.
+                    result['modelCatalogIdentity'] = result['draftAccountIdentity'] = ''
+                    result.pop('draftContinuation', None)
+                    caps = result.get('capabilities') or result['session'].get('capabilities', {})
+                    result['capabilities'] = {**caps, 'models': False, 'effort': False,
+                                              'manualModels': False, 'manualEffort': False}
+                    result['notice'] = 'Claude 账号暂不可读，模型切换与账号草稿暂不可用'
+                    return result
                 try:
                     result['draftAccountIdentity'] = self._draft_account_identity(provider, sid, result)
                 except (OSError, ValueError, KeyError, TypeError, AttributeError, BridgeUnavailable):
@@ -1030,9 +1042,12 @@ class DesktopSessions:
         with self._changing(provider, rebind=False):
             if self.config.get('enabled', {}).get(provider) is False and not (provider == 'claude' and self._wsl_claude_enabled()):
                 raise ValueError('此应用已关闭，请在应用管理中开启')
-            if action == 'settings' and 'modelCatalogIdentity' in body:
-                expected_identity = body['modelCatalogIdentity']
-                if not isinstance(expected_identity, str) or not expected_identity or self._model_identity(provider, sid) != expected_identity:
+            native_claude_model_write = (provider == 'claude' and action == 'settings' and
+                                         ('model' in body or 'effort' in body) and sid in adapter.index)
+            if action == 'settings' and ('modelCatalogIdentity' in body or native_claude_model_write):
+                current_identity = self._model_identity(provider, sid)
+                if 'modelCatalogIdentity' in body and (not body['modelCatalogIdentity'] or
+                                                       current_identity != body['modelCatalogIdentity']):
                     raise ValueError('账号已切换，请重新打开模型设置')
             scope = None
             if provider == 'claude':

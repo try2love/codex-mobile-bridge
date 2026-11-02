@@ -1165,6 +1165,8 @@ const en={
 "Claude 登录已失效或需要在客户端完成验证":"The Claude sign-in has expired or requires verification in the client.",
 "Claude 登录已失效，请在客户端重新登录后保存":"The Claude sign-in has expired. Sign in again in the client, then save the account.",
 "Claude 登录数据库暂不可读，请退出客户端后重试":"The Claude sign-in database is temporarily unreadable. Quit the client and try again.",
+"Claude 登录数据库暂不可读，账号操作暂不可用":"Claude’s sign-in database is temporarily unreadable. Account actions are unavailable.",
+"Claude 账号暂不可读，模型切换与账号草稿暂不可用":"Claude’s account is temporarily unreadable. Model switching and account drafts are unavailable.",
 "Claude 登录目录不能是符号链接":"The Claude sign-in directory cannot be a symlink.",
 "Claude 账号":"Claude account",
 "Claude 账号不存在，请刷新列表":"The Claude account no longer exists. Refresh the list.",
