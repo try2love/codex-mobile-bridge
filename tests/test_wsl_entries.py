@@ -30,6 +30,7 @@ class RegistryTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(dir=ROOT/'.tmp')
         self.addCleanup(self.temp.cleanup)
         self.entries = Entries(self.temp.name)
+        self.entries.wsl = wsl
         self.info = {'user': 'fixture', 'homes': [{'home': '/home/fixture/.codex', 'daemon': None}]}
 
     def test_only_explicit_scan_probes_running_distributions(self):
@@ -94,6 +95,7 @@ class RegistryTests(unittest.TestCase):
             self.assertFalse(self.entries.bridges)
             probe.assert_not_called()
             restarted = Entries(self.temp.name)
+            restarted.wsl = wsl
             self.assertEqual(restarted.applications()[0]['id'], row['id'])
 
 

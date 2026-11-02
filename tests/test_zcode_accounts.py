@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -25,7 +26,8 @@ class AccountTests(unittest.TestCase):
         token=self.store.restore(a)
         credentials=json.loads((self.home/'credentials.json').read_text());self.assertEqual(credentials['oauth:test:access_token'],'enc:v1:A');self.assertEqual(credentials['unrelated'],'other-API');self.assertFalse(any(k.startswith('project-key-location:') for k in credentials))
         settings=json.loads((self.home/'setting.json').read_text());self.assertEqual(settings,{'providerFamilyDomain':'a','locale':'en','recentProjects':['new']})
-        self.assertEqual((self.home/'credentials.json').stat().st_mode & 0o777,0o600)
+        if os.name == 'posix':
+            self.assertEqual((self.home/'credentials.json').stat().st_mode & 0o777,0o600)
         self.store.rollback(token);self.assertEqual(json.loads((self.home/'credentials.json').read_text())['oauth:test:access_token'],'enc:v1:B')
     def test_drift_and_symlink_fail_without_overwriting(self):
         a=self.store.import_current()['activeId'];token=self.store.restore(a)

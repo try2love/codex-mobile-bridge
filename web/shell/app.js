@@ -241,7 +241,11 @@ $('logout').onclick=async()=>{await api('/api/logout',{});hideWebhookUrl();docum
 function dateText(value){if(!value)return '';return new Date(value*1000).toLocaleDateString(BridgeI18n.locale(),{month:'numeric',day:'numeric'});}
 function listAuthIdentity(auth){return auth?.authenticated&&/^[0-9a-f]{64}$/.test(auth.listCacheIdentity||'')?auth.listCacheIdentity:'';}
 function listSnapshotKey(filter){return listIdentity?'codex-list-v1:'+listIdentity+':'+filter:'';}
-function currentListFilter(){return JSON.stringify([$('search').value,$('archived').checked,listSource,$('list-mode').value]);}
+function currentListFilter(){
+  const fields=[$('search').value,$('archived').checked,listSource,$('list-mode').value];
+  if(selectedCodexEntry)fields.push(selectedCodexEntry);
+  return JSON.stringify(fields);
+}
 function restoreListSnapshot(filter=currentListFilter()){
   const key=listSnapshotKey(filter);if(!key)return false;
   let saved,legacy=false;
@@ -438,7 +442,7 @@ async function loadList(reset=false){
   if(!reset&&(listLoading||!listHasMore))return;
   const generation=++listGeneration,offset=reset?0:listOffset,pinRead=sessionPins.capture();
   const query=$('search').value,archived=$('archived').checked,source=listSource,mode=$('list-mode').value;
-  const filter=JSON.stringify([query,archived,source,mode,selectedCodexEntry]);
+  const filter=currentListFilter();
   if(reset&&filter!==listFilterKey){
     if(!restoreListSnapshot(filter)){listRows=[];availableSources=[];listOffset=0;listHasMore=false;listHostIds=[];listFilterKey=filter;}
     $('sessions').scrollTop=0;
@@ -1634,7 +1638,7 @@ async function refreshSelectedAccounts(){
 }
 $('accounts-dialog').addEventListener('close',()=>{codexCliAccessPanel?.clear();codexWslAccounts?.clear();});
 function renderAccountEntries(){
-  const independent=codexAccountEntry.startsWith('codex:'),entries=codexEntries().filter(row=>row.enabled&&(independent?row.id===codexAccountEntry:row.kind==='wsl-cli'));
+  const independent=codexAccountEntry.startsWith('codex:'),entries=codexEntries().filter(row=>row.enabled&&(independent?row.id===codexAccountEntry:clientNavigation.wslSupported===true&&row.kind==='wsl-cli'));
   if(entries.length&&!accountEntryControls){
     accountEntryControls=el('div','accounts-runtime-controls');const label=el('label','',t('运行环境'));accountEntrySelect=el('select');accountEntrySelect.setAttribute('aria-label',t('运行环境'));label.append(accountEntrySelect);accountEntryControls.append(label);$('accounts-heading').closest('.picker-head').after(accountEntryControls);
     codexWslRoot=el('div');$('accounts-dialog').append(codexWslRoot);

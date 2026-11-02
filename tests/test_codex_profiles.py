@@ -1,5 +1,6 @@
 """Independent home identities share the existing native Codex session flow."""
 import json
+from contextlib import closing
 import sqlite3
 import tempfile
 import unittest
@@ -59,7 +60,7 @@ class ProfileRegistryTests(unittest.TestCase):
 class IdeProfileTests(CliBridgeFixture):
     def setUp(self):
         super().setUp()
-        with sqlite3.connect(self.home/'state_5.sqlite') as db:
+        with closing(sqlite3.connect(self.home/'state_5.sqlite')) as db, db:
             db.execute("UPDATE threads SET source='vscode', originator='codex_vscode'")
         self.bridge.host = 'codex:'+'1'*32
         self.bridge.entry_label = 'IDE fixture'

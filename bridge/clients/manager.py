@@ -2042,7 +2042,8 @@ class DesktopSessions:
             if entries is None or type(enabled) is not bool or set(value) - {'action', 'provider', 'enabled', 'quitDesktop'}:
                 raise ValueError('Codex 入口开关无效')
             if value.get('quitDesktop', False) is not False:
-                raise ValueError('请在原客户端退出 Codex；应用管理只停用手机访问，不会终止原任务')
+                where = '原 WSL 终端' if provider.startswith('wsl:') else '原客户端'
+                raise ValueError(f'请在{where}退出 Codex；应用管理只停用手机访问，不会终止原任务')
             with self.client_lock:
                 entries.configure(provider, enabled)
                 self.client_cache = None
@@ -2483,7 +2484,7 @@ class DesktopSessions:
 
     def scan_wsl(self):
         entries = getattr(self.bridge, 'entries', None)
-        if entries is None:
+        if entries is None or self.claude_wsl is None:
             raise ValueError('当前电脑不支持 WSL 应用')
         with self.client_lock:
             result = entries.scan()

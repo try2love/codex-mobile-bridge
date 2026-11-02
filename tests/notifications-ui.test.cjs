@@ -19,7 +19,7 @@ async function fixture({sessionStore=new Map(),localStore=new Map(),skipStartup=
   let nextPost,nextGet;
   const response=(data,status=200)=>({ok:status===200,status,json:async()=>data});
   let listResponse=()=>response({sessions:[],unavailableHosts:[]}),knownRows=[];
-  const context=vm.createContext({SessionMenu:class{bind(){}close(){}},ClientNavigation:class{constructor(){this.provider="codex";this.clients=[];}async refresh(){}acknowledgeList(provider,value){acknowledgements.push({provider,value});}},DesktopSessionsView:class{bindListCache(){}previewCachedList(){return false;}clear(){}},Workbench:class{constructor(){this.current={};}open(){}reset(){}setThumbnails(){}relabel(){}},navigator:{userAgent:'test'},document:{addEventListener(){},documentElement:{classList:{contains(){return false;}}},getElementById:id=>nodes.get(id),querySelector:selector=>selector==='.archive-filter'?archiveFilter:{disabled:false},querySelectorAll:selector=>selector==='[data-notification-channel]'?channelButtons:[],createElement:node},
+  const context=vm.createContext({CliConnectionsPanel:class{},SessionMenu:class{bind(){}close(){}},ClientNavigation:class{constructor(){this.provider="codex";this.clients=[];}async refresh(){}acknowledgeList(provider,value){acknowledgements.push({provider,value});}},DesktopSessionsView:class{bindListCache(){}previewCachedList(){return false;}clear(){}},Workbench:class{constructor(){this.current={};}open(){}reset(){}setThumbnails(){}relabel(){}},navigator:{userAgent:'test'},document:{addEventListener(){},documentElement:{classList:{contains(){return false;}}},getElementById:id=>nodes.get(id),querySelector:selector=>selector==='.archive-filter'?archiveFilter:{disabled:false},querySelectorAll:selector=>selector==='[data-notification-channel]'?channelButtons:[],createElement:node},
     renderMarkdown(){},window:{addEventListener(){}},localStorage,sessionStorage:scopedStorage,
     location:{hash:'',pathname:'/',search:''},history:{state:null,replaceState(state){this.state=state;},pushState(state){this.state=state;},back(){}},confirm:()=>true,setTimeout(){},clearTimeout(){},setInterval(){},
     ChatTimeline:class{constructor(){this.abort=new AbortController();}async start(){}dispose(){this.abort.abort();}relabel(){}refreshActions(){}},
@@ -61,7 +61,7 @@ async function fixture({sessionStore=new Map(),localStore=new Map(),skipStartup=
       }
       return response(saved.get(url)||{available:true,watching:false,notifyOnCompletion:false,requests:'inherit',completion:'inherit'});
     }});
-  vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/features/clients/client-navigation.js'),'utf8').match(/^function isCodexClient.*$/m)[0],context);
+  require('./fixtures/codex-entry-predicates.cjs')(context);
   for(const file of ['web/hosts/environment.js','web/hosts/browser-navigation.js','web/shared/i18n.js','web/features/chat/list-sync.js','web/features/accounts/account.js','web/features/chat/modes.js','web/features/chat/attachments.js','web/features/chat/activity.js','web/features/chat/fast-mode.js','web/features/chat/message-actions.js','web/features/chat/permissions.js','web/shell/app.js']){
     let source=fs.readFileSync(path.join(__dirname,'..',file),'utf8');
     if(skipStartup&&file==='web/shell/app.js')source=source.replace('startFromLink(initialPairingToken);initialPairingToken=null;','initialPairingToken=null;');
@@ -595,6 +595,18 @@ test('Codex list snapshot survives a new storage session and remains scoped to i
   assert.equal(second.run('restoreListSnapshot()'),true,'returning to A restores before a network read');
   assert.equal(second.nodes.get('sessions').children[0].dataset.id,'saved-a');
   assert.equal(second.listRequests.length,0);
+});
+
+test('independent Codex profiles restore only their own cached list',async()=>{
+  const ui=await fixture({skipStartup:true}),a='codex:'+'a'.repeat(32),b='codex:'+'b'.repeat(32);
+  ui.nodes.get('app').hidden=false;
+  ui.run("listIdentity='"+'f'.repeat(64)+"';selectedCodexEntry='"+a+"'");
+  ui.setList(()=>ui.response({sessions:[{id:'profile-chat',host:a,title:'Project A',projectKey:'p',projectName:'P',recency:1}],remoteHosts:[],availableSources:['ide'],unavailableHosts:[],complete:true}));
+  await ui.run('loadList(true)');
+  assert.equal(ui.run("selectedCodexEntry='"+b+"';restoreListSnapshot()"),false);
+  assert.equal(ui.run('selectedCodexEntry=null;restoreListSnapshot()'),false);
+  assert.equal(ui.run("selectedCodexEntry='"+a+"';restoreListSnapshot()"),true);
+  assert.equal(ui.nodes.get('sessions').children[0].dataset.id,'profile-chat');
 });
 
 test('legacy Codex tab snapshot migrates after authenticated reentry',async()=>{

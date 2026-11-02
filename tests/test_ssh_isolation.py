@@ -42,6 +42,7 @@ class SshIsolationTests(unittest.TestCase):
         local, remote = Bridge.__new__(Bridge), Bridge.__new__(Bridge)
         local.host, remote.host = 'local', 'remote:fixture'
         local.accounts = remote.accounts = accounts
+        local.released_cli = Mock()
         local.session = lambda *args, **kwargs: SimpleNamespace(
             activation_lock=threading.Lock(), connected=True)
 

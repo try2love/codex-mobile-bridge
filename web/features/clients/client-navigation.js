@@ -81,7 +81,7 @@ class ClientNavigation {
   restoreClientSelection(){
     this.provider=localStorage.getItem('bridge-client')||'codex';const requested=new URLSearchParams(location.search).get('client');
     if(requested&&/^[a-z][a-z0-9:-]*$/.test(requested))this.provider=requested;
-    if(isCodexEntry(this.provider)){this.initialHost=this.provider;this.codexEntry=this.provider;this.provider='codex';}
+    if(isCodexEntry(this.provider)){this.initialHost=this.provider;this.codexEntry=this.provider;this.provider='codex';if(this.initialHost.startsWith('wsl:'))localStorage.setItem('bridge-client','codex');}
   }
   paintSettingsActions(){
     this.settingsNotifications.hidden=!!window.BridgeSharedRelay;
@@ -243,7 +243,7 @@ class ClientNavigation {
     this.cancelListSwipe();
     const previousClient=this.activeClient(),host=isCodexEntry(id)?id:undefined;if(host)id='codex';
     const resetCodex=id==='codex'&&!host&&!!this.codexEntry;if(id==='codex')this.codexEntry=host||null;
-    if(id)localStorage.setItem('bridge-client',host||id);
+    if(id)localStorage.setItem('bridge-client',host?.startsWith('codex:')?host:id);
     if(id===this.provider&&this.view.provider===(isCodexClient(id)?'codex':id||'codex')){
       if(host&&host!==previousClient||resetCodex){++this.revision;this.listReadDone=false;this.listVisit=(this.listVisit||0)+1;this.paint();await this.onApplicationChange?.(id,id,{activate,host:host||'local',loadList});}
       return;

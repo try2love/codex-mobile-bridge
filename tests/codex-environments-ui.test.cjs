@@ -32,6 +32,7 @@ function fixture({native=true,listSource='all',host='local',wslSupported=true}={
   clientNavigation:{wslSupported,provider:'codex',clients:[{id:'codex',entries}]},currentHost:host,currentId:null,listSource,listRows:[],
   renderSourceFilter(){},uuid:()=> '11111111-1111-4111-8111-111111111111',setLanguageBusy(){},loadList:async()=>{},openChat:async(id,where)=>opened.push({id,host:where}),toast:message=>notices.push(message),isCodexClient:id=>id==='codex',
   sessionStorage:{getItem:key=>store.get(key)||null,setItem:(key,value)=>store.set(key,value),removeItem:key=>store.delete(key)}});
+ require('./fixtures/codex-entry-predicates.cjs')(context);
  vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/shared/project-picker.js'),'utf8'),context);
  vm.runInContext(environmentsCode+creationCode+accountCode,context);
  return {$,calls,opened,entries,context,run:code=>vm.runInContext(code,context),setHandler:next=>handler=next};

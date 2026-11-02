@@ -19,6 +19,7 @@ class ClientLifecycleTests(unittest.TestCase):
         from bridge.features.endpoints.registry import Entries
         from bridge.platforms.windows import wsl
         entries = self.bridge.entries = Entries(self.root)
+        entries.wsl = wsl
         self.addCleanup(entries.close)
         # The shared lifecycle fixture is macOS; supply both Windows registries.
         from bridge.clients.claude.wsl import WslClaudeEntries
@@ -55,6 +56,7 @@ class ClientLifecycleTests(unittest.TestCase):
         from bridge.features.endpoints.registry import Entries, entry_id
         from bridge.platforms.windows import wsl
         entries = self.bridge.entries = Entries(self.root)
+        entries.wsl = wsl
         self.addCleanup(entries.close)
         identifier = entry_id('Ubuntu', 'fixture', '/home/fixture/.codex')
         entries.entries = [{'id': identifier, 'distribution': 'Ubuntu', 'user': 'fixture',

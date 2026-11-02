@@ -26,7 +26,7 @@ try{
   row.projections.values.contextPressure={projectedTokens:120,pressureTokens:100,contextWindow:1000};
   const session=(await(await request('detail')).json()).session;
   assert.equal(session.permissionMode,'full-access');assert.equal(session.permissionLabel,'Full access');
-  assert.deepEqual(session.contextUsage,{usedTokens:120,contextWindow:1000,estimated:true});
+  assert.deepEqual(session.contextUsage,{usedTokens:120,contextWindow:1000,pressureTokens:100,estimated:true});
   delete row.projections.values.contextPressure;delete row.projections.values.permissions;
   const initialStatus=await(await request('status')).json();assert.equal(initialStatus.configured,false);assert.equal(initialStatus.bridgeRevision,9);
   const services={settings:{describe:options=>{assert.deepEqual(options,{redactSecrets:true});return [{ns:'provider',value:{apiKeyEnv:'FIXTURE_KEY',private:'DO-NOT-EXPOSE'}}];}},credentials:{describe:async ref=>{assert.equal(ref,'FIXTURE_KEY');return {configured:true};},resolve:()=>{throw Error('Must not resolve credentials');}},llm:{listConfigurableProviders:()=>[{provider:'deepseek',settingsNs:'provider',settingsPath:[]}]}};

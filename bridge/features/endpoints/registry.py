@@ -2,6 +2,7 @@
 import hashlib
 import json
 import threading
+import sys
 import os
 import re
 from pathlib import Path, PureWindowsPath
@@ -12,7 +13,6 @@ except ModuleNotFoundError:  # Python 3.9 and 3.10 gateway builds
     from bridge.vendor.wsl_tomli import loads as load_toml
 
 from bridge.app.lifecycle import private_json
-from bridge.platforms.windows import wsl
 from bridge.clients.codex.remote import RemoteUnavailable
 
 
@@ -63,6 +63,10 @@ class Entries:
         self.closed = threading.Event()
         self.bridges = {}
         self.candidates = {}
+        self.wsl = None
+        if sys.platform == 'win32':
+            from bridge.platforms.windows import wsl
+            self.wsl = wsl
         self.local_factory = local_factory
         self.desktop_home = Path(desktop_home).resolve() if desktop_home else None
         if self.path.exists():
@@ -85,21 +89,23 @@ class Entries:
 
     def public(self):
         with self.lock:
-            running = set(wsl.running_distributions())
+            running = set(self.wsl.running_distributions()) if self.wsl else set()
             values = {r['id']: self.public_row(r, r.get('enabled', True), r.get('kind') == 'codex-local' or r.get('distribution') in running)
                       for r in self.entries}
             for key, row in self.candidates.items():
                 values.setdefault(key, self.public_row(row, False, row.get('kind') == 'codex-local' or row.get('distribution') in running))
-            return {'wslSupported': os.name == 'nt',
+            return {'wslSupported': self.wsl is not None,
                     'entries': [{'id': 'desktop', 'label': '桌面 Codex', 'kind': 'desktop',
                                  'enabled': True, 'running': True}, *values.values()]}
 
     def scan(self):
         # Explicit action only. No startup/periodic automatic distribution probing.
+        if not self.wsl:
+            raise ValueError('当前电脑不支持 WSL 应用')
         candidates, errors = {}, []
-        for distribution in wsl.running_distributions():
+        for distribution in self.wsl.running_distributions():
             try:
-                info = wsl.probe(distribution)
+                info = self.wsl.probe(distribution)
                 for item in info.get('homes', []):
                     identifier = entry_id(distribution, info['user'], item['home'])
                     candidates[identifier] = {'id': identifier, 'distribution': distribution,

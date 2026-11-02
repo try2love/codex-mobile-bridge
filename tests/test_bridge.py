@@ -1396,6 +1396,7 @@ class HttpTests(unittest.TestCase):
         entry = 'wsl:' + 'a' * 32
         manager = DesktopSessions.__new__(DesktopSessions)
         manager.read_lock = threading.Lock()
+        manager.adapters = {'claude': Mock(), 'deepseek': Mock()}
         manager.config = {'enabled': {'codex': False, 'claude': True, 'deepseek': False}}
         manager.bridge = SimpleNamespace(entries=SimpleNamespace(hosts=lambda: {entry: {}}))
         manager.applications = Mock(side_effect=AssertionError('runtime scan during authentication'))

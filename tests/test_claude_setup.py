@@ -246,7 +246,7 @@ class ClaudeProfileEvidence(unittest.TestCase):
     @patch('bridge.clients.claude.setup.sys.platform', 'darwin')
     def test_only_selected_executable_open_storage_establishes_profile(self):
         other = self.root/'Other/Claude.app/Contents/MacOS/Claude'
-        processes = Mock(stdout=f' 42 {self.executable}\n 51 {other}\n')
+        processes = Mock(stdout=f' 42 {self.executable.as_posix()[len(self.executable.drive):]}\n 51 {other.as_posix()[len(other.drive):]}\n')
         files = Mock(stdout=f'p42\nn{self.posix_third}/Local Storage/leveldb/LOCK\n'
                             f'n{self.posix_third}/Session Storage/LOCK\n'
                             f'n{self.posix_default}/claude_desktop_config.json\n')

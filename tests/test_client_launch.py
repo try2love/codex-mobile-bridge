@@ -175,7 +175,7 @@ class ProcessLifecycleTests(unittest.TestCase):
     def test_mac_process_paths_are_never_truncated_at_terminal_width(self):
         from bridge.clients.desktop_app import DesktopApp
         app = DesktopApp('/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness', '/fixture/home')
-        with patch('bridge.clients.desktop_app.sys.platform', 'darwin'), patch('bridge.clients.desktop_app.os.getuid', return_value=1000, create=True), patch('bridge.clients.desktop_app.subprocess.run', return_value=Mock(stdout='42 '+str(app.executable))) as run:
+        with patch('bridge.clients.desktop_app.sys.platform', 'darwin'), patch('bridge.clients.desktop_app.os.getuid', return_value=1000, create=True), patch('bridge.clients.desktop_app.subprocess.run', return_value=Mock(stdout='42 '+app.executable.as_posix()[len(app.executable.drive):])) as run:
             self.assertEqual(app.processes(), [42])
             self.assertIn('-ww', run.call_args.args[0])
 

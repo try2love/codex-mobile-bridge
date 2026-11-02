@@ -19,7 +19,8 @@ class MacOSProcessCommandsTests(unittest.TestCase):
             self.assertEqual(commands([701]), {701: '/fixture/Desktop --profile /path with spaces'})
             self.assertEqual(run.call_args.args[0], ['ps', '-ww', '-p', '701', '-o', 'pid=,args='])
 
-    def test_display_name_uses_same_user_kernel_image_without_signals(self):
+    @patch('os.getuid', return_value=501, create=True)
+    def test_display_name_uses_same_user_kernel_image_without_signals(self, _uid):
         from bridge.platforms.macos.desktop import processes
         import os
         result=SimpleNamespace(stdout=' 701 ZCode\n 702 /Applications/Other.app/Contents/MacOS/Other\n 703 vanished\n')

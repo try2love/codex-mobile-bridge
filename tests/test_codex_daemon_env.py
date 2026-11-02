@@ -83,14 +83,18 @@ class DaemonAbsenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as directory:
             home=Path(directory);state=home/'app-server-daemon';state.mkdir()
             (state/'daemon.pid').write_text(json.dumps({'pid':12345}))
-            with patch('bridge.platforms.codex_daemon_env.os.name','posix'), patch('bridge.platforms.codex_daemon_env.os.kill',side_effect=ProcessLookupError):
+            with patch('bridge.platforms.codex_daemon_env.os', wraps=os) as native:
+                native.name = 'posix'
+                native.getuid.return_value = (state/'daemon.pid').stat().st_uid
+                native.kill.side_effect = ProcessLookupError
                 self.assertTrue(daemon_process_absent(home))
-            with patch('bridge.platforms.codex_daemon_env.os.kill',side_effect=PermissionError):
+                native.kill.side_effect = PermissionError
                 self.assertFalse(daemon_process_absent(home))
-            with patch('bridge.platforms.codex_daemon_env.os.kill',return_value=None):
+                native.kill.return_value = None
+                native.kill.side_effect = None
                 self.assertFalse(daemon_process_absent(home))
-            (state/'daemon.pid').write_text('[]')
-            self.assertFalse(daemon_process_absent(home))
+                (state/'daemon.pid').write_text('[]')
+                self.assertFalse(daemon_process_absent(home))
 
 
 if __name__ == '__main__':

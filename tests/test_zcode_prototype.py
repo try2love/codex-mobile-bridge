@@ -164,7 +164,8 @@ class ZCodePrototypeTests(unittest.TestCase):
 
     @patch('bridge.platforms.macos.loopback.Native')
     @patch('bridge.platforms.macos.loopback.subprocess.run')
-    def test_endpoint_rejects_non_loopback_or_wrong_process(self, run, native):
+    @patch('os.getuid', return_value=501, create=True)
+    def test_endpoint_rejects_non_loopback_or_wrong_process(self, _uid, run, native):
         run.return_value = Mock(returncode=0, stdout='p123\nn*:17742\n')
         with self.assertRaises(ValueError): listener_identity(17742, '/Applications/ZCode.app/Contents/MacOS/ZCode')
         native.assert_not_called()

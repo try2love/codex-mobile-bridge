@@ -123,7 +123,7 @@ class GitWorkspaceTests(unittest.TestCase):
     def test_remote_routing_does_not_activate_owner(self):
         self.baseline(); (self.root / 'hello.txt').write_text('remote change\n')
         store = RemoteStore('fixture-host'); store.get = lambda _: {'cwd': str(self.root)}
-        bridge = SimpleNamespace(host='remote:fixture', store=store)
+        bridge = SimpleNamespace(host='remote:fixture', local=False, store=store)
         def execute(alias, source, timeout):
             self.assertEqual(alias, 'fixture-host'); output = io.StringIO()
             with contextlib.redirect_stdout(output): exec(compile(source, '<remote-git>', 'exec'), {})
@@ -232,7 +232,7 @@ class GitWorkspaceTests(unittest.TestCase):
     def test_remote_management_and_history_use_remote_repository(self):
         self.baseline(); (self.root / 'hello.txt').write_text('remote staged change\n')
         store = RemoteStore('fixture-host'); store.get = lambda _: {'cwd': str(self.root)}
-        bridge = SimpleNamespace(host='remote:fixture', store=store)
+        bridge = SimpleNamespace(host='remote:fixture', local=False, store=store)
         def execute(alias, source, timeout):
             self.assertEqual(alias, 'fixture-host'); output = io.StringIO()
             with contextlib.redirect_stdout(output): exec(compile(source, '<remote-git>', 'exec'), {})
