@@ -58,7 +58,14 @@ final class DownloadManager: NSObject, URLSessionDataDelegate, @unchecked Sendab
         guard GatewayURL.same(url, origin), url.fragment == nil else { return false }
         return GatewayURL.apiPath(url, origin).range(of: "^/api/sessions/[0-9a-f-]{36}/(?:files/[a-f0-9]{64}|workspace/download)$", options: .regularExpression) != nil ||
             GatewayURL.apiPath(url, origin).range(of: "^/api/desktop-sessions/(?:claude|deepseek|zcode)/workspace/download$", options: .regularExpression) != nil ||
+            imageDownload(url, origin: origin) ||
             diagnosticReport(url, origin: origin)
+    }
+
+    static func imageDownload(_ url: URL, origin: String) -> Bool {
+        let flags = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.filter { $0.name == "download" } ?? []
+        return flags.count == 1 && flags[0].value == "1" && GatewayURL.apiPath(url, origin).range(of:
+            "^(?:/api/sessions/[0-9a-f-]{36}/(?:uploads/[0-9a-f-]{36}/preview|desktop-images/[a-f0-9]{64})|/api/desktop-sessions/(?:claude|deepseek|zcode)/(?:uploads/[0-9a-f-]{36}/preview|images/[a-f0-9]{64}))$", options: .regularExpression) != nil
     }
 
     static func diagnosticReport(_ url: URL, origin: String) -> Bool {

@@ -72,6 +72,34 @@ def _permission_prompt_args(binary, env):
     return ['--permission-prompts', 'host']
 
 
+def _supports_compact(catalog, *, desktop_projection=False):
+    for row in catalog.get('commands') or []:
+        if not isinstance(row, dict) or row.get('name') != 'compact':
+            continue
+        if row.get('builtin') is True:
+            return True
+        # Desktop projects SDK commands to name/description/argumentHint and
+        # drops builtin. Match its observed native descriptor, never name alone:
+        # custom commands can shadow compact and carry a source in description.
+        if (desktop_projection and 'builtin' not in row and
+                row.get('description') == 'Free up context by summarizing the conversation so far' and
+                row.get('argumentHint') == '<optional custom summarization instructions>'):
+            return True
+    return False
+
+
+def _compact_cli(owned, request_id):
+    # The native slash dispatcher owns compaction; never substitute a model prompt.
+    with owned.condition:
+        if not _supports_compact(owned.catalog):
+            raise BridgeUnavailable('当前 Claude Code 未提供原生上下文压缩命令')
+        if owned.active or owned.pending or owned.error or owned.finished:
+            raise BridgeUnavailable('请等待当前 Claude Code 任务结束后再压缩上下文')
+        owned.active = True
+        owned.write({'type': 'user', 'uuid': request_id,
+                     'message': {'role': 'user', 'content': '/compact'}})
+
+
 def _skill_catalog(catalog):
     """Use commands loaded by the native CLI with this profile and project."""
     rows = {}
@@ -385,6 +413,7 @@ def _saved(path, origin):
 class _Owned:
     def __init__(self, process, origin, native, cwd):
         self.process, self.origin, self.native, self.cwd = process, origin, native, cwd
+        self.connection_token = str(uuid.uuid4())
         self.condition = threading.Condition()
         self.responses = {}
         self.pending = {}
@@ -491,6 +520,9 @@ class _Owned:
         return response.get('response') or {}
 
     def release_for_archive(self, timeout=20):
+        return self.release_connection(stop=True, timeout=timeout)
+
+    def release_connection(self, stop=False, timeout=20):
         """Finish this owned CLI only; never terminate a foreign or shared process."""
         deadline = time.monotonic() + timeout
         with self.condition:
@@ -499,22 +531,25 @@ class _Owned:
             active = self.active or bool(self.pending)
         if self.process.poll() is not None:
             return
+        if active and not stop:
+            return {'status': 'waiting'}
         if active:
             self.control({'subtype': 'interrupt'}, timeout=max(.1, deadline-time.monotonic()))
         with self.condition:
             while (self.active or self.pending) and not self.finished and time.monotonic() < deadline:
                 self.condition.wait(max(0, deadline-time.monotonic()))
             if self.error or self.active or self.pending:
-                raise BridgeUnavailable('停止结果待核对，尚未发送归档请求')
+                raise BridgeUnavailable('停止结果待核对，连接尚未释放')
         # EOF lets the original executor flush and exit; no terminate/kill fallback.
         self.process.stdin.close()
         try:
             code = self.process.wait(timeout=max(.1, deadline-time.monotonic()))
             # Native print mode exits 1 after an acknowledged user interruption.
             if code != 0 and not (active and code == 1):
-                raise BridgeUnavailable('原会话未正常退出，尚未发送归档请求')
+                raise BridgeUnavailable('原会话未正常退出，连接释放结果待核对')
         except subprocess.TimeoutExpired:
-            raise BridgeUnavailable('原会话连接尚未释放，尚未发送归档请求') from None
+            raise BridgeUnavailable('原会话连接尚未释放，请核对原会话') from None
+        return {'status': 'released', 'notice': '连接已释放，可在电脑端继续'}
 
     def close(self):
         try:
@@ -578,6 +613,9 @@ class ClaudeCli:
         finally:
             with self.lock:
                 self.auth_refreshing = False
+
+    def cli_connections(self):
+        return owned_connections(self)
 
     def busy(self):
         with self.lock:
@@ -845,6 +883,7 @@ class ClaudeCli:
                             'resume': can_resume,
                             'send': live and public['connectionState'] == 'ready',
                             'models': live, 'permissions': live, 'stop': live,
+                            'compact': live and not owned.active and not owned.pending and _supports_compact(owned.catalog),
                             'attachments': True, 'queue': False, 'steer': False, 'skills': live,
                             **row.get('capabilities', {})}}
             if action == 'catalog':
@@ -928,6 +967,8 @@ class ClaudeCli:
                         raise BridgeUnavailable('请等待当前 Claude Code 任务结束后再发送')
                     owned.active = True
                     owned.write({'type': 'user', 'message': {'role': 'user', 'content': content}})
+            elif action == 'compact':
+                _compact_cli(owned, body['id'])
             elif action == 'stop':
                 owned.control({'subtype': 'interrupt'})
             elif action == 'settings':
@@ -984,3 +1025,26 @@ class ClaudeCli:
             for owned in self.owned.values():
                 owned.close()
             self.owned.clear()
+
+
+def owned_connections(client, remote=False):
+    """Local, SSH and WSL share the same owned print-session shutdown path."""
+    with client.lock:
+        rows = []
+        for sid, row in client.index.items():
+            owned = client.owned.get(sid if remote else row['nativeId'])
+            if not owned or owned.origin != row['origin'] or owned.process.poll() is not None:
+                continue
+            token = owned.connection_token
+            def release(stop, owned=owned, sid=sid, native=row['nativeId'], token=token):
+                with client.lock:
+                    if client.owned.get(sid if remote else native) is not owned or owned.connection_token != token:
+                        raise BridgeUnavailable('原 CLI 连接已变化；未操作新的连接')
+                    result = owned.release_connection(stop)
+                    if result and result['status'] == 'released':
+                        client.owned.pop(sid if remote else native, None)
+                    return result or {'status': 'released'}
+            rows.append({'key': token, 'provider': 'claude', 'sessionId': sid,
+                         'host': row.get('host', 'local'), 'title': row.get('title') or sid,
+                         'location': row.get('hostLabel') or row.get('host', '本机 CLI'), '_release': release})
+        return rows

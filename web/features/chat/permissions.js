@@ -16,14 +16,14 @@ function permissionOption(button,preset,label,help,selected){
 
 // All clients and side chats share native context usage and last-prompt semantics.
 class ContextUsageControl {
-  constructor(){
-    this.button=document.createElement('button');this.button.type='button';this.button.className='tool-button context-usage';this.button.hidden=true;
+  constructor({onCompact}={}){
+    this.onCompact=onCompact;this.button=document.createElement('button');this.button.type='button';this.button.className='tool-button context-usage';this.button.hidden=true;
     this.ring=document.createElement('span');this.ring.className='context-usage-ring';this.ring.setAttribute('aria-hidden','true');this.button.append(this.ring);
     this.button.onclick=()=>this.open();
   }
   update(state){
     if(!state||state.id!==this.state?.id){this.dialog?.remove();this.dialog=null;}
-    this.state=state;this.button.hidden=!state;const usage=state?.contextUsage;
+    this.state=state;if(this.compactButton)this.compactButton.disabled=!state?.connected||state?.capabilities?.compact!==true||!!state?.busy;this.button.hidden=!state;const usage=state?.contextUsage;
     const known=usage?.measurement!=='lastPrompt'&&Number.isFinite(usage?.usedTokens)&&usage.usedTokens>=0&&Number.isFinite(usage.contextWindow)&&usage.contextWindow>0;
     const percent=known?Math.round(usage.usedTokens/usage.contextWindow*100):null;
     this.ring.style.setProperty('--context-percent',known?Math.min(percent,100)+'%':'0%');this.ring.classList.toggle('unknown',!known);
@@ -40,12 +40,20 @@ class ContextUsageControl {
       line(usage.measurement==='lastPrompt'?'最近一次模型输入':'已用 Token',number(usage.usedTokens));line('上下文容量',number(usage.contextWindow));
       if(usage.measurement!=='lastPrompt'&&usage.contextWindow>0&&Number.isFinite(usage.usedTokens)&&usage.usedTokens>=0)line('使用占比',(usage.usedTokens/usage.contextWindow*100).toFixed(1)+'%');
       if(usage.model)line('模型',usage.model);
+      if(Number.isFinite(usage.autoCompactThresholdTokens))line('自动压缩阈值',number(usage.autoCompactThresholdTokens));
+      if(Number.isFinite(usage.pressureTokens)&&usage.pressureTokens!==usage.usedTokens)line('已确认上下文 Token',number(usage.pressureTokens));
+      for(const [key,label] of [['inputTokens','最近输入 Token'],['cacheReadTokens','缓存读取 Token'],['cacheWriteTokens','缓存写入 Token']])if(Number.isFinite(usage.cache?.[key]))line(label,number(usage.cache[key]));
       if(usage.compacted)line('最近一次压缩后统计。');
       if(usage.measurement==='lastPrompt')line('统计最近一次请求的输入与缓存 Token；不包含尚未发送的内容。');
       if(usage.estimated)line('包含客户端对尚未发送内容的估算。');
       if(usage.cached||!this.state.connected)line('当前为缓存数据，连接恢复后更新。');
     }
     if(previous&&!usage){line('最近一次模型输入',number(previous.usedTokens));line('统计最近一次请求的输入与缓存 Token；不包含尚未发送的内容。');}
+    if(this.onCompact&&this.state.capabilities?.compact===true){
+      const stateId=this.state.id,button=this.compactButton=document.createElement('button');button.type='button';button.textContent=BridgeI18n.t('压缩上下文');button.disabled=!this.state.connected||!!this.state.busy;
+      button.onclick=async()=>{if(button.disabled||stateId!==this.state?.id)return;button.disabled=true;try{if(await this.onCompact())dialog.close();}finally{if(dialog.open&&stateId===this.state?.id)button.disabled=!this.state.connected||this.state.capabilities?.compact!==true||!!this.state.busy;}};
+      dialog.append(button);
+    }
     dialog.addEventListener('close',()=>dialog.remove(),{once:true});document.body.append(dialog);dialog.showModal();
   }
   dispose(){this.dialog?.remove();this.button.remove();}

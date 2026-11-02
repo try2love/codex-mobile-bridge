@@ -76,3 +76,23 @@ HTTPS 实发前即时核验原生执行器为 GLM-5.3-Flash / low：所选 Skill
 已有聊天、账号和通知组件承接第四客户端，未增加 ZCode 专属刷新循环、聊天页或模型执行器。新增账号文件格式、原生 provider 目录及内核进程发现需要维护；私有快照不能跨电脑搬运。仍属 Mac Test 原型，固定会话、版本与临时 loopback 的范围不变；不宣称任意会话、新建聊天、跨平台原生接入或第二真实账号均已通过。手机原生壳的通知路由更新需要安装对应新壳后生效，网页聊天入口由网关更新提供。
 
 当前同项目多会话与原生工作模式接入见[共用原生工作模式与 ZCode 新建聊天](2026-11-01-native-work-modes-and-zcode-create.md)；该决定部分取代本文的固定单会话范围，保留原 owner、模型与未知回执约束。
+
+## 原生发送方式
+
+共享输入区继续使用发送新消息、完成后发送和补充当前任务三个选项。ZCode 将本次选择映射为原生 requestedDelivery，不更改会话默认 followupMode；原生裁决为 queue 时统一返回 queued。Flash 本轮真实 guide 请求被原 App 接收为 queue，界面因此提示已入队，不宣称即时打断成功。空闲时 requestedDelivery=queue 可以被原 App 立即执行，同样以回执为准。
+
+可选 sendModes 能力按发送方式控制共享按钮，不增加专属输入框。运行中不允许新消息抢占；阻塞审批、暂停队列下未确认的清空行为不能通过旧 send 路径绕开。对未提供 sendModes 的其他客户端维持原逻辑。
+
+协议、共享输入区和回执映射检查通过。真实独立 Flash/low 会话的运行中 queue 与 guide 请求均得到 inputAccepted/delivery=queue，随后任务完成，队列为空、autoDrain 恢复为 true。测试未证明 Flash 的即时 guide 能力，保留原生降级；未将“已接收”当成“已即时补充”。Mac Test zcode11 与手机 Test build 42 已打包，手机原生交互仍待验收。
+
+## 原生消息与标题操作
+
+ZCode 改名使用 renameSession，并继续通过共享 RenameCommands 的持久幂等记录和原生读回确认。消息分支使用 forkAssistant；编辑重发使用 editUserQuery，携带原生 rowId/entityId/logEpoch 与读取时 revision 做 CAS，拒绝过期或不可编辑消息。编辑保留原生附件引用，并显式设置 workspaceMode=preserve，不回滚已执行的文件操作。
+
+编辑界面复用 MessageActions 表单、草稿和未知结果处理，仅由 DesktopSessionsView 提供原生路由回调。成功分支只接入原生回执返回的新会话，复用原 App 工作区的引用计数连接；接入未就绪不重放分支命令。每个会话独立持有工作区引用，获取失败释放本次引用。
+
+真实独立会话改名108ms、分支324ms、编辑回执194ms；分支保持原目录和 Flash/low，编辑后收到指定短回复。测试仅作用于临时验收聊天；安装后的 HTTPS Test 已实际打开共享编辑表单，未重复提交模型请求；手机编辑实操仍待验收。上下文维护与后台任务见[共用控制](2026-11-01-native-context-and-background-controls.md)。
+
+## 原生权限
+
+原 App 的 build、guarded、yolo 分别为变更前确认、自主模式、完全访问。共享权限控件根据选项声明显示风险复选框，ZCode 适配器在发送原生命令前核验本次确认；忙碌、待审批、计划模式和不匹配的会话版本均不能越过原生约束。专用 Flash / low 会话在原 App 和安装后的手机接口均读回 build → guarded → build，未产生推理请求。完全访问的拒绝和确认路径通过隔离替身验证，不在用户会话打开完全访问。

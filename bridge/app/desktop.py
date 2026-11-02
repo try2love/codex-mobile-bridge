@@ -85,7 +85,7 @@ class Desktop:
             return sessions.control(value)
         if action == 'cli-access':
             return bridge.cli_access_control(value)
-        return bridge.accounts.control(value) if action == 'accounts' else bridge.accounts.account(value)
+        return bridge.accounts_control(value) if action == 'accounts' else bridge.accounts.account(value)
 
     def config(self):
         if not self.config_path.exists():
@@ -183,7 +183,6 @@ class Desktop:
         hosts = ['127.0.0.1', 'localhost'] + static_addresses if preferences['lan'] else ['127.0.0.1', 'localhost']
         if not preferences['localAccess']:
             hosts = [host for host in hosts if host not in ('127.0.0.1', 'localhost')]
-        urls = [f'http://{host}:{preferences["port"]}/' for host in hosts if host != 'localhost']
         quick = read_json(self.data_dir/'cloudflare-status.json', {})
         if not runtime['running'] or quick.get('pid') != runtime.get('pid'):
             quick = {}
@@ -195,8 +194,7 @@ class Desktop:
             value = public.read_text(encoding='utf-8').splitlines()[0]
             if value.startswith('https://'):
                 quick_url = value
-                urls.insert(0, value)
-        urls = [url+'/' for url in access.public_urls(preferences)] + urls
+        urls = [url if url == quick_url else url+'/' for url in access.phone_urls(preferences, hosts, quick_url)]
         external = {}
         for entry in preferences['connections']:
             status = read_json(self.data_dir/('ssh-status-'+entry['id']+'.json'), {})

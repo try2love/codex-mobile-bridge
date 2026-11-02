@@ -16,6 +16,17 @@ class TransportTests(unittest.TestCase):
     request = test_bridge.HttpTests.request
     login = test_bridge.HttpTests.login
 
+    def test_fast_cloudflare_asset_keeps_id_without_routine_info_records(self):
+        headers = {'CF-Ray': 'abcdef0123456789-SIN'}
+        conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=3)
+        self.addCleanup(conn.close)
+        with self.assertNoLogs('bridge.api.httpd', level='INFO'):
+            conn.request('GET', '/style.css', headers=headers)
+            response = conn.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertRegex(response.getheader('X-Bridge-Request-Id'), r'^[a-f0-9]{16}$')
+            self.assertTrue(response.read())
+
     def test_send_response_correlates_ray_without_private_request_data(self):
         headers = self.login()
         headers['CF-Ray'] = 'abcdef0123456789-SIN'

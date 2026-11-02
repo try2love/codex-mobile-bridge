@@ -24,6 +24,7 @@ E00000000000000000000009 /* mobile-system-bars.js in Resources */ = {isa = PBXBu
 F30000000000000000000001 = {isa = PBXBuildFile; fileRef = F30000000000000000000002; };
 E00000000000000000000002 /* WebScripts.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000000000000000000001; };
 E00000000000000000000004 /* mobile-ui.js in Resources */ = {isa = PBXBuildFile; fileRef = E00000000000000000000003; };
+FA4400000000000000000006 /* channel-link.js in Resources */ = {isa = PBXBuildFile; fileRef = FA4400000000000000000005; };
 E00000000000000000000006 /* mobile-clipboard.js in Resources */ = {isa = PBXBuildFile; fileRef = E00000000000000000000005; };
 D00000000000000000000002 = {isa = PBXBuildFile; fileRef = D00000000000000000000001; };
 C00000000000000000000002 = {isa = PBXBuildFile; fileRef = C00000000000000000000001; };
@@ -61,6 +62,7 @@ E00000000000000000000008 /* mobile-system-bars.js */ = {isa = PBXFileReference; 
 F30000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionDiscovery.swift; sourceTree = "<group>"; };
 E00000000000000000000001 /* WebScripts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebScripts.swift; sourceTree = "<group>"; };
 E00000000000000000000003 /* mobile-ui.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = ../shared/web/mobile-ui.js; sourceTree = SOURCE_ROOT; };
+FA4400000000000000000005 /* channel-link.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = ../shared/web/channel-link.js; sourceTree = SOURCE_ROOT; };
 E00000000000000000000005 /* mobile-clipboard.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = ../shared/web/mobile-clipboard.js; sourceTree = SOURCE_ROOT; };
 D00000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadManager.swift; sourceTree = "<group>"; };
 C00000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileRelease.swift; sourceTree = "<group>"; };
@@ -141,6 +143,7 @@ F30000000000000000000002, F40000000000000000000001, F40000000000000000000002,
 			sourceTree = "<group>";
 		};
 B00000000000000000000014 = {isa = PBXGroup; children = (B00000000000000000000003,); path = BridgeActivity; sourceTree = "<group>"; };
+E00000000000000000000007 /* Shared Web */ = {isa = PBXGroup; children = (E00000000000000000000003, FA4400000000000000000005, E00000000000000000000008,); name = "Shared Web"; sourceTree = "<group>"; };
 E00000000000000000000007 /* Shared Web */ = {isa = PBXGroup; children = (E00000000000000000000003, E00000000000000000000005, E00000000000000000000008,); name = "Shared Web"; sourceTree = "<group>"; };
 F40000000000000000000014 = {isa = PBXGroup; children = (F40000000000000000000003,); path = BridgeNotifications; sourceTree = "<group>"; };
 /* End PBXGroup section */
@@ -210,6 +213,7 @@ F20000000000000000000002, F20000000000000000000003,
 F20000000000000000000001,
 F20000000000000000000000,
 E00000000000000000000004 /* mobile-ui.js in Resources */,
+FA4400000000000000000006 /* channel-link.js in Resources */,
 E00000000000000000000006 /* mobile-clipboard.js in Resources */,
 E00000000000000000000009 /* mobile-system-bars.js in Resources */,
 				A00000000000000000000053 /* AppIcon76x76@2x.png in Resources */,

@@ -31,6 +31,15 @@ class ZCodePrototypeTests(unittest.TestCase):
             mapping['zcode'] = 0
         return manager
 
+    def test_full_access_without_checkbox_is_blocked_before_native_dispatch(self):
+        transport = Mock(side_effect=AssertionError("native dispatch must not occur"))
+        manager = self.manager(transport)
+        body = {'id': str(uuid.uuid4()), 'mode': 'yolo', 'confirmed': False}
+        receipt = manager.call('zcode', 'access', 'sess_test', body)
+        self.assertEqual(receipt['status'], 'blocked')
+        self.assertEqual(manager.call('zcode', 'access', 'sess_test', body), receipt)
+        transport.assert_not_called()
+
     def test_shared_receipts_survive_reconnect_and_never_replay_unknown_send(self):
         transport = Mock(side_effect=TimeoutError('accepted but receipt lost'))
         first = self.manager(transport)
@@ -114,6 +123,44 @@ class ZCodePrototypeTests(unittest.TestCase):
         self.assertEqual(session['contextUsageStatus'], 'unavailable')
         snapshot['usage']['contextWindow'] = {'usedTokens': 0, 'maxTokens': 1000000}
         self.assertEqual(project_snapshot(snapshot, str(self.project))['session']['contextUsage']['usedTokens'], 0)
+
+    def test_new_project_binding_and_file_reads_do_not_use_the_anchor_directory(self):
+        new = self.root / 'new-project'; new.mkdir(); (new / 'test.md').write_text('new project')
+        (self.project / 'test.md').write_text('old project')
+        transport = Mock(return_value={'status': 'accepted', 'result': {'id': 'sess_new'},
+                                      'workspace': str(new), 'binding': {'owner': 'new-project'}})
+        adapter = ZCodePrototype(self.root, self.config, transport)
+        result = adapter.call('create', body={'id': str(uuid.uuid4()), 'projectKey': 'registered',
+                              'firstMessage': 'test', 'directoryProject': {'cwd': str(new)}})
+        self.assertNotIn('binding', result)
+        transport.return_value = {'status': 'accepted'}
+        adapter.call('send', 'sess_new', {'id': str(uuid.uuid4()), 'text': 'read', 'projectFiles': ['test.md']})
+        request = transport.call_args[0][0]
+        self.assertEqual(request['workspace'], str(new))
+        self.assertEqual(request['binding'], {'owner': 'new-project'})
+        import base64
+        self.assertEqual(base64.b64decode(request['body']['files'][0]['data']), b'new project')
+        self.assertEqual(adapter.config['binding'], {'owner': 'one'})
+
+    def test_new_project_requires_explicit_binding_after_adapter_restart(self):
+        new = str(self.root / 'new-project')
+        transport = Mock(return_value={'sessions': [{'id': 'sess_new', 'cwd': new}]})
+        adapter = ZCodePrototype(self.root, self.config, transport)
+        adapter.call('list')
+        transport.reset_mock()
+        with self.assertRaisesRegex(Exception, '显式接入'):
+            adapter.call('send', 'sess_new', {'id': str(uuid.uuid4()), 'text': 'test'})
+        transport.assert_not_called()
+
+    def test_delivery_feedback_uses_native_admission_instead_of_requested_mode(self):
+        ack = {'status': 'accepted', 'result': {'type': 'inputAccepted', 'delivery': 'queue'}}
+        transport = Mock(return_value=ack)
+        adapter = ZCodePrototype(self.root, self.config, transport)
+        body = {'id': str(uuid.uuid4()), 'text': 'guide', 'mode': 'steer'}
+        self.assertEqual(adapter.call('send', 'sess_test', body)['status'], 'queued')
+        self.assertEqual(transport.call_args[0][0]['body']['mode'], 'steer')
+        ack['result']['delivery'] = 'startNow'
+        self.assertEqual(adapter.call('send', 'sess_test', {**body, 'mode': 'queue'})['status'], 'accepted')
 
     @patch('bridge.platforms.macos.loopback.Native')
     @patch('bridge.platforms.macos.loopback.subprocess.run')

@@ -2,11 +2,13 @@ import Foundation
 
 // Resource loading only; frame, origin and token validation stay with the native bridge.
 struct WebScripts {
+    let route: String
     let appearance: String
     let clipboard: String
     let systemBars: String
 
     init(bundle: Bundle = .main) throws {
+        route = try Self.source("channel-link", bundle: bundle)
         appearance = try Self.source("mobile-ui", bundle: bundle)
         clipboard = try Self.source("mobile-clipboard", bundle: bundle)
         systemBars = try Self.source("mobile-system-bars", bundle: bundle)

@@ -60,3 +60,26 @@ test('native metadata actions preserve cwd and never resume a cold session',asyn
     assert.equal(row.cwd,cwd);
   }finally{for(const dispose of disposers.reverse())await dispose();await rm(folder,{recursive:true,force:true});}
 });
+
+test('native context maintenance and tasks do not activate agents or expose another owner',async()=>{
+ const folder=await mkdtemp(join('.tmp','dsh-maintenance-')),endpoint=join(folder,'endpoint.json'),configPath=join(folder,'config.json');
+ await writeFile(configPath,JSON.stringify({token:'fixture',endpoint}));
+ const row={sessionId:'parent',running:false,projections:{values:{subagentCatalog:[{id:'child',label:'Native child'}]}}};
+ const calls=[],disposers=[],agent={id:'parent',status:'idle'},child={id:'child',status:'running'};
+ const jobs=[{id:'own',owner:'parent',label:'Own job',status:'running'},{id:'foreign',owner:'another',status:'running'},{id:'global',status:'running'}];
+ const services={commands:{list:()=>[{definitionId:'@deepseek-ai/dsh-command-compact'}],execute:async(a,line)=>{calls.push(['command',a.id,line]);return {result:{kind:'success',text:'No compactable history yet.'}};}},
+   jobs:{list:()=>jobs,kill:(id,sid)=>calls.push(['kill',id,sid])},subagents:{interrupt:(id,authority)=>calls.push(['interrupt',id,authority])}};
+ const ctx={agents:new Map([['parent',agent],['child',child]]),sessionController:{list:async()=>({items:[row]}),resolveAgent(){throw Error('unexpected activation');}},workspaceRegistry:{},permissionPresets:{catalog:()=>({options:[]})},get:name=>services[name],on(){},effect:setup=>disposers.push(setup())};
+ await apply(ctx,{configPath});const {port}=JSON.parse(await readFile(endpoint,'utf8'));
+ const request=async(action,body={})=>{const r=await fetch(`http://127.0.0.1:${port}/mobile`,{method:'POST',headers:{Authorization:'Bearer fixture'},body:JSON.stringify({action,sid:'parent',body})});return {code:r.status,...await r.json()};};
+ try{
+   assert.deepEqual((await request('tasks')).tasks.map(t=>t.id),['job:own','child:child']);assert.equal(calls.length,0);
+   assert.equal((await request('stop-task',{taskId:'job:foreign'})).code,400);
+   assert.equal((await request('stop-task',{taskId:'job:own'})).status,'accepted');
+   assert.equal((await request('stop-task',{taskId:'child:child'})).status,'accepted');
+   assert.deepEqual(calls[1],['interrupt','child',{kind:'user',parentSessionId:'parent'}]);
+   assert.equal((await request('compact')).status,'accepted');assert.deepEqual(calls.at(-1),['command','parent','/compact']);
+   row.running=true;assert.equal((await request('compact')).code,400);
+   child.status='idle';assert.equal((await request('stop-task',{taskId:'child:child'})).code,400);
+ }finally{for(const dispose of disposers.reverse())await dispose();await rm(folder,{recursive:true,force:true});}
+});

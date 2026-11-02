@@ -123,7 +123,8 @@ flowchart TD
 - `web/assets.json` 映射单一文件或按声明顺序组合的 CSS 源文件；`bridge/api/assets.py` 的固定白名单决定可公开访问的 URL。新增映射不会自动开放任意文件。中继使用同一映射。
 - `scripts/gateway-resources.json` 列出必须随网关分发的 SSH 源文件、连接脚本和许可；移动它们时同步清单。CA 证书仍按 TLS 模块的相邻位置分发。
 - 桌面页面直接引用一部分 Web 共享文件，需同时更新 `desktop/index.html` 和 `package.json` 资源清单；不要把磁盘路径改动误用为浏览器公开 URL 改动。
-- 本机 CLI 接入由网关管理。Codex CLI 与 Desktop 共用原始 `CODEX_HOME`，切换使用账号存储与原生配置核验；Claude Code API 凭据保存在网关私有目录，选择时更新原始 Claude 配置目录中的认证环境项，保留该目录的会话历史与其他设置。
+- 客户端管理页面、顶部切换菜单和底部导航按接入实例 ID 复用，配置内创建的项目与聊天归该实例；详见[共享客户端外壳](../../.agents/notes/implemented/architecture/2026-11-02-shared-client-shell.md)。
+- 本机 CLI 接入由网关管理。默认 Codex CLI 与 Desktop 共用原始 `CODEX_HOME`；独立 Codex 客户端复用同一 Bridge、账号管理与聊天组件，以入口 ID 隔离配置目录、账号和远程导航（详见[独立客户端管理](../../.agents/notes/implemented/feature/2026-11-02-independent-codex-management.md)），切换使用账号存储与原生配置核验；Claude Code API 凭据保存在网关私有目录，选择时更新原始 Claude 配置目录中的认证环境项，保留该目录的会话历史与其他设置。
 - 资源路径回归会在无本地 `bridge` 包的隔离 Python 中执行 SSH 源码定义；这不等于真实 SSH、冻结程序或原生助手已验证。
 
 ## 本轮保留的边界

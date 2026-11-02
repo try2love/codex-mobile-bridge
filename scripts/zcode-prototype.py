@@ -10,8 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from bridge.app.lifecycle import private_json
 from bridge.clients.manager import DesktopSessions
 from bridge.clients.zcode.adapter import ZCodePrototype
-from bridge.platforms.macos.discovery import bundle
-from bridge.platforms.macos.loopback import listener_identity
+from bridge.clients.zcode.installation import installation, listener_identity
 
 
 def main():
@@ -22,7 +21,7 @@ def main():
     config_path = args.state / 'binding.json'
     config = json.loads(config_path.read_text())
     if args.action == 'attach':
-        app = bundle(Path(config['application']), 'dev.zcode.app')
+        app = installation(config['application'])
         if not app or app['version'] != '3.17.1':
             raise ValueError('原型仅接受 ZCode 3.17.1')
         config['process'] = listener_identity(config['port'], app['executable'])

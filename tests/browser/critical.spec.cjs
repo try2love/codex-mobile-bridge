@@ -18,6 +18,28 @@ async function ready(page, scenario = 'success') {
   });
 }
 
+test('image preview has one header row and a bottom save icon', async ({page}, testInfo) => {
+  for (const width of [320,390,844,1280]) {
+    await page.setViewportSize({width,height:844});
+    await ready(page);
+    await page.evaluate(()=>BridgeFeatures.load('chat'));
+    await page.evaluate(readFileSync(path.join(__dirname,'image-save.browser.js'),'utf8'));
+    for (const language of ['zh','en']) {
+      await page.evaluate(language=>BridgeI18n.setLanguage(language),language);
+      expect((await page.evaluate(()=>runImageSaveChecks())).passed).toBe(47);
+    }
+  }
+  await page.setViewportSize({width:390,height:844});
+  await page.evaluate(()=>{
+    BridgeI18n.setLanguage('zh');
+    BridgeImageViewer.configureComposer({scope:()=> 'fixture',canReuse:()=>true,add:()=>true});
+    const button=document.createElement('button');document.body.append(button);
+    button.dataset.imagePreview='/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/uploads/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/preview';
+    button.dataset.imageName='Screenshot_2026-11-01_很长的原始图片文件名.png';button.click();
+  });
+  await testInfo.attach('image-toolbar',{body:await page.screenshot(),contentType:'image/png'});
+});
+
 test('Markdown, literal code and math rendering', async ({page}, testInfo) => {
   await ready(page);
   await expect(page.locator('#bootstrap-status')).toBeHidden();
@@ -158,6 +180,7 @@ for (const [name, file, invoke] of [
   ['shared chat reading state across refreshes', 'chat-reading-state', 'runChatReadingStateChecks'],
   ['account-scoped drafts and late send acknowledgement', 'persistent-drafts', 'runPersistentDraftTests'],
   ['API form labels, layout and upstream model selection', 'api-form', 'runApiFormBrowserChecks'],
+  ['CLI release single and all across local WSL SSH', 'cli-release', 'runCliReleaseChecks'],
   ['shared session menu on desktop and mobile', 'session-menu', 'runSessionMenuBrowserChecks'],
   ['composer quotes retain draft and layout', 'composer-quotes', 'runComposerQuoteLayoutChecks'],
 ]) {
@@ -421,4 +444,117 @@ test('lost send response reconciles once and preserves newer composer edits', as
     expect(row.text).toBe(row.edit?'newer draft':'');expect(row.draft).toBe(row.edit?'newer draft':'');
     expect(row.error).toBe('');
   }
+});
+
+test('independent Codex list and project picker stay in the selected configuration',async({page})=>{
+ await ready(page);await page.evaluate(()=>BridgeFeatures.load('chat'));
+ const result=await page.evaluate(async()=>{
+  const originalApi=api,entry='codex:'+'a'.repeat(32),calls=[];
+  try{
+   api=async url=>{calls.push(url);if(url.startsWith('/api/projects'))return {projects:[{key:'cli|'+entry+'|fixture',name:'IDE project',cwd:'/fixture/project',host:entry,type:'cli'}],environments:[{key:'cli|'+entry,type:'cli',host:entry,name:'IDE fixture'}]};return {sessions:[],availableSources:['ide'],remoteHosts:['default-must-not-be-read'],complete:true};};
+   currentHost=entry;selectedCodexEntry=entry;listRows=[];listHostIds=[];listFilterKey='';listSource='all';
+   await loadList(true);const reads=[...calls];calls.length=0;
+   await $('new-chat').onclick();
+   return {reads,projects:[...calls],entry:newChatEntry,mode:$('new-chat-type').value,locked:$('new-chat-type').disabled,project:$('new-chat-project').value,host:newChatEnvironment().host};
+  }finally{$('new-chat-dialog').close();api=originalApi;selectedCodexEntry=null;currentHost='local';}
+ });
+ expect(result.reads).toHaveLength(1);expect(new URL(result.reads[0],'http://fixture').searchParams.get('host')).toBe('codex:'+'a'.repeat(32));
+ expect(result.projects).toEqual(['/api/projects?entry='+encodeURIComponent(result.entry)]);
+ expect(result.mode).toBe('cli');expect(result.locked).toBe(true);expect(result.host).toBe(result.entry);expect(result.project).toContain(result.entry);
+});
+
+test('restored independent Codex selection creates in its own configuration',async({page})=>{
+ const entry='codex:'+'a'.repeat(32),reads=[];
+ await page.addInitScript(value=>localStorage.setItem('bridge-client',value),entry);
+ await page.route('**/api/clients',route=>route.fulfill({json:{clients:[{id:'codex',name:'Codex',enabled:true},{id:entry,name:'工作 Codex',kind:'codex-local',enabled:true,capabilities:{create:true,accounts:true}}]}}));
+ await page.route('**/api/projects*',route=>{reads.push(new URL(route.request().url()).searchParams.get('entry'));return route.fulfill({json:{projects:[{key:'cli|'+entry+'|fixture',name:'独立项目',cwd:'/fixture',host:entry,type:'cli'}],environments:[{key:'cli|'+entry,type:'cli',host:entry,name:'工作 Codex'}]}});});
+ await ready(page,'session-menu');await expect(page.locator('.client-picker')).toContainText('工作 Codex');
+ await page.locator('#new-chat').click();await expect(page.locator('#new-chat-submit')).toBeEnabled();
+ expect(reads).toEqual([entry]);await expect(page.locator('#new-chat-type')).toHaveValue('cli');await expect(page.locator('#new-chat-type')).toBeDisabled();
+ expect(await page.evaluate(()=>newChatEnvironment().host)).toBe(entry);
+});
+
+test('independent Codex clients have separate navigation and account scopes',async({page},info)=>{
+ await ready(page);await page.evaluate(()=>BridgeFeatures.load('chat'));
+ const result=await page.evaluate(async()=>{
+  const entry='codex:'+'a'.repeat(32),original=api,calls=[];
+  try{
+   api=async(url,body)=>{calls.push({url,write:!!body});if(url.startsWith('/api/accounts'))return {scope:'profile',scopeLabel:'工作 Codex',current:{kind:'api',name:'独立 API'},accounts:[],switch:{phase:'idle'},management:{external:false},reminders:{},canSwitch:true,canManageDesktop:false};return {sessions:[],complete:true};};
+   clientNavigation.applyClients({clients:[{id:'codex',name:'Codex',enabled:true,entries:[{id:'desktop',name:'Codex',enabled:true}]},{id:entry,name:'工作 Codex',kind:'codex-local',enabled:true,capabilities:{create:true,accounts:true}}]});
+   await clientNavigation.choose(entry);await openCurrentAccounts();await accountsPanel.refresh();
+   return {selected:clientNavigation.activeClient(),buttons:[...document.querySelectorAll('.client-switch button')].map(b=>({text:b.textContent,selected:b.classList.contains('selected')})),entry:codexAccountEntry,selectorHidden:!accountEntryControls||accountEntryControls.hidden,calls,refreshHidden:accountsPanel.refreshButton.hidden,updateHidden:accountsPanel.updates.hidden};
+  }finally{api=original;}
+ });
+ expect(result.buttons).toEqual([{text:'Codex',selected:false},{text:'工作 Codex',selected:true}]);
+ expect(result.selected).toBe(result.entry);expect(result.selectorHidden).toBe(true);expect(result.refreshHidden).toBe(false);expect(result.updateHidden).toBe(true);
+ expect(result.calls.filter(x=>x.url.startsWith('/api/accounts')).every(x=>x.url.includes(encodeURIComponent(result.entry)))).toBe(true);
+ await info.attach('independent-codex-accounts',{body:await page.screenshot(),contentType:'image/png'});
+});
+
+test('shared client shell preserves navigation scroll and switches exact instances from its heading',async({page},info)=>{
+ const entry='codex:'+'a'.repeat(32),other='codex:'+'b'.repeat(32),reads=[];
+ const clients=[{id:'codex',name:'Codex'}, {id:'claude',name:'Claude'}, {id:'deepseek',name:'DSH'}, {id:'zcode',name:'ZCode'}, {id:entry,name:'工作 Codex'}, {id:other,name:'个人 Codex'}].map(row=>({...row,enabled:true,configured:true,connected:true,capabilities:{accounts:true,create:true}}));
+ await page.route('**/api/clients',route=>route.fulfill({json:{clients}}));
+ await page.route('**/api/sessions?*',route=>{reads.push(new URL(route.request().url()).searchParams.get('host'));return route.fulfill({json:{sessions:[],remoteHosts:[],availableSources:[],complete:true}});});
+ await page.setViewportSize({width:390,height:844});await ready(page,'session-menu');
+ await expect(page.locator('.client-switch button')).toHaveCount(6);
+ await page.locator('.client-switch').hover();await page.mouse.wheel(140,0);
+ await page.evaluate(()=>{window.__firstSwitch=document.querySelector('.client-switch button');});
+ await expect.poll(()=>page.locator('.client-switch').evaluate(node=>Math.round(node.scrollLeft))).toBe(140);
+ await page.locator('.client-picker').click();await expect(page.locator('.client-picker-options button')).toHaveCount(6);
+ await page.locator('.client-picker-options [data-client-id="'+entry+'"]').click();
+ await expect.poll(()=>page.evaluate(()=>clientNavigation.activeClient())).toBe(entry);
+ await expect.poll(()=>page.evaluate(()=>selectedCodexEntry)).toBe(entry);
+ await expect.poll(()=>reads.at(-1)).toBe(entry);
+ await page.evaluate(()=>clientNavigation.applyClients({clients:clientNavigation.clients.map(row=>({...row}))}));
+ await expect.poll(()=>page.locator('.client-switch').evaluate(node=>Math.round(node.scrollLeft))).toBe(140);
+ expect(await page.evaluate(()=>window.__firstSwitch===document.querySelector('.client-switch button'))).toBe(true);
+ await expect(page.locator('.client-switch-arrow.previous')).toBeVisible();await expect(page.locator('.client-switch-arrow.next')).toBeVisible();
+ // Moving the same shell between provider lists must retain the user's position.
+ await page.locator('.client-picker').click();await page.locator('.client-picker-options [data-client-id="claude"]').click();
+ await expect.poll(()=>page.evaluate(()=>clientNavigation.activeClient())).toBe('claude');
+ await expect.poll(()=>page.locator('.client-switch').evaluate(node=>Math.round(node.scrollLeft))).toBe(140);
+ await page.locator('.client-picker').click();await page.locator('.client-picker-options [data-client-id="'+other+'"]').click();
+ await expect.poll(()=>page.evaluate(()=>selectedCodexEntry)).toBe(other);
+ await expect.poll(()=>page.locator('.client-switch').evaluate(node=>Math.round(node.scrollLeft))).toBe(140);
+ await page.evaluate(()=>{clientNavigation.preference('switch:zcode',false);clientNavigation.paint();});
+ await page.locator('.client-picker').click();await expect(page.locator('.client-picker-options [data-client-id="zcode"]')).toBeVisible();
+ expect(await page.locator('.client-picker-options button').evaluateAll(nodes=>nodes.map(n=>n.dataset.clientId))).toEqual(clients.map(row=>row.id));
+ await info.attach('client-picker',{body:await page.screenshot(),contentType:'image/png'});
+ await page.locator('.client-picker-options [data-client-id="codex"]').click();await expect.poll(()=>page.evaluate(()=>selectedCodexEntry)).toBeNull();
+ // A hidden chat/list transition should not overwrite the cached position with zero.
+ const saved=await page.locator('.client-switch').evaluate(node=>node.scrollLeft);
+ await page.evaluate(()=>{document.getElementById('sidebar').style.display='none';clientNavigation.paint();});
+ await page.evaluate(()=>new Promise(requestAnimationFrame));
+ await page.evaluate(()=>{document.getElementById('sidebar').style.display='';clientNavigation.paint();});
+ await expect.poll(()=>page.locator('.client-switch').evaluate(node=>node.scrollLeft)).toBe(saved);
+ expect(await page.evaluate(()=>__startupTest.errors)).toEqual([]);
+});
+
+test('every desktop client uses the shared next-level management shell',async({page},info)=>{
+ const root=path.resolve(__dirname,'../..');
+ const clients=[{id:'codex',name:'Codex'},{id:'claude',name:'Claude'},{id:'deepseek',name:'DSH'},{id:'zcode',name:'ZCode',configurationNotice:'原 App 账号',capabilities:{accounts:true}}, {id:'codex:'+'a'.repeat(32),name:'工作 Codex',kind:'codex-local'}, {id:'wsl:'+'b'.repeat(32),name:'Ubuntu Codex',kind:'wsl-cli'}].map(c=>({...c,enabled:true,configured:true,installed:true,connected:true}));
+ const bootstrap=`window.testCalls=[];window.bridgeDesktop={};window.loadWslAccounts=async()=>{};
+ window.testPanel=new DesktopConnectionsPanel({root:document.getElementById('desktop-connections'),feedback:message=>{throw Error(message)},api:{desktopSessions:async body=>{testCalls.push(body);return {accounts:[],activeIds:[],capabilities:{quota:false}}},cliAccess:async body=>{testCalls.push(body);return {provider:body.provider,entry:body.entry,available:true,accounts:[],capabilities:{}}}}});
+ testPanel.clients=${JSON.stringify(clients)};testPanel.renderClients();document.querySelectorAll('[data-panel]').forEach(node=>node.hidden=!['accounts','account','desktop-sessions','harness'].includes(node.dataset.panel));GatewayLayout.tab('accounts');`;
+ await page.route('**/desktop/**',async route=>{const filename=new URL(route.request().url()).pathname;
+  if(filename==='/desktop/shell/renderer.js')return route.fulfill({contentType:'text/javascript',body:bootstrap});
+  const file=path.resolve(root,'.'+filename);if(!file.startsWith(root+path.sep))return route.abort();
+  try{let body=readFileSync(file);if(filename==='/desktop/index.html')body=Buffer.from(body.toString().replace('<script src="shell/layout.js">','<script src="../web/features/accounts/wsl-accounts.js"></script><script src="shell/layout.js">'));
+  return route.fulfill({body,contentType:filename.endsWith('.html')?'text/html':filename.endsWith('.js')?'text/javascript':filename.endsWith('.css')?'text/css':'image/png'});}catch{return route.abort();}});
+ await page.route('**/web/**',route=>{const filename=new URL(route.request().url()).pathname;try{return route.fulfill({body:readFileSync(path.resolve(root,'.'+filename)),contentType:filename.endsWith('.js')?'text/javascript':filename.endsWith('.css')?'text/css':'image/png'});}catch{return route.abort();}});
+ const errors=[];page.on('pageerror',error=>errors.push(error.message));
+ await page.setViewportSize({width:1200,height:950});await page.goto('/desktop/index.html');
+ for(const client of clients){
+  await page.locator('[data-client-id="'+client.id+'"] button').filter({hasText:/^管理$/}).click();
+  await expect(page.locator('#clients-page')).toBeHidden();await expect(page.locator('.client-config-back')).toBeInViewport();
+  const section=client.kind==='codex-local'?'codex':client.id;
+  await expect(page.locator('[data-client-config="'+section+'"]:visible').first()).toBeVisible();
+  expect((await page.locator('.client-config-back').boundingBox()).y).toBeLessThan((await page.locator('[data-client-config="'+section+'"]:visible').first().boundingBox()).y);await expect(page.locator('dialog[open]')).toHaveCount(0);
+  if(client.id==='zcode')await info.attach('zcode-management-page',{body:await page.screenshot(),contentType:'image/png'});
+  await page.locator('.client-config-back').click();await expect(page.locator('#clients-page')).toBeVisible();
+ }
+ expect(await page.evaluate(()=>testCalls.some(call=>call.provider==='zcode'&&call.action==='accounts'))).toBe(true);
+ expect(await page.evaluate(()=>testCalls.some(call=>call.entry==='wsl:'+'b'.repeat(32)&&call.action==='wslAccounts'))).toBe(true);
+ expect(errors).toEqual([]);
 });

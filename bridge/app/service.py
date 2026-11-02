@@ -15,6 +15,7 @@ import uuid
 import unicodedata
 from pathlib import Path
 
+from bridge.features.endpoints.registry import codex_list_hosts
 from bridge.app.lifecycle import private_json
 from bridge.resources import source_text
 from bridge.features.sessions.message_management import snapshot as management_snapshot, mutate as management_mutate
@@ -41,6 +42,8 @@ from bridge.features.sessions.create import (
     project_directory_listing, project_trust, apply_desktop_config,
 )
 from bridge.features.sessions.archive import ArchiveCommands
+from bridge.features.sessions.compaction import CompactCommands
+from bridge.features.sessions.cli_release import ReleasedSessions
 from bridge.features.sessions.organization_commands import OrganizationCommands
 from bridge.features.sessions.organization import OrganizationNotSent
 from bridge.features.sessions.pins import SessionPins
@@ -50,6 +53,7 @@ from bridge.features.sessions.timeline import Timeline
 from bridge.features.sessions.tool_images import TOOL_IMAGE_CACHE, public_turns
 from bridge.features.accounts.account import Account
 from bridge.features.accounts.accounts import Accounts, operation
+from bridge.features.accounts.operation_gate import OperationGate
 from bridge.features.accounts.draft_identity import codex_account_identity, draft_identity
 from bridge.features.accounts.cli_access import CliAccess
 from bridge.features.sessions.goal import GoalRPC, GoalError, GoalUnavailable, GoalUnsupported, goal_activation, goal_identity, normalize_goal_result, normalize_ui_locale, goal_command_fingerprint, goal_state_confirms_command, native_goal_absent, normalize_goal, plan_goal_command, read_native_goal
@@ -195,7 +199,7 @@ class LiveSession:
                         turn['model'], turn['effort'] = saved.get('model'), saved.get('effort')
             # Native paginated snapshots only contain the loaded tail. Keep the
             # saved prefix in the presentation, never in the IPC patch base.
-            if self.saved_view and (not result['historyComplete'] or self.origin == 'cli' and self.runtime == 'desktop'):
+            if self.saved_view and (not result['historyComplete'] or self.origin in ('cli', 'ide') and self.runtime == 'desktop'):
                 saved = self.saved_view['turns']
                 turns = result['turns']
                 first = next((i for i, turn in enumerate(saved) if turns and turn['id'] == turns[0]['id']), None)
@@ -208,6 +212,7 @@ class LiveSession:
             result["rebuildRecommended"] = self.rebuild_recommended and not self.connected
             result["desktopRestartRecommended"] = self.desktop_restart_recommended and not self.connected
             result["connecting"] = self.connecting
+            result['capabilities'] = {'compact': self.connected and result['status'] == 'idle' and not result['requests']}
             result["activating"] = self.activating
             result["loadingHistory"] = self.state is None and self.history_state is None
             if self.access is not None:
@@ -231,8 +236,11 @@ class LiveSession:
 
 
 class Bridge:
-    def __init__(self, codex_home, data_dir, host="local", alias=None, ipc_path=None, codex_bin=None, goal_rpc=None, owner_goal=None, cli_sessions=None):
+    def __init__(self, codex_home, data_dir, host="local", alias=None, ipc_path=None, codex_bin=None, goal_rpc=None, owner_goal=None, cli_sessions=None, entry_label=None, owner_guard=None):
         self.host = host
+        self.entry_label = entry_label
+        self.owner_guard = owner_guard
+        self.entry_gate = OperationGate() if host.startswith('codex:') else None
         self.codex_home = Path(codex_home)
         self._draft_remote_lock = threading.Lock()
         self._draft_remote_cache = {}
@@ -240,12 +248,15 @@ class Bridge:
         self.data_dir = Path(data_dir)
         self.session_pins = SessionPins(data_dir, host + ":" + str(self.codex_home))
         self.archive_commands = ArchiveCommands(data_dir)
+        self.compact_commands = CompactCommands(data_dir, private_json)
+        self.released_cli = ReleasedSessions(data_dir, private_json)
         self.organization_commands = OrganizationCommands(data_dir, private_json)
         self.hosts = AppHosts(codex_home)
         self.directory_projects = Projects(data_dir)
-        if host == 'local' and sys.platform == 'win32':
+        if host == 'local':
             from bridge.features.endpoints.registry import Entries
-            self.entries = Entries(data_dir, codex_home)
+            self.entries = Entries(data_dir, codex_home, local_factory=lambda row, directory:
+                self._local_entry(row, directory, codex_bin))
         else:
             self.entries = None
         self.remote_bridges = {}
@@ -262,9 +273,9 @@ class Bridge:
         self.catalog_reader = RemoteCatalog(alias) if alias else Catalog(codex_home, codex_bin)
         self.terminals = TerminalManager()
         self.uploads = Uploads(data_dir, (lambda *args: upload_file(alias, *args)) if alias else None)
-        executable_getter = (lambda: self.catalog_reader.executable) if host == 'local' else None
-        self.account = Account(codex_home, data_dir, codex_bin, executable_getter=executable_getter) if host == 'local' else None
-        self.accounts = Accounts(self) if host == "local" else None
+        executable_getter = (lambda: self.catalog_reader.executable) if self.local else None
+        self.account = Account(codex_home, data_dir, codex_bin, executable_getter=executable_getter) if self.local else None
+        self.accounts = Accounts(self) if self.local else None
         self.cli_access = CliAccess(self) if host == "local" else None
         self.wsl_accounts = None
         if host == 'local' and sys.platform == 'win32':
@@ -276,7 +287,7 @@ class Bridge:
         self._open_desktop = open_in_desktop
         self.live = {}
         self.origins = {}
-        self.cli_sessions = cli_sessions or CliSessions(self.codex_home, self._cli_state, self._cli_disconnected, alias=alias)
+        self.cli_sessions = cli_sessions or CliSessions(self.codex_home, self._cli_state, self._cli_disconnected, alias=alias, allow_installed_runtime=host.startswith('codex:'))
         self.lock = threading.RLock()
         self.ipc = DesktopIPC(ipc_path or ipc_endpoint(codex_home), self._event, self._disconnected)
         self.side_chats = SideChats(codex_bin, self.codex_home, self.data_dir, host,
@@ -309,6 +320,42 @@ class Bridge:
                 self.live.setdefault(key.split(":")[0], LiveSession(key.split(":")[0]))
         threading.Thread(target=self._maintain, daemon=True).start()
         threading.Thread(target=self._upload_gc, daemon=True).start()
+
+    def _local_entry(self, row, directory, codex_bin):
+        target = Bridge(row['home'], directory, host=row['id'], entry_label=row['label'],
+                        codex_bin=codex_bin, owner_guard=lambda sid: self.entries.check_ipc_scope(row['id'], sid, self.store))
+        target.accounts.monitor.notification_data_dir = self.data_dir
+        if self.accounts.monitor.worker is not None:
+            target.accounts.monitor.start()
+        return target
+
+    def account_target(self, entry='desktop'):
+        if entry in ('desktop', 'local'):
+            return self
+        if not isinstance(entry, str) or not entry.startswith('codex:') or self.entries is None:
+            raise ValueError('此入口不支持本机账号管理')
+        return self.entries.get(entry, management=True)
+
+    def accounts_control(self, value):
+        value = dict(value)
+        target = self.account_target(value.pop('entry', 'desktop'))
+        with target.entry_gate if target.entry_gate is not None else nullcontext():
+            if target.closed.is_set():
+                raise ValueError('Codex 入口已关闭')
+            return target.accounts.control(value)
+
+    @property
+    def local(self):
+        return self.host == 'local' or self.host.startswith('codex:')
+
+    @property
+    def native_host(self):
+        return 'local' if self.local else self.host
+
+    @property
+    def host_label(self):
+        return getattr(self, 'entry_label', None) or ('此电脑' if self.host == 'local' else
+            self.hosts.hosts().get(self.host, {}).get('displayName', self.host))
 
     def cli_access_control(self, value):
         """Local desktop control; credential mutations stay off the web route."""
@@ -393,9 +440,9 @@ class Bridge:
 
     def _native_goal_state(self, thread_id, *, strict=False):
         session = self.live.get(thread_id)
-        if self.host != 'local' and not (session and session.origin == 'cli' and session.connected and session.runtime == 'cli'):
+        if self.host != 'local' and not (session and session.origin in ('cli', 'ide') and session.connected and session.runtime == 'cli'):
             raise GoalUnsupported('目标模式暂不支持 SSH 桌面会话')
-        if self.goal or session and session.origin == 'cli' and session.runtime == 'cli':
+        if self.goal or session and session.origin in ('cli', 'ide') and session.runtime == 'cli':
             try:
                 native = self._goal_call('get_goal', thread_id)
                 # A successful empty answer is authoritative. Do not let a stale
@@ -614,7 +661,7 @@ class Bridge:
             raise ValueError('请选择电脑 App 中已保存的项目')
         if key == 'local|independent':
             return 'local'
-        hosts = {'local', *self.hosts.hosts()}
+        hosts = {self.host} if self.host.startswith('codex:') else {'local', *self.hosts.hosts()}
         project = self.directory_projects.get(key)
         if project is None:
             project = next((row for row in self.hosts.projects() if row['key'] == key), None)
@@ -627,9 +674,9 @@ class Bridge:
         raise ValueError('请选择电脑 App 中已保存的项目')
 
     def projects(self, host=None):
-        if host is not None and host not in {'local', *self.hosts.hosts()}:
+        if host is not None and host not in ({self.host} if self.host.startswith('codex:') else {'local', *self.hosts.hosts()}):
             raise ValueError('项目环境不存在')
-        hosts = {'local', *self.hosts.hosts()} if host is None else {host}
+        hosts = ({self.host} if self.host.startswith('codex:') else {'local', *self.hosts.hosts()}) if host is None else {host}
         projects = [dict(project, type=project.get('type', 'desktop'))
                     for project in self.directory_projects.list(hosts)]
         def identity(project):
@@ -665,10 +712,10 @@ class Bridge:
         for (host, bridge), rows in zip(candidates, groups):
             for row in rows:
                 cwd = row.get('cwd')
-                if row.get('origin') != 'cli' or not isinstance(cwd, str) or not cwd or (host, cwd) in seen:
+                if row.get('origin') not in ('cli', 'ide') or not isinstance(cwd, str) or not cwd or (host, cwd) in seen:
                     continue
                 seen.add((host, cwd))
-                label = '此电脑' if host == 'local' else self.hosts.hosts()[host].get('displayName', host)
+                label = self.host_label if host == self.host else self.hosts.hosts()[host].get('displayName', host)
                 projects.append({'key': 'cli|' + host + '|' + hashlib.sha256(cwd.encode()).hexdigest()[:20],
                                  'type': 'cli', 'host': host, 'hostLabel': label,
                                  'name': project_path_name(cwd) or cwd, 'cwd': cwd})
@@ -677,18 +724,18 @@ class Bridge:
         return projects
 
     def project_environments(self):
-        hosts = {'local': {'displayName': '此电脑'}, **self.hosts.hosts()}
+        hosts = {self.host: {'displayName': self.host_label}} if self.host.startswith('codex:') else {'local': {'displayName': '此电脑'}, **self.hosts.hosts()}
         return [{'key': kind + '|' + host, 'type': kind, 'surface': kind, 'host': host,
                  'hostLabel': info.get('displayName') or info.get('alias') or host,
                  'name': (info.get('displayName') or info.get('alias') or host) +
                          (' · Codex App' if kind == 'desktop' else ' · Codex CLI')}
-                for host, info in hosts.items() for kind in ('desktop', 'cli')]
+                for host, info in hosts.items() for kind in (('cli',) if self.host.startswith('codex:') else ('desktop', 'cli'))]
 
     @operation(host='host')
     def register_project(self, path, create=False, host='local', kind='desktop'):
         if kind not in ('desktop', 'cli'):
             raise ValueError('未知聊天类型')
-        if host == 'local':
+        if host == self.host and self.local:
             identity = project_directory(path, create)
             label = '此电脑'
         else:
@@ -700,11 +747,11 @@ class Bridge:
             label = info.get('displayName') or info['alias']
         return self.directory_projects.save(host, label, identity,
             scope='cli' if kind == 'cli' else None, type=kind, environment=kind+'|'+host,
-            hostIdentity=None if host == 'local' else info['alias'])
+            hostIdentity=None if host == self.host and self.local else info['alias'])
 
     @operation(host='host')
     def project_directories(self, host, path=None, hidden=False, name=None, identity=None):
-        if host == 'local': return project_directory_listing(path, hidden, name, identity)
+        if host == self.host and self.local: return project_directory_listing(path, hidden, name, identity)
         info = self.hosts.hosts().get(host)
         if info is None: raise ValueError('请选择已登记的运行主机')
         source = source_text('features/sessions/create.py')
@@ -790,6 +837,8 @@ class Bridge:
 
     @operation(project='project_key')
     def create_chat(self, project_key, title, request_id, kind='desktop'):
+        if self.host.startswith('codex:'):
+            kind = 'cli'
         if not isinstance(request_id, str):
             raise ValueError('创建请求标识无效')
         uuid.UUID(request_id)
@@ -819,7 +868,7 @@ class Bridge:
                     raise ValueError('原 SSH 主机配置已变化，请重新选择项目')
                 if kind == 'cli':
                     cli_bridge = self.for_host(project['host'])
-                    if (project['host'] != 'local' and
+                    if (not cli_bridge.local and
                             cli_bridge.cli_sessions.alias != self.hosts.hosts()[project['host']]['alias']):
                         raise ValueError('原 SSH 主机配置已变化，请重启网关后重新选择项目')
                 if kind == 'desktop':
@@ -844,14 +893,14 @@ class Bridge:
 
                     try:
                         if project.get('directoryIdentity'):
-                            if project['host'] == 'local':
+                            if cli_bridge.local:
                                 project_directory(project['cwd'], expected=project['directoryIdentity'])
                             else:
                                 source = source_text('features/sessions/create.py')
                                 source += '\nprint(json.dumps(project_directory(**' + payload({
                                     'value': project['cwd'], 'expected': project['directoryIdentity']}) + ')))\n'
                                 ssh_read(cli_bridge.cli_sessions.alias, source)
-                        if (project['host'] != 'local' and
+                        if (not cli_bridge.local and
                                 cli_bridge.cli_sessions.alias != self.hosts.hosts().get(project['host'], {}).get('alias')):
                             raise ValueError('原 SSH 主机配置已变化，请重启网关后重新选择项目')
                         state = cli_bridge.cli_sessions.create(
@@ -1061,7 +1110,7 @@ class Bridge:
     def for_host(self, host, *, cached=False):
         if host == self.host:
             return self
-        if isinstance(host, str) and host.startswith('wsl:') and self.entries is not None:
+        if isinstance(host, str) and host.startswith(('wsl:', 'codex:')) and self.entries is not None:
             return self.entries.get(host)
         available = self.hosts.hosts(cached=True) if cached else self.hosts.hosts()
         if self.host != "local" or host not in available:
@@ -1300,11 +1349,11 @@ class Bridge:
             ipc.close()
 
     def _access(self, origin, session=None):
-        desktop = origin != 'cli'
+        desktop = origin not in ('cli', 'ide') and not self.host.startswith('codex:')
         connected = bool(session and session.connected)
         writable = desktop or connected
-        reconnect = desktop or bool(session and session.desktop_owner_probe == 'found') or self.cli_sessions.available()
-        cli_controls = connected and origin == 'cli'
+        reconnect = desktop or origin in ('cli', 'ide') and (bool(session and session.desktop_owner_probe == 'found') or self.cli_sessions.available())
+        cli_controls = connected and origin in ('cli', 'ide')
         goal = ((self.host == 'local' and self._goal_runtime_available())
                 if not session or session.runtime != 'cli' else session.native_goal_supported is True)
         return {'source': origin, 'runtime': (session.runtime if connected else None),
@@ -1320,15 +1369,73 @@ class Bridge:
 
     def _require_desktop_feature(self, thread_id):
         metadata = self.store.get(thread_id)
-        if metadata.get('origin') == 'cli':
+        if metadata.get('origin') in ('cli', 'ide'):
             raise ValueError('此功能请在原 CLI 中操作。')
+
+    def cli_network(self, thread_id, body=None):
+        from bridge.clients.codex.cli_session import _managed_cli
+        from bridge.clients.codex.daemon_network import inspect_proxy
+        from bridge.features.accounts.cli_sync import LocalCliSync
+        from bridge.platforms.codex_daemon_env import read_daemon_environment, stop_daemon_gracefully
+        from contextlib import closing
+        from bridge.clients.codex.app_server import CodexAppServer
+        import sys
+        if self.host != 'local' and not self.host.startswith('codex:') or self.store.get(thread_id).get('origin') not in ('cli', 'ide'):
+            raise ValueError('只支持本机 Codex CLI')
+        cli = self.cli_sessions
+        executable = _managed_cli(cli.home)
+        if executable is None:
+            raise ValueError('无法核对当前 CLI 服务')
+        with self.accounts.gate, cli.start_lock:
+            generation, updates, stamp = inspect_proxy(cli.home, executable)
+            if not updates:
+                if body is not None:
+                    raise ValueError('网络状态已变化，请重新检查')
+                return {'canRecover': False, 'message': '未检测到可恢复的失效本机代理'}
+            if body is not None and body != {'confirmed': True, 'generation': stamp}:
+                raise ValueError('网络状态已变化，请重新检查')
+            try:
+                if sys.platform not in ('darwin', 'linux'):
+                    raise ValueError('此平台请在电脑上正常重启 CLI 服务')
+                live = self.live.get(thread_id)
+                if live and live.desktop_owner_probe == 'found':
+                    raise ValueError('当前会话由 Codex App 持有')
+                with closing(CodexAppServer(cli.client.socket_path, cli=executable,
+                                            client_name='codex-mobile-bridge-network-check')) as probe:
+                    LocalCliSync.check_idle_daemon(probe, cli.home)
+                    if body is not None:
+                        config = probe.request('config/read', {'includeLayers': False}, replay_safe=True)['config']
+                if cli.attaching or any(cli.requests.values()) or any(row.get('status') in ('queued', 'unknown') for row in self.submissions.values()):
+                    raise ValueError('请先处理当前配置的待确认或待发送操作')
+            except ValueError as error:
+                if body is not None:
+                    raise
+                return {'canRecover': False, 'message': '原 CLI 使用的代理已失效。' + str(error)}
+            if body is None:
+                return {'canRecover': True, 'generation': stamp, 'message': '原 CLI 使用的本机代理已失效，当前系统代理可用。'}
+            # Preserve credentials and provider routing from this exact process, even
+            # when the gateway was launched with a different shell environment.
+            names = {'OPENAI_BASE_URL', 'OPENAI_API_KEY', 'CODEX_SQLITE_HOME', 'NO_PROXY', 'no_proxy'}
+            for provider in (config.get('model_providers') or {}):
+                names.update(cli._required_model_environment(config, provider))
+            original, identity = read_daemon_environment(cli.home, executable, names)
+            if identity != generation:
+                raise ValueError('原生服务已变化，请重新检查')
+            stop_daemon_gracefully(cli.home, executable, generation)
+            cli.close()
+            if cli.daemon_status() != 'stopped':
+                raise ValueError('尚未确认原 CLI 已退出，请重新检查')
+            cli._start_daemon(updates, {name: original.get(name) for name in names})
+            cli.daemon_start_generation += 1
+        session = self.activate(thread_id)
+        return {'connected': session.connected}
 
     def _cli_state(self, thread_id, state):
         if not isinstance(state, dict) or state.get('id') != thread_id:
             return
         with self.lock:
             session = self.live.get(thread_id)
-        if session is None or session.origin != 'cli' or self.closed.is_set():
+        if session is None or session.origin not in ('cli', 'ide') or self.closed.is_set():
             return
         with session.condition:
             if (session.desktop_owner_probe == 'found' or
@@ -1359,6 +1466,68 @@ class Bridge:
                     session.native_goal_supported = None
                 self._invalidate(session, 'CLI 连接已断开，请重新连接；未自动重发任何操作。', runtime='cli')
 
+    def cli_connections(self):
+        rows = []
+        with self.lock:
+            followers = [session for session in self.live.values() if session.origin == 'ide'
+                         and session.connected and session.runtime == 'desktop' and session.owner]
+        for session in followers:
+            owner, generation = session.owner, self.ipc.client_id
+            callback = lambda stop, sid=session.id, owner=owner, generation=generation: self._release_ide_follower(sid, owner, generation, stop)
+            release = lambda stop, callback=callback, sid=session.id: self._release_cli_connection(sid, callback, stop)
+            rows.append({'key': ':'.join([self.host, session.id, owner, generation]), 'sessionId': session.id,
+                         'provider': 'codex', 'title': session.view().get('title') or session.id,
+                         'host': self.host, 'location': self.host_label + ' · VS Code', '_release': release})
+        for row in self.cli_sessions.cli_connections():
+            callback, sid = row['_release'], row['sessionId']
+            release = lambda stop, callback=callback, sid=sid: self._release_cli_connection(sid, callback, stop)
+            rows.append({**row, 'host': self.host, '_release': release})
+        if self.host == 'local':
+            with self.lock:
+                sources = list(self.remote_bridges.values())
+            if self.entries is not None:
+                with self.entries.lock:
+                    sources += list(self.entries.bridges.values())
+            for source in sources:
+                rows.extend(source.cli_connections())
+        return rows
+
+    def _release_ide_follower(self, sid, owner, generation, stop):
+        session = self.live[sid]
+        if (not session.connected or session.runtime != 'desktop' or session.owner != owner
+                or self.ipc.client_id != generation):
+            raise ValueError('原 VS Code 连接已变化，未释放新的连接')
+        if session.view().get('status') != 'idle':
+            if stop:
+                self.interrupt(sid)
+            return {'status': 'waiting'}
+        self.ipc.follow(sid, owner, False, host=self.native_host)
+        return {'status': 'detached', 'notice': '网关连接已释放，可在原 VS Code 会话中继续。'}
+
+    @operation
+    def _release_cli_connection(self, sid, callback, stop):
+        session = self.session(sid, attach=False)
+        with session.activation_lock, session.action_lock, session.attach_lock:
+            with self.submit_lock:
+                entries = [value for key, value in self.submissions.items() if key.startswith(sid + ':')]
+                if any(value.get('status') == 'unknown' for value in entries):
+                    raise ValueError('发送结果尚未确认，请先核对；未释放 CLI 连接')
+                queued = [value for value in entries if value.get('status') == 'queued']
+                if queued and not stop:
+                    return {'status': 'waiting'}
+                if queued:
+                    for value in queued:
+                        value['status'] = 'cancelled'
+                    self._save_ledger()
+            result = callback(stop)
+            if result['status'] in ('released', 'detached'):
+                self.released_cli.set(sid, True)
+                with session.condition:
+                    session.connected = False
+                    session.error = result.get('notice', 'CLI 连接已释放，请点击继续会话重新连接')
+                    session.changed()
+            return result
+
     def discovery_diagnostics(self, thread_id=None):
         if thread_id is not None:
             uuid.UUID(thread_id)
@@ -1382,7 +1551,7 @@ class Bridge:
 
     def list(self, query="", limit=100, offset=0, archived=False, source='all', include_sources=False,
              local_only=False, host_label=None, entry=None, pin_order=False):
-        if source not in ('all', 'desktop', 'cli', 'wsl'):
+        if source not in ('all', 'desktop', 'cli', 'ide', 'wsl'):
             raise ValueError('不支持的会话来源')
         if entry and entry not in ('desktop', 'all'):
             self.host_errors = []
@@ -1393,11 +1562,16 @@ class Bridge:
             except (RemoteUnavailable, StoreUnavailable) as exc:
                 self.host_errors = [{'host': entry, 'label': host_label or 'WSL', 'error': str(exc)}]
                 return ([], []) if include_sources else []
-        sources = [(self, host_label or "此电脑")]
+        entry_errors = []
+        sources = [(self, host_label or self.host_label)]
         if self.host == 'local' and not local_only:
-            sources.extend((self.for_host(host), info.get('displayName') or info['alias']) for host, info in self.hosts.hosts().items())
-            if self.entries is not None and entry != 'desktop':
-                sources.extend((self.for_host(host), info['label']) for host, info in self.entries.hosts().items())
+            entries = self.entries.hosts() if self.entries is not None and entry != 'desktop' else {}
+            for host, info in codex_list_hosts(self.hosts.hosts(), entries).items():
+                label = info.get('displayName') or info.get('label') or info.get('alias') or host
+                try:
+                    sources.append((self.for_host(host), label))
+                except (OSError, ValueError, KeyError) as exc:
+                    entry_errors.append({'host': host, 'label': label, 'error': str(exc)})
         def read(host_source):
             bridge, label = host_source
             try:
@@ -1413,8 +1587,11 @@ class Bridge:
                 remote = self.host == 'local' and isinstance(bridge.store, RemoteStore)
                 available = ((bridge.store.poll('available_sources', {}) if remote else
                               bridge.store.available_sources()) if include_sources else [])
+                excluded = () if bridge.host.startswith('codex:') else ('ide',)
+                available = [item for item in available if item not in excluded]
                 pins = set(bridge.session_pins.identifiers())
                 options = dict(limit=limit + offset, archived=archived, query=query, source=source,
+                               **({'exclude_sources': excluded} if excluded else {}),
                                **({"pinned_ids": sorted(pins)} if pin_order else {}))
                 rows = ([] if source == 'wsl' else bridge.store.poll('list', options) if remote else
                         bridge.store.list(**options))
@@ -1433,7 +1610,7 @@ class Bridge:
                 return [], {'host': bridge.host, 'label': label, 'error': str(exc)}, []
         with ThreadPoolExecutor(max_workers=min(4, len(sources))) as pool:
             results = list(pool.map(read, sources))
-        self.host_errors = [error for _, error, _ in results if error]
+        self.host_errors = entry_errors + [error for _, error, _ in results if error]
         rows = [row for group, _, _ in results for row in group]
         available_sources = {source for _, _, available in results for source in available}
         rows.sort(key=lambda row: (bool(pin_order and row.get('bridgePinned')), row['recency'], row['id'], row['host']), reverse=True)
@@ -1515,7 +1692,7 @@ class Bridge:
             for identifier in self.entries.hosts():
                 try:
                     rows.extend(self.entries.get(identifier).notification_candidates())
-                except (IPCError, RemoteUnavailable, StoreUnavailable, KeyError):
+                except (IPCError, RemoteUnavailable, StoreUnavailable, KeyError, OSError, ValueError):
                     pass
         return rows
 
@@ -1555,7 +1732,7 @@ class Bridge:
                     return True
                 if (session.connected or session.discovering) and session.runtime != "cli":
                     try:
-                        self.ipc.follow(session.id, session.owner, False, host=self.host)
+                        self.ipc.follow(session.id, session.owner, False, host=self.native_host)
                     except IPCError:
                         pass
                 session.connected = False
@@ -1596,11 +1773,12 @@ class Bridge:
                             session.condition.notify_all()
                         self.notification_slots.release()
                         self.notification_event.set()
-                        logging.info('notification stage=probe source=%s work_ms=%.1f',
+                        logging.debug('notification stage=probe source=%s work_ms=%.1f',
                                      'local' if self.host == 'local' else 'remote', (time.monotonic() - started) * 1000)
                 threading.Thread(target=follow, daemon=True).start()
         return session
 
+    @operation(entry_only=True)
     def upload(self, thread_id, identifier, name, data):
         self.store.get(thread_id)  # Uploads do not activate a desktop chat.
         return self.uploads.put(thread_id, identifier, name, data)
@@ -1637,6 +1815,7 @@ class Bridge:
         self.store.get(thread_id)
         return self.side_chats.attachment(thread_id, child, operation, *args)
 
+    @operation(entry_only=True)
     def upload_thumb(self, thread_id, identifier, data, width, height):
         self.store.get(thread_id)
         return self.uploads.set_thumb(thread_id, identifier, data, width, height)
@@ -1661,10 +1840,10 @@ class Bridge:
             return session
         if attach and not session.connected:
             self._attach(session)
-        if (session.state is None and session.history_state is None) or session.activity_only or (session.origin == 'cli' and session.runtime == 'desktop' and session.saved_view is None):
+        if (session.state is None and session.history_state is None) or session.activity_only or (session.origin in ('cli', 'ide') and session.runtime == 'desktop' and session.saved_view is None):
             fallback = self._saved_history(session)
             with session.condition:
-                if (session.state is None and session.history_state is None) or session.activity_only or (session.origin == 'cli' and session.runtime == 'desktop' and session.saved_view is None):
+                if (session.state is None and session.history_state is None) or session.activity_only or (session.origin in ('cli', 'ide') and session.runtime == 'desktop' and session.saved_view is None):
                     session.set_history(fallback)
                     session.activity_only = False
         return session
@@ -1739,7 +1918,7 @@ class Bridge:
                 return
             # A CLI origin may keep writing its rollout after the first passive
             # read. Refresh saved turns while no runtime owns this viewer.
-            needs_history = session.history_state is None or session.activity_only or (session.origin == 'cli' and not session.connected)
+            needs_history = session.history_state is None or session.activity_only or (session.origin in ('cli', 'ide') and not session.connected)
             session.connecting = True
             session.owner_probe_inflight = True
             session.changed()
@@ -1782,8 +1961,26 @@ class Bridge:
                     session.changed()
         threading.Thread(target=refresh, daemon=True).start()
 
+    def _owner_absent(self, error, connected):
+        if str(error) == 'no-client-found':
+            return True
+        if connected or not isinstance(error.__cause__, OSError):
+            return False
+        if isinstance(error.__cause__, (FileNotFoundError, ConnectionRefusedError)):
+            return True
+        if sys.platform != 'win32':
+            try:
+                Path(self.ipc.path).stat()
+            except FileNotFoundError:
+                return True
+            except OSError:
+                pass
+        return False
+
     def _attach(self, session, timeout=1.5):
         with session.attach_lock:
+            if self.released_cli.contains(session.id):
+                return
             if session.connected or self.closed.is_set():
                 return
             if isinstance(self.store, RemoteStore):
@@ -1795,12 +1992,19 @@ class Bridge:
                         session.changed()
                     return
             self._load_session_origin(session)
-            if session.origin == "cli":
+            if self.host.startswith('codex:') and session.origin == 'desktop':
+                with session.condition:
+                    session.error = '此独立入口只接入原 VS Code / CLI 会话；桌面会话请使用默认入口。'
+                    session.changed()
+                return
+            if session.origin in ('cli', 'ide'):
                 ipc_connected = False
                 try:
+                    if sys.platform == 'win32' and self.owner_guard:
+                        self.owner_guard(session.id)
                     self.ipc.connect()
                     ipc_connected = True
-                    owner = self.ipc.owner(session.id, host=self.host)
+                    owner = self.ipc.owner(session.id, host=self.native_host)
                     if not isinstance(owner, str) or not owner:
                         raise IPCError('现有 Codex App 连接与此会话不匹配，未连接')
                     with session.condition:
@@ -1809,14 +2013,15 @@ class Bridge:
                         session.desktop_owner_probe = 'found'
                         session.discovering = True
                         session.access = self._access(session.origin, session)
-                    self.ipc.follow(session.id, owner, host=self.host)
+                    self.ipc.follow(session.id, owner, host=self.native_host)
                     with session.condition:
                         session.condition.wait_for(lambda: session.connected or self.closed.is_set(), timeout=timeout)
                 except IPCError as exc:
                     with session.condition:
                         session.discovering = False
-                        if (not ipc_connected or str(exc) in
-                                ('no-client-found', '桌面读取超时；尚未取得实时会话状态。')):
+                        absent = self._owner_absent(exc, ipc_connected)
+                        if absent or session.origin == 'cli' and (not ipc_connected or
+                                str(exc) == '桌面读取超时；尚未取得实时会话状态。'):
                             session.owner = None
                             session.desktop_owner_probe = 'absent'
                             session.error = None
@@ -1834,7 +2039,7 @@ class Bridge:
                     session.owner = None
                     session.revision = None
                     session.discovering = True
-                self.ipc.follow(session.id, None, host=self.host)
+                self.ipc.follow(session.id, None, host=self.native_host)
                 with session.condition:
                     session.condition.wait_for(lambda: session.connected or self.closed.is_set(), timeout=timeout)
                     # Keep following: a cold chat can publish after this short
@@ -1843,7 +2048,7 @@ class Bridge:
                 with session.condition:
                     session.discovering = False
                     session.connected = False
-                    session.error = None if session.origin == "cli" else str(exc)
+                    session.error = None if session.origin in ('cli', 'ide') else str(exc)
                     session.access = self._access(session.origin, session)
                     session.changed()
 
@@ -1883,7 +2088,10 @@ class Bridge:
     def activate(self, thread_id):
         """Explicit phone operation only; reads and notification watches never navigate."""
         session = self.session(thread_id, background=True)
+        if self.host.startswith('codex:') and self.store.get(thread_id).get('origin') == 'desktop':
+            raise ValueError('此独立入口只接入原 VS Code / CLI 会话')
         with session.activation_lock:
+            self.released_cli.set(thread_id, False)
             if session.connected:
                 return session
             with session.condition:
@@ -1904,16 +2112,18 @@ class Bridge:
                     self._attach(session)
                 if session.connected:
                     return session
-                if session.origin == 'cli' and session.desktop_owner_probe != 'absent':
+                native_retry = (session.origin == 'ide' and session.desktop_owner_probe == 'unknown'
+                                and session.error == '桌面读取超时；尚未取得实时会话状态。')
+                if session.origin in ('cli', 'ide') and session.desktop_owner_probe != 'absent' and not native_retry:
                     raise IPCError(session.error or '正在等待原 Codex App 会话快照；未启动 CLI 后台服务。')
                 if self.closed.is_set():
                     raise IPCError('网关正在停止；操作未发送，请稍后重试。')
-                if session.origin == 'cli':
+                if session.origin in ('cli', 'ide'):
                     with session.attach_lock:
                         with session.condition:
                             if session.connected:
                                 return session
-                            if session.desktop_owner_probe != 'absent':
+                            if session.desktop_owner_probe != 'absent' and not native_retry:
                                 raise IPCError(session.error or '正在等待原 Codex App 会话快照；未启动 CLI 后台服务。')
                             session.native_attaching = True
                         try:
@@ -1976,19 +2186,19 @@ class Bridge:
             self._disconnected()
             return
         params = message.get("params", {})
-        if params.get("hostId") != self.host:
+        if params.get("hostId") != self.native_host:
             return
         with self.lock:
             session = self.live.get(params.get("conversationId"))
-        if session is None:
+        if session is None or self.released_cli.contains(session.id):
             return
         change = params.get("change", {})
         with session.condition:
-            if session.origin == 'cli' and (session.native_attaching or session.runtime == 'cli' and session.connected):
+            if session.origin in ('cli', 'ide') and (session.native_attaching or session.runtime == 'cli' and session.connected):
                 return
-            if session.origin == 'cli' and session.desktop_owner_probe != 'found':
+            if session.origin in ('cli', 'ide') and session.desktop_owner_probe != 'found':
                 return
-            if session.discovering and session.origin != 'cli' and change.get("type") == "snapshot" and (change.get("conversationState") or {}).get("id") == session.id:
+            if session.discovering and session.origin not in ('cli', 'ide') and change.get("type") == "snapshot" and (change.get("conversationState") or {}).get("id") == session.id:
                 session.owner = message.get("sourceClientId")
                 session.discovering = False
             if not session.owner or message.get("sourceClientId") != session.owner:
@@ -2007,7 +2217,7 @@ class Bridge:
                 if state.get('id') != session.id:
                     reason = 'thread_id_mismatch'
                     raise ValueError("Session mismatch")
-                if session.origin == 'cli' and (state.get('hostId', self.host) != self.host or
+                if session.origin in ('cli', 'ide') and (state.get('hostId', self.native_host) != self.native_host or
                         not session.saved_cwd or not session.saved_provider or
                         state.get('cwd') != session.saved_cwd or
                         state.get('modelProvider') != session.saved_provider):
@@ -2035,7 +2245,7 @@ class Bridge:
                     "Codex connection transition thread=%s cause=%s", session.id, reason)
                 session.connected = False
                 session.revision = None
-                session.error = "现有 Codex App 连接与此会话不匹配，未连接" if session.origin == 'cli' else "同步状态发生变化，正在重新读取桌面快照"
+                session.error = "现有 Codex App 连接与此会话不匹配，未连接" if session.origin in ('cli', 'ide') else "同步状态发生变化，正在重新读取桌面快照"
                 session.changed()
 
     def _invalidate(self, session, message, runtime=None, owner=None, reason=None):
@@ -2048,7 +2258,7 @@ class Bridge:
             session.connected = False
             session.rebuild_recommended = session.origin == 'desktop' and self.host == 'local'
             session.revision = None
-            if session.origin == 'cli' and session.runtime == 'desktop':
+            if session.origin in ('cli', 'ide') and session.runtime == 'desktop':
                 session.owner = None
                 session.desktop_owner_probe = None
             session.error = message
@@ -2062,7 +2272,7 @@ class Bridge:
         with self.lock:
             sessions = list(self.live.values())
         for session in sessions:
-            if session.origin != 'cli' or session.desktop_owner_probe == 'found':
+            if session.origin not in ('cli', 'ide') or session.desktop_owner_probe == 'found':
                 self._invalidate(session, "桌面 App 连接已断开，正在等待重连", runtime='desktop',
                                  reason='desktop_ipc_disconnected')
 
@@ -2103,12 +2313,14 @@ class Bridge:
                         self.live.pop(session.id, None)
                     if (session.connected or session.discovering) and session.runtime != "cli":
                         try:
-                            self.ipc.follow(session.id, session.owner, False, host=self.host)
+                            self.ipc.follow(session.id, session.owner, False, host=self.native_host)
                         except IPCError:
                             pass
             delay = 3 if self.ipc.client_id else min(30, delay * 2)
 
     def _target(self, thread_id):
+        if self.released_cli.contains(thread_id):
+            raise IPCError('CLI 连接已释放，请点击继续会话重新连接')
         session = self.activate(thread_id)
         with session.condition:
             if not session.connected or not session.owner:
@@ -2125,7 +2337,7 @@ class Bridge:
             except AppServerError as exc:
                 raise IPCError(str(exc)) from exc
         try:
-            return self.ipc.request(method, {"conversationId": session.id, **params}, target=session.owner, host=self.host, timeout=timeout)["result"]
+            return self.ipc.request(method, {"conversationId": session.id, **params}, target=session.owner, host=self.native_host, timeout=timeout)["result"]
         except IPCError as exc:
             if str(exc) in ('no-client-found', 'client-disconnected', 'server-closed', 'request-timeout') or str(exc).startswith(('桌面连接已断开', '桌面响应超时')):
                 self._invalidate(session, '桌面执行连接不可用，可点击“重建连接”恢复；未确认操作不会自动重发。',
@@ -2143,7 +2355,7 @@ class Bridge:
         provider = view.get('provider')
         if not isinstance(provider, str) or not provider:
             return ''
-        if self.host != 'local':
+        if not self.local:
             alias = self.cli_sessions.alias
             if not alias:
                 return ''
@@ -2203,8 +2415,8 @@ class Bridge:
                     view["permissionMode"] = linux_permissions.current_mode(session.state)
         view["host"] = self.host
         view['draftAccountIdentity'] = self._draft_account_identity(view)
-        view["hostLabel"] = "此电脑" if self.host == "local" else self.hosts.hosts().get(self.host, {}).get("displayName", self.host)
-        if self.host == 'local' and session.origin != 'cli':
+        view["hostLabel"] = self.host_label
+        if self.host == 'local' and session.origin not in ('cli', 'ide'):
             cwd = view.get('cwd')
             provider = view.get('provider')
             if cwd:
@@ -2218,7 +2430,7 @@ class Bridge:
         view["goalActivationIds"] = sorted(self._goal_activation_ids(thread_id))
         with session.condition:
             source = session.state if session.connected else session.history_state or session.state
-            artifacts = artifact_paths(source or {}, self.store.home) if self.host == "local" else {}
+            artifacts = artifact_paths(source or {}, self.store.home) if self.local else {}
         view["files"] = [{"id": k, "name": v["name"], "reference": v["reference"], "references": v["references"], "image": v["image"]} for k, v in artifacts.items()]
         self._overlay_native_goal(session, thread_id, view)
         self._submission_meta(session, view)
@@ -2255,7 +2467,7 @@ class Bridge:
                 return
         with session.condition:
             saved = session.history_state
-            if saved and saved.get('hostId', self.host) != self.host:
+            if saved and saved.get('hostId', self.native_host) != self.native_host:
                 return
             identifiers = persisted_submission_ids(saved, session.id)
         if not identifiers:
@@ -2355,11 +2567,12 @@ class Bridge:
                     break
         view["goalSubmission"] = {"id": key, "objective": entry["text"], "status": status}
 
+    @operation(entry_only=True)
     def workspace(self, thread_id, action, params):
         uuid.UUID(thread_id)
         # Read project metadata only: file browsing never activates a Codex owner.
         root = self.store.get(thread_id).get('cwd')
-        if self.host == 'local':
+        if self.local:
             return workspace_operation(root, action, params)
         if not isinstance(self.store, RemoteStore):
             raise RemoteUnavailable('此主机暂不支持文件浏览')
@@ -2383,13 +2596,14 @@ class Bridge:
         return {'id': agent_id, 'title': view['title'], 'turns': public_turns(view['turns'], image_previews=False),
                 'historyComplete': view['historyComplete'], 'saved': True}
 
+    @operation(entry_only=True)
     def terminal(self, thread_id, owner, action, params):
         uuid.UUID(thread_id)
         if action == 'info':
             root = self.store.get(thread_id).get('cwd')
             from bridge.platforms.posix.terminal import default_shell
             return {'cwd': root, 'host': self.host, 'mode': 'pty',
-                    'shell': default_shell() if self.host == 'local' else None}
+                    'shell': default_shell() if self.local else None}
         identifier = params.get('id', '')
         if action == 'open':
             root = self.store.get(thread_id).get('cwd')
@@ -2424,7 +2638,7 @@ class Bridge:
         session = self.session(thread_id, attach=False)
         with session.condition:
             source = session.state if session.connected else session.history_state or session.state
-            files = artifact_paths(source or {}, self.store.home) if self.host == "local" else {}
+            files = artifact_paths(source or {}, self.store.home) if self.local else {}
         if artifact_id not in files:
             raise KeyError("文件不属于此聊天的工作目录")
         return files[artifact_id]
@@ -2448,7 +2662,7 @@ class Bridge:
                     attachment['mime'] = upload['image']
                     attachment['thumb'] = upload.get('thumb')
                     attachment['name'] = upload.get('name') or attachment.get('name')
-                elif self.host == 'local':
+                elif self.local:
                     attachment['desktopId'] = hashlib.sha256(resolved.encode('utf-8')).hexdigest()
                 if not attachment.get('name'):
                     attachment['name'] = Path(path).name
@@ -2573,7 +2787,7 @@ class Bridge:
             else:
                 result = projection.changes(**options) if mode == 'changes' else projection.page(**options)
                 result['meta'] = dict(result['meta'], host=self.host,
-                                      hostLabel='此电脑' if self.host == 'local' else self.hosts.hosts().get(self.host, {}).get('displayName', self.host),
+                                      hostLabel=self.host_label,
                                       goalRuntimeAvailable=goal_available)
                 if linux_permissions.enabled(self.host):
                     result['meta']['linuxPermissionChecks'] = True
@@ -2595,7 +2809,7 @@ class Bridge:
             {'items': [{'type': 'agentMessage', 'text': text} for text in texts]},
             {'items': media_items},
         ]}
-        artifacts = artifact_paths(file_state, self.store.home) if self.host == 'local' else {}
+        artifacts = artifact_paths(file_state, self.store.home) if self.local else {}
         result['files'] = [{'id': k, 'name': v['name'], 'reference': v['reference'], 'references': v['references'], 'image': v['image']} for k, v in artifacts.items()]
         if mode != 'detail':
             self._submission_meta(session, result['meta'])
@@ -2614,7 +2828,7 @@ class Bridge:
         if not isinstance(account, dict):
             account = {}
         try:
-            local_auth = hashlib.sha256((self.codex_home/'auth.json').read_bytes()).hexdigest() if self.host == 'local' else None
+            local_auth = hashlib.sha256((self.codex_home/'auth.json').read_bytes()).hexdigest() if self.local else None
         except OSError:
             local_auth = None
         runtime_home = (self.cli_sessions.remote_home if self.cli_sessions.alias is not None
@@ -2720,14 +2934,14 @@ class Bridge:
 
     def catalog(self, thread_id, refresh=False, kind=None, query='', offset=0, limit=200, ids=None):
         session = self.session(thread_id, attach=False, background=True)
-        if session.origin != 'cli':
+        if session.origin not in ('cli', 'ide'):
             session = self.session(thread_id, attach=False)
         with session.condition:
             state = session.state if session.connected else session.history_state or session.state or {}
-            native = session.origin == 'cli' and session.runtime == 'cli' and session.connected
-            if session.origin == 'cli' and not session.connected:
+            native = session.origin in ('cli', 'ide') and session.runtime == 'cli' and session.connected
+            if session.origin in ('cli', 'ide') and not session.connected:
                 raise ValueError('请先继续此会话，再读取模型或 Skill')
-            cwd = state.get("cwd") if session.origin != 'cli' else state.get("cwd") or session.saved_cwd
+            cwd = state.get("cwd") if session.origin not in ('cli', 'ide') else state.get("cwd") or session.saved_cwd
             model = state.get("latestModel")
             effort = state.get("latestReasoningEffort") or (state.get("latestThreadSettings") or {}).get("effort")
             provider = state.get('modelProvider')
@@ -2742,7 +2956,7 @@ class Bridge:
             skills = self.cli_sessions.get_kind(thread_id, 'skills', refresh=refresh)
             return {**models, **skills, 'currentModel': model or models.get('currentModel'),
                     'currentEffort': effort or models.get('currentEffort')}
-        selected = (self.accounts.current_models(refresh) if session.origin != 'cli' and
+        selected = (self.accounts.current_models(refresh) if session.origin not in ('cli', 'ide') and
                     self.host == 'local' and self.accounts and kind != 'skills' else None)
         if kind in ('models', 'skills'):
             value = selected if kind == 'models' and selected is not None else self.catalog_reader.get_kind(
@@ -2774,7 +2988,7 @@ class Bridge:
             cwd = session.state.get("cwd") or str(self.codex_home)
         identifiers = sorted(set(skills))
         rows = (self.cli_sessions.validate_skills(session.id, identifiers)
-                if session.origin == 'cli' and session.runtime == 'cli'
+                if session.origin in ('cli', 'ide') and session.runtime == 'cli'
                 else self.catalog_reader.validate_skills(cwd, identifiers))
         by_id = {row["id"]: row for row in rows}
         selected = []
@@ -2798,15 +3012,15 @@ class Bridge:
             return metadata
         def prepare(metadata):
             identifiers = [row['id'] for row in self.store.lifecycle_threads(root_id=thread_id)]
-            if not (disconnect and metadata.get('origin') == 'cli'):
-                self.assert_desktop_idle(identifiers=identifiers, allow_missing_ipc=metadata.get('origin') == 'cli',
+            if not (disconnect and metadata.get('origin') in ('cli', 'ide')):
+                self.assert_desktop_idle(identifiers=identifiers, allow_missing_ipc=metadata.get('origin') in ('cli', 'ide'),
                                          allow_stopped_app=metadata.get('origin') == 'desktop')
             with self.submit_lock:
                 ledgers = (self.submissions, self.goal_commands, self.message_actions)
                 if any((key.split(':')[0] in identifiers or row.get('source') in identifiers or row.get('id') in identifiers) and row.get('status', row.get('state')) in
                        ('queued', 'unknown', 'pending', 'sent') for ledger in ledgers for key, row in ledger.items()):
                     raise ValueError('聊天有排队或待核对操作，请先在原客户端处理')
-            if metadata.get('origin') == 'cli':
+            if metadata.get('origin') in ('cli', 'ide'):
                 def check_scope():
                     if set(identifiers) != {row['id'] for row in self.store.lifecycle_threads(root_id=thread_id)}:
                         raise ValueError('子会话范围已变化，尚未发送归档请求')
@@ -3051,7 +3265,7 @@ class Bridge:
     def _goal_call(self, method, *args):
         """Use the owner when available, otherwise the isolated sidecar."""
         session = self.live.get(args[0]) if args else None
-        if session and session.origin == 'cli' and session.runtime == 'cli':
+        if session and session.origin in ('cli', 'ide') and session.runtime == 'cli':
             return getattr(self.cli_sessions, method)(*args)
         if self.owner_goal is not None:
             # A configured owner transport is authoritative. Never silently
@@ -3075,13 +3289,13 @@ class Bridge:
     def _goal_control(self, thread_id, request_id, action, *, status=None, objective=None, ui_locale=None, expected=None):
         uuid.UUID(request_id)
         session = self.session(thread_id, attach=False, background=True)
-        if self.host != 'local' and not (session.origin == 'cli' and session.connected and session.runtime == 'cli'):
+        if self.host != 'local' and not (session.origin in ('cli', 'ide') and session.connected and session.runtime == 'cli'):
             raise ValueError('目标模式暂不支持 SSH 主机')
-        if session.origin != 'cli' and self.goal is None:
+        if session.origin not in ('cli', 'ide') and self.goal is None:
             raise ValueError('目标模式暂不支持 SSH 主机')
-        if session.origin == 'cli' and not session.connected:
+        if session.origin in ('cli', 'ide') and not session.connected:
             raise ValueError('请先继续此会话，再操作目标')
-        if session.origin == 'cli' and not self._session_goal_available(session):
+        if session.origin in ('cli', 'ide') and not self._session_goal_available(session):
             raise ValueError('当前 Codex 会话暂不支持目标模式')
         # Match the queue dispatcher lock order and serialize state + activation.
         with session.action_lock, self.goal_lock:
@@ -3122,7 +3336,7 @@ class Bridge:
             provider = (session.state or {}).get('modelProvider') or session.saved_provider
         if not provider:
             return ''
-        if self.host == 'local':
+        if self.local:
             return self._draft_account_identity({'provider': provider})
         alias = self.cli_sessions.alias
         home = str(self.cli_sessions.remote_home) if self.cli_sessions.remote_home else None
@@ -3244,14 +3458,14 @@ class Bridge:
                 raise ValueError("目标模式只接受纯文本目标")
             if self.host != 'local':
                 session = self.session(thread_id, attach=False, background=True)
-                if not (session.origin == 'cli' and session.connected and session.runtime == 'cli'):
+                if not (session.origin in ('cli', 'ide') and session.connected and session.runtime == 'cli'):
                     raise ValueError('目标模式暂不支持 SSH 主机')
             session = self._target(thread_id)
-            if self.host != 'local' and not (session.origin == 'cli' and session.connected and session.runtime == 'cli'):
+            if self.host != 'local' and not (session.origin in ('cli', 'ide') and session.connected and session.runtime == 'cli'):
                 raise ValueError('目标模式暂不支持 SSH 主机')
-            if session.origin != 'cli' and self.goal is None:
+            if session.origin not in ('cli', 'ide') and self.goal is None:
                 raise ValueError('目标模式暂不支持 SSH 主机')
-            if session.origin == 'cli' and not self._session_goal_available(session):
+            if session.origin in ('cli', 'ide') and not self._session_goal_available(session):
                 raise ValueError('当前 Codex 会话暂不支持目标模式')
             with session.action_lock, self.goal_lock:
                 response = self._goal_command(session, thread_id, submission_id, "create", objective=text,
@@ -3396,6 +3610,31 @@ class Bridge:
             session.changed()
         return {"status": "accepted", "id": submission_id, "result": response}
 
+    @operation
+    def compact(self, thread_id, request_id):
+        session = self.session(thread_id, attach=False)
+        with session.action_lock:
+            def prepare():
+                with session.condition:
+                    identity = (session.runtime, session.owner)
+                    if not session.connected or not session.owner:
+                        raise ValueError('请先连接原会话后再压缩上下文')
+                if session.runtime == 'cli':
+                    self.cli_sessions.refresh(thread_id)
+                else:
+                    try:
+                        self.assert_desktop_idle(timeout=8, identifiers=[thread_id])
+                    except ValueError as exc:
+                        raise ValueError('原生会话忙碌或状态暂不可确认，请稍后再压缩上下文') from exc
+                with session.condition:
+                    view = session.view()
+                    if (not session.connected or identity != (session.runtime, session.owner) or
+                            view['status'] != 'idle' or view['requests'] or
+                            any(turn.get('status') == 'inProgress' for turn in ordered_turns(session.state))):
+                        raise ValueError('请等待当前任务结束并核对原会话连接后再压缩上下文')
+                return lambda: self._call(session, 'thread-follower-compact-thread', {})
+            return self.compact_commands.perform(thread_id, request_id, prepare)
+
     def interrupt(self, thread_id):
         session = self._target(thread_id)
         with session.condition:
@@ -3407,7 +3646,7 @@ class Bridge:
 
     def full_history(self, thread_id):
         session = self.session(thread_id, attach=False)
-        if session.origin == "cli":
+        if session.origin in ('cli', 'ide'):
             fallback = self.store.history(thread_id, turn_limit=None)
             with session.condition:
                 session.set_history(fallback)
@@ -3512,6 +3751,10 @@ class Bridge:
         return self._call(session, mapping[method], payload)
 
     def close(self):
+        with self.entry_gate if self.entry_gate is not None else nullcontext():
+            self._close()
+
+    def _close(self):
         self.terminals.close()
         self.side_chats.close()
         if self.cli_access:
@@ -3527,7 +3770,8 @@ class Bridge:
             self.native_model_timers.clear()
         if self.entries is not None:
             self.entries.close()
-        if self.host == "local" and self.accounts:
+        if self.accounts:
+            self.accounts.monitor.close()
             self.accounts.login_cancel.set()
             self.accounts.reset_forecast.close()
             with self.accounts.lock:
@@ -3543,7 +3787,7 @@ class Bridge:
         for session in sessions:
             try:
                 if (session.connected or session.discovering) and session.runtime != "cli":
-                    self.ipc.follow(session.id, session.owner, False, host=self.host)
+                    self.ipc.follow(session.id, session.owner, False, host=self.native_host)
             except IPCError:
                 pass
         self.ipc.close()

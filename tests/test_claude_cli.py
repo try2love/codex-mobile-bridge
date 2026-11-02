@@ -574,7 +574,7 @@ class ClaudeCliContract(unittest.TestCase):
         process = Mock(); process.poll.return_value = None
         owner = Mock(origin=self.profile['origin'], process=process, active=False,
                      model=None, permission='plan', events=[])
-        owner.pending = {}; owner.condition = threading.Condition(); owner.error = None
+        owner.pending = {}; owner.condition = threading.Condition(); owner.error = None; owner.catalog = {}
         self.cli.owned[self.native] = owner
         self.assertTrue(self.cli.call('detail', self.sid, {})['capabilities']['attachments'])
         file = self.root/'private note.txt'; file.write_text('fixture bytes')

@@ -348,7 +348,7 @@ class Workbench {
       const button = this.button('', () => { dialog.close(); action(); }, name);
       button.append(this.node('strong', '', name), this.node('span', '', description));
       const capability=name===BridgeI18n.t('终端')?'terminal':name===BridgeI18n.t('侧边聊天')?'sideChat':null;
-      const unavailable=this.current.provider&&['侧边聊天','子智能体'].map(BridgeI18n.t).includes(name)
+      const unavailable=this.current.provider&&(name===BridgeI18n.t('侧边聊天')||name===BridgeI18n.t('子智能体')&&this.current.capabilities?.tasks!==true)
         ||this.current.access?.canUseSideChat===false&&['侧边聊天','子智能体'].map(BridgeI18n.t).includes(name)
         ||capability&&this.current.capabilities?.[capability]===false;
       if(unavailable){button.disabled=true;button.lastChild.textContent=BridgeI18n.t('当前客户端尚未提供此能力');}
@@ -541,7 +541,7 @@ class Workbench {
       if (result.kind === 'pdf') {
         tab.pdf = BridgePdfPreview.create({url:downloadUrl, info:result});
         content.classList.add('wb-pdf-content'); content.append(tab.pdf.element);
-      } else if (result.kind === 'image') { const image = this.node('img'); image.src = 'data:' + result.mime + ';base64,' + result.data; image.alt = result.name; window.BridgeImageViewer?.registerWorkspaceImage(image, result, imageContext, imageComposerScope); content.append(image); }
+      } else if (result.kind === 'image') { const image = this.node('img'); image.src = 'data:' + result.mime + ';base64,' + result.data; image.alt = result.name; window.BridgeImageViewer?.registerWorkspaceImage(image, result, imageContext, imageComposerScope, downloadUrl); content.append(image); }
       else if (result.kind === 'text') {
         tab.fileFont=FileFont.control(this);actions.append(tab.fileFont.element);
         if (/\.md$/i.test(result.name)) { const markdown=this.markdownPreview(session,tab,content,result);modes=markdown.modes;copyAction=markdown.copy; }
@@ -610,6 +610,15 @@ class Workbench {
     dialog.showModal();
   }
   upload(url, file, progress) {
+    if(window.BridgeChannelLink?.alternate){
+      const controller=this.uploadController=new AbortController();
+      const timer=setTimeout(()=>controller.abort(),120000);
+      return fetch(url,{method:'POST',headers:{'X-CSRF-Token':this.csrf(),'Content-Type':'application/octet-stream'},body:file,signal:controller.signal})
+        .catch(()=>{throw Error(BridgeI18n.t('上传结果未确认，请刷新目录核对，或重试同一文件；不会覆盖已有文件。'));})
+        .then(async response=>{const result=await response.json();if(response.status===401)this.onUnauthorized();
+          if(!response.ok)throw Error(result.error||BridgeI18n.t('上传失败'));progress(100);return result;
+        }).finally(()=>clearTimeout(timer));
+    }
     return new Promise((resolve, reject) => {
       const xhr = this.uploadController = new XMLHttpRequest(); xhr.open('POST', url); xhr.timeout = 120000;
       xhr.setRequestHeader('X-CSRF-Token', this.csrf()); xhr.setRequestHeader('Content-Type', 'application/octet-stream');

@@ -27,6 +27,7 @@ class DesktopIPC:
         "thread-follower-edit-last-user-turn": 2,
         "thread-follower-update-thread-settings": 2,
         "thread-follower-load-complete-history": 1,
+        "thread-follower-compact-thread": 1,
         "thread-follower-steer-turn": 1,
         "thread-follower-interrupt-turn": 4,
         "thread-follower-command-approval-decision": 1,

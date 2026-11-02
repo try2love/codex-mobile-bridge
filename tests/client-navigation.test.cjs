@@ -482,3 +482,27 @@ test('authenticated startup opens only the configured native or WSL entry before
  await nav.openChatLink('#'+id+'~'+encodeURIComponent(host),(...args)=>opened.push(args));
  assert.equal(opened.length,1);assert.equal(notices.length,2);
 });
+
+
+test('independent Codex entry routes through the shared Codex page and retains its host',async()=>{
+  const {nav}=fixture(),calls=[];nav.onApplicationChange=(previous,provider,options)=>calls.push({previous,provider,...options});
+  const host='codex:'+'a'.repeat(32);await nav.choose(host);
+  assert.equal(nav.provider,'codex');assert.equal(nav.view.provider,'codex');assert.equal(calls[0].host,host);
+  await nav.choose(host);assert.equal(calls.length,1,'selecting the current entry preserves list and scroll state');
+});
+
+test('returning from an independent Codex entry selects the default list instead of retaining the profile',async()=>{
+ const {nav}=fixture(),calls=[];nav.onApplicationChange=(...args)=>calls.push(args);
+ await nav.choose('codex:'+'b'.repeat(32));await nav.choose('codex');
+ assert.equal(calls.at(-1)[2].host,'local');assert.equal(nav.codexEntry,null);
+});
+
+test('independent Codex profiles keep separate bottom identities and survive status refresh',async()=>{
+ const {nav}=fixture(),id='codex:'+'a'.repeat(32),other='codex:'+'b'.repeat(32),events=[];
+ nav.clients=[{id:'codex',enabled:true},{id,kind:'codex-local',enabled:true},{id:other,kind:'codex-local',enabled:true}];
+ nav.onApplicationChange=(previous,provider,options)=>events.push({previous,provider,...options});
+ await nav.choose(id);assert.equal(nav.provider,'codex');assert.equal(nav.activeClient(),id);assert.equal(events.at(-1).host,id);
+ events.length=0;nav.applyClients({clients:nav.clients});assert.equal(events.length,0);assert.equal(nav.activeClient(),id);
+ await nav.choose(other);assert.equal(nav.activeClient(),other);assert.equal(events.at(-1).host,other);
+ await nav.choose('codex');assert.equal(nav.activeClient(),'codex');assert.equal(events.at(-1).host,'local');
+});

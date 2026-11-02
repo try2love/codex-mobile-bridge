@@ -1227,6 +1227,33 @@ class HttpTests(unittest.TestCase):
         self.server.bridge.entries.hosts = lambda: {}
         self.assertEqual(self.request('GET', path, headers=headers)[0], 400)
 
+    def test_independent_codex_hosts_are_only_read_from_their_own_list(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        profile, wsl = 'codex:' + 'a' * 32, 'wsl:' + 'b' * 32
+        registry = {profile: {'kind': 'codex-local', 'displayName': 'Work Codex'},
+                    wsl: {'kind': 'wsl-cli', 'label': 'Ubuntu'}}
+        self.server.bridge.entries = SimpleNamespace(hosts=lambda: registry)
+        self.server.bridge.hosts = SimpleNamespace(hosts=lambda: {'ssh-host': {'label': 'SSH'}})
+        target = Mock()
+        target.list.return_value = ([{'id': THREAD, 'host': profile}], ['cli', 'ide'])
+        target.host_errors = []
+        self.server.bridge.for_host = lambda host: target if host == profile else self.server.bridge
+        manager = self.server.desktop_sessions = Mock()
+        headers = self.login()
+        status, _, body = self.request('GET', '/api/sessions?scope=host&host=local', headers=headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(body['remoteHosts'], ['ssh-host', wsl])
+        target.list.assert_not_called()
+        status, _, body = self.request('GET', '/api/sessions?scope=host&host=' + profile, headers=headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(body['remoteHosts'], [])
+        self.assertEqual(body['sessions'][0]['host'], profile)
+        self.assertEqual(body['availableSources'], ['cli', 'ide'])
+        manager.require_enabled.assert_called_with(profile)
+        registry.pop(profile)
+        self.assertEqual(self.request('GET', '/api/sessions?scope=host&host=' + profile, headers=headers)[0], 400)
+
     def test_host_scoped_wsl_failure_reports_incomplete_without_other_hosts(self):
         from types import SimpleNamespace
         from unittest.mock import Mock

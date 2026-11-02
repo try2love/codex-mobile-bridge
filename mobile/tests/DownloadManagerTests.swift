@@ -14,6 +14,13 @@ import Foundation
         precondition(!DownloadManager.allows(URL(string: "https://other.invalid" + path)!, origin: origin))
         precondition(!DownloadManager.allows(URL(string: origin + "/api/desktop-sessions/claude/send")!, origin: origin))
         let diagnostic = "/api/sessions/diagnostics", thread = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        for imagePath in ["/api/sessions/\(thread)/uploads/\(thread)/preview", "/api/sessions/\(thread)/desktop-images/" + String(repeating: "a", count: 64), "/api/desktop-sessions/zcode/uploads/\(thread)/preview", "/api/desktop-sessions/deepseek/images/" + String(repeating: "a", count: 64)] {
+            precondition(DownloadManager.allows(URL(string: origin + imagePath + "?download=1&sessionId=fixture")!, origin: origin))
+            for suffix in ["", "?download=0", "?download=1&download=0", "?download=1#fragment"] {
+                precondition(!DownloadManager.allows(URL(string: origin + imagePath + suffix)!, origin: origin))
+            }
+            precondition(!DownloadManager.allows(URL(string: "https://other.invalid" + imagePath + "?download=1")!, origin: origin))
+        }
         precondition(DownloadManager.allows(URL(string: origin + diagnostic)!, origin: origin))
         precondition(DownloadManager.allows(URL(string: origin + diagnostic + "?thread=" + thread)!, origin: origin))
         for suffix in ["?thread=bad", "?thread=" + thread + "&extra=1", "?other=1", "/extra", "#fragment"] {

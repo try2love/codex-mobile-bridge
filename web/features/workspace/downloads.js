@@ -9,9 +9,12 @@ const BridgeDownload = (() => {
       const url = new URL(value, base);
       const scope = /^\/d\/[a-f0-9]{32}(?=\/)/.exec(new URL(base).pathname)?.[0] || "";
       const pathname = scope ? (url.pathname.startsWith(scope+"/") ? url.pathname.slice(scope.length) : "") : url.pathname;
-      return url.origin === new URL(base).origin && !url.username && !url.password &&
+      const image = url.searchParams.getAll('download').length === 1 && url.searchParams.get('download') === '1' &&
+        (/^\/api\/sessions\/[0-9a-f-]{36}\/(?:uploads\/[0-9a-f-]{36}\/preview|desktop-images\/[a-f0-9]{64})$/.test(pathname) ||
+         /^\/api\/desktop-sessions\/(?:claude|deepseek|zcode)\/(?:uploads\/[0-9a-f-]{36}\/preview|images\/[a-f0-9]{64})$/.test(pathname));
+      return url.origin === new URL(base).origin && !url.username && !url.password && !url.hash &&
         (/^\/api\/sessions\/[0-9a-f-]{36}\/(?:files\/[a-f0-9]{64}|workspace\/download)$/.test(pathname) ||
-         /^\/api\/desktop-sessions\/(?:claude|deepseek|zcode)\/workspace\/download$/.test(pathname));
+         /^\/api\/desktop-sessions\/(?:claude|deepseek|zcode)\/workspace\/download$/.test(pathname) || image);
     } catch { return false; }
   }
   const host = typeof module === 'object' && module.exports ? require('../../hosts/environment.js') : BridgeHost;

@@ -647,7 +647,7 @@ class Notifications:
                 events = [{**event, 'ageMs': max(0, round((now - event['createdAt']) * 1000))}
                           for event in snapshot['events']]
                 if events:
-                    logging.info('notification stage=read events=%d cursor=%d wait_ms=%.1f', len(events), snapshot['cursor'], elapsed)
+                    logging.debug('notification stage=read events=%d cursor=%d wait_ms=%.1f', len(events), snapshot['cursor'], elapsed)
                 # Timing is response-local, outside the stable revision. Phone
                 # and gateway wall clocks are never subtracted from one another.
                 return {**snapshot, 'events': events, 'longPoll': 60, 'revision': token, 'timing': {'waitMs': elapsed}}
@@ -1044,7 +1044,7 @@ class Notifications:
         except Exception:
             pass  # Publish errors must not expose endpoint credentials or content.
         elapsed = (time.monotonic() - started) * 1000
-        logging.info('notification stage=%s provider=%s kind=%s channel=%s trace=%s count=%d queue_ms=%.1f work_ms=%.1f outcome=%s',
+        logging.log(logging.INFO if success else logging.WARNING, 'notification stage=%s provider=%s kind=%s channel=%s trace=%s count=%d queue_ms=%.1f work_ms=%.1f outcome=%s',
                      'inbox' if channel == 'mobile' else 'outbound', provider or 'codex',
                      kind, channel.split(':')[0], pending[0][-64:][:16],
                      len(pending), max(0, started - (detected if detected is not None else started)) * 1000,
@@ -1071,7 +1071,6 @@ class Notifications:
         # A manual single pass retains synchronous delivery. The live scanner and
         # sender use separate workers, sharing the exact same detection path.
         started = time.monotonic()
-        cursor = self.mobile.checkpoint()['cursor']
         with self.lock:
             self.delivery_queue = {key: job for key, job in self.delivery_queue.items()
                                    if key[-1] or self.desktop_provider(key[0])}
@@ -1092,7 +1091,7 @@ class Notifications:
             # Explicit watches also need to discover a new run after going idle.
             discovery_started = time.monotonic()
             candidates = self.bridge.notification_candidates()
-            logging.info('notification stage=discovery work_ms=%.1f count=%d',
+            logging.debug('notification stage=discovery work_ms=%.1f count=%d',
                          (time.monotonic() - discovery_started) * 1000, len(candidates))
             for row in candidates:
                 key = (row['host'], row['id'])
@@ -1205,8 +1204,8 @@ class Notifications:
                         keys = [self._delivery_key(row, record['pending'], completion='attention', target=target)]
                         changed = self._dispatch(config, row, record.get('title') or '聊天', 'mobile', target, keys, 'attention') or changed
         elapsed = (time.monotonic() - started) * 1000
-        if elapsed >= 1000 or self.mobile.checkpoint()['cursor'] != cursor:
-            logging.info('notification stage=scan work_ms=%.1f inbox_cursor=%d', elapsed, self.mobile.checkpoint()['cursor'])
+        if elapsed >= 2000:
+            logging.warning('notification stage=scan work_ms=%.1f', elapsed)
         if deliver:
             self.deliver_pending()
 
@@ -1220,7 +1219,7 @@ class Notifications:
                                    if key[-1] or not self.desktop_provider(key[0])}
         listed = time.monotonic()
         rows = manager.notification_rows()
-        logging.info('notification stage=desktop-list work_ms=%.1f count=%d', (time.monotonic() - listed) * 1000, len(rows))
+        logging.debug('notification stage=desktop-list work_ms=%.1f count=%d', (time.monotonic() - listed) * 1000, len(rows))
         if not rows:
             return False
         # Rotate bounded history reads so one large client's history cannot block
@@ -1254,7 +1253,7 @@ class Notifications:
                 try:
                     read_started = time.monotonic()
                     detail = manager.call(row['provider'], 'detail', row['id'])
-                    logging.info('notification stage=desktop-detail provider=%s work_ms=%.1f',
+                    logging.debug('notification stage=desktop-detail provider=%s work_ms=%.1f',
                                  row['provider'], (time.monotonic() - read_started) * 1000)
                     if detail.get('connected') is False or not isinstance(detail.get('turns'), list):
                         continue

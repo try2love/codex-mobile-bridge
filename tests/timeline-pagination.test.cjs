@@ -40,3 +40,15 @@ test('empty page with more history does not lose the current cursor or loop fore
  pending.shift().resolve({epoch:'a',rows:[],before:null,hasMore:true});await done;
  assert.equal(ui.before,'a.recent');assert.equal(ui.retryCount,100);assert.equal(pending.length,0);
 });
+
+test('a live reset keeps the visible message during a mobile handoff and resumes following after release',()=>{
+ const window={}, ctx=vm.createContext({window,BridgeI18n:{t:s=>s},requestAnimationFrame:cb=>cb()});
+ for(const file of ['activity','timeline'])vm.runInContext(fs.readFileSync('web/features/chat/'+file+'.js','utf8'),ctx);
+ const Type=vm.runInContext('ChatTimeline',ctx),viewport={clientHeight:500,scrollHeight:2000,scrollTop:1500,getBoundingClientRect:()=>({top:0})};
+ const node={hidden:false,getBoundingClientRect:()=>({top:800-viewport.scrollTop})};
+ const timeline=Object.assign(Object.create(Type.prototype),{viewport,abort:{signal:{aborted:false}},nodes:new Map([['read-here',{node}]]),newer:{},capture:()=>({key:'read-here',offset:800-viewport.scrollTop})});
+ window.BridgeMobileHandoff={readingAnchor:()=>({key:'read-here',offset:-30})};
+ timeline.restore(null,true);assert.equal(viewport.scrollTop,830);assert.equal(timeline.following,false);
+ viewport.scrollTop=1500;timeline.restore(null,true);assert.equal(viewport.scrollTop,830);
+ delete window.BridgeMobileHandoff;timeline.restore(null,true);assert.equal(timeline.following,true);
+});

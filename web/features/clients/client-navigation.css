@@ -25,3 +25,20 @@
 .client-swipe-rows{flex:1;min-height:0;overflow:hidden!important}
 .client-swipe-caption{display:flex;align-items:center;gap:8px;flex:none;padding:10px 8px;font-size:12px;font-weight:600;color:var(--muted)}
 .no-client .chat-list-toolbar{display:none}
+
+/* The shared client shell preserves item nodes and scroll across provider changes. */
+.list-heading h2{min-width:0;max-width:min(54vw,280px)}
+.client-picker{display:flex;align-items:center;gap:7px;min-width:0;padding:0;color:inherit;font:inherit;font-weight:inherit;text-align:left}
+.client-picker:disabled{opacity:1;cursor:default}
+.client-picker:not(:disabled):after{content:'⌄';font-size:12px;color:var(--muted);flex:none}
+.client-picker .client-badge{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block}
+.client-picker .client-icon{vertical-align:middle;margin-right:4px}
+.client-switch-dock{position:relative}
+.client-switch-dock>.client-switch-arrow{position:absolute;z-index:1;top:0;bottom:0;width:24px;padding:0;border:0;border-radius:0;color:var(--text);font-size:22px}
+.client-switch-arrow.previous{left:0;background:linear-gradient(to right,var(--surface) 50%,transparent)}
+.client-switch-arrow.next{right:0;background:linear-gradient(to left,var(--surface) 50%,transparent)}
+.client-switch-dock>.client-switch-arrow[hidden]{display:none}
+.client-picker-options{display:flex;flex-direction:column;gap:5px}
+.client-picker-options>button{display:flex;align-items:center;gap:12px;text-align:left;background:transparent;border:0;padding:14px;border-radius:10px;color:var(--text)}
+.client-picker-options>button[aria-pressed="true"]{background:var(--soft)}
+.client-picker-options>button>span:nth-child(2){flex:1;overflow-wrap:anywhere}

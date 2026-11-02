@@ -10,10 +10,14 @@ export async function nativeRequest(request) {
     const stack = [...document.querySelectorAll('#root,#app')].flatMap(el =>
       Object.keys(el).filter(k => k.startsWith('__reactContainer$') || k.startsWith('__reactFiber$')).map(k => el[k]));
     const seen = new Set(), found = new Set(), contexts = new Set();
+    let registryAnchor;
     while (stack.length && seen.size < 20000) {
       const f = stack.pop();
       if (!f || seen.has(f)) continue;
       seen.add(f); stack.push(f.child, f.sibling, f.alternate);
+      // The service provider is mounted on the home screen too. Its module holds
+      // the same native workspace registry; no open conversation is required.
+      if (!registryAnchor && f.memoizedProps?.services?.zcodeAgentService && typeof f.type === 'function') registryAnchor = f.type;
       for (const value of [f.memoizedProps?.value, f.memoizedProps?.services]) {
         if (value?.layer?.acquire && value?.layer?.entries?.has('conversation/' + (request.anchorSessionId || request.sessionId))) contexts.add(value);
         const services = value?.zcodeAgentService ? value : value?.services;
@@ -21,9 +25,21 @@ export async function nativeRequest(request) {
       }
     }
     if (found.size !== 1) throw Error('Original ZCode service accessor is unavailable or ambiguous');
-    return { services: [...found][0], contexts: [...contexts] };
+    return { services: [...found][0], contexts: [...contexts], registryAnchor };
   };
-  const { services, contexts } = findServices(), agent = services.zcodeAgentService;
+  const { services, contexts, registryAnchor } = findServices(), agent = services.zcodeAgentService;
+  if (request.action === 'registry-probe') return typeof window.__codexMobileZCodeAcquireWorkspace === 'function' ||
+    contexts.find(context => !context.layer.disposed)?.layer.acquire || registryAnchor;
+  if (['projects', 'target'].includes(request.action)) {
+    const tree = await services.projectService.readTree({});
+    if (request.action === 'target') {
+      const row = tree.tasks.find(row => row.taskId === request.sessionId && (!row.hostId || row.hostId === 'local'));
+      if (!row) throw Error('原 App 中找不到此本机会话，请刷新列表');
+      return { workspace: row.workspacePath };
+    }
+    return { projects: tree.projects.filter(row => !row.deleted && row.hostId === 'local' && row.roots.some(root => root.isPrimary))
+      .map(row => ({ key: row.id, name: row.name, cwd: row.roots.find(root => root.isPrimary).rootPath, surface: 'desktop', host: 'local' })) };
+  }
   const account = async () => {
     const provider = await services.oauthService.getActiveProvider();
     const raw = provider ? await services.credentialService.load('oauth:' + provider + ':user_info') : null;
@@ -100,57 +116,85 @@ export async function nativeRequest(request) {
       }), sessions };
   }
   const target = { workspacePath: request.workspace, sessionId: request.sessionId };
-  const identity = async () => {
+  const read = () => agent.readSession({ ...target, runtimePolicy: 'existing-only', messageLimit: 100 });
+  const identity = async (workspacePath = request.workspace, sessionId = request.sessionId) => {
     const hello = await agent.helloConversationV4();
     const clientId = localStorage.getItem('zcode-v4-client-id:v1');
     if (!clientId || hello.protocolVersion !== 3 || hello.clientMode !== 'desktop-continuous')
       throw Error('Unsupported original ZCode connection');
-    const runtime = await agent.getWorkspaceRuntimeIdentity({ ...target, runtimePolicy: 'existing-only' });
-    if (!runtime?.identity || runtime.workspaceKey !== request.workspace)
+    const runtime = await agent.getWorkspaceRuntimeIdentity({ workspacePath, sessionId, runtimePolicy: 'existing-only' });
+    if (!runtime?.identity || runtime.workspaceKey !== workspacePath)
       throw Error('Original workspace runtime is unavailable');
     return { clientId, connectionId: hello.connectionId, runtime };
   };
-  const current = await identity();
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-  if (request.binding && !same(current, request.binding)) throw Error('ZCode owner changed; explicit reattach required');
   // Upgrade the original single-session lease without dropping the desktop's store.
   if (window[key] && !window[key].sessions) window[key].sessions = new Map([[window[key].sessionId, window[key]]]);
   const states = window[key]?.sessions || new Map();
+  if (request.action === 'attach') {
+    const tree = await services.projectService.readTree({});
+    if (!tree.tasks.some(row => row.taskId === request.sessionId && row.workspacePath === request.workspace &&
+        !row.deleted && (!row.hostId || row.hostId === 'local')))
+      throw Error('原 App 会话或项目已变化，请刷新列表');
+    const previous = states.get(request.sessionId);
+    if (previous?.lease.store.getState().status === 'live') {
+      const current = await identity();
+      if (same(previous.binding, current)) return {binding:current,subscriptionId:previous.lease.store.getState().subscriptionId};
+    }
+    checkDeadline();
+    // Native acquire performs cold restore. Reading history before subscribing
+    // fails on the home screen because the conversation is not resident yet.
+    const workspaceLease = window.__codexMobileZCodeAcquireWorkspace?.({ workspacePath: request.workspace }, agent);
+    const existing = contexts.find(context => context.layer.entries.has('conversation/' + request.sessionId));
+    const layer = workspaceLease?.layer || existing?.layer ||
+      (window[key]?.binding?.runtime?.workspaceKey === request.workspace ? window[key].layer : null);
+    let lease;
+    try {
+      if (!layer || layer.disposed) throw Error('ZCode 原生连接入口不可用，请在应用管理中恢复接入');
+      lease = layer.acquire(request.sessionId);
+      const store = lease.store;
+      if (store.getState().status === 'error') void store.retry();
+      if (store.getState().status !== 'live') await new Promise((resolve, reject) => {
+        const finish = error => { clearTimeout(timer); off(); error ? reject(error) : resolve(); };
+        const inspect = () => {
+          const value = store.getState();
+          if (value.status === 'live') finish();
+          else if (['error','closed'].includes(value.status)) finish(Error(value.lastError || 'ZCode 原生聊天恢复失败'));
+        };
+        const timer = setTimeout(() => finish(Error('ZCode 原生聊天恢复超时，请重新连接')), Math.max(1, request.expiresAt - Date.now() - 250));
+        const off = store.subscribe(inspect);
+        inspect();
+      });
+      checkDeadline();
+      const current = await identity();
+      // V4's cold history projection need not create a legacy session/read runtime.
+      // The native task index and runtime identity above bind this snapshot's cwd.
+      if (store.getState().snapshot?.sessionId !== request.sessionId) throw Error('Native session workspace changed');
+      // Swap only this Bridge reference, retaining the App's shared native store.
+      previous?.lease.release(); previous?.workspaceLease?.release();
+      const state = {binding:current,sessionId:request.sessionId,lease,layer,workspaceLease,sessions:states};
+      states.set(request.sessionId,state); window[key]=state;
+      return {binding:current,subscriptionId:store.getState().subscriptionId};
+    } catch (error) { lease?.release(); workspaceLease?.release(); throw error; }
+  }
+  const current = await identity();
+  if (request.binding && !same(current, request.binding)) throw Error('ZCode owner changed; explicit reattach required');
   if (request.action === 'list') {
     const tree = await services.projectService.readTree({});
-    return { sessions: tree.tasks.filter(row => row.workspacePath === request.workspace && (!row.hostId || row.hostId === 'local'))
+    return { sessions: tree.tasks.filter(row => !row.hostId || row.hostId === 'local')
       .map(row => {
         const state = states.get(row.taskId), value = state?.lease.store.getState();
-        return value?.status === 'live' && same(state.binding, current) ? { snapshot: value.snapshot } :
+        return value?.status === 'live' && state.binding.clientId === current.clientId &&
+          state.binding.connectionId === current.connectionId ? { snapshot: value.snapshot, cwd: row.workspacePath } :
           { id: row.taskId, title: row.title, cwd: row.workspacePath, model: row.model,
             effort: row.thoughtLevel, updatedAt: row.updatedAt, archived: row.archived };
       }) };
   }
-  const read = () => agent.readSession({ ...target, runtimePolicy: 'existing-only', messageLimit: 100 });
-  // Verify the original session/cwd before any subscription or command.
-  const history = ['attach', 'history'].includes(request.action) || request.action === 'detail' &&
+  const history = request.action === 'history' || request.action === 'detail' &&
     (!states.has(request.sessionId) || !same(states.get(request.sessionId).binding, current)) ? await read() : null;
   if (history && (history.session?.sessionId !== request.sessionId || history.session?.workspace?.workspacePath !== request.workspace))
     throw Error('Native session workspace changed');
-  let state = states.get(request.sessionId);
-  if (request.action === 'attach') {
-    if (state && (!same(state.binding, current) || state.lease.store.getState().status === 'closed')) {
-      // Only this explicit action can adopt a new host generation. Old command IDs
-      // remain claimed by DesktopSessions; replacing a subscription never resends them.
-      state.lease.release(); states.delete(request.sessionId); state = null;
-    }
-    if (!state) {
-      checkDeadline();
-      // Reuse the App's ref-counted store, including its delta reducer. A second
-      // subscribe on the renderer connection would evict the desktop subscription.
-      const layer = contexts.length === 1 ? contexts[0].layer : window[key]?.layer;
-      if (!layer || layer.disposed) throw Error('请先在 ZCode 打开此项目的一条聊天，再重新连接');
-      const lease = layer.acquire(request.sessionId);
-      state = { binding: current, sessionId: request.sessionId, lease, layer, sessions: states };
-      states.set(request.sessionId, state); window[key] = state;
-    }
-    return { binding: current, subscriptionId: state.lease.store.getState().subscriptionId };
-  }
+  const state = states.get(request.sessionId);
   if (request.action === 'receipt') {
     return agent.queryConversationCommandsV4({ workspacePath: request.workspace,
       commands: [{ sessionId: request.sessionId, commandId: request.commandId }] });
@@ -166,6 +210,7 @@ export async function nativeRequest(request) {
     throw Error('Prototype subscription is detached; explicitly attach again');
   if (request.action === 'detach') {
     state.lease.release();
+    state.workspaceLease?.release();
     states.delete(request.sessionId);
     if (window[key] === state) { delete window[key]; const remaining = states.values().next().value; if (remaining) window[key] = remaining; }
     return { detached: true };
@@ -186,24 +231,46 @@ export async function nativeRequest(request) {
     if (typeof body.firstMessage !== 'string' || !body.firstMessage.trim() || body.firstMessage.length > 100000)
       throw Error('请输入首条消息');
     const sid = 'sess_' + body.id;
-    const ack = await agent.sendConversationCommandV4({ workspacePath: request.workspace, projectId: null,
+    let workspacePath = request.workspace, projectId = null;
+    if (body.directoryProject || body.projectKey && body.projectKey !== request.workspace) {
+      if (typeof window.__codexMobileZCodeAcquireWorkspace !== 'function') throw Error('ZCode 原生多项目连接尚不可用');
+      const project = body.directoryProject ? await services.projectService.saveProject({ hostId: 'local',
+        roots: [body.directoryProject.cwd], reuseExistingRoot: true }) :
+        (await services.projectService.readProjects({ hostId: 'local' })).find(row => row.id === body.projectKey && !row.deleted);
+      if (!project || project.hostId !== 'local') throw Error('原生项目已变化，请重新选择');
+      const prepared = await services.projectService.prepareSession({ projectId: project.id, hostId: 'local' });
+      const expected = body.directoryProject?.cwd || project.roots.find(root => root.isPrimary)?.rootPath;
+      if (prepared.workspacePath !== expected || prepared.projectId !== project.id || prepared.workspaceIdentity)
+        throw Error('原生项目目录已变化，请重新选择');
+      workspacePath = prepared.workspacePath; projectId = prepared.projectId;
+    }
+    if (!same(await identity(), current)) throw Error('ZCode owner changed before create');
+    checkDeadline();
+    const ack = await agent.sendConversationCommandV4({ workspacePath, projectId,
       envelope: { commandId: body.id, clientId: current.clientId, sessionId: null, type: 'createSession',
-        payload: { sessionId: sid, workspaceId: request.workspace,
+        payload: { sessionId: sid, workspaceId: workspacePath,
           config: { provider: row.provider, model: row.model, thought: before.config.thought, mode: 'build' },
           firstInput: { text: body.firstMessage, modelSelection: { providerId: row.provider, modelId: row.model,
             options: { reasoningLevel: before.config.thought } }, mode: 'build', planEnabled: false } }, issuedAt: Date.now() } });
     if (ack.status !== 'accepted' || ack.result?.sessionId !== sid)
       return { status: ack.status === 'accepted' ? 'unknown' : ack.status, message: ack.message || '原生创建结果待核对，请查看 ZCode 会话列表；不会自动重试', nativeAck: ack };
-    const layer = state.layer || (contexts.length === 1 ? contexts[0].layer : null);
-    let notice;
+    let notice, binding, workspaceLease;
     try {
+      binding = await identity(workspacePath, sid);
+      workspaceLease = window.__codexMobileZCodeAcquireWorkspace?.({ workspacePath }, agent);
+      const layer = workspaceLease?.layer || (workspacePath === request.workspace ? state.layer : null);
       if (!layer || layer.disposed) throw Error('原生会话已创建，请点击继续会话完成接入');
       const lease = layer.acquire(sid);
-      states.set(sid, { binding: current, sessionId: sid, lease, layer, sessions: states });
-    } catch (error) { notice = String(error.message || error); }
-    return { status: 'accepted', result: { id: sid }, ...(notice ? { message: notice } : {}) };
+      states.set(sid, { binding, sessionId: sid, lease, layer, workspaceLease, sessions: states });
+    } catch (error) { workspaceLease?.release(); notice = String(error.message || error); }
+    return { status: 'accepted', result: { id: sid }, workspace: workspacePath, binding,
+      ...(notice ? { message: notice } : {}) };
   }
   if (request.action === 'detail') return { binding: current, snapshot: before, account: await account() };
+  if (request.action === 'tasks') return { tasks: (before.backgroundWorks || []).map(work => ({
+    id: work.workId, title: work.title, kind: work.kind, status: work.status,
+    cancellable: work.cancellable === true && work.status === 'running',
+  })) };
   const body = request.body || {};
   const skills = async () => {
     const catalog = await agent.getSkillReferenceCatalog({ ...target, runtimePolicy: 'existing-only' });
@@ -221,11 +288,13 @@ export async function nativeRequest(request) {
   }
   let type, payload;
   if (request.action === 'send') {
-    // This first slice deliberately does not implement queue/steer or auto-start a cold owner.
-    if (before.inputRouting?.mode !== 'startNow' || before.control.activeWorks.length ||
-        before.pendingInteractions.length || before.queue.items.length)
+    const mode = body.mode || 'send', routing = before.inputRouting?.mode;
+    const allowed = { send: routing === 'startNow' && !before.control.activeWorks.length && !before.queue.items.length,
+      queue: ['startNow', 'enqueue', 'guide', 'choice'].includes(routing),
+      steer: before.control.activeWorks.length > 0 && ['enqueue', 'guide'].includes(routing) };
+    if (!allowed[mode] || before.pendingInteractions.length)
       throw Error('Native session is busy or awaiting input');
-    type = 'sendText'; payload = { text: body.text, requestedDelivery: 'startNow' };
+    type = 'sendText'; payload = { text: body.text, requestedDelivery: { send: 'startNow', queue: 'queue', steer: 'guide' }[mode] };
     if (body.plugins?.length) {
       const catalog = await skills();
       const selected = body.plugins.map(id => catalog.find(skill => skill.id === id));
@@ -264,13 +333,42 @@ export async function nativeRequest(request) {
       }
     }
     if (attachments.length) payload.attachments = attachments;
+  } else if (request.action === 'rename') {
+    if (typeof body.title !== 'string' || !body.title.trim() || body.title.trim().length > 120) throw Error('请输入 1–120 字的聊天名称');
+    type = 'renameSession'; payload = { title: body.title.trim() };
+  } else if (request.action === 'fork' || request.action === 'edit-message') {
+    const edit = request.action === 'edit-message', target = body.target;
+    const row = before.rows.window.find(row => row.rowId === target?.rowId && row.entityId === target?.entityId);
+    if (target?.logEpoch !== before.logEpoch || !row || row.kind !== (edit ? 'userInput' : 'assistantText') ||
+        row.actions?.[edit ? 'canEdit' : 'canFork'] !== true) throw Error('消息已变化或不支持此操作，请刷新后重新选择');
+    if (edit && (typeof body.text !== 'string' || !body.text.trim() || body.text.length > 100000)) throw Error('请输入 1–100000 字的消息');
+    type = edit ? 'editUserQuery' : 'forkAssistant';
+    payload = { target: { rowId: row.rowId, entityId: row.entityId }, ...(edit ? {
+      newText: body.text, workspaceMode: 'preserve', ...(row.attachments?.length ? { attachments: row.attachments } : {}),
+    } : {}) };
+  } else if (request.action === 'compact') {
+    if (before.availability?.compact?.allowed !== true || before.control.activeWorks.length ||
+        before.pendingInteractions.length || before.queue.items.length) throw Error('请等待当前任务和队列结束后再压缩上下文');
+    type = 'compact'; payload = {};
+  } else if (request.action === 'stop-task') {
+    const work = before.backgroundWorks?.find(work => work.workId === body.taskId);
+    if (!work || work.status !== 'running' || work.cancellable !== true) throw Error('后台任务已结束或不支持独立停止');
+    type = 'cancelBackgroundWork'; payload = { workId: work.workId };
+  } else if (request.action === 'access') {
+    if (!['build','guarded','yolo'].includes(before.config.mode) || !['build','guarded','yolo'].includes(body.mode) ||
+        (body.mode === 'yolo' && body.confirmed !== true)) throw Error('请确认本次权限切换');
+    if (before.config.mode === body.mode) return { status: 'accepted' };
+    if (before.control.activeWorks.length || before.pendingInteractions.length || before.queue.items.length || before.config.planEnabled)
+      throw Error('请先结束当前任务并退出计划模式');
+    type = 'switchCollaborationMode'; payload = { mode: body.mode };
   } else if (request.action === 'work-mode') {
     if (!['default', 'plan'].includes(body.mode)) throw Error('工作模式无效');
     const planning = before.config.planEnabled || before.config.mode === 'plan';
     if (planning === (body.mode === 'plan')) return { status: 'accepted' };
     if (before.control.activeWorks.length || before.pendingInteractions.length || before.queue.items.length)
       throw Error('请等待当前任务结束后再切换模式');
-    type = 'switchCollaborationMode'; payload = { mode: body.mode === 'plan' ? 'plan' : 'build' };
+    type = 'switchCollaborationMode';
+    payload = { mode: body.mode === 'plan' ? 'plan' : (['guarded','yolo'].includes(before.config.mode) ? before.config.mode : 'build') };
   } else if (request.action === 'goal') {
     if (!['set', 'pause', 'resume', 'clear'].includes(body.operation)) throw Error('目标操作无效');
     if (body.operation !== 'set' && (!before.goal || body.expected?.goalId !== before.goal.targetId ||
@@ -315,8 +413,18 @@ export async function nativeRequest(request) {
   } else throw Error('Unsupported prototype operation');
   if (!same(await identity(), current)) throw Error('ZCode owner changed before dispatch');
   checkDeadline();
-  return agent.sendConversationCommandV4({ workspacePath: request.workspace,
+  const ack = await agent.sendConversationCommandV4({ workspacePath: request.workspace,
     envelope: { commandId: body.id, clientId: current.clientId, sessionId: request.sessionId,
-      ...(['switchModelConfig', 'switchCollaborationMode', 'pauseGoal', 'resumeGoal'].includes(type) ? { baseRevision: before.revision, baseLogEpoch: before.logEpoch } : {}),
+      ...(['switchModelConfig', 'switchCollaborationMode', 'pauseGoal', 'resumeGoal', 'forkAssistant', 'editUserQuery'].includes(type) ? { baseRevision: before.revision, baseLogEpoch: before.logEpoch } : {}),
       type, payload, issuedAt: Date.now() } });
+  if (type === 'forkAssistant' && ack.status === 'accepted' && ack.result?.sessionId) {
+    const sid = ack.result.sessionId;
+    // Explicit fork adopts only its returned child, through the existing native layer.
+    const workspaceLease = window.__codexMobileZCodeAcquireWorkspace?.({ workspacePath: request.workspace }, agent);
+    try {
+      const layer = workspaceLease?.layer || state.layer, lease = layer.acquire(sid);
+      states.set(sid, { binding: current, sessionId: sid, lease, layer, workspaceLease, sessions: states });
+    } catch { workspaceLease?.release(); } // Fork remains accepted; explicit resume can restore its view.
+  }
+  return ack;
 }

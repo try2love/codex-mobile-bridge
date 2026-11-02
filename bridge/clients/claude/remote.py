@@ -14,7 +14,7 @@ from pathlib import Path
 from bridge.clients.claude import model
 from bridge.clients.claude.context import context_fields
 from bridge.clients.claude.cli_session import (_Owned, _message_content, _skill_catalog, _cli_catalog,
-                                                _set_cli_settings, MODES,
+                                                _set_cli_settings, _supports_compact, _compact_cli, MODES,
                                                 PERMISSION_OPTIONS, ResumePreflightBlocked)
 from bridge.clients.codex.remote import ssh_command
 from bridge.clients.errors import BridgeUnavailable
@@ -87,6 +87,10 @@ class RemoteClaudeCli:
         self.complete = False
         self.owned = {}
         self.closed = False
+
+    def cli_connections(self):
+        from bridge.clients.claude.cli_session import owned_connections
+        return owned_connections(self, remote=True)
 
     def available(self):
         return not self.closed and self.hosts is not None and bool(self.hosts.hosts())
@@ -511,6 +515,7 @@ class RemoteClaudeCli:
                         'notice': '无法确认原会话权限模式，请在远端终端继续' if not live and not row['permissionKnown'] else '',
                         'capabilities': {**row.get('capabilities', {}), 'resume': not live and not row.get('archived') and ready, 'send': live and public['connectionState'] == 'ready',
                                          'models': live, 'permissions': live, 'stop': live,
+                                         'compact': live and not owned.active and not owned.pending and _supports_compact(owned.catalog),
                                          'attachments': True, 'queue': False, 'steer': False, 'skills': live}}
             if row.get('archived'):
                 raise BridgeUnavailable('请先恢复归档的 Claude Code 会话')
@@ -589,6 +594,8 @@ class RemoteClaudeCli:
                                  'message': {'role': 'user', 'content': content}})
                 if self._saved_user(row['alias'], owned, message_id, sid) is None:
                     raise BridgeUnavailable('SSH Claude Code 发送结果不明，请检查原会话')
+            elif action == 'compact':
+                _compact_cli(owned, body['id'])
             elif action == 'stop':
                 owned.control({'subtype': 'interrupt'})
             elif action == 'settings':

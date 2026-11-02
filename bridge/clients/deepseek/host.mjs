@@ -72,7 +72,7 @@ export async function apply(ctx,config){
   const modeServices=row=>{
     const agent=row&&ctx.agents.get(row.sessionId),scope=agent?.ctx||ctx,commands=scope.get?.('commands');
     const plan=!!agent&&!!commands?.list(agent).some(command=>command.definitionId==='@deepseek-ai/dsh-plan-mode');
-    return {plan,commands,goals:scope.get?.('goals')};
+    return {plan,commands,compact:!!agent&&!!commands?.list(agent).some(command=>command.definitionId==='@deepseek-ai/dsh-command-compact'),goals:scope.get?.('goals')};
   };
   const workState=row=>{
     const services=modeServices(row),agent=ctx.agents.get(row.sessionId),plan=values(row).plan;
@@ -83,7 +83,7 @@ export async function apply(ctx,config){
         roundsStarted:goal.roundsStarted,maxGoalRounds:goal.maxGoalRounds}:null};
   };
   const workspaceCapable=()=>typeof ctx.workspaceRegistry.get==='function'&&typeof ctx.workspaceRegistry.list==='function'&&ctx.workspaceRegistry.list().every(w=>Array.isArray(w.sessionIds)&&typeof w.attachSession==='function'&&typeof w.detachSession==='function');
-  const capabilities=row=>({resume:!!row&&!ctx.agents.get(row.sessionId)&&typeof ctx.sessionController.resolveAgent==='function',plan:!!modeServices(row).plan,goal:!!modeServices(row).goals,goalEdit:true,goalPause:!row||workState(row).goal?.status==='active',goalResume:!!row&&['paused','blocked'].includes(workState(row).goal?.status),goalPauseStops:true,models:typeof ctx.sessionController.selectModel==='function',manualModels:typeof ctx.sessionController.selectModel==='function',manualEffort:typeof ctx.sessionController.selectModel==='function',effort:typeof ctx.sessionController.selectModel==='function',permissions:typeof ctx.permissionPresets?.set==='function',attachments:typeof ctx.sessionController.prompt==='function',skills:typeof ctx.sessionSkillCatalog?.list==='function',queue:typeof ctx.sessionController.prompt==='function',steer:typeof ctx.sessionController.prompt==='function',fork:typeof ctx.sessionController.fork==='function',rename:!!row&&!!ctx.agents?.get?.(row.sessionId)?.session&&typeof ctx.get?.('sessionTitle')?.rename==='function',organization:workspaceCapable(),archive:typeof ctx.workspaceRegistry.archiveSession==='function'&&typeof ctx.workspaceRegistry.unarchiveSession==='function',unarchive:typeof ctx.workspaceRegistry.archiveSession==='function'&&typeof ctx.workspaceRegistry.unarchiveSession==='function'});
+  const capabilities=row=>({tasks:typeof ctx.get?.('jobs')?.list==='function'||!!ctx.get?.('subagents'),compact:!!row&&row.running===false&&modeServices(row).compact,resume:!!row&&!ctx.agents.get(row.sessionId)&&typeof ctx.sessionController.resolveAgent==='function',plan:!!modeServices(row).plan,goal:!!modeServices(row).goals,goalEdit:true,goalPause:!row||workState(row).goal?.status==='active',goalResume:!!row&&['paused','blocked'].includes(workState(row).goal?.status),goalPauseStops:true,models:typeof ctx.sessionController.selectModel==='function',manualModels:typeof ctx.sessionController.selectModel==='function',manualEffort:typeof ctx.sessionController.selectModel==='function',effort:typeof ctx.sessionController.selectModel==='function',permissions:typeof ctx.permissionPresets?.set==='function',attachments:typeof ctx.sessionController.prompt==='function',skills:typeof ctx.sessionSkillCatalog?.list==='function',queue:typeof ctx.sessionController.prompt==='function',steer:typeof ctx.sessionController.prompt==='function',fork:typeof ctx.sessionController.fork==='function',rename:!!row&&!!ctx.agents?.get?.(row.sessionId)?.session&&typeof ctx.get?.('sessionTitle')?.rename==='function',organization:workspaceCapable(),archive:typeof ctx.workspaceRegistry.archiveSession==='function'&&typeof ctx.workspaceRegistry.unarchiveSession==='function',unarchive:typeof ctx.workspaceRegistry.archiveSession==='function'&&typeof ctx.workspaceRegistry.unarchiveSession==='function'});
   const membership=row=>{
     if(!workspaceCapable())return {};
     const members=ctx.workspaceRegistry.list().filter(w=>w.sessionIds.includes(row.sessionId));
@@ -92,7 +92,20 @@ export async function apply(ctx,config){
   const contextUsage=row=>{
     const pressure=values(row).contextPressure||{},used=pressure.projectedTokens??pressure.pressureTokens,limit=pressure.contextWindow;
     return Number.isFinite(used)&&used>=0&&Number.isFinite(limit)&&limit>0
-      ? {usedTokens:used,contextWindow:limit,estimated:Number.isFinite(pressure.projectedTokens)&&pressure.projectedTokens!==pressure.pressureTokens} : null;
+      ? {usedTokens:used,contextWindow:limit,pressureTokens:pressure.pressureTokens,estimated:Number.isFinite(pressure.projectedTokens)&&pressure.projectedTokens!==pressure.pressureTokens} : null;
+  };
+  const tasks=row=>{
+    const jobs=ctx.get?.('jobs'),subagents=ctx.get?.('subagents');
+    const result=(jobs?.list(row.sessionId)||[]).filter(job=>job.owner===row.sessionId).map(job=>({
+      id:'job:'+job.id,title:job.label||job.id,kind:job.kind,status:job.status,
+      cancellable:job.status==='running'&&typeof jobs.kill==='function'}));
+    for(const child of values(row).subagentCatalog||[]){
+      const agent=ctx.agents.get(child.id),running=agent?.status==='running';
+      result.push({id:'child:'+child.id,title:child.label||child.id,kind:'subagent',
+        status:running?'running':agent?.status==='idle'?'idle':'unknown',
+        cancellable:running&&typeof subagents?.interrupt==='function'});
+    }
+    return result;
   };
   const permissionState=row=>{const catalog=ctx.permissionPresets.catalog(),mode=values(row).permissions?.currentValue||catalog.defaultPreset,option=catalog.options.find(o=>o.value===mode);return {permissionMode:mode,permissionLabel:localized(option?.label||option?.name)||mode};};
   const normalize=row=>{const v=values(row),m=v.modelSelection?.next||v.modelSelection?.lastUsed||ctx.get?.('agentDefaultModel')?.currentSelection()||{};return {id:row.sessionId,capabilities:capabilities(row),title:v.title||'新会话',cwd:row.cwd||'',backend:'deepseek',mode:'desktop',connectionState:ctx.agents.get(row.sessionId)?'ready':'detached',status:typeof row.running==='boolean'?(row.running?'active':'idle'):'unknown',runtimeKnown:typeof row.running==='boolean',updatedAt:row.updatedAt,model:m.provider&&m.model?m.provider+'/'+m.model:'',effort:m.reasoningEffort||'',...membership(row),...permissionState(row),...workState(row),contextUsage:contextUsage(row),requests:[...questions.values()].filter(q=>q.sid===row.sessionId).map(q=>q.public)};};
@@ -298,6 +311,21 @@ export async function apply(ctx,config){
     if(action==='image')return readHistoryImage(ctx,sid,body.source,signal());
     if(action==='detail'){const page=await readHistoryPage(ctx.sessionController,row,body,signal());return {session:normalize(row),capabilities:capabilities(row),records:await historyRecords({sessionId:sid,get:name=>ctx.get?.(name)},page.rows,signal()),history:page.history,steps:values(row).todos||[],connected:true};}
     if(action==='catalog')return catalog(sid,body.section||'all');
+    if(action==='tasks')return {tasks:tasks(row)};
+    if(action==='stop-task'){
+      const task=tasks(row).find(task=>task.id===body.taskId);
+      if(!task?.cancellable)throw Error('后台任务已结束或不支持独立停止');
+      if(task.id.startsWith('job:'))await ctx.get('jobs').kill(task.id.slice(4),sid,'user');
+      else await ctx.get('subagents').interrupt(task.id.slice(6),{kind:'user',parentSessionId:sid});
+      return {status:'accepted'};
+    }
+    if(action==='compact'){
+      const agent=ctx.agents.get(sid),services=modeServices(row);
+      if(!agent||row.running!==false||!services.compact||[...questions.values()].some(q=>q.sid===sid))throw Error('请等待当前任务结束并连接原会话后再压缩上下文');
+      const result=await services.commands.execute(agent,'/compact',[],signal());
+      if(result?.result?.kind!=='success')throw Error(result?.result?.text||'原生上下文压缩未确认');
+      return {status:'accepted',message:result.result.text};
+    }
     if(action==='work-mode'||action==='goal'){
       const services=modeServices(row);
       if(action==='work-mode'&&(!services.plan||!['default','plan'].includes(body.mode))||action==='goal'&&!services.goals)throw Error('当前 Harness 未提供此原生工作模式');
@@ -342,7 +370,7 @@ export async function apply(ctx,config){
     const credential=String(req.headers.authorization||'').replace(/^Bearer /,'');const a=Buffer.from(credential),b=Buffer.from(token);
     if(req.method!=='POST'||req.url!=='/mobile'||req.headers.origin||a.length!==b.length||!timingSafeEqual(a,b)){res.writeHead(403);res.end();return;}
     let size=0,chunks=[];for await(const chunk of req){size+=chunk.length;if(size>maxRequestBytes)throw Error('请求过大');chunks.push(chunk);}const {action,sid,body={}}=JSON.parse(Buffer.concat(chunks));
-    const mutating=['create','fork','rename','archive','stop','send','respond','settings','resume','work-mode','goal'].includes(action)||(action==='access'&&Boolean(body?.mode))||(action==='organization'&&body?.operation==='set-project');
+    const mutating=['create','fork','rename','archive','stop','send','respond','settings','resume','work-mode','goal','compact','stop-task'].includes(action)||(action==='access'&&Boolean(body?.mode))||(action==='organization'&&body?.operation==='set-project');
     if(mutating&&quitting)throw Error('Harness 正在退出，请稍后重试');
     let result;
     if(mutating)activeMutations++;

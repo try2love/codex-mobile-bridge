@@ -127,7 +127,7 @@ function register(){
     if(action==='accounts'){
       if(updater?.busy&&payload?.action!=='list')throw Error('正在更新应用，请稍候。');
       if(payload?.action==='openLogin'){
-        const value=await worker('accounts',{action:'list'}),url=new URL(value.enrollment?.authUrl||'');
+        const value=await worker('accounts',{action:'list',...(payload.entry?{entry:payload.entry}:{})}),url=new URL(value.enrollment?.authUrl||'');
         if(value.enrollment?.phase!=='waiting'||url.protocol!=='https:'||!['auth.openai.com','chatgpt.com','auth0.openai.com'].includes(url.hostname))throw Error('登录已过期，请重新登录');
         await shell.openExternal(url.href);return value;
       }

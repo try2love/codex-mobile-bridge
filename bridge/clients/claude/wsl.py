@@ -308,6 +308,9 @@ class ClaudeCliRemotes:
         with self.lock:
             return {**self.ssh.owned, **self.wsl.owned}
 
+    def cli_connections(self):
+        return self.ssh.cli_connections() + self.wsl.cli_connections()
+
     def available(self):
         return self.ssh.available() or self.wsl.available()
 

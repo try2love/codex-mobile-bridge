@@ -114,8 +114,9 @@ def _same_cwd(saved, runtime, local_windows):
 
 class CliSessions:
     def __init__(self, home, on_state, on_disconnect, cli='codex', alias=None,
-                 process_factory=None):
+                 process_factory=None, allow_installed_runtime=False):
         self.home = Path(home)
+        self.allow_installed_runtime = allow_installed_runtime
         self.alias = alias
         self.remote_home = None
         command = _ssh_proxy_command(alias) if alias else None
@@ -142,8 +143,41 @@ class CliSessions:
         self.configured_cli = cli
         self.store = RemoteStore(alias) if alias else SessionStore(self.home)
 
+    def cli_connections(self):
+        with self.lock:
+            return [{'key': self.metadata[sid]['connectionToken'], 'sessionId': sid, 'provider': 'codex',
+                     'title': self.states.get(sid, {}).get('title') or sid, 'host': self.alias or 'local',
+                     'location': self.alias or '本机 CLI',
+                     '_release': lambda stop, sid=sid, token=self.metadata[sid]['connectionToken']: self.release_connection(sid, token, stop)}
+                    for sid, process in self.joined.items() if process is self.client.process
+                    and sid in self.metadata and self.metadata[sid].get('connectionToken')]
+
+    def release_connection(self, identifier, token, stop=False):
+        from bridge.clients.codex.release import release_thread
+        with self.lock:
+            guard = self.attach_locks.setdefault(identifier, threading.Lock())
+        with guard:
+            process = self.client.process
+            def request(method, params):
+                with self.lock:
+                    if (process is None or self.client.process is not process or self.joined.get(identifier) is not process
+                            or self.metadata.get(identifier, {}).get('connectionToken') != token):
+                        raise AppServerUnavailable('原 CLI 连接已变化；未操作新的连接')
+                return self.client.request(method, params)
+            result = release_thread(request, identifier, stop)
+            if result['status'] in ('released', 'detached'):
+                self._invalidate(identifier, process)
+            return result
+
     def available(self):
-        return self.alias is not None or Path(self.client.socket_path).exists() or _managed_cli(self.home) is not None
+        if self.alias is not None or Path(self.client.socket_path).exists() or _managed_cli(self.home) is not None:
+            return True
+        if self.allow_installed_runtime:
+            try:
+                return bool(_local_cli(self.home, self.configured_cli))
+            except AppServerUnavailable:
+                pass
+        return False
 
     def daemon_status(self):
         """Return running, stopped or unknown without starting the local daemon."""
@@ -158,6 +192,8 @@ class CliSessions:
             executable = _local_cli(self.home, self.configured_cli)
             environment = os.environ.copy()
             environment['CODEX_HOME'] = str(self.home)
+            if self.allow_installed_runtime:
+                environment.pop('CODEX_SQLITE_HOME', None)
             options = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
             result = subprocess.run([executable, 'app-server', 'daemon', 'version'],
                                     env=environment, stdin=subprocess.DEVNULL,
@@ -168,6 +204,10 @@ class CliSessions:
                     return 'running'
         except (AppServerUnavailable, OSError, subprocess.TimeoutExpired, ValueError):
             pass
+        if not socket_path.exists():
+            from bridge.platforms.codex_daemon_env import daemon_process_absent
+            if daemon_process_absent(self.home):
+                return 'stopped'
         return 'unknown'
 
     def daemon_may_be_running(self):
@@ -188,7 +228,8 @@ class CliSessions:
             self.remote_home = remote_home
         if on_start is not None:
             on_start()
-        result = self.client.request('thread/start', {'cwd': cwd, 'ephemeral': False, 'threadSource': 'cli'})
+        params = {'cwd': cwd, 'ephemeral': False, 'threadSource': 'cli'}
+        result = self.client.request('thread/start', params)
         thread = result.get('thread') or {}
         thread_id = thread.get('id')
         if not isinstance(thread_id, str) or thread.get('cwd') != cwd or not thread.get('modelProvider'):
@@ -198,7 +239,7 @@ class CliSessions:
             on_created(thread_id)
         with self.lock:
             self.joined[thread_id] = self.client.process
-            self.metadata[thread_id] = {'cwd': cwd, 'modelProvider': thread['modelProvider'],
+            self.metadata[thread_id] = {'connectionToken': str(uuid.uuid4()), 'cwd': cwd, 'modelProvider': thread['modelProvider'],
                                         'model': result.get('model'), 'reasoningEffort': result.get('reasoningEffort'),
                                         'serviceTier': result.get('serviceTier'),
                                         'collaborationMode': result.get('collaborationMode'),
@@ -264,14 +305,28 @@ class CliSessions:
                 self.daemon_start_generation += 1
                 return self.client.connect()
 
-    def _start_daemon(self):
+    def _start_daemon(self, proxy_updates=None, preserved=None):
         if self.alias is None:
             managed = _managed_cli(self.home)
+            if managed is None and self.allow_installed_runtime:
+                managed = _local_cli(self.home, self.configured_cli)
             if managed is None:
                 raise AppServerUnavailable('Installed Codex daemon package is required')
             environment = os.environ.copy()
             environment['CODEX_HOME'] = str(self.home)
+            if proxy_updates:
+                from bridge.clients.codex.daemon_network import PROXY_NAMES
+                for name in PROXY_NAMES:
+                    environment.pop(name, None)
+                environment.update(proxy_updates)
             command = [str(managed), 'app-server', 'daemon', 'start']
+            if self.allow_installed_runtime:
+                environment.pop('CODEX_SQLITE_HOME', None)
+            for name, value in (preserved or {}).items():
+                if value is None:
+                    environment.pop(name, None)
+                else:
+                    environment[name] = value
         else:
             command = _ssh_daemon_start_command(self.alias)
             environment = None
@@ -282,6 +337,8 @@ class CliSessions:
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise AppServerUnavailable('Could not start the existing Codex CLI daemon') from exc
         if result.returncode:
+            if 'daemon executable not found' in result.stderr:
+                raise AppServerUnavailable('此 Codex 配置的原生运行组件缺失，请修复对应 Codex CLI 安装后重试。')
             raise AppServerUnavailable('Installed Codex CLI daemon could not start')
         try:
             report = json.loads(result.stdout)
@@ -315,7 +372,7 @@ class CliSessions:
                 saved = self.store.get(thread_id)
             except (KeyError, StoreUnavailable, RemoteUnavailable) as exc:
                 raise AppServerUnavailable('Saved CLI thread metadata is unavailable') from exc
-            if (saved.get('origin') != 'cli' or not saved.get('cwd') or
+            if (saved.get('origin') not in ('cli', 'ide') or not saved.get('cwd') or
                     not _same_cwd(saved.get('cwd'), before.get('cwd'),
                                   self.alias is None and os.name == 'nt') or
                     saved.get('model_provider') != before.get('modelProvider')):
@@ -323,8 +380,9 @@ class CliSessions:
         # Resume is explicit and sends no model, cwd, provider or permission overrides.
         with self.lock:
             self.attaching.add(thread_id)
+        params = {'threadId': thread_id, 'excludeTurns': True}
         try:
-            resumed = self.client.request('thread/resume', {'threadId': thread_id, 'excludeTurns': True})
+            resumed = self.client.request('thread/resume', params)
         except Exception:
             with self.lock:
                 self.attaching.discard(thread_id)
@@ -354,7 +412,7 @@ class CliSessions:
         with self.lock:
             self.joined[thread_id] = self.client.process
             self.attaching.discard(thread_id)
-            self.metadata[thread_id] = {'model': resumed.get('model'),
+            self.metadata[thread_id] = {'connectionToken': str(uuid.uuid4()), 'model': resumed.get('model'),
                                         'modelProvider': resumed.get('modelProvider'),
                                         'cwd': resumed.get('cwd'),
                                         'reasoningEffort': resumed.get('reasoningEffort'),
@@ -449,6 +507,14 @@ class CliSessions:
 
     def call(self, thread_id, desktop_method, params, timeout=30):
         self._check_joined_identity(thread_id)
+        if desktop_method == 'thread-follower-compact-thread':
+            state = self.refresh(thread_id)
+            if (state.get('threadRuntimeStatus', {}).get('type') != 'idle' or state.get('requests') or
+                    any(turn.get('status') == 'inProgress' for turn in state.get('turns', []))):
+                raise AppServerUnavailable('请等待当前 Codex 任务结束后再压缩上下文')
+            result = self.client.request('thread/compact/start', {'threadId': thread_id}, timeout=timeout)
+            self._queue_refresh(thread_id)
+            return result
         if desktop_method == 'thread-follower-start-turn':
             start = params.get('turnStart') or {}
             request = start.get('request') or {}

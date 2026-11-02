@@ -24,6 +24,7 @@ from bridge.features.sessions.timeline import Timeline
 from bridge.features.sessions.store import StoreUnavailable
 from bridge.features.sessions.archive import ArchiveCommands
 from bridge.features.sessions.organization_commands import OrganizationCommands
+from bridge.features.sessions.compaction import CompactCommands
 from bridge.features.sessions.create import check_archive_runtime
 from bridge.features.sessions.pins import SessionPins
 from bridge.features.sessions.organization import organization as native_organization
@@ -103,6 +104,7 @@ class WslEntry(WslFeatures):
         self.session_pins = SessionPins(directory, self.host + ":" + row["user"] + ":" + row["home"])
         self.archive_commands = ArchiveCommands(directory)
         self.organization_commands = OrganizationCommands(directory, private_json)
+        self.compact_commands = CompactCommands(directory, private_json)
         self.lock = threading.RLock()
         self.connection_lock = threading.RLock()
         self.closed = threading.Event()
@@ -111,6 +113,9 @@ class WslEntry(WslFeatures):
         self.server = None
         self.generation = None
         self.subscriptions = {}
+        self.subscription_tokens = {}
+        from bridge.features.sessions.cli_release import ReleasedSessions
+        self.released_cli = ReleasedSessions(directory, private_json)
         self._managed_routes = {}
         self.write_lock = threading.RLock()
         self._draft_identity_cache = {}
@@ -264,7 +269,7 @@ class WslEntry(WslFeatures):
                          'threadRuntimeStatus': thread.get('status') or {},
                          'turns': [{**t, 'turnId': t['id'], 'turnStartedAtMs': (t.get('startedAt') or 0) * 1000} for t in turns],
                          'turnHistory': {'history': {'isComplete': not bool(cursor)}}}
-                connected = thread.get('status', {}).get('type') in ('idle', 'active') and thread.get('canAcceptDirectInput') is True
+                connected = not self.released_cli.contains(session.id) and thread.get('status', {}).get('type') in ('idle', 'active') and thread.get('canAcceptDirectInput') is True
                 error = None if connected else '点击重新连接即可在此设备恢复会话并继续聊天'
                 if runtime.closed or generation != self.generation:
                     raise IPCError('WSL 原连接已变化')
@@ -511,6 +516,8 @@ class WslEntry(WslFeatures):
                       accessManagement='external', forkedFrom=None)
         for turn in result['turns']:
             turn['actionable'] = False
+        result['capabilities'] = {**result['capabilities'], 'compact': result['connected'] and
+                                  result['status'] == 'idle' and not result['requests']}
         if not result['connected']:
             result['readOnlyReason'] = result.get('error') or '点击重新连接以恢复 WSL 会话'
         return self._view_features(session, result)
@@ -609,6 +616,8 @@ class WslEntry(WslFeatures):
         return proof
 
     def _target(self, identifier, activate=False, managed_control=False):
+        if not activate and self.released_cli.contains(identifier):
+            raise IPCError('CLI 连接已释放，请点击继续会话重新连接')
         metadata = self.store.get(identifier)
         runtime = self.runtime(allow_start=activate)
         # Fresh native evidence, never a display cache. Explicit subscription is
@@ -665,13 +674,53 @@ class WslEntry(WslFeatures):
                 session.state['currentPermissions'] = permissions
                 session.changed()
         self.subscriptions[identifier] = generation
+        self.subscription_tokens[identifier] = str(uuid.uuid4())
         if route_proof is not None:
             self._managed_routes[identifier] = (*route_proof[:-1], current.get('model'))
+
+    def cli_connections(self):
+        with self.lock:
+            return [{'key': self.subscription_tokens[sid], 'provider': 'codex', 'sessionId': sid,
+                     'host': self.host, 'location': 'WSL · ' + self.row['distribution'],
+                     'title': self.live[sid].state.get('title') or sid,
+                     '_release': lambda stop, sid=sid, token=self.subscription_tokens[sid]: self.release_connection(sid, token, stop)}
+                    for sid, generation in self.subscriptions.items() if generation == self.generation
+                    and sid in self.subscription_tokens and sid in self.live]
+
+    @_entry_write
+    def release_connection(self, identifier, token, stop=False):
+        from bridge.clients.codex.release import release_thread
+        session = self.session(identifier, attach=False)
+        with session.action_lock:
+            generation, runtime = self.generation, self.server
+            def request(method, params):
+                if (runtime is None or runtime.closed or self.server is not runtime or self.generation != generation
+                        or self.subscriptions.get(identifier) != generation or self.subscription_tokens.get(identifier) != token):
+                    raise IPCError('原 WSL CLI 连接已变化；未操作新的连接')
+                return runtime.request(method, params)
+            queued = [entry for key, entry in self.receipts.items() if key.startswith(identifier + ':send:')
+                      and entry.get('result', {}).get('status') in ('queued', 'unknown')]
+            if queued:
+                if not stop:
+                    return {'status': 'waiting'}
+                raise ValueError('此会话还有待处理的发送记录，请先在发送管理中处理')
+            result = release_thread(request, identifier, stop)
+            if result['status'] in ('released', 'detached'):
+                self.released_cli.set(identifier, True)
+                self.subscriptions.pop(identifier, None)
+                self.subscription_tokens.pop(identifier, None)
+                with session.condition:
+                    session.connected = False
+                    session.state['requests'] = []
+                    session.error = result.get('notice')
+                    session.changed()
+            return result
 
     @_entry_write
     def activate(self, identifier):
         uuid.UUID(identifier)
         self.runtime(allow_start=True)
+        self.released_cli.set(identifier, False)
         session = self.session(identifier, attach=False)
         with session.action_lock:
             with session.condition:
@@ -1108,6 +1157,17 @@ class WslEntry(WslFeatures):
                 applied = session.condition.wait_for(lambda: session.sequence > before and linux_permissions.current_mode(session.state) == preset, timeout=5)
                 current = linux_permissions.current_mode(session.state)
             return {'applied': True, 'confirmed': applied, 'permissionMode': current}
+
+    @_entry_write
+    def compact(self, identifier, request_id):
+        session = self.session(identifier, attach=False)
+        with session.action_lock:
+            def prepare():
+                runtime, thread = self._target(identifier)
+                if thread['status']['type'] != 'idle' or session.view()['requests']:
+                    raise ValueError('请等待当前 Codex 任务结束后再压缩上下文')
+                return lambda: runtime.request('thread/compact/start', {'threadId': identifier})
+            return self.compact_commands.perform(identifier, request_id, prepare)
 
     @_entry_write
     def interrupt(self, identifier):

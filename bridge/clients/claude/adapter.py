@@ -16,7 +16,7 @@ from bridge.clients.errors import BridgeUnavailable
 from bridge.clients.file_mentions import file_mentions
 from bridge.features.sessions.create import ArchiveNotSent
 from bridge.clients.claude.mailbox import FileDesktop, MAX_REQUEST, CONNECTOR_REVISION, workspace_trust_rejection
-from bridge.clients.claude.cli_session import ClaudeCli, project_account_identity
+from bridge.clients.claude.cli_session import ClaudeCli, project_account_identity, _supports_compact
 from bridge.clients.claude.remote import RemoteClaudeCli
 from bridge.app.lifecycle import private_json
 from bridge.platforms.windows import session as windows_session
@@ -621,6 +621,7 @@ class Claude:
                 'rename': 'mobileRename' in methods,
                 'archive': kind == 'code' and 'mobileArchive' in methods,
                 'unarchive': kind == 'code' and 'mobileArchive' in methods,
+                'compact': all(method in methods for method in ('getSupportedCommands', 'getSession', 'sendMessage')),
                 'contextUsage': any(method in methods for method in ('getContextUsageSummary', 'getContextUsage'))}
 
     def cli_projects(self, include_remote=True):
@@ -850,6 +851,8 @@ class Claude:
             # when Desktop cannot provide its current context summary.
             row['lastPromptContextUsage'] = context_fields(raw)['contextUsage']
             capabilities = self.session_capabilities(kind)
+            capabilities['compact'] = (capabilities['compact'] and row['runtimeKnown'] and
+                                       row['status'] == 'idle' and not row['requests'] and not row['archived'])
             if row['contextUsage'] is not None:
                 capabilities = {**capabilities, 'contextUsage': True}
             history = detail.get('history', {}) if detail is not None else {}
@@ -911,6 +914,19 @@ class Claude:
                     raise ValueError('Cowork 未提供补充当前任务接口，请使用普通发送')
                 args += [None, body.get('id')]
             result = await self.desktop.call(kind, 'sendMessage', *args, timeout=90)
+        elif action == 'compact':
+            if not self.session_capabilities(kind)['compact'] or row['status'] != 'idle' or not row['runtimeKnown'] or row['requests']:
+                raise BridgeUnavailable('请等待原生会话空闲后再压缩上下文')
+            commands = await self.desktop.call(kind, 'getSupportedCommands', {'sessionId': native})
+            if not isinstance(commands, list) or not _supports_compact({'commands': commands}, desktop_projection=True):
+                raise BridgeUnavailable('当前 Claude 会话未提供原生上下文压缩命令')
+            fresh = model.session(kind, await self.desktop.call(kind, 'getSession', native))
+            if (fresh['id'] != sid or fresh['cwd'] != row['cwd'] or fresh['archived'] or
+                    fresh['status'] != 'idle' or not fresh['runtimeKnown'] or fresh['requests']):
+                raise BridgeUnavailable('原生会话已变化，尚未提交压缩')
+            args = [native, '/compact', None]
+            args += [None, None, None, None, body['id']] if kind == 'code' else [None, body['id']]
+            result = await self.desktop.call(kind, 'sendMessage', *args, timeout=30)
         elif action == 'stop':
             result = await self.desktop.call(kind, 'interrupt' if kind == 'code' else 'stop', native)
         elif action == 'settings':

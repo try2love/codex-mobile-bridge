@@ -20,8 +20,9 @@ final class TaskNotifications {
   if (!manager.areNotificationsEnabled()) throw new java.io.IOException("Notifications disabled");
   createChannel(context, channel);
   String thread = event.optString("threadId"), host = event.optString("host", "local");
-  String tag = thread.isEmpty() ? "inbox|" + origin + "|" + stream + "|" + event.getString("id")
-      : chatTag(origin, host, thread);
+  String gateway = gatewayIdentity(context, origin);
+  String tag = thread.isEmpty() ? "inbox|" + gateway + "|" + stream + "|" + event.getString("id")
+      : chatTag(gateway, host, thread);
   String eventKey = new org.json.JSONArray().put(stream)
       .put(event.optString("sequence", event.getString("id"))).toString();
   boolean repeated = false;
@@ -62,12 +63,17 @@ final class TaskNotifications {
   }
  }
 
+ private static String gatewayIdentity(Context context, String origin) {
+  JSONObject channel = GatewayChannels.record(context.getSharedPreferences("bridge",0), origin);
+  return channel == null ? origin : channel.optString("deviceId", origin);
+ }
+
  private static String chatTag(String origin, String host, String thread) {
   return "chat|" + new org.json.JSONArray().put(origin).put(host).put(thread);
  }
 
  static void clearChat(Context context, String origin, String thread, String host) {
-  String tag = chatTag(origin, host, thread);
+  String tag = chatTag(gatewayIdentity(context, origin), host, thread);
   ((NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE)).cancel(tag, tag.hashCode() & 0x7fffffff);
  }
 

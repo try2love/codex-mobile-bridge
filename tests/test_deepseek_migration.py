@@ -248,9 +248,9 @@ class DeepSeekMigrationTests(unittest.TestCase):
         lf = current.read_bytes().replace(b'\r\n', b'\n')
         self.assertIn(b'\n', lf)
         self.assertEqual(hashlib.sha256(lf).hexdigest(),
-                         '5479ae9f1e78bd7bf7ce61478a6427025b47964593dbc830b0845a1ef4f0da5a')
+                         'bb6a664b33c21d6195ec158a029fed76a121e989bc2ea46168e6e3c9130035c1')
         self.assertEqual(hashlib.sha256(lf.replace(b'\n', b'\r\n')).hexdigest(),
-                         '32fd056cd0840884610a223a41bb690c4f3e244c3af7bdb7fc9c65c84d19b3db')
+                         '1608bf0b7b4c1f6e2927a1103467b3c56dfaef4d80c6821309dca03fe2e2d9f5')
         for content in (lf, lf.replace(b'\n', b'\r\n')):
             with self.subTest(line_ending='CRLF' if b'\r\n' in content else 'LF'):
                 source.write_bytes(content)

@@ -183,7 +183,10 @@ def main(connections=None, connection_secrets=None):
         raise KeyboardInterrupt()
     signal.signal(signal.SIGTERM, stop_signal)
     from bridge.features.network.discovery import ConnectionDiscovery
-    discovery = ConnectionDiscovery(args.config.parent, server)
+    from bridge.features.network.access import phone_urls
+    discovery = ConnectionDiscovery(args.config.parent, server, lambda: phone_urls(
+        {**preferences, 'port': args.port}, monitor.addresses(),
+        tunnel.url if tunnel and tunnel.entry_stable() else ''))
     listener_manager.configure = lambda listener: setattr(listener, 'connection_discovery', discovery)
     try:
         monitor.scan(initial=True)
@@ -261,7 +264,7 @@ def main(connections=None, connection_secrets=None):
         address_notifications.start()
         monitor.start()
         bridge.accounts.monitor.start()
-        control.start(server.shutdown, server.pairing.control, server.instance_id, server.auth, bridge.account.control, server.notifications.control, bridge.accounts.control, server.harness.control, server.desktop_sessions.control, bridge.cli_access_control, network_adaptation=adaptation.control)
+        control.start(server.shutdown, server.pairing.control, server.instance_id, server.auth, bridge.account.control, server.notifications.control, bridge.accounts_control, server.harness.control, server.desktop_sessions.control, bridge.cli_access_control, network_adaptation=adaptation.control)
         for listener in servers[1:]:
             thread = threading.Thread(target=listener.serve_forever, kwargs={'poll_interval': 0.5}, daemon=True)
             thread.start()

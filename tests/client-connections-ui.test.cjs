@@ -7,13 +7,14 @@ function fixture({accounts=false}={}){
   const articles={};if(accounts)for(const provider of ['deepseek','claude']){const article=node('article'),automatic=node('div');automatic.className='client-auto-setup';article.append(automatic);if(provider==='deepseek'){const details=node('details'),label=node('label');label.append(input);details.append(label);article.append(details);}articles[provider]=article;}
   const root={hidden:false,querySelector(selector){const provider=selector.includes('deepseek')?'deepseek':'claude';if(selector.includes('.client-auto-setup'))return articles[provider]?.querySelector('.client-auto-setup')||null;if(selector.startsWith('[data-client-config='))return articles[provider]||null;if(selector==='input')return accounts?articles.deepseek.querySelector('input'):input;if(selector==='[data-deepseek-home]')return input;if(selector==='[data-desktop-choose]')return choose;if(selector==='[data-claude-workspace]')return workspace;if(selector==='[data-claude-home]')return claudeHome;if(selector==='[data-claude-data]')return claudeData;return statuses[provider];},querySelectorAll(selector){if(selector==='[data-desktop-status]')return Object.values(statuses);if(selector.includes('data-desktop-action'))return [scan];return Object.values(articles).flatMap(article=>article.querySelectorAll(selector));}};
   const calls=[],errors=[],prompts=[],choices=[],initializations=[];let closeChoice=true,finishChoice,initializeChoice=true,finishInitialize,chosen='',confirmed=true,handler=async body=>body.action==='status'?{backends:{},deepseekHome:'/fixture'}:body.action==='accounts'?{accounts:[]}:{clients:[]};
-  const listeners={},timers=[],storage=new Map();
-  const context=vm.createContext({ClientLifecycle:{...require('../web/features/clients/client-lifecycle.js'),chooseDisable(client){choices.push(client.id);return closeChoice==='pending'?new Promise(resolve=>finishChoice=resolve):closeChoice;}},CustomEvent:class{constructor(type){this.type=type;}},document:{body:node('body'),documentElement:{},getElementById:id=>nodes[id],createElement:node,querySelector:()=>null,querySelectorAll:selector=>selector==='[data-i18n]'?Object.values(statuses):[],hidden:false,addEventListener(type,fn){listeners[type]=fn;},removeEventListener(type,fn){if(listeners[type]===fn)delete listeners[type];},dispatchEvent(event){listeners[event.type]?.(event);}},setInterval(fn){timers.push(fn);},setTimeout(){},clearTimeout(){},localStorage:{getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value)},window:{confirm:message=>{prompts.push(message);return confirmed;},GatewayLayout:{selectClient(){}}}});
+  const listeners={},timers=[],storage=new Map(),pages=new Map(),selected=[];
+  const layout={hasClient:id=>['codex','claude','deepseek'].includes(id)||id.startsWith('codex:')||pages.has(id),clientPage(id){const page=node('section');pages.set(id,page);return page;},selectClient(id){selected.push(id);listeners['bridge-client-config']?.({detail:id});}};
+  const context=vm.createContext({ClientLifecycle:{...require('../web/features/clients/client-lifecycle.js'),chooseDisable(client){choices.push(client.id);return closeChoice==='pending'?new Promise(resolve=>finishChoice=resolve):closeChoice;}},CustomEvent:class{constructor(type){this.type=type;}},document:{body:node('body'),documentElement:{},getElementById:id=>nodes[id],createElement:node,querySelector:()=>null,querySelectorAll:selector=>selector==='[data-i18n]'?Object.values(statuses):[],hidden:false,addEventListener(type,fn){listeners[type]=fn;},removeEventListener(type,fn){if(listeners[type]===fn)delete listeners[type];},dispatchEvent(event){listeners[event.type]?.(event);}},setInterval(fn){timers.push(fn);},setTimeout(){},clearTimeout(){},localStorage:{getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value)},window:{confirm:message=>{prompts.push(message);return confirmed;},GatewayLayout:layout}});
   context.ClientLifecycle.chooseInitialize=client=>{initializations.push(client.id);return initializeChoice==='pending'?new Promise(resolve=>finishInitialize=resolve):initializeChoice;};
   for(const file of ['web/shared/i18n.js','web/features/accounts/wsl-accounts.js',...(accounts?['web/features/accounts/client-accounts.js']:[]),'desktop/features/clients/desktop-sessions.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
   const Class=vm.runInContext('DesktopConnectionsPanel',context),panel=new Class({root,api:{choose:async()=>chosen,cliAccess:body=>{calls.push(body);return handler(body);},desktopSessions:body=>{calls.push(body);return handler(body);}},feedback:message=>errors.push(message)});
   const all=n=>[n,...n.children.flatMap(all)];
-  return {panel,nodes,calls,errors,scan,storage,prompts,choices,initializations,setInitializeChoice:value=>initializeChoice=value,decideInitialize:value=>finishInitialize(value),setChoice:value=>closeChoice=value,decide:value=>finishChoice(value),statuses,workspace,claudeHome,claudeData,input,choose,root,document:context.document,setChosen:value=>chosen=value,poll:async()=>{await timers[0]();},apply:()=>vm.runInContext('BridgeI18n.apply()',context),confirm:value=>confirmed=value,setHandler:fn=>handler=fn,all:()=>all(nodes['client-overview']),text:()=>all(nodes['client-overview']).map(n=>n.textContent).join('\n'),english:()=>vm.runInContext("BridgeI18n.setLanguage('en')",context)};
+  return {panel,nodes,calls,errors,scan,pages,selected,storage,prompts,choices,initializations,setInitializeChoice:value=>initializeChoice=value,decideInitialize:value=>finishInitialize(value),setChoice:value=>closeChoice=value,decide:value=>finishChoice(value),statuses,workspace,claudeHome,claudeData,input,choose,root,document:context.document,setChosen:value=>chosen=value,poll:async()=>{await timers[0]();},apply:()=>vm.runInContext('BridgeI18n.apply()',context),confirm:value=>confirmed=value,setHandler:fn=>handler=fn,all:()=>all(nodes['client-overview']),text:()=>all(nodes['client-overview']).map(n=>n.textContent).join('\n'),english:()=>vm.runInContext("BridgeI18n.setLanguage('en')",context)};
 }
 
 test('first Claude setup guides both permissions without launching, trusting or copying the connector',async()=>{
@@ -392,7 +393,9 @@ test('desktop WSL Manage buttons mount the real account panel for the exact prov
   const ui=fixture(),entry=prefix+'a'.repeat(32),client={id:entry,kind,name:'Fixture WSL',configured:true,enabled:true,installed:true,canQuitDesktop:false};ui.panel.clients=[client];
   ui.setHandler(async value=>{assert.equal(value.action,'wslAccounts');assert.equal(value.provider,provider);assert.equal(value.entry,entry);return{provider,entry,identity:'fixture',available:true,target:{distribution:'Fixture',user:'tester',configDir:'/home/tester/.config'},accounts:[],blockers:['External CLI remains running'],capabilities:{save:true,import:true,capture:false,switch:false}};});
   ui.panel.renderClients();assert.ok(ui.text().includes('在网关中管理 WSL 账号与 API'));const button=ui.all().find(node=>node.tag==='button'&&node.textContent==='管理');const panel=await button.onclick();await new Promise(resolve=>setImmediate(resolve));
-  const dialog=ui.document.body.children.find(node=>node.id==='wsl-account-management-dialog');assert.ok(dialog?.open);assert.equal(dialog.dataset.provider,provider);assert.equal(dialog.dataset.entry,entry);assert.equal(dialog.children[0].className,'picker-head');assert.equal(dialog.children[0].children[0].textContent,'WSL 账号与接入');assert.equal(dialog.children[0].children[1].textContent,'关闭');assert.equal(dialog.children.length,2);const labels=dialog.querySelectorAll('button').map(node=>node.textContent);assert.ok(labels.includes('保存 API 接入'));assert.ok(labels.includes('从本机导入 API 接入'));assert.equal(labels.includes('确认切换'),false);assert.equal(panel.entry,entry);dialog.close();assert.equal(panel.entry,'');assert.equal(ui.document.body.children.includes(dialog),false);
+  const page=ui.pages.get(entry),account=ui.panel.managementPages.get(entry).panel;
+  assert.ok(page);assert.equal(ui.selected.at(-1),entry);assert.equal(ui.document.body.children.length,0);assert.equal(page.children[0].children[0].textContent,'Fixture WSL');const labels=page.querySelectorAll('button').map(node=>node.textContent);assert.ok(labels.includes('保存 API 接入'));assert.ok(labels.includes('从本机导入 API 接入'));assert.equal(labels.includes('确认切换'),false);assert.equal(account.entry,entry);
+  await button.onclick();assert.equal(ui.pages.size,1,'reuse the management page');
  }
 });
 test('desktop WSL resource is optional and remains in the package',()=>{
@@ -419,13 +422,28 @@ test('absent unconfigured clients do not occupy the list, but offline configured
  assert.equal(dialog.open,true);assert.deepEqual(buttons.map(button=>button.textContent),['Codex','Claude','DSH / 自定义 Harness','取消']);buttons[2].onclick();assert.equal(ui.document.body.children.length,0);
 });
 
-test('ZCode uses its own logo, shared description and original App account instructions',()=>{
+test('ZCode uses its own logo and shared next-level management page',async()=>{
   const ui=fixture(),client={id:'zcode',name:'ZCode',installed:true,configured:true,connected:true,enabled:true,
     canQuitDesktop:false,description:'连接 ZCode 原生聊天',accountNotice:'在 ZCode 中管理模型与账号',configurationNotice:'仅接入原生测试聊天'};
   ui.panel.clients=[client];ui.panel.renderClients();
   assert.ok(ui.all().some(node=>node.tag==='img'&&node.src==='../web/client-icons/zcode.png'));
   assert.match(ui.text(),/连接 ZCode 原生聊天/);assert.match(ui.text(),/在 ZCode 中管理模型与账号/);
   assert.doesNotMatch(ui.text(),/在 Harness 中管理/);
-  ui.all().find(node=>node.tag==='button'&&node.textContent==='管理').onclick();
-  assert.equal(ui.document.body.children.at(-1).open,true);assert.equal(ui.calls.length,0);
+  await ui.all().find(node=>node.tag==='button'&&node.textContent==='管理').onclick();
+  assert.equal(ui.selected.at(-1),'zcode');assert.ok(ui.pages.get('zcode'));assert.equal(ui.document.body.children.length,0);assert.equal(ui.calls.length,0);
+});
+
+test('independent Codex form shares scan, host folder picker and manual save without launching clients',async()=>{
+ const ui=fixture(),profile={id:'codex:'+'a'.repeat(32),home:'/fixture/.codex-vscode',label:'IDE'};
+ ui.setHandler(async body=>body.action==='codex-profiles'?{profiles:[],candidates:[profile]}:{clients:[]});
+ await ui.panel.codexProfile();const dialog=ui.document.body.children[0],form=dialog.querySelector('form'),inputs=form.querySelectorAll('input');
+ const button=text=>form.querySelectorAll('button').find(b=>b.textContent===text);
+ assert.equal(ui.calls.length,0);
+ await button('扫描配置').onclick();assert.deepEqual(JSON.parse(JSON.stringify(ui.calls)),[{action:'codex-profiles',operation:'scan'}]);
+ button(profile.home).onclick();assert.equal(inputs[1].value,profile.home);
+ ui.setChosen('/fixture/chosen');await button('选择文件夹').onclick();assert.equal(inputs[1].value,'/fixture/chosen');
+ inputs[1].value='/fixture/manual';inputs[0].value='Manual IDE';await form.onsubmit({preventDefault(){}});
+ assert.deepEqual(JSON.parse(JSON.stringify(ui.calls.find(c=>c.operation==='save'))),{action:'codex-profiles',operation:'save',home:'/fixture/manual',label:'Manual IDE'});
+ assert.ok(!ui.calls.some(c=>['initialize','resume','start'].includes(c.action)));
+ assert.equal(dialog.open,false);assert.ok(ui.errors.includes('Codex 接入已保存'));
 });

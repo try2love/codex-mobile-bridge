@@ -92,6 +92,8 @@ class ChatTimeline {
   jumpBottom(){this.viewport.scrollTop=this.viewport.scrollHeight;this.following=true;this.newer.hidden=true;}
   restore(anchor,bottom=false){
     if(this.abort.signal.aborted||!this.viewport.clientHeight)return;
+    const reading=window.BridgeMobileHandoff?.readingAnchor?.(this);
+    if(reading && this.nodes.has(reading.key)){anchor=reading;bottom=false;this.following=false;}
     this.suppress=true;
     const node=anchor&&this.nodes.get(anchor.key)?.node;
     if(bottom)this.jumpBottom();

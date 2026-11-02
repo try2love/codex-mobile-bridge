@@ -24,6 +24,10 @@ final class MobileStrings {
   values.put("待开发项，暂时只支持设置页主题切换","In development. Theme changes currently apply to Settings only.");
   values.put("任务通知","Task notifications");
   values.put("通知来源","Notification sources");
+        values.put("连接中…","Connecting…");
+        values.put("当前信道不可达，请手动切换连接信道","Current channel is unreachable. Choose another channel.");
+        values.put("移除此电脑","Remove this computer");
+        values.put("管理这台电脑","Manage this computer");
   values.put("仅控制这台手机的任务提醒，不影响聊天和通知收件箱。","Choose task alerts for this phone. Chats and notification inboxes remain available.");
   values.put("尚未保存电脑连接","No saved computer connections");
   values.put("后台通知功能说明","Background notification information");

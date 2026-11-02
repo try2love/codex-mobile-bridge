@@ -480,6 +480,11 @@ class UploadHttpTests(unittest.TestCase):
             original=preview+'?variant=original'
             status,headers,body=self.upload_preview(original,credentials)
             self.assertEqual(status,200);self.assertEqual(headers['Content-Type'],'image/png');self.assertEqual(body,PNG)
+            status,headers,body=self.upload_preview(preview+'?download=1&variant=thumb',credentials)
+            self.assertEqual(status,200);self.assertEqual(body,PNG)
+            self.assertEqual(headers['X-Preview-Variant'],'original')
+            self.assertTrue(headers['Content-Disposition'].startswith('attachment;'))
+            self.assertEqual(headers['Cache-Control'],'private, no-store')
 
 class UploadBoundaryRegressions(unittest.TestCase):
     setUp = support.IntegrationTests.setUp

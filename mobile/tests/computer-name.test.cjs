@@ -27,7 +27,7 @@ test('Android and iOS inject shared mobile layout with the native connection tok
  const loader=fs.readFileSync(path.join(root,'mobile/ios/BridgePreview/WebScripts.swift'),'utf8');
  const android=fs.readFileSync(path.join(root,'mobile/android/src/io/github/try2love/codexbridge/MainActivity.java'),'utf8');
  assert.match(loader,/appearance = try Self\.source\("mobile-ui", bundle: bundle\)/);
- assert.match(swift,/scripts\.appearance\.replacingOccurrences\(of: "__BRIDGE_CLIPBOARD_TOKEN__", with: clipboardToken\)/);
+ assert.match(swift,/\(scripts\.route\+"\\n"\+scripts\.appearance\)\.replacingOccurrences\(of: "__BRIDGE_CLIPBOARD_TOKEN__", with: clipboardToken\)/);
  assert.match(android,/MobileWebScripts\.appearance\(getAssets\(\)\)\.replace\("__BRIDGE_CLIPBOARD_TOKEN__",clipboardToken\)/);
  assert.match(android,/replace\("'__BRIDGE_CONNECTION_NAME__'",JSONObject\.quote\(computerName\(origin\)\)\)/);
  assert.match(swift,/replacingOccurrences\(of: "'__BRIDGE_CONNECTION_NAME__'", with: connectionName\)/);

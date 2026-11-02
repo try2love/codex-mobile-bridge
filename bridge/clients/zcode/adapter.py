@@ -9,10 +9,12 @@ import time
 import uuid
 from pathlib import Path
 
-from bridge.clients.errors import BridgeUnavailable
+from bridge.clients.errors import BridgeUnavailable, ResumePreflightBlocked
 from bridge.features.workspace.workspace import MAX_TRANSFER, Workspace
-from bridge.platforms.macos.discovery import bundle
-from bridge.platforms.macos.loopback import listener_identity
+from .installation import installation, listener_identity, launch
+
+
+ACCESS = {'build': '变更前确认', 'guarded': '自主模式', 'yolo': '完全访问'}
 
 
 def project_files(root, paths):
@@ -53,9 +55,19 @@ def project_snapshot(snapshot, workspace):
         if row.get('attachments'):
             message['attachments'] = [{'name': a['fileName'], 'mime': a['mime'], 'size': a['bytes'],
                                        'nativeRef': a['ref']} for a in row['attachments']]
+        if row.get('entityId'):
+            target = json.dumps({'rowId': row['rowId'], 'entityId': row['entityId'], 'logEpoch': snapshot['logEpoch']}, separators=(',', ':'))
+            if row['kind'] == 'assistantText' and row.get('actions', {}).get('canFork'):
+                message['forkMessageId'] = target
+            if row['kind'] == 'userInput' and row.get('actions', {}).get('canEdit'):
+                message['editMessageId'] = target
         messages.append(message)
     control = snapshot['control']
     active = bool(control.get('activeWorks')) or bool(snapshot['pendingInteractions'])
+    routing = snapshot.get('inputRouting', {}).get('mode')
+    send_modes = {'send': not active and routing == 'startNow' and not snapshot.get('queue', {}).get('items'),
+                  'queue': routing in ('startNow', 'enqueue', 'guide', 'choice') and not snapshot['pendingInteractions'],
+                  'steer': bool(control.get('activeWorks')) and routing in ('enqueue', 'guide') and not snapshot['pendingInteractions']}
     error = control.get('lastError') if control.get('phase') == 'error' else None
     if error:
         text = error.get('message') or 'ZCode 原生任务执行失败'
@@ -83,7 +95,8 @@ def project_snapshot(snapshot, workspace):
             if native_goal else None)
     native_usage = snapshot.get('usage', {}).get('contextWindow')
     usage = ({'usedTokens': native_usage['usedTokens'], 'contextWindow': native_usage['maxTokens'],
-              'measurement': 'native', 'model': snapshot.get('config', {}).get('model')}
+              'measurement': 'native', 'model': snapshot.get('config', {}).get('model'),
+              **{key: native_usage[key] for key in ('autoCompactThresholdTokens', 'cache') if key in native_usage}}
              if native_usage else None)
     return {'session': {'id': snapshot['sessionId'], 'provider': 'zcode', 'host': 'local',
                         'cwd': workspace, 'title': snapshot.get('meta', {}).get('title', ''),
@@ -92,6 +105,8 @@ def project_snapshot(snapshot, workspace):
                         'model': '/'.join(filter(None, (snapshot.get('config', {}).get('provider'), snapshot.get('config', {}).get('model')))),
                         'modelDisplayName': snapshot.get('config', {}).get('model'), 'effort': snapshot.get('config', {}).get('thought'),
                         'runtimeKnown': True,
+                        'permissionMode': snapshot.get('config', {}).get('mode'),
+                        'permissionLabel': ACCESS.get(snapshot.get('config', {}).get('mode')),
                         'collaborationMode': 'plan' if snapshot.get('config', {}).get('planEnabled') or snapshot.get('config', {}).get('mode') == 'plan' else 'default',
                         'goal': goal, 'contextUsage': usage,
                         'contextUsageStatus': 'available' if usage else 'unavailable',
@@ -100,10 +115,12 @@ def project_snapshot(snapshot, workspace):
             'requests': snapshot['pendingInteractions'], 'control': control, 'turns': turns,
             'native': {'revision': snapshot['revision'], 'seq': snapshot['seq'], 'logEpoch': snapshot['logEpoch']},
             'history': {'hasMore': snapshot['rows']['totalCount'] > len(snapshot['rows']['window'])},
-            'capabilities': {'send': not active and snapshot.get('inputRouting', {}).get('mode') == 'startNow',
+            'capabilities': {'send': any(send_modes.values()), 'sendModes': send_modes,
                              'stop': bool(control.get('canStop')) and len(foreground) == 1,
                              'attachments': True, 'uploadFiles': True, 'resume': True, 'models': True, 'effort': True,
-                             'queue': False, 'steer': False, 'skills': True, 'permissions': False,
+                             'queue': send_modes['queue'], 'steer': send_modes['steer'], 'skills': True, 'permissions': snapshot.get('config', {}).get('mode') in ACCESS,
+                             'tasks': True, 'rename': True, 'fork': True, 'editMessage': True, 'compact': not active and not snapshot.get('queue', {}).get('items') and
+                             snapshot.get('availability', {}).get('compact', {}).get('allowed') is True,
                              'plan': True, 'goal': True, 'goalEdit': False, 'create': True}}
 
 
@@ -121,14 +138,16 @@ class ZCodePrototype:
         self.workspace = str(Path(config['workspace']).resolve(strict=True))
         self.home = Path(config.get('dataDirectory', Path.home()/'.zcode/v2'))
         self.sid = config['sessionId']
+        self.workspaces = {self.sid: self.workspace}
+        self.bindings = {}
         if not self.sid.startswith('sess_'):
             raise ValueError('必须指定原 App 中的独立测试会话')
 
     def _native(self, request):
-        if sys.platform != 'darwin':
-            raise BridgeUnavailable('此原型仅验证 macOS ZCode 3.17.1，其他平台尚未开放')
+        if sys.platform not in ('darwin', 'win32'):
+            raise BridgeUnavailable('此平台的 ZCode 原生接入尚未验证')
         application = Path(self.config['application'])
-        app = bundle(application, 'dev.zcode.app')
+        app = installation(application)
         if not app or app['version'] != '3.17.1':
             raise BridgeUnavailable('ZCode 安装身份或版本不匹配')
         process = listener_identity(self.config['port'], app['executable'])
@@ -136,14 +155,12 @@ class ZCodePrototype:
             raise BridgeUnavailable('ZCode App 进程已变化，请重新核验并显式接入')
         request = {**request, 'application': str(application), 'port': self.config['port'],
                    'expiresAt': int(time.time() * 1000) + 12000}
+        from bridge.clients.zcode.transport import request_native
         try:
-            result = subprocess.run([self.config.get('node', 'node'), str(Path(__file__).with_name('transport.mjs'))],
-                                    input=json.dumps(request), text=True, capture_output=True, timeout=15)
-        except subprocess.TimeoutExpired:
-            raise BridgeUnavailable('ZCode 回执超时，结果待核对；不会自动重放') from None
-        if result.returncode:
-            raise BridgeUnavailable(result.stderr.strip()[:1500] or 'ZCode 原生连接不可用')
-        return json.loads(result.stdout)
+            return request_native(request)
+        except (OSError, TimeoutError, ValueError, RuntimeError) as error:
+            raise BridgeUnavailable(str(error)[:1500]) from None
+
 
     def call(self, action, sid=None, body=None):
         if action in ('account', 'lifecycle'):
@@ -152,30 +169,57 @@ class ZCodePrototype:
         if action == 'list':
             result = self.transport({'action': 'list', 'workspace': self.workspace, 'sessionId': self.sid,
                                      'binding': self.config.get('binding')})
-            return {'sessions': [project_snapshot(row['snapshot'], self.workspace)['session'] if 'snapshot' in row
-                                 else detached_session(row, self.workspace) for row in result['sessions']],
-                    'connected': True}
+            rows = [project_snapshot(row['snapshot'], row['cwd'])['session'] if 'snapshot' in row
+                    else detached_session(row, row['cwd']) for row in result['sessions']]
+            self.workspaces.update({row['id']: row['cwd'] for row in rows})
+            return {'sessions': rows, 'connected': True}
         if action == 'projects':
-            return {'projects': [{'key': self.workspace, 'cwd': self.workspace, 'name': Path(self.workspace).name,
-                                   'surface': 'desktop', 'host': 'local'}], 'browseDirectories': False}
+            result = self.transport({'action': action, 'workspace': self.workspace, 'sessionId': self.sid})
+            if not any(row['cwd'] == self.workspace for row in result['projects']):
+                result['projects'].append({'key': self.workspace, 'cwd': self.workspace,
+                                           'name': Path(self.workspace).name, 'surface': 'desktop', 'host': 'local'})
+            return {**result, 'browseDirectories': True}
         if action == 'create':
-            if body.get('projectKey') != self.workspace or body.get('directoryProject'):
-                raise ValueError('请选择已接入的 ZCode 原生项目')
+            if not isinstance(body.get('projectKey'), str) or not body['projectKey']:
+                raise ValueError('请选择 ZCode 项目')
             uuid.UUID(body.get('id', ''))
             if not isinstance(body.get('firstMessage'), str) or not 1 <= len(body['firstMessage'].strip()) <= 100000:
                 raise ValueError('请输入首条消息')
             if not self.config.get('binding'):
                 raise BridgeUnavailable('必须先显式接入原生项目')
-            return self.transport({'action': action, 'workspace': self.workspace, 'sessionId': self.sid,
-                                   'binding': self.config.get('binding'), 'body': body})
+            result = self.transport({'action': action, 'workspace': self.workspace, 'sessionId': self.sid,
+                                     'binding': self.config.get('binding'), 'body': body})
+            workspace, binding = result.pop('workspace', None), result.pop('binding', None)
+            if result.get('status') == 'accepted' and workspace:
+                self.workspaces[result['result']['id']] = workspace
+                if binding:
+                    self.bindings[workspace] = binding
+            return result
         if not isinstance(sid, str) or not sid.startswith('sess_'):
             raise ValueError('ZCode 会话标识无效')
-        if action not in ('attach', 'detach', 'resume', 'history', 'detail', 'receipt', 'send', 'stop', 'respond', 'catalog', 'settings', 'work-mode', 'goal'):
+        if action not in ('attach', 'detach', 'resume', 'history', 'detail', 'receipt', 'send', 'stop', 'respond', 'catalog', 'settings', 'access', 'work-mode', 'goal', 'compact', 'tasks', 'stop-task', 'fork', 'edit-message', 'rename'):
             raise ValueError('尚未验证的 ZCode 操作')
         body = dict(body or {})
+        if action == 'access':
+            if 'mode' not in body:
+                detail = self.call('detail', sid)
+                if not detail['capabilities'].get('permissions'):
+                    raise ValueError('当前会话未提供权限切换')
+                return {'mode': detail['session']['permissionMode'],
+                        'options': [{'value': mode, 'label': label, 'requiresConfirmation': mode == 'yolo'}
+                                    for mode, label in ACCESS.items()]}
+            if body.get('mode') not in ACCESS or set(body) - {'id', 'mode', 'confirmed'} or (
+                    body['mode'] == 'yolo' and body.get('confirmed') is not True):
+                raise ResumePreflightBlocked('请确认本次权限切换')
+        if action == 'rename':
+            body.setdefault('id', str(uuid.uuid4()))  # Outer RenameCommands owns durable deduplication.
+        if sid not in self.workspaces:
+            self.workspaces[sid] = self.transport({'action': 'target', 'workspace': self.workspace,
+                                                  'sessionId': sid})['workspace']
+        workspace = self.workspaces[sid]
         if action == 'resume':
             # Only an explicit phone action may adopt a new App process/owner.
-            app = bundle(Path(self.config['application']), 'dev.zcode.app')
+            app = installation(self.config['application'])
             if not app or app['version'] != '3.17.1':
                 raise BridgeUnavailable('ZCode 安装身份或版本不匹配')
             process = listener_identity(self.config['port'], app['executable'])
@@ -183,15 +227,19 @@ class ZCodePrototype:
             try:
                 self.config['process'] = process
                 result = self.call('attach', sid)
-                self.config['binding'] = result['binding']
+                if workspace == self.workspace:
+                    self.config['binding'] = result['binding']
+                else:
+                    self.bindings[workspace] = result['binding']
             except Exception:
                 self.config = previous
                 raise
             return {'status': 'ready', 'id': body['id']}
-        request = {'action': action, 'workspace': self.workspace, 'sessionId': sid,
+        request = {'action': action, 'workspace': workspace, 'sessionId': sid,
                    'anchorSessionId': self.sid,
-                   'binding': None if action == 'attach' else self.config.get('binding')}
-        if action in ('send', 'stop', 'respond', 'settings', 'work-mode', 'goal'):
+                   'binding': None if action == 'attach' else
+                       self.config.get('binding') if workspace == self.workspace else self.bindings.get(workspace)}
+        if action in ('send', 'stop', 'respond', 'settings', 'access', 'work-mode', 'goal', 'compact', 'stop-task', 'fork', 'edit-message', 'rename'):
             uuid.UUID(body.get('id', ''))
             if not request['binding']:
                 raise BridgeUnavailable('必须先显式接入原生测试会话')
@@ -203,12 +251,12 @@ class ZCodePrototype:
             skills = body.get('plugins', [])
             if not isinstance(skills, list) or len(skills) > 8 or any(not isinstance(v, str) for v in skills) or len(set(skills)) != len(skills):
                 raise ValueError('最多选择 8 个有效 Skill')
-            if body.pop('mode', 'send') != 'send':
-                raise ValueError('ZCode 原型暂只支持发送新消息')
-            body['files'] = project_files(self.workspace, body.pop('projectFiles', []))
+            if body.get('mode', 'send') not in ('send', 'queue', 'steer'):
+                raise ValueError('发送方式无效')
+            body['files'] = project_files(workspace, body.pop('projectFiles', []))
             references = body.pop('resolvedReferences', [])
-            paths = [str(Path(item['path']).relative_to(self.workspace)) for item in references]
-            body['files'].extend(project_files(self.workspace, paths))
+            paths = [str(Path(item['path']).relative_to(workspace)) for item in references]
+            body['files'].extend(project_files(workspace, paths))
             for item in body.pop('resolvedImages', []):
                 header, data = item['url'].split(',', 1)
                 body['files'].append({'name': item['name'], 'mime': header[5:].split(';')[0], 'data': data})
@@ -219,6 +267,14 @@ class ZCodePrototype:
                                      'application/octet-stream', 'data': file['data']})
             if len(body['files']) > 10 or sum(len(base64.b64decode(f['data'], validate=True)) for f in body['files']) > MAX_TRANSFER:
                 raise ValueError('最多 10 个附件，附件总量不能超过 20 MB')
+        if action in ('fork', 'edit-message'):
+            try:
+                target = json.loads(body['messageId'])
+            except (KeyError, TypeError, ValueError):
+                raise ValueError('消息标识无效') from None
+            if not isinstance(target, dict) or set(target) != {'rowId', 'entityId', 'logEpoch'}:
+                raise ValueError('消息标识无效')
+            body['target'] = target
         if action == 'respond' and 'requestId' in body:
             body['interactionId'] = body.pop('requestId')
             decision = body.pop('decision')
@@ -233,28 +289,43 @@ class ZCodePrototype:
                                     not isinstance(body.get('model'), str) or not isinstance(body.get('effort', ''), str)):
             raise ValueError('模型设置格式无效')
         request['body'] = body
+        detached = action == 'detail' and not request['binding']
+        if detached:
+            request['action'] = 'history'
         result = self.transport(request)
         if action == 'detail':
+            if detached:
+                result = {'detached': True, 'history': result}
             if result.get('detached'):
                 history = result['history']
                 row = history['session']
                 messages = [{'id': item['info']['messageId'], 'role': item['info']['role'],
                              'text': '\n'.join(part.get('text', '') for part in item.get('parts', []) if part.get('type') == 'text')}
                             for item in history['messages'] if item['info'].get('semantics', {}).get('uiVisibility') == 'visible']
-                session = detached_session({'id': row['sessionId'], 'title': row.get('title', '')}, self.workspace)
+                session = detached_session({'id': row['sessionId'], 'title': row.get('title', '')}, workspace)
                 return {'session': session, 'messages': messages, 'capabilities': session['capabilities'],
                         'notice': '当前显示 ZCode 历史；点击继续会话连接原生运行状态。'}
-            value = project_snapshot(result['snapshot'], self.workspace)
+            value = project_snapshot(result['snapshot'], workspace)
             value['draftAccountIdentity'] = result.get('account', {}).get('identity', '')
             if value['history']['hasMore']:
                 value['notice'] = '当前显示 ZCode 已加载的历史；更早内容请在原 App 中加载。'
                 value['history']['hasMore'] = False
             return value
-        if action in ('send', 'stop', 'respond', 'settings', 'work-mode', 'goal'):
+        if action in ('send', 'stop', 'respond', 'settings', 'access', 'work-mode', 'goal', 'compact', 'stop-task', 'fork', 'edit-message', 'rename'):
             status = result['status']
-            if action in ('settings', 'work-mode') and status == 'noop' and result.get('reasonCode') == 'config.unchanged':
+            if action == 'send' and status == 'accepted' and result.get('result', {}).get('delivery') == 'queue':
+                status = 'queued'
+            if action in ('settings', 'access', 'work-mode') and status == 'noop' and result.get('reasonCode') == 'config.unchanged':
                 status = 'accepted'
-            return {'id': body['id'], 'status': status, 'nativeAck': result}
+            extra = {}
+            if action in ('fork', 'edit-message') and status == 'accepted':
+                native = result.get('result', {})
+                if not native.get('sessionId') or native.get('disposition') == 'blocked':
+                    status = 'rejected'
+                else:
+                    self.workspaces[native['sessionId']] = workspace
+                    extra['result'] = {'id': native['sessionId']}
+            return {'id': body['id'], 'status': status, 'nativeAck': result, **extra}
         return result
 
     def account_scope(self):
@@ -267,12 +338,10 @@ class ZCodePrototype:
 
     def launch(self):
         """Explicit account transaction only; normal Launch Services, no force quit."""
-        from bridge.platforms.macos.desktop import start
-        app = bundle(Path(self.config['application']), 'dev.zcode.app')
+        app = installation(self.config['application'])
         if not app or app['version'] != '3.17.1':
             raise BridgeUnavailable('ZCode 安装身份或版本已变化')
-        start(Path(app['executable']), self.home, {}, arguments=(
-            '--remote-debugging-address=127.0.0.1', '--remote-debugging-port='+str(self.config['port'])))
+        launch(app['executable'], self.home, self.config['port'])
         deadline = time.monotonic() + 25
         while True:
             try:

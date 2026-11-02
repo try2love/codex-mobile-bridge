@@ -24,6 +24,8 @@ class MobileContracts(unittest.TestCase):
 
     def transport(self, request):
         self.calls.append(request)
+        if request['action'] == 'list':
+            return {'sessions': [{'snapshot': self.snapshot, 'cwd': str(self.root)}]}
         return {'snapshot': self.snapshot} if request['action'] == 'detail' else {'models': [], 'capabilities': {'models': True}} if request['action'] == 'account' else {'status': 'accepted'}
 
     def test_opt_in_registers_in_shared_manager_without_native_activation(self):

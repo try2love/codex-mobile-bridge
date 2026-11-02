@@ -31,8 +31,8 @@ from bridge.features.sessions.create import project_directory, project_directory
 from bridge.clients.codex.remote import ssh_read, payload
 from bridge.resources import source_text
 
-READS = {'list', 'detail', 'catalog', 'projects', 'account', 'access', 'organization'}
-WRITES = {'send', 'stop', 'settings', 'respond', 'create', 'access', 'resume', 'fork', 'pin', 'archive', 'rename', 'organization', 'goal'}
+READS = {'list', 'detail', 'catalog', 'projects', 'account', 'access', 'organization', 'tasks'}
+WRITES = {'send', 'stop', 'settings', 'respond', 'create', 'access', 'resume', 'fork', 'pin', 'archive', 'rename', 'organization', 'goal', 'compact', 'stop-task', 'edit-message'}
 
 
 CLAUDE_HISTORY_NOTICE = '客户端尚未提供当前可选模型，历史模型仅供查看'
@@ -147,7 +147,7 @@ class DesktopSessions:
                 self.deepseek_restore_error = '已有 Harness 接入无法验证，请重新扫描'
                 self.config.setdefault('setup', {})['deepseek'] = {
                     'setupStatus': 'failed', 'reason': '已有 Harness 接入无法验证，请重新扫描'}
-        if self.config.get('zcodePrototype') and sys.platform == 'darwin':
+        if self.config.get('zcodePrototype') and sys.platform in ('darwin', 'win32'):
             from bridge.clients.zcode.adapter import ZCodePrototype
             self.adapters['zcode'] = ZCodePrototype(self.directory/'zcode', self.config['zcodePrototype'])
             self.session_pins['zcode'] = SessionPins(self.directory/'zcode', 'zcode')
@@ -705,6 +705,10 @@ class DesktopSessions:
             self.model_timers[identity] = timer
             timer.start()
 
+    def cli_connections(self):
+        adapter = self.adapters.get('claude')
+        return adapter.cli.cli_connections() + adapter.remote_cli.cli_connections() if adapter else []
+
     def list_with_activity(self, provider):
         with self.read_lock:
             binding, adapter = self.binding_epochs[provider], self.adapters[provider]
@@ -819,7 +823,8 @@ class DesktopSessions:
 
     def _project_environments(self, provider):
         if provider == 'zcode':
-            return [{'key': 'desktop|local|zcode', 'host': 'local', 'hostLabel': '此电脑', 'surface': 'desktop',
+            scope = hashlib.sha256(self.adapters[provider].account_scope().encode()).hexdigest()[:24]
+            return [{'key': 'desktop|local|'+scope, 'host': 'local', 'hostLabel': '此电脑', 'surface': 'desktop',
                      'name': 'ZCode', 'createRequiresMessage': True, 'createTitle': False}]
         adapter = self.adapters[provider]
         rows = (adapter.remote_cli.wsl.project_environments() if provider == 'claude' and
@@ -993,6 +998,11 @@ class DesktopSessions:
                             for identity in hint.get('previousAccountIdentities', [])]}
             return result
         rid = str(uuid.UUID(body.get('id', '')))
+        if action == 'compact' and set(body) != {'id'}:
+            raise ValueError('上下文压缩请求无效')
+        if action == 'stop-task' and (set(body) != {'id', 'taskId'} or
+                not isinstance(body.get('taskId'), str) or not 1 <= len(body['taskId']) <= 512):
+            raise ValueError('后台任务标识无效')
         if action == 'send' and (not isinstance(body.get('text'), str) or
                                  not body['text'].strip() and not (body.get('resolvedImages') or body.get('resolvedFiles') or body.get('references')) or len(body['text']) > 100000):
             raise ValueError('请输入 1–100000 字的消息')
@@ -1008,7 +1018,9 @@ class DesktopSessions:
                 raise ValueError('目标操作无效，请刷新会话后重试')
             if body['operation'] == 'edit' and (not isinstance(body.get('objective'), str) or not 1 <= len(body['objective'].strip()) <= 4000):
                 raise ValueError('请输入 1–4000 字的目标')
-        if action == 'fork' and (set(body) - {'id', 'messageId'} or
+        if action == 'edit-message' and (set(body) != {'id', 'messageId', 'text'} or not isinstance(body.get('text'), str) or not 1 <= len(body['text'].strip()) <= 100000):
+            raise ValueError('请输入 1–100000 字的消息')
+        if action in ('fork', 'edit-message') and (set(body) - {'id', 'messageId', *(['text'] if action == 'edit-message' else [])} or
                                  not isinstance(body.get('messageId'), str) or
                                  not body['messageId'].strip() or len(body['messageId']) > 512):
             raise ValueError('请选择原会话中可分支的消息')
@@ -1167,7 +1179,7 @@ class DesktopSessions:
         return targets + (list(entries.hosts()) if entries is not None else [])
 
     def enabled(self, provider):
-        if isinstance(provider, str) and provider.startswith('wsl:'):
+        if isinstance(provider, str) and provider.startswith(('wsl:', 'codex:')):
             entries = getattr(self.bridge, 'entries', None)
             return bool(entries and entries.enabled(provider))
         native = self.config.get('enabled', {}).get(provider, provider == 'codex')
@@ -1297,8 +1309,8 @@ class DesktopSessions:
     def _descriptor(self, provider):
         if provider == 'zcode' and provider in self.adapters:
             adapter = self.adapters[provider]
-            from bridge.platforms.macos.discovery import bundle
-            app = bundle(Path(adapter.config['application']), 'dev.zcode.app')
+            from bridge.clients.zcode.installation import installation
+            app = installation(adapter.config['application'])
             return {'id': provider, 'installed': bool(app and app['version'] == '3.17.1'),
                     'executable': app['executable'] if app else '', 'dataDirectory': str(adapter.home)}
         if provider == 'deepseek' and self.config.get('deepseekManualBinding'):
@@ -1832,7 +1844,9 @@ class DesktopSessions:
             codex['desktopRestartRecommended'] = bool(self.bridge and
                 getattr(self.bridge, 'desktop_restart_recommended', lambda: False)())
             native = {**codex, 'id': 'desktop', 'kind': 'desktop'}
-            codex_entries = [native, *(entries.applications() if entries is not None else [])]
+            applications = entries.applications() if entries is not None else []
+            rows.extend(entry for entry in applications if entry.get('kind') == 'codex-local')
+            codex_entries = [native, *(entry for entry in applications if entry.get('kind') != 'codex-local')]
             codex.update(entries=codex_entries, desktopEnabled=native['enabled'],
                          nativeConfigured=native['configured'], nativeSelectable=native['selectable'],
                          nativeInstalled=native['installed'], nativeRunning=native['running'],
@@ -1852,7 +1866,7 @@ class DesktopSessions:
                 rows.append({'id': 'zcode', 'name': 'ZCode',
                     'description': '连接 ZCode 原生聊天，沿用 App 的模型、账号与项目。',
                     'accountNotice': '可切换已保存账号，聊天内选择模型和 Skill',
-                    'configurationNotice': 'Mac Test 可在已接入的 ZCode 项目中新建原生聊天。请保持 ZCode 打开；连接中断后可手动重试。', 'enabled': enabled, 'installed': True,
+                    'configurationNotice': 'Test 版可在已接入的 ZCode 项目中新建原生聊天。请保持 ZCode 打开；连接中断后可手动重试。', 'enabled': enabled, 'installed': True,
                     'configured': True, 'selectable': True, 'connected': connected,
                     'setupStatus': 'ready' if connected else 'needs-retry',
                     'reason': '原生测试聊天已接入' if connected else '请保持 ZCode 测试聊天打开，然后重试连接',
@@ -2008,12 +2022,12 @@ class DesktopSessions:
                                 remote.index.pop(sid, None)
                 self.client_cache = None
             return self.clients(refresh=True)
-        if isinstance(provider, str) and provider.startswith('wsl:'):
+        if isinstance(provider, str) and provider.startswith(('wsl:', 'codex:')):
             entries = getattr(self.bridge, 'entries', None)
             if entries is None or type(enabled) is not bool or set(value) - {'action', 'provider', 'enabled', 'quitDesktop'}:
-                raise ValueError('WSL 应用开关无效')
+                raise ValueError('Codex 入口开关无效')
             if value.get('quitDesktop', False) is not False:
-                raise ValueError('请在原 WSL 终端退出 Codex；应用管理只停用手机访问，不会终止原任务')
+                raise ValueError('请在原客户端退出 Codex；应用管理只停用手机访问，不会终止原任务')
             with self.client_lock:
                 entries.configure(provider, enabled)
                 self.client_cache = None
@@ -2357,6 +2371,18 @@ class DesktopSessions:
         if action == 'scan-deepseek-plugins':
             from bridge.clients.deepseek.manual import discover_plugins
             return {'candidates': discover_plugins(value.get('home'))}
+        if action == 'codex-profiles':
+            entries = getattr(self.bridge, 'entries', None)
+            if entries is None:
+                raise ValueError('当前网关未提供本机 Codex 配置管理')
+            operation = value.get('operation')
+            if operation in ('list', 'scan') and set(value) == {'action', 'operation'}:
+                return entries.local_profiles(scan=operation == 'scan')
+            if operation == 'save' and set(value) == {'action', 'operation', 'home', 'label'}:
+                result = entries.save_local(value['home'], value['label'])
+                self.client_cache = None
+                return result
+            raise ValueError('Codex 配置请求无效')
         if action == 'scan-wsl':
             return self.scan_wsl()
         if action == 'claude-prerequisites':

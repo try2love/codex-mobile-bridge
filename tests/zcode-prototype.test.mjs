@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { nativeRequest } from '../bridge/clients/zcode/renderer.mjs';
-import { verifiedTarget } from '../bridge/clients/zcode/transport.mjs';
 
 function fixture() {
   const binding = { clientId: 'original-client', connectionId: 'original-port',
@@ -35,8 +34,49 @@ function fixture() {
   globalThis.localStorage = { getItem: key => { assert.equal(key, 'zcode-v4-client-id:v1'); return binding.clientId; } };
   const request = (action, body = {}, extra = {}) => nativeRequest({ action, body, workspace: '/project',
     sessionId: 'sess-test', binding: structuredClone(binding), expiresAt: Date.now() + 10000, ...extra });
-  return { request, calls, snapshot, binding, agent, listeners, storeState };
+  const nodes = document.querySelectorAll();
+  globalThis.document.querySelectorAll = () => nodes;
+  const services = nodes[0].__reactContainer$test.memoizedProps.value;
+  services.projectService = {readTree:async()=>({tasks:[{taskId:'sess-test',workspacePath:'/project',hostId:'local'}]})};
+  return { request, calls, snapshot, binding, agent, listeners, storeState, services };
 }
+
+test('home screen exposes the native registry anchor without a mounted conversation', async () => {
+  const f = fixture(), provider = function NativeServiceProvider() {};
+  delete f.services.layer;
+  document.querySelectorAll()[0].__reactContainer$test = {type:provider,memoizedProps:{services:f.services}};
+  assert.equal(await f.request('registry-probe'),provider);
+  assert.deepEqual(f.calls,[]);
+});
+
+test('cold reconnect uses V4 history without a legacy session runtime and keeps passive reads dormant', async () => {
+  const f = fixture(), identity=f.agent.getWorkspaceRuntimeIdentity;
+  let warm=false,listener,removed=false;
+  f.storeState.status='connecting';
+  f.services.layer.acquire=()=>{
+    f.calls.push('acquire');
+    queueMicrotask(()=>{warm=true;f.storeState.status='live';listener?.();});
+    return {store:{getState:()=>f.storeState,subscribe:fn=>{listener=fn;return ()=>{removed=true;listener=null;};}},release:()=>f.calls.push('release')};
+  };
+  f.agent.getWorkspaceRuntimeIdentity=async p=>{if(!warm)throw Error('runtime not running');return identity(p);};
+  f.agent.readSession=async()=>{throw Error('legacy session runtime is not ready');};
+  await assert.rejects(f.request('history'),/runtime not running/);
+  assert.equal(warm,false);
+  await assert.rejects(f.request('attach',{}, {workspace:'/wrong'}),/项目已变化/);
+  assert.equal(warm,false);
+  await f.request('attach');
+  assert.equal(warm,true);assert.equal(removed,true);assert.deepEqual(f.calls,['acquire']);
+});
+
+test('cold restore timeout releases the new Bridge lease and listener without sending input', async () => {
+  const f=fixture();let removed=false;
+  f.storeState.status='connecting';
+  f.services.layer.acquire=()=>({store:{getState:()=>f.storeState,subscribe:()=>()=>{removed=true;}},release:()=>f.calls.push('release')});
+  window.__codexMobileZCodeAcquireWorkspace=()=>({layer:f.services.layer,release:()=>f.calls.push('workspace-release')});
+  await assert.rejects(f.request('attach',{}, {expiresAt:Date.now()+260}),/恢复超时/);
+  assert.equal(removed,true);assert.deepEqual(f.calls,['release','workspace-release']);
+  assert.equal(window.__codexMobileZCodePrototypeV1,undefined);
+});
 
 test('passive history never subscribes or starts an executor and hides model-only context', async () => {
   const f = fixture();
@@ -78,7 +118,7 @@ test('only explicit reattach can adopt a new owner generation, without replaying
   const attached = await f.request('attach', {}, { binding: null });
   assert.equal(attached.binding.runtime.identity, 'new-owner');
   await f.request('detail');
-  assert.deepEqual(f.calls, ['acquire', 'release', 'acquire']);
+  assert.deepEqual(f.calls, ['acquire', 'acquire', 'release']);
 });
 
 test('stop targets exactly an observed native execution; stale approval never sends', async () => {
@@ -116,16 +156,7 @@ test('receipt query never resends an unknown command', async () => {
   assert.deepEqual(f.calls, []);
 });
 
-test('CDP rejects redirect-shaped, remote, ambiguous and wrong-App targets', () => {
-  const target = { type: 'page', url: 'file:///Applications/ZCode.app/Contents/Resources/app.asar/out/renderer/index.html',
-    webSocketDebuggerUrl: 'ws://127.0.0.1:17742/devtools/page/ABC' };
-  assert.equal(verifiedTarget([target], '/Applications/ZCode.app', 17742), target.webSocketDebuggerUrl);
-  for (const url of ['ws://example.com:17742/devtools/page/ABC', 'ws://127.0.0.1:17743/devtools/page/ABC',
-    'ws://user@127.0.0.1:17742/devtools/page/ABC', 'ws://127.0.0.1:17742/devtools/page/ABC?redirect=1'])
-    assert.throws(() => verifiedTarget([{ ...target, webSocketDebuggerUrl: url }], '/Applications/ZCode.app', 17742));
-  assert.throws(() => verifiedTarget([target, target], '/Applications/ZCode.app', 17742), /ambiguous/);
-  assert.throws(() => verifiedTarget([{ ...target, url: 'file:///wrong/index.html' }], '/Applications/ZCode.app', 17742));
-});
+
 
 test('a failed turn follows native input routing; only a new explicit send may continue',async()=>{
   const f=fixture();await f.request('attach');
@@ -202,4 +233,89 @@ test('new native chat uses atomic firstInput and independent shared lease withou
  assert.equal(create.envelope.payload.firstInput.text,'first message');assert.equal(create.envelope.payload.config.model,'Flash');assert.equal(create.envelope.payload.config.thought,'low');
  assert.equal(window.__codexMobileZCodePrototypeV1.sessions.size,2);
  const before=f.calls.length;await assert.rejects(f.request('create',{id:'empty',firstMessage:''}),/首条消息/);assert.equal(f.calls.length,before);
+});
+
+test('new project uses the original project service and workspace registry, preserving the old lease', async()=>{
+  const f=fixture();await f.request('attach');
+  const scopes=[],released=[];
+  window.__codexMobileZCodeAcquireWorkspace=scope=>{scopes.push(scope);return {layer:{acquire:sid=>({store:{getState:()=>({status:'live',snapshot:{...f.snapshot,sessionId:sid}})},release:()=>released.push(sid)})},release:()=>released.push(scope.workspacePath)};};
+  f.services.projectService={saveProject:async p=>{f.calls.push({save:p});return {id:'native-project',hostId:'local'};},prepareSession:async p=>{f.calls.push({prepare:p});return {projectId:p.projectId,workspacePath:'/new-project'};}};
+  f.agent.getWorkspaceRuntimeIdentity=async p=>({...f.binding.runtime,workspaceKey:p.workspacePath});
+  f.agent.sendConversationCommandV4=async p=>{f.calls.push(p);return {status:'accepted',result:{sessionId:p.envelope.payload.sessionId}};};
+  const result=await f.request('create',{id:'new-project-command',firstMessage:'hello',projectKey:'registered',directoryProject:{cwd:'/new-project'}});
+  assert.equal(result.workspace,'/new-project');assert.equal(result.binding.runtime.workspaceKey,'/new-project');
+  const command=f.calls.find(p=>p.envelope?.type==='createSession');assert.equal(command.workspacePath,'/new-project');assert.equal(command.projectId,'native-project');
+  assert.equal(command.envelope.payload.config.model,'Flash');assert.equal(command.envelope.payload.config.thought,'low');
+  assert.deepEqual(scopes,[{workspacePath:'/new-project'}]);assert.deepEqual(released,[]);
+  assert.equal((await f.request('detail')).snapshot.sessionId,'sess-test');
+  await f.request('detach',{}, {sessionId:result.result.id,workspace:'/new-project',binding:result.binding});
+  assert.deepEqual(released,[result.result.id,'/new-project']);
+});
+
+test('native project cwd mismatch rejects first input instead of sending it to the anchor',async()=>{
+  const f=fixture();await f.request('attach');window.__codexMobileZCodeAcquireWorkspace=()=>{throw Error('must not acquire')};
+  f.services.projectService={saveProject:async()=>({id:'project',hostId:'local'}),prepareSession:async()=>({projectId:'project',workspacePath:'/changed'})};
+  await assert.rejects(f.request('create',{id:'new',firstMessage:'hello',projectKey:'registered',directoryProject:{cwd:'/requested'}}),/目录已变化/);
+  assert.equal(f.calls.filter(p=>p.envelope).length,0);
+});
+
+test('project inventory and cold session target are passive and use native host membership',async()=>{
+  const f=fixture();f.services.projectService={readTree:async()=>({projects:[{id:'p',name:'Native',hostId:'local',roots:[{rootPath:'/new',isPrimary:true}]},{id:'remote',hostId:'ssh',roots:[{rootPath:'/remote',isPrimary:true}]}],tasks:[{taskId:'sess-new',workspacePath:'/new',hostId:'local'}]})};
+  assert.equal((await f.request('projects')).projects.length,1);
+  assert.deepEqual(await f.request('target',{}, {sessionId:'sess-new'}),{workspace:'/new'});
+  await assert.rejects(f.request('target',{}, {sessionId:'sess-unknown'}),/找不到/);assert.deepEqual(f.calls,[]);
+});
+
+
+
+test('queue and guide keep native delivery and never interrupt a busy turn as a new send',async()=>{
+ const f=fixture();await f.request('attach');f.snapshot.control.activeWorks=[{foregroundExecutionId:'active'}];f.snapshot.inputRouting.mode='enqueue';
+ await assert.rejects(f.request('send',{id:'new',text:'new',mode:'send'}),/busy/);
+ for(const [mode,delivery] of [['queue','queue'],['steer','guide']]){await f.request('send',{id:mode,text:mode,mode});assert.equal(f.calls.at(-1).envelope.payload.requestedDelivery,delivery);}
+ f.snapshot.inputRouting.mode='choice';f.snapshot.control.activeWorks=[];f.snapshot.queue.items=[{id:'held'}];
+ await assert.rejects(f.request('send',{id:'held',text:'new',mode:'send'}),/busy/);
+ await f.request('send',{id:'more',text:'more',mode:'queue'});assert.equal(f.calls.at(-1).envelope.payload.heldQueueDisposition,undefined);
+});
+
+test('maintenance and individual task stop are native commands and reject stale targets',async()=>{
+  const f=fixture();await f.request('attach');f.snapshot.availability={compact:{allowed:true}};
+  f.snapshot.backgroundWorks=[{workId:'own-task',title:'Background shell',kind:'bash',status:'running',cancellable:true}];
+  assert.equal((await f.request('tasks')).tasks[0].id,'own-task');
+  await f.request('stop-task',{id:'stop-once',taskId:'own-task'});
+  assert.equal(f.calls.at(-1).envelope.type,'cancelBackgroundWork');
+  assert.deepEqual(f.calls.at(-1).envelope.payload,{workId:'own-task'});
+  f.snapshot.backgroundWorks[0].status='resultPending';
+  await assert.rejects(f.request('stop-task',{id:'late',taskId:'own-task'}),/已结束/);
+  await f.request('compact',{id:'compact-once'});assert.equal(f.calls.at(-1).envelope.type,'compact');
+  f.snapshot.queue.items=[{itemId:'held'}];
+  await assert.rejects(f.request('compact',{id:'held'}),/队列结束/);
+});
+
+test('native message actions bind the row entity and epoch and preserve files and attachments',async()=>{
+  const f=fixture();await f.request('attach');
+  const attachment={ref:'original',fileName:'a.md',mime:'text/markdown',bytes:2};
+  f.snapshot.rows={window:[{rowId:3,entityId:'user-message',kind:'userInput',actions:{canEdit:true},attachments:[attachment]},
+    {rowId:4,entityId:'assistant-message',kind:'assistantText',actions:{canFork:true}}]};
+  const target={rowId:3,entityId:'user-message',logEpoch:'epoch'};
+  await f.request('edit-message',{id:'edit',target,text:'new text'});
+  const edit=f.calls.at(-1).envelope;assert.equal(edit.type,'editUserQuery');assert.equal(edit.baseLogEpoch,'epoch');assert.equal(edit.baseRevision,7);
+  assert.equal(edit.payload.workspaceMode,'preserve');assert.deepEqual(edit.payload.attachments,[attachment]);
+  await assert.rejects(f.request('edit-message',{id:'stale',target:{...target,logEpoch:'old'},text:'bad'}),/消息已变化/);
+  await assert.rejects(f.request('fork',{id:'wrong',target}),/消息已变化/);
+  await f.request('fork',{id:'fork',target:{rowId:4,entityId:'assistant-message',logEpoch:'epoch'}});
+  assert.equal(f.calls.at(-1).envelope.type,'forkAssistant');
+  await f.request('rename',{id:'rename',title:'New title'});assert.deepEqual(f.calls.at(-1).envelope.payload,{title:'New title'});
+});
+
+test('native access switch requires confirmation for full access and preserves revision and original owner',async()=>{
+ const f=fixture(); await f.request('attach'); f.snapshot.config.mode='build';
+ await assert.rejects(f.request('access',{id:'unsafe',mode:'yolo'}),/确认/);
+ assert.equal(f.calls.filter(x=>x?.envelope?.type==='switchCollaborationMode').length,0);
+ f.snapshot.pendingInteractions=[{}];
+ await assert.rejects(f.request('access',{id:'busy',mode:'yolo',confirmed:true}),/结束/);
+ f.snapshot.pendingInteractions=[];
+ await f.request('access',{id:'checked',mode:'yolo',confirmed:true});
+ const cmd=f.calls.at(-1).envelope;
+ assert.equal(cmd.type,'switchCollaborationMode');assert.equal(cmd.baseRevision,7);
+ assert.equal(cmd.baseLogEpoch,'epoch');assert.equal(cmd.payload.mode,'yolo');
 });

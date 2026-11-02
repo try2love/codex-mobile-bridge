@@ -1205,3 +1205,32 @@ test('ZCode native create reuses firstMessage contract and omits hidden title',a
  await ui.view.create();const dialog=ui.document.querySelector('dialog'),form=dialog.querySelector('form');dialog.querySelector('input').value='';dialog.querySelector('textarea').value='first message';await form.onsubmit({preventDefault(){}});
  const sent=ui.calls.find(c=>c.url.endsWith('/create')).body;assert.equal(sent.firstMessage,'first message');assert.equal(sent.title,undefined);assert.equal(sent.projectKey,'p');
 });
+
+test('native per-mode availability reuses the shared composer without disabling queue and guide',async()=>{
+ const ui=await opened(),v=ui.view;v.provider='zcode';v.applyDetail({connected:true,session:{id:'a',status:'active',capabilities:{send:true,queue:true,steer:true,sendModes:{send:false,queue:true,steer:true}}},messages:[]});
+ v.mode.value='send';v.updateComposer();assert.equal(v.send.disabled,true);
+ v.mode.value='queue';v.updateComposer();assert.equal(v.send.disabled,false);
+ v.mode.value='steer';v.updateComposer();assert.equal(v.send.disabled,false);
+ v.applyDetail({connected:true,session:{id:'a',status:'idle',capabilities:{send:true,queue:true,steer:false,sendModes:{send:true,queue:true,steer:false}}},messages:[]});
+ assert.equal(v.mode.value,'send');assert.equal(v.send.disabled,false);
+});
+
+test('shared context dialog shows native cache and threshold and blocks stale compaction',async()=>{
+ const ui=await opened(),view=ui.view;
+ view.applyDetail({session:{id:'a',status:'idle',contextUsage:{usedTokens:250,contextWindow:1000,autoCompactThresholdTokens:800,cache:{cacheReadTokens:100}},capabilities:{compact:true,tasks:true}},messages:[]});
+ view.contextDetails();const dialog=view.contextUsage.dialog;
+ assert.match(dialog.textContent,/自动压缩阈值.*800/);assert.match(dialog.textContent,/缓存读取 Token.*100/);
+ const compact=dialog.querySelectorAll('button').find(n=>n.textContent==='压缩上下文');assert.equal(compact.disabled,false);
+ view.staleDetail();assert.equal(compact.disabled,true);assert.equal(view.workbench.current.capabilities.tasks,true);
+});
+
+test('desktop native edit uses the shared message action dialog and one receipt id',async()=>{
+ const ui=await opened(),view=ui.view;let openedAction;
+ view.messageActions={open:(...args)=>openedAction=args};
+ view.applyDetail({session:{id:'a',status:'idle',capabilities:{editMessage:true}},messages:[{id:'u',role:'user',text:'before',editMessageId:'native-token'}]});
+ const button=view.messages.querySelectorAll('button').find(n=>n.textContent==='编辑并重新发送');assert.ok(button);button.click();
+ assert.equal(openedAction[0],'edit');assert.equal(await openedAction[2].fullText(),'before');
+ ui.setHandler(async(url,body)=>body?{status:'accepted',result:{id:'a'}}:{session:{id:'a'},messages:[]});
+ const result=await openedAction[3].request('',{id:'same-attempt',text:'after'});assert.equal(result.status,'accepted');
+ assert.ok(ui.calls.some(c=>c.url.includes('/edit-message')&&c.body?.id==='same-attempt'&&c.body.text==='after'));
+});

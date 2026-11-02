@@ -24,9 +24,71 @@ class LocalCliSync:
 
     def _codex_runtime(self):
         accounts = self._accounts()
+        if accounts.independent:
+            return False, None
         executable = accounts.index.get('desktopExecutable') or DesktopApp.discover(accounts.runtime)
         app = DesktopApp(executable, accounts.home) if executable else None
         return bool(app and app.processes()), app
+
+    def prepare_profile_switch(self):
+        """An explicit account switch may close only this idle independent runtime."""
+        accounts = self._accounts()
+        if not accounts.independent:
+            return
+        accounts.idle()
+        cli = self.bridge.cli_sessions
+        status = cli.daemon_status()
+        if status == 'stopped':
+            return
+        if status != 'running':
+            raise ValueError('此配置的原生服务状态未知，未切换账号')
+        from bridge.clients.codex.cli_session import _managed_cli
+        from bridge.platforms.codex_daemon_env import read_daemon_environment, stop_daemon_gracefully
+        executable = _managed_cli(accounts.home)
+        if executable is None:
+            raise ValueError('此配置的原生运行组件不可用，未切换账号')
+        identity = read_daemon_environment(accounts.home, executable, ())[1]
+        self.check_idle_daemon(cli.client, accounts.home)
+        accounts.idle()
+        stop_daemon_gracefully(accounts.home, executable, identity)
+        cli.close()
+        # A native watchdog/restart must not be mistaken for a stopped runtime.
+        if cli.daemon_status() != 'stopped':
+            raise ValueError('此配置的原生服务未确认退出，未切换账号')
+
+    @staticmethod
+    def check_idle_daemon(client, home):
+        from bridge.features.sessions.create import check_archive_runtime
+        from bridge.clients.codex.app_server import AppServerUnsupported
+        info = client.connect()
+        if Path(info['codexHome']).resolve() != home.resolve():
+            raise ValueError('原生服务不属于此配置，未切换账号')
+        def request(method, params):
+            return client.request(method, params, replay_safe=True)
+        identifiers = client.loaded_threads()
+        def check(threads):
+            blockers = []
+            for identifier in threads:
+                try:
+                    check_archive_runtime(request, [identifier])
+                    tasks = request('thread/backgroundTerminals/list', {'threadId': identifier, 'limit': 1})
+                    if not isinstance(tasks.get('data'), list) or tasks['data'] or tasks.get('nextCursor'):
+                        raise ValueError('有后台任务或状态未知')
+                    try:
+                        goal = request('thread/goal/get', {'threadId': identifier})['goal']
+                    except AppServerUnsupported:
+                        goal = None
+                    if goal and goal.get('status') == 'active':
+                        raise ValueError('有运行中的目标')
+                except ValueError as error:
+                    blockers.append(f"{identifier}：{error}")
+            if blockers:
+                raise ValueError('；'.join(blockers))
+        check(identifiers)
+        if client.loaded_threads() != identifiers:
+            raise ValueError('此配置的会话已变化，请重新检查')
+        check(identifiers)
+
 
     def _codex_idle(self):
         cli = self.bridge.cli_sessions

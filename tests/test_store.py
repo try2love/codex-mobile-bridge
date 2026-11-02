@@ -23,6 +23,23 @@ class StoreTests(unittest.TestCase):
             conn.execute('UPDATE threads SET project_id=NULL')
         self.assertIsNone(self.store.list()[0]['_nativeProject'])
 
+    def test_native_cli_metadata_controls_read_list_and_source_filters(self):
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute('ALTER TABLE threads ADD COLUMN thread_source TEXT')
+            db.executemany('INSERT INTO threads VALUES (?,?,?,?,?,?,?,?)', [
+                ('created', 'Created in profile', '/project', 5, 0, 'Codex Desktop', 'vscode', 'cli'),
+                ('ide', 'VS Code', '/project', 6, 0, 'codex_vscode', 'vscode', 'cli'),
+                ('legacy', 'Old desktop', '/project', 2, 0, None, 'vscode', None),
+                ('child', 'Worker', '/project', 7, 0, 'Codex Desktop', 'vscode', 'subagent'),
+            ])
+        self.assertEqual(self.store.get('created')['origin'], 'cli')
+        self.assertEqual(self.store.get('ide')['origin'], 'ide')
+        self.assertEqual([r['id'] for r in self.store.list(source='cli')], ['created'])
+        self.assertEqual({r['id'] for r in self.store.list(source='desktop')}, {'test', 'legacy'})
+        self.assertEqual([r['id'] for r in self.store.list(exclude_sources=('ide',), limit=1)], ['created'])
+        self.assertEqual({r['id'] for r in self.store.list(exclude_sources=('ide',))}, {'test', 'legacy', 'created'})
+        self.assertEqual(self.store.available_sources(), ['cli', 'desktop', 'ide'])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=ROOT / '.tmp')
         self.root = Path(self.temp.name)
@@ -124,7 +141,7 @@ class StoreTests(unittest.TestCase):
                 self.store.get(thread_id)
         self.assertEqual({r['id'] for r in self.store.lifecycle_threads()}, {'test'})
         report = self.store.discovery_diagnostics('cli')
-        self.assertEqual(report['counts'], {'desktop': 1, 'cli': 7, 'other': 2, 'subagent': 1,
+        self.assertEqual(report['counts'], {'desktop': 1, 'cli': 7, 'ide': 0, 'other': 2, 'subagent': 1,
                                             'visible': 7, 'archived': 1})
         self.assertEqual(report['target'], {'found': True, 'origin': 'cli', 'archived': False,
                                             'reason': 'rollout_missing', 'read': 'unavailable'})

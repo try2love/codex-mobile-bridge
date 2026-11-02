@@ -71,8 +71,8 @@ def terminate(pid):
                    timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
 
 
-def start(executable, home, environment):
-    return subprocess.Popen([str(executable)], cwd=home,
+def start(executable, home, environment, *, arguments=()):
+    return subprocess.Popen([str(executable), *arguments], cwd=home,
                             env={**os.environ, **environment},
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL,

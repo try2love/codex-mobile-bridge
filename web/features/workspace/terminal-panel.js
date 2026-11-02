@@ -286,7 +286,7 @@ class TerminalPanel {
     finally{this.flushing=false;if(!this.disposed&&!this.inputError){this.send.disabled=!this.running;this.layout();this.flushDuplex();if(this.hadDuplex&&!this.duplex&&!this.duplexUnsupported&&!this.reconnectTimer)this.startDuplex();}}
   }
   startDuplex(){
-    if(this.disposed||!this.running||this.duplexUnsupported||this.duplex||typeof WebSocket!=='function'||!this.workbench.csrf?.())return;
+    if(window.BridgeChannelLink?.alternate||this.disposed||!this.running||this.duplexUnsupported||this.duplex||typeof WebSocket!=='function'||!this.workbench.csrf?.())return;
     let socket;
     try{
       const address=new URL(this.url('&id='+encodeURIComponent(this.id)+'&after='+this.cursor),location.href);
