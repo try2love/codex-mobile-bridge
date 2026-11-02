@@ -9,9 +9,6 @@ import threading
 import time
 from pathlib import Path
 
-from cryptography.exceptions import InvalidTag
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-
 
 def _regular(info):
     return stat.S_ISREG(info.st_mode) and not getattr(info, 'st_file_attributes', 0) & 0x400
@@ -22,18 +19,13 @@ def _directory(path):
 
 
 def _replace(path, data):
-    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as output:
-        tmp = Path(output.name)
-        try:
-            output.write(data)
-        except BaseException:
-            output.close()
-            tmp.unlink(missing_ok=True)
-            raise
+    fd, name = tempfile.mkstemp(dir=path.parent)
     try:
-        tmp.replace(path)
+        with os.fdopen(fd, 'wb') as output:
+            output.write(data)
+        os.replace(name, path)
     finally:
-        tmp.unlink(missing_ok=True)
+        Path(name).unlink(missing_ok=True)
 
 
 class StagedReply:
@@ -41,7 +33,7 @@ class StagedReply:
         self.root = Path(profile) / 'pending-uploads'
         tag = hashlib.sha256(('cmb-reply-name:' + token).encode()).hexdigest()[:32]
         self.filename = re.compile(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}-cmb-' + tag + r'\.bin\Z')
-        self.cipher = AESGCM(hashlib.sha256(('cmb-reply-key:' + token).encode()).digest())
+        self.key = hashlib.sha256(('cmb-reply-key:' + token).encode()).digest()
         self.lock = threading.Lock()
         self.next_scan = 0
         self.folder = None
@@ -89,8 +81,12 @@ class StagedReply:
                         if not os.path.samestat(info, opened):
                             continue
                         raw = stream.read(limit + 29)
+                    # Packaged gateways include the crypto backend. Source-only
+                    # gateways using other clients need not install it.
+                    from cryptography.exceptions import InvalidTag
+                    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
                     try:
-                        data = self.cipher.decrypt(raw[:12], raw[12:], None)
+                        data = AESGCM(self.key).decrypt(raw[:12], raw[12:], None)
                         value = json.loads(json.loads(data)['payload'])
                     except (InvalidTag, ValueError, KeyError, TypeError):
                         complete = False

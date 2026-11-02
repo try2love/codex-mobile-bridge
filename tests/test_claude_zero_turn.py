@@ -38,9 +38,10 @@ class FirstConnection(unittest.TestCase):
                     self.assertEqual((counts['starts'],counts['sends'],counts['trust']), (0,0,1))
                     self.assertEqual(own_attachment.read_text(), 'untouched')
                     self.assertTrue((directory/'staged-ack.json').is_file())
-                    # Stop the reader but leave the renderer and its last signed request alive.
+                    # Stop the gateway reader. Desktop can publish its stop receipt
+                    # once, even after another five-second heartbeat is due.
                     desktop.close()
-                    time.sleep(0.65)
+                    time.sleep(5.65)
                     self.assertLessEqual(len(list(stage.glob('*-cmb-*.bin'))),1)
                 finally:
                     process.terminate()

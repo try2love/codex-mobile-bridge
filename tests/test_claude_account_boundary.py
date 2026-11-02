@@ -5,6 +5,7 @@ import sqlite3
 import tempfile
 import unittest
 import uuid
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class DesktopAccountBoundary(unittest.TestCase):
     def test_detail_and_settings_with_a_locked_official_account(self):
-        with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as temp:
+        with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as temp, ExitStack() as cleanup:
             root = Path(temp)
             profile = root/'profile'
             profile.mkdir()
@@ -27,7 +28,7 @@ class DesktopAccountBoundary(unittest.TestCase):
             db.execute('CREATE TABLE cookies(host_key,name,value,encrypted_value,expires_utc)')
             db.executemany("INSERT INTO cookies VALUES('.claude.ai',?,'fixture',NULL,0)", [('sessionKey',), ('lastActiveOrg',)])
             manager = DesktopSessions(root/'gateway')
-            self.addCleanup(manager.close)
+            cleanup.callback(manager.close)
             sid = 'fixture'
             session = {'id': sid, 'cwd': temp, 'backend': 'code', 'model': 'original'}
             manager.adapters['claude'].index[sid] = session
@@ -70,6 +71,26 @@ class DesktopAccountBoundary(unittest.TestCase):
                     unlock()
                     db.close()
                 self.assertEqual(manager.call('claude', 'detail', sid)['modelCatalogIdentity'], identity)
+
+    def test_utf8_paths_are_read_independently_of_the_system_codepage(self):
+        from bridge.clients.claude.adapter import Claude
+        with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as temp, ExitStack() as cleanup:
+            root = Path(temp)
+            settings = root/'desktop-sessions/settings.json'
+            discovery = root/'claude/discovery.json'
+            for path, value in [(settings, {'claudeHome':'工作区'}), (discovery, {'dataHome':'工作区'})]:
+                path.parent.mkdir()
+                path.write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8-sig')
+            original_read = Path.read_text
+            def legacy_read(path, encoding=None, **options):
+                return original_read(path, encoding=encoding or 'gbk', **options)
+            with patch.object(Path, 'read_text', legacy_read):
+                manager = DesktopSessions(root)
+                cleanup.callback(manager.close)
+                adapter = Claude(discovery.parent, auto_connect=False)
+                cleanup.callback(adapter.close)
+                self.assertEqual(manager.config['claudeHome'], '工作区')
+                self.assertEqual(adapter.discovery['dataHome'], '工作区')
 
     def test_msix_only_redirects_the_exact_observed_roaming_profile(self):
         with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as temp:

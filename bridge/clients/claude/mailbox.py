@@ -173,7 +173,11 @@ class FileDesktop:
     def read(self):
         path = self.directory / 'response.json'
         if self.staged_reply and (self.cached.get('receipt') or time.time() - self.cached.get('timestamp', 0) >= 20):
-            self.staged_reply.collect(path, self.generation, MAX_PACKET, self.pack)
+            try:
+                self.staged_reply.collect(path, self.generation, MAX_PACKET, self.pack)
+            except ImportError:
+                self.message = 'Claude 无会话接入需要安装源码版桌面依赖'
+                self.staged_reply = None
         try:
             stat = path.stat()
             stamp = (stat.st_mtime_ns, stat.st_size)

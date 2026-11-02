@@ -50,7 +50,7 @@ class Claude:
         discovery_path = self.directory/'discovery.json'
         if discovery_path.exists():
             try:
-                value = json.loads(discovery_path.read_text())
+                value = json.loads(discovery_path.read_text(encoding='utf-8-sig'))
                 if isinstance(value, dict):
                     self.discovery = value
             except (OSError, ValueError):

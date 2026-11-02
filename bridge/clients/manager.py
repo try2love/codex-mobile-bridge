@@ -121,7 +121,7 @@ class DesktopSessions:
         self.model_timers = {}
         self.model_lock = threading.Lock()
         self.config_path = self.directory/'settings.json'
-        self.config = json.loads(self.config_path.read_text()) if self.config_path.exists() else {}
+        self.config = json.loads(self.config_path.read_text(encoding='utf-8-sig')) if self.config_path.exists() else {}
         self.claude_wsl = None
         if sys.platform == 'win32':
             from bridge.clients.claude.wsl import WslClaudeEntries
