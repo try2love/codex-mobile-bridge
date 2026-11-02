@@ -1,6 +1,7 @@
 """Transport evidence correlates hops without recording conversations or secrets."""
 import http.client
 import json
+import logging
 import socketserver
 import unittest
 from unittest.mock import patch
@@ -20,12 +21,15 @@ class TransportTests(unittest.TestCase):
         headers = {'CF-Ray': 'abcdef0123456789-SIN'}
         conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=3)
         self.addCleanup(conn.close)
-        with self.assertNoLogs('bridge.api.httpd', level='INFO'):
+        # Python 3.9 has assertLogs but not assertNoLogs.
+        with self.assertLogs('bridge.api.httpd', level='INFO') as captured:
+            logging.getLogger('bridge.api.httpd').info('capture started')
             conn.request('GET', '/style.css', headers=headers)
             response = conn.getresponse()
             self.assertEqual(response.status, 200)
             self.assertRegex(response.getheader('X-Bridge-Request-Id'), r'^[a-f0-9]{16}$')
             self.assertTrue(response.read())
+        self.assertEqual([record.getMessage() for record in captured.records], ['capture started'])
 
     def test_send_response_correlates_ray_without_private_request_data(self):
         headers = self.login()

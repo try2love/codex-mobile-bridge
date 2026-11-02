@@ -618,11 +618,12 @@ class NotificationTests(unittest.TestCase):
                 response.read.return_value = raw
                 with self.assertRaisesRegex(RuntimeError, '响应格式不正确'):
                     publish_webhook(config, 'title', 'body')
-        with patch('bridge.features.notifications.channels.time.time', side_effect=[1700000000, 1700000001]), \
+        with patch('bridge.features.notifications.channels.time') as webhook_clock, \
                 patch('bridge.features.notifications.channels.build_opener') as opener:
             response = opener.return_value.open.return_value.__enter__.return_value
             response.status = 200
             response.read.return_value = b'{"code":0}'
+            webhook_clock.time.side_effect = [1700000000, 1700000001]
             publish_webhook(config, 'title', 'body')
             publish_webhook(config, 'title', 'body')
             requests = [json.loads(call.args[0].data) for call in opener.return_value.open.call_args_list]
