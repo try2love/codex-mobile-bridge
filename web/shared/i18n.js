@@ -3,6 +3,8 @@
 const BridgeI18n=(()=>{
 const en={
 "本机兼容连接":"Local compatibility connection",
+"网关将通过本机专用管道连接 ZCode。你可以在电脑锁屏时继续原会话。":"The gateway will connect to ZCode through a private local pipe. You can continue the original chat while the computer is locked.",
+"使用本机兼容连接…":"Use local compatibility connection…",
 "ZCode 将仅在 127.0.0.1:17742 监听。本机其他程序也能访问此端口。网关会记住此选择，用于下次启动。":"ZCode will listen only on 127.0.0.1:17742. Other apps on this computer can access this port. The gateway will remember this choice for future launches.",
 "如果当前 ZCode 无法接入，网关将尝试正常退出并重新启动。检测到活动任务时会停止重启。":"If the gateway cannot connect to the running ZCode app, it will try to quit and restart ZCode normally. Detected active tasks prevent the restart.",
 "重新启动 ZCode？":"Restart ZCode?",

@@ -289,9 +289,9 @@ class ClientNavigation {
     const client=this.managementClients().find(row=>row.id===id),state=client&&this.connection(client);if(this.gatewayRunning===false||this.pending.size||this.choosing||this.hasUncertain()||!state||!(state.canInitialize||state.canStartDesktop))return;
     this.choosing=id;++this.revision;this.paint();let confirmed=false;
     try{confirmed=await ClientLifecycle.chooseInitialize(client);}finally{this.choosing=null;this.paint();}
-    if(confirmed)return this.toggle(id,true,{initializeDesktop:true,acknowledgeRestart:confirmed==='recovery'});
+    if(confirmed)return this.toggle(id,true,{initialization:confirmed});
   }
-  async toggle(id,enabled,{initializeDesktop=false,acknowledgeRestart=false}={}){
+  async toggle(id,enabled,{initialization=false}={}){
     const client=this.managementClients().find(row=>row.id===id);if(this.pending.size||this.choosing||this.hasUncertain()||!client||(enabled&&!(client.selectable??client.configured)))return;
     let quitDesktop=false;
     if(!enabled&&this.gatewayRunning!==false&&client.canQuitDesktop!==false){
@@ -300,13 +300,14 @@ class ClientNavigation {
       finally{this.choosing=null;this.paint();}
       if(quitDesktop===null)return;
     }
-    const acknowledgeUnavailable=quitDesktop==='recovery'||initializeDesktop&&acknowledgeRestart,forceDesktop=quitDesktop==='force';quitDesktop=quitDesktop===true||forceDesktop||quitDesktop==='recovery';
+    const intent=ClientLifecycle.initializationFields(initialization);
+    const acknowledgeUnavailable=quitDesktop==='recovery',forceDesktop=quitDesktop==='force';quitDesktop=quitDesktop===true||forceDesktop||acknowledgeUnavailable;
     const before=this.clients.map(c=>({...c})),previous=this.provider;
     this.operationFailures??=new Map();this.operationFailures.delete(id);let failed=false;
     this.pending.add(id);this.pendingQuitDesktop=quitDesktop;this.pendingForceDesktop=forceDesktop;++this.revision;
     this.applyClients({clients:this.withClientEnabled(id,enabled)});
-    try{const data=await ClientLifecycle.request(signal=>this.request('/api/clients',{provider:id,enabled,...(!enabled?{quitDesktop}:{}),...(forceDesktop?{forceDesktop:true,forceConfirmed:true}:{}),...(acknowledgeUnavailable?{acknowledgeUnavailable:true}:{}),...(initializeDesktop?{initializeDesktop:true}:{})},signal),{timeout:this.lifecycleTimeout??45000});this.applyClients(data);if(enabled&&id==='codex'&&previous===null)this.view.onSelect?.('codex');}
-    catch(error){failed=true;this.operationFailures.set(id,ClientLifecycle.failure(initializeDesktop?'initialize':enabled?'enable':forceDesktop?'force':quitDesktop?'quit':'disable',error));this.provider=previous;this.applyClients({clients:before});throw error;}
+    try{const data=await ClientLifecycle.request(signal=>this.request('/api/clients',{provider:id,enabled,...(!enabled?{quitDesktop}:{}),...(forceDesktop?{forceDesktop:true,forceConfirmed:true}:{}),...(acknowledgeUnavailable?{acknowledgeUnavailable:true}:{}),...intent},signal),{timeout:this.lifecycleTimeout??45000});this.applyClients(data);if(enabled&&id==='codex'&&previous===null)this.view.onSelect?.('codex');}
+    catch(error){failed=true;this.operationFailures.set(id,{...ClientLifecycle.failure(initialization?'initialize':enabled?'enable':forceDesktop?'force':quitDesktop?'quit':'disable',error),connectionMode:intent.connectionMode});this.provider=previous;this.applyClients({clients:before});throw error;}
     finally{this.pending.delete(id);this.pendingQuitDesktop=false;this.pendingForceDesktop=false;++this.revision;this.paint();if(failed)await this.refresh();}
   }
   async reconnect(id){

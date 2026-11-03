@@ -126,6 +126,38 @@ test('ZCode compatibility is offered explicitly on both surfaces and separates r
   assert.deepEqual(writes,['cold','restart'].includes(scenario)?[{...(desktop?{action:'toggle-client'}:{}),provider:'zcode',enabled:true,initializeDesktop:true,...(scenario==='restart'?{acknowledgeUnavailable:true}:{})}]:[]);
  }
 });
+test('private pipe is the primary ZCode initialization and port use requires its own consent',async()=>{
+ for(const surface of ['desktop','web'])for(const flow of ['pipe','restart','cancel-restart','use-port','cancel-port']){
+  const desktop=surface==='desktop',ui=fixture('en'),file=desktop?'desktop/features/clients/desktop-sessions.js':'web/features/clients/client-navigation.js';
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),ui.context);
+  const Controller=vm.runInContext(desktop?'DesktopConnectionsPanel':'ClientNavigation',ui.context),panel=Object.create(Controller.prototype),calls=[];
+  const client={id:'zcode',name:'ZCode',enabled:true,configured:true,installed:true,canInitializeDesktop:true,initializationMode:'zcode-local-compatibility',
+    pipeSupported:true,pipeReady:false,running:flow.includes('restart'),confirmTaskState:true};
+  const save=async body=>{calls.push(JSON.parse(JSON.stringify(body)));return {clients:[client]};};
+  Object.assign(panel,{clients:[client],clientsRevision:0,statusRevision:0,revision:0,pending:new Set(),provider:'zcode',
+    renderClients(){},renderScan(){},paint(){},refreshClients:async()=>{},applyClients(){},api:{desktopSessions:save},request:(url,body)=>save(body)});
+  assert.equal(panel.connection(client).initializeLabel,'初始化连接');
+  const result=desktop?panel.toggleClient('zcode',true,{initializeDesktop:true}):panel.initialize('zcode');
+  let dialog=ui.dialog();assert.match(dialog.textContent,/private local pipe/);assert.doesNotMatch(dialog.textContent,/17742/);
+  const buttons=dialog.children.at(-1).children;assert.match(buttons[1].textContent,/Use local compatibility/);assert.equal(ui.document.activeElement,buttons.at(-1));
+  buttons[flow.includes('port')?1:0].onclick();await Promise.resolve();assert.deepEqual(calls,[]);
+  if(flow.includes('port')){
+   dialog=ui.dialog();assert.match(dialog.textContent,/127\.0\.0\.1:17742/);dialog.children.at(-1).children[flow==='cancel-port'?1:0].onclick();
+  }else if(flow.includes('restart')){
+   dialog=ui.dialog();assert.match(dialog.textContent,/Some tasks could not be checked/);dialog.children.at(-1).children[flow==='cancel-restart'?1:0].onclick();
+  }
+  await result;
+  assert.deepEqual(calls,flow.startsWith('cancel')?[]:[{...(desktop?{action:'toggle-client'}:{}),provider:'zcode',enabled:true,initializeDesktop:true,
+    ...(flow!=='use-port'?{connectionMode:'private-pipe'}:{}),...(flow==='restart'?{acknowledgeUnavailable:true}:{})}]);
+ }
+ const {connection,reconcile}=require('../web/features/clients/client-lifecycle.js'),ready={id:'zcode',pipeSupported:true,pipeReady:true,enabled:true,canInitializeDesktop:true};
+ assert.equal(connection(ready).canInitialize,false);assert.equal(connection(ready).label,'按会话接入');
+ for(const mode of ['private-pipe',undefined]){
+  const failed=new Map([['zcode',{action:'initialize',uncertain:true,connectionMode:mode}]]);reconcile(failed,[ready]);
+  assert.equal(failed.has('zcode'),mode!=='private-pipe');
+ }
+});
+
 test('a verified session-access result reconciles an opted-in initialization without replaying it',()=>{
  const lifecycle=require('../web/features/clients/client-lifecycle.js');
  const base={id:'zcode',installed:true,enabled:true,canInitializeDesktop:true,initializationMode:'zcode-local-compatibility'};

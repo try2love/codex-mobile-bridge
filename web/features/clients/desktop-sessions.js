@@ -115,9 +115,10 @@ class DesktopSessionsView {
     const before=this.clientStates?.find(client=>client.id===this.provider);this.clientStates=clients;this.retryClient=retry;this.initializeClient=initialize;this.refreshClients=refresh;this.reconnectClient=reconnect;
     const selected=clients.find(client=>client.id===this.provider),cliReadable=this.provider==='claude'&&this.state?.backend==='cli'&&selected?.enabled!==false&&this.sourceReadable(selected);
     if(this.state&&!this.canMutate()&&!cliReadable&&!(this.sourceReadable(selected)&&this.canResume()))this.staleDetail();else this.updateComposer();
-    const current=clients.find(client=>client.id===this.provider),wasWaiting=before&&ClientLifecycle.connection(before).waiting;
+    const wasWaiting=before&&ClientLifecycle.connection(before).waiting;
+    const sessionReady=client=>client?.pipeReady===true||client?.setupStatus==='session-access';
     this.prefetchLists();
-    if(!this.renderConnectionStatus()&&before&&(wasWaiting||(!this.sourceReadable(before)&&this.sourceReadable(current)))){this.listStatus.textContent=this.rows.length?'':BridgeI18n.t('正在读取聊天…');return this.refresh();}
+    if(!this.renderConnectionStatus()&&before&&(wasWaiting||!sessionReady(before)&&sessionReady(selected)||!this.sourceReadable(before)&&this.sourceReadable(selected))){this.listStatus.textContent=this.rows.length?'':BridgeI18n.t('正在读取聊天…');return this.refresh();}
   }
   sourceReadable(client){return !!client&&(client.connected===true||client.historyAvailable===true||client.id==='claude'&&client.cliAvailable===true);}
   renderConnectionStatus(){

@@ -1208,6 +1208,14 @@ test('ZCode chat list offers opted-in compatibility even when saved history is r
  view.setClientStates([{...client,setupStatus:'session-access',canInitializeDesktop:false}]);assert.equal(view.connectionInitialize.hidden,true);
 });
 
+test('a verified ZCode initialization immediately refreshes readable history for the selected session',async()=>{
+ const ui=fixture(),view=ui.view,old={id:'zcode',enabled:true,connected:false,historyAvailable:true,pipeSupported:true,canInitializeDesktop:true,setupStatus:'history-only'};
+ view.provider='zcode';view.setClientStates([old]);assert.equal(view.connectionInitialize.textContent,'初始化连接');
+ let reads=0;view.refresh=async()=>{reads++;};
+ const ready={...old,pipeReady:true,canInitializeDesktop:false,setupStatus:'session-access'};
+ await view.setClientStates([ready]);assert.equal(reads,1);assert.equal(view.connectionInitialize.hidden,true);
+ await view.setClientStates([ready]);assert.equal(reads,1);
+});
 test('ZCode native create reuses firstMessage contract and omits hidden title',async()=>{
  const ui=fixture();ui.view.provider='zcode';ui.view.generation=1;
  ui.setHandler(async(url,body)=>url.endsWith('/projects')?{projects:[{key:'p',environment:'desktop',cwd:'/p',name:'Project'}],environments:[{key:'desktop',surface:'desktop',createRequiresMessage:true,createTitle:false}],browseDirectories:false}:url.endsWith('/create')?{status:'accepted',result:{id:'native'}}:url.includes('/detail')?{session:{id:'native',title:'Native',status:'idle'},messages:[]}:{sessions:[]});
