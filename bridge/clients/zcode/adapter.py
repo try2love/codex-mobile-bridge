@@ -384,14 +384,9 @@ class ZCodePrototype(ZCodeDesktop):
             return super().call(action, sid, body)
         if not self.pipe and action in ('list', 'detail', 'history', 'resume', 'send') and self._window_app():
             if action == 'resume':
-                try:
-                    result = super().call(action, sid, body)
-                    self.debug_sessions.discard(sid)
-                    return result
-                except ResumePreflightBlocked:
-                    # Resume sends no message. Only this explicit, pre-dispatch failure
-                    # may try the configured compatible transport (e.g. a locked UI).
-                    pass
+                ready = self._try_window_resume(sid, body)
+                if ready is not None:
+                    return ready
             elif sid not in self.debug_sessions and (action != 'list' or not self.debug_sessions):
                 return super().call(action, sid, body)
         try:
@@ -419,34 +414,77 @@ class ZCodePrototype(ZCodeDesktop):
                     view['notice'] = '当前显示 ZCode 历史；点击继续会话连接原生运行状态。'
             return view
 
+    def _try_window_resume(self, sid, body):
+        try:
+            result = super().call('resume', sid, body)
+        except ResumePreflightBlocked:
+            # Only an explicit operation rejected before dispatch may use the compatible transport.
+            return None
+        self.debug_sessions.discard(sid)
+        return result
+
     def _resume_debug(self, sid, body):
         if not isinstance(sid, str) or not sid.startswith('sess_') or set(body or {}) != {'id'}:
             raise ResumePreflightBlocked('ZCode 会话接入参数无效')
-        # Look up the target on the newly verified listener, never via the retired
-        # process. Only commit its identity and lease after the original App agrees.
+        result, _ = self._resume_transaction(sid, body['id'], progressive=False)
+        return result
+
+    def resume_step(self, sid, request_id, continuation=None):
+        if not isinstance(sid, str) or not sid.startswith('sess_') or not isinstance(request_id, str):
+            raise ResumePreflightBlocked('ZCode 会话接入参数无效')
+        try:
+            uuid.UUID(request_id)
+        except ValueError as error:
+            raise ResumePreflightBlocked('ZCode 会话接入参数无效') from error
+        if continuation is None and not self.pipe and self._window_app():
+            ready = self._try_window_resume(sid, {'id': request_id})
+            if ready is not None:
+                return ready, None
+        return self._resume_transaction(sid, request_id, progressive=True, continuation=continuation)
+
+    def _resume_transaction(self, sid, request_id, *, progressive, continuation=None):
         try:
             process = self._live_process()
-            expected = self.workspaces.get(sid)
-            if self.config.get('debugFallbackPort') or (self.home/'tasks-index.sqlite').is_file():
-                from bridge.clients.zcode.history import resume_workspace
-                expected = resume_workspace(self.home, sid)
             target = {'sessionId': sid, 'expectedProcess': process}
-            workspace = self.transport({**target, 'action': 'target'})['workspace']
-            if not isinstance(workspace, str) or not Path(workspace).is_absolute() or (
-                    expected is not None and not same_cwd(expected, workspace, sys.platform == 'win32')):
-                raise ValueError('原 App 会话或项目已变化，请刷新列表')
-            result = self.transport({**target, 'action': 'attach', 'workspace': workspace, 'binding': None})
+            if progressive:
+                # Each visit observes a native subscription; its lifetime is independent of this RPC.
+                target['expiresAt'] = int((time.time() + 8) * 1000)
+            if continuation is None:
+                expected = self.workspaces.get(sid)
+                if self.config.get('debugFallbackPort') or (self.home/'tasks-index.sqlite').is_file():
+                    from bridge.clients.zcode.history import resume_workspace
+                    expected = resume_workspace(self.home, sid)
+                workspace = self.transport({**target, 'action': 'target'})['workspace']
+                if not isinstance(workspace, str) or not Path(workspace).is_absolute() or (
+                        expected is not None and not same_cwd(expected, workspace, sys.platform == 'win32')):
+                    raise ValueError('原 App 会话或项目已变化，请刷新列表')
+            else:
+                adapter, original, session_id, operation, workspace = continuation
+                if adapter is not self or (original, session_id, operation) != (process, sid, request_id):
+                    raise ValueError('原 App 会话或接续已变化，请重新连接')
+            args = {**target, 'action': 'attach', 'workspace': workspace, 'binding': None}
+            if progressive:
+                args['body'] = {'resumeId': request_id, 'observe': continuation is not None}
+            result = self.transport(args)
+            if progressive and result.get('status') == 'pending':
+                progress = result.get('progress')
+                if type(progress) is not int or progress < 0 or result.get('stage') != 'restoring':
+                    raise ValueError('ZCode 接续状态无效')
+                return ({'id': request_id, 'status': 'pending', 'stage': 'restoring', 'progress': progress},
+                        (self, process, sid, request_id, workspace))
             binding = result['binding']
             if not binding.get('clientId') or not binding.get('connectionId') or not result.get('subscriptionId') or (
                     not binding.get('runtime', {}).get('identity') or binding['runtime'].get('workspaceKey') != workspace):
                 raise ValueError('ZCode 未确认原会话连接')
-        except (OSError, ValueError, AttributeError, KeyError, TypeError) as error:
+            if progressive and self._live_process() != process:
+                raise ValueError('原 App 进程已变化，请重新接续')
+        except (OSError, EOFError, ValueError, AttributeError, KeyError, TypeError) as error:
             raise ResumePreflightBlocked(str(error)) from error
         self._adopt_process(process)
         self.debug_sessions.add(sid)
         self.workspace, self.sid = workspace, sid
         self.workspaces[sid], self.bindings[workspace] = workspace, binding
-        return {'status': 'ready', 'id': body['id']}
+        return {'status': 'ready', 'id': request_id}, None
 
     def _call_live(self, action, sid=None, body=None):
         if action == 'resume':

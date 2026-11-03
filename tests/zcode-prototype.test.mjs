@@ -118,6 +118,73 @@ test('cold restore timeout releases the new Bridge lease and listener without se
   assert.equal(window.__codexMobileZCodePrototypeV1,undefined);
 });
 
+function pendingFixture() {
+  const f = fixture();
+  f.storeState.status = 'connecting';
+  let signal;
+  f.services.layer.acquire = () => {
+    f.calls.push('acquire');
+    return { store: { getState: () => f.storeState,
+      subscribe: fn => {signal = fn; return () => {signal = undefined;};} },
+      release: () => f.calls.push('release') };
+  };
+  window.__codexMobileZCodeAcquireWorkspace=()=>({layer:f.services.layer,release:()=>f.calls.push('workspace-release')});
+  const step = (id, observe = false, extra = {}) => f.request('attach', {resumeId:id, observe}, extra);
+  return {...f, step, emit: () => signal?.()};
+}
+
+test('a slow observed restore releases the transport between checks and preserves one original subscription', async t => {
+  t.mock.timers.enable({apis:['Date','setTimeout'], now:100000});
+  const f = pendingFixture();
+  const initial = await f.step('a');
+  assert.equal(initial.status,'pending');
+  assert.equal((await f.request('detail')).detached,true);
+  assert.deepEqual(f.calls,['acquire']);
+  await assert.rejects(f.step('b'),/另一次接续/);
+  await assert.rejects(f.step('b',true),/另一次接续/);
+  for(let i=0;i<4;i++){
+    t.mock.timers.tick(60000);
+    f.storeState.status = i%2 ? 'connecting' : 'restoring'; f.emit();
+    const next = await f.step('a',true);
+    assert.equal(next.status,'pending'); assert.ok(next.progress>initial.progress);
+  }
+  f.storeState.status='live'; f.emit();
+  assert.deepEqual((await f.step('a',true)).binding,f.binding);
+  assert.deepEqual(f.calls,['acquire']);
+  t.mock.timers.tick(300000);
+  assert.deepEqual((await f.step('a',true)).binding,f.binding);
+  assert.deepEqual(f.calls,['acquire']);
+});
+
+test('abandoned or stalled restores release only their temporary lease; stale polls cannot start it again', async t => {
+  t.mock.timers.enable({apis:['Date','setTimeout'],now:100000});
+  const f = pendingFixture();
+  await f.step('old');
+  t.mock.timers.tick(91000);
+  await assert.rejects(f.step('old',true),/失效/);
+  assert.deepEqual(f.calls,['acquire','release','workspace-release']);
+  await f.step('fresh');
+  await assert.rejects(f.step('old',true),/另一次接续/);
+  t.mock.timers.tick(65000); await f.step('fresh',true);
+  t.mock.timers.tick(65000); await f.step('fresh',true);
+  t.mock.timers.tick(51000); await assert.rejects(f.step('fresh',true),/失效/);
+  assert.deepEqual(f.calls,['acquire','release','workspace-release','acquire','release','workspace-release']);
+});
+
+test('a changed original connection or project cannot promote a held restore to writable',async t=>{
+  t.mock.timers.enable({apis:['Date','setTimeout'],now:100000});
+  const f = pendingFixture();
+  await f.step('generation');
+  f.binding.connectionId='replacement';
+  await assert.rejects(f.step('generation',true),/失效/);
+  await f.step('project');
+  f.services.projectService.readTree = async()=>({tasks:[{taskId:'sess-test',hostId:'local',workspacePath:'/other'}]});
+  f.storeState.status='live'; f.emit();
+  await assert.rejects(f.step('project',true),/项目已变化/);
+  assert.deepEqual(f.calls,['acquire','release','workspace-release','acquire','release','workspace-release']);
+  assert.equal(window.__codexMobileZCodePrototypeV1,undefined);
+});
+
 test('passive history never subscribes or starts an executor and hides model-only context', async () => {
   const f = fixture();
   const result = await f.request('history');

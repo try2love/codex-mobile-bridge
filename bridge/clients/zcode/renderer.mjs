@@ -183,29 +183,80 @@ export async function nativeRequest(request) {
   if (window[key] && !window[key].sessions) window[key].sessions = new Map([[window[key].sessionId, window[key]]]);
   const states = window[key]?.sessions || new Map();
   if (request.action === 'attach') {
-    const tree = await services.projectService.readTree({});
-    if (targetTask(tree).workspacePath !== request.workspace)
-      throw Error('原 App 会话或项目已变化，请刷新列表');
-    const previous = states.get(request.sessionId);
-    const loaded = previous?.lease.store.getState();
-    if (loaded?.status === 'live' && loaded.snapshot?.sessionId === request.sessionId) {
-      const current = await identity();
-      if (same(previous.binding, current)) return { binding: current, subscriptionId: loaded.subscriptionId };
+    const sid = request.sessionId, workspace = request.workspace;
+    const ticket = request.body?.resumeId, observing = request.body?.observe === true;
+    const restores = window[key + 'Restores'] ||= new Map();
+    let job = restores.get(sid);
+    if (job && (job.ticket !== ticket || job.workspace !== workspace))
+      throw Error('此聊天有另一次接续，请等待其完成');
+    const previous = states.get(sid);
+    const verifyTarget = async () => {
+      if (targetTask(await services.projectService.readTree({})).workspacePath !== workspace)
+        throw Error('原 App 会话或项目已变化，请刷新列表');
+    };
+    if (!job) {
+      if (observing && previous?.ticket !== ticket) throw Error('接续已失效，请重新连接');
+      await verifyTarget();
+      const loaded = previous?.lease.store.getState();
+      if (loaded?.status === 'live' && loaded.snapshot?.sessionId === sid) {
+        const current = await identity();
+        if (same(previous.binding, current)) return { binding: current, subscriptionId: loaded.subscriptionId };
+      }
+      if (observing) throw Error('原 App 连接已变化，请重新接续');
     }
+    const client = ticket ? await clientIdentity() : null;
     checkDeadline();
-    // Native acquire performs cold restore. Reading history before subscribing
-    // fails on the home screen because the conversation is not resident yet.
-    const workspaceLease = window.__codexMobileZCodeAcquireWorkspace?.({ workspacePath: request.workspace }, agent);
-    const existing = contexts.find(context => context.layer.entries.has('conversation/' + request.sessionId));
-    const layer = workspaceLease?.layer || existing?.layer ||
-      (window[key]?.binding?.runtime?.workspaceKey === request.workspace ? window[key].layer : null);
-    let lease;
+    // Native acquire starts restoring the original workspace even from the home screen.
+    if (!job) {
+      if (restores.has(sid)) throw Error('此聊天正在接续，请刷新状态');
+      if (ticket && restores.size >= 16) throw Error('正在接续的聊天较多，请稍后重试');
+      const workspaceLease = window.__codexMobileZCodeAcquireWorkspace?.({ workspacePath: workspace }, agent);
+      const existing = contexts.find(context => context.layer.entries.has('conversation/' + sid));
+      const layer = workspaceLease?.layer || existing?.layer ||
+        (window[key]?.binding?.runtime?.workspaceKey === workspace ? window[key].layer : null);
+      let lease;
+      try {
+        if (!layer || layer.disposed) throw Error('ZCode 原生连接入口不可用，请在应用管理中恢复接入');
+        lease = layer.acquire(sid);
+        if (lease.store.getState().status === 'error') void lease.store.retry();
+      } catch (error) { lease?.release(); workspaceLease?.release(); throw error; }
+      job = { workspace, ticket, client, workspaceLease, layer, lease, progress: 0 };
+      if (ticket) {
+        const now = Date.now();
+        job.lastSeen = job.lastChange = now;
+        restores.set(sid, job);
+        // Polls keep ownership alive; only actual native changes extend a stalled restore.
+        job.until = () => Math.min(job.lastSeen + 90000, job.lastChange + 180000);
+        job.track = () => {
+          const state = lease.store.getState();
+          const stamp = JSON.stringify([state.status, state.subscriptionId, state.snapshot?.seq, state.snapshot?.revision]);
+          if (stamp !== job.stamp) { job.stamp = stamp; job.progress++; job.lastChange = Date.now(); }
+        };
+        job.finish = keep => {
+          if (restores.get(sid) !== job) return;
+          restores.delete(sid); clearTimeout(job.timer); job.unsubscribe?.();
+          if (!keep) { lease.release(); workspaceLease?.release(); }
+        };
+        const expire = () => {
+          const left = job.until() - Date.now();
+          if (left <= 0) job.finish(false);
+          else job.timer = setTimeout(expire, left);
+        };
+        try { job.track(); job.unsubscribe = lease.store.subscribe?.(job.track); expire(); }
+        catch (error) { job.finish(false); throw error; }
+      }
+    }
+    const { lease, workspaceLease, layer } = job, store = lease.store;
     try {
-      if (!layer || layer.disposed) throw Error('ZCode 原生连接入口不可用，请在应用管理中恢复接入');
-      lease = layer.acquire(request.sessionId);
-      const store = lease.store;
-      if (store.getState().status === 'error') void store.retry();
-      if (store.getState().status !== 'live') await new Promise((resolve, reject) => {
+      if (ticket) {
+        if (restores.get(sid) !== job || Date.now() >= job.until() || !same(job.client, client))
+          throw Error('原 App 连接或接续已失效，请重新连接');
+        job.lastSeen = Date.now(); job.track();
+        const value = store.getState();
+        if (['error','closed'].includes(value.status)) throw Error(value.lastError || 'ZCode 原生聊天恢复失败');
+        if (value.status !== 'live' || !value.subscriptionId) return { status: 'pending', stage: 'restoring', progress: job.progress };
+        await verifyTarget();
+      } else if (store.getState().status !== 'live') await new Promise((resolve, reject) => {
         const finish = error => { clearTimeout(timer); off(); error ? reject(error) : resolve(); };
         const inspect = () => {
           const value = store.getState();
@@ -218,15 +269,22 @@ export async function nativeRequest(request) {
       });
       checkDeadline();
       const current = await identity();
-      // V4's cold history projection need not create a legacy session/read runtime.
-      // The native task index and runtime identity above bind this snapshot's cwd.
-      if (store.getState().snapshot?.sessionId !== request.sessionId) throw Error('Native session workspace changed');
-      // Swap only this Bridge reference, retaining the App's shared native store.
+      const value = store.getState();
+      if (value.status !== 'live' || value.snapshot?.sessionId !== sid ||
+          ticket && (restores.get(sid) !== job || current.clientId !== client.clientId || current.connectionId !== client.connectionId))
+        throw Error('原 App 会话或连接已变化，请重新接续');
+      checkDeadline();
       previous?.lease.release(); previous?.workspaceLease?.release();
-      const state = {binding:current,sessionId:request.sessionId,lease,layer,workspaceLease,sessions:states};
-      states.set(request.sessionId,state); window[key]=state;
-      return {binding:current,subscriptionId:store.getState().subscriptionId};
-    } catch (error) { lease?.release(); workspaceLease?.release(); throw error; }
+      const sessions = window[key]?.sessions || states;
+      const state = { binding: current, sessionId: sid, lease, layer, workspaceLease, sessions, ticket };
+      sessions.set(sid, state); window[key] = state;
+      job.finish?.(true);
+      return { binding: current, subscriptionId: value.subscriptionId };
+    } catch (error) {
+      if (ticket) job.finish(false);
+      else { lease.release(); workspaceLease?.release(); }
+      throw error;
+    }
   }
   const create = async (current, anchor) => {
     checkDeadline();

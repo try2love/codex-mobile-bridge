@@ -110,6 +110,32 @@ class ZCodePrototypeTests(unittest.TestCase):
             self.assertEqual([c.args[0]['action'] for c in transport.call_args_list], ['target','attach','send'])
             send.assert_called_once()
 
+    def test_only_matching_operation_generation_may_finish_a_pending_restore(self):
+        from bridge.clients.errors import ResumePreflightBlocked
+        transport = Mock()
+        adapter = ZCodePrototype(self.root, {**self.config, 'dataDirectory': str(self.root/'native')}, transport=transport)
+        rid = str(uuid.uuid4())
+        binding = {'connectionId': 'original', 'clientId': 'client',
+                   'runtime': {'workspaceKey': str(self.project), 'identity': 'owner'}}
+        transport.side_effect = [{'workspace': str(self.project)}, {'status': 'pending', 'stage': 'restoring', 'progress': 4},
+                                 {'binding': binding, 'subscriptionId': 'sub'}]
+        with patch.object(adapter, '_live_process', return_value={'pid': 7, 'birth': 'one'}) as owner:
+            reply, ticket = adapter.resume_step('sess_test', rid)
+            self.assertEqual(reply, {'id': rid, 'status': 'pending', 'stage': 'restoring', 'progress': 4})
+            self.assertNotIn('sess_test', adapter.debug_sessions)
+            for session, operation in [('sess_other', rid), ('sess_test', str(uuid.uuid4()))]:
+                with self.assertRaises(ResumePreflightBlocked):
+                    adapter.resume_step(session, operation, ticket)
+            owner.return_value = {'pid': 7, 'birth': 'other'}
+            with self.assertRaises(ResumePreflightBlocked):
+                adapter.resume_step('sess_test', rid, ticket)
+            owner.return_value = {'pid': 7, 'birth': 'one'}
+            self.assertEqual(adapter.resume_step('sess_test', rid, ticket), ({'status': 'ready', 'id': rid}, None))
+        calls = [c.args[0] for c in transport.call_args_list]
+        self.assertEqual([q['action'] for q in calls], ['target', 'attach', 'attach'])
+        self.assertFalse(calls[1]['body']['observe']); self.assertTrue(calls[2]['body']['observe'])
+        self.assertEqual(adapter.binding, binding)
+
     def test_project_root_replacement_is_rejected(self):
         self.project.rename(self.root / 'original')
         outside = self.root / 'replacement'; outside.mkdir()
