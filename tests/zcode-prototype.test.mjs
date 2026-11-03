@@ -142,8 +142,8 @@ test('a slow observed restore releases the transport between checks and preserve
   assert.deepEqual(f.calls,['acquire']);
   await assert.rejects(f.step('b'),/另一次接续/);
   await assert.rejects(f.step('b',true),/另一次接续/);
-  for(let i=0;i<4;i++){
-    t.mock.timers.tick(60000);
+  for(let i=0;i<3;i++){
+    t.mock.timers.tick(105000);
     f.storeState.status = i%2 ? 'connecting' : 'restoring'; f.emit();
     const next = await f.step('a',true);
     assert.equal(next.status,'pending'); assert.ok(next.progress>initial.progress);
@@ -160,7 +160,13 @@ test('abandoned or stalled restores release only their temporary lease; stale po
   t.mock.timers.enable({apis:['Date','setTimeout'],now:100000});
   const f = pendingFixture();
   await f.step('old');
-  t.mock.timers.tick(91000);
+  // The store keeps advancing while the user stays away. Abandon it at five
+  // minutes even though it never hit the three-minute no-progress deadline.
+  for(let i=0;i<3;i++){
+    t.mock.timers.tick(95000); f.snapshot.revision++; f.emit();
+  }
+  assert.deepEqual(f.calls,['acquire']);
+  t.mock.timers.tick(16000);
   await assert.rejects(f.step('old',true),/失效/);
   assert.deepEqual(f.calls,['acquire','release','workspace-release']);
   await f.step('fresh');
@@ -169,6 +175,18 @@ test('abandoned or stalled restores release only their temporary lease; stale po
   t.mock.timers.tick(65000); await f.step('fresh',true);
   t.mock.timers.tick(51000); await assert.rejects(f.step('fresh',true),/失效/);
   assert.deepEqual(f.calls,['acquire','release','workspace-release','acquire','release','workspace-release']);
+});
+
+test('unobserved cold restores use a bounded number of native leases per window',async t=>{
+  t.mock.timers.enable({apis:['Date','setTimeout'],now:100000});
+  const f = pendingFixture(), ids=Array.from({length:17},(_,i)=>'sess_'+i);
+  f.services.projectService.readTree=async()=>({tasks:ids.map(taskId=>({taskId,workspacePath:'/project',hostId:'local'}))});
+  for(const sessionId of ids.slice(0,16)) await f.step(sessionId,false,{sessionId});
+  await assert.rejects(f.step(ids[16],false,{sessionId:ids[16]}),/较多/);
+  assert.equal(f.calls.filter(x=>x==='acquire').length,16);
+  t.mock.timers.tick(301000);
+  assert.equal(f.calls.filter(x=>x==='release').length,16);
+  assert.equal(f.calls.filter(x=>x==='workspace-release').length,16);
 });
 
 test('a changed original connection or project cannot promote a held restore to writable',async t=>{

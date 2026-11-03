@@ -226,7 +226,8 @@ export async function nativeRequest(request) {
         job.lastSeen = job.lastChange = now;
         restores.set(sid, job);
         // Polls keep ownership alive; only actual native changes extend a stalled restore.
-        job.until = () => Math.min(job.lastSeen + 90000, job.lastChange + 180000);
+        // Two slow status requests and their backoff can span more than three minutes.
+        job.until = () => Math.min(job.lastSeen + 300000, job.lastChange + 180000);
         job.track = () => {
           const state = lease.store.getState();
           const stamp = JSON.stringify([state.status, state.subscriptionId, state.snapshot?.seq, state.snapshot?.revision]);
