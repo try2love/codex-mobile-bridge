@@ -7,6 +7,7 @@ import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from unittest.mock import patch
 from bridge.clients.zcode.pipe_rpc import PipeTransport
 
 
@@ -88,6 +89,19 @@ class PipeTests(unittest.TestCase):
                 * 4,
             )
             self.assertEqual(len({m["id"] for m in seen}), len(seen))
+
+    def test_only_explicit_attach_allows_a_slow_first_native_snapshot(self):
+        with peer(normal) as (t, _):
+            def budget(request, deadline):
+                return deadline - time.monotonic(), request['expiresAt'] / 1000 - time.time()
+            with patch.object(t, '_with_window', side_effect=budget):
+                for action, expected in [('attach', 25), ('send', 12), ('detail', 12)]:
+                    for limit in t.call({'action': action}):
+                        self.assertLessEqual(limit, expected + .01)
+                        self.assertGreater(limit, expected - 1)
+                for limit in t.call({'action': 'attach', 'expiresAt': int(time.time()*1000) + 2000}):
+                    self.assertLessEqual(limit, 2)
+                    self.assertGreater(limit, 1)
 
     def test_wrong_and_duplicate_targets_never_attach(self):
         for count in (0, 2):
