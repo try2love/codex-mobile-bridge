@@ -2092,8 +2092,9 @@ class Bridge:
             with session.condition:
                 if session.connected:
                     return session
+                session.rebuild_recommended = True
                 session.desktop_restart_recommended = True
-                session.error = '重建连接后仍无法连接原桌面会话。可在应用管理中正常退出并重新启动 Codex；退出前请核对任务。'
+                session.error = '尚未连接原桌面会话。可再次重建连接；若仍失败，可在应用管理中核对任务后重启 Codex。'
                 session.changed()
                 raise IPCError(session.error) from exc
 

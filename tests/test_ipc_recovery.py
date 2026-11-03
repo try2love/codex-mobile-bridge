@@ -112,6 +112,23 @@ class RecoveryTests(unittest.TestCase):
         self.assertFalse(session.connected)
         self.assertTrue(session.view()['rebuildRecommended'])
 
+    def test_retry_after_transport_replacement_error_reattaches_without_restart(self):
+        session = self.bridge.session(THREAD)
+        self.bridge._disconnected()
+        session.rebuild_recommended = False
+        with patch.object(self.bridge, '_refresh_async'), patch.object(
+                self.bridge.ipc, 'reconnect', side_effect=IPCError('interrupted')):
+            with self.assertRaisesRegex(IPCError, '再次重建'):
+                self.bridge.rebuild_connection(THREAD)
+        self.assertTrue(session.view()['desktopRestartRecommended'])
+        self.assertTrue(session.view()['rebuildRecommended'])
+        with patch('bridge.app.service.open_in_desktop') as navigate:
+            result = self.bridge.rebuild_connection(THREAD)
+        self.assertTrue(result.connected)
+        self.assertFalse(result.view()['desktopRestartRecommended'])
+        self.assertFalse(result.view()['rebuildRecommended'])
+        navigate.assert_not_called()
+
     def test_missing_owner_invalidates_control_without_replaying_write(self):
         session = self.bridge.session(THREAD)
         with patch.object(self.bridge.ipc, 'request', side_effect=IPCError('no-client-found')) as request:

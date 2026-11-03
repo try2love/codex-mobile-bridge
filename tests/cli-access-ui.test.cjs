@@ -185,3 +185,19 @@ test('desktop router failure offers explicit rebuild and keeps failure plus draf
   assert.equal(JSON.stringify(calls),JSON.stringify([{url:'local/a/reconnect',body:{activate:true,rebuild:true}}]));
   assert.equal($('reconnect').disabled,false);assert.match($('notice-text').textContent,/尚未恢复/);assert.equal($('message').value,'unsent draft');
 });
+
+test('a failed rebuild keeps retry and app management independently available',async()=>{
+  const {ctx,$}=fixture(),calls=[];
+  const view={host:'local',connected:false,status:'idle',requests:[],submissions:[],historyComplete:true,desktopRestartRecommended:true,rebuildRecommended:false,access:{source:'desktop',canReconnect:true}};
+  $('message').value='unsent draft';ctx.renderState(view);
+  ctx.clientNavigation={openManager(){calls.push('manager');}};
+  ctx.sessionUrl=(id,action,host)=>`${host}/${id}/${action}`;
+  ctx.api=async(url,body)=>{calls.push({url,body});return {connected:true};};
+  vm.runInContext(reconnectCode,ctx);
+  assert.equal($('reconnect').textContent,'重建连接');assert.equal($('reconnect-manager').hidden,false);
+  await $('reconnect').onclick();
+  assert.equal(JSON.stringify(calls),JSON.stringify([{url:'local/a/reconnect',body:{activate:true,rebuild:true}}]));
+  $('reconnect-manager').onclick();assert.equal(calls[1],'manager');assert.equal($('message').value,'unsent draft');
+  ctx.renderState({...view,connected:true,desktopRestartRecommended:false});
+  assert.equal($('notice').hidden,true);assert.equal($('reconnect-manager').hidden,true);
+});

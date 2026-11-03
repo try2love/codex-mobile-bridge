@@ -53,6 +53,7 @@ const en={
 "当前无法核验所有任务。正常退出可能中断正在运行的任务或等待中的审批，是否继续？":"Some tasks could not be verified. Quitting may interrupt a running task or pending approval. Continue?",
 "Codex 恢复退出确认":"Confirm Codex recovery exit",
 "连接重建失败，可能无法核验全部任务。正常退出仍可能中断无法确认的任务；已知运行任务会阻止退出。请确认接受此风险，退出后再手动开启 Codex。":"The connection rebuild failed, so some tasks may be unavailable for verification. Normal exit may interrupt those tasks; known active tasks will still block exit. Confirm this risk, then manually start Codex after it exits.",
+"尚未连接原桌面会话。可再次重建连接；若仍失败，可在应用管理中核对任务后重启 Codex。":"The original desktop session is still disconnected. Try rebuilding again. If that fails, review your tasks in App management before restarting Codex.",
 "重建连接后仍无法连接原桌面会话。可在应用管理中正常退出并重新启动 Codex；退出前请核对任务。":"The original desktop session is still unreachable after rebuilding. Use App management to quit Codex normally and start it again; review tasks before quitting.",
 "添加附件":"Add attachment",
 "电脑项目引用":"Computer project reference",
