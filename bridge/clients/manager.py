@@ -153,6 +153,7 @@ class DesktopSessions:
         self.locks = {name: threading.RLock() for name in ('codex', 'zcode', *self.adapters)}
         self.read_lock = threading.Lock()
         self.reads = {}
+        self.pending_resumes = {}
         self.activity = {}
         self.activity_pending = set()
         self.read_epochs = dict.fromkeys(self.locks, 0)
@@ -242,6 +243,7 @@ class DesktopSessions:
         with self.locks[provider]:
             if rebind and provider == 'zcode' and provider in self.adapters:
                 self.adapters[provider].release_window()
+                self.pending_resumes.clear()
             with self.read_lock:
                 self.read_epochs[provider] += 1
                 self.read_changes[provider] += 1
@@ -993,6 +995,25 @@ class DesktopSessions:
             result = commands.perform(scoped, body['archived'], body['id'], read, prepare)
             return {**result, 'id': sid}
 
+    def _resume_step(self, provider, adapter, sid, rid, first):
+        # The durable receipt identifies the logical request. Only its original
+        # adapter generation can continue observing the live subscription.
+        key = (provider, rid)
+        now = time.monotonic()
+        for old in [k for k, (_, _, last) in self.pending_resumes.items() if now - last > 600]:
+            del self.pending_resumes[old]
+        ticket = self.pending_resumes.get(key)
+        if self.adapters.get(provider) is not adapter or not first and (ticket is None or ticket[0] is not adapter):
+            raise ResumePreflightBlocked('原会话接续已过期，请重新连接。')
+        if first and len(self.pending_resumes) >= 64:
+            raise ResumePreflightBlocked('正在恢复的会话较多，请稍后连接。')
+        result, continuation = adapter.resume_step(sid, rid, None if first else ticket[1])
+        if result['status'] == 'pending' and continuation is not None:
+            self.pending_resumes[key] = (adapter, continuation, now)
+        else:
+            self.pending_resumes.pop(key, None)
+        return result
+
     def call(self, provider, action, sid=None, body=None):
         if provider not in self.adapters or action not in READS | WRITES:
             raise ValueError('不支持的桌面操作')
@@ -1023,6 +1044,8 @@ class DesktopSessions:
                 result['sessions'] = [self.display_metadata.decorate(self._display_scope(provider, row), row)
                                       for row in result.get('sessions', [])]
             if action == 'detail' and result.get('session'):
+                if callable(getattr(type(adapter), 'resume_step', None)) and result.get('capabilities', {}).get('resume'):
+                    result['capabilities'] = {**result['capabilities'], 'progressiveResume': True}
                 row = result['session']
                 result['session'] = self.display_metadata.decorate(self._display_scope(provider, row), row)
             if action == 'projects':
@@ -1071,6 +1094,10 @@ class DesktopSessions:
                             for identity in hint.get('previousAccountIdentities', [])]}
             return result
         rid = str(uuid.UUID(body.get('id', '')))
+        progressive = action == 'resume' and body.get('progressive') is True
+        if 'progressive' in body and (not progressive or set(body) != {'id', 'progressive'} or
+                                      not callable(getattr(type(adapter), 'resume_step', None))):
+            raise ValueError('会话接续请求无效')
         if action == 'compact' and set(body) != {'id'}:
             raise ValueError('上下文压缩请求无效')
         if action == 'stop-task' and (set(body) != {'id', 'taskId'} or
@@ -1119,6 +1146,7 @@ class DesktopSessions:
                 reference_files = self.workspace_bridge(provider, sid).workspace(sid, 'references', {'references': body['references']})
                 if len(reference_files) + len(body.get('resolvedImages', [])) + len(body.get('resolvedFiles', [])) > 10:
                     raise ValueError('每条消息最多添加 10 个不同附件')
+            cached = None
             with self.db_lock:
                 db = None
                 try:
@@ -1144,7 +1172,8 @@ class DesktopSessions:
                                 db.execute('UPDATE requests SET result=? WHERE id=?', (json.dumps(checked), rid))
                                 db.commit()
                             return checked
-                        return cached
+                        if not progressive or cached.get('status') != 'pending':
+                            return cached
                 except sqlite3.OperationalError as exc:
                     if db is not None:
                         db.rollback()
@@ -1179,13 +1208,18 @@ class DesktopSessions:
                                 raise BridgeUnavailable('原生模式未确认，消息未发送')
                         result = self._adapter_call(provider, action, sid, {key: value for key, value in dispatched.items() if key != 'workMode'})
                 else:
-                    result = self._adapter_call(provider, action, sid, dispatched)
+                    result = (self._resume_step(provider, adapter, sid, rid, bool(inserted)) if progressive
+                              else self._adapter_call(provider, action, sid, dispatched))
             except ResumePreflightBlocked as exc:
                 result = {'status': 'blocked', 'id': rid, 'message': str(exc)}
             except Exception as exc:
                 # The desktop may already have accepted a command before a timeout.
                 # Do not turn an uncertain outcome into a safe-to-retry failure.
                 result['message'] = str(exc) if isinstance(exc, (ValueError, BridgeUnavailable)) else result['message']
+            if progressive and result.get('status') != 'pending':
+                self.pending_resumes.pop((provider, rid), None)
+            if cached == result:
+                return result
             with self.db_lock:
                 db.execute('UPDATE requests SET result=? WHERE id=?', (json.dumps(result), rid))
                 db.commit()

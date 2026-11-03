@@ -9,7 +9,7 @@ import threading
 import time
 
 from bridge.clients.zcode.installation import renderer_url
-from bridge.clients.zcode.transport import bind_workspace_registry, expression, operation_timeout
+from bridge.clients.zcode.transport import bind_workspace_registry, expression, needs_workspace_registry, operation_timeout
 
 
 # The shared adapter accepts files up to 20 MiB, including their base64 encoding.
@@ -196,7 +196,7 @@ class PipeTransport:
             return self._rpc(method, params, deadline, session)
 
         try:
-            if request["action"] in ("attach", "create"):
+            if needs_workspace_registry(request):
                 bind_workspace_registry(page, request)
             result = page(
                 "Runtime.evaluate",

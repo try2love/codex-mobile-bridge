@@ -40,6 +40,11 @@ def expression(request):
     return '(' + renderer_source() + ')(' + json.dumps(request, ensure_ascii=False) + ')'
 
 
+def needs_workspace_registry(request):
+    return (request['action'] == 'create' or
+            request['action'] == 'attach' and not (request.get('body') or {}).get('observe'))
+
+
 def bind_workspace_registry(rpc, request):
     group = 'bridge-zcode-registry'
     try:
@@ -117,7 +122,7 @@ def request_native(request):
                         raise ValueError(reply['error'].get('message', 'ZCode native request failed'))
                     return reply['result']
 
-            if request['action'] in ('attach', 'create'):
+            if needs_workspace_registry(request):
                 bind_workspace_registry(rpc, request)
             result = rpc('Runtime.evaluate', {'expression': expression(request),
                          'awaitPromise': True, 'returnByValue': True})
