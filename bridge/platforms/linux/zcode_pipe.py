@@ -2,6 +2,7 @@
 import contextlib
 from functools import lru_cache
 import os
+import re
 from pathlib import Path
 import signal
 import subprocess
@@ -55,6 +56,29 @@ def identity(pid):
         raise ProcessLookupError('ZCode 进程已退出或用户已变化')
     return {'pid': pid, 'uid': data['uid'], 'image': data['image'], 'birth': data['birth'],
             'started': Path('/proc/sys/kernel/random/boot_id').read_text().strip()}
+
+
+def main_processes(executable, candidates, commands):
+    # ZCode rewrites both argv titles. A name alone cannot establish ownership.
+    workers = [pid for pid in candidates if re.fullmatch(r'zcode-host-local-[0-9]+', commands.get(pid, ''))]
+    if not workers:
+        return candidates, False
+    main = [pid for pid in candidates if pid not in workers]
+    if len(main) != 1:
+        return main, True
+    try:
+        native = Native()
+        parent = native.identity(main[0])
+        if parent['zombie'] or parent['uid'] != os.getuid() or parent['image'] != str(executable):
+            return main, True
+        for pid in workers:
+            child = native.identity(pid)
+            if (child['parent'] != main[0] or child['zombie'] or child['uid'] != parent['uid']
+                    or child['image'] != parent['image']):
+                return main, True
+        return main, native.identity(main[0]) != parent
+    except (OSError, ValueError):
+        return main, True
 
 
 def _launch_context(application):

@@ -46,6 +46,24 @@ class ZCodeLinuxTests(unittest.TestCase):
             self.assertNotIn('zcode', discover_clients(platform='linux', home=base, env=env))
             self.assertIsNone(zcode_pipe.installation(cli/'zcode'))
 
+    def test_only_direct_owned_zcode_host_is_excluded_from_main_and_never_signalled_on_quit(self):
+        from types import SimpleNamespace
+        from bridge.clients.lifecycle import _process_state
+        exe = Path('/opt/ZCode/zcode')
+        basename = {'image': str(exe), 'uid': 1000, 'zombie': False}
+        rows = {11: {**basename, 'parent': 1}, 12: {**basename, 'parent': 11}}
+        def inspect(commands):
+            return _process_state({'id': 'zcode'}, SimpleNamespace(executable=exe), list(commands), commands)
+        with patch('sys.platform', 'linux'), patch.object(zcode_pipe, 'Native') as native, patch('os.getuid', return_value=1000, create=True):
+            native.return_value.identity.side_effect = rows.__getitem__
+            commands = {11: 'ZCode', 12: 'zcode-host-local-1'}
+            state = inspect(commands)
+            self.assertEqual((state['mainPids'], state['runtimePids'], state['unknown']), ([11], [], False))
+            for override in ({'parent': 1}, {'uid': 1001}, {'image': '/tmp/zcode'}):
+                rows[12] = {**basename, 'parent': 11, **override}
+                self.assertTrue(inspect(commands)['unknown'])
+            self.assertTrue(inspect({12: commands[12]})['unknown'])
+
     def test_no_display_or_running_app_cannot_launch_a_new_process(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
             app = package(Path(directory))
