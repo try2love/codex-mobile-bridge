@@ -119,7 +119,7 @@ test('connection labels distinguish startup, required action, failure and actual
  for(const running of [false,true])for(const configured of [false,true]){
   assert.equal(connection({...base,running,configured,connectionState:'starting'}).label,'正在启动应用…');assert.equal(connection({...base,running,configured,connectionState:'connecting'}).label,'正在连接，请稍候…');
  }
- for(const [setupStatus,label] of [['needs-initialization','需要初始化连接'],['needs-permission','等待授权'],['failed','连接失败']])assert.equal(connection({...base,running:false,setupStatus}).label,label);
+ for(const [setupStatus,label] of [['needs-initialization','需要初始化连接'],['needs-permission','等待授权'],['failed','连接失败'],['history-only','本机历史（只读）']])assert.equal(connection({...base,running:false,setupStatus}).label,label);
  assert.equal(connection({...base,connected:true,connectionState:'connecting'}).label,'已连接');assert.equal(connection({...base,connected:true,connectionState:'connecting'}).waiting,false);
  assert.equal(connection({...base,connectionState:'timeout',retryable:true}).retryable,true);assert.equal(connection({...base,connectionState:'connecting',retryable:true}).retryable,false);
  assert.equal(connection({...base,setupStatus:'recovery-required',connectionState:'connecting',backgroundRunning:true,mainRunning:false}).label,'后台运行，桌面未打开');

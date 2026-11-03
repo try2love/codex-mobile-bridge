@@ -1826,12 +1826,13 @@ class DesktopSessions:
                 status = self.adapters['zcode'].status() if enabled else {}
                 connected = status.get('connected') is True
                 installed = self._descriptor('zcode')['installed']
+                history_only = status.get('historyAvailable') and not status.get('retryable')
                 rows.append({'id': 'zcode', 'name': 'ZCode', 'installed': installed,
                              'description': '管理 ZCode 桌面应用与手机接入。',
                              'enabled': enabled, 'configured': installed, 'connected': connected,
-                             'setupStatus': 'ready' if connected else 'not-connected',
+                             'setupStatus': 'ready' if connected else 'history-only' if history_only else 'not-connected',
                              'reason': '原生会话已接入' if connected else status.get('reason', ''),
-                             'retryable': enabled and not connected and bool(self.config.get('zcodePrototype')),
+                             'retryable': status.get('retryable') is True,
                              'confirmTaskState': not connected, 'historyAvailable': status.get('historyAvailable') is True,
                              'capabilities': {'create': connected, 'accounts': True, 'notifications': connected}})
             from bridge.clients.lifecycle import inspect_clients
@@ -2159,7 +2160,7 @@ class DesktopSessions:
                     result = launch_client(descriptor)
                     if provider == 'zcode' and self.config.get('zcodePrototype') and not result.get('launched'):
                         adapter = self.adapters[provider]
-                        if getattr(adapter, 'sid', None) and not adapter.status().get('connected'):
+                        if adapter.status().get('retryable'):
                             # Only reattach a deliberately configured, already-running compatible instance.
                             if adapter.reconnect_existing():
                                 self.config['zcodePrototype'] = adapter.config

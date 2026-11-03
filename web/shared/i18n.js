@@ -48,6 +48,8 @@ const en={
 "原生会话已接入":"Connected to the native session",
 "请先停用 ZCode 手机接入并退出原 App，再切换已保存账号":"Disable ZCode phone access and quit the desktop app before switching saved accounts.",
 "本机历史（只读）":"Local history (read-only)",
+"当前安装的 ZCode 不支持此本机实时连接。":"This ZCode installation does not support this local live connection.",
+"未检测到可接入的 ZCode 本机实时连接。":"No compatible local ZCode connection was found.",
 "正常退出确认":"Confirm normal quit",
 "通过原生方式退出；无法核验任务时需要再次确认。":"Quit using the app's native action. Unverified tasks require confirmation.",
 "当前无法核验所有任务。正常退出可能中断正在运行的任务或等待中的审批，是否继续？":"Some tasks could not be verified. Quitting may interrupt a running task or pending approval. Continue?",

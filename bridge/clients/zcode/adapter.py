@@ -130,6 +130,10 @@ def detached_session(row, workspace):
             'capabilities': {'send': False, 'resume': True, 'plan': False, 'goal': False}}
 
 
+class _NoLocalTransport(BridgeUnavailable):
+    """A saved prototype has no verified endpoint to reconnect to."""
+
+
 class ZCodeDesktop:
     """Ordinary installation, with OS management independent of chat transport."""
     unavailable = 'ZCode 已安装，当前没有可用的本机聊天连接。'
@@ -173,17 +177,23 @@ class ZCodePrototype(ZCodeDesktop):
         if not self.sid.startswith('sess_'):
             raise ValueError('必须指定原 App 中的独立测试会话')
 
-    def _native(self, request):
+    def _live_process(self):
         if sys.platform not in ('darwin', 'win32'):
-            raise BridgeUnavailable('此平台的 ZCode 原生接入尚未验证')
-        application = Path(self.config['application'])
-        app = installation(application)
+            raise _NoLocalTransport('此平台的 ZCode 原生接入尚未验证')
+        application = self.config.get('application')
+        app = installation(application) if application else None
         if not app or app['version'] != '3.17.1':
-            raise BridgeUnavailable('ZCode 安装身份或版本不匹配')
-        process = listener_identity(self.config['port'], app['executable'])
-        if process != self.config['process']:
+            raise _NoLocalTransport('当前安装的 ZCode 不支持此本机实时连接。')
+        try:
+            return listener_identity(self.config.get('port'), app['executable'])
+        except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+            raise _NoLocalTransport('未检测到可接入的 ZCode 本机实时连接。') from error
+
+    def _native(self, request):
+        process = self._live_process()
+        if process != self.config.get('process'):
             raise BridgeUnavailable('ZCode App 进程已变化，请重新核验并显式接入')
-        request = {**request, 'application': str(application), 'port': self.config['port'],
+        request = {**request, 'application': str(self.config['application']), 'port': self.config['port'],
                    'expiresAt': int(time.time() * 1000) + 12000}
         from bridge.clients.zcode.transport import request_native
         try:
@@ -257,10 +267,7 @@ class ZCodePrototype(ZCodeDesktop):
         workspace = self.workspaces[sid]
         if action == 'resume':
             # Only an explicit phone action may adopt a new App process/owner.
-            app = installation(self.config['application'])
-            if not app or app['version'] != '3.17.1':
-                raise BridgeUnavailable('ZCode 安装身份或版本不匹配')
-            process = listener_identity(self.config['port'], app['executable'])
+            process = self._live_process()
             previous = dict(self.config)
             try:
                 self.config['process'] = process
@@ -375,7 +382,12 @@ class ZCodePrototype(ZCodeDesktop):
 
     def status(self):
         try:
-            self._call_live('detail', self.sid)
-            return {'connected': True}
+            detail = self._call_live('detail', self.sid)
+            if detail.get('native'):
+                return {'connected': True}
+        except _NoLocalTransport as error:
+            return {**super().status(), 'reason': str(error)}
         except (ValueError, OSError):
-            return super().status()
+            pass
+        # A compatible live endpoint can renew a retired session binding.
+        return {**super().status(), 'retryable': True}

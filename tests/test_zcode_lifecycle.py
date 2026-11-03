@@ -45,6 +45,33 @@ class ZCodeLifecycleTests(unittest.TestCase):
     def toggle(self, enabled, **options):
         return self.manager.toggle_client({'provider': 'zcode', 'enabled': enabled, **options})
 
+    def test_saved_prototype_only_offers_retry_for_a_verified_reachable_owner(self):
+        installation = self.manager.config['discovered']['zcode']
+        home = Path(installation['dataDirectory'])
+        home.mkdir(parents=True, exist_ok=True)
+        (home / 'tasks-index.sqlite').touch()
+        self.manager.config['zcodePrototype'] = {'application': installation['application'],
+            'dataDirectory': str(home), 'workspace': str(self.root), 'sessionId': 'sess_test',
+            'port': 17742, 'process': {'pid': 1}, 'binding': {'owner': 'retired'}}
+        self.manager._configure_zcode()
+        self.manager.config.setdefault('enabled', {})['zcode'] = True
+        def row():
+            return next(x for x in self.manager.clients(refresh=True)['clients'] if x['id'] == 'zcode')
+        with patch('bridge.clients.zcode.adapter.listener_identity') as listener:
+            current = row()
+            self.assertTrue(current['running'] and current['historyAvailable'])
+            self.assertFalse(current['connected'] or current['retryable'])
+            self.assertEqual(current['setupStatus'], 'history-only')
+            listener.assert_not_called()
+            with patch('bridge.clients.zcode.adapter.installation', return_value={'version': '3.17.1', 'executable': 'test'}):
+                listener.side_effect = ValueError('no verified listener')
+                self.assertFalse(row()['retryable'])
+                listener.side_effect = None
+                listener.return_value = {'pid': 2}
+                expired = row()
+                self.assertTrue(expired['retryable'])
+                self.assertFalse(expired['connected'])
+
     def test_normal_start_and_phone_only_disconnect_dont_open_ports_or_create_chats(self):
         with patch('bridge.clients.lifecycle.launch_client', return_value={'running': True, 'launched': True}) as launch, \
                 patch.object(self.adapter, 'call') as call, patch('bridge.clients.lifecycle.stop_client') as stop:
