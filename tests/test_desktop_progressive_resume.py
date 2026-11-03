@@ -42,7 +42,7 @@ class ProgressiveResumeTests(unittest.TestCase):
         self.assertEqual(ready['status'], 'ready')
         self.assertEqual(self.poll(), ready)
         self.assertEqual(self.native.observed, [None, self.native.ticket, self.native.ticket])
-        self.assertFalse(self.manager.pending_resumes)
+        self.assertFalse(self.manager.pending_resumes['zcode'])
 
     def test_old_receipt_cannot_activate_another_session_or_replacement_adapter(self):
         self.poll()

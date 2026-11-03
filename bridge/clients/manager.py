@@ -153,7 +153,7 @@ class DesktopSessions:
         self.locks = {name: threading.RLock() for name in ('codex', 'zcode', *self.adapters)}
         self.read_lock = threading.Lock()
         self.reads = {}
-        self.pending_resumes = {}
+        self.pending_resumes = {provider: {} for provider in self.locks}
         self.activity = {}
         self.activity_pending = set()
         self.read_epochs = dict.fromkeys(self.locks, 0)
@@ -243,7 +243,8 @@ class DesktopSessions:
         with self.locks[provider]:
             if rebind and provider == 'zcode' and provider in self.adapters:
                 self.adapters[provider].release_window()
-                self.pending_resumes.clear()
+            if rebind:
+                self.pending_resumes[provider].clear()
             with self.read_lock:
                 self.read_epochs[provider] += 1
                 self.read_changes[provider] += 1
@@ -998,20 +999,20 @@ class DesktopSessions:
     def _resume_step(self, provider, adapter, sid, rid, first):
         # The durable receipt identifies the logical request. Only its original
         # adapter generation can continue observing the live subscription.
-        key = (provider, rid)
+        pending = self.pending_resumes[provider]
         now = time.monotonic()
-        for old in [k for k, (_, _, last) in self.pending_resumes.items() if now - last > 600]:
-            del self.pending_resumes[old]
-        ticket = self.pending_resumes.get(key)
+        for old in [k for k, (_, _, last) in pending.items() if now - last > 600]:
+            del pending[old]
+        ticket = pending.get(rid)
         if self.adapters.get(provider) is not adapter or not first and (ticket is None or ticket[0] is not adapter):
             raise ResumePreflightBlocked('原会话接续已过期，请重新连接。')
-        if first and len(self.pending_resumes) >= 64:
+        if first and len(pending) >= 64:
             raise ResumePreflightBlocked('正在恢复的会话较多，请稍后连接。')
         result, continuation = adapter.resume_step(sid, rid, None if first else ticket[1])
         if result['status'] == 'pending' and continuation is not None:
-            self.pending_resumes[key] = (adapter, continuation, now)
+            pending[rid] = (adapter, continuation, now)
         else:
-            self.pending_resumes.pop(key, None)
+            pending.pop(rid, None)
         return result
 
     def call(self, provider, action, sid=None, body=None):
@@ -1217,7 +1218,7 @@ class DesktopSessions:
                 # Do not turn an uncertain outcome into a safe-to-retry failure.
                 result['message'] = str(exc) if isinstance(exc, (ValueError, BridgeUnavailable)) else result['message']
             if progressive and result.get('status') != 'pending':
-                self.pending_resumes.pop((provider, rid), None)
+                self.pending_resumes[provider].pop(rid, None)
             if cached == result:
                 return result
             with self.db_lock:
