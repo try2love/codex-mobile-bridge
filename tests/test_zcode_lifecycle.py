@@ -23,7 +23,7 @@ class ZCodeLifecycleTests(unittest.TestCase):
         (bundle/'MacOS/ZCode').touch()
         (bundle/'Info.plist').write_bytes(plistlib.dumps({
             'CFBundleIdentifier': 'dev.zcode.app', 'CFBundleExecutable': 'ZCode',
-            'CFBundleShortVersionString': '3.17.2'}))
+            'CFBundleShortVersionString': '4.3.7'}))
         row = discover_clients(home=self.root, platform='darwin', env={}, applications=[bundle.parent.parent])['zcode']
         self.assertEqual(row['application'], str(bundle.parent))
         settings = self.root/'desktop-sessions/settings.json'
@@ -151,7 +151,7 @@ class ZCodeLifecycleTests(unittest.TestCase):
             listener.assert_called_once()
             with patch('bridge.clients.zcode.adapter.installation', return_value={'version': '3.18.0', 'executable': 'test'}):
                 self.assertFalse(row()['retryable'])
-                self.assertEqual(listener.call_count, 1)
+                self.assertEqual(listener.call_count, 2)
             with patch('bridge.clients.zcode.adapter.installation', return_value={'version': '3.17.1', 'executable': 'test'}):
                 listener.side_effect = ValueError('no verified listener')
                 self.assertFalse(row()['retryable'])
@@ -216,7 +216,7 @@ class ZCodeLifecycleTests(unittest.TestCase):
             self.assertIs(self.manager.adapters['zcode'], self.adapter)
             self.assertNotIn('zcodeCompatibility', self.manager.config)
 
-    def test_initialization_does_not_override_known_work_or_an_unsupported_version(self):
+    def test_initialization_does_not_override_known_work_or_unverified_installation(self):
         from bridge.clients.zcode.adapter import ZCodePrototype
         with patch('bridge.clients.lifecycle.stop_client') as stop, patch('bridge.clients.lifecycle.launch_client') as start, \
                 patch.object(ZCodePrototype, 'compatibility_owner', return_value=None), \
@@ -224,10 +224,10 @@ class ZCodeLifecycleTests(unittest.TestCase):
                 patch.object(self.adapter, 'call', return_value={'complete': False, 'sessions': [{'status': 'running'}]}):
             with self.assertRaisesRegex(ValueError, '有任务运行'):
                 self.toggle(True, initializeDesktop=True, acknowledgeUnavailable=True)
-            with patch('bridge.clients.zcode.installation.installation', return_value={'version': '0.0', 'executable': '/unsupported'}):
+            with patch('bridge.clients.zcode.installation.installation', return_value=None):
                 value = self.manager.clients(refresh=True)
                 self.assertFalse(next(row for row in value['clients'] if row['id']=='zcode')['canInitializeDesktop'])
-                with self.assertRaisesRegex(ValueError, '不支持'):
+                with self.assertRaises(ValueError):
                     self.toggle(True, initializeDesktop=True, acknowledgeUnavailable=True)
             start.assert_not_called()
             stop.assert_not_called()

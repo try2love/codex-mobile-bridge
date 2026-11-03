@@ -27,6 +27,7 @@ function fixture() {
     attachmentBeginV4: async p => { calls.push({ upload: p }); },
     attachmentChunkV4: async p => { calls.push({ chunk: p }); },
     attachmentCommitV4: async () => ({ ref: 'native-committed-ref' }),
+    attachmentAbortV4: async () => {},
   };
   globalThis.window = {};
   globalThis.document = { querySelectorAll: () => [{ __reactContainer$test: {
@@ -50,6 +51,27 @@ test('application handshake reads the original project service without activatin
   f.agent.helloConversationV4=async()=>({protocolVersion:3,clientMode:'desktop-continuous',connectionId:'native'});
   f.services.projectService.readTree=async()=>({});
   await assert.rejects(f.request('application'),/会话服务/);
+});
+
+test('runtime handshake requires owner, command and receipt primitives independently of release version',async()=>{
+  for(const missing of ['helloConversationV4','getWorkspaceRuntimeIdentity','queryConversationCommandsV4','sendConversationCommandV4']){
+    const f=fixture();delete f.agent[missing];
+    await assert.rejects(f.request('application'),/会话服务/);
+    assert.deepEqual(f.calls,[]);
+  }
+  const f=fixture();f.agent.helloConversationV4=async()=>({protocolVersion:4,clientMode:'desktop-continuous',connectionId:'other'});
+  await assert.rejects(f.request('application'),/会话服务/);assert.deepEqual(f.calls,[]);
+});
+
+test('partial optional services keep text working and never begin an unsupported attachment transfer',async()=>{
+  const f=fixture();delete f.services.modelSelectionService;delete f.services.oauthService;delete f.agent.attachmentChunkV4;
+  await f.request('attach');
+  const detail=await f.request('detail');
+  assert.deepEqual(detail.capabilities,{models:false,effort:false,create:false,skills:false,attachments:false,uploadFiles:false,projectReferences:false});
+  assert.equal(detail.account,undefined);
+  await assert.rejects(f.request('send',{id:'file',text:'one',files:[{name:'a.txt',data:'MQ==',mime:'text/plain'}]}),/附件/);
+  assert.deepEqual(f.calls,['acquire']);
+  assert.equal((await f.request('send',{id:'text',text:'one'})).status,'accepted');
 });
 
 test('known active work blocks normal quit even if full inventory cannot be read',async()=>{

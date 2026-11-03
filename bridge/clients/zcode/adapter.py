@@ -17,7 +17,7 @@ from .installation import installation, listener_identity
 
 
 ACCESS = {'build': '变更前确认', 'guarded': '自主模式', 'yolo': '完全访问'}
-DEBUG_VERSIONS = {'darwin': ('3.17.1', '3.17.2'), 'win32': ('3.17.1',)}
+LOOPBACK_PLATFORMS = ('darwin', 'win32')
 
 
 def project_files(root, paths):
@@ -155,7 +155,7 @@ class ZCodeDesktop:
         path = self.config.get('application')
         if sys.platform == 'darwin' and path:
             app = installation(path)
-            if app and app['version'] == '3.17.2':
+            if app:
                 from bridge.platforms.macos.zcode import supports_window_send
                 if supports_window_send():
                     return app['executable']
@@ -296,11 +296,11 @@ class ZCodePrototype(ZCodeDesktop):
             if owner is None:
                 raise _NoLocalTransport('请在应用管理中初始化 ZCode 连接。')
             return owner
-        if sys.platform not in DEBUG_VERSIONS:
+        if sys.platform not in LOOPBACK_PLATFORMS:
             raise _NoLocalTransport('此平台的 ZCode 原生接入尚未验证')
         application = self.config.get('application')
         app = installation(application) if application else None
-        if not app or app['version'] not in DEBUG_VERSIONS[sys.platform]:
+        if not app:
             raise _NoLocalTransport('当前安装的 ZCode 不支持此本机实时连接。')
         try:
             return listener_identity(self.port, app['executable'])
@@ -602,6 +602,7 @@ class ZCodePrototype(ZCodeDesktop):
             models = native_reply_models(self.home, sid, workspace, (row.get('entityId') for row in
                 snapshot['rows']['window'] if row['kind'] == 'assistantText' and row.get('visibility') == 'visible'))
             value = project_snapshot(snapshot, workspace, models)
+            value['capabilities'].update(result.get('capabilities', {}))
             if sid in self.debug_sessions:
                 # The client inventory may still describe the previous connection.
                 value['session'].update(controlScope='session', connectionState='ready')
@@ -660,7 +661,7 @@ class ZCodePrototype(ZCodeDesktop):
         try:
             detail = self._call_live('detail', self.sid)
             if detail.get('native'):
-                return {'connected': True}
+                return {'connected': True, 'canCreate': detail['capabilities'].get('create') is True}
         except _NoLocalTransport as error:
             return {**super().status(), 'reason': str(error)}
         except (ValueError, OSError):

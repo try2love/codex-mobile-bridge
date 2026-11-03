@@ -28,14 +28,27 @@ export async function nativeRequest(request) {
     return { services: [...found][0], contexts: [...contexts], registryAnchor };
   };
   const { services, contexts, registryAnchor } = findServices(), agent = services.zcodeAgentService;
-  if (request.action === 'application') {
+  const handshake = async () => {
+    if (!['helloConversationV4', 'getWorkspaceRuntimeIdentity', 'sendConversationCommandV4',
+          'queryConversationCommandsV4'].every(name => typeof agent[name] === 'function'))
+      throw Error('ZCode 原 App 缺少会话服务接口');
     const hello = await agent.helloConversationV4();
-    const tree = await services.projectService.readTree({});
-    if (hello.protocolVersion !== 3 || hello.clientMode !== 'desktop-continuous' || !hello.connectionId ||
-        !Array.isArray(tree.tasks) || typeof agent.sendConversationCommandV4 !== 'function')
+    if (hello?.protocolVersion !== 3 || hello.clientMode !== 'desktop-continuous' ||
+        typeof hello.connectionId !== 'string' || !hello.connectionId)
+      throw Error('ZCode 原 App 会话服务协议不兼容');
+    return hello;
+  };
+  const hasModels = typeof services.modelSelectionService?.getView === 'function';
+  const hasSkills = typeof agent.getSkillReferenceCatalog === 'function';
+  const hasAttachments = ['attachmentBeginV4', 'attachmentChunkV4', 'attachmentCommitV4', 'attachmentAbortV4']
+    .every(name => typeof agent[name] === 'function');
+  if (request.action === 'application') {
+    await handshake();
+    if (typeof services.projectService?.readTree !== 'function' ||
+        !Array.isArray((await services.projectService.readTree({}))?.tasks))
       throw Error('ZCode 原 App 的会话服务尚未就绪');
     const canCreate = typeof services.projectService.prepareSession === 'function' &&
-      typeof services.projectService.readProjects === 'function' && typeof services.modelSelectionService?.getView === 'function';
+      typeof services.projectService.readProjects === 'function' && hasModels;
     return { ready: true, ...(canCreate ? { canCreate: true } : {}) };
   }
   if (request.action === 'registry-probe') return typeof window.__codexMobileZCodeAcquireWorkspace === 'function' ||
@@ -72,6 +85,7 @@ export async function nativeRequest(request) {
       provider, name: profile.name || profile.displayName || profile.email || 'ZCode', email: profile.email || '' };
   };
   const models = async () => {
+    if (!hasModels) throw Error('ZCode 原 App 未提供模型目录');
     const view = await services.modelSelectionService.getView();
     return view.providers.flatMap(provider => provider.models.filter(model => model.config.enabled !== false).map(model => ({
       id: provider.providerId + '/' + model.modelId, name: model.modelId + ' · ' + provider.providerName,
@@ -146,9 +160,7 @@ export async function nativeRequest(request) {
   const target = { workspacePath: request.workspace, sessionId: request.sessionId };
   const read = () => agent.readSession({ ...target, runtimePolicy: 'existing-only', messageLimit: 100 });
   const clientIdentity = async (initialize = false) => {
-    const hello = await agent.helloConversationV4();
-    if (hello.protocolVersion !== 3 || hello.clientMode !== 'desktop-continuous' || !hello.connectionId)
-      throw Error('Unsupported original ZCode connection');
+    const hello = await handshake();
     const storageKey = 'zcode-v4-client-id:v1';
     let clientId = localStorage.getItem(storageKey);
     if (!clientId && initialize) {
@@ -223,10 +235,14 @@ export async function nativeRequest(request) {
     const body = request.body;
     if (typeof body.firstMessage !== 'string' || !body.firstMessage.trim() || body.firstMessage.length > 100000)
       throw Error('请输入首条消息');
+    if (!hasModels) throw Error('ZCode 原 App 未提供模型目录');
     const sid = 'sess_' + body.id;
     let workspacePath = request.workspace, projectId = null;
     if (body.directoryProject || body.projectKey && body.projectKey !== request.workspace) {
-      if (typeof window.__codexMobileZCodeAcquireWorkspace !== 'function') throw Error('ZCode 原生多项目连接尚不可用');
+      if (typeof window.__codexMobileZCodeAcquireWorkspace !== 'function' ||
+          typeof services.projectService?.prepareSession !== 'function' ||
+          typeof services.projectService[body.directoryProject ? 'saveProject' : 'readProjects'] !== 'function')
+        throw Error('ZCode 原生多项目连接尚不可用');
       const project = body.directoryProject ? await services.projectService.saveProject({ hostId: 'local',
         roots: [body.directoryProject.cwd], reuseExistingRoot: true }) :
         (await services.projectService.readProjects({ hostId: 'local' })).find(row => row.id === body.projectKey && !row.deleted);
@@ -324,13 +340,20 @@ export async function nativeRequest(request) {
   const before = projection.snapshot;
   if (before.sessionId !== request.sessionId) throw Error('Wrong native snapshot');
   if (request.action === 'create') return create(current, state);
-  if (request.action === 'detail') return { binding: current, snapshot: before, account: await account() };
+  if (request.action === 'detail') {
+    const hasAccount = typeof services.oauthService?.getActiveProvider === 'function' &&
+      typeof services.credentialService?.load === 'function';
+    return { binding: current, snapshot: before, ...(hasAccount ? { account: await account() } : {}),
+      capabilities: { models: hasModels, effort: hasModels, create: hasModels, skills: hasSkills,
+        attachments: hasAttachments, uploadFiles: hasAttachments, projectReferences: hasAttachments } };
+  }
   if (request.action === 'tasks') return { tasks: (before.backgroundWorks || []).map(work => ({
     id: work.workId, title: work.title, kind: work.kind, status: work.status,
     cancellable: work.cancellable === true && work.status === 'running',
   })) };
   const body = request.body || {};
   const skills = async () => {
+    if (!hasSkills) throw Error('ZCode 原 App 未提供 Skill 目录');
     const catalog = await agent.getSkillReferenceCatalog({ ...target, runtimePolicy: 'existing-only' });
     if (catalog.authority !== 'session') throw Error('ZCode 会话 Skill 目录尚未就绪');
     return catalog.skills.filter(skill => skill.enabled).map(skill => ({
@@ -338,10 +361,10 @@ export async function nativeRequest(request) {
     }));
   };
   if (request.action === 'catalog') {
-    const value = { capabilities: { models: true, effort: true, skills: true },
+    const value = { capabilities: { models: hasModels, effort: hasModels, skills: hasSkills },
       currentModel: before.config.provider + '/' + before.config.model, currentEffort: before.config.thought };
-    if (body.section !== 'skills') value.models = await models();
-    if (body.section !== 'models') value.skills = await skills();
+    if (hasModels && body.section !== 'skills') value.models = await models();
+    if (hasSkills && body.section !== 'models') value.skills = await skills();
     return value;
   }
   let type, payload;
@@ -363,6 +386,7 @@ export async function nativeRequest(request) {
       payload.text = selected.map(skill => '[' + label('$' + skill.name) + '](' + destination(skill.path) + ')').join('\n') + '\n\n' + body.text;
     }
     const attachments = [];
+    if (body.files?.length && !hasAttachments) throw Error('ZCode 原 App 未提供完整的附件上传接口');
     for (const file of body.files || []) {
       checkDeadline();
       const uploadId = crypto.randomUUID();

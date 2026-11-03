@@ -100,7 +100,8 @@ def is_supported(application):
         info = plistlib.loads((application / "Contents/Info.plist").read_bytes())
         return (
             info.get("CFBundleIdentifier") == "dev.zcode.app"
-            and info.get("CFBundleShortVersionString") == "3.17.2"
+            and info.get("CFBundleExecutable") == "ZCode"
+            and (application / "Contents/MacOS/ZCode").is_file()
         )
     except (OSError, ValueError, plistlib.InvalidFileException):
         return False

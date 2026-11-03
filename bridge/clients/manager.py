@@ -1397,10 +1397,10 @@ class DesktopSessions:
     def _descriptor(self, provider):
         if provider == 'zcode' and provider in self.adapters:
             adapter = self.adapters[provider]
-            from bridge.clients.zcode.adapter import DEBUG_VERSIONS
+            from bridge.clients.zcode.adapter import LOOPBACK_PLATFORMS
             from bridge.clients.zcode.installation import installation
             app = installation(adapter.config.get('application', ''))
-            compatible = bool(app and app['version'] in DEBUG_VERSIONS.get(sys.platform, ()))
+            compatible = bool(app and sys.platform in LOOPBACK_PLATFORMS)
             return {'id': provider, 'installed': bool(app), 'compatibilitySupported': compatible,
                     'pipeSupported': bool(self.zcode_pipe and self.zcode_pipe.supported()),
                     'executable': app['executable'] if app else '', 'dataDirectory': str(adapter.home),
@@ -1940,7 +1940,7 @@ class DesktopSessions:
                              'canInitializeDesktop': bool(self.gateway_running and (zcode['pipeSupported'] or zcode['compatibilitySupported'])
                                                           and not (connected or status.get('sessionAccess'))),
                              'compatibilityLaunch': self.config.get('zcodeCompatibility') is True,
-                             'capabilities': {'create': connected or status.get('canCreate') is True, 'accounts': True,
+                             'capabilities': {'create': status.get('canCreate') is True, 'accounts': True,
                                               'notifications': True}})
             from bridge.clients.lifecycle import inspect_clients
             descriptors = []

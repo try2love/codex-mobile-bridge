@@ -78,7 +78,8 @@ static NSString *const zcodeIdentifier = @"dev.zcode.app";
 static NSString *const brokerRelativePath = @"Resources/gateway/codex-mobile-gateway";
 
 // The request identifies the installation selected in the gateway. Only the vendor
-// signature and supported native protocol authorize executing its main Mach-O.
+// signature and local executable identity authorize executing its main Mach-O.
+// The gateway checks the native protocol before connecting a conversation.
 static BOOL verifiedZCode(NSString *bundlePath, NSString **executable) {
     if (!bundlePath.isAbsolutePath || ![bundlePath.pathExtension isEqualToString:@"app"] ||
         ![bundlePath.stringByResolvingSymlinksInPath isEqualToString:bundlePath])
@@ -86,7 +87,6 @@ static BOOL verifiedZCode(NSString *bundlePath, NSString **executable) {
     NSBundle *target = [NSBundle bundleWithPath:bundlePath];
     NSString *image = [bundlePath stringByAppendingPathComponent:@"Contents/MacOS/ZCode"];
     if (![target.bundleIdentifier isEqualToString:zcodeIdentifier] ||
-        ![[target objectForInfoDictionaryKey:@"CFBundleShortVersionString"] isEqualToString:@"3.17.2"] ||
         ![target.executablePath isEqualToString:image] ||
         ![image.stringByResolvingSymlinksInPath isEqualToString:image])
         return NO;
