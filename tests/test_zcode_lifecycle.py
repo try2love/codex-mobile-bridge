@@ -70,6 +70,34 @@ class ZCodeLifecycleTests(unittest.TestCase):
         ordinary.assert_not_called()
         port.assert_not_called()
 
+    def test_cold_probes_share_one_native_deadline_and_an_existing_process_is_tried_once(self):
+        from bridge.clients.errors import BridgeUnavailable
+        from bridge.clients.zcode.adapter import ZCodePrototype
+        now = [10.0]  # The initial locate/launch already used ten seconds.
+        owner = {'pid': 77}
+        requests = []
+        def elapsed(seconds):
+            now[0] += seconds
+        def probe(body):
+            requests.append(body.get('expiresAt'))
+            if len(requests) == 1:
+                elapsed(12)
+                raise TimeoutError('renderer starting')
+            if len(requests) == 2:
+                return {'ready': True}
+            raise EOFError('closed')
+        cfg = self.manager.config['discovered']['zcode']
+        adapter = ZCodePrototype(self.root, {**cfg, 'debugFallbackPort': 17742}, transport=probe)
+        with patch.object(adapter, '_live_process', return_value=owner), \
+                patch('bridge.clients.zcode.adapter.time.monotonic', side_effect=lambda: now[0]), \
+                patch('bridge.clients.zcode.adapter.time.time', side_effect=lambda: now[0]), \
+                patch('bridge.clients.zcode.adapter.time.sleep', side_effect=elapsed):
+            adapter.connect_application(77, wait=True, deadline=30)
+            self.assertEqual(requests, [22000, 30000])
+            with self.assertRaisesRegex(BridgeUnavailable, 'closed'):
+                adapter.connect_application(77)
+            self.assertEqual(requests, [22000, 30000, None])
+
     def test_app_inventory_projects_and_creation_need_no_bound_conversation(self):
         from bridge.clients.zcode.adapter import ZCodePrototype
         owner = {'pid': 77}
@@ -246,7 +274,7 @@ class ZCodeLifecycleTests(unittest.TestCase):
                 patch('bridge.clients.lifecycle.stop_client') as stop, \
                 patch('bridge.clients.lifecycle.launch_client', side_effect=launch) as start:
             self.manager.toggle_client({'provider':'zcode','enabled':True}, startup=True)
-            handshake.assert_called_once_with(88, wait=True)
+            handshake.assert_called_once_with(88, wait=True, deadline=None)
             with self.assertRaisesRegex(ValueError, '选择本机兼容连接'):
                 self.manager.toggle_client({'provider':'zcode','enabled':True}, startup=True)
             stop.assert_not_called()

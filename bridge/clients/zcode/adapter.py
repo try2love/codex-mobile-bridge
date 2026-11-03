@@ -321,25 +321,33 @@ class ZCodePrototype(ZCodeDesktop):
         except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
             raise BridgeUnavailable('无法核验本机兼容端口，请检查 17742 是否已被其他进程占用。') from exc
 
-    def connect_application(self, pid, *, wait=False):
+    def connect_application(self, pid, *, wait=False, deadline=None):
         # Cold startup needs time to mount its native services. Only probe the App,
         # never create/select a workspace or submit a command during this retry.
-        deadline = time.monotonic() + (10 if wait else 0)
+        bounded_probe = deadline is not None
+        deadline = deadline if bounded_probe else time.monotonic() + (10 if wait else 0)
         delay = .25
         while True:
             try:
                 owner = self._live_process()
                 if owner.get('pid') == pid:
-                    result = self.transport({'action': 'application', 'expectedProcess': owner})
+                    request = {'action': 'application', 'expectedProcess': owner}
+                    if bounded_probe:
+                        left = deadline - time.monotonic()
+                        if left <= 0:
+                            raise TimeoutError('原 App 会话服务尚未就绪')
+                        request['expiresAt'] = int((time.time() + min(12, left)) * 1000)
+                    result = self.transport(request)
                     if result.get('ready') is not True or self._live_process() != owner:
                         raise BridgeUnavailable('ZCode 原 App 未确认连接。')
                     self._adopt_process(owner)
                     self.application_create = result.get('canCreate') is True
                     return
-            except (ValueError, OSError, subprocess.TimeoutExpired) as error:
-                if time.monotonic() >= deadline:
-                    raise BridgeUnavailable('ZCode 兼容连接未就绪，请重试。' + str(error)) from error
-                time.sleep(delay)
+            except (ValueError, OSError, EOFError, subprocess.TimeoutExpired) as error:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise BridgeUnavailable('ZCode 连接未就绪，请重试。' + str(error)) from error
+                time.sleep(min(left, delay))
                 delay = min(1, delay * 2)
                 continue
             raise BridgeUnavailable('ZCode 进程已变化，请重新检查。')
@@ -360,7 +368,7 @@ class ZCodePrototype(ZCodeDesktop):
         if self.pipe is not None:
             return self.pipe.call({**request, 'expectedProcess': process})
         request = {**request, 'application': str(self.config['application']), 'port': self.port,
-                   'expiresAt': int(time.time() * 1000) + 12000}
+                   'expiresAt': min(int(time.time() * 1000) + 12000, request.get('expiresAt', float('inf')))}
         request.pop('expectedProcess', None)
         from bridge.clients.zcode.transport import request_native
         try:

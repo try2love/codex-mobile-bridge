@@ -1424,6 +1424,9 @@ class DesktopSessions:
         from bridge.clients.lifecycle import inspect_client, launch_client
         from bridge.clients.zcode.adapter import ZCodePrototype
 
+        # Allow a new Linux/Windows renderer to mount its native services, including
+        # time spent finding and launching the original process (mobile timeout: 45s).
+        cold_deadline = time.monotonic() + 30 if sys.platform in ('linux', 'win32') else None
         supported = 'pipeSupported' if private_pipe else 'compatibilitySupported'
         if not descriptor.get(supported):
             raise ValueError('当前安装的 ZCode 不支持此本机实时连接。')
@@ -1466,7 +1469,8 @@ class DesktopSessions:
                 raise ValueError('无法确认唯一的 ZCode 进程，请刷新后重试。')
         if owner and state['mainPids'] != [owner['pid']]:
             raise ValueError('ZCode 进程已变化，请刷新后重试。')
-        adapter.connect_application(state['mainPids'][0], wait=launched)
+        adapter.connect_application(state['mainPids'][0], wait=launched,
+                                    deadline=cold_deadline if launched else None)
         self.adapters = {**self.adapters, 'zcode': adapter}
         self.config['zcodeCompatibility'] = not private_pipe
 
