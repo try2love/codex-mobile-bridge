@@ -10,6 +10,17 @@ if len(sys.argv) == 3 and sys.argv[1] == '--terminal-child':
         from bridge.platforms.posix.terminal import child_main
     child_main(sys.argv[2])
 
+if sys.argv[1:2] == ['zcode-pipe-host']:
+    if sys.platform != 'darwin' or not getattr(sys, 'frozen', False):
+        raise SystemExit('The private ZCode host requires the installed macOS gateway')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--data-dir', required=True)
+    parser.add_argument('--application', required=True)
+    options = parser.parse_args(sys.argv[2:])
+    from bridge.clients.zcode.pipe_host import serve
+    serve(options.data_dir, options.application)
+    raise SystemExit(0)
+
 from bridge.app.desktop import Desktop
 
 
