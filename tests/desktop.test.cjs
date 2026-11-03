@@ -159,6 +159,33 @@ for(const transferFirst of [false,true])test(`independent transfer settings ${tr
   assert.equal(ui.value.preferences.autoStart,true,'independent validation cannot block saving gateway settings');
 });
 
+test('client account controls cannot dirty or block saving the gateway, and a gateway draft links to its field',async()=>{
+  const ui=await renderer();
+  const port=ui.nodes.get('port'),settings=ui.nodes.get('settings');
+  const network={dataset:{panel:'network'}},client={dataset:{panel:'accounts'}};
+  port.id='port';port.type='number';port.closest=selector=>selector==='[data-panel]'?network:null;
+  port.validity={valid:true};
+  // Agent account editors mount after the first snapshot. Their required name and auth fields
+  // share an empty DOM id, have different defaults and are saved by the account API.
+  const independent=['','bearer'].map(value=>({id:'',value,dataset:{},validity:{valid:false},
+    closest:selector=>selector==='[data-panel]'?client:null}));
+  settings.querySelectorAll=()=>[port];
+  ui.run('dirty=false;render(snapshot)');
+  settings.querySelectorAll=()=>[port,...independent];
+  ui.run('updateDirty()');assert.equal(ui.run('dirty'),false);
+  port.value='9797';ui.run('updateDirty()');assert.equal(ui.run('dirty'),true);
+  assert.equal(port.dataset.unsaved,'true');
+  let focused=false;port.focus=()=>{focused=true;};
+  const list=ui.nodes.get('dirty-fields');
+  assert.equal(list.children.length,1);list.children[0].click();
+  assert.equal(ui.run('activeTab'),'network');assert.equal(focused,true);
+  port.value=8787;ui.run('updateDirty()');assert.equal(ui.run('dirty'),false);
+  port.value='9797';ui.run('updateDirty()');
+  await settings.onsubmit({preventDefault(){}});
+  assert.equal(ui.value.preferences.port,9797);assert.equal(ui.run('dirty'),false);
+  assert.equal(port.dataset.unsaved,undefined);assert.equal(independent[1].value,'bearer');
+});
+
 test('Tailscale detection fills a read-only URL and preserves its unsaved identity across polls',async()=>{
   const ui=await renderer('en');
   ui.run(`connectionDraft=[{id:'ts',name:'',enabled:true,accessMode:'tailscale',publicUrl:'',tailscaleMode:'funnel',tailscalePort:443,tailscaleNodeId:''}];savedConnections=JSON.stringify(connectionDraft);renderConnections();updateDirty();`);

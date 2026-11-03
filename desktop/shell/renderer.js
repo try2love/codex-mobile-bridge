@@ -57,13 +57,81 @@ const titles={'desktop-sessions':'桌面会话',harness:'Harness 官方 Web',ove
 const watchPanel=new WatchPanel({root:$('watches'),change:value=>api.notificationWatches(value)});
 const harnessPanel=typeof HarnessPanel==='undefined'?null:new HarnessPanel({root:$('harness-panel'),api,t,feedback});
 const desktopConnections=typeof DesktopConnectionsPanel==='undefined'?null:new DesktopConnectionsPanel({root:$('desktop-connections'),api,feedback});
-function fields(){return [...$('settings').querySelectorAll('input,textarea,select')].filter(node=>!node.closest('#watches')&&!node.closest('#connections')&&!node.closest('#lan-addresses')&&!node.closest('#file-transfer-settings')&&!node.closest('#webhook-editor')&&node.id!=='connection-kind'&&node.id!=='network-adaptation-enabled');}
-function fieldValues(){return Object.fromEntries(fields().map(node=>[node.id,node.id==='webhook-sign-secret'?!!node.value:node.id==='webhook-url'?webhookUrlDraft():node.type==='checkbox'?node.checked:node.value]));}
+// Only these scalar controls submit through collect(). Client editors and instant-save
+// panels may mount inside the same form but own their values and validation.
+const gatewayFieldIds=new Set([
+  'login-startup','auto-start','port','lan','lan-scope','local-access','cloudflared','codex-home','ipc-path','codex-bin',
+  'auth-mode','username','password','revoke-bound-devices','session-hours','origins','mobile-enabled','mobile-app-links',
+  'security-enabled','address-enabled','address-name','pushplus-enabled','pushplus-token','clear-pushplus-token',
+  'ntfy-enabled','ntfy-server','ntfy-topic','ntfy-token','clear-token','bark-enabled','bark-server','bark-key',
+  'clear-bark-key','click-base','include-title'
+]);
+function fields(){return [...$('settings').querySelectorAll('input,textarea,select')].filter(node=>gatewayFieldIds.has(node.id));}
+function fieldValue(node){return node.type==='checkbox'?node.checked:node.value;}
+function fieldValues(){return Object.fromEntries(fields().map(node=>[node.id,fieldValue(node)]));}
+function fieldName(node){
+  const label=node?.closest('label')?.querySelector?.('span');
+  return label?.textContent.trim()||node?.id||'';
+}
+function connectionChanges(){
+  const before=new Map(JSON.parse(savedConnections).map(row=>[row.id,row]));
+  const changes=[];
+  for(const row of connectionDraft){
+    const previous=before.get(row.id),name=row.name||connectionLabel(row.accessMode);
+    before.delete(row.id);
+    const nameField=$('connection-'+row.id+'-name');
+    const add=(node,label)=>changes.push({panel:'network',node:node||nameField||$('add-connection'),label:name+' · '+label});
+    if(!previous){add(nameField,t('新增'));continue;}
+    for(const key of Object.keys(row)){
+      if(previous[key]===row[key]||key==='tailscaleNodeId'&&previous.publicUrl!==row.publicUrl)continue;
+      const id=key==='tailscaleNodeId'?'publicUrl':key;
+      const node=$('connection-'+row.id+'-'+id);
+      add(node,fieldName(node)||t('连接方式'));
+    }
+  }
+  for(const row of before.values())changes.push({panel:'network',node:$('add-connection'),label:(row.name||connectionLabel(row.accessMode))+' · '+t('移除')});
+  return changes;
+}
+let changedFields=[];
+function renderChangedFields(changes){
+  const previous=changedFields;
+  changedFields=changes;
+  for(const {node} of previous)if(node&&!changes.some(entry=>entry.node===node))delete node.dataset.unsaved;
+  for(const entry of changes){
+    if(entry.node)entry.node.dataset.unsaved='true';
+    entry.caption=t(titles[entry.panel])+' › '+entry.label;
+  }
+  // Keep keyboard focus in the list across status refreshes and continued typing.
+  if(previous.length===changes.length&&changes.every((entry,index)=>entry.caption===previous[index].caption))return;
+  const buttons=changes.map((entry,index)=>{
+    const button=document.createElement('button');button.type='button';
+    button.textContent=entry.caption;
+    button.onclick=()=>{$('dirty-details').open=false;revealField(changedFields[index].node);};
+    return button;
+  });
+  $('dirty-fields').replaceChildren(...buttons);
+  if(!buttons.length)$('dirty-details').open=false;
+}
 function updateDirty(){
-  const changed=new Set();
-  for(const node of fields())if((node.id==='webhook-sign-secret'?!!node.value:node.id==='webhook-url'?webhookUrlDraft():node.type==='checkbox'?node.checked:node.value)!==savedFields[node.id])changed.add(moduleName(node.closest('[data-panel]').dataset.panel));
-  if(JSON.stringify(connectionDraft)!==savedConnections||JSON.stringify(lanDraft)!==savedLan)changed.add('network');
-  dirty=changed.size>0;
+  const changes=[];
+  for(const node of fields()){
+    if(fieldValue(node)===savedFields[node.id])continue;
+    changes.push({panel:moduleName(node.closest('[data-panel]').dataset.panel),node,label:fieldName(node)});
+  }
+  if(JSON.stringify(connectionDraft)!==savedConnections)changes.push(...connectionChanges());
+  if($('lan-scope').value==='selected'){
+    const previous=new Set(JSON.parse(savedLan)),current=new Set(lanDraft);
+    const boxes=[...$('lan-addresses').querySelectorAll('[data-lan-interface]')];
+    for(const id of new Set([...previous,...current])){
+      if(previous.has(id)===current.has(id))continue;
+      const node=boxes.find(box=>box.dataset.lanInterface===id);
+      const name=snapshot?.networkInterfaces?.find(row=>row.id===id)?.name||id;
+      changes.push({panel:'network',node:node||$('lan-scope'),label:t('局域网访问范围')+' · '+name});
+    }
+  }
+  const changed=new Set(changes.map(entry=>entry.panel));
+  dirty=changes.length>0;
+  renderChangedFields(changes);
   for(const button of document.querySelectorAll('[data-tab]')){
     const unsaved=changed.has(button.dataset.tab);
     button.dataset.dirty=String(unsaved);
@@ -72,7 +140,7 @@ function updateDirty(){
   document.querySelectorAll('#connections input,#connections select,[data-remove-connection]').forEach(node=>node.disabled=!!snapshot?.runtime.running||busyActions.size>0);
   $('save').disabled=saving||busyActions.size>0;
   $('dirty-dot').hidden=!dirty;
-  $('dirty-label').textContent=dirty?t('有未保存的修改'):t('配置已保存');
+  $('dirty-label').textContent=dirty?t('有未保存的修改')+' ('+changes.length+')':t('配置已保存');
   $('save-bar').hidden=!dirty;
   for(const [id,key] of [['lan','lan'],['local-access','localAccess']]){
     const status=$(id+'-saved-state');if(!status)continue;
@@ -97,12 +165,19 @@ function feedback(text,error=false,kind=''){
   toastTimer=setTimeout(dismissToast,5000);
 }
 $('toast-close').onclick=dismissToast;
-function focusField(node){
+function revealField(node){
   if(!node)return;
   const panel=node.closest('[data-panel]');if(panel)tab(panel.dataset.panel);
+  const client=node.closest('[data-client-config]')?.dataset.clientConfig;
+  if(client)window.GatewayLayout?.selectClient(client);
   for(let parent=node.parentElement;parent;parent=parent.parentElement)if(parent.tagName==='DETAILS')parent.open=true;
+  node.scrollIntoView({block:'center',behavior:'instant'});node.focus({preventScroll:true});
+}
+function focusField(node){
+  if(!node)return;
+  revealField(node);
   document.querySelectorAll('[aria-invalid="true"]').forEach(item=>item.removeAttribute('aria-invalid'));
-  node.setAttribute('aria-invalid','true');node.scrollIntoView({block:'center',behavior:'instant'});node.focus({preventScroll:true});
+  node.setAttribute('aria-invalid','true');
   node.addEventListener('input',()=>node.removeAttribute('aria-invalid'),{once:true});
 }
 function unwrapValidation(value){if(value?.validationError)throw Object.assign(Error(value.validationError.message),{validation:value.validationError});return value;}
@@ -244,6 +319,7 @@ function render(value,watchRevision=watchPanel.revision){
   if(!webhookCreating){if(!webhookRows().some(row=>row.webhookId===webhookSelectedId)&&(!webhookSavedFields||!webhookDirty()))webhookSelectedId=webhookRows()[0]?.webhookId||'legacy';const row=webhookRow();if(!webhookSavedFields||(JSON.stringify(row)!==webhookRenderedRowSignature&&!webhookDirty()))renderWebhookEditor(row);}
   renderWebhookCopy(webhookCreating?{}:webhookRow());
   renderWebhookList();
+  renderLan();
   updateDirty();
   $('network-lock').hidden=!running;
   for(const id of ['lan','local-access','port','connection-kind','add-connection','origins','cloudflared','codex-home','ipc-path','codex-bin'])$(id).disabled=running;
@@ -254,7 +330,6 @@ function render(value,watchRevision=watchPanel.revision){
     const summary=node.closest('.connection-card')?.querySelector('.connection-summary');if(summary&&row)summary.textContent=connectionSummary(row);
   }
   document.querySelectorAll('[data-pick]').forEach(button=>button.disabled=running);
-  renderLan();
   renderCloudflared();
   renderUpdate();
   loadSavedSecrets();
@@ -263,7 +338,7 @@ let renderedSnapshot='',renderedDirty=false,renderedRevision=-1;
 async function refresh(force=false){if(loading||(document.hidden&&force!==true))return;loading=true;try{const revision=watchPanel.revision,networkRevision=networkAdaptationRevision,value=await api.snapshot();if(networkRevision!==networkAdaptationRevision)value.networkAdaptation=networkAdaptationState;const signature=JSON.stringify(value);if(signature!==renderedSnapshot||renderedDirty!==dirty||renderedRevision!==revision||startingUntil){render(value,revision);renderedSnapshot=signature;renderedDirty=dirty;renderedRevision=revision;}}catch(e){feedback(e.message,true);}finally{loading=false;}}
 function collect(){const rows=snapshot?.networkInterfaces||[],selected=rows.filter(row=>lanDraft.includes(row.id));return {...(snapshot?.loginStartup?.supported?{loginStartup:$('login-startup').checked}:{}),preferences:{autoStart:$('auto-start').checked,port:Number($('port').value),lan:$('lan').checked,lanInterfaces:$('lan-scope').value==='all'?null:[...lanDraft],lanAddresses:$('lan-scope').value==='all'?null:[...new Set(selected.flatMap(row=>row.addresses||[]))],localAccess:$('local-access').checked,connections:connectionDraft.map(row=>row.accessMode==='external'||row.accessMode==='nas'?{...row,publicUrl:normalizeExternalUrl(row.publicUrl||'')}:row),cloudflared:$('cloudflared').value.trim(),codexHome:$('codex-home').value.trim(),ipcPath:$('ipc-path').value.trim(),codexBin:$('codex-bin').value.trim()},auth:{sessionHours:Number($('session-hours').value),mode:$('auth-mode').value,username:$('username').value.trim(),password:submittedSecret('password'),revokeBoundDevices:$('revoke-bound-devices').checked},origins:$('origins').value.split('\n').map(s=>s.trim()).filter(Boolean),notifications:{mobileEnabled:$('mobile-enabled').checked,mobileAppLinks:$('mobile-app-links').checked,securityEnabled:$('security-enabled').checked,addressEnabled:$('address-enabled').checked,addressName:$('address-name').value.trim(),pushplusEnabled:$('pushplus-enabled').checked,pushplusToken:submittedSecret('pushplus-token'),clearPushplusToken:$('clear-pushplus-token').checked,enabled:$('ntfy-enabled').checked,server:$('ntfy-server').value.trim(),topic:$('ntfy-topic').value.trim(),token:submittedSecret('ntfy-token'),clearToken:$('clear-token').checked,barkEnabled:$('bark-enabled').checked,barkServer:$('bark-server').value.trim(),barkKey:submittedSecret('bark-key'),clearBarkKey:$('clear-bark-key').checked,clickBase:$('click-base').value.trim(),includeTitle:$('include-title').checked}};}
 $('settings').onsubmit=async event=>{
-  event.preventDefault();if(saving||busyActions.size)return;const invalid=[...$('settings').querySelectorAll('input,textarea,select')].find(node=>!node.closest('#file-transfer-settings')&&!node.closest('#webhook-editor')&&!node.disabled&&!node.validity.valid&&(!node.closest('.connection-card')||connectionDraft.find(row=>row.id===node.closest('.connection-card').dataset.connectionId)?.enabled));if(invalid){focusField(invalid);feedback(invalid.validationMessage,true);return;}saving=true;$('save').disabled=true;const submitted=fieldValues(),submittedConnections=JSON.stringify(connectionDraft),submittedLan=JSON.stringify(lanDraft);
+  event.preventDefault();if(saving||busyActions.size)return;const invalid=[...$('settings').querySelectorAll('input,textarea,select')].find(node=>(gatewayFieldIds.has(node.id)||node.dataset.connectionField)&&!node.disabled&&!node.validity.valid&&(!node.closest('.connection-card')||connectionDraft.find(row=>row.id===node.closest('.connection-card').dataset.connectionId)?.enabled));if(invalid){focusField(invalid);feedback(invalid.validationMessage,true);return;}saving=true;$('save').disabled=true;const submitted=fieldValues(),submittedConnections=JSON.stringify(connectionDraft),submittedLan=JSON.stringify(lanDraft);
   try{
     const value=unwrapValidation(await api.save(collect()));savedFields={...submitted};savedConnections=submittedConnections;savedLan=submittedLan;
     // Edits made while saving must remain visibly unsaved.
