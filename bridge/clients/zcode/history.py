@@ -43,7 +43,12 @@ def _history(home):
         db.execute('PRAGMA trusted_schema = OFF')
         try:
             db.execute('ATTACH DATABASE ? AS cli', (transcript.as_uri() + '?mode=ro',))
-        except sqlite3.OperationalError as error:
+        except sqlite3.DatabaseError as error:
+            # Some bundled SQLite builds do not mark their built-in JSON function
+            # innocuous for ZCode's expression index. Keep trusted_schema disabled.
+            if not isinstance(error, sqlite3.OperationalError) and str(error).casefold() != (
+                    'malformed database schema (dwf_event_artifact_idx) - unsafe use of json_extract()'):
+                raise
             raise _TranscriptUnavailable('暂时无法读取 ZCode 本机聊天记录') from error
         db.execute('BEGIN')
         yield db
