@@ -68,6 +68,8 @@ def fixture_holder(profile):
             self.w, self.r = w, r
 
         def call(self, req):
+            if req["action"] == "history":
+                raise subprocess.TimeoutExpired("fixture identity probe", 1)
             if req["action"] != "application":
                 raise ValueError("fixture only")
             os.write(self.w, b"q")
@@ -100,7 +102,9 @@ def fixture_client(profile, action):
         host.private_json(root / "gateway-control.json", {"pid": os.getpid()})
     with socket.socket(socket.AF_UNIX) as conn:
         conn.connect(record["endpoint"])
-        if action == "authorize-and-disconnect":
+        if action == "timed-out-operation":
+            req = {"command":"operation","owner":record["owner"],"native":{"action":"history"}}
+        elif action == "authorize-and-disconnect":
             req = {"command": "operation", "owner": record["owner"], "native": {"action": "application"}}
         else:
             req = {"command": "status" if action == "unauthorized" else action}
@@ -113,7 +117,7 @@ def fixture_client(profile, action):
             if action == "unauthorized":
                 return
             raise
-        if action == "unauthorized":
+        if action in ("timed-out-operation", "unauthorized"):
             assert reply["ok"] is False
         else:
             assert reply["ok"], reply.get("error")
@@ -164,6 +168,7 @@ int main(int argc,char** argv) {
                     )
                 first = json.loads(client("initialize"))
                 client("authorize-and-disconnect")
+                client("timed-out-operation")
                 self.assertEqual(json.loads(client("status"))["owner"], first)
                 client("unauthorized")
                 self.assertEqual(json.loads(client("initialize")), first)

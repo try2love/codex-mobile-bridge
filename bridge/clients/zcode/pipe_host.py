@@ -286,7 +286,9 @@ def serve(profile, application, launch=None):
                                 session["owner"] = holder.owner
                                 private_json(record, session)
                             reply = {"ok": True, "value": result}
-                        except (OSError, ValueError, KeyError, TypeError, EOFError) as exc:
+                        except Exception as exc:
+                            # Fail this transaction, including OS probe/renderer timeouts.
+                            # The custodian must still accept the next verified connection.
                             reply = {"ok": False, "error": str(exc)[:600]}
                         try:
                             exchange_write(client, reply, 2)
