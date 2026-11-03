@@ -95,7 +95,7 @@ class SignedGatewayPeer:
         identifier = "io.github.try2love.codexmobilebridge.zcode-pipe-starter"
         clause = f'identifier "{identifier}" and certificate leaf = H"{self.leaf_hash}"'
         result = subprocess.run(
-            ["/usr/bin/codesign", "--verify", "--strict", "-R", clause, str(bundle)],
+            ["/usr/bin/codesign", "--verify", "--strict", "-R=" + clause, str(bundle)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=6,
