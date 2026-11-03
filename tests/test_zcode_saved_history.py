@@ -93,6 +93,25 @@ class ZCodeSavedHistoryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             resume_workspace(self.home, 'sess_mismatch')
 
+    def test_legacy_sqlite_json_index_does_not_block_verified_native_resume(self):
+        from bridge.clients.zcode.history import resume_workspace
+        with closing(sqlite3.connect(self.transcript)) as db:
+            db.execute("CREATE INDEX dwf_event_artifact_idx ON message(json_extract(data,'$.artifact'))")
+
+        connect = sqlite3.connect
+        def legacy_connection(*args, **kwargs):
+            db = connect(*args, **kwargs)
+            # Deterministic but not tagged SQLITE_INNOCUOUS, as on older SQLite.
+            db.create_function('json_extract', -1, lambda *_: None, deterministic=True)
+            return db
+
+        with patch.object(sqlite3, 'connect', side_effect=legacy_connection):
+            self.assertEqual(resume_workspace(self.home, 'sess_ok'), '/work')
+            with self.assertRaises(ValueError):
+                resume_workspace(self.home, 'sess_remote')
+            with self.assertRaises(BridgeUnavailable):
+                saved_detail(self.home, 'sess_ok')
+
     def test_debug_reconnect_from_saved_chat_validates_process_and_workspace_before_binding(self):
         from bridge.clients.zcode.adapter import ZCodePrototype
         app = {'application': 'fixture.app', 'dataDirectory': self.home, 'debugFallbackPort': 17742}
