@@ -344,6 +344,7 @@ class ZCodePrototype(ZCodeDesktop):
 
     def _adopt_process(self, owner):
         if self.process != owner:
+            self.application_create = False
             self.debug_sessions.clear()
             self.bindings.clear()
             self.workspaces.clear()
