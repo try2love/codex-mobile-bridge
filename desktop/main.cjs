@@ -9,7 +9,7 @@ const {createTray}=require('./shell/tray.cjs');
 const {normalize,translate}=require('./shared/i18n.js');
 const {publishLanguage}=require('./shared/gateway-language.cjs');
 const cloudflared=require('./features/connections/cloudflared.cjs');
-const {Updater,allowedMirrorUrl}=require('./features/updates/updater.cjs');
+const {Updater,allowedMirrorUrl,activeUpdateHandoff}=require('./features/updates/updater.cjs');
 const {createLoginStartup,restoreDevelopmentEnvironment}=require('./login-startup.cjs');
 restoreDevelopmentEnvironment(app);
 const loginStartup=createLoginStartup(app);
@@ -28,8 +28,15 @@ const managementWorker=createManagementWorker();
 let connectionSecrets={},setupPending=false;
 const entry=pathToFileURL(path.join(__dirname,'index.html')).href;
 function releaseTray(){snapshotWorker.close();managementWorker.close();quitting=true;tray?.dispose();tray=null;}
+function updateTarget(){return process.platform==='darwin'?path.resolve(process.execPath,'../../..'):path.dirname(process.execPath);}
+let handoff=null;
+function currentHandoff(){return activeUpdateHandoff(process.env,updateTarget(),app.getVersion(),process.pid);}
 function loadDataDir(){
-  if(process.env.CMB_UPDATE_DATA_DIR)return path.resolve(process.env.CMB_UPDATE_DATA_DIR);
+  handoff=currentHandoff();
+  if(handoff)return handoff.dataDir;
+  // Rollback explicitly launches the previous GUI without a transaction/token.
+  if(!process.env.CMB_UPDATE_TRANSACTION&&!process.env.CMB_UPDATE_TOKEN&&process.env.CMB_UPDATE_DATA_DIR)
+    return path.resolve(process.env.CMB_UPDATE_DATA_DIR);
   if(process.env.CMB_DATA_DIR)return path.resolve(process.env.CMB_DATA_DIR);
   const saved=path.join(app.getPath('userData'),'bridge-location.json');
   if(fs.existsSync(saved))return JSON.parse(fs.readFileSync(saved,'utf8')).dataDir;
@@ -41,10 +48,12 @@ function authorize(event){
   if(!window||event.sender!==window.webContents||event.senderFrame!==window.webContents.mainFrame||event.senderFrame.url!==entry)throw Error('不允许的界面来源');
 }
 function updateResult(){try{return JSON.parse(fs.readFileSync(path.join(dataDir,'desktop-update-result.json'),'utf8'));}catch{return null;}}
-let updateHandoffPending=!!process.env.CMB_UPDATE_TRANSACTION;
 function updateManaged(){
-  if(updateHandoffPending&&fs.existsSync(path.join(process.env.CMB_UPDATE_TRANSACTION,'result.json')))updateHandoffPending=false;
-  return updateHandoffPending;
+  if(handoff){
+    const current=currentHandoff();
+    if(!current||current.transaction!==handoff.transaction||current.token!==handoff.token||current.dataDir!==handoff.dataDir)handoff=null;
+  }
+  return !!handoff;
 }
 function worker(action,payload){
   if(action==='snapshot'&&updateQuitting)return Promise.resolve({...lastSnapshot,update:updater.status()});
@@ -61,7 +70,7 @@ function worker(action,payload){
 }
 async function installUpdate(candidate){
   snapshotWorker.close();managementWorker.close();
-  const target=process.platform==='darwin'?path.resolve(process.execPath,'../../..'):path.dirname(process.execPath);
+  const target=updateTarget();
   const token=randomUUID();
   const prepared=await worker('update-prepare',{archive:candidate.archive,sha256:candidate.asset.sha256,version:candidate.version,
     platform:process.platform,arch:process.arch,target,parentPid:process.pid,token});
@@ -284,19 +293,21 @@ function register(){
     clipboard.writeText(target);
   });
 }
+async function acknowledgeUpdate(){
+  if(!updateManaged())return;
+  try{
+    await worker('snapshot');
+    if(updateManaged()&&handoff.dataDir===dataDir)
+      fs.writeFileSync(path.join(handoff.transaction,'ack.json'),JSON.stringify({token:handoff.token,version:app.getVersion(),dataDir}),{mode:0o600,flag:'wx'});
+  }catch{} // Missing acknowledgement makes the independent helper restore the old app.
+}
 function createWindow(hidden=false){
   window=new BrowserWindow({show:!hidden,width:1100,height:850,minWidth:820,minHeight:640,title:t('Codex 手机网关'),icon:path.join(__dirname,'assets/icon.png'),backgroundColor:'#f6f7f9',webPreferences:{preload:path.join(__dirname,'preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true}});
   // The native title is owned by the main process, including locale changes.
   window.on('page-title-updated',event=>event.preventDefault());
   window.webContents.setWindowOpenHandler(()=>({action:'deny'}));
   window.webContents.on('will-navigate',event=>event.preventDefault());
-  window.webContents.once('did-finish-load',async()=>{
-    if(!process.env.CMB_UPDATE_TRANSACTION)return;
-    try{
-      await worker('snapshot');
-      fs.writeFileSync(path.join(process.env.CMB_UPDATE_TRANSACTION,'ack.json'),JSON.stringify({token:process.env.CMB_UPDATE_TOKEN,version:app.getVersion(),dataDir}),{mode:0o600});
-    }catch{} // Missing acknowledgement makes the independent helper restore the old app.
-  });
+  window.webContents.once('did-finish-load',acknowledgeUpdate);
   window.loadFile(path.join(__dirname,'index.html'));
   window.on('close',event=>{if(tray&&!quitting){event.preventDefault();window.hide();}});
   window.on('closed',()=>{window=null;});
