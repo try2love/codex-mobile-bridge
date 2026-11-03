@@ -28,20 +28,20 @@ class ForkUnavailable(CreationUnavailable):
     """The capability check failed before any thread could be created."""
 
 
-def runtime_environment(codex_home):
-    # User-scoped helpers must use this profile's configured databases, even
-    # when the gateway itself was launched by an editor using a SQL override.
+def runtime_environment(codex_home, *, isolated_home=False):
+    # Only a separately registered home has an enforced database boundary.
     env = dict(os.environ, CODEX_HOME=str(codex_home))
-    env.pop('CODEX_SQLITE_HOME', None)
+    if isolated_home:
+        env.pop('CODEX_SQLITE_HOME', None)
     return env
 
 
-def _runtime_operation(executable, codex_home, cwd, operation, *, failure_message=None):
+def _runtime_operation(executable, codex_home, cwd, operation, *, failure_message=None, isolated_home=False):
     if not executable:
         raise CreationUnavailable('找不到 Codex 运行时，请在电脑启动器的运行配置中指定路径')
     if not Path(cwd).is_dir():
         raise CreationUnavailable('项目目录不存在，请先在电脑 App 中检查项目')
-    env = runtime_environment(codex_home)
+    env = runtime_environment(codex_home, isolated_home=isolated_home)
     kwargs = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
     try:
         process = subprocess.Popen([str(executable), 'app-server', '--listen', 'stdio://'],
@@ -312,7 +312,7 @@ def create_empty(executable, codex_home, cwd, title, project=None):
     return _runtime_operation(executable, codex_home, cwd, create)
 
 
-def fork_copy(executable, codex_home, cwd, source_id, turn_id, title, settings, *, thread_source=None):
+def fork_copy(executable, codex_home, cwd, source_id, turn_id, title, settings, *, thread_source=None, isolated_home=False):
     if not executable:
         raise ForkUnavailable('找不到 Codex 运行时，请在电脑启动器的运行配置中指定路径')
     # Check the bundled runtime, not a guessed version. Older servers can silently
@@ -348,7 +348,7 @@ def fork_copy(executable, codex_home, cwd, source_id, turn_id, title, settings, 
             raise CreationError('分支模型提供商不一致，请检查桌面聊天列表')
         request('thread/name/set', {'threadId': thread['id'], 'name': title})
         return thread['id']
-    return _runtime_operation(executable, codex_home, cwd, fork)
+    return _runtime_operation(executable, codex_home, cwd, fork, isolated_home=isolated_home)
 
 
 def open_project_in_desktop(cwd):
@@ -381,10 +381,11 @@ def _open_desktop_url(url):
         raise CreationError('请在支持 Codex App 的 Mac 或 Windows 电脑运行网关')
 
 
-def rename_thread(executable, codex_home, thread_id, title):
+def rename_thread(executable, codex_home, thread_id, title, *, isolated_home=False):
     uuid.UUID(thread_id)
     return _runtime_operation(executable, codex_home, str(codex_home),
-                              lambda request: request('thread/name/set', {'threadId': thread_id, 'name': title}))
+                              lambda request: request('thread/name/set', {'threadId': thread_id, 'name': title}),
+                              isolated_home=isolated_home)
 
 
 class ArchiveRejected(CreationError):
@@ -468,7 +469,7 @@ def stop_archive_runtime(request, identifiers, timeout=20):
             time.sleep(.1)
 
 
-def archive_thread(executable, codex_home, thread_id, archived, identifiers):
+def archive_thread(executable, codex_home, thread_id, archived, identifiers, *, isolated_home=False):
     uuid.UUID(thread_id)
     sent = False
     def dispatch(request):
@@ -477,7 +478,7 @@ def archive_thread(executable, codex_home, thread_id, archived, identifiers):
         sent = True
         return request('thread/archive' if archived else 'thread/unarchive', {'threadId': thread_id})
     try:
-        return _runtime_operation(executable, codex_home, str(codex_home), dispatch)
+        return _runtime_operation(executable, codex_home, str(codex_home), dispatch, isolated_home=isolated_home)
     except Exception as exc:
         if not sent:
             raise ArchiveNotSent(str(exc)) from exc

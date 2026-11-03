@@ -235,6 +235,10 @@ class LiveSession:
             return self.tool_images.get(image_id)
 
 
+def _runtime_scope(host):
+    return {'isolated_home': True} if host.startswith('codex:') else {}
+
+
 class Bridge:
     def __init__(self, codex_home, data_dir, host="local", alias=None, ipc_path=None, codex_bin=None, goal_rpc=None, owner_goal=None, cli_sessions=None, entry_label=None, owner_guard=None):
         self.host = host
@@ -281,7 +285,7 @@ class Bridge:
         if host == 'local' and sys.platform == 'win32':
             from bridge.features.accounts.wsl_accounts import WslAccounts
             self.wsl_accounts = WslAccounts(self)
-        self.goal = goal_rpc or (GoalRPC(codex_home, codex_bin, executable_getter=executable_getter) if self.local else None)
+        self.goal = goal_rpc or (GoalRPC(codex_home, codex_bin, executable_getter=executable_getter, **_runtime_scope(host)) if self.local else None)
         self.owner_goal = owner_goal
         self.goal_transport = 'owner' if owner_goal else 'sidecar'
         self._open_desktop = open_in_desktop
@@ -291,7 +295,7 @@ class Bridge:
         self.lock = threading.RLock()
         self.ipc = DesktopIPC(ipc_path or ipc_endpoint(codex_home), self._event, self._disconnected)
         self.side_chats = SideChats(codex_bin, self.codex_home, self.data_dir, self.native_host,
-                                   executable_getter=executable_getter)
+                                   executable_getter=executable_getter, **_runtime_scope(host))
         self.closed = threading.Event()
         self.native_model_store = ModelStore(self.data_dir)
         self.native_model_lock = threading.Lock()
@@ -1058,7 +1062,7 @@ class Bridge:
                     try:
                         if self.local:
                             if self.host.startswith('codex:'):
-                                args['thread_source'] = 'cli'
+                                args.update(thread_source='cli', isolated_home=True)
                             child = fork_copy(self.catalog_reader.executable, self.codex_home, **args)
                         else:
                             host = self.hosts.hosts()[self.host]
@@ -3046,7 +3050,7 @@ class Bridge:
                     source += 'archive_thread(runtime, home, **' + payload({'thread_id': thread_id, 'archived': archived, 'identifiers': identifiers}) + ')\nprint(json.dumps({"ok":True}))\n'
                     ssh_read(self.store.alias, source, timeout=90)
                 else:
-                    archive_thread(self.catalog_reader.executable, self.codex_home, thread_id, archived, identifiers)
+                    archive_thread(self.catalog_reader.executable, self.codex_home, thread_id, archived, identifiers, **_runtime_scope(self.host))
             return call
         result = self.archive_commands.perform(thread_id, archived, request_id, read, prepare)
         return {**result, 'host': self.host}
@@ -3074,7 +3078,7 @@ class Bridge:
                 with self.store.lock:
                     self.store.cache.clear()
             else:
-                rename_thread(self.catalog_reader.executable, self.codex_home, thread_id, title)
+                rename_thread(self.catalog_reader.executable, self.codex_home, thread_id, title, **_runtime_scope(self.host))
             with session.condition:
                 if session.state is not None:
                     session.state['title'] = title
@@ -3105,7 +3109,7 @@ class Bridge:
             else:
                 result = _runtime_operation(self.catalog_reader.executable, self.codex_home, str(self.codex_home),
                     lambda request: native_organization(request, thread_id, change, expected_cwd=metadata.get('cwd')),
-                    failure_message='原生分类结果待核对，请刷新会话列表')
+                    failure_message='原生分类结果待核对，请刷新会话列表', **_runtime_scope(self.host))
             return result
         with session.action_lock:
             result = execute(None) if change is None else self.organization_commands.perform(
