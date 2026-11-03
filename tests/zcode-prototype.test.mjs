@@ -53,6 +53,39 @@ test('application handshake reads the original project service without activatin
   await assert.rejects(f.request('application'),/会话服务/);
 });
 
+test('cold readiness identifies a missing service, handshake and project tree without acquiring a chat',async()=>{
+  const f=fixture(),nodes=document.querySelectorAll();
+  document.querySelectorAll=()=>[];
+  assert.deepEqual(await f.request('application'),{ready:false,stage:'services'});
+  document.querySelectorAll=()=>nodes;
+  const hello=f.agent.helloConversationV4;
+  f.agent.helloConversationV4=async()=>null;
+  assert.deepEqual(await f.request('application'),{ready:false,stage:'handshake'});
+  f.agent.helloConversationV4=hello;
+  f.services.projectService.readTree=async()=>null;
+  assert.deepEqual(await f.request('application'),{ready:false,stage:'projects'});
+  f.services.projectService.readTree=async()=>({tasks:[]});
+  assert.deepEqual(await f.request('application'),{ready:true});
+  assert.deepEqual(f.calls,[]);
+});
+
+test('startup observers join one slow original hello and tree read without entering a conversation',async()=>{
+  const f=fixture(), hello=f.agent.helloConversationV4;
+  let helloDone, treeDone, hellos=0, trees=0;
+  f.agent.helloConversationV4=()=>{hellos++; return new Promise(resolve=>{helloDone=resolve;});};
+  f.services.projectService.readTree=()=>{trees++; return new Promise(resolve=>{treeDone=resolve;});};
+  const probe=()=>f.request('application',{startupId:'one-start'});
+  assert.deepEqual(await probe(),{ready:false,stage:'handshake'});
+  assert.deepEqual(await probe(),{ready:false,stage:'handshake'});
+  assert.equal(hellos,1);
+  helloDone(await hello());
+  assert.deepEqual(await probe(),{ready:false,stage:'projects'});
+  assert.equal(trees,1);
+  treeDone({tasks:[]});
+  assert.deepEqual(await probe(),{ready:true});
+  assert.deepEqual([hellos,trees,f.calls.length],[1,1,0]);
+});
+
 test('runtime handshake requires owner, command and receipt primitives independently of release version',async()=>{
   for(const missing of ['helloConversationV4','getWorkspaceRuntimeIdentity','queryConversationCommandsV4','sendConversationCommandV4']){
     const f=fixture();delete f.agent[missing];

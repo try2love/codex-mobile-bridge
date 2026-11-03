@@ -283,6 +283,7 @@ class ZCodePrototype(ZCodeDesktop):
         self.process = config.get('process')
         self.application_owner = None
         self.application_create = False
+        self.application_start = None
         self.debug_sessions = set()
         self.workspaces = {self.sid: self.workspace} if self.sid else {}
         self.bindings = {self.workspace: config['binding']} if config.get('binding') and self.workspace else {}
@@ -322,6 +323,72 @@ class ZCodePrototype(ZCodeDesktop):
         except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
             raise BridgeUnavailable('无法核验本机兼容端口，请检查 17742 是否已被其他进程占用。') from exc
 
+    def release_window(self):
+        super().release_window()
+        self.application_start = None
+
+    def _confirm_application(self, owner, result):
+        if not isinstance(result, dict) or result.get('ready') is not True or self._live_process() != owner:
+            raise BridgeUnavailable('ZCode 原 App 未确认连接。')
+        self._adopt_process(owner)
+        self.application_create = result.get('canCreate') is True
+
+    def start_private_application(self, owner):
+        # Only the verified gateway-owned original may enter this state. Inventory
+        # observations never launch an App, acquire a chat, or send a command.
+        self.application_start = {'owner': owner, 'id': str(uuid.uuid4()), 'stage': -1, 'until': time.monotonic() + 180,
+                                  'next': 0, 'delay': 2}
+        state = self.observe_application_start()
+        if state and state['connectionState'] == 'error':
+            raise BridgeUnavailable(state['reason'])
+
+    def observe_application_start(self):
+        attempt = self.application_start
+        if not attempt:
+            return None
+        def failed(phase, reason):
+            if self.application_start is not attempt:
+                return None
+            self._adopt_process(None)
+            self.application_start = {'failure': {'connectionState': phase, 'reason': reason}}
+            return self.application_start['failure']
+        if 'failure' in attempt:
+            return attempt['failure']
+        now = time.monotonic()
+        if now >= attempt['until']:
+            return failed('timeout', 'ZCode 的会话服务长时间未就绪，请重试连接。')
+        waiting = {'connectionState': 'connecting', 'reason': 'ZCode 已启动，正在连接原生会话服务。'}
+        if now < attempt['next']:
+            return waiting
+        owner = attempt['owner']
+        try:
+            if self._live_process() != owner:
+                raise BridgeUnavailable('ZCode 原进程已变化，请重新连接。')
+            try:
+                result = self.transport({'action': 'application', 'expectedProcess': owner,
+                                         'body': {'startupId': attempt['id']},
+                                         'expiresAt': int((time.time() + min(12, max(3, attempt['delay']))) * 1000)})
+            except (TimeoutError, subprocess.TimeoutExpired):
+                result = {'ready': False, 'stage': 'waiting'}
+            if self.application_start is not attempt:
+                return None
+            if result.get('ready') is True:
+                self._confirm_application(owner, result)
+                self.application_start = None
+                return None
+            stages = ('waiting', 'window', 'services', 'handshake', 'projects')
+            if result.get('ready') is not False or result.get('stage') not in stages:
+                raise BridgeUnavailable('ZCode 原 App 未确认会话服务。')
+            stage = stages.index(result['stage'])
+        except (OSError, EOFError, ValueError, AttributeError, subprocess.SubprocessError) as error:
+            return failed('error', (str(error).splitlines() or ['ZCode 原生连接失败，请重试。'])[0])
+        self._adopt_process(None)
+        now = time.monotonic()
+        if stage > attempt['stage']:
+            attempt.update(stage=stage, until=now + 180, delay=2)
+        attempt.update(next=now + attempt['delay'], delay=min(20, attempt['delay'] * 2))
+        return waiting
+
     def connect_application(self, pid, *, wait=False, deadline=None):
         # Cold startup needs time to mount its native services. Only probe the App,
         # never create/select a workspace or submit a command during this retry.
@@ -339,10 +406,7 @@ class ZCodePrototype(ZCodeDesktop):
                             raise TimeoutError('原 App 会话服务尚未就绪')
                         request['expiresAt'] = int((time.time() + min(12, left)) * 1000)
                     result = self.transport(request)
-                    if result.get('ready') is not True or self._live_process() != owner:
-                        raise BridgeUnavailable('ZCode 原 App 未确认连接。')
-                    self._adopt_process(owner)
-                    self.application_create = result.get('canCreate') is True
+                    self._confirm_application(owner, result)
                     return
             except (ValueError, OSError, EOFError, subprocess.TimeoutExpired) as error:
                 left = deadline - time.monotonic()

@@ -24,15 +24,19 @@ export async function nativeRequest(request) {
         if (services?.zcodeAgentService) found.add(services);
       }
     }
+    if (!found.size && request.action === 'application') return { services: null };
     if (found.size !== 1) throw Error('Original ZCode service accessor is unavailable or ambiguous');
     return { services: [...found][0], contexts: [...contexts], registryAnchor };
   };
-  const { services, contexts, registryAnchor } = findServices(), agent = services.zcodeAgentService;
+  const { services, contexts, registryAnchor } = findServices();
+  if (!services) return { ready: false, stage: 'services' };
+  const agent = services.zcodeAgentService;
   const handshake = async () => {
     if (!['helloConversationV4', 'getWorkspaceRuntimeIdentity', 'sendConversationCommandV4',
           'queryConversationCommandsV4'].every(name => typeof agent[name] === 'function'))
       throw Error('ZCode 原 App 缺少会话服务接口');
     const hello = await agent.helloConversationV4();
+    if (hello == null && request.action === 'application') return null;
     if (hello?.protocolVersion !== 3 || hello.clientMode !== 'desktop-continuous' ||
         typeof hello.connectionId !== 'string' || !hello.connectionId)
       throw Error('ZCode 原 App 会话服务协议不兼容');
@@ -43,13 +47,44 @@ export async function nativeRequest(request) {
   const hasAttachments = ['attachmentBeginV4', 'attachmentChunkV4', 'attachmentCommitV4', 'attachmentAbortV4']
     .every(name => typeof agent[name] === 'function');
   if (request.action === 'application') {
-    await handshake();
-    if (typeof services.projectService?.readTree !== 'function' ||
-        !Array.isArray((await services.projectService.readTree({}))?.tasks))
-      throw Error('ZCode 原 App 的会话服务尚未就绪');
-    const canCreate = typeof services.projectService.prepareSession === 'function' &&
-      typeof services.projectService.readProjects === 'function' && hasModels;
-    return { ready: true, ...(canCreate ? { canCreate: true } : {}) };
+    const check = async stage => {
+      if (!await handshake()) return { ready: false, stage: 'handshake' };
+      stage?.('projects');
+      if (typeof services.projectService?.readTree !== 'function') throw Error('ZCode 原 App 缺少项目会话服务接口');
+      const tree = await services.projectService.readTree({});
+      if (tree == null) return { ready: false, stage: 'projects' };
+      if (!Array.isArray(tree.tasks)) throw Error('ZCode 原 App 的项目会话服务协议不兼容');
+      const canCreate = typeof services.projectService.prepareSession === 'function' &&
+        typeof services.projectService.readProjects === 'function' && hasModels;
+      return { ready: true, ...(canCreate ? { canCreate: true } : {}) };
+    };
+    const id = request.body?.startupId;
+    if (!id) return check();
+    const slot = key + 'Startup';
+    let job = window[slot];
+    if (!job || job.id !== id || job.agent !== agent) {
+      if (job) clearTimeout(job.timer);
+      job = window[slot] = { id, agent };
+      const stage = value => {
+        if (window[slot] !== job) throw Error('ZCode 原生启动观察已失效');
+        job.stage = value;
+        clearTimeout(job.timer);
+        job.timer = setTimeout(() => { if (window[slot] === job) delete window[slot]; }, 180000);
+      };
+      stage('handshake');
+      job.work = check(stage).then(reply => { job.reply = reply; }, error => { job.error = error; });
+    }
+    // A slow original hello/tree read continues after this short CDP visit.
+    // A later observation joins it without replaying either native operation.
+    let timer;
+    try {
+      await Promise.race([job.work, new Promise(resolve => { timer = setTimeout(resolve, 80); })]);
+    } finally { clearTimeout(timer); }
+    if (window[slot] !== job) throw Error('ZCode 原生启动观察已失效');
+    if (!job.reply && !job.error) return { ready: false, stage: job.stage };
+    delete window[slot]; clearTimeout(job.timer);
+    if (job.error) throw job.error;
+    return job.reply;
   }
   if (request.action === 'registry-probe') return typeof window.__codexMobileZCodeAcquireWorkspace === 'function' ||
     contexts.find(context => !context.layer.disposed)?.layer.acquire || registryAnchor;

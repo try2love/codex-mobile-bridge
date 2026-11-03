@@ -1504,8 +1504,11 @@ class DesktopSessions:
                 raise ValueError('无法确认唯一的 ZCode 进程，请刷新后重试。')
         if owner and state['mainPids'] != [owner['pid']]:
             raise ValueError('ZCode 进程已变化，请刷新后重试。')
-        adapter.connect_application(state['mainPids'][0], wait=launched,
-                                    deadline=cold_deadline if launched else None)
+        if private_pipe and sys.platform in ('win32', 'linux'):
+            adapter.start_private_application(owner)
+        else:
+            adapter.connect_application(state['mainPids'][0], wait=launched,
+                                        deadline=cold_deadline if launched else None)
         self.adapters = {**self.adapters, 'zcode': adapter}
         self.config['zcodeCompatibility'] = not private_pipe
 
@@ -1969,7 +1972,11 @@ class DesktopSessions:
                                  'canStartDesktop': status.get('automaticConnection') == 'native-console'} if provider == 'claude' else {})})
             if 'zcode' in self.adapters:
                 enabled = self.enabled('zcode')
-                status = self.adapters['zcode'].inventory_status() if enabled else {}
+                adapter = self.adapters['zcode']
+                observing = (enabled and self.gateway_running and not self.closed.is_set()
+                             and getattr(adapter, 'application_start', None))
+                startup = adapter.observe_application_start() if observing else None
+                status = startup or (adapter.inventory_status() if enabled else {})
                 connected = status.get('connected') is True
                 zcode = self._descriptor('zcode')
                 installed = zcode['installed']
@@ -1990,6 +1997,10 @@ class DesktopSessions:
                              'compatibilityLaunch': zcode['compatibilitySupported'] and self.config.get('zcodeCompatibility') is True,
                              'capabilities': {'create': status.get('canCreate') is True, 'accounts': True,
                                               'notifications': True}})
+                if startup:
+                    phase = startup['connectionState']
+                    rows[-1].update(connectionState=phase, setupStatus='connecting' if phase == 'connecting' else 'failed',
+                                    canInitializeDesktop=phase != 'connecting')
             from bridge.clients.lifecycle import inspect_clients
             descriptors = []
             for row in rows:

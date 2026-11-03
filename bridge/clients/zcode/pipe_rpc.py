@@ -173,6 +173,8 @@ class PipeTransport:
             if row.get("type") == "page"
             and row.get("url", "").split("?")[0].split("#")[0] == self.window_url
         ]
+        if not matches and request["action"] == "application":
+            return {"ready": False, "stage": "window"}
         if len(matches) != 1 or not matches[0].get("targetId"):
             raise ValueError("原 ZCode 窗口尚未就绪或无法唯一定位")
         session = self._rpc(
@@ -225,14 +227,19 @@ class PipeTransport:
         if type(expiry) not in (int, float) or not math.isfinite(expiry):
             raise ValueError("ZCode request deadline invalid")
         deadline = time.monotonic() + min(limit, (expiry / 1000) - now)
-        if not self._lock.acquire(timeout=remaining(deadline)):
-            raise TimeoutError("ZCode pipe is busy")
         try:
-            return self._with_window(
-                {**request, "expiresAt": min(expiry, int((now + limit) * 1000))}, deadline
-            )
-        finally:
-            self._lock.release()
+            if not self._lock.acquire(timeout=remaining(deadline)):
+                raise TimeoutError("ZCode pipe is busy")
+            try:
+                return self._with_window(
+                    {**request, "expiresAt": min(expiry, int((now + limit) * 1000))}, deadline
+                )
+            finally:
+                self._lock.release()
+        except TimeoutError:
+            if request["action"] == "application" and not self.broken:
+                return {"ready": False, "stage": "waiting"}
+            raise
 
     def request_quit(self):
         # Called only through the separately authorized lifecycle operation.

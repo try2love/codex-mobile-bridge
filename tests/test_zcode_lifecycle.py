@@ -2,6 +2,7 @@
 import json
 import plistlib
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -69,6 +70,85 @@ class ZCodeLifecycleTests(unittest.TestCase):
         self.assertTrue(self.manager.adapters['zcode'].config['privatePipe'])
         ordinary.assert_not_called()
         port.assert_not_called()
+
+    def test_verified_private_start_becomes_ready_from_status_refresh_after_the_request_budget(self):
+        from bridge.clients.zcode.local_pipe_host import LocalPipeClient
+        row = self.manager.config['discovered']['zcode']
+        process = {'pid': 77, 'birth': 'original'}
+        pipe = Mock(spec=LocalPipeClient)
+        pipe.application = row['application']
+        pipe.supported.return_value = True
+        pipe.owner.side_effect = lambda: process if pipe.start.called else None
+        pipe.start.return_value = process
+        pipe.call.side_effect = [{'ready': False, 'stage': 'window'}, {'ready': True, 'canCreate': True},
+                                 {'ready': False, 'stage': 'handshake'}]
+        self.manager.zcode_pipe = pipe
+        self.manager._configure_zcode()
+        native = {**self.state, 'running': False, 'mainPids': [], 'pids': []}
+        now = [100.]
+        get = lambda report: next(c for c in report['clients'] if c['id'] == 'zcode')
+        with patch('sys.platform', 'linux'), patch('bridge.clients.zcode.installation.installation', return_value=row), \
+                patch('bridge.clients.manager.time.monotonic', side_effect=lambda: now[0]), \
+                patch('bridge.clients.lifecycle.inspect_client', side_effect=[native, self.state, self.state]), \
+                patch('bridge.clients.lifecycle.launch_client') as ordinary:
+            pending = get(self.toggle(True))
+            self.assertEqual(pending['connectionState'], 'connecting')
+            self.assertTrue(pending['enabled'])
+            self.assertFalse(pending['pipeReady'] or pending['capabilities']['create'] or pending['connected'])
+            self.manager.clients(refresh=True)
+            self.assertEqual(pipe.call.call_count, 1)
+            now[0] += 40
+            done = threading.Event()
+            refresh = self.manager._refresh_clients_status
+            def observe():
+                try:
+                    refresh()
+                finally:
+                    done.set()
+            with patch.object(self.manager, '_refresh_clients_status', side_effect=observe):
+                self.assertTrue(self.manager.clients_status()['pending'])
+                self.assertTrue(done.wait(2))
+                ready = get(self.manager.clients_status())
+            self.assertEqual(ready['setupStatus'], 'session-access')
+            self.assertTrue(ready['pipeReady'] and ready['capabilities']['create'])
+            checks = [c.args[0] for c in pipe.call.call_args_list]
+            self.assertEqual([req['action'] for req in checks], ['application', 'application'])
+            self.assertEqual(checks[0]['body']['startupId'], checks[1]['body']['startupId'])
+            # Start a fresh observation on the same holder, then stop phone access.
+            self.assertEqual(get(self.toggle(True))['connectionState'], 'connecting')
+            self.toggle(False, quitDesktop=False)
+            now[0] += 60
+            self.assertFalse(get(self.manager.clients(refresh=True))['enabled'])
+            self.assertEqual(pipe.call.call_count, 3)
+            pipe.start.assert_called_once_with()
+            pipe.request_quit.assert_not_called()
+            ordinary.assert_not_called()
+
+    def test_application_observation_expires_or_rejects_a_different_owner_without_relaunch(self):
+        from bridge.clients.zcode.adapter import ZCodePrototype
+        owner = {'pid': 77, 'birth': 'one'}
+        pipe = Mock()
+        pipe.owner.return_value = owner
+        pipe.call.return_value = {'ready': False, 'stage': 'services'}
+        adapter = ZCodePrototype(self.root, {'privatePipe': True}, pipe=pipe)
+        now = [0.]
+        with patch('bridge.clients.zcode.adapter.time.monotonic', side_effect=lambda: now[0]):
+            adapter.start_private_application(owner)
+            now[0] = 181
+            self.assertEqual(adapter.observe_application_start()['connectionState'], 'timeout')
+            self.assertEqual(pipe.call.call_count, 1)
+            adapter.start_private_application(owner)
+            now[0] += 5
+            pipe.owner.return_value = {'pid': 77, 'birth': 'two'}
+            self.assertEqual(adapter.observe_application_start()['connectionState'], 'error')
+            self.assertEqual(pipe.call.call_count, 2)
+            self.assertIsNone(adapter.application_owner)
+            pipe.owner.return_value = owner
+            pipe.call.side_effect = ValueError('ZCode 原 App 会话服务协议不兼容')
+            with self.assertRaisesRegex(ValueError, '协议不兼容'):
+                adapter.start_private_application(owner)
+            self.assertIsNone(adapter.application_owner)
+            pipe.start.assert_not_called()
 
     def test_cold_probes_share_one_native_deadline_and_an_existing_process_is_tried_once(self):
         from bridge.clients.errors import BridgeUnavailable

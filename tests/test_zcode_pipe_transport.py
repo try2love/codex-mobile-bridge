@@ -75,6 +75,19 @@ def normal(transport, msg):
 
 @unittest.skipUnless(os.name == "posix", "POSIX byte pipe fixture")
 class PipeTests(unittest.TestCase):
+    def test_cold_application_probe_waits_for_a_missing_window_but_rejects_ambiguous_targets(self):
+        with peer(normal) as (transport, _), patch.object(transport, '_rpc') as rpc:
+            rpc.return_value = {'targetInfos': []}
+            self.assertEqual(transport.call({'action':'application'}), {'ready': False, 'stage': 'window'})
+            target = {'type':'page','url':transport.window_url,'targetId':'x'}
+            rpc.return_value = {'targetInfos': [target, {**target, 'targetId':'other'}]}
+            with self.assertRaisesRegex(ValueError, '唯一定位'):
+                transport.call({'action':'application'})
+            rpc.side_effect = TimeoutError('slow')
+            self.assertEqual(transport.call({'action':'application'}), {'ready': False, 'stage': 'waiting'})
+            with self.assertRaises(TimeoutError):
+                transport.call({'action':'list'})
+
     def test_parallel_calls_serialize_and_filter_foreign_sessions(self):
         with peer(normal) as (t, seen), ThreadPoolExecutor(max_workers=4) as pool:
             self.assertEqual(list(pool.map(lambda _: t.probe(), range(4))), [{"ready": True}] * 4)
