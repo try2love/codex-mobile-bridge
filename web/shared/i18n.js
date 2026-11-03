@@ -2,6 +2,12 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"本机兼容连接":"Local compatibility connection",
+"ZCode 将仅在 127.0.0.1:17742 监听。本机其他程序也能访问此端口。网关会记住此选择，用于下次启动。":"ZCode will listen only on 127.0.0.1:17742. Other apps on this computer can access this port. The gateway will remember this choice for future launches.",
+"如果当前 ZCode 无法接入，网关将尝试正常退出并重新启动。检测到活动任务时会停止重启。":"If the gateway cannot connect to the running ZCode app, it will try to quit and restart ZCode normally. Detected active tasks prevent the restart.",
+"重新启动 ZCode？":"Restart ZCode?",
+"确认重启":"Confirm restart",
+"当前无法核验所有任务。正常重启可能中断未确认的任务或审批。是否继续？":"Some tasks could not be checked. Restarting ZCode may interrupt those tasks or pending approvals. Continue?",
 "未检测到兼容端口。请确认任务已结束，在应用管理中正常退出 ZCode，再由网关启动。":"Compatibility port unavailable. Once your tasks finish, quit ZCode normally in App Management and let the gateway start it again.",
 "ZCode 未能恢复原会话，请在聊天中重试连接。":"ZCode could not restore the original session. Retry from that chat.",
 "由网关启动时开启本机兼容端口":"Enable the local compatibility port when the gateway starts ZCode",

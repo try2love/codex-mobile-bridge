@@ -122,12 +122,12 @@ class DesktopSessionsView {
   sourceReadable(client){return !!client&&(client.connected===true||client.historyAvailable===true||client.id==='claude'&&client.cliAvailable===true);}
   renderConnectionStatus(){
     const client=this.clientStates?.find(client=>client.id===this.provider),state=client&&ClientLifecycle.connection(client);
-    const failure=client?.operationFailure,uncertain=!!(client?.operationUncertain||failure?.uncertain),blocked=!!state&&!client.connected&&(state.waiting||state.action||state.retryable||state.canReconnect||!!failure);
+    const failure=client?.operationFailure,uncertain=!!(client?.operationUncertain||failure?.uncertain),blocked=!!state&&!client.connected&&(state.waiting||state.action||state.retryable||state.canReconnect||state.canInitialize||!!failure);
     this.listStatus.setAttribute('aria-busy',String(!!state?.waiting));this.listStatus.classList.toggle('client-connection-waiting',!!state?.waiting);
     this.connectionRetry.hidden=!blocked||!state.retryable||uncertain;this.connectionRetry.disabled=!!this.retryingClient;
     this.connectionInitialize.hidden=!blocked||!state.canInitialize||uncertain;this.connectionInitialize.disabled=!!this.initializingClient;
     this.connectionReconnect.hidden=!blocked||!state.canReconnect||uncertain;this.connectionReconnect.disabled=!!this.reconnectingClient;this.connectionReconnect.textContent=BridgeI18n.t('重新连接 Desktop');
-    this.connectionInitialize.textContent=BridgeI18n.t(state?.canReconnect?'重新初始化连接':'初始化连接');
+    this.connectionInitialize.textContent=BridgeI18n.t(state?.initializeLabel||'初始化连接');
     this.connectionNotice.hidden=!failure;this.connectionNotice.textContent=failure?BridgeI18n.t(ClientLifecycle.failureMessage(failure)):'';this.connectionRefresh.hidden=!uncertain;this.connectionRefresh.disabled=!!this.refreshingClient;
     if(blocked)this.listStatus.textContent=BridgeI18n.t(state.label)+(state.reason&&state.reason!==state.label?' · '+BridgeI18n.t(state.reason):'');
     return blocked&&!(client?.enabled!==false&&this.sourceReadable(client));

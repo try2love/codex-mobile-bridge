@@ -161,6 +161,18 @@ test('Claude connection recovery waits for an explicit initialization click and 
   ui.english();assert.match(ui.text(),/Connection initialization required/);assert.match(ui.text(),/Initialization uses the foreground window/);assert.doesNotMatch(ui.text(),/[\u4e00-\u9fff]/);
 });
 
+test('desktop ZCode access switch stays separate from the optional compatibility connection',async()=>{
+ const ui=fixture(),client={id:'zcode',name:'ZCode',configured:true,installed:true,enabled:false,canInitializeDesktop:true,initializationMode:'zcode-local-compatibility'};
+ ui.panel.clients=[client];ui.panel.renderClients();ui.setHandler(async()=>({clients:[{...client,enabled:true}]}));
+ await ui.panel.toggleClient('zcode',true);
+ const writes=()=>ui.calls.filter(call=>call.action==='toggle-client');
+ assert.equal(writes().length,1);assert.equal(writes()[0].initializeDesktop,undefined);assert.deepEqual(ui.initializations,[]);
+ ui.setInitializeChoice(false);await ui.all().find(node=>node.tag==='button'&&node.textContent==='本机兼容连接').onclick();
+ assert.equal(writes().length,1);assert.deepEqual(ui.initializations,['zcode']);
+ ui.panel.operationFailures=new Map([['zcode',{action:'initialize',uncertain:false}]]);ui.setInitializeChoice(true);
+ await ui.panel.retryOperation('zcode');assert.equal(writes().at(-1).initializeDesktop,true);assert.equal(writes().at(-1).provider,'zcode');
+});
+
 test('desktop enabling and retrying Claude never submit initialization intent',async()=>{
   const ui=fixture(),client={id:'claude',name:'Claude',enabled:false,installed:true,configured:true,initializationMode:'foreground',setupStatus:'needs-initialization',connected:false};ui.panel.clients=[client];
   ui.setHandler(async()=>({clients:[{...client,enabled:true}]}));await ui.panel.toggleClient('claude',true);

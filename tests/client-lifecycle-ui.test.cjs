@@ -104,6 +104,40 @@ test('an uncertain force quit needs a stopped app as well as disabled access bef
  }
 });
 
+test('ZCode compatibility is offered explicitly on both surfaces and separates restart consent',async()=>{
+ for(const surface of ['desktop','web'])for(const scenario of ['cancel','cold','restart','keep-running']){
+  const ui=fixture('en'),desktop=surface==='desktop',file=desktop?'desktop/features/clients/desktop-sessions.js':'web/features/clients/client-navigation.js';
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),ui.context);
+  const Controller=vm.runInContext(desktop?'DesktopConnectionsPanel':'ClientNavigation',ui.context),panel=Object.create(Controller.prototype),writes=[];
+  const client={id:'zcode',name:'ZCode',enabled:true,installed:true,configured:true,running:scenario!=='cold',confirmTaskState:true,
+    setupStatus:'needs-initialization',canInitializeDesktop:true,initializationMode:'zcode-local-compatibility'};
+  const save=async body=>{writes.push(JSON.parse(JSON.stringify(body)));return {clients:[client]};};
+  Object.assign(panel,{clients:[client],clientsRevision:0,statusRevision:0,revision:0,pending:new Set(),provider:'zcode',
+    renderClients(){},renderScan(){},paint(){},refreshClients:async()=>{},applyClients(){},api:{desktopSessions:save},request:(url,body)=>save(body)});
+  const result=desktop?panel.toggleClient('zcode',true,{initializeDesktop:true}):panel.initialize('zcode');
+  const first=ui.dialog();assert.ok(first);assert.match(first.textContent,/127\.0\.0\.1:17742/);assert.match(first.textContent,/Other apps/);
+  assert.doesNotMatch(first.textContent,/Claude|keyboard focus|[一-鿿]/);assert.equal(writes.length,0);
+  first.children.at(-1).children[scenario==='cancel'?1:0].onclick();await Promise.resolve();
+  if(['restart','keep-running'].includes(scenario)){
+   const second=ui.dialog();assert.match(second.textContent,/Some tasks could not be checked/);assert.equal(writes.length,0);
+   second.children.at(-1).children[scenario==='restart'?0:1].onclick();
+  }
+  await result;
+  assert.deepEqual(writes,['cold','restart'].includes(scenario)?[{...(desktop?{action:'toggle-client'}:{}),provider:'zcode',enabled:true,initializeDesktop:true,...(scenario==='restart'?{acknowledgeUnavailable:true}:{})}]:[]);
+ }
+});
+test('a verified session-access result reconciles an opted-in initialization without replaying it',()=>{
+ const lifecycle=require('../web/features/clients/client-lifecycle.js');
+ const base={id:'zcode',installed:true,enabled:true,canInitializeDesktop:true,initializationMode:'zcode-local-compatibility'};
+ assert.equal(lifecycle.connection(base).canInitialize,true);
+ assert.equal(lifecycle.connection({...base,canInitializeDesktop:false}).canInitialize,false);
+ assert.equal(lifecycle.connection({...base,initializationMode:undefined}).canInitialize,false);
+ for(const compatibilityLaunch of [false,true]){
+  const failures=new Map([['zcode',{action:'initialize',uncertain:true}]]);
+  lifecycle.reconcile(failures,[{...base,setupStatus:'session-access',compatibilityLaunch}]);assert.equal(failures.has('zcode'),!compatibilityLaunch);
+ }
+});
+
 test('initialization distinguishes background attempts from interactive foreground setup and defaults to cancel',async()=>{
  for(const language of ['zh','en'])for(const accepted of [false,true])for(const initializationMode of ['background','foreground']){
   const ui=fixture(language),result=ui.initialize({id:'claude',name:'Claude',initializationMode}),dialog=ui.dialog(),buttons=dialog.children.at(-1).children;

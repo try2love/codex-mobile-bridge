@@ -289,9 +289,9 @@ class ClientNavigation {
     const client=this.managementClients().find(row=>row.id===id),state=client&&this.connection(client);if(this.gatewayRunning===false||this.pending.size||this.choosing||this.hasUncertain()||!state||!(state.canInitialize||state.canStartDesktop))return;
     this.choosing=id;++this.revision;this.paint();let confirmed=false;
     try{confirmed=await ClientLifecycle.chooseInitialize(client);}finally{this.choosing=null;this.paint();}
-    if(confirmed)return this.toggle(id,true,{initializeDesktop:true});
+    if(confirmed)return this.toggle(id,true,{initializeDesktop:true,acknowledgeRestart:confirmed==='recovery'});
   }
-  async toggle(id,enabled,{initializeDesktop=false}={}){
+  async toggle(id,enabled,{initializeDesktop=false,acknowledgeRestart=false}={}){
     const client=this.managementClients().find(row=>row.id===id);if(this.pending.size||this.choosing||this.hasUncertain()||!client||(enabled&&!(client.selectable??client.configured)))return;
     let quitDesktop=false;
     if(!enabled&&this.gatewayRunning!==false&&client.canQuitDesktop!==false){
@@ -300,7 +300,7 @@ class ClientNavigation {
       finally{this.choosing=null;this.paint();}
       if(quitDesktop===null)return;
     }
-    const acknowledgeUnavailable=quitDesktop==='recovery',forceDesktop=quitDesktop==='force';quitDesktop=quitDesktop===true||forceDesktop||acknowledgeUnavailable;
+    const acknowledgeUnavailable=quitDesktop==='recovery'||initializeDesktop&&acknowledgeRestart,forceDesktop=quitDesktop==='force';quitDesktop=quitDesktop===true||forceDesktop||quitDesktop==='recovery';
     const before=this.clients.map(c=>({...c})),previous=this.provider;
     this.operationFailures??=new Map();this.operationFailures.delete(id);let failed=false;
     this.pending.add(id);this.pendingQuitDesktop=quitDesktop;this.pendingForceDesktop=forceDesktop;++this.revision;
@@ -379,7 +379,7 @@ class ClientNavigation {
       if(failure){const retry=document.createElement('button');retry.type='button';retry.textContent=BridgeI18n.t(failure.uncertain?'刷新状态':ClientLifecycle.retryLabel(failure.action));retry.disabled=this.pending.size>0||!!this.choosing||!!this.loading||(!failure.uncertain&&this.hasUncertain());retry.onclick=()=>Promise.resolve(failure.uncertain?this.refresh():this.retryOperation(client.id)).catch(error=>this.notify(error.message));control.append(retry);}
       if(!failure&&state.retryable&&this.gatewayRunning!==false){const retry=document.createElement('button');retry.type='button';retry.textContent=BridgeI18n.t('重试连接');retry.disabled=this.pending.size>0||!!this.choosing||this.hasUncertain();retry.onclick=()=>this.toggle(client.id,true).catch(error=>this.notify(error.message));control.append(retry);}
       if(!failure&&state.canReconnect&&this.gatewayRunning!==false){const reconnect=document.createElement('button');reconnect.type='button';reconnect.textContent=BridgeI18n.t('重新连接 Desktop');reconnect.disabled=this.pending.size>0||!!this.choosing||this.hasUncertain();reconnect.onclick=()=>this.reconnect(client.id).catch(error=>this.notify(error.message));control.append(reconnect);}
-      if(!failure&&state.canInitialize&&this.gatewayRunning!==false){const initialize=document.createElement('button');initialize.type='button';initialize.textContent=BridgeI18n.t(state.canReconnect?'重新初始化连接':'初始化连接');initialize.disabled=this.pending.size>0||!!this.choosing||this.hasUncertain();initialize.onclick=()=>this.initialize(client.id).catch(error=>this.notify(error.message));control.append(initialize);}
+      if(!failure&&state.canInitialize&&this.gatewayRunning!==false){const initialize=document.createElement('button');initialize.type='button';initialize.textContent=BridgeI18n.t(state.initializeLabel);initialize.disabled=this.pending.size>0||!!this.choosing||this.hasUncertain();initialize.onclick=()=>this.initialize(client.id).catch(error=>this.notify(error.message));control.append(initialize);}
       if(!failure&&state.canStartDesktop&&this.gatewayRunning!==false){const start=document.createElement('button');start.type='button';start.textContent=BridgeI18n.t('启动 Desktop');start.disabled=this.pending.size>0||!!this.choosing||this.hasUncertain();start.onclick=()=>this.initialize(client.id).catch(error=>this.notify(error.message));control.append(start);}
     }
     note.textContent=BridgeI18n.t(this.gatewayRunning===false?'网关未启动，开关仅保存下次启动时的选择，不会打开或退出应用。':'安装和登录请在电脑端完成。关闭接入可保留或退出电脑 App。macOS Claude 默认后台启动并尝试恢复已有连接；“初始化连接”经确认后使用电脑前台。Windows 优先尝试后台初始化。')+' '+BridgeI18n.t(ClientLifecycle.sessionNotice(this.windowsSession));
