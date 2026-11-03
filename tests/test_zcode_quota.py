@@ -77,11 +77,17 @@ class QuotaTests(unittest.TestCase):
     def test_switch_during_read_invalidates_result_and_cache(self):
         self.write_event()
         original = quota.latest
+        # Two in-place writes can have the same timestamps on a coarse filesystem.
+        regular, identity = quota.regular, self.credentials.stat()
+        def same_tick(path, **kwargs):
+            info = regular(path, **kwargs)
+            return identity if path == self.credentials else info
         def switched(home, generation, now):
             result = original(home, generation, now)
-            self.credentials.write_text(json.dumps({**self.login, 'oauth:zai:user_info': 'enc:v1:other-user'}))
+            self.credentials.write_text(json.dumps({**self.login, 'oauth:zai:user_info': 'enc:v1:another'}))
             return result
-        with patch.object(quota, 'latest', switched), self.assertRaisesRegex(ValueError, '正在变化'):
+        with patch.object(quota, 'regular', same_tick), patch.object(quota, 'latest', switched), \
+                self.assertRaisesRegex(ValueError, '正在变化'):
             self.details()
         self.assertIsNone(self.store.quota_cache)
 

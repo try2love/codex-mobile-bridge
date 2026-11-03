@@ -1,4 +1,5 @@
 """Read the Start Plan balance receipt written by the original local ZCode host."""
+import hashlib
 import json
 import os
 import re
@@ -46,7 +47,9 @@ def login_generation(home):
             family = families.pop()
             login = [fields.get('oauth:'+family+':'+key) for key in ('access_token', 'user_info')]
             if family in ('bigmodel', 'zai') and all(isinstance(v, str) and v.startswith('enc:v1:') for v in login):
-                return (family, after.st_dev, after.st_ino, after.st_mtime_ns, after.st_ctime_ns)
+                # A fast in-place account switch can preserve both filesystem timestamps.
+                identity = hashlib.sha256(json.dumps([active, *login]).encode()).digest()
+                return (family, identity, after.st_dev, after.st_ino, after.st_mtime_ns, after.st_ctime_ns)
     except (OSError, ValueError):
         pass
     return None
