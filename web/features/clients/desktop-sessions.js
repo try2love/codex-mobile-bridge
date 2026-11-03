@@ -235,7 +235,14 @@ class DesktopSessionsView {
     if(this.renderConnectionStatus()){this.updateActivity(this.rows,false);this.renderIndicators();this.freshDetail=false;this.updateComposer();return;}
     if(this.loading?.generation===generation)return this.loading.promise;const loading={generation};this.loading=loading;
     if(this.sid)this.detail(generation).catch(error=>{if(generation===this.generation){this.error.textContent=BridgeI18n.t(error.message);this.status.textContent=BridgeI18n.t('连接失败');}});
-    loading.promise=this.refreshList().catch(()=>{}).finally(()=>{if(this.loading===loading){this.loading=null;if(generation===this.generation){const client=this.clientStates?.find(row=>row.id===provider);const interval=client?.historyAvailable&&!client.connected?15000:this.sid||ClientLifecycle.connection(client).waiting?2000:5000;this.timer=setTimeout(()=>this.refresh(),interval);}}});
+    loading.promise=this.refreshList().catch(()=>{}).finally(()=>{
+      if(this.loading!==loading)return;
+      this.loading=null;
+      if(generation!==this.generation)return;
+      const client=this.clientStates?.find(row=>row.id===provider);
+      const interval=client?.historyAvailable&&!client.connected?15000:(this.sid||ClientLifecycle.connection(client).waiting?2000:5000);
+      this.timer=setTimeout(()=>this.refresh(),interval);
+    });
     return loading.promise;
   }
   refreshList(){
@@ -285,7 +292,7 @@ class DesktopSessionsView {
     const task=this.sharedRead(provider,'detail',sid),current=()=>task.current()&&generation===this.generation&&provider===this.provider&&sid===this.sid&&revision===this.detailRevision;let value;
     try{value=await task.promise;}catch(error){if(current()){this.staleDetail();throw error;}return;}if(!current())return;this.applyDetail(value);
   }
-  canMutate(){const client=this.clientStates?.find(row=>row.id===this.provider);if(!this.state||!this.freshDetail||client?.enabled===false||this.state.connectionState==='detached'&&this.state.capabilities?.resume===true)return false;if(this.provider==='claude'&&this.state.backend==='cli')return ['ready','active','awaiting'].includes(this.state.connectionState);return !client||client.connected===true;}
+  canMutate(){const client=this.clientStates?.find(row=>row.id===this.provider);if(!this.state||this.state.readOnly||!this.freshDetail||client?.enabled===false||this.state.connectionState==='detached'&&this.state.capabilities?.resume===true)return false;if(this.provider==='claude'&&this.state.backend==='cli')return ['ready','active','awaiting'].includes(this.state.connectionState);return !client||client.connected===true;}
   canResume(){const client=this.clientStates?.find(row=>row.id===this.provider);return this.freshDetail&&client?.enabled!==false&&this.state?.capabilities?.resume===true&&(this.state.connectionState==='detached'||this.provider==='claude'&&this.state.backend==='cli');}
   staleDetail(){this.freshDetail=false;this.renderRequests([]);this.requestStamp='';this.updateComposer();}
   applyDetail(value,cached=false){

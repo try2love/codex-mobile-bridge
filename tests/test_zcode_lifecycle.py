@@ -13,7 +13,9 @@ from bridge.clients.zcode.adapter import ZCodeDesktop
 
 class ZCodeLifecycleTests(unittest.TestCase):
     def setUp(self):
-        directory = tempfile.TemporaryDirectory()
+        scratch = Path(__file__).resolve().parents[1]/'.tmp'
+        scratch.mkdir(exist_ok=True)
+        directory = tempfile.TemporaryDirectory(dir=scratch)
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name).resolve()
         bundle = self.root/'Apps/ZCode.app/Contents'
