@@ -50,6 +50,32 @@ class WindowsPrivateRoute(unittest.TestCase):
             clone = {**commands, 12: f'{exe} /other/zcode.cjs app-server --stdio --surface desktop'}
             self.assertTrue(zcode_pipe.main_processes(exe, ids, clone)[1])
 
+    def test_private_quit_only_uses_tray_after_explicit_unsupported_reply_for_same_owner(self):
+        from unittest.mock import Mock
+        from bridge.platforms.windows import codex_quit
+        app = Path('ZCode.exe').resolve()
+        owner = {'pid': 7, 'created': 18, 'image': os.path.normcase(str(app))}
+        state = {'main': 7, 'created': 18, 'pids': {7, 32}}
+        with patch.object(codex_quit, '_snapshot', return_value=state), patch.object(codex_quit, '_observe') as observe:
+            unsupported = Mock(return_value=False)
+            self.assertFalse(codex_quit.stop_private_zcode(app, [7], owner, unsupported))
+            unsupported.assert_called_once_with()
+            observe.assert_not_called()
+            with self.assertRaises(ValueError):
+                codex_quit.stop_private_zcode(app, [7], {**owner, 'created': 19}, unsupported)
+            unsupported.assert_called_once_with()
+            uncertain = Mock(side_effect=BrokenPipeError)
+            self.assertTrue(codex_quit.stop_private_zcode(app, [7], owner, uncertain))
+            observe.assert_called_once()
+            observe.side_effect = ValueError('original still running')
+            with self.assertRaisesRegex(ValueError, 'still running'):
+                codex_quit.stop_private_zcode(app, [7], owner, uncertain)
+            self.assertEqual(uncertain.call_count, 2)
+        changed = {'main': 7, 'created': 21, 'pids': {7}}
+        with patch.object(codex_quit, '_snapshot', side_effect=[state, changed, changed]):
+            with self.assertRaises(ValueError):
+                codex_quit.stop_private_zcode(app, [7], owner, lambda: False)
+
     @unittest.skipUnless(sys.platform == 'win32', 'Windows Win32 and local named pipe')
     def test_session_identity_and_local_pipe_peer_process(self):
         name = r'\\.\pipe\cmb-zcode-test-' + uuid.uuid4().hex
