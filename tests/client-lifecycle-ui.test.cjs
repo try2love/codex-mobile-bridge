@@ -195,13 +195,18 @@ test('Claude explains its native quit menu while other clients retain the idle r
 });
 
 
+function toggleFixture(ui,surface,client,calls){
+  const file=surface==='desktop'?'desktop/features/clients/desktop-sessions.js':'web/features/clients/client-navigation.js';
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),ui.context);
+  const Class=vm.runInContext(surface==='desktop'?'DesktopConnectionsPanel':'ClientNavigation',ui.context),controller=Object.create(Class.prototype);
+  Object.assign(controller,{clients:[client],clientsRevision:0,statusRevision:0,revision:0,pending:new Set(),provider:client.id,renderClients(){},renderScan(){},paint(){},refreshClients:async()=>{},applyClients(value){this.clients=value.clients;},api:{desktopSessions:async body=>{calls.push(body);return {clients:[{...client,enabled:false,running:false}]};}},request:async(url,body)=>{calls.push(body);return {clients:[{...client,enabled:false,running:false}]};}});
+  return surface==='desktop'?controller.toggleClient(client.id,false):controller.toggle(client.id,false);
+}
+
 test('failed Codex rebuild exposes a cancellable normal-exit risk confirmation on both surfaces',async()=>{
  for(const surface of ['web','desktop'])for(const language of ['zh','en'])for(const accepted of [false,true]){
-  const ui=fixture(language),file=surface==='desktop'?'desktop/features/clients/desktop-sessions.js':'web/features/clients/client-navigation.js';
-  vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),ui.context);
-  const Class=vm.runInContext(surface==='desktop'?'DesktopConnectionsPanel':'ClientNavigation',ui.context),controller=Object.create(Class.prototype),client={id:'codex',name:'Codex',enabled:true,running:true,desktopRestartRecommended:true},calls=[];
-  Object.assign(controller,{clients:[client],clientsRevision:0,statusRevision:0,revision:0,pending:new Set(),provider:'codex',renderClients(){},renderScan(){},paint(){},refreshClients:async()=>{},applyClients(value){this.clients=value.clients;},api:{desktopSessions:async body=>{calls.push(body);return {clients:[{...client,enabled:false,running:false}]};}},request:async(url,body)=>{calls.push(body);return {clients:[{...client,enabled:false,running:false}]};}});
-  const pending=surface==='desktop'?controller.toggleClient('codex',false):controller.toggle('codex',false);
+  const ui=fixture(language),client={id:'codex',name:'Codex',enabled:true,running:true,desktopRestartRecommended:true},calls=[];
+  const pending=toggleFixture(ui,surface,client,calls);
   ui.dialog().children.at(-1).children[1].onclick();await Promise.resolve();
   const confirmation=ui.dialog(),buttons=confirmation.children.at(-1).children;
   assert.equal(calls.length,0);assert.equal(ui.document.activeElement,buttons[1]);
@@ -210,5 +215,22 @@ test('failed Codex rebuild exposes a cancellable normal-exit risk confirmation o
   buttons[accepted?0:1].onclick();await pending;
   assert.equal(calls.length,accepted?1:0);
   if(accepted){assert.equal(calls[0].quitDesktop,true);assert.equal(calls[0].acknowledgeUnavailable,true);assert.equal(calls[0].forceDesktop,undefined);}
+ }
+});
+
+
+test('ZCode phone disconnect, unknown-state quit and force are independent choices on both surfaces',async()=>{
+ for(const surface of ['desktop','web'])for(const selection of ['disconnect','cancel','quit','force']){
+  const ui=fixture('en'),client={id:'zcode',name:'ZCode',enabled:true,running:true,canForceQuit:true,confirmTaskState:true};
+  const calls=[],pending=toggleFixture(ui,surface,client,calls);
+  ui.dialog().children.at(-1).children[selection==='disconnect'?0:selection==='force'?2:1].onclick();await Promise.resolve();
+  if(selection!=='disconnect'){
+   const confirm=ui.dialog(),buttons=confirm.children.at(-1).children;
+   assert.equal(calls.length,0);assert.equal(ui.document.activeElement,buttons[1]);
+   assert.match(confirm.textContent,selection==='force'?/Force quit/i:/running task or pending approval/i);
+   buttons[selection==='cancel'?1:0].onclick();
+  }
+  await pending;assert.equal(calls.length,selection==='cancel'?0:1);
+  if(calls.length){assert.equal(calls[0].quitDesktop,selection!=='disconnect');assert.equal(!!calls[0].acknowledgeUnavailable,selection==='quit');assert.equal(!!calls[0].forceConfirmed,selection==='force');}
  }
 });

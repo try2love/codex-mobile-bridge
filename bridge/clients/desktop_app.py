@@ -87,9 +87,10 @@ class DesktopApp:
         return _native().processes(lambda path: os.path.normcase(str(Path(path).resolve())) == expected)
 
     def stop(self, *, runtime_pids=(), gui_pids=None, provider=None):
-        if sys.platform == 'win32' and provider == 'codex':
-            from bridge.platforms.windows.codex_quit import stop_codex
-            return stop_codex(self, gui_pids=gui_pids)
+        if sys.platform == 'win32' and provider in ('codex', 'zcode'):
+            from bridge.platforms.windows.codex_quit import stop_codex, stop_zcode
+            quit_app = stop_zcode if provider == 'zcode' else stop_codex
+            return quit_app(self, gui_pids=gui_pids)
         pids = self.processes()
         main = pids if gui_pids is None else [pid for pid in gui_pids if pid in pids]
         native = _native()

@@ -23,6 +23,7 @@ from bridge.clients.codex.catalog import ModelStore, MODEL_REFRESH_SECONDS
 from bridge.features.accounts.draft_identity import draft_identity
 from bridge.app.lifecycle import private_json
 from bridge.platforms.windows import session as windows_session
+from bridge.features.sessions.pins import SessionPins
 from bridge.features.sessions.archive import ArchiveCommands
 from bridge.features.sessions.projects import Projects
 from bridge.features.sessions.display_metadata import DisplayMetadata, RenameCommands
@@ -108,7 +109,6 @@ class DesktopSessions:
         from bridge.features.workspace.history_images import HistoryImages
         self.history_images = HistoryImages()
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        from bridge.features.sessions.pins import SessionPins
         self.session_pins = {provider: SessionPins(self.directory/provider, provider) for provider in ('claude', 'deepseek')}
         self.display_metadata = DisplayMetadata(self.directory, private_json)
         self.rename_commands = RenameCommands(self.directory, private_json)
@@ -148,11 +148,8 @@ class DesktopSessions:
                 self.deepseek_restore_error = '已有 Harness 接入无法验证，请重新扫描'
                 self.config.setdefault('setup', {})['deepseek'] = {
                     'setupStatus': 'failed', 'reason': '已有 Harness 接入无法验证，请重新扫描'}
-        if self.config.get('zcodePrototype') and sys.platform in ('darwin', 'win32'):
-            from bridge.clients.zcode.adapter import ZCodePrototype
-            self.adapters['zcode'] = ZCodePrototype(self.directory/'zcode', self.config['zcodePrototype'])
-            self.session_pins['zcode'] = SessionPins(self.directory/'zcode', 'zcode')
-        self.locks = {name: threading.RLock() for name in ('codex', *self.adapters)}
+        self._configure_zcode()
+        self.locks = {name: threading.RLock() for name in ('codex', 'zcode', *self.adapters)}
         self.read_lock = threading.Lock()
         self.reads = {}
         self.activity = {}
@@ -170,6 +167,32 @@ class DesktopSessions:
         self._codex_guard = lambda: self.require_enabled('codex')
         if self.bridge is not None:
             self.bridge.accounts.require_client_enabled = self._codex_guard
+
+    def _configure_zcode(self):
+        if sys.platform not in ('darwin', 'win32'):
+            return
+        from bridge.clients.zcode.adapter import ZCodeDesktop, ZCodePrototype
+        legacy = self.config.get('zcodePrototype')
+        row = self.config.get('discovered', {}).get('zcode', {})
+        if not legacy and not row.get('installed'):
+            self.adapters.pop('zcode', None)
+            return
+        config = legacy or {key: row[key] for key in ('application', 'dataDirectory')}
+        previous = self.adapters.get('zcode')
+        if previous and previous.config == config:
+            return
+        directory = self.directory/'zcode'
+        if legacy:
+            try:
+                adapter = ZCodePrototype(directory, config)
+            except (ValueError, KeyError, OSError):
+                # A removed test workspace must not prevent the gateway from starting.
+                adapter = ZCodeDesktop(directory, config)
+        else:
+            adapter = ZCodeDesktop(directory, config)
+        self.adapters['zcode'] = adapter
+        if 'zcode' not in self.session_pins:
+            self.session_pins['zcode'] = SessionPins(directory, 'zcode')
 
     def _receipts(self, adapter):
         # A recovered connector shares its original mutation receipts with the
@@ -984,6 +1007,9 @@ class DesktopSessions:
                 result['projects'] = result.get('projects', []) + registered
                 result['environments'] = [self._public_project(row) for row in environments]
             if action == 'detail' and result.get('session'):
+                if result.get('readOnly') is True or result.get('session', {}).get('readOnly') is True:
+                    result['modelCatalogIdentity'] = result['draftAccountIdentity'] = ''
+                    return result
                 try:
                     result['modelCatalogIdentity'] = self._model_identity(provider, sid)
                 except ClaudeLoginDatabaseUnavailable:
@@ -1245,6 +1271,8 @@ class DesktopSessions:
                 preferences['desktopExecutable'] = self.bridge.accounts.index.get('desktopExecutable')
             discovered = discover_clients(preferences)
             self.config['discovered'] = discovered
+            with self.read_lock:
+                self._configure_zcode()
             outcomes = self.config.setdefault('setup', {})
             for provider in ('claude', 'deepseek'):
                 if provider == 'deepseek' and self.config.get('deepseekManualBinding'):
@@ -1300,8 +1328,10 @@ class DesktopSessions:
         if not self.gateway_running or self.closed.is_set():
             return
         self.scan(scan_wsl=False)
-        for provider in ('codex', 'claude', 'deepseek'):
+        for provider in ('codex', 'claude', 'deepseek', 'zcode'):
             with self.client_lock:
+                if provider == 'zcode' and provider not in self.adapters:
+                    continue
                 if self.closed.is_set():
                     return
                 if not self.config.get('enabled', {}).get(provider, provider == 'codex'):
@@ -1325,8 +1355,8 @@ class DesktopSessions:
         if provider == 'zcode' and provider in self.adapters:
             adapter = self.adapters[provider]
             from bridge.clients.zcode.installation import installation
-            app = installation(adapter.config['application'])
-            return {'id': provider, 'installed': bool(app and app['version'] == '3.17.1'),
+            app = installation(adapter.config.get('application', ''))
+            return {'id': provider, 'installed': bool(app),
                     'executable': app['executable'] if app else '', 'dataDirectory': str(adapter.home)}
         if provider == 'deepseek' and self.config.get('deepseekManualBinding'):
             return {'id': provider, 'installed': False, 'executable': '',
@@ -1410,7 +1440,7 @@ class DesktopSessions:
         except TaskStateUnavailable:
             # Only explicitly confirmed normal quit may accept unavailable task
             # evidence. Known activity, writes and ambiguous identities still block.
-            if not (acknowledge_unavailable and provider == 'codex' or
+            if not (acknowledge_unavailable and provider in ('codex', 'zcode') or
                     native_confirmation and provider == 'claude' and sys.platform == 'win32'):
                 raise
         if provider == 'claude':
@@ -1789,6 +1819,19 @@ class DesktopSessions:
                              **({'cliAvailable': status.get('cliAvailable') is True,
                                  'cliAuthReady': status.get('cliAuthReady') is True,
                                  'canStartDesktop': status.get('automaticConnection') == 'native-console'} if provider == 'claude' else {})})
+            if 'zcode' in self.adapters:
+                enabled = self.enabled('zcode')
+                status = self.adapters['zcode'].status() if enabled else {}
+                connected = status.get('connected') is True
+                installed = self._descriptor('zcode')['installed']
+                rows.append({'id': 'zcode', 'name': 'ZCode', 'installed': installed,
+                             'description': '管理 ZCode 桌面应用与手机接入。',
+                             'enabled': enabled, 'configured': installed, 'connected': connected,
+                             'setupStatus': 'ready' if connected else 'not-connected',
+                             'reason': '原生会话已接入' if connected else status.get('reason', ''),
+                             'retryable': enabled and not connected and bool(self.config.get('zcodePrototype')),
+                             'confirmTaskState': not connected, 'historyAvailable': status.get('historyAvailable') is True,
+                             'capabilities': {'create': connected, 'accounts': True, 'notifications': connected}})
             from bridge.clients.lifecycle import inspect_clients
             descriptors = []
             for row in rows:
@@ -1875,18 +1918,6 @@ class DesktopSessions:
             claude['entries'] = self.claude_wsl.applications() if self.claude_wsl is not None else []
             if any(row['enabled'] for row in claude['entries']):
                 claude.update(enabled=True, selectable=True, configured=True)
-            if 'zcode' in self.adapters:
-                enabled = self.enabled('zcode')
-                connected = enabled and self.adapters['zcode'].status()['connected']
-                rows.append({'id': 'zcode', 'name': 'ZCode',
-                    'description': '连接 ZCode 原生聊天，沿用 App 的模型、账号与项目。',
-                    'accountNotice': '可切换已保存账号，聊天内选择模型和 Skill',
-                    'configurationNotice': 'Test 版可在已接入的 ZCode 项目中新建原生聊天。请保持 ZCode 打开；连接中断后可手动重试。', 'enabled': enabled, 'installed': True,
-                    'configured': True, 'selectable': True, 'connected': connected,
-                    'setupStatus': 'ready' if connected else 'needs-retry',
-                    'reason': '原生测试聊天已接入' if connected else '请保持 ZCode 测试聊天打开，然后重试连接',
-                    'retryable': True, 'canQuitDesktop': False, 'canStartDesktop': False,
-                    'capabilities': {'create': True, 'accounts': True, 'notifications': True}})
             result = {'clients': rows, 'computer': socket.gethostname(), 'gatewayRunning': self.gateway_running,
                       'wslSupported': entries is not None and sys.platform == 'win32'}
             if sys.platform == 'win32':
@@ -2048,18 +2079,8 @@ class DesktopSessions:
                 entries.configure(provider, enabled)
                 self.client_cache = None
                 return self.clients(refresh=True)
-        if provider == 'zcode' and provider in self.adapters:
-            if type(enabled) is not bool or value.get('quitDesktop') or value.get('forceDesktop'):
-                raise ValueError('ZCode Test 仅管理手机接入；退出请在原 App 操作')
-            with self.client_lock, self._changing(provider):
-                if enabled:
-                    self.adapters[provider].call('resume', self.adapters[provider].sid, {'id': str(uuid.uuid4())})
-                    self.config['zcodePrototype'] = self.adapters[provider].config
-                self.config.setdefault('enabled', {})[provider] = enabled
-                private_json(self.config_path, self.config)
-                self.client_cache = None
-            return self.clients(refresh=True)
-        if provider not in ('codex', 'claude', 'deepseek') or type(enabled) is not bool:
+        if provider not in ('codex', 'claude', 'deepseek', 'zcode') or type(enabled) is not bool or (
+                provider == 'zcode' and provider not in self.adapters):
             raise ValueError('应用开关无效')
         if 'quitDesktop' in value and (type(value['quitDesktop']) is not bool or enabled):
             raise ValueError('应用开关无效')
@@ -2072,13 +2093,13 @@ class DesktopSessions:
             raise ValueError('应用初始化请求无效')
         acknowledge_unavailable = value.get('acknowledgeUnavailable', False)
         if 'acknowledgeUnavailable' in value and (acknowledge_unavailable is not True or
-                provider != 'codex' or enabled or value.get('quitDesktop') is not True or
+                provider not in ('codex', 'zcode') or enabled or value.get('quitDesktop') is not True or
                 value.get('forceDesktop') or sys.platform not in ('darwin', 'win32') or
-                not self.gateway_running or not self.bridge or
-                not self.bridge.desktop_restart_recommended()):
+                not self.gateway_running or provider == 'codex' and (not self.bridge or
+                not self.bridge.desktop_restart_recommended())):
             raise ValueError('桌面恢复退出确认无效，请重新检查连接状态')
         # Older clients use disabling as native quit. New clients choose explicitly.
-        quit_desktop = value.get('quitDesktop', True)
+        quit_desktop = value.get('quitDesktop', provider != 'zcode')
         if provider == 'deepseek' and self.config.get('deepseekManualBinding'):
             with self.client_lock, self._changing(provider):
                 if not enabled and quit_desktop:
@@ -2134,6 +2155,12 @@ class DesktopSessions:
                         raise ValueError('此系统不支持 Claude 桌面连接')
                 else:
                     result = launch_client(descriptor)
+                    if provider == 'zcode' and self.config.get('zcodePrototype') and not result.get('launched'):
+                        adapter = self.adapters[provider]
+                        if getattr(adapter, 'sid', None) and not adapter.status().get('connected'):
+                            # Only reattach a deliberately configured, already-running compatible instance.
+                            if adapter.reconnect_existing():
+                                self.config['zcodePrototype'] = adapter.config
                     if not result.get('running'):
                         raise ValueError('客户端尚未启动，请在电脑端检查后重试')
             else:
@@ -2199,9 +2226,8 @@ class DesktopSessions:
     def _launch_account_client(self, provider, descriptor):
         from bridge.clients.lifecycle import launch_client
         if provider == 'zcode':
-            self.adapters[provider].launch()
-            self.config['zcodePrototype'] = self.adapters[provider].config
-            private_json(self.config_path, self.config)
+            if not launch_client(descriptor).get('running'):
+                raise ValueError('ZCode 尚未启动，请在电脑端检查后重试')
         elif provider == 'deepseek':
             self._start_deepseek()
         elif provider == 'claude' and sys.platform == 'win32':
@@ -2276,6 +2302,10 @@ class DesktopSessions:
             descriptor = self._descriptor(provider)
             state = inspect_client(descriptor)
             restart = state['running'] or self.gateway_running and self.enabled(provider)
+            if provider == 'zcode' and operation == 'switch' and restart:
+                # A normal restart cannot verify a changed login through the old
+                # test process. Leave the current login and running app untouched.
+                raise ValueError('请先停用 ZCode 手机接入并退出原 App，再切换已保存账号')
             if state['running'] and not self.gateway_running:
                 raise ValueError('请先退出客户端，再保存或切换账号；也可启动网关后操作')
             # Stop only after all tasks and requests are confirmed idle.
@@ -2294,9 +2324,6 @@ class DesktopSessions:
                         raise ValueError('账号配置尚未生效，请重试')
                 if restart:
                     self._launch_account_client(provider, descriptor)
-                    if provider == 'zcode' and operation == 'switch':
-                        if self.adapters[provider].call('account')['account']['identity'] != store._row(value['id'])['identity']:
-                            raise ValueError('ZCode 原生账号尚未确认切换；不会提交此次操作')
                     if operation == 'switch':
                         result = store.public()
                         active = result.get('activeIds', [result.get('activeId')])

@@ -72,7 +72,7 @@ const ClientLifecycle=(()=>{
       const finish=value=>{choice=value;dialog.close();};
       const options=[
         ['仅停用手机接入','保留电脑 App 和现有任务。',false],
-        ['正常退出电脑 App',client.id==='claude'?'通过 Claude 原生菜单正常退出；如有任务或保存确认，请在电脑端处理。下次开启时会尝试重新连接。':client.id==='codex'&&client.canForceQuit===true?'仅在所有任务结束且没有待确认操作时，通过 Codex 原生菜单正常退出。锁屏时可能不可用；如有退出确认，请在电脑端处理。':'仅在所有任务结束且没有待确认操作时退出。',true]
+        ['正常退出电脑 App',client.confirmTaskState?'通过原生方式退出；无法核验任务时需要再次确认。':client.id==='claude'?'通过 Claude 原生菜单正常退出；如有任务或保存确认，请在电脑端处理。下次开启时会尝试重新连接。':client.id==='codex'&&client.canForceQuit===true?'仅在所有任务结束且没有待确认操作时，通过 Codex 原生菜单正常退出。锁屏时可能不可用；如有退出确认，请在电脑端处理。':'仅在所有任务结束且没有待确认操作时退出。',true]
       ];
       if(client.bindingMode==='manual')options.splice(1);
       if(client.canForceQuit===true)options.push(['强制关闭 App','结束应用进程，可能丢失未保存内容或中断任务。锁屏时也可使用。','force']);
@@ -87,7 +87,7 @@ const ClientLifecycle=(()=>{
       dialog.addEventListener('close',()=>{dialog.remove();resolve(choice);},{once:true});
       document.body.append(dialog);dialog.showModal();cancel.focus();
     });
-    return choice==='force'?chooseForce(client):choice===true&&(client.id==='claude'||client.id==='codex'&&client.desktopRestartRecommended===true)?confirmQuit(client,false):choice;
+    return choice==='force'?chooseForce(client):choice===true&&(client.confirmTaskState||client.id==='claude'||client.id==='codex'&&client.desktopRestartRecommended===true)?confirmQuit(client,false):choice;
   }
   function chooseForce(client){
     if(client.canForceQuit!==true)return Promise.resolve(null);
@@ -97,14 +97,14 @@ const ClientLifecycle=(()=>{
     return new Promise(resolve=>{
       const dialog=document.createElement('dialog');dialog.className='client-disable-dialog';
       const node=(tag,text)=>{const element=document.createElement(tag);element.dataset.i18n=text;element.textContent=BridgeI18n.t(text);return element;};
-      const title=node('h2',force?'强制关闭确认':client.id==='codex'?'Codex 恢复退出确认':'退出 Claude Desktop 确认'),description=node('p',!force&&client.id==='codex'?'连接重建失败，可能无法核验全部任务。正常退出仍可能中断无法确认的任务；已知运行任务会阻止退出。请确认接受此风险，退出后再手动开启 Codex。':client.id==='claude'
+      const title=node('h2',force?'强制关闭确认':client.confirmTaskState?'正常退出确认':client.id==='codex'?'Codex 恢复退出确认':'退出 Claude Desktop 确认'),description=node('p',!force&&client.confirmTaskState?'当前无法核验所有任务。正常退出可能中断正在运行的任务或等待中的审批，是否继续？':!force&&client.id==='codex'?'连接重建失败，可能无法核验全部任务。正常退出仍可能中断无法确认的任务；已知运行任务会阻止退出。请确认接受此风险，退出后再手动开启 Codex。':client.id==='claude'
         ?force?'这会立即结束 Claude Desktop，可能中断正在运行的会话并丢失未保存内容。重新启动后，初始化连接需要电脑处于解锁状态。是否确认强制退出？':'重新启动 Claude Desktop 后，初始化连接需要电脑处于解锁状态。是否确认退出？'
         :'这会立即结束电脑上的应用，可能中断正在运行的会话并丢失未保存内容。请确认仍要继续。');
       const identity=document.createElement('p');identity.textContent=client.name||client.id;
       const id='client-quit-confirm-'+(++sequence);title.id=id+'-title';description.id=id+'-description';dialog.setAttribute('aria-labelledby',title.id);dialog.setAttribute('aria-describedby',description.id);
       const actions=document.createElement('div');actions.className='client-disable-options';let choice=null;
       const finish=value=>{choice=value;dialog.close();};
-      const confirm=node('button',force?'确认强制关闭':'确认退出'),cancel=node('button','取消');confirm.type=cancel.type='button';if(force)confirm.className='client-force-confirm';confirm.onclick=()=>finish(force?'force':client.id==='codex'?'recovery':true);cancel.onclick=()=>finish(null);actions.append(confirm,cancel);dialog.append(title,identity,description,actions);
+      const confirm=node('button',force?'确认强制关闭':'确认退出'),cancel=node('button','取消');confirm.type=cancel.type='button';if(force)confirm.className='client-force-confirm';confirm.onclick=()=>finish(force?'force':client.confirmTaskState||client.id==='codex'?'recovery':true);cancel.onclick=()=>finish(null);actions.append(confirm,cancel);dialog.append(title,identity,description,actions);
       dialog.addEventListener('cancel',event=>{event.preventDefault();finish(null);});dialog.addEventListener('close',()=>{dialog.remove();resolve(choice);},{once:true});document.body.append(dialog);dialog.showModal();cancel.focus();
     });
   }

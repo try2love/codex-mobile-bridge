@@ -11,7 +11,7 @@ from pathlib import Path
 
 from bridge.clients.errors import BridgeUnavailable, ResumePreflightBlocked
 from bridge.features.workspace.workspace import MAX_TRANSFER, Workspace
-from .installation import installation, listener_identity, launch
+from .installation import installation, listener_identity
 
 
 ACCESS = {'build': '变更前确认', 'guarded': '自主模式', 'yolo': '完全访问'}
@@ -130,13 +130,43 @@ def detached_session(row, workspace):
             'capabilities': {'send': False, 'resume': True, 'plan': False, 'goal': False}}
 
 
-class ZCodePrototype:
-    def __init__(self, directory, config, transport=None):
+class ZCodeDesktop:
+    """Ordinary installation, with OS management independent of chat transport."""
+    unavailable = 'ZCode 已安装，当前没有可用的本机聊天连接。'
+
+    def __init__(self, directory, config):
         self.directory = Path(directory)
         self.config = dict(config)
+        self.home = Path(config.get('dataDirectory', Path.home()/'.zcode/v2'))
+
+    def call(self, action, sid=None, body=None):
+        if action == 'list':
+            from bridge.clients.zcode.history import saved_sessions
+            return saved_sessions(self.home)
+        if action in ('detail', 'history'):
+            from bridge.clients.zcode.history import saved_detail
+            return saved_detail(self.home, sid, body)
+        raise BridgeUnavailable(self.unavailable)
+
+    def status(self):
+        available = (self.home/'tasks-index.sqlite').is_file()
+        return {'connected': False, 'historyAvailable': available,
+                'reason': '本机历史（只读）' if available else self.unavailable}
+
+    def account_scope(self):
+        """Invalidate shared catalogs on account/provider changes, not UI settings."""
+        from bridge.clients.zcode.accounts import read, account_key, SETTINGS
+        settings = read(self.home/'setting.json')
+        value = [{k: v for k, v in read(self.home/'credentials.json').items() if account_key(k)},
+                 read(self.home/'provider_config.json'), {k: settings[k] for k in SETTINGS if k in settings}]
+        return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+class ZCodePrototype(ZCodeDesktop):
+    def __init__(self, directory, config, transport=None):
+        super().__init__(directory, config)
         self.transport = transport or self._native
         self.workspace = str(Path(config['workspace']).resolve(strict=True))
-        self.home = Path(config.get('dataDirectory', Path.home()/'.zcode/v2'))
         self.sid = config['sessionId']
         self.workspaces = {self.sid: self.workspace}
         self.bindings = {}
@@ -163,6 +193,14 @@ class ZCodePrototype:
 
 
     def call(self, action, sid=None, body=None):
+        try:
+            return self._call_live(action, sid, body)
+        except (OSError, ValueError):
+            if action not in ('list', 'detail', 'history') or not (self.home/'tasks-index.sqlite').is_file():
+                raise
+            return super().call(action, sid, body)
+
+    def _call_live(self, action, sid=None, body=None):
         if action in ('account', 'lifecycle'):
             return self.transport({'action': action, 'workspace': self.workspace, 'sessionId': self.sid,
                                    'expectedRuntime': self.config.get('binding', {}).get('runtime')})
@@ -328,41 +366,16 @@ class ZCodePrototype:
             return {'id': body['id'], 'status': status, 'nativeAck': result, **extra}
         return result
 
-    def account_scope(self):
-        """Invalidate shared catalogs on account/provider changes, not UI settings."""
-        from bridge.clients.zcode.accounts import read, account_key, SETTINGS
-        settings = read(self.home/'setting.json')
-        value = [{k: v for k, v in read(self.home/'credentials.json').items() if account_key(k)},
-                 read(self.home/'provider_config.json'), {k: settings[k] for k in SETTINGS if k in settings}]
-        return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
-
-    def launch(self):
-        """Explicit account transaction only; normal Launch Services, no force quit."""
-        app = installation(self.config['application'])
-        if not app or app['version'] != '3.17.1':
-            raise BridgeUnavailable('ZCode 安装身份或版本已变化')
-        launch(app['executable'], self.home, self.config['port'])
-        deadline = time.monotonic() + 25
-        while True:
-            try:
-                self.config['process'] = listener_identity(self.config['port'], app['executable'])
-                account = self.call('account')['account']
-                if not account.get('identity'):
-                    raise BridgeUnavailable('ZCode 尚未恢复账号，请在原 App 检查登录')
-                # The account action explicitly authorizes reconnecting the same native chat.
-                try:
-                    self.config['binding'] = self.call('attach', self.sid)['binding']
-                except (OSError, ValueError):
-                    pass  # A cold App stays disconnected until explicit resume; never send a turn.
-                return
-            except (OSError, ValueError):
-                if time.monotonic() >= deadline:
-                    raise BridgeUnavailable('ZCode 启动或登录核验超时；恢复备份已保留') from None
-                time.sleep(.5)
+    def reconnect_existing(self):
+        try:
+            self.call('resume', self.sid, {'id': str(uuid.uuid4())})
+            return True
+        except (OSError, ValueError):
+            return False
 
     def status(self):
         try:
-            self.call('detail', self.sid)
+            self._call_live('detail', self.sid)
             return {'connected': True}
-        except (BridgeUnavailable, ValueError, OSError):
-            return {'connected': False}
+        except (ValueError, OSError):
+            return super().status()

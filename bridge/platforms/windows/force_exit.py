@@ -298,7 +298,7 @@ def force_stop_client(descriptor, *, state):
     deadline, held = time.monotonic() + BUDGET, {}
     try:
         executable = Path(descriptor.get('executable', ''))
-        if (descriptor.get('id') not in ('codex', 'claude', 'deepseek') or descriptor.get('installed') is not True
+        if (descriptor.get('id') not in ('codex', 'claude', 'deepseek', 'zcode') or descriptor.get('installed') is not True
                 or not executable.is_absolute() or executable.suffix.lower() != '.exe' or not executable.is_file()):
             raise ValueError(INVALID)
         executable = executable.resolve()

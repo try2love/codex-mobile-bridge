@@ -1,4 +1,4 @@
-"""Request Codex's native Quit menu once and observe the selected installation."""
+"""Request the selected desktop's native Quit menu once and verify its exit."""
 import ctypes
 import json
 import os
@@ -159,7 +159,21 @@ def _observe(executable, original, deadline, reason=PENDING, *, wait=True):
 
 
 def stop_codex(app, gui_pids=None):
-    """Never replay a timed-out/uncertain request and never terminate Codex."""
+    return _stop_menu(app, gui_pids, '--quit')
+
+
+def stop_zcode(app, gui_pids=None):
+    if (app.executable.name.casefold() != 'zcode.exe'
+            or not (app.executable.parent/'resources/app.asar').is_file()):
+        raise ValueError('ZCode 安装身份无法确认')
+    try:
+        return _stop_menu(app, gui_pids, '--quit-zcode')
+    except ValueError as exc:
+        raise ValueError(str(exc).replace('Codex', 'ZCode')) from None
+
+
+def _stop_menu(app, gui_pids, mode):
+    """An uncertain request is never replayed or escalated to termination."""
     if sys.platform != 'win32':
         raise ValueError('此系统不支持 Windows Codex 原生退出组件')
     executable, deadline = Path(app.executable).resolve(), time.monotonic() + BUDGET
@@ -185,7 +199,7 @@ def stop_codex(app, gui_pids=None):
     try:
         remaining = _remaining(deadline)
         helper_timeout = remaining - min(3, remaining / 2)
-        result = subprocess.run([str(helper), str(pid), '--quit', str(executable), str(original['created'])],
+        result = subprocess.run([str(helper), str(pid), mode, str(executable), str(original['created'])],
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding='utf-8', errors='replace', timeout=helper_timeout,
             creationflags=subprocess.CREATE_NO_WINDOW, close_fds=True, check=False)

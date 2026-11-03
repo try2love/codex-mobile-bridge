@@ -38,8 +38,7 @@ def renderer_url(application):
     return (path/'Contents/Resources/app.asar/out/renderer/index.html').as_uri()
 
 
-def launch(executable, home, port):
-    arguments = ('--remote-debugging-address=127.0.0.1', '--remote-debugging-port='+str(port))
+def launch(executable, home):
     if sys.platform == 'win32':
         from bridge.platforms.windows.session import require_interactive
         from bridge.platforms.windows.desktop import start
@@ -48,4 +47,4 @@ def launch(executable, home, port):
         from bridge.platforms.macos.desktop import start
     else:
         raise ValueError('此平台的 ZCode 原生接入尚未验证')
-    return start(Path(executable), home, {}, arguments=arguments)
+    return start(Path(executable), home if home.is_dir() else Path(executable).parent, {})

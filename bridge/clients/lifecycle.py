@@ -116,7 +116,8 @@ def _process_state(descriptor, app, pids, commands):
                 hosts.append(pid)
             else:
                 unknown = True
-        elif '--expose-internals' in command or '--eval' in command or ' --run' in command:
+        elif (descriptor['id'] == 'zcode' and re.search(r'(?:^|\s)--(?:user-data-dir|profile)(?:[=\s]|$)', command)
+              or '--expose-internals' in command or '--eval' in command or ' --run' in command):
             unknown = True
         else:
             main.append(pid)
@@ -158,6 +159,10 @@ def force_stop_client(descriptor, *, state):
         raise ValueError(CHANGED)
     for pid, command in commands.items():
         prefix = str(app.executable)
+        if descriptor['id'] == 'zcode' and sys.platform == 'darwin' and command == app.executable.name:
+            # Launch Services may expose just "ZCode" as argv[0]. The native
+            # binder below independently verifies image, UID, birth and command.
+            continue
         if command != prefix and not command.startswith(prefix + ' '):
             raise ValueError(CHANGED)
         arguments = command[len(prefix):]
@@ -269,6 +274,9 @@ def launch_client(descriptor):
         return {'running': True, 'launched': False}
     if descriptor['id'] == 'codex':
         app.start()
+    elif descriptor['id'] == 'zcode':
+        from bridge.clients.zcode.installation import launch
+        launch(app.executable, app.home)
     else:
         # Claude owns its native profile selection, including third-party login.
         from bridge.clients.claude.setup import running_app
