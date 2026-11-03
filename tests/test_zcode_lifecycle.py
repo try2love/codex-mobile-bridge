@@ -4,7 +4,7 @@ import plistlib
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from bridge.clients.discovery import discover_clients
 from bridge.clients.manager import DesktopSessions
@@ -44,6 +44,51 @@ class ZCodeLifecycleTests(unittest.TestCase):
 
     def toggle(self, enabled, **options):
         return self.manager.toggle_client({'provider': 'zcode', 'enabled': enabled, **options})
+
+    def test_gateway_starts_private_pipe_by_default_and_never_opens_a_port(self):
+        from bridge.clients.zcode.pipe_host import PipeHostClient
+        process = {'pid': 77, 'birth': [1, 2], 'started': [3, 4]}
+        row = self.manager.config['discovered']['zcode']
+        fake = Mock(spec=PipeHostClient)
+        fake.application = row['application']
+        fake.supported.return_value = True
+        fake.call.return_value = {'ready': True}
+        fake.start.return_value = process
+        fake.owner.side_effect = lambda: process if fake.start.called else None
+        self.manager.zcode_pipe = fake
+        self.manager._configure_zcode()
+        empty = {**self.state, 'running': False, 'pids': [], 'mainPids': []}
+        with patch('bridge.clients.lifecycle.inspect_client', side_effect=[empty, self.state]), \
+                patch('bridge.clients.lifecycle.launch_client') as ordinary, \
+                patch('bridge.clients.zcode.adapter.listener_identity') as port:
+            status = self.toggle(True)
+        client = next(r for r in status['clients'] if r['id'] == 'zcode')
+        self.assertTrue(client['pipeReady'] and client['pipeSupported'])
+        self.assertFalse(client['compatibilityLaunch'])
+        fake.start.assert_called_once_with()
+        self.assertTrue(self.manager.adapters['zcode'].config['privatePipe'])
+        ordinary.assert_not_called()
+        port.assert_not_called()
+
+    def test_pipe_error_or_unknown_tasks_do_not_authorize_compatibility_or_relaunch(self):
+        from bridge.clients.zcode.pipe_host import PipeHostClient
+        fake = Mock(spec=PipeHostClient)
+        fake.application = self.manager.config['discovered']['zcode']['application']
+        fake.supported.return_value = True
+        fake.owner.return_value = None
+        self.manager.zcode_pipe = fake
+        self.manager._configure_zcode()
+        with patch('bridge.clients.lifecycle.stop_client') as stop, \
+                patch('bridge.clients.zcode.adapter.listener_identity') as port:
+            with self.assertRaisesRegex(ValueError, '无法确认任务状态'):
+                self.toggle(True, initializeDesktop=True, connectionMode='private-pipe')
+            fake.owner.side_effect = PermissionError('identity mismatch')
+            with self.assertRaises(PermissionError):
+                self.toggle(True, initializeDesktop=True, connectionMode='private-pipe', acknowledgeUnavailable=True)
+            fake.start.assert_not_called()
+            stop.assert_not_called()
+            port.assert_not_called()
+            self.assertNotIn('zcodeCompatibility', self.manager.config)
 
     def test_saved_prototype_only_offers_retry_for_a_verified_reachable_owner(self):
         installation = self.manager.config['discovered']['zcode']

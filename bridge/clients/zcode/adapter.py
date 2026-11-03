@@ -257,8 +257,9 @@ class ZCodeDesktop:
 
 
 class ZCodePrototype(ZCodeDesktop):
-    def __init__(self, directory, config, transport=None):
+    def __init__(self, directory, config, transport=None, *, pipe=None):
         super().__init__(directory, config)
+        self.pipe = pipe
         self.transport = transport or self._native
         self.port = config.get('debugFallbackPort', config.get('port'))
         self.sid = config.get('sessionId')
@@ -266,7 +267,7 @@ class ZCodePrototype(ZCodeDesktop):
         if bool(self.workspace) != bool(self.sid) or self.sid is not None and (
                 not isinstance(self.sid, str) or not self.sid.startswith('sess_')):
             raise ValueError('ZCode 原会话或工作区无效')
-        if not self.sid and config.get('debugFallbackPort') != 17742:
+        if not self.sid and not self.pipe and config.get('debugFallbackPort') != 17742:
             raise ValueError('请先启用 ZCode 本机兼容连接')
         self.process = config.get('process')
         self.application_owner = None
@@ -279,6 +280,11 @@ class ZCodePrototype(ZCodeDesktop):
         return self.bindings.get(self.workspace)
 
     def _live_process(self):
+        if self.pipe is not None:
+            owner = self.pipe.owner()
+            if owner is None:
+                raise _NoLocalTransport('请在应用管理中初始化 ZCode 连接。')
+            return owner
         if sys.platform not in DEBUG_VERSIONS:
             raise _NoLocalTransport('此平台的 ZCode 原生接入尚未验证')
         application = self.config.get('application')
@@ -291,6 +297,11 @@ class ZCodePrototype(ZCodeDesktop):
             reason = ('未检测到兼容端口。请确认任务已结束，在应用管理中正常退出 ZCode，再由网关启动。'
                       if self.config.get('debugFallbackPort') else '未检测到可接入的 ZCode 本机实时连接。')
             raise _NoLocalTransport(reason) from error
+
+    def connection_owner(self, executable):
+        if self.pipe is not None:
+            return self.pipe.owner()
+        return self.compatibility_owner(executable)
 
     def compatibility_owner(self, executable):
         """A free port can be used for launch. Never displace an unknown listener."""
@@ -333,6 +344,8 @@ class ZCodePrototype(ZCodeDesktop):
         process = self._live_process()
         if process != request.get('expectedProcess', self.process):
             raise BridgeUnavailable('ZCode App 进程已变化，请重新核验并显式接入')
+        if self.pipe is not None:
+            return self.pipe.call({**request, 'expectedProcess': process})
         request = {**request, 'application': str(self.config['application']), 'port': self.port,
                    'expiresAt': int(time.time() * 1000) + 12000}
         request.pop('expectedProcess', None)
@@ -344,7 +357,7 @@ class ZCodePrototype(ZCodeDesktop):
 
 
     def call(self, action, sid=None, body=None):
-        if action in ('list', 'detail', 'history', 'resume', 'send') and self._window_app():
+        if not self.pipe and action in ('list', 'detail', 'history', 'resume', 'send') and self._window_app():
             if action == 'resume':
                 try:
                     result = super().call(action, sid, body)
@@ -361,11 +374,22 @@ class ZCodePrototype(ZCodeDesktop):
         except (OSError, ValueError) as error:
             if action not in ('list', 'detail', 'history') or not (self.home/'tasks-index.sqlite').is_file():
                 raise
-            view = super().call(action, sid, body)
+            from .history import _TranscriptUnavailable, resume_workspace
+            try:
+                view = super().call(action, sid, body)
+            except _TranscriptUnavailable:
+                if action != 'detail' or self.application_owner is None:
+                    raise
+                workspace = resume_workspace(self.home, sid)
+                target = self.transport({'action': 'target', 'sessionId': sid, 'expectedProcess': self.application_owner})
+                if not same_cwd(workspace, target.get('workspace'), sys.platform == 'win32'):
+                    raise BridgeUnavailable('原 App 会话或项目已变化，请刷新列表')
+                row = detached_session({'id': sid, 'title': target.get('title', '')}, workspace)
+                view = {'session': row, 'messages': [], 'readOnly': True, 'capabilities': row['capabilities']}
             if not isinstance(error, _NoLocalTransport):
                 if action == 'list':
                     view['sessionAccess'] = True
-                elif not view['session']['archived']:
+                elif not view['session'].get('archived'):
                     view['capabilities']['resume'] = True
                     view['notice'] = '当前显示 ZCode 历史；点击继续会话连接原生运行状态。'
             return view
@@ -406,6 +430,10 @@ class ZCodePrototype(ZCodeDesktop):
             # The original renderer can still hold active leases after a gateway restart.
             return self.transport({'action': action, 'expectedProcess': self._live_process()})
         if not self.sid:
+            if action == 'list' and self.application_owner is not None:
+                result = self.transport({'action': 'list', 'expectedProcess': self.application_owner})
+                return {'sessions': [detached_session(row, row['cwd']) for row in result['sessions']],
+                        'sessionAccess': True, 'connected': False, 'readOnly': True, 'capabilities': {'create': False}}
             self._live_process()  # Identity only. Reading saved history never selects a session.
             raise BridgeUnavailable('请在要继续的 ZCode 聊天中连接原会话。')
         if action in ('account', 'lifecycle'):
@@ -574,7 +602,7 @@ class ZCodePrototype(ZCodeDesktop):
                 except _NoLocalTransport as error:
                     return {**base, 'reason': str(error)}
             return base
-        if self._window_app() and not self.debug_sessions:
+        if not self.pipe and self._window_app() and not self.debug_sessions:
             return super().status()
         try:
             detail = self._call_live('detail', self.sid)

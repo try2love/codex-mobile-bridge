@@ -1286,3 +1286,17 @@ test('a verified per-session connection enables only text without granting app-w
  assert.equal(view.stop.hidden,true);assert.equal(view.skillsButton.hidden,true);assert.equal(view.canResume(),false);
  assert.equal(ui.calls.filter(c=>c.body).length,1);
 });
+
+test('only selecting a ZCode row continues its verified private session',async()=>{
+ const ui=fixture(),view=ui.view,actions=[];
+ view.provider='zcode';view.clientStates=[{id:'zcode',enabled:true,pipeReady:true}];
+ view.detail=async()=>{};view.loadNotificationPolicy=()=>{};view.canResume=()=>true;
+ view.mutate=async action=>actions.push(action);
+ await view.open('cold');
+ assert.deepEqual(actions,[]);
+ await view.open('cold',{continueSelected:true});
+ assert.deepEqual(actions,['resume']);
+ view.clientStates[0].pipeReady=false;
+ await view.open('cold',{continueSelected:true});
+ assert.deepEqual(actions,['resume']);
+});

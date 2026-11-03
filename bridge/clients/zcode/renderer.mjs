@@ -44,10 +44,18 @@ export async function nativeRequest(request) {
     if (rows.length !== 1) throw Error('原 App 中找不到唯一的本机会话，请刷新列表');
     return rows[0];
   };
-  if (['projects', 'target'].includes(request.action)) {
+  const listTasks = (tree, snapshotFor) => ({ sessions: tree.tasks.filter(row => !row.deleted && (!row.hostId || row.hostId === 'local'))
+    .map(row => {
+      const snapshot = snapshotFor?.(row.taskId);
+      return snapshot ? { snapshot, cwd: row.workspacePath } : { id: row.taskId, title: row.title,
+        cwd: row.workspacePath, model: row.model, effort: row.thoughtLevel, updatedAt: row.updatedAt, archived: row.archived };
+    }) });
+  if (['projects', 'target'].includes(request.action) || request.action === 'list' && !request.sessionId) {
     const tree = await services.projectService.readTree({});
+    if (request.action === 'list') return listTasks(tree);
     if (request.action === 'target') {
-      return { workspace: targetTask(tree).workspacePath };
+      const task = targetTask(tree);
+      return { workspace: task.workspacePath, ...(task.title ? { title: task.title } : {}) };
     }
     return { projects: tree.projects.filter(row => !row.deleted && row.hostId === 'local' && row.roots.some(root => root.isPrimary))
       .map(row => ({ key: row.id, name: row.name, cwd: row.roots.find(root => root.isPrimary).rootPath, surface: 'desktop', host: 'local' })) };
@@ -199,14 +207,11 @@ export async function nativeRequest(request) {
   if (request.binding && !same(current, request.binding)) throw Error('ZCode owner changed; explicit reattach required');
   if (request.action === 'list') {
     const tree = await services.projectService.readTree({});
-    return { sessions: tree.tasks.filter(row => !row.hostId || row.hostId === 'local')
-      .map(row => {
-        const state = states.get(row.taskId), value = state?.lease.store.getState();
-        return value?.status === 'live' && state.binding.clientId === current.clientId &&
-          state.binding.connectionId === current.connectionId ? { snapshot: value.snapshot, cwd: row.workspacePath } :
-          { id: row.taskId, title: row.title, cwd: row.workspacePath, model: row.model,
-            effort: row.thoughtLevel, updatedAt: row.updatedAt, archived: row.archived };
-      }) };
+    return listTasks(tree, id => {
+      const state = states.get(id), value = state?.lease.store.getState();
+      return value?.status === 'live' && state.binding.clientId === current.clientId &&
+        state.binding.connectionId === current.connectionId ? value.snapshot : null;
+    });
   }
   const history = request.action === 'history' || request.action === 'detail' &&
     (!states.has(request.sessionId) || !same(states.get(request.sessionId).binding, current)) ? await read() : null;
