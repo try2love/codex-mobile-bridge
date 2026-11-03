@@ -1234,3 +1234,15 @@ test('desktop native edit uses the shared message action dialog and one receipt 
  const result=await openedAction[3].request('',{id:'same-attempt',text:'after'});assert.equal(result.status,'accepted');
  assert.ok(ui.calls.some(c=>c.url.includes('/edit-message')&&c.body?.id==='same-attempt'&&c.body.text==='after'));
 });
+
+test('saved ZCode history can be read without a live client and never enables the composer',async()=>{
+ const ui=fixture(),view=ui.view;
+ const row={id:'sess_1',title:'Saved',readOnly:true,connectionState:'detached',requests:[],capabilities:{send:false,resume:false,stop:false}};
+ ui.setHandler(async url=>url.includes('/detail')?{readOnly:true,session:row,messages:[{id:'m',role:'assistant',text:'Saved reply'}],capabilities:row.capabilities}:url.includes('/list')?{readOnly:true,connected:false,sessions:[row]}:{});
+ view.setClientStates([{id:'zcode',enabled:true,connected:false,historyAvailable:true}]);
+ await view.choose('zcode');assert.equal(view.rows.length,1);assert.match(view.listStatus.textContent,/只读/);
+ await view.open(row.id);assert.match(view.status.textContent,/只读/);assert.equal(view.canMutate(),false);assert.equal(view.canResume(),false);
+ // An older cached row must stay read-only if a new live route is reported meanwhile.
+ view.clientStates=[{id:'zcode',enabled:true,connected:true}];assert.equal(view.canMutate(),false);
+ assert.equal(ui.calls.some(call=>call.body),false);
+});

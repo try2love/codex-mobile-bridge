@@ -175,7 +175,8 @@ class DesktopSessions:
         legacy = self.config.get('zcodePrototype')
         row = self.config.get('discovered', {}).get('zcode', {})
         if not legacy and not row.get('installed'):
-            self.adapters.pop('zcode', None)
+            if 'zcode' in self.adapters:
+                self.adapters = {key: item for key, item in self.adapters.items() if key != 'zcode'}
             return
         config = legacy or {key: row[key] for key in ('application', 'dataDirectory')}
         previous = self.adapters.get('zcode')
@@ -190,9 +191,10 @@ class DesktopSessions:
                 adapter = ZCodeDesktop(directory, config)
         else:
             adapter = ZCodeDesktop(directory, config)
-        self.adapters['zcode'] = adapter
         if 'zcode' not in self.session_pins:
             self.session_pins['zcode'] = SessionPins(directory, 'zcode')
+        # Status readers may be iterating the previous installation snapshot.
+        self.adapters = {**self.adapters, 'zcode': adapter}
 
     def _receipts(self, adapter):
         # A recovered connector shares its original mutation receipts with the
@@ -278,7 +280,7 @@ class DesktopSessions:
         # a response from an account that was switched in the meantime.
         result = _copy_read(future.result())
         with self.read_lock:
-            if self.closed.is_set() or self.binding_epochs[provider] != binding or self.adapters[provider] is not adapter:
+            if self.closed.is_set() or self.binding_epochs[provider] != binding or self.adapters.get(provider) is not adapter:
                 raise BridgeUnavailable('客户端状态已变化，请重试')
         # Consumers may annotate rows. Sharing a result object crosses requests.
         return result
@@ -742,7 +744,7 @@ class DesktopSessions:
         if value.get('connected') is not False:
             self._list_activity(provider, adapter, binding, value.get('sessions', []))
         with self.read_lock:
-            if self.binding_epochs[provider] != binding or self.adapters[provider] is not adapter:
+            if self.binding_epochs[provider] != binding or self.adapters.get(provider) is not adapter:
                 raise BridgeUnavailable('客户端状态已变化，请重试')
         return value
 
@@ -827,7 +829,7 @@ class DesktopSessions:
                 candidates.sort(key=lambda item: item[0] not in self.activity)
                 for key, signature in candidates[:8]:
                     with self.read_lock:
-                        if self.closed.is_set() or self.binding_epochs[provider] != binding or self.adapters[provider] is not adapter:
+                        if self.closed.is_set() or self.binding_epochs[provider] != binding or self.adapters.get(provider) is not adapter:
                             return
                     try:
                         detail = self._read(provider, 'detail', key[2])

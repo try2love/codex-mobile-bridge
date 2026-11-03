@@ -27,7 +27,12 @@ class CodexQuit {
     [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindow callback,IntPtr data);
 
 
+    [DllImport("user32.dll")] static extern bool AllowSetForegroundWindow(uint pid);
+    [DllImport("user32.dll")] static extern IntPtr SendMessageTimeout(IntPtr window,uint message,IntPtr wparam,IntPtr lparam,uint flags,uint milliseconds,out IntPtr receipt);
     [DllImport("user32.dll")] static extern bool PostMessage(IntPtr window,uint message,IntPtr wparam,IntPtr lparam);
+    [StructLayout(LayoutKind.Sequential)] struct IconId {public uint size;public IntPtr hwnd;public uint id;public Guid guid;}
+    [StructLayout(LayoutKind.Sequential)] struct Rect {public int left,top,right,bottom;}
+    [DllImport("shell32.dll")] static extern int Shell_NotifyIconGetRect(ref IconId id,out Rect rect);
     static bool tray;
     static string executable,cancelFile;
     static readonly int session=Process.GetCurrentProcess().SessionId;
@@ -169,10 +174,24 @@ class CodexQuit {
         if(host==null)throw new Exception("找不到 ZCode 的原生托盘菜单");
         Action check=()=>Check(process,started,operation,host.Handle);
         check();
-        // The shell supplies no screen rectangle for some overflow icons.
-        // A missing icon ignores the context request; only the exact ZCode
-        // menu in a new same-process window below can authorize a Quit invoke.
-        if(!PostMessage(host.Handle,0x8001,new IntPtr(2),new IntPtr(0x007B)))throw new Exception("无法打开 ZCode 托盘菜单");
+        // Electron allocates increasing IDs for an app's tray entries. Explorer
+        // returns S_FALSE for a registered icon in the overflow area.
+        uint selected=0;Rect rect;
+        for(uint id=2;id<=32;id++){
+            var icon=new IconId {size=(uint)Marshal.SizeOf(typeof(IconId)),hwnd=host.Handle,id=id};
+            int code=Shell_NotifyIconGetRect(ref icon,out rect);
+            if(code!=0&&code!=1)continue;
+            if(selected!=0)throw new Exception("ZCode 的原生托盘图标不唯一");
+            selected=id;
+        }
+        if(selected==0)throw new Exception("ZCode 托盘图标未注册");
+        check();
+        // Electron's tray callback asks Windows to foreground its own menu HWND.
+        // Pass only this PID the caller's existing foreground grant, if any.
+        AllowSetForegroundWindow((uint)process.Id);
+        IntPtr receipt;
+        if(SendMessageTimeout(host.Handle,0x8001,new IntPtr(selected),new IntPtr(0x0204),0x22,1500,out receipt)==IntPtr.Zero||receipt!=new IntPtr(1))
+            throw new Exception("ZCode 未确认打开托盘菜单，尚未请求退出");
         IntPtr popup=IntPtr.Zero;
         Func<AutomationElement> find=()=>{
             AutomationElement quit=null;
