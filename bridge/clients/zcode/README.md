@@ -1,8 +1,12 @@
-# ZCode 原生会话协议原型
+# ZCode 桌面接入
 
-这是供开发验证的显式入口，在私有配置显式启用后可从 Mac Test 的共享手机界面访问。当前只验证 macOS 上的 ZCode 3.17.1 与 Node 26.12.1。原 App 负责执行、模型、账号和工作区；Bridge 不另起 CLI。
+macOS 和 Windows 网关扫描已安装的 ZCode。普通启动时可在网关或手机管理应用、查看本机保存的聊天。停用手机访问后，电脑上的应用和任务继续运行。退出与强制退出是独立操作；Windows 正常退出使用 ZCode 自己的托盘菜单，请在可交互的桌面上使用。
 
-设计和证据见 [Agent Note](../../../.agents/notes/implemented/feature/2026-10-31-zcode-native-session-prototype.md)。
+普通本机接入不会启动调试端口。保存的聊天标记为只读，不能通过这条通道发送消息或处理审批。此前已配置的 3.17.1 兼容接入仍可复用已打开并核验过的原会话。切换已保存账号前，请先停用手机访问并退出 ZCode。
+
+## 旧版显式会话原型
+
+以下说明仅适用于单独配置的开发原型。原 App 负责执行、模型、账号和工作区。设计和证据见 [Agent Note](../../../.agents/notes/implemented/feature/2026-10-31-zcode-native-session-prototype.md)。
 
 ## 使用边界
 
