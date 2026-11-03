@@ -163,6 +163,8 @@ def stop_codex(app, gui_pids=None):
 
 
 def stop_zcode(app, gui_pids=None):
+    from .session import require_interactive
+    require_interactive()
     if (app.executable.name.casefold() != 'zcode.exe'
             or not (app.executable.parent/'resources/app.asar').is_file()):
         raise ValueError('ZCode 安装身份无法确认')
