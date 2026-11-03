@@ -1,4 +1,23 @@
 'use strict';
+function chatFollowsLatest(viewport){
+  return viewport.scrollHeight-viewport.scrollTop-viewport.clientHeight<110;
+}
+function captureChatScrollAnchor(viewport,container,accept=()=>true){
+  const top=viewport.getBoundingClientRect().top;
+  let anchor=null;
+  for(const node of container.children){
+    if(node.hidden||node.dataset.key===undefined||!accept(node))continue;
+    const rect=node.getBoundingClientRect();
+    anchor={key:node.dataset.key,offset:rect.top-top};
+    if(rect.bottom>top)break;
+  }
+  return anchor;
+}
+function restoreChatScrollAnchor(viewport,node,anchor){
+  if(!node||node.hidden||!anchor)return false;
+  viewport.scrollTop+=node.getBoundingClientRect().top-viewport.getBoundingClientRect().top-anchor.offset;
+  return true;
+}
 function captureChatActivityState(node){
   const details=node?.tagName==='DETAILS'?node:node?.querySelector('details.activity');
   if(!details)return null;

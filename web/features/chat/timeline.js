@@ -62,9 +62,9 @@ class ChatTimeline {
     this.resize.observe(this.container);
   }
   dispose(){this.abort.abort();window.BridgeMermaidCards?.clearScope(this.mermaidScope);clearTimeout(this.startRetry);this.resize.disconnect();this.viewport.removeEventListener('scroll',this.onScroll);this.viewport.removeEventListener('wheel',this.onWheel);this.viewport.removeEventListener('touchstart',this.onTouchStart);this.viewport.removeEventListener('touchmove',this.onTouchMove);this.newer.hidden=true;}
-  atBottom(){return this.viewport.scrollHeight-this.viewport.scrollTop-this.viewport.clientHeight<110;}
+  atBottom(){return chatFollowsLatest(this.viewport);}
   nearTop(){const nodes=[...this.container.children].filter(n=>!n.hidden);return nodes.length>0&&nodes.slice(0,11).some(n=>n.getBoundingClientRect().bottom>=this.viewport.getBoundingClientRect().top);}
-  capture(accept=()=>true){if(!this.viewport.clientHeight)return this.anchor;const top=this.viewport.getBoundingClientRect().top;const nodes=[...this.container.children].filter(n=>!n.hidden&&accept(n));const node=nodes.find(n=>n.getBoundingClientRect().bottom>top)||nodes[nodes.length-1];return node?{key:node.dataset.key,offset:node.getBoundingClientRect().top-top}:null;}
+  capture(accept){return this.viewport.clientHeight?captureChatScrollAnchor(this.viewport,this.container,accept):this.anchor;}
   rowVisible(row){
     if(row.role==='user'||row.role==='error')return true;
     if(row.kind==='reasoning')return this.showReasoning;
@@ -97,7 +97,7 @@ class ChatTimeline {
     this.suppress=true;
     const node=anchor&&this.nodes.get(anchor.key)?.node;
     if(bottom)this.jumpBottom();
-    else if(node&&!node.hidden)this.viewport.scrollTop+=node.getBoundingClientRect().top-this.viewport.getBoundingClientRect().top-anchor.offset;
+    else restoreChatScrollAnchor(this.viewport,node,anchor);
     this.lastTop=this.viewport.scrollTop;
     this.anchor=this.capture();
     requestAnimationFrame(()=>this.suppress=false);

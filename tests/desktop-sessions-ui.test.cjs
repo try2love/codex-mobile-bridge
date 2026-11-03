@@ -12,12 +12,12 @@ test('loaded desktop chat content reports readiness after rendering, including s
 test('opening the current desktop chat keeps its draft, message nodes and workbench',async()=>{
  const ui=await opened(),view=ui.view,session=view.workbench.current;
  ui.setHandler(async()=>({session:{id:'a',title:'Chat',status:'idle'},messages:[{id:'reply',role:'assistant',text:'Current reply'}]}));await view.open('a');
- view.input.value='unsent draft';Object.defineProperty(view.messages,'scrollHeight',{value:1000,configurable:true});view.messages.scrollTop=42;const nodes=[...view.messages.children];
+ view.input.value='unsent draft';Object.defineProperty(view.messages,'scrollHeight',{value:1000,configurable:true});view.messages.scrollTop=42;const nodes=[...view.messageList.children];
  const prepare=view.prepareChat;view.prepareChat=()=>{throw Error('chat rebuilt');};
  await view.open(view.sid);
  assert.equal(view.workbench.current,session);assert.equal(view.input.value,'unsent draft');
- assert.equal(view.messages.scrollTop,42);assert.equal(view.messages.children.length,nodes.length);
- assert.ok(nodes.every((node,index)=>node===view.messages.children[index]));
+ assert.equal(view.messages.scrollTop,42);assert.equal(view.messageList.children.length,nodes.length);
+ assert.ok(nodes.every((node,index)=>node===view.messageList.children[index]));
  view.prepareChat=prepare;
 });
 function fixture({storage=new Map(),sessionStore=new Map()}={}){
@@ -71,7 +71,7 @@ test('native history images use the shared preview markup and survive unchanged 
 });
 test('shared task indicator separates native work, approvals, stale reads and completion',async()=>{
  const ui=await opened(),view=ui.view,apply=(status,requests=[])=>view.applyDetail({connected:true,session:{id:'a',title:'Chat',status,requests},messages:[]});
- apply('active');assert.equal(view.progress.dataset.state,'working');assert.equal(view.progress.hidden,false);assert.ok(view.messages.children.includes(view.progress));
+ apply('active');assert.equal(view.progress.dataset.state,'working');assert.equal(view.progress.hidden,false);assert.ok(view.messageList.children.includes(view.progress));
  apply('active',[{id:'approval',tool:'Confirm',input:{}}]);assert.equal(view.progress.dataset.state,'waiting');
  view.staleDetail();assert.equal(view.progress.dataset.state,'unknown');assert.doesNotMatch(view.progress.textContent,/正在工作/);
  apply('blocked');assert.equal(view.progress.dataset.state,'blocked');apply('idle');assert.equal(view.progress.hidden,true);
@@ -284,7 +284,7 @@ test('returning to list clears selection and prevents an old detail from reopeni
  const ui=await opened();ui.view.input.value='draft';let finish;ui.setHandler(()=>new Promise(resolve=>finish=resolve));const reading=ui.view.open('b');assert.equal(ui.view.isChatOpen,true);ui.view.backToList();assert.equal(ui.view.sid,null);assert.equal(ui.view.isChatOpen,false);assert.equal(ui.view.welcome.hidden,false);finish({session:{id:'b',title:'late',status:'idle'},messages:[]});await reading;assert.equal(ui.view.sid,null);assert.equal(ui.view.conversation.hidden,true);assert.equal(ui.view.drafts.get('claude:a'),'draft');
 });
 test('composer and historical replies show their own model and effort without rewriting history',async()=>{
- const ui=fixture();await ui.view.choose('claude');ui.setHandler(async()=>({session:{id:'a',title:'Chat',model:'new-model',effort:'high',status:'idle',capabilities:{}},messages:[{id:'1',role:'assistant',model:'old-model',effort:'low',text:'answer'},{id:'2',role:'assistant',text:'no metadata'}]}));await ui.view.open('a');assert.match(ui.view.modelButton.textContent,/new-model/);assert.match(ui.view.modelButton.textContent,/high/);assert.match(ui.view.messages.children[0].textContent,/old-model.*low/);assert.doesNotMatch(ui.view.messages.children[1].textContent,/new-model|high/);assert.ok(ui.view.modelButton.classList.contains('tool-button'));assert.equal(ui.view.input.rows,1);ui.view.composerToggle.click();assert.equal(ui.view.composerBody.hidden,true);ui.view.composerToggle.click();assert.equal(ui.view.composerBody.hidden,false);
+ const ui=fixture();await ui.view.choose('claude');ui.setHandler(async()=>({session:{id:'a',title:'Chat',model:'new-model',effort:'high',status:'idle',capabilities:{}},messages:[{id:'1',role:'assistant',model:'old-model',effort:'low',text:'answer'},{id:'2',role:'assistant',text:'no metadata'}]}));await ui.view.open('a');assert.match(ui.view.modelButton.textContent,/new-model/);assert.match(ui.view.modelButton.textContent,/high/);assert.match(ui.view.messageList.children[0].textContent,/old-model.*low/);assert.doesNotMatch(ui.view.messageList.children[1].textContent,/new-model|high/);assert.ok(ui.view.modelButton.classList.contains('tool-button'));assert.equal(ui.view.input.rows,1);ui.view.composerToggle.click();assert.equal(ui.view.composerBody.hidden,true);ui.view.composerToggle.click();assert.equal(ui.view.composerBody.hidden,false);
 });
 test('Claude recent list combines types chronologically and retains archive, search and project filters',async()=>{
  const ui=fixture();await ui.view.choose('claude');ui.view.rows=[{id:'a',title:'Code chat',backend:'code',cwd:'/same',updatedAt:1},{id:'b',title:'Cowork chat',backend:'cowork',cwd:'/same',updatedAt:2},{id:'c',title:'Archive',backend:'code',cwd:'/same',archived:true}];ui.view.renderList();
@@ -596,7 +596,7 @@ test('Claude request-size limit stays in attachment help and rejects oversized i
  const ui=fixture();await ui.view.choose('claude');ui.setHandler(async()=>({session:{id:'a',title:'Chat',status:'idle'},capabilities:{attachments:true},maxRequestBytes:10*1024*1024,messages:[]}));await ui.view.open('a');assert.ok(!ui.view.composerBody.querySelector('.ds-attachment-hint'));assert.match(ui.view.attachButton.title,/10 MiB/);ui.view.attachments.add([{name:'large.png',type:'image/png',size:8*1024*1024}]);assert.equal(ui.calls.some(c=>c.upload),false);assert.match(ui.view.attachments.error,/10 MiB/);
 });
 test('history updates retain expanded activities and honor visibility settings',async()=>{
- const ui=await opened();ui.view.renderMessages([{id:'step',role:'activity',title:'Write',text:'before'}]);ui.view.messages.children[0].open=true;ui.view.renderMessages([{id:'step',role:'activity',title:'Write',text:'after'},{id:'thought',role:'reasoning',text:'summary'}]);assert.equal(ui.view.messages.children[0].open,true);ui.document.documentElement.dataset.showProcess='false';ui.document.documentElement.dataset.showReasoning='false';ui.view.renderMessages(ui.view.lastMessages);assert.ok(ui.view.messages.children.every(n=>n.hidden));
+ const ui=await opened();ui.view.renderMessages([{id:'step',role:'activity',title:'Write',text:'before'}]);ui.view.messageList.children[0].open=true;ui.view.renderMessages([{id:'step',role:'activity',title:'Write',text:'after'},{id:'thought',role:'reasoning',text:'summary'}]);assert.equal(ui.view.messageList.children[0].open,true);ui.document.documentElement.dataset.showProcess='false';ui.document.documentElement.dataset.showReasoning='false';ui.view.renderMessages(ui.view.lastMessages);assert.ok(ui.view.messageList.children.every(n=>n.hidden));
 });
 
 test('skill selection clears after acceptance and expired choices cannot be submitted',async()=>{
@@ -725,7 +725,7 @@ test('cached history survives refresh failure and late errors cannot cross provi
 
 
 test('reopening cached history keeps its scroll and draft when the background connection fails',async()=>{
- const ui=fixture();ui.setHandler(async url=>url.includes('/detail')?{session:{id:'a',title:'Saved title',status:'idle'},messages:[{id:'saved',role:'assistant',text:'saved history'}]}:{sessions:[{id:'a',title:'Saved title',backend:'code'}]});await ui.view.choose('claude');await ui.view.open('a');ui.view.input.value='saved draft';ui.view.messages.scrollTop=42;ui.view.backToList();ui.setHandler(async()=>{throw Error('offline');});const reopening=ui.view.open('a');assert.match(ui.view.messages.textContent,/saved history/);assert.equal(ui.view.messages.scrollTop,42);assert.equal(ui.view.input.value,'saved draft');await reopening;assert.match(ui.view.messages.textContent,/saved history/);assert.equal(ui.view.send.disabled,true);assert.match(ui.view.error.textContent,/offline/);
+ const ui=fixture();ui.setHandler(async url=>url.includes('/detail')?{session:{id:'a',title:'Saved title',status:'idle'},messages:[{id:'saved',role:'assistant',text:'saved history'}]}:{sessions:[{id:'a',title:'Saved title',backend:'code'}]});await ui.view.choose('claude');await ui.view.open('a');ui.view.input.value='saved draft';ui.view.messages.scrollHeight=1000;ui.view.messages.scrollTop=42;ui.view.backToList();ui.setHandler(async()=>{throw Error('offline');});const reopening=ui.view.open('a');assert.match(ui.view.messages.textContent,/saved history/);assert.equal(ui.view.messages.scrollTop,42);assert.equal(ui.view.input.value,'saved draft');await reopening;assert.match(ui.view.messages.textContent,/saved history/);assert.equal(ui.view.send.disabled,true);assert.match(ui.view.notice.textContent,/offline/);
 });
 test('logout clears provider history and ignores detail responses arriving after clear',async()=>{
  const ui=fixture();ui.setHandler(async url=>url.includes('/detail')?{session:{id:'a',title:'Private title',status:'idle'},messages:[{id:'saved',role:'assistant',text:'private history'}]}:{sessions:[{id:'a',title:'Private title',backend:'code'}]});await ui.view.choose('claude');await ui.view.open('a');let complete;ui.setHandler(()=>new Promise(resolve=>complete=resolve));const late=ui.view.detail(ui.view.generation);ui.view.clear();complete({session:{id:'a',title:'Late private title',status:'idle'},messages:[{id:'late',role:'assistant',text:'late private history'}]});await late;assert.equal(ui.view.providerViews.size,0);assert.equal(ui.view.detailCache.size,0);assert.equal(ui.view.messages.textContent,'');assert.equal(ui.view.rowsRoot.textContent,'');ui.setHandler(async()=>({sessions:[]}));await ui.view.choose('claude');assert.equal(ui.view.rows.length,0);assert.equal(ui.view.sid,null);
