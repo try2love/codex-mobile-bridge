@@ -100,6 +100,13 @@ class ZCodeLifecycleTests(unittest.TestCase):
             native.reset_mock()
             self.assertTrue(inventory()['capabilities']['create'])
             native.assert_not_called()  # No large chat read to paint two entry points.
+            # An original cwd without a native project ID is still selectable through
+            # the existing bound-workspace entry, never sent as an invented project ID.
+            body = {**body, 'projectKey': '/project', 'id': 'fc220000-4000-4000-8000-000000000024'}
+            native.return_value = {'status': 'rejected'}
+            adapter.call('create', body=body)
+            self.assertEqual(native.call_args.args[0]['workspace'], '/project')
+            self.assertEqual(native.call_args.args[0]['sessionId'], created['result']['id'])
             with patch.object(adapter, '_live_process', return_value={'pid': 88}):
                 self.assertFalse(inventory()['capabilities']['create'])
                 self.assertTrue(inventory()['capabilities']['notifications'])

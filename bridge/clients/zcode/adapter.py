@@ -474,7 +474,8 @@ class ZCodePrototype(ZCodeDesktop):
                 raise BridgeUnavailable('必须先显式接入原生项目')
             # Managed application connections use the selected project, independent
             # of which conversation was last visited. Legacy leases keep their config.
-            context = ({'expectedProcess': self.application_owner} if self.application_create else
+            plain_workspace = self.binding and body['projectKey'] == self.workspace and not body.get('directoryProject')
+            context = ({'expectedProcess': self.application_owner} if self.application_create and not plain_workspace else
                        {'workspace': self.workspace, 'sessionId': self.sid, 'binding': self.binding})
             result = self.transport({'action': action, **context, 'body': body})
             workspace, binding = result.pop('workspace', None), result.pop('binding', None)
