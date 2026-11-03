@@ -17,26 +17,14 @@ import tempfile
 import time
 
 from bridge.features.accounts.accounts import private_json
-from bridge.clients.zcode.pipe_rpc import ACTIONS, MAX_FRAME, PipeTransport
+from bridge.clients.zcode.pipe_rpc import ACTIONS, KEYS, MAX_FRAME, PipeTransport
+from bridge.clients.zcode.transport import operation_timeout
 from bridge.platforms.macos import zcode_pipe
 from bridge.platforms.macos.desktop import commands
 from bridge.platforms.macos.force_exit import Native
 from bridge.platforms.macos.signed_peer import SignedGatewayPeer
 
 
-KEYS = frozenset(
-    (
-        "action",
-        "anchorSessionId",
-        "binding",
-        "body",
-        "commandId",
-        "expectedRuntime",
-        "expiresAt",
-        "sessionId",
-        "workspace",
-    )
-)
 OWNER_KEYS = ("pid", "uid", "image", "birth", "started")
 
 
@@ -433,7 +421,8 @@ class PipeHostClient:
         request.pop("port", None)
         if set(request) - KEYS:
             raise ValueError("未知的 ZCode 原生字段")
-        return self._request({"command": "operation", "owner": expected, "native": request})
+        return self._request({"command": "operation", "owner": expected, "native": request},
+                             timeout=operation_timeout(request.get("action")) + 3)
 
     def _start_service(self):
         """Only on explicit initialization. A competing new holder exits on flock."""

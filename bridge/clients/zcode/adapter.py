@@ -14,10 +14,11 @@ from bridge.features.sessions.identity import same_cwd
 from bridge.features.workspace.workspace import MAX_TRANSFER, Workspace
 from .attachments import attachments, read_image
 from .installation import installation, listener_identity
+from .transport import operation_timeout
 
 
 ACCESS = {'build': '变更前确认', 'guarded': '自主模式', 'yolo': '完全访问'}
-DEBUG_VERSIONS = {'darwin': ('3.17.1', '3.17.2'), 'win32': ('3.17.1',)}
+LOOPBACK_PLATFORMS = ('darwin', 'win32')
 
 
 def project_files(root, paths):
@@ -155,7 +156,7 @@ class ZCodeDesktop:
         path = self.config.get('application')
         if sys.platform == 'darwin' and path:
             app = installation(path)
-            if app and app['version'] == '3.17.2':
+            if app:
                 from bridge.platforms.macos.zcode import supports_window_send
                 if supports_window_send():
                     return app['executable']
@@ -282,6 +283,7 @@ class ZCodePrototype(ZCodeDesktop):
         self.process = config.get('process')
         self.application_owner = None
         self.application_create = False
+        self.application_start = None
         self.debug_sessions = set()
         self.workspaces = {self.sid: self.workspace} if self.sid else {}
         self.bindings = {self.workspace: config['binding']} if config.get('binding') and self.workspace else {}
@@ -296,11 +298,11 @@ class ZCodePrototype(ZCodeDesktop):
             if owner is None:
                 raise _NoLocalTransport('请在应用管理中初始化 ZCode 连接。')
             return owner
-        if sys.platform not in DEBUG_VERSIONS:
+        if sys.platform not in LOOPBACK_PLATFORMS:
             raise _NoLocalTransport('此平台的 ZCode 原生接入尚未验证')
         application = self.config.get('application')
         app = installation(application) if application else None
-        if not app or app['version'] not in DEBUG_VERSIONS[sys.platform]:
+        if not app:
             raise _NoLocalTransport('当前安装的 ZCode 不支持此本机实时连接。')
         try:
             return listener_identity(self.port, app['executable'])
@@ -321,25 +323,96 @@ class ZCodePrototype(ZCodeDesktop):
         except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
             raise BridgeUnavailable('无法核验本机兼容端口，请检查 17742 是否已被其他进程占用。') from exc
 
-    def connect_application(self, pid, *, wait=False):
+    def release_window(self):
+        super().release_window()
+        self.application_start = None
+
+    def _confirm_application(self, owner, result):
+        if not isinstance(result, dict) or result.get('ready') is not True or self._live_process() != owner:
+            raise BridgeUnavailable('ZCode 原 App 未确认连接。')
+        self._adopt_process(owner)
+        self.application_create = result.get('canCreate') is True
+
+    def start_private_application(self, owner):
+        # Only the verified gateway-owned original may enter this state. Inventory
+        # observations never launch an App, acquire a chat, or send a command.
+        self.application_start = {'owner': owner, 'id': str(uuid.uuid4()), 'stage': -1, 'until': time.monotonic() + 180,
+                                  'next': 0, 'delay': 2}
+        state = self.observe_application_start()
+        if state and state['connectionState'] == 'error':
+            raise BridgeUnavailable(state['reason'])
+
+    def observe_application_start(self):
+        attempt = self.application_start
+        if not attempt:
+            return None
+        def failed(phase, reason):
+            if self.application_start is not attempt:
+                return None
+            self._adopt_process(None)
+            self.application_start = {'failure': {'connectionState': phase, 'reason': reason}}
+            return self.application_start['failure']
+        if 'failure' in attempt:
+            return attempt['failure']
+        now = time.monotonic()
+        if now >= attempt['until']:
+            return failed('timeout', 'ZCode 的会话服务长时间未就绪，请重试连接。')
+        waiting = {'connectionState': 'connecting', 'reason': 'ZCode 已启动，正在连接原生会话服务。'}
+        if now < attempt['next']:
+            return waiting
+        owner = attempt['owner']
+        try:
+            if self._live_process() != owner:
+                raise BridgeUnavailable('ZCode 原进程已变化，请重新连接。')
+            try:
+                result = self.transport({'action': 'application', 'expectedProcess': owner,
+                                         'body': {'startupId': attempt['id']},
+                                         'expiresAt': int((time.time() + min(12, max(3, attempt['delay']))) * 1000)})
+            except (TimeoutError, subprocess.TimeoutExpired):
+                result = {'ready': False, 'stage': 'waiting'}
+            if self.application_start is not attempt:
+                return None
+            if result.get('ready') is True:
+                self._confirm_application(owner, result)
+                self.application_start = None
+                return None
+            stages = ('waiting', 'window', 'services', 'handshake', 'projects')
+            if result.get('ready') is not False or result.get('stage') not in stages:
+                raise BridgeUnavailable('ZCode 原 App 未确认会话服务。')
+            stage = stages.index(result['stage'])
+        except (OSError, EOFError, ValueError, AttributeError, subprocess.SubprocessError) as error:
+            return failed('error', (str(error).splitlines() or ['ZCode 原生连接失败，请重试。'])[0])
+        self._adopt_process(None)
+        now = time.monotonic()
+        if stage > attempt['stage']:
+            attempt.update(stage=stage, until=now + 180, delay=2)
+        attempt.update(next=now + attempt['delay'], delay=min(20, attempt['delay'] * 2))
+        return waiting
+
+    def connect_application(self, pid, *, wait=False, deadline=None):
         # Cold startup needs time to mount its native services. Only probe the App,
         # never create/select a workspace or submit a command during this retry.
-        deadline = time.monotonic() + (10 if wait else 0)
+        bounded_probe = deadline is not None
+        deadline = deadline if bounded_probe else time.monotonic() + (10 if wait else 0)
         delay = .25
         while True:
             try:
                 owner = self._live_process()
                 if owner.get('pid') == pid:
-                    result = self.transport({'action': 'application', 'expectedProcess': owner})
-                    if result.get('ready') is not True or self._live_process() != owner:
-                        raise BridgeUnavailable('ZCode 原 App 未确认连接。')
-                    self._adopt_process(owner)
-                    self.application_create = result.get('canCreate') is True
+                    request = {'action': 'application', 'expectedProcess': owner}
+                    if bounded_probe:
+                        left = deadline - time.monotonic()
+                        if left <= 0:
+                            raise TimeoutError('原 App 会话服务尚未就绪')
+                        request['expiresAt'] = int((time.time() + min(12, left)) * 1000)
+                    result = self.transport(request)
+                    self._confirm_application(owner, result)
                     return
-            except (ValueError, OSError, subprocess.TimeoutExpired) as error:
-                if time.monotonic() >= deadline:
-                    raise BridgeUnavailable('ZCode 兼容连接未就绪，请重试。' + str(error)) from error
-                time.sleep(delay)
+            except (ValueError, OSError, EOFError, subprocess.TimeoutExpired) as error:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise BridgeUnavailable('ZCode 连接未就绪，请重试。' + str(error)) from error
+                time.sleep(min(left, delay))
                 delay = min(1, delay * 2)
                 continue
             raise BridgeUnavailable('ZCode 进程已变化，请重新检查。')
@@ -360,7 +433,8 @@ class ZCodePrototype(ZCodeDesktop):
         if self.pipe is not None:
             return self.pipe.call({**request, 'expectedProcess': process})
         request = {**request, 'application': str(self.config['application']), 'port': self.port,
-                   'expiresAt': int(time.time() * 1000) + 12000}
+                   'expiresAt': min(int((time.time() + operation_timeout(request['action'])) * 1000),
+                                    request.get('expiresAt', float('inf')))}
         request.pop('expectedProcess', None)
         from bridge.clients.zcode.transport import request_native
         try:
@@ -374,14 +448,9 @@ class ZCodePrototype(ZCodeDesktop):
             return super().call(action, sid, body)
         if not self.pipe and action in ('list', 'detail', 'history', 'resume', 'send') and self._window_app():
             if action == 'resume':
-                try:
-                    result = super().call(action, sid, body)
-                    self.debug_sessions.discard(sid)
-                    return result
-                except ResumePreflightBlocked:
-                    # Resume sends no message. Only this explicit, pre-dispatch failure
-                    # may try the configured compatible transport (e.g. a locked UI).
-                    pass
+                ready = self._try_window_resume(sid, body)
+                if ready is not None:
+                    return ready
             elif sid not in self.debug_sessions and (action != 'list' or not self.debug_sessions):
                 return super().call(action, sid, body)
         try:
@@ -409,34 +478,77 @@ class ZCodePrototype(ZCodeDesktop):
                     view['notice'] = '当前显示 ZCode 历史；点击继续会话连接原生运行状态。'
             return view
 
+    def _try_window_resume(self, sid, body):
+        try:
+            result = super().call('resume', sid, body)
+        except ResumePreflightBlocked:
+            # Only an explicit operation rejected before dispatch may use the compatible transport.
+            return None
+        self.debug_sessions.discard(sid)
+        return result
+
     def _resume_debug(self, sid, body):
         if not isinstance(sid, str) or not sid.startswith('sess_') or set(body or {}) != {'id'}:
             raise ResumePreflightBlocked('ZCode 会话接入参数无效')
-        # Look up the target on the newly verified listener, never via the retired
-        # process. Only commit its identity and lease after the original App agrees.
+        result, _ = self._resume_transaction(sid, body['id'], progressive=False)
+        return result
+
+    def resume_step(self, sid, request_id, continuation=None):
+        if not isinstance(sid, str) or not sid.startswith('sess_') or not isinstance(request_id, str):
+            raise ResumePreflightBlocked('ZCode 会话接入参数无效')
+        try:
+            uuid.UUID(request_id)
+        except ValueError as error:
+            raise ResumePreflightBlocked('ZCode 会话接入参数无效') from error
+        if continuation is None and not self.pipe and self._window_app():
+            ready = self._try_window_resume(sid, {'id': request_id})
+            if ready is not None:
+                return ready, None
+        return self._resume_transaction(sid, request_id, progressive=True, continuation=continuation)
+
+    def _resume_transaction(self, sid, request_id, *, progressive, continuation=None):
         try:
             process = self._live_process()
-            expected = self.workspaces.get(sid)
-            if self.config.get('debugFallbackPort') or (self.home/'tasks-index.sqlite').is_file():
-                from bridge.clients.zcode.history import resume_workspace
-                expected = resume_workspace(self.home, sid)
             target = {'sessionId': sid, 'expectedProcess': process}
-            workspace = self.transport({**target, 'action': 'target'})['workspace']
-            if not isinstance(workspace, str) or not Path(workspace).is_absolute() or (
-                    expected is not None and not same_cwd(expected, workspace, sys.platform == 'win32')):
-                raise ValueError('原 App 会话或项目已变化，请刷新列表')
-            result = self.transport({**target, 'action': 'attach', 'workspace': workspace, 'binding': None})
+            if progressive:
+                # Each visit observes a native subscription; its lifetime is independent of this RPC.
+                target['expiresAt'] = int((time.time() + 8) * 1000)
+            if continuation is None:
+                expected = self.workspaces.get(sid)
+                if self.config.get('debugFallbackPort') or (self.home/'tasks-index.sqlite').is_file():
+                    from bridge.clients.zcode.history import resume_workspace
+                    expected = resume_workspace(self.home, sid)
+                workspace = self.transport({**target, 'action': 'target'})['workspace']
+                if not isinstance(workspace, str) or not Path(workspace).is_absolute() or (
+                        expected is not None and not same_cwd(expected, workspace, sys.platform == 'win32')):
+                    raise ValueError('原 App 会话或项目已变化，请刷新列表')
+            else:
+                adapter, original, session_id, operation, workspace = continuation
+                if adapter is not self or (original, session_id, operation) != (process, sid, request_id):
+                    raise ValueError('原 App 会话或接续已变化，请重新连接')
+            args = {**target, 'action': 'attach', 'workspace': workspace, 'binding': None}
+            if progressive:
+                args['body'] = {'resumeId': request_id, 'observe': continuation is not None}
+            result = self.transport(args)
+            if progressive and result.get('status') == 'pending':
+                progress = result.get('progress')
+                if type(progress) is not int or progress < 0 or result.get('stage') != 'restoring':
+                    raise ValueError('ZCode 接续状态无效')
+                return ({'id': request_id, 'status': 'pending', 'stage': 'restoring', 'progress': progress},
+                        (self, process, sid, request_id, workspace))
             binding = result['binding']
             if not binding.get('clientId') or not binding.get('connectionId') or not result.get('subscriptionId') or (
                     not binding.get('runtime', {}).get('identity') or binding['runtime'].get('workspaceKey') != workspace):
                 raise ValueError('ZCode 未确认原会话连接')
-        except (OSError, ValueError, AttributeError, KeyError, TypeError) as error:
+            if progressive and self._live_process() != process:
+                raise ValueError('原 App 进程已变化，请重新接续')
+        except (OSError, EOFError, ValueError, AttributeError, KeyError, TypeError) as error:
             raise ResumePreflightBlocked(str(error)) from error
         self._adopt_process(process)
         self.debug_sessions.add(sid)
         self.workspace, self.sid = workspace, sid
         self.workspaces[sid], self.bindings[workspace] = workspace, binding
-        return {'status': 'ready', 'id': body['id']}
+        return {'status': 'ready', 'id': request_id}, None
 
     def _call_live(self, action, sid=None, body=None):
         if action == 'resume':
@@ -602,6 +714,7 @@ class ZCodePrototype(ZCodeDesktop):
             models = native_reply_models(self.home, sid, workspace, (row.get('entityId') for row in
                 snapshot['rows']['window'] if row['kind'] == 'assistantText' and row.get('visibility') == 'visible'))
             value = project_snapshot(snapshot, workspace, models)
+            value['capabilities'].update(result.get('capabilities', {}))
             if sid in self.debug_sessions:
                 # The client inventory may still describe the previous connection.
                 value['session'].update(controlScope='session', connectionState='ready')
@@ -660,7 +773,7 @@ class ZCodePrototype(ZCodeDesktop):
         try:
             detail = self._call_live('detail', self.sid)
             if detail.get('native'):
-                return {'connected': True}
+                return {'connected': True, 'canCreate': detail['capabilities'].get('create') is True}
         except _NoLocalTransport as error:
             return {**super().status(), 'reason': str(error)}
         except (ValueError, OSError):

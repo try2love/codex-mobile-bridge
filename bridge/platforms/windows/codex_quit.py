@@ -99,6 +99,11 @@ def _snapshot(executable, deadline):
                 raise ValueError(CHANGED)
             if not kinds:
                 main.append(pid)
+        if Path(executable).name.casefold() == 'zcode.exe' and main:
+            from .zcode_pipe import main_processes
+            main, ambiguous = main_processes(executable, main, commands)
+            if ambiguous:
+                raise ValueError(CHANGED)
         if len(main) > 1:
             raise ValueError(CHANGED)
         created = _creation_time(main[0]) if main else None
@@ -160,6 +165,33 @@ def _observe(executable, original, deadline, reason=PENDING, *, wait=True):
 
 def stop_codex(app, gui_pids=None):
     return _stop_menu(app, gui_pids, '--quit')
+
+
+def stop_private_zcode(executable, main_pids, owner, request_quit):
+    """After task preflight, request one native quit and verify actual OS exit."""
+    executable = Path(executable).resolve()
+    deadline = time.monotonic() + BUDGET
+    original = _snapshot(executable, deadline)
+    if not original['pids']:
+        return True
+    if (not isinstance(owner, dict) or original['main'] is None or main_pids != [original['main']]
+            or owner.get('pid') != original['main'] or owner.get('created') != original['created']
+            or owner.get('image') != os.path.normcase(str(executable))):
+        raise ValueError('ZCode 运行实例已变化，尚未请求退出')
+    try:
+        supported = request_quit()
+    except (OSError, EOFError, ValueError, subprocess.SubprocessError):
+        # Electron can close the debugging stream before returning its reply.
+        # Only a complete OS exit settles this; a second Quit could hit another App.
+        supported = None
+    if supported is False:
+        current = _snapshot(executable, deadline)
+        if not current['pids']:
+            return True
+        if current['main'] == original['main'] and current['created'] == original['created']:
+            return False  # The original App definitively did not implement Browser.close.
+    _observe(executable, original, deadline, '尚未确认 ZCode 正常退出，请检查原 App；不会重复请求退出')
+    return True
 
 
 def stop_zcode(app, gui_pids=None):

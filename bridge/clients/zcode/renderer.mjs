@@ -24,19 +24,67 @@ export async function nativeRequest(request) {
         if (services?.zcodeAgentService) found.add(services);
       }
     }
+    if (!found.size && request.action === 'application') return { services: null };
     if (found.size !== 1) throw Error('Original ZCode service accessor is unavailable or ambiguous');
     return { services: [...found][0], contexts: [...contexts], registryAnchor };
   };
-  const { services, contexts, registryAnchor } = findServices(), agent = services.zcodeAgentService;
-  if (request.action === 'application') {
+  const { services, contexts, registryAnchor } = findServices();
+  if (!services) return { ready: false, stage: 'services' };
+  const agent = services.zcodeAgentService;
+  const handshake = async () => {
+    if (!['helloConversationV4', 'getWorkspaceRuntimeIdentity', 'sendConversationCommandV4',
+          'queryConversationCommandsV4'].every(name => typeof agent[name] === 'function'))
+      throw Error('ZCode 原 App 缺少会话服务接口');
     const hello = await agent.helloConversationV4();
-    const tree = await services.projectService.readTree({});
-    if (hello.protocolVersion !== 3 || hello.clientMode !== 'desktop-continuous' || !hello.connectionId ||
-        !Array.isArray(tree.tasks) || typeof agent.sendConversationCommandV4 !== 'function')
-      throw Error('ZCode 原 App 的会话服务尚未就绪');
-    const canCreate = typeof services.projectService.prepareSession === 'function' &&
-      typeof services.projectService.readProjects === 'function' && typeof services.modelSelectionService?.getView === 'function';
-    return { ready: true, ...(canCreate ? { canCreate: true } : {}) };
+    if (hello == null && request.action === 'application') return null;
+    if (hello?.protocolVersion !== 3 || hello.clientMode !== 'desktop-continuous' ||
+        typeof hello.connectionId !== 'string' || !hello.connectionId)
+      throw Error('ZCode 原 App 会话服务协议不兼容');
+    return hello;
+  };
+  const hasModels = typeof services.modelSelectionService?.getView === 'function';
+  const hasSkills = typeof agent.getSkillReferenceCatalog === 'function';
+  const hasAttachments = ['attachmentBeginV4', 'attachmentChunkV4', 'attachmentCommitV4', 'attachmentAbortV4']
+    .every(name => typeof agent[name] === 'function');
+  if (request.action === 'application') {
+    const check = async stage => {
+      if (!await handshake()) return { ready: false, stage: 'handshake' };
+      stage?.('projects');
+      if (typeof services.projectService?.readTree !== 'function') throw Error('ZCode 原 App 缺少项目会话服务接口');
+      const tree = await services.projectService.readTree({});
+      if (tree == null) return { ready: false, stage: 'projects' };
+      if (!Array.isArray(tree.tasks)) throw Error('ZCode 原 App 的项目会话服务协议不兼容');
+      const canCreate = typeof services.projectService.prepareSession === 'function' &&
+        typeof services.projectService.readProjects === 'function' && hasModels;
+      return { ready: true, ...(canCreate ? { canCreate: true } : {}) };
+    };
+    const id = request.body?.startupId;
+    if (!id) return check();
+    const slot = key + 'Startup';
+    let job = window[slot];
+    if (!job || job.id !== id || job.agent !== agent) {
+      if (job) clearTimeout(job.timer);
+      job = window[slot] = { id, agent };
+      const stage = value => {
+        if (window[slot] !== job) throw Error('ZCode 原生启动观察已失效');
+        job.stage = value;
+        clearTimeout(job.timer);
+        job.timer = setTimeout(() => { if (window[slot] === job) delete window[slot]; }, 180000);
+      };
+      stage('handshake');
+      job.work = check(stage).then(reply => { job.reply = reply; }, error => { job.error = error; });
+    }
+    // A slow original hello/tree read continues after this short CDP visit.
+    // A later observation joins it without replaying either native operation.
+    let timer;
+    try {
+      await Promise.race([job.work, new Promise(resolve => { timer = setTimeout(resolve, 80); })]);
+    } finally { clearTimeout(timer); }
+    if (window[slot] !== job) throw Error('ZCode 原生启动观察已失效');
+    if (!job.reply && !job.error) return { ready: false, stage: job.stage };
+    delete window[slot]; clearTimeout(job.timer);
+    if (job.error) throw job.error;
+    return job.reply;
   }
   if (request.action === 'registry-probe') return typeof window.__codexMobileZCodeAcquireWorkspace === 'function' ||
     contexts.find(context => !context.layer.disposed)?.layer.acquire || registryAnchor;
@@ -72,6 +120,7 @@ export async function nativeRequest(request) {
       provider, name: profile.name || profile.displayName || profile.email || 'ZCode', email: profile.email || '' };
   };
   const models = async () => {
+    if (!hasModels) throw Error('ZCode 原 App 未提供模型目录');
     const view = await services.modelSelectionService.getView();
     return view.providers.flatMap(provider => provider.models.filter(model => model.config.enabled !== false).map(model => ({
       id: provider.providerId + '/' + model.modelId, name: model.modelId + ' · ' + provider.providerName,
@@ -146,9 +195,7 @@ export async function nativeRequest(request) {
   const target = { workspacePath: request.workspace, sessionId: request.sessionId };
   const read = () => agent.readSession({ ...target, runtimePolicy: 'existing-only', messageLimit: 100 });
   const clientIdentity = async (initialize = false) => {
-    const hello = await agent.helloConversationV4();
-    if (hello.protocolVersion !== 3 || hello.clientMode !== 'desktop-continuous' || !hello.connectionId)
-      throw Error('Unsupported original ZCode connection');
+    const hello = await handshake();
     const storageKey = 'zcode-v4-client-id:v1';
     let clientId = localStorage.getItem(storageKey);
     if (!clientId && initialize) {
@@ -171,29 +218,81 @@ export async function nativeRequest(request) {
   if (window[key] && !window[key].sessions) window[key].sessions = new Map([[window[key].sessionId, window[key]]]);
   const states = window[key]?.sessions || new Map();
   if (request.action === 'attach') {
-    const tree = await services.projectService.readTree({});
-    if (targetTask(tree).workspacePath !== request.workspace)
-      throw Error('原 App 会话或项目已变化，请刷新列表');
-    const previous = states.get(request.sessionId);
-    const loaded = previous?.lease.store.getState();
-    if (loaded?.status === 'live' && loaded.snapshot?.sessionId === request.sessionId) {
-      const current = await identity();
-      if (same(previous.binding, current)) return { binding: current, subscriptionId: loaded.subscriptionId };
+    const sid = request.sessionId, workspace = request.workspace;
+    const ticket = request.body?.resumeId, observing = request.body?.observe === true;
+    const restores = window[key + 'Restores'] ||= new Map();
+    let job = restores.get(sid);
+    if (job && (job.ticket !== ticket || job.workspace !== workspace))
+      throw Error('此聊天有另一次接续，请等待其完成');
+    const previous = states.get(sid);
+    const verifyTarget = async () => {
+      if (targetTask(await services.projectService.readTree({})).workspacePath !== workspace)
+        throw Error('原 App 会话或项目已变化，请刷新列表');
+    };
+    if (!job) {
+      if (observing && previous?.ticket !== ticket) throw Error('接续已失效，请重新连接');
+      await verifyTarget();
+      const loaded = previous?.lease.store.getState();
+      if (loaded?.status === 'live' && loaded.snapshot?.sessionId === sid) {
+        const current = await identity();
+        if (same(previous.binding, current)) return { binding: current, subscriptionId: loaded.subscriptionId };
+      }
+      if (observing) throw Error('原 App 连接已变化，请重新接续');
     }
+    const client = ticket ? await clientIdentity() : null;
     checkDeadline();
-    // Native acquire performs cold restore. Reading history before subscribing
-    // fails on the home screen because the conversation is not resident yet.
-    const workspaceLease = window.__codexMobileZCodeAcquireWorkspace?.({ workspacePath: request.workspace }, agent);
-    const existing = contexts.find(context => context.layer.entries.has('conversation/' + request.sessionId));
-    const layer = workspaceLease?.layer || existing?.layer ||
-      (window[key]?.binding?.runtime?.workspaceKey === request.workspace ? window[key].layer : null);
-    let lease;
+    // Native acquire starts restoring the original workspace even from the home screen.
+    if (!job) {
+      if (restores.has(sid)) throw Error('此聊天正在接续，请刷新状态');
+      if (ticket && restores.size >= 16) throw Error('正在接续的聊天较多，请稍后重试');
+      const workspaceLease = window.__codexMobileZCodeAcquireWorkspace?.({ workspacePath: workspace }, agent);
+      const existing = contexts.find(context => context.layer.entries.has('conversation/' + sid));
+      const layer = workspaceLease?.layer || existing?.layer ||
+        (window[key]?.binding?.runtime?.workspaceKey === workspace ? window[key].layer : null);
+      let lease;
+      try {
+        if (!layer || layer.disposed) throw Error('ZCode 原生连接入口不可用，请在应用管理中恢复接入');
+        lease = layer.acquire(sid);
+        if (lease.store.getState().status === 'error') void lease.store.retry();
+      } catch (error) { lease?.release(); workspaceLease?.release(); throw error; }
+      job = { workspace, ticket, client, workspaceLease, layer, lease, progress: 0 };
+      if (ticket) {
+        const now = Date.now();
+        job.lastSeen = job.lastChange = now;
+        restores.set(sid, job);
+        // Polls keep ownership alive; only actual native changes extend a stalled restore.
+        // Two slow status requests and their backoff can span more than three minutes.
+        job.until = () => Math.min(job.lastSeen + 300000, job.lastChange + 180000);
+        job.track = () => {
+          const state = lease.store.getState();
+          const stamp = JSON.stringify([state.status, state.subscriptionId, state.snapshot?.seq, state.snapshot?.revision]);
+          if (stamp !== job.stamp) { job.stamp = stamp; job.progress++; job.lastChange = Date.now(); }
+        };
+        job.finish = keep => {
+          if (restores.get(sid) !== job) return;
+          restores.delete(sid); clearTimeout(job.timer); job.unsubscribe?.();
+          if (!keep) { lease.release(); workspaceLease?.release(); }
+        };
+        const expire = () => {
+          const left = job.until() - Date.now();
+          if (left <= 0) job.finish(false);
+          else job.timer = setTimeout(expire, left);
+        };
+        try { job.track(); job.unsubscribe = lease.store.subscribe?.(job.track); expire(); }
+        catch (error) { job.finish(false); throw error; }
+      }
+    }
+    const { lease, workspaceLease, layer } = job, store = lease.store;
     try {
-      if (!layer || layer.disposed) throw Error('ZCode 原生连接入口不可用，请在应用管理中恢复接入');
-      lease = layer.acquire(request.sessionId);
-      const store = lease.store;
-      if (store.getState().status === 'error') void store.retry();
-      if (store.getState().status !== 'live') await new Promise((resolve, reject) => {
+      if (ticket) {
+        if (restores.get(sid) !== job || Date.now() >= job.until() || !same(job.client, client))
+          throw Error('原 App 连接或接续已失效，请重新连接');
+        job.lastSeen = Date.now(); job.track();
+        const value = store.getState();
+        if (['error','closed'].includes(value.status)) throw Error(value.lastError || 'ZCode 原生聊天恢复失败');
+        if (value.status !== 'live' || !value.subscriptionId) return { status: 'pending', stage: 'restoring', progress: job.progress };
+        await verifyTarget();
+      } else if (store.getState().status !== 'live') await new Promise((resolve, reject) => {
         const finish = error => { clearTimeout(timer); off(); error ? reject(error) : resolve(); };
         const inspect = () => {
           const value = store.getState();
@@ -206,15 +305,22 @@ export async function nativeRequest(request) {
       });
       checkDeadline();
       const current = await identity();
-      // V4's cold history projection need not create a legacy session/read runtime.
-      // The native task index and runtime identity above bind this snapshot's cwd.
-      if (store.getState().snapshot?.sessionId !== request.sessionId) throw Error('Native session workspace changed');
-      // Swap only this Bridge reference, retaining the App's shared native store.
+      const value = store.getState();
+      if (value.status !== 'live' || value.snapshot?.sessionId !== sid ||
+          ticket && (restores.get(sid) !== job || current.clientId !== client.clientId || current.connectionId !== client.connectionId))
+        throw Error('原 App 会话或连接已变化，请重新接续');
+      checkDeadline();
       previous?.lease.release(); previous?.workspaceLease?.release();
-      const state = {binding:current,sessionId:request.sessionId,lease,layer,workspaceLease,sessions:states};
-      states.set(request.sessionId,state); window[key]=state;
-      return {binding:current,subscriptionId:store.getState().subscriptionId};
-    } catch (error) { lease?.release(); workspaceLease?.release(); throw error; }
+      const sessions = window[key]?.sessions || states;
+      const state = { binding: current, sessionId: sid, lease, layer, workspaceLease, sessions, ticket };
+      sessions.set(sid, state); window[key] = state;
+      job.finish?.(true);
+      return { binding: current, subscriptionId: value.subscriptionId };
+    } catch (error) {
+      if (ticket) job.finish(false);
+      else { lease.release(); workspaceLease?.release(); }
+      throw error;
+    }
   }
   const create = async (current, anchor) => {
     checkDeadline();
@@ -223,10 +329,14 @@ export async function nativeRequest(request) {
     const body = request.body;
     if (typeof body.firstMessage !== 'string' || !body.firstMessage.trim() || body.firstMessage.length > 100000)
       throw Error('请输入首条消息');
+    if (!hasModels) throw Error('ZCode 原 App 未提供模型目录');
     const sid = 'sess_' + body.id;
     let workspacePath = request.workspace, projectId = null;
     if (body.directoryProject || body.projectKey && body.projectKey !== request.workspace) {
-      if (typeof window.__codexMobileZCodeAcquireWorkspace !== 'function') throw Error('ZCode 原生多项目连接尚不可用');
+      if (typeof window.__codexMobileZCodeAcquireWorkspace !== 'function' ||
+          typeof services.projectService?.prepareSession !== 'function' ||
+          typeof services.projectService[body.directoryProject ? 'saveProject' : 'readProjects'] !== 'function')
+        throw Error('ZCode 原生多项目连接尚不可用');
       const project = body.directoryProject ? await services.projectService.saveProject({ hostId: 'local',
         roots: [body.directoryProject.cwd], reuseExistingRoot: true }) :
         (await services.projectService.readProjects({ hostId: 'local' })).find(row => row.id === body.projectKey && !row.deleted);
@@ -324,13 +434,20 @@ export async function nativeRequest(request) {
   const before = projection.snapshot;
   if (before.sessionId !== request.sessionId) throw Error('Wrong native snapshot');
   if (request.action === 'create') return create(current, state);
-  if (request.action === 'detail') return { binding: current, snapshot: before, account: await account() };
+  if (request.action === 'detail') {
+    const hasAccount = typeof services.oauthService?.getActiveProvider === 'function' &&
+      typeof services.credentialService?.load === 'function';
+    return { binding: current, snapshot: before, ...(hasAccount ? { account: await account() } : {}),
+      capabilities: { models: hasModels, effort: hasModels, create: hasModels, skills: hasSkills,
+        attachments: hasAttachments, uploadFiles: hasAttachments, projectReferences: hasAttachments } };
+  }
   if (request.action === 'tasks') return { tasks: (before.backgroundWorks || []).map(work => ({
     id: work.workId, title: work.title, kind: work.kind, status: work.status,
     cancellable: work.cancellable === true && work.status === 'running',
   })) };
   const body = request.body || {};
   const skills = async () => {
+    if (!hasSkills) throw Error('ZCode 原 App 未提供 Skill 目录');
     const catalog = await agent.getSkillReferenceCatalog({ ...target, runtimePolicy: 'existing-only' });
     if (catalog.authority !== 'session') throw Error('ZCode 会话 Skill 目录尚未就绪');
     return catalog.skills.filter(skill => skill.enabled).map(skill => ({
@@ -338,10 +455,10 @@ export async function nativeRequest(request) {
     }));
   };
   if (request.action === 'catalog') {
-    const value = { capabilities: { models: true, effort: true, skills: true },
+    const value = { capabilities: { models: hasModels, effort: hasModels, skills: hasSkills },
       currentModel: before.config.provider + '/' + before.config.model, currentEffort: before.config.thought };
-    if (body.section !== 'skills') value.models = await models();
-    if (body.section !== 'models') value.skills = await skills();
+    if (hasModels && body.section !== 'skills') value.models = await models();
+    if (hasSkills && body.section !== 'models') value.skills = await skills();
     return value;
   }
   let type, payload;
@@ -363,6 +480,7 @@ export async function nativeRequest(request) {
       payload.text = selected.map(skill => '[' + label('$' + skill.name) + '](' + destination(skill.path) + ')').join('\n') + '\n\n' + body.text;
     }
     const attachments = [];
+    if (body.files?.length && !hasAttachments) throw Error('ZCode 原 App 未提供完整的附件上传接口');
     for (const file of body.files || []) {
       checkDeadline();
       const uploadId = crypto.randomUUID();

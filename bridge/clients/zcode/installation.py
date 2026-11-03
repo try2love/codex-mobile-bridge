@@ -8,6 +8,9 @@ def installation(application):
     if sys.platform == 'darwin':
         from bridge.platforms.macos.discovery import bundle
         return bundle(path, 'dev.zcode.app')
+    if sys.platform == 'linux':
+        from bridge.platforms.linux.zcode_pipe import installation as linux_installation
+        return linux_installation(path)
     if sys.platform == 'win32':
         from bridge.platforms.windows.executable import product_version
         if not path.is_absolute() or path.name.lower() != 'zcode.exe' or not path.is_file():
@@ -33,12 +36,17 @@ def listener_identity(port, executable, *, required=True):
 
 def renderer_url(application):
     path = Path(application)
-    if sys.platform == 'win32':
+    if sys.platform in ('win32', 'linux'):
         return (path.parent/'resources/app.asar/out/renderer/index.html').as_uri()
     return (path/'Contents/Resources/app.asar/out/renderer/index.html').as_uri()
 
 
 def launch(executable, home, *, debug_port=None):
+    if sys.platform == 'linux':
+        from bridge.platforms.linux.zcode_pipe import launch_ordinary
+        if debug_port is not None:
+            raise ValueError('Linux ZCode 使用私有会话连接')
+        return launch_ordinary(executable, home)
     if sys.platform == 'win32':
         from bridge.platforms.windows.session import require_interactive
         from bridge.platforms.windows.desktop import start

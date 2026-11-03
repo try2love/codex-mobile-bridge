@@ -121,6 +121,13 @@ def _process_state(descriptor, app, pids, commands):
             unknown = True
         else:
             main.append(pid)
+    if sys.platform in ('linux', 'win32') and descriptor['id'] == 'zcode':
+        if sys.platform == 'win32':
+            from bridge.platforms.windows.zcode_pipe import main_processes
+        else:
+            from bridge.platforms.linux.zcode_pipe import main_processes
+        main, ambiguous = main_processes(app.executable, main, commands)
+        unknown = unknown or ambiguous
     if len(main) > 1 or len(hosts) > 1:
         unknown = True
     return {'running': bool(pids), 'pids': pids, 'mainPids': main,
@@ -155,10 +162,16 @@ def force_stop_client(descriptor, *, state):
     # Do not reuse the first inventory's profile classification. The command
     # passed to the native binder must itself still name this exact profile.
     classified = _process_state(descriptor, app, current['pids'], commands)
-    if len(classified['mainPids']) > 1:
+    if len(classified['mainPids']) > 1 or descriptor['id'] == 'zcode' and classified['unknown']:
         raise ValueError(CHANGED)
     for pid, command in commands.items():
         prefix = str(app.executable)
+        if descriptor['id'] == 'zcode' and sys.platform == 'linux' and len(classified['mainPids']) == 1:
+            # The main and host title replace argv; the classification above verified
+            # the native worker's parent. The force binder pins every exact PID below.
+            from bridge.platforms.linux.zcode_pipe import worker_title
+            if pid in classified['mainPids'] and command == 'ZCode' or worker_title(command):
+                continue
         if descriptor['id'] == 'zcode' and sys.platform == 'darwin' and command == app.executable.name:
             # Launch Services may expose just "ZCode" as argv[0]. The native
             # binder below independently verifies image, UID, birth and command.

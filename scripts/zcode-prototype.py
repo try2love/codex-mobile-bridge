@@ -22,8 +22,8 @@ def main():
     config = json.loads(config_path.read_text())
     if args.action == 'attach':
         app = installation(config['application'])
-        if not app or app['version'] != '3.17.1':
-            raise ValueError('原型仅接受 ZCode 3.17.1')
+        if not app:
+            raise ValueError('无法核验 ZCode 安装')
         config['process'] = listener_identity(config['port'], app['executable'])
     adapter = ZCodePrototype(args.state, config)
     body = json.load(sys.stdin) if args.action in ('send', 'stop', 'respond', 'receipt') else {}

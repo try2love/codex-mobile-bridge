@@ -9,11 +9,24 @@ import threading
 import time
 
 from bridge.clients.zcode.installation import renderer_url
-from bridge.clients.zcode.transport import bind_workspace_registry, expression
+from bridge.clients.zcode.transport import bind_workspace_registry, expression, needs_workspace_registry, operation_timeout
 
 
 # The shared adapter accepts files up to 20 MiB, including their base64 encoding.
 MAX_FRAME = 64 * 1024 * 1024
+KEYS = frozenset(
+    (
+        "action",
+        "anchorSessionId",
+        "binding",
+        "body",
+        "commandId",
+        "expectedRuntime",
+        "expiresAt",
+        "sessionId",
+        "workspace",
+    )
+)
 ACTIONS = frozenset(
     (
         "application",
@@ -53,10 +66,15 @@ def remaining(deadline):
     return left
 
 
+class QuitUnsupported(ValueError):
+    pass
+
+
 class PipeTransport:
     """Single-reader transaction stream. Its caller owns both file descriptors."""
 
-    def __init__(self, to_app: int, from_app: int, application: str):
+    def __init__(self, to_app, from_app, application, *, stream=None):
+        self.stream = stream
         self.to_app = to_app
         self.from_app = from_app
         self.window_url = renderer_url(application)
@@ -64,8 +82,13 @@ class PipeTransport:
         self._buffer = bytearray()
         self._next_id = secrets.randbelow(1 << 30) + 1
         self._broken = False
-        os.set_blocking(to_app, False)
-        os.set_blocking(from_app, False)
+        if stream is None:
+            os.set_blocking(to_app, False)
+            os.set_blocking(from_app, False)
+
+    @property
+    def broken(self):
+        return self._broken
 
     def _write(self, data, deadline):
         if len(data) > MAX_FRAME:
@@ -74,17 +97,20 @@ class PipeTransport:
         written = 0
         try:
             while written < len(packet):
-                if not select.select([], [self.to_app], [], remaining(deadline))[1]:
-                    raise TimeoutError("ZCode pipe write timed out")
-                try:
-                    count = os.write(self.to_app, packet[written:])
-                except BlockingIOError:
-                    continue
+                if self.stream is not None:
+                    count = self.stream.write(packet[written:], deadline)
+                else:
+                    if not select.select([], [self.to_app], [], remaining(deadline))[1]:
+                        raise TimeoutError("ZCode pipe write timed out")
+                    try:
+                        count = os.write(self.to_app, packet[written:])
+                    except BlockingIOError:
+                        continue
                 if not count:
                     raise EOFError("ZCode pipe closed")
                 written += count
         except BaseException:
-            if written:
+            if written or self.stream is not None:
                 # Another command cannot safely follow an incomplete frame.
                 self._broken = True
             raise
@@ -104,12 +130,15 @@ class PipeTransport:
             if searched > MAX_FRAME:
                 self._broken = True
                 raise ValueError("ZCode pipe reply too large")
-            if not select.select([self.from_app], [], [], remaining(deadline))[0]:
-                raise TimeoutError("ZCode pipe reply timed out")
-            try:
-                chunk = os.read(self.from_app, 64 * 1024)
-            except BlockingIOError:
-                continue
+            if self.stream is not None:
+                chunk = self.stream.read(64 * 1024, deadline)
+            else:
+                if not select.select([self.from_app], [], [], remaining(deadline))[0]:
+                    raise TimeoutError("ZCode pipe reply timed out")
+                try:
+                    chunk = os.read(self.from_app, 64 * 1024)
+                except BlockingIOError:
+                    continue
             if not chunk:
                 self._broken = True
                 raise EOFError("ZCode pipe closed")
@@ -131,6 +160,8 @@ class PipeTransport:
             if not isinstance(reply, dict) or reply.get("id") != seq or reply.get("sessionId") != session:
                 continue
             if reply.get("error"):
+                if method == "Browser.close" and reply["error"].get("code") == -32601:
+                    raise QuitUnsupported("ZCode 没有提供原生退出命令")
                 raise ValueError("ZCode DevTools: " + str(reply["error"].get("message"))[:400])
             return reply["result"]
 
@@ -142,6 +173,8 @@ class PipeTransport:
             if row.get("type") == "page"
             and row.get("url", "").split("?")[0].split("#")[0] == self.window_url
         ]
+        if not matches and request["action"] == "application":
+            return {"ready": False, "stage": "window"}
         if len(matches) != 1 or not matches[0].get("targetId"):
             raise ValueError("原 ZCode 窗口尚未就绪或无法唯一定位")
         session = self._rpc(
@@ -165,7 +198,7 @@ class PipeTransport:
             return self._rpc(method, params, deadline, session)
 
         try:
-            if request["action"] in ("attach", "create"):
+            if needs_workspace_registry(request):
                 bind_workspace_registry(page, request)
             result = page(
                 "Runtime.evaluate",
@@ -189,16 +222,32 @@ class PipeTransport:
         if not isinstance(request, dict) or request.get("action") not in ACTIONS:
             raise ValueError("未知的 ZCode 原生操作")
         now = time.time()
-        expiry = request.get("expiresAt", int(now * 1000) + 12000)
+        limit = operation_timeout(request["action"])
+        expiry = request.get("expiresAt", int((now + limit) * 1000))
         if type(expiry) not in (int, float) or not math.isfinite(expiry):
             raise ValueError("ZCode request deadline invalid")
-        deadline = time.monotonic() + min(12.0, (expiry / 1000) - now)
-        if not self._lock.acquire(timeout=remaining(deadline)):
-            raise TimeoutError("ZCode pipe is busy")
+        deadline = time.monotonic() + min(limit, (expiry / 1000) - now)
         try:
-            return self._with_window(
-                {**request, "expiresAt": min(expiry, int((now + 12) * 1000))}, deadline
-            )
+            if not self._lock.acquire(timeout=remaining(deadline)):
+                raise TimeoutError("ZCode pipe is busy")
+            try:
+                return self._with_window(
+                    {**request, "expiresAt": min(expiry, int((now + limit) * 1000))}, deadline
+                )
+            finally:
+                self._lock.release()
+        except TimeoutError:
+            if request["action"] == "application" and not self.broken:
+                return {"ready": False, "stage": "waiting"}
+            raise
+
+    def request_quit(self):
+        # Called only through the separately authorized lifecycle operation.
+        deadline = time.monotonic() + 5
+        if not self._lock.acquire(timeout=remaining(deadline)):
+            raise TimeoutError("ZCode 管道正忙，未提交退出")
+        try:
+            self._rpc("Browser.close", {}, deadline)
         finally:
             self._lock.release()
 

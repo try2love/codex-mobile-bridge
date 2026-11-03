@@ -201,6 +201,11 @@ def _snapshot(executable, deadline):
         if not kinds:
             main.append(pid)
         arguments[pid] = argv
+    if Path(executable).name.casefold() == 'zcode.exe' and main:
+        from .zcode_pipe import main_processes
+        main, ambiguous = main_processes(executable, main, commands)
+        if ambiguous:
+            raise ValueError(CHANGED)
     if len(main) > 1:
         raise ValueError(CHANGED)
     return {'pids': pids, 'main': main[0] if main else None, 'arguments': arguments}

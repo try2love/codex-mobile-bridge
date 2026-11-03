@@ -27,6 +27,7 @@ function fixture() {
     attachmentBeginV4: async p => { calls.push({ upload: p }); },
     attachmentChunkV4: async p => { calls.push({ chunk: p }); },
     attachmentCommitV4: async () => ({ ref: 'native-committed-ref' }),
+    attachmentAbortV4: async () => {},
   };
   globalThis.window = {};
   globalThis.document = { querySelectorAll: () => [{ __reactContainer$test: {
@@ -50,6 +51,60 @@ test('application handshake reads the original project service without activatin
   f.agent.helloConversationV4=async()=>({protocolVersion:3,clientMode:'desktop-continuous',connectionId:'native'});
   f.services.projectService.readTree=async()=>({});
   await assert.rejects(f.request('application'),/会话服务/);
+});
+
+test('cold readiness identifies a missing service, handshake and project tree without acquiring a chat',async()=>{
+  const f=fixture(),nodes=document.querySelectorAll();
+  document.querySelectorAll=()=>[];
+  assert.deepEqual(await f.request('application'),{ready:false,stage:'services'});
+  document.querySelectorAll=()=>nodes;
+  const hello=f.agent.helloConversationV4;
+  f.agent.helloConversationV4=async()=>null;
+  assert.deepEqual(await f.request('application'),{ready:false,stage:'handshake'});
+  f.agent.helloConversationV4=hello;
+  f.services.projectService.readTree=async()=>null;
+  assert.deepEqual(await f.request('application'),{ready:false,stage:'projects'});
+  f.services.projectService.readTree=async()=>({tasks:[]});
+  assert.deepEqual(await f.request('application'),{ready:true});
+  assert.deepEqual(f.calls,[]);
+});
+
+test('startup observers join one slow original hello and tree read without entering a conversation',async()=>{
+  const f=fixture(), hello=f.agent.helloConversationV4;
+  let helloDone, treeDone, hellos=0, trees=0;
+  f.agent.helloConversationV4=()=>{hellos++; return new Promise(resolve=>{helloDone=resolve;});};
+  f.services.projectService.readTree=()=>{trees++; return new Promise(resolve=>{treeDone=resolve;});};
+  const probe=()=>f.request('application',{startupId:'one-start'});
+  assert.deepEqual(await probe(),{ready:false,stage:'handshake'});
+  assert.deepEqual(await probe(),{ready:false,stage:'handshake'});
+  assert.equal(hellos,1);
+  helloDone(await hello());
+  assert.deepEqual(await probe(),{ready:false,stage:'projects'});
+  assert.equal(trees,1);
+  treeDone({tasks:[]});
+  assert.deepEqual(await probe(),{ready:true});
+  assert.deepEqual([hellos,trees,f.calls.length],[1,1,0]);
+});
+
+test('runtime handshake requires owner, command and receipt primitives independently of release version',async()=>{
+  for(const missing of ['helloConversationV4','getWorkspaceRuntimeIdentity','queryConversationCommandsV4','sendConversationCommandV4']){
+    const f=fixture();delete f.agent[missing];
+    await assert.rejects(f.request('application'),/会话服务/);
+    assert.deepEqual(f.calls,[]);
+  }
+  const f=fixture();f.agent.helloConversationV4=async()=>({protocolVersion:4,clientMode:'desktop-continuous',connectionId:'other'});
+  await assert.rejects(f.request('application'),/会话服务/);assert.deepEqual(f.calls,[]);
+});
+
+test('partial optional services keep text working and never begin an unsupported attachment transfer',async()=>{
+  const f=fixture();delete f.services.modelSelectionService;delete f.services.oauthService;delete f.agent.attachmentChunkV4;
+  await f.request('attach');
+  const detail=await f.request('detail');
+  assert.deepEqual(detail.capabilities,{models:false,effort:false,create:false,skills:false,attachments:false,uploadFiles:false,projectReferences:false});
+  assert.equal(detail.account,undefined);
+  await assert.rejects(f.request('send',{id:'file',text:'one',files:[{name:'a.txt',data:'MQ==',mime:'text/plain'}]}),/附件/);
+  assert.deepEqual(f.calls,['acquire']);
+  assert.equal((await f.request('send',{id:'text',text:'one'})).status,'accepted');
 });
 
 test('known active work blocks normal quit even if full inventory cannot be read',async()=>{
@@ -93,6 +148,91 @@ test('cold restore timeout releases the new Bridge lease and listener without se
   window.__codexMobileZCodeAcquireWorkspace=()=>({layer:f.services.layer,release:()=>f.calls.push('workspace-release')});
   await assert.rejects(f.request('attach',{}, {expiresAt:Date.now()+260}),/恢复超时/);
   assert.equal(removed,true);assert.deepEqual(f.calls,['release','workspace-release']);
+  assert.equal(window.__codexMobileZCodePrototypeV1,undefined);
+});
+
+function pendingFixture() {
+  const f = fixture();
+  f.storeState.status = 'connecting';
+  let signal;
+  f.services.layer.acquire = () => {
+    f.calls.push('acquire');
+    return { store: { getState: () => f.storeState,
+      subscribe: fn => {signal = fn; return () => {signal = undefined;};} },
+      release: () => f.calls.push('release') };
+  };
+  window.__codexMobileZCodeAcquireWorkspace=()=>({layer:f.services.layer,release:()=>f.calls.push('workspace-release')});
+  const step = (id, observe = false, extra = {}) => f.request('attach', {resumeId:id, observe}, extra);
+  return {...f, step, emit: () => signal?.()};
+}
+
+test('a slow observed restore releases the transport between checks and preserves one original subscription', async t => {
+  t.mock.timers.enable({apis:['Date','setTimeout'], now:100000});
+  const f = pendingFixture();
+  const initial = await f.step('a');
+  assert.equal(initial.status,'pending');
+  assert.equal((await f.request('detail')).detached,true);
+  assert.deepEqual(f.calls,['acquire']);
+  await assert.rejects(f.step('b'),/另一次接续/);
+  await assert.rejects(f.step('b',true),/另一次接续/);
+  for(let i=0;i<3;i++){
+    t.mock.timers.tick(105000);
+    f.storeState.status = i%2 ? 'connecting' : 'restoring'; f.emit();
+    const next = await f.step('a',true);
+    assert.equal(next.status,'pending'); assert.ok(next.progress>initial.progress);
+  }
+  f.storeState.status='live'; f.emit();
+  assert.deepEqual((await f.step('a',true)).binding,f.binding);
+  assert.deepEqual(f.calls,['acquire']);
+  t.mock.timers.tick(300000);
+  assert.deepEqual((await f.step('a',true)).binding,f.binding);
+  assert.deepEqual(f.calls,['acquire']);
+});
+
+test('abandoned or stalled restores release only their temporary lease; stale polls cannot start it again', async t => {
+  t.mock.timers.enable({apis:['Date','setTimeout'],now:100000});
+  const f = pendingFixture();
+  await f.step('old');
+  // The store keeps advancing while the user stays away. Abandon it at five
+  // minutes even though it never hit the three-minute no-progress deadline.
+  for(let i=0;i<3;i++){
+    t.mock.timers.tick(95000); f.snapshot.revision++; f.emit();
+  }
+  assert.deepEqual(f.calls,['acquire']);
+  t.mock.timers.tick(16000);
+  await assert.rejects(f.step('old',true),/失效/);
+  assert.deepEqual(f.calls,['acquire','release','workspace-release']);
+  await f.step('fresh');
+  await assert.rejects(f.step('old',true),/另一次接续/);
+  t.mock.timers.tick(65000); await f.step('fresh',true);
+  t.mock.timers.tick(65000); await f.step('fresh',true);
+  t.mock.timers.tick(51000); await assert.rejects(f.step('fresh',true),/失效/);
+  assert.deepEqual(f.calls,['acquire','release','workspace-release','acquire','release','workspace-release']);
+});
+
+test('unobserved cold restores use a bounded number of native leases per window',async t=>{
+  t.mock.timers.enable({apis:['Date','setTimeout'],now:100000});
+  const f = pendingFixture(), ids=Array.from({length:17},(_,i)=>'sess_'+i);
+  f.services.projectService.readTree=async()=>({tasks:ids.map(taskId=>({taskId,workspacePath:'/project',hostId:'local'}))});
+  for(const sessionId of ids.slice(0,16)) await f.step(sessionId,false,{sessionId});
+  await assert.rejects(f.step(ids[16],false,{sessionId:ids[16]}),/较多/);
+  assert.equal(f.calls.filter(x=>x==='acquire').length,16);
+  t.mock.timers.tick(301000);
+  assert.equal(f.calls.filter(x=>x==='release').length,16);
+  assert.equal(f.calls.filter(x=>x==='workspace-release').length,16);
+});
+
+test('a changed original connection or project cannot promote a held restore to writable',async t=>{
+  t.mock.timers.enable({apis:['Date','setTimeout'],now:100000});
+  const f = pendingFixture();
+  await f.step('generation');
+  f.binding.connectionId='replacement';
+  await assert.rejects(f.step('generation',true),/失效/);
+  await f.step('project');
+  f.services.projectService.readTree = async()=>({tasks:[{taskId:'sess-test',hostId:'local',workspacePath:'/other'}]});
+  f.storeState.status='live'; f.emit();
+  await assert.rejects(f.step('project',true),/项目已变化/);
+  assert.deepEqual(f.calls,['acquire','release','workspace-release','acquire','release','workspace-release']);
   assert.equal(window.__codexMobileZCodePrototypeV1,undefined);
 });
 

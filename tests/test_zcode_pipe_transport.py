@@ -7,7 +7,8 @@ import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from bridge.clients.zcode.pipe_rpc import PipeTransport
+from unittest.mock import patch
+from bridge.clients.zcode.pipe_rpc import PipeTransport, QuitUnsupported
 
 
 @contextmanager
@@ -74,6 +75,19 @@ def normal(transport, msg):
 
 @unittest.skipUnless(os.name == "posix", "POSIX byte pipe fixture")
 class PipeTests(unittest.TestCase):
+    def test_cold_application_probe_waits_for_a_missing_window_but_rejects_ambiguous_targets(self):
+        with peer(normal) as (transport, _), patch.object(transport, '_rpc') as rpc:
+            rpc.return_value = {'targetInfos': []}
+            self.assertEqual(transport.call({'action':'application'}), {'ready': False, 'stage': 'window'})
+            target = {'type':'page','url':transport.window_url,'targetId':'x'}
+            rpc.return_value = {'targetInfos': [target, {**target, 'targetId':'other'}]}
+            with self.assertRaisesRegex(ValueError, '唯一定位'):
+                transport.call({'action':'application'})
+            rpc.side_effect = TimeoutError('slow')
+            self.assertEqual(transport.call({'action':'application'}), {'ready': False, 'stage': 'waiting'})
+            with self.assertRaises(TimeoutError):
+                transport.call({'action':'list'})
+
     def test_parallel_calls_serialize_and_filter_foreign_sessions(self):
         with peer(normal) as (t, seen), ThreadPoolExecutor(max_workers=4) as pool:
             self.assertEqual(list(pool.map(lambda _: t.probe(), range(4))), [{"ready": True}] * 4)
@@ -88,6 +102,29 @@ class PipeTests(unittest.TestCase):
                 * 4,
             )
             self.assertEqual(len({m["id"] for m in seen}), len(seen))
+
+    def test_only_explicit_attach_allows_a_slow_first_native_snapshot(self):
+        with peer(normal) as (t, _):
+            def budget(request, deadline):
+                return deadline - time.monotonic(), request['expiresAt'] / 1000 - time.time()
+            with patch.object(t, '_with_window', side_effect=budget):
+                for action, expected in [('attach', 25), ('send', 12), ('detail', 12)]:
+                    for limit in t.call({'action': action}):
+                        self.assertLessEqual(limit, expected + .01)
+                        self.assertGreater(limit, expected - 1)
+                for limit in t.call({'action': 'attach', 'expiresAt': int(time.time()*1000) + 2000}):
+                    self.assertLessEqual(limit, 2)
+                    self.assertGreater(limit, 1)
+
+    def test_explicit_quit_is_separate_from_normal_actions(self):
+        def unsupported(_, message):
+            yield {"id": message["id"], "error": {"code": -32601, "message": "Method not found"}}
+        with peer(unsupported) as (t, calls):
+            with self.assertRaises(ValueError):
+                t.call({"action": "Browser.close"})
+            with self.assertRaises(QuitUnsupported):
+                t.request_quit()
+            self.assertEqual([msg["method"] for msg in calls], ["Browser.close"])
 
     def test_wrong_and_duplicate_targets_never_attach(self):
         for count in (0, 2):

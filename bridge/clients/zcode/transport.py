@@ -11,6 +11,12 @@ from bridge.clients.websocket import WebSocket
 from .installation import renderer_url
 
 
+def operation_timeout(action):
+    # A cold original conversation may need to start its workspace and restore
+    # a snapshot. Attaching cannot send model input. Keep normal mutations bounded.
+    return 25 if action == 'attach' else 12
+
+
 def verified_target(targets, application, port):
     expected = renderer_url(application)
     matches = [row for row in targets if row.get('type') == 'page'
@@ -32,6 +38,11 @@ def renderer_source():
 
 def expression(request):
     return '(' + renderer_source() + ')(' + json.dumps(request, ensure_ascii=False) + ')'
+
+
+def needs_workspace_registry(request):
+    return (request['action'] == 'create' or
+            request['action'] == 'attach' and not (request.get('body') or {}).get('observe'))
 
 
 def bind_workspace_registry(rpc, request):
@@ -111,7 +122,7 @@ def request_native(request):
                         raise ValueError(reply['error'].get('message', 'ZCode native request failed'))
                     return reply['result']
 
-            if request['action'] in ('attach', 'create'):
+            if needs_workspace_registry(request):
                 bind_workspace_registry(rpc, request)
             result = rpc('Runtime.evaluate', {'expression': expression(request),
                          'awaitPromise': True, 'returnByValue': True})

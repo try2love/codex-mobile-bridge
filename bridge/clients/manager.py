@@ -153,6 +153,7 @@ class DesktopSessions:
         self.locks = {name: threading.RLock() for name in ('codex', 'zcode', *self.adapters)}
         self.read_lock = threading.Lock()
         self.reads = {}
+        self.pending_resumes = {provider: {} for provider in self.locks}
         self.activity = {}
         self.activity_pending = set()
         self.read_epochs = dict.fromkeys(self.locks, 0)
@@ -170,7 +171,7 @@ class DesktopSessions:
             self.bridge.accounts.require_client_enabled = self._codex_guard
 
     def _configure_zcode(self):
-        if sys.platform not in ('darwin', 'win32'):
+        if sys.platform not in ('darwin', 'win32', 'linux'):
             return
         from bridge.clients.zcode.adapter import ZCodeDesktop, ZCodePrototype
         legacy = self.config.get('zcodePrototype')
@@ -179,13 +180,16 @@ class DesktopSessions:
             if 'zcode' in self.adapters:
                 self.adapters = {key: item for key, item in self.adapters.items() if key != 'zcode'}
             return
-        compatibility = self.config.get('zcodeCompatibility')
+        compatibility = False if sys.platform == 'linux' else self.config.get('zcodeCompatibility')
         # Legacy profiles may reuse a verified listener. Starting one requires
         # the separate compatibility preference or explicit initialization.
         source = row if row.get('installed') else legacy or {}
         application = source.get('application')
-        if sys.platform == 'darwin' and application:
-            from bridge.clients.zcode.pipe_host import PipeHostClient
+        if application:
+            if sys.platform == 'darwin':
+                from bridge.clients.zcode.pipe_host import PipeHostClient
+            else:
+                from bridge.clients.zcode.local_pipe_host import LocalPipeClient as PipeHostClient
             if self.zcode_pipe is None or str(self.zcode_pipe.application) != application:
                 self.zcode_pipe = PipeHostClient(self.directory.parent, application)
         else:
@@ -239,6 +243,8 @@ class DesktopSessions:
         with self.locks[provider]:
             if rebind and provider == 'zcode' and provider in self.adapters:
                 self.adapters[provider].release_window()
+            if rebind:
+                self.pending_resumes[provider].clear()
             with self.read_lock:
                 self.read_epochs[provider] += 1
                 self.read_changes[provider] += 1
@@ -990,6 +996,25 @@ class DesktopSessions:
             result = commands.perform(scoped, body['archived'], body['id'], read, prepare)
             return {**result, 'id': sid}
 
+    def _resume_step(self, provider, adapter, sid, rid, first):
+        # The durable receipt identifies the logical request. Only its original
+        # adapter generation can continue observing the live subscription.
+        pending = self.pending_resumes[provider]
+        now = time.monotonic()
+        for old in [k for k, (_, _, last) in pending.items() if now - last > 600]:
+            del pending[old]
+        ticket = pending.get(rid)
+        if self.adapters.get(provider) is not adapter or not first and (ticket is None or ticket[0] is not adapter):
+            raise ResumePreflightBlocked('原会话接续已过期，请重新连接。')
+        if first and len(pending) >= 64:
+            raise ResumePreflightBlocked('正在恢复的会话较多，请稍后连接。')
+        result, continuation = adapter.resume_step(sid, rid, None if first else ticket[1])
+        if result['status'] == 'pending' and continuation is not None:
+            pending[rid] = (adapter, continuation, now)
+        else:
+            pending.pop(rid, None)
+        return result
+
     def call(self, provider, action, sid=None, body=None):
         if provider not in self.adapters or action not in READS | WRITES:
             raise ValueError('不支持的桌面操作')
@@ -1020,6 +1045,8 @@ class DesktopSessions:
                 result['sessions'] = [self.display_metadata.decorate(self._display_scope(provider, row), row)
                                       for row in result.get('sessions', [])]
             if action == 'detail' and result.get('session'):
+                if callable(getattr(type(adapter), 'resume_step', None)) and result.get('capabilities', {}).get('resume'):
+                    result['capabilities'] = {**result['capabilities'], 'progressiveResume': True}
                 row = result['session']
                 result['session'] = self.display_metadata.decorate(self._display_scope(provider, row), row)
             if action == 'projects':
@@ -1068,6 +1095,10 @@ class DesktopSessions:
                             for identity in hint.get('previousAccountIdentities', [])]}
             return result
         rid = str(uuid.UUID(body.get('id', '')))
+        progressive = action == 'resume' and body.get('progressive') is True
+        if 'progressive' in body and (not progressive or set(body) != {'id', 'progressive'} or
+                                      not callable(getattr(type(adapter), 'resume_step', None))):
+            raise ValueError('会话接续请求无效')
         if action == 'compact' and set(body) != {'id'}:
             raise ValueError('上下文压缩请求无效')
         if action == 'stop-task' and (set(body) != {'id', 'taskId'} or
@@ -1116,6 +1147,7 @@ class DesktopSessions:
                 reference_files = self.workspace_bridge(provider, sid).workspace(sid, 'references', {'references': body['references']})
                 if len(reference_files) + len(body.get('resolvedImages', [])) + len(body.get('resolvedFiles', [])) > 10:
                     raise ValueError('每条消息最多添加 10 个不同附件')
+            cached = None
             with self.db_lock:
                 db = None
                 try:
@@ -1141,7 +1173,8 @@ class DesktopSessions:
                                 db.execute('UPDATE requests SET result=? WHERE id=?', (json.dumps(checked), rid))
                                 db.commit()
                             return checked
-                        return cached
+                        if not progressive or cached.get('status') != 'pending':
+                            return cached
                 except sqlite3.OperationalError as exc:
                     if db is not None:
                         db.rollback()
@@ -1176,13 +1209,18 @@ class DesktopSessions:
                                 raise BridgeUnavailable('原生模式未确认，消息未发送')
                         result = self._adapter_call(provider, action, sid, {key: value for key, value in dispatched.items() if key != 'workMode'})
                 else:
-                    result = self._adapter_call(provider, action, sid, dispatched)
+                    result = (self._resume_step(provider, adapter, sid, rid, bool(inserted)) if progressive
+                              else self._adapter_call(provider, action, sid, dispatched))
             except ResumePreflightBlocked as exc:
                 result = {'status': 'blocked', 'id': rid, 'message': str(exc)}
             except Exception as exc:
                 # The desktop may already have accepted a command before a timeout.
                 # Do not turn an uncertain outcome into a safe-to-retry failure.
                 result['message'] = str(exc) if isinstance(exc, (ValueError, BridgeUnavailable)) else result['message']
+            if progressive and result.get('status') != 'pending':
+                self.pending_resumes[provider].pop(rid, None)
+            if cached == result:
+                return result
             with self.db_lock:
                 db.execute('UPDATE requests SET result=? WHERE id=?', (json.dumps(result), rid))
                 db.commit()
@@ -1397,10 +1435,10 @@ class DesktopSessions:
     def _descriptor(self, provider):
         if provider == 'zcode' and provider in self.adapters:
             adapter = self.adapters[provider]
-            from bridge.clients.zcode.adapter import DEBUG_VERSIONS
+            from bridge.clients.zcode.adapter import LOOPBACK_PLATFORMS
             from bridge.clients.zcode.installation import installation
             app = installation(adapter.config.get('application', ''))
-            compatible = bool(app and app['version'] in DEBUG_VERSIONS.get(sys.platform, ()))
+            compatible = bool(app and sys.platform in LOOPBACK_PLATFORMS)
             return {'id': provider, 'installed': bool(app), 'compatibilitySupported': compatible,
                     'pipeSupported': bool(self.zcode_pipe and self.zcode_pipe.supported()),
                     'executable': app['executable'] if app else '', 'dataDirectory': str(adapter.home),
@@ -1421,6 +1459,9 @@ class DesktopSessions:
         from bridge.clients.lifecycle import inspect_client, launch_client
         from bridge.clients.zcode.adapter import ZCodePrototype
 
+        # Allow a new Linux/Windows renderer to mount its native services, including
+        # time spent finding and launching the original process (mobile timeout: 45s).
+        cold_deadline = time.monotonic() + 30 if sys.platform in ('linux', 'win32') else None
         supported = 'pipeSupported' if private_pipe else 'compatibilitySupported'
         if not descriptor.get(supported):
             raise ValueError('当前安装的 ZCode 不支持此本机实时连接。')
@@ -1463,7 +1504,11 @@ class DesktopSessions:
                 raise ValueError('无法确认唯一的 ZCode 进程，请刷新后重试。')
         if owner and state['mainPids'] != [owner['pid']]:
             raise ValueError('ZCode 进程已变化，请刷新后重试。')
-        adapter.connect_application(state['mainPids'][0], wait=launched)
+        if private_pipe and sys.platform in ('win32', 'linux'):
+            adapter.start_private_application(owner)
+        else:
+            adapter.connect_application(state['mainPids'][0], wait=launched,
+                                        deadline=cold_deadline if launched else None)
         self.adapters = {**self.adapters, 'zcode': adapter}
         self.config['zcodeCompatibility'] = not private_pipe
 
@@ -1550,6 +1595,12 @@ class DesktopSessions:
             if force:
                 from bridge.clients.lifecycle import force_stop_client
                 force_stop_client(descriptor, state=state)
+            elif provider == 'zcode' and sys.platform == 'win32' and getattr(self.adapters['zcode'], 'pipe', None):
+                from bridge.platforms.windows.codex_quit import stop_private_zcode
+                pipe = self.adapters['zcode'].pipe
+                owner = pipe.owner()
+                if owner is None or stop_private_zcode(descriptor['executable'], state['mainPids'], owner, lambda: pipe.request_quit(owner)) is False:
+                    stop_client(descriptor, state=state)
             elif provider == 'deepseek' and sys.platform == 'win32':
                 stop_deepseek(descriptor, self.adapters[provider], state=state)
             else:
@@ -1921,7 +1972,11 @@ class DesktopSessions:
                                  'canStartDesktop': status.get('automaticConnection') == 'native-console'} if provider == 'claude' else {})})
             if 'zcode' in self.adapters:
                 enabled = self.enabled('zcode')
-                status = self.adapters['zcode'].inventory_status() if enabled else {}
+                adapter = self.adapters['zcode']
+                observing = (enabled and self.gateway_running and not self.closed.is_set()
+                             and getattr(adapter, 'application_start', None))
+                startup = adapter.observe_application_start() if observing else None
+                status = startup or (adapter.inventory_status() if enabled else {})
                 connected = status.get('connected') is True
                 zcode = self._descriptor('zcode')
                 installed = zcode['installed']
@@ -1936,12 +1991,16 @@ class DesktopSessions:
                              'confirmTaskState': True, 'historyAvailable': status.get('historyAvailable') is True,
                              'pipeSupported': zcode['pipeSupported'], 'compatibilitySupported': zcode['compatibilitySupported'],
                              'pipeReady': bool(getattr(self.adapters['zcode'], 'pipe', None) and (connected or status.get('sessionAccess'))),
-                             'initializationMode': 'zcode-local-compatibility',
+                             'initializationMode': 'zcode-local-compatibility' if zcode['compatibilitySupported'] else 'private-pipe',
                              'canInitializeDesktop': bool(self.gateway_running and (zcode['pipeSupported'] or zcode['compatibilitySupported'])
                                                           and not (connected or status.get('sessionAccess'))),
-                             'compatibilityLaunch': self.config.get('zcodeCompatibility') is True,
-                             'capabilities': {'create': connected or status.get('canCreate') is True, 'accounts': True,
+                             'compatibilityLaunch': zcode['compatibilitySupported'] and self.config.get('zcodeCompatibility') is True,
+                             'capabilities': {'create': status.get('canCreate') is True, 'accounts': True,
                                               'notifications': True}})
+                if startup:
+                    phase = startup['connectionState']
+                    rows[-1].update(connectionState=phase, setupStatus='connecting' if phase == 'connecting' else 'failed',
+                                    canInitializeDesktop=phase != 'connecting')
             from bridge.clients.lifecycle import inspect_clients
             descriptors = []
             for row in rows:
@@ -2211,7 +2270,8 @@ class DesktopSessions:
         acknowledge_unavailable = value.get('acknowledgeUnavailable', False)
         if 'acknowledgeUnavailable' in value and (acknowledge_unavailable is not True or
                 provider not in ('codex', 'zcode') or not initialize_zcode and (enabled or value.get('quitDesktop') is not True) or
-                value.get('forceDesktop') or sys.platform not in ('darwin', 'win32') or
+                value.get('forceDesktop') or sys.platform not in ('darwin', 'win32', 'linux') or
+                sys.platform == 'linux' and provider != 'zcode' or
                 not self.gateway_running or provider == 'codex' and (not self.bridge or
                 not self.bridge.desktop_restart_recommended())):
             raise ValueError('桌面恢复退出确认无效，请重新检查连接状态')
@@ -2259,7 +2319,7 @@ class DesktopSessions:
                 elif provider == 'zcode' and (initialize_zcode or descriptor['pipeSupported'] or
                                                self.config.get('zcodeCompatibility') is True):
                     private_pipe = (value.get('connectionMode') == 'private-pipe' if initialize_zcode else
-                                    descriptor['pipeSupported'] and self.config.get('zcodeCompatibility') is not True)
+                                    descriptor['pipeSupported'] and not (descriptor['compatibilitySupported'] and self.config.get('zcodeCompatibility') is True))
                     self._start_zcode_connection(descriptor, private_pipe=private_pipe, initialize=initialize_zcode,
                                                  acknowledge_unavailable=acknowledge_unavailable)
                 elif provider == 'claude':
