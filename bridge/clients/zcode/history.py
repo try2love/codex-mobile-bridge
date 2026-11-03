@@ -2,7 +2,7 @@
 import os
 import sqlite3
 import stat
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 from bridge.clients.errors import BridgeUnavailable
@@ -23,6 +23,10 @@ def _checked_db(path):
     return path.is_file()
 
 
+class _TranscriptUnavailable(BridgeUnavailable):
+    pass
+
+
 @contextmanager
 def _history(home):
     home = Path(home).absolute()
@@ -37,7 +41,10 @@ def _history(home):
         db.row_factory = sqlite3.Row
         db.execute('PRAGMA query_only = ON')
         db.execute('PRAGMA trusted_schema = OFF')
-        db.execute('ATTACH DATABASE ? AS cli', (transcript.as_uri() + '?mode=ro',))
+        try:
+            db.execute('ATTACH DATABASE ? AS cli', (transcript.as_uri() + '?mode=ro',))
+        except sqlite3.OperationalError as error:
+            raise _TranscriptUnavailable('暂时无法读取 ZCode 本机聊天记录') from error
         db.execute('BEGIN')
         yield db
     except sqlite3.Error as exc:
@@ -78,6 +85,31 @@ def saved_target(home, sid):
     """Resolve the original local task and its transcript without loading messages."""
     with _history(home) as db:
         return _target(db, sid)
+
+
+def resume_workspace(home, sid):
+    try:
+        row = saved_target(home, sid)
+    except _TranscriptUnavailable:
+        # The CLI database may still be reopening. The desktop's own task index
+        # identifies the project; the live App must independently verify this
+        # same ID and project before its V4 subscription can confer write access.
+        index = Path(home).absolute() / 'tasks-index.sqlite'
+        if index.parent.name != 'v2' or not _checked_db(index):
+            raise
+        with closing(sqlite3.connect(index.as_uri() + '?mode=ro', uri=True, timeout=.2)) as db:
+            db.execute('PRAGMA trusted_schema = OFF')
+            rows = db.execute(
+                "SELECT workspace_path, archived FROM tasks WHERE task_id=? AND deleted=0 "
+                "AND host_id='local' AND provider='glm' AND workspace_identity IS NULL", (sid,)).fetchall()
+        if len(rows) != 1:
+            raise ValueError('找不到此本机 ZCode 聊天')
+        row = {'cwd': rows[0][0], 'archived': rows[0][1]}
+    if row['archived']:
+        raise ValueError('无法继续已归档的 ZCode 会话')
+    if not isinstance(row['cwd'], str) or not Path(row['cwd']).is_absolute():
+        raise ValueError('ZCode 原项目目录无效')
+    return row['cwd']
 
 
 def send_boundary(home, sid):

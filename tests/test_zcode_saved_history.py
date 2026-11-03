@@ -47,6 +47,16 @@ class ZCodeSavedHistoryTests(unittest.TestCase):
                        '{"type":"text","text":"private runtime context","synthetic":true}')""")
             db.commit()
 
+    def test_resume_checks_local_project_when_cold_transcript_cannot_be_attached(self):
+        from bridge.clients.zcode.history import resume_workspace, _TranscriptUnavailable
+        with patch('bridge.clients.zcode.history.saved_target', side_effect=_TranscriptUnavailable('cold')):
+            self.assertEqual(resume_workspace(self.home, 'sess_ok'), '/work')
+            for sid in ('sess_archived', 'sess_remote', 'sess_deleted', 'sess_missing'):
+                with self.subTest(sid=sid), self.assertRaises(ValueError):
+                    resume_workspace(self.home, sid)
+        with self.assertRaises(ValueError):
+            resume_workspace(self.home, 'sess_mismatch')
+
     def test_debug_reconnect_from_saved_chat_validates_process_and_workspace_before_binding(self):
         from bridge.clients.zcode.adapter import ZCodePrototype
         app = {'application': 'fixture.app', 'dataDirectory': self.home, 'debugFallbackPort': 17742}

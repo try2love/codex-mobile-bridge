@@ -379,11 +379,8 @@ class ZCodePrototype(ZCodeDesktop):
             process = self._live_process()
             expected = self.workspaces.get(sid)
             if self.config.get('debugFallbackPort') or (self.home/'tasks-index.sqlite').is_file():
-                from bridge.clients.zcode.history import saved_target
-                row = saved_target(self.home, sid)
-                if row['archived']:
-                    raise ValueError('无法继续已归档的 ZCode 会话')
-                expected = row['cwd']
+                from bridge.clients.zcode.history import resume_workspace
+                expected = resume_workspace(self.home, sid)
             target = {'sessionId': sid, 'expectedProcess': process}
             workspace = self.transport({**target, 'action': 'target'})['workspace']
             if not isinstance(workspace, str) or not Path(workspace).is_absolute() or (
