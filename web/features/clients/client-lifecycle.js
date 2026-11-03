@@ -9,6 +9,7 @@ const ClientLifecycle=(()=>{
     let label,reason=client.reason||'',pending=false,action=false;
     if(setup==='recovery-required'||(background&&!waiting&&!client.pendingEnable))label=background?'后台运行，桌面未打开':'需要恢复连接';
     else if(client.connected)label='已连接';
+    else if(setup==='session-access')label='按会话接入';
     else if(client.pendingEnable){label='正在启动应用…';reason='正在等待客户端连接，完成后会自动显示聊天。';pending=true;}
     else if(waiting){label=({'needs-screen-saver':'等待退出屏保','needs-unlock':'等待解锁','needs-desktop':'等待桌面恢复'})[setup]||
       (stage==='starting'?'正在启动应用…':'正在连接，请稍候…');pending=true;}

@@ -142,20 +142,108 @@ class ZCodeDesktop:
         self.directory = Path(directory)
         self.config = dict(config)
         self.home = Path(config.get('dataDirectory', Path.home()/'.zcode/v2'))
+        self.window_binding = None
+
+    def _window_app(self):
+        path = self.config.get('application')
+        if sys.platform == 'darwin' and path:
+            app = installation(path)
+            if app and app['version'] == '3.17.2':
+                from bridge.platforms.macos.zcode import supports_window_send
+                if supports_window_send():
+                    return app['executable']
+        return None
+
+    def release_window(self):
+        self.window_binding = None
 
     def call(self, action, sid=None, body=None):
+        from bridge.clients.zcode.history import saved_sessions, saved_detail
+        executable = self._window_app()
         if action == 'list':
-            from bridge.clients.zcode.history import saved_sessions
-            return saved_sessions(self.home)
+            view = saved_sessions(self.home)
+            if executable:
+                view['sessionAccess'] = True
+            return view
         if action in ('detail', 'history'):
-            from bridge.clients.zcode.history import saved_detail
-            return saved_detail(self.home, sid, body)
-        raise BridgeUnavailable(self.unavailable)
+            view = saved_detail(self.home, sid, body)
+            row = view['session']
+            if executable and not row['archived'] and row['title']:
+                bound = self.window_binding is not None and self.window_binding[0] == sid
+                caps = {**row['capabilities'], 'send': bound, 'resume': not bound, 'attachments': False,
+                        'projectReferences': False, 'notifications': False, 'models': False, 'skills': False,
+                        'queue': False, 'steer': False}
+                row.update(capabilities=caps, readOnly=not bound, connectionState='ready' if bound else 'detached',
+                           controlScope='session')
+                view.update(readOnly=not bound, capabilities=caps, notice=(
+                    '已接入原窗口，可发送文字消息。' if bound else '可先查看历史；继续会话时会在电脑上打开此原生聊天。'))
+            return view
+        if action not in ('resume', 'send') or not executable:
+            raise BridgeUnavailable(self.unavailable)
+        if action == 'resume':
+            return self._resume_window(executable, sid, body or {})
+        return self._send_window(executable, sid, body or {})
+
+    def _resume_window(self, executable, sid, body):
+        from bridge.clients.zcode.history import send_boundary
+        from bridge.platforms.macos.zcode import operation
+        if set(body) != {'id'}:
+            raise ResumePreflightBlocked('ZCode 会话接入参数无效')
+        self.release_window()
+        try:
+            title, _ = send_boundary(self.home, sid)
+            receipt = operation('resume', executable, sid, title)
+            pid = receipt.get('pid')
+            if receipt.get('status') != 'ready' or type(pid) is not int or pid <= 0:
+                raise ValueError('ZCode 未确认原生聊天')
+        except (ValueError, OSError) as exc:
+            raise ResumePreflightBlocked(str(exc)) from exc
+        self.window_binding = (sid, pid)
+        return {'id': body['id'], 'status': 'ready'}
+
+    def _send_window(self, executable, sid, body):
+        from bridge.clients.zcode.history import send_boundary
+        from bridge.platforms.macos.zcode import operation
+        if (set(body) - {'id', 'text', 'mode'} or body.get('mode', 'send') != 'send'
+                or not isinstance(body.get('text'), str) or not body['text'].strip()):
+            raise ResumePreflightBlocked('此 ZCode 原窗口只支持发送纯文字')
+        binding = self.window_binding
+        if not binding or binding[0] != sid:
+            raise ResumePreflightBlocked('请先继续此 ZCode 会话')
+        title, after = send_boundary(self.home, sid)
+        started = int(time.time() * 1000)
+        try:
+            receipt = operation('send', executable, sid, title, body['text'], expected_pid=binding[1])
+        except (ValueError, OSError):
+            self.release_window()
+            raise
+        if receipt.get('status') != 'submitted' or receipt.get('pid') != binding[1]:
+            self.release_window()
+            raise BridgeUnavailable('ZCode 发送结果待核对')
+        pending = {'id': body['id'], 'status': 'unknown', 'windowReceiptAfter': after, 'windowReceiptSince': started,
+                   'message': '尚未在原聊天记录中确认这条消息，请稍后核对。'}
+        for delay in (0, .1, .25, .5, 1):
+            if delay:
+                time.sleep(delay)
+            result = self.check_window_receipt(sid, body, pending)
+            if result['status'] == 'accepted':
+                return result
+        return pending
+
+    def check_window_receipt(self, sid, body, pending):
+        from bridge.clients.zcode.history import new_user_message
+        try:
+            mid = new_user_message(self.home, sid, pending['windowReceiptAfter'], pending['windowReceiptSince'], body['text'])
+        except (ValueError, OSError):
+            return pending
+        return {'status': 'accepted', 'id': body['id'], 'nativeMessageId': mid} if mid else pending
 
     def status(self):
         available = (self.home/'tasks-index.sqlite').is_file()
-        return {'connected': False, 'historyAvailable': available,
-                'reason': '本机历史（只读）' if available else self.unavailable}
+        session_access = bool(available and self._window_app())
+        return {'connected': False, 'historyAvailable': available, 'sessionAccess': session_access,
+                'reason': ('可在聊天中继续原生会话。' if session_access
+                           else '本机历史（只读）' if available else self.unavailable)}
 
     def account_scope(self):
         """Invalidate shared catalogs on account/provider changes, not UI settings."""
@@ -203,6 +291,8 @@ class ZCodePrototype(ZCodeDesktop):
 
 
     def call(self, action, sid=None, body=None):
+        if self._window_app() and action in ('list', 'detail', 'history', 'resume', 'send'):
+            return super().call(action, sid, body)
         try:
             return self._call_live(action, sid, body)
         except (OSError, ValueError):
@@ -381,6 +471,8 @@ class ZCodePrototype(ZCodeDesktop):
             return False
 
     def status(self):
+        if self._window_app():
+            return super().status()
         try:
             detail = self._call_live('detail', self.sid)
             if detail.get('native'):

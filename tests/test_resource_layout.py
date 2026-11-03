@@ -68,6 +68,7 @@ WSL_ACCOUNT_SOURCES = {'bridge/features/accounts/wsl_account_worker.py',
                          ('__init__.py', '_parser.py', '_re.py', '_types.py'))}
 CONNECTORS = {'bridge/clients/claude/connector.js', 'bridge/clients/deepseek/host.mjs'}
 NATIVE_SOURCES = {'bridge/platforms/macos/claude-helper.swift',
+                  'bridge/platforms/macos/zcode-helper.swift',
                   'bridge/platforms/windows/claude-helper.cs',
                   'bridge/platforms/windows/codex-quit-helper.cs'}
 

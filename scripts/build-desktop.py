@@ -39,11 +39,10 @@ command.extend(['--add-data', str(certificate_package.locate_file(license_file))
 for relative in json.loads((root/'scripts/gateway-resources.json').read_text(encoding='utf-8')):
     source_file = root/relative
     command.extend(['--add-data', str(source_file)+':'+str(Path(relative).parent)])
-helpers = ('claude-bridge-helper.exe', 'codex-quit-helper.exe') if sys.platform == 'win32' else ('claude-bridge-helper',)
-for name in helpers:
-    helper = root/'dist/client-helpers'/name
-    if helper.is_file():
-        command.extend(['--add-binary', str(helper)+':client-helpers'])
+helpers = {'darwin': ('claude-bridge-helper', 'zcode-bridge-helper'),
+           'win32': ('claude-bridge-helper.exe', 'codex-quit-helper.exe')}
+for name in helpers.get(sys.platform, ()):
+    command.extend(['--add-binary', str(root/'dist/client-helpers'/name)+':client-helpers'])
 command.append(str(root/'desktop.py'))
 subprocess.run(command, cwd=root, check=True)
 source = root/'dist/codex-mobile-gateway'

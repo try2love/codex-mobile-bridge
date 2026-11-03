@@ -1246,3 +1246,26 @@ test('saved ZCode history can be read without a live client and never enables th
  view.clientStates=[{id:'zcode',enabled:true,connected:true}];assert.equal(view.canMutate(),false);
  assert.equal(ui.calls.some(call=>call.body),false);
 });
+
+
+test('a verified per-session connection enables only text without granting app-wide control',async()=>{
+ const ui=fixture(),view=ui.view;
+ let bound=false;
+ const client={id:'zcode',enabled:true,connected:false,historyAvailable:true};
+ const row=()=>({id:'sess_A',title:'A',cwd:'/project',controlScope:'session',readOnly:!bound,
+   connectionState:bound?'ready':'detached',requests:[],capabilities:{send:bound,resume:!bound,stop:false,
+   skills:false,models:false,attachments:false,projectReferences:false,queue:false,steer:false,notifications:false}});
+ ui.setHandler(async(url,body)=>{
+   if(url.includes('/resume')){bound=true;return {status:'ready'};}
+   if(url.includes('/detail'))return {session:row(),readOnly:!bound,messages:[],capabilities:row().capabilities};
+   if(url.includes('/list'))return {sessionAccess:true,readOnly:true,connected:false,sessions:[row()]};
+   return {};
+ });
+ view.setClientStates([client]);await view.choose('zcode');await view.open('sess_A');
+ assert.equal(view.canResume(),true);view.setClientStates([client]);assert.equal(view.canResume(),true);
+ await view.mutate('resume',{});assert.equal(bound,true);
+ await view.detail(view.generation);assert.equal(view.canMutate(),true);
+ assert.equal(view.attachButton.hidden,true);assert.equal(view.modelButton.disabled,true);assert.equal(view.workMode.hidden,true);
+ assert.equal(view.stop.hidden,true);assert.equal(view.skillsButton.hidden,true);assert.equal(view.canResume(),false);
+ assert.equal(ui.calls.filter(c=>c.body).length,1);
+});

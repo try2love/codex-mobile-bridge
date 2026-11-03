@@ -216,6 +216,8 @@ class DesktopSessions:
         # Keep progress reads available during writes, but never join a read from
         # an earlier account/connector generation. Safety checks bypass _read.
         with self.locks[provider]:
+            if rebind and provider == 'zcode' and provider in self.adapters:
+                self.adapters[provider].release_window()
             with self.read_lock:
                 self.read_epochs[provider] += 1
                 self.read_changes[provider] += 1
@@ -1009,7 +1011,8 @@ class DesktopSessions:
                 result['projects'] = result.get('projects', []) + registered
                 result['environments'] = [self._public_project(row) for row in environments]
             if action == 'detail' and result.get('session'):
-                if result.get('readOnly') is True or result.get('session', {}).get('readOnly') is True:
+                if (result.get('readOnly') is True or result['session'].get('readOnly') is True or
+                        provider == 'zcode' and result['session'].get('controlScope') == 'session'):
                     result['modelCatalogIdentity'] = result['draftAccountIdentity'] = ''
                     return result
                 try:
@@ -1100,7 +1103,15 @@ class DesktopSessions:
                         old = db.execute('SELECT fingerprint,result FROM requests WHERE id=?', (rid,)).fetchone()
                         if old[0] != fingerprint:
                             raise ValueError('相同请求 ID 不能用于不同操作')
-                        return json.loads(old[1])
+                        cached = json.loads(old[1])
+                        if (provider == 'zcode' and action == 'send' and cached.get('status') == 'unknown'
+                                and type(cached.get('windowReceiptAfter')) is int):
+                            checked = adapter.check_window_receipt(sid, body, cached)
+                            if checked['status'] == 'accepted':
+                                db.execute('UPDATE requests SET result=? WHERE id=?', (json.dumps(checked), rid))
+                                db.commit()
+                            return checked
+                        return cached
                 except sqlite3.OperationalError as exc:
                     if db is not None:
                         db.rollback()
@@ -1830,7 +1841,8 @@ class DesktopSessions:
                 rows.append({'id': 'zcode', 'name': 'ZCode', 'installed': installed,
                              'description': '管理 ZCode 桌面应用与手机接入。',
                              'enabled': enabled, 'configured': installed, 'connected': connected,
-                             'setupStatus': 'ready' if connected else 'history-only' if history_only else 'not-connected',
+                             'setupStatus': ('ready' if connected else 'session-access' if status.get('sessionAccess') else
+                                             'history-only' if history_only else 'not-connected'),
                              'reason': '原生会话已接入' if connected else status.get('reason', ''),
                              'retryable': status.get('retryable') is True,
                              'confirmTaskState': not connected, 'historyAvailable': status.get('historyAvailable') is True,

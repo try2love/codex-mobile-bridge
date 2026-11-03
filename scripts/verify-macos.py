@@ -24,7 +24,11 @@ def verify(app, arch):
     if not (cloudflared.parent/'LICENSE').is_file():
         raise RuntimeError('Missing bundled cloudflared license')
     subprocess.run([str(cloudflared), '--version'], check=True, timeout=10)
-    for executable in (app/'Contents/MacOS'/info['CFBundleExecutable'], runtime, cloudflared):
+    helpers = [runtime.parent/'_internal/client-helpers'/name for name in ('claude-bridge-helper', 'zcode-bridge-helper')]
+    for helper in helpers:
+        subprocess.run(['codesign', '--verify', '--strict', str(helper)], check=True)
+        subprocess.run([str(helper), '--self-check'], check=True, timeout=10)
+    for executable in (app/'Contents/MacOS'/info['CFBundleExecutable'], runtime, cloudflared, *helpers):
         subprocess.run(['lipo', str(executable), '-verify_arch', native_arch], check=True)
     subprocess.run(['codesign', '--verify', '--deep', '--strict', '--verbose=2', str(app)], check=True)
     subprocess.run(['codesign', '--verify', '--strict', '--verbose=2', str(runtime)], check=True)

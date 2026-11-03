@@ -67,6 +67,22 @@ def _session(row):
             'capabilities': {'send': False, 'resume': False, 'stop': False}}
 
 
+def _target(db, sid):
+    row = _session(db.execute(_TASKS + ' AND t.task_id = ?', (sid,)).fetchone()) if db is not None else None
+    if row is None:
+        raise ValueError('找不到此本机 ZCode 聊天')
+    return row
+
+
+def send_boundary(home, sid):
+    with _history(home) as db:
+        row = _target(db, sid)
+        if row['archived'] or not row['title']:
+            raise ValueError('请先在 ZCode 打开未归档的聊天')
+        seq = db.execute('SELECT max(sequence) FROM cli.message WHERE session_id = ?', (sid,)).fetchone()[0]
+        return row['title'], seq if seq is not None else -1
+
+
 def saved_sessions(home):
     with _history(home) as db:
         rows = db.execute(_TASKS + ' ORDER BY t.updated_at DESC') if db is not None else ()
@@ -89,9 +105,7 @@ def saved_detail(home, sid, body=None):
     before = body.get('historyBefore')
     limit = max(1, min(100, int(body.get('historyLimit', 40))))
     with _history(home) as db:
-        session = _session(db.execute(_TASKS + ' AND t.task_id = ?', (sid,)).fetchone()) if db is not None else None
-        if session is None:
-            raise ValueError('找不到此本机 ZCode 聊天')
+        session = _target(db, sid)
         page = ''
         args = [sid]
         if before:
@@ -128,3 +142,22 @@ def saved_detail(home, sid, body=None):
             'capabilities': session['capabilities'],
             'history': {'hasMore': len(rows) > limit, 'before': messages[0]['id'] if len(rows) > limit else None},
             'notice': '当前为本机保存的聊天文字，仅供查看。'}
+
+
+def new_user_message(home, sid, after, started, text):
+    """One new visible user message with the complete text, in the same native thread."""
+    with _history(home) as db:
+        _target(db, sid)
+        rows = db.execute("""
+            SELECT id FROM cli.message WHERE session_id = ? AND sequence > ? AND time_created BETWEEN ? AND ?
+              AND json_extract(data, '$.role') = 'user'
+              AND json_extract(data, '$.semantics.uiVisibility') = 'visible'
+              AND coalesce(json_extract(data, '$.synthetic'), 0) = 0 LIMIT 2
+        """, (sid, after, started, started + 30000)).fetchall()
+        if len(rows) != 1:
+            return None
+        mid = rows[0]['id']
+        parts = db.execute("SELECT json_extract(p.data, '$.text') FROM cli.part AS p "
+                           'WHERE p.session_id = ? AND p.message_id = ? AND ' + _VISIBLE_TEXT +
+                           ' ORDER BY p.sequence, p.time_created, p.id', (sid, mid)).fetchall()
+        return mid if parts and '\n'.join(part[0] for part in parts if isinstance(part[0], str)) == text else None

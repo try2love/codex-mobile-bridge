@@ -2,9 +2,12 @@ import json
 import os
 import sqlite3
 import tempfile
+import time
+import uuid
 import unittest
 from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 
 from bridge.clients.errors import BridgeUnavailable
 from bridge.clients.zcode.history import saved_detail, saved_sessions
@@ -43,6 +46,104 @@ class ZCodeSavedHistoryTests(unittest.TestCase):
             db.execute("""INSERT INTO part VALUES ('internal', 'sess_ok', '0', 1, 0,
                        '{"type":"text","text":"private runtime context","synthetic":true}')""")
             db.commit()
+
+    def _window_manager(self):
+        from bridge.clients.manager import DesktopSessions
+        from bridge.clients.zcode.adapter import ZCodeDesktop
+        manager = DesktopSessions(self.home.parent)
+        self.addCleanup(manager.close)
+        adapter = ZCodeDesktop(manager.directory/'zcode', {'dataDirectory': self.home, 'application': 'fixture.app'})
+        manager.adapters['zcode'] = adapter
+        manager.config.setdefault('enabled', {})['zcode'] = True
+        window = patch.object(adapter, '_window_app', return_value='/fixture/ZCode')
+        window.start()
+        self.addCleanup(window.stop)
+        return manager, adapter
+
+    def _append_user(self, mid, text, seq=10, sid='sess_ok', visible=True, at=None):
+        at = int(time.time() * 1000) if at is None else at
+        with closing(sqlite3.connect(self.transcript)) as db:
+            msg = {'role': 'user', 'semantics': {'uiVisibility': 'visible' if visible else 'hidden'}}
+            db.execute('INSERT INTO message VALUES (?, ?, ?, ?, ?)', (mid, sid, seq, at, json.dumps(msg)))
+            db.execute('INSERT INTO part VALUES (?, ?, ?, 0, ?, ?)', (
+                'part-'+mid, sid, mid, at, json.dumps({'type':'text','text':text})))
+            db.commit()
+
+    def test_window_resume_is_explicit_and_send_waits_for_original_user_message(self):
+        manager, adapter = self._window_manager()
+        rid = str(uuid.uuid4())
+        with patch('bridge.platforms.macos.zcode.operation') as operate:
+            listing = adapter.call('list')
+            self.assertFalse(listing['connected'])
+            view = manager.call('zcode', 'detail', 'sess_ok')
+            self.assertTrue(view['readOnly'] and view['capabilities']['resume'])
+            self.assertFalse(view['capabilities']['send'])
+            operate.assert_not_called()
+            operate.return_value = {'status': 'ready', 'pid': 21}
+            self.assertEqual(manager.call('zcode','resume','sess_ok',{'id':str(uuid.uuid4())})['status'], 'ready')
+            self.assertFalse(manager.call('zcode', 'detail', 'sess_ok')['readOnly'])
+            self.assertFalse(manager.call('zcode', 'detail', 'sess_archived')['capabilities']['resume'])
+            def send(action, executable, sid, title, text, *, expected_pid):
+                self.assertEqual((action, sid, title, expected_pid), ('send', 'sess_ok', 'Saved', 21))
+                self._append_user('new', text)
+                return {'status': 'submitted', 'pid': 21}
+            operate.side_effect = send
+            body = {'id':rid,'text':'same text','mode':'send'}
+            self.assertEqual(manager.call('zcode','send','sess_ok',body), {'id':rid,'status':'accepted','nativeMessageId':'new'})
+            self.assertEqual(manager.call('zcode','send','sess_ok',body)['nativeMessageId'], 'new')
+            self.assertEqual(operate.call_count, 2)
+            manager.toggle_client({'provider':'zcode','enabled':False,'quitDesktop':False})
+            self.assertIsNone(adapter.window_binding)
+
+    def test_late_receipt_only_reads_native_history_and_cannot_match_old_hidden_or_foreign_text(self):
+        manager, adapter = self._window_manager()
+        adapter.window_binding = ('sess_ok', 22)
+        rid = str(uuid.uuid4())
+        text = 'same native text'
+        self._append_user('old', text, 8)
+        body = {'id':rid,'mode':'send','text':text}
+        with patch('bridge.platforms.macos.zcode.operation', return_value={'status':'submitted','pid':22}) as operate, \
+                patch('bridge.clients.zcode.adapter.time.sleep'):
+            pending=manager.call('zcode','send','sess_ok',body)
+            self.assertEqual(pending['status'],'unknown')
+            self._append_user('hidden',text,10,visible=False)
+            self._append_user('foreign',text,11,sid='sess_remote')
+            self._append_user('too-late',text,12,at=pending['windowReceiptSince']+30001)
+            self.assertEqual(manager.call('zcode','send','sess_ok',body)['status'],'unknown')
+            self._append_user('visible',text,11)
+            self.assertEqual(manager.call('zcode','send','sess_ok',body)['nativeMessageId'],'visible')
+            operate.assert_called_once()
+
+    def test_uncertain_or_wrong_window_receipt_never_triggers_second_send(self):
+        manager, adapter = self._window_manager()
+        adapter.window_binding = ('sess_ok', 23)
+        body={'id':str(uuid.uuid4()),'text':'match'}
+        with patch('bridge.platforms.macos.zcode.operation',return_value={'status':'submitted','pid':24}) as operate:
+            for _ in range(2):
+                self.assertEqual(manager.call('zcode','send','sess_ok',body)['status'],'unknown')
+            operate.assert_called_once()
+            self.assertIsNone(adapter.window_binding)
+        with patch('bridge.platforms.macos.zcode.operation') as operate:
+            for sid, extra in [('sess_archived',{}),('sess_ok',{'mode':'queue'}),('sess_ok',{'plugins':['x']}),
+                               ('sess_ok',{'resolvedFiles':[{'path':'untouched'}]})]:
+                adapter.window_binding=('sess_ok',23)
+                result=manager.call('zcode','send',sid,{'id':str(uuid.uuid4()),'text':'x',**extra})
+                self.assertEqual(result['status'],'blocked')
+            operate.assert_not_called()
+
+    def test_two_new_visible_user_messages_never_confirm_a_window_send(self):
+        manager, adapter = self._window_manager()
+        adapter.window_binding = ('sess_ok', 26)
+        body={'id':str(uuid.uuid4()),'text':'overlap'}
+        def send(*args, **kwargs):
+            self._append_user('one','overlap',10)
+            self._append_user('two','overlap',11)
+            return {'status':'submitted','pid':26}
+        with patch('bridge.platforms.macos.zcode.operation',side_effect=send) as operate, \
+                patch('bridge.clients.zcode.adapter.time.sleep'):
+            self.assertEqual(manager.call('zcode','send','sess_ok',body)['status'],'unknown')
+            self.assertEqual(manager.call('zcode','send','sess_ok',body)['status'],'unknown')
+            operate.assert_called_once()
 
     def test_only_matching_local_tasks_and_visible_messages_are_readable(self):
         listing = saved_sessions(self.home)
