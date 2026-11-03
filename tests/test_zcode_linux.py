@@ -6,7 +6,7 @@ import struct
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from bridge.clients.discovery import discover_clients
 from bridge.clients.zcode.installation import renderer_url
@@ -76,13 +76,16 @@ class ZCodeLinuxTests(unittest.TestCase):
             self.assertTrue(inspect({12: commands[12]})['unknown'])
 
     def test_no_display_or_running_app_cannot_launch_a_new_process(self):
-        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
+        fcntl = Mock()
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True), \
+                patch.dict(sys.modules, {'fcntl': fcntl}):
             app = package(Path(directory))
             with self.assertRaisesRegex(ValueError, '图形会话'):
                 zcode_pipe.launch(app)
             with patch.dict(os.environ, {'WAYLAND_DISPLAY': 'wayland-0'}), patch.object(zcode_pipe.desktop, 'processes', return_value=[1234]):
                 with self.assertRaisesRegex(ValueError, '已在运行'):
                     zcode_pipe.launch(app)
+        self.assertEqual(fcntl.mock_calls, [])
 
     @unittest.skipUnless(sys.platform == 'linux', 'requires native Linux descriptor inheritance and /proc')
     def test_anonymous_pipes_are_remapped_and_unrelated_descriptor_is_private(self):

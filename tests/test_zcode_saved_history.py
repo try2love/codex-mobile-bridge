@@ -19,20 +19,22 @@ class ZCodeSavedHistoryTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.home = Path(temp.name).resolve() / 'v2'
         self.home.mkdir()
+        self.workspace = str(self.home.parent / 'work')
+        Path(self.workspace).mkdir()
         self.index = self.home / 'tasks-index.sqlite'
         self.transcript = self.home.parent / 'cli' / 'db' / 'db.sqlite'
         self.transcript.parent.mkdir(parents=True)
         with closing(sqlite3.connect(self.index)) as db:
             db.execute('CREATE TABLE tasks(task_id, title, workspace_path, updated_at, archived, deleted, host_id, provider, workspace_identity, model)')
-            db.executemany("INSERT INTO tasks VALUES (?, ?, '/work', 1, ?, ?, ?, 'glm', NULL, 'Flash')", [
-                ('sess_ok', 'Saved', 0, 0, 'local'), ('sess_deleted', '', 0, 1, 'local'),
-                ('sess_remote', '', 0, 0, 'ssh:host'), ('sess_mismatch', '', 0, 0, 'local'),
-                ('sess_archived', 'Archived', 1, 0, 'local')])
+            db.executemany("INSERT INTO tasks VALUES (?, ?, ?, 1, ?, ?, ?, 'glm', NULL, 'Flash')", [
+                ('sess_ok', 'Saved', self.workspace, 0, 0, 'local'), ('sess_deleted', '', self.workspace, 0, 1, 'local'),
+                ('sess_remote', '', self.workspace, 0, 0, 'ssh:host'), ('sess_mismatch', '', self.workspace, 0, 0, 'local'),
+                ('sess_archived', 'Archived', self.workspace, 1, 0, 'local')])
             db.commit()
         with closing(sqlite3.connect(self.transcript)) as db:
             db.execute('CREATE TABLE session(id PRIMARY KEY, directory, time_deleted)')
             db.executemany('INSERT INTO session VALUES (?, ?, NULL)', [
-                ('sess_' + sid, '/another' if sid == 'mismatch' else '/work')
+                ('sess_' + sid, str(self.home.parent / 'another') if sid == 'mismatch' else self.workspace)
                 for sid in ('ok', 'deleted', 'remote', 'mismatch', 'archived')])
             db.execute('CREATE TABLE message(id PRIMARY KEY, session_id, sequence INTEGER, time_created INTEGER, data)')
             db.execute('CREATE TABLE part(id PRIMARY KEY, session_id, message_id, sequence INTEGER, time_created INTEGER, data)')
@@ -57,7 +59,7 @@ class ZCodeSavedHistoryTests(unittest.TestCase):
         self.assertEqual(result['messages'], [])
         self.assertTrue(result['readOnly'] and result['session']['indexOnly'])
         self.assertFalse(result['capabilities']['send'])
-        self.assertEqual(resume_workspace(self.home, 'sess_ok'), '/work')
+        self.assertEqual(resume_workspace(self.home, 'sess_ok'), self.workspace)
         for sid in ('sess_mismatch', 'sess_deleted', 'sess_remote', 'sess_missing'):
             with self.subTest(sid=sid), self.assertRaises(ValueError):
                 saved_detail(self.home, sid)
@@ -73,20 +75,20 @@ class ZCodeSavedHistoryTests(unittest.TestCase):
                 ('sess_ok','turn-a','2','Flash','low','completed',2,1),
                 ('sess_remote','turn-a','2','other','high','completed',3,1)])
             db.commit()
-        models = native_reply_models(self.home,'sess_ok','/work',['2'])
+        models = native_reply_models(self.home,'sess_ok',self.workspace,['2'])
         self.assertEqual(models, {'2': {'model': 'Flash', 'effort': 'low'}})
-        self.assertEqual(native_reply_models(self.home,'sess_ok','/wrong',['2']), {})
+        self.assertEqual(native_reply_models(self.home,'sess_ok',str(self.home.parent / 'wrong'),['2']), {})
         reply = next(m for m in saved_detail(self.home,'sess_ok')['messages'] if m['role']=='assistant')
         self.assertEqual((reply['model'],reply['effort']), ('Flash','low'))
         with closing(sqlite3.connect(self.transcript)) as db:
             db.execute('DROP TABLE model_usage')
             db.commit()
-        self.assertEqual(native_reply_models(self.home,'sess_ok','/work',['2']), {'2': {'model':'previous'}})
+        self.assertEqual(native_reply_models(self.home,'sess_ok',self.workspace,['2']), {'2': {'model':'previous'}})
 
     def test_resume_checks_local_project_when_cold_transcript_cannot_be_attached(self):
         from bridge.clients.zcode.history import resume_workspace, _TranscriptUnavailable
         with patch('bridge.clients.zcode.history.saved_target', side_effect=_TranscriptUnavailable('cold')):
-            self.assertEqual(resume_workspace(self.home, 'sess_ok'), '/work')
+            self.assertEqual(resume_workspace(self.home, 'sess_ok'), self.workspace)
             for sid in ('sess_archived', 'sess_remote', 'sess_deleted', 'sess_missing'):
                 with self.subTest(sid=sid), self.assertRaises(ValueError):
                     resume_workspace(self.home, sid)
@@ -106,7 +108,7 @@ class ZCodeSavedHistoryTests(unittest.TestCase):
             return db
 
         with patch.object(sqlite3, 'connect', side_effect=legacy_connection):
-            self.assertEqual(resume_workspace(self.home, 'sess_ok'), '/work')
+            self.assertEqual(resume_workspace(self.home, 'sess_ok'), self.workspace)
             with self.assertRaises(ValueError):
                 resume_workspace(self.home, 'sess_remote')
             with self.assertRaises(BridgeUnavailable):
@@ -117,12 +119,12 @@ class ZCodeSavedHistoryTests(unittest.TestCase):
         app = {'application': 'fixture.app', 'dataDirectory': self.home, 'debugFallbackPort': 17742}
         adapter = ZCodePrototype(self.home.parent, app)
         process = {'pid': 7, 'birth': [1, 0], 'started': [1, 0]}
-        binding = {'runtime': {'workspaceKey': '/work', 'identity': 'runtime'}, 'clientId': 'client', 'connectionId': 'owner'}
+        binding = {'runtime': {'workspaceKey': self.workspace, 'identity': 'runtime'}, 'clientId': 'client', 'connectionId': 'owner'}
         calls = []
         def native(request):
             calls.append(request['action'])
             if request['action'] == 'target':
-                return {'workspace': '/work'}
+                return {'workspace': self.workspace}
             if request['action'] == 'attach':
                 return {'binding': binding, 'subscriptionId': 'lease'}
             if request['action'] == 'detail':
@@ -157,7 +159,7 @@ class ZCodeSavedHistoryTests(unittest.TestCase):
         from bridge.clients.zcode.adapter import ZCodePrototype
         adapter = ZCodePrototype(self.home.parent, {'dataDirectory': self.home, 'debugFallbackPort': 17742})
         with patch.object(adapter, '_live_process', return_value={'pid': 29}), \
-                patch.object(adapter, 'transport', return_value={'workspace': '/unrelated'}) as native:
+                patch.object(adapter, 'transport', return_value={'workspace': str(self.home.parent / 'unrelated')}) as native:
             with self.assertRaisesRegex(BridgeUnavailable, '项目已变化'):
                 adapter.call('resume', 'sess_ok', {'id': str(uuid.uuid4())})
             with self.assertRaisesRegex(BridgeUnavailable, '归档'):
