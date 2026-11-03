@@ -56,15 +56,20 @@ def _history(home):
 
 _TASKS = """
     SELECT t.task_id, t.title, t.workspace_path, t.updated_at, t.archived,
-           t.model, c.directory
-    FROM tasks AS t JOIN cli.session AS c ON c.id = t.task_id
+           t.model, c.id AS transcript_id, c.directory
+    FROM tasks AS t LEFT JOIN cli.session AS c ON c.id = t.task_id
     WHERE t.deleted = 0 AND t.host_id = 'local' AND t.provider = 'glm'
       AND t.workspace_identity IS NULL AND c.time_deleted IS NULL
 """
 
 
-def _session(row):
-    if not row or not same_cwd(row['workspace_path'], row['directory'], os.name == 'nt'):
+def _session(row, *, allow_index_only=False):
+    if not row:
+        return None
+    if row['transcript_id'] is None:
+        if not allow_index_only or not isinstance(row['workspace_path'], str) or not Path(row['workspace_path']).is_absolute():
+            return None
+    elif not same_cwd(row['workspace_path'], row['directory'], os.name == 'nt'):
         return None
     return {'id': row['task_id'], 'provider': 'zcode', 'host': 'local',
             'backend': 'desktop', 'title': row['title'], 'cwd': row['workspace_path'],
@@ -74,17 +79,20 @@ def _session(row):
             'capabilities': {'send': False, 'resume': False, 'stop': False}}
 
 
-def _target(db, sid):
-    row = _session(db.execute(_TASKS + ' AND t.task_id = ?', (sid,)).fetchone()) if db is not None else None
+def _target(db, sid, *, allow_index_only=False):
+    found = db.execute(_TASKS + ' AND t.task_id = ?', (sid,)).fetchone() if db is not None else None
+    row = _session(found, allow_index_only=allow_index_only)
     if row is None:
         raise ValueError('找不到此本机 ZCode 聊天')
+    if found['transcript_id'] is None:
+        row['indexOnly'] = True
     return row
 
 
 def saved_target(home, sid):
     """Resolve the original local task and its transcript without loading messages."""
     with _history(home) as db:
-        return _target(db, sid)
+        return _target(db, sid, allow_index_only=True)
 
 
 def resume_workspace(home, sid):
@@ -143,7 +151,11 @@ def saved_detail(home, sid, body=None):
     before = body.get('historyBefore')
     limit = max(1, min(100, int(body.get('historyLimit', 40))))
     with _history(home) as db:
-        session = _target(db, sid)
+        session = _target(db, sid, allow_index_only=True)
+        if session.get('indexOnly'):
+            return {'session': session, 'readOnly': True, 'messages': [], 'requests': [],
+                    'capabilities': session['capabilities'], 'history': {'hasMore': False, 'before': None},
+                    'notice': '此聊天尚无已保存的消息。'}
         page = ''
         args = [sid]
         if before:
@@ -174,7 +186,10 @@ def saved_detail(home, sid, body=None):
             for part in parts:
                 if isinstance(part['text'], str):
                     texts[part['message_id']].append(part['text'])
+            from .reply_metadata import reply_models
+            models = reply_models(db, sid, (m['id'] for m in messages if m['role'] == 'assistant'))
             for message in messages:
+                message.update(models.get(message['id'], {}))
                 message['text'] = '\n'.join(texts[message['id']])
     return {'session': session, 'readOnly': True, 'messages': messages, 'requests': [],
             'capabilities': session['capabilities'],

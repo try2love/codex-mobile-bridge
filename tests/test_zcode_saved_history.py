@@ -47,6 +47,42 @@ class ZCodeSavedHistoryTests(unittest.TestCase):
                        '{"type":"text","text":"private runtime context","synthetic":true}')""")
             db.commit()
 
+    def test_indexed_chat_without_cli_transcript_can_open_but_not_authorize_a_write(self):
+        from bridge.clients.zcode.history import resume_workspace
+        with closing(sqlite3.connect(self.transcript)) as db:
+            db.execute("DELETE FROM session WHERE id='sess_ok'")
+            db.commit()
+        # Orphaned message rows still exist. They must not be read through the index alone.
+        result = saved_detail(self.home, 'sess_ok')
+        self.assertEqual(result['messages'], [])
+        self.assertTrue(result['readOnly'] and result['session']['indexOnly'])
+        self.assertFalse(result['capabilities']['send'])
+        self.assertEqual(resume_workspace(self.home, 'sess_ok'), '/work')
+        for sid in ('sess_mismatch', 'sess_deleted', 'sess_remote', 'sess_missing'):
+            with self.subTest(sid=sid), self.assertRaises(ValueError):
+                saved_detail(self.home, sid)
+
+    def test_historical_reply_uses_its_own_completed_model_call(self):
+        from bridge.clients.zcode.reply_metadata import native_reply_models
+        with closing(sqlite3.connect(self.transcript)) as db:
+            db.execute("UPDATE message SET data=json_set(data,'$.modelId','previous','$.parentID','0','$.anchor.turnId','turn-a') WHERE id='2'")
+            db.execute("UPDATE message SET data=json_set(data,'$.modelSelection.modelId','requested','$.modelSelection.options.reasoningLevel','high') WHERE id='0'")
+            db.execute('CREATE TABLE model_usage(session_id, turn_id, assistant_message_id, model_id, variant, status, completed_at, attempt_index)')
+            db.executemany('INSERT INTO model_usage VALUES (?,?,?,?,?,?,?,?)',[
+                ('sess_ok','turn-a','2','older','medium','completed',1,0),
+                ('sess_ok','turn-a','2','Flash','low','completed',2,1),
+                ('sess_remote','turn-a','2','other','high','completed',3,1)])
+            db.commit()
+        models = native_reply_models(self.home,'sess_ok','/work',['2'])
+        self.assertEqual(models, {'2': {'model': 'Flash', 'effort': 'low'}})
+        self.assertEqual(native_reply_models(self.home,'sess_ok','/wrong',['2']), {})
+        reply = next(m for m in saved_detail(self.home,'sess_ok')['messages'] if m['role']=='assistant')
+        self.assertEqual((reply['model'],reply['effort']), ('Flash','low'))
+        with closing(sqlite3.connect(self.transcript)) as db:
+            db.execute('DROP TABLE model_usage')
+            db.commit()
+        self.assertEqual(native_reply_models(self.home,'sess_ok','/work',['2']), {'2': {'model':'previous'}})
+
     def test_resume_checks_local_project_when_cold_transcript_cannot_be_attached(self):
         from bridge.clients.zcode.history import resume_workspace, _TranscriptUnavailable
         with patch('bridge.clients.zcode.history.saved_target', side_effect=_TranscriptUnavailable('cold')):

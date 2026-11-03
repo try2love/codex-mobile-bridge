@@ -38,7 +38,7 @@ def project_files(root, paths):
     return result
 
 
-def project_snapshot(snapshot, workspace):
+def project_snapshot(snapshot, workspace, reply_models=None):
     messages = []
     turns = [{'turnId': row['turnId'], 'sequence': row['rowId'],
               'status': {'running': 'inProgress', 'completedSuccess': 'completed',
@@ -50,6 +50,11 @@ def project_snapshot(snapshot, workspace):
         message = {'id': 'zcode:%s:%s' % (snapshot['sessionId'], row['rowId']),
                    'role': {'userInput': 'user', 'assistantText': 'assistant', 'reasoning': 'reasoning',
                             'toolCall': 'activity'}[row['kind']], 'text': row.get('text', '')}
+        if row['kind'] == 'assistantText':
+            if isinstance(row.get('model'), str) and row['model']:
+                message['model'] = row['model']
+            if reply_models:
+                message.update(reply_models.get(row.get('entityId'), {}))
         if row['kind'] == 'toolCall':
             message.update(title=row.get('toolName', '执行过程'), text='\n'.join(
                 value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
@@ -556,10 +561,18 @@ class ZCodePrototype(ZCodeDesktop):
                 messages = [{'id': item['info']['messageId'], 'role': item['info']['role'],
                              'text': '\n'.join(part.get('text', '') for part in item.get('parts', []) if part.get('type') == 'text')}
                             for item in history['messages'] if item['info'].get('semantics', {}).get('uiVisibility') == 'visible']
+                from .reply_metadata import native_reply_models
+                models = native_reply_models(self.home, sid, workspace, (m['id'] for m in messages if m['role'] == 'assistant'))
+                for message in messages:
+                    message.update(models.get(message['id'], {}))
                 session = detached_session({'id': row['sessionId'], 'title': row.get('title', '')}, workspace)
                 return {'session': session, 'messages': messages, 'capabilities': session['capabilities'],
                         'notice': '当前显示 ZCode 历史；点击继续会话连接原生运行状态。'}
-            value = project_snapshot(result['snapshot'], workspace)
+            from .reply_metadata import native_reply_models
+            snapshot = result['snapshot']
+            models = native_reply_models(self.home, sid, workspace, (row.get('entityId') for row in
+                snapshot['rows']['window'] if row['kind'] == 'assistantText' and row.get('visibility') == 'visible'))
+            value = project_snapshot(snapshot, workspace, models)
             if sid in self.debug_sessions:
                 # The client inventory may still describe the previous connection.
                 value['session'].update(controlScope='session', connectionState='ready')
