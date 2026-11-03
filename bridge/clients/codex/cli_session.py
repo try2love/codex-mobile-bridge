@@ -90,8 +90,8 @@ def _local_cli(home, configured):
         if path.is_file() and os.access(path, os.X_OK):
             return str(path)
         raise AppServerUnavailable('Configured Codex CLI is unavailable')
-    candidates = (_managed_cli(home), shutil.which('codex'),
-                  Path.home()/'.local/bin/codex')
+    binary = 'codex.exe' if os.name == 'nt' else 'codex'
+    candidates = (_managed_cli(home), shutil.which('codex'), Path.home()/'.local/bin'/binary)
     for candidate in candidates:
         if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
             return str(candidate)
@@ -101,10 +101,12 @@ def _local_cli(home, configured):
     raise AppServerUnavailable('Codex CLI executable is unavailable')
 
 
-def _same_cwd(saved, runtime, local_windows):
+def same_cwd(saved, runtime, local_windows):
+    if not isinstance(saved, str) or not saved or not isinstance(runtime, str) or not runtime:
+        return False
     if saved == runtime:
         return True
-    if not local_windows or not isinstance(saved, str) or not isinstance(runtime, str):
+    if not local_windows:
         return False
     try:
         return os.path.samefile(saved, runtime)
@@ -232,7 +234,7 @@ class CliSessions:
         result = self.client.request('thread/start', params)
         thread = result.get('thread') or {}
         thread_id = thread.get('id')
-        if not isinstance(thread_id, str) or thread.get('cwd') != cwd or not thread.get('modelProvider'):
+        if not isinstance(thread_id, str) or not same_cwd(cwd, thread.get('cwd'), self.alias is None and os.name == 'nt') or not thread.get('modelProvider'):
             raise AppServerUnsupported('CLI creation returned an unverified thread')
         uuid.UUID(thread_id)
         if on_created is not None:
@@ -337,8 +339,9 @@ class CliSessions:
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise AppServerUnavailable('Could not start the existing Codex CLI daemon') from exc
         if result.returncode:
-            if 'daemon executable not found' in result.stderr:
-                raise AppServerUnavailable('此 Codex 配置的原生运行组件缺失，请修复对应 Codex CLI 安装后重试。')
+            if ('daemon executable not found' in result.stderr or
+                    'this CLI has no complete local package' in result.stderr):
+                raise AppServerUnavailable('此 Codex CLI 缺少完整的后台运行组件。请安装或修复完整的 Codex CLI 后重试。')
             raise AppServerUnavailable('Installed Codex CLI daemon could not start')
         try:
             report = json.loads(result.stdout)
@@ -373,7 +376,7 @@ class CliSessions:
             except (KeyError, StoreUnavailable, RemoteUnavailable) as exc:
                 raise AppServerUnavailable('Saved CLI thread metadata is unavailable') from exc
             if (saved.get('origin') not in ('cli', 'ide') or not saved.get('cwd') or
-                    not _same_cwd(saved.get('cwd'), before.get('cwd'),
+                    not same_cwd(saved.get('cwd'), before.get('cwd'),
                                   self.alias is None and os.name == 'nt') or
                     saved.get('model_provider') != before.get('modelProvider')):
                 raise AppServerUnsupported('Saved CLI thread identity does not match this runtime')
@@ -389,7 +392,7 @@ class CliSessions:
                 self.requests.pop(thread_id, None)
             raise
         after = resumed.get('thread') or {}
-        if (after.get('id') != thread_id or after.get('cwd') != before.get('cwd') or
+        if (after.get('id') != thread_id or not same_cwd(before.get('cwd'), after.get('cwd'), self.alias is None and os.name == 'nt') or
                 resumed.get('modelProvider') != before.get('modelProvider')):
             with self.lock:
                 self.attaching.discard(thread_id)
@@ -456,7 +459,7 @@ class CliSessions:
                 metadata = self.metadata.get(thread_id)
                 if metadata is None:
                     raise AppServerUnavailable('CLI thread is no longer joined')
-                if (thread.get('cwd') != metadata['cwd'] or
+                if (not same_cwd(metadata['cwd'], thread.get('cwd'), self.alias is None and os.name == 'nt') or
                         thread.get('modelProvider') != metadata['modelProvider']):
                     invalid_reason = 'CLI thread provider or working directory changed'
             if invalid_reason is None:
@@ -936,7 +939,7 @@ class CliSessions:
         if metadata is None:
             raise AppServerUnavailable('CLI thread is no longer joined')
         if (thread.get('id') != thread_id or thread.get('status', {}).get('type') == 'notLoaded' or
-                thread.get('cwd') != metadata['cwd'] or
+                not same_cwd(metadata['cwd'], thread.get('cwd'), self.alias is None and os.name == 'nt') or
                 thread.get('modelProvider') != metadata['modelProvider']):
             self._invalidate(thread_id)
             raise AppServerUnavailable('CLI thread identity changed before the operation')
