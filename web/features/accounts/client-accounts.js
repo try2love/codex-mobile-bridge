@@ -74,6 +74,7 @@ class DesktopClientAccountsPanel {
       const value=await this.read();if(generation!==this.generation)return;this.accept(value);
       if(this.provider!=='claude'&&this.value.capabilities?.quota!==false&&this.visible())for(const row of this.value.accounts){
         if(!this.visible()||generation!==this.generation)break;
+        if(row.canReadQuota===false)continue;
         const details=await this.request({action:'details',id:row.id,refresh:force});if(generation!==this.generation)return;this.accept(details);
       }
     }catch(error){if(generation===this.generation)this.error=error.message;}
@@ -101,26 +102,28 @@ class DesktopClientAccountsPanel {
   queryTime(seconds){const date=new Date(seconds*1000),pad=value=>String(value).padStart(2,'0');return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;}
   usageControls(row){
     const usage=row.usage||row.quota,controls=this.node('div',undefined,'accounts-usage-controls');
-    const label=this.text(this.queryingId===row.id?'查询中…':this.provider==='claude'?'查看剩余额度':'刷新余额');
+    const label=this.text(this.queryingId===row.id?'查询中…':this.provider==='zcode'?'读取原 App 最新额度':this.provider==='claude'?'查看剩余额度':'刷新余额');
     const refresh=this.button('',()=>this.perform({action:'details',id:row.id,refresh:true}));
     refresh.title=label;refresh.setAttribute('aria-label',label);refresh.className='accounts-usage-refresh';
     refresh.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 12a8 8 0 1 1-2.34-5.66L20 8M20 3v5h-5"/></svg>';
     refresh.disabled=this.busy||this.loading;
-    if(usage?.checkedAt)controls.append(this.node('small',this.text(this.provider==='claude'?'查询时间：':'更新于：')+(this.provider==='claude'?this.queryTime(usage.checkedAt):new Date(usage.checkedAt*1000).toLocaleString(BridgeI18n.locale())),'account-updated'));
+    if(usage?.checkedAt)controls.append(this.node('small',this.text(usage.source==='nativeSnapshot'?'原 App 查询时间：':this.provider==='claude'?'查询时间：':'更新于：')+(this.provider==='claude'?this.queryTime(usage.checkedAt):new Date(usage.checkedAt*1000).toLocaleString(BridgeI18n.locale())),'account-updated'));
     controls.append(refresh);return controls;
   }
   usage(box,row){
     const usage=row.usage||row.quota;
     if(row.kind==='api'&&!usage?.balance)return;
     const heading=this.node('div',undefined,'accounts-client-usage-heading');
-    heading.append(this.node('strong',this.provider==='claude'?'剩余额度':'账户余额'));
+    heading.append(this.node('strong',this.provider==='zcode'?'今日剩余额度':this.provider==='claude'?'剩余额度':'账户余额'));
     box.append(heading);
     const results=this.node('div',undefined,'accounts-client-usage-results');
     let shown=false;
     for(const bucket of usage?.limits||[])for(const window of bucket.windows||[]){
       const line=this.node('div',undefined,'accounts-window'),percent=window.remainingPercent;
       const remaining=Number.isFinite(percent)?this.text('剩余 ')+Math.round(percent*10)/10+'%':window.remaining!=null?[window.remaining,window.total].filter(value=>value!=null).join(' / '):this.text('暂未提供');
-      line.append(this.node('span',[bucket.name,this.text(this.duration(window.windowDurationMins))].filter(Boolean).join(' · ')),this.node('strong',remaining));
+      const tokens=window.unit==='tokens'&&Number.isFinite(window.remaining);
+      const quantity=tokens?[window.remaining,window.total].filter(Number.isFinite).map(n=>n.toLocaleString(BridgeI18n.locale())).join(' / ')+' tokens':remaining;
+      line.append(this.node('span',tokens?bucket.name:[bucket.name,this.text(this.duration(window.windowDurationMins))].filter(Boolean).join(' · ')),this.node('strong',quantity));
       if(Number.isFinite(percent)){const progress=this.node('progress');progress.max=100;progress.value=Math.min(100,Math.max(0,percent));progress.setAttribute('aria-label',this.text('剩余额度'));line.append(progress);}
       if(window.resetsAt)line.append(this.node('small',this.text('恢复时间：')+new Date(window.resetsAt*1000).toLocaleString(BridgeI18n.locale()),'account-reset-time'));
       results.append(line);shown=true;
@@ -131,7 +134,7 @@ class DesktopClientAccountsPanel {
       results.append(line);shown=true;
     }
     const unavailable=this.provider==='claude'?'暂未提供额度信息':'余额信息暂不可用',failure=this.provider==='claude'?'额度查询失败':'余额查询失败';
-    if(!shown)results.append(this.node('span',usage?.status==='error'?(usage.error||failure):usage?.status==='loading'?'查询中…':usage?.status==='unsupported'?unavailable:!usage&&this.provider==='claude'?'尚未查询':!usage?'正在读取余额…':unavailable,'account-muted'));
+    if(!shown)results.append(this.node('span',usage?.source==='nativeSnapshot'?'原 App 暂无当前账号的今日额度记录':usage?.status==='error'?(usage.error||failure):usage?.status==='loading'?'查询中…':usage?.status==='unsupported'?unavailable:!usage&&this.provider==='claude'?'尚未查询':!usage&&this.provider==='zcode'?'正在读取额度…':!usage?'正在读取余额…':unavailable,'account-muted'));
     if(shown&&usage?.status==='error')results.append(this.node('small',this.text(usage.error||failure)+' · '+this.text('保留上次结果，数据尚未更新'),'account-muted'));
     box.append(results);
   }
@@ -205,12 +208,13 @@ class DesktopClientAccountsPanel {
       const active=activeIds.has(row.id),card=this.node('section',undefined,'account-bucket accounts-client-card'+(active?' is-current':'')),identity=this.node('div',undefined,'accounts-identity'),name=this.node('div',undefined,'accounts-name'),heading=this.node('div',undefined,'accounts-name-heading');card.accountRowId=row.id;
       heading.append(this.node('h3',row.name||row.email||row.id));if(active)heading.append(this.node('span','当前接入','accounts-plan'));if(row.saved===false)heading.append(this.node('span','尚未保存','account-muted'));name.append(heading);
       name.append(this.node('p',row.kind==='api'?'API 接入':'官方账号','account-muted'));if(row.email)name.append(this.node('p',row.email,'account-muted'));identity.append(name);
+      const canReadQuota=value?.capabilities?.quota!==false&&row.canReadQuota!==false&&(row.kind!=='api'||(row.usage||row.quota)?.balance);
       card.append(identity);
-      if(value?.capabilities?.quota!==false&&(row.kind!=='api'||(row.usage||row.quota)?.balance)){const usage=this.node('div',undefined,'accounts-usage accounts-client-usage');this.usage(usage,row);if(usage.children.length)card.append(usage);}
+      if(canReadQuota){const usage=this.node('div',undefined,'accounts-usage accounts-client-usage');this.usage(usage,row);if(usage.children.length)card.append(usage);}
       const actions=this.node('div',undefined,'accounts-actions'),switcher=this.button(active?'当前接入':'切换到此接入',()=>this.choose(row));switcher.disabled=active||this.busy||this.loading||value.canSwitch!==true;actions.append(switcher);
       if(this.provider==='claude'&&!active){const label=this.node('label',undefined,'account-reminder'),checkbox=this.node('input');checkbox.type='checkbox';checkbox.checked=row.kind==='api'&&this.syncLocalCliIds.has(row.id);checkbox.disabled=row.kind!=='api'||this.busy||this.loading;checkbox.onchange=()=>{if(checkbox.checked)this.syncLocalCliIds.add(row.id);else this.syncLocalCliIds.delete(row.id);};label.append(checkbox,this.node('span','同时应用到本机 CLI'));actions.append(label);if(row.kind!=='api')actions.append(this.node('small','官方 Claude Desktop 登录不能直接同步到 Claude Code CLI','account-muted'));}
       if(this.desktop&&row.saved!==false){for(const [label,fn] of [['编辑',()=>this.editAccount(row)],['删除',()=>this.removeAccount(row)]]){const button=this.button(label,fn);button.disabled=this.busy||this.loading;actions.append(button);}}
-      card.append(actions);const footer=this.node('div',undefined,'accounts-card-footer');if(active&&!modelsPlaced&&this.readModels){footer.append(this.modelsButton);modelsPlaced=true;modelTargetId=row.id;}if(value?.capabilities?.quota!==false&&(row.kind!=='api'||(row.usage||row.quota)?.balance))footer.append(this.usageControls(row));if(footer.children.length)card.append(footer);cards.push(card);
+      card.append(actions);const footer=this.node('div',undefined,'accounts-card-footer');if(active&&!modelsPlaced&&this.readModels){footer.append(this.modelsButton);modelsPlaced=true;modelTargetId=row.id;}if(canReadQuota)footer.append(this.usageControls(row));if(footer.children.length)card.append(footer);cards.push(card);
     }
     this.reconcileRows(cards,modelTargetId);
   }
