@@ -208,3 +208,13 @@ for(const provider of ['claude','deepseek'])test(`${provider} model scroller sur
  await ui.all().find(n=>n.tag==='button'&&n.textContent==='刷新模型').onclick();assert.equal(box.scrollTop,83);assert.match(ui.text(),/model-d/);
  let finish;ui.setHandler(()=>new Promise(resolve=>finish=resolve));ui.focus(ui.panel.modelsRefreshButton);const pending=ui.panel.modelsRefreshButton.onclick();ui.blur();finish({cache:{identity,updatedAt:3000},models:[{id:'model-e'}]});await pending;assert.equal(ui.active(),ui.panel.modelsRefreshButton);assert.equal(box.scrollTop,83);
 });
+
+test('current ZCode daily model quota shows exact native token quantities and checks only the active row',async()=>{
+ const ui=fixture({provider:'zcode'}),usage={status:'ok',source:'nativeSnapshot',checkedAt:1000,
+  limits:[{name:'GLM-5.3',windows:[{unit:'tokens',remaining:0,total:10,remainingPercent:0}]},
+   {name:'GLM-5.3-Flash',windows:[{unit:'tokens',remaining:9,total:20,remainingPercent:45}]}]};
+ ui.setValue(snapshot([{...row('current','official',usage),canReadQuota:true},{...row('other','official'),canReadQuota:false}]));
+ await ui.panel.resume();assert.deepEqual(ui.calls.map(c=>c.action),['list','details']);assert.equal(ui.calls[1].id,'current');
+ assert.match(ui.text(),/今日剩余额度/);assert.match(ui.text(),/GLM-5.3/);assert.match(ui.text(),/GLM-5.3-Flash/);
+ assert.match(ui.text(),/0 \/ 10 tokens/);assert.match(ui.text(),/9 \/ 20 tokens/);assert.match(ui.text(),/原 App 查询时间/);
+});

@@ -3,10 +3,12 @@ import hashlib
 import json
 import re
 import threading
+import time
 import uuid
 from pathlib import Path
 
 from bridge.features.accounts.accounts import private_json
+from . import quota
 
 SETTINGS = ('providerFamilyDomain', 'providerFamilyDomainUpdatedAt', 'providerFamilyDomainMigrated',
             'providerFamilyConnectionSelections', 'modelProviderFamilyModes')
@@ -37,6 +39,7 @@ class ZCodeAccounts:
         if self.home.is_symlink():
             raise ValueError('ZCode 数据目录不能是符号链接')
         self.lock = threading.RLock()
+        self.quota_cache = None
 
     def index(self):
         return read(self.directory/'index.json').get('accounts', [])
@@ -55,27 +58,52 @@ class ZCodeAccounts:
         return row
 
     def public(self):
+        return self._public()
+
+    def _public(self, quota_for=None, refresh=False):
         with self.lock:
             rows = self.index()
+            generation = quota.login_generation(self.home)
             try:
                 current = self.metadata()
             except (OSError, ValueError):
                 current = {}
             active = [r['id'] for r in rows if current.get('identity') and r['identity'] == current['identity']]
             # While stopped inside the transaction, validate restored encrypted bytes.
-            if not current.get('identity'):
+            if rows and not current.get('identity'):
                 try:
                     fingerprint = stamp(self.snapshot())
                     active = [r['id'] for r in rows if r['fingerprint'] == fingerprint]
                 except (OSError, ValueError):
                     pass
             public = [{k: r[k] for k in ('id', 'name', 'kind', 'email', 'saved')} for r in rows]
-            if current.get('identity') and not active:
-                public.append({'id': 'current', 'name': current['name'], 'email': current.get('email', ''), 'kind': 'official', 'saved': False})
+            if generation and current.get('provider') and current['provider'] != generation[0]:
+                generation = None
+            if (current.get('identity') or generation) and not active:
+                public.append({'id': 'current', 'name': current.get('name') or 'ZCode', 'email': current.get('email', ''), 'kind': 'official', 'saved': False})
                 active = ['current']
+            if quota_for is not None and quota_for not in active:
+                raise ValueError('仅支持查看当前 ZCode 登录账号的额度')
+            if self.quota_cache and self.quota_cache[0] != generation:
+                self.quota_cache = None
+            for row in public:
+                row['canReadQuota'] = bool(generation and row['id'] in active)
+                if row['canReadQuota']:
+                    now = time.time()
+                    if self.quota_cache and any(now >= window['validUntil']+1 for limit in self.quota_cache[2]['limits']
+                                                for window in limit['windows']):
+                        self.quota_cache = None
+                    if quota_for is not None and (refresh or not self.quota_cache or now-self.quota_cache[1] >= 30):
+                        usage = quota.latest(self.home, generation, now)
+                        self.quota_cache = (generation, now, usage)
+                    if self.quota_cache:
+                        row['usage'] = self.quota_cache[2]
+            if generation and quota.login_generation(self.home) != generation:
+                self.quota_cache = None
+                raise ValueError('ZCode 登录正在变化，请稍后重试')
             return {'accounts': public, 'activeIds': active, 'activeId': next(iter(active), None),
                     'current': {'name': current.get('name')}, 'canImport': bool(current.get('identity')),
-                    'capabilities': {'addApi': False, 'quota': False},
+                    'capabilities': {'addApi': False, 'quota': bool(generation)},
                     'enrollmentHint': '请先在 ZCode 登录，再保存当前接入；可在手机上切换已保存账号。'}
 
     def import_current(self, name=''):
@@ -117,8 +145,9 @@ class ZCodeAccounts:
             return self.public()
 
     def details(self, identifier, refresh=False):
-        self._row(identifier)
-        return self.public()
+        if not identifier:
+            raise ValueError('请指定 ZCode 账号')
+        return self._public(identifier, refresh)
 
     def save_api(self, value):
         raise ValueError('请在 ZCode 原生设置中配置 API 接入')
