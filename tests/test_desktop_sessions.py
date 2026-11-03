@@ -620,6 +620,18 @@ class HttpAdapters(unittest.TestCase):
         self.server.desktop_sessions.call.assert_not_called()
         self.server.desktop_sessions.toggle_client.assert_not_called()
 
+    def test_zcode_initialization_requires_authenticated_gateway(self):
+        manager = self.server.desktop_sessions = Mock()
+        manager.toggle_client.return_value = {'clients': []}
+        body = {'provider': 'zcode', 'enabled': True, 'initializeDesktop': True}
+        headers = self.login()
+        self.assertEqual(self.request('POST', '/api/clients', body, headers)[0], 200)
+        manager.toggle_client.assert_called_once_with(body)
+        manager.reset_mock()
+        self.server.auth.config['mode'] = 'none'
+        self.assertEqual(self.request('POST', '/api/clients', body, headers)[0], 403)
+        manager.toggle_client.assert_not_called()
+
     def test_client_disable_choice_is_forwarded_with_auth_and_csrf(self):
         self.server.desktop_sessions = Mock()
         self.server.desktop_sessions.toggle_client.return_value = {'clients': []}
