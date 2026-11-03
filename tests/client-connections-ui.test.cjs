@@ -446,7 +446,7 @@ test('ZCode uses its own logo and shared next-level management page',async()=>{
 });
 
 test('ZCode compatibility preference only changes after a local opt-in and does not relaunch',async()=>{
- const ui=fixture(),client={id:'zcode',name:'ZCode',installed:true,configured:true,compatibilityLaunch:false};
+ const ui=fixture(),client={id:'zcode',name:'ZCode',installed:true,configured:true,compatibilitySupported:true,compatibilityLaunch:false};
  ui.panel.clients=[client];await ui.panel.manageClient(client);
  const input=ui.pages.get('zcode').querySelector('[data-zcode-compatibility]');
  assert.equal(input.checked,false);ui.confirm(false);input.checked=true;await input.onchange();
@@ -454,6 +454,15 @@ test('ZCode compatibility preference only changes after a local opt-in and does 
  ui.confirm(true);ui.setHandler(async()=>({clients:[{...client,compatibilityLaunch:true}]}));
  input.checked=true;await input.onchange();
  assert.deepEqual(JSON.parse(JSON.stringify(ui.calls)),[{action:'zcode-compatibility',enabled:true}]);
+});
+
+test('ZCode without the compatibility port capability does not offer the option',async()=>{
+ for(const capability of [{},{compatibilitySupported:false}]){
+  const ui=fixture(),client={id:'zcode',name:'ZCode',installed:true,configured:true,...capability};
+  ui.panel.clients=[client];await ui.panel.manageClient(client);
+  assert.equal(ui.pages.get('zcode').querySelector('[data-zcode-compatibility]'),null);
+  assert.equal(ui.calls.length,0);
+ }
 });
 
 test('independent Codex form shares scan, host folder picker and manual save without launching clients',async()=>{
