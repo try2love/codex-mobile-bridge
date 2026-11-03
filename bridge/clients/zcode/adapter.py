@@ -252,6 +252,9 @@ class ZCodeDesktop:
                 'reason': ('可在聊天中继续原生会话。' if session_access
                            else '本机历史（只读）' if available else self.unavailable)}
 
+    def inventory_status(self):
+        return self.status()
+
     def account_scope(self):
         """Invalidate shared catalogs on account/provider changes, not UI settings."""
         from bridge.clients.zcode.accounts import read, account_key, SETTINGS
@@ -276,6 +279,7 @@ class ZCodePrototype(ZCodeDesktop):
             raise ValueError('请先启用 ZCode 本机兼容连接')
         self.process = config.get('process')
         self.application_owner = None
+        self.application_create = False
         self.debug_sessions = set()
         self.workspaces = {self.sid: self.workspace} if self.sid else {}
         self.bindings = {self.workspace: config['binding']} if config.get('binding') and self.workspace else {}
@@ -328,6 +332,7 @@ class ZCodePrototype(ZCodeDesktop):
                     if result.get('ready') is not True or self._live_process() != owner:
                         raise BridgeUnavailable('ZCode 原 App 未确认连接。')
                     self._adopt_process(owner)
+                    self.application_create = result.get('canCreate') is True
                     return
             except (ValueError, OSError, subprocess.TimeoutExpired) as error:
                 if time.monotonic() >= deadline:
@@ -438,9 +443,10 @@ class ZCodePrototype(ZCodeDesktop):
             if action == 'list' and self.application_owner is not None:
                 result = self.transport({'action': 'list', 'expectedProcess': self.application_owner})
                 return {'sessions': [detached_session(row, row['cwd']) for row in result['sessions']],
-                        'sessionAccess': True, 'connected': False, 'readOnly': True, 'capabilities': {'create': False}}
-            self._live_process()  # Identity only. Reading saved history never selects a session.
-            raise BridgeUnavailable('请在要继续的 ZCode 聊天中连接原会话。')
+                        'sessionAccess': True, 'connected': False, 'readOnly': True, 'capabilities': {'create': self.application_create}}
+            if action not in ('projects', 'create') or self.application_owner is None:
+                self._live_process()  # Reading saved history never selects a session.
+                raise BridgeUnavailable('请在要继续的 ZCode 聊天中连接原会话。')
         if action in ('account', 'lifecycle'):
             return self.transport({'action': action, 'workspace': self.workspace, 'sessionId': self.sid,
                                    'expectedRuntime': (self.binding or {}).get('runtime')})
@@ -453,7 +459,7 @@ class ZCodePrototype(ZCodeDesktop):
             return {'sessions': rows, 'connected': True}
         if action == 'projects':
             result = self.transport({'action': action, 'workspace': self.workspace, 'sessionId': self.sid})
-            if not any(row['cwd'] == self.workspace for row in result['projects']):
+            if self.workspace and not any(row['cwd'] == self.workspace for row in result['projects']):
                 result['projects'].append({'key': self.workspace, 'cwd': self.workspace,
                                            'name': Path(self.workspace).name, 'surface': 'desktop', 'host': 'local'})
             return {**result, 'browseDirectories': True}
@@ -463,15 +469,21 @@ class ZCodePrototype(ZCodeDesktop):
             uuid.UUID(body.get('id', ''))
             if not isinstance(body.get('firstMessage'), str) or not 1 <= len(body['firstMessage'].strip()) <= 100000:
                 raise ValueError('请输入首条消息')
-            if not self.binding:
+            if not self.binding and not self.application_create:
                 raise BridgeUnavailable('必须先显式接入原生项目')
-            result = self.transport({'action': action, 'workspace': self.workspace, 'sessionId': self.sid,
-                                     'binding': self.binding, 'body': body})
+            # Managed application connections use the selected project, independent
+            # of which conversation was last visited. Legacy leases keep their config.
+            context = ({'expectedProcess': self.application_owner} if self.application_create else
+                       {'workspace': self.workspace, 'sessionId': self.sid, 'binding': self.binding})
+            result = self.transport({'action': action, **context, 'body': body})
             workspace, binding = result.pop('workspace', None), result.pop('binding', None)
             if result.get('status') == 'accepted' and workspace:
                 self.workspaces[result['result']['id']] = workspace
                 if binding:
                     self.bindings[workspace] = binding
+                    if not self.sid:
+                        self.sid, self.workspace = result['result']['id'], workspace
+                        self.debug_sessions.add(self.sid)
             return result
         if not isinstance(sid, str) or not sid.startswith('sess_'):
             raise ValueError('ZCode 会话标识无效')
@@ -605,16 +617,27 @@ class ZCodePrototype(ZCodeDesktop):
         except (OSError, ValueError):
             return False
 
+    def inventory_status(self):
+        # The app inventory does not need a full conversation. Model lookup and
+        # operation-specific callers retain their live session status check.
+        if self.application_create or not self.sid:
+            return self._application_status()
+        return self.status()
+
+    def _application_status(self):
+        base = super().status()
+        if self.application_owner is not None:
+            try:
+                if self._live_process() == self.application_owner:
+                    return {**base, 'sessionAccess': True, 'canCreate': self.application_create,
+                            'reason': '可在聊天中继续原生会话。'}
+            except _NoLocalTransport as error:
+                return {**base, 'reason': str(error)}
+        return base
+
     def status(self):
         if not self.sid:
-            base = super().status()
-            if self.application_owner is not None:
-                try:
-                    if self._live_process() == self.application_owner:
-                        return {**base, 'sessionAccess': True, 'reason': '可在聊天中继续原生会话。'}
-                except _NoLocalTransport as error:
-                    return {**base, 'reason': str(error)}
-            return base
+            return self._application_status()
         if not self.pipe and self._window_app() and not self.debug_sessions:
             return super().status()
         try:

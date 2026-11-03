@@ -1913,7 +1913,7 @@ class DesktopSessions:
                                  'canStartDesktop': status.get('automaticConnection') == 'native-console'} if provider == 'claude' else {})})
             if 'zcode' in self.adapters:
                 enabled = self.enabled('zcode')
-                status = self.adapters['zcode'].status() if enabled else {}
+                status = self.adapters['zcode'].inventory_status() if enabled else {}
                 connected = status.get('connected') is True
                 zcode = self._descriptor('zcode')
                 installed = zcode['installed']
@@ -1932,7 +1932,8 @@ class DesktopSessions:
                              'canInitializeDesktop': bool(self.gateway_running and (zcode['pipeSupported'] or zcode['compatibilitySupported'])
                                                           and not (connected or status.get('sessionAccess'))),
                              'compatibilityLaunch': self.config.get('zcodeCompatibility') is True,
-                             'capabilities': {'create': connected, 'accounts': True, 'notifications': connected}})
+                             'capabilities': {'create': connected or status.get('canCreate') is True, 'accounts': True,
+                                              'notifications': True}})
             from bridge.clients.lifecycle import inspect_clients
             descriptors = []
             for row in rows:

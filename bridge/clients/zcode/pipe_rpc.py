@@ -204,6 +204,6 @@ class PipeTransport:
 
     def probe(self):
         value = self.call({"action": "application"})
-        if value != {"ready": True}:
+        if not isinstance(value, dict) or value.get("ready") is not True:
             raise ValueError("ZCode 原 App 会话服务尚未就绪")
         return value

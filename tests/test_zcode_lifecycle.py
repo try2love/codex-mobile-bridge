@@ -70,6 +70,40 @@ class ZCodeLifecycleTests(unittest.TestCase):
         ordinary.assert_not_called()
         port.assert_not_called()
 
+    def test_app_inventory_projects_and_creation_need_no_bound_conversation(self):
+        from bridge.clients.zcode.adapter import ZCodePrototype
+        owner = {'pid': 77}
+        cfg = self.manager.config['discovered']['zcode']
+        native = Mock()
+        adapter = ZCodePrototype(self.root, {**cfg, 'debugFallbackPort': 17742}, transport=native)
+        self.manager.adapters['zcode'] = adapter
+        self.manager.config.setdefault('enabled', {})['zcode'] = True
+
+        def inventory():
+            return next(row for row in self.manager.clients(refresh=True)['clients'] if row['id'] == 'zcode')
+
+        with patch.object(adapter, '_live_process', return_value=owner), patch.object(adapter, '_window_app', return_value=None):
+            self.assertEqual(inventory()['capabilities'], {'notifications': True, 'create': False, 'accounts': True})
+            native.return_value = {'ready': True, 'canCreate': True}
+            adapter.connect_application(77)
+            self.assertTrue(inventory()['capabilities']['create'])
+            self.assertIsNone(adapter.sid)
+            native.return_value = {'projects': [{'key': 'p', 'cwd': '/project'}]}
+            self.assertEqual(adapter.call('projects')['projects'], [{'key': 'p', 'cwd': '/project'}])
+            rid = 'fc220000-4000-4000-8000-000000000023'
+            body = {'id': rid, 'projectKey': 'p', 'firstMessage': 'test'}
+            native.return_value = {'status': 'accepted', 'result': {'id': 'sess_'+rid},
+                                   'workspace': '/project', 'binding': {'clientId': 'same-client'}}
+            created = adapter.call('create', body=body)
+            self.assertEqual(created['result']['id'], adapter.sid)
+            self.assertEqual(native.call_args.args[0], {'action': 'create', 'expectedProcess': owner, 'body': body})
+            native.reset_mock()
+            self.assertTrue(inventory()['capabilities']['create'])
+            native.assert_not_called()  # No large chat read to paint two entry points.
+            with patch.object(adapter, '_live_process', return_value={'pid': 88}):
+                self.assertFalse(inventory()['capabilities']['create'])
+                self.assertTrue(inventory()['capabilities']['notifications'])
+
     def test_pipe_error_or_unknown_tasks_do_not_authorize_compatibility_or_relaunch(self):
         from bridge.clients.zcode.pipe_host import PipeHostClient
         fake = Mock(spec=PipeHostClient)

@@ -34,7 +34,9 @@ export async function nativeRequest(request) {
     if (hello.protocolVersion !== 3 || hello.clientMode !== 'desktop-continuous' || !hello.connectionId ||
         !Array.isArray(tree.tasks) || typeof agent.sendConversationCommandV4 !== 'function')
       throw Error('ZCode 原 App 的会话服务尚未就绪');
-    return { ready: true };
+    const canCreate = typeof services.projectService.prepareSession === 'function' &&
+      typeof services.projectService.readProjects === 'function' && typeof services.modelSelectionService?.getView === 'function';
+    return { ready: true, ...(canCreate ? { canCreate: true } : {}) };
   }
   if (request.action === 'registry-probe') return typeof window.__codexMobileZCodeAcquireWorkspace === 'function' ||
     contexts.find(context => !context.layer.disposed)?.layer.acquire || registryAnchor;
@@ -143,15 +145,26 @@ export async function nativeRequest(request) {
   }
   const target = { workspacePath: request.workspace, sessionId: request.sessionId };
   const read = () => agent.readSession({ ...target, runtimePolicy: 'existing-only', messageLimit: 100 });
-  const identity = async (workspacePath = request.workspace, sessionId = request.sessionId) => {
+  const clientIdentity = async (initialize = false) => {
     const hello = await agent.helloConversationV4();
-    const clientId = localStorage.getItem('zcode-v4-client-id:v1');
-    if (!clientId || hello.protocolVersion !== 3 || hello.clientMode !== 'desktop-continuous')
+    if (hello.protocolVersion !== 3 || hello.clientMode !== 'desktop-continuous' || !hello.connectionId)
       throw Error('Unsupported original ZCode connection');
+    const storageKey = 'zcode-v4-client-id:v1';
+    let clientId = localStorage.getItem(storageKey);
+    if (!clientId && initialize) {
+      localStorage.setItem(storageKey, 'client-' + crypto.randomUUID());
+      clientId = localStorage.getItem(storageKey);
+    }
+    if (!clientId)
+      throw Error('Unsupported original ZCode connection');
+    return { clientId, connectionId: hello.connectionId };
+  };
+  const identity = async (workspacePath = request.workspace, sessionId = request.sessionId) => {
+    const client = await clientIdentity();
     const runtime = await agent.getWorkspaceRuntimeIdentity({ workspacePath, sessionId, runtimePolicy: 'existing-only' });
     if (!runtime?.identity || runtime.workspaceKey !== workspacePath)
       throw Error('Original workspace runtime is unavailable');
-    return { clientId, connectionId: hello.connectionId, runtime };
+    return { ...client, runtime };
   };
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   // Upgrade the original single-session lease without dropping the desktop's store.
@@ -203,6 +216,73 @@ export async function nativeRequest(request) {
       return {binding:current,subscriptionId:store.getState().subscriptionId};
     } catch (error) { lease?.release(); workspaceLease?.release(); throw error; }
   }
+  const create = async (current, anchor) => {
+    checkDeadline();
+    // Match the native composer: firstInput persists the session and its input in one admission.
+    // A bare draft is not a durable chat and cannot receive native goal/rename commands yet.
+    const body = request.body;
+    if (typeof body.firstMessage !== 'string' || !body.firstMessage.trim() || body.firstMessage.length > 100000)
+      throw Error('请输入首条消息');
+    const sid = 'sess_' + body.id;
+    let workspacePath = request.workspace, projectId = null;
+    if (body.directoryProject || body.projectKey && body.projectKey !== request.workspace) {
+      if (typeof window.__codexMobileZCodeAcquireWorkspace !== 'function') throw Error('ZCode 原生多项目连接尚不可用');
+      const project = body.directoryProject ? await services.projectService.saveProject({ hostId: 'local',
+        roots: [body.directoryProject.cwd], reuseExistingRoot: true }) :
+        (await services.projectService.readProjects({ hostId: 'local' })).find(row => row.id === body.projectKey && !row.deleted);
+      if (!project || project.hostId !== 'local') throw Error('原生项目已变化，请重新选择');
+      const prepared = await services.projectService.prepareSession({ projectId: project.id, hostId: 'local' });
+      const expected = body.directoryProject?.cwd || project.roots.find(root => root.isPrimary)?.rootPath;
+      if (prepared.workspacePath !== expected || prepared.projectId !== project.id || prepared.workspaceIdentity)
+        throw Error('原生项目目录已变化，请重新选择');
+      workspacePath = prepared.workspacePath; projectId = prepared.projectId;
+    }
+    const view = await services.modelSelectionService.getView();
+    const previous = anchor?.lease.store.getState();
+    if (anchor && (previous.status !== 'live' || previous.snapshot?.sessionId !== request.sessionId))
+      throw Error('ZCode 原生会话连接尚未就绪');
+    let selection;
+    if (previous) {
+      const config = previous.snapshot.config;
+      selection = { providerId: config.provider, modelId: config.model, options: { reasoningLevel: config.thought } };
+    } else {
+      // Use the original composer's project-scoped recent choice, then its Host recommendation.
+      const recentKey = 'zcode-composer-recent:v2:' + JSON.stringify(['desktop', 'local', projectId]);
+      let recent;
+      try { recent = JSON.parse(localStorage.getItem(recentKey) || 'null'); } catch { /* No valid preference. */ }
+      selection = recent?.modelSelection || view.preferredSelection;
+    }
+    const model = view.providers.find(p => p.providerId === selection?.providerId)?.models.find(m => m.modelId === selection.modelId);
+    const thought = selection?.options?.reasoningLevel;
+    if (!model || model.config.enabled === false || !model.config.optionSpecs?.reasoningLevel?.values?.includes(thought))
+      throw Error('请先在 ZCode 选择有效的模型和思考深度');
+    if (!same(anchor ? await identity() : await clientIdentity(), current)) throw Error('ZCode owner changed before create');
+    checkDeadline();
+    const ack = await agent.sendConversationCommandV4({ workspacePath, projectId,
+      envelope: { commandId: body.id, clientId: current.clientId, sessionId: null, type: 'createSession',
+        payload: { sessionId: sid, workspaceId: workspacePath,
+          config: { provider: selection.providerId, model: selection.modelId, thought, mode: 'build' },
+          firstInput: { text: body.firstMessage, modelSelection: { providerId: selection.providerId, modelId: selection.modelId, options: { reasoningLevel: thought } }, mode: 'build', planEnabled: false } }, issuedAt: Date.now() } });
+    if (ack.status !== 'accepted' || ack.result?.sessionId !== sid)
+      return { status: ack.status === 'accepted' ? 'unknown' : ack.status, message: ack.message || '原生创建结果待核对，请查看 ZCode 会话列表；不会自动重试', nativeAck: ack };
+    let notice, binding, workspaceLease;
+    try {
+      binding = await identity(workspacePath, sid);
+      workspaceLease = window.__codexMobileZCodeAcquireWorkspace?.({ workspacePath }, agent);
+      const layer = workspaceLease?.layer || (workspacePath === request.workspace ? anchor?.layer : null);
+      if (!layer || layer.disposed) throw Error('原生会话已创建，请点击继续会话完成接入');
+      const lease = layer.acquire(sid);
+      const created = { binding, sessionId: sid, lease, layer, workspaceLease, sessions: states };
+      states.set(sid, created);
+      if (!window[key]) window[key] = created;
+    } catch (error) { workspaceLease?.release(); binding = undefined; notice = String(error.message || error); }
+    return { status: 'accepted', result: { id: sid }, workspace: workspacePath, binding,
+      ...(notice ? { message: notice } : {}) };
+  };
+  if (request.action === 'create' && !request.sessionId) {
+    if (!request.body?.projectKey) throw Error('请选择 ZCode 项目');
+    return create(await clientIdentity(true), null);
+  }
   const current = await identity();
   if (request.binding && !same(current, request.binding)) throw Error('ZCode owner changed; explicit reattach required');
   if (request.action === 'list') {
@@ -243,52 +323,7 @@ export async function nativeRequest(request) {
     throw Error('ZCode 原生会话连接尚未就绪，请在原 App 核对后重新连接');
   const before = projection.snapshot;
   if (before.sessionId !== request.sessionId) throw Error('Wrong native snapshot');
-  if (request.action === 'create') {
-    const row = (await models()).find(model => model.provider === before.config.provider && model.model === before.config.model);
-    if (!row || !row.efforts.includes(before.config.thought)) throw Error('请先为当前原生会话选择有效模型和思考深度');
-    if (!same(await identity(), current)) throw Error('ZCode owner changed before create');
-    checkDeadline();
-    // Match the native composer: firstInput persists the session and its input in one admission.
-    // A bare draft is not a durable chat and cannot receive native goal/rename commands yet.
-    const body = request.body;
-    if (typeof body.firstMessage !== 'string' || !body.firstMessage.trim() || body.firstMessage.length > 100000)
-      throw Error('请输入首条消息');
-    const sid = 'sess_' + body.id;
-    let workspacePath = request.workspace, projectId = null;
-    if (body.directoryProject || body.projectKey && body.projectKey !== request.workspace) {
-      if (typeof window.__codexMobileZCodeAcquireWorkspace !== 'function') throw Error('ZCode 原生多项目连接尚不可用');
-      const project = body.directoryProject ? await services.projectService.saveProject({ hostId: 'local',
-        roots: [body.directoryProject.cwd], reuseExistingRoot: true }) :
-        (await services.projectService.readProjects({ hostId: 'local' })).find(row => row.id === body.projectKey && !row.deleted);
-      if (!project || project.hostId !== 'local') throw Error('原生项目已变化，请重新选择');
-      const prepared = await services.projectService.prepareSession({ projectId: project.id, hostId: 'local' });
-      const expected = body.directoryProject?.cwd || project.roots.find(root => root.isPrimary)?.rootPath;
-      if (prepared.workspacePath !== expected || prepared.projectId !== project.id || prepared.workspaceIdentity)
-        throw Error('原生项目目录已变化，请重新选择');
-      workspacePath = prepared.workspacePath; projectId = prepared.projectId;
-    }
-    if (!same(await identity(), current)) throw Error('ZCode owner changed before create');
-    checkDeadline();
-    const ack = await agent.sendConversationCommandV4({ workspacePath, projectId,
-      envelope: { commandId: body.id, clientId: current.clientId, sessionId: null, type: 'createSession',
-        payload: { sessionId: sid, workspaceId: workspacePath,
-          config: { provider: row.provider, model: row.model, thought: before.config.thought, mode: 'build' },
-          firstInput: { text: body.firstMessage, modelSelection: { providerId: row.provider, modelId: row.model,
-            options: { reasoningLevel: before.config.thought } }, mode: 'build', planEnabled: false } }, issuedAt: Date.now() } });
-    if (ack.status !== 'accepted' || ack.result?.sessionId !== sid)
-      return { status: ack.status === 'accepted' ? 'unknown' : ack.status, message: ack.message || '原生创建结果待核对，请查看 ZCode 会话列表；不会自动重试', nativeAck: ack };
-    let notice, binding, workspaceLease;
-    try {
-      binding = await identity(workspacePath, sid);
-      workspaceLease = window.__codexMobileZCodeAcquireWorkspace?.({ workspacePath }, agent);
-      const layer = workspaceLease?.layer || (workspacePath === request.workspace ? state.layer : null);
-      if (!layer || layer.disposed) throw Error('原生会话已创建，请点击继续会话完成接入');
-      const lease = layer.acquire(sid);
-      states.set(sid, { binding, sessionId: sid, lease, layer, workspaceLease, sessions: states });
-    } catch (error) { workspaceLease?.release(); notice = String(error.message || error); }
-    return { status: 'accepted', result: { id: sid }, workspace: workspacePath, binding,
-      ...(notice ? { message: notice } : {}) };
-  }
+  if (request.action === 'create') return create(current, state);
   if (request.action === 'detail') return { binding: current, snapshot: before, account: await account() };
   if (request.action === 'tasks') return { tasks: (before.backgroundWorks || []).map(work => ({
     id: work.workId, title: work.title, kind: work.kind, status: work.status,

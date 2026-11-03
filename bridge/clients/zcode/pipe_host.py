@@ -413,7 +413,7 @@ class PipeHostClient:
         while True:
             try:
                 ready = self.call({"expectedProcess": expected, "action": "application"})
-                if ready != {"ready": True}:
+                if not isinstance(ready, dict) or ready.get("ready") is not True:
                     raise ValueError("ZCode 原会话服务尚未就绪")
                 return expected
             except ValueError:

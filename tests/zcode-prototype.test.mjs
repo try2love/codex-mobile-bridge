@@ -270,6 +270,32 @@ test('new project uses the original project service and workspace registry, pres
   assert.deepEqual(released,[result.result.id,'/new-project']);
 });
 
+test('cold app creates its first chat in the selected project without opening any other chat',async()=>{
+ const f=fixture(), project={id:'native-p',name:'New',hostId:'local',roots:[{rootPath:'/new',isPrimary:true}]};
+ const p=f.services.projectService={readTree:async()=>({tasks:[],projects:[project]}),readProjects:async()=>[project],
+   prepareSession:async()=>({projectId:project.id,workspacePath:'/new'})};
+ const settings={providerId:'account:test',modelId:'Flash',options:{reasoningLevel:'low'}};
+ const catalog=await f.services.modelSelectionService.getView();
+ f.services.modelSelectionService.getView=async()=>({...catalog,preferredSelection:{...settings,options:{reasoningLevel:'high'}}});
+ const recent='zcode-composer-recent:v2:'+JSON.stringify(['desktop','local',project.id]);
+ globalThis.localStorage.getItem=key=>key==='zcode-v4-client-id:v1'?'original-client':key===recent?JSON.stringify({modelSelection:settings}):null;
+ const cold={workspace:null,sessionId:null,binding:null}, workspace={...f.binding.runtime,workspaceKey:'/new'};
+ f.agent.getWorkspaceRuntimeIdentity=async({sessionId})=>{assert.equal(sessionId,'sess_new');assert.equal(f.calls.length,1);return workspace;};
+ window.__codexMobileZCodeAcquireWorkspace=()=>({layer:{acquire:sessionId=>({store:{getState:()=>({status:'live',snapshot:{...f.snapshot,sessionId}})}})}});
+ f.agent.sendConversationCommandV4=async cmd=>{f.calls.push(cmd);return {status:'accepted',result:{sessionId:cmd.envelope.payload.sessionId}};};
+ assert.deepEqual(await f.request('application',{},cold),{ready:true,canCreate:true});
+ assert.equal((await f.request('list',{},cold)).sessions.length,0);assert.equal(f.calls.length,0);
+ const result=await f.request('create',{id:'new',projectKey:project.id,firstMessage:'first'},cold);
+ assert.equal(result.result.id,'sess_new');assert.equal(f.calls.length,1);
+ assert.equal(f.calls[0].projectId,project.id);assert.equal(f.calls[0].workspacePath,'/new');
+ assert.equal(f.calls[0].envelope.sessionId,null);assert.equal(f.calls[0].envelope.clientId,'original-client');
+ assert.deepEqual(f.calls[0].envelope.payload.firstInput.modelSelection,settings);
+ assert.equal(window.__codexMobileZCodePrototypeV1.sessionId,'sess_new');
+ p.prepareSession=async()=>({projectId:'different-project',workspacePath:'/new'});
+ await assert.rejects(f.request('create',{id:'wrong',projectKey:project.id,firstMessage:'x'},cold),/目录已变化/);
+ assert.equal(f.calls.length,1);
+});
+
 test('native project cwd mismatch rejects first input instead of sending it to the anchor',async()=>{
   const f=fixture();await f.request('attach');window.__codexMobileZCodeAcquireWorkspace=()=>{throw Error('must not acquire')};
   f.services.projectService={saveProject:async()=>({id:'project',hostId:'local'}),prepareSession:async()=>({projectId:'project',workspacePath:'/changed'})};
