@@ -1557,6 +1557,12 @@ class DesktopSessions:
             if force:
                 from bridge.clients.lifecycle import force_stop_client
                 force_stop_client(descriptor, state=state)
+            elif provider == 'zcode' and sys.platform == 'win32' and getattr(self.adapters['zcode'], 'pipe', None):
+                from bridge.platforms.windows.codex_quit import stop_private_zcode
+                pipe = self.adapters['zcode'].pipe
+                owner = pipe.owner()
+                if owner is None or stop_private_zcode(descriptor['executable'], state['mainPids'], owner, lambda: pipe.request_quit(owner)) is False:
+                    stop_client(descriptor, state=state)
             elif provider == 'deepseek' and sys.platform == 'win32':
                 stop_deepseek(descriptor, self.adapters[provider], state=state)
             else:

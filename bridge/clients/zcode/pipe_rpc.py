@@ -66,6 +66,10 @@ def remaining(deadline):
     return left
 
 
+class QuitUnsupported(ValueError):
+    pass
+
+
 class PipeTransport:
     """Single-reader transaction stream. Its caller owns both file descriptors."""
 
@@ -156,6 +160,8 @@ class PipeTransport:
             if not isinstance(reply, dict) or reply.get("id") != seq or reply.get("sessionId") != session:
                 continue
             if reply.get("error"):
+                if method == "Browser.close" and reply["error"].get("code") == -32601:
+                    raise QuitUnsupported("ZCode 没有提供原生退出命令")
                 raise ValueError("ZCode DevTools: " + str(reply["error"].get("message"))[:400])
             return reply["result"]
 
@@ -225,6 +231,16 @@ class PipeTransport:
             return self._with_window(
                 {**request, "expiresAt": min(expiry, int((now + limit) * 1000))}, deadline
             )
+        finally:
+            self._lock.release()
+
+    def request_quit(self):
+        # Called only through the separately authorized lifecycle operation.
+        deadline = time.monotonic() + 5
+        if not self._lock.acquire(timeout=remaining(deadline)):
+            raise TimeoutError("ZCode 管道正忙，未提交退出")
+        try:
+            self._rpc("Browser.close", {}, deadline)
         finally:
             self._lock.release()
 

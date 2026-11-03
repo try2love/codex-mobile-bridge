@@ -13,7 +13,7 @@ import threading
 import time
 from multiprocessing.connection import Client, Listener
 
-from bridge.clients.zcode.pipe_rpc import ACTIONS, KEYS, MAX_FRAME, PipeTransport
+from bridge.clients.zcode.pipe_rpc import ACTIONS, KEYS, MAX_FRAME, PipeTransport, QuitUnsupported
 from bridge.clients.zcode.transport import operation_timeout
 
 
@@ -135,6 +135,9 @@ class LocalPipeClient:
                     raise ValueError('无法启动本机 ZCode 私有连接')
                 time.sleep(.1)
 
+    def request_quit(self, owner):
+        return self._request({'command': 'quit-original', 'owner': owner}, timeout=6)
+
     def call(self, request):
         native = dict(request)
         owner = native.pop('expectedProcess')
@@ -180,6 +183,17 @@ def serve(profile, application):
             if state['transport'].broken:
                 raise ValueError('ZCode 私有管道已中断，请在应用管理中重新初始化连接')
             return state['owner']
+        if sys.platform == 'win32' and state and message == {'command': 'quit-original', 'owner': state['owner']}:
+            if not state.get('quitPending'):
+                state['quitPending'] = True
+                try:
+                    state['transport'].request_quit()
+                except QuitUnsupported:
+                    state['quitPending'] = False
+                    return False  # Only an explicit method-not-found permits the native tray fallback.
+                except (OSError, EOFError, ValueError):
+                    pass  # The peer may exit before acknowledging. The caller verifies OS process exit.
+            return True
         if (not state or not isinstance(message, dict) or set(message) != {'command', 'owner', 'native'}
                 or message['command'] != 'operation' or message['owner'] != state['owner']):
             raise ValueError('ZCode 原会话连接已变化')

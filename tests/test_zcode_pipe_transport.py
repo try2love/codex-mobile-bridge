@@ -8,7 +8,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from unittest.mock import patch
-from bridge.clients.zcode.pipe_rpc import PipeTransport
+from bridge.clients.zcode.pipe_rpc import PipeTransport, QuitUnsupported
 
 
 @contextmanager
@@ -102,6 +102,16 @@ class PipeTests(unittest.TestCase):
                 for limit in t.call({'action': 'attach', 'expiresAt': int(time.time()*1000) + 2000}):
                     self.assertLessEqual(limit, 2)
                     self.assertGreater(limit, 1)
+
+    def test_explicit_quit_is_separate_from_normal_actions(self):
+        def unsupported(_, message):
+            yield {"id": message["id"], "error": {"code": -32601, "message": "Method not found"}}
+        with peer(unsupported) as (t, calls):
+            with self.assertRaises(ValueError):
+                t.call({"action": "Browser.close"})
+            with self.assertRaises(QuitUnsupported):
+                t.request_quit()
+            self.assertEqual([msg["method"] for msg in calls], ["Browser.close"])
 
     def test_wrong_and_duplicate_targets_never_attach(self):
         for count in (0, 2):
