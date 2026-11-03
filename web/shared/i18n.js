@@ -61,6 +61,7 @@ const en={
 "原生会话已接入":"Connected to the native session",
 "请先停用 ZCode 手机接入并退出原 App，再切换已保存账号":"Disable ZCode phone access and quit the desktop app before switching saved accounts.",
 "按会话接入":"Connect per chat",
+"此聊天尚无已保存的消息。":"This chat has no saved messages yet.",
 "可在聊天中继续原生会话。":"Open a chat to continue its native session.",
 "已接入原窗口，可发送文字消息。":"Connected to the original window. You can send text.",
 "可先查看历史；继续会话时会在电脑上打开此原生聊天。":"You can read the history now. Continuing opens this chat on the computer.",
