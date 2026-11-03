@@ -58,25 +58,41 @@ def identity(pid):
             'started': Path('/proc/sys/kernel/random/boot_id').read_text().strip()}
 
 
+def worker_title(command):
+    if re.fullmatch(r'zcode-host-local-[0-9]+', command):
+        return 'host'
+    return {'zcode-cli': 'cli', 'zcode-node-repl-mcp': 'repl'}.get(command)
+
+
 def main_processes(executable, candidates, commands):
-    # ZCode rewrites both argv titles. A name alone cannot establish ownership.
-    workers = [pid for pid in candidates if re.fullmatch(r'zcode-host-local-[0-9]+', commands.get(pid, ''))]
-    if not workers:
+    # All native workers replace argv. A title alone never establishes ownership.
+    roles = {pid: role for pid in candidates if (role := worker_title(commands.get(pid, '')))}
+    if not roles:
         return candidates, False
-    main = [pid for pid in candidates if pid not in workers]
+    main = [pid for pid in candidates if pid not in roles]
     if len(main) != 1:
         return main, True
     try:
         native = Native()
-        parent = native.identity(main[0])
-        if parent['zombie'] or parent['uid'] != os.getuid() or parent['image'] != str(executable):
+        identities = {pid: native.identity(pid) for pid in candidates}
+        if any(item['zombie'] or item['uid'] != os.getuid() or item['image'] != str(executable)
+               for item in identities.values()):
             return main, True
-        for pid in workers:
-            child = native.identity(pid)
-            if (child['parent'] != main[0] or child['zombie'] or child['uid'] != parent['uid']
-                    or child['image'] != parent['image']):
-                return main, True
-        return main, native.identity(main[0]) != parent
+        for pid in roles:
+            cursor, seen = pid, set()
+            while cursor in roles:
+                if cursor in seen:
+                    return main, True
+                seen.add(cursor)
+                role = roles[cursor]
+                cursor = identities[cursor]['parent']
+                if role == 'host':
+                    if cursor != main[0]:
+                        return main, True
+                    break
+                if roles.get(cursor) not in (('cli',) if role == 'repl' else ('host', 'cli')):
+                    return main, True
+        return main, any(native.identity(pid) != item for pid, item in identities.items())
     except (OSError, ValueError):
         return main, True
 

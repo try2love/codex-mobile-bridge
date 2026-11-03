@@ -59,6 +59,17 @@ class ZCodeLinuxTests(unittest.TestCase):
             commands = {11: 'ZCode', 12: 'zcode-host-local-1'}
             state = inspect(commands)
             self.assertEqual((state['mainPids'], state['runtimePids'], state['unknown']), ([11], [], False))
+            rows.update({13: {**basename, 'parent': 12}, 14: {**basename, 'parent': 13},
+                         15: {**basename, 'parent': 14}})
+            tree = {**commands, 13: 'zcode-cli', 14: 'zcode-cli', 15: 'zcode-node-repl-mcp'}
+            state = inspect(tree)
+            self.assertEqual((state['mainPids'], state['runtimePids'], state['unknown']), ([11], [], False))
+            for invalid_parent in (1, 11, 14):
+                rows[13]['parent'] = invalid_parent
+                self.assertTrue(inspect(tree)['unknown'])
+            rows[13]['parent'] = 12
+            rows[15]['parent'] = 12
+            self.assertTrue(inspect(tree)['unknown'])
             for override in ({'parent': 1}, {'uid': 1001}, {'image': '/tmp/zcode'}):
                 rows[12] = {**basename, 'parent': 11, **override}
                 self.assertTrue(inspect(commands)['unknown'])

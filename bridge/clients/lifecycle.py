@@ -169,8 +169,8 @@ def force_stop_client(descriptor, *, state):
         if descriptor['id'] == 'zcode' and sys.platform == 'linux' and len(classified['mainPids']) == 1:
             # The main and host title replace argv; the classification above verified
             # the native worker's parent. The force binder pins every exact PID below.
-            if (pid in classified['mainPids'] and command == 'ZCode' or
-                    re.fullmatch(r'zcode-host-local-[0-9]+', command)):
+            from bridge.platforms.linux.zcode_pipe import worker_title
+            if pid in classified['mainPids'] and command == 'ZCode' or worker_title(command):
                 continue
         if descriptor['id'] == 'zcode' and sys.platform == 'darwin' and command == app.executable.name:
             # Launch Services may expose just "ZCode" as argv[0]. The native
