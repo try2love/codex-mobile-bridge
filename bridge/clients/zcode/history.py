@@ -74,6 +74,12 @@ def _target(db, sid):
     return row
 
 
+def saved_target(home, sid):
+    """Resolve the original local task and its transcript without loading messages."""
+    with _history(home) as db:
+        return _target(db, sid)
+
+
 def send_boundary(home, sid):
     with _history(home) as db:
         row = _target(db, sid)

@@ -38,7 +38,7 @@ def renderer_url(application):
     return (path/'Contents/Resources/app.asar/out/renderer/index.html').as_uri()
 
 
-def launch(executable, home):
+def launch(executable, home, *, debug_port=None):
     if sys.platform == 'win32':
         from bridge.platforms.windows.session import require_interactive
         from bridge.platforms.windows.desktop import start
@@ -47,4 +47,10 @@ def launch(executable, home):
         from bridge.platforms.macos.desktop import start
     else:
         raise ValueError('此平台的 ZCode 原生接入尚未验证')
-    return start(Path(executable), home if home.is_dir() else Path(executable).parent, {})
+    directory = home if home.is_dir() else Path(executable).parent
+    if debug_port is None:
+        return start(Path(executable), directory, {})
+    if debug_port != 17742:
+        raise ValueError('ZCode 兼容连接设置无效')
+    return start(Path(executable), directory, {}, arguments=(
+        '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=17742'))

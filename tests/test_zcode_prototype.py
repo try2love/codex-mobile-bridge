@@ -69,7 +69,7 @@ class ZCodePrototypeTests(unittest.TestCase):
         transport = Mock()
         adapter = ZCodePrototype(self.root, self.config, transport)
         with self.assertRaises(ValueError): adapter.call('stop', 'another-session', {'id': str(uuid.uuid4())})
-        adapter.config.pop('binding')
+        adapter.bindings.clear()
         with self.assertRaisesRegex(Exception, '显式接入'): adapter.call('send', 'sess_test', {'id': str(uuid.uuid4()), 'text': 'hi'})
         transport.assert_not_called()
 
@@ -79,6 +79,36 @@ class ZCodePrototypeTests(unittest.TestCase):
         adapter.call('attach', 'sess_test')
         self.assertIsNone(transport.call_args[0][0]['binding'])
         self.assertEqual(adapter.config['binding'], {'owner': 'one'})
+
+    def test_only_explicit_resume_may_switch_from_locked_window_to_debug_connection(self):
+        from bridge.clients.errors import BridgeUnavailable, ResumePreflightBlocked
+        binding = {'runtime': {'workspaceKey': str(self.project), 'identity': 'runtime'},
+                   'clientId': 'client', 'connectionId': 'owner'}
+        def native(req):
+            if req['action'] == 'target':
+                return {'workspace': str(self.project)}
+            if req['action'] == 'attach':
+                return {'binding': binding, 'subscriptionId': 'lease'}
+            raise BridgeUnavailable('回执未知')
+        transport = Mock(side_effect=native)
+        adapter = ZCodePrototype(self.root, {**self.config, 'dataDirectory': self.root/'v2'}, transport)
+        rid = str(uuid.uuid4())
+        with patch.object(adapter, '_window_app', return_value='original'), \
+                patch.object(adapter, '_live_process', return_value={'pid': 70}), \
+                patch.object(adapter, '_resume_window', return_value={'id': rid, 'status': 'ready'}) as window, \
+                patch.object(adapter, '_send_window', side_effect=BridgeUnavailable('回执未知')) as send:
+            adapter.call('resume', 'sess_test', {'id': rid})
+            with self.assertRaisesRegex(BridgeUnavailable, '回执未知'):
+                adapter.call('send', 'sess_test', {'id': rid, 'text': 'only once'})
+            transport.assert_not_called()
+            # Lock only prevents the GUI's explicit resume. An authorized debugger
+            # reconnects the same session without unlocking or retrying that input.
+            window.side_effect = ResumePreflightBlocked('屏幕已锁定')
+            self.assertEqual(adapter.call('resume', 'sess_test', {'id': rid})['status'], 'ready')
+            with self.assertRaisesRegex(BridgeUnavailable, '回执未知'):
+                adapter.call('send', 'sess_test', {'id': rid, 'text': 'new input'})
+            self.assertEqual([c.args[0]['action'] for c in transport.call_args_list], ['target','attach','send'])
+            send.assert_called_once()
 
     def test_project_root_replacement_is_rejected(self):
         self.project.rename(self.root / 'original')

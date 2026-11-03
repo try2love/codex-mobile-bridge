@@ -8,7 +8,7 @@ function fixture({accounts=false}={}){
   const root={hidden:false,querySelector(selector){const provider=selector.includes('deepseek')?'deepseek':'claude';if(selector.includes('.client-auto-setup'))return articles[provider]?.querySelector('.client-auto-setup')||null;if(selector.startsWith('[data-client-config='))return articles[provider]||null;if(selector==='input')return accounts?articles.deepseek.querySelector('input'):input;if(selector==='[data-deepseek-home]')return input;if(selector==='[data-desktop-choose]')return choose;if(selector==='[data-claude-workspace]')return workspace;if(selector==='[data-claude-home]')return claudeHome;if(selector==='[data-claude-data]')return claudeData;return statuses[provider];},querySelectorAll(selector){if(selector==='[data-desktop-status]')return Object.values(statuses);if(selector.includes('data-desktop-action'))return [scan];return Object.values(articles).flatMap(article=>article.querySelectorAll(selector));}};
   const calls=[],errors=[],prompts=[],choices=[],initializations=[];let closeChoice=true,finishChoice,initializeChoice=true,finishInitialize,chosen='',confirmed=true,handler=async body=>body.action==='status'?{backends:{},deepseekHome:'/fixture'}:body.action==='accounts'?{accounts:[]}:{clients:[]};
   const listeners={},timers=[],storage=new Map(),pages=new Map(),selected=[];
-  const layout={hasClient:id=>['codex','claude','deepseek'].includes(id)||id.startsWith('codex:')||pages.has(id),clientPage(id){const page=node('section');pages.set(id,page);return page;},selectClient(id){selected.push(id);listeners['bridge-client-config']?.({detail:id});}};
+  const layout={hasClient:id=>['codex','claude','deepseek'].includes(id)||id.startsWith('codex:')||pages.has(id),clientPage(id){if(pages.has(id))return pages.get(id);const page=node('section');pages.set(id,page);return page;},selectClient(id){selected.push(id);listeners['bridge-client-config']?.({detail:id});}};
   const context=vm.createContext({ClientLifecycle:{...require('../web/features/clients/client-lifecycle.js'),chooseDisable(client){choices.push(client.id);return closeChoice==='pending'?new Promise(resolve=>finishChoice=resolve):closeChoice;}},CustomEvent:class{constructor(type){this.type=type;}},document:{body:node('body'),documentElement:{},getElementById:id=>nodes[id],createElement:node,querySelector:()=>null,querySelectorAll:selector=>selector==='[data-i18n]'?Object.values(statuses):[],hidden:false,addEventListener(type,fn){listeners[type]=fn;},removeEventListener(type,fn){if(listeners[type]===fn)delete listeners[type];},dispatchEvent(event){listeners[event.type]?.(event);}},setInterval(fn){timers.push(fn);},setTimeout(){},clearTimeout(){},localStorage:{getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value)},window:{confirm:message=>{prompts.push(message);return confirmed;},GatewayLayout:layout}});
   context.ClientLifecycle.chooseInitialize=client=>{initializations.push(client.id);return initializeChoice==='pending'?new Promise(resolve=>finishInitialize=resolve):initializeChoice;};
   for(const file of ['web/shared/i18n.js','web/features/accounts/wsl-accounts.js',...(accounts?['web/features/accounts/client-accounts.js']:[]),'desktop/features/clients/desktop-sessions.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
@@ -431,6 +431,17 @@ test('ZCode uses its own logo and shared next-level management page',async()=>{
   assert.doesNotMatch(ui.text(),/在 Harness 中管理/);
   await ui.all().find(node=>node.tag==='button'&&node.textContent==='管理').onclick();
   assert.equal(ui.selected.at(-1),'zcode');assert.ok(ui.pages.get('zcode'));assert.equal(ui.document.body.children.length,0);assert.equal(ui.calls.length,0);
+});
+
+test('ZCode compatibility preference only changes after a local opt-in and does not relaunch',async()=>{
+ const ui=fixture(),client={id:'zcode',name:'ZCode',installed:true,configured:true,compatibilityLaunch:false};
+ ui.panel.clients=[client];await ui.panel.manageClient(client);
+ const input=ui.pages.get('zcode').querySelector('[data-zcode-compatibility]');
+ assert.equal(input.checked,false);ui.confirm(false);input.checked=true;await input.onchange();
+ assert.equal(input.checked,false);assert.equal(ui.calls.length,0);
+ ui.confirm(true);ui.setHandler(async()=>({clients:[{...client,compatibilityLaunch:true}]}));
+ input.checked=true;await input.onchange();
+ assert.deepEqual(JSON.parse(JSON.stringify(ui.calls)),[{action:'zcode-compatibility',enabled:true}]);
 });
 
 test('independent Codex form shares scan, host folder picker and manual save without launching clients',async()=>{

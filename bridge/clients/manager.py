@@ -178,12 +178,21 @@ class DesktopSessions:
             if 'zcode' in self.adapters:
                 self.adapters = {key: item for key, item in self.adapters.items() if key != 'zcode'}
             return
-        config = legacy or {key: row[key] for key in ('application', 'dataDirectory')}
+        compatibility = self.config.get('zcodeCompatibility')
+        # Previous preview profiles may reuse an existing listener, but only a
+        # local, explicit preference authorizes starting the App with one.
+        source = row if row.get('installed') else legacy or {}
+        if legacy and compatibility is None:
+            config = dict(legacy)
+        else:
+            config = {key: source[key] for key in ('application', 'dataDirectory') if key in source}
+            if compatibility is True:
+                config['debugFallbackPort'] = 17742
         previous = self.adapters.get('zcode')
         if previous and previous.config == config:
             return
         directory = self.directory/'zcode'
-        if legacy:
+        if compatibility is True or legacy and compatibility is not False:
             try:
                 adapter = ZCodePrototype(directory, config)
             except (ValueError, KeyError, OSError):
@@ -290,7 +299,7 @@ class DesktopSessions:
     def _model_identity(self, provider, sid):
         adapter = self.adapters[provider]
         if provider == 'zcode':
-            return ModelStore.key('desktop', provider, adapter.config.get('binding'), adapter.account_scope())
+            return ModelStore.key('desktop', provider, getattr(adapter, 'binding', None), adapter.account_scope())
         paths = []
         scope = None
         if provider == 'claude':
@@ -1012,7 +1021,8 @@ class DesktopSessions:
                 result['environments'] = [self._public_project(row) for row in environments]
             if action == 'detail' and result.get('session'):
                 if (result.get('readOnly') is True or result['session'].get('readOnly') is True or
-                        provider == 'zcode' and result['session'].get('controlScope') == 'session'):
+                        provider == 'zcode' and result['session'].get('controlScope') == 'session' and
+                        result.get('capabilities', {}).get('models') is False):
                     result['modelCatalogIdentity'] = result['draftAccountIdentity'] = ''
                     return result
                 try:
@@ -1350,7 +1360,7 @@ class DesktopSessions:
                 if not self.config.get('enabled', {}).get(provider, provider == 'codex'):
                     continue
                 try:
-                    self.toggle_client({'provider': provider, 'enabled': True})
+                    self.toggle_client({'provider': provider, 'enabled': True}, startup=True)
                 except (ValueError, OSError, subprocess.SubprocessError) as exc:
                     setup = self.config.setdefault('setup', {})
                     previous = setup.get(provider, {}) if provider == 'deepseek' else {}
@@ -1370,7 +1380,8 @@ class DesktopSessions:
             from bridge.clients.zcode.installation import installation
             app = installation(adapter.config.get('application', ''))
             return {'id': provider, 'installed': bool(app),
-                    'executable': app['executable'] if app else '', 'dataDirectory': str(adapter.home)}
+                    'executable': app['executable'] if app else '', 'dataDirectory': str(adapter.home),
+                    'debugFallbackPort': 17742 if self.config.get('zcodeCompatibility') is True else None}
         if provider == 'deepseek' and self.config.get('deepseekManualBinding'):
             return {'id': provider, 'installed': False, 'executable': '',
                     'dataDirectory': str(self.adapters[provider].home)}
@@ -1846,6 +1857,7 @@ class DesktopSessions:
                              'reason': '原生会话已接入' if connected else status.get('reason', ''),
                              'retryable': status.get('retryable') is True,
                              'confirmTaskState': not connected, 'historyAvailable': status.get('historyAvailable') is True,
+                             'compatibilityLaunch': self.config.get('zcodeCompatibility') is True,
                              'capabilities': {'create': connected, 'accounts': True, 'notifications': connected}})
             from bridge.clients.lifecycle import inspect_clients
             descriptors = []
@@ -2054,7 +2066,7 @@ class DesktopSessions:
         elif row['setupStatus'] in ('needs-first-launch', 'restart-required'):
             row['retryable'] = True
 
-    def toggle_client(self, value):
+    def toggle_client(self, value, *, startup=False):
         provider, enabled = value.get('provider'), value.get('enabled')
         if isinstance(provider, str) and provider.startswith('wsl-claude:'):
             if self.claude_wsl is None:
@@ -2170,12 +2182,11 @@ class DesktopSessions:
                         raise ValueError('此系统不支持 Claude 桌面连接')
                 else:
                     result = launch_client(descriptor)
-                    if provider == 'zcode' and self.config.get('zcodePrototype') and not result.get('launched'):
+                    if provider == 'zcode' and not startup and not result.get('launched'):
                         adapter = self.adapters[provider]
-                        if adapter.status().get('retryable'):
-                            # Only reattach a deliberately configured, already-running compatible instance.
-                            if adapter.reconnect_existing():
-                                self.config['zcodePrototype'] = adapter.config
+                        if getattr(adapter, 'sid', None) and adapter.status().get('retryable'):
+                            if not adapter.reconnect_existing():
+                                raise ValueError('ZCode 未能恢复原会话，请在聊天中重试连接。')
                     if not result.get('running'):
                         raise ValueError('客户端尚未启动，请在电脑端检查后重试')
             else:
@@ -2471,6 +2482,18 @@ class DesktopSessions:
             return self.clients(refresh=True)
         if action == 'clients':
             return self.clients(refresh=value.get('refresh') is True)
+        if action == 'zcode-compatibility':
+            # Desktop control socket only; mobile clients may reconnect to the
+            # selected installation, not expand its debugging permissions.
+            if (set(value) != {'action', 'enabled'} or type(value['enabled']) is not bool or
+                    'zcode' not in self.adapters or not self._descriptor('zcode')['installed']):
+                raise ValueError('ZCode 兼容连接设置无效')
+            with self.client_lock, self._changing('zcode'):
+                self.config['zcodeCompatibility'] = value['enabled']
+                self._configure_zcode()
+                private_json(self.config_path, self.config)
+                self.client_cache = None
+            return self.clients(refresh=True)
         if action == 'toggle-client':
             return self.toggle_client(value)
         if action == 'status':

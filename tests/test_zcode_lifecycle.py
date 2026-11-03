@@ -57,12 +57,15 @@ class ZCodeLifecycleTests(unittest.TestCase):
         self.manager.config.setdefault('enabled', {})['zcode'] = True
         def row():
             return next(x for x in self.manager.clients(refresh=True)['clients'] if x['id'] == 'zcode')
-        with patch('bridge.clients.zcode.adapter.listener_identity') as listener:
+        with patch('bridge.clients.zcode.adapter.listener_identity', side_effect=ValueError('no listener')) as listener:
             current = row()
             self.assertTrue(current['running'] and current['historyAvailable'])
             self.assertFalse(current['connected'] or current['retryable'])
             self.assertEqual(current['setupStatus'], 'history-only')
-            listener.assert_not_called()
+            listener.assert_called_once()
+            with patch('bridge.clients.zcode.adapter.installation', return_value={'version': '3.18.0', 'executable': 'test'}):
+                self.assertFalse(row()['retryable'])
+                self.assertEqual(listener.call_count, 1)
             with patch('bridge.clients.zcode.adapter.installation', return_value={'version': '3.17.1', 'executable': 'test'}):
                 listener.side_effect = ValueError('no verified listener')
                 self.assertFalse(row()['retryable'])
@@ -71,6 +74,26 @@ class ZCodeLifecycleTests(unittest.TestCase):
                 expired = row()
                 self.assertTrue(expired['retryable'])
                 self.assertFalse(expired['connected'])
+
+    def test_compatibility_is_a_local_explicit_next_launch_preference(self):
+        from bridge.clients.lifecycle import launch_client
+        from bridge.clients.zcode.adapter import ZCodePrototype
+        with patch('bridge.clients.lifecycle.stop_client') as stop, patch('bridge.platforms.macos.desktop.start') as start:
+            result = self.manager.control({'action': 'zcode-compatibility', 'enabled': True})
+            self.assertTrue(next(row for row in result['clients'] if row['id'] == 'zcode')['compatibilityLaunch'])
+            self.assertIsInstance(self.manager.adapters['zcode'], ZCodePrototype)
+            descriptor = self.manager._descriptor('zcode')
+            with patch('bridge.clients.desktop_app.DesktopApp.processes', return_value=[77]):
+                self.assertFalse(launch_client(descriptor)['launched'])
+            start.assert_not_called()
+            with patch('bridge.clients.desktop_app.DesktopApp.processes', side_effect=[[], [78]]):
+                self.assertTrue(launch_client(descriptor)['launched'])
+            self.assertEqual(start.call_args.kwargs['arguments'],
+                             ('--remote-debugging-address=127.0.0.1', '--remote-debugging-port=17742'))
+            self.manager.control({'action': 'zcode-compatibility', 'enabled': False})
+            self.assertIs(type(self.manager.adapters['zcode']), ZCodeDesktop)
+            self.assertIsNone(self.manager._descriptor('zcode')['debugFallbackPort'])
+            stop.assert_not_called()
 
     def test_normal_start_and_phone_only_disconnect_dont_open_ports_or_create_chats(self):
         with patch('bridge.clients.lifecycle.launch_client', return_value={'running': True, 'launched': True}) as launch, \

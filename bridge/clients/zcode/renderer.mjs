@@ -30,12 +30,16 @@ export async function nativeRequest(request) {
   const { services, contexts, registryAnchor } = findServices(), agent = services.zcodeAgentService;
   if (request.action === 'registry-probe') return typeof window.__codexMobileZCodeAcquireWorkspace === 'function' ||
     contexts.find(context => !context.layer.disposed)?.layer.acquire || registryAnchor;
+  const targetTask = tree => {
+    const rows = tree.tasks.filter(row => row.taskId === request.sessionId && !row.deleted &&
+      !row.archived && (!row.hostId || row.hostId === 'local'));
+    if (rows.length !== 1) throw Error('原 App 中找不到唯一的本机会话，请刷新列表');
+    return rows[0];
+  };
   if (['projects', 'target'].includes(request.action)) {
     const tree = await services.projectService.readTree({});
     if (request.action === 'target') {
-      const row = tree.tasks.find(row => row.taskId === request.sessionId && (!row.hostId || row.hostId === 'local'));
-      if (!row) throw Error('原 App 中找不到此本机会话，请刷新列表');
-      return { workspace: row.workspacePath };
+      return { workspace: targetTask(tree).workspacePath };
     }
     return { projects: tree.projects.filter(row => !row.deleted && row.hostId === 'local' && row.roots.some(root => root.isPrimary))
       .map(row => ({ key: row.id, name: row.name, cwd: row.roots.find(root => root.isPrimary).rootPath, surface: 'desktop', host: 'local' })) };
@@ -133,13 +137,13 @@ export async function nativeRequest(request) {
   const states = window[key]?.sessions || new Map();
   if (request.action === 'attach') {
     const tree = await services.projectService.readTree({});
-    if (!tree.tasks.some(row => row.taskId === request.sessionId && row.workspacePath === request.workspace &&
-        !row.deleted && (!row.hostId || row.hostId === 'local')))
+    if (targetTask(tree).workspacePath !== request.workspace)
       throw Error('原 App 会话或项目已变化，请刷新列表');
     const previous = states.get(request.sessionId);
-    if (previous?.lease.store.getState().status === 'live') {
+    const loaded = previous?.lease.store.getState();
+    if (loaded?.status === 'live' && loaded.snapshot?.sessionId === request.sessionId) {
       const current = await identity();
-      if (same(previous.binding, current)) return {binding:current,subscriptionId:previous.lease.store.getState().subscriptionId};
+      if (same(previous.binding, current)) return { binding: current, subscriptionId: loaded.subscriptionId };
     }
     checkDeadline();
     // Native acquire performs cold restore. Reading history before subscribing

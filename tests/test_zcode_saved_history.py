@@ -47,6 +47,59 @@ class ZCodeSavedHistoryTests(unittest.TestCase):
                        '{"type":"text","text":"private runtime context","synthetic":true}')""")
             db.commit()
 
+    def test_debug_reconnect_from_saved_chat_validates_process_and_workspace_before_binding(self):
+        from bridge.clients.zcode.adapter import ZCodePrototype
+        app = {'application': 'fixture.app', 'dataDirectory': self.home, 'debugFallbackPort': 17742}
+        adapter = ZCodePrototype(self.home.parent, app)
+        process = {'pid': 7, 'birth': [1, 0], 'started': [1, 0]}
+        binding = {'runtime': {'workspaceKey': '/work', 'identity': 'runtime'}, 'clientId': 'client', 'connectionId': 'owner'}
+        calls = []
+        def native(request):
+            calls.append(request['action'])
+            if request['action'] == 'target':
+                return {'workspace': '/work'}
+            if request['action'] == 'attach':
+                return {'binding': binding, 'subscriptionId': 'lease'}
+            if request['action'] == 'detail':
+                return {'snapshot': {'sessionId': 'sess_ok', 'revision': 1, 'seq': 0, 'logEpoch': 'a',
+                                     'rows': {'window': [], 'totalCount': 0}, 'control': {},
+                                     'inputRouting': {'mode': 'startNow'}, 'pendingInteractions': []}}
+            raise AssertionError(request['action'])
+        with patch.object(adapter, '_window_app', return_value=None), patch.object(adapter, '_live_process', return_value=process), \
+                patch('bridge.clients.zcode.transport.request_native', side_effect=native):
+            before = adapter.call('detail', 'sess_ok')
+            self.assertTrue(before['readOnly'] and before['capabilities']['resume'])
+            self.assertFalse(adapter.call('detail', 'sess_archived')['capabilities']['resume'])
+            self.assertFalse(adapter.status()['connected'])
+            self.assertEqual(calls, [])
+            receipt = adapter.call('resume', 'sess_ok', {'id': str(uuid.uuid4())})
+            self.assertEqual(receipt['status'], 'ready')
+            self.assertEqual(calls, ['target', 'attach'])
+            self.assertEqual(adapter.sid, 'sess_ok')
+            self.assertEqual(adapter.config, app)
+            live = adapter.call('detail', 'sess_ok')
+            self.assertTrue(live['capabilities']['send'])
+            self.assertEqual(live['session']['connectionState'], 'ready')
+            self.assertEqual(live['session']['controlScope'], 'session')
+            # Both target lookup and attach must verify the newly observed, exact PID.
+            replacement = {**process, 'birth': [2, 0]}
+            with patch.object(adapter, '_live_process', side_effect=[replacement, replacement, process]):
+                with self.assertRaisesRegex(BridgeUnavailable, '进程已变化'):
+                    adapter.call('resume', 'sess_ok', {'id': str(uuid.uuid4())})
+            self.assertEqual(calls, ['target', 'attach', 'detail', 'target'])
+
+    def test_reconnect_refuses_different_native_workspace_and_archived_rows(self):
+        from bridge.clients.zcode.adapter import ZCodePrototype
+        adapter = ZCodePrototype(self.home.parent, {'dataDirectory': self.home, 'debugFallbackPort': 17742})
+        with patch.object(adapter, '_live_process', return_value={'pid': 29}), \
+                patch.object(adapter, 'transport', return_value={'workspace': '/unrelated'}) as native:
+            with self.assertRaisesRegex(BridgeUnavailable, '项目已变化'):
+                adapter.call('resume', 'sess_ok', {'id': str(uuid.uuid4())})
+            with self.assertRaisesRegex(BridgeUnavailable, '归档'):
+                adapter.call('resume', 'sess_archived', {'id': str(uuid.uuid4())})
+            self.assertEqual([call.args[0]['action'] for call in native.call_args_list], ['target'])
+            self.assertFalse(adapter.sid)
+
     def _window_manager(self):
         from bridge.clients.manager import DesktopSessions
         from bridge.clients.zcode.adapter import ZCodeDesktop

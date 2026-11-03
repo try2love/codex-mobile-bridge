@@ -2,6 +2,11 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"未检测到兼容端口。请确认任务已结束，在应用管理中正常退出 ZCode，再由网关启动。":"Compatibility port unavailable. Once your tasks finish, quit ZCode normally in App Management and let the gateway start it again.",
+"ZCode 未能恢复原会话，请在聊天中重试连接。":"ZCode could not restore the original session. Retry from that chat.",
+"由网关启动时开启本机兼容端口":"Enable the local compatibility port when the gateway starts ZCode",
+"仅监听 127.0.0.1:17742。本机其他程序可能访问此端口。设置在下次由网关启动 ZCode 时生效。":"Listens only on 127.0.0.1:17742. Other programs on this computer may access it. Takes effect the next time the gateway starts ZCode.",
+"允许网关在下次启动 ZCode 时开启本机调试端口？":"Allow the gateway to open a local debugging port the next time it starts ZCode?",
 "检查 CLI 网络":"Check CLI network",
 "正常重启此配置的 CLI 并恢复连接？":"Restart this configuration’s CLI normally and reconnect?",
 "原 CLI 使用的本机代理已失效，当前系统代理可用。":"The CLI’s previous local proxy is offline. The current system proxy is reachable.",

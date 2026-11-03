@@ -276,7 +276,7 @@ def launch_client(descriptor):
         app.start()
     elif descriptor['id'] == 'zcode':
         from bridge.clients.zcode.installation import launch
-        launch(app.executable, app.home)
+        launch(app.executable, app.home, debug_port=descriptor.get('debugFallbackPort'))
     else:
         # Claude owns its native profile selection, including third-party login.
         from bridge.clients.claude.setup import running_app

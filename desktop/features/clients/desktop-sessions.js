@@ -225,6 +225,21 @@ class DesktopConnectionsPanel {
         if(request!==this.managementRequest)return;
         const page=layout.clientPage(client.id),article=document.createElement('article'),title=document.createElement('h2'),description=document.createElement('p'),notice=document.createElement('p'),content=document.createElement('div');
         title.textContent=client.name;description.textContent=BridgeI18n.t(client.description||'');notice.textContent=BridgeI18n.t(client.configurationNotice||'');notice.hidden=!client.configurationNotice;article.append(title,description,notice,content);page.append(article);
+        if(client.id==='zcode'){
+          const label=document.createElement('label'),select=document.createElement('input'),hint=document.createElement('p');
+          select.type='checkbox';select.dataset.zcodeCompatibility='';hint.className='hint';
+          const caption=document.createElement('span');caption.textContent=BridgeI18n.t('由网关启动时开启本机兼容端口');label.append(select,caption);
+          hint.textContent=BridgeI18n.t('仅监听 127.0.0.1:17742。本机其他程序可能访问此端口。设置在下次由网关启动 ZCode 时生效。');
+          article.insertBefore(label,content);article.insertBefore(hint,content);
+          select.onchange=async()=>{
+            const enabled=select.checked;
+            if(enabled&&!window.confirm(BridgeI18n.t('允许网关在下次启动 ZCode 时开启本机调试端口？'))){select.checked=false;return;}
+            select.disabled=true;
+            try{const result=await this.api.desktopSessions({action:'zcode-compatibility',enabled});this.clients=result.clients;this.renderClients();}
+            catch(error){select.checked=!enabled;this.feedback(error.message,true);}
+            finally{select.disabled=false;}
+          };
+        }
         if(wsl){
           const provider=client.kind==='wsl-claude-cli'?'claude':'codex',entry=client.id;
           const panel=new WslAccountsPanel({root:content,provider,desktop:true,
@@ -240,6 +255,9 @@ class DesktopConnectionsPanel {
             onUpdate:value=>this.renderClientAccount(provider,value),onChanged:()=>this.refreshClients(true)});
           this.accountPanels[provider]=panel;
         }
+      }
+      if(client.id==='zcode'){
+        const select=layout.clientPage(client.id).querySelector('[data-zcode-compatibility]');if(select)select.checked=client.compatibilityLaunch===true;
       }
       layout.selectClient(client.id);this.managementPages.get(client.id)?.open();
     }catch(error){this.feedback(error.message,true);}
