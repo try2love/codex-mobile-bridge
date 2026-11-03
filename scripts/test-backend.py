@@ -21,12 +21,14 @@ def main():
         import test_codex_native_quit
         import test_windows_force_exit_native
         import test_windows_preview_launcher
+        import test_zcode_starter_bundle
         for cls in (test_claude_native_helper.NativeConsoleSelectors,
                     test_claude_native_helper.DesktopSessionGuards,
                     test_claude_native_helper.WindowsNativeWindowSelectors,
                     test_codex_native_quit.CodexNativeQuit,
                     test_windows_force_exit_native.WindowsForceExitNativeTests,
-                    test_windows_preview_launcher.PreviewLauncherTest):
+                    test_windows_preview_launcher.PreviewLauncherTest,
+                    test_zcode_starter_bundle.ZCodeStarterBundle):
             cls.__unittest_skip__ = True
             cls.__unittest_skip_why__ = 'Source-only run excludes native compilation and execution'
     suite = unittest.defaultTestLoader.discover(str(ROOT/'tests'), pattern=args.pattern)

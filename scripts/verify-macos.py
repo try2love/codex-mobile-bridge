@@ -12,6 +12,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from zcode_starter_bundle import helper_path, verify as verify_zcode_starter
+
 
 def verify(app, arch):
     metadata = json.loads((app/'Contents/Resources/update-version.json').read_text(encoding='utf-8'))
@@ -28,6 +30,8 @@ def verify(app, arch):
     for helper in helpers:
         subprocess.run(['codesign', '--verify', '--strict', str(helper)], check=True)
         subprocess.run([str(helper), '--self-check'], check=True, timeout=10)
+    if helper_path(app).exists():
+        verify_zcode_starter(app)
     for executable in (app/'Contents/MacOS'/info['CFBundleExecutable'], runtime, cloudflared, *helpers):
         subprocess.run(['lipo', str(executable), '-verify_arch', native_arch], check=True)
     subprocess.run(['codesign', '--verify', '--deep', '--strict', '--verbose=2', str(app)], check=True)
