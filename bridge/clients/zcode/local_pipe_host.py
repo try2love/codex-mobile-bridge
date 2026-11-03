@@ -150,12 +150,17 @@ def serve(profile, application):
                 else Listener(endpoint, family='AF_UNIX', backlog=4))
     started = threading.Event()
     launched = []
+    initializing = threading.Lock()
+    closing = threading.Event()
     state = {}
 
     def dispatch(message):
         if message == {'command': 'initialize'} and not launched:
-            launched.extend(native.launch(application))
-            started.set()  # Never close either pipe end while the original App is alive.
+            with initializing:
+                if closing.is_set():
+                    raise ValueError('ZCode 私有连接已关闭')
+                launched.extend(native.launch(application))
+                started.set()  # Keep both ends until the original App exits.
         if launched:
             pid = launched[0]
             owner = native.identity(pid)
@@ -167,8 +172,12 @@ def serve(profile, application):
                 state.update(owner=owner, transport=transport)
             if state['owner'] != owner:
                 raise ValueError('ZCode 原进程已变化')
-        if message in ({'command': 'initialize'}, {'command': 'status'}):
-            return state.get('owner')
+        if message == {'command': 'status'}:
+            return state.get('owner') if state and not state['transport'].broken else None
+        if message == {'command': 'initialize'}:
+            if state['transport'].broken:
+                raise ValueError('ZCode 私有管道已中断，请在应用管理中重新初始化连接')
+            return state['owner']
         if (not state or not isinstance(message, dict) or set(message) != {'command', 'owner', 'native'}
                 or message['command'] != 'operation' or message['owner'] != state['owner']):
             raise ValueError('ZCode 原会话连接已变化')
@@ -196,7 +205,10 @@ def serve(profile, application):
         worker = threading.Thread(target=handle_requests, daemon=True)
         worker.start()
         if not started.wait(45):
-            return
+            with initializing:
+                if not launched:
+                    closing.set()
+                    return
         # Wait on OS process exit; an idle holder consumes no polling budget.
         if sys.platform == 'win32':
             launched[1].process.wait()

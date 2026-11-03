@@ -82,6 +82,10 @@ class PipeTransport:
             os.set_blocking(to_app, False)
             os.set_blocking(from_app, False)
 
+    @property
+    def broken(self):
+        return self._broken
+
     def _write(self, data, deadline):
         if len(data) > MAX_FRAME:
             raise ValueError("ZCode pipe request too large")
