@@ -5,6 +5,7 @@ import struct
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -577,10 +578,13 @@ class ClaudeNativeConnection(unittest.TestCase):
                     return {'setupState': 'owner-conflict', 'reason': 'Claude 桥接连接被其他网关占用，请先停止旧网关；旧版连接还需重新加载 Claude'}
                 return {'setupState': 'needs-trust' if trust else 'failed', 'reason': 'trust required'}
             return {'setupState': 'ready'}
+        # Keep the four synthetic ticks private to the adapter, not the process event loops.
+        clock = Mock(wraps=time)
+        clock.monotonic.side_effect = [0, 0, 3 if conflict else 0 if heartbeat else 19, 3]
         with patch('bridge.clients.claude.adapter.native_action', side_effect=native), \
              patch('bridge.clients.claude.adapter.running_app', return_value=42), \
              patch('bridge.clients.claude.adapter.developer_mode_enabled', return_value=True), \
-             patch('bridge.clients.claude.adapter.time.monotonic', side_effect=[0, 0, 3 if conflict else 0 if heartbeat else 19, 3]), \
+             patch('bridge.clients.claude.adapter.time', clock), \
              patch.object(self.adapter, 'prepare', return_value={'consolePath': str(self.root/'script')}), \
              patch.object(self.adapter.setup_cancel, 'wait', return_value=False), \
              patch.object(self.adapter, '_setup_state', wraps=self.adapter._setup_state) as state:

@@ -40,6 +40,7 @@ async function rewriteAsar(asarPath,mutate){
 async function makeStubUpdater(asarPath){
   await rewriteAsar(asarPath,async source=>{
     const file=path.join(source,'desktop/features/updates/updater.cjs');
+    await fs.rename(file,path.join(path.dirname(file),'updater-production.cjs'));
     // Only release discovery/download is stubbed. installUpdate, helper spawn,
     // ready polling, app.exit, gateway ownership and swap remain production.
     await fs.writeFile(file,`'use strict';
@@ -61,7 +62,7 @@ class Updater {
     catch(error){return this.set('error',{message:error.message,version:candidate.version});}
   }
 }
-module.exports={Updater,allowedMirrorUrl:value=>value};
+module.exports={...require('./updater-production.cjs'),Updater};
 `);
   });
 }
@@ -181,6 +182,10 @@ async function runScenario(gatewayRunning){
     // reads; the production controller must still reject concurrent writes.
     const management=await until(async()=>{
       const value=await rendererManagementState(cdp);
+      if(value?.choosingClient==='claude'){
+        // Hosts with Claude installed offer its setup guide after discovery; defer it like a user.
+        await cdp.call('Runtime.evaluate',{expression:`document.querySelector('dialog[open][aria-labelledby="claude-setup-title"] button[data-i18n="稍后设置"]')?.click()`});
+      }
       return value?.scanning===false&&!value.busy&&!value.clientsLoading&&!value.choosingClient&&value.statusLoaded?value:null;
     },'initial client discovery settled',180000);
     console.log('Initial client management',JSON.stringify(management));
