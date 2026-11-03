@@ -595,7 +595,7 @@ class Handler(BaseHTTPRequestHandler):
                         raise PermissionError('请启用密码保护后再连接 ZCode')
                     return self.output(200, manager.toggle_client(value))
                 return self.output(200, manager.clients_status())
-            desktop_image = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude)/images/([0-9a-f]{64})', path)
+            desktop_image = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode)/images/([0-9a-f]{64})', path)
             if desktop_image:
                 if write:
                     return self.output(405, {'error': '请求方式无效'})

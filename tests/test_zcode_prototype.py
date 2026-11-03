@@ -135,7 +135,7 @@ class ZCodePrototypeTests(unittest.TestCase):
         first = project_snapshot(snapshot, str(self.project))
         snapshot['seq'] = 3
         self.assertEqual(first['messages'], project_snapshot(snapshot, str(self.project))['messages'])
-        self.assertEqual(first['messages'][0]['attachments'][0]['nativeRef'], 'native')
+        self.assertEqual(first['messages'][0]['attachments'], [{'name': 'file.md', 'mime': 'text/markdown', 'size': 2}])
         self.assertTrue(first['history']['hasMore'])
 
     def test_context_usage_uses_current_native_window_not_cumulative_tokens(self):

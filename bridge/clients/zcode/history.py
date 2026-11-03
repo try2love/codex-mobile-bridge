@@ -147,6 +147,9 @@ _VISIBLE_TEXT = """
 
 
 def saved_detail(home, sid, body=None):
+    import json
+    from .attachments import attachments
+
     body = body or {}
     before = body.get('historyBefore')
     limit = max(1, min(100, int(body.get('historyLimit', 40))))
@@ -166,15 +169,28 @@ def saved_detail(home, sid, body=None):
             page = ' AND (m.sequence, m.time_created, m.id) < (?, ?, ?)'
             args.extend(pos)
         rows = db.execute("""
-            SELECT m.id, json_extract(m.data, '$.role') AS role FROM cli.message AS m
+            SELECT m.id, json_extract(m.data, '$.role') AS role,
+                   CASE WHEN json_type(m.data, '$.metadata.conversationInputIntent.attachments')='array'
+                        THEN json_extract(m.data, '$.metadata.conversationInputIntent.attachments')
+                        WHEN json_type(m.data, '$.metadata.inputIntent.attachmentRefs')='array'
+                        THEN json_extract(m.data, '$.metadata.inputIntent.attachmentRefs') END AS files,
+                   coalesce(json_extract(m.data, '$.metadata.conversationInputIntent.sourceCommandId'),
+                            json_extract(m.data, '$.metadata.inputIntent.sourceCommandId')) AS command
+            FROM cli.message AS m
             WHERE m.session_id = ? AND json_extract(m.data, '$.role') IN ('user', 'assistant')
               AND json_extract(m.data, '$.semantics.uiVisibility') = 'visible'
               AND coalesce(json_extract(m.data, '$.synthetic'), 0) = 0
-              AND EXISTS (SELECT 1 FROM cli.part AS p WHERE p.message_id = m.id
-                          AND p.session_id = m.session_id AND """ + _VISIBLE_TEXT + ')'
+              AND ((json_extract(m.data, '$.role')='user' AND json_array_length(files)>0) OR
+                   EXISTS (SELECT 1 FROM cli.part AS p WHERE p.message_id = m.id
+                          AND p.session_id = m.session_id AND """ + _VISIBLE_TEXT + '))'
             + page + ' ORDER BY m.sequence DESC, m.time_created DESC, m.id DESC LIMIT ?',
             (*args, limit + 1)).fetchall()
-        messages = [{'id': row['id'], 'role': row['role'], 'text': ''} for row in reversed(rows[:limit])]
+        messages = []
+        for row in reversed(rows[:limit]):
+            message = {'id': row['id'], 'role': row['role'], 'text': ''}
+            if row['role'] == 'user' and row['files']:
+                message['attachments'] = attachments(sid, json.loads(row['files']), row['command'])
+            messages.append(message)
         if messages:
             ids = [row['id'] for row in messages]
             parts = db.execute("""

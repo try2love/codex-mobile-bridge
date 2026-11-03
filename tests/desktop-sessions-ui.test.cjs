@@ -69,6 +69,18 @@ test('native history images use the shared preview markup and survive unchanged 
  view.provider='deepseek';view.messageNodes.clear();view.applyDetail(detail);
  assert.match(view.messageNodes.get('image').node.querySelector('.attachment-image').src,/deepseek/);
 });
+test('ZCode project image exposes both the shared image viewer and the session file page',async()=>{
+ const ui=fixture(),view=ui.view,id='f'.repeat(64),path='/project/assets/photo.png';
+ await view.choose('zcode');await view.open('a');
+ const message={id:'photo',role:'user',text:'',attachments:[{type:'file',path,name:'photo.png',desktopId:id}]};
+ view.applyDetail({connected:true,session:{id:'a',title:'Chat',status:'idle',cwd:'/project'},messages:[message],
+   files:[{id:'f',name:'photo.png',path:'assets/photo.png',reference:path}]});
+ const node=view.messageNodes.get('photo').node;
+ assert.equal(node.querySelector('.attachment-image').src,view.path('images/'+id,'a','zcode'));
+ const file=node.querySelectorAll('a').find(a=>a.textContent==='photo.png');
+ assert.equal(file.href,view.workbench.url(view.workbench.current,'download','assets/photo.png'));
+ assert.match(file.href,/desktop-sessions\/zcode\/workspace\/download/);
+});
 test('shared task indicator separates native work, approvals, stale reads and completion',async()=>{
  const ui=await opened(),view=ui.view,apply=(status,requests=[])=>view.applyDetail({connected:true,session:{id:'a',title:'Chat',status,requests},messages:[]});
  apply('active');assert.equal(view.progress.dataset.state,'working');assert.equal(view.progress.hidden,false);assert.ok(view.messageList.children.includes(view.progress));

@@ -6,7 +6,7 @@ function renderChatAttachments(node,items,{url,fileUrl,showToolImages=true}={}){
   const t=value=>BridgeI18n.t(value),attachments=document.createElement('div');attachments.className='timeline-attachments';
   for(const item of items){
     if(item.type==='toolImage'&&!showToolImages)continue;
-    if(!['localImage','image','toolImage'].includes(item.type))continue;
+    if(!['localImage','image','toolImage'].includes(item.type)&&!(item.type==='file'&&item.desktopId))continue;
     const source=url(item);if(!source)continue;
     const link=document.createElement('a');link.href=source.original;link.target='_blank';link.rel='noopener';
     link.dataset.imagePreview=source.original;link.dataset.imageName=item.name||t('图片附件');

@@ -282,6 +282,11 @@ class DesktopSessions:
                             if files:
                                 message['text'] = user_display_text(text)
                                 message.setdefault('attachments', []).extend(files)
+                    if provider == 'zcode':
+                        from bridge.clients.zcode.attachments import bind_project_files
+                        with self.db_lock:
+                            bind_project_files(self._receipts(adapter), sid, value.get('messages', []),
+                                               value.get('session', {}).get('cwd'))
                     self.history_images.bind(provider, sid, value.get('messages', []))
                     from bridge.features.workspace.files import workspace_references
                     value['files'] = workspace_references(value.get('messages', []), value.get('session', {}).get('cwd'))
@@ -1117,6 +1122,9 @@ class DesktopSessions:
                     db = self._receipts(adapter)
                     result = {'status': 'unknown', 'id': rid, 'message': '结果待核对，请检查桌面原会话；相同请求不会重复执行'}
                     inserted = db.execute('INSERT OR IGNORE INTO requests VALUES (?,?,?)', (rid, fingerprint, json.dumps(result))).rowcount
+                    if inserted and reference_files and provider == 'zcode':
+                        from bridge.clients.zcode.attachments import remember_project_files
+                        remember_project_files(db, sid, rid, reference_files)
                     if inserted and scope is not None:
                         db.execute('CREATE TABLE IF NOT EXISTS request_scopes (id TEXT PRIMARY KEY, provider TEXT, host TEXT, sid TEXT)')
                         db.execute('INSERT INTO request_scopes VALUES (?,?,?,?)', (rid, *scope))

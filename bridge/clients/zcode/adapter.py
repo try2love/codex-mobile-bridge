@@ -12,6 +12,7 @@ from pathlib import Path
 from bridge.clients.errors import BridgeUnavailable, ResumePreflightBlocked
 from bridge.features.sessions.identity import same_cwd
 from bridge.features.workspace.workspace import MAX_TRANSFER, Workspace
+from .attachments import attachments, read_image
 from .installation import installation, listener_identity
 
 
@@ -60,8 +61,7 @@ def project_snapshot(snapshot, workspace, reply_models=None):
                 value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
                 for value in (row.get('inputText') or row.get('input'), row.get('output'), row.get('error')) if value))
         if row.get('attachments'):
-            message['attachments'] = [{'name': a['fileName'], 'mime': a['mime'], 'size': a['bytes'],
-                                       'nativeRef': a['ref']} for a in row['attachments']]
+            message['attachments'] = attachments(snapshot['sessionId'], row['attachments'], row.get('sourceCommandId'))
         if row.get('entityId'):
             target = json.dumps({'rowId': row['rowId'], 'entityId': row['entityId'], 'logEpoch': snapshot['logEpoch']}, separators=(',', ':'))
             if row['kind'] == 'assistantText' and row.get('actions', {}).get('canFork'):
@@ -166,6 +166,8 @@ class ZCodeDesktop:
 
     def call(self, action, sid=None, body=None):
         from bridge.clients.zcode.history import saved_sessions, saved_detail
+        if action == 'image':
+            return read_image(self.home, sid, (body or {}).get('source', {}))
         executable = self._window_app()
         if action == 'list':
             view = saved_sessions(self.home)
@@ -368,6 +370,8 @@ class ZCodePrototype(ZCodeDesktop):
 
 
     def call(self, action, sid=None, body=None):
+        if action == 'image':
+            return super().call(action, sid, body)
         if not self.pipe and action in ('list', 'detail', 'history', 'resume', 'send') and self._window_app():
             if action == 'resume':
                 try:
@@ -572,9 +576,20 @@ class ZCodePrototype(ZCodeDesktop):
             if result.get('detached'):
                 history = result['history']
                 row = history['session']
-                messages = [{'id': item['info']['messageId'], 'role': item['info']['role'],
-                             'text': '\n'.join(part.get('text', '') for part in item.get('parts', []) if part.get('type') == 'text')}
-                            for item in history['messages'] if item['info'].get('semantics', {}).get('uiVisibility') == 'visible']
+                messages = []
+                for item in history['messages']:
+                    info = item['info']
+                    if info.get('semantics', {}).get('uiVisibility') != 'visible':
+                        continue
+                    message = {'id': info['messageId'], 'role': info['role'],
+                               'text': '\n'.join(part.get('text', '') for part in item.get('parts', []) if part.get('type') == 'text')}
+                    if info['role'] == 'user':
+                        metadata = info.get('metadata') or {}
+                        intent = metadata.get('conversationInputIntent') or metadata.get('inputIntent') or {}
+                        files = attachments(sid, intent.get('attachments') or intent.get('attachmentRefs'), intent.get('sourceCommandId'))
+                        if files:
+                            message['attachments'] = files
+                    messages.append(message)
                 from .reply_metadata import native_reply_models
                 models = native_reply_models(self.home, sid, workspace, (m['id'] for m in messages if m['role'] == 'assistant'))
                 for message in messages:
