@@ -9,7 +9,7 @@ import threading
 import time
 
 from bridge.clients.zcode.installation import renderer_url
-from bridge.clients.zcode.transport import bind_workspace_registry, expression
+from bridge.clients.zcode.transport import bind_workspace_registry, expression, operation_timeout
 
 
 # The shared adapter accepts files up to 20 MiB, including their base64 encoding.
@@ -214,15 +214,16 @@ class PipeTransport:
         if not isinstance(request, dict) or request.get("action") not in ACTIONS:
             raise ValueError("未知的 ZCode 原生操作")
         now = time.time()
-        expiry = request.get("expiresAt", int(now * 1000) + 12000)
+        limit = operation_timeout(request["action"])
+        expiry = request.get("expiresAt", int((now + limit) * 1000))
         if type(expiry) not in (int, float) or not math.isfinite(expiry):
             raise ValueError("ZCode request deadline invalid")
-        deadline = time.monotonic() + min(12.0, (expiry / 1000) - now)
+        deadline = time.monotonic() + min(limit, (expiry / 1000) - now)
         if not self._lock.acquire(timeout=remaining(deadline)):
             raise TimeoutError("ZCode pipe is busy")
         try:
             return self._with_window(
-                {**request, "expiresAt": min(expiry, int((now + 12) * 1000))}, deadline
+                {**request, "expiresAt": min(expiry, int((now + limit) * 1000))}, deadline
             )
         finally:
             self._lock.release()

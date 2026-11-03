@@ -14,6 +14,7 @@ import time
 from multiprocessing.connection import Client, Listener
 
 from bridge.clients.zcode.pipe_rpc import ACTIONS, KEYS, MAX_FRAME, PipeTransport
+from bridge.clients.zcode.transport import operation_timeout
 
 
 def platform_pipe():
@@ -137,7 +138,8 @@ class LocalPipeClient:
     def call(self, request):
         native = dict(request)
         owner = native.pop('expectedProcess')
-        return self._request({'command': 'operation', 'owner': owner, 'native': native})
+        return self._request({'command': 'operation', 'owner': owner, 'native': native},
+                             timeout=operation_timeout(native.get('action')) + 3)
 
 
 def serve(profile, application):

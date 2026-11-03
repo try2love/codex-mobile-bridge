@@ -11,6 +11,12 @@ from bridge.clients.websocket import WebSocket
 from .installation import renderer_url
 
 
+def operation_timeout(action):
+    # A cold original conversation may need to start its workspace and restore
+    # a snapshot. Attaching cannot send model input. Keep normal mutations bounded.
+    return 25 if action == 'attach' else 12
+
+
 def verified_target(targets, application, port):
     expected = renderer_url(application)
     matches = [row for row in targets if row.get('type') == 'page'

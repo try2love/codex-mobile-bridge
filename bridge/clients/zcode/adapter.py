@@ -14,6 +14,7 @@ from bridge.features.sessions.identity import same_cwd
 from bridge.features.workspace.workspace import MAX_TRANSFER, Workspace
 from .attachments import attachments, read_image
 from .installation import installation, listener_identity
+from .transport import operation_timeout
 
 
 ACCESS = {'build': '变更前确认', 'guarded': '自主模式', 'yolo': '完全访问'}
@@ -368,7 +369,8 @@ class ZCodePrototype(ZCodeDesktop):
         if self.pipe is not None:
             return self.pipe.call({**request, 'expectedProcess': process})
         request = {**request, 'application': str(self.config['application']), 'port': self.port,
-                   'expiresAt': min(int(time.time() * 1000) + 12000, request.get('expiresAt', float('inf')))}
+                   'expiresAt': min(int((time.time() + operation_timeout(request['action'])) * 1000),
+                                    request.get('expiresAt', float('inf')))}
         request.pop('expectedProcess', None)
         from bridge.clients.zcode.transport import request_native
         try:
