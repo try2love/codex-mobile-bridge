@@ -1,3 +1,37 @@
+## v2.2.0-preview.2 · ZCode 历史、桌面接入与模型额度
+
+**这次预览版把「看历史」和「操作桌面」分开了。** 手机和 Web 可以直接打开 ZCode 已保存的聊天；要继续发送或处理审批时，Bridge 再确认连接的是原来的桌面会话。
+
+- **看历史不用切换桌面窗口。** 在 macOS 和 Windows 网关上，可以直接读取已保存的 ZCode 聊天。如果 ZCode 只保留了列表条目，仍可打开空会话；原 App 已找不到的聊天不会取得发送权限。读取失败可以原地重试。打开聊天先看最新消息，向上翻阅时，后台刷新会保留阅读位置。[#128](https://github.com/try2love/codex-mobile-bridge/issues/128)
+- **看清每条回复用的模型，也能找回附件。** 如果原记录提供了模型和思考强度，聊天会按回复显示当时的值。历史图片可以点缩略图看原图；来自当前项目、且来源可核实的附件可以点击文件名定位。原记录缺少信息时不会用当前模型或同名文件代替。
+- **从手机管理 ZCode 或新建项目聊天。** 可以在网关、手机或 Web 启动 ZCode、正常退出，或只关闭远程接入，让电脑上的任务继续运行。Windows 支持从原生托盘正常退出。「第三方通知」可以直接从列表打开；原 App 的项目服务就绪后，即可新建项目聊天，不必先找一个可发送的旧会话。[#128](https://github.com/try2love/codex-mobile-bridge/issues/128)
+- **按模型查看 ZCode 每日额度。** 账号页可分别显示 GLM-5.3、GLM-5.3-Flash 等模型的剩余额度及更新时间。数据来自 ZCode 官方账号已取得的记录；没有记录时不会估算，点击刷新也不会消耗模型额度。[#129](https://github.com/try2love/codex-mobile-bridge/issues/129)
+- **继续 VS Code 里正在使用的 Codex 聊天。** 对于单独配置了 `CODEX_HOME` 的 VS Code 扩展，Bridge 优先把发送、审批和停止交给原来持有会话的扩展，减少电脑和手机争用同一聊天的问题。修复了 Windows 上同一目录因路径写法不同而未被识别的情况。可用操作取决于扩展版本。[#106](https://github.com/try2love/codex-mobile-bridge/issues/106)
+- **连接与更新。** 会话连接重建失败后仍可重试；网关设置会指出尚未保存的字段。修复同一台电脑装有多份网关时，更新重启可能用错数据目录的问题。
+
+**兼容范围：** ZCode 原生聊天控制的兼容接入已适配 macOS 上的 ZCode 3.17.1 / 3.17.2、Windows 上的 3.17.1。普通启动即可看历史。要继续原会话，可在「应用管理」显式启用本机兼容端口并按提示初始化，不必先在电脑上点开目标聊天；Mac Test 验证过的锁屏无端口启动不包含在本次公开包中。
+
+**从 preview.1 更新：** macOS 和 Windows 网关可在「检查更新」中选择「更新并重启」；Android 可在 App 内检查更新、下载并确认安装。Linux 请覆盖安装对应架构的 DEB，或替换原 AppImage；iOS 可在 App 内检查更新并打开发布页，仍需使用与原安装一致的签名身份和应用标识覆盖安装。无需先卸载 preview.1。使用稳定版的用户不会收到此次预览更新。
+
+---
+
+### English · ZCode history, desktop access and model quotas
+
+You can now open saved ZCode chats on mobile and the web without switching the desktop window. Before sending a message or handling an approval, Bridge verifies that it is connected to the original desktop session.
+
+- **Read saved chats.** macOS and Windows gateways read ZCode history locally. An indexed chat with no transcript opens as an empty conversation. A chat missing from the original app stays read-only. Failed reads can be retried in place. Chats open at the latest message and keep your place while you read older replies. [#128](https://github.com/try2love/codex-mobile-bridge/issues/128)
+- **Inspect replies and attachments.** Replies show the model and reasoning effort recorded at the time, when available. Tap image thumbnails to see the original, or select a verified project attachment to locate its file.
+- **Manage the desktop or start a project chat.** Start ZCode, quit normally (including via its native Windows tray), or turn off remote access while leaving local work running. Open third-party notifications from the list or start a project chat once ZCode’s project service is ready, without first opening a writable chat. [#128](https://github.com/try2love/codex-mobile-bridge/issues/128)
+- **See daily quota by model.** The account page shows the remaining allowance and update time for models such as GLM-5.3 and GLM-5.3-Flash when ZCode has recorded an official quota response. Refresh rereads those records; it does not make a model request or estimate missing values. [#129](https://github.com/try2love/codex-mobile-bridge/issues/129)
+- **Continue the original VS Code Codex chat.** For extensions registered with a separate `CODEX_HOME`, Bridge routes sending, approvals and stop requests to the extension that owns the session when supported. Windows paths that refer to the same directory are now recognised consistently. [#106](https://github.com/try2love/codex-mobile-bridge/issues/106)
+- **Connection and update fixes.** Retry a failed reconnection, identify unsaved gateway settings and keep the correct data directory when an update restarts one of several gateway installations.
+
+**Compatibility:** ZCode chat control supports the local loopback connection on macOS with ZCode 3.17.1 / 3.17.2 and on Windows with 3.17.1. Reading history needs no special startup. To continue a chat, enable the local compatibility port in app management and follow the setup prompts. The port-free locked-screen launcher tested in Mac Test is not included in the public preview.
+
+**Upgrading from preview.1:** Use **Check for updates → Update and restart** on macOS or Windows. Android can check, download and prompt to install in the app. On Linux, install the matching DEB over the previous package or replace the AppImage. On iOS, the update check opens the release page; sign and install over the existing app using the same identity and bundle ID. Stable installations will not be offered this preview.
+
+---
+
 ## v2.2.0-preview.1 · ZCode 原生会话与手机连接切换
 
 这次预览版把 ZCode 原生聊天带到手机和 Web。手机 App 也开始按网关整理电脑。同一个网关的局域网、固定 HTTPS 和临时 HTTPS 地址可以放在一张卡片里，在家和外出时都能继续原来的聊天。
