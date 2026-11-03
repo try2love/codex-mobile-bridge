@@ -179,8 +179,8 @@ class DesktopSessions:
                 self.adapters = {key: item for key, item in self.adapters.items() if key != 'zcode'}
             return
         compatibility = self.config.get('zcodeCompatibility')
-        # Previous preview profiles may reuse an existing listener, but only a
-        # local, explicit preference authorizes starting the App with one.
+        # Legacy profiles may reuse a verified listener. Starting one requires
+        # the separate compatibility preference or explicit initialization.
         source = row if row.get('installed') else legacy or {}
         if legacy and compatibility is None:
             config = dict(legacy)
@@ -1377,11 +1377,13 @@ class DesktopSessions:
     def _descriptor(self, provider):
         if provider == 'zcode' and provider in self.adapters:
             adapter = self.adapters[provider]
+            from bridge.clients.zcode.adapter import DEBUG_VERSIONS
             from bridge.clients.zcode.installation import installation
             app = installation(adapter.config.get('application', ''))
-            return {'id': provider, 'installed': bool(app),
+            compatible = bool(app and app['version'] in DEBUG_VERSIONS.get(sys.platform, ()))
+            return {'id': provider, 'installed': bool(app), 'compatibilitySupported': compatible,
                     'executable': app['executable'] if app else '', 'dataDirectory': str(adapter.home),
-                    'debugFallbackPort': 17742 if self.config.get('zcodeCompatibility') is True else None}
+                    'debugFallbackPort': 17742 if compatible and self.config.get('zcodeCompatibility') is True else None}
         if provider == 'deepseek' and self.config.get('deepseekManualBinding'):
             return {'id': provider, 'installed': False, 'executable': '',
                     'dataDirectory': str(self.adapters[provider].home)}
@@ -1393,6 +1395,47 @@ class DesktopSessions:
             row.update(id='codex', executable=executable, dataDirectory=str(accounts.home),
                        installed=bool(executable and Path(executable).is_file()))
         return row
+
+    def _start_zcode_compatibility(self, descriptor, *, initialize, acknowledge_unavailable):
+        from bridge.clients.lifecycle import inspect_client, launch_client
+        from bridge.clients.zcode.adapter import ZCodePrototype
+
+        if not descriptor.get('compatibilitySupported'):
+            raise ValueError('当前安装的 ZCode 不支持此本机实时连接。')
+        existing = self.adapters['zcode']
+        adapter = existing if existing.config.get('debugFallbackPort') == 17742 else ZCodePrototype(
+            existing.directory, {'application': existing.config['application'], 'dataDirectory': str(existing.home),
+                                 'debugFallbackPort': 17742})
+        state = inspect_client(descriptor)
+        if state.get('unknown') or state['running'] and len(state.get('mainPids', [])) != 1:
+            raise ValueError('无法确认唯一的 ZCode 进程，请刷新后重试。')
+        owner = adapter.compatibility_owner(descriptor['executable'])
+        launched = False
+        if owner:
+            if not state['running'] or state['mainPids'] != [owner['pid']]:
+                raise ValueError('ZCode 进程已变化，请刷新后重试。')
+        else:
+            if state['running']:
+                if not initialize:
+                    raise ValueError('请在应用管理中选择本机兼容连接，以重新接入正在运行的 ZCode。')
+                self._stop_client('zcode', descriptor, state, acknowledge_unavailable=acknowledge_unavailable)
+            # Recheck after a potentially slow normal quit. An update or a new
+            # listener must not inherit the decision made for the previous App.
+            fresh = self._descriptor('zcode')
+            if not fresh['compatibilitySupported'] or fresh['executable'] != descriptor['executable']:
+                raise ValueError('ZCode 安装已变化，请刷新后重试。')
+            if state['running'] and adapter.compatibility_owner(fresh['executable']):
+                raise ValueError('ZCode 进程已变化，请刷新后重试。')
+            result = launch_client({**fresh, 'debugFallbackPort': 17742})
+            if not result.get('running'):
+                raise ValueError('ZCode 尚未启动，请刷新后重试。')
+            launched = result.get('launched') is True
+            state = inspect_client(fresh)
+            if state.get('unknown') or len(state.get('mainPids', [])) != 1:
+                raise ValueError('无法确认唯一的 ZCode 进程，请刷新后重试。')
+        adapter.connect_application(state['mainPids'][0], wait=launched)
+        self.adapters = {**self.adapters, 'zcode': adapter}
+        self.config['zcodeCompatibility'] = True
 
     def _codex_executable(self, accounts):
         from bridge.clients.desktop_app import DesktopApp
@@ -1419,12 +1462,13 @@ class DesktopSessions:
         adapter = self.adapters[provider]
         if provider == 'claude' and self._claude_native_cli_busy():
             raise ValueError('有 Claude Code 任务运行或等待确认，请先结束任务再关闭客户端')
-        try:
-            status = adapter.call('status') if provider == 'deepseek' else adapter.status()
-        except (ValueError, OSError, BridgeUnavailable):
-            raise TaskStateUnavailable(unknown) from None
-        if not status.get('connected'):
-            raise TaskStateUnavailable('客户端尚未连接，无法确认任务状态；可选择“仅停用手机接入”，或在电脑端退出 App 后重试')
+        if provider != 'zcode':
+            try:
+                status = adapter.call('status') if provider == 'deepseek' else adapter.status()
+            except (ValueError, OSError, BridgeUnavailable):
+                raise TaskStateUnavailable(unknown) from None
+            if not status.get('connected'):
+                raise TaskStateUnavailable('客户端尚未连接，无法确认任务状态；可选择“仅停用手机接入”，或在电脑端退出 App 后重试')
         if provider == 'deepseek':
             hosts = state.get('runtimePids', [])
             endpoint = self._deepseek_endpoint(adapter)
@@ -1437,6 +1481,8 @@ class DesktopSessions:
                        adapter.desktop_listing() if provider == 'claude' else
                        adapter.call('lifecycle'))
         except (ValueError, OSError, BridgeUnavailable):
+            if provider == 'zcode':
+                raise TaskStateUnavailable('无法确认任务状态，请确认是否正常退出 ZCode。') from None
             raise TaskStateUnavailable(unknown) from None
         sessions = listing.get('sessions')
         if not isinstance(sessions, list):
@@ -1847,7 +1893,8 @@ class DesktopSessions:
                 enabled = self.enabled('zcode')
                 status = self.adapters['zcode'].status() if enabled else {}
                 connected = status.get('connected') is True
-                installed = self._descriptor('zcode')['installed']
+                zcode = self._descriptor('zcode')
+                installed = zcode['installed']
                 history_only = status.get('historyAvailable') and not status.get('retryable')
                 rows.append({'id': 'zcode', 'name': 'ZCode', 'installed': installed,
                              'description': '管理 ZCode 桌面应用与手机接入。',
@@ -1856,7 +1903,10 @@ class DesktopSessions:
                                              'history-only' if history_only else 'not-connected'),
                              'reason': '原生会话已接入' if connected else status.get('reason', ''),
                              'retryable': status.get('retryable') is True,
-                             'confirmTaskState': not connected, 'historyAvailable': status.get('historyAvailable') is True,
+                             'confirmTaskState': True, 'historyAvailable': status.get('historyAvailable') is True,
+                             'initializationMode': 'zcode-local-compatibility',
+                             'canInitializeDesktop': bool(self.gateway_running and zcode['compatibilitySupported']
+                                                          and not (connected or status.get('sessionAccess'))),
                              'compatibilityLaunch': self.config.get('zcodeCompatibility') is True,
                              'capabilities': {'create': connected, 'accounts': True, 'notifications': connected}})
             from bridge.clients.lifecycle import inspect_clients
@@ -1897,6 +1947,9 @@ class DesktopSessions:
                             row.update(setupStatus='recovery-required', reason='Harness 存在残留或多个后台实例，请在桌面使用完整退出并重新接入')
                     except (ValueError, OSError, subprocess.SubprocessError):
                         pass
+                if row['id'] == 'zcode':
+                    row['canInitializeDesktop'] = bool(row['canInitializeDesktop'] and native and
+                        native.get('unknown') is False and (not native['running'] or len(native.get('mainPids', [])) == 1))
                 if row['id'] == 'deepseek':
                     self._deepseek_progress(row, native_states.get('deepseek'))
                 elif row['id'] == 'claude':
@@ -2115,12 +2168,14 @@ class DesktopSessions:
                 or value.get('quitDesktop') is not True or value.get('forceConfirmed') is not True
                 or sys.platform not in ('darwin', 'win32', 'linux') or not self.gateway_running):
             raise ValueError('后台强制结束请求无效')
+        initialize_zcode = provider == 'zcode' and value.get('initializeDesktop') is True
         if 'initializeDesktop' in value and (type(value['initializeDesktop']) is not bool
-                or provider != 'claude' or enabled is not True):
+                or provider not in ('claude', 'zcode') or not enabled
+                or initialize_zcode and (startup or not self.gateway_running)):
             raise ValueError('应用初始化请求无效')
         acknowledge_unavailable = value.get('acknowledgeUnavailable', False)
         if 'acknowledgeUnavailable' in value and (acknowledge_unavailable is not True or
-                provider not in ('codex', 'zcode') or enabled or value.get('quitDesktop') is not True or
+                provider not in ('codex', 'zcode') or not initialize_zcode and (enabled or value.get('quitDesktop') is not True) or
                 value.get('forceDesktop') or sys.platform not in ('darwin', 'win32') or
                 not self.gateway_running or provider == 'codex' and (not self.bridge or
                 not self.bridge.desktop_restart_recommended())):
@@ -2166,6 +2221,9 @@ class DesktopSessions:
             if enabled:
                 if provider == 'deepseek':
                     self._start_deepseek()
+                elif provider == 'zcode' and (initialize_zcode or self.config.get('zcodeCompatibility') is True):
+                    self._start_zcode_compatibility(descriptor, initialize=initialize_zcode,
+                                                    acknowledge_unavailable=acknowledge_unavailable)
                 elif provider == 'claude':
                     if value.get('initializeDesktop') is True:
                         self.adapters[provider].connect()
@@ -2483,10 +2541,11 @@ class DesktopSessions:
         if action == 'clients':
             return self.clients(refresh=value.get('refresh') is True)
         if action == 'zcode-compatibility':
-            # Desktop control socket only; mobile clients may reconnect to the
-            # selected installation, not expand its debugging permissions.
+            # This preference affects the next launch. Remote setup uses the
+            # confirmed, task-checked lifecycle operation instead.
             if (set(value) != {'action', 'enabled'} or type(value['enabled']) is not bool or
-                    'zcode' not in self.adapters or not self._descriptor('zcode')['installed']):
+                    'zcode' not in self.adapters or not self._descriptor('zcode')['installed'] or
+                    value['enabled'] and not self._descriptor('zcode')['compatibilitySupported']):
                 raise ValueError('ZCode 兼容连接设置无效')
             with self.client_lock, self._changing('zcode'):
                 self.config['zcodeCompatibility'] = value['enabled']

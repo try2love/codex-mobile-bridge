@@ -73,10 +73,12 @@ def _same_user(native, first, second):
     return bool(security.EqualSid(*(ctypes.c_void_p.from_buffer(buffer) for buffer in buffers)))
 
 
-def listener_identity(port, executable):
+def listener_identity(port, executable, *, required=True):
     if type(port) is not int or not 1024 <= port <= 65535:
         raise ValueError('无效的本机调试端口')
     rows = _listeners(port)
+    if not required and not rows:
+        return None  # Both OS listener tables were read successfully.
     if len(rows) != 1 or rows[0][1] != '127.0.0.1':
         raise ValueError('调试端口必须仅由一个本机进程监听 127.0.0.1')
     native = _Native()

@@ -41,6 +41,24 @@ function fixture() {
   return { request, calls, snapshot, binding, agent, listeners, storeState, services };
 }
 
+test('application handshake reads the original project service without activating any chat',async()=>{
+  const f=fixture();
+  assert.deepEqual(await f.request('application'),{ready:true});
+  assert.deepEqual(f.calls,[]);
+  f.agent.helloConversationV4=async()=>({protocolVersion:3,clientMode:'web-remote-replayable',connectionId:'foreign'});
+  await assert.rejects(f.request('application'),/会话服务/);
+  f.agent.helloConversationV4=async()=>({protocolVersion:3,clientMode:'desktop-continuous',connectionId:'native'});
+  f.services.projectService.readTree=async()=>({});
+  await assert.rejects(f.request('application'),/会话服务/);
+});
+
+test('known active work blocks normal quit even if full inventory cannot be read',async()=>{
+  const f=fixture();await f.request('attach');f.snapshot.pendingInteractions=[{interactionId:'ask'}];
+  f.services.projectService.readTree=()=>{throw Error('inventory unavailable');};
+  const result=await f.request('lifecycle',{}, {sessionId:null,expectedRuntime:null});
+  assert.deepEqual(result,{complete:false,sessions:[{id:'sess-test',status:'active',runtimeKnown:true}]});
+});
+
 test('home screen exposes the native registry anchor without a mounted conversation', async () => {
   const f = fixture(), provider = function NativeServiceProvider() {};
   delete f.services.layer;

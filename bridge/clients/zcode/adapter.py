@@ -269,6 +269,7 @@ class ZCodePrototype(ZCodeDesktop):
         if not self.sid and config.get('debugFallbackPort') != 17742:
             raise ValueError('请先启用 ZCode 本机兼容连接')
         self.process = config.get('process')
+        self.application_owner = None
         self.debug_sessions = set()
         self.workspaces = {self.sid: self.workspace} if self.sid else {}
         self.bindings = {self.workspace: config['binding']} if config.get('binding') and self.workspace else {}
@@ -290,6 +291,43 @@ class ZCodePrototype(ZCodeDesktop):
             reason = ('未检测到兼容端口。请确认任务已结束，在应用管理中正常退出 ZCode，再由网关启动。'
                       if self.config.get('debugFallbackPort') else '未检测到可接入的 ZCode 本机实时连接。')
             raise _NoLocalTransport(reason) from error
+
+    def compatibility_owner(self, executable):
+        """A free port can be used for launch. Never displace an unknown listener."""
+        try:
+            return listener_identity(self.port, executable, required=False)
+        except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
+            raise BridgeUnavailable('无法核验本机兼容端口，请检查 17742 是否已被其他进程占用。') from exc
+
+    def connect_application(self, pid, *, wait=False):
+        # Cold startup needs time to mount its native services. Only probe the App,
+        # never create/select a workspace or submit a command during this retry.
+        deadline = time.monotonic() + (10 if wait else 0)
+        delay = .25
+        while True:
+            try:
+                owner = self._live_process()
+                if owner.get('pid') == pid:
+                    result = self.transport({'action': 'application', 'expectedProcess': owner})
+                    if result.get('ready') is not True or self._live_process() != owner:
+                        raise BridgeUnavailable('ZCode 原 App 未确认连接。')
+                    self._adopt_process(owner)
+                    return
+            except (ValueError, OSError, subprocess.TimeoutExpired) as error:
+                if time.monotonic() >= deadline:
+                    raise BridgeUnavailable('ZCode 兼容连接未就绪，请重试。' + str(error)) from error
+                time.sleep(delay)
+                delay = min(1, delay * 2)
+                continue
+            raise BridgeUnavailable('ZCode 进程已变化，请重新检查。')
+
+    def _adopt_process(self, owner):
+        if self.process != owner:
+            self.debug_sessions.clear()
+            self.bindings.clear()
+            self.workspaces.clear()
+            self.workspace = self.sid = None
+        self.application_owner = self.process = owner
 
     def _native(self, request):
         process = self._live_process()
@@ -358,18 +396,18 @@ class ZCodePrototype(ZCodeDesktop):
                 raise ValueError('ZCode 未确认原会话连接')
         except (OSError, ValueError, AttributeError, KeyError, TypeError) as error:
             raise ResumePreflightBlocked(str(error)) from error
-        if process != self.process:
-            self.debug_sessions.clear()
-            self.bindings.clear()
-            self.workspaces.clear()
+        self._adopt_process(process)
         self.debug_sessions.add(sid)
-        self.process, self.workspace, self.sid = process, workspace, sid
+        self.workspace, self.sid = workspace, sid
         self.workspaces[sid], self.bindings[workspace] = workspace, binding
         return {'status': 'ready', 'id': body['id']}
 
     def _call_live(self, action, sid=None, body=None):
         if action == 'resume':
             return self._resume_debug(sid, body)
+        if action == 'lifecycle' and not self.sid:
+            # The original renderer can still hold active leases after a gateway restart.
+            return self.transport({'action': action, 'expectedProcess': self._live_process()})
         if not self.sid:
             self._live_process()  # Identity only. Reading saved history never selects a session.
             raise BridgeUnavailable('请在要继续的 ZCode 聊天中连接原会话。')
@@ -530,6 +568,15 @@ class ZCodePrototype(ZCodeDesktop):
             return False
 
     def status(self):
+        if not self.sid:
+            base = super().status()
+            if self.application_owner is not None:
+                try:
+                    if self._live_process() == self.application_owner:
+                        return {**base, 'sessionAccess': True, 'reason': '可在聊天中继续原生会话。'}
+                except _NoLocalTransport as error:
+                    return {**base, 'reason': str(error)}
+            return base
         if self._window_app() and not self.debug_sessions:
             return super().status()
         try:
@@ -541,6 +588,4 @@ class ZCodePrototype(ZCodeDesktop):
         except (ValueError, OSError):
             pass
         # A compatible live endpoint can renew a retired session binding.
-        if not self.sid:
-            return {**super().status(), 'sessionAccess': True, 'reason': '可在聊天中继续原生会话。'}
         return {**super().status(), 'retryable': True}

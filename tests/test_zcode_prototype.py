@@ -192,6 +192,15 @@ class ZCodePrototypeTests(unittest.TestCase):
         ack['result']['delivery'] = 'startNow'
         self.assertEqual(adapter.call('send', 'sess_test', {**body, 'mode': 'queue'})['status'], 'accepted')
 
+    def test_mac_compatibility_preflight_only_accepts_explicitly_absent_listener(self):
+        from bridge.platforms.macos.loopback import listener_identity
+        with patch('bridge.platforms.macos.loopback.subprocess.run') as run:
+            run.return_value = Mock(returncode=1, stdout='', stderr='')
+            self.assertIsNone(listener_identity(17742, '/Applications/ZCode.app/Contents/MacOS/ZCode', required=False))
+            run.return_value.stderr = 'lsof failed'
+            with self.assertRaises(ValueError):
+                listener_identity(17742, '/Applications/ZCode.app/Contents/MacOS/ZCode', required=False)
+
     @patch('bridge.platforms.macos.loopback.Native')
     @patch('bridge.platforms.macos.loopback.subprocess.run')
     @patch('os.getuid', return_value=501, create=True)

@@ -45,6 +45,15 @@ class ZCodeWindowsTests(unittest.TestCase):
                 self.assertTrue(all(call.kwargs == {'terminate': False} for call in native.open.call_args_list))
                 self.assertEqual(native.close.call_count, 2)
 
+    def test_port_preflight_distinguishes_empty_tables_from_unreadable_or_foreign(self):
+        with patch('bridge.platforms.windows.loopback._listeners') as table:
+            table.return_value=[]
+            self.assertIsNone(listener_identity(17742, Path('ZCode.exe'), required=False))
+            table.return_value=[(5, '::1')]
+            with self.assertRaises(ValueError): listener_identity(17742, Path('ZCode.exe'), required=False)
+            table.side_effect=OSError('native table unavailable')
+            with self.assertRaises(OSError): listener_identity(17742, Path('ZCode.exe'), required=False)
+
     def test_external_and_duplicate_listeners_are_rejected_before_opening_process(self):
         for rows in ([(12, '0.0.0.0')], [(12, '::1')], [(12, '127.0.0.1'), (13, '::')], []):
             with patch('bridge.platforms.windows.loopback._listeners', return_value=rows), patch(

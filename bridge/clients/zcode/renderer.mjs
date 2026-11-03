@@ -28,6 +28,14 @@ export async function nativeRequest(request) {
     return { services: [...found][0], contexts: [...contexts], registryAnchor };
   };
   const { services, contexts, registryAnchor } = findServices(), agent = services.zcodeAgentService;
+  if (request.action === 'application') {
+    const hello = await agent.helloConversationV4();
+    const tree = await services.projectService.readTree({});
+    if (hello.protocolVersion !== 3 || hello.clientMode !== 'desktop-continuous' || !hello.connectionId ||
+        !Array.isArray(tree.tasks) || typeof agent.sendConversationCommandV4 !== 'function')
+      throw Error('ZCode 原 App 的会话服务尚未就绪');
+    return { ready: true };
+  }
   if (request.action === 'registry-probe') return typeof window.__codexMobileZCodeAcquireWorkspace === 'function' ||
     contexts.find(context => !context.layer.disposed)?.layer.acquire || registryAnchor;
   const targetTask = tree => {
@@ -63,6 +71,16 @@ export async function nativeRequest(request) {
   };
   if (request.action === 'account') return { account: await account(), models: await models(), capabilities: { models: true } };
   if (request.action === 'lifecycle') {
+    const busySnapshot = snapshot => snapshot.queue.items.length || snapshot.pendingInteractions.length ||
+      snapshot.control.activeWorks.length || snapshot.pendingCommands?.length || snapshot.backgroundWorks?.length;
+    // A live lease can prove work even when the full runtime inventory is
+    // unavailable (for example after restarting only the gateway).
+    const leased = window[key]?.sessions ? [...window[key].sessions.values()] : window[key] ? [window[key]] : [];
+    for (const state of leased) {
+      const live = state.lease.store.getState();
+      if (live?.status === 'live' && busySnapshot(live.snapshot))
+        return { complete: false, sessions: [{ id: live.snapshot.sessionId, status: 'active', runtimeKnown: true }] };
+    }
     const tree = await services.projectService.readTree({ includeDeleted: true, includeDeletedTasks: true });
     const tasks = [...tree.tasks, ...tree.deletedTasks];
     // Refuse remote ownership and incomplete/large inventories. This check runs only
@@ -78,8 +96,7 @@ export async function nativeRequest(request) {
     if (loaded?.status !== 'live' || loaded.snapshot.sessionId !== request.sessionId)
       return { complete: false, sessions: [] };
     const current = loaded.snapshot;
-    if (current.queue.items.length || current.pendingInteractions.length || current.control.activeWorks.length ||
-        current.pendingCommands?.length || current.backgroundWorks?.length)
+    if (busySnapshot(current))
       return { complete: true, sessions: [{ id: request.sessionId, status: 'active', runtimeKnown: true }] };
     const sessions = [];
     for (const state of window[key]?.sessions?.values() || [bound]) {
@@ -87,9 +104,7 @@ export async function nativeRequest(request) {
       if (live?.status !== 'live' || JSON.stringify(state.binding.runtime) !== JSON.stringify(expected))
         return { complete: false, sessions };
       const snapshot = live.snapshot;
-      const busy = snapshot.queue.items.length || snapshot.pendingInteractions.length || snapshot.control.activeWorks.length ||
-        snapshot.pendingCommands?.length || snapshot.backgroundWorks?.length;
-      sessions.push({ id: snapshot.sessionId, status: busy ? 'active' : 'idle', runtimeKnown: true });
+      sessions.push({ id: snapshot.sessionId, status: busySnapshot(snapshot) ? 'active' : 'idle', runtimeKnown: true });
     }
     for (const workspacePath of new Set([request.workspace, ...tasks.map(task => task.workspacePath)])) {
       checkDeadline();
@@ -114,8 +129,7 @@ export async function nativeRequest(request) {
         const live = state?.lease.store.getState();
         if (live?.status !== 'live' || JSON.stringify(state.binding.runtime) !== JSON.stringify(expected)) return false;
         const snapshot = live.snapshot;
-        if (snapshot.queue.items.length || snapshot.pendingInteractions.length || snapshot.control.activeWorks.length ||
-            snapshot.pendingCommands?.length || snapshot.backgroundWorks?.length) row.status = 'active';
+        if (busySnapshot(snapshot)) row.status = 'active';
         return true;
       }), sessions };
   }

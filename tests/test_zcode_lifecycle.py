@@ -75,6 +75,97 @@ class ZCodeLifecycleTests(unittest.TestCase):
                 self.assertTrue(expired['retryable'])
                 self.assertFalse(expired['connected'])
 
+    def test_initialization_requires_consent_restarts_normally_and_verifies_the_native_app(self):
+        from bridge.clients.zcode.adapter import ZCodePrototype
+        owner = {'pid': 82, 'birth': [3, 4]}
+
+        def stop(descriptor, *, state):
+            self.assertIs(state, self.state)
+            self.state.update(running=False, mainPids=[], pids=[])
+
+        def launch(descriptor):
+            self.assertEqual(descriptor['debugFallbackPort'], 17742)
+            self.state.update(running=True, mainPids=[82], pids=[82])
+            return {'running': True, 'launched': True}
+
+        with patch.object(ZCodePrototype, 'compatibility_owner', return_value=None), \
+                patch('bridge.clients.lifecycle.stop_client', side_effect=stop) as quit_app, \
+                patch('bridge.clients.lifecycle.launch_client', side_effect=launch) as start, \
+                patch.object(ZCodePrototype, '_live_process', return_value=owner), \
+                patch('bridge.clients.zcode.transport.request_native', return_value={'ready': True}) as native:
+            with self.assertRaisesRegex(ValueError, '无法确认任务状态'):
+                self.toggle(True, initializeDesktop=True)
+            quit_app.assert_not_called()
+            start.assert_not_called()
+            self.assertNotIn('zcodeCompatibility', self.manager.config)
+            value = self.toggle(True, initializeDesktop=True, acknowledgeUnavailable=True)
+            row = next(row for row in value['clients'] if row['id'] == 'zcode')
+            self.assertTrue(row['compatibilityLaunch'])
+            self.assertIs(json.loads(self.manager.config_path.read_text())['zcodeCompatibility'], True)
+            self.assertEqual(row['setupStatus'], 'session-access')
+            self.assertFalse(row['connected'] or row['canInitializeDesktop'])
+            self.assertEqual([call.args[0]['action'] for call in native.call_args_list], ['application'])
+            self.assertIsNone(self.manager.adapters['zcode'].sid)
+            quit_app.assert_called_once()
+            start.assert_called_once()
+
+    def test_failed_or_occupied_connection_does_not_persist_or_restart_a_verified_live_owner(self):
+        from bridge.clients.zcode.adapter import ZCodePrototype
+        with patch('bridge.clients.lifecycle.stop_client') as stop, \
+                patch('bridge.clients.lifecycle.launch_client') as start, \
+                patch.object(ZCodePrototype, 'compatibility_owner') as port, \
+                patch.object(ZCodePrototype, '_live_process', return_value={'pid': 77}), \
+                patch('bridge.clients.zcode.transport.request_native', return_value={}) as native:
+            port.side_effect = ValueError('端口已被占用')
+            with self.assertRaisesRegex(ValueError, '占用'):
+                self.toggle(True, initializeDesktop=True, acknowledgeUnavailable=True)
+            native.assert_not_called()
+            port.side_effect = None
+            port.return_value = {'pid': 77}
+            with self.assertRaisesRegex(ValueError, '原 App 未确认连接'):
+                self.toggle(True, initializeDesktop=True)
+            native.assert_called_once()
+            start.assert_not_called()
+            stop.assert_not_called()
+            self.assertIs(self.manager.adapters['zcode'], self.adapter)
+            self.assertNotIn('zcodeCompatibility', self.manager.config)
+
+    def test_initialization_does_not_override_known_work_or_an_unsupported_version(self):
+        from bridge.clients.zcode.adapter import ZCodePrototype
+        with patch('bridge.clients.lifecycle.stop_client') as stop, patch('bridge.clients.lifecycle.launch_client') as start, \
+                patch.object(ZCodePrototype, 'compatibility_owner', return_value=None), \
+                patch.object(self.adapter, 'status', return_value={'connected': False, 'sessionAccess': True}), \
+                patch.object(self.adapter, 'call', return_value={'complete': False, 'sessions': [{'status': 'running'}]}):
+            with self.assertRaisesRegex(ValueError, '有任务运行'):
+                self.toggle(True, initializeDesktop=True, acknowledgeUnavailable=True)
+            with patch('bridge.clients.zcode.installation.installation', return_value={'version': '0.0', 'executable': '/unsupported'}):
+                value = self.manager.clients(refresh=True)
+                self.assertFalse(next(row for row in value['clients'] if row['id']=='zcode')['canInitializeDesktop'])
+                with self.assertRaisesRegex(ValueError, '不支持'):
+                    self.toggle(True, initializeDesktop=True, acknowledgeUnavailable=True)
+            start.assert_not_called()
+            stop.assert_not_called()
+            self.assertNotIn('zcodeCompatibility', self.manager.config)
+
+    def test_saved_compatibility_cold_starts_but_never_restarts_an_ordinary_instance_automatically(self):
+        from bridge.clients.zcode.adapter import ZCodePrototype
+        self.manager.control({'action': 'zcode-compatibility', 'enabled': True})
+        self.state.update(running=False, mainPids=[], pids=[])
+        def launch(descriptor):
+            self.assertEqual(descriptor['debugFallbackPort'], 17742)
+            self.state.update(running=True, mainPids=[88], pids=[88])
+            return {'running': True, 'launched': True}
+        with patch.object(ZCodePrototype, 'compatibility_owner', return_value=None), \
+                patch.object(ZCodePrototype, 'connect_application') as handshake, \
+                patch('bridge.clients.lifecycle.stop_client') as stop, \
+                patch('bridge.clients.lifecycle.launch_client', side_effect=launch) as start:
+            self.manager.toggle_client({'provider':'zcode','enabled':True}, startup=True)
+            handshake.assert_called_once_with(88, wait=True)
+            with self.assertRaisesRegex(ValueError, '选择本机兼容连接'):
+                self.manager.toggle_client({'provider':'zcode','enabled':True}, startup=True)
+            stop.assert_not_called()
+            start.assert_called_once()
+
     def test_compatibility_is_a_local_explicit_next_launch_preference(self):
         from bridge.clients.lifecycle import launch_client
         from bridge.clients.zcode.adapter import ZCodePrototype

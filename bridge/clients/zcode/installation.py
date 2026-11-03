@@ -21,14 +21,14 @@ def installation(application):
     return None
 
 
-def listener_identity(port, executable):
+def listener_identity(port, executable, *, required=True):
     if sys.platform == 'win32':
         from bridge.platforms.windows.loopback import listener_identity as read
     elif sys.platform == 'darwin':
         from bridge.platforms.macos.loopback import listener_identity as read
     else:
         raise ValueError('此平台的 ZCode 原生接入尚未验证')
-    return read(port, executable)
+    return read(port, executable, required=required)
 
 
 def renderer_url(application):

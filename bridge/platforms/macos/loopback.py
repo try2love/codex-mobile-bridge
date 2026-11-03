@@ -6,11 +6,13 @@ from pathlib import Path
 from bridge.platforms.macos.force_exit import Native
 
 
-def listener_identity(port, executable):
+def listener_identity(port, executable, *, required=True):
     if type(port) is not int or not 1024 <= port <= 65535:
         raise ValueError('无效的本机调试端口')
     result = subprocess.run(['/usr/sbin/lsof', '-nP', '-a', '-iTCP:%d' % port,
                              '-sTCP:LISTEN', '-Fpnt'], capture_output=True, text=True, timeout=3)
+    if not required and result.returncode == 1 and not result.stdout and not result.stderr:
+        return None  # lsof found no matching TCP listener.
     rows = result.stdout.splitlines()
     pids = {int(row[1:]) for row in rows if row.startswith('p')}
     names = {row[1:] for row in rows if row.startswith('n')}
