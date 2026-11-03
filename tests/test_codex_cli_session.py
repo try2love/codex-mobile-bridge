@@ -150,7 +150,8 @@ class CliSessionTests(unittest.TestCase):
         samefile = Mock(return_value=True)
         windows = SimpleNamespace(name='nt', path=SimpleNamespace(samefile=samefile))
         with patch.object(self.sessions.store, 'get', return_value=saved), \
-                patch('bridge.clients.codex.cli_session.os', windows):
+                patch('bridge.clients.codex.cli_session.os', windows), \
+                patch('bridge.features.sessions.identity.os', windows):
             state = self.sessions.attach('thread-a', explicit=True)
         self.assertEqual(state['id'], 'thread-a')
         samefile.assert_called_once_with(r'\\?\C:\project', r'C:\project')
@@ -162,7 +163,8 @@ class CliSessionTests(unittest.TestCase):
                  'cwd': r'\\?\C:\other', 'model_provider': 'original-provider'}
         windows = SimpleNamespace(name='nt', path=SimpleNamespace(samefile=Mock(return_value=False)))
         with patch.object(self.sessions.store, 'get', return_value=saved), \
-                patch('bridge.clients.codex.cli_session.os', windows):
+                patch('bridge.clients.codex.cli_session.os', windows), \
+                patch('bridge.features.sessions.identity.os', windows):
             with self.assertRaises(AppServerUnsupported):
                 self.sessions.attach('thread-a', explicit=True)
         self.assertFalse(any(method == 'thread/resume' for method, _ in self.fake.sent))
@@ -174,7 +176,8 @@ class CliSessionTests(unittest.TestCase):
         windows = SimpleNamespace(name='nt', path=SimpleNamespace(
             samefile=Mock(side_effect=OSError('inaccessible'))))
         with patch.object(self.sessions.store, 'get', return_value=saved), \
-                patch('bridge.clients.codex.cli_session.os', windows):
+                patch('bridge.clients.codex.cli_session.os', windows), \
+                patch('bridge.features.sessions.identity.os', windows):
             with self.assertRaises(AppServerUnsupported):
                 self.sessions.attach('thread-a', explicit=True)
         self.assertFalse(any(method == 'thread/resume' for method, _ in self.fake.sent))
@@ -186,7 +189,8 @@ class CliSessionTests(unittest.TestCase):
         samefile = Mock(return_value=True)
         posix = SimpleNamespace(name='posix', path=SimpleNamespace(samefile=samefile))
         with patch.object(self.sessions.store, 'get', return_value=saved), \
-                patch('bridge.clients.codex.cli_session.os', posix):
+                patch('bridge.clients.codex.cli_session.os', posix), \
+                patch('bridge.features.sessions.identity.os', posix):
             with self.assertRaises(AppServerUnsupported):
                 self.sessions.attach('thread-a', explicit=True)
         samefile.assert_not_called()
@@ -200,7 +204,8 @@ class CliSessionTests(unittest.TestCase):
         samefile = Mock(return_value=True)
         windows = SimpleNamespace(name='nt', path=SimpleNamespace(samefile=samefile))
         with patch.object(self.sessions.store, 'get', return_value=saved), \
-                patch('bridge.clients.codex.cli_session.os', windows):
+                patch('bridge.clients.codex.cli_session.os', windows), \
+                patch('bridge.features.sessions.identity.os', windows):
             with self.assertRaises(AppServerUnsupported):
                 self.sessions.attach('thread-a', explicit=True)
         samefile.assert_not_called()
