@@ -2,6 +2,9 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"正在等待网络恢复…":"Waiting for the network…",
+"正在接续原会话…":"Reconnecting to this chat…",
+"未能接续原会话，请重试":"Could not reconnect to this chat. Try again.",
 "本机兼容连接":"Local compatibility connection",
 "网关将通过本机专用管道连接 ZCode。你可以在电脑锁屏时继续原会话。":"The gateway will connect to ZCode through a private local pipe. You can continue the original chat while the computer is locked.",
 "使用本机兼容连接…":"Use local compatibility connection…",

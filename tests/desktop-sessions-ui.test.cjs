@@ -44,10 +44,10 @@ function fixture({storage=new Map(),sessionStore=new Map()}={}){
  }
  document={body:new Node('body'),documentElement:new Node('html'),hidden:false,activeElement:null,getSelection:()=>null,createElement:tag=>new Node(tag),createElementNS:(_,tag)=>new Node(tag),createTextNode:text=>{const n=new Node('#text');n.textContent=text;return n;},querySelectorAll:s=>document.body.querySelectorAll(s),querySelector:s=>document.body.querySelector(s),getElementById:id=>document.body.querySelector('#'+id),addEventListener:(type,fn)=>listeners[type]=fn,dispatchEvent:event=>listeners[event.type]?.(event)};
  const root=new Node('div');root.className='app';document.body.append(root);const select=new Node('select'),calls=[],notices=[];let uploadHandler=async()=>({ok:true,status:200,json:async()=>({image:true,size:16,name:'image.png'})}),handler=async(url,body)=>body?{status:'accepted'}:url.includes('/detail')?{session:{id:'a',title:'Chat',model:'model-a',effort:'high',status:'idle',capabilities:{}},messages:[]}:url.includes('/workspace')?{entries:[],total:0,project:'/project'}:{sessions:[]};
- const context=vm.createContext({document,window:{addEventListener(){}},navigator:{},location:{pathname:'/'},history:{replaceState(){}},localStorage:{get length(){return storage.size;},key:i=>[...storage.keys()][i],getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},sessionStorage:{get length(){return sessionStore.size;},key:i=>[...sessionStore.keys()][i],getItem:k=>sessionStore.get(k),setItem:(k,v)=>sessionStore.set(k,v),removeItem:k=>sessionStore.delete(k)},crypto:{getRandomValues:array=>webcrypto.getRandomValues(array)},Uint8Array,TextEncoder,Option:class extends Node{constructor(text,value){super('option');this.textContent=text;this.value=value;this.setAttribute('value',value);}},ResizeObserver:class{observe(){}},MutationObserver:class{observe(){}},AbortController,URLSearchParams,requestAnimationFrame:fn=>fn(),cancelAnimationFrame(){},getComputedStyle:()=>({getPropertyValue:()=>8}),setTimeout(){return 1;},clearTimeout(){},fetch:async(url,options)=>{calls.push({url,upload:options});return uploadHandler(url,options);},renderMarkdown:(node,text)=>node.textContent=text,CustomEvent:class{constructor(type,options){this.type=type;Object.assign(this,options);}}});
+ const context=vm.createContext({document,window:{addEventListener:(type,fn)=>listeners['window:'+type]=fn,dispatchEvent:event=>listeners['window:'+event.type]?.(event)},navigator:{},location:{pathname:'/'},history:{replaceState(){}},localStorage:{get length(){return storage.size;},key:i=>[...storage.keys()][i],getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},sessionStorage:{get length(){return sessionStore.size;},key:i=>[...sessionStore.keys()][i],getItem:k=>sessionStore.get(k),setItem:(k,v)=>sessionStore.set(k,v),removeItem:k=>sessionStore.delete(k)},crypto:{getRandomValues:array=>webcrypto.getRandomValues(array)},Uint8Array,TextEncoder,Option:class extends Node{constructor(text,value){super('option');this.textContent=text;this.value=value;this.setAttribute('value',value);}},ResizeObserver:class{observe(){}},MutationObserver:class{observe(){}},AbortController,URLSearchParams,requestAnimationFrame:fn=>fn(),cancelAnimationFrame(){},getComputedStyle:()=>({getPropertyValue:()=>8}),setTimeout(){return 1;},clearTimeout(){},fetch:async(url,options)=>{calls.push({url,upload:options});return uploadHandler(url,options);},renderMarkdown:(node,text)=>node.textContent=text,CustomEvent:class{constructor(type,options){this.type=type;Object.assign(this,options);}}});
  vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/shell/app.js'),'utf8').match(/^function uuid\(\).*$/m)[0],context);
  for(const file of ['web/layouts/viewport.js','web/features/chat/activity.js','web/features/chat/composer-drafts.js','web/features/chat/composer-quotes.js','web/features/chat/attachments.js','web/shared/i18n.js','web/features/clients/client-lifecycle.js','web/features/chat/message-actions.js','web/features/chat/permissions.js','web/features/chat/modes.js','web/features/workspace/workbench.js','web/features/chat/list-sync.js','web/features/clients/desktop-sessions.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
- const View=vm.runInContext('DesktopSessionsView',context),view=new View({root,select,request:(url,body)=>{calls.push({url,body});return handler(url,body);},notify:text=>notices.push(text),onSelect(){},csrf:()=>'csrf-test',onUnauthorized(){}});
+ const View=vm.runInContext('DesktopSessionsView',context),view=new View({root,select,request:(url,body,signal)=>{calls.push({url,body});return handler(url,body,signal);},notify:text=>notices.push(text),onSelect(){},csrf:()=>'csrf-test',onUnauthorized(){}});
  return {view,root,document,calls,notices,storage,sessionStore,setHandler:fn=>handler=fn,setUploadHandler:fn=>uploadHandler=fn,run:s=>vm.runInContext(s,context),text:n=>n.textContent};
 }
 async function opened(){const ui=fixture();await ui.view.choose('claude');await ui.view.open('a');return ui;}
@@ -1311,4 +1311,62 @@ test('only selecting a ZCode row continues its verified private session',async()
  view.clientStates[0].pipeReady=false;
  await view.open('cold',{continueSelected:true});
  assert.deepEqual(actions,['resume']);
+});
+
+async function progressiveChat(options){
+ const ui=fixture(options),view=ui.view,session={id:'sess-cold',title:'Cold',status:'idle',cwd:'/p',requests:[]};
+ const detail=ready=>({session:{...session,controlScope:'session',connectionState:ready?'ready':'detached'},
+   capabilities:{resume:!ready,progressiveResume:!ready,send:ready},messages:[{id:'m',role:'assistant',text:'History'}]});
+ const client={id:'zcode',label:'ZCode',enabled:true,connected:false,historyAvailable:true,pipeReady:true,setupStatus:'session-access'};
+ let read=detail(false),respond=async()=>({status:'pending',progress:0});
+ ui.setHandler(async(url,body,signal)=>{
+   if(body){assert.match(url,/\/resume$/);return respond(body,signal);}
+   if(url.includes('/detail'))return read;return {sessions:[session]};
+ });
+ view.bindDraftGateway('gateway');view.setClientStates([client]);await view.choose('zcode');await view.open(session.id);ui.calls.length=0;
+ return {...ui,answer:fn=>respond=fn,ready:()=>read=detail(true),session,detail};
+}
+
+test('weak route retries only the same resume receipt and a 17s response fits the second transport budget',async()=>{
+ const ui=await progressiveChat(),view=ui.view,requests=[];
+ const timer=ui.run("globalThis.timeouts=new Map();let serial=0;globalThis.now=0;Date.now=()=>now;setTimeout=(fn,ms)=>{timeouts.set(++serial,{fn,ms});return serial;};clearTimeout=id=>timeouts.delete(id);timeouts");
+ view.input.value='草稿';view.draftTouched=true;view.messages.scrollHeight=1000;view.messages.scrollTop=31;view.rememberReading();const listNode=view.messageNodes.get('m').node;
+ let settle;ui.answer((body,signal)=>{requests.push(body);return new Promise((resolve,reject)=>{settle=resolve;signal.addEventListener('abort',()=>reject(signal.reason));});});
+ const first=view.continueChat();assert.equal(requests.length,1);assert.equal(!!view.busy,false);
+ const timeLimit=[...timer.values()].find(t=>t.ms===12000);assert.ok(timeLimit);
+ ui.run('now=12000');timeLimit.fn();await first;assert.equal(view.resumeAttempt.timeout,24000);assert.match(view.notice.textContent,/等待网络/);
+ const before=ui.calls.length;await view.refresh();assert.equal(ui.calls.length,before);
+ const poll=timer.get(view.resumeAttempt.timer);assert.equal(poll.ms,1000);const later=poll.fn();
+ assert.equal(requests.length,2);assert.equal(requests[0].id,requests[1].id);assert.equal(requests[0].progressive,true);
+ assert.ok([...timer.values()].some(t=>t.ms===24000));assert.equal(view.send.disabled,true);
+ ui.run('now=29000');ui.ready();settle({status:'ready'});await later;
+ assert.equal(view.canMutate(),true);assert.equal(view.savedResumeId(),null);
+ assert.equal(ui.calls.filter(c=>/\/detail/.test(c.url)).length,1);assert.equal(ui.calls.filter(c=>/\/list/.test(c.url)).length,0);
+ assert.ok(requests.every(b=>b.id===requests[0].id&&b.sessionId===ui.session.id));
+ assert.equal(view.input.value,'草稿');assert.equal(view.messages.scrollTop,31);assert.equal(view.messageNodes.get('m').node,listNode);
+});
+
+test('hidden or switched chats stop polling and reload resumes the stored UUID only for the same gateway',async()=>{
+ const ui=await progressiveChat();const view=ui.view;
+ await view.continueChat();const id=view.resumeAttempt.id;assert.equal(view.savedResumeId(),id);
+ ui.document.hidden=true;ui.document.dispatchEvent({type:'visibilitychange'});await view.checkResume(view.resumeAttempt);
+ assert.equal(ui.calls.filter(c=>c.body).length,1);
+ ui.document.hidden=false;ui.document.dispatchEvent({type:'visibilitychange'});await new Promise(setImmediate);
+ assert.equal(ui.calls.filter(c=>c.body).length,2);
+ view.backToList();await view.checkResume(view.resumeAttempt);assert.equal(view.resumeAttempt,null);
+ const returned=await progressiveChat({sessionStore:ui.sessionStore});await new Promise(setImmediate);
+ assert.equal(returned.view.resumeAttempt.id,id);
+ returned.view.bindDraftGateway('other');assert.equal(returned.view.resumeAttempt,null);assert.equal(returned.view.savedResumeId(),null);
+});
+
+test('channel handoff rechecks one pending UUID and a blocked response permits exactly one explicit new attempt',async()=>{
+ const ui=await progressiveChat(),view=ui.view;let settle;
+ const timers=ui.run("globalThis.timers=new Map();let serial=0;setTimeout=(fn,ms)=>{timers.set(++serial,{fn,ms});return serial;};clearTimeout=id=>timers.delete(id);timers");
+ ui.answer((_body,signal)=>new Promise((resolve,reject)=>{settle=resolve;signal.addEventListener('abort',()=>reject(signal.reason));}));
+ const run=view.continueChat(),id=view.resumeAttempt.id;ui.run("window.dispatchEvent({type:'bridge-channel-changed'})");await run;
+ const wake=timers.get(view.resumeAttempt.timer);assert.equal(wake.ms,0);const pending=wake.fn();assert.equal(ui.calls.filter(c=>c.body).at(-1).body.id,id);
+ settle({status:'blocked',message:'原会话已关闭'});await pending;await new Promise(setImmediate);
+ assert.match(view.error.textContent,/原会话已关闭/);assert.equal(view.savedResumeId(),null);assert.equal(view.resumeAttempt,null);
+ const writes=ui.calls.filter(c=>c.body).length;await view.refresh();assert.equal(ui.calls.filter(c=>c.body).length,writes);
+ ui.answer(async()=>({status:'pending'}));await view.resumeButton.click();assert.notEqual(view.resumeAttempt.id,id);
 });

@@ -20,10 +20,13 @@ class DesktopSessionsView {
     this.clientIcon=this.node('span','client-icon');const info=this.node('div','chat-info');this.title=this.node('span','ds-title');this.titleButton=this.button('',()=>this.chatDetails());this.titleButton.className='chat-title-button';this.label(this.titleButton,'查看聊天详情');this.titleButton.append(this.title);info.append(this.titleButton);
     this.status=this.node('span','status');this.status.setAttribute('role','status');const settings=this.iconButton('设置','M5 12h.01M12 12h.01M19 12h.01',()=>{document.getElementById('appearance-dialog')?.showModal();window.loadNotificationDefaults?.();});settings.className='ds-settings appearance-button';settings.setAttribute('data-open-appearance','');
     const head=this.node('header','ds-head chat-head');head.append(this.back,this.clientIcon,info,this.status,settings);
-    this.messages=this.node('div','ds-messages timeline');this.messages.tabIndex=-1;this.progress=this.node('div','working');this.progress.hidden=true;this.requests=this.node('div','ds-requests');this.notice=this.node('p','notice');this.notice.hidden=true;this.resumeButton=this.button('继续会话',()=>this.mutate('resume',{}));this.resumeButton.hidden=true;
+    this.messages=this.node('div','ds-messages timeline');this.messages.tabIndex=-1;this.progress=this.node('div','working');this.progress.hidden=true;this.requests=this.node('div','ds-requests');this.notice=this.node('p','notice');this.notice.hidden=true;this.resumeButton=this.button('继续会话',()=>this.continueChat());this.resumeButton.hidden=true;
     this.messageList=this.node('div');this.messages.append(this.messageList);
     this.messages.addEventListener('scroll',()=>this.rememberReading(),{passive:true});
-    this.readingResize=new ResizeObserver(()=>this.restoreReading());
+    this.readingResize=new ResizeObserver(()=>{
+      this.restoreReading();
+      if(this.resumeAttempt&&!this.resumeAttempt.timer&&!this.workbench?.isFileVisible)this.checkResume(this.resumeAttempt);
+    });
     this.readingResize.observe(this.messageList);this.readingResize.observe(this.messages);
     this.readRetry=this.button('重试读取',async()=>{
       if(this.readRetry.disabled||!this.sid)return;
@@ -45,7 +48,18 @@ class DesktopSessionsView {
     this.attachments=new ChatAttachments({root:this.attachmentList,button:this.attachButton,input:this.attachmentInput,canUpload:()=>this.state?.capabilities?.attachments===true,chooseReference:()=>window.BridgeFileActions.pickReference(this.workbench),paste:this.input,drop:this.form,onChange:()=>this.updateComposer(),upload:(key,id,file)=>this.uploadAttachment(key,id,file),preview:(key,id)=>this.attachmentUrl(key,id,'preview'),thumbnail:async(key,id,file)=>{const image=await this.attachments.thumbnailBlob(file);return this.uploadBinary(this.attachmentUrl(key,id,'thumb')+'&width='+image.width+'&height='+image.height,image.data,image.mime);}});
     const addAttachments=this.attachments.add.bind(this.attachments);this.attachments.add=files=>{if(!this.attachments.key||this.attachments.locked)return;if(this.overRequestLimit([...this.attachments.rows,...files])){this.attachments.error=this.requestLimitMessage();this.attachments.render();return;}if(this.state?.capabilities?.uploadFiles!==true&&(this.provider!=='claude'||this.state?.backend!=='cli')){if(files.some(file=>!file.type?.startsWith('image/'))){this.attachments.error='此应用的消息附件仅支持图片；其他文件请使用文件传输。';this.attachments.render();return;}}addAttachments(files);};
     this.conversation.append(head,this.notice,this.messages,this.requests,this.goalRoot,this.form);this.workbench=new Workbench({chat:this.conversation,request,csrf,notify,onUnauthorized,composer:this.input,onReference:()=>this.collapseComposer(false)});select.onchange=()=>this.choose(select.value);this.workbench.attachReference=info=>this.state?.capabilities?.projectReferences!==false&&this.attachments.addReference(info);
-    document.addEventListener('bridge-language',()=>this.relabel());const resume=()=>{clearTimeout(this.timer);if(document.hidden)this.listSync.reset();else{this.prefetchLists();if(this.provider!=='codex')this.refresh();}};document.addEventListener('visibilitychange',resume);window.addEventListener('focus',resume);window.addEventListener('pagehide',()=>this.saveDraft());
+    document.addEventListener('bridge-language',()=>this.relabel());
+    const resume=()=>{clearTimeout(this.timer);if(document.hidden)this.listSync.reset();else{this.prefetchLists();if(this.provider!=='codex')this.refresh();}};
+    const wakeResume=()=>{
+      const attempt=this.resumeAttempt;if(!attempt)return;
+      clearTimeout(attempt.timer);attempt.timer=null;
+      if(attempt.controller){attempt.wake=true;attempt.controller.abort();}
+      else this.checkResume(attempt);
+    };
+    document.addEventListener('visibilitychange',()=>{wakeResume();resume();});
+    window.addEventListener('focus',resume);
+    for(const event of ['offline','online','bridge-channel-changed','pageshow'])window.addEventListener(event,wakeResume);
+    window.addEventListener('pagehide',()=>this.saveDraft());
     this.workbench.stopTask=(session,taskId)=>session.provider===this.provider&&session.id===this.sid?this.mutate('stop-task',{taskId}):null;
     this.appearanceObserver=new MutationObserver(()=>{this.renderMessages(this.lastMessages||[]);this.workbench.setThumbnails(document.documentElement.dataset.showFileThumbnails==='true');});this.appearanceObserver.observe(document.documentElement,{attributes:true,attributeFilter:['data-show-reasoning','data-show-process','data-show-file-thumbnails']});
     const listRegion=this.node('div','session-list-region');this.listHint=this.button('',()=>{});this.listHint.className='list-sync';this.listHint.hidden=true;this.listHint.setAttribute('aria-live','polite');listRegion.append(this.rowsRoot,this.listHint);this.list.append(listRegion);
@@ -112,7 +126,7 @@ class DesktopSessionsView {
     if(provider===this.provider){this.freshDetail=false;this.detailRevision++;this.loading=null;this.listSync.reset();}
   }
   prefetchLists(){
-    if(document.hidden||this.root.hidden)return;
+    if(document.hidden||this.root.hidden||this.resumeAttempt)return;
     const now=Date.now();for(const client of this.clientStates||[]){
       if(!['claude','deepseek','zcode'].includes(client.id)||client.id===this.provider||!client.enabled||!this.sourceReadable(client)||client.operationUncertain)continue;
       if(now-Math.max(this.providerViews.get(client.id)?.cachedAt||0,this.listPrefetchAt.get(client.id)||0)<30000)continue;
@@ -123,6 +137,7 @@ class DesktopSessionsView {
     for(const client of clients){const old=this.clientStates?.find(row=>row.id===client.id);if(old&&(old.enabled!==false&&client.enabled===false||this.sourceReadable(old)&&!this.sourceReadable(client)))this.invalidateReads(client.id);}
     const before=this.clientStates?.find(client=>client.id===this.provider);this.clientStates=clients;this.retryClient=retry;this.initializeClient=initialize;this.refreshClients=refresh;this.reconnectClient=reconnect;
     const selected=clients.find(client=>client.id===this.provider),cliReadable=this.provider==='claude'&&this.state?.backend==='cli'&&selected?.enabled!==false&&this.sourceReadable(selected);
+    if(selected?.enabled===false&&this.resumeAttempt)this.resetResume(true);
     if(this.state&&!this.canMutate()&&!cliReadable&&!(this.sourceReadable(selected)&&this.canResume()))this.staleDetail();else this.updateComposer();
     const wasWaiting=before&&ClientLifecycle.connection(before).waiting;
     const sessionReady=client=>client?.pipeReady===true||client?.setupStatus==='session-access';
@@ -143,7 +158,7 @@ class DesktopSessionsView {
     return blocked&&!(client?.enabled!==false&&this.sourceReadable(client));
   }
   get isChatOpen(){return this.provider!=='codex'&&!!this.sid&&!this.conversation.hidden;}
-  bindDraftGateway(identity){if(this.draftGateway&&this.draftGateway!==identity){this.provisionalDrafts.clear();this.drafts.clear();for(let i=sessionStorage.length-1;i>=0;i--){const key=sessionStorage.key(i);if(key?.startsWith('desktop-draft:'))sessionStorage.removeItem(key);}}this.draftGateway=identity||'';}
+  bindDraftGateway(identity){if(this.draftGateway&&this.draftGateway!==identity){this.forgetResumes();this.provisionalDrafts.clear();this.drafts.clear();for(let i=sessionStorage.length-1;i>=0;i--){const key=sessionStorage.key(i);if(key?.startsWith('desktop-draft:'))sessionStorage.removeItem(key);}}this.draftGateway=identity||'';}
   saveDraft(){
     if(!this.sid||this.restoringDraft)return null;
     const key=this.provider+':'+this.sid,fields={quotes:this.quotes?.quotes.map(quote=>({...quote}))||[],text:this.input.value,selectionStart:this.input.selectionStart,selectionEnd:this.input.selectionEnd,sendMode:this.mode.value,skills:[...this.selectedSkills().keys()]};
@@ -214,14 +229,14 @@ class DesktopSessionsView {
   }
   async choose(provider,{previewOnly=false,loadList=true}={}){
     if(provider===this.provider)return;
-    this.resetMermaidScope();
+    this.resetResume();this.resetMermaidScope();
     this.modelDialog?.close();this.rememberView();this.quotes?.reset();this.listSync.reset();clearTimeout(this.timer);this.generation++;this.detailRevision++;this.provider=provider;this.previewOnly=previewOnly;this.select.value=provider;this.workbench.provider=provider;this.workbench.current=null;this.workbench.panel.hidden=true;this.workbench.tabs.replaceChildren();this.conversation.classList.remove('workbench-active','wb-split');this.sid=null;this.state=null;this.freshDetail=false;const saved=this.providerViews.get(provider);this.rows=saved?.rows||[];this.listStamp='';this.search.value=saved?.query||'';this.archived.checked=saved?.archived||false;if(saved?.listMode)this.listMode.value=saved.listMode;this.surfaceSelection=saved?.surface||'all';this.showSelection(false);
     this.container.hidden=provider==='codex';this.root.classList.toggle('desktop-mode',provider!=='codex');this.clientIcon.replaceChildren();if(provider!=='codex'){const img=this.node('img');img.src='/client-icons/'+provider+'.png';img.alt='';this.clientIcon.append(img);}this.clientIcon.className='client-icon client-'+provider;this.listStatus.textContent=this.rows.length?'':BridgeI18n.t('正在读取聊天…');this.renderList();this.rowsRoot.scrollTop=saved?.scroll||0;this.saveListSnapshot(provider);this.updateComposer();if(saved?.sid&&!previewOnly&&loadList)this.prepareChat(saved.sid);if(!previewOnly)this.onSelect(provider);
     this.renderConnectionStatus();if(provider!=='codex'&&!previewOnly&&loadList)await this.refresh();
   }
-  backToList(){if(!this.isChatOpen)return false;this.rememberReading();this.modelDialog?.close();this.saveDraft();this.quotes?.reset();this.workbench.cancelLocate();this.workbench.rememberScroll();this.workbench.stopThumbnails();this.sid=null;this.state=null;this.notificationPolicy=null;this.freshDetail=false;this.detailRevision++;this.showSelection(false);this.renderList();this.updateComposer();this.rememberView();this.onNavigation?.();this.onListEnter?.();return true;}
+  backToList(){if(!this.isChatOpen)return false;this.resetResume();this.rememberReading();this.modelDialog?.close();this.saveDraft();this.quotes?.reset();this.workbench.cancelLocate();this.workbench.rememberScroll();this.workbench.stopThumbnails();this.sid=null;this.state=null;this.notificationPolicy=null;this.freshDetail=false;this.detailRevision++;this.showSelection(false);this.renderList();this.updateComposer();this.rememberView();this.onNavigation?.();this.onListEnter?.();return true;}
   async accountChanged(provider,previous={},next={}){
-    this.onHistoryInvalidated?.();
+    this.forgetResumes(provider);this.onHistoryInvalidated?.();
     if(provider===this.provider)this.resetMermaidScope();
     if(provider===this.provider)this.modelDialog?.close();this.invalidateReads(provider);
     const identity=value=>JSON.stringify([provider,[...(value.activeIds||[value.activeId].filter(Boolean))].sort()]);
@@ -239,9 +254,10 @@ class DesktopSessionsView {
     if(provider!==this.provider)return;
     this.rows=[];this.listStamp='';this.lastMessages=[];this.requestStamp='';this.messageNodes.clear();this.messageList.replaceChildren();this.requests.replaceChildren();this.showSelection(false);this.renderList();this.updateComposer();await this.refresh();
   }
-  clear(){this.sendingPreview=null;this.sendFeedback.replaceChildren();this.sendFeedback.hidden=true;this.quotes?.reset();this.resetMermaidScope();this.modelDialog?.close();this.listSync.reset();this.readEpoch++;this.readTasks.clear();this.providerReadEpochs.clear();this.listPrefetchAt.clear();this.detailCacheSizes.clear();this.detailCacheBytes=0;this.clientStates=[];this.workbench.reset();clearTimeout(this.timer);this.generation++;this.detailRevision++;this.provider='codex';this.previewOnly=false;this.select.value='codex';this.select.hidden=true;this.container.hidden=true;this.root.classList.remove('desktop-mode');this.sid=null;this.state=null;this.showSelection(false);this.drafts.clear();this.provisionalDrafts.clear();for(let i=sessionStorage.length-1;i>=0;i--){const key=sessionStorage.key(i);if(key?.startsWith('desktop-draft:'))sessionStorage.removeItem(key);}this.accountDrafts.clear();this.skillSelections.clear();this.providerViews.clear();this.listCacheIdentity='';this.listCacheHost='';this.draftGateway='';this.draftScope=null;this.detailCache.clear();this.historyMessages=[];this.historyPage=null;this.historyRetry=false;this.historyBusy=false;this.activity.clear();this.freshDetail=false;this.rows=[];this.listStamp='';this.rowsRoot.replaceChildren();this.lastMessages=[];this.requestStamp='';this.pending.clear();this.attachments.reset();this.messageList.replaceChildren();this.requests.replaceChildren();this.messageNodes.clear();}
+  clear(){this.forgetResumes();this.sendingPreview=null;this.sendFeedback.replaceChildren();this.sendFeedback.hidden=true;this.quotes?.reset();this.resetMermaidScope();this.modelDialog?.close();this.listSync.reset();this.readEpoch++;this.readTasks.clear();this.providerReadEpochs.clear();this.listPrefetchAt.clear();this.detailCacheSizes.clear();this.detailCacheBytes=0;this.clientStates=[];this.workbench.reset();clearTimeout(this.timer);this.generation++;this.detailRevision++;this.provider='codex';this.previewOnly=false;this.select.value='codex';this.select.hidden=true;this.container.hidden=true;this.root.classList.remove('desktop-mode');this.sid=null;this.state=null;this.showSelection(false);this.drafts.clear();this.provisionalDrafts.clear();for(let i=sessionStorage.length-1;i>=0;i--){const key=sessionStorage.key(i);if(key?.startsWith('desktop-draft:'))sessionStorage.removeItem(key);}this.accountDrafts.clear();this.skillSelections.clear();this.providerViews.clear();this.listCacheIdentity='';this.listCacheHost='';this.draftGateway='';this.draftScope=null;this.detailCache.clear();this.historyMessages=[];this.historyPage=null;this.historyRetry=false;this.historyBusy=false;this.activity.clear();this.freshDetail=false;this.rows=[];this.listStamp='';this.rowsRoot.replaceChildren();this.lastMessages=[];this.requestStamp='';this.pending.clear();this.attachments.reset();this.messageList.replaceChildren();this.requests.replaceChildren();this.messageNodes.clear();}
   async refresh(){
     clearTimeout(this.timer);const generation=this.generation,provider=this.provider;if(this.previewOnly||provider==='codex'||document.hidden||this.root.hidden)return;
+    if(this.resumeAttempt){if(!this.resumeAttempt.timer&&!this.resumeAttempt.controller)this.checkResume(this.resumeAttempt);return;}
     if(this.renderConnectionStatus()){this.updateActivity(this.rows,false);this.renderIndicators();this.freshDetail=false;this.updateComposer();return;}
     if(this.loading?.generation===generation)return this.loading.promise;const loading={generation};this.loading=loading;
     const sid=this.sid;if(sid)this.detail(generation).catch(error=>{if(generation===this.generation&&sid===this.sid)this.showReadFailure(error);});
@@ -300,7 +316,7 @@ class DesktopSessionsView {
     this.reading={following,top:this.messages.scrollTop,anchor:following?null:captureChatScrollAnchor(this.messages,this.messageList)};
   }
   prepareChat(sid){
-    this.rememberReading();this.detailFailure='';this.resetMermaidScope();
+    this.resetResume();this.rememberReading();this.detailFailure='';this.resetMermaidScope();
     this.modelDialog?.close();this.saveDraft();this.sid=sid;this.workModes.open(JSON.stringify([this.draftGateway,this.provider,sid]));this.historyPage=null;this.historyMessages=[];this.historyBusy=false;this.historyRetry=false;this.draftScope=null;this.draftTouched=false;this.quotes?.reset();this.mode.value='send';this.state=null;this.notificationPolicy=null;this.freshDetail=false;this.detailRevision++;this.modelSelectionRevision++;const row=this.rows.find(r=>r.id===sid);this.title.textContent=row?.title||BridgeI18n.t('正在读取聊天…');this.status.textContent=BridgeI18n.t('正在连接…');this.input.value=this.draftGateway&&this.composerDrafts?'':this.drafts.get(this.provider+':'+sid)||'';this.requestStamp='';this.error.textContent='';this.notice.hidden=true;this.messageList.replaceChildren(this.translated('p','正在读取聊天…','muted'));this.messageNodes.clear();this.lastMessages=[];this.requests.replaceChildren();this.showSelection(true);this.attachments.open(JSON.stringify([this.provider,sid]));this.workbench.open(sid,'local');this.reading=this.workbench.current.reading||{top:0,following:true};const cached=this.detailCache.get(JSON.stringify([this.provider,sid]));if(cached&&typeof renderMarkdown==='function'){this.applyDetail(cached,true);}this.activity.read(this.provider+'|'+sid);this.updateComposer();this.renderList();this.resizeInput();this.rememberView();this.onNavigation?.();
   }
   async open(sid,{continueSelected=false}={}){
@@ -308,12 +324,14 @@ class DesktopSessionsView {
     const generation=this.generation;
     if(this.sid===sid&&this.isChatOpen){if(this.workbench.current?.active!=='chat')this.workbench.select('chat');this.activity.read(this.provider+'|'+sid);this.onNavigation?.();}
     else this.prepareChat(sid);
+    if(this.resumeAttempt)return;
+    if(continueSelected)this.resumeSelected=sid;
     try{
       await this.detail(generation);
       if(generation!==this.generation||sid!==this.sid)return;
       this.loadNotificationPolicy();
       const client=this.clientStates?.find(row=>row.id===this.provider);
-      if(continueSelected&&this.provider==='zcode'&&client?.pipeReady===true&&this.canResume())await this.mutate('resume',{});
+      if(continueSelected&&this.resumeSelected===sid&&this.provider==='zcode'&&client?.pipeReady===true&&this.canResume()){this.resumeSelected=null;await this.continueChat();}
     }catch(error){if(generation===this.generation&&sid===this.sid)this.showReadFailure(error);}
   }
   async detail(generation){
@@ -324,8 +342,77 @@ class DesktopSessionsView {
     const task=this.sharedRead(provider,'detail',sid),current=()=>task.current()&&generation===this.generation&&provider===this.provider&&sid===this.sid&&revision===this.detailRevision;let value;
     try{value=await task.promise;}catch(error){if(current()){this.staleDetail();throw error;}return;}if(!current())return;this.applyDetail(value);
   }
-  canMutate(){const client=this.clientStates?.find(row=>row.id===this.provider);if(!this.state||this.state.readOnly||!this.freshDetail||client?.enabled===false||this.state.connectionState==='detached'&&this.state.capabilities?.resume===true)return false;if(this.provider==='claude'&&this.state.backend==='cli')return ['ready','active','awaiting'].includes(this.state.connectionState);return !client||client.connected===true||this.state.controlScope==='session'&&this.state.connectionState==='ready'&&client.historyAvailable===true;}
+  canMutate(){const client=this.clientStates?.find(row=>row.id===this.provider);if(this.resumeAttempt||!this.state||this.state.readOnly||!this.freshDetail||client?.enabled===false||this.state.connectionState==='detached'&&this.state.capabilities?.resume===true)return false;if(this.provider==='claude'&&this.state.backend==='cli')return ['ready','active','awaiting'].includes(this.state.connectionState);return !client||client.connected===true||this.state.controlScope==='session'&&this.state.connectionState==='ready'&&client.historyAvailable===true;}
   canResume(){const client=this.clientStates?.find(row=>row.id===this.provider);return this.freshDetail&&client?.enabled!==false&&this.state?.capabilities?.resume===true&&(this.state.connectionState==='detached'||this.provider==='claude'&&this.state.backend==='cli');}
+  resumeStorageKey(){
+    return this.draftGateway&&this.sid?'desktop-resume:'+this.provider+':'+JSON.stringify([this.draftGateway,this.sid]):'';
+  }
+  savedResumeId(){
+    const key=this.resumeStorageKey();if(!key)return null;
+    const id=sessionStorage.getItem(key);
+    return typeof id==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)?id:null;
+  }
+  resetResume(finished=false){
+    const attempt=this.resumeAttempt;this.resumeAttempt=null;this.resumeSelected=null;
+    if(attempt){clearTimeout(attempt.timer);attempt.controller?.abort();}
+    if(finished){const key=attempt?.key||this.resumeStorageKey();if(key)sessionStorage.removeItem(key);}
+  }
+  forgetResumes(provider){
+    if(!provider||provider===this.provider)this.resetResume();
+    const prefix='desktop-resume:'+(provider?provider+':':'');
+    for(let i=sessionStorage.length-1;i>=0;i--){const key=sessionStorage.key(i);if(key?.startsWith(prefix))sessionStorage.removeItem(key);}
+  }
+  continueChat(){
+    if(!this.canResume())return;
+    if(this.state?.capabilities?.progressiveResume!==true)return this.mutate('resume',{});
+    if(this.resumeAttempt)return;
+    this.resumeSelected=null;
+    const key=this.resumeStorageKey(),id=this.savedResumeId()||this.requestId();
+    if(key)sessionStorage.setItem(key,id);
+    this.invalidateReads(this.provider);this.resumeAttempt={id,sid:this.sid,key,delay:1000,timeout:12000};
+    this.error.textContent='';this.renderNotice();
+    return this.checkResume(this.resumeAttempt);
+  }
+  async checkResume(attempt){
+    if(!attempt||attempt!==this.resumeAttempt||attempt.controller)return;
+    clearTimeout(attempt.timer);attempt.timer=null;
+    if(document.hidden||this.root.hidden||!this.isChatOpen||this.previewOnly||this.sid!==attempt.sid)return;
+    if(this.workbench.isFileVisible)return;
+    if(navigator.onLine===false){attempt.waitingNetwork=true;this.renderNotice();return;}
+    const controller=new AbortController(),started=Date.now();attempt.controller=controller;attempt.wake=false;
+    const timeout=setTimeout(()=>controller.abort(),attempt.timeout);
+    try{
+      const result=await this.request(this.path('resume',null),{sessionId:attempt.sid,id:attempt.id,progressive:true},controller.signal,()=>this.resumeAttempt===attempt);
+      if(attempt!==this.resumeAttempt||document.hidden||this.root.hidden||this.workbench.isFileVisible)return;
+      const elapsed=Date.now()-started;
+      attempt.timeout=Math.min(90000,Math.max(12000,attempt.timeout*.8,elapsed*2));
+      if(result.status==='ready'){
+        this.resetResume(true);this.invalidateReads(this.provider);this.renderNotice();this.updateComposer();
+        const generation=this.generation,sid=this.sid,current=()=>this.generation===generation&&this.sid===sid;
+        try{await this.detail(generation);}catch(error){if(current())this.showReadFailure(error);}
+        if(current()){clearTimeout(this.timer);this.timer=setTimeout(()=>this.refresh(),2000);}
+        return;
+      }
+      if(result.status!=='pending')throw Error(result.message||'未能接续原会话，请重试');
+      attempt.waitingNetwork=false;
+      if(Number.isInteger(result.progress)&&result.progress!==attempt.progress){attempt.delay=1000;attempt.progress=result.progress;}
+      attempt.delay=Math.max(attempt.delay,Math.min(12000,elapsed));
+    }catch(error){
+      if(attempt!==this.resumeAttempt)return;
+      if(error.name==='AbortError'||error.name==='TypeError'||error.name==='SyntaxError'&&error.status===200||[408,429,500,502,503,504,520,521,522,523,524,530].includes(error.status)){
+        attempt.waitingNetwork=true;
+        if(controller.signal.aborted&&!attempt.wake)attempt.timeout=Math.min(90000,attempt.timeout*2);
+      }else{
+        this.resetResume(true);this.error.textContent=BridgeI18n.t(error.message);this.status.textContent=BridgeI18n.t('连接失败');this.renderNotice();this.updateComposer();this.refresh();return;
+      }
+    }finally{clearTimeout(timeout);attempt.controller=null;}
+    if(attempt!==this.resumeAttempt)return;
+    this.renderNotice();
+    if(!document.hidden&&!this.root.hidden&&navigator.onLine!==false){
+      attempt.timer=setTimeout(()=>this.checkResume(attempt),attempt.wake?0:attempt.delay);
+      attempt.delay=Math.min(12000,attempt.delay*2);
+    }
+  }
   staleDetail(){this.freshDetail=false;this.renderRequests([]);this.requestStamp='';this.updateComposer();}
   showReadFailure(error){
     this.staleDetail();
@@ -343,9 +430,18 @@ class DesktopSessionsView {
     const requests=this.canMutate()?this.state.requests||[]:[],stamp=JSON.stringify([requests,BridgeI18n.language()]);if(stamp!==this.requestStamp){this.renderRequests(requests);this.requestStamp=stamp;}
     if(this.workbench.current)this.workbench.current.capabilities={...this.workbench.current.capabilities,tasks:this.state.capabilities.tasks===true};
     this.detailNotice=value.notice||'';this.renderNotice();if(!cached)this.updateActivity([this.state]);this.renderIndicators();
-    if(!cached)this.onDetailReady?.();
+    if(!cached){
+      if(this.canMutate()&&this.savedResumeId()){
+        this.resetResume(true);
+      }else if(this.canResume()&&this.state.capabilities.progressiveResume===true&&!this.resumeAttempt&&
+               (this.resumeSelected===this.sid||this.savedResumeId())){
+        this.continueChat();
+      }
+      this.onDetailReady?.();
+    }
   }
   renderNotice(){
+    if(this.resumeAttempt){const message=this.resumeAttempt.waitingNetwork?'正在等待网络恢复…':'正在接续原会话…';this.status.textContent=BridgeI18n.t(message);this.notice.textContent=BridgeI18n.t(message);this.notice.hidden=false;return;}
     if(this.detailFailure){this.notice.textContent=BridgeI18n.t(this.detailFailure);this.notice.append(this.readRetry);this.notice.hidden=false;return;}
     const resumable=this.canResume();this.notice.textContent=BridgeI18n.t(this.detailNotice||(resumable?'可先阅读聊天历史；继续时将恢复原会话。':''));this.notice.hidden=!this.detailNotice&&!resumable;if(resumable)this.notice.append(this.resumeButton);}
   sendingHere(preview=this.sendingPreview){return !!preview&&preview.provider===this.provider&&preview.sid===this.sid&&preview.gateway===this.draftGateway&&preview.account===(this.draftScope?.account||'');}
