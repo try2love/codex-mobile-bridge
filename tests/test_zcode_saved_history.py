@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -60,6 +61,16 @@ class ZCodeSavedHistoryTests(unittest.TestCase):
                 saved_detail(self.home, sid)
         with self.assertRaises(ValueError):
             saved_detail(self.home, 'sess_ok', {'historyBefore': '3'})
+
+    @unittest.skipUnless(os.name == 'nt', 'Requires the Windows filesystem')
+    def test_local_windows_extended_path_matches_the_same_native_directory(self):
+        with closing(sqlite3.connect(self.index)) as db:
+            db.execute("UPDATE tasks SET workspace_path = ? WHERE task_id = 'sess_ok'", (str(self.home),))
+            db.commit()
+        with closing(sqlite3.connect(self.transcript)) as db:
+            db.execute("UPDATE session SET directory = ? WHERE id = 'sess_ok'", ('\\\\?\\' + str(self.home),))
+            db.commit()
+        self.assertEqual(saved_detail(self.home, 'sess_ok')['session']['cwd'], str(self.home))
 
     def test_missing_profile_does_not_create_database(self):
         self.index.unlink()

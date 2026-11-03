@@ -26,7 +26,8 @@ from bridge.features.sessions import linux_permissions
 from bridge.clients.codex.ipc import DesktopIPC, IPCError
 from bridge.clients.errors import TaskStateUnavailable
 from bridge.clients.codex.app_server import AppServerError, AppServerUnavailable
-from bridge.clients.codex.cli_session import CliSessions, same_cwd
+from bridge.clients.codex.cli_session import CliSessions
+from bridge.features.sessions.identity import same_cwd
 from bridge.clients.desktop_app import DesktopApp
 from bridge.clients.codex.transport import ipc_endpoint
 from bridge.features.sessions.model import apply_patches, attachment_prompt, computer_use_approval, items_array, normalize_state, normalize_request, ordered_turns, pending_requests, async_requests, request_id, user_display_text

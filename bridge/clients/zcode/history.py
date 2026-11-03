@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from bridge.clients.errors import BridgeUnavailable
+from bridge.features.sessions.identity import same_cwd
 
 
 def _checked_db(path):
@@ -56,9 +57,7 @@ _TASKS = """
 
 
 def _session(row):
-    if not row or not row['workspace_path'] or not row['directory']:
-        return None
-    if os.path.normcase(row['workspace_path']) != os.path.normcase(row['directory']):
+    if not row or not same_cwd(row['workspace_path'], row['directory'], os.name == 'nt'):
         return None
     return {'id': row['task_id'], 'provider': 'zcode', 'host': 'local',
             'backend': 'desktop', 'title': row['title'], 'cwd': row['workspace_path'],

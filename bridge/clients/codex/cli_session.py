@@ -12,6 +12,7 @@ import time
 import uuid
 from pathlib import Path
 
+from bridge.features.sessions.identity import same_cwd
 from bridge.clients.codex.app_server import (
     AppServerError, AppServerUnavailable, AppServerUnknownResult, AppServerUnsupported, CodexAppServer)
 from bridge.clients.codex.catalog import Catalog, CatalogError, ModelStore, normalize_native_skills
@@ -99,19 +100,6 @@ def _local_cli(home, configured):
     if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
         return str(candidate)
     raise AppServerUnavailable('Codex CLI executable is unavailable')
-
-
-def same_cwd(saved, runtime, local_windows):
-    if not isinstance(saved, str) or not saved or not isinstance(runtime, str) or not runtime:
-        return False
-    if saved == runtime:
-        return True
-    if not local_windows:
-        return False
-    try:
-        return os.path.samefile(saved, runtime)
-    except (OSError, ValueError):
-        return False
 
 
 class CliSessions:
