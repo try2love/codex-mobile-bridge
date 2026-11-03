@@ -28,6 +28,29 @@ class WindowsPrivateRoute(unittest.TestCase):
                 with self.subTest(version=version), patch.object(zcode_pipe, 'product_version', return_value=version):
                     self.assertTrue(zcode_pipe.is_supported(app))
 
+    def test_only_original_desktop_children_are_excluded_from_main_pids(self):
+        from shlex import split
+        exe = Path('/install/ZCode.exe')
+        script = exe.parent/'resources/glm/zcode.cjs'
+        commands = {10: str(exe), 11: f'{exe} --type=utility --utility-sub-type=node.mojom.NodeService',
+                    12: f'{exe} {script} app-server --stdio --surface desktop',
+                    13: f'{exe} {script} __zcode-plugin-host plugin.js'}
+        ids = (10, 12, 13)
+        def row(pid, *, parent):
+            return {'pid': pid, 'image': os.path.normcase(str(exe)), 'session': 1, 'created': pid,
+                    'parent': parents[pid]}
+        parents = {10: 1, 11: 10, 12: 11, 13: 12}
+        with patch.object(zcode_pipe, '_windows_argv', side_effect=split), patch.object(zcode_pipe, '_identity', side_effect=row):
+            self.assertEqual(zcode_pipe.main_processes(exe, ids, commands), ([10], False))
+            parents[11] = 3  # Identical command lines from a different GUI cannot qualify.
+            self.assertEqual(zcode_pipe.main_processes(exe, ids, commands), ([10], True))
+            parents[11] = 10
+            parents[13] = 11
+            self.assertEqual(zcode_pipe.main_processes(exe, ids, commands), ([10], True))
+            parents[13] = 12
+            clone = {**commands, 12: f'{exe} /other/zcode.cjs app-server --stdio --surface desktop'}
+            self.assertTrue(zcode_pipe.main_processes(exe, ids, clone)[1])
+
     @unittest.skipUnless(sys.platform == 'win32', 'Windows Win32 and local named pipe')
     def test_session_identity_and_local_pipe_peer_process(self):
         name = r'\\.\pipe\cmb-zcode-test-' + uuid.uuid4().hex

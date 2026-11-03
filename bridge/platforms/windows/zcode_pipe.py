@@ -20,7 +20,7 @@ def _native():
     return _Native()
 
 
-def identity(pid):
+def _identity(pid, *, parent=False):
     native = _native()
     try:
         process = native.open(pid, terminate=False)
@@ -37,7 +37,75 @@ def identity(pid):
             raise ProcessLookupError(pid)
         if not native.session or row['session'] != native.session or not _same_user(native, process, own):
             raise PermissionError('ZCode 连接与当前 Windows 用户或桌面会话不匹配')
+        if parent:
+            # PROCESS_BASIC_INFORMATION, last field InheritedFromUniqueProcessId.
+            query = ctypes.WinDLL('ntdll').NtQueryInformationProcess
+            query.argtypes = [wintypes.HANDLE, wintypes.ULONG, ctypes.c_void_p, wintypes.ULONG, ctypes.POINTER(wintypes.ULONG)]
+            query.restype = wintypes.LONG
+            fields = (ctypes.c_size_t * 6)()
+            if query(process, 0, fields, ctypes.sizeof(fields), None) != 0:
+                raise PermissionError('无法核验 ZCode 子进程的原生所有者')
+            row['parent'] = fields[5]
         return row
+
+
+def identity(pid):
+    return _identity(pid)
+
+
+def main_processes(executable, candidates, commands):
+    # Windows uses the selected Electron image as Node for the workspace server
+    # and its plugins. Only the packaged entry and its actual owner chain qualify.
+    script = os.path.normcase(str(Path(executable).parent/'resources/glm/zcode.cjs'))
+    workers = {}
+    for pid in candidates:
+        command = commands.get(pid, '')
+        if 'zcode.cjs' not in command.casefold():
+            continue
+        argv = _windows_argv(command)
+        if len(argv) < 3 or os.path.normcase(argv[1]) != script:
+            continue
+        if tuple(argv[2:]) == ('app-server', '--stdio', '--surface', 'desktop'):
+            workers[pid] = 'server'
+        elif len(argv) >= 4 and argv[2] == '__zcode-plugin-host':
+            workers[pid] = 'plugin'
+    if not workers:
+        return candidates, False
+    roots = [pid for pid in candidates if pid not in workers]
+    if len(roots) != 1:
+        return roots, True
+    try:
+        root = _identity(roots[0], parent=True)
+        if root['image'] != os.path.normcase(str(executable)):
+            return roots, True
+        seen = {roots[0]: root}
+        def member(pid):
+            if pid not in commands:
+                raise ValueError('无法核对工作区运行时父进程')
+            if pid not in seen:
+                row = _identity(pid, parent=True)
+                if row['image'] != root['image'] or row['session'] != root['session']:
+                    raise ValueError('工作区运行时与原进程不匹配')
+                seen[pid] = row
+            return seen[pid]
+        for pid, role in workers.items():
+            child = member(pid)
+            if role == 'plugin':
+                if workers.get(child['parent']) != 'server':
+                    return roots, True
+                parent = member(child['parent'])
+                if child['created'] < parent['created']:
+                    return roots, True
+                child = parent
+            host = member(child['parent'])
+            args = _windows_argv(commands[host['pid']])
+            if ('--type=utility' not in args or '--utility-sub-type=node.mojom.NodeService' not in args or
+                    child['created'] < host['created'] or host['parent'] != root['pid'] or
+                    host['created'] < root['created']):
+                return roots, True
+        return roots, _identity(roots[0], parent=True) != root
+    except (OSError, ValueError):
+        return roots, True
 
 
 def process_args(pid):

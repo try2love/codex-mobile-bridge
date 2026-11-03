@@ -121,8 +121,11 @@ def _process_state(descriptor, app, pids, commands):
             unknown = True
         else:
             main.append(pid)
-    if sys.platform == 'linux' and descriptor['id'] == 'zcode':
-        from bridge.platforms.linux.zcode_pipe import main_processes
+    if sys.platform in ('linux', 'win32') and descriptor['id'] == 'zcode':
+        if sys.platform == 'win32':
+            from bridge.platforms.windows.zcode_pipe import main_processes
+        else:
+            from bridge.platforms.linux.zcode_pipe import main_processes
         main, ambiguous = main_processes(app.executable, main, commands)
         unknown = unknown or ambiguous
     if len(main) > 1 or len(hosts) > 1:
