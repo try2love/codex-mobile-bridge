@@ -15,6 +15,7 @@ import threading
 import uuid
 from pathlib import Path
 
+from bridge.features.sessions.create import runtime_environment
 from bridge.features.sessions.model import attachment_prompt, normalize_state, normalize_request
 from bridge.features.sessions.tool_images import TOOL_IMAGE_CACHE, public_turns
 from bridge.features.workspace.uploads import Uploads
@@ -44,7 +45,7 @@ class SideRuntime:
         self.closed = False
         options = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
         self.process = subprocess.Popen([str(executable), 'app-server', '--listen', 'stdio://'],
-            cwd=cwd, env={**os.environ, 'CODEX_HOME': str(home)}, stdin=subprocess.PIPE,
+            cwd=cwd, env=runtime_environment(home), stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding='utf-8', **options)
         self.reader = threading.Thread(target=self._read, daemon=True)
 

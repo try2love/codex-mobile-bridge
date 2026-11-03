@@ -90,15 +90,55 @@ class IdeProfileTests(CliBridgeFixture):
         self.assertEqual(self.bridge.project_host(project['key']), self.bridge.host)
         self.assertEqual(self.bridge.project_environments()[0]['host'], self.bridge.host)
 
-    def test_owner_timeout_allows_only_explicit_native_reconnect(self):
+    def test_owner_timeout_never_starts_a_competing_writer(self):
         self.bridge.ipc.connect = Mock()
         self.bridge.ipc.owner.side_effect = IPCError('桌面读取超时；尚未取得实时会话状态。')
-        session = self.bridge.session(self.thread_id, attach=False)
-        self.bridge._attach(session)
+        with self.assertRaisesRegex(IPCError, 'VS Code 原会话未响应'):
+            self.bridge.activate(self.thread_id)
         self.cli.attach.assert_not_called()
-        self.assertEqual(session.desktop_owner_probe, 'unknown')
+
+    def test_mutation_after_editor_closes_requires_explicit_headless_resume(self):
+        with self.assertRaisesRegex(IPCError, '主动继续'):
+            self.bridge._target(self.thread_id)
+        self.cli.attach.assert_not_called()
         self.assertTrue(self.bridge.activate(self.thread_id).connected)
         self.cli.attach.assert_called_once_with(self.thread_id, explicit=True)
+
+    def test_windows_ide_snapshot_follows_same_directory_and_reuses_verified_cwd(self):
+        from unittest.mock import patch
+        session = self.bridge.session(self.thread_id, attach=False)
+        session.saved_cwd = r'C:\Work\Project'
+        session.owner = 'editor'
+        session.desktop_owner_probe = 'found'
+        state = {**self.native_state, 'cwd': r'\\?\C:\Work\Project'}
+        def emit(change, version=11):
+            self.bridge._event({'method': 'thread-stream-state-changed', 'sourceClientId': 'editor',
+                                'version': version, 'params': {'hostId': 'local',
+                                'conversationId': self.thread_id, 'change': change}})
+        with patch('sys.platform', 'win32'), patch('os.path.samefile', return_value=True) as same:
+            emit({'type': 'snapshot', 'conversationState': state, 'revision': 1})
+            self.assertTrue(session.connected)
+            self.assertTrue(session.access['canEditMessages'])
+            self.assertTrue(session.access['canUseSideChat'])
+            self.assertTrue(session.access['canConfigure'])
+            self.assertEqual(session.runtime, 'desktop')
+            emit({'type': 'patches', 'baseRevision': 1, 'revision': 2, 'patches': []})
+            same.assert_called_once_with(session.saved_cwd, state['cwd'])
+            emit({'type': 'snapshot', 'conversationState': state, 'revision': 3}, version=7)
+        self.assertFalse(session.connected)
+        self.assertIn('不兼容', session.error)
+        self.assertFalse(session.access['canEditMessages'])
+        self.cli.attach.assert_not_called()
+
+    def test_unrelated_legacy_stream_does_not_disconnect_current_editor(self):
+        session = self.bridge.session(self.thread_id, attach=False)
+        self.bridge.ipc.follow = Mock()
+        session.connected, session.runtime, session.owner = True, 'desktop', 'editor'
+        session.desktop_owner_probe = 'found'
+        self.bridge._event({'method': 'thread-stream-state-changed', 'version': 7,
+                            'sourceClientId': 'other-editor', 'params': {
+                                'hostId': 'local', 'conversationId': self.thread_id, 'change': {}}})
+        self.assertTrue(session.connected)
 
     def test_other_owner_failures_cannot_bypass_identity_checks(self):
         self.bridge.ipc.connect = Mock()

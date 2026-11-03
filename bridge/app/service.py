@@ -26,7 +26,7 @@ from bridge.features.sessions import linux_permissions
 from bridge.clients.codex.ipc import DesktopIPC, IPCError
 from bridge.clients.errors import TaskStateUnavailable
 from bridge.clients.codex.app_server import AppServerError, AppServerUnavailable
-from bridge.clients.codex.cli_session import CliSessions
+from bridge.clients.codex.cli_session import CliSessions, same_cwd
 from bridge.clients.desktop_app import DesktopApp
 from bridge.clients.codex.transport import ipc_endpoint
 from bridge.features.sessions.model import apply_patches, attachment_prompt, computer_use_approval, items_array, normalize_state, normalize_request, ordered_turns, pending_requests, async_requests, request_id, user_display_text
@@ -281,7 +281,7 @@ class Bridge:
         if host == 'local' and sys.platform == 'win32':
             from bridge.features.accounts.wsl_accounts import WslAccounts
             self.wsl_accounts = WslAccounts(self)
-        self.goal = goal_rpc or (GoalRPC(codex_home, codex_bin, executable_getter=executable_getter) if host == 'local' else None)
+        self.goal = goal_rpc or (GoalRPC(codex_home, codex_bin, executable_getter=executable_getter) if self.local else None)
         self.owner_goal = owner_goal
         self.goal_transport = 'owner' if owner_goal else 'sidecar'
         self._open_desktop = open_in_desktop
@@ -290,7 +290,7 @@ class Bridge:
         self.cli_sessions = cli_sessions or CliSessions(self.codex_home, self._cli_state, self._cli_disconnected, alias=alias, allow_installed_runtime=host.startswith('codex:'))
         self.lock = threading.RLock()
         self.ipc = DesktopIPC(ipc_path or ipc_endpoint(codex_home), self._event, self._disconnected)
-        self.side_chats = SideChats(codex_bin, self.codex_home, self.data_dir, host,
+        self.side_chats = SideChats(codex_bin, self.codex_home, self.data_dir, self.native_host,
                                    executable_getter=executable_getter)
         self.closed = threading.Event()
         self.native_model_store = ModelStore(self.data_dir)
@@ -388,7 +388,7 @@ class Bridge:
         return account_guard(self, provider, row, read_only=read_only, release_idle=release_idle)
 
     def _goal_runtime_available(self):
-        if self.host != "local":
+        if not self.local:
             return False
         if self.owner_goal is not None:
             return True
@@ -400,7 +400,7 @@ class Bridge:
             native = session.connected and session.runtime == 'cli'
             known = session.native_goal_supported
         if not native:
-            return self.host == 'local' and self._goal_runtime_available()
+            return self._goal_runtime_available()
         if known is None:
             try:
                 known = self.cli_sessions.supports_goal(session.id)
@@ -440,7 +440,7 @@ class Bridge:
 
     def _native_goal_state(self, thread_id, *, strict=False):
         session = self.live.get(thread_id)
-        if self.host != 'local' and not (session and session.origin in ('cli', 'ide') and session.connected and session.runtime == 'cli'):
+        if not self.local and not (session and session.origin in ('cli', 'ide') and session.connected and session.runtime == 'cli'):
             raise GoalUnsupported('目标模式暂不支持 SSH 桌面会话')
         if self.goal or session and session.origin in ('cli', 'ide') and session.runtime == 'cli':
             try:
@@ -1056,7 +1056,9 @@ class Bridge:
                     title = (entry['sourceTitle'][:90] + ' · 分支')
                     args = dict(cwd=snapshot['cwd'], source_id=thread_id, turn_id=entry['turnId'], title=title, settings=settings)
                     try:
-                        if self.host == 'local':
+                        if self.local:
+                            if self.host.startswith('codex:'):
+                                args['thread_source'] = 'cli'
                             child = fork_copy(self.catalog_reader.executable, self.codex_home, **args)
                         else:
                             host = self.hosts.hosts()[self.host]
@@ -1351,25 +1353,30 @@ class Bridge:
     def _access(self, origin, session=None):
         desktop = origin not in ('cli', 'ide') and not self.host.startswith('codex:')
         connected = bool(session and session.connected)
+        desktop_controls = desktop or bool(connected and origin == 'ide' and session.runtime == 'desktop' and self.local)
         writable = desktop or connected
-        reconnect = desktop or origin in ('cli', 'ide') and (bool(session and session.desktop_owner_probe == 'found') or self.cli_sessions.available())
+        reconnect = desktop or origin == 'ide' or origin == 'cli' and (bool(session and session.desktop_owner_probe == 'found') or self.cli_sessions.available())
         cli_controls = connected and origin in ('cli', 'ide')
-        goal = ((self.host == 'local' and self._goal_runtime_available())
+        goal = (self._goal_runtime_available()
                 if not session or session.runtime != 'cli' else session.native_goal_supported is True)
         return {'source': origin, 'runtime': (session.runtime if connected else None),
                 'readOnly': not writable, 'canSend': writable, 'canInterrupt': writable,
                 'canApprove': writable, 'canReconnect': reconnect,
-                'canConfigure': desktop, 'canChangePermissions': desktop or cli_controls,
+                'canConfigure': desktop_controls, 'canChangePermissions': desktop or cli_controls,
                 'canChangeModel': desktop or cli_controls,
                 'canSelectSkills': desktop or cli_controls,
                 'canUseModes': desktop or cli_controls,
                 'canUseGoal': (desktop and self.host == 'local') or cli_controls and goal,
-                'canUseSideChat': desktop, 'canEditMessages': desktop,
+                'canUseSideChat': desktop_controls, 'canEditMessages': desktop_controls,
                 'reason': None if reconnect else '未找到可用的 Codex CLI 后台服务或已安装的服务包；请先在电脑上安装或更新 Codex CLI，并运行一次。'}
 
     def _require_desktop_feature(self, thread_id):
         metadata = self.store.get(thread_id)
-        if metadata.get('origin') in ('cli', 'ide'):
+        if metadata.get('origin') == 'ide':
+            session = self.session(thread_id, attach=False, background=True)
+            if not self.local or not session.connected or session.runtime != 'desktop':
+                raise ValueError('此功能需要已连接的本机 VS Code 原会话')
+        elif metadata.get('origin') == 'cli':
             raise ValueError('此功能请在原 CLI 中操作。')
 
     def cli_network(self, thread_id, body=None):
@@ -1785,11 +1792,11 @@ class Bridge:
 
     @operation
     def side_chat(self, thread_id, owner, action, body):
-        self._require_desktop_feature(thread_id)
         self.store.get(thread_id)
         snapshot = settings = None
         if action == 'create':
-            if self.host != 'local':
+            self._require_desktop_feature(thread_id)
+            if not self.local:
                 raise ValueError('此预览暂支持网关电脑上的聊天，SSH 远程工作区尚未接入侧边聊天')
             # Follow only: creating a child must never resume or execute the parent.
             session = self.session(thread_id, attach=True)
@@ -1806,7 +1813,7 @@ class Bridge:
                     raise ValueError('当前权限配置暂不支持临时侧边聊天')
                 settings['sandbox'] = modes[policy['type']]
         result = self.side_chats.operate(thread_id, action, body, snapshot, settings, self.catalog_reader)
-        if (self.host == 'local' and isinstance(result, dict) and result.get('id') and
+        if (self.local and isinstance(result, dict) and result.get('id') and
                 result.get('cwd') and result.get('provider')):
             result['modelCatalogIdentity'] = self.catalog_reader.model_identity(result['cwd'], result['provider'])
         return result
@@ -2027,7 +2034,8 @@ class Bridge:
                             session.error = None
                         else:
                             session.desktop_owner_probe = 'unknown'
-                            session.error = str(exc)
+                            session.error = ('VS Code 原会话未响应，尚未确认执行归属。请重新连接；如使用旧版 Codex 扩展，请先更新扩展。'
+                                             if session.origin == 'ide' and str(exc) == '桌面读取超时；尚未取得实时会话状态。' else str(exc))
                         session.access = self._access(session.origin, session)
                         session.changed()
                 return
@@ -2085,7 +2093,7 @@ class Bridge:
                 raise IPCError(session.error) from exc
 
     @operation
-    def activate(self, thread_id):
+    def activate(self, thread_id, *, allow_ide_resume=True):
         """Explicit phone operation only; reads and notification watches never navigate."""
         session = self.session(thread_id, background=True)
         if self.host.startswith('codex:') and self.store.get(thread_id).get('origin') == 'desktop':
@@ -2112,9 +2120,9 @@ class Bridge:
                     self._attach(session)
                 if session.connected:
                     return session
-                native_retry = (session.origin == 'ide' and session.desktop_owner_probe == 'unknown'
-                                and session.error == '桌面读取超时；尚未取得实时会话状态。')
-                if session.origin in ('cli', 'ide') and session.desktop_owner_probe != 'absent' and not native_retry:
+                if session.origin == 'ide' and not allow_ide_resume:
+                    raise IPCError(session.error or 'VS Code 原会话尚未连接。若编辑器已关闭，请主动继续此会话以启用后台接续。')
+                if session.origin in ('cli', 'ide') and session.desktop_owner_probe != 'absent':
                     raise IPCError(session.error or '正在等待原 Codex App 会话快照；未启动 CLI 后台服务。')
                 if self.closed.is_set():
                     raise IPCError('网关正在停止；操作未发送，请稍后重试。')
@@ -2123,7 +2131,7 @@ class Bridge:
                         with session.condition:
                             if session.connected:
                                 return session
-                            if session.desktop_owner_probe != 'absent' and not native_retry:
+                            if session.desktop_owner_probe != 'absent':
                                 raise IPCError(session.error or '正在等待原 Codex App 会话快照；未启动 CLI 后台服务。')
                             session.native_attaching = True
                         try:
@@ -2182,9 +2190,6 @@ class Bridge:
             return
         if message.get("method") != "thread-stream-state-changed":
             return
-        if message.get("version") != 11:
-            self._disconnected()
-            return
         params = message.get("params", {})
         if params.get("hostId") != self.native_host:
             return
@@ -2197,6 +2202,11 @@ class Bridge:
             if session.origin in ('cli', 'ide') and (session.native_attaching or session.runtime == 'cli' and session.connected):
                 return
             if session.origin in ('cli', 'ide') and session.desktop_owner_probe != 'found':
+                return
+            if message.get('version') != 11:
+                if session.owner and session.owner == message.get('sourceClientId'):
+                    self._invalidate(session, '原客户端的会话同步协议与网关不兼容，请更新 Codex 客户端后重连。',
+                                     runtime='desktop', owner=session.owner, reason='desktop_stream_version')
                 return
             if session.discovering and session.origin not in ('cli', 'ide') and change.get("type") == "snapshot" and (change.get("conversationState") or {}).get("id") == session.id:
                 session.owner = message.get("sourceClientId")
@@ -2217,10 +2227,12 @@ class Bridge:
                 if state.get('id') != session.id:
                     reason = 'thread_id_mismatch'
                     raise ValueError("Session mismatch")
+                previous_cwd = session.state.get('cwd') if session.connected and session.state else None
                 if session.origin in ('cli', 'ide') and (state.get('hostId', self.native_host) != self.native_host or
                         not session.saved_cwd or not session.saved_provider or
-                        state.get('cwd') != session.saved_cwd or
-                        state.get('modelProvider') != session.saved_provider):
+                        state.get('modelProvider') != session.saved_provider or
+                        not (previous_cwd and previous_cwd == state.get('cwd') or
+                             same_cwd(session.saved_cwd, state.get('cwd'), self.local and sys.platform == 'win32'))):
                     reason = 'owner_identity_mismatch'
                     raise ValueError("CLI owner identity mismatch")
                 newly_connected = not session.connected or session.runtime != 'desktop'
@@ -2321,7 +2333,7 @@ class Bridge:
     def _target(self, thread_id):
         if self.released_cli.contains(thread_id):
             raise IPCError('CLI 连接已释放，请点击继续会话重新连接')
-        session = self.activate(thread_id)
+        session = self.activate(thread_id, allow_ide_resume=False)
         with session.condition:
             if not session.connected or not session.owner:
                 raise IPCError(session.error or "请先在桌面 App 打开此聊天")
@@ -2408,7 +2420,7 @@ class Bridge:
         with session.condition:
             session.access = self._access(session.origin, session)
         view = session.view()
-        if linux_permissions.enabled(self.host):
+        if linux_permissions.enabled(self.native_host):
             view["linuxPermissionChecks"] = True
             with session.condition:
                 if session.connected:
@@ -2529,7 +2541,7 @@ class Bridge:
         if (latest_goal_command and latest_goal_command[1].get('action') == 'create' and
                 (latest_goal_command[1].get('response') or {}).get('confirmed') and
                 time.time() - latest_goal_command[1].get('confirmedAt', latest_goal_command[1].get('at', 0)) > 1 and
-                self.host == 'local' and native_goal_absent(self.codex_home, session.id)):
+                self.local and native_goal_absent(self.codex_home, session.id)):
             view['goal'] = None
             return
         goals = [(k, v) for k, v in merged.items() if v.get("workMode") == "goal"]
@@ -2741,7 +2753,7 @@ class Bridge:
                     attachments.append({'type': 'file', 'name': name})
 
     def _overlay_native_goal(self, session, thread_id, view):
-        if self.host != "local" or session.runtime == "cli":
+        if not self.local or session.runtime == "cli":
             return view
         native_goal = normalize_goal(read_native_goal(self.codex_home, thread_id))
         if native_goal:
@@ -2789,7 +2801,7 @@ class Bridge:
                 result['meta'] = dict(result['meta'], host=self.host,
                                       hostLabel=self.host_label,
                                       goalRuntimeAvailable=goal_available)
-                if linux_permissions.enabled(self.host):
+                if linux_permissions.enabled(self.native_host):
                     result['meta']['linuxPermissionChecks'] = True
                     if session.connected:
                         result['meta']['permissionMode'] = linux_permissions.current_mode(session.state)
@@ -3116,7 +3128,7 @@ class Bridge:
         session = self.session(thread_id, attach=False, background=True)
         if session.connected and session.runtime == 'cli':
             return self.cli_sessions.permission_options(thread_id)[1]
-        if not linux_permissions.enabled(self.host):
+        if not linux_permissions.enabled(self.native_host):
             raise ValueError('此主机未启用 Linux 权限检查')
         self.store.get(thread_id)
         # Picker inspection must not activate the desktop or change the owner.
@@ -3153,7 +3165,7 @@ class Bridge:
             settings = {'approvalPolicy': 'never' if preset == 'full-access' else 'on-request',
                         'approvalsReviewer': 'auto_review' if preset == 'auto-review' else 'user',
                         'permissions': profile, 'activePermissionProfile': {'id': profile, 'extends': None}}
-            if linux_permissions.enabled(self.host):
+            if linux_permissions.enabled(self.native_host):
                 facts, options = self._linux_permission_options(session)
                 linux_permissions.require_permission(options, preset)
                 settings = linux_permissions.permission_settings(preset, facts)
@@ -3164,7 +3176,7 @@ class Bridge:
                 raise IPCError('桌面未应用权限设置，请刷新后重试')
         with session.condition:
             confirmed = session.condition.wait_for(lambda: (linux_permissions.current_mode(session.state)
-                if linux_permissions.enabled(self.host) else session.view().get('permissionMode')) == preset, timeout=5)
+                if linux_permissions.enabled(self.native_host) else session.view().get('permissionMode')) == preset, timeout=5)
         return {'applied': True, 'confirmed': confirmed, 'permissionMode': preset}
 
     @operation
@@ -3289,7 +3301,7 @@ class Bridge:
     def _goal_control(self, thread_id, request_id, action, *, status=None, objective=None, ui_locale=None, expected=None):
         uuid.UUID(request_id)
         session = self.session(thread_id, attach=False, background=True)
-        if self.host != 'local' and not (session.origin in ('cli', 'ide') and session.connected and session.runtime == 'cli'):
+        if not self.local and not (session.origin in ('cli', 'ide') and session.connected and session.runtime == 'cli'):
             raise ValueError('目标模式暂不支持 SSH 主机')
         if session.origin not in ('cli', 'ide') and self.goal is None:
             raise ValueError('目标模式暂不支持 SSH 主机')
@@ -3456,12 +3468,12 @@ class Bridge:
                 raise ValueError("目标模式暂不支持附件")
             if skills:
                 raise ValueError("目标模式只接受纯文本目标")
-            if self.host != 'local':
+            if not self.local:
                 session = self.session(thread_id, attach=False, background=True)
                 if not (session.origin in ('cli', 'ide') and session.connected and session.runtime == 'cli'):
                     raise ValueError('目标模式暂不支持 SSH 主机')
             session = self._target(thread_id)
-            if self.host != 'local' and not (session.origin in ('cli', 'ide') and session.connected and session.runtime == 'cli'):
+            if not self.local and not (session.origin in ('cli', 'ide') and session.connected and session.runtime == 'cli'):
                 raise ValueError('目标模式暂不支持 SSH 主机')
             if session.origin not in ('cli', 'ide') and self.goal is None:
                 raise ValueError('目标模式暂不支持 SSH 主机')
@@ -3646,7 +3658,7 @@ class Bridge:
 
     def full_history(self, thread_id):
         session = self.session(thread_id, attach=False)
-        if session.origin in ('cli', 'ide'):
+        if session.origin in ('cli', 'ide') and not (session.origin == 'ide' and session.connected and session.runtime == 'desktop'):
             fallback = self.store.history(thread_id, turn_limit=None)
             with session.condition:
                 session.set_history(fallback)

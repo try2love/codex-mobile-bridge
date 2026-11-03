@@ -28,12 +28,20 @@ class ForkUnavailable(CreationUnavailable):
     """The capability check failed before any thread could be created."""
 
 
+def runtime_environment(codex_home):
+    # User-scoped helpers must use this profile's configured databases, even
+    # when the gateway itself was launched by an editor using a SQL override.
+    env = dict(os.environ, CODEX_HOME=str(codex_home))
+    env.pop('CODEX_SQLITE_HOME', None)
+    return env
+
+
 def _runtime_operation(executable, codex_home, cwd, operation, *, failure_message=None):
     if not executable:
         raise CreationUnavailable('找不到 Codex 运行时，请在电脑启动器的运行配置中指定路径')
     if not Path(cwd).is_dir():
         raise CreationUnavailable('项目目录不存在，请先在电脑 App 中检查项目')
-    env = dict(os.environ, CODEX_HOME=str(codex_home))
+    env = runtime_environment(codex_home)
     kwargs = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
     try:
         process = subprocess.Popen([str(executable), 'app-server', '--listen', 'stdio://'],
@@ -304,7 +312,7 @@ def create_empty(executable, codex_home, cwd, title, project=None):
     return _runtime_operation(executable, codex_home, cwd, create)
 
 
-def fork_copy(executable, codex_home, cwd, source_id, turn_id, title, settings):
+def fork_copy(executable, codex_home, cwd, source_id, turn_id, title, settings, *, thread_source=None):
     if not executable:
         raise ForkUnavailable('找不到 Codex 运行时，请在电脑启动器的运行配置中指定路径')
     # Check the bundled runtime, not a guessed version. Older servers can silently
@@ -320,12 +328,15 @@ def fork_copy(executable, codex_home, cwd, source_id, turn_id, title, settings):
         if result.returncode or not paths:
             raise ForkUnavailable('此 Codex 版本暂不支持安全分支，请更新电脑 Codex App')
         properties = json.loads(paths[0].read_text(encoding='utf-8')).get('properties', {})
-        if not {'lastTurnId', 'deferGoalContinuation'} <= properties.keys():
+        required = {'lastTurnId', 'deferGoalContinuation'}
+        if thread_source is not None:
+            required.add('threadSource')
+        if not required <= properties.keys():
             raise ForkUnavailable('此 Codex 版本暂不支持安全分支，请更新电脑 Codex App')
     def fork(request):
         result = request('thread/fork', {'threadId': source_id, 'lastTurnId': turn_id,
                                         'deferGoalContinuation': True, 'ephemeral': False,
-                                        'cwd': cwd, **settings})
+                                        'cwd': cwd, **settings, **({'threadSource': thread_source} if thread_source else {})})
         thread = result['thread']
         uuid.UUID(thread['id'])
         if thread['id'] == source_id:

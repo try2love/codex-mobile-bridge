@@ -111,6 +111,15 @@ class CliSessionTests(unittest.TestCase):
         start.assert_called_once_with()
         self.assertEqual(self.fake.connect.call_count, 2)
 
+    def test_incomplete_cli_package_returns_actionable_diagnostic(self):
+        from unittest.mock import patch
+        self.sessions.allow_installed_runtime = True
+        response = Mock(returncode=1, stderr='Error: this CLI has no complete local package')
+        with patch('bridge.clients.codex.cli_session._managed_cli', return_value=self.home/'codex'), \
+                patch('subprocess.run', return_value=response):
+            with self.assertRaisesRegex(AppServerUnavailable, '安装或修复完整的 Codex CLI'):
+                self.sessions._start_daemon()
+
     def test_explicit_attach_resumes_saved_thread_and_preserves_identity(self):
         self.fake.loaded = False
         saved = {'id': 'thread-a', 'origin': 'cli', 'cwd': '/original/project',
