@@ -57,6 +57,39 @@ class ProfileRegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'sqlite_home'): self.registry.save_local(str(self.other), 'IDE')
 
 
+class RuntimeEnvironmentTests(unittest.TestCase):
+    def test_helpers_preserve_default_database_and_isolate_extra_home(self):
+        import os
+        from unittest.mock import patch
+        from bridge.features.sessions.create import _runtime_operation, CreationUnavailable
+        from bridge.features.sessions.goal import GoalError
+        with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as directory, \
+                patch.dict(os.environ, {'CODEX_SQLITE_HOME': '/default/sqlite'}):
+            root = Path(directory)
+            for host in ('local', 'codex:'+'1'*32):
+                home = root / host.replace(':', '-')
+                home.mkdir()
+                bridge = Bridge(home, home/'data', host=host, codex_bin=__file__)
+                try:
+                    with self.subTest(host=host), patch('subprocess.Popen', side_effect=OSError('probe')) as popen:
+                        def check():
+                            env = popen.call_args.kwargs['env']
+                            self.assertEqual(env['CODEX_HOME'], str(home))
+                            self.assertEqual(env.get('CODEX_SQLITE_HOME'), '/default/sqlite' if host=='local' else None)
+                            popen.reset_mock()
+                        with self.assertRaises(GoalError):
+                            bridge.goal.start()
+                        check()
+                        with self.assertRaises(OSError):
+                            bridge.side_chats.factory(__file__, home, 'parent', str(home), {'model':'fixture', 'modelProvider':'fixture'})
+                        check()
+                        with self.assertRaises(CreationUnavailable):
+                            _runtime_operation(__file__, home, home, lambda request: None, isolated_home=host.startswith('codex:'))
+                        check()
+                finally:
+                    bridge.close()
+
+
 class IdeProfileTests(CliBridgeFixture):
     def setUp(self):
         super().setUp()

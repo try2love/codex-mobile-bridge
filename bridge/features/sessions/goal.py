@@ -231,7 +231,8 @@ class GoalRPC:
         'thread/goal/clear',
     }
 
-    def __init__(self, home, executable, *, executable_getter=None):
+    def __init__(self, home, executable, *, executable_getter=None, isolated_home=False):
+        self.isolated_home = isolated_home
         self.home, self._executable = Path(home), Path(executable) if executable else None
         self.executable_getter = executable_getter
         self.process = None
@@ -257,7 +258,7 @@ class GoalRPC:
                 self.messages = messages
                 self.process = subprocess.Popen(
                     [str(executable), 'app-server', '--listen', 'stdio://'], cwd=self.home,
-                    env=runtime_environment(self.home), stdin=subprocess.PIPE,
+                    env=runtime_environment(self.home, isolated_home=self.isolated_home), stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding='utf-8', **options)
                 reader = threading.Thread(target=self._read, args=(messages, self.process.stdout), daemon=True)
                 reader.start()
