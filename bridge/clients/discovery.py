@@ -63,7 +63,7 @@ def discover_clients(preferences=None, *, platform=None, home=None, env=None, ap
     homes['claude'] = native.claude_home(home, env)
     result = {}
     for provider, name in NAMES.items():
-        if provider == 'zcode' and platform not in ('darwin', 'win32'):
+        if provider == 'zcode' and platform not in ('darwin', 'win32', 'linux'):
             continue
         override = preferences.get(provider+'Application') or preferences.get(provider+'Executable')
         if provider == 'codex':
