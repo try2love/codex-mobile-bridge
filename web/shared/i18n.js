@@ -2,6 +2,13 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"ZCode 已启动，正在连接原生会话服务。":"ZCode is running. Connecting to its chat service.",
+"ZCode 的会话服务长时间未就绪，请重试连接。":"ZCode’s chat service stopped making progress. Try connecting again.",
+"ZCode 原进程已变化，请重新连接。":"The ZCode process changed. Reconnect to continue.",
+"原会话接续已过期，请重新连接。":"This reconnect request expired. Reconnect to continue.",
+"此聊天有另一次接续，请等待其完成":"Another reconnect is in progress for this chat. Wait for it to finish.",
+"接续已失效，请重新连接":"This reconnect request expired. Reconnect to continue.",
+"正在恢复的会话较多，请稍后连接。":"Several chats are reconnecting. Try again shortly.",
 "正在等待网络恢复…":"Waiting for the network…",
 "正在接续原会话…":"Reconnecting to this chat…",
 "未能接续原会话，请重试":"Could not reconnect to this chat. Try again.",
