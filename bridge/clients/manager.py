@@ -170,7 +170,7 @@ class DesktopSessions:
             self.bridge.accounts.require_client_enabled = self._codex_guard
 
     def _configure_zcode(self):
-        if sys.platform not in ('darwin', 'win32'):
+        if sys.platform not in ('darwin', 'win32', 'linux'):
             return
         from bridge.clients.zcode.adapter import ZCodeDesktop, ZCodePrototype
         legacy = self.config.get('zcodePrototype')
@@ -179,13 +179,16 @@ class DesktopSessions:
             if 'zcode' in self.adapters:
                 self.adapters = {key: item for key, item in self.adapters.items() if key != 'zcode'}
             return
-        compatibility = self.config.get('zcodeCompatibility')
+        compatibility = False if sys.platform == 'linux' else self.config.get('zcodeCompatibility')
         # Legacy profiles may reuse a verified listener. Starting one requires
         # the separate compatibility preference or explicit initialization.
         source = row if row.get('installed') else legacy or {}
         application = source.get('application')
-        if sys.platform == 'darwin' and application:
-            from bridge.clients.zcode.pipe_host import PipeHostClient
+        if application:
+            if sys.platform == 'darwin':
+                from bridge.clients.zcode.pipe_host import PipeHostClient
+            else:
+                from bridge.clients.zcode.local_pipe_host import LocalPipeClient as PipeHostClient
             if self.zcode_pipe is None or str(self.zcode_pipe.application) != application:
                 self.zcode_pipe = PipeHostClient(self.directory.parent, application)
         else:
@@ -1936,10 +1939,10 @@ class DesktopSessions:
                              'confirmTaskState': True, 'historyAvailable': status.get('historyAvailable') is True,
                              'pipeSupported': zcode['pipeSupported'], 'compatibilitySupported': zcode['compatibilitySupported'],
                              'pipeReady': bool(getattr(self.adapters['zcode'], 'pipe', None) and (connected or status.get('sessionAccess'))),
-                             'initializationMode': 'zcode-local-compatibility',
+                             'initializationMode': 'zcode-local-compatibility' if zcode['compatibilitySupported'] else 'private-pipe',
                              'canInitializeDesktop': bool(self.gateway_running and (zcode['pipeSupported'] or zcode['compatibilitySupported'])
                                                           and not (connected or status.get('sessionAccess'))),
-                             'compatibilityLaunch': self.config.get('zcodeCompatibility') is True,
+                             'compatibilityLaunch': zcode['compatibilitySupported'] and self.config.get('zcodeCompatibility') is True,
                              'capabilities': {'create': status.get('canCreate') is True, 'accounts': True,
                                               'notifications': True}})
             from bridge.clients.lifecycle import inspect_clients
@@ -2211,7 +2214,8 @@ class DesktopSessions:
         acknowledge_unavailable = value.get('acknowledgeUnavailable', False)
         if 'acknowledgeUnavailable' in value and (acknowledge_unavailable is not True or
                 provider not in ('codex', 'zcode') or not initialize_zcode and (enabled or value.get('quitDesktop') is not True) or
-                value.get('forceDesktop') or sys.platform not in ('darwin', 'win32') or
+                value.get('forceDesktop') or sys.platform not in ('darwin', 'win32', 'linux') or
+                sys.platform == 'linux' and provider != 'zcode' or
                 not self.gateway_running or provider == 'codex' and (not self.bridge or
                 not self.bridge.desktop_restart_recommended())):
             raise ValueError('桌面恢复退出确认无效，请重新检查连接状态')
@@ -2259,7 +2263,7 @@ class DesktopSessions:
                 elif provider == 'zcode' and (initialize_zcode or descriptor['pipeSupported'] or
                                                self.config.get('zcodeCompatibility') is True):
                     private_pipe = (value.get('connectionMode') == 'private-pipe' if initialize_zcode else
-                                    descriptor['pipeSupported'] and self.config.get('zcodeCompatibility') is not True)
+                                    descriptor['pipeSupported'] and not (descriptor['compatibilitySupported'] and self.config.get('zcodeCompatibility') is True))
                     self._start_zcode_connection(descriptor, private_pipe=private_pipe, initialize=initialize_zcode,
                                                  acknowledge_unavailable=acknowledge_unavailable)
                 elif provider == 'claude':

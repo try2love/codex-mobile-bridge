@@ -237,7 +237,7 @@ class DesktopConnectionsPanel {
         if(request!==this.managementRequest)return;
         const page=layout.clientPage(client.id),article=document.createElement('article'),title=document.createElement('h2'),description=document.createElement('p'),notice=document.createElement('p'),content=document.createElement('div');
         title.textContent=client.name;description.textContent=BridgeI18n.t(client.description||'');notice.textContent=BridgeI18n.t(client.configurationNotice||'');notice.hidden=!client.configurationNotice;article.append(title,description,notice,content);page.append(article);
-        if(client.id==='zcode'){
+        if(client.id==='zcode'&&client.compatibilitySupported===true){
           const label=document.createElement('label'),select=document.createElement('input'),hint=document.createElement('p');
           select.type='checkbox';select.dataset.zcodeCompatibility='';hint.className='hint';
           const caption=document.createElement('span');caption.textContent=BridgeI18n.t('由网关启动时开启本机兼容端口');label.append(select,caption);

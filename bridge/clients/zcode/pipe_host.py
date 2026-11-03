@@ -17,26 +17,13 @@ import tempfile
 import time
 
 from bridge.features.accounts.accounts import private_json
-from bridge.clients.zcode.pipe_rpc import ACTIONS, MAX_FRAME, PipeTransport
+from bridge.clients.zcode.pipe_rpc import ACTIONS, KEYS, MAX_FRAME, PipeTransport
 from bridge.platforms.macos import zcode_pipe
 from bridge.platforms.macos.desktop import commands
 from bridge.platforms.macos.force_exit import Native
 from bridge.platforms.macos.signed_peer import SignedGatewayPeer
 
 
-KEYS = frozenset(
-    (
-        "action",
-        "anchorSessionId",
-        "binding",
-        "body",
-        "commandId",
-        "expectedRuntime",
-        "expiresAt",
-        "sessionId",
-        "workspace",
-    )
-)
 OWNER_KEYS = ("pid", "uid", "image", "birth", "started")
 
 

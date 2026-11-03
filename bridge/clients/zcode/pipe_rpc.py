@@ -14,6 +14,19 @@ from bridge.clients.zcode.transport import bind_workspace_registry, expression
 
 # The shared adapter accepts files up to 20 MiB, including their base64 encoding.
 MAX_FRAME = 64 * 1024 * 1024
+KEYS = frozenset(
+    (
+        "action",
+        "anchorSessionId",
+        "binding",
+        "body",
+        "commandId",
+        "expectedRuntime",
+        "expiresAt",
+        "sessionId",
+        "workspace",
+    )
+)
 ACTIONS = frozenset(
     (
         "application",
@@ -56,7 +69,8 @@ def remaining(deadline):
 class PipeTransport:
     """Single-reader transaction stream. Its caller owns both file descriptors."""
 
-    def __init__(self, to_app: int, from_app: int, application: str):
+    def __init__(self, to_app, from_app, application, *, stream=None):
+        self.stream = stream
         self.to_app = to_app
         self.from_app = from_app
         self.window_url = renderer_url(application)
@@ -64,8 +78,9 @@ class PipeTransport:
         self._buffer = bytearray()
         self._next_id = secrets.randbelow(1 << 30) + 1
         self._broken = False
-        os.set_blocking(to_app, False)
-        os.set_blocking(from_app, False)
+        if stream is None:
+            os.set_blocking(to_app, False)
+            os.set_blocking(from_app, False)
 
     def _write(self, data, deadline):
         if len(data) > MAX_FRAME:
@@ -74,17 +89,20 @@ class PipeTransport:
         written = 0
         try:
             while written < len(packet):
-                if not select.select([], [self.to_app], [], remaining(deadline))[1]:
-                    raise TimeoutError("ZCode pipe write timed out")
-                try:
-                    count = os.write(self.to_app, packet[written:])
-                except BlockingIOError:
-                    continue
+                if self.stream is not None:
+                    count = self.stream.write(packet[written:], deadline)
+                else:
+                    if not select.select([], [self.to_app], [], remaining(deadline))[1]:
+                        raise TimeoutError("ZCode pipe write timed out")
+                    try:
+                        count = os.write(self.to_app, packet[written:])
+                    except BlockingIOError:
+                        continue
                 if not count:
                     raise EOFError("ZCode pipe closed")
                 written += count
         except BaseException:
-            if written:
+            if written or self.stream is not None:
                 # Another command cannot safely follow an incomplete frame.
                 self._broken = True
             raise
@@ -104,12 +122,15 @@ class PipeTransport:
             if searched > MAX_FRAME:
                 self._broken = True
                 raise ValueError("ZCode pipe reply too large")
-            if not select.select([self.from_app], [], [], remaining(deadline))[0]:
-                raise TimeoutError("ZCode pipe reply timed out")
-            try:
-                chunk = os.read(self.from_app, 64 * 1024)
-            except BlockingIOError:
-                continue
+            if self.stream is not None:
+                chunk = self.stream.read(64 * 1024, deadline)
+            else:
+                if not select.select([self.from_app], [], [], remaining(deadline))[0]:
+                    raise TimeoutError("ZCode pipe reply timed out")
+                try:
+                    chunk = os.read(self.from_app, 64 * 1024)
+                except BlockingIOError:
+                    continue
             if not chunk:
                 self._broken = True
                 raise EOFError("ZCode pipe closed")
