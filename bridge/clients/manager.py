@@ -180,11 +180,19 @@ class DesktopSessions:
             if 'zcode' in self.adapters:
                 self.adapters = {key: item for key, item in self.adapters.items() if key != 'zcode'}
             return
-        compatibility = False if sys.platform == 'linux' else self.config.get('zcodeCompatibility')
-        # Legacy profiles may reuse a verified listener. Starting one requires
-        # the separate compatibility preference or explicit initialization.
+        from bridge.clients.zcode.connections import selected_mode
         source = row if row.get('installed') else legacy or {}
-        if self.config.get('zcodeOfficialRemote') is True:
+        application = source.get('application')
+        if application:
+            if sys.platform == 'darwin':
+                from bridge.clients.zcode.pipe_host import PipeHostClient
+            else:
+                from bridge.clients.zcode.local_pipe_host import LocalPipeClient as PipeHostClient
+            if self.zcode_pipe is None or str(self.zcode_pipe.application) != application:
+                self.zcode_pipe = PipeHostClient(self.directory.parent, application)
+        else:
+            self.zcode_pipe = None
+        if selected_mode(self.config) == 'official-remote':
             from bridge.clients.local_rpc import LocalService
             from bridge.clients.zcode.official import ZCodeOfficial
             config = {key: source[key] for key in ('application', 'dataDirectory') if key in source}
@@ -197,31 +205,17 @@ class DesktopSessions:
             self.session_pins.setdefault('zcode', SessionPins(directory, 'zcode'))
             self.adapters = {**self.adapters, 'zcode': adapter}
             return
-        application = source.get('application')
-        if application:
-            if sys.platform == 'darwin':
-                from bridge.clients.zcode.pipe_host import PipeHostClient
-            else:
-                from bridge.clients.zcode.local_pipe_host import LocalPipeClient as PipeHostClient
-            if self.zcode_pipe is None or str(self.zcode_pipe.application) != application:
-                self.zcode_pipe = PipeHostClient(self.directory.parent, application)
-        else:
-            self.zcode_pipe = None
-        private_pipe = self.zcode_pipe is not None and self.zcode_pipe.supported() and compatibility is not True
+        private_pipe = self.zcode_pipe is not None and self.zcode_pipe.supported()
         if private_pipe:
             config = {key: source[key] for key in ('application', 'dataDirectory') if key in source}
             config['privatePipe'] = True
-        elif legacy and compatibility is None:
-            config = dict(legacy)
         else:
             config = {key: source[key] for key in ('application', 'dataDirectory') if key in source}
-            if compatibility is True:
-                config['debugFallbackPort'] = 17742
         previous = self.adapters.get('zcode')
         if previous and previous.config == config:
             return
         directory = self.directory/'zcode'
-        if private_pipe or compatibility is True or legacy and compatibility is not False:
+        if private_pipe:
             try:
                 adapter = ZCodePrototype(directory, config, pipe=self.zcode_pipe if private_pipe else None)
             except (ValueError, KeyError, OSError):
@@ -1448,15 +1442,14 @@ class DesktopSessions:
     def _descriptor(self, provider):
         if provider == 'zcode' and provider in self.adapters:
             adapter = self.adapters[provider]
-            from bridge.clients.zcode.adapter import LOOPBACK_PLATFORMS
+            from bridge.clients.zcode.connections import selected_mode
             from bridge.clients.zcode.installation import installation
             app = installation(adapter.config.get('application', ''))
-            compatible = bool(app and sys.platform in LOOPBACK_PLATFORMS)
-            return {'id': provider, 'installed': bool(app), 'compatibilitySupported': compatible,
-                    'officialRemote': self.config.get('zcodeOfficialRemote') is True,
+            return {'id': provider, 'installed': bool(app), 'compatibilitySupported': False,
+                    'officialRemote': selected_mode(self.config) == 'official-remote',
                     'pipeSupported': bool(self.zcode_pipe and self.zcode_pipe.supported()),
                     'executable': app['executable'] if app else '', 'dataDirectory': str(adapter.home),
-                    'debugFallbackPort': 17742 if compatible and self.config.get('zcodeCompatibility') is True else None}
+                    'debugFallbackPort': None}
         if provider == 'deepseek' and self.config.get('deepseekManualBinding'):
             return {'id': provider, 'installed': False, 'executable': '',
                     'dataDirectory': str(self.adapters[provider].home)}
@@ -1469,21 +1462,20 @@ class DesktopSessions:
                        installed=bool(executable and Path(executable).is_file()))
         return row
 
-    def _start_zcode_connection(self, descriptor, *, private_pipe, initialize, acknowledge_unavailable):
-        from bridge.clients.lifecycle import inspect_client, launch_client
+    def _start_zcode_connection(self, descriptor, *, initialize, acknowledge_unavailable):
+        from bridge.clients.lifecycle import inspect_client
         from bridge.clients.zcode.adapter import ZCodePrototype
 
         # Allow a new Linux/Windows renderer to mount its native services, including
         # time spent finding and launching the original process (mobile timeout: 45s).
         cold_deadline = time.monotonic() + 30 if sys.platform in ('linux', 'win32') else None
-        supported = 'pipeSupported' if private_pipe else 'compatibilitySupported'
-        if not descriptor.get(supported):
+        if not descriptor.get('pipeSupported'):
             raise ValueError('当前安装的 ZCode 不支持此本机实时连接。')
         existing = self.adapters['zcode']
         config = {'application': existing.config['application'], 'dataDirectory': str(existing.home),
-                  **({'privatePipe': True} if private_pipe else {'debugFallbackPort': 17742})}
+                  'privatePipe': True}
         adapter = existing if existing.config == config else ZCodePrototype(
-            existing.directory, config, pipe=self.zcode_pipe if private_pipe else None)
+            existing.directory, config, pipe=self.zcode_pipe)
         state = inspect_client(descriptor)
         if state.get('unknown') or state['running'] and len(state.get('mainPids', [])) != 1:
             raise ValueError('无法确认唯一的 ZCode 进程，请刷新后重试。')
@@ -1495,36 +1487,30 @@ class DesktopSessions:
         else:
             if state['running']:
                 if not initialize:
-                    raise ValueError('请在应用管理中初始化连接，以接入正在运行的 ZCode。' if private_pipe else
-                                     '请在应用管理中选择本机兼容连接，以重新接入正在运行的 ZCode。')
+                    raise ValueError('请在应用管理中初始化连接，以接入正在运行的 ZCode。')
                 self._stop_client('zcode', descriptor, state, acknowledge_unavailable=acknowledge_unavailable)
             # Recheck after a potentially slow normal quit. An update or a new
             # listener must not inherit the decision made for the previous App.
             fresh = self._descriptor('zcode')
-            if not fresh[supported] or fresh['executable'] != descriptor['executable']:
+            if not fresh['pipeSupported'] or fresh['executable'] != descriptor['executable']:
                 raise ValueError('ZCode 安装已变化，请刷新后重试。')
             if state['running'] and adapter.connection_owner(fresh['executable']):
                 raise ValueError('ZCode 进程已变化，请刷新后重试。')
-            if private_pipe:
-                owner = self.zcode_pipe.start()
-                launched = True
-            else:
-                result = launch_client({**fresh, 'debugFallbackPort': 17742})
-                if not result.get('running'):
-                    raise ValueError('ZCode 尚未启动，请刷新后重试。')
-                launched = result.get('launched') is True
+            owner = self.zcode_pipe.start()
+            launched = True
             state = inspect_client(fresh)
             if state.get('unknown') or len(state.get('mainPids', [])) != 1:
                 raise ValueError('无法确认唯一的 ZCode 进程，请刷新后重试。')
         if owner and state['mainPids'] != [owner['pid']]:
             raise ValueError('ZCode 进程已变化，请刷新后重试。')
-        if private_pipe and sys.platform in ('win32', 'linux'):
+        if sys.platform in ('win32', 'linux'):
             adapter.start_private_application(owner)
         else:
             adapter.connect_application(state['mainPids'][0], wait=launched,
                                         deadline=cold_deadline if launched else None)
         self.adapters = {**self.adapters, 'zcode': adapter}
-        self.config['zcodeCompatibility'] = not private_pipe
+        self.config['zcodeConnectionMode'] = 'private-pipe'
+        self.config.pop('zcodeCompatibility', None)
 
     def _codex_executable(self, accounts):
         from bridge.clients.desktop_app import DesktopApp
@@ -1890,6 +1876,33 @@ class DesktopSessions:
                 self.client_cache = None
                 return self.clients(refresh=True)
 
+    def _zcode_official_status(self):
+        if sys.platform != 'darwin':
+            return {}
+        from bridge.clients.local_rpc import LocalService
+        return LocalService(self.directory.parent, 'zcode-official').status()
+
+    def _select_zcode_connection(self, mode):
+        """Called under the provider write gate; changing transport never exits the App."""
+        from bridge.clients.zcode.connections import MODES, selected_mode
+        if mode not in MODES:
+            raise ValueError('ZCode 连接方式无效')
+        previous = selected_mode(self.config)
+        if mode == 'official-remote':
+            if sys.platform != 'darwin' or not self._zcode_official_status().get('configured'):
+                raise ValueError('请先在电脑网关配置并登录官方远控')
+        elif not self.zcode_pipe or not self.zcode_pipe.supported():
+            raise ValueError('当前安装暂不能使用本机连接')
+        with self._changing('zcode', rebind=previous != mode):
+            if previous != mode and previous == 'official-remote':
+                self.adapters['zcode'].disconnect()
+            self.config['zcodeConnectionMode'] = mode
+            self.config.pop('zcodeOfficialRemote', None)
+            self.config.pop('zcodeCompatibility', None)
+            self._configure_zcode()
+            private_json(self.config_path, self.config)
+            self.client_cache = None
+
     def clients(self, refresh=False):
         with self.client_lock:
             pending = self.client_cache and any(row.get('connectionState') in ('starting', 'connecting')
@@ -1993,6 +2006,12 @@ class DesktopSessions:
                 status = startup or (adapter.inventory_status() if enabled else {})
                 connected = status.get('connected') is True
                 zcode = self._descriptor('zcode')
+                from bridge.clients.zcode.connections import connection_modes
+                modes = connection_modes(self.config, installed=zcode['installed'],
+                                         pipe_supported=zcode['pipeSupported'],
+                                         official=self._zcode_official_status(), official_supported=sys.platform == 'darwin')
+                modes['connectionModes'][0]['connected'] = bool(modes['connectionMode'] == 'private-pipe' and
+                                                              (connected or status.get('sessionAccess')))
                 installed = zcode['installed']
                 history_only = status.get('historyAvailable') and not status.get('retryable')
                 rows.append({'id': 'zcode', 'name': 'ZCode', 'installed': installed,
@@ -2005,6 +2024,7 @@ class DesktopSessions:
                              'confirmTaskState': True, 'historyAvailable': status.get('historyAvailable') is True,
                              'pipeSupported': zcode['pipeSupported'], 'compatibilitySupported': zcode['compatibilitySupported'],
                              'officialRemote': zcode['officialRemote'],
+                             **modes,
                              'pipeReady': bool(getattr(self.adapters['zcode'], 'pipe', None) and (connected or status.get('sessionAccess'))),
                              'initializationMode': 'zcode-local-compatibility' if zcode['compatibilitySupported'] else 'private-pipe',
                              'canInitializeDesktop': bool(not zcode['officialRemote'] and self.gateway_running and (zcode['pipeSupported'] or zcode['compatibilitySupported'])
@@ -2276,8 +2296,10 @@ class DesktopSessions:
                 or sys.platform not in ('darwin', 'win32', 'linux') or not self.gateway_running):
             raise ValueError('后台强制结束请求无效')
         initialize_zcode = provider == 'zcode' and value.get('initializeDesktop') is True
-        if 'connectionMode' in value and (not initialize_zcode or value['connectionMode'] != 'private-pipe'):
-            raise ValueError('应用初始化请求无效')
+        if 'connectionMode' in value and (provider != 'zcode' or not enabled or
+                value['connectionMode'] not in ('private-pipe', 'official-remote') or
+                initialize_zcode and value['connectionMode'] != 'private-pipe'):
+            raise ValueError('应用连接方式无效')
         if 'initializeDesktop' in value and (type(value['initializeDesktop']) is not bool
                 or provider not in ('claude', 'zcode') or not enabled
                 or initialize_zcode and (startup or not self.gateway_running)):
@@ -2304,13 +2326,16 @@ class DesktopSessions:
                 return self.clients(refresh=True)
         from bridge.clients.lifecycle import inspect_client, launch_client
         accounts = self.bridge.accounts if provider == 'codex' and self.bridge else None
-        with self.client_lock, self._changing(provider), accounts.gate if accounts else nullcontext(), accounts.lock if accounts else nullcontext():
+        with self.client_lock, self._changing(provider, rebind='connectionMode' not in value), accounts.gate if accounts else nullcontext(), accounts.lock if accounts else nullcontext():
+            if provider == 'zcode' and 'connectionMode' in value:
+                self._select_zcode_connection(value['connectionMode'])
             if not enabled and not quit_desktop:
                 # Revoke gateway access without inspecting or interrupting tasks.
                 # Keep the same write gate so a queued send sees the new setting.
                 if provider == 'claude':
                     self.adapters[provider].cancel()
-                if provider == 'zcode' and self.config.get('zcodeOfficialRemote') is True:
+                from bridge.clients.zcode.connections import selected_mode
+                if provider == 'zcode' and selected_mode(self.config) == 'official-remote':
                     self.adapters[provider].disconnect()
                 self.config.setdefault('enabled', {})[provider] = False
                 private_json(self.config_path, self.config)
@@ -2333,13 +2358,10 @@ class DesktopSessions:
             if enabled:
                 if provider == 'deepseek':
                     self._start_deepseek()
-                elif provider == 'zcode' and self.config.get('zcodeOfficialRemote') is True:
+                elif provider == 'zcode' and descriptor['officialRemote']:
                     self.adapters[provider].connect_application(None)
-                elif provider == 'zcode' and (initialize_zcode or descriptor['pipeSupported'] or
-                                               self.config.get('zcodeCompatibility') is True):
-                    private_pipe = (value.get('connectionMode') == 'private-pipe' if initialize_zcode else
-                                    descriptor['pipeSupported'] and not (descriptor['compatibilitySupported'] and self.config.get('zcodeCompatibility') is True))
-                    self._start_zcode_connection(descriptor, private_pipe=private_pipe, initialize=initialize_zcode,
+                elif provider == 'zcode' and (initialize_zcode or descriptor['pipeSupported']):
+                    self._start_zcode_connection(descriptor, initialize=initialize_zcode,
                                                  acknowledge_unavailable=acknowledge_unavailable)
                 elif provider == 'claude':
                     if value.get('initializeDesktop') is True:
@@ -2661,9 +2683,8 @@ class DesktopSessions:
             if (set(value) != {'action', 'enabled'} or type(value['enabled']) is not bool or
                     sys.platform != 'darwin' or 'zcode' not in self.adapters):
                 raise ValueError('ZCode 官方远控设置无效')
-            with self.client_lock, self._changing('zcode'):
-                self.config['zcodeOfficialRemote'] = value['enabled']
-                self._configure_zcode()
+            with self.client_lock:
+                self._select_zcode_connection('official-remote' if value['enabled'] else 'private-pipe')
                 if value['enabled']:
                     self.config.setdefault('enabled', {})['zcode'] = True
                 private_json(self.config_path, self.config)
@@ -2672,18 +2693,7 @@ class DesktopSessions:
                     self.adapters['zcode'].connect_application(None)
             return self.clients(refresh=True)
         if action == 'zcode-compatibility':
-            # This preference affects the next launch. Remote setup uses the
-            # confirmed, task-checked lifecycle operation instead.
-            if (set(value) != {'action', 'enabled'} or type(value['enabled']) is not bool or
-                    'zcode' not in self.adapters or not self._descriptor('zcode')['installed'] or
-                    value['enabled'] and not self._descriptor('zcode')['compatibilitySupported']):
-                raise ValueError('ZCode 兼容连接设置无效')
-            with self.client_lock, self._changing('zcode'):
-                self.config['zcodeCompatibility'] = value['enabled']
-                self._configure_zcode()
-                private_json(self.config_path, self.config)
-                self.client_cache = None
-            return self.clients(refresh=True)
+            raise ValueError('本机兼容端口已移除，请选择本机连接或官方远控')
         if action == 'toggle-client':
             return self.toggle_client(value)
         if action == 'status':

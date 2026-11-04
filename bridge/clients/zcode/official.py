@@ -93,10 +93,10 @@ class ZCodeOfficial(ZCodePrototype):
         state = self.client.status()
         owner = state.get('owner')
         ready = state.get('connected') is True and owner is not None and owner == self.application_owner
-        return {'connected': False, 'historyAvailable': (self.home/'tasks-index.sqlite').is_file(),
+        return {'connected': ready, 'historyAvailable': (self.home/'tasks-index.sqlite').is_file(),
                 'sessionAccess': ready, 'canCreate': ready and self.application_create,
-                'retryable': state.get('configured') is True,
-                'reason': '可在聊天中继续原生会话。' if ready else
+                'retryable': state.get('configured') is True and not ready,
+                'reason': '已连接官方远控' if ready else
                           state.get('reason') or 'ZCode 官方远控尚未连接，请在应用管理中重新连接。'}
 
     def status(self):

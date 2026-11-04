@@ -138,17 +138,18 @@ function register(){
       if(process.platform!=='darwin'||!officialRemote)throw Error('此实验 Test 暂只支持 macOS 官方远控。');
       if(updater?.busy)throw Error('正在更新应用，请稍候。');
       if(payload.action==='zcode-official-state')return officialRemote.status();
+      if(payload.action==='zcode-official-save')return officialRemote.save(payload.link);
       if(payload.action==='zcode-official-login')return officialRemote.login(payload.link);
       if(payload.action==='zcode-official-connect'){
-        if(officialRemote.localLink(payload.link).url!==officialRemote.auth?.link)throw Error('远控链接已变化，请先重新登录此链接。');
-        await officialRemote.connect();
-        await worker('desktop-sessions',{action:'zcode-official',enabled:true});
+        if(officialRemote.localLink(payload.link).url!==officialRemote.targetLink())throw Error('远控链接已变化，请先保存连接配置。');
+        await worker('desktop-sessions',{action:'toggle-client',provider:'zcode',enabled:true,connectionMode:'official-remote'});
       }else if(payload.action==='zcode-official-disconnect'){
         await officialRemote.disconnect();
-      }else if(['zcode-official-local','zcode-official-forget'].includes(payload.action)){
+      }else if(payload.action==='zcode-official-forget'){
+        return officialRemote.forget();
+      }else if(payload.action==='zcode-official-local'){
         await officialRemote.disconnect();
         await worker('desktop-sessions',{action:'zcode-official',enabled:false});
-        if(payload.action==='zcode-official-forget')await officialRemote.forget();
       }else throw Error('未知官方远控操作');
       return officialRemote.status();
     }

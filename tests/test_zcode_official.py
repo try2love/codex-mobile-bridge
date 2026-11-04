@@ -61,6 +61,8 @@ class OfficialZCodeTests(unittest.TestCase):
     def test_application_connection_lists_and_reads_account_without_acquiring_chat(self):
         self.adapter.connect_application()
         self.assertTrue(self.adapter.inventory_status()['sessionAccess'])
+        self.assertTrue(self.adapter.inventory_status()['connected'])
+        self.assertFalse(self.adapter.inventory_status()['retryable'])
         self.assertTrue(self.adapter.inventory_status()['canCreate'])
         self.assertEqual(self.adapter.call('list')['sessions'][0]['id'], 'sess_test')
         self.assertEqual(self.adapter.call('account')['provider'], 'official-account')
@@ -169,17 +171,54 @@ class OfficialManagerTests(unittest.TestCase):
 
     def test_selecting_official_reuses_adapter_and_never_launches_native_app(self):
         m = self.manager
-        with patch('bridge.clients.zcode.official.ZCodeOfficial') as factory, patch.object(m, 'clients', return_value={'clients': []}), patch('bridge.clients.lifecycle.launch_client') as launch:
+        with patch('bridge.clients.zcode.official.ZCodeOfficial') as factory, patch.object(m, 'clients', return_value={'clients': []}), patch('bridge.clients.lifecycle.launch_client') as launch, patch.object(m, '_zcode_official_status', return_value={'configured': True}):
             m.control({'action': 'zcode-official', 'enabled': True})
-            self.assertTrue(m.config['zcodeOfficialRemote'])
+            self.assertEqual(m.config['zcodeConnectionMode'], 'official-remote')
+            self.assertNotIn('zcodeOfficialRemote', m.config)
             self.assertTrue(m.config['enabled']['zcode'])
             factory.assert_called_once()
             self.assertEqual(factory.call_args.args[1]['dataDirectory'], m.config['discovered']['zcode']['dataDirectory'])
-            self.assertIsNone(m.zcode_pipe)
+            self.assertEqual(str(m.zcode_pipe.application), '/Fixture/ZCode.app')
             launch.assert_not_called()
             factory.return_value.config = factory.call_args.args[1]
             m._configure_zcode()
             factory.assert_called_once()
+
+    def test_unconfigured_remote_selection_preserves_previous_adapter_and_mode(self):
+        m = self.manager
+        previous = m.adapters['zcode']
+        with patch.object(m, '_zcode_official_status', return_value={'configured': False}):
+            with self.assertRaisesRegex(ValueError, '配置并登录'):
+                m.toggle_client({'provider': 'zcode', 'enabled': True, 'connectionMode': 'official-remote'})
+        self.assertIs(m.adapters['zcode'], previous)
+        previous.disconnect.assert_not_called()
+        previous.release_window.assert_not_called()
+        self.assertNotIn('zcodeConnectionMode', m.config)
+
+    def test_switch_to_local_retains_saved_official_auth_and_does_not_stop_app(self):
+        m = self.manager
+        m.config['zcodeOfficialRemote'] = True
+        m.config['zcodeCompatibility'] = True
+        m.zcode_pipe = Mock()
+        m.zcode_pipe.supported.return_value = True
+        previous = m.adapters['zcode']
+        with patch.object(m, '_configure_zcode') as configure, patch.object(m, '_stop_client') as stop:
+            m._select_zcode_connection('private-pipe')
+        previous.disconnect.assert_called_once()
+        configure.assert_called_once()
+        stop.assert_not_called()
+        self.assertEqual(m.config['zcodeConnectionMode'], 'private-pipe')
+        self.assertNotIn('zcodeCompatibility', m.config)
+
+    def test_public_connection_modes_do_not_contain_remote_credentials_or_link(self):
+        from bridge.clients.zcode.connections import connection_modes
+        value = connection_modes({'zcodeOfficialRemote': True}, installed=True, pipe_supported=True,
+                                 official={'configured': True, 'connected': True, 'jwt': 'secret', 'link': 'private-link'}, official_supported=True)
+        self.assertEqual(value['connectionMode'], 'official-remote')
+        self.assertTrue(all(row['available'] for row in value['connectionModes']))
+        self.assertTrue(value['connectionModes'][1]['connected'])
+        self.assertNotIn('secret', str(value))
+        self.assertNotIn('private-link', str(value))
 
     def test_phone_disconnect_closes_only_relay_not_original_app(self):
         m = self.manager

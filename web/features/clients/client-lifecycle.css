@@ -6,3 +6,4 @@
 .client-disable-dialog .client-force-confirm{color:var(--danger,#b42318);border-color:currentColor}
 
 .client-config-form{display:grid;gap:14px}.client-config-form label{display:grid;gap:6px}.client-config-form input{box-sizing:border-box;width:100%;min-width:0;padding:10px;border:1px solid var(--line,#dfe3eb);border-radius:8px;background:var(--raised,#fff);color:inherit;font:inherit}.client-config-form p{margin:0}.client-config-form .actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}.client-config-candidates{display:grid;gap:6px}.client-config-candidates button{text-align:left;overflow-wrap:anywhere}
+.client-disable-options button[aria-pressed="true"]{box-shadow:inset 0 0 0 1px var(--accent)}

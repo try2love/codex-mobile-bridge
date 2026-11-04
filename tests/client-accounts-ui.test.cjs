@@ -13,6 +13,27 @@ function fixture({desktop=false,provider='deepseek',toolbar=false}={}){
 }
 const row=(id,kind='account',usage)=>({id,name:id,kind,usage});
 const snapshot=(accounts,activeIds=['current'])=>({accounts,activeId:activeIds[0],activeIds,current:{name:'Current desktop access'},canSwitch:true});
+test('ZCode API editor reuses shared form and sends native protocol plus URL and models without applying',async()=>{
+  const ui=fixture({provider:'zcode',desktop:true});
+  const value={...snapshot([]),capabilities:{addApi:true,quota:false,apiFormats:[{value:'anthropic-messages',label:'Anthropic Messages'},{value:'openai-chat-completions',label:'OpenAI Chat Completions'},{value:'openai-responses',label:'OpenAI Responses'}],switchRequiresStopped:true}};
+  ui.panel.accept(value);assert.equal(ui.panel.addApiButton.textContent,'添加 API 接入');ui.panel.addApiButton.onclick();
+  assert.equal(ui.panel.editUrl.wrap.hidden,false);assert.equal(ui.panel.editModels.wrap.hidden,false);assert.equal(ui.panel.apiFormatWrap.hidden,false);assert.equal(ui.panel.authWrap.hidden,true);
+  assert.equal(ui.panel.editApiFormat.children.length,3);assert.equal(ui.panel.editApiFormat.value,'anthropic-messages');
+  ui.panel.editName.input.value='Local API';ui.panel.editUrl.input.value='http://127.0.0.1:9999/v1';ui.panel.editApiFormat.value='openai-responses';ui.panel.editKey.input.value='fixture-key';ui.panel.editModels.input.value='first\nsecond';
+  ui.setHandler(async()=>value);await ui.panel.saveEditor();
+  assert.equal(ui.calls.length,1);assert.equal(ui.calls[0].action,'save-api');assert.equal(ui.calls[0].apiFormat,'openai-responses');assert.equal(ui.calls[0].baseUrl,'http://127.0.0.1:9999/v1');assert.equal(ui.calls[0].models.join(','),'first,second');assert.equal('authScheme' in ui.calls[0],false);
+  assert.equal(ui.panel.editKey.input.value,'');assert.equal(ui.prompts.length,0);
+  ui.panel.openEditor({id:'saved',kind:'api',name:'API',api:{baseUrl:'https://api.example.invalid',apiFormat:'openai-chat-completions',models:['x'],hasKey:true}});
+  assert.equal(ui.panel.editApiFormat.value,'openai-chat-completions');assert.equal(ui.panel.editKey.input.required,false);assert.equal(ui.panel.editKey.input.value,'');
+});
+test('ZCode API applied state is distinct from official login and selecting a model',async()=>{
+  const ui=fixture({provider:'zcode',desktop:true});
+  const value={...snapshot([{...row('official','official'),saved:true},{...row('draft','api'),saved:true},{...row('applied','api'),saved:true}],['official','applied']),capabilities:{apiFormats:[{value:'openai-responses',label:'OpenAI Responses'}],switchRequiresStopped:true,quota:false}};
+  ui.panel.accept(value);assert.match(ui.text(),/已配置/);assert.match(ui.text(),/待应用/);assert.match(ui.text(),/应用配置/);
+  const applied=ui.panel.rows.children.find(card=>card.accountRowId==='applied');assert.equal(applied.children[0].children[0].children[0].children[1].textContent,'已配置');
+  ui.setHandler(async()=>value);await ui.panel.choose(row('draft','api'));
+  assert.equal(ui.calls.length,1);assert.equal(ui.calls[0].action,'switch');assert.match(ui.prompts[0],/正常退出原 App/);assert.match(ui.prompts[0],/选择对应模型/);assert.doesNotMatch(ui.prompts[0],/切换会重启/);
+});
 test('manual DSH account state hides editing and restores official controls after unbinding',()=>{
  const ui=fixture({desktop:true});ui.panel.openEditor({api:{}});
  ui.panel.accept({...snapshot([]),readOnly:true,canImport:false,canSwitch:false});

@@ -1,4 +1,4 @@
-"""Machine-local encrypted login snapshots; lifecycle transactions live in manager."""
+"""Machine-local login snapshots and private API drafts; lifecycle transactions live in manager."""
 import hashlib
 import json
 import re
@@ -7,8 +7,8 @@ import time
 import uuid
 from pathlib import Path
 
-from bridge.features.accounts.accounts import private_json
-from . import quota
+from bridge.features.accounts.accounts import Accounts, private_json
+from . import quota, api_config
 
 SETTINGS = ('providerFamilyDomain', 'providerFamilyDomainUpdatedAt', 'providerFamilyDomainMigrated',
             'providerFamilyConnectionSelections', 'modelProviderFamilyModes')
@@ -68,26 +68,37 @@ class ZCodeAccounts:
                 current = self.metadata()
             except (OSError, ValueError):
                 current = {}
-            active = [r['id'] for r in rows if current.get('identity') and r['identity'] == current['identity']]
+            active = [r['id'] for r in rows if r['kind'] == 'official' and current.get('identity') and r['identity'] == current['identity']]
             # While stopped inside the transaction, validate restored encrypted bytes.
             if rows and not current.get('identity'):
                 try:
                     fingerprint = stamp(self.snapshot())
-                    active = [r['id'] for r in rows if r['fingerprint'] == fingerprint]
+                    active = [r['id'] for r in rows if r['kind'] == 'official' and r['fingerprint'] == fingerprint]
                 except (OSError, ValueError):
                     pass
+            official_active = bool(active)
+            try:
+                providers = api_config.rules(read(self.home/api_config.FILE))
+                for row in rows:
+                    if row['kind'] == 'api':
+                        saved = self._saved(row)['provider']
+                        native = next((item for item in providers if item['providerId'] == saved['providerId']), None)
+                        if api_config.matches(saved, native):
+                            active.append(row['id'])
+            except (OSError, ValueError):
+                pass  # Saved API drafts remain editable before the original App is initialized.
             public = [{k: r[k] for k in ('id', 'name', 'kind', 'email', 'saved')} for r in rows]
             if generation and current.get('provider') and current['provider'] != generation[0]:
                 generation = None
-            if (current.get('identity') or generation) and not active:
+            if (current.get('identity') or generation) and not official_active:
                 public.append({'id': 'current', 'name': current.get('name') or 'ZCode', 'email': current.get('email', ''), 'kind': 'official', 'saved': False})
-                active = ['current']
+                active.insert(0, 'current')
             if quota_for is not None and quota_for not in active:
                 raise ValueError('仅支持查看当前 ZCode 登录账号的额度')
             if self.quota_cache and self.quota_cache[0] != generation:
                 self.quota_cache = None
             for row in public:
-                row['canReadQuota'] = bool(generation and row['id'] in active)
+                row['canReadQuota'] = bool(row['kind'] == 'official' and generation and row['id'] in active)
                 if row['canReadQuota']:
                     now = time.time()
                     if self.quota_cache and any(now >= window['validUntil']+1 for limit in self.quota_cache[2]['limits']
@@ -103,8 +114,9 @@ class ZCodeAccounts:
                 raise ValueError('ZCode 登录正在变化，请稍后重试')
             return {'accounts': public, 'activeIds': active, 'activeId': next(iter(active), None),
                     'current': {'name': current.get('name')}, 'canImport': bool(current.get('identity')),
-                    'capabilities': {'addApi': False, 'quota': bool(generation)},
-                    'enrollmentHint': '请先在 ZCode 登录，再保存当前接入；可在手机上切换已保存账号。'}
+                    'capabilities': {'addApi': True, 'quota': bool(generation), 'apiFormats': list(api_config.API_FORMATS),
+                                     'switchRequiresStopped': True},
+                    'enrollmentHint': '官方账号请先在 ZCode 登录，再保存当前接入。API 可在此保存；停用手机接入并正常退出原 App 后应用，重新启动后在聊天中选择对应模型。'}
 
     def import_current(self, name=''):
         with self.lock:
@@ -113,7 +125,7 @@ class ZCodeAccounts:
             if not re.fullmatch(r'[0-9a-f]{64}', current.get('identity', '')) or before != self.snapshot():
                 raise ValueError('ZCode 登录正在变化，请稍后重试')
             rows = self.index()
-            row = next((r for r in rows if r['identity'] == current['identity']), None)
+            row = next((r for r in rows if r['kind'] == 'official' and r['identity'] == current['identity']), None)
             if row is None:
                 row = {'id': str(uuid.uuid4()), 'identity': current['identity'], 'kind': 'official', 'saved': True}
                 rows.append(row)
@@ -124,7 +136,18 @@ class ZCodeAccounts:
 
     def edit(self, identifier):
         row = self._row(identifier)
-        return {k: row[k] for k in ('id', 'name', 'kind')}
+        result = {k: row[k] for k in ('id', 'name', 'kind')}
+        if row['kind'] == 'api':
+            config = self._saved(row)['provider']['config']
+            result['api'] = {'baseUrl': config['api']['baseUrl'], 'apiFormat': config['api']['type'],
+                             'models': config['personalModelIds'], 'hasKey': bool(config['access']['apiKey'])}
+        return result
+
+    def _saved(self, row):
+        selected = read(self.directory/(row['id']+'.json'))
+        if stamp(selected) != row['fingerprint']:
+            raise ValueError('保存的 ZCode 接入快照已变化')
+        return selected
 
     def rename(self, identifier, name):
         if not isinstance(name, str) or not 1 <= len(name.strip()) <= 100:
@@ -150,14 +173,45 @@ class ZCodeAccounts:
         return self._public(identifier, refresh)
 
     def save_api(self, value):
-        raise ValueError('请在 ZCode 原生设置中配置 API 接入')
+        name = value.get('name')
+        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 100:
+            raise ValueError('名称长度应为 1–100 字')
+        with self.lock:
+            rows = self.index()
+            existing = self._row(value['id']) if value.get('id') else None
+            if existing and existing['kind'] != 'api':
+                raise ValueError('官方登录只能在 ZCode 中修改')
+            identifier = existing['id'] if existing else str(uuid.uuid4())
+            previous = self._saved(existing) if existing else None
+            url = Accounts.api_url(value.get('baseUrl', '').strip() if isinstance(value.get('baseUrl'), str) else '')
+            saved = {'kind': 'api', 'provider': api_config.provider(value, identifier, name.strip(),
+                                                                  url,
+                                                                  previous['provider'] if previous else None)}
+            row = {'id': identifier, 'name': name.strip(), 'kind': 'api', 'saved': True,
+                   'email': '', 'fingerprint': stamp(saved)}
+            path = self.directory/(identifier+'.json')
+            try:
+                private_json(path, saved)
+                private_json(self.directory/'index.json', {'accounts': [item for item in rows if item['id'] != identifier]+[row]})
+            except Exception:
+                if previous is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    private_json(path, previous)
+                raise
+            return self.public()
 
     def restore(self, identifier):
         with self.lock:
             row = self._row(identifier)
-            selected = read(self.directory/(row['id']+'.json'))
-            if stamp(selected) != row['fingerprint']:
-                raise ValueError('保存的 ZCode 账号快照已变化')
+            selected = self._saved(row)
+            if row['kind'] == 'api':
+                # The manager only reaches restore after the original App and
+                # phone access are stopped. Do not compete with native writers.
+                native = read(self.home/api_config.FILE)
+                before = {api_config.FILE: native}
+                after = {api_config.FILE: api_config.apply(native, selected['provider'])}
+                return self._restore_files(before, after)
             before = {name: read(self.home/name) for name in ('credentials.json', 'setting.json')}
             after = {name: dict(value) for name, value in before.items()}
             # Drop account-derived project keys, retaining independent API/plugin credentials.
@@ -167,16 +221,19 @@ class ZCodeAccounts:
             for key in SETTINGS:
                 after['setting.json'].pop(key, None)
             after['setting.json'].update(selected['settings'])
-            token = uuid.uuid4().hex
-            private_json(self.directory/('rollback-'+token+'.json'), {'before': before, 'after': after})
-            try:
-                for name, value in after.items():
-                    private_json(self.home/name, value)
-            except Exception:
-                for name, value in before.items():
-                    private_json(self.home/name, value)
-                raise
-            return token
+            return self._restore_files(before, after)
+
+    def _restore_files(self, before, after):
+        token = uuid.uuid4().hex
+        private_json(self.directory/('rollback-'+token+'.json'), {'before': before, 'after': after})
+        try:
+            for name, value in after.items():
+                private_json(self.home/name, value)
+        except Exception:
+            for name, value in before.items():
+                private_json(self.home/name, value)
+            raise
+        return token
 
     def _rollback_path(self, token):
         if not isinstance(token, str) or not re.fullmatch(r'[0-9a-f]{32}', token):

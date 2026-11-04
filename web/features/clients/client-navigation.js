@@ -236,8 +236,8 @@ class ClientNavigation {
   managementClients(clients=this.clients){return clients.flatMap(client=>client.id==='codex'&&client.entries?.length?client.entries.map(entry=>({...entry,id:entry.id==='desktop'?'codex':entry.id,parentId:'codex'})):client.id==='claude'&&client.entries?.length?[{...client,enabled:client.nativeEnabled??client.enabled,parentId:'claude'},...client.entries.map(entry=>({...entry,parentId:'claude'}))]:[client]);}
   withClientEnabled(id,enabled){return this.clients.map(client=>{if(client.id==='codex'&&client.entries?.length){const entries=client.entries.map(entry=>(entry.id==='desktop'?'codex':entry.id)===id?{...entry,enabled}:entry);return {...client,entries,desktopEnabled:entries.find(entry=>entry.id==='desktop')?.enabled,enabled:entries.some(entry=>entry.enabled)};}if(client.id==='claude'&&client.entries?.length){const entries=client.entries.map(entry=>entry.id===id?{...entry,enabled}:entry),nativeEnabled=client.id===id?enabled:client.nativeEnabled??client.enabled;return {...client,entries,nativeEnabled,enabled:nativeEnabled||entries.some(entry=>entry.enabled)};}return client.id===id?{...client,enabled}:client;});}
   hasUncertain(){return [...(this.operationFailures?.values()||[])].some(value=>value.uncertain);}
-  syncViewClients(){this.view.setClientStates?.(this.clients.map(client=>({...client,operationFailure:this.operationFailures?.get(client.id),operationUncertain:this.hasUncertain(),pendingEnable:this.gatewayRunning!==false&&this.pending.has(client.id)&&client.enabled})),id=>this.toggle(id,true),id=>this.initialize(id),()=>this.refresh(),id=>this.reconnect(id));}
-  retryOperation(id){const failure=this.operationFailures?.get(id);if(!failure||this.hasUncertain())return;return failure.action==='initialize'?this.initialize(id):this.toggle(id,failure.action==='enable');}
+  syncViewClients(){this.view.setClientStates?.(this.clients.map(client=>({...client,operationFailure:this.operationFailures?.get(client.id),operationUncertain:this.hasUncertain(),pendingEnable:this.gatewayRunning!==false&&this.pending.has(client.id)&&client.enabled})),id=>this.toggle(id,true),id=>this.initialize(id),()=>this.refresh(),id=>this.reconnect(id),id=>this.selectConnectionMode(id));}
+  retryOperation(id){const failure=this.operationFailures?.get(id);if(!failure||this.hasUncertain())return;return failure.action==='initialize'?this.initialize(id):this.toggle(id,failure.action==='enable',{connectionMode:failure.connectionMode});}
   async choose(id,{activate=true,fromStatus=false,loadList=true}={}){
     if(!fromStatus)this.pendingChatLink=null;
     this.cancelListSwipe();
@@ -291,7 +291,13 @@ class ClientNavigation {
     try{confirmed=await ClientLifecycle.chooseInitialize(client);}finally{this.choosing=null;this.paint();}
     if(confirmed)return this.toggle(id,true,{initialization:confirmed});
   }
-  async toggle(id,enabled,{initialization=false}={}){
+  async selectConnectionMode(id){
+    const client=this.managementClients().find(row=>row.id===id);if(!client||this.pending.size||this.choosing||this.hasUncertain())return;
+    this.choosing=id;++this.revision;this.paint();let mode;
+    try{mode=await ClientLifecycle.chooseConnectionMode(client);}finally{this.choosing=null;this.paint();}
+    if(mode){await this.toggle(id,true,{connectionMode:mode});this.notify('已选择连接方式');}
+  }
+  async toggle(id,enabled,{initialization=false,connectionMode}={}){
     const client=this.managementClients().find(row=>row.id===id);if(this.pending.size||this.choosing||this.hasUncertain()||!client||(enabled&&!(client.selectable??client.configured)))return;
     let quitDesktop=false;
     if(!enabled&&this.gatewayRunning!==false&&client.canQuitDesktop!==false){
@@ -300,7 +306,7 @@ class ClientNavigation {
       finally{this.choosing=null;this.paint();}
       if(quitDesktop===null)return;
     }
-    const intent=ClientLifecycle.initializationFields(initialization);
+    const intent={...ClientLifecycle.initializationFields(initialization),...(connectionMode?{connectionMode}:{})};
     const acknowledgeUnavailable=quitDesktop==='recovery',forceDesktop=quitDesktop==='force';quitDesktop=quitDesktop===true||forceDesktop||acknowledgeUnavailable;
     const before=this.clients.map(c=>({...c})),previous=this.provider;
     this.operationFailures??=new Map();this.operationFailures.delete(id);let failed=false;
@@ -370,11 +376,12 @@ class ClientNavigation {
       let parent=list;if(client.parentId){if(!groups.has(client.parentId)){const group=document.createElement('section'),title=document.createElement('h3'),name=client.parentId==='codex'?'Codex':'Claude';group.className='client-management-group';group.setAttribute('aria-label',name);title.textContent=name;group.append(title);list.append(group);groups.set(client.parentId,group);}parent=groups.get(client.parentId);}
       const row=document.createElement('div');row.className='client-management-row';row.dataset.clientId=client.id;
       const text=document.createElement('span'),name=document.createElement('strong'),status=document.createElement('small'),reason=document.createElement('small'),control=document.createElement('span'),label=document.createElement('span'),toggle=document.createElement('button');
-      const state=this.connection(client),failure=this.operationFailures?.get(client.id),message=failure?ClientLifecycle.failureMessage(failure):state.reason;name.textContent=client.parentId==='codex'&&client.id==='codex'?'APP / CLI':client.name;status.textContent=BridgeI18n.t(state.label);status.setAttribute('role','status');status.setAttribute('aria-busy',String(state.waiting));status.classList.toggle('client-connection-waiting',state.waiting);reason.textContent=BridgeI18n.t(message);reason.hidden=!message||reason.textContent===status.textContent;text.append(name);if(client.description){const description=document.createElement('small');description.textContent=BridgeI18n.t(client.description);text.append(description);}text.append(status,reason);
+      const state=this.connection(client),failure=this.operationFailures?.get(client.id),message=failure?ClientLifecycle.failureMessage(failure):state.reason;name.textContent=client.parentId==='codex'&&client.id==='codex'?'APP / CLI':client.name;status.textContent=BridgeI18n.t(state.label)+(state.modeLabel?' · '+BridgeI18n.t(state.modeLabel):'');status.setAttribute('role','status');status.setAttribute('aria-busy',String(state.waiting));status.classList.toggle('client-connection-waiting',state.waiting);reason.textContent=BridgeI18n.t(message);reason.hidden=!message||reason.textContent===status.textContent;text.append(name);if(client.description){const description=document.createElement('small');description.textContent=BridgeI18n.t(client.description);text.append(description);}text.append(status,reason);
       control.className='client-management-control';label.className='client-toggle-status';label.setAttribute('role','status');label.textContent=BridgeI18n.t(this.managementState(client));
       toggle.type='button';toggle.className='client-management-switch';toggle.setAttribute('role','switch');toggle.setAttribute('aria-checked',String(client.enabled));toggle.setAttribute('aria-label',BridgeI18n.t('启用')+' '+client.name);toggle.setAttribute('aria-busy',String(this.pending.has(client.id)));toggle.disabled=(!client.enabled&&!(client.selectable??client.configured))||this.pending.size>0||!!this.choosing||this.hasUncertain();
       toggle.append(document.createElement('span'));control.append(toggle,label);row.append(this.icon(client.id),text,control);parent.append(row);
       toggle.onclick=()=>this.toggle(client.id,!client.enabled).catch(error=>this.notify(error.message));
+      if(ClientLifecycle.connectionModes(client).length>1){const choose=document.createElement('button');choose.type='button';choose.textContent=BridgeI18n.t('选择连接方式');choose.disabled=this.pending.size>0||!!this.choosing||this.hasUncertain();choose.onclick=()=>this.selectConnectionMode(client.id).catch(error=>this.notify(error.message));control.append(choose);}
       if(!client.enabled&&client.running&&client.canQuitDesktop!==false&&this.gatewayRunning!==false){const quit=document.createElement('button');quit.type='button';quit.textContent=BridgeI18n.t('关闭电脑 App…');quit.disabled=this.pending.size>0||!!this.choosing||this.hasUncertain();quit.onclick=()=>this.toggle(client.id,false).catch(error=>this.notify(error.message));control.append(quit);}
       if(client.enabled){const open=document.createElement('button');open.type='button';open.textContent=BridgeI18n.t('查看聊天');open.onclick=()=>{manager.dialog.close();this.choose(client.id).catch(error=>this.notify(error.message));};control.append(open);}
       if(failure){const retry=document.createElement('button');retry.type='button';retry.textContent=BridgeI18n.t(failure.uncertain?'刷新状态':ClientLifecycle.retryLabel(failure.action));retry.disabled=this.pending.size>0||!!this.choosing||!!this.loading||(!failure.uncertain&&this.hasUncertain());retry.onclick=()=>Promise.resolve(failure.uncertain?this.refresh():this.retryOperation(client.id)).catch(error=>this.notify(error.message));control.append(retry);}

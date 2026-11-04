@@ -1211,11 +1211,11 @@ test('project trust requires explicit confirmation and never replays the first m
  assert.equal(ui.view.canMutate(),false);assert.equal(ui.view.canResume(),true);assert.equal(ui.view.send.disabled,true);assert.equal(ui.view.workMode.disabled,true);
  });
 
-test('ZCode chat list offers opted-in compatibility even when saved history is readable',async()=>{
+test('ZCode chat list offers private-pipe initialization even when saved history is readable',async()=>{
  const ui=fixture(),view=ui.view,requested=[];
- const client={id:'zcode',enabled:true,connected:false,historyAvailable:true,canInitializeDesktop:true,initializationMode:'zcode-local-compatibility',setupStatus:'history-only'};
+ const client={id:'zcode',enabled:true,connected:false,historyAvailable:true,canInitializeDesktop:true,pipeSupported:true,initializationMode:'private-pipe',setupStatus:'history-only'};
  view.provider='zcode';view.setClientStates([client],null,id=>requested.push(id));
- assert.equal(view.connectionInitialize.hidden,false);assert.equal(view.connectionInitialize.textContent,'本机兼容连接');
+ assert.equal(view.connectionInitialize.hidden,false);assert.equal(view.connectionInitialize.textContent,'初始化连接');
  assert.equal(view.renderConnectionStatus(),false);await view.connectionInitialize.onclick();assert.deepEqual(requested,['zcode']);
  view.setClientStates([{...client,setupStatus:'session-access',canInitializeDesktop:false}]);assert.equal(view.connectionInitialize.hidden,true);
 });
@@ -1369,4 +1369,23 @@ test('channel handoff rechecks one pending UUID and a blocked response permits e
  assert.match(view.error.textContent,/原会话已关闭/);assert.equal(view.savedResumeId(),null);assert.equal(view.resumeAttempt,null);
  const writes=ui.calls.filter(c=>c.body).length;await view.refresh();assert.equal(ui.calls.filter(c=>c.body).length,writes);
  ui.answer(async()=>({status:'pending'}));await view.resumeButton.click();assert.notEqual(view.resumeAttempt.id,id);
+});
+
+
+test('ready connection methods hide retry and keep a shared chooser in the chat list',async()=>{
+ const ui=fixture(),view=ui.view,requested=[];view.provider='zcode';
+ const client={id:'zcode',enabled:true,setupStatus:'session-access',connected:false,historyAvailable:true,retryable:true,connectionMode:'official-remote',connectionModes:[{id:'private-pipe',label:'本机连接',configured:true},{id:'official-remote',label:'官方远控',configured:true}]};
+ view.setClientStates([client],null,null,null,null,id=>requested.push(id));
+ assert.equal(view.connectionRetry.hidden,true);assert.equal(view.connectionMode.hidden,false);assert.equal(view.listStatus.textContent,'已连接 · 官方远控');
+ await view.connectionMode.onclick();assert.deepEqual(requested,['zcode']);
+});
+
+test('connection method changes invalidate old write state without clearing drafts or reading position',async()=>{
+ const ui=fixture(),view=ui.view;view.provider='zcode';view.sid='fixture';
+ const client={id:'zcode',enabled:true,connected:true,historyAvailable:true,connectionMode:'private-pipe'};view.setClientStates([client]);
+ view.state={id:'fixture',title:'Fixture',status:'idle',capabilities:{send:true}};view.freshDetail=true;view.input.value='Keep draft';view.messages.scrollTop=123;
+ const attachments=view.attachments,messageList=view.messageList;let reads=0;view.refresh=async()=>{reads++;};
+ await view.setClientStates([{...client,connectionMode:'official-remote'}]);
+ assert.equal(view.freshDetail,false);assert.equal(view.canMutate(),false);assert.equal(reads,1);assert.equal(view.input.value,'Keep draft');assert.equal(view.messages.scrollTop,123);assert.equal(view.attachments,attachments);assert.equal(view.messageList,messageList);
+ await view.setClientStates([{...client,connectionMode:'official-remote'}]);assert.equal(reads,1);
 });

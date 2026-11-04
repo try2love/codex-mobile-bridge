@@ -23,7 +23,7 @@ class DesktopClientAccountsPanel {
     if(this.desktop)this.buildEditor();
   }
   buildEditor(){
-    this.addApiButton=this.button(this.provider==='claude'?'添加 API 接入':'添加 DeepSeek 官方 API',()=>this.openEditor({kind:'api',api:{}}));this.root.append(this.addApiButton);
+    this.addApiButton=this.button(this.provider==='deepseek'?'添加 DeepSeek 官方 API':'添加 API 接入',()=>this.openEditor({kind:'api',api:{}}));this.root.append(this.addApiButton);
     this.editor=this.node('form',undefined,'accounts-client-editor');this.editor.hidden=true;
     const field=(label,type='text')=>{const wrap=this.node('label'),input=this.node(type==='textarea'?'textarea':'input');if(type!=='textarea')input.type=type;wrap.append(this.node('span',label),input);return {wrap,input};};
     this.editName=field('名称');this.editName.input.maxLength=this.provider==='claude'?120:100;this.editName.input.required=true;
@@ -31,14 +31,16 @@ class DesktopClientAccountsPanel {
     this.editKey=field('API Key','password');this.editKey.input.maxLength=8192;this.editKey.input.autocomplete='new-password';
     this.editModels=field('模型 ID（每行一个）','textarea');this.editModels.input.rows=3;
     this.authWrap=this.node('label');this.authWrap.append(this.node('span','认证方式'));this.editAuth=this.node('select');for(const value of ['bearer','x-api-key']){const option=this.node('option',value==='bearer'?'Bearer':'x-api-key');option.value=value;this.editAuth.append(option);}this.authWrap.append(this.editAuth);
+    this.apiFormatWrap=this.node('label');this.apiFormatWrap.append(this.node('span','API 协议'));this.editApiFormat=this.node('select');this.apiFormatWrap.append(this.editApiFormat);
     this.editHint=this.node('p',undefined,'account-muted');this.editSubmit=this.node('button','保存配置');this.editSubmit.type='submit';this.editCancel=this.button('取消编辑',()=>this.closeEditor());
-    this.editor.append(this.editName.wrap,this.editUrl.wrap,this.authWrap,this.editKey.wrap,this.editModels.wrap,this.editHint,this.editSubmit,this.editCancel);this.editor.onsubmit=event=>{event.preventDefault();return this.saveEditor();};this.root.append(this.editor);
+    this.editor.append(this.editName.wrap,this.editUrl.wrap,this.apiFormatWrap,this.authWrap,this.editKey.wrap,this.editModels.wrap,this.editHint,this.editSubmit,this.editCancel);this.editor.onsubmit=event=>{event.preventDefault();return this.saveEditor();};this.root.append(this.editor);
   }
   openEditor(value){
     if(!this.desktop||this.busy||this.loading)return;
     this.editing=value;this.editor.hidden=false;this.editName.input.value=value.name||'';this.editKey.input.value='';this.editUrl.input.value=value.api?.baseUrl||'';this.editAuth.value=value.api?.authScheme||'bearer';this.editModels.input.value=(value.api?.models||[]).join('\n');
-    const api=!!value.api,claude=api&&this.provider==='claude';this.editKey.wrap.hidden=!api;this.editKey.input.required=api&&!value.api.hasKey;this.editKey.input.placeholder=this.text(value.api?.hasKey?'留空保留已有密钥':'');
-    for(const part of [this.editUrl.wrap,this.authWrap,this.editModels.wrap])part.hidden=!claude;this.editUrl.input.required=claude;this.editModels.input.required=claude;
+    const api=!!value.api,claude=api&&this.provider==='claude',formats=api?this.value?.capabilities?.apiFormats:[],custom=claude||!!formats?.length;this.editKey.wrap.hidden=!api;this.editKey.input.required=api&&!value.api.hasKey;this.editKey.input.placeholder=this.text(value.api?.hasKey?'留空保留已有密钥':'');
+    this.editApiFormat.replaceChildren();for(const format of formats||[]){const option=this.node('option',format.label);option.value=format.value;this.editApiFormat.append(option);}this.editApiFormat.value=value.api?.apiFormat||formats?.[0]?.value||'';
+    this.apiFormatWrap.hidden=!formats?.length;this.authWrap.hidden=!claude;for(const part of [this.editUrl.wrap,this.editModels.wrap])part.hidden=!custom;this.editUrl.input.required=custom;this.editModels.input.required=custom;
     this.render();
   }
   closeEditor(){if(!this.editor)return;this.editor.hidden=true;this.editing=null;this.editKey.input.value='';}
@@ -51,7 +53,7 @@ class DesktopClientAccountsPanel {
   async saveEditor(){
     if(!this.desktop||!this.editing||this.busy||this.loading)return;
     const value={action:this.editing.api?'save-api':'rename',name:this.editName.input.value.trim(),...(this.editing.id?{id:this.editing.id}:{})};
-    if(this.editing.api){value.apiKey=this.editKey.input.value;if(this.provider==='claude')Object.assign(value,{baseUrl:this.editUrl.input.value.trim(),authScheme:this.editAuth.value,models:this.editModels.input.value.split(/\r?\n/).map(row=>row.trim()).filter(Boolean)});}
+    if(this.editing.api){value.apiKey=this.editKey.input.value;const formats=this.value?.capabilities?.apiFormats;if(this.provider==='claude'||formats?.length)Object.assign(value,{baseUrl:this.editUrl.input.value.trim(),models:this.editModels.input.value.split(/\r?\n/).map(row=>row.trim()).filter(Boolean)},formats?.length?{apiFormat:this.editApiFormat.value}:{authScheme:this.editAuth.value});}
     if(await this.perform(value))this.closeEditor();
   }
   removeAccount(row){
@@ -94,7 +96,7 @@ class DesktopClientAccountsPanel {
   }
   choose(row){
     if(this.busy||this.loading||this.value?.canSwitch!==true||this.activeIds().has(row.id))return;
-    const prompt=this.text('切换会重启对应桌面应用。未发送草稿按账号保留，待发附件需重新添加。请先结束任务并保存工作，确认切换？')+(this.provider==='claude'?'\n\n'+this.text('重新启动 Claude Desktop 后，初始化连接需要电脑处于解锁状态。是否确认退出？'):'');
+    const prompt=this.text(this.value.capabilities?.switchRequiresStopped?'请先停用手机接入并正常退出原 App，再应用已保存的接入配置。API 配置保留官方登录，重新启动后请在聊天中选择对应模型。确认应用？':'切换会重启对应桌面应用。未发送草稿按账号保留，待发附件需重新添加。请先结束任务并保存工作，确认切换？')+(this.provider==='claude'?'\n\n'+this.text('重新启动 Claude Desktop 后，初始化连接需要电脑处于解锁状态。是否确认退出？'):'');
     if(window.confirm(prompt))return this.perform({action:'switch',id:row.id,
       ...(this.provider==='claude'&&this.syncLocalCliIds.has(row.id)?{syncLocalCli:true}:{})});
   }
@@ -198,20 +200,21 @@ class DesktopClientAccountsPanel {
     if(this.nameInput)this.nameInput.disabled=this.busy||this.loading;
     for(const button of [this.importButton,this.importApiButton])if(button)button.disabled=this.busy||this.loading||!value||value.canImport===false;
     if(this.editor){
-      for(const control of [this.addApiButton,this.editSubmit,this.editCancel,this.editName.input,this.editUrl.input,this.editKey.input,this.editAuth,this.editModels.input])control.disabled=this.busy||this.loading;
-      this.editHint.textContent=this.text(this.editing?.api?(this.provider==='claude'?'上游需兼容 Anthropic Messages API，填写其支持的 Claude 模型 ID。凭据仅保存于此电脑；保存不会立即切换。':'仅配置 DeepSeek 官方 API Key；自定义上游请在 Harness 中配置。保存不会立即切换。'):'此处修改已保存接入的名称；登录凭据请在原桌面应用中更新后重新保存。');
+      for(const control of [this.addApiButton,this.editSubmit,this.editCancel,this.editName.input,this.editUrl.input,this.editKey.input,this.editAuth,this.editApiFormat,this.editModels.input])control.disabled=this.busy||this.loading;
+      this.editHint.textContent=this.text(this.editing?.api?(value?.capabilities?.apiFormats?.length?'选择上游支持的协议并填写模型 ID。配置仅保存于此电脑；保存不会调用模型，也不会立即应用到原 App。':this.provider==='claude'?'上游需兼容 Anthropic Messages API，填写其支持的 Claude 模型 ID。凭据仅保存于此电脑；保存不会立即切换。':'仅配置 DeepSeek 官方 API Key；自定义上游请在 Harness 中配置。保存不会立即切换。'):'此处修改已保存接入的名称；登录凭据请在原桌面应用中更新后重新保存。');
     }
     let modelsPlaced=false,modelTargetId=null;const cards=[];
     const activeIds=this.activeIds(),accounts=[...(value?.accounts||[])].sort((a,b)=>Number(activeIds.has(b.id))-Number(activeIds.has(a.id)));
     if(value&&!accounts.length)cards.push(this.node('p','尚未保存此客户端的接入。','account-muted'));
     for(const row of accounts){
       const active=activeIds.has(row.id),card=this.node('section',undefined,'account-bucket accounts-client-card'+(active?' is-current':'')),identity=this.node('div',undefined,'accounts-identity'),name=this.node('div',undefined,'accounts-name'),heading=this.node('div',undefined,'accounts-name-heading');card.accountRowId=row.id;
-      heading.append(this.node('h3',row.name||row.email||row.id));if(active)heading.append(this.node('span','当前接入','accounts-plan'));if(row.saved===false)heading.append(this.node('span','尚未保存','account-muted'));name.append(heading);
+      const providerConfig=row.kind==='api'&&value?.capabilities?.apiFormats?.length;
+      heading.append(this.node('h3',row.name||row.email||row.id));if(active)heading.append(this.node('span',providerConfig?'已配置':'当前接入','accounts-plan'));else if(providerConfig&&row.saved)heading.append(this.node('span','待应用','account-muted'));if(row.saved===false)heading.append(this.node('span','尚未保存','account-muted'));name.append(heading);
       name.append(this.node('p',row.kind==='api'?'API 接入':'官方账号','account-muted'));if(row.email)name.append(this.node('p',row.email,'account-muted'));identity.append(name);
       const canReadQuota=value?.capabilities?.quota!==false&&row.canReadQuota!==false&&(row.kind!=='api'||(row.usage||row.quota)?.balance);
       card.append(identity);
       if(canReadQuota){const usage=this.node('div',undefined,'accounts-usage accounts-client-usage');this.usage(usage,row);if(usage.children.length)card.append(usage);}
-      const actions=this.node('div',undefined,'accounts-actions'),switcher=this.button(active?'当前接入':'切换到此接入',()=>this.choose(row));switcher.disabled=active||this.busy||this.loading||value.canSwitch!==true;actions.append(switcher);
+      const actions=this.node('div',undefined,'accounts-actions'),switcher=this.button(providerConfig?(active?'已配置':'应用配置'):active?'当前接入':'切换到此接入',()=>this.choose(row));switcher.disabled=active||this.busy||this.loading||value.canSwitch!==true;actions.append(switcher);
       if(this.provider==='claude'&&!active){const label=this.node('label',undefined,'account-reminder'),checkbox=this.node('input');checkbox.type='checkbox';checkbox.checked=row.kind==='api'&&this.syncLocalCliIds.has(row.id);checkbox.disabled=row.kind!=='api'||this.busy||this.loading;checkbox.onchange=()=>{if(checkbox.checked)this.syncLocalCliIds.add(row.id);else this.syncLocalCliIds.delete(row.id);};label.append(checkbox,this.node('span','同时应用到本机 CLI'));actions.append(label);if(row.kind!=='api')actions.append(this.node('small','官方 Claude Desktop 登录不能直接同步到 Claude Code CLI','account-muted'));}
       if(this.desktop&&row.saved!==false){for(const [label,fn] of [['编辑',()=>this.editAccount(row)],['删除',()=>this.removeAccount(row)]]){const button=this.button(label,fn);button.disabled=this.busy||this.loading;actions.append(button);}}
       card.append(actions);const footer=this.node('div',undefined,'accounts-card-footer');if(active&&!modelsPlaced&&this.readModels){footer.append(this.modelsButton);modelsPlaced=true;modelTargetId=row.id;}if(canReadQuota)footer.append(this.usageControls(row));if(footer.children.length)card.append(footer);cards.push(card);

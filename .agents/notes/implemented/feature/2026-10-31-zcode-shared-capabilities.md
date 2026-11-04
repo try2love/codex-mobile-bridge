@@ -2,6 +2,8 @@
 
 Status: implemented
 
+后续[统一连接选择与 API 配置](2026-11-04-zcode-connection-choice-and-api.md)在本文共享账号事务上补齐个人 API Provider 的新增、保存和应用；模型选择、原生账号与任务保护规则继续复用。
+
 ## 问题
 
 [手机原型](2026-10-31-zcode-mobile-test.md)仅开放核心收发，模型、Skill、提醒和账号入口仍被关闭。用户在手机上看到第四客户端后，无法使用其他客户端已有的共享能力。继续为 ZCode 另建页面会重复模型目录、草稿、通知和账号事务规则。

@@ -70,7 +70,7 @@ class DesktopConnectionsPanel {
     if(typeof failure.recoveryRestart==='boolean')return this.recoverDeepseek(failure.recoveryRestart);
     if(failure.desktopAction)return this.action(failure.desktopAction);
     if(failure.action==='initialize')return id==='claude'?this.action('connect-claude'):this.toggleClient(id,true,{initializeDesktop:true});
-    return this.toggleClient(id,failure.action==='enable');
+    return this.toggleClient(id,failure.action==='enable',{connectionMode:failure.connectionMode});
   }
   pollClients(fast=false){
     if(document.hidden||document.getElementById('clients-page').hidden||this.hasUncertain()||(fast&&!this.managementClients().some(client=>this.connection(client).waiting)))return;
@@ -132,7 +132,7 @@ class DesktopConnectionsPanel {
     const button=document.getElementById('refresh-clients');if(button){button.disabled=!!this.scanning||!!this.busy||!!this.choosingClient;button.textContent=BridgeI18n.t(this.scanning?'正在扫描…':'重新扫描');}
     this.root.querySelectorAll('[data-desktop-action]').forEach(button=>button.disabled=!!this.scanning||!!this.busy||!!this.choosingClient||(button.dataset.desktopAction!=='scan'&&this.hasUncertain()));
   }
-  async toggleClient(id,enabled,{initializeDesktop=false}={}){
+  async toggleClient(id,enabled,{initializeDesktop=false,connectionMode}={}){
     const client=this.managementClients().find(row=>row.id===id);
     if(this.busy||this.scanning||this.choosingClient||this.hasUncertain()||!client||(enabled&&!(client.selectable??client.configured)))return;
     let choice;
@@ -143,7 +143,7 @@ class DesktopConnectionsPanel {
       finally{this.choosingClient=null;this.renderClients();this.renderScan();}
       if(choice===null||initializeDesktop&&!choice)return;
     }
-    const intent=ClientLifecycle.initializationFields(initializeDesktop&&choice);
+    const intent={...ClientLifecycle.initializationFields(initializeDesktop&&choice),...(connectionMode?{connectionMode}:{})};
     const acknowledgeUnavailable=!enabled&&choice==='recovery',forceDesktop=choice==='force';
     const quitDesktop=!enabled&&(choice===true||forceDesktop||acknowledgeUnavailable);
     const before=this.clients;
@@ -154,6 +154,13 @@ class DesktopConnectionsPanel {
     try{const value=await ClientLifecycle.request(()=>this.api.desktopSessions({action:'toggle-client',provider:id,enabled,...intent,...(!enabled?{quitDesktop}:{}),...(forceDesktop?{forceDesktop:true,forceConfirmed:true}:{}),...(acknowledgeUnavailable?{acknowledgeUnavailable:true}:{})}),{timeout:this.lifecycleTimeout??45000});if(value.clients)this.clients=value.clients;this.gatewayRunning=value.gatewayRunning??this.gatewayRunning;this.windowsSession=value.windowsSession??this.windowsSession;}
     catch(error){this.operationFailures.set(id,{...ClientLifecycle.failure(initializeDesktop?'initialize':enabled?'enable':forceDesktop?'force':quitDesktop?'quit':'disable',error,'desktop'),connectionMode:intent.connectionMode});this.clients=before;this.feedback(error.message,true);}
     finally{this.busy=false;this.pendingClient=null;this.renderClients();this.renderScan();await this.refreshClients(true);}
+  }
+  async selectConnectionMode(id){
+    const client=this.managementClients().find(row=>row.id===id);
+    if(!client||this.busy||this.scanning||this.choosingClient||this.hasUncertain())return;
+    this.choosingClient=id;this.clientsRevision++;this.statusRevision++;this.renderClients();this.renderScan();let mode;
+    try{mode=await ClientLifecycle.chooseConnectionMode(client);}finally{this.choosingClient=null;this.renderClients();this.renderScan();}
+    if(mode){await this.toggleClient(id,true,{connectionMode:mode});if(id==='zcode')await this.zcodeOfficial?.refresh();}
   }
   addClient(){
     const dialog=document.createElement('dialog');dialog.className='client-disable-dialog';dialog.setAttribute('aria-labelledby','client-add-title');
@@ -199,7 +206,7 @@ class DesktopConnectionsPanel {
       const img=node('img');img.src='../web/client-icons/'+(client.icon||client.id)+'.png';img.alt='';logo.append(img);
       const label=node('div');label.append(node('strong',client.name),node('small',client.description|| (client.kind==='wsl-claude-cli'?'WSL Claude Code':client.kind==='wsl-cli'?'WSL Codex CLI':({codex:'Codex Desktop',claude:'Claude Desktop',deepseek:'DeepSeek Harness'})[client.id])));name.append(logo,label);identity.append(name);
       const access=node('td'),toggle=node('input');toggle.type='checkbox';toggle.className='client-toggle';toggle.checked=client.enabled;toggle.disabled=(!client.enabled&&!(client.selectable??client.configured))||this.scanning||this.busy||!!this.choosingClient;toggle.setAttribute('aria-label',t('启用')+' '+client.name);toggle.title=t(client.reason);toggle.onchange=()=>this.toggleClient(client.id,toggle.checked);access.append(toggle,node('small',this.pendingClient?.id===client.id?(this.gatewayRunning===false?'正在保存…':this.pendingClient.enabled?(client.id==='claude'?'正在连接…':'正在打开应用…'):this.pendingClient.forceDesktop?'正在后台强制结束…':this.pendingClient.quitDesktop?'正在退出应用…':'正在停用接入…'):client.setupStatus==='unsupported'?'暂不可用':client.enabled?(this.gatewayRunning===false?'随网关启动':'已启用'):!client.installed&&!client.configured?'待配置':'未启用'));
-      toggle.disabled=toggle.disabled||this.hasUncertain();const state=this.connection(client),failure=this.operationFailures?.get(client.id),status=node('td'),stateLabel=node('span',state.label,state.waiting?'state-pending client-connection-waiting':client.connected?'state-ready':state.error?'state-error':state.action?'state-pending':'');stateLabel.setAttribute('role','status');stateLabel.setAttribute('aria-busy',String(state.waiting));status.append(stateLabel,node('small',failure?ClientLifecycle.failureMessage(failure):state.reason));
+      toggle.disabled=toggle.disabled||this.hasUncertain();const state=this.connection(client),failure=this.operationFailures?.get(client.id),status=node('td'),stateLabel=node('span',state.label,state.waiting?'state-pending client-connection-waiting':state.ready?'state-ready':state.error?'state-error':state.action?'state-pending':'');if(state.modeLabel)stateLabel.textContent+=' · '+BridgeI18n.t(state.modeLabel);stateLabel.setAttribute('role','status');stateLabel.setAttribute('aria-busy',String(state.waiting));status.append(stateLabel,node('small',failure?ClientLifecycle.failureMessage(failure):state.reason));
       const account=node('td');account.dataset.clientAccount=client.id;
       if(client.id!=='codex')account.append(node('span',client.configured?'已配置':'待配置'),node('small',client.accountNotice|| (client.kind==='codex-local'?'独立管理账号与 API':['wsl-cli','wsl-claude-cli'].includes(client.kind)?'在网关中管理 WSL 账号与 API':client.id==='claude'?'在 Claude 中管理账号':'在 Harness 中管理账号 / API')));
       const actions=node('td'),buttons=node('div',undefined,'connection-actions'),manage=node('button',client.setupStatus==='unsupported'?'查看详情':client.configured?'管理':'配置');
@@ -222,10 +229,12 @@ class DesktopConnectionsPanel {
         const quit=node('button','退出 Claude…');quit.type='button';quit.disabled=!!this.busy||!!this.scanning;quit.onclick=()=>this.quitClaude();buttons.append(quit);
       }
       if(!client.enabled&&client.running&&client.canQuitDesktop!==false&&this.gatewayRunning!==false){const quit=node('button','关闭电脑 App…');quit.type='button';quit.disabled=this.busy||this.scanning||!!this.choosingClient||this.hasUncertain();quit.onclick=()=>this.toggleClient(client.id,false);buttons.append(quit);}
+      if(ClientLifecycle.connectionModes(client).length>1){const connection=node('button','选择连接方式');connection.type='button';connection.disabled=this.busy||this.scanning||!!this.choosingClient||this.hasUncertain();connection.onclick=()=>this.selectConnectionMode(client.id);buttons.append(connection);}
       manage.type='button';manage.onclick=()=>this.manageClient(client);buttons.append(manage);actions.append(buttons);row.append(identity,access,status,account,actions);body.append(row);
     }
     root.replaceChildren(this.visibleClients().length?table:node('p','尚未发现客户端，请添加接入或重新扫描。','hint'));this.renderAccount(this.accountValue);
     for(const [provider,panel] of Object.entries(this.accountPanels)){this.renderClientAccount(provider,panel.value);}
+    for(const [id,panel] of this.connectionModePanels||[])panel.render(this.managementClients().find(row=>row.id===id));
     this.resumeAccounts();
   }
   async manageClient(client){
@@ -237,22 +246,7 @@ class DesktopConnectionsPanel {
         if(request!==this.managementRequest)return;
         const page=layout.clientPage(client.id),article=document.createElement('article'),title=document.createElement('h2'),description=document.createElement('p'),notice=document.createElement('p'),content=document.createElement('div');
         title.textContent=client.name;description.textContent=BridgeI18n.t(client.description||'');notice.textContent=BridgeI18n.t(client.configurationNotice||'');notice.hidden=!client.configurationNotice;article.append(title,description,notice,content);page.append(article);
-        if(client.id==='zcode'&&client.compatibilitySupported===true){
-          const label=document.createElement('label'),select=document.createElement('input'),hint=document.createElement('p');
-          select.type='checkbox';select.dataset.zcodeCompatibility='';hint.className='hint';
-          const caption=document.createElement('span');caption.textContent=BridgeI18n.t('由网关启动时开启本机兼容端口');label.append(select,caption);
-          hint.textContent=BridgeI18n.t('仅监听 127.0.0.1:17742。本机其他程序可能访问此端口。设置在下次由网关启动 ZCode 时生效。');
-          article.insertBefore(label,content);article.insertBefore(hint,content);
-          select.onchange=async()=>{
-            if(select.disabled||this.zcodeOfficial?.value?.selected){select.checked=client.compatibilityLaunch===true;return;}
-            const enabled=select.checked;
-            if(enabled&&!window.confirm(BridgeI18n.t('允许网关在下次启动 ZCode 时开启本机调试端口？'))){select.checked=false;return;}
-            select.disabled=true;
-            try{const result=await this.api.desktopSessions({action:'zcode-compatibility',enabled});this.clients=result.clients;this.renderClients();}
-            catch(error){select.checked=!enabled;this.feedback(error.message,true);}
-            finally{select.disabled=this.zcodeOfficial?.value?.selected===true;}
-          };
-        }
+        if(ClientLifecycle.connectionModes(client).length>1)this.mountConnectionModes(article,content,client);
         if(client.id==='zcode')this.mountZcodeOfficial(article,content);
         if(wsl){
           const provider=client.kind==='wsl-claude-cli'?'claude':'codex',entry=client.id;
@@ -270,46 +264,50 @@ class DesktopConnectionsPanel {
           this.accountPanels[provider]=panel;
         }
       }
-      if(client.id==='zcode'){
-        const select=layout.clientPage(client.id).querySelector('[data-zcode-compatibility]');if(select){select.checked=client.compatibilityLaunch===true;select.disabled=this.zcodeOfficial?.value?.selected===true;}
-      }
       layout.selectClient(client.id);this.managementPages.get(client.id)?.open();
       if(client.id==='zcode')await this.zcodeOfficial?.refresh();
     }catch(error){this.feedback(error.message,true);}
+  }
+  mountConnectionModes(article,before,client){
+    const node=(tag,text,cls='')=>{const value=document.createElement(tag);value.className=cls;if(text!==undefined)value.textContent=BridgeI18n.t(text);return value;};
+    const section=node('section',undefined,'accounts-panel'),heading=node('div',undefined,'account-heading'),title=node('h3','连接方式'),change=node('button','选择连接方式','accounts-refresh'),current=node('p'),help=node('div');
+    change.type='button';change.onclick=()=>this.selectConnectionMode(client.id);section.dataset.clientConnectionModes=client.id;heading.append(title,change);section.append(heading,current,help);article.insertBefore(section,before);
+    const render=value=>{const modes=ClientLifecycle.connectionModes(value);section.hidden=modes.length<2;current.textContent=BridgeI18n.t('当前连接方式')+'：'+BridgeI18n.t(ClientLifecycle.connectionModeLabel(value)||'尚未选择');current.setAttribute('role','status');change.disabled=this.busy||this.scanning||!!this.choosingClient||this.hasUncertain();help.replaceChildren();for(const mode of modes){const row=node('p',undefined,'account-muted'),description=node('span');description.textContent='：'+BridgeI18n.t(mode.description||mode.reason||'');row.append(node('strong',mode.label),description);help.append(row);}};
+    this.connectionModePanels??=new Map();this.connectionModePanels.set(client.id,{render});render(client);
   }
   mountZcodeOfficial(article,before){
     const node=(tag,text,cls='')=>{const value=document.createElement(tag);value.className=cls;if(text!==undefined)value.textContent=BridgeI18n.t(text);return value;};
     const section=node('section',undefined,'accounts-panel'),heading=node('div',undefined,'account-heading');section.dataset.zcodeOfficial='';
     const title=node('h3','官方远控（实验）'),refresh=node('button','刷新状态','accounts-refresh');heading.append(title,refresh);
     const help=node('p','使用与此电脑 ZCode 相同的官方账号，并在原 App 中开启 Web 远程控制。会话数据经过 ZCode 官方中继。','account-muted');
-    const mode=node('p'),status=node('p'),reason=node('p',undefined,'hint');status.setAttribute('role','status');reason.setAttribute('role','status');
+    const status=node('p'),reason=node('p',undefined,'hint'),saved=node('p',undefined,'hint');status.setAttribute('role','status');reason.setAttribute('role','status');saved.setAttribute('role','status');
     const label=node('label'),link=node('input');link.type='url';link.autocomplete='off';link.spellcheck=false;link.maxLength=4096;link.placeholder=BridgeI18n.t('粘贴此电脑的 Web 远程控制链接');label.append(node('span','官方远控链接'),link);
     const actions=node('div',undefined,'actions'),buttons={};
-    for(const [action,text] of [['login','登录官方账号'],['connect','连接官方远控'],['disconnect','断开官方远控'],['local','切回本机连接'],['forget','清除官方登录']]){
+    for(const [action,text] of [['save','保存连接配置'],['login','登录官方账号'],['connect','连接官方远控'],['disconnect','断开官方远控'],['forget','清除官方登录']]){
       const button=node('button',text);button.type='button';button.dataset.officialAction=action;buttons[action]=button;actions.append(button);
     }
-    refresh.type='button';section.append(heading,help,mode,status,reason,label,actions);article.insertBefore(section,before);
+    refresh.type='button';section.append(heading,help,status,reason,label,saved,actions);article.insertBefore(section,before);
     let busy=false,pendingAction='',loadedLink='',error='';
     const panel=this.zcodeOfficial={value:null};
     const render=()=>{
-      const value=panel.value,unavailable=!value,selected=value?.selected===true;
-      mode.textContent=BridgeI18n.t(unavailable?(busy?'正在读取当前接入方式…':'当前接入方式暂不可用'):selected?'当前接入：官方远控':'当前接入：本机连接');
+      const value=panel.value,unavailable=!value,edited=link.value.trim()!==loadedLink;
       status.textContent=value?[(value.configured?BridgeI18n.t('已登录')+(value.accountName?' · '+value.accountName:'')+(value.provider?' · '+value.provider:''):BridgeI18n.t('尚未登录官方账号')),
         BridgeI18n.t(value.connected?'官方远控已连接':'官方远控未连接')].join('；'):'';
-      reason.textContent=BridgeI18n.t(busy?({state:'正在刷新状态…',login:'正在打开官方登录…',connect:'正在连接官方远控…',disconnect:'正在断开官方远控…',local:'正在切回本机连接…',forget:'正在清除官方登录…'})[pendingAction]:error||value?.reason||'');reason.className=error?'error':'hint';
+      reason.textContent=BridgeI18n.t(busy?({state:'正在刷新状态…',save:'正在保存连接配置…',login:'正在打开官方登录…',connect:'正在连接官方远控…',disconnect:'正在断开官方远控…',forget:'正在清除官方登录…'})[pendingAction]:error||value?.reason||'');reason.className=error?'error':'hint';
+      saved.textContent=BridgeI18n.t(edited?'连接配置已修改，尚未保存。':loadedLink?'连接配置已保存。登录失效时需要重新验证。':'请保存此电脑的官方远控链接，再完成官方登录。');label.dataset.dirty=String(edited);
       link.disabled=busy;refresh.disabled=busy;for(const button of Object.values(buttons))button.disabled=busy||unavailable;
-      buttons.login.disabled=busy||unavailable||!link.value.trim();buttons.connect.disabled=busy||unavailable||!value?.configured||!link.value.trim();
-      buttons.disconnect.disabled=busy||!value?.connected;buttons.local.disabled=busy||!selected;buttons.forget.disabled=busy||!value?.configured;
-      const compatibility=article.querySelector('[data-zcode-compatibility]');if(compatibility)compatibility.disabled=busy||selected||unavailable;
+      buttons.save.disabled=busy||unavailable||!link.value.trim()||!edited;buttons.login.disabled=busy||unavailable||!loadedLink||edited;buttons.connect.disabled=busy||unavailable||!value?.configured||!loadedLink||edited||value?.connected===true;
+      buttons.disconnect.disabled=busy||!value?.connected;buttons.forget.disabled=busy||!value?.configured;
     };
     const perform=async action=>{
       if(busy||this.busy||this.scanning||this.choosingClient)return;
       if(action!=='state'&&buttons[action].disabled)return;
-      if(action==='forget'&&!window.confirm(BridgeI18n.t('清除网关保存的官方登录并切回本机连接？ZCode 原 App 的账号和任务会保留。')))return;
+      if(action==='connect'){await this.toggleClient('zcode',true,{connectionMode:'official-remote'});await panel.refresh();return;}
+      if(action==='forget'&&!window.confirm(BridgeI18n.t('清除网关保存的官方登录并断开官方远控？已保存的链接、ZCode 原 App 的账号和任务会保留。')))return;
       const edited=link.value!==loadedLink;busy=true;pendingAction=action;error='';this.busy=true;render();this.renderClients();this.renderScan();
       try{
-        const value=await this.api.desktopSessions({action:'zcode-official-'+action,...(['login','connect'].includes(action)?{link:link.value.trim()}:{})});
-        panel.value=value;if(!edited||action==='forget')link.value=value.link||'';loadedLink=value.link||'';
+        const value=await this.api.desktopSessions({action:'zcode-official-'+action,...(['save','login','connect'].includes(action)?{link:link.value.trim()}:{})});
+        panel.value=value;if(!edited||['save','forget'].includes(action))link.value=value.link||'';loadedLink=value.link||'';
       }catch(failure){error=failure.message;this.feedback(error,true);panel.value=null;if(action!=='state')try{panel.value=await this.api.desktopSessions({action:'zcode-official-state'});}catch(_){}}
       finally{busy=false;this.busy=false;render();this.renderClients();this.renderScan();}
       if(!['state','login'].includes(action))await this.refreshClients(true);

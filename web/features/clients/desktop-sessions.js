@@ -13,7 +13,8 @@ class DesktopSessionsView {
     this.listStatus=this.node('p','muted ds-list-status');this.listStatus.setAttribute('role','status');this.connectionRetry=this.button('重试连接',async()=>{const provider=this.provider;if(this.retryingClient||!this.retryClient)return;this.retryingClient=provider;this.renderConnectionStatus();try{await this.retryClient(provider);}finally{this.retryingClient=null;this.renderConnectionStatus();}});this.connectionRetry.hidden=true;
     this.connectionInitialize=this.button('初始化连接',async()=>{const provider=this.provider;if(this.initializingClient||!this.initializeClient)return;this.initializingClient=provider;this.renderConnectionStatus();try{await this.initializeClient(provider);}finally{this.initializingClient=null;this.renderConnectionStatus();}});this.connectionInitialize.hidden=true;
     this.connectionReconnect=this.button('重新连接 Desktop',async()=>{const provider=this.provider;if(this.reconnectingClient||!this.reconnectClient)return;this.reconnectingClient=provider;this.renderConnectionStatus();try{await this.reconnectClient(provider);}finally{this.reconnectingClient=null;this.renderConnectionStatus();}});this.connectionReconnect.hidden=true;
-    this.connectionNotice=this.node('p','muted');this.connectionNotice.hidden=true;this.connectionRefresh=this.button('刷新状态',async()=>{if(this.refreshingClient||!this.refreshClients)return;this.refreshingClient=true;this.renderConnectionStatus();try{await this.refreshClients();}finally{this.refreshingClient=false;this.renderConnectionStatus();}});this.connectionRefresh.hidden=true;this.rowsRoot=this.node('div','sessions');const toolbar=this.node('div','chat-list-toolbar');toolbar.append(this.search,filters);this.list.append(toolbar,this.listStatus,this.connectionNotice,this.connectionRetry,this.connectionReconnect,this.connectionInitialize,this.connectionRefresh,this.rowsRoot);if(typeof bindChatListToolbar==='function')bindChatListToolbar(toolbar);
+    this.connectionMode=this.button('选择连接方式',async()=>{const provider=this.provider;if(this.choosingConnectionMode||!this.chooseConnectionMode)return;this.choosingConnectionMode=provider;this.renderConnectionStatus();try{await this.chooseConnectionMode(provider);}finally{this.choosingConnectionMode=null;this.renderConnectionStatus();}});this.connectionMode.hidden=true;
+    this.connectionNotice=this.node('p','muted');this.connectionNotice.hidden=true;this.connectionRefresh=this.button('刷新状态',async()=>{if(this.refreshingClient||!this.refreshClients)return;this.refreshingClient=true;this.renderConnectionStatus();try{await this.refreshClients();}finally{this.refreshingClient=false;this.renderConnectionStatus();}});this.connectionRefresh.hidden=true;this.rowsRoot=this.node('div','sessions');const toolbar=this.node('div','chat-list-toolbar');toolbar.append(this.search,filters);this.list.append(toolbar,this.listStatus,this.connectionMode,this.connectionNotice,this.connectionRetry,this.connectionReconnect,this.connectionInitialize,this.connectionRefresh,this.rowsRoot);if(typeof bindChatListToolbar==='function')bindChatListToolbar(toolbar);
     this.welcome=this.node('div','welcome ds-welcome');const logo=this.node('img','mark large');logo.src='/icon-ui.png';logo.alt='';logo.width=72;logo.height=72;this.welcome.append(logo,this.translated('h1','从一条聊天继续'),this.translated('p','选择电脑上的聊天，查看进度或发送消息。','muted'));
     this.conversation=this.node('section','ds-conversation chat');this.conversation.hidden=true;this.main.append(this.welcome,this.conversation);
     this.back=this.iconButton('返回聊天列表','m15 5-7 7 7 7',()=>this.backToList());this.back.classList.add('ds-back');
@@ -133,16 +134,17 @@ class DesktopSessionsView {
       this.listPrefetchAt.set(client.id,now);this.sharedRead(client.id,'list').promise.catch(()=>{});
     }
   }
-  setClientStates(clients,retry,initialize,refresh,reconnect){
-    for(const client of clients){const old=this.clientStates?.find(row=>row.id===client.id);if(old&&(old.enabled!==false&&client.enabled===false||this.sourceReadable(old)&&!this.sourceReadable(client)))this.invalidateReads(client.id);}
-    const before=this.clientStates?.find(client=>client.id===this.provider);this.clientStates=clients;this.retryClient=retry;this.initializeClient=initialize;this.refreshClients=refresh;this.reconnectClient=reconnect;
+  setClientStates(clients,retry,initialize,refresh,reconnect,chooseConnectionMode){
+    let modeChanged=false;
+    for(const client of clients){const old=this.clientStates?.find(row=>row.id===client.id),changed=old?.connectionMode&&client.connectionMode&&old.connectionMode!==client.connectionMode;if(old&&(changed||old.enabled!==false&&client.enabled===false||this.sourceReadable(old)&&!this.sourceReadable(client)))this.invalidateReads(client.id);if(changed){this.forgetResumes(client.id);if(client.id===this.provider){modeChanged=true;this.staleDetail();if(this.sid)this.status.textContent=BridgeI18n.t('正在连接…');}}}
+    const before=this.clientStates?.find(client=>client.id===this.provider);this.clientStates=clients;this.retryClient=retry;this.initializeClient=initialize;this.refreshClients=refresh;this.reconnectClient=reconnect;this.chooseConnectionMode=chooseConnectionMode;
     const selected=clients.find(client=>client.id===this.provider),cliReadable=this.provider==='claude'&&this.state?.backend==='cli'&&selected?.enabled!==false&&this.sourceReadable(selected);
     if(selected?.enabled===false&&this.resumeAttempt)this.resetResume(true);
     if(this.state&&!this.canMutate()&&!cliReadable&&!(this.sourceReadable(selected)&&this.canResume()))this.staleDetail();else this.updateComposer();
     const wasWaiting=before&&ClientLifecycle.connection(before).waiting;
     const sessionReady=client=>client?.pipeReady===true||client?.setupStatus==='session-access';
     this.prefetchLists();
-    if(!this.renderConnectionStatus()&&before&&(wasWaiting||!sessionReady(before)&&sessionReady(selected)||!this.sourceReadable(before)&&this.sourceReadable(selected))){this.listStatus.textContent=this.rows.length?'':BridgeI18n.t('正在读取聊天…');return this.refresh();}
+    if(!this.renderConnectionStatus()&&before&&(modeChanged||wasWaiting||!sessionReady(before)&&sessionReady(selected)||!this.sourceReadable(before)&&this.sourceReadable(selected))){this.listStatus.textContent=this.rows.length?'':BridgeI18n.t('正在读取聊天…');return this.refresh();}
   }
   sourceReadable(client){return !!client&&(client.connected===true||client.historyAvailable===true||client.id==='claude'&&client.cliAvailable===true);}
   renderConnectionStatus(){
@@ -150,11 +152,13 @@ class DesktopSessionsView {
     const failure=client?.operationFailure,uncertain=!!(client?.operationUncertain||failure?.uncertain),blocked=!!state&&!client.connected&&(state.waiting||state.action||state.retryable||state.canReconnect||state.canInitialize||!!failure);
     this.listStatus.setAttribute('aria-busy',String(!!state?.waiting));this.listStatus.classList.toggle('client-connection-waiting',!!state?.waiting);
     this.connectionRetry.hidden=!blocked||!state.retryable||uncertain;this.connectionRetry.disabled=!!this.retryingClient;
+    this.connectionMode.hidden=!this.chooseConnectionMode||ClientLifecycle.connectionModes(client).length<2;this.connectionMode.disabled=!!this.choosingConnectionMode||uncertain||!!client?.pendingEnable;
     this.connectionInitialize.hidden=!blocked||!state.canInitialize||uncertain;this.connectionInitialize.disabled=!!this.initializingClient;
     this.connectionReconnect.hidden=!blocked||!state.canReconnect||uncertain;this.connectionReconnect.disabled=!!this.reconnectingClient;this.connectionReconnect.textContent=BridgeI18n.t('重新连接 Desktop');
     this.connectionInitialize.textContent=BridgeI18n.t(state?.initializeLabel||'初始化连接');
     this.connectionNotice.hidden=!failure;this.connectionNotice.textContent=failure?BridgeI18n.t(ClientLifecycle.failureMessage(failure)):'';this.connectionRefresh.hidden=!uncertain;this.connectionRefresh.disabled=!!this.refreshingClient;
-    if(blocked)this.listStatus.textContent=BridgeI18n.t(state.label)+(state.reason&&state.reason!==state.label?' · '+BridgeI18n.t(state.reason):'');
+    if(state?.modeLabel)this.listStatus.textContent=BridgeI18n.t(state.label)+' · '+BridgeI18n.t(state.modeLabel)+(blocked&&state.reason&&state.reason!==state.label?' · '+BridgeI18n.t(state.reason):'');
+    else if(blocked)this.listStatus.textContent=BridgeI18n.t(state.label)+(state.reason&&state.reason!==state.label?' · '+BridgeI18n.t(state.reason):'');
     return blocked&&!(client?.enabled!==false&&this.sourceReadable(client));
   }
   get isChatOpen(){return this.provider!=='codex'&&!!this.sid&&!this.conversation.hidden;}

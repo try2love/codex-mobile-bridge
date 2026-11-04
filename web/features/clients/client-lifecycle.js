@@ -1,18 +1,16 @@
 'use strict';
 const ClientLifecycle=(()=>{
   let sequence=0;
-  function zcodeCompatibility(client){
-    return client?.id==='zcode'&&(client.compatibilitySupported===true||client.initializationMode==='zcode-local-compatibility');
-  }
+  function connectionModes(client){return Array.isArray(client?.connectionModes)?client.connectionModes.filter(mode=>typeof mode?.id==='string'&&mode.id&&typeof mode.label==='string'):[];}
+  function connectionModeLabel(client){return connectionModes(client).find(mode=>mode.id===client.connectionMode)?.label||'';}
   function connection(client={}){
     const stage=client.connectionState,setup=client.setupStatus;
     const waiting=['starting','connecting'].includes(stage)||(!stage&&['starting','connecting'].includes(setup))||
       (client.initializationMode!=='background'&&['needs-screen-saver','needs-unlock','needs-desktop'].includes(setup));
-    const background=client.backgroundRunning&&client.mainRunning===false;
+    const background=client.backgroundRunning&&client.mainRunning===false,ready=client.connected===true||setup==='session-access'||client.pipeReady===true;
     let label,reason=client.reason||'',pending=false,action=false;
     if(setup==='recovery-required'||(background&&!waiting&&!client.pendingEnable))label=background?'后台运行，桌面未打开':'需要恢复连接';
-    else if(client.connected)label='已连接';
-    else if(setup==='session-access'||client.pipeReady===true)label='按会话接入';
+    else if(ready)label='已连接';
     else if(client.pendingEnable){label='正在启动应用…';reason='正在等待客户端连接，完成后会自动显示聊天。';pending=true;}
     else if(waiting){label=({'needs-screen-saver':'等待退出屏保','needs-unlock':'等待解锁','needs-desktop':'等待桌面恢复'})[setup]||
       (stage==='starting'?'正在启动应用…':'正在连接，请稍候…');pending=true;}
@@ -26,11 +24,11 @@ const ClientLifecycle=(()=>{
     const canReconnect=client.id==='claude'&&client.canReconnect===true&&client.reconnectSupported===true&&!client.connected&&!pending&&!['recovery-required','restart-required'].includes(setup);
     const pipe=client.id==='zcode'&&client.pipeSupported===true;
     const canInitialize=client.id==='zcode'
-      ?(pipe||zcodeCompatibility(client))&&client.canInitializeDesktop===true&&client.installed!==false&&!client.connected&&!pending&&setup!=='session-access'&&client.pipeReady!==true
+      ?pipe&&client.canInitializeDesktop===true&&client.installed!==false&&!ready&&!pending
       :client.id==='claude'&&!canStartDesktop&&client.enabled&&client.installed!==false&&!client.connected&&!pending&&(['needs-initialization','needs-retry','needs-developer-mode','needs-trust','needs-permission','needs-unlock','needs-desktop','cancelled','failed'].includes(setup)||stage==='needs-initialization'||client.canInitializeDesktop===true&&!canReconnect);
-    const initializeLabel=!pipe&&zcodeCompatibility(client)?'本机兼容连接':canReconnect?'重新初始化连接':'初始化连接';
-    const retryable=client.retryable===true&&client.enabled&&!client.connected&&!pending&&!canInitialize&&!canReconnect&&!canStartDesktop&&!['recovery-required','restart-required'].includes(setup);
-    return {label,reason,waiting:pending,action:action||setup==='recovery-required',retryable:!!retryable,canReconnect:!!canReconnect,canInitialize:!!canInitialize,initializeLabel,canStartDesktop:!!canStartDesktop,error:!pending&&!client.connected&&(['error','timeout'].includes(stage)||setup==='failed')};
+    const initializeLabel=canReconnect?'重新初始化连接':'初始化连接';
+    const retryable=client.retryable===true&&client.enabled&&!ready&&!pending&&!canInitialize&&!canReconnect&&!canStartDesktop&&!['recovery-required','restart-required'].includes(setup);
+    return {label,modeLabel:connectionModeLabel(client),reason,ready,waiting:pending,action:action||setup==='recovery-required',retryable:!!retryable,canReconnect:!!canReconnect,canInitialize:!!canInitialize,initializeLabel,canStartDesktop:!!canStartDesktop,error:!pending&&!ready&&(['error','timeout'].includes(stage)||setup==='failed')};
   }
   function request(operation,{timeout=45000,uncertain=true,message='操作结果尚未确认，请刷新状态后再重试。'}={}){
     const controller=typeof AbortController!=='undefined'?new AbortController():null;let timer;
@@ -49,21 +47,16 @@ const ClientLifecycle=(()=>{
     for(const [id,value] of failures||[]){
       if(!value.uncertain)continue;const client=clients.find(row=>row.id===id);
       const ready=client&&(client.connected||client.setupStatus==='session-access');
-      const initialized=id==='zcode'?(value.connectionMode==='private-pipe'
-        ?client?.pipeReady===true||ready&&client.pipeSupported===true&&client.compatibilityLaunch!==true
-        :ready&&client.compatibilityLaunch===true):client&&(client.connected||connection(client).waiting);
-      const completed=client&&(['quit','force'].includes(value.action)?client.enabled===false&&client.running===false:value.action==='disable'?client.enabled===false:value.action==='initialize'?initialized:value.action==='enable'?client.enabled&&(client.running||client.connected||connection(client).waiting):false);
+      const initialized=id==='zcode'?value.connectionMode==='private-pipe'&&(client?.pipeReady===true||ready&&client.pipeSupported===true):client&&(client.connected||connection(client).waiting);
+      const completed=client&&(['quit','force'].includes(value.action)?client.enabled===false&&client.running===false:value.action==='disable'?client.enabled===false:value.action==='initialize'?initialized:value.action==='enable'?(!value.connectionMode||client.connectionMode===value.connectionMode)&&client.enabled&&(client.running||client.connected||connection(client).waiting):false);
       if(completed)failures.delete(id);else failures.set(id,{...value,uncertain:false,message:client?.reason||'状态已刷新，可重试上次操作。'});
     }
   }
   function sessionNotice(session){return session?.state==='locked'?'电脑已锁定，后台服务继续运行；需要桌面交互的操作请解锁后重试。':session&&session.interactive!==true?'电脑交互桌面暂不可用，后台服务继续运行；恢复桌面后可重试。':'';}
   async function chooseInitialize(client){
-    let mode=client.id==='zcode'&&client.pipeSupported===true?'private-pipe':zcodeCompatibility(client)?'compatibility':'';
+    const mode=client.id==='zcode'&&client.pipeSupported===true?'private-pipe':'';
+    if(client.id==='zcode'&&!mode)return false;
     let accepted=await initializeDialog(client,mode);
-    if(accepted==='compatibility'){
-      mode='compatibility';
-      accepted=await initializeDialog(client,mode);
-    }
     if(!accepted)return false;
     if(mode&&client.running&&client.confirmTaskState){
       accepted=await confirmQuit(client,false,true);
@@ -80,9 +73,8 @@ const ClientLifecycle=(()=>{
     return new Promise(resolve=>{
       const dialog=document.createElement('dialog');dialog.className='client-disable-dialog';
       const node=(tag,text)=>{const element=document.createElement(tag);element.dataset.i18n=text;element.textContent=BridgeI18n.t(text);return element;};
-      const title=node('h2',mode==='compatibility'?'本机兼容连接':'初始化连接');
+      const title=node('h2','初始化连接');
       const description=node('p',mode==='private-pipe'?'网关将通过本机专用管道连接 ZCode。你可以在电脑锁屏时继续原会话。'
-        :mode==='compatibility'?'ZCode 将仅在 127.0.0.1:17742 监听。本机其他程序也能访问此端口。网关会记住此选择，用于下次启动。'
         :client.initializationMode==='background'?'Windows 上优先后台初始化，无需保持键盘焦点；开发者工具可能短暂出现。后台方式不可用时，仅在桌面可交互时尝试前台引导。'
         :'将在电脑端打开 Claude 和开发者工具，并使用键盘焦点完成连接；如遇屏保或锁屏，请恢复桌面后继续。');
       const identity=document.createElement('p');identity.textContent=client.name||client.id;
@@ -90,13 +82,30 @@ const ClientLifecycle=(()=>{
       const actions=document.createElement('div');actions.className='client-disable-options';let choice=false;
       const finish=value=>{choice=value;dialog.close();};
       const start=node('button','开始初始化'),cancel=node('button','取消');start.type=cancel.type='button';start.onclick=()=>finish(true);cancel.onclick=()=>finish(false);actions.append(start);
-      if(mode==='private-pipe'&&zcodeCompatibility(client)){
-        const fallback=node('button','使用本机兼容连接…');fallback.type='button';fallback.onclick=()=>finish('compatibility');actions.append(fallback);
-      }
       actions.append(cancel);dialog.append(title,identity,description);
       if(mode&&client.running)dialog.append(node('p','如果当前 ZCode 无法接入，网关将尝试正常退出并重新启动。检测到活动任务时会停止重启。'));
       dialog.append(actions);
       dialog.addEventListener('cancel',event=>{event.preventDefault();finish(false);});dialog.addEventListener('close',()=>{dialog.remove();resolve(choice);},{once:true});document.body.append(dialog);dialog.showModal();cancel.focus();
+    });
+  }
+  function chooseConnectionMode(client){
+    const modes=connectionModes(client);if(modes.length<2)return Promise.resolve(null);
+    return new Promise(resolve=>{
+      const dialog=document.createElement('dialog');dialog.className='client-disable-dialog';
+      const node=(tag,text)=>{const element=document.createElement(tag);element.textContent=BridgeI18n.t(text);return element;};
+      const title=node('h2','选择连接方式'),identity=node('p',client.name||client.id),description=node('p','一次使用一种连接方式；切换不会自动退出电脑 App。');
+      const id='client-connection-'+(++sequence);title.id=id+'-title';description.id=id+'-description';dialog.setAttribute('aria-labelledby',title.id);dialog.setAttribute('aria-describedby',description.id);
+      const actions=document.createElement('div');actions.className='client-disable-options';let choice=null;
+      const finish=value=>{choice=value;dialog.close();};
+      for(const mode of modes){
+        const button=node('button',''),name=node('strong',mode.label);button.type='button';button.dataset.connectionMode=mode.id;button.setAttribute('aria-pressed',String(mode.id===client.connectionMode));button.disabled=mode.available===false||mode.configured!==true;if(mode.id===client.connectionMode)name.textContent+=' ✓';button.append(name);
+        if(mode.description)button.append(node('small',mode.description));
+        if(mode.reason)button.append(node('small',mode.reason));
+        if(!mode.configured&&!mode.reason)button.append(node('small','请先在电脑网关中配置此连接方式。'));
+        button.onclick=()=>{if(!button.disabled)finish(mode.id);};actions.append(button);
+      }
+      const cancel=node('button','取消');cancel.type='button';cancel.onclick=()=>finish(null);actions.append(cancel);dialog.append(title,identity,description,actions);
+      dialog.addEventListener('cancel',event=>{event.preventDefault();finish(null);});dialog.addEventListener('close',()=>{dialog.remove();resolve(choice);},{once:true});document.body.append(dialog);dialog.showModal();cancel.focus();
     });
   }
   async function chooseDisable(client){
@@ -147,6 +156,6 @@ const ClientLifecycle=(()=>{
       dialog.addEventListener('cancel',event=>{event.preventDefault();finish(null);});dialog.addEventListener('close',()=>{dialog.remove();resolve(choice);},{once:true});document.body.append(dialog);dialog.showModal();cancel.focus();
     });
   }
-  return {chooseDisable,chooseForce,chooseInitialize,initializationFields,connection,request,failure,failureMessage,retryLabel,reconcile,sessionNotice};
+  return {chooseDisable,chooseForce,chooseInitialize,chooseConnectionMode,connectionModes,connectionModeLabel,initializationFields,connection,request,failure,failureMessage,retryLabel,reconcile,sessionNotice};
 })();
 if(typeof module!=='undefined')module.exports=ClientLifecycle;

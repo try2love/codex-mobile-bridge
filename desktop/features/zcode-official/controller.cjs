@@ -10,7 +10,8 @@ const failure=message=>Object.assign(Error(message),{publicMessage:message});
 class OfficialRemote {
   constructor({electron,profile,rendererPath}){
     this.electron=electron;this.profile=profile;this.rendererPath=rendererPath;
-    this.authFile=path.join(profile,'zcode-official-auth.enc');this.reason='请登录与 ZCode 原 App 相同的官方账号。';
+    this.authFile=path.join(profile,'zcode-official-auth.enc');this.settingsFile=path.join(profile,'zcode-official.json');
+    this.link='';this.reason='请登录与 ZCode 原 App 相同的官方账号。';
     this.generation=0;this.runtime=null;this.loginWindow=null;this.auth=null;
   }
   config(){try{return JSON.parse(fs.readFileSync(path.join(this.profile,'desktop-sessions/settings.json'),'utf8'));}catch{return {};}}
@@ -21,14 +22,30 @@ class OfficialRemote {
     if(!mid||mid!==parsed.mid)throw failure('此实验只接入本机 ZCode，请使用本机原 App 的官方远控链接。');
     return parsed;
   }
-  status(){return {configured:!!this.auth,connected:!!this.runtime,owner:this.runtime?this.owner:null,
+  targetLink(){return this.link||this.auth?.link||'';}
+  status(){const config=this.config();return {configured:!!this.auth&&!!this.targetLink(),connected:!!this.runtime,owner:this.runtime?this.owner:null,
     accountName:this.auth?.name||'',provider:this.auth?.provider||'',reason:this.reason,
-    link:this.auth?.link||'',selected:this.config().zcodeOfficialRemote===true};}
+    link:this.targetLink(),selected:config.zcodeConnectionMode==='official-remote'||!config.zcodeConnectionMode&&config.zcodeOfficialRemote===true};}
   secure(){const s=this.electron.safeStorage;
     return s.isEncryptionAvailable()&&(process.platform!=='linux'||s.getSelectedStorageBackend()!=='basic_text');}
+  restore(){
+    try{if(fs.existsSync(this.settingsFile))this.link=this.localLink(JSON.parse(fs.readFileSync(this.settingsFile,'utf8')).link).url;}catch{this.reason='官方远控链接无法读取，请重新保存本机链接。';}
+    try{if(fs.existsSync(this.authFile)&&this.secure()){
+      this.auth=JSON.parse(this.electron.safeStorage.decryptString(fs.readFileSync(this.authFile)));
+      if(!this.link)this.save(this.auth.link);
+      this.reason='官方登录已保存，可连接官方远控。';
+    }}catch{this.auth=null;this.reason='官方登录无法读取，请重新登录。';}
+  }
+  save(link){
+    const parsed=this.localLink(link);
+    if((this.runtime||this.connecting||this.loginWindow)&&parsed.url!==this.targetLink())throw failure('请先断开官方远控并关闭登录窗口，再修改连接配置。');
+    fs.writeFileSync(this.settingsFile+'.tmp',JSON.stringify({link:parsed.url}),{mode:0o600});
+    fs.renameSync(this.settingsFile+'.tmp',this.settingsFile);this.link=parsed.url;
+    return this.status();
+  }
   async start(){
     if(process.platform==='win32')return; // This isolated build exposes the tested macOS path only.
-    try{if(fs.existsSync(this.authFile)&&this.secure())this.auth=JSON.parse(this.electron.safeStorage.decryptString(fs.readFileSync(this.authFile)));}catch{this.reason='官方登录无法读取，请重新登录。';}
+    this.restore();
     this.stopServer=await serveLocal(this.profile,'zcode-official',request=>this.handle(request));
   }
   async disconnect(){
@@ -39,19 +56,19 @@ class OfficialRemote {
     if(this.runtime)return this.owner;
     if(this.connecting)return this.connecting;
     if(!this.auth)throw failure('请先在网关的 ZCode 管理页登录官方远控。');
-    this.localLink(this.auth.link);
+    const link=this.localLink(this.targetLink()).url;
     const generation=this.generation;
     const task=(async()=>{
       this.reason='正在连接 ZCode 官方远控…';
       const {createRelay}=await import('./runtime.mjs');
       let runtime;
       try{
-        runtime=await createRelay({jwt:this.auth.jwt,link:this.auth.link,onState:state=>{
+        runtime=await createRelay({jwt:this.auth.jwt,link,onState:state=>{
           if(this.runtime!==runtime)return;
           if(state.connected===false){this.reason=state.reason||'官方远控已断开，请重新连接。';this.runtime=null;this.owner=null;this.environment=null;}
         }});
         if(generation!==this.generation){runtime.dispose();throw failure('此次连接已取消。');}
-        this.runtime=runtime;this.owner={epoch:randomUUID(),device:parseLink(this.auth.link).sid};
+        this.runtime=runtime;this.owner={epoch:randomUUID(),device:parseLink(link).sid};
         this.environment={services:runtime.services,contexts:[],state:runtime.state,storage:runtime.storage,
           acquireWorkspace:runtime.acquireWorkspace,clientMode:'web-remote-replayable'};
         this.reason='已连接官方远控';return this.owner;
@@ -78,6 +95,7 @@ class OfficialRemote {
     if(!this.secure())throw failure('系统安全存储不可用，暂不能保存官方登录。');
     if(this.loginWindow){this.loginWindow.show();this.loginWindow.focus();return this.status();}
     await this.disconnect();
+    this.save(parsed.url);
     const {BrowserWindow,session}=this.electron;
     const browserSession=session.fromPartition('zcode-official-login-'+randomUUID());
     browserSession.setPermissionRequestHandler((_w,_p,done)=>done(false));browserSession.setPermissionCheckHandler(()=>false);

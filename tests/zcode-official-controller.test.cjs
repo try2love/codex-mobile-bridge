@@ -20,6 +20,29 @@ test('public state never contains authentication and preserves explicit local/of
  const c=fixture(t);c.auth={jwt:'private-secret',link,provider:'zai',name:'Fixture'};
  const state=c.status();assert.equal(state.selected,false);assert.equal(state.link,link);assert.equal(JSON.stringify(state).includes('private-secret'),false);
 });
+test('saved link and encrypted login survive controller restart and a local-mode selection',t=>{
+ const c=fixture(t);c.electron.safeStorage={isEncryptionAvailable:()=>true,decryptString:data=>data.toString().slice(7)};
+ c.save(link);assert.equal(c.status().configured,false);
+ fs.writeFileSync(c.authFile,'sealed:'+JSON.stringify({jwt:'private-secret',provider:'zai',name:'Fixture',link}),{mode:0o600});
+ const restored=new OfficialRemote({electron:c.electron,profile:c.profile,rendererPath:__filename});restored.restore();
+ assert.equal(restored.status().configured,true);assert.equal(restored.status().connected,false);assert.equal(restored.status().selected,false);
+ assert.equal(restored.status().link,link);assert.equal(restored.status().accountName,'Fixture');
+ assert.equal(fs.statSync(c.settingsFile).mode&0o777,0o600);assert.equal(JSON.stringify(restored.status()).includes('private-secret'),false);
+ const config=JSON.parse(fs.readFileSync(path.join(c.profile,'desktop-sessions/settings.json')));config.zcodeConnectionMode='official-remote';
+ fs.writeFileSync(path.join(c.profile,'desktop-sessions/settings.json'),JSON.stringify(config));assert.equal(restored.status().selected,true);
+});
+test('saving configuration cannot silently move a live connection to a different target',t=>{
+ const c=fixture(t);c.save(link);c.runtime={};
+ assert.throws(()=>c.save(link.replace('native-session','another-session')),/先断开/);
+ assert.equal(c.status().link,link);assert.throws(()=>c.save(link.replace('this-machine','another-machine')),/本机/);
+});
+test('legacy encrypted login supplies the target and forget retains the saved link',async t=>{
+ const c=fixture(t);c.electron.safeStorage={isEncryptionAvailable:()=>true,decryptString:data=>data.toString()};
+ fs.writeFileSync(c.authFile,JSON.stringify({jwt:'fixture-only',provider:'zai',link}));c.restore();assert.equal(c.targetLink(),link);
+ await c.forget();assert.equal(c.status().configured,false);assert.equal(c.status().link,link);
+ const restored=new OfficialRemote({electron:c.electron,profile:c.profile,rendererPath:__filename});restored.restore();
+ assert.equal(restored.status().configured,false);assert.equal(restored.status().link,link);
+});
 test('requests cannot cross a relay epoch or bypass expiry and action validation',async t=>{
  const c=fixture(t);c.runtime={};c.owner={epoch:'current',device:'native-session'};
  await assert.rejects(c.handle({command:'call',request:{action:'send',expectedProcess:{epoch:'old',device:'native-session'},expiresAt:Date.now()+10000}}),/已变化/);
