@@ -178,6 +178,19 @@ class InstanceRuntimeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.manager.resolve_instance('deepseek', row['id'], require_enabled=False)
 
+    def test_registration_rejects_profiles_inside_discovered_application(self):
+        application = self.root/'installed'
+        application.mkdir()
+        executable = application/'DSH.exe'; executable.write_bytes(b'fixture')
+        self.manager.config['discovered']['deepseek']['executable'] = str(executable)
+        self.manager.config['discovered']['claude']['executable'] = ''
+        self.manager.instances.registry.defaults = self.manager.instances.defaults
+        forbidden = application/'new-profile'; forbidden.mkdir()
+        with self.assertRaises(ValueError):
+            self.manager.instance_control({'operation':'save', 'family':'deepseek',
+                'kind':'desktop-profile', 'home':str(forbidden), 'label':'invalid installation root'})
+        self.assertEqual(self.manager.instances.registry.list(), [])
+
 
 class ProfileProcessTests(unittest.TestCase):
     def test_dsh_model_writes_use_stored_instance_route_not_shell_or_forged_body(self):

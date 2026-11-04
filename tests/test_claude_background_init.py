@@ -174,6 +174,7 @@ class BackgroundConsoleCapability(unittest.TestCase):
 class BackgroundAccountRestart(unittest.TestCase):
     def test_account_restart_preserves_explicit_profile_selection(self):
         manager = object.__new__(DesktopSessions)
+        manager.instance = None
         manager.gateway_running = True; manager.enabled = Mock(return_value=True)
         manager.adapters = {'claude': Mock()}
         for explicit in (False, True):
@@ -185,6 +186,7 @@ class BackgroundAccountRestart(unittest.TestCase):
 
     def test_account_restart_waits_for_confirmed_main_process_before_reconnect(self):
         manager = object.__new__(DesktopSessions)
+        manager.instance = None
         manager.gateway_running = True; manager.enabled = Mock(return_value=True)
         manager.adapters = {'claude': Mock()}
         descriptor = {'executable': 'fixture.exe', 'dataDirectory': 'fixture-profile'}
@@ -205,6 +207,7 @@ class BackgroundAccountRestart(unittest.TestCase):
 
     def test_offline_or_disabled_account_launch_does_not_open_console(self):
         manager = object.__new__(DesktopSessions)
+        manager.instance = None
         manager.adapters = {'claude': Mock()}
         for gateway, enabled in ((False, True), (True, False)):
             manager.gateway_running = gateway; manager.enabled = Mock(return_value=enabled)

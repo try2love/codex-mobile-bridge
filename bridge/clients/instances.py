@@ -28,12 +28,26 @@ class ClientInstances:
         manager = self.manager
         home = Path.home()
         selected = manager.config.get('discovered', {})
+        for family, row in selected.items():
+            executable = row.get('executable')
+            if family not in ('codex', 'claude', 'deepseek', 'zcode') or not executable:
+                continue
+            executable = Path(executable).expanduser().resolve()
+            if executable.is_file():
+                installation = next((part for part in executable.parents if part.suffix == '.app'), executable.parent)
+                yield NativeProfile(family, 'installation', installation, {'application': installation})
         claude = Path(selected.get('claude', {}).get('dataDirectory') or
                       discovery(sys.platform).claude_home(home, os.environ)).expanduser().resolve()
         base = Path(str(claude)[:-3]) if str(claude).endswith('-3p') else claude
         code = Path(os.environ.get('CLAUDE_CONFIG_DIR') or home/'.claude').expanduser().resolve()
-        yield NativeProfile('claude', 'default', base,
-                            {'userData': base, 'thirdParty': Path(str(base)+'-3p'), 'code': code})
+        claude_roots = {'userData': base, 'thirdParty': Path(str(base)+'-3p'), 'code': code}
+        if sys.platform == 'win32':
+            # Native 3p uses Local AppData even when the active official profile
+            # is Roaming/Store userData; old Roaming 3p is a migration source.
+            for name, key in (('nativeThirdParty', 'LOCALAPPDATA'), ('legacyThirdParty', 'APPDATA')):
+                if os.environ.get(key):
+                    claude_roots[name] = Path(os.environ[key]).expanduser().resolve()/'Claude-3p'
+        yield NativeProfile('claude', 'default', base, claude_roots)
         dsh = Path(manager.config.get('deepseekHome') or selected.get('deepseek', {}).get('dataDirectory') or
                    os.environ.get('DSH_HOME') or home/'.dsh').expanduser().resolve()
         ui_base = (home/'Library/Application Support' if sys.platform == 'darwin' else
@@ -217,14 +231,19 @@ def scan_profile(manager):
     return manager.clients(refresh=True)
 
 
-def prepare_deepseek_profile(profile):
+def prepare_deepseek_profile(profile, descriptor=None):
     """Seed only the connector slot; native first launch owns all other setup."""
     if profile.family != 'deepseek':
         raise ValueError('此配置不属于 DSH')
     directory = profile.home/'profiles/desktop'
-    for path in (profile.home/'profiles', directory, directory/'cordis.patch.yml'):
+    for path in (profile.home/'profiles', directory, directory/'cordis.patch.yml',
+                 directory/'package.json', directory/'pnpm-workspace.yaml'):
         if path.is_symlink() or path.resolve() != path:
             raise ValueError('DSH 独立配置中的插件目录不能转向其他位置')
+    if descriptor is not None:
+        from bridge.clients.deepseek.profile import prepare
+        if prepare(profile, descriptor):
+            return
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     target = directory/'cordis.patch.yml'
     try:

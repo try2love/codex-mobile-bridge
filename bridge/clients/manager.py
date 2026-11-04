@@ -1861,7 +1861,7 @@ class DesktopSessions:
         state = inspect_client(row)
         if self.instance is not None and not state['running']:
             from bridge.clients.instances import prepare_deepseek_profile
-            prepare_deepseek_profile(self.instance.profile)
+            prepare_deepseek_profile(self.instance.profile, row)
         if state['running'] and not state.get('mainPids'):
             raise ValueError('检测到残留 Harness 后台实例且无法核对任务状态，请在电脑端退出 Harness 后重试')
         if not (adapter.home/'profiles/desktop/cordis.patch.yml').is_file():
@@ -2705,6 +2705,8 @@ class DesktopSessions:
             identity = ''
         return {**value, 'provider': provider, 'gatewayRunning': self.gateway_running,
                 'canSwitch': provider not in self.account_operations,
+                'canSyncLocalCli': provider == 'claude' and getattr(self, 'instance', None) is None
+                    and getattr(getattr(self, 'bridge', None), 'cli_access', None) is not None,
                 'cliSync': self.cli_sync_status.get(provider), 'modelCatalogIdentity': identity}
 
     def _launch_account_client(self, provider, descriptor):

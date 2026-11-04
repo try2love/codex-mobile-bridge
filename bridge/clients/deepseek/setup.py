@@ -83,6 +83,23 @@ COMPATIBLE_OFFICIAL_SOURCES = ('1608bf0b7b4c1f6e2927a1103467b3c56dfaef4d80c68213
                                '9dfb9fe8eaba3f5f162b9177f6a9d551f2899f6316f9ee94bf82fbc5c59089d6',
                                'd9b394e55b8436209ead3a953da0d374cb08f2454848718db0eb6a59e7ee9a1f')
 
+def without_empty_array(text):
+    """Remove only an otherwise empty YAML document's array tokens.
+
+    The native initializer emits comments followed by []. Appending a block
+    sequence to that flow sequence is invalid YAML. Do not parse/evaluate user
+    expressions, and retain comments and newline placement verbatim.
+    """
+    tokens = ''.join(line.split('#', 1)[0].strip() for line in text.lstrip('\ufeff').splitlines())
+    if tokens != '[]':
+        return text
+    lines = []
+    for line in text.splitlines(keepends=True):
+        code, separator, comment = line.partition('#')
+        lines.append(code.replace('[', '').replace(']', '') + separator + comment)
+    return ''.join(lines)
+
+
 def insertion(text):
     """Read only our JSON flow insertion, including Harness's line wrapping.
 

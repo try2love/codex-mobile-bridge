@@ -186,6 +186,13 @@ test('Claude API switch sends local CLI choice only after checkbox selection',as
  assert.ok(box);box.checked=true;box.onchange();ui.confirm(true);await ui.panel.choose(row('other','api'));
  assert.equal(ui.calls[0].syncLocalCli,true);
 });
+test('independent Claude account cards never offer or retain default CLI synchronization',async()=>{
+ const ui=fixture({provider:'claude'}),other=row('other','api');
+ ui.panel.syncLocalCliIds.add(other.id);
+ ui.panel.accept({...snapshot([row('current'),other]),canSyncLocalCli:false});
+ assert.equal(ui.all().some(node=>node.tag==='input'&&node.type==='checkbox'),false);
+ ui.confirm(true);await ui.panel.choose(other);assert.equal(ui.calls[0].syncLocalCli,undefined);
+});
 test('switch remains pending until the backend finishes and rejects duplicate clicks',async()=>{
   const ui=fixture();ui.panel.accept(snapshot([row('current'),row('other')]));let finish;ui.setHandler(()=>new Promise(resolve=>finish=resolve));const pending=ui.panel.choose(row('other'));assert.equal(ui.panel.busy,true);await ui.panel.choose(row('other'));assert.equal(ui.calls.length,1);
   finish(snapshot([row('current'),row('other')],['other']));await pending;assert.equal(ui.panel.busy,false);assert.equal(ui.panel.value.activeId,'other');

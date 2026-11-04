@@ -18,7 +18,11 @@ Status: implemented
 
 ## 原生目录边界
 
+默认目录保护也覆盖原生运行时的所有已知账号目的地。Windows Claude 即使当前使用 Roaming 或 MSIX 官方资料目录，仍会读取 LOCALAPPDATA/Claude-3p，并可能迁移 APPDATA/Claude-3p；这两个精确目录与当前默认资料均禁止作为新增入口。保护不扩大到整个 AppData，同级真正独立的目录仍可登记。针对经典版与 Store 资料的目录冲突用例及同级允许用例通过，不依赖启动原 App。
+
 DSH 需要同时隔离 DSH_HOME 与 Electron userData；同一个 DSH_HOME 下的两个 profile 并不隔离账号和历史。Claude 使用已核验的标准 userData 参数、CLAUDE_CONFIG_DIR 和第三方配置派生路径；不能绕过官方签名或把其他配对功能的限制误认为当前文件桥限制。ZCode 还读取真实用户目录的 bootstrap 和 MCP/技能/命令等全局配置，不能只看到环境变量存在就承诺完全隔离；用户选择不开放 ZCode 第二配置。验证只用临时空目录，默认客户端保留。Windows 假 API 实例发出过一次本机 POST，测试服务直接返回 403；没有请求真实上游或产生模型回复。
+
+DSH 首次准备按原 App 能力处理：有 `./profile` 导出时，由原 App 已使用的 Electron-as-Node 运行其 `ensureDesktopProfile`，先生成原生清单，再安装连接插件，最后启动 GUI。Windows 验收中的原生程序把仅有 patch、没有 package.json 的目录视作不完整目录并移走，因此只预建 patch 无法接入。原生初始化不覆盖已有 patch；共用安装器把纯空 YAML 数组 `[]` 转成插件序列，保留注释和非空配置。缺少初始化能力时不启动一个注定无法接入的新实例，用户可选择已初始化的独立目录。此路径不依赖外装 Node，也不锁定版本号。
 
 DSH 在 POSIX 上会自行从登录 Shell 恢复 API 环境变量，因此仅清理网关子进程环境不能证明独立账号。原生插件的 `account` 响应以兼容附加字段报告 `credentialSourcesVersion`、实际 `credentialSource` 和非秘密的 `credentialRef`；独立实例触发模型前必须匹配当前原生模型及 `file` 凭据来源。默认接入不新增这一限制。不会用 `DEEPSEEK_API_KEY` 文件存在推断自定义 ref，也不会读取或传回密钥。旧运行插件的哈希保留兼容，新增来源合同不迫使默认客户端重启。原 App 在网关之外自行使用 Shell 环境仍属于原生行为。
 
@@ -38,6 +42,8 @@ DSH 在 POSIX 上会自行从登录 Shell 恢复 API 环境变量，因此仅清
 8. Ubuntu 的 Test 更新须沿用旧 rc7 实际资料并修正用户级启动入口；安装/登录持久恢复与源码验证分别记录，构建成功不能替代安装验收。
 
 Mac 已实际经 manager 登记、开启两套空 DSH，和原有 DSH 并存，读取各自连接与空任务状态，并逐一正常退出；原有 PID 和账号/patch/package 文件哈希、修改时间未变。父状态约 4.03 秒变为已连接。Mac Claude、Windows Claude 的官方空配置/API 空配置进程与资料目录隔离已验证；这不代表双账号 OAuth 和登录后的原会话收发已经验收。
+
+Windows 的最终 DSH 验收也通过 manager 完成两套空配置的原生握手、父状态同步、凭据来源合同及逐一正常退出。原有 DSH 的 PID、账号文件与修改时间不变，没有发送模型消息。首次开启到握手约 33–38 秒，正常退出约 17–22 秒；不能据此宣称快速启动。此前失败的空测试实例没有强退。Ubuntu 仅安装 DSH Web CLI，因此 Linux 上只有路径契约和真实 POSIX 子进程证据，没有 Desktop 双实例实机结论。独立 Claude 的完整初始化仍需要用户在该配置亲自确认原 App 开发者模式及必要的目录信任。
 
 共享回归覆盖相同原生会话 ID 下的草稿、晚到详情、附件、工作台、HTTP 读写和通知已读/历史隔离；Java/Swift 原生路由编译检查保留完整实例 host。桌面新增表单通过浏览器视觉检查：空错误容器不占高度，有错误内容仍显示。
 
