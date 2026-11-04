@@ -41,7 +41,8 @@ try{
   assert.equal(workspaces.length,1,'A second chat reuses the native workspace');
   assert.deepEqual(workspaces[0].sessionIds,['session-explicit-project','session-same-project']);
   const before=calls.length;
-  assert.equal((await request('create',{id:'changed-directory',projectDirectory:{...projectDirectory,inode:identity.ino+1}})).status,400);
+  // Large Windows inode numbers can round ino + 1 back to ino; use a definite mismatch.
+  assert.equal((await request('create',{id:'changed-directory',projectDirectory:{...projectDirectory,inode:-1}})).status,400);
   assert.equal((await request('create',{id:'missing-directory',projectDirectory:{...projectDirectory,cwd:join(cwd,'missing')}})).status,400);
   assert.equal(calls.length,before);
 }finally{
