@@ -2613,7 +2613,13 @@ class DesktopSessions:
                     if value.get('initializeDesktop') is True:
                         self.adapters[provider].connect()
                     elif self.adapters[provider].status().get('cliAvailable') is True:
-                        pass  # CLI-only selection never launches or activates Claude Desktop.
+                        # CLI/SSH availability does not replace a previously
+                        # prepared Desktop mailbox. Recover that signed channel
+                        # without launching an App for a CLI-only selection.
+                        if (self._claude_reconnect_supported()
+                                and self.adapters[provider].discovery.get('autoConnect') is not False
+                                and not self.adapters[provider].status().get('connected')):
+                            self.adapters[provider].reconnect()
                     elif sys.platform == 'darwin':
                         result = launch_client(descriptor)
                         if not result.get('running'):

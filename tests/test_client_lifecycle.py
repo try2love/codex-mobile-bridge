@@ -803,6 +803,41 @@ class ClientLifecycleTests(unittest.TestCase):
                 self.claude.connect.assert_not_called()
                 self.claude.reconnect.assert_not_called()
 
+    def test_cli_available_gateway_start_recovers_prepared_desktop_without_launch(self):
+        self.claude.directory = self.root/'prepared-claude'
+        self.claude.directory.mkdir()
+        (self.claude.directory/'connection.json').write_text('{"token":"fixture"}')
+        self.claude.discovery = {'installed': True, 'automaticConnection': 'native-console',
+                                 'autoConnect': True}
+        self.claude.status.return_value = {'connected': False, 'cliAvailable': True,
+                                           'cliAuthReady': False, **self.claude.discovery}
+        self.manager.config['enabled'] = {'codex': False, 'claude': True, 'deepseek': False}
+        for platform in ('darwin', 'win32'):
+            with self.subTest(platform=platform), patch('bridge.clients.manager.sys.platform', platform), \
+                    patch.object(self.manager, 'scan'):
+                self.manager.start_enabled()
+                self.claude.reconnect.assert_called_once_with()
+                self.claude.connect.assert_not_called()
+                self.launch.assert_not_called()
+                self.stop.assert_not_called()
+                self.claude.reconnect.reset_mock()
+
+    def test_cli_available_does_not_recover_missing_disabled_or_connected_desktop(self):
+        self.claude.directory = self.root/'prepared-claude'
+        self.claude.directory.mkdir()
+        (self.claude.directory/'connection.json').write_text('{"token":"fixture"}')
+        for values in ({'installed': False}, {'autoConnect': False}, {'connected': True}):
+            with self.subTest(values=values):
+                self.claude.discovery = {'installed': True, 'automaticConnection': 'native-console',
+                                         'autoConnect': True, **values}
+                self.claude.status.return_value = {'connected': False, 'cliAvailable': True,
+                                                   **self.claude.discovery}
+                self.manager.toggle_client({'provider': 'claude', 'enabled': True})
+                self.claude.reconnect.assert_not_called()
+                self.claude.connect.assert_not_called()
+                self.launch.assert_not_called()
+                self.stop.assert_not_called()
+
     def test_claude_desktop_launch_capability_requires_confirmed_stopped_supported_app(self):
         self.running = False
         self.claude.status.return_value = {'connected': False, 'installed': True,

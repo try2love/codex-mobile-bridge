@@ -16,6 +16,8 @@ Claude Desktop 发现机制不暴露终端 Claude Code 聊天。复用 Desktop �
 
 展示状态立即判断 CLI 可用性，在后台刷新缓存认证结果。Desktop 初始化及就绪检查只使用 Desktop 连接和会话证据，因此 CLI 认证和保存历史扫描不会拖慢它们。显式 CLI 新建和恢复仍做即时认证检查；展示缓存不授权写入。
 
+CLI 或 SSH 可用不代表用户只选择了 CLI。启用时，若已安装的 Desktop 支持原生接入、已有 connection.json，且用户没有取消自动接入，则恢复尚未连通的既有签名文件通道。此路径不启动、重启或前台初始化 Desktop；真正没有桌面连接资料的 CLI-only 接入保持不启动 App，已连通状态也不重复重连。
+
 Web 和手机 App 管理中，CLI 可用性不隐藏 Desktop 启动控件。仅当 Claude Desktop 已安装、支持原生控制台且进程确认停止时，网关报告 `canStartDesktop`。确认单一主进程运行时报告 `canInitializeDesktop`，使空闲设置状态仍暴露初始化，除非可以重新连接。进程状态未知时两种操作均不提供。两个初始化控件都使用既有确认及 `initializeDesktop` 请求；仅启用 CLI 接入不发送该意图。
 
 ## 备选方案
@@ -28,11 +30,15 @@ Web 和手机 App 管理中，CLI 可用性不隐藏 Desktop 启动控件。仅�
 
 用应用启用开关触发 Desktop 启动，会在仅选择 CLI 时也启动 Desktop。显式启动控件保持两种选择独立。
 
+只要 CLI 可用便跳过全部 Desktop 处理也不成立：网关正常退出会写入 stop，重启后必须为已有 Desktop 通道写入新代次的 idle 才能恢复。直接沿用 CLI 可用性会让原 App 持续回应 connected=false，却永远没有恢复握手。复用已有 reconnect 能保留纯 CLI 的边界，并恢复用户此前已初始化的 Desktop。
+
 ## 影响
 
 已关闭本地会话可在现有手机/Web 界面恢复并提供原生控制。原权限未知、原配置不可用或写入者证据不确定时仍不可写。注册表保护比较每个写入者的进程启动身份，Linux 还绑定机器 ID 和 PID 命名空间。终端在最终注册表检查与启动之间打开，仍是上游的狭窄并发限制。
 
 即使 Claude Code 可用，已安装且停止的 Desktop 仍可从应用管理启动。进程状态未知、不支持自动连接、未安装或网关停止时隐藏控件。渲染测试验证按钮和既有请求载荷；后端生命周期夹具覆盖能力边界。本次检查未对真实 Desktop 操作该控件。
+
+网关升级后的真实共存恢复另行核验：默认 Claude 资料目录和连接密钥均未改变，CLI 可执行文件与已登记 SSH 主机使 cliAvailable 为真，旧 renderer 持续发布签名有效、修订一致的 connected=false；请求仍停在旧网关正常退出的 stop。经现有局域网重新连接接口仅发送新代次 idle 后，原进程恢复 connected/configured，未前台初始化、重启、换账号或发送模型消息，临时 HTTP 验证会话已登出。生命周期测试覆盖已准备 Desktop 在 CLI 可用时恢复、真正 CLI-only 不启动，以及未安装、取消自动接入、已连接时不重复恢复；该模块 101 项通过。真实验证说明当前原连接可无 UI 恢复；自动启动分支的修复仍需进入后续 Test 包。
 
 选定受管 API 配置时，认证检查和 CLI 启动忽略环境中的 `ANTHROPIC_*` 值及已记录的 Claude provider 路由变量。原生配置设置仍是选定凭据和 provider 的来源。
 
