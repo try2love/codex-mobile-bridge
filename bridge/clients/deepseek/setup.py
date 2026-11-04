@@ -72,7 +72,10 @@ COMPATIBLE_OFFICIAL_SOURCES = ('1608bf0b7b4c1f6e2927a1103467b3c56dfaef4d80c68213
                                '14ca377eecc7b714e9c059b026181164c3cb21166d315a6d9ef9d16327bda815',
                                '9c8da5a761588f5f91d5696e938ff2bd927412a2e56367e08aeabeabc6a42ec2',
                                '80cc10b76e18621b90dbdd5675ce8dd3932eb381a3380f0a538a76b4bcc77ebf',
-                               '2ffbe404b5251cd5fb26da5ffa44a8f3ba4ed2c3c91f80c57ad9f299d62c0741')
+                               '2ffbe404b5251cd5fb26da5ffa44a8f3ba4ed2c3c91f80c57ad9f299d62c0741',
+                               # Last revision 9 shipped before creation model selection (d75c61e).
+                               '7c10ac8e3b2849ef6cb72dd7db7a32ef2755572cd1978a5f7eaaa0cf05680aad',
+                               '2714358b35f126daed913e0f73bd52bf585038d831f68e1b09642050f7f923ef')
 
 def insertion(text):
     """Read only our JSON flow insertion, including Harness's line wrapping.
