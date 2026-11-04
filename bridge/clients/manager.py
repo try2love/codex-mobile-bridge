@@ -184,6 +184,19 @@ class DesktopSessions:
         # Legacy profiles may reuse a verified listener. Starting one requires
         # the separate compatibility preference or explicit initialization.
         source = row if row.get('installed') else legacy or {}
+        if self.config.get('zcodeOfficialRemote') is True:
+            from bridge.clients.local_rpc import LocalService
+            from bridge.clients.zcode.official import ZCodeOfficial
+            config = {key: source[key] for key in ('application', 'dataDirectory') if key in source}
+            config['officialRemote'] = True
+            previous = self.adapters.get('zcode')
+            if previous and previous.config == config:
+                return
+            directory = self.directory/'zcode'
+            adapter = ZCodeOfficial(directory, config, LocalService(self.directory.parent, 'zcode-official'))
+            self.session_pins.setdefault('zcode', SessionPins(directory, 'zcode'))
+            self.adapters = {**self.adapters, 'zcode': adapter}
+            return
         application = source.get('application')
         if application:
             if sys.platform == 'darwin':
@@ -1440,6 +1453,7 @@ class DesktopSessions:
             app = installation(adapter.config.get('application', ''))
             compatible = bool(app and sys.platform in LOOPBACK_PLATFORMS)
             return {'id': provider, 'installed': bool(app), 'compatibilitySupported': compatible,
+                    'officialRemote': self.config.get('zcodeOfficialRemote') is True,
                     'pipeSupported': bool(self.zcode_pipe and self.zcode_pipe.supported()),
                     'executable': app['executable'] if app else '', 'dataDirectory': str(adapter.home),
                     'debugFallbackPort': 17742 if compatible and self.config.get('zcodeCompatibility') is True else None}
@@ -1990,9 +2004,10 @@ class DesktopSessions:
                              'retryable': status.get('retryable') is True,
                              'confirmTaskState': True, 'historyAvailable': status.get('historyAvailable') is True,
                              'pipeSupported': zcode['pipeSupported'], 'compatibilitySupported': zcode['compatibilitySupported'],
+                             'officialRemote': zcode['officialRemote'],
                              'pipeReady': bool(getattr(self.adapters['zcode'], 'pipe', None) and (connected or status.get('sessionAccess'))),
                              'initializationMode': 'zcode-local-compatibility' if zcode['compatibilitySupported'] else 'private-pipe',
-                             'canInitializeDesktop': bool(self.gateway_running and (zcode['pipeSupported'] or zcode['compatibilitySupported'])
+                             'canInitializeDesktop': bool(not zcode['officialRemote'] and self.gateway_running and (zcode['pipeSupported'] or zcode['compatibilitySupported'])
                                                           and not (connected or status.get('sessionAccess'))),
                              'compatibilityLaunch': zcode['compatibilitySupported'] and self.config.get('zcodeCompatibility') is True,
                              'capabilities': {'create': status.get('canCreate') is True, 'accounts': True,
@@ -2295,6 +2310,8 @@ class DesktopSessions:
                 # Keep the same write gate so a queued send sees the new setting.
                 if provider == 'claude':
                     self.adapters[provider].cancel()
+                if provider == 'zcode' and self.config.get('zcodeOfficialRemote') is True:
+                    self.adapters[provider].disconnect()
                 self.config.setdefault('enabled', {})[provider] = False
                 private_json(self.config_path, self.config)
                 self.client_cache = None
@@ -2316,6 +2333,8 @@ class DesktopSessions:
             if enabled:
                 if provider == 'deepseek':
                     self._start_deepseek()
+                elif provider == 'zcode' and self.config.get('zcodeOfficialRemote') is True:
+                    self.adapters[provider].connect_application(None)
                 elif provider == 'zcode' and (initialize_zcode or descriptor['pipeSupported'] or
                                                self.config.get('zcodeCompatibility') is True):
                     private_pipe = (value.get('connectionMode') == 'private-pipe' if initialize_zcode else
@@ -2638,6 +2657,20 @@ class DesktopSessions:
             return self.clients(refresh=True)
         if action == 'clients':
             return self.clients(refresh=value.get('refresh') is True)
+        if action == 'zcode-official':
+            if (set(value) != {'action', 'enabled'} or type(value['enabled']) is not bool or
+                    sys.platform != 'darwin' or 'zcode' not in self.adapters):
+                raise ValueError('ZCode 官方远控设置无效')
+            with self.client_lock, self._changing('zcode'):
+                self.config['zcodeOfficialRemote'] = value['enabled']
+                self._configure_zcode()
+                if value['enabled']:
+                    self.config.setdefault('enabled', {})['zcode'] = True
+                private_json(self.config_path, self.config)
+                self.client_cache = None
+                if value['enabled'] and self.gateway_running:
+                    self.adapters['zcode'].connect_application(None)
+            return self.clients(refresh=True)
         if action == 'zcode-compatibility':
             # This preference affects the next launch. Remote setup uses the
             # confirmed, task-checked lifecycle operation instead.

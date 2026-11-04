@@ -442,14 +442,14 @@ test('ZCode uses its own logo and shared next-level management page',async()=>{
   assert.match(ui.text(),/连接 ZCode 原生聊天/);assert.match(ui.text(),/在 ZCode 中管理模型与账号/);
   assert.doesNotMatch(ui.text(),/在 Harness 中管理/);
   await ui.all().find(node=>node.tag==='button'&&node.textContent==='管理').onclick();
-  assert.equal(ui.selected.at(-1),'zcode');assert.ok(ui.pages.get('zcode'));assert.equal(ui.document.body.children.length,0);assert.equal(ui.calls.length,0);
+  assert.equal(ui.selected.at(-1),'zcode');assert.ok(ui.pages.get('zcode'));assert.equal(ui.document.body.children.length,0);assert.deepEqual(ui.calls.map(value=>value.action),['zcode-official-state']);
 });
 
 test('ZCode compatibility preference only changes after a local opt-in and does not relaunch',async()=>{
  const ui=fixture(),client={id:'zcode',name:'ZCode',installed:true,configured:true,compatibilitySupported:true,compatibilityLaunch:false};
  ui.panel.clients=[client];await ui.panel.manageClient(client);
  const input=ui.pages.get('zcode').querySelector('[data-zcode-compatibility]');
- assert.equal(input.checked,false);ui.confirm(false);input.checked=true;await input.onchange();
+ assert.equal(input.checked,false);ui.calls.length=0;ui.confirm(false);input.checked=true;await input.onchange();
  assert.equal(input.checked,false);assert.equal(ui.calls.length,0);
  ui.confirm(true);ui.setHandler(async()=>({clients:[{...client,compatibilityLaunch:true}]}));
  input.checked=true;await input.onchange();
@@ -461,8 +461,48 @@ test('ZCode without the compatibility port capability does not offer the option'
   const ui=fixture(),client={id:'zcode',name:'ZCode',installed:true,configured:true,...capability};
   ui.panel.clients=[client];await ui.panel.manageClient(client);
   assert.equal(ui.pages.get('zcode').querySelector('[data-zcode-compatibility]'),null);
-  assert.equal(ui.calls.length,0);
+  assert.deepEqual(ui.calls.map(value=>value.action),['zcode-official-state']);
  }
+});
+
+test('ZCode official management uses the shared page and refreshes only on opening or explicit actions',async()=>{
+ const ui=fixture(),client={id:'zcode',name:'ZCode',installed:true,configured:true,compatibilitySupported:true,compatibilityLaunch:true};ui.panel.clients=[client];
+ const state={configured:true,connected:false,selected:false,accountName:'Fixture account',provider:'z.ai',link:'https://zcode.z.ai/pair?fixture=one'};
+ ui.setHandler(async request=>request.action==='clients'?{clients:[client]}:{...state});await ui.panel.manageClient(client);
+ const page=ui.pages.get('zcode'),section=page.querySelector('[data-zcode-official]'),text=()=>section.querySelectorAll('p').map(node=>node.textContent).join('\n');
+ assert.equal(section.className,'accounts-panel');assert.match(text(),/当前接入：本机连接/);assert.match(text(),/同.*官方账号/);assert.match(text(),/官方中继/);assert.match(text(),/Fixture account/);
+ assert.equal(page.querySelector('[data-zcode-compatibility]').disabled,false);assert.deepEqual(ui.calls.map(value=>value.action),['zcode-official-state']);
+ await ui.poll();assert.equal(ui.calls.filter(value=>value.action==='zcode-official-state').length,1);
+ await ui.panel.manageClient(client);assert.equal(ui.pages.size,1);assert.equal(ui.calls.filter(value=>value.action==='zcode-official-state').length,2);
+ const input=section.querySelector('input');input.value='https://zcode.z.ai/pair?fixture=edited';input.oninput();
+ state.selected=true;await section.querySelectorAll('button').find(button=>button.textContent==='刷新状态').onclick();
+ assert.equal(input.value,'https://zcode.z.ai/pair?fixture=edited');assert.match(text(),/当前接入：官方远控/);assert.equal(page.querySelector('[data-zcode-compatibility]').disabled,true);
+ const before=ui.calls.length,compatibility=page.querySelector('[data-zcode-compatibility]');compatibility.checked=false;await compatibility.onchange();assert.equal(ui.calls.length,before);assert.equal(compatibility.checked,true);
+});
+
+test('official actions send the current link and keep disconnect, local access and clearing login separate',async()=>{
+ const ui=fixture(),client={id:'zcode',name:'ZCode',installed:true,configured:true,compatibilitySupported:true};ui.panel.clients=[client];
+ const state={configured:false,connected:false,selected:false,link:''};
+ ui.setHandler(async request=>{if(request.action==='clients')return {clients:[client]};if(request.action==='zcode-official-login')Object.assign(state,{configured:true,accountName:'Signed in',link:request.link});if(request.action==='zcode-official-connect')Object.assign(state,{connected:true,selected:true});if(request.action==='zcode-official-disconnect')state.connected=false;if(request.action==='zcode-official-local')state.selected=false;if(request.action==='zcode-official-forget')Object.assign(state,{configured:false,connected:false,selected:false,link:''});return {...state};});
+ await ui.panel.manageClient(client);const section=ui.pages.get('zcode').querySelector('[data-zcode-official]'),input=section.querySelector('input'),button=action=>section.querySelector('[data-official-action="'+action+'"]');
+ assert.equal(button('login').disabled,true);assert.equal(button('connect').disabled,true);
+ input.value='https://zcode.z.ai/pair?fixture=selected';input.oninput();await button('login').onclick();assert.equal(button('connect').disabled,false);
+ await button('connect').onclick();assert.equal(button('disconnect').disabled,false);assert.equal(button('local').disabled,false);
+ assert.deepEqual(JSON.parse(JSON.stringify(ui.calls.filter(value=>['zcode-official-login','zcode-official-connect'].includes(value.action)))),[{action:'zcode-official-login',link:input.value},{action:'zcode-official-connect',link:input.value}]);
+ await button('disconnect').onclick();assert.equal(state.selected,true);await button('local').onclick();assert.equal(state.configured,true);
+ const count=ui.calls.length;ui.confirm(false);await button('forget').onclick();assert.equal(ui.calls.length,count);assert.match(ui.prompts.at(-1),/原 App.*账号和任务会保留/);
+ ui.confirm(true);await button('forget').onclick();assert.equal(state.configured,false);assert.equal(input.value,'');
+ assert.ok(ui.calls.every(value=>value.action==='clients'||value.action.startsWith('zcode-official-')));
+});
+
+test('official connection blocks overlapping actions and rereads actual mode after a failed request',async()=>{
+ const ui=fixture(),client={id:'zcode',name:'ZCode',installed:true,configured:true,compatibilitySupported:true};ui.panel.clients=[client];let finish;
+ const state={configured:true,connected:false,selected:false,link:'https://zcode.z.ai/pair?fixture=one'};
+ ui.setHandler(request=>request.action==='clients'?Promise.resolve({clients:[client]}):request.action==='zcode-official-connect'?new Promise((resolve,reject)=>finish=reject):Promise.resolve({...state}));
+ await ui.panel.manageClient(client);const page=ui.pages.get('zcode'),section=page.querySelector('[data-zcode-official]'),connect=section.querySelector('[data-official-action="connect"]');
+ const pending=connect.onclick();await connect.onclick();assert.equal(connect.disabled,true);assert.equal(page.querySelector('[data-zcode-compatibility]').disabled,true);assert.equal(ui.calls.filter(value=>value.action==='zcode-official-connect').length,1);
+ state.selected=true;finish(Error('relay temporarily unavailable'));await pending;assert.match(section.querySelectorAll('p').map(node=>node.textContent).join('\n'),/当前接入：官方远控/);assert.equal(page.querySelector('[data-zcode-compatibility]').disabled,true);assert.ok(ui.errors.includes('relay temporarily unavailable'));assert.equal(ui.panel.busy,false);
+ ui.setHandler(async()=>{throw Error('state unavailable');});await ui.panel.zcodeOfficial.refresh();assert.equal(page.querySelector('[data-zcode-compatibility]').disabled,true);assert.equal(connect.disabled,true);assert.match(section.querySelectorAll('p').map(node=>node.textContent).join('\n'),/当前接入方式暂不可用/);
 });
 
 test('independent Codex form shares scan, host folder picker and manual save without launching clients',async()=>{

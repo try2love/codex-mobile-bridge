@@ -1,0 +1,46 @@
+'use strict';
+const test=require('node:test'),assert=require('node:assert/strict');
+const fs=require('node:fs'),path=require('node:path'),net=require('node:net');
+const {OfficialRemote}=require('../desktop/features/zcode-official/controller.cjs');
+const {serveLocal}=require('../desktop/shared/local-service.cjs');
+const root=path.resolve(__dirname,'../.tmp');
+function profile(t){const p=fs.mkdtempSync(path.join(root,'official-controller-'));t.after(()=>fs.rmSync(p,{recursive:true,force:true}));return p;}
+const link='https://zcode.z.ai/remote/v4?sid=native-session&mid=this-machine';
+function fixture(t){const p=profile(t),home=path.join(p,'native');fs.mkdirSync(home);fs.mkdirSync(path.join(p,'desktop-sessions'));
+fs.writeFileSync(path.join(home,'telemetry-state.json'),JSON.stringify({deviceMid:'this-machine'}));
+fs.writeFileSync(path.join(p,'desktop-sessions/settings.json'),JSON.stringify({discovered:{zcode:{dataDirectory:home}}}));
+return new OfficialRemote({electron:{safeStorage:{isEncryptionAvailable:()=>true}},profile:p,rendererPath:__filename});}
+test('official target must match existing native telemetry without generating a new identity',t=>{
+ const c=fixture(t);assert.equal(c.localLink(link).mid,'this-machine');
+ assert.throws(()=>c.localLink(link.replace('this-machine','another-machine')),/本机/);
+ assert.throws(()=>c.localLink(link.replace('zcode.z.ai','evil.invalid')),/官方/);
+ assert.throws(()=>c.localLink(link+'&mid=this-machine'),/官方/);
+});
+test('public state never contains authentication and preserves explicit local/official selection',t=>{
+ const c=fixture(t);c.auth={jwt:'private-secret',link,provider:'zai',name:'Fixture'};
+ const state=c.status();assert.equal(state.selected,false);assert.equal(state.link,link);assert.equal(JSON.stringify(state).includes('private-secret'),false);
+});
+test('requests cannot cross a relay epoch or bypass expiry and action validation',async t=>{
+ const c=fixture(t);c.runtime={};c.owner={epoch:'current',device:'native-session'};
+ await assert.rejects(c.handle({command:'call',request:{action:'send',expectedProcess:{epoch:'old',device:'native-session'},expiresAt:Date.now()+10000}}),/已变化/);
+ await assert.rejects(c.handle({command:'call',request:{action:'send',expectedProcess:c.owner,expiresAt:Date.now()-1}}),/过期/);
+ await assert.rejects(c.handle({command:'call',request:{action:'arbitrary-eval'}}),/不支持/);
+});
+test('forget closes pending login, drops relay and removes encrypted credentials only',async t=>{
+ const c=fixture(t);let closed=0,disposed=0;c.loginWindow={destroy(){closed++;}};c.runtime={dispose(){disposed++;}};c.auth={jwt:'private-secret'};
+ fs.writeFileSync(c.authFile,'ciphertext');await c.forget();assert.equal(closed,1);assert.equal(disposed,1);assert.equal(c.auth,null);assert.equal(fs.existsSync(c.authFile),false);
+});
+async function request(record,token,request){return new Promise((resolve,reject)=>{
+ const socket=net.connect(record.endpoint);const chunks=[];socket.on('error',reject);socket.on('data',c=>chunks.push(c));
+ socket.on('end',()=>{const data=Buffer.concat(chunks);resolve(data.length?JSON.parse(data.subarray(4)):null);});
+ socket.on('connect',()=>{const data=Buffer.from(JSON.stringify({token,request})),head=Buffer.alloc(4);head.writeUInt32BE(data.length);socket.write(Buffer.concat([head,data]));});
+});}
+test('private IPC authenticates before dispatch and redacts internal errors',async t=>{
+ const p=profile(t);let calls=0;const stop=await serveLocal(p,'zcode-official',value=>{calls++;if(value.fail)throw Error('secret-token');return {safe:true};});t.after(stop);
+ const record=JSON.parse(fs.readFileSync(path.join(p,'zcode-official-ipc.json')));
+ assert.equal(fs.statSync(path.join(p,'zcode-official-ipc.json')).mode&0o777,0o600);
+ assert.equal(fs.statSync(path.dirname(record.endpoint)).mode&0o777,0o700);
+ assert.equal(await request(record,'wrong',{}),null);assert.equal(calls,0);
+ assert.deepEqual(await request(record,record.token,{}),{ok:true,value:{safe:true}});
+ const error=await request(record,record.token,{fail:true});assert.equal(error.ok,false);assert.equal(JSON.stringify(error).includes('secret-token'),false);
+});

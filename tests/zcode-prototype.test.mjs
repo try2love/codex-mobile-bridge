@@ -53,6 +53,38 @@ test('application handshake reads the original project service without activatin
   await assert.rejects(f.request('application'),/会话服务/);
 });
 
+test('official services reuse native operations without reading the desktop renderer', async () => {
+  const f = fixture();
+  f.agent.helloConversationV4 = async () => ({protocolVersion:3,clientMode:'web-remote-replayable',connectionId:f.binding.connectionId});
+  const environment = {clientMode:'web-remote-replayable',services:f.services,state:{},storage:localStorage,
+    acquireWorkspace:()=>({layer:f.services.layer,release:()=>f.calls.push('workspace-release')})};
+  const originalWindow = window;
+  document.querySelectorAll = () => {throw Error('must not inspect the original desktop');};
+  const request = (action,body={}) => nativeRequest({action,body,sessionId:'sess-test',workspace:'/project',
+    binding:f.binding,expiresAt:Date.now()+10000}, environment);
+  assert.deepEqual(await request('application'),{ready:true});
+  assert.deepEqual(f.calls,[]);
+  assert.deepEqual((await request('attach')).binding,f.binding);
+  assert.equal((await request('detail')).snapshot.sessionId,'sess-test');
+  assert.equal((await request('send',{id:'official-command',text:'same native command'})).status,'accepted');
+  assert.equal(f.calls.at(-1).envelope.commandId,'official-command');
+  assert.equal(f.calls.at(-1).envelope.type,'sendText');
+  assert.equal(originalWindow.__codexMobileZCodePrototypeV1,undefined);
+  await request('detach');
+  assert.deepEqual(f.calls.slice(-2),['release','workspace-release']);
+});
+
+test('transport mode is selected only by the trusted environment, never by request fields', async () => {
+  const f = fixture();
+  f.agent.helloConversationV4 = async () => ({protocolVersion:3,clientMode:'web-remote-replayable',connectionId:f.binding.connectionId});
+  await assert.rejects(f.request('application',{}, {clientMode:'web-remote-replayable',officialRemote:true}),/会话服务/);
+  const environment = {clientMode:'web-remote-replayable',services:f.services,state:{},storage:localStorage};
+  f.agent.helloConversationV4 = async () => ({protocolVersion:3,clientMode:'desktop-continuous',connectionId:f.binding.connectionId});
+  await assert.rejects(nativeRequest({action:'application',expiresAt:Date.now()+1000},environment),/会话服务/);
+  await assert.rejects(nativeRequest({action:'application',expiresAt:Date.now()+1000},{...environment,clientMode:'desktop-continuous'}),/environment/);
+  assert.deepEqual(f.calls,[]);
+});
+
 test('cold readiness identifies a missing service, handshake and project tree without acquiring a chat',async()=>{
   const f=fixture(),nodes=document.querySelectorAll();
   document.querySelectorAll=()=>[];

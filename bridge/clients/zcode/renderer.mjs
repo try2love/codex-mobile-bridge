@@ -1,12 +1,20 @@
 // Development-only bridge to the existing renderer service. Never starts a CLI.
 // Kept as a self-contained function so CDP can execute it without altering app.asar.
-export async function nativeRequest(request) {
+export async function nativeRequest(request, environment) {
+  // The official relay supplies the same native services and lease store. The
+  // trusted runtime passes this argument; request data cannot select a transport.
+  if (environment && environment.clientMode !== 'web-remote-replayable')
+    throw Error('Unsupported ZCode service environment');
+  const window = environment ? environment.state : globalThis.window;
+  const localStorage = environment ? environment.storage : globalThis.localStorage;
+  const acquireWorkspace = environment ? environment.acquireWorkspace : window?.__codexMobileZCodeAcquireWorkspace;
   const checkDeadline = () => {
     if (Date.now() >= request.expiresAt) throw Error('ZCode request expired; outcome may be unknown');
   };
   checkDeadline();
   const key = '__codexMobileZCodePrototypeV1';
   const findServices = () => {
+    if (environment) return { services: environment.services, contexts: environment.contexts || [] };
     const stack = [...document.querySelectorAll('#root,#app')].flatMap(el =>
       Object.keys(el).filter(k => k.startsWith('__reactContainer$') || k.startsWith('__reactFiber$')).map(k => el[k]));
     const seen = new Set(), found = new Set(), contexts = new Set();
@@ -37,7 +45,7 @@ export async function nativeRequest(request) {
       throw Error('ZCode 原 App 缺少会话服务接口');
     const hello = await agent.helloConversationV4();
     if (hello == null && request.action === 'application') return null;
-    if (hello?.protocolVersion !== 3 || hello.clientMode !== 'desktop-continuous' ||
+    if (hello?.protocolVersion !== 3 || hello.clientMode !== (environment ? 'web-remote-replayable' : 'desktop-continuous') ||
         typeof hello.connectionId !== 'string' || !hello.connectionId)
       throw Error('ZCode 原 App 会话服务协议不兼容');
     return hello;
@@ -86,7 +94,7 @@ export async function nativeRequest(request) {
     if (job.error) throw job.error;
     return job.reply;
   }
-  if (request.action === 'registry-probe') return typeof window.__codexMobileZCodeAcquireWorkspace === 'function' ||
+  if (request.action === 'registry-probe') return typeof acquireWorkspace === 'function' ||
     contexts.find(context => !context.layer.disposed)?.layer.acquire || registryAnchor;
   const targetTask = tree => {
     const rows = tree.tasks.filter(row => row.taskId === request.sessionId && !row.deleted &&
@@ -245,7 +253,7 @@ export async function nativeRequest(request) {
     if (!job) {
       if (restores.has(sid)) throw Error('此聊天正在接续，请刷新状态');
       if (ticket && restores.size >= 16) throw Error('正在接续的聊天较多，请稍后重试');
-      const workspaceLease = window.__codexMobileZCodeAcquireWorkspace?.({ workspacePath: workspace }, agent);
+      const workspaceLease = acquireWorkspace?.({ workspacePath: workspace }, agent);
       const existing = contexts.find(context => context.layer.entries.has('conversation/' + sid));
       const layer = workspaceLease?.layer || existing?.layer ||
         (window[key]?.binding?.runtime?.workspaceKey === workspace ? window[key].layer : null);
@@ -333,7 +341,7 @@ export async function nativeRequest(request) {
     const sid = 'sess_' + body.id;
     let workspacePath = request.workspace, projectId = null;
     if (body.directoryProject || body.projectKey && body.projectKey !== request.workspace) {
-      if (typeof window.__codexMobileZCodeAcquireWorkspace !== 'function' ||
+      if (typeof acquireWorkspace !== 'function' ||
           typeof services.projectService?.prepareSession !== 'function' ||
           typeof services.projectService[body.directoryProject ? 'saveProject' : 'readProjects'] !== 'function')
         throw Error('ZCode 原生多项目连接尚不可用');
@@ -378,7 +386,7 @@ export async function nativeRequest(request) {
     let notice, binding, workspaceLease;
     try {
       binding = await identity(workspacePath, sid);
-      workspaceLease = window.__codexMobileZCodeAcquireWorkspace?.({ workspacePath }, agent);
+      workspaceLease = acquireWorkspace?.({ workspacePath }, agent);
       const layer = workspaceLease?.layer || (workspacePath === request.workspace ? anchor?.layer : null);
       if (!layer || layer.disposed) throw Error('原生会话已创建，请点击继续会话完成接入');
       const lease = layer.acquire(sid);
@@ -596,7 +604,7 @@ export async function nativeRequest(request) {
   if (type === 'forkAssistant' && ack.status === 'accepted' && ack.result?.sessionId) {
     const sid = ack.result.sessionId;
     // Explicit fork adopts only its returned child, through the existing native layer.
-    const workspaceLease = window.__codexMobileZCodeAcquireWorkspace?.({ workspacePath: request.workspace }, agent);
+    const workspaceLease = acquireWorkspace?.({ workspacePath: request.workspace }, agent);
     try {
       const layer = workspaceLease?.layer || state.layer, lease = layer.acquire(sid);
       states.set(sid, { binding: current, sessionId: sid, lease, layer, workspaceLease, sessions: states });

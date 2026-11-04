@@ -244,14 +244,16 @@ class DesktopConnectionsPanel {
           hint.textContent=BridgeI18n.t('仅监听 127.0.0.1:17742。本机其他程序可能访问此端口。设置在下次由网关启动 ZCode 时生效。');
           article.insertBefore(label,content);article.insertBefore(hint,content);
           select.onchange=async()=>{
+            if(select.disabled||this.zcodeOfficial?.value?.selected){select.checked=client.compatibilityLaunch===true;return;}
             const enabled=select.checked;
             if(enabled&&!window.confirm(BridgeI18n.t('允许网关在下次启动 ZCode 时开启本机调试端口？'))){select.checked=false;return;}
             select.disabled=true;
             try{const result=await this.api.desktopSessions({action:'zcode-compatibility',enabled});this.clients=result.clients;this.renderClients();}
             catch(error){select.checked=!enabled;this.feedback(error.message,true);}
-            finally{select.disabled=false;}
+            finally{select.disabled=this.zcodeOfficial?.value?.selected===true;}
           };
         }
+        if(client.id==='zcode')this.mountZcodeOfficial(article,content);
         if(wsl){
           const provider=client.kind==='wsl-claude-cli'?'claude':'codex',entry=client.id;
           const panel=new WslAccountsPanel({root:content,provider,desktop:true,
@@ -269,10 +271,51 @@ class DesktopConnectionsPanel {
         }
       }
       if(client.id==='zcode'){
-        const select=layout.clientPage(client.id).querySelector('[data-zcode-compatibility]');if(select)select.checked=client.compatibilityLaunch===true;
+        const select=layout.clientPage(client.id).querySelector('[data-zcode-compatibility]');if(select){select.checked=client.compatibilityLaunch===true;select.disabled=this.zcodeOfficial?.value?.selected===true;}
       }
       layout.selectClient(client.id);this.managementPages.get(client.id)?.open();
+      if(client.id==='zcode')await this.zcodeOfficial?.refresh();
     }catch(error){this.feedback(error.message,true);}
+  }
+  mountZcodeOfficial(article,before){
+    const node=(tag,text,cls='')=>{const value=document.createElement(tag);value.className=cls;if(text!==undefined)value.textContent=BridgeI18n.t(text);return value;};
+    const section=node('section',undefined,'accounts-panel'),heading=node('div',undefined,'account-heading');section.dataset.zcodeOfficial='';
+    const title=node('h3','官方远控（实验）'),refresh=node('button','刷新状态','accounts-refresh');heading.append(title,refresh);
+    const help=node('p','使用与此电脑 ZCode 相同的官方账号，并在原 App 中开启 Web 远程控制。会话数据经过 ZCode 官方中继。','account-muted');
+    const mode=node('p'),status=node('p'),reason=node('p',undefined,'hint');status.setAttribute('role','status');reason.setAttribute('role','status');
+    const label=node('label'),link=node('input');link.type='url';link.autocomplete='off';link.spellcheck=false;link.maxLength=4096;link.placeholder=BridgeI18n.t('粘贴此电脑的 Web 远程控制链接');label.append(node('span','官方远控链接'),link);
+    const actions=node('div',undefined,'actions'),buttons={};
+    for(const [action,text] of [['login','登录官方账号'],['connect','连接官方远控'],['disconnect','断开官方远控'],['local','切回本机连接'],['forget','清除官方登录']]){
+      const button=node('button',text);button.type='button';button.dataset.officialAction=action;buttons[action]=button;actions.append(button);
+    }
+    refresh.type='button';section.append(heading,help,mode,status,reason,label,actions);article.insertBefore(section,before);
+    let busy=false,pendingAction='',loadedLink='',error='';
+    const panel=this.zcodeOfficial={value:null};
+    const render=()=>{
+      const value=panel.value,unavailable=!value,selected=value?.selected===true;
+      mode.textContent=BridgeI18n.t(unavailable?(busy?'正在读取当前接入方式…':'当前接入方式暂不可用'):selected?'当前接入：官方远控':'当前接入：本机连接');
+      status.textContent=value?[(value.configured?BridgeI18n.t('已登录')+(value.accountName?' · '+value.accountName:'')+(value.provider?' · '+value.provider:''):BridgeI18n.t('尚未登录官方账号')),
+        BridgeI18n.t(value.connected?'官方远控已连接':'官方远控未连接')].join('；'):'';
+      reason.textContent=BridgeI18n.t(busy?({state:'正在刷新状态…',login:'正在打开官方登录…',connect:'正在连接官方远控…',disconnect:'正在断开官方远控…',local:'正在切回本机连接…',forget:'正在清除官方登录…'})[pendingAction]:error||value?.reason||'');reason.className=error?'error':'hint';
+      link.disabled=busy;refresh.disabled=busy;for(const button of Object.values(buttons))button.disabled=busy||unavailable;
+      buttons.login.disabled=busy||unavailable||!link.value.trim();buttons.connect.disabled=busy||unavailable||!value?.configured||!link.value.trim();
+      buttons.disconnect.disabled=busy||!value?.connected;buttons.local.disabled=busy||!selected;buttons.forget.disabled=busy||!value?.configured;
+      const compatibility=article.querySelector('[data-zcode-compatibility]');if(compatibility)compatibility.disabled=busy||selected||unavailable;
+    };
+    const perform=async action=>{
+      if(busy||this.busy||this.scanning||this.choosingClient)return;
+      if(action!=='state'&&buttons[action].disabled)return;
+      if(action==='forget'&&!window.confirm(BridgeI18n.t('清除网关保存的官方登录并切回本机连接？ZCode 原 App 的账号和任务会保留。')))return;
+      const edited=link.value!==loadedLink;busy=true;pendingAction=action;error='';this.busy=true;render();this.renderClients();this.renderScan();
+      try{
+        const value=await this.api.desktopSessions({action:'zcode-official-'+action,...(['login','connect'].includes(action)?{link:link.value.trim()}:{})});
+        panel.value=value;if(!edited||action==='forget')link.value=value.link||'';loadedLink=value.link||'';
+      }catch(failure){error=failure.message;this.feedback(error,true);panel.value=null;if(action!=='state')try{panel.value=await this.api.desktopSessions({action:'zcode-official-state'});}catch(_){}}
+      finally{busy=false;this.busy=false;render();this.renderClients();this.renderScan();}
+      if(!['state','login'].includes(action))await this.refreshClients(true);
+    };
+    for(const [action,button] of Object.entries(buttons))button.onclick=()=>perform(action);
+    refresh.onclick=panel.refresh=()=>perform('state');link.oninput=render;render();
   }
   resumeAccounts(){for(const panel of Object.values(this.accountPanels))panel.resume();}
   renderClientAccount(provider,value){

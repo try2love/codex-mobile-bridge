@@ -16,18 +16,19 @@ const loginStartup=createLoginStartup(app);
 const {spawn}=require('node:child_process');
 const {randomUUID}=require('node:crypto');
 const {interfaces}=require('./features/connections/network.cjs');
+const {OfficialRemote}=require('./features/zcode-official/controller.cjs');
 let language='zh-CN';
 const t=text=>translate(text,language);
 const root=path.resolve(__dirname,'..');
 // An explicit data directory also keeps test caches inside the project.
 if(process.env.CMB_DATA_DIR)app.setPath('userData',path.join(path.resolve(process.env.CMB_DATA_DIR),'desktop-runtime'));
 let window,dataDir,tray,quitting=false,snapshotPending,lastSnapshot,updateQuitting=false;
-let installPending,installStatus={},updater,workerWrites=0;
+let installPending,installStatus={},updater,workerWrites=0,officialRemote;
 const snapshotWorker=createSnapshotWorker();
 const managementWorker=createManagementWorker();
 let connectionSecrets={},setupPending=false;
 const entry=pathToFileURL(path.join(__dirname,'index.html')).href;
-function releaseTray(){snapshotWorker.close();managementWorker.close();quitting=true;tray?.dispose();tray=null;}
+function releaseTray(){officialRemote?.dispose();snapshotWorker.close();managementWorker.close();quitting=true;tray?.dispose();tray=null;}
 function updateTarget(){return process.platform==='darwin'?path.resolve(process.execPath,'../../..'):path.dirname(process.execPath);}
 let handoff=null;
 function currentHandoff(){return activeUpdateHandoff(process.env,updateTarget(),app.getVersion(),process.pid);}
@@ -133,6 +134,24 @@ function register(){
   });
   for(const action of ['snapshot','save','start','stop','logs','test-notification','webhook-endpoint','network-adaptation','check-entry','tailscale-setup','devices','account', 'accounts', 'cli-access', 'harness', 'desktop-sessions','notification-watches', 'transfer-settings'])ipcMain.handle('bridge:'+action,async(event,payload)=>{
     authorize(event);
+    if(action==='desktop-sessions'&&payload?.action?.startsWith('zcode-official-')){
+      if(process.platform!=='darwin'||!officialRemote)throw Error('此实验 Test 暂只支持 macOS 官方远控。');
+      if(updater?.busy)throw Error('正在更新应用，请稍候。');
+      if(payload.action==='zcode-official-state')return officialRemote.status();
+      if(payload.action==='zcode-official-login')return officialRemote.login(payload.link);
+      if(payload.action==='zcode-official-connect'){
+        if(officialRemote.localLink(payload.link).url!==officialRemote.auth?.link)throw Error('远控链接已变化，请先重新登录此链接。');
+        await officialRemote.connect();
+        await worker('desktop-sessions',{action:'zcode-official',enabled:true});
+      }else if(payload.action==='zcode-official-disconnect'){
+        await officialRemote.disconnect();
+      }else if(['zcode-official-local','zcode-official-forget'].includes(payload.action)){
+        await officialRemote.disconnect();
+        await worker('desktop-sessions',{action:'zcode-official',enabled:false});
+        if(payload.action==='zcode-official-forget')await officialRemote.forget();
+      }else throw Error('未知官方远控操作');
+      return officialRemote.status();
+    }
     if(action==='accounts'){
       if(updater?.busy&&payload?.action!=='list')throw Error('正在更新应用，请稍候。');
       if(payload?.action==='openLogin'){
@@ -316,10 +335,13 @@ function createWindow(hidden=false){
 if(!app.requestSingleInstanceLock())app.quit();
 else{
   app.on('second-instance',(_event,argv)=>{if(!loginStartup.hidden(argv))showWindow();});
-  app.whenReady().then(()=>{
+  app.whenReady().then(async()=>{
     language=normalize(app.getLocale());
     try{language=normalize(JSON.parse(fs.readFileSync(path.join(app.getPath('userData'),'language.json'),'utf8')).language);}catch{}
-    dataDir=loadDataDir();publishLanguage(dataDir,language);setupUpdater();register();
+    dataDir=loadDataDir();publishLanguage(dataDir,language);
+    officialRemote=new OfficialRemote({electron:require('electron'),profile:dataDir,rendererPath:app.isPackaged?
+      path.join(process.resourcesPath,'gateway/_internal/bridge/clients/zcode/renderer.mjs'):path.join(root,'bridge/clients/zcode/renderer.mjs')});
+    await officialRemote.start();setupUpdater();register();
     if(process.platform==='win32')app.setAppUserModelId('io.github.try2love.codexmobilebridge');
     if(['win32','darwin'].includes(process.platform)){
       const icon=process.platform==='darwin'?nativeImage.createFromPath(path.join(__dirname,'assets/icon.png')).resize({width:18,height:18}):path.join(__dirname,'assets/icon.ico');

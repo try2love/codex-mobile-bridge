@@ -278,7 +278,7 @@ class ZCodePrototype(ZCodeDesktop):
         if bool(self.workspace) != bool(self.sid) or self.sid is not None and (
                 not isinstance(self.sid, str) or not self.sid.startswith('sess_')):
             raise ValueError('ZCode 原会话或工作区无效')
-        if not self.sid and not self.pipe and config.get('debugFallbackPort') != 17742:
+        if not self.sid and not self.pipe and transport is None and config.get('debugFallbackPort') != 17742:
             raise ValueError('请先启用 ZCode 本机兼容连接')
         self.process = config.get('process')
         self.application_owner = None
