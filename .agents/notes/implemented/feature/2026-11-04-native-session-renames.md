@@ -18,7 +18,7 @@ Status: implemented
 
 - Claude Desktop 的 Code/Cowork 沿用已核验的 `updateSession(id, {title, titleSource: 'user'})` 与 `getSession` 读回，不加载聊天、不写模型设置。
 - Claude CLI 只对网关已经持有、原生初始化同时公布 `ui_surface_v1` 和 `rename` 命令的连接开放。复用同一 `_Owned.control`，发送官方 `rename_session` 控制请求，携带 `title`、`source: host` 和预期 `session_id`。本机、SSH、WSL 共用该函数和原生标题事件读取；不发送 `/rename` 用户消息，不新起执行器，也不由 Bridge 追加或重写 JSONL。冷会话先由用户显式连接。
-- DSH 使用原 `sessionTitle.rename` 服务，对原 Session store 中仍然加载的同一 Session 生效；不要求同时存在 Agent。缺少已加载 Session 时明确要求先连接，不调用会隐式恢复 Agent 的 `sessionController.rename`。派发前读取原服务当前 `config.maxTitleBytes`，明确拒绝会被原服务折叠、去控制或按 UTF-8 字节截断的标题；无法核验上限时不写入，不猜默认值。接受回执后再核对列表标题、cwd 与同一 Session 对象。
+- DSH 通过已有 `ctx.get('sessions')` 动态服务入口取得 Session，使用原 `sessionTitle.rename` 服务，对原 Session store 中仍然加载的同一 Session 生效；不要求同时存在 Agent。缺少已加载 Session 时明确要求先连接，不调用会隐式恢复 Agent 的 `sessionController.rename`。派发前读取原服务当前 `config.maxTitleBytes`，明确拒绝会被原服务折叠、去控制或按 UTF-8 字节截断的标题；无法核验上限时不写入，不猜默认值。接受回执后再核对列表标题、cwd 与同一 Session 对象。
 - ZCode 使用原 `zcodeTaskService.renameTask`。该服务经原生 `renameSession`、CLI 事实对账和任务索引持久化后返回任务元数据；Bridge 再读原项目树确认 ID、标题、cwd。它不需要聊天订阅，列表独立传递原生改名能力，避免丢失外层能力后退回别名。归档或尚未持久化的草稿不被承诺为可原生改名。
 
 ## 原生依据与验证

@@ -18,10 +18,10 @@ test('native metadata actions preserve cwd and never resume a cold session',asyn
   const workspaces=[workspace('same',cwd),workspace('different',other)];
   const titles={config:{maxTitleBytes:32},rename(session,title){calls.push(['rename',session.id,title]);if(!ignoreRename)row.projections.values.title=title;return {title};}};
   const forbidden=()=>{throw Error('Metadata must not activate a session');};
-  const ctx={agents,sessions,sessionController:{list:async()=>({items:[row]}),rename:forbidden,create:forbidden,prompt:forbidden},
+  const ctx={agents,get sessions(){throw Error('cannot get property sessions without inject');},sessionController:{list:async()=>({items:[row]}),rename:forbidden,create:forbidden,prompt:forbidden},
     workspaceRegistry:{list:()=>workspaces,get:id=>workspaces.find(w=>w.id===id)},
     permissionPresets:{catalog:()=>({options:[],defaultPreset:'default'})},
-    get:name=>name==='sessionTitle'?titles:undefined,on(){},effect:setup=>disposers.push(setup())};
+    get:name=>name==='sessionTitle'?titles:name==='sessions'?sessions:undefined,on(){},effect:setup=>disposers.push(setup())};
   await apply(ctx,{configPath});
   const {port}=JSON.parse(await readFile(endpoint,'utf8'));
   const request=async(action,body={})=>{

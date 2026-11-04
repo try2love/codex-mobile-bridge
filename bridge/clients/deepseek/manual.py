@@ -16,7 +16,7 @@ SOURCE = Path(__file__).resolve().parent
 PACKAGE = 'dsh-codex-mobile-bridge'
 # Wire schemas are reviewed independently of bundle patch releases.
 PROTOCOL = 1
-SUPPORTED_REVISIONS = (9, 10)
+SUPPORTED_REVISIONS = (9, 11)
 # Previously shipped 0.1.0 bundle: retained without trusting arbitrary legacy code.
 LEGACY_HASHES = {'host.mjs': '80cc10b76e18621b90dbdd5675ce8dd3932eb381a3380f0a538a76b4bcc77ebf', 'index.mjs': 'fcec77a5c6fa824cce97d668bf099c1bd720e7d23ef34d553e699bc1c708b647', 'package.json': '40cc010b6b09629f589e1fefa077a155849d97d1be9a3dcb310423f245478219', 'cordis.patch.yml': '88dd63b62c0021216c2f94171bc1585e5ba19fcce739a8b6ef02b2206a1e4af0'}
 

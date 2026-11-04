@@ -27,7 +27,9 @@ Linux 允许明文 fallback 能减少首次配置失败，但不满足登录持�
 - macOS：共享帧与损坏记录检查通过；Node holder 转发、异常脱敏和启动失败隔离测试通过；既有 Unix socket 认证测试在允许本机 socket 后通过。Linux 存储后端枚举的定向测试拒绝 `basic_text` 和 `unknown`。
 - Windows 实机：原生私有 ACL/硬链接拒绝与命名管道 PID/字节流检查通过；SSH session 0 按原边界拒绝身份接入。临时、非提权的交互计划任务进一步通过 Node → holder → Python → Node 正向链路，错误脱敏、两次处理、父进程继续运行与发现记录移除均确认；任务随后注销。没有退出原 App 或发送模型消息。
 - Ubuntu 实机：复用已安装 Test 的 Electron Node 模式运行 Unix RPC，帧交换、错误脱敏、两次处理、父进程保留和发现记录清理通过。系统没有独立 Node 安装，本次未安装。真实安全存储探针已找到同用户图形环境，但临时运行时以 exit 1 结束，未取得 backend 结果；不能据此认定密钥环不可用或未解锁，停止该探针路径。
-- 上述源码/操作系统证据不替代最终三端安装包验收。Windows/Linux 的官方登录、真实配对以及 Ubuntu 实际 safeStorage 后端仍须在最终 Test 中核对，不能使用 Mac 密文或模拟账号代替。
+- 最终 Test 128.13：Ubuntu 完整成品在同用户图形会话、独立空配置中正常启动；对该进程的私有 socket 读取真实控制器状态，`available=true`、`secureStorageAvailable=true`，未登录且未配对。此结果通过真实系统安全存储后端的允许列表检查，不再将旧临时运行时探针失败当成阻塞；不代表已验证官方凭据加密后的跨进程恢复。
+- 最终 Test 128.13：Windows 完整成品在交互 session 1 启动，内部 holder 与父进程记录匹配；同版本打包网关的 `management-stream` 经命名管道取得实际官方状态，返回“请登录与 ZCode 原 App 相同的官方账号”。这是空账号启动安全存储门禁通过的证据，尚未验证真实账号的加密保存与恢复。两端使用独立资料、关闭自动启动及全部 Agent 接入，保留现有任务，不发送模型请求。
+- Windows/Linux 的官方登录、真实配对与官方凭据持久恢复仍须用户分别在对应电脑完成验证，不能使用 Mac 密文或模拟账号代替。无 ZCode descriptor 的旧 128.12 临时 `clients` 探针未覆盖官方 RPC，不能作为成品通过或产品故障的依据。
 
 ## 影响
 
