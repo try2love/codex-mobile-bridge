@@ -1,5 +1,6 @@
 'use strict';
 const $=id=>document.getElementById(id),api=window.bridgeDesktop,t=BridgeI18n.t;
+const developmentReload=window.sourceDevelopmentReload||null;
 let connectionDraft=[],savedConnections='[]',lanDraft=[],savedLan='[]';
 let snapshot,dirty=false,loading=false,startingUntil=0,activeTab='overview',savedFields={},feedbackKind='',lastFeedback;
 let networkAdaptationState,networkAdaptationBusy=false,networkAdaptationRevision=0,networkAdaptationError='';
@@ -358,7 +359,7 @@ $('cloudflared').oninput=()=>{renderCloudflared();updateDirty();};
 async function loadLogs(){try{$('log-output').textContent=(await api.logs()).text||t('暂无运行日志');$('log-output').scrollTop=0;}catch(e){feedback(e.message,true);}}
 $('refresh-logs').onclick=loadLogs;
 for(const id of ['password','ntfy-token','bark-key','pushplus-token'])secretControl($(id));
-api.language().then(applyLanguage).catch(error=>feedback(error.message,true)).then(()=>refresh(true)).then(()=>desktopConnections?.scan()).then(()=>{if(snapshot?.preferences.autoStart&&!snapshot.updateManaged&&!snapshot.runtime.running&&!snapshot.runtime.portOccupied)$('start').click();});
+api.language().then(applyLanguage).catch(error=>feedback(error.message,true)).then(()=>refresh(true)).then(()=>developmentReload?.restore()).then(()=>desktopConnections?.scan()).then(()=>{if(!developmentReload?.reloaded&&snapshot?.preferences.autoStart&&!snapshot.updateManaged&&!snapshot.runtime.running&&!snapshot.runtime.portOccupied)$('start').click();});
 let refreshTimer=setInterval(refresh,3000);
 document.addEventListener('visibilitychange',()=>{clearInterval(refreshTimer);refreshTimer=null;if(!document.hidden){refresh();refreshTimer=setInterval(refresh,3000);}});
 
@@ -542,3 +543,11 @@ for(const provider of ['codex','claude']){
 }
 if(api.platform==='win32')window.loadWslAccounts().then(()=>{createWslAccountScopes();if(activeTab==='accounts')for(const scope of wslAccountScopes)scope.load();}).catch(error=>feedback(error.message,true));
 document.addEventListener('bridge-client-config',event=>{for(const scope of wslAccountScopes){scope.panel.clear();scope.load();}});
+
+developmentReload?.attach({
+  ready:()=>!!snapshot&&!loading,
+  dirty:()=>dirty||devicesDirty||webhookDirty()||saving||webhookSaving||networkAdaptationBusy||busyActions.size>0,
+  managedInput:node=>fields().includes(node)||!!node.closest('#connections,#lan-addresses,#webhook-editor,#device-policy'),
+  view:()=>({tab:activeTab,scroll:document.querySelector('main')?.scrollTop||window.scrollY||0,details:[...document.querySelectorAll('details[id][open]')].map(node=>node.id).slice(0,128)}),
+  restore:value=>{tab(value.tab);for(const node of document.querySelectorAll('details[id]'))node.open=value.details.includes(node.id);const main=document.querySelector('main');if(main)main.scrollTop=value.scroll;window.scrollTo?.(0,value.scroll);}
+});

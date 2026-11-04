@@ -586,6 +586,7 @@ npm ci
 npm run desktop
 ```
 
+For UI work, use `npm run desktop:dev`; a `DEV UI` badge confirms the mode. CSS saves replace styles without resetting inputs. HTML and frontend JavaScript saves reload only the renderer, preserving the current section, expanded details and scroll position. The gateway stays running and autostart is not repeated. Reload waits for unsaved inputs, open editor dialogs and pending operations; save, clear or close the editor to continue. Exit the old control panel through its menu before switching modes for the first time: closing its window normally only hides it. Packaged apps and plain `npm run desktop` never watch source files. Main-process, preload, Python and dependency changes still require a manual restart of the affected process.
 
 Install the Python dependencies in the same environment used by the source
 desktop runtime. Cloud access requires `aiohttp`, `noiseprotocol` and the native

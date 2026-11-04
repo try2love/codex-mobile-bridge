@@ -1,3 +1,4 @@
+.dev-reload-status{position:fixed;right:14px;bottom:14px;z-index:9999;max-width:calc(100vw - 28px);padding:6px 10px;border:1px solid #b5cbbd;border-radius:4px;background:#e9f3ed;color:#214332;font:11px/1.5 monospace;pointer-events:none}
 /* The approved gateway layout: quiet shell, compact tables, progressive settings. */
 :root{--accent:#2563eb;--line:#dfe3ea;--muted:#626d7e;color:#202631;background:#f6f7f9}
 body>aside{width:230px;padding:28px 20px;background:#eef0f4;border-right:1px solid var(--line)}

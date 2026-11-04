@@ -12,7 +12,7 @@ function controller({ready='valid',readyAt=0,pending=false,spawnError=false,exit
   const app={isPackaged:packaged,requestSingleInstanceLock:()=>true,whenReady:()=>({then(){}}),on(){},
     getVersion:()=> '2.0.0-preview.3',getPath:()=>'/fixture/user',exit:code=>calls.exit.push(code),quit:()=>calls.quit++};
   const context=vm.createContext({__dirname:path.dirname(main),
-    process:{env:{},platform,arch:'x64',pid:123,execPath:'/fixture/app/Bridge.exe'},
+    process:{env:{},platform,argv:[],arch:'x64',pid:123,execPath:'/fixture/app/Bridge.exe'},
     Date:{now:()=>now},
     setTimeout(fn,ms){
       timers.push(ms);
