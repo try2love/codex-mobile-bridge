@@ -983,6 +983,28 @@ class CliSessions:
                     item = next((item for item in turn['items'] if item.get('id') == params.get('itemId')), None)
                     if item is not None and isinstance(params.get('delta'), str):
                         item['aggregatedOutput'] = item.get('aggregatedOutput', '') + params['delta']
+            elif method in ('item/reasoning/textDelta', 'item/reasoning/summaryTextDelta'):
+                # Third-party Responses backends stream raw chain of thought and
+                # never fill `summary`; keep both streams so the phone can show
+                # progress before `item/completed` replaces the item wholesale.
+                turn = next((item for item in state['turns'] if item['turnId'] == params.get('turnId')), None)
+                delta = params.get('delta')
+                if turn and isinstance(delta, str):
+                    item = next((item for item in turn['items'] if item.get('id') == params.get('itemId')), None)
+                    if item is None:
+                        item = {'id': params.get('itemId'), 'type': 'reasoning', 'summary': [], 'content': []}
+                        turn['items'].append(item)
+                    summary = method.endswith('summaryTextDelta')
+                    field = 'summary' if summary else 'content'
+                    index = params.get('summaryIndex' if summary else 'contentIndex')
+                    parts = item.get(field)
+                    if not isinstance(parts, list):
+                        parts = []
+                        item[field] = parts
+                    slot = index if isinstance(index, int) and index >= 0 else 0
+                    while len(parts) <= slot:
+                        parts.append('')
+                    parts[slot] = (parts[slot] or '') + delta
             else:
                 return
             snapshot = copy.deepcopy(state)
