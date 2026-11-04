@@ -184,7 +184,7 @@ class Workbench {
   get isFileVisible() { return !!this.current && !this.splitMode && this.current.active !== 'chat'; }
   endpoint(session, action) {
     const path = session.provider && session.provider !== 'codex'
-      ? '/api/desktop-sessions/'+session.provider+'/'+action+'?sessionId='+encodeURIComponent(session.id)
+      ? ClientIdentity.path(session.provider,action,session.id)
       : '/api/sessions/'+session.id+'/'+action+'?host='+encodeURIComponent(session.host);
     return window.BridgeRelayURL?.(path)||path;
   }

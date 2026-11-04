@@ -1,5 +1,5 @@
 """Opt-in phone notifications. Watching a chat never changes its execution owner."""
-from bridge.features.notifications.providers import PROVIDERS, desktop_provider
+from bridge.features.notifications.providers import PROVIDERS, desktop_provider, desktop_client
 
 import hashlib
 import base64
@@ -662,11 +662,11 @@ class Notifications:
         states = {row['id']: row for row in cached[1].get('clients', [])} if isinstance(cached, tuple) and len(cached) == 2 else {}
         clients = [{'id': provider, 'connected': states.get(provider, {}).get('connected'), 'enabled': self.desktop_sessions.enabled(provider)
                     if self.desktop_sessions is not None else provider == 'codex'}
-                   for provider in self.mobile.PROVIDERS]
+                   for provider in dict.fromkeys((*self.mobile.PROVIDERS, *[identifier for identifier in states if desktop_client('desktop:' + identifier)]))]
         active = {row['id'] for row in clients if row['enabled']}
         effective = {}
         def allowed(event):
-            if not enabled or self.mobile.provider(event) not in active:
+            if not enabled or self.mobile.client(event) not in active:
                 return False
             key = (event['host'], event['threadId'])
             if key not in effective:
@@ -747,8 +747,9 @@ class Notifications:
                 if provider:
                     if self.desktop_sessions is None:
                         raise ValueError('桌面会话接入不可用')
-                    self.desktop_sessions.require_enabled(provider)
-                    self.desktop_sessions.call(provider, 'detail', thread_id)
+                    manager = self.desktop_sessions.resolve_instance(provider, desktop_client(host)) if ':' in desktop_client(host) else self.desktop_sessions
+                    manager.require_enabled(provider)
+                    manager.call(provider, 'detail', thread_id)
                 elif self.bridge is not None:
                     self.bridge.for_host(host).store.get(thread_id)
                 self.dormant.discard((host, thread_id))
@@ -1010,7 +1011,7 @@ class Notifications:
             if self._targets(config).get(channel) != target:
                 return False
             provider = self.desktop_provider(row['host'])
-            if provider and (self.desktop_sessions is None or not self.desktop_sessions.enabled(provider)):
+            if provider and (self.desktop_sessions is None or not self.desktop_sessions.enabled(desktop_client(row['host']))):
                 return False
             current = self._effective(row)
             if not current['notifyOnCompletion' if completed is True else 'notifyOnRequest']:
@@ -1119,7 +1120,7 @@ class Notifications:
                 host, identifier, target = json.loads(key)
                 row = {'host': host, 'id': identifier}
                 provider = self.desktop_provider(host)
-                if provider and (self.desktop_sessions is None or not self.desktop_sessions.enabled(provider)):
+                if provider and (self.desktop_sessions is None or not self.desktop_sessions.enabled(desktop_client(host))):
                     continue
                 if target not in targets.values() or not self._effective(row, policies, legacy_rows)['notifyOnCompletion']:
                     del self.completions[key]
@@ -1231,7 +1232,12 @@ class Notifications:
         for row in rows:
             if self.closed.is_set():
                 break
-            if not manager.enabled(row['provider']):
+            client = desktop_client(row['host'])
+            if not client or not manager.enabled(client):
+                continue
+            try:
+                selected = manager.resolve_instance(row['provider'], client) if ':' in client else manager
+            except (OSError, ValueError):
                 continue
             current = self._effective(row)
             if not (current['notifyOnRequest'] or current['notifyOnCompletion']):
@@ -1252,7 +1258,7 @@ class Notifications:
                 reads += 1
                 try:
                     read_started = time.monotonic()
-                    detail = manager.call(row['provider'], 'detail', row['id'])
+                    detail = selected.call(row['provider'], 'detail', row['id'])
                     logging.debug('notification stage=desktop-detail provider=%s work_ms=%.1f',
                                  row['provider'], (time.monotonic() - read_started) * 1000)
                     if detail.get('connected') is False or not isinstance(detail.get('turns'), list):
@@ -1309,7 +1315,7 @@ class Notifications:
 
     def _push_allowed(self, event):
         provider = self.desktop_provider(event['host'])
-        if provider and (self.desktop_sessions is None or not self.desktop_sessions.enabled(provider)):
+        if provider and (self.desktop_sessions is None or not self.desktop_sessions.enabled(desktop_client(event['host']))):
             return False
         policy = self._effective({'id': event['threadId'], 'host': event['host']})
         if event['kind'] == 'state':

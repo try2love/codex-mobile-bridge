@@ -1,5 +1,5 @@
 """Authenticated companion inbox. Delivery to an inbox is not OS push delivery."""
-from bridge.features.notifications.providers import PROVIDERS, desktop_provider
+from bridge.features.notifications.providers import PROVIDERS, desktop_provider, desktop_client
 
 import hashlib
 import threading
@@ -18,6 +18,10 @@ class MobileEvents:
     def provider(event):
         return desktop_provider(event['host']) or 'codex'
 
+    @staticmethod
+    def client(event):
+        return desktop_client(event['host']) or 'codex'
+
     def __init__(self, directory):
         self.path = Path(directory) / 'mobile-events.json'
         self.lock = threading.RLock()
@@ -27,7 +31,7 @@ class MobileEvents:
         self.value = read_json(self.path, {'streamId': uuid.uuid4().hex, 'cursor': 0, 'events': []})
         if 'pending' not in self.value:
             self.value['pending'] = [self.metadata(event) for event in self.value['events']
-                                     if event['sequence'] > self.value.get('seen', {}).get(self.provider(event), 0)]
+                                     if event['sequence'] > self.value.get('seen', {}).get(self.client(event), 0)]
 
     @staticmethod
     def metadata(event):
@@ -70,19 +74,20 @@ class MobileEvents:
             self.changed()
 
     def acknowledge(self, provider, stream, through):
-        if provider not in (*self.PROVIDERS, 'all') or type(through) is not int or through < 0:
+        if (provider not in (*self.PROVIDERS, 'all') and not desktop_client('desktop:' + str(provider))) or type(through) is not int or through < 0:
             raise ValueError('通知已读参数无效')
         with self.lock:
             if stream != self.value['streamId'] or through > self.value['cursor']:
                 raise ValueError('通知状态已变化，请刷新后重试')
             seen = dict(self.value.get('seen', {}))
-            providers = self.PROVIDERS if provider == 'all' else (provider,)
+            known = set(self.PROVIDERS) | {self.client(event) for event in self.value['pending']} | set(seen)
+            providers = known if provider == 'all' else (provider,) if provider in known else ()
             if all(through <= seen.get(item, 0) for item in providers):
                 return
             for item in providers:
                 seen[item] = max(through, seen.get(item, 0))
             updated = {**self.value, 'seen': seen, 'pending': [event for event in self.value['pending']
-                       if event['sequence'] > seen.get(self.provider(event), 0)]}
+                       if event['sequence'] > seen.get(self.client(event), 0)]}
             write_json(self.path, updated)
             self.value = updated
             self.changed()
@@ -108,7 +113,7 @@ class MobileEvents:
                 if allowed is not None and not allowed(item):
                     continue
                 provider = self.provider(item)
-                event = {**item, 'provider': provider, 'unread': item['sequence'] > seen.get(provider, 0)}
+                event = {**item, 'provider': provider, 'clientId': self.client(item), 'unread': item['sequence'] > seen.get(self.client(item), 0)}
                 latest[provider] = {'provider': provider, 'kind': event['kind'], 'sequence': event['sequence']}
                 if event['sequence'] > after:
                     events.append(event)

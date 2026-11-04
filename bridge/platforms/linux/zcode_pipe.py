@@ -3,13 +3,16 @@ import contextlib
 from functools import lru_cache
 import os
 import re
+import shlex
 from pathlib import Path
 import signal
 import subprocess
 import sys
+import time
 
 from bridge.platforms.electron import package_manifest
 from bridge.platforms.linux import desktop
+from bridge.platforms.linux import appimage
 from bridge.platforms.linux.force_exit import Native
 
 
@@ -22,7 +25,7 @@ def _version(archive, file_identity):
     return None
 
 
-def installation(application):
+def _directory_installation(application):
     path = Path(application)
     try:
         if not path.is_absolute():
@@ -34,7 +37,8 @@ def installation(application):
         if not archive.is_file() or archive.resolve() != archive:
             return None
         with path.open('rb') as stream:
-            if stream.read(4) != b'\x7fELF':
+            header = stream.read(11)
+            if header[:4] != b'\x7fELF' or header[8:11] == b'AI\x02':
                 return None
         meta = archive.stat()
         version = _version(archive, (meta.st_dev, meta.st_ino, meta.st_size, meta.st_ctime_ns))
@@ -43,6 +47,81 @@ def installation(application):
     except (OSError, ValueError, RuntimeError, KeyError, TypeError, AttributeError, OverflowError):
         pass
     return None
+
+
+def _image_metadata(path):
+    raw = appimage.metadata(path, 'zcode.desktop')
+    if not raw:
+        return None
+    command = shlex.split(raw.get('exec', ''))
+    if (raw.get('type') != 'Application' or raw.get('name', '').casefold() != 'zcode'
+            or raw.get('startupwmclass', '').casefold() != 'zcode'
+            or not command or command[0] not in ('AppRun', 'zcode')):
+        return None
+    version = raw.get('x-appimage-version', '')
+    if len(version) > 128 or any(ord(char) < 32 for char in version):
+        return None
+    return {'version': version}
+
+
+def runtime_candidates(application):
+    return appimage.runtime_candidates(application, 'zcode')
+
+
+def installation(application, *, pid=None):
+    path = Path(application)
+    try:
+        if not path.is_absolute():
+            return None
+        path = path.resolve(strict=True)
+        direct = _directory_installation(path)
+        if direct:
+            return direct
+        if not os.access(path, os.X_OK) or not appimage.is_type2(path):
+            return None
+        identity = appimage.file_identity(path)
+        runtimes = runtime_candidates(path)
+        if pid is not None:
+            runtimes = [row for row in runtimes if row['pid'] == pid]
+        if len(runtimes) > 1:
+            return None  # A caller must identify the instance; never take the first.
+        if runtimes:
+            runtime = runtimes[0]
+            info = _directory_installation(runtime['executable'])
+            if not info or appimage.file_identity(path) != identity:
+                return None
+            return {**info, 'application': str(path), 'packageType': 'appimage',
+                    'installationIdentity': list(identity), 'runtimePid': runtime['pid'],
+                    'runtimeVerified': True, 'coldStartVerified': _image_metadata(path) is not None}
+        if pid is not None:
+            return None
+        metadata = _image_metadata(path)
+        if metadata is not None:
+            return {'application': str(path), 'executable': str(path), **metadata,
+                    'packageType': 'appimage', 'installationIdentity': list(identity),
+                    'runtimeVerified': False, 'coldStartVerified': True}
+    except (OSError, ValueError, RuntimeError, KeyError, TypeError, AttributeError, OverflowError):
+        pass
+    return None
+
+
+def runtime_owner(application, pid, *, timeout=15):
+    """The launcher's PID may exec into a freshly mounted payload before CDP is ready."""
+    application = Path(application).resolve(strict=True)
+    deadline = time.monotonic() + timeout
+    first = None
+    while True:
+        owner = identity(pid)
+        generation = (owner['uid'], owner['birth'], owner['started'])
+        if first is None:first = generation
+        if generation != first:raise ValueError('原 ZCode 进程身份已变化')
+        info = installation(application, pid=pid)
+        if info and owner['image'] == info['executable'] and (
+                info.get('packageType') != 'appimage' or info.get('runtimeVerified')):
+            return owner
+        if time.monotonic() >= deadline:
+            raise ValueError('ZCode AppImage 运行身份尚未核验，请稍后重试连接')
+        time.sleep(.1)
 
 
 def is_supported(application):
@@ -66,6 +145,13 @@ def worker_title(command):
 
 def main_processes(executable, candidates, commands):
     # All native workers replace argv. A title alone never establishes ownership.
+    try:
+        if appimage.is_type2(executable):
+            # This is a cold launcher's path, not an authenticated GUI runtime.
+            # A remaining FUSE keeper must never be mistaken for the App window.
+            return [], bool(candidates)
+    except (OSError, ValueError):
+        pass  # Existing callers separately verify the selected executable.
     roles = {pid: role for pid in candidates if (role := worker_title(commands.get(pid, '')))}
     if not roles:
         return candidates, False
@@ -103,11 +189,16 @@ def _launch_context(application):
         raise ValueError('未找到所选的 ZCode 桌面安装')
     if not (os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY')):
         raise ValueError('未检测到 Linux 图形会话，请在已登录的桌面中启动网关')
-    exe = found['executable']
-    if desktop.processes(lambda image: str(image) == exe):
+    exe = found['application']
+    runtime_images = {exe, found['executable']}
+    if desktop.processes(lambda image: str(image) in runtime_images):
         raise ValueError('ZCode 已在运行，请先在应用管理中核验并正常退出')
     env = os.environ.copy()
     env.pop('ELECTRON_RUN_AS_NODE', None)
+    # A gateway may itself run from an AppImage. Its runtime identity or an
+    # inherited target override must not redirect the selected Agent launch.
+    for key in ('APPIMAGE', 'APPDIR', 'ARGV0', 'TARGET_APPIMAGE'):
+        env.pop(key, None)
     if getattr(sys, 'frozen', False):
         # PyInstaller prepends its private runtime libraries to the gateway.
         previous = env.pop('LD_LIBRARY_PATH_ORIG', None)

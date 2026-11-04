@@ -260,11 +260,19 @@ def _usage_limits(data):
 
 
 class ClaudeAccounts:
-    def __init__(self, directory, data_home, *, executable=None, package_family=None, explicit_home=False):
+    def __init__(self, directory, data_home, *, executable=None, package_family=None, explicit_home=False,
+                 native_profile=None):
         self.directory = Path(directory).absolute()
         self.mode_home = self.home = Path(data_home).absolute()
         self._ambiguous_profiles = set()
-        if explicit_home:
+        if native_profile is not None:
+            from bridge.clients.profiles import launch_parameters
+            launch_parameters(native_profile)  # Reject invented/mismatched root maps.
+            if native_profile.family != 'claude':
+                raise ValueError('此独立配置不属于 Claude')
+            self.mode_home = self.home = native_profile.roots['userData']
+            self.threep = native_profile.roots['thirdParty']
+        elif explicit_home:
             self.threep = self.home
         elif sys.platform == 'win32':
             groups = windows_claude_profile_paths(executable, self.home, package_family=package_family)

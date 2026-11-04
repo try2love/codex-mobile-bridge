@@ -151,23 +151,26 @@ export async function apply(ctx,config){
     return result;
   };
   const account=async sid=>{
-    // Only presence and public provider names leave the desktop; never resolve a key.
-    const service=ctx.get?.('deepseekAccount'),settings=ctx.get?.('settings'),credentials=ctx.get?.('credentials'),llm=ctx.get?.('llm'),configured=new Set();
-    if(service&&(await bounded(service.getState())).status==='credential-stored')configured.add('deepseek-account');
+    // Report provenance and public reference names, never resolve a key.
+    const service=ctx.get?.('deepseekAccount'),settings=ctx.get?.('settings'),credentials=ctx.get?.('credentials'),llm=ctx.get?.('llm'),configured=new Map();
+    if(service&&(await bounded(service.getState())).status==='credential-stored')configured.set('deepseek-account',{credentialSource:'file'});
     if(settings&&credentials&&llm){
       const namespaces=settings.describe({redactSecrets:true});
       for(const provider of llm.listConfigurableProviders()){
         let profile=namespaces.find(n=>n.ns===provider.settingsNs)?.value;
         for(const key of provider.settingsPath)profile=profile&&typeof profile==='object'?profile[key]:undefined;
         const ref=profile?.apiKeyEnv;
-        if(typeof ref==='string'&&/^[A-Za-z_][A-Za-z0-9_]*$/.test(ref)&&(await bounded(credentials.describe(ref))).configured)configured.add(provider.provider);
+        if(typeof ref==='string'&&/^[A-Za-z_][A-Za-z0-9_]*$/.test(ref)){
+          const credential=await bounded(credentials.describe(ref));
+          if(credential.configured)configured.set(provider.provider,{credentialRef:ref,credentialSource:['file','env','project-env','user-env'].includes(credential.source)?credential.source:'unknown'});
+        }
       }
     }
-    const raw=await bounded(ctx.sessionController.modelCatalog()),sources=raw.groups.filter(g=>configured.has(g.id)&&g.models.length>0).map(g=>({id:g.id,kind:g.id==='deepseek-account'?'account':'api',label:g.name||g.id}));
+    const raw=await bounded(ctx.sessionController.modelCatalog()),sources=raw.groups.filter(g=>configured.has(g.id)&&g.models.length>0).map(g=>({id:g.id,kind:g.id==='deepseek-account'?'account':'api',label:g.name||g.id,...configured.get(g.id)}));
     const groups=raw.groups.filter(g=>configured.has(g.id)).map(g=>({id:g.id,name:g.name||g.id,models:g.models.map(m=>({id:g.id+'/'+m.id,name:m.name,efforts:(m.reasoning?.efforts||[]).map(e=>e.id),defaultEffort:m.reasoning?.defaultEffort}))}));
     const session=sid?normalize(await find(sid)):null,provider=session?.model.split('/')[0]||raw.default?.provider;
     const current=sources.find(s=>s.id===provider)||null;
-    return {provider:'deepseek',readOnly:true,canManage:false,status:sources.length?'configured':'unconfigured',current,sources,groups,models:groups.flatMap(g=>g.models),
+    return {provider:'deepseek',readOnly:true,canManage:false,credentialSourcesVersion:1,status:sources.length?'configured':'unconfigured',current,sources,groups,models:groups.flatMap(g=>g.models),
       ...(raw.default?.provider&&raw.default?.model?{currentModel:raw.default.provider+'/'+raw.default.model,currentEffort:raw.default.reasoningEffort||''}:{})};
   };
   // Desktop and mobile share one pending request. First explicit answer wins.

@@ -51,6 +51,33 @@ function fixture({storage=new Map(),sessionStore=new Map()}={}){
  return {view,root,document,calls,notices,storage,sessionStore,setHandler:fn=>handler=fn,setUploadHandler:fn=>uploadHandler=fn,run:s=>vm.runInContext(s,context),text:n=>n.textContent};
 }
 async function opened(){const ui=fixture();await ui.view.choose('claude');await ui.view.open('a');return ui;}
+test('independent desktops keep the same native session in separate drafts attachments and workspace routes',async()=>{
+ const ui=fixture(),view=ui.view,a='claude:'+ 'a'.repeat(32),b='claude:'+ 'b'.repeat(32);
+ view.clientStates=[a,b].map(id=>({id,family:'claude',enabled:true,connected:true}));
+ await view.choose(a);await view.open('a');view.input.value='draft A';view.saveDraft();
+ const first=view.workbench.current,keyA=view.attachments.key;
+ await view.choose(b);await view.open('a');assert.equal(view.input.value,'');assert.notEqual(view.attachments.key,keyA);
+ view.input.value='draft B';view.saveDraft();
+ assert.notEqual(first,view.workbench.current);
+ assert.equal(new URL(view.workbench.endpoint(first,'workspace'),'http://test').searchParams.get('entry'),a);
+ assert.equal(new URL(view.attachmentUrl(keyA,'upload','preview'),'http://test').searchParams.get('entry'),a);
+ await view.choose(a);await view.open('a');assert.equal(view.input.value,'draft A');
+ const catalog=new URL(view.path('create-models',null,b,{environment:'code',refresh:'true'}),'http://test');
+ assert.equal(catalog.pathname,'/api/desktop-sessions/claude/create-models');assert.equal(catalog.searchParams.get('entry'),b);assert.equal(catalog.searchParams.get('refresh'),'true');
+ assert.ok(ui.calls.every(call=>!call.url?.includes('/claude:')));
+});
+test('late detail from another instance cannot replace the current same-id conversation',async()=>{
+ const ui=fixture(),view=ui.view,a='deepseek:'+ 'a'.repeat(32),b='deepseek:'+ 'b'.repeat(32);let complete;
+ view.clientStates=[a,b].map(id=>({id,family:'deepseek',enabled:true,connected:true}));
+ ui.setHandler(async url=>{
+  const parsed=new URL(url,'http://test');if(!url.includes('/detail'))return {sessions:[]};
+  if(parsed.searchParams.get('entry')===a)return new Promise(resolve=>complete=resolve);
+  return {session:{id:'same',title:'B',status:'idle'},messages:[{id:'b',role:'assistant',text:'B only'}]};
+ });
+ await view.choose(a);const old=view.open('same');await Promise.resolve();await view.choose(b);await view.open('same');
+ complete({session:{id:'same',title:'A',status:'idle'},messages:[{id:'a',role:'assistant',text:'A private'}]});await old;
+ assert.equal(view.title.textContent,'B');assert.match(view.messageList.textContent,/B only/);assert.doesNotMatch(view.messageList.textContent,/A private/);
+});
 test('native context reuses activity folding and retains explicit expansion after refresh',async()=>{
  const ui=await opened(),view=ui.view;view.provider='deepseek';
  const message={id:'context',role:'activity',kind:'context',title:'上下文',text:'Exact native context'};

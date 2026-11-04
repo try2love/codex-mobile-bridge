@@ -26,10 +26,16 @@ DESKTOP_WAIT_STATES = {'needs-screen-saver', 'needs-unlock', 'needs-desktop'}
 
 
 class Claude:
-    def __init__(self, directory, *, auto_connect=True, hosts=None, wsl_entries=None):
+    def __init__(self, directory, *, auto_connect=True, hosts=None, wsl_entries=None,
+                 desktop_only=False, descriptor=None):
         self.directory = Path(directory)
         self.hosts = hosts
-        self.cli = ClaudeCli(self.directory.parent/'uploads')
+        self.native_descriptor = descriptor
+        self.cli = ClaudeCli(self.directory.parent/'uploads',
+                             **({'profile_resolver': lambda: None} if desktop_only else {}))
+        if desktop_only:
+            hosts = self.hosts = None
+            wsl_entries = None
         if wsl_entries is not None:
             from bridge.clients.claude.wsl import ClaudeCliRemotes
             self.remote_cli = ClaudeCliRemotes(hosts, wsl_entries)
@@ -215,7 +221,10 @@ class Claude:
                 return
             if not data_home:
                 raise ValueError('未找到 Claude 数据目录，请重新扫描')
-            app = background_running_app(executable, data_home, cancelled=cancel,
+            runner = background_running_app
+            if self.native_descriptor is not None and self.native_descriptor().get('nativeProfile'):
+                raise ValueError('当前系统尚未验证此独立 Claude 配置的后台初始化')
+            app = runner(executable, data_home, cancelled=cancel,
                                          launch_gate=self.setup_lock, initialize_console=True,
                                          explicit_home=bool(self.discovery.get('dataHomeExplicit')))
             if not self._background_state(cancel, 'connecting', 'Claude 已启动，正在等待已有桌面连接恢复'):
@@ -427,7 +436,12 @@ class Claude:
                 data_home = self.discovery.get('dataHome')
                 if not data_home:
                     raise ValueError('未找到 Claude 数据目录，请重新扫描')
-                pid = running_app(executable, data_home, restart=restart, cancelled=cancel, allow_launch=not existing_only)
+                descriptor = self.native_descriptor() if self.native_descriptor is not None else None
+                if descriptor and (descriptor.get('nativeProfile') or descriptor.get('excludeProfiles')):
+                    from bridge.clients.lifecycle import profile_running_app
+                    pid = profile_running_app(descriptor, restart=restart, cancelled=cancel, allow_launch=not existing_only)
+                else:
+                    pid = running_app(executable, data_home, restart=restart, cancelled=cancel, allow_launch=not existing_only)
                 restart = False
                 if cancel.is_set() or cancel is not self.setup_cancel: return
                 if not self.discovery.get('dataHomeExplicit'):

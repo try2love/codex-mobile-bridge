@@ -1,4 +1,18 @@
 'use strict';
+// One identity for navigation, drafts and operations; family only selects a protocol.
+const ClientIdentity=(()=>{
+  const entry=id=>typeof id==='string'&&/^(claude|deepseek):[0-9a-f]{32}$/.test(id);
+  const family=id=>entry(id)?id.split(':')[0]:typeof id==='string'&&/^wsl-claude:[0-9a-f]{32}$/.test(id)?'claude':typeof id==='string'&&/^(codex|wsl):[0-9a-f]{32}$/.test(id)?'codex':id;
+  const desktop=id=>entry(id)||['claude','deepseek','zcode'].includes(id);
+  function path(id,action,sessionId=null,extra={}){
+    if(!desktop(id))throw Error('未知客户端接入');
+    const query=new URLSearchParams(extra);
+    if(sessionId)query.set('sessionId',sessionId);
+    if(entry(id))query.set('entry',id);
+    return '/api/desktop-sessions/'+family(id)+'/'+action+(query.toString()?'?'+query:'');
+  }
+  return {entry,family,desktop,path};
+})();
 const ClientLifecycle=(()=>{
   let sequence=0;
   function connectionModes(client){return Array.isArray(client?.connectionModes)?client.connectionModes.filter(mode=>typeof mode?.id==='string'&&mode.id&&typeof mode.label==='string'):[];}
@@ -166,4 +180,4 @@ const ClientLifecycle=(()=>{
   }
   return {chooseDisable,chooseForce,chooseInitialize,mountConnectionModes,confirmConnectionMode,connectionModes,connectionModeLabel,initializationFields,connection,request,failure,failureMessage,retryLabel,reconcile,sessionNotice};
 })();
-if(typeof module!=='undefined')module.exports=ClientLifecycle;
+if(typeof module!=='undefined')module.exports={...ClientLifecycle,ClientIdentity};

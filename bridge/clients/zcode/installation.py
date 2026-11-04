@@ -36,6 +36,15 @@ def listener_identity(port, executable, *, required=True):
 
 def renderer_url(application):
     path = Path(application)
+    if sys.platform == 'linux' and path.is_file():
+        from bridge.platforms.linux.zcode_pipe import installation as linux_installation
+        with path.open('rb') as stream:
+            appimage = stream.read(11)[8:11] == b'AI\x02'
+        if appimage:
+            found = linux_installation(path)
+            if not found or not found.get('runtimeVerified'):
+                raise ValueError('ZCode 运行目录尚未核验')
+            path = Path(found['executable'])
     if sys.platform in ('win32', 'linux'):
         return (path.parent/'resources/app.asar/out/renderer/index.html').as_uri()
     return (path/'Contents/Resources/app.asar/out/renderer/index.html').as_uri()

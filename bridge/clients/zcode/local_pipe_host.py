@@ -168,12 +168,12 @@ def serve(profile, application):
                 started.set()  # Keep both ends until the original App exits.
         if launched:
             pid = launched[0]
-            owner = native.identity(pid)
-            if os.path.normcase(owner['image']) != os.path.normcase(str(application)):
+            owner = native.runtime_owner(application, pid, timeout=0 if state else 15) if sys.platform == 'linux' else native.identity(pid)
+            if sys.platform != 'linux' and os.path.normcase(owner['image']) != os.path.normcase(str(application)):
                 raise ValueError('原 ZCode 进程身份不匹配')
             if not state:
-                transport = (PipeTransport(None, None, str(application), stream=launched[1]) if sys.platform == 'win32'
-                             else PipeTransport(launched[1], launched[2], str(application)))
+                transport = (PipeTransport(None, None, owner['image'], stream=launched[1]) if sys.platform == 'win32'
+                             else PipeTransport(launched[1], launched[2], owner['image']))
                 state.update(owner=owner, transport=transport)
             if state['owner'] != owner:
                 raise ValueError('ZCode 原进程已变化')

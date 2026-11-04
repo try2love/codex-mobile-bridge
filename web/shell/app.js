@@ -73,7 +73,7 @@ async function api(path,body,signal,authCurrent){const options={signal,credentia
 const workbench=window.BridgeWorkbench=new Workbench({chat:$('chat'),request:api,csrf:()=>csrf,notify:toast,onUnauthorized:authLost,openChat,composer:$('message'),onReference:()=>window.BridgePresentation?.openChat()});
 async function sendSessionPin(identity,body,token){
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15000);
-  try{return await api(identity.provider==='codex'?sessionUrl(identity.id,'pin',identity.host):'/api/desktop-sessions/'+identity.provider+'/pin',identity.provider==='codex'?body:{...body,sessionId:identity.id},controller.signal,()=>sessionPins.current(token));}finally{clearTimeout(timer);}
+  try{return await api(identity.provider==='codex'?sessionUrl(identity.id,'pin',identity.host):ClientIdentity.path(identity.provider,'pin'),identity.provider==='codex'?body:{...body,sessionId:identity.id},controller.signal,()=>sessionPins.current(token));}finally{clearTimeout(timer);}
 }
 const sessionPins=new LocalSessionPins({newId:uuid,send:sendSessionPin,onChange:()=>{listRenderStamp='';renderList();desktopSessions.listStamp='';desktopSessions.renderList();if(listFilterKey)saveListSnapshot(listFilterKey);desktopSessions.rememberView();}});
 function pinRow(row,provider='codex'){const identity={provider,id:row.id,host:row.host||'local'};return {...row,bridgePinned:sessionPins.value(identity,row.bridgePinned),pinPending:sessionPins.pending(identity)};}
@@ -351,7 +351,7 @@ function sessionMenuContext(chat,provider='codex'){
   const current=()=>provider==='codex'?clientNavigation.provider==='codex'&&currentId===chat.id&&currentHost===identity.host:
     desktopSessions.provider===provider&&desktopSessions.sid===chat.id;
   const detail=current()?(provider==='codex'?state:desktopSessions.state):null;
-  const view={...chat,...detail},access=sessionAccess(view.access),caps=view.capabilities||{},nativeId=view.nativeId||(provider==='claude'?null:chat.id);
+  const view={...chat,...detail},access=sessionAccess(view.access),caps=view.capabilities||{},nativeId=view.nativeId||(ClientIdentity.family(provider)==='claude'?null:chat.id);
   const ensure=async()=>{
     if(!isCurrent())throw Error('连接或账号已变化，请重新打开会话菜单');
     if(!current()){
@@ -371,7 +371,7 @@ function sessionMenuContext(chat,provider='codex'){
     organization:async change=>{
       if(!isCurrent())throw Error('连接或账号已变化，请重新打开会话菜单');
       const result=await api(provider==='codex'?sessionUrl(chat.id,'organization',identity.host):
-        '/api/desktop-sessions/'+provider+'/organization'+(change?'':'?sessionId='+encodeURIComponent(chat.id)),
+        ClientIdentity.path(provider,'organization',change?null:chat.id),
         provider==='codex'||!change?change:{...change,sessionId:chat.id},undefined,isCurrent);
       if(!isCurrent())throw Error('连接或账号已变化，请重新打开会话菜单');
       if(change)(provider==='codex'?loadList(true):desktopSessions.refresh()).catch(error=>toast(t(error.message)));
@@ -395,7 +395,7 @@ function sessionMenuContext(chat,provider='codex'){
   if(provider!=='codex'||access.canConfigure)context.rename=async title=>{
     if(!isCurrent())throw Error('连接或账号已变化，请重新打开会话菜单');
     if(!renameIds.has(title))renameIds.set(title,uuid());
-    const result=await api(provider==='codex'?sessionUrl(chat.id,'rename',identity.host):'/api/desktop-sessions/'+provider+'/rename',
+    const result=await api(provider==='codex'?sessionUrl(chat.id,'rename',identity.host):ClientIdentity.path(provider,'rename'),
       provider==='codex'?{title}:{title,id:renameIds.get(title),sessionId:chat.id},undefined,isCurrent);
     if(provider!=='codex'&&result.status!=='confirmed')throw Error('改名结果待核对；不会重复提交，请先在原客户端核对');
     if(!isCurrent())return;
@@ -422,7 +422,7 @@ function sessionMenuContext(chat,provider='codex'){
   const archiveId=uuid();
   if(provider==='codex'||caps[view.archived?'unarchive':'archive']===true)context.archive=async()=>{
     const body={archived:!view.archived,id:archiveId,...(!view.archived?{disconnect:true}:{})};
-    const result=await api(provider==='codex'?sessionUrl(chat.id,'archive',identity.host):'/api/desktop-sessions/'+provider+'/archive',
+    const result=await api(provider==='codex'?sessionUrl(chat.id,'archive',identity.host):ClientIdentity.path(provider,'archive'),
       provider==='codex'?body:{...body,sessionId:chat.id},undefined,isCurrent);
     if(result.status!=='confirmed')throw Error(t('归档结果待核对，请检查原聊天；不会重复提交'));
     if(!isCurrent())return;
@@ -1675,26 +1675,26 @@ function renderAccountEntries(){
 const accountsPanel=window.BridgeSharedRelay||typeof AccountsPanel==='undefined'?null:new AccountsPanel({root:$('accounts-content'),toolbar:$('accounts-heading'),read:force=>api(accountUrl('/api/accounts'+(accountsPanel?.visible()&&accountsPanel?.value?.resetDynamicEnabled?'?resetForecast='+(force?'refresh':'1'):''))),request:({action,...value})=>action==='ignoreSubmission'?ignoreSubmission(value):api(accountUrl(action==='retrySsh'?'/api/accounts/ssh-retry':action==='account'?'/api/accounts/account':action==='details'?'/api/accounts/details':action==='reminders'?'/api/accounts/reminders':action==='checkDesktopUpdate'||action==='requestDesktopUpdate'?'/api/accounts/desktop-update':'/api/accounts/switch'),action==='checkDesktopUpdate'||action==='requestDesktopUpdate'?{action,...value}:value),onChanged:value=>{if(codexActiveAccountId!==undefined&&codexActiveAccountId!==value.activeId){browserNavigation.invalidate();if(typeof ChatTimeline!=='undefined')ChatTimeline.clearCache?.();clearCodexProvisionalDrafts();clearQuoteComposer();codexDraftScope=null;codexDraftTouched=false;}resetModelCatalog();},onUpdate:value=>{codexActiveAccountId=value.activeId;const label='账号管理';$('accounts-button').setAttribute('data-i18n',label);$('accounts-button').textContent=t(label);}});
 accountsPanel?.attachApiAccess(codexCliAccessPanel,codexCliDetails);
 function openCurrentAccounts(){
-  const activeProvider=clientNavigation.provider,provider=activeProvider?.startsWith('wsl-claude:')?'claude':activeProvider;
+  const activeProvider=clientNavigation.provider,provider=ClientIdentity.family(activeProvider),entry=ClientIdentity.entry(activeProvider)?activeProvider:provider;
   if(!provider)return false;
   if(isCodexClient(provider)){
     if(!accountsPanel)return false;
     refreshEntryAccounts();renderAccountEntries();$('accounts-dialog').showModal();refreshSelectedAccounts();return true;
   }
-  const name=clientNavigation.clients.find(row=>row.id===provider)?.name||provider;
+  const name=clientNavigation.clients.find(row=>row.id===activeProvider)?.name||provider;
   const dialog=desktopSessions.dialog('账号与接入'),content=el('div','provider-account');
   const head=dialog.querySelector('.picker-head'),title=head.querySelector('h2'),toolbar=el('div','accounts-dialog-heading');
   title.classList.add('dialog-content-start');title.tabIndex=-1;title.autofocus=true;title.replaceWith(toolbar);toolbar.append(title);
   dialog.append(el('p','account-muted',name),content);
   const panel=new DesktopClientAccountsPanel({root:content,provider,toolbar,
-    read:()=>api('/api/desktop-sessions/'+provider+'/accounts'),
-    request:value=>api('/api/desktop-sessions/'+provider+'/accounts',value),
-    readModels:(refresh=false)=>api('/api/desktop-sessions/'+provider+'/account'+(refresh?'?refresh=true':'')),
-    onChanged:(value,previous)=>desktopSessions.accountChanged(provider,previous,value)
+    read:()=>api(ClientIdentity.path(entry,'accounts')),
+    request:value=>api(ClientIdentity.path(entry,'accounts'),value),
+    readModels:(refresh=false)=>api(ClientIdentity.path(entry,'account',null,refresh?{refresh:'true'}:{})),
+    onChanged:(value,previous)=>desktopSessions.accountChanged(entry,previous,value)
   });
-  const unbindConnection=clientNavigation.bindAccountManagement(panel,provider);
+  const unbindConnection=clientNavigation.bindAccountManagement(panel,entry);
   let claudeWslAccounts=null,selectClaudeAccounts=null;
-  if(provider==='claude'&&typeof CliAccessPanel!=='undefined'){
+  if(provider==='claude'&&!ClientIdentity.entry(entry)&&typeof CliAccessPanel!=='undefined'){
     const details=el('details','account-compact'),root=el('div'),summary=el('summary','',t('Claude Code CLI 接入'));summary.dataset.i18n='Claude Code CLI 接入';details.append(summary,root);dialog.append(details);
     claudeCliAccessPanel=new CliAccessPanel({root,provider:'claude',read:()=>api('/api/cli-access'),request:value=>api('/api/cli-access',value)});
     const initializeWsl=async()=>{

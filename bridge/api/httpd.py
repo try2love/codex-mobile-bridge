@@ -177,6 +177,21 @@ class GatewayServer(ThreadingHTTPServer):
 
 
 class Handler(BaseHTTPRequestHandler):
+    def desktop_context(self, provider, query, *, require_enabled=True):
+        """Resolve explicit entries once; unknown entries never use defaults."""
+        manager = self.server.desktop_sessions
+        if manager is None:
+            raise ValueError('桌面会话接入不可用')
+        # Preserve empty values here: ?entry= is an invalid explicit selection,
+        # not permission to operate on the default account.
+        values = parse_qs(urlsplit(self.path).query, keep_blank_values=True).get('entry')
+        if values is None:
+            return manager, self.server.desktop_uploads, 'desktop:' + provider
+        if len(values) != 1 or not re.fullmatch(r'(claude|deepseek):[0-9a-f]{32}', values[0]):
+            raise ValueError('独立接入标识无效')
+        selected = manager.resolve_instance(provider, values[0], require_enabled=require_enabled)
+        return selected, selected.uploads, 'desktop:' + values[0]
+
     protocol_version = "HTTP/1.1"
     server_version = "CodexMobile/0.1"
     sys_version = ""
@@ -501,9 +516,10 @@ class Handler(BaseHTTPRequestHandler):
                     if self.server.desktop_sessions is None:
                         return self.output(503, {'error': '桌面会话接入不可用'})
                     sid = query.get('sessionId', [''])[0]
-                    bridge = self.server.desktop_sessions.workspace_bridge(desktop_socket[1], sid)
+                    manager, _, _ = self.desktop_context(desktop_socket[1], query)
+                    bridge = manager.workspace_bridge(desktop_socket[1], sid)
                     thread = bridge.identifier
-                    enabled = lambda: self.server.desktop_sessions.require_enabled(desktop_socket[1]) is None
+                    enabled = lambda: manager.require_enabled(desktop_socket[1]) is None
                 else:
                     bridge = self.server.bridge.for_host(query.get('host', ['local'])[0])
                     if self.server.desktop_sessions:
@@ -560,10 +576,13 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError('重新连接请求无效')
                 if self.server.auth.config.get('mode') == 'none':
                     raise PermissionError('请启用密码保护后再重新连接客户端')
-                manager = self.server.desktop_sessions
+                manager, _, _ = self.desktop_context('claude', query)
                 if manager is None:
                     return self.output(503, {'error': '应用管理不可用'})
-                return self.output(200, manager.reconnect_claude())
+                result = manager.reconnect_claude()
+                if manager is not self.server.desktop_sessions:
+                    result = self.server.desktop_sessions.clients(refresh=True)
+                return self.output(200, result)
             if path == '/api/file-transfer':
                 return self.output(200, transfer_settings(self.server.transfer_directory, self.read_json() if write else None))
             if path == '/api/network-adaptation':
@@ -603,6 +622,7 @@ class Handler(BaseHTTPRequestHandler):
                 if manager is None:
                     return self.output(503, {'error': '桌面会话接入不可用'})
                 provider, identifier = desktop_image.groups()
+                manager, _, _ = self.desktop_context(provider, query)
                 artifact, variant = manager.image_preview(provider, query.get('sessionId', [None])[0], identifier)
                 return self.attachment_preview(artifact, variant, private=True, download=query.get('download') == ['1'])
             desktop_upload = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode)/uploads(?:/([0-9a-f-]{36})/(thumb|preview))?', path)
@@ -611,6 +631,7 @@ class Handler(BaseHTTPRequestHandler):
                 if manager is None or uploads is None:
                     return self.output(503, {'error': '桌面会话接入不可用'})
                 provider, identifier, operation = desktop_upload.groups()
+                manager, uploads, _ = self.desktop_context(provider, query)
                 manager.require_enabled(provider)
                 sid = query.get('sessionId', [None])[0]
                 scope = uploads.scope(provider, sid)
@@ -638,7 +659,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.output(200, result)
             desktop_accounts = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode)/accounts', path)
             if desktop_accounts:
-                manager = self.server.desktop_sessions
+                manager, _, _ = self.desktop_context(desktop_accounts.group(1), query, require_enabled=False)
                 if manager is None:
                     return self.output(503, {'error': '桌面会话接入不可用'})
                 value = self.read_json() if write else {'action': 'list'}
@@ -656,10 +677,11 @@ class Handler(BaseHTTPRequestHandler):
                 if manager is None or self.server.notifications is None:
                     return self.output(503, {'error': '桌面会话接入不可用'})
                 provider = desktop_notifications.group(1)
+                manager, _, notification_host = self.desktop_context(provider, query)
                 manager.require_enabled(provider)
                 sid = query.get('sessionId', [''])[0]
                 return self.output(200, self.server.notifications.policy(
-                    sid, 'desktop:' + provider, self.read_json() if write else None))
+                    sid, notification_host, self.read_json() if write else None))
             desktop_workspace = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode)/(workspace(?:/[a-z-]+)?|terminal)', path)
             desktop_projects = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode)/projects/(browse|register|trust)', path)
             if desktop_projects:
@@ -669,6 +691,7 @@ class Handler(BaseHTTPRequestHandler):
                 if manager is None:
                     return self.output(503, {'error': '桌面会话接入不可用'})
                 provider, action = desktop_projects.groups()
+                manager, _, _ = self.desktop_context(provider, query)
                 manager.require_enabled(provider)
                 body = self.read_json()
                 fields = ({'environment', 'path', 'hidden', 'name', 'identity'} if action == 'browse'
@@ -694,6 +717,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.output(503, {'error': '桌面会话接入不可用'})
                 if len(parts) != 4 or parts[2] not in ('deepseek', 'claude', 'zcode') or parts[3] not in (WRITES if write else READS):
                     return self.output(404, {'error': '接口不存在'})
+                manager, uploads, _ = self.desktop_context(parts[2], query)
                 manager.require_enabled(parts[2])
                 body = self.read_json() if write else ({'section': query.get('section', ['all'])[0],
                                                          'refresh': query.get('refresh') == ['true']}
@@ -713,12 +737,12 @@ class Handler(BaseHTTPRequestHandler):
                 if write and any(key in body for key in ('resolvedImages', 'resolvedFiles', 'resolvedReferences')):
                     raise ValueError('附件格式无效')
                 if write and parts[3] == 'send' and 'attachments' in body:
-                    if self.server.desktop_uploads is None:
+                    if uploads is None:
                         return self.output(503, {'error': '桌面会话接入不可用'})
                     detail = manager.call(parts[2], 'detail', sid)
                     session = detail.get('session') or {}
                     local_cli = parts[2] == 'claude' and session.get('backend') == 'cli'
-                    images, files = self.server.desktop_uploads.resolve(
+                    images, files = uploads.resolve(
                         parts[2], sid, body.pop('attachments'), local_claude_cli=local_cli, native_files=detail.get('capabilities', {}).get('uploadFiles') is True)
                     body['resolvedImages'] = images
                     if files:
@@ -1145,7 +1169,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.output(503, {'error': '桌面会话接入不可用'})
                 provider, operation = desktop_workspace.groups()
                 sid = query.get('sessionId', [''])[0]
-                bridge = self.server.desktop_sessions.workspace_bridge(provider, sid)
+                manager, _, _ = self.desktop_context(provider, query)
+                bridge = manager.workspace_bridge(provider, sid)
                 path = '/api/sessions/' + bridge.identifier + '/' + operation
             else:
                 bridge = self.server.bridge.for_host(query.get("host", ["local"])[0])

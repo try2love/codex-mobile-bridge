@@ -86,12 +86,14 @@ class DesktopApp:
         expected = os.path.normcase(str(self.executable))
         return _native().processes(lambda path: os.path.normcase(str(Path(path).resolve())) == expected)
 
-    def stop(self, *, runtime_pids=(), gui_pids=None, provider=None):
+    def stop(self, *, runtime_pids=(), gui_pids=None, provider=None, selected_pids=None):
         if sys.platform == 'win32' and provider in ('codex', 'zcode'):
             from bridge.platforms.windows.codex_quit import stop_codex, stop_zcode
             quit_app = stop_zcode if provider == 'zcode' else stop_codex
             return quit_app(self, gui_pids=gui_pids)
         pids = self.processes()
+        if selected_pids is not None:
+            pids = [pid for pid in pids if pid in selected_pids]
         main = pids if gui_pids is None else [pid for pid in gui_pids if pid in pids]
         native = _native()
         if main and sys.platform == 'darwin':
@@ -109,7 +111,7 @@ class DesktopApp:
                 continue
             native.terminate(pid)
         deadline = time.monotonic() + 25
-        while self.processes():
+        while set(self.processes()) & set(pids):
             if time.monotonic() >= deadline:
                 raise ValueError('桌面程序尚未退出，请在电脑上关闭后重试；尚未强制结束进程')
             time.sleep(.25)

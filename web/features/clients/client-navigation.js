@@ -198,8 +198,9 @@ class ClientNavigation {
     for(const client of this.clients){const row=document.createElement('label'),box=document.createElement('input'),caption=document.createElement('span');row.className='display-option';row.dataset.clientSwitch=client.id;box.type='checkbox';box.id='appearance-switch-'+client.id;box.checked=this.preference('switch:'+client.id);box.onchange=()=>{this.preference('switch:'+client.id,box.checked);this.paint();};caption.textContent=client.name;row.append(caption,box);this.switchPreferences.insertBefore(row,anchor);}
   }
   visibleClients(){return this.clients.filter(client=>client.enabled&&this.preference('switch:'+client.id));}
-  icon(id){const n=document.createElement('span');n.className='client-icon client-'+id;n.setAttribute('aria-hidden','true');const img=document.createElement('img');img.src='/client-icons/'+(isCodexClient(id)?'codex':id.startsWith('wsl-claude:')?'claude':id)+'.png';img.alt='';n.append(img);return n;}
+  icon(id){const n=document.createElement('span');n.className='client-icon client-'+id;n.setAttribute('aria-hidden','true');const img=document.createElement('img');img.src='/client-icons/'+ClientIdentity.family(id)+'.png';img.alt='';n.append(img);return n;}
   applyClients(data){
+    if(data.instanceError&&data.instanceError!==this.instanceError)this.notify(data.instanceError);this.instanceError=data.instanceError||'';
     this.clientsKnown=true;
     this.clients=data.clients;this.wslSupported=data.wslSupported??this.wslSupported;this.gatewayRunning=data.gatewayRunning??this.gatewayRunning;
     this.windowsSession=data.windowsSession??this.windowsSession;
@@ -266,7 +267,7 @@ class ClientNavigation {
     try{
       const value=hash.replace(/^#/,''),at=value.indexOf('~'),id=decodeURIComponent(at<0?value:value.slice(0,at)),host=at<0?'local':decodeURIComponent(value.slice(at+1));
       if(!id||id.length>512||host.length>256||/[\x00-\x1f\x7f]/.test(id+host))return null;
-      if(['desktop:claude','desktop:deepseek','desktop:zcode'].includes(host))return {provider:host.slice(8),id,host};
+      if(host.startsWith('desktop:')&&ClientIdentity.desktop(host.slice(8)))return {provider:host.slice(8),id,host};
       if(host.startsWith('desktop:')||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))return null;
       if(host.startsWith('wsl:')&&!isCodexClient(host))return null;
       return {provider:'codex',id,host};
@@ -329,9 +330,9 @@ class ClientNavigation {
     finally{this.pending.delete(id);this.pendingQuitDesktop=false;this.pendingForceDesktop=false;++this.revision;this.paint();if(failed)await this.refresh();}
   }
   async reconnect(id){
-    const client=this.clients.find(row=>row.id===id);if(this.pending.size||this.hasUncertain()||id!=='claude'||!this.connection(client||{}).canReconnect)return;
+    const client=this.clients.find(row=>row.id===id);if(this.pending.size||this.hasUncertain()||ClientIdentity.family(id)!=='claude'||!this.connection(client||{}).canReconnect)return;
     this.pending.add(id);this.reconnecting=id;++this.revision;this.paint();
-    try{const data=await this.request('/api/clients/claude/reconnect',{});this.applyClients(data);const connected=data.clients.find(row=>row.id===id)?.connected;this.notify(connected?'Claude 已连接':'已发起重新连接');if(connected&&this.provider===id)await this.view.refresh();}
+    try{const data=await this.request('/api/clients/claude/reconnect'+(ClientIdentity.entry(id)?'?entry='+encodeURIComponent(id):''),{});this.applyClients(data);const connected=data.clients.find(row=>row.id===id)?.connected;this.notify(connected?'Claude 已连接':'已发起重新连接');if(connected&&this.provider===id)await this.view.refresh();}
     finally{this.pending.delete(id);this.reconnecting=null;++this.revision;this.paint();}
   }
   paint(){

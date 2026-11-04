@@ -3,7 +3,8 @@ import UserNotifications
 
 enum NotificationSource {
     static func apply(_ content: UNMutableNotificationContent, provider supplied: String?, host: String?) {
-        let provider = ["codex", "claude", "deepseek", "zcode"].contains(supplied ?? "") ? supplied! : host == "desktop:claude" ? "claude" : host == "desktop:deepseek" ? "deepseek" : host == "desktop:zcode" ? "zcode" : "codex"
+        let family = host?.range(of: "^desktop:(claude|deepseek)(:[0-9a-f]{32})?$", options: .regularExpression) != nil ? host!.split(separator: ":")[1].description : host == "desktop:zcode" ? "zcode" : "codex"
+        let provider = ["codex", "claude", "deepseek", "zcode"].contains(supplied ?? "") ? supplied! : family
         content.subtitle = ["codex": "Codex", "claude": "Claude", "deepseek": "DeepSeek Harness", "zcode": "ZCode"][provider]!
         // iOS retains the sending App's system icon; source artwork is an
         // attachment. It is bundled, never fetched from an arbitrary push URL.

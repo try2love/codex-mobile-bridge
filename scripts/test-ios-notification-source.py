@@ -31,7 +31,7 @@ struct UNNotificationAttachment {
 }
 """ + source)
 (WORK / 'main.swift').write_text('''import Foundation
-for (provider, host, expected) in [("codex", "local", "Codex"), ("claude", "desktop:claude", "Claude"), ("deepseek", "desktop:deepseek", "DeepSeek Harness"), ("zcode", "desktop:zcode", "ZCode"), ("unknown", "desktop:zcode", "ZCode"), ("unknown", "desktop:claude", "Claude")] {
+for (provider, host, expected) in [("codex", "local", "Codex"), ("claude", "desktop:claude", "Claude"), ("deepseek", "desktop:deepseek", "DeepSeek Harness"), ("zcode", "desktop:zcode", "ZCode"), ("unknown", "desktop:zcode", "ZCode"), ("unknown", "desktop:claude", "Claude"), ("unknown", "desktop:claude:" + String(repeating: "a", count: 32), "Claude"), ("unknown", "desktop:deepseek:" + String(repeating: "b", count: 32), "DeepSeek Harness")] {
     let content = UNMutableNotificationContent()
     NotificationSource.apply(content, provider: provider, host: host)
     precondition(content.subtitle == expected)

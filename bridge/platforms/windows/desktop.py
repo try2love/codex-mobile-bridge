@@ -71,9 +71,21 @@ def terminate(pid):
                    timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
 
 
-def start(executable, home, environment, *, arguments=()):
-    return subprocess.Popen([str(executable), *arguments], cwd=home,
-                            env={**os.environ, **environment},
+def start(executable, home, environment, *, arguments=(), new_instance=False, environment_unset=()):
+    launcher = executable
+    if new_instance and any(folder.name.casefold() == 'windowsapps' or (folder/'AppxManifest.xml').is_file()
+                            for folder in Path(executable).parents):
+        from .discovery_ext import application_execution_alias
+        # Resolve the OS registration in the gateway's real environment first.
+        # Explorer activation would discard the private environment/arguments
+        # and can activate the default instance instead of creating this one.
+        launcher = application_execution_alias(executable)
+        if launcher is None:
+            raise ValueError('无法确认所选应用的独立启动别名，尚未启动默认配置')
+    removed = {name.upper() for name in environment_unset}
+    inherited = {key: value for key, value in os.environ.items() if key.upper() not in removed}
+    return subprocess.Popen([str(launcher), *arguments], cwd=home,
+                            env={**inherited, **environment},
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL,
                             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP, close_fds=True)

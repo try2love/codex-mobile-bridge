@@ -116,13 +116,18 @@ def quit_application(executable, *, pids=None):
     raise ValueError('无法核验 macOS 退出请求结果，请检查客户端状态（quit: invalid-response）')
 
 
-def start(executable, home, environment, *, arguments=()):
+def start(executable, home, environment, *, arguments=(), new_instance=False, environment_unset=()):
     # Keep Launch Services' GUI privacy identity without activating the app or
     # stealing focus from the user's current app / screen saver. The client may
     # still present its own first-run, login or system permission prompts.
     args = ['/usr/bin/open', '-g', '-a', str(_bundle(executable))]
-    for name, value in environment.items():
+    if new_instance:
+        args.insert(2, '-n')
+    # Launch Services merges its environment. Explicit empty values also mask
+    # launchd's inherited authentication inputs, without changing global state.
+    for name, value in {**dict.fromkeys(environment_unset, ''), **environment}.items():
         args += ['--env', name+'='+str(value)]
     if arguments:
         args += ['--args', *arguments]
-    subprocess.run(args, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=25)
+    options = {'env': {key: value for key, value in os.environ.items() if key not in environment_unset}} if environment_unset else {}
+    subprocess.run(args, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=25, **options)

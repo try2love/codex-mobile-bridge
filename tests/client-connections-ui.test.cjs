@@ -425,14 +425,15 @@ test('Codex overview shows unsaved native login quota and refreshes that exact l
  ui.panel.renderAccount({accounts:[{...login,id:'another'}],activeId:null,current:{name:'Unknown'}});assert.doesNotMatch(ui.text(),/75%|重置卡/);
 });
 
-test('absent unconfigured clients do not occupy the list, but offline configured bindings remain',()=>{
+test('absent unconfigured clients do not occupy the list, but offline configured bindings remain',async()=>{
  const ui=fixture();
  ui.panel.clients=[{id:'codex',name:'Codex',installed:true},{id:'claude',name:'Claude',installed:false,configured:false,enabled:false},{id:'deepseek',name:'DSH',bindingMode:'manual',connected:false}];
  ui.panel.renderClients();assert.match(ui.text(),/Codex/);assert.doesNotMatch(ui.text(),/Claude/);assert.match(ui.text(),/DSH/);
  ui.panel.clients=[{id:'claude',name:'Claude',configured:true,installed:false}];ui.panel.renderClients();assert.match(ui.text(),/Claude/);
  ui.panel.clients=[];ui.panel.renderClients();assert.match(ui.text(),/尚未发现客户端/);
- ui.panel.addClient();const dialog=ui.document.body.children[0],buttons=dialog.children[1].children;
- assert.equal(dialog.open,true);assert.deepEqual(buttons.map(button=>button.textContent),['Codex','Claude','DSH / 自定义 Harness','取消']);buttons[2].onclick();assert.equal(ui.document.body.children.length,0);
+ ui.setHandler(async()=>({capabilities:[{family:'codex',kind:'codex-local',supported:true},{family:'claude',kind:'desktop-profile',supported:true},{family:'deepseek',kind:'desktop-profile',supported:true},{family:'zcode',supported:false,reason:'仅使用默认接入'}]}));
+ await ui.panel.addClient();const dialog=ui.document.body.children[0],buttons=dialog.children[1].children;
+ assert.equal(dialog.open,true);assert.deepEqual(buttons.map(button=>button.textContent),['Codex','Claude','DSH','ZCode · 仅使用默认接入','取消']);assert.equal(buttons[3].disabled,true);buttons[3].onclick();assert.equal(dialog.open,true);await buttons[2].onclick();assert.notEqual(ui.document.body.children[0],dialog);assert.match(ui.document.body.children[0].querySelector('h2').textContent,/DSH/);assert.equal(ui.selected.length,0,'adding never opens the default account page');
 });
 
 test('ZCode uses its own logo and shared next-level management page',async()=>{
@@ -500,17 +501,38 @@ test('official actions block overlap and reread state after a failed save withou
  ui.setHandler(async()=>{throw Error('state unavailable');});await ui.panel.zcodeOfficial.refresh();assert.equal(connect.disabled,true);assert.equal(save.disabled,true);assert.match(section.querySelectorAll('p').map(node=>node.textContent).join('\n'),/state unavailable/);
 });
 
-test('independent Codex form shares scan, host folder picker and manual save without launching clients',async()=>{
- const ui=fixture(),profile={id:'codex:'+'a'.repeat(32),home:'/fixture/.codex-vscode',label:'IDE'};
- ui.setHandler(async body=>body.action==='codex-profiles'?{profiles:[],candidates:[profile]}:{clients:[]});
- await ui.panel.codexProfile();const dialog=ui.document.body.children[0],form=dialog.querySelector('form'),inputs=form.querySelectorAll('input');
- const button=text=>form.querySelectorAll('button').find(b=>b.textContent===text);
- assert.equal(ui.calls.length,0);
- await button('扫描配置').onclick();assert.deepEqual(JSON.parse(JSON.stringify(ui.calls)),[{action:'codex-profiles',operation:'scan'}]);
- button(profile.home).onclick();assert.equal(inputs[1].value,profile.home);
- ui.setChosen('/fixture/chosen');await button('选择文件夹').onclick();assert.equal(inputs[1].value,'/fixture/chosen');
- inputs[1].value='/fixture/manual';inputs[0].value='Manual IDE';await form.onsubmit({preventDefault(){}});
- assert.deepEqual(JSON.parse(JSON.stringify(ui.calls.find(c=>c.operation==='save'))),{action:'codex-profiles',operation:'save',home:'/fixture/manual',label:'Manual IDE'});
- assert.ok(!ui.calls.some(c=>['initialize','resume','start'].includes(c.action)));
- assert.equal(dialog.open,false);assert.ok(ui.errors.includes('Codex 接入已保存'));
+test('shared independent profile form scans, picks and manually saves the selected family without starting it',async()=>{
+ for(const [family,label,kind,prefix] of [['codex','Codex','codex-local','codex:'],['claude','Claude','desktop-profile','claude-profile:'],['deepseek','DSH','desktop-profile','deepseek-profile:']]){
+  const ui=fixture(),profile={id:prefix+'a'.repeat(32),family,kind,home:'/fixture/profile',label:'Independent',name:'Independent',configured:true};
+  ui.setHandler(async body=>body.action==='client-profiles'?body.operation==='save'?{instance:{...profile,home:body.home,label:body.label,name:body.label},instances:[profile]}:{capabilities:[{family,kind,supported:true}],candidates:[profile,{family:'other',kind,home:'/wrong',label:'Wrong'}]}:{clients:[profile]});
+  if(family==='codex')await ui.panel.codexProfile();else await ui.panel.clientProfile(family);
+  const dialog=ui.document.body.children[0],form=dialog.querySelector('form'),inputs=form.querySelectorAll('input'),button=text=>form.querySelectorAll('button').find(b=>b.textContent===text);
+  assert.equal(ui.calls.length,1);assert.equal(ui.calls[0].operation,'list');assert.equal(form.querySelector('.error').textContent,'');
+  await button('扫描配置').onclick();assert.deepEqual(JSON.parse(JSON.stringify(ui.calls.at(-1))),{action:'client-profiles',operation:'scan',family,kind});assert.equal(button('/wrong'),undefined);
+  button(profile.home).onclick();assert.equal(inputs[1].value,profile.home);
+  ui.setChosen('/fixture/chosen');await button('选择文件夹').onclick();assert.equal(inputs[1].value,'/fixture/chosen');
+  inputs[1].value='/fixture/manual';inputs[0].value='Manual profile';await form.onsubmit({preventDefault(){}});
+  assert.deepEqual(JSON.parse(JSON.stringify(ui.calls.find(c=>c.operation==='save'))),{action:'client-profiles',operation:'save',family,kind,home:'/fixture/manual',label:'Manual profile'});
+  assert.ok(!ui.calls.some(c=>['initialize','resume','start','toggle-client'].includes(c.action)));
+  assert.equal(dialog.open,false);assert.ok(ui.errors.includes(label+' 接入已保存'));assert.equal(ui.selected.at(-1),profile.id);
+ }
+});
+
+test('independent native management reuses account controls and scopes every account request to the entry',async()=>{
+ for(const family of ['claude','deepseek']){
+  const ui=fixture({accounts:true}),entry=family+'-profile:'+'b'.repeat(32),client={id:entry,family,kind:'desktop-profile',name:'Independent '+family,configured:true,capabilities:{accounts:true}};
+  ui.setHandler(async()=>({accounts:[],activeIds:[],capabilities:{},models:[]}));
+  await ui.panel.manageClient(client);const account=ui.panel.accountPanels[entry];assert.ok(account);assert.equal(account.provider,family);assert.equal(ui.selected.at(-1),entry);assert.ok(ui.pages.get(entry));
+  ui.calls.length=0;await account.read();await account.request({action:'models-draft',entry:'other',provider:'other',baseUrl:'https://fixture.invalid'});await account.readModels(true);
+  assert.deepEqual(JSON.parse(JSON.stringify(ui.calls)),[{action:'accounts',provider:family,entry,operation:'list'},{action:'accounts',provider:family,entry,operation:'models-draft',baseUrl:'https://fixture.invalid'},{action:'account',provider:family,entry,refresh:true}]);
+  await ui.panel.manageClient(client);assert.equal(ui.pages.size,1);assert.equal(ui.panel.accountPanels[entry],account);
+ }
+});
+
+test('profile errors retain the form and unsupported capabilities never open a default page',async()=>{
+ const ui=fixture();ui.setHandler(async()=>({capabilities:[{family:'claude',kind:'desktop-profile',supported:false,reason:'Unsupported on this host'}]}));
+ await ui.panel.clientProfile('claude');assert.equal(ui.document.body.children.length,0);assert.equal(ui.selected.length,0);assert.ok(ui.errors.includes('Unsupported on this host'));
+ ui.setHandler(async body=>{if(body.operation==='save')throw Error('Configuration directory is already used');return {capabilities:[{family:'claude',kind:'desktop-profile',supported:true}]};});
+ await ui.panel.clientProfile('claude');const dialog=ui.document.body.children[0],form=dialog.querySelector('form');form.querySelectorAll('input')[1].value='/duplicate';await form.onsubmit({preventDefault(){}});
+ assert.equal(dialog.open,true);assert.match(form.querySelector('.error').textContent,/already used/);assert.equal(ui.selected.length,0);
 });

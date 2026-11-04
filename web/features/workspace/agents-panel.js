@@ -2,7 +2,7 @@
 
 class AgentsPanel {
   constructor(workbench,session,tab){Object.assign(this,{workbench,session,tab});this.node=(...a)=>workbench.node(...a);this.button=(...a)=>workbench.button(...a);this.windowState={};this.load();}
-  url(id=''){return this.session.provider?'/api/desktop-sessions/'+encodeURIComponent(this.session.provider)+'/tasks?sessionId='+encodeURIComponent(this.session.id):'/api/sessions/'+this.session.id+'/subagents?host='+encodeURIComponent(this.session.host)+(id?'&id='+encodeURIComponent(id):'');}
+  url(id=''){return this.session.provider?ClientIdentity.path(this.session.provider,'tasks',this.session.id):'/api/sessions/'+this.session.id+'/subagents?host='+encodeURIComponent(this.session.host)+(id?'&id='+encodeURIComponent(id):'');}
   async load(){
     this.controller?.abort();const controller=this.controller=new AbortController();
     if(!this.list){

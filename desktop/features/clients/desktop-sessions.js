@@ -56,7 +56,7 @@ class DesktopConnectionsPanel {
     if(this.clientsLoading){await this.clientsLoading;if(refresh)return this.refreshClients(true);return;}
     const revision=this.clientsRevision;
     const pending=(async()=>{
-      try{const value=await ClientLifecycle.request(()=>this.api.desktopSessions({action:'clients',refresh}),{timeout:this.statusTimeout??10000,uncertain:false,message:'客户端状态读取超时，请重试。'});if(revision!==this.clientsRevision)return;ClientLifecycle.reconcile(this.operationFailures,this.managementClients(value.clients));this.clients=value.clients;this.gatewayRunning=value.gatewayRunning??this.gatewayRunning;this.windowsSession=value.windowsSession??this.windowsSession;this.renderClients();this.renderScan();}
+      try{const value=await ClientLifecycle.request(()=>this.api.desktopSessions({action:'clients',refresh}),{timeout:this.statusTimeout??10000,uncertain:false,message:'客户端状态读取超时，请重试。'});if(revision!==this.clientsRevision)return;ClientLifecycle.reconcile(this.operationFailures,this.managementClients(value.clients));this.clients=value.clients;this.instanceError=value.instanceError||'';this.gatewayRunning=value.gatewayRunning??this.gatewayRunning;this.windowsSession=value.windowsSession??this.windowsSession;this.renderClients();this.renderScan();}
       catch(error){if(revision!==this.clientsRevision)return;this.scanMessage=error.message;this.scanError=true;this.renderScan();}
     })();
     this.clientsLoading=pending;try{await pending;}finally{if(this.clientsLoading===pending)this.clientsLoading=null;this.renderClients();}
@@ -128,7 +128,7 @@ class DesktopConnectionsPanel {
     }catch(error){release();this.feedback(error.message,true);}
   }
   renderScan(){
-    const node=document.getElementById('client-scan-status');if(node){node.textContent=BridgeI18n.t(this.scanMessage||(this.visibleClients().some(client=>client.id==='claude')?'选择需要接入的应用。macOS Claude 默认后台启动并尝试恢复已有连接；“初始化连接”经确认后使用电脑前台。Windows 优先尝试后台初始化。':'选择已有接入，或通过“添加接入”配置客户端。'))+' '+BridgeI18n.t(ClientLifecycle.sessionNotice(this.windowsSession));node.classList.toggle('error',!!this.scanError);}
+    const node=document.getElementById('client-scan-status');if(node){node.textContent=BridgeI18n.t(this.instanceError||this.scanMessage||(this.visibleClients().some(client=>client.id==='claude')?'选择需要接入的应用。macOS Claude 默认后台启动并尝试恢复已有连接；“初始化连接”经确认后使用电脑前台。Windows 优先尝试后台初始化。':'选择已有接入，或通过“添加接入”配置客户端。'))+' '+BridgeI18n.t(ClientLifecycle.sessionNotice(this.windowsSession));node.classList.toggle('error',!!this.scanError||!!this.instanceError);}
     const button=document.getElementById('refresh-clients');if(button){button.disabled=!!this.scanning||!!this.busy||!!this.choosingClient;button.textContent=BridgeI18n.t(this.scanning?'正在扫描…':'重新扫描');}
     this.root.querySelectorAll('[data-desktop-action]').forEach(button=>button.disabled=!!this.scanning||!!this.busy||!!this.choosingClient||(button.dataset.desktopAction!=='scan'&&this.hasUncertain()));
   }
@@ -162,38 +162,46 @@ class DesktopConnectionsPanel {
     try{accepted=await ClientLifecycle.confirmConnectionMode(client,mode);}finally{this.choosingClient=null;this.renderClients();this.renderScan();}
     if(accepted){await this.toggleClient(id,true,{connectionMode:mode});if(id==='zcode')await this.zcodeOfficial?.refresh();}
   }
-  addClient(){
+  async addClient(){
+    let value;try{value=await this.api.desktopSessions({action:'client-profiles',operation:'list'});}catch(error){this.feedback(error.message,true);return;}
     const dialog=document.createElement('dialog');dialog.className='client-disable-dialog';dialog.setAttribute('aria-labelledby','client-add-title');
     const heading=document.createElement('h2');heading.id='client-add-title';heading.textContent=BridgeI18n.t('添加接入');dialog.append(heading);
     const actions=document.createElement('div');actions.className='actions';
-    for(const [id,label] of [['codex','Codex'],['claude','Claude'],['deepseek','DSH / 自定义 Harness']]){
-      const button=document.createElement('button');button.type='button';button.textContent=BridgeI18n.t(label);
-      button.onclick=()=>{dialog.close();if(id==='codex'){this.codexProfile();return;}window.GatewayLayout.selectClient(id);if(id==='deepseek'){const manual=this.root.querySelector('[data-deepseek-manual]');if(manual)manual.open=true;}};actions.append(button);
+    for(const [family,label] of [['codex','Codex'],['claude','Claude'],['deepseek','DSH'],['zcode','ZCode']]){
+      const capability=value.capabilities?.find(row=>row.family===family),button=document.createElement('button');button.type='button';button.textContent=label;
+      button.disabled=capability?.supported!==true;button.title=BridgeI18n.t(capability?.reason||'');
+      if(family==='zcode')button.textContent+=' · '+BridgeI18n.t('仅使用默认接入');
+      button.onclick=()=>{if(button.disabled)return;dialog.close();return this.clientProfile(family,capability);};actions.append(button);
     }
     const cancel=document.createElement('button');cancel.type='button';cancel.textContent=BridgeI18n.t('取消');cancel.onclick=()=>dialog.close();actions.append(cancel);dialog.append(actions);
     dialog.addEventListener('close',()=>dialog.remove());document.body.append(dialog);dialog.showModal();cancel.focus();
   }
-  async codexProfile(){
-    const t=BridgeI18n.t,dialog=document.createElement('dialog');dialog.className='client-disable-dialog';
-    const title=document.createElement('h2');title.textContent=t('添加 Codex 接入');
+  codexProfile(){return this.clientProfile('codex');}
+  async clientProfile(family,capability){
+    const label=({codex:'Codex',claude:'Claude',deepseek:'DSH'})[family];if(!label)return;
+    try{if(!capability)capability=(await this.api.desktopSessions({action:'client-profiles',operation:'list'})).capabilities?.find(row=>row.family===family);}
+    catch(error){this.feedback(error.message,true);return;}
+    if(capability?.supported!==true){this.feedback(BridgeI18n.t(capability?.reason||'暂不可用'),true);return;}
+    const kind=capability.kind,t=BridgeI18n.t,dialog=document.createElement('dialog');dialog.className='client-disable-dialog';
+    const title=document.createElement('h2');title.textContent=t('添加 Codex 接入').replace('Codex',label);
     const form=document.createElement('form'),nameLabel=document.createElement('label'),homeLabel=document.createElement('label');
-    form.className='client-config-form';nameLabel.textContent=t('接入名称');homeLabel.textContent=t('Codex 配置目录');
-    const name=document.createElement('input'),home=document.createElement('input');name.required=true;name.maxLength=80;name.value='Codex · 独立配置';home.required=true;home.placeholder=t('输入完整路径，或选择文件夹');nameLabel.append(name);homeLabel.append(home);
-    const help=document.createElement('p');help.className='hint';help.textContent=t('选择此电脑上的独立 Codex 配置目录，保留其中的账号和会话。默认 Codex 接入保持不变。');
+    form.className='client-config-form';nameLabel.textContent=t('接入名称');homeLabel.textContent=t('Codex 配置目录').replace('Codex',label);
+    const name=document.createElement('input'),home=document.createElement('input');name.required=true;name.maxLength=80;name.value=t('Codex 独立配置').replace('Codex',label);home.required=true;home.placeholder=t('输入完整路径，或选择文件夹');nameLabel.append(name);homeLabel.append(home);
+    const help=document.createElement('p');help.className='hint';help.textContent=t('选择此电脑上的独立 Codex 配置目录，保留其中的账号和会话。默认 Codex 接入保持不变。').replaceAll('Codex',label);
     const actions=document.createElement('div');actions.className='actions';
     const choose=document.createElement('button'),scan=document.createElement('button'),save=document.createElement('button'),cancel=document.createElement('button');
     choose.type=scan.type=cancel.type='button';save.type='submit';choose.textContent=t('选择文件夹');scan.textContent=t('扫描配置');save.textContent=t('保存');cancel.textContent=t('关闭');
     const error=document.createElement('p');error.className='error';error.setAttribute('role','alert');
-    const candidates=document.createElement('div');candidates.className='client-config-candidates';
-    const run=async task=>{error.textContent='';for(const b of [choose,scan,save])b.disabled=true;try{await task();}catch(e){error.textContent=t(e.message);}finally{for(const b of [choose,scan,save])b.disabled=false;}};
-    choose.onclick=()=>run(async()=>{const path=await this.api.choose('folder');if(path)home.value=path;});
-    scan.onclick=()=>run(async()=>{const value=await this.api.desktopSessions({action:'codex-profiles',operation:'scan'});candidates.replaceChildren();if(!value.candidates.length){candidates.textContent=t('未发现新的配置目录，可选择文件夹或手动输入路径。');return;}for(const row of value.candidates){const button=document.createElement('button');button.type='button';button.textContent=row.home;button.onclick=()=>{home.value=row.home;name.value=row.label;};candidates.append(button);}});
-    form.onsubmit=event=>{event.preventDefault();return run(async()=>{await this.api.desktopSessions({action:'codex-profiles',operation:'save',home:home.value,label:name.value});dialog.close();await this.refreshClients(true);this.feedback(t('Codex 接入已保存'));});};
-    cancel.onclick=()=>dialog.close();actions.append(choose,scan,save,cancel);form.append(nameLabel,homeLabel,help,candidates,error,actions);dialog.append(title,form);dialog.addEventListener('close',()=>dialog.remove());document.body.append(dialog);dialog.showModal();
+    const candidates=document.createElement('div');candidates.className='client-config-candidates';let busy=false,closed=false;
+    const run=async task=>{if(busy||closed)return;busy=true;error.textContent='';for(const b of [choose,scan,save])b.disabled=true;try{await task();}catch(e){if(!closed)error.textContent=t(e.message);}finally{busy=false;for(const b of [choose,scan,save])b.disabled=false;}};
+    choose.onclick=()=>run(async()=>{const path=await this.api.choose('folder');if(path&&!closed)home.value=path;});
+    scan.onclick=()=>run(async()=>{const value=await this.api.desktopSessions({action:'client-profiles',operation:'scan',family,kind});if(closed)return;candidates.replaceChildren();const rows=(value.candidates||[]).filter(row=>row.family===family&&row.kind===kind);if(!rows.length){candidates.textContent=t('未发现新的配置目录，可选择文件夹或手动输入路径。');return;}for(const row of rows){const button=document.createElement('button');button.type='button';button.textContent=row.home;button.onclick=()=>{home.value=row.home;name.value=row.label;};candidates.append(button);}});
+    form.onsubmit=event=>{event.preventDefault();return run(async()=>{const value=await this.api.desktopSessions({action:'client-profiles',operation:'save',family,kind,home:home.value,label:name.value});dialog.close();await this.refreshClients(true);this.feedback(t('Codex 接入已保存').replace('Codex',label));if(value.instance?.id)await this.manageClient(this.managementClients().find(row=>row.id===value.instance.id)||value.instance);});};
+    cancel.onclick=()=>dialog.close();actions.append(choose,scan,save,cancel);form.append(nameLabel,homeLabel,help,candidates,error,actions);dialog.append(title,form);dialog.addEventListener('close',()=>{closed=true;dialog.remove();});document.body.append(dialog);dialog.showModal();
     home.focus();
   }
   visibleClients(){
-    return this.managementClients().filter(client=>client.installed||client.configured||client.enabled||client.connected||client.running||client.bindingMode==='manual');
+    return this.managementClients().filter(client=>client.installed||client.configured||client.enabled||client.connected||client.running||client.kind==='desktop-profile'||client.bindingMode==='manual');
   }
   renderClients(){
     this.renderDetails();
@@ -254,13 +262,13 @@ class DesktopConnectionsPanel {
             request:({action,provider:_provider,entry:_entry,...fields})=>this.api.cliAccess({action:'wslAccounts',provider,entry,operation:action,...fields})});
           this.managementPages.set(entry,{panel,open:()=>panel.select(entry)});
         }else if(client.capabilities?.accounts===true){
-          const provider=client.id,panel=new DesktopClientAccountsPanel({root:content,provider,desktop:true,
-            read:()=>this.api.desktopSessions({action:'accounts',provider,operation:'list'}),
-            request:({action,...value})=>this.api.desktopSessions({action:'accounts',provider,operation:action,...value}),
-            readModels:refresh=>this.api.desktopSessions({action:'account',provider,refresh}),
+          const provider=client.family||client.id,entry=client.kind==='desktop-profile'?client.id:null,scope=entry?{entry}:{},panel=new DesktopClientAccountsPanel({root:content,provider,desktop:true,
+            read:()=>this.api.desktopSessions({action:'accounts',provider,...scope,operation:'list'}),
+            request:({action,provider:_provider,entry:_entry,...value})=>this.api.desktopSessions({action:'accounts',provider,...scope,operation:action,...value}),
+            readModels:refresh=>this.api.desktopSessions({action:'account',provider,...scope,refresh}),
             visible:()=>!document.hidden&&!page.hidden&&!page.classList.contains('client-config-hidden'),
-            onUpdate:value=>this.renderClientAccount(provider,value),onChanged:()=>this.refreshClients(true)});
-          this.accountPanels[provider]=panel;
+            onUpdate:value=>this.renderClientAccount(client.id,value),onChanged:()=>this.refreshClients(true)});
+          this.accountPanels[client.id]=panel;this.managementPages.set(client.id,{panel,open:()=>panel.resume()});
         }
       }
       layout.selectClient(client.id);this.managementPages.get(client.id)?.open();

@@ -48,7 +48,7 @@ final class TaskNotifications {
   metadata.putString("bridgeEvent", eventKey);
   String provider = event.optString("provider");
   if (!Arrays.asList("codex", "claude", "deepseek", "zcode").contains(provider)) {
-   provider = host.equals("desktop:claude") ? "claude" : host.equals("desktop:deepseek") ? "deepseek" : host.equals("desktop:zcode") ? "zcode" : "codex";
+   provider = host.matches("desktop:(claude|deepseek)(:[0-9a-f]{32})?") ? host.split(":")[1] : host.equals("desktop:zcode") ? "zcode" : "codex";
   }
   String source = provider.equals("claude") ? "Claude" : provider.equals("deepseek") ? "DeepSeek Harness" : provider.equals("zcode") ? "ZCode" : "Codex";
   Notification.Builder notification = new Notification.Builder(context, channel)

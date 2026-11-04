@@ -12,6 +12,7 @@ function fixture(){
    renderActivity(){},sessionAccess:v=>({canConfigure:true,canEditMessages:true,...v}),sourceLabel:()=> 'APP',dateText:()=>'',toast(){},pinRow:row=>row,sessionPins:{value:(_identity,pinned)=>!!pinned,set(identity,pinned){requests.push({url:`/${identity.host}/${identity.id}/pin`,body:{pinned}});}},desktopSessions:{refresh:async()=>{}},openChat:async()=>{},
    setTimeout:fn=>{timers.set(++timer,fn);return timer;},clearTimeout:id=>timers.delete(id),uuid:()=> 'request-id',
    api:async(url,body)=>{requests.push({url,body});return {status:'confirmed'};},sessionUrl:(id,action,host)=>`/${host}/${id}/${action}`,loadList:async()=>{}});
+ context.ClientIdentity=require('../web/features/clients/client-lifecycle.js').ClientIdentity;context.URLSearchParams=URLSearchParams;
  vm.runInContext(code,context);
  const row=(id,recency,pinned=false)=>({id,host:'local',title:id,projectKey:'p',projectName:'Project',hostLabel:'Local',recency,bridgePinned:pinned,access:{}});
  return {context,$,node,row,requests,dialogs,copies,fireTimers(){const work=[...timers.values()];timers.clear();work.forEach(fn=>fn());}};

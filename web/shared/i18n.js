@@ -103,6 +103,7 @@ const en={
 "向左滚动应用":"Scroll apps left",
 "向右滚动应用":"Scroll apps right",
 "Codex 独立配置":"Independent Codex configuration",
+"仅使用默认接入":"Default connection only",
 "添加 Codex 接入":"Add Codex connection",
 "接入名称":"Connection name",
 "Codex 配置目录":"Codex configuration directory",
