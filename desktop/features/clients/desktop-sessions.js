@@ -278,17 +278,30 @@ class DesktopConnectionsPanel {
     const section=node('section',undefined,'accounts-panel'),heading=node('div',undefined,'account-heading');section.dataset.zcodeOfficial='';
     const title=node('h3','官方远控（实验）'),refresh=node('button','刷新状态','accounts-refresh');heading.append(title,refresh);
     const help=node('p','使用与此电脑 ZCode 相同的官方账号，并在原 App 中开启 Web 远程控制。会话数据经过 ZCode 官方中继。','account-muted');
+    const guide=node('details',undefined,'notification-guide guide-more');guide.dataset.zcodeOfficialGuide='';guide.open=true;
+    const steps=node('ol',undefined,'setup-steps');
+    for(const [title,description] of [
+      ['启动 ZCode 并登录','打开此电脑的 ZCode，登录官方账号。API Key 不能代替官方账号登录。'],
+      ['打开移动端远程控制','在 ZCode 左下角打开“移动端远程控制”，开启远控并复制此电脑的连接链接。'],
+      ['保存官方远控链接','将链接粘贴到下方“官方远控链接”，点击“保存连接配置”。'],
+      ['在网关登录同一账号','点击“登录官方账号”，使用与原 App 相同的官方站点和登录方式，确认登录的是同一账号。'],
+      ['连接官方远控','点击“连接官方远控”，在确认框中选择使用官方远控。仅完成登录还不等于已连接。'],
+      ['启动网关并连接手机','网关尚未运行时，在“概览”点击“启动网关”；已运行则无需重启。随后用手机 App 或 Web 连接此网关。'],
+      ['确认连接成功','网关应显示“官方远控已连接”，ZCode 左下角远控标识变为绿色。黄色表示启动、连接或等待接入，红色表示错误。']
+    ]){const item=node('li');item.append(node('strong',title),node('p',description));steps.append(item);}
+    guide.append(node('summary','首次连接步骤'),steps,node('p','原 App 的绿色标识可能来自其他已连接终端，请同时核对本网关的连接状态。','hint'));
     const status=node('p'),reason=node('p',undefined,'hint'),saved=node('p',undefined,'hint');status.setAttribute('role','status');reason.setAttribute('role','status');saved.setAttribute('role','status');
     const label=node('label'),link=node('input');link.type='url';link.autocomplete='off';link.spellcheck=false;link.maxLength=4096;link.placeholder=BridgeI18n.t('粘贴此电脑的 Web 远程控制链接');label.append(node('span','官方远控链接'),link);
     const actions=node('div',undefined,'actions'),buttons={};
     for(const [action,text] of [['save','保存连接配置'],['login','登录官方账号'],['connect','连接官方远控'],['disconnect','断开官方远控'],['forget','清除官方登录']]){
       const button=node('button',text);button.type='button';button.dataset.officialAction=action;buttons[action]=button;actions.append(button);
     }
-    refresh.type='button';section.append(heading,help,status,reason,label,saved,actions);article.insertBefore(section,before);
-    let busy=false,pendingAction='',loadedLink='',error='';
+    refresh.type='button';section.append(heading,help,guide,status,reason,label,saved,actions);article.insertBefore(section,before);
+    let busy=false,pendingAction='',loadedLink='',error='',guidePending=true;
     const panel=this.zcodeOfficial={value:null};
     const render=()=>{
       const value=panel.value,unavailable=!value,edited=link.value.trim()!==loadedLink;
+      if(value&&guidePending){guide.open=!value.configured;guidePending=false;}
       status.textContent=value?[(value.configured?BridgeI18n.t('已登录')+(value.accountName?' · '+value.accountName:'')+(value.provider?' · '+value.provider:''):BridgeI18n.t('尚未登录官方账号')),
         BridgeI18n.t(value.connected?'官方远控已连接':'官方远控未连接')].join('；'):'';
       reason.textContent=BridgeI18n.t(busy?({state:'正在刷新状态…',save:'正在保存连接配置…',login:'正在打开官方登录…',connect:'正在连接官方远控…',disconnect:'正在断开官方远控…',forget:'正在清除官方登录…'})[pendingAction]:error||value?.reason||'');reason.className=error?'error':'hint';

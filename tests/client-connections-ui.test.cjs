@@ -461,6 +461,7 @@ test('ZCode management shares its mode picker and refreshes official state only 
  const state={configured:true,connected:false,selected:false,accountName:'Fixture account',provider:'z.ai',link:'https://zcode.z.ai/pair?fixture=one'};
  ui.setHandler(async request=>request.action==='clients'?{clients:[client]}:{...state});await ui.panel.manageClient(client);
  const page=ui.pages.get('zcode'),section=page.querySelector('[data-zcode-official]'),text=()=>section.querySelectorAll('p').map(node=>node.textContent).join('\n'),modes=page.querySelector('[data-client-connection-modes]');
+ const guide=section.querySelector('[data-zcode-official-guide]');assert.equal(guide.open,false);assert.equal(guide.querySelectorAll('li').length,7);guide.open=true;
  assert.equal(section.className,'accounts-panel');assert.equal(modes.querySelector('[data-connection-mode="private-pipe"]').attributes['aria-pressed'],'true');assert.match(text(),/同.*官方账号/);assert.match(text(),/官方中继/);assert.match(text(),/Fixture account/);
  assert.equal(page.querySelector('[data-zcode-compatibility]'),null);assert.deepEqual(ui.calls.map(value=>value.action),['zcode-official-state']);
  await ui.poll();assert.equal(ui.calls.filter(value=>value.action==='zcode-official-state').length,1);
@@ -468,6 +469,7 @@ test('ZCode management shares its mode picker and refreshes official state only 
  const input=section.querySelector('input');input.value='https://zcode.z.ai/pair?fixture=edited';input.oninput();
  client.connectionMode='official-remote';ui.panel.renderClients();assert.equal(modes.querySelector('[data-connection-mode="official-remote"]').attributes['aria-pressed'],'true');
  await section.querySelectorAll('button').find(button=>button.textContent==='刷新状态').onclick();
+ assert.equal(guide.open,true,'A status refresh preserves the user-opened instructions');
  assert.equal(input.value,'https://zcode.z.ai/pair?fixture=edited');assert.match(text(),/已修改，尚未保存/);assert.equal(section.querySelector('[data-official-action="connect"]').disabled,true);
 });
 
@@ -476,9 +478,11 @@ test('official settings save independently and connect through the shared client
  const state={configured:false,connected:false,selected:false,link:''};
  ui.setHandler(async request=>{if(request.action==='clients')return {clients:[client]};if(request.action==='zcode-official-save')state.link=request.link;if(request.action==='zcode-official-login')Object.assign(state,{configured:true,accountName:'Signed in'});if(request.action==='toggle-client'){Object.assign(state,{connected:true,selected:true});client.connectionMode=request.connectionMode;return {clients:[client]};}if(request.action==='zcode-official-disconnect')state.connected=false;if(request.action==='zcode-official-forget')Object.assign(state,{configured:false,connected:false,selected:false});return {...state};});
  await ui.panel.manageClient(client);const section=ui.pages.get('zcode').querySelector('[data-zcode-official]'),input=section.querySelector('input'),button=action=>section.querySelector('[data-official-action="'+action+'"]');
+ const guide=section.querySelector('[data-zcode-official-guide]');assert.equal(guide.open,true);guide.open=false;
  assert.equal(button('login').disabled,true);assert.equal(button('connect').disabled,true);assert.equal(button('local'),null);
  input.value='https://zcode.z.ai/pair?fixture=selected';input.oninput();assert.equal(button('login').disabled,true);
  await button('save').onclick();assert.equal(state.configured,false);assert.equal(button('login').disabled,false);assert.equal(button('save').disabled,true);
+ assert.equal(guide.open,false,'Saving does not reopen instructions the user collapsed');
  await button('login').onclick();assert.equal(button('connect').disabled,false);await button('connect').onclick();assert.equal(button('disconnect').disabled,false);
  assert.deepEqual(JSON.parse(JSON.stringify(ui.calls.filter(value=>['zcode-official-save','zcode-official-login','toggle-client'].includes(value.action)))),[{action:'zcode-official-save',link:input.value},{action:'zcode-official-login',link:input.value},{action:'toggle-client',provider:'zcode',enabled:true,connectionMode:'official-remote'}]);
  await button('disconnect').onclick();assert.equal(state.selected,true);assert.equal(state.configured,true);
