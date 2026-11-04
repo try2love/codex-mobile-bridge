@@ -30,7 +30,7 @@ API 接入复用共享账号编辑器、私有副本以及 restore/rollback 事�
 
 绿色语义依据固定官方源码 [WorkspaceWebRemoteControlTrigger](https://github.com/zai-org/ZCode/blob/a9fe401eede6e6e5e01be9048679c206fe6f02d9/packages/ui/src/WorkspaceWebRemoteControlTrigger.tsx)：只有 active 显示绿色，starting/connecting/running 为黄色，error 为红色。绿色也可能对应其他已连接终端，因此引导同时要求本网关显示“官方远控已连接”，不把颜色单独作为网关已配对的证明。
 
-2026-11-05 用户在 Windows 独立 Test128.14 完成官方登录后，真实认证HTTP确认官方方式 configured/connected/ready，聊天列表359ms、原生项目125ms，登录密文与链接均已保存。没有输出凭据、没有模型消息，也没有启停App。真正正常重开Test后的恢复与本轮引导更新合并验收，避免重复重启。引导相关3项UI检查和生产JS/CSS合成浏览器中英文展示通过；不扩大到未变功能回归。
+2026-11-05 用户在 Windows 独立 Test128.14 完成官方登录后，真实认证HTTP确认官方方式 configured/connected/ready，聊天列表359ms、原生项目125ms，登录密文与链接均已保存。没有输出凭据、没有模型消息，也没有启停App。随后 Windows Test 128.15 以相同应用身份和原资料目录正常重开，未再次官方网页登录即恢复 configured/connected/ready；8793 正常认证，原项目157ms、历史140ms。既有独立聊天显式接续1078ms、详情516ms，原ID/cwd保留、发送权限为true，仍为GLM-5.3-Flash/low，没有模型消息。原ZCode主进程及启动身份未变。更新只重打外壳并替换静态字典，717个网关文件中后端EXE等未变文件沿用已核验哈希；不初始化、覆盖或迁移已登录资料。引导相关3项UI检查和生产JS/CSS合成浏览器中英文展示通过；不扩大到未变功能回归。
 
 ## 备选方案
 
