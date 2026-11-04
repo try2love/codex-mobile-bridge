@@ -34,8 +34,9 @@ def stamp(value):
 
 
 class ZCodeAccounts:
-    def __init__(self, directory, home, metadata):
+    def __init__(self, directory, home, metadata, quota_reader=None):
         self.directory, self.home, self.metadata = Path(directory), Path(home), metadata
+        self.quota_reader = quota_reader
         if self.home.is_symlink():
             raise ValueError('ZCode 数据目录不能是符号链接')
         self.lock = threading.RLock()
@@ -93,30 +94,68 @@ class ZCodeAccounts:
             if (current.get('identity') or generation) and not official_active:
                 public.append({'id': 'current', 'name': current.get('name') or 'ZCode', 'email': current.get('email', ''), 'kind': 'official', 'saved': False})
                 active.insert(0, 'current')
-            if quota_for is not None and quota_for not in active:
+            if quota_for is not None and not any(row['id'] == quota_for and row['kind'] == 'official'
+                                                and row['id'] in active for row in public):
                 raise ValueError('仅支持查看当前 ZCode 登录账号的额度')
-            if self.quota_cache and self.quota_cache[0] != generation:
+            native = (callable(self.quota_reader) and current.get('provider') in ('zai', 'bigmodel') and
+                      bool(re.fullmatch(r'[0-9a-f]{64}', current.get('identity', ''))))
+            scope = ('native', current['provider'], current['identity']) if native else generation
+            if self.quota_cache and self.quota_cache[0] != scope:
                 self.quota_cache = None
             for row in public:
-                row['canReadQuota'] = bool(row['kind'] == 'official' and generation and row['id'] in active)
+                row['canReadQuota'] = bool(row['kind'] == 'official' and scope and row['id'] in active)
                 if row['canReadQuota']:
                     now = time.time()
-                    if self.quota_cache and any(now >= window['validUntil']+1 for limit in self.quota_cache[2]['limits']
-                                                for window in limit['windows']):
-                        self.quota_cache = None
-                    if quota_for is not None and (refresh or not self.quota_cache or now-self.quota_cache[1] >= 30):
-                        usage = quota.latest(self.home, generation, now)
-                        self.quota_cache = (generation, now, usage)
+                    manual_due = quota_for == row['id'] and refresh and (not self.quota_cache or
+                                  now-self.quota_cache[1] >= (quota.MANUAL_RETRY_SECONDS if native else 0))
+                    expired = self.quota_cache and any(now > window['validUntil']
+                              for limit in self.quota_cache[2]['limits'] for window in limit['windows'])
+                    if not self.quota_cache or now-self.quota_cache[1] >= quota.REFRESH_SECONDS or manual_due or expired:
+                        if native:
+                            usage = self._native_quota(current, refresh=bool(manual_due))
+                        else:
+                            usage = quota.latest(self.home, generation, now)
+                        self.quota_cache = (scope, time.time(), usage)
                     if self.quota_cache:
-                        row['usage'] = self.quota_cache[2]
-            if generation and quota.login_generation(self.home) != generation:
+                        usage = self.quota_cache[2]
+                        row['usage'] = (quota.unexpired(usage, now) or
+                                        {**usage, 'limits': [], 'status': 'error' if usage.get('status') == 'error' else 'unsupported'})
+            if not native and generation and quota.login_generation(self.home) != generation:
                 self.quota_cache = None
                 raise ValueError('ZCode 登录正在变化，请稍后重试')
             return {'accounts': public, 'activeIds': active, 'activeId': next(iter(active), None),
                     'current': {'name': current.get('name')}, 'canImport': bool(current.get('identity')),
-                    'capabilities': {'addApi': True, 'quota': bool(generation), 'apiFormats': list(api_config.API_FORMATS),
+                    'capabilities': {'addApi': True, 'quota': bool(scope), 'apiFormats': list(api_config.API_FORMATS),
                                      'switchRequiresStopped': True},
                     'enrollmentHint': '官方账号请先在 ZCode 登录，再保存当前接入。API 可在此保存；停用手机接入并正常退出原 App 后应用，重新启动后在聊天中选择对应模型。'}
+
+    def _native_quota(self, current, refresh=False):
+        previous = quota.unexpired(self.quota_cache[2], time.time()) if self.quota_cache else {}
+        def require_current():
+            try:
+                after = self.metadata()
+            except (OSError, ValueError):
+                self.quota_cache = None
+                raise ValueError('无法确认当前 ZCode 账号，请稍后重试') from None
+            if any(after.get(key) != current.get(key) for key in ('provider', 'identity')):
+                self.quota_cache = None
+                raise ValueError('ZCode 登录正在变化，请刷新账号后重试')
+        try:
+            value = self.quota_reader(refresh)
+        except (OSError, ValueError, TimeoutError):
+            require_current()
+            return {**previous, 'status': 'error', 'source': 'native', 'limits': previous.get('limits', []),
+                    'error': '额度查询失败，请稍后重试'}
+        returned = value.get('account', {}) if isinstance(value, dict) else {}
+        if any(returned.get(key) != current.get(key) for key in ('provider', 'identity')):
+            self.quota_cache = None
+            raise ValueError('ZCode 登录正在变化，请刷新账号后重试')
+        require_current()
+        try:
+            return quota.native_snapshot(value.get('quota'), current['provider'], time.time())
+        except (AttributeError, TypeError, ValueError):
+            return {**previous, 'status': 'error', 'source': 'native', 'limits': previous.get('limits', []),
+                    'error': '原 App 暂未提供可确认的今日额度，请稍后重试'}
 
     def import_current(self, name=''):
         with self.lock:
@@ -142,6 +181,16 @@ class ZCodeAccounts:
             result['api'] = {'baseUrl': config['api']['baseUrl'], 'apiFormat': config['api']['type'],
                              'models': config['personalModelIds'], 'hasKey': bool(config['access']['apiKey'])}
         return result
+
+    def api_credentials(self, identifier):
+        """Private desktop draft flow only; never include this in public/edit replies."""
+        with self.lock:
+            row = self._row(identifier)
+            if row['kind'] != 'api':
+                raise ValueError('此接入不是 API 配置')
+            config = self._saved(row)['provider']['config']
+            return {'baseUrl': config['api']['baseUrl'], 'apiKey': config['access']['apiKey'],
+                    'apiFormat': config['api']['type']}
 
     def _saved(self, row):
         selected = read(self.directory/(row['id']+'.json'))

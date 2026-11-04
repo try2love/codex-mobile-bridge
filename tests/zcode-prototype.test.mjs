@@ -53,6 +53,37 @@ test('application handshake reads the original project service without activatin
   await assert.rejects(f.request('application'),/会话服务/);
 });
 
+test('quota reads the exact original Start account without a conversation or model request', async()=>{
+  const f=fixture(), requests=[];
+  f.services.oauthService.getActiveProvider=async()=>'zai';
+  const access={type:'zhipu-account',accountType:'zai',mode:'start-plan',entitled:true};
+  f.services.providerSettingsService={getView:async()=>({providers:[
+    {providerId:'account:bigmodel-start-plan',effectiveConfig:{access:{...access,accountType:'bigmodel'}}},
+    {providerId:'account:zai-start-plan',effectiveConfig:{access}},
+  ]})};
+  const snapshot={authenticated:true,provider:{id:'account:zai-start-plan'},serverTime:Date.now(),quota:{level:'Start',limits:[]}};
+  f.services.usageStatsService={getEntitlementSnapshot:async request=>{requests.push(request);return snapshot;}};
+  const result=await f.request('quota',{refresh:true},{sessionId:null,workspace:null,binding:null});
+  assert.equal(result.account.provider,'zai');assert.match(result.account.identity,/^[0-9a-f]{64}$/);
+  assert.deepEqual(result.quota,snapshot);assert.deepEqual(requests,[{preferredProviderId:'account:zai-start-plan',
+    accountAccess:access,allowDisabledPreferredProvider:true,requirePreferredProvider:true,allowEnvApiKey:false,invalidateBalanceCache:true}]);
+  assert.deepEqual(f.calls,[]);
+});
+
+test('quota rejects a changed account and never guesses access from a provider name', async()=>{
+  const f=fixture();let profile='before',reads=0;
+  f.services.oauthService.getActiveProvider=async()=>'zai';
+  f.services.credentialService.load=async key=>{assert.equal(key,'oauth:zai:user_info');return JSON.stringify({id:profile});};
+  const row={providerId:'account:zai-start-plan',effectiveConfig:{access:{type:'zhipu-account',accountType:'zai',mode:'start-plan',entitled:true}}};
+  f.services.providerSettingsService={getView:async()=>({providers:[row]})};
+  f.services.usageStatsService={getEntitlementSnapshot:async()=>{reads++;profile='after';return {};}};
+  await assert.rejects(f.request('quota'),/登录正在变化/);assert.equal(reads,1);
+  row.effectiveConfig.access.accountType='bigmodel';
+  await assert.rejects(f.request('quota'),/尚未确认/);assert.equal(reads,1);
+  await assert.rejects(f.request('quota',{preferredProviderId:'untrusted'}),/参数无效/);assert.equal(reads,1);
+  assert.deepEqual(f.calls,[]);
+});
+
 test('official services reuse native operations without reading the desktop renderer', async () => {
   const f = fixture();
   f.agent.helloConversationV4 = async () => ({protocolVersion:3,clientMode:'web-remote-replayable',connectionId:f.binding.connectionId});

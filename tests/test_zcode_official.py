@@ -70,6 +70,12 @@ class OfficialZCodeTests(unittest.TestCase):
         self.assertEqual(self.adapter.application_owner, self.owner)
         self.assertNotIn('pid', self.adapter.application_owner)
 
+    def test_cold_application_connect_grants_only_device_startup_wait(self):
+        self.adapter.connect_application(wait=True)
+        self.client.close.assert_called_once()
+        self.client.connect.assert_called_once_with(wait=True)
+        self.assertEqual([c.args[0]['action'] for c in self.client.call.call_args_list], ['application'])
+
     def test_shared_attach_projection_and_file_send_use_the_selected_epoch(self):
         self.connect_session()
         detail = self.adapter.call('detail', 'sess_test')
@@ -171,7 +177,7 @@ class OfficialManagerTests(unittest.TestCase):
 
     def test_selecting_official_reuses_adapter_and_never_launches_native_app(self):
         m = self.manager
-        with patch('bridge.clients.zcode.official.ZCodeOfficial') as factory, patch.object(m, 'clients', return_value={'clients': []}), patch('bridge.clients.lifecycle.launch_client') as launch, patch.object(m, '_zcode_official_status', return_value={'configured': True}):
+        with patch('bridge.clients.zcode.official.ZCodeOfficial') as factory, patch.object(m, 'clients', return_value={'clients': [{'id':'zcode','selectable':True}]}), patch('bridge.clients.lifecycle.launch_client') as launch, patch.object(m, '_zcode_official_status', return_value={'configured': True}):
             m.control({'action': 'zcode-official', 'enabled': True})
             self.assertEqual(m.config['zcodeConnectionMode'], 'official-remote')
             self.assertNotIn('zcodeOfficialRemote', m.config)
@@ -229,6 +235,35 @@ class OfficialManagerTests(unittest.TestCase):
         adapter.disconnect.assert_called_once()
         stop.assert_not_called()
         self.assertFalse(m.config['enabled']['zcode'])
+
+    def test_official_mode_cold_starts_original_app_without_private_transport(self):
+        m = self.manager
+        m.gateway_running = True
+        m.config['zcodeConnectionMode'] = 'official-remote'
+        adapter = m.adapters['zcode']
+        descriptor = {'id': 'zcode', 'officialRemote': True, 'debugFallbackPort': None}
+        rows = {'clients': [{'id': 'zcode', 'selectable': True}]}
+        with patch.object(m, 'clients', return_value=rows), patch.object(m, '_descriptor', return_value=descriptor), \
+                patch('bridge.clients.lifecycle.inspect_client', return_value={'running': False, 'unknown': False, 'mainPids': []}), \
+                patch('bridge.clients.lifecycle.launch_client', return_value={'running': True, 'launched': True}) as launch, \
+                patch.object(m, '_start_zcode_connection') as pipe:
+            m.toggle_client({'provider': 'zcode', 'enabled': True})
+        launch.assert_called_once_with(descriptor)
+        adapter.connect_application.assert_called_once_with(None, wait=True)
+        pipe.assert_not_called()
+        self.assertTrue(m.config['enabled']['zcode'])
+
+    def test_official_mode_preserves_a_running_original_app(self):
+        m = self.manager
+        m.gateway_running = True
+        m.config['zcodeConnectionMode'] = 'official-remote'
+        with patch.object(m, 'clients', return_value={'clients': [{'id': 'zcode', 'selectable': True}]}), \
+                patch.object(m, '_descriptor', return_value={'id': 'zcode', 'officialRemote': True}), \
+                patch('bridge.clients.lifecycle.inspect_client', return_value={'running': True, 'unknown': False, 'mainPids': [77]}), \
+                patch('bridge.clients.lifecycle.launch_client') as launch:
+            m.toggle_client({'provider': 'zcode', 'enabled': True})
+        launch.assert_not_called()
+        m.adapters['zcode'].connect_application.assert_called_once_with(None, wait=False)
 
 
 if __name__ == '__main__':

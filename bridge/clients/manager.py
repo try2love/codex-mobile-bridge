@@ -2359,7 +2359,16 @@ class DesktopSessions:
                 if provider == 'deepseek':
                     self._start_deepseek()
                 elif provider == 'zcode' and descriptor['officialRemote']:
-                    self.adapters[provider].connect_application(None)
+                    state = inspect_client(descriptor)
+                    if state.get('unknown') or len(state.get('mainPids', [])) > 1:
+                        raise ValueError('无法确认唯一的 ZCode 进程，请刷新后重试。')
+                    launched = False
+                    if not state['running']:
+                        result = launch_client(descriptor)
+                        if not result.get('running'):
+                            raise ValueError('ZCode 尚未启动，请刷新后重试。')
+                        launched = result.get('launched') is True
+                    self.adapters[provider].connect_application(None, wait=launched)
                 elif provider == 'zcode' and (initialize_zcode or descriptor['pipeSupported']):
                     self._start_zcode_connection(descriptor, initialize=initialize_zcode,
                                                  acknowledge_unavailable=acknowledge_unavailable)
@@ -2425,7 +2434,8 @@ class DesktopSessions:
             if provider == 'zcode':
                 from bridge.clients.zcode.accounts import ZCodeAccounts
                 store = ZCodeAccounts(self.directory/'zcode-accounts', home,
-                                      lambda: self.adapters[provider].call('account')['account'])
+                                      lambda: self.adapters[provider].call('account')['account'],
+                                      quota_reader=lambda refresh: self.adapters[provider].call('quota', body={'refresh': refresh}))
             elif provider == 'claude':
                 from bridge.clients.claude.accounts import ClaudeAccounts
                 store = ClaudeAccounts(self.directory/'claude-accounts', home,
@@ -2493,6 +2503,15 @@ class DesktopSessions:
             return self._accounts_public(provider, store.details(value.get('id'), refresh=value.get('refresh') is True))
         if operation == 'edit':
             return store.edit(value.get('id'))
+        if operation == 'models-draft':
+            # Desktop-only enrollment, like save-api. The shared probe only GETs
+            # model metadata; it neither saves the draft nor changes the owner.
+            from bridge.features.accounts.api_drafts import model_draft
+            protocol = ('anthropic-messages' if provider == 'claude' else
+                        value.get('apiFormat') if provider == 'zcode' else 'openai-chat-completions')
+            return model_draft(value, protocol=protocol,
+                               fixed_url='https://api.deepseek.com' if provider == 'deepseek' else None,
+                               saved=store.api_credentials)
         if operation in ('save-api', 'rename', 'remove'):
             # Desktop IPC only: HTTP exposes list/details/switch. These mutate
             # saved copies, never the native login or a running conversation.
@@ -2683,14 +2702,10 @@ class DesktopSessions:
             if (set(value) != {'action', 'enabled'} or type(value['enabled']) is not bool or
                     sys.platform != 'darwin' or 'zcode' not in self.adapters):
                 raise ValueError('ZCode 官方远控设置无效')
+            if value['enabled']:
+                return self.toggle_client({'provider': 'zcode', 'enabled': True, 'connectionMode': 'official-remote'})
             with self.client_lock:
-                self._select_zcode_connection('official-remote' if value['enabled'] else 'private-pipe')
-                if value['enabled']:
-                    self.config.setdefault('enabled', {})['zcode'] = True
-                private_json(self.config_path, self.config)
-                self.client_cache = None
-                if value['enabled'] and self.gateway_running:
-                    self.adapters['zcode'].connect_application(None)
+                self._select_zcode_connection('private-pipe')
             return self.clients(refresh=True)
         if action == 'zcode-compatibility':
             raise ValueError('本机兼容端口已移除，请选择本机连接或官方远控')

@@ -1,4 +1,4 @@
-"""Read the Start Plan balance receipt written by the original local ZCode host."""
+"""Normalize original Start Plan snapshots; safely read local receipts as a fallback."""
 import hashlib
 import json
 import os
@@ -15,6 +15,8 @@ RECEIPT = re.compile(
     rb'\(local-\d+\) \[host\] \[[0-9-]{10} [0-9:.]{12}\] \[pid:\d+\] '
     rb'\[usage-stats\] billing/balance [^{}\r\n]{1,60} (\{.*\})$')
 TAIL_LIMIT = 2 * 1024 * 1024
+REFRESH_SECONDS = 300
+MANUAL_RETRY_SECONDS = 30
 
 
 def regular(path, directory=False):
@@ -59,6 +61,58 @@ def integer(value):
     if isinstance(value, str) and re.fullmatch('[0-9]{1,16}', value):
         value = int(value)
     return value if type(value) is int and 0 <= value <= 2**53-1 else None
+
+
+def native_snapshot(snapshot, family, now):
+    """Accept only the explicitly selected original account's daily token buckets."""
+    if not isinstance(snapshot, dict) or snapshot.get('authenticated') is not True:
+        raise ValueError('请在 ZCode 原 App 确认官方账号登录')
+    provider = snapshot.get('provider') or {}
+    if provider.get('id') != 'account:'+family+'-start-plan':
+        raise ValueError('原 App 额度响应与当前官方账号不符')
+    unavailable = snapshot.get('unavailableReason')
+    if unavailable and unavailable != 'no_plan':
+        raise ValueError('原 App 暂时无法查询当前账号的额度')
+    timestamp = integer(snapshot.get('serverTime', snapshot.get('generatedAt')))
+    if timestamp is None or timestamp/1000 > now+2:
+        raise ValueError('原 App 额度查询时间无效')
+    checked = timestamp/1000
+    limits = []
+    for bucket in (snapshot.get('quota') or {}).get('limits') or []:
+        if not isinstance(bucket, dict) or bucket.get('period') != 'daily' or bucket.get('unitType') != 'token':
+            continue
+        remaining, total = integer(bucket.get('remaining')), integer(bucket.get('number'))
+        start, end = integer(bucket.get('periodStart')), integer(bucket.get('periodEnd'))
+        reset = integer(bucket.get('nextResetTime'))
+        if None in (start, end, remaining, total) or remaining > total:
+            continue
+        valid_until = min(end, reset) if reset is not None else end
+        if not start/1000 <= checked <= now <= valid_until/1000:
+            continue
+        models = []
+        for model in bucket.get('usageDetails') or []:
+            code = model.get('modelCode') if isinstance(model, dict) else None
+            if not isinstance(code, str) or not re.fullmatch(r'[a-zA-Z0-9_.-]{1,80}', code):
+                continue
+            display = model.get('displayName')
+            label = display if isinstance(display, str) and 0 < len(display) <= 100 else code
+            if label not in models:
+                models.append(label)
+        if not models:
+            continue
+        limits.append({'name': ', '.join(models), 'windows': [{'remaining': remaining, 'total': total,
+                       'unit': 'tokens', 'remainingPercent': 100*remaining/total if total else None,
+                       'validUntil': valid_until/1000, 'resetsAt': valid_until/1000}]})
+    return {'status': 'ok' if limits else 'unsupported', 'source': 'native', 'checkedAt': checked, 'limits': limits}
+
+
+def unexpired(usage, now):
+    if not usage:
+        return {}
+    limits = [{**limit, 'windows': [window for window in limit['windows'] if now <= window['validUntil']]}
+              for limit in usage.get('limits') or []]
+    limits = [limit for limit in limits if limit['windows']]
+    return {**usage, 'limits': limits} if limits else {}
 
 
 def daily_limits(data, checked, now):

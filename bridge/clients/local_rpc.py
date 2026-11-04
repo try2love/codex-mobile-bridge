@@ -54,8 +54,8 @@ class LocalService:
     def owner(self):
         return self.status().get('owner')
 
-    def connect(self):
-        return self._exchange({'command':'connect'})
+    def connect(self, *, wait=False):
+        return self._exchange({'command':'connect', **({'waitForDevice': True} if wait else {})})
 
     def close(self):
         return self._exchange({'command':'disconnect'},timeout=10)

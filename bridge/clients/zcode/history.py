@@ -7,6 +7,7 @@ from pathlib import Path
 
 from bridge.clients.errors import BridgeUnavailable
 from bridge.features.sessions.identity import same_cwd
+from .presentation import composer_presentation
 
 
 def _checked_db(path):
@@ -79,7 +80,7 @@ def _session(row, *, allow_index_only=False):
     return {'id': row['task_id'], 'provider': 'zcode', 'host': 'local',
             'backend': 'desktop', 'title': row['title'], 'cwd': row['workspace_path'],
             'updatedAt': row['updated_at'], 'archived': bool(row['archived']),
-            'model': row['model'], 'status': 'unknown', 'runtimeKnown': False,
+            'model': row['model'], **composer_presentation(row['model']), 'status': 'unknown', 'runtimeKnown': False,
             'requests': [], 'readOnly': True, 'connectionState': 'detached',
             'capabilities': {'send': False, 'resume': False, 'stop': False}}
 

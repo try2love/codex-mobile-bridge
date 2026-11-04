@@ -6,13 +6,47 @@ function fixture({desktop=false,provider='deepseek',toolbar=false}={}){
   const document={hidden:false,body:node('body'),activeElement:null,documentElement:{},createElement:node,querySelectorAll:()=>[],addEventListener:(type,fn)=>(listeners[type]??=[]).push(fn),removeEventListener:(type,fn)=>listeners[type]=listeners[type].filter(row=>row!==fn),dispatchEvent(event){for(const fn of listeners[event.type]||[])fn(event);}};
   class Clock extends Date{static now(){return time;}}
   const context=vm.createContext({document,Date:Clock,CustomEvent:class{constructor(type){this.type=type;}},localStorage:{getItem(){return null;},setItem(){}},window:{confirm(message){prompts.push(message);return confirmed;}},setTimeout(fn,ms){timers.set(++tid,{fn,due:time+ms});return tid;},clearTimeout:id=>timers.delete(id)});
-  for(const path of ['web/shared/i18n.js','web/features/accounts/client-accounts.js'])vm.runInContext(fs.readFileSync(path,'utf8'),context);
+  for(const path of ['web/shared/i18n.js','web/features/accounts/api-editor.js','web/features/accounts/client-accounts.js'])vm.runInContext(fs.readFileSync(path,'utf8'),context);
   const Panel=vm.runInContext('DesktopClientAccountsPanel',context),panel=new Panel({root,provider,desktop,toolbar:outerToolbar,read:()=>{calls.push({action:'list'});return readHandler();},request:body=>{calls.push(body);return handler(body);},readModels:(refresh=false)=>handler({action:'models',refresh}),visible:()=>visible,onUpdate:result=>updates.push(result)});
   const all=node=>[node,...node.children.flatMap(all)];
   return {panel,root,outerToolbar,calls,prompts,updates,timers,focus:node=>document.activeElement=node,blur:()=>document.activeElement=document.body,active:()=>document.activeElement,setValue:next=>value=next,setHandler:next=>handler=next,setRead:next=>readHandler=next,setVisible:next=>visible=next,confirm:next=>confirmed=next,advance:async ms=>{time+=ms;for(const [id,timer]of [...timers])if(timer.due<=time){timers.delete(id);await timer.fn();}},tick:ms=>time+=ms,now:()=>time,all:()=>all(root),text:()=>all(root).map(row=>row.textContent).join('\n'),english:()=>vm.runInContext("BridgeI18n.setLanguage('en')",context)};
 }
 const row=(id,kind='account',usage)=>({id,name:id,kind,usage});
 const snapshot=(accounts,activeIds=['current'])=>({accounts,activeId:activeIds[0],activeIds,current:{name:'Current desktop access'},canSwitch:true});
+test('native API editors share Codex fold placement and fetch models before saving',async()=>{
+  for(const provider of ['claude','deepseek','zcode']){
+    const ui=fixture({provider,desktop:true}),formats=provider==='zcode'?[{value:'openai-responses',label:'OpenAI Responses'}]:undefined;
+    const value={...snapshot([]),capabilities:{addApi:true,quota:false,apiFormats:formats}};ui.panel.accept(value);
+    assert.equal(ui.panel.apiDetails.open,undefined);assert.equal(ui.panel.apiDetails.parentNode,ui.panel.management);assert.equal(ui.panel.scanDetails.parentNode,ui.panel.management);assert.equal(ui.panel.importName.parentNode,ui.panel.scanDetails);
+    ui.panel.addApiButton.onclick();ui.panel.editName.input.value='Fixture';ui.panel.editUrl.input.value='https://fixture.invalid/v1';ui.panel.editKey.input.value='fixture-key';
+    const calls=[];ui.setHandler(async request=>{calls.push({...request});return request.action==='models-draft'?{models:['first','second']}:value;});
+    await ui.panel.apiEditor.fetchModels.onclick();
+    assert.equal(calls.length,1);assert.equal(calls[0].action,'models-draft');assert.equal(ui.panel.apiEditor.modelSelect.hidden,false);
+    if(provider==='deepseek'){
+      assert.equal(calls[0].baseUrl,undefined);assert.equal(calls[0].apiFormat,undefined);assert.equal(ui.panel.editUrl.wrap.hidden,true);assert.equal(ui.panel.editModels.wrap.hidden,true);
+    }else{
+      assert.equal(ui.panel.editModels.wrap.htmlFor,ui.panel.editModels.input.id);assert.equal(ui.panel.apiEditor.modelCaption.htmlFor,ui.panel.editModels.input.id);
+      assert.equal(ui.panel.editModels.input.value,'first');ui.panel.apiEditor.modelSelect.value='second';ui.panel.apiEditor.modelSelect.onchange();assert.equal(ui.panel.editModels.input.value,'first\nsecond');
+    }
+    await ui.panel.saveEditor();assert.equal(calls[1].action,'save-api');assert.equal(ui.panel.editKey.input.value,'');assert.equal(ui.panel.apiDetails.open,false);
+    if(provider==='deepseek')assert.equal(calls[1].models,undefined);else assert.equal(calls[1].models.join(','),'first,second');
+  }
+});
+test('draft model responses cannot refill canceled or replaced native API editors',async()=>{
+  const ui=fixture({provider:'zcode',desktop:true});ui.panel.accept({...snapshot([]),capabilities:{apiFormats:[{value:'openai-responses',label:'OpenAI Responses'}],quota:false}});ui.panel.openEditor({kind:'api',api:{}});
+  ui.panel.editUrl.input.value='https://first.invalid';ui.panel.editKey.input.value='fixture-key';
+  const pending=[];ui.setHandler(()=>new Promise(resolve=>pending.push(resolve)));
+  const first=ui.panel.apiEditor.fetchModels.onclick();ui.panel.editUrl.input.value='https://second.invalid';ui.panel.editUrl.input.oninput();const second=ui.panel.apiEditor.fetchModels.onclick();
+  pending[0]({models:['stale']});await first;assert.equal(ui.panel.editModels.input.value,'');assert.equal(ui.panel.apiEditor.fetchModels.disabled,true);
+  pending[1]({models:['fresh']});await second;assert.equal(ui.panel.editModels.input.value,'fresh');
+  ui.panel.editKey.input.value='changed-key';ui.panel.editKey.input.oninput();const third=ui.panel.apiEditor.fetchModels.onclick();ui.panel.closeEditor();pending[2]({models:['closed']});await third;
+  assert.equal(ui.panel.editKey.input.value,'');assert.equal(ui.panel.editor.hidden,true);assert.equal(ui.panel.apiEditor.modelSelect.hidden,true);assert.equal(ui.panel.editModels.input.value,'');
+});
+test('account management action uses one reusable slot without moving the saved account cards',()=>{
+  const ui=fixture({provider:'zcode'});ui.panel.accept(snapshot([row('current')]));const cards=ui.panel.rows,button=ui.panel.managementButton;let clicked=0;
+  ui.panel.setManagementAction({label:'连接方式',description:'当前：官方远控',onClick:()=>clicked++});assert.equal(ui.panel.rows,cards);assert.equal(ui.panel.managementSlot.hidden,false);button.onclick();assert.equal(clicked,1);
+  ui.panel.setManagementAction({label:'连接方式',disabled:true});assert.equal(ui.panel.managementButton,button);assert.equal(button.disabled,true);ui.panel.setManagementAction(null);assert.equal(ui.panel.managementSlot.hidden,true);
+});
 test('ZCode API editor reuses shared form and sends native protocol plus URL and models without applying',async()=>{
   const ui=fixture({provider:'zcode',desktop:true});
   const value={...snapshot([]),capabilities:{addApi:true,quota:false,apiFormats:[{value:'anthropic-messages',label:'Anthropic Messages'},{value:'openai-chat-completions',label:'OpenAI Chat Completions'},{value:'openai-responses',label:'OpenAI Responses'}],switchRequiresStopped:true}};
@@ -37,9 +71,9 @@ test('ZCode API applied state is distinct from official login and selecting a mo
 test('manual DSH account state hides editing and restores official controls after unbinding',()=>{
  const ui=fixture({desktop:true});ui.panel.openEditor({api:{}});
  ui.panel.accept({...snapshot([]),readOnly:true,canImport:false,canSwitch:false});
- assert.equal(ui.panel.editor.hidden,true);assert.equal(ui.panel.addApiButton.hidden,true);assert.equal(ui.panel.importName.hidden,true);
+ assert.equal(ui.panel.editor.hidden,true);assert.equal(ui.panel.apiDetails.hidden,true);assert.equal(ui.panel.scanDetails.hidden,true);
  assert.match(ui.panel.hint.textContent,/第三方客户端/);assert.equal(ui.panel.modelsButton.hidden,false);
- ui.panel.accept(snapshot([]));assert.equal(ui.panel.addApiButton.hidden,false);assert.equal(ui.panel.importName.hidden,false);
+ ui.panel.accept(snapshot([]));assert.equal(ui.panel.apiDetails.hidden,false);assert.equal(ui.panel.scanDetails.hidden,false);
 });
 test('multiple native active connections are first and cannot be switched again',()=>{
   const ui=fixture();ui.panel.accept(snapshot([row('other'),row('api','api'),row('current')],['current','api']));

@@ -40,7 +40,7 @@ class AccountsPanel {
     this.rows=this.node('div',undefined,'accounts-list');
     this.currentReset=this.button('查看并使用重置卡',()=>this.onReset?.());this.currentReset.hidden=true;
     this.current=this.node('p',undefined,'accounts-current');this.blocked=this.node('div',undefined,'account-muted');this.root.append(this.current,this.status,this.error,this.currentReset,this.blocked,this.globalReset,this.rows);
-    this.management=this.node('div',undefined,'accounts-management');this.root.append(this.management);
+    this.management=ApiAccessEditor.management(this.root,this.node.bind(this));
     this.sshHosts=this.node('section');this.sshHosts.hidden=true;this.root.append(this.sshHosts);
     this.tools=this.node('details');this.toolsTitle=this.node('summary');this.tools.append(this.toolsTitle);
     this.reminders=this.node('div');this.updates=this.node('section');this.tools.append(this.reminders,this.updates);this.management.append(this.tools);
@@ -63,19 +63,19 @@ class AccountsPanel {
     this.model=this.field('默认模型');this.model.input.maxLength=200;
     this.modelOptions=this.node('select');this.modelOptions.setAttribute('aria-label',this.text('上游模型'));this.modelOptions.hidden=true;
     this.modelOptions.onchange=()=>{if(this.modelOptions.value)this.model.input.value=this.modelOptions.value;};
-    this.modelsButton=this.button('获取上游模型',async()=>{
-      const context=()=>JSON.stringify([this.importId,this.editId,this.kind.value,this.url.input.value,this.key.input.value]),started=context();
-      const payload=this.importId?{action:'models',candidateId:this.importId}:{action:'models',id:this.editId,baseUrl:this.url.input.value,apiKey:this.key.input.value};
-      if(await this.perform(payload)){if(started!==context())return;this.modelOptions.replaceChildren(this.node('option','请选择模型'));
-        this.modelOptions.children[0].value='';for(const id of this.value.models||[]){const option=this.node('option');option.textContent=id;option.value=id;this.modelOptions.append(option);}
-        if(!this.model.input.value.trim()&&this.value.models?.length){this.model.input.value=this.value.models[0];this.modelOptions.value=this.value.models[0];}
-        this.modelOptions.hidden=false;this.modelMessage.textContent=this.text('模型列表不保证支持 Responses API，请选择可用于对话的模型。');}
-    });
+    this.modelsButton=this.button('获取上游模型',()=>ApiAccessEditor.discover(this.apiEditor));
     this.modelMessage=this.node('p',undefined,'account-muted');
-    const clearModels=()=>{this.modelOptions.replaceChildren();this.modelOptions.hidden=true;this.modelMessage.textContent='';};
+    this.submit=this.node('button','继续');this.submit.type='submit';
+    const panel=this,asField=value=>({label:value.wrap,input:value.input});
+    this.apiEditor={t:this.text.bind(this),node:this.node.bind(this),get busy(){return panel.busy;},draftRevision:0,draftModelMode:'legacy',draftManualToggle:false,
+      model:asField(this.model),baseUrl:asField(this.url),key:asField(this.key),save:this.submit,modelSelect:this.modelOptions,modelCaption:this.model.wrap,modelFeedback:this.modelMessage,fetchModels:this.modelsButton,manualModel:this.button('手动填写',()=>{}),request:payload=>this.request(payload),
+      draftModelContext:()=>JSON.stringify([this.generation,this.importId,this.editId,this.kind.value,this.url.input.value,this.key.input.value]),
+      draftModelRequest:()=>this.importId?{action:'models',candidateId:this.importId}:{action:'models',id:this.editId,baseUrl:this.url.input.value,apiKey:this.key.input.value},
+      onDraftStart:()=>{this.operationError=false;this.error.textContent='';},onDraftError:error=>{this.operationError=true;this.error.textContent=this.text(String(error.message).replace(/^Error invoking remote method '[^']+': (?:Error: )?/,''));},
+      draftModelSuccess:'模型列表不保证支持 Responses API，请选择可用于对话的模型。'};
+    const clearModels=()=>ApiAccessEditor.clear(this.apiEditor);
     this.url.input.oninput=clearModels;this.key.input.oninput=clearModels;this.clearModels=clearModels;
     const fields=()=>{this.modelsButton.hidden=this.kind.value!=='api';if(this.kind.value!=='api')clearModels();for(const field of [this.url,this.key,this.model])field.wrap.hidden=this.kind.value!=='api';};this.kind.onchange=fields;fields();
-    this.submit=this.node('button','继续');this.submit.type='submit';
     this.cancelEdit=this.button('取消编辑',()=>{this.resetForm();fields();});
     this.form.append(this.name.wrap,this.kind,this.url.wrap,this.key.wrap,this.model.wrap,this.modelsButton,this.modelOptions,this.modelMessage,this.submit,this.cancelEdit);
     this.form.onsubmit=async event=>{
@@ -239,7 +239,7 @@ class AccountsPanel {
     controls.append(refresh);return controls;
   }
   accept(value){const old=this.value;if(!this.desktop&&old?.canSwitch===false&&value.canSwitch===undefined)value={...value,canSwitch:false};this.value=value;if(!value.resetDynamicEnabled)this.globalResetRefreshIntent=null;this.finishGlobalResetRefresh(value.globalReset);if(old&&(old.activeId!==value.activeId||old.current?.kind!==value.current?.kind||old.current?.name!==value.current?.name||old.switch?.phase!==value.switch?.phase))this.onChanged(value);this.onUpdate(value);this.render();}
-  clear(){clearTimeout(this.resetMidnightTimer);this.resetMidnightTimer=null;this.globalResetRefreshIntent=null;this.globalResetMessage='';this.globalResetKey=null;this.globalReset.hidden=true;this.resetDialog?.close();clearTimeout(this.timer);this.generation++;this.value=null;this.loading=false;this.busy=false;this.readFailed=false;this.resumePending=false;this.operationError=false;this.modelBoxes.clear();this.error.textContent='';this.rows.replaceChildren();this.sshHosts.replaceChildren();this.sshHosts.hidden=true;}
+  clear(){clearTimeout(this.resetMidnightTimer);this.resetMidnightTimer=null;this.globalResetRefreshIntent=null;this.globalResetMessage='';this.globalResetKey=null;this.globalReset.hidden=true;this.resetDialog?.close();clearTimeout(this.timer);this.generation++;this.clearModels?.();this.value=null;this.loading=false;this.busy=false;this.readFailed=false;this.resumePending=false;this.operationError=false;this.modelBoxes.clear();this.error.textContent='';this.rows.replaceChildren();this.sshHosts.replaceChildren();this.sshHosts.hidden=true;}
   requestId(){
     if(typeof crypto.randomUUID==='function')return crypto.randomUUID();
     const bytes=crypto.getRandomValues(new Uint8Array(16));bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;
@@ -481,7 +481,7 @@ class AccountsPanel {
     if(!this.desktop&&value.canSwitch===false&&!external)cards.push(this.node('p','免密访问不能切换账号，请在桌面端操作'));
     this.reconcileRows(cards);
     if(this.desktop){
-      this.scanDesktop.disabled=this.busy||switching;this.renameSave.disabled=this.busy||switching;this.scanButton.disabled=this.busy||switching;this.modelsButton.disabled=this.busy||switching;
+      this.scanDesktop.disabled=this.busy||switching;this.renameSave.disabled=this.busy||switching;this.scanButton.disabled=this.busy||switching;this.modelsButton.disabled=this.busy||switching||!!this.apiEditor?.draftLoading;this.submit.disabled=this.busy||switching||!!this.apiEditor?.draftLoading;
       this.scanSource.input.placeholder=value.codexHome||this.text('留空使用当前 Codex 数据目录');this.scanRows.replaceChildren();
       if(value.discovery){const scan=value.discovery;const source=this.node('p',undefined,'account-muted');source.textContent=scan.source||'';this.scanRows.append(source);
         if(scan.notice)this.scanRows.append(this.node('p',scan.notice,'account-muted'));

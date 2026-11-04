@@ -506,3 +506,12 @@ test('independent Codex profiles keep separate bottom identities and survive sta
  await nav.choose(other);assert.equal(nav.activeClient(),other);assert.equal(events.at(-1).host,other);
  await nav.choose('codex');assert.equal(nav.activeClient(),'codex');assert.equal(events.at(-1).host,'local');
 });
+
+
+test('account management owns the shared connection chooser and releases its status subscription',async()=>{
+ const {nav}=fixture(),values=[],selected=[];nav.clients=[{id:'zcode',enabled:true,connected:true,connectionMode:'official-remote',connectionModes:[{id:'private-pipe',label:'本机连接',configured:true},{id:'official-remote',label:'官方远控',configured:true}]}];
+ nav.selectConnectionMode=async id=>selected.push(id);const release=nav.bindAccountManagement({setManagementAction:value=>values.push(value)},'zcode');
+ assert.equal(values.at(-1).label,'连接方式');assert.equal(values.at(-1).description,'官方远控 · 已连接');await values.at(-1).onClick();assert.deepEqual(selected,['zcode']);
+ nav.pending.add('zcode');for(const render of nav.accountManagementRenderers)render();assert.equal(values.at(-1).disabled,true);
+ nav.pending.clear();nav.clients[0].connectionMode='private-pipe';for(const render of nav.accountManagementRenderers)render();assert.equal(values.at(-1).description,'本机连接 · 已连接');release();assert.equal(nav.accountManagementRenderers.size,0);
+});

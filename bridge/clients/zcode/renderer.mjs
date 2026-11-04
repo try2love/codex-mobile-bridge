@@ -137,6 +137,37 @@ export async function nativeRequest(request, environment) {
     })));
   };
   if (request.action === 'account') return { account: await account(), models: await models(), capabilities: { models: true } };
+  if (request.action === 'quota') {
+    const body = request.body || {};
+    if (Object.keys(body).some(key => key !== 'refresh') ||
+        body.refresh !== undefined && typeof body.refresh !== 'boolean')
+      throw Error('ZCode 额度查询参数无效');
+    const current = await account();
+    if (!current.identity || !['zai', 'bigmodel'].includes(current.provider))
+      throw Error('请先在 ZCode 原 App 登录官方账号');
+    if (typeof services.providerSettingsService?.getView !== 'function' ||
+        typeof services.usageStatsService?.getEntitlementSnapshot !== 'function')
+      throw Error('ZCode 原 App 未提供额度查询接口');
+    const providerId = 'account:' + current.provider + '-start-plan';
+    const view = await services.providerSettingsService.getView();
+    const selected = view?.providers?.find(row => row.providerId === providerId);
+    const access = selected?.effectiveConfig?.access;
+    if (access?.type !== 'zhipu-account' || access.accountType !== current.provider ||
+        access.mode !== 'start-plan' || typeof access.entitled !== 'boolean')
+      throw Error('原 App 尚未确认当前账号的 Start Plan 连接');
+    checkDeadline();
+    const snapshot = await services.usageStatsService.getEntitlementSnapshot({
+      preferredProviderId: providerId,
+      accountAccess: { type: access.type, accountType: access.accountType, mode: access.mode, entitled: access.entitled },
+      allowDisabledPreferredProvider: true, requirePreferredProvider: true, allowEnvApiKey: false,
+      ...(body.refresh ? { invalidateBalanceCache: true } : {}),
+    });
+    const after = await account();
+    if (after.identity !== current.identity || after.provider !== current.provider)
+      throw Error('ZCode 登录正在变化，请稍后重试');
+    checkDeadline();
+    return { account: after, quota: snapshot };
+  }
   if (request.action === 'lifecycle') {
     const busySnapshot = snapshot => snapshot.queue.items.length || snapshot.pendingInteractions.length ||
       snapshot.control.activeWorks.length || snapshot.pendingCommands?.length || snapshot.backgroundWorks?.length;

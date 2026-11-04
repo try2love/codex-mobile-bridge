@@ -1679,6 +1679,7 @@ function openCurrentAccounts(){
     readModels:(refresh=false)=>api('/api/desktop-sessions/'+provider+'/account'+(refresh?'?refresh=true':'')),
     onChanged:(value,previous)=>desktopSessions.accountChanged(provider,previous,value)
   });
+  const unbindConnection=clientNavigation.bindAccountManagement(panel,provider);
   let claudeWslAccounts=null,selectClaudeAccounts=null;
   if(provider==='claude'&&typeof CliAccessPanel!=='undefined'){
     const details=el('details','account-compact'),root=el('div'),summary=el('summary','',t('Claude Code CLI 接入'));summary.dataset.i18n='Claude Code CLI 接入';details.append(summary,root);dialog.append(details);
@@ -1695,7 +1696,7 @@ function openCurrentAccounts(){
     };
     selectClaudeAccounts=()=>{if(clientNavigation.wslSupported===true)initializeWsl().catch(error=>{if(dialog.open)toast(error.message);});else{panel.resume();claudeCliAccessPanel.refresh();}};
   }
-  dialog.addEventListener('close',()=>{panel.dispose();claudeWslAccounts?.dispose();claudeCliAccessPanel?.dispose();claudeCliAccessPanel=null;});dialog.showModal();if(selectClaudeAccounts)selectClaudeAccounts();else panel.resume();
+  dialog.addEventListener('close',()=>{unbindConnection();panel.dispose();claudeWslAccounts?.dispose();claudeCliAccessPanel?.dispose();claudeCliAccessPanel=null;});dialog.showModal();if(selectClaudeAccounts)selectClaudeAccounts();else panel.resume();
   return true;
 }
 $('accounts-button').onclick=openCurrentAccounts;

@@ -43,6 +43,7 @@
       "web/shared/i18n.js",
       "web/shared/dialog-dismiss.js",
       "web/features/accounts/account.js",
+      "web/features/accounts/api-editor.js",
       "web/features/accounts/accounts.js",
       "web/features/accounts/client-accounts.js",
       "web/features/accounts/cli-access.js",

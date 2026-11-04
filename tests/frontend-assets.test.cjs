@@ -33,3 +33,11 @@ test('desktop local resources exist and are included in the application package'
   for(const [,file] of entry.matchAll(/require\(['"](\.[^'"]+)['"]\)/g))assert.ok(fs.statSync(path.resolve(root,'desktop',file)).isFile(),file);
   assert.ok(fs.statSync(path.join(root,'desktop/features/updates/update-public-key.pem')).isFile());
 });
+
+test('shared API editor loads before every account consumer without another Web request',()=>{
+  assert.deepEqual(assets['/accounts.js'],['features/accounts/api-editor.js','features/accounts/accounts.js']);
+  assert.equal(assets['/api-editor.js'],undefined);
+  const desktop=fs.readFileSync(path.join(root,'desktop/index.html'),'utf8'),web=fs.readFileSync(path.join(root,'web/index.html'),'utf8');
+  for(const consumer of ['accounts.js','client-accounts.js','cli-access.js'])assert.ok(desktop.indexOf('src="../web/features/accounts/api-editor.js"')<desktop.indexOf('src="../web/features/accounts/'+consumer+'"'));
+  for(const consumer of ['client-accounts.js','cli-access.js'])assert.ok(web.indexOf('data-bridge-src="/accounts.js')<web.indexOf('data-bridge-src="/'+consumer));
+});

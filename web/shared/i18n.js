@@ -2,6 +2,13 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"在网关管理账号与API":"Manage accounts and APIs in the gateway",
+"已获取模型，可选择添加或手动填写。":"Models fetched. Select models to add or enter IDs manually.",
+"官方登录已失效，请在电脑网关重新登录。":"Official authentication has expired. Sign in again in the desktop gateway.",
+"ZCode 官方远控尚未上线，请确认原 App 已开启 Web 远程控制。":"ZCode official remote is not online yet. Check that Web Remote Control is enabled in the original app.",
+"官方账号或远控链接不匹配，请在电脑网关核对配置。":"The official account and remote link do not match. Check the settings in the desktop gateway.",
+"官方远控被另一终端接入，请确认后重新连接。":"Another terminal connected to official remote. Check before reconnecting.",
+"等待 ZCode 官方远控上线超时，请稍后重新连接。":"Timed out waiting for ZCode official remote. Try reconnecting later.",
 "ZCode 已启动，正在连接原生会话服务。":"ZCode is running. Connecting to its chat service.",
 "ZCode 的会话服务长时间未就绪，请重试连接。":"ZCode’s chat service stopped making progress. Try connecting again.",
 "ZCode 原进程已变化，请重新连接。":"The ZCode process changed. Reconnect to continue.",
@@ -12,7 +19,6 @@ const en={
 "正在等待网络恢复…":"Waiting for the network…",
 "正在接续原会话…":"Reconnecting to this chat…",
 "未能接续原会话，请重试":"Could not reconnect to this chat. Try again.",
-"选择连接方式":"Choose connection method",
 "API 协议":"API protocol",
 "待应用":"Not applied",
 "应用配置":"Apply configuration",
@@ -1096,7 +1102,6 @@ const en={
 "初始化连接":"Initialize connection",
 "启动 Desktop":"Start Desktop",
 "尝试重连":"Try reconnecting",
-"重新连接 Desktop":"Reconnect Desktop",
 "重新初始化连接":"Reinitialize connection",
 "连接被其他网关占用":"Connection used by another gateway",
 "Claude 桥接连接被其他网关占用，请先停止旧网关；旧版连接还需重新加载 Claude":"Another gateway is using Claude's bridge. Stop the old gateway first; legacy connections also require reloading Claude.",

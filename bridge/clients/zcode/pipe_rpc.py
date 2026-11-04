@@ -33,6 +33,7 @@ ACTIONS = frozenset(
         "projects",
         "target",
         "account",
+        "quota",
         "lifecycle",
         "attach",
         "detach",

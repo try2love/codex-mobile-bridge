@@ -15,6 +15,7 @@ from bridge.features.workspace.workspace import MAX_TRANSFER, Workspace
 from .attachments import attachments, read_image
 from .installation import installation, listener_identity
 from .transport import operation_timeout
+from .presentation import COMPOSER_CAPABILITIES, composer_presentation
 
 
 ACCESS = {'build': '变更前确认', 'guarded': '自主模式', 'yolo': '完全访问'}
@@ -112,6 +113,7 @@ def project_snapshot(snapshot, workspace, reply_models=None):
                         'turnStatus': 'failed' if error else 'inProgress' if active else 'completed',
                         'model': '/'.join(filter(None, (snapshot.get('config', {}).get('provider'), snapshot.get('config', {}).get('model')))),
                         'modelDisplayName': snapshot.get('config', {}).get('model'), 'effort': snapshot.get('config', {}).get('thought'),
+                        'composerCapabilities': dict(COMPOSER_CAPABILITIES),
                         'runtimeKnown': True,
                         'permissionMode': snapshot.get('config', {}).get('mode'),
                         'permissionLabel': ACCESS.get(snapshot.get('config', {}).get('mode')),
@@ -134,6 +136,7 @@ def project_snapshot(snapshot, workspace, reply_models=None):
 
 def detached_session(row, workspace):
     return {**row, 'provider': 'zcode', 'host': 'local', 'cwd': workspace, 'backend': 'desktop',
+            **composer_presentation(row.get('model'), row.get('effort')),
             'status': 'unknown', 'runtimeKnown': False, 'requests': [], 'connectionState': 'detached',
             'capabilities': {'send': False, 'resume': True, 'plan': False, 'goal': False}}
 
@@ -553,6 +556,9 @@ class ZCodePrototype(ZCodeDesktop):
     def _call_live(self, action, sid=None, body=None):
         if action == 'resume':
             return self._resume_debug(sid, body)
+        if action in ('account', 'quota') and self.application_owner is not None:
+            return self.transport({'action': action, 'expectedProcess': self.application_owner,
+                                   **({'body': body or {}} if action == 'quota' else {})})
         if action == 'lifecycle' and not self.sid:
             # The original renderer can still hold active leases after a gateway restart.
             return self.transport({'action': action, 'expectedProcess': self._live_process()})

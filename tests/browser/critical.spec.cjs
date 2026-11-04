@@ -558,3 +558,83 @@ test('every desktop client uses the shared next-level management shell',async({p
  expect(await page.evaluate(()=>testCalls.some(call=>call.entry==='wsl:'+'b'.repeat(32)&&call.action==='wslAccounts'))).toBe(true);
  expect(errors).toEqual([]);
 });
+
+test('shared native API editors keep production form layout and synthetic model discovery',async({page},testInfo)=>{
+  await ready(page);
+  for(const provider of ['codex','claude','deepseek','zcode']){
+    const result=await page.evaluate(async provider=>{
+      const node=(tag,text)=>{const n=document.createElement(tag);if(text)n.textContent=text;return n;};
+      const dialog=node('dialog');dialog.className='picker';dialog.id='native-api-layout';
+      const heading=node('div');heading.className='picker-head';const title=node('h2',provider+' API');title.className='dialog-content-start';title.tabIndex=-1;heading.append(title);
+      const root=node('div');dialog.append(heading,root);document.body.append(dialog);dialog.showModal();title.focus();
+      const state=provider==='codex'?{codex:{accounts:[]}}:{accounts:[],activeIds:[],canSwitch:true,capabilities:{quota:false,addApi:true,...provider==='zcode'?{apiFormats:[{value:'openai-responses',label:'OpenAI Responses'}]}:{}}};
+      const calls=[];const request=async value=>{calls.push({...value,apiKey:'[synthetic]'});return ['modelsDraft','models-draft'].includes(value.action)?{models:['fixture-model','fixture-alternate']}:state;};
+      const panel=provider==='codex'?new CliAccessPanel({root,provider,formOnly:true,read:async()=>state,request}):new DesktopClientAccountsPanel({root,provider,desktop:true,read:async()=>state,request,visible:()=>false});
+      if(provider==='codex')await panel.refresh();else{panel.accept(state);panel.addApiButton.click();}
+      const editor=provider==='codex'?panel:panel.apiEditor;
+      editor.name.input.value='独立测试 API';editor.baseUrl.input.value='https://synthetic.invalid/v1';editor.key.input.value='synthetic-key';
+      editor.fetchModels.click();const end=performance.now()+1500;while(editor.draftLoading){if(performance.now()>end)throw Error('Synthetic discovery timed out');await new Promise(resolve=>setTimeout(resolve,10));}
+      await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+      const controls=[...editor.form.querySelectorAll('input,select,textarea,button')].filter(n=>n.getClientRects().length),box=dialog.getBoundingClientRect();
+      const result={provider,models:[...editor.modelSelect.options].map(n=>n.value).filter(Boolean),modelValue:editor.model.input.value,selectorVisible:!editor.modelSelect.hidden,
+        labels:controls.filter(n=>['INPUT','TEXTAREA','SELECT'].includes(n.tagName)).every(n=>n.labels?.length||n.getAttribute('aria-label')),
+        noOverflow:dialog.scrollWidth<=dialog.clientWidth+1&&controls.every(n=>{const r=n.getBoundingClientRect();return r.width>20&&r.left>=box.left-1&&r.right<=box.right+1;}),
+        urlVisible:editor.baseUrl.input.getClientRects().length>0,protocolVisible:!!panel.editApiFormat?.getClientRects().length,
+        actions:calls.map(x=>x.action),font:getComputedStyle(editor.name.input).fontSize};
+      globalThis.__nativeApiLayout={dialog,panel};return result;
+    },provider);
+    expect(result.selectorVisible).toBe(true);expect(result.models).toEqual(['fixture-model','fixture-alternate']);expect(result.labels).toBe(true);expect(result.noOverflow).toBe(true);
+    expect(result.urlVisible).toBe(provider!=='deepseek');expect(result.protocolVisible).toBe(provider==='zcode');expect(result.actions).toEqual([provider==='codex'?'modelsDraft':'models-draft']);
+    if(provider!=='deepseek')expect(result.modelValue).toBe('fixture-model');
+    await testInfo.attach(provider+'-api-layout',{body:await page.locator('#native-api-layout').screenshot(),contentType:'image/png'});
+    await testInfo.attach(provider+'-api-checks',{body:JSON.stringify(result),contentType:'application/json'});
+    await page.evaluate(()=>{__nativeApiLayout.panel.dispose();__nativeApiLayout.dialog.remove();delete globalThis.__nativeApiLayout;});
+  }
+});
+
+test('native saved and connected composer keeps production control geometry and drafts',async({page},testInfo)=>{
+  await ready(page);await page.evaluate(()=>BridgeFeatures.load('chat'));
+  const before=await page.evaluate(async()=>{
+    document.getElementById('login').hidden=true;
+    const root=document.createElement('div');root.className='app';root.id='composer-layout-test';root.style.cssText='position:fixed;inset:0;background:var(--page);z-index:10';document.body.append(root);
+    const select=document.createElement('select');for(const id of ['codex','zcode'])select.add(new Option(id,id));
+    const session={id:'sess_fixture',title:'ZCode 连接状态布局验收',cwd:'/fixture',model:'account:zai-start-plan/GLM-5.3-Flash$low',modelDisplayName:'GLM-5.3-Flash',effort:'low',composerCapabilities:{models:true,skills:true,permissions:true,attachments:true,plan:true,goal:true}};
+    const history={session:{...session,status:'unknown',readOnly:true,connectionState:'detached'},readOnly:true,capabilities:{send:false,resume:true,plan:false,goal:false},messages:Array.from({length:20},(_,i)=>({id:'reply-'+i,role:'assistant',text:'仅供布局验证的历史消息 '+i+'。保留阅读位置与上传附件。'}))};
+    const live={session:{...session,status:'idle',runtimeKnown:true,connectionState:'ready',permissionMode:'build',permissionLabel:'变更前确认'},capabilities:{send:true,models:true,skills:true,permissions:true,attachments:true,uploadFiles:true,plan:true,goal:true},messages:history.messages};
+    const view=new DesktopSessionsView({root,select,notify(){},onSelect(){},csrf:()=>'',onUnauthorized(){},request:async(url,body)=>{if(body)throw Error('Unexpected write');return url.includes('/detail')?history:url.includes('/workspace')?{entries:[],project:'/fixture'}:{sessions:[session]};}});
+    view.setClientStates([{id:'zcode',enabled:true,connected:true,historyAvailable:true}]);await view.choose('zcode');await view.open(session.id);clearTimeout(view.timer);
+    view.input.value='保留这份尚未发送的草稿';view.attachments.rows.push({id:'fixture-upload',name:'notes.txt',size:20,status:'ready'});view.attachments.render();view.messages.scrollTop=120;view.rememberReading();
+    await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+    const items=[view.modelButton,view.reminderButton,view.skillsButton,view.permissionsButton,view.contextButton,view.composerToggle,view.attachButton,view.mode,view.workMode,view.send];
+    const measure=()=>items.map(node=>{const b=node.getBoundingClientRect();return {left:b.left,top:b.top,width:b.width,height:b.height,hidden:node.hidden};});
+    globalThis.__composerLayout={root,view,live,measure,first:view.messageList.firstElementChild,scroll:view.messages.scrollTop};
+    return {rects:measure(),disabled:[view.modelButton,view.skillsButton,view.permissionsButton,view.workMode,view.send].every(n=>n.disabled),text:view.modelName.textContent,modelLabelWidth:view.modelName.clientWidth,scroll:view.messages.scrollTop};
+  });
+  expect(before.disabled).toBe(true);expect(before.text).toBe('GLM-5.3-Flash');expect(before.modelLabelWidth).toBeGreaterThanOrEqual(50);expect(before.rects.every(r=>!r.hidden&&r.width>10)).toBe(true);
+  await testInfo.attach('composer-before',{body:await page.locator('#composer-layout-test .ds-composer').screenshot(),contentType:'image/png'});
+  const after=await page.evaluate(async()=>{const f=__composerLayout;f.view.applyDetail(f.live);await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));return {rects:f.measure(),draft:f.view.input.value,attachments:f.view.attachments.rows.map(row=>row.id),sameMessage:f.view.messageList.firstElementChild===f.first,scroll:f.view.messages.scrollTop,canSend:!f.view.send.disabled,formFits:f.view.form.scrollWidth<=f.view.form.clientWidth+1};});
+  expect(after.canSend).toBe(true);expect(after.draft).toBe('保留这份尚未发送的草稿');expect(after.attachments).toEqual(['fixture-upload']);expect(after.sameMessage).toBe(true);expect(Math.abs(after.scroll-before.scroll)).toBeLessThanOrEqual(1);
+  for(let i=0;i<after.rects.length;i++)for(const key of ['left','top','width','height'])expect(Math.abs(after.rects[i][key]-before.rects[i][key]),'control '+i+' '+key).toBeLessThanOrEqual(1);
+  const width=testInfo.project.use.viewport.width;expect(after.formFits).toBe(true);expect(after.rects.slice(6).every(r=>r.left>=0&&r.left+r.width<=width+1)).toBe(true);
+  await testInfo.attach('composer-after',{body:await page.locator('#composer-layout-test .ds-composer').screenshot(),contentType:'image/png'});
+  await testInfo.attach('composer-geometry',{body:JSON.stringify({before,after}),contentType:'application/json'});
+  await page.evaluate(()=>{__composerLayout.view.clear();__composerLayout.root.remove();delete globalThis.__composerLayout;});
+});
+
+test('shared native API save actions match Codex and remain reachable by dialog scrolling',async({page},testInfo)=>{
+  await ready(page);
+  for(const provider of ['claude','deepseek','zcode']){
+    const result=await page.evaluate(async provider=>{
+      const dialog=document.createElement('dialog');dialog.className='picker';dialog.id='native-api-footer';const root=document.createElement('div');dialog.append(root);document.body.append(dialog);dialog.showModal();
+      const value={accounts:[],activeIds:[],canSwitch:true,capabilities:{quota:false,addApi:true,...provider==='zcode'?{apiFormats:[{value:'openai-responses',label:'OpenAI Responses'}]}:{}}};
+      const panel=new DesktopClientAccountsPanel({root,provider,desktop:true,visible:()=>false,read:async()=>value,request:async()=>{throw Error('No API request expected');}});
+      panel.accept(value);panel.addApiButton.click();panel.editName.input.value='独立测试 API';panel.editUrl.input.value='https://synthetic.invalid/v1';panel.editKey.input.value='synthetic-key';panel.editModels.input.value='fixture-model';
+      panel.editSubmit.scrollIntoView({block:'end'});await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+      const box=dialog.getBoundingClientRect(),save=panel.editSubmit.getBoundingClientRect(),cancel=panel.editCancel.getBoundingClientRect();
+      const style=getComputedStyle(panel.editSubmit),baseline=getComputedStyle(codexCliAccessPanel.save);globalThis.__nativeApiFooter={dialog,panel};return {primaryMatches:['backgroundColor','borderTopColor','color','fontWeight'].every(key=>style[key]===baseline[key]),scrollable:dialog.scrollHeight>dialog.clientHeight,visible:save.width>30&&save.top>=box.top&&save.bottom<=box.bottom+1&&save.left>=box.left&&save.right<=box.right,oneRow:Math.abs(save.top-cancel.top)<1};
+    },provider);
+    expect(result.visible).toBe(true);expect(result.oneRow).toBe(true);expect(result.primaryMatches).toBe(true);
+    await testInfo.attach(provider+'-api-footer',{body:await page.locator('#native-api-footer').screenshot(),contentType:'image/png'});
+    await page.evaluate(()=>{__nativeApiFooter.panel.dispose();__nativeApiFooter.dialog.remove();delete globalThis.__nativeApiFooter;});
+  }
+});

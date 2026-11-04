@@ -357,6 +357,15 @@ class DeepSeekAccounts:
                 result['api'] = {'hasKey': True}
             return result
 
+    def api_credentials(self, identifier):
+        """Private model-draft lookup for the official API route only."""
+        with self.lock:
+            row = self._row(identifier)
+            if row['kind'] != 'api':
+                raise ValueError('请选择已保存的 API 接入')
+            return {'baseUrl': 'https://api.deepseek.com', 'apiKey': self._snapshot(row),
+                    'apiFormat': 'openai-chat-completions'}
+
     def rename(self, identifier, name):
         with self.lock:
             row = self._row(identifier)

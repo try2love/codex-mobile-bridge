@@ -210,9 +210,9 @@ test('Claude session list exposes the confirmed initialization flow without runn
 test('prepared Claude lists offer separate reconnect and reinitialization actions',async()=>{
  const ui=fixture(),client={id:'claude',name:'Claude',enabled:true,installed:true,connected:false,setupStatus:'needs-initialization',reconnectSupported:true,canReconnect:true},reconnects=[],initializations=[];
  ui.view.setClientStates([client],undefined,id=>initializations.push(id),undefined,id=>reconnects.push(id));await ui.view.choose('claude');
- assert.equal(ui.view.connectionReconnect.hidden,false);assert.equal(ui.view.connectionReconnect.textContent,'重新连接 Desktop');assert.equal(ui.view.connectionInitialize.hidden,false);
+ assert.equal(ui.view.connectionReconnect.hidden,false);assert.equal(ui.view.connectionReconnect.textContent,'重新连接');assert.equal(ui.view.connectionInitialize.hidden,false);
  assert.equal(ui.view.connectionInitialize.textContent,'重新初始化连接');
- ui.run("BridgeI18n.setLanguage('en')");ui.view.renderConnectionStatus();assert.equal(ui.view.connectionReconnect.textContent,'Reconnect Desktop');ui.run("BridgeI18n.setLanguage('zh')");
+ ui.run("BridgeI18n.setLanguage('en')");ui.view.renderConnectionStatus();assert.equal(ui.view.connectionReconnect.textContent,'Reconnect');ui.run("BridgeI18n.setLanguage('zh')");
  await ui.view.connectionReconnect.click();assert.deepEqual(reconnects,['claude']);assert.deepEqual(initializations,[]);
  await ui.view.connectionInitialize.click();assert.deepEqual(initializations,['claude']);
  ui.view.setClientStates([{...client,operationUncertain:true}],undefined,()=>{throw Error('unexpected initialize');},undefined,()=>{throw Error('unexpected reconnect');});
@@ -1372,12 +1372,12 @@ test('channel handoff rechecks one pending UUID and a blocked response permits e
 });
 
 
-test('ready connection methods hide retry and keep a shared chooser in the chat list',async()=>{
- const ui=fixture(),view=ui.view,requested=[];view.provider='zcode';
+test('ready connection methods hide retry without placing a chooser above the chat list',()=>{
+ const ui=fixture(),view=ui.view;view.provider='zcode';
  const client={id:'zcode',enabled:true,setupStatus:'session-access',connected:false,historyAvailable:true,retryable:true,connectionMode:'official-remote',connectionModes:[{id:'private-pipe',label:'本机连接',configured:true},{id:'official-remote',label:'官方远控',configured:true}]};
- view.setClientStates([client],null,null,null,null,id=>requested.push(id));
- assert.equal(view.connectionRetry.hidden,true);assert.equal(view.connectionMode.hidden,false);assert.equal(view.listStatus.textContent,'已连接 · 官方远控');
- await view.connectionMode.onclick();assert.deepEqual(requested,['zcode']);
+ view.setClientStates([client]);
+ assert.equal(view.connectionRetry.hidden,true);assert.equal(view.connectionMode,undefined);assert.equal(view.listStatus.textContent,'已连接 · 官方远控');
+ assert.equal(view.list.querySelectorAll('button').some(button=>button.textContent==='连接方式'),false);
 });
 
 test('connection method changes invalidate old write state without clearing drafts or reading position',async()=>{
@@ -1388,4 +1388,32 @@ test('connection method changes invalidate old write state without clearing draf
  await view.setClientStates([{...client,connectionMode:'official-remote'}]);
  assert.equal(view.freshDetail,false);assert.equal(view.canMutate(),false);assert.equal(reads,1);assert.equal(view.input.value,'Keep draft');assert.equal(view.messages.scrollTop,123);assert.equal(view.attachments,attachments);assert.equal(view.messageList,messageList);
  await view.setClientStates([{...client,connectionMode:'official-remote'}]);assert.equal(reads,1);
+});
+
+
+test('saved composer presentation keeps native controls stable without granting live permissions',async()=>{
+ const ui=fixture(),view=ui.view,sid='sess_presentation',presentation={models:true,effort:true,skills:true,permissions:true,attachments:true,plan:true,goal:true};
+ view.provider='zcode';view.setClientStates([{id:'zcode',enabled:true,connected:true,historyAvailable:true}]);
+ const session={id:sid,title:'Native',cwd:'/project',model:'account:zai-start-plan/GLM-5.3-Flash$low',modelDisplayName:'GLM-5.3-Flash',effort:'low',composerCapabilities:presentation};
+ view.rows=[session];view.prepareChat(sid);
+ const controls=[view.modelButton,view.reminderButton,view.skillsButton,view.permissionsButton,view.attachButton,view.workMode];
+ assert.deepEqual(controls.map(button=>button.hidden),[false,false,false,false,false,false]);assert.equal(view.modelName.textContent,'GLM-5.3-Flash');
+ const saved={session:{...session,status:'unknown',connectionState:'detached',readOnly:true},readOnly:true,capabilities:{send:false,resume:true,stop:false,plan:false,goal:false},messages:[{id:'saved',role:'assistant',text:'Saved reply'}]};
+ view.workModes.selection='plan';view.applyDetail(saved);
+ assert.equal(view.workMode.value,'plan');assert.equal(view.workMode.disabled,true);assert.equal(view.send.disabled,true);
+ assert.equal(view.modelButton.disabled,true);assert.equal(view.skillsButton.disabled,true);assert.equal(view.permissionsButton.disabled,true);assert.equal(view.attachments.locked,true);
+ const calls=ui.calls.length;await view.models();await view.skills();await view.permissions();assert.equal(ui.calls.length,calls);
+ view.input.value='Keep draft';view.attachments.rows.push({id:'saved-upload',status:'ready',name:'file.png'});view.messages.scrollTop=42;view.reading={following:false,top:42};const before=view.messageList.children[0];
+ const live={session:{...session,status:'idle',connectionState:'ready',permissionMode:'build',permissionLabel:'变更前确认'},capabilities:{send:true,models:true,skills:true,permissions:true,attachments:true,plan:true,goal:true},messages:saved.messages};
+ view.applyDetail(live);assert.deepEqual(controls.map(button=>button.hidden),[false,false,false,false,false,false]);assert.equal(view.workMode.value,'plan');assert.equal(view.workMode.disabled,false);assert.equal(view.skillsButton.disabled,false);assert.equal(view.modelButton.disabled,false);
+ assert.equal(view.input.value,'Keep draft');assert.equal(view.attachments.rows[0].id,'saved-upload');assert.equal(view.messages.scrollTop,42);assert.equal(view.messageList.children[0],before);
+ view.applyDetail(saved);assert.deepEqual(controls.map(button=>button.hidden),[false,false,false,false,false,false]);assert.equal(view.send.disabled,true);assert.equal(view.workMode.value,'plan');assert.equal(view.input.value,'Keep draft');assert.equal(view.attachments.rows[0].id,'saved-upload');
+});
+
+
+test('presentation-only work mode does not add unsupported commands to a plain message',async()=>{
+ const ui=fixture(),view=ui.view;view.provider='zcode';view.sid='a';view.setClientStates([{id:'zcode',connected:true,enabled:true}]);view.prepareChat('a');
+ view.applyDetail({session:{id:'a',title:'Limited',status:'idle',connectionState:'ready',composerCapabilities:{plan:true,goal:true}},capabilities:{send:true,plan:false,goal:false},messages:[]});
+ assert.equal(view.workMode.hidden,false);assert.equal(view.workMode.disabled,true);view.input.value='plain message';ui.setHandler(async()=>({status:'unknown'}));await view.submit();
+ const sent=ui.calls.find(call=>call.body);assert.ok(sent);assert.equal(sent.body.workMode,undefined);
 });

@@ -2,6 +2,8 @@
 
 Status: implemented
 
+当前已建立原生控制通道的接入，按[共享账号与 ZCode 状态记录](2026-11-04-shared-account-editor-and-zcode-readiness.md)使用账号绑定的原生额度查询；本文的日志回执继续作为严格的可归属回退，不放宽时间门禁。
+
 ## 问题
 
 ZCode 免费账号给 GLM-5.3 与 GLM-5.3-Flash 分配不同的每日额度。已有账号页面能展示额度窗口，但 ZCode 适配器没有提供可核对的上游数值。

@@ -14,7 +14,9 @@ from .installation import renderer_url
 def operation_timeout(action):
     # A cold original conversation may need to start its workspace and restore
     # a snapshot. Attaching cannot send model input. Keep normal mutations bounded.
-    return 25 if action == 'attach' else 12
+    # The original billing request itself allows 15s; leave room for its native
+    # reply and relay hops without widening any mutation's timeout.
+    return 30 if action == 'quota' else 25 if action == 'attach' else 12
 
 
 def verified_target(targets, application, port):

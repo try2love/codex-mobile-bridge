@@ -503,6 +503,16 @@ class ClaudeAccounts:
                                    for model in config.get('inferenceModels', [])], 'hasKey': True}
             return result
 
+    def api_credentials(self, identifier):
+        """Private model-draft lookup; never expose the stored key to the editor."""
+        with self.lock:
+            row, snapshot = self._account(identifier)
+            if row['kind'] != 'api' or not self.edit(identifier).get('api'):
+                raise ValueError('请选择已保存的 API 接入')
+            config = _json(snapshot/'gateway.json')['config']
+            return {'baseUrl': config['inferenceGatewayBaseUrl'], 'apiKey': config['inferenceGatewayApiKey'],
+                    'apiFormat': 'anthropic-messages', 'authScheme': config.get('inferenceGatewayAuthScheme', 'bearer')}
+
     def rename(self, identifier, name):
         with self.lock:
             self._account(identifier)

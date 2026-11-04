@@ -44,9 +44,10 @@ class WorkModes {
       :view.goalRuntimeAvailable===true&&view.access?.canUseGoal===true);
     const goalUnavailableReason=caps?.goal===false?'当前客户端未提供原生目标模式':view?.host!=='local'&&view?.access?.runtime==='desktop'?'目标模式暂不支持 SSH 主机':view?.access?.source==='cli'?'当前 Codex 会话暂不支持目标模式':view?.host!=='local'?'目标模式暂不支持 SSH 主机':'未找到桌面 App 的 Codex 运行时';
     this.select.value=this.selection||(view?.collaborationMode==='plan'?'plan':'default');
-    if(!goalSupported&&this.select.value==='goal')this.select.value='default';
+    const pendingCapabilities=view?.readOnly===true||view?.connectionState==='detached'||view?.runtimeKnown===false;
+    if(!goalSupported&&!(pendingCapabilities&&view?.composerCapabilities?.goal===true)&&this.select.value==='goal')this.select.value='default';
     const planOption=this.select.querySelector('[value=plan]');if(planOption)planOption.disabled=caps?.plan===false;
-    if(caps?.plan===false&&this.select.value==='plan')this.select.value='default';
+    if(caps?.plan===false&&!(pendingCapabilities&&view?.composerCapabilities?.plan===true)&&this.select.value==='plan')this.select.value='default';
     this.select.disabled=!view||view.loadingHistory||view.activating||busy||sendMode==='steer';
     const goalOption=this.select.querySelector('[value=goal]');
     goalOption.disabled=!goalSupported||!!(view?.status==='active'||(view?.goal&&view.goal.status!=='complete')||['pending','unknown'].includes(view?.goalSubmission?.status));

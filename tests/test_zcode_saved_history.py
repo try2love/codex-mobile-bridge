@@ -49,6 +49,26 @@ class ZCodeSavedHistoryTests(unittest.TestCase):
                        '{"type":"text","text":"private runtime context","synthetic":true}')""")
             db.commit()
 
+    def test_saved_composer_labels_preserve_routing_ids_without_live_permissions(self):
+        for model, display, effort in [
+                ('account:zai-start-plan/GLM-5.3-Flash$low', 'GLM-5.3-Flash', 'low'),
+                ('api:fixture/team/model$high', 'team/model', 'high'),
+                ('custom:api%3Afixture:team%2Fmodel', 'team/model', None),
+                ('Flash', 'Flash', None)]:
+            with self.subTest(model=model), closing(sqlite3.connect(self.index)) as db:
+                db.execute('UPDATE tasks SET model=? WHERE task_id=?', (model, 'sess_ok'))
+                db.commit()
+                view = saved_detail(self.home, 'sess_ok')
+                row = view['session']
+                self.assertEqual(row['model'], model)
+                self.assertEqual(row['modelDisplayName'], display)
+                self.assertEqual(row.get('effort'), effort)
+                self.assertTrue(row['composerCapabilities']['skills'])
+                self.assertTrue(row['composerCapabilities']['plan'])
+                self.assertFalse(view['capabilities']['send'])
+                self.assertNotIn('skills', view['capabilities'])
+                self.assertTrue(view['readOnly'])
+
     def test_indexed_chat_without_cli_transcript_can_open_but_not_authorize_a_write(self):
         from bridge.clients.zcode.history import resume_workspace
         with closing(sqlite3.connect(self.transcript)) as db:

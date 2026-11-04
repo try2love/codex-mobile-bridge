@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { parseLink } from './link.cjs';
 import { createAcknowledgedWebRemoteControlRelayProtocol, ChannelClient, ProxyChannel, ServiceChannels, ensureAgentV4ConnectionHandshake } from './vendor/zcode-official.mjs';
 
@@ -11,14 +12,14 @@ export class RelayFailure extends Error {
 
 // This is a terminal connection, never a second agent or a model client. A dead
 // socket terminates its RPC owner. In particular KICKED must not steal it back.
-export async function connectProtocol({ jwt, link, timeoutMs = 120_000, onState = () => {} }, {
+export async function connectProtocol({ jwt, link, timeoutMs = 120_000, waitForDevice = false, signal, onState = () => {} }, {
   fetcher = globalThis.fetch, createSocket = url => new WebSocket(url), random = Math.random,
 } = {}) {
   const { sid, mid } = parseLink(link);
   if (typeof jwt !== 'string' || !jwt || jwt.length > 16384 || /\s/.test(jwt)) throw new RelayFailure('auth-required');
   if (!Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 180000) throw new RelayFailure('invalid-timeout');
   const abort = new AbortController();
-  let stopped = false, socket, heartbeat, watchdog, adapter, client, bootstrap, device;
+  let stopped = false, stopReason, socket, heartbeat, watchdog, adapter, client, bootstrap, device;
   let terminalSid, authenticated = false, requested = false, connected = false;
   let openingBridgeId, earlyBytes = 0;
   const earlyFrames = [];
@@ -32,7 +33,7 @@ export async function connectProtocol({ jwt, link, timeoutMs = 120_000, onState 
   const deadline = setTimeout(() => stop('connection-timeout'), timeoutMs);
   function stop(reason = 'disconnected') {
     if (stopped) return;
-    stopped = true; connected = false;
+    stopped = true; stopReason = reason; connected = false;
     clearTimeout(deadline); clearTimeout(heartbeat); clearTimeout(watchdog);
     abort.abort();
     client?.dispose(); adapter?.dispose();
@@ -43,6 +44,8 @@ export async function connectProtocol({ jwt, link, timeoutMs = 120_000, onState 
     rejectConnection(new RelayFailure(reason));
     state({ connected: false, reason });
   }
+  const cancelled = () => stop('connection-cancelled');
+  signal?.addEventListener('abort', cancelled, { once: true });
   const http = async (path, body) => {
     const response = await fetcher(ORIGIN + path, { method: body ? 'POST' : 'GET', redirect: 'error', cache: 'no-store',
       headers: { Authorization: 'Bearer ' + jwt, ...(body ? { 'Content-Type': 'application/json' } : {}) },
@@ -123,6 +126,7 @@ export async function connectProtocol({ jwt, link, timeoutMs = 120_000, onState 
         zcodeAgentService: ServiceChannels.ZCodeAgent, projectService: ServiceChannels.Project,
         zcodeTaskService: ServiceChannels.ZCodeTask, modelSelectionService: ServiceChannels.ModelSelection,
         oauthService: ServiceChannels.OAuth, credentialService: ServiceChannels.Credential,
+        providerSettingsService: ServiceChannels.ProviderSettings, usageStatsService: ServiceChannels.UsageStats,
       }).map(([name, channel]) => [name, ProxyChannel.toService(client.getChannel(channel))]));
       // Handshake confirms the RPC transport rather than treating bridge-ready as
       // a writable session. No create, resume or model command is sent here.
@@ -137,11 +141,21 @@ export async function connectProtocol({ jwt, link, timeoutMs = 120_000, onState 
     } catch (error) { stop(error instanceof RelayFailure ? error.reason : 'desktop-rejected'); }
   }
   try {
-    const devices = await http('/api/v1/remote/device');
-    const matches = Array.isArray(devices) ? devices.filter(row => row?.device_sid === sid && row.device_mid === mid) : [];
-    if (matches.length !== 1) throw new RelayFailure('device-not-owned');
-    if (matches[0].online !== true) throw new RelayFailure('device-offline');
-    device = { sid, mid, name: typeof matches[0].name === 'string' ? matches[0].name : '' };
+    if (signal?.aborted) throw new RelayFailure('connection-cancelled');
+    let attempt = 0;
+    for (;;) {
+      const devices = await http('/api/v1/remote/device');
+      const matches = Array.isArray(devices) ? devices.filter(row => row?.device_sid === sid && row.device_mid === mid) : [];
+      if (matches.length !== 1) throw new RelayFailure('device-not-owned');
+      if (matches[0].online === true) {
+        device = { sid, mid, name: typeof matches[0].name === 'string' ? matches[0].name : '' };
+        break;
+      }
+      if (!waitForDevice) throw new RelayFailure('device-offline');
+      // Only a just-launched native App gets this startup grace. No terminal
+      // ticket or session command is issued until that exact device is online.
+      await delay(Math.min(1000 * 2 ** attempt++, 8000), undefined, { signal: abort.signal });
+    }
     const ticket = await http('/api/v1/remote/token', { role: 'terminal' });
     jwt = '';
     if (!/^[A-Za-z0-9_-]{21}[AQgw]$/.test(ticket?.token) || !Number.isInteger(ticket.expires_in) || ticket.expires_in <= 0)
@@ -190,7 +204,7 @@ export async function connectProtocol({ jwt, link, timeoutMs = 120_000, onState 
     });
     return await connection;
   } catch (error) {
-    const safe = error instanceof RelayFailure ? error : new RelayFailure(stopped ? 'connection-timeout' : 'http-failed');
+    const safe = error instanceof RelayFailure ? error : new RelayFailure(stopped ? stopReason : 'http-failed');
     stop(safe.reason); throw safe;
-  } finally { jwt = ''; }
+  } finally { jwt = ''; signal?.removeEventListener('abort', cancelled); }
 }

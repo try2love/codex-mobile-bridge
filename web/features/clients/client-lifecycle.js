@@ -93,7 +93,7 @@ const ClientLifecycle=(()=>{
     return new Promise(resolve=>{
       const dialog=document.createElement('dialog');dialog.className='client-disable-dialog';
       const node=(tag,text)=>{const element=document.createElement(tag);element.textContent=BridgeI18n.t(text);return element;};
-      const title=node('h2','选择连接方式'),identity=node('p',client.name||client.id),description=node('p','一次使用一种连接方式；切换不会自动退出电脑 App。');
+      const title=node('h2','连接方式'),identity=node('p',client.name||client.id),description=node('p','一次使用一种连接方式；切换不会自动退出电脑 App。');
       const id='client-connection-'+(++sequence);title.id=id+'-title';description.id=id+'-description';dialog.setAttribute('aria-labelledby',title.id);dialog.setAttribute('aria-describedby',description.id);
       const actions=document.createElement('div');actions.className='client-disable-options';let choice=null;
       const finish=value=>{choice=value;dialog.close();};

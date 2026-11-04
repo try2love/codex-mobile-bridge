@@ -50,7 +50,11 @@ class ZCodeOfficial(ZCodePrototype):
         return self.client.call(args)
 
     def connect_application(self, pid=None, *, wait=False, deadline=None):
-        self.client.connect()
+        if wait:
+            # A new native process cannot inherit the old terminal's workspace
+            # binding, even if its final offline heartbeat has not arrived yet.
+            self.client.close()
+        self.client.connect(**({'wait': True} if wait else {}))
         owner = self._live_process()
         request = {'action': 'application', 'expectedProcess': owner}
         if deadline is not None:
@@ -83,11 +87,6 @@ class ZCodeOfficial(ZCodePrototype):
             return True
         except (OSError, ValueError, EOFError):
             return False
-
-    def _call_live(self, action, sid=None, body=None):
-        if action == 'account' and not self.sid and self.application_owner is not None:
-            return self.transport({'action': action, 'expectedProcess': self.application_owner})
-        return super()._call_live(action, sid, body)
 
     def _application_status(self):
         state = self.client.status()

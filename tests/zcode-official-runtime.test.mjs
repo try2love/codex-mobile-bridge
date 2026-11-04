@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRelay } from '../desktop/features/zcode-official/runtime.mjs';
+import { connectProtocol } from '../desktop/features/zcode-official/protocol.mjs';
 import { ChannelServer, ProxyChannel, ServiceChannels, Emitter,
   createAcknowledgedWebRemoteControlRelayProtocol } from '../desktop/features/zcode-official/vendor/zcode-official.mjs';
 
@@ -9,8 +10,8 @@ const hello = { kind: 'hello', protocolVersion: 3, connectionId: 'fixture-connec
   clientMode: 'web-remote-replayable', deliveryProfile: 'replayable', serverTime: Date.now(),
   capabilities: { nativeDialogs: false, localTerminal: false, binaryFrames: false, compression: 'none' }, auth: {} };
 
-function fixture({ owned = true, wrongBridge = false, large = false, incompatible = false } = {}) {
-  let socket, server, relay, socketCount = 0, clientHello;
+function fixture({ owned = true, wrongBridge = false, large = false, incompatible = false, offlineReads = 0 } = {}) {
+  let socket, server, relay, socketCount = 0, clientHello, deviceReads = 0;
   const requests = [], commands = [];
   const events = new Emitter();
   const emit = data => socket.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(data) }));
@@ -20,7 +21,7 @@ function fixture({ owned = true, wrongBridge = false, large = false, incompatibl
     fetcher: async (url, options) => {
       assert.equal(options.redirect, 'error');
       assert.equal(new URL(url).origin, 'https://zcode.z.ai');
-      const body = url.endsWith('/device') ? [{ device_sid: owned ? 'fixture-device' : 'someone-else', device_mid: 'fixture-machine', online: true }]
+      const body = url.endsWith('/device') ? [{ device_sid: owned ? 'fixture-device' : 'someone-else', device_mid: 'fixture-machine', online: ++deviceReads > offlineReads }]
         : { token: 'AAAAAAAAAAAAAAAAAAAAAA', expires_in: 60 };
       return new Response(JSON.stringify({ code: 0, msg: 'ok', data: body }));
     },
@@ -69,7 +70,7 @@ function fixture({ owned = true, wrongBridge = false, large = false, incompatibl
       return socket;
     },
   };
-  return { dependencies, requests, commands, emit, get clientHello() { return clientHello; }, get socketCount() { return socketCount; },
+  return { dependencies, requests, commands, emit, get clientHello() { return clientHello; }, get socketCount() { return socketCount; }, get deviceReads() { return deviceReads; },
     close() { server?.dispose(); relay?.dispose(); events.dispose(); socket?.close(); } };
 }
 
@@ -117,5 +118,32 @@ test('foreign devices and workspace mismatches never become native services', as
     finally { f.close(); }
     assert.equal(f.commands.length, 0);
     if (options.owned === false) assert.equal(f.socketCount, 0);
+  }
+});
+
+test('explicit cold startup waits for the same offline device before obtaining a terminal', async t => {
+  const f = fixture({ offlineReads: 1 });t.after(() => f.close());
+  const runtime = await createRelay({ jwt:'fixture-jwt',link,waitForDevice:true,timeoutMs:3000 },f.dependencies);
+  t.after(() => runtime.dispose());
+  assert.equal(f.deviceReads,2);assert.equal(f.socketCount,1);assert.equal(f.commands.length,0);
+});
+
+test('ordinary reconnect does not poll an offline or unowned device', async () => {
+  for (const options of [{offlineReads:100},{owned:false}]) {
+    const f=fixture(options);
+    try {await assert.rejects(connectProtocol({jwt:'fixture-jwt',link,timeoutMs:1000},f.dependencies),/device-offline|device-not-owned/);}
+    finally {f.close();}
+    assert.equal(f.deviceReads,1);assert.equal(f.socketCount,0);
+  }
+});
+
+test('cold startup backoff obeys cancellation and the existing connection deadline', async () => {
+  for (const cancel of [true,false]) {
+    const f=fixture({offlineReads:100}),abort=new AbortController();
+    const promise=connectProtocol({jwt:'fixture-jwt',link,waitForDevice:true,timeoutMs:50,signal:abort.signal},f.dependencies);
+    if(cancel){await new Promise(resolve=>setImmediate(resolve));abort.abort();}
+    try {await assert.rejects(promise,cancel?/connection-cancelled/:/connection-timeout/);}
+    finally {f.close();}
+    assert.equal(f.deviceReads,1);assert.equal(f.socketCount,0);
   }
 });

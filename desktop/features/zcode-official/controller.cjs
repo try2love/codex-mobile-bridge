@@ -5,7 +5,7 @@ const {randomUUID}=require('node:crypto');
 const {pathToFileURL}=require('node:url');
 const {ORIGIN,parseLink}=require('./link.cjs');
 const {serveLocal}=require('../../shared/local-service.cjs');
-const ACTIONS=new Set(['application','projects','target','account','lifecycle','attach','detach','list','create','detail','history','receipt','tasks','stop-task','catalog','send','stop','respond','settings','access','work-mode','goal','compact','fork','edit-message','rename']);
+const ACTIONS=new Set(['application','projects','target','account','quota','lifecycle','attach','detach','list','create','detail','history','receipt','tasks','stop-task','catalog','send','stop','respond','settings','access','work-mode','goal','compact','fork','edit-message','rename']);
 const failure=message=>Object.assign(Error(message),{publicMessage:message});
 class OfficialRemote {
   constructor({electron,profile,rendererPath}){
@@ -49,21 +49,22 @@ class OfficialRemote {
     this.stopServer=await serveLocal(this.profile,'zcode-official',request=>this.handle(request));
   }
   async disconnect(){
-    this.generation++;this.runtime?.dispose();this.runtime=null;this.owner=null;this.environment=null;
+    this.generation++;this.connectAbort?.abort();this.runtime?.dispose();this.runtime=null;this.owner=null;this.environment=null;
     this.reason='官方远控已断开，可重新连接。';return this.status();
   }
-  async connect(){
+  async connect({waitForDevice=false}={}){
     if(this.runtime)return this.owner;
     if(this.connecting)return this.connecting;
     if(!this.auth)throw failure('请先在网关的 ZCode 管理页登录官方远控。');
     const link=this.localLink(this.targetLink()).url;
     const generation=this.generation;
+    const connectAbort=this.connectAbort=new AbortController();
     const task=(async()=>{
       this.reason='正在连接 ZCode 官方远控…';
       const {createRelay}=await import('./runtime.mjs');
       let runtime;
       try{
-        runtime=await createRelay({jwt:this.auth.jwt,link,onState:state=>{
+        runtime=await createRelay({jwt:this.auth.jwt,link,waitForDevice,signal:connectAbort.signal,onState:state=>{
           if(this.runtime!==runtime)return;
           if(state.connected===false){this.reason=state.reason||'官方远控已断开，请重新连接。';this.runtime=null;this.owner=null;this.environment=null;}
         }});
@@ -72,14 +73,20 @@ class OfficialRemote {
         this.environment={services:runtime.services,contexts:[],state:runtime.state,storage:runtime.storage,
           acquireWorkspace:runtime.acquireWorkspace,clientMode:'web-remote-replayable'};
         this.reason='已连接官方远控';return this.owner;
-      }catch(error){runtime?.dispose();this.reason='官方远控连接失败，请检查原 App 的远控开关、账号和网络。';throw failure(this.reason);}
+      }catch(error){runtime?.dispose();if(generation!==this.generation)throw failure('此次连接已取消。');this.reason=({
+        'auth-required':'官方登录已失效，请在电脑网关重新登录。',
+        'device-offline':'ZCode 官方远控尚未上线，请确认原 App 已开启 Web 远程控制。',
+        'device-not-owned':'官方账号或远控链接不匹配，请在电脑网关核对配置。',
+        'terminal-replaced':'官方远控被另一终端接入，请确认后重新连接。',
+        'connection-timeout':'等待 ZCode 官方远控上线超时，请稍后重新连接。'
+      })[error.code]||'官方远控连接失败，请检查原 App 的远控开关、账号和网络。';throw failure(this.reason);}
     })();
     this.connecting=task;
-    try{return await task;}finally{if(this.connecting===task)this.connecting=null;}
+    try{return await task;}finally{if(this.connecting===task){this.connecting=null;this.connectAbort=null;}}
   }
   async handle(message){
     if(message?.command==='status')return this.status();
-    if(message?.command==='connect')return this.connect();
+    if(message?.command==='connect')return this.connect({waitForDevice:message.waitForDevice===true});
     if(message?.command==='disconnect')return this.disconnect();
     if(message?.command!=='call'||!ACTIONS.has(message.request?.action))throw failure('不支持的官方远控操作。');
     const request=message.request;
