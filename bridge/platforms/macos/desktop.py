@@ -9,7 +9,8 @@ from bridge.platforms.posix.desktop import terminate
 
 def _process_rows():
     output = subprocess.run(['ps', '-ww', '-u', str(os.getuid()), '-o', 'pid=,comm='],
-                            capture_output=True, text=True, check=True, timeout=10).stdout
+                            capture_output=True, text=True, encoding='utf-8', check=True, timeout=10,
+                            env={**os.environ, 'LC_ALL': 'en_US.UTF-8'}).stdout
     native = None
     for line in output.splitlines():
         fields = line.strip().split(None, 1)
@@ -50,7 +51,8 @@ def commands(pids):
     if not pids:
         return {}
     result = subprocess.run(['ps', '-ww', '-p', ','.join(map(str, pids)), '-o', 'pid=,args='],
-                            capture_output=True, text=True, timeout=10)
+                            capture_output=True, text=True, encoding='utf-8', timeout=10,
+                            env={**os.environ, 'LC_ALL': 'en_US.UTF-8'})
     if result.returncode not in (0, 1):
         result.check_returncode()
     return {int(parts[0]): parts[1] for line in result.stdout.splitlines()

@@ -1,5 +1,6 @@
 """Read-only process command contract; never invokes ps or signals real apps."""
 from types import SimpleNamespace
+import os
 import unittest
 from unittest.mock import patch
 
@@ -18,6 +19,20 @@ class MacOSProcessCommandsTests(unittest.TestCase):
         with patch('bridge.platforms.macos.desktop.subprocess.run', return_value=result) as run:
             self.assertEqual(commands([701]), {701: '/fixture/Desktop --profile /path with spaces'})
             self.assertEqual(run.call_args.args[0], ['ps', '-ww', '-p', '701', '-o', 'pid=,args='])
+
+    def test_gui_c_locale_does_not_escape_unicode_process_identity(self):
+        from bridge.platforms.macos.desktop import processes
+        command = '/Users/test/中文项目/Gateway serve --data-dir /Users/test/会话'
+        def ps(args, **options):
+            self.assertEqual(options['env']['LC_ALL'], 'en_US.UTF-8')
+            self.assertEqual(options['encoding'], 'utf-8')
+            self.assertEqual(options['env']['KEEP_FIXTURE'], 'untouched')
+            return SimpleNamespace(returncode=0, stdout=' 701 '+command+'\n')
+        with patch.dict(os.environ, {'LC_ALL': 'C', 'KEEP_FIXTURE': 'untouched'}), \
+                patch('bridge.platforms.macos.desktop.subprocess.run', side_effect=ps):
+            self.assertEqual(commands([701]), {701: command})
+            self.assertEqual(processes(lambda value: value == command), [701])
+            self.assertEqual(os.environ['LC_ALL'], 'C')
 
     @patch('os.getuid', return_value=501, create=True)
     def test_display_name_uses_same_user_kernel_image_without_signals(self, _uid):
