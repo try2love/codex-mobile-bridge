@@ -44,7 +44,11 @@ helpers = {'darwin': ('claude-bridge-helper', 'zcode-bridge-helper'),
 for name in helpers.get(sys.platform, ()):
     command.extend(['--add-binary', str(root/'dist/client-helpers'/name)+':client-helpers'])
 command.append(str(root/'desktop.py'))
-subprocess.run(command, cwd=root, check=True)
+# Resource paths can exceed Windows' CreateProcess command-line limit. Keep
+# PyInstaller isolated, but pass the unchanged argument list over stdin.
+subprocess.run([sys.executable, '-c',
+                'import json,sys;from PyInstaller.__main__ import run;run(json.load(sys.stdin))'],
+               input=json.dumps(command[3:]), text=True, cwd=root, check=True)
 source = root/'dist/codex-mobile-gateway'
 import shutil
 shutil.rmtree(root/'dist/gateway', ignore_errors=True)
