@@ -857,6 +857,38 @@ class CliSessionTests(unittest.TestCase):
             'threadId': 'thread-a', 'turn': {'id': 'turn-1', 'status': 'completed'}}})
         self.assertEqual(self.states[-1][1]['turns'][0]['status'], 'completed')
 
+    def test_reasoning_deltas_stream_before_completion(self):
+        # Third-party Responses backends stream chain of thought as raw text
+        # deltas and leave `summary` empty until (never) filled upstream.
+        self.sessions.attach('thread-a', explicit=True)
+        self.sessions._event({'method': 'turn/started', 'params': {
+            'threadId': 'thread-a', 'turn': {'id': 'turn-1', 'status': 'inProgress', 'items': []}}})
+        self.sessions._event({'method': 'item/started', 'params': {
+            'threadId': 'thread-a', 'turnId': 'turn-1',
+            'item': {'id': 'rs-1', 'type': 'reasoning', 'summary': [], 'content': []}}})
+        for delta in ('Think', 'ing'):
+            self.sessions._event({'method': 'item/reasoning/textDelta', 'params': {
+                'threadId': 'thread-a', 'turnId': 'turn-1', 'itemId': 'rs-1',
+                'delta': delta, 'contentIndex': 0}})
+        item = self.states[-1][1]['turns'][0]['items'][0]
+        self.assertEqual(item['content'], ['Thinking'])
+        self.assertEqual(item['summary'], [])
+        self.sessions._event({'method': 'item/reasoning/summaryTextDelta', 'params': {
+            'threadId': 'thread-a', 'turnId': 'turn-1', 'itemId': 'rs-1',
+            'delta': 'Summary', 'summaryIndex': 0}})
+        item = self.states[-1][1]['turns'][0]['items'][0]
+        self.assertEqual(item['summary'], ['Summary'])
+        self.assertEqual(item['content'], ['Thinking'])
+
+    def test_reasoning_delta_without_started_item_is_buffered(self):
+        self.sessions.attach('thread-a', explicit=True)
+        self.sessions._event({'method': 'turn/started', 'params': {
+            'threadId': 'thread-a', 'turn': {'id': 'turn-1', 'status': 'inProgress', 'items': []}}})
+        self.sessions._event({'method': 'item/reasoning/textDelta', 'params': {
+            'threadId': 'thread-a', 'turnId': 'turn-1', 'itemId': 'rs-2', 'delta': 'partial'}})
+        item = self.states[-1][1]['turns'][0]['items'][0]
+        self.assertEqual((item['id'], item['type'], item['content']), ('rs-2', 'reasoning', ['partial']))
+
     def test_capacity_error_distinguishes_native_retry_and_required_intervention(self):
         self.sessions.attach('thread-a', explicit=True)
         started = {'method': 'turn/started', 'params': {
