@@ -24,8 +24,8 @@
 | 聊天与 Markdown 文件中的 Mermaid 图表、源码和全屏 | `web/shared/mermaid-*.js`、`markdown.js` | `bridge/api/mermaid_render.py`、中继与 iOS 子页面导航；[模块约定](../../web/README.md#mermaid-preview) |
 | Claude 手动额度与成功查询快照 | `bridge/clients/claude/accounts.py` | `web/features/accounts/client-accounts.js`；[决定与边界](../../.agents/notes/implemented/bug-fix/2026-10-12-keychain-access-and-manual-quota.md) |
 | 终端会话与命令 | `bridge/features/terminals/manager.py` | `bridge/platforms/windows/terminal.py`、`posix/terminal.py` |
-| 通知、后台巡检、事件游标 | `bridge/features/notifications/` | `desktop/features/notifications/`，`mobile/android/`、`mobile/ios/` |
-| 局域网、域名、SSH、Tailscale、中继连接 | `bridge/features/network/` | `desktop/features/connections/`，独立服务 `relay/` |
+| 通知、后台巡检、事件游标 | `bridge/features/notifications/` | `desktop/features/notifications/`，`mobile/android/`、`mobile/ios/`；[云通知与本地审批](../cloud-relay.md) |
+| 局域网、域名、SSH、Tailscale、中继连接 | `bridge/features/network/` | `desktop/features/connections/`，旧独立服务 `relay/`；[hosted/selfhost 加密云接入](../cloud-relay.md) |
 | 网关更新或 Codex 更新 | `bridge/features/updates/` | `desktop/features/updates/`、签名与构建脚本 |
 | 共享聊天功能、应用切换 | `web/features/chat/`、`web/features/clients/` | `web/shell/` |
 | 窄屏、横屏、宽屏分屏 | `web/layouts/` | 工作台自身标签/草稿状态仍归 `web/features/workspace/` |

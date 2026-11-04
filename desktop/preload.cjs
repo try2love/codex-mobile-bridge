@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('bridgeDesktop',{
   transferSettings:value=>ipcRenderer.invoke('bridge:transfer-settings',value),
   devices:value=>ipcRenderer.invoke('bridge:devices',value),
   pairing:value=>ipcRenderer.invoke('bridge:pairing',value),
+  cloud:value=>ipcRenderer.invoke('bridge:cloud',value),
   installCloudflared:()=>ipcRenderer.invoke('bridge:install-cloudflared'),
   checkCloudflared:value=>ipcRenderer.invoke('bridge:check-cloudflared',value),
   copyServerDiagnostics:value=>ipcRenderer.invoke('bridge:copy-server-diagnostics',value),

@@ -363,9 +363,13 @@ macOS 在构建网关运行时后执行 `npm run build:mac -- --arm64`（M 系�
 
 ```bash
 git switch main
+python -m pip install -r requirements-desktop.txt
 npm ci
 npm run desktop
 ```
+
+
+源码桌面运行先在同一 Python 环境安装上述依赖，其中包含云中继所需的 `aiohttp`、`noiseprotocol` 和系统凭据库 `keyring`；仅安装 Node 依赖不够。使用 `CMB_PYTHON` 时请指向安装了这些依赖的解释器。修改环境后需重启网关；刷新窗口不会替换正在运行的 Python 进程。桌面打包会提前检查并显式收集这些模块，安装版用户无需自行安装 Python 依赖。
 
 构建步骤（在当前项目的 Python 虚拟环境中执行）：
 

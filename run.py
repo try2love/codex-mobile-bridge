@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 
 from bridge.features.auth.auth import password_record
 from bridge.api.httpd import GatewayServer
+from bridge.app.cloud import create_cloud_server
 from bridge.app.lifecycle import GatewayControl
 from bridge.app.service import Bridge
 from bridge.features.network.tunnel import QuickTunnel
@@ -172,6 +173,8 @@ def main(connections=None, connection_secrets=None):
                           lan_addresses=monitor.addresses())
     address_notifications = AddressNotifications(args.config.parent, notification_urls, server.instance_id)
     notifications = Notifications(bridge, args.config.parent, lambda: server.origins, lambda: config.get('publicUrl', ''), desktop_sessions=server.desktop_sessions)
+    from bridge.features.network.cloud_connector import Connector
+    cloud = Connector(args.config.parent, server)
     def valid_push_session(key):
         with server.auth.lock:
             session = server.auth.sessions.get(key)
@@ -258,10 +261,14 @@ def main(connections=None, connection_secrets=None):
         for listener in servers:
             listener.connection_discovery = discovery
         notifications.start()
+        try:
+            cloud.start(lambda: create_cloud_server(server))
+        except ImportError:
+            cloud.status('unavailable', 'cloud_dependencies_missing')
         address_notifications.start()
         monitor.start()
         bridge.accounts.monitor.start()
-        control.start(server.shutdown, server.pairing.control, server.instance_id, server.auth, bridge.account.control, server.notifications.control, bridge.accounts.control, server.harness.control, server.desktop_sessions.control, bridge.cli_access_control, network_adaptation=adaptation.control)
+        control.start(server.shutdown, server.pairing.control, server.instance_id, server.auth, bridge.account.control, server.notifications.control, bridge.accounts.control, server.harness.control, server.desktop_sessions.control, bridge.cli_access_control, network_adaptation=adaptation.control, cloud=cloud.control)
         for listener in servers[1:]:
             thread = threading.Thread(target=listener.serve_forever, kwargs={'poll_interval': 0.5}, daemon=True)
             thread.start()
@@ -271,6 +278,7 @@ def main(connections=None, connection_secrets=None):
     except KeyboardInterrupt:
         pass
     finally:
+        cloud.close()
         for listener, thread in listener_threads:
             listener.shutdown()
             thread.join()

@@ -1,0 +1,30 @@
+{
+  "binding_id": "00000000-0000-4000-8000-000000000002",
+  "channel_id": "00000000-0000-4000-8000-000000000003",
+  "control_prologue": "YnJpZGdlL2NvbnRyb2wvdjEAABpodHRwczovL3JlbGF5LmV4YW1wbGUudGVzdAAAAAAAAEAAgAAAAAAAAAEAAAAAAABAAIAAAAAAAAACAAAAAAAAQACAAAAAAAAAAwejfLwUIJPIt1XcGxDobLQmN0rRaqhT7QvfwLK4bRx8WGmv9FBUlzLLqu1eXfmzCm2jHLDldCutWtShp2jxpns=",
+  "desktop_ephemeral": "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2A=",
+  "desktop_preview_private": "gYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6A=",
+  "desktop_preview_public": "iDGGuAC0HVzwQpaV2ps8xPMo680YSm5IL6V4wQPwbHc=",
+  "desktop_private": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+  "desktop_public": "B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9/AsrhtHHw=",
+  "desktop_record": "vPMbAREkr/RUaY85SWv7CklLcpOPEpfp5+OgU1pHcLo=",
+  "envelope": {
+    "binding_id": "00000000-0000-4000-8000-000000000002",
+    "ciphertext": "OlU9dHktcn76m5pM3j2hrZPxotDAnLY5saPA/aFMviT5sE10Dn1Bc8PNJS0D4nmDXS5EUj1VAr72383CSNulelgsDPgAInPYvw/U2eYT0uooq9o17V5jNNvHmRWW1GnyAIP9sfUeUx2eH06baH1poHQYPTWR+HxPKVhLzYLqeALbLK0i0jCbFZ/p+lBirxAX9Cc9CVHatnOdDNEaISDUWk7Xcm+VrJxcfbrHOA==",
+    "expires_at": 1793450000,
+    "notification_id": "00000000-0000-4000-8000-000000000004",
+    "v": 1
+  },
+  "gateway_id": "00000000-0000-4000-8000-000000000001",
+  "kk_first": "JE/juWPomd0pW6/84kjTUw86mnR5ugYwAmgOv+etrUmX5jUqX9zCXyP8neX/1aQh",
+  "kk_second": "ZLEBsdC+WocEvQePmJUAH8A+jp+VIvGI3RKNmEbUhGbcRr6uQxRqihoF625+6tsZ",
+  "mobile_ephemeral": "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1+f4A=",
+  "mobile_preview_private": "oaKjpKWmp6ipqqusra6vsLGys7S1tre4ubq7vL2+v8A=",
+  "mobile_preview_public": "rUOL+uMfbAk9YdQzklXqeYCSyfrdB7l4J/Swrp3ufBw=",
+  "mobile_private": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0A=",
+  "mobile_public": "WGmv9FBUlzLLqu1eXfmzCm2jHLDldCutWtShp2jxpns=",
+  "mobile_record": "Ew3Aa9F9lEMEVMUYkv4TAYfHNkB7F0cGkQ6mBCNpDt0tmsXaSr0=",
+  "origin": "https://relay.example.test",
+  "preview_plaintext": "eyJ0aXRsZSI6IkJyaWRnZSIsImJvZHkiOiJQcml2YXRlIHRlc3QgcHJldmlldyIsImV2ZW50X2lkIjoidGVzdC1ldmVudCIsImdhdGV3YXlfaWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDEifQ==",
+  "preview_prologue": "YnJpZGdlL3ByZXZpZXcvdjEAABpodHRwczovL3JlbGF5LmV4YW1wbGUudGVzdAAAAAAAAEAAgAAAAAAAAAQAAAAAAABAAIAAAAAAAAACAAAAAGrl4BA="
+}
