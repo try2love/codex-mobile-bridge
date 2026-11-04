@@ -65,6 +65,7 @@
     registration_disabled:'Public registration is disabled. Ask the server administrator to create an account.',
     redemption_disabled:'Service-day redemption is not available in self-host mode.',
     invalid_redemption:'The redemption code is invalid or no longer available.',
+    redemption_batch_already_used:'This account has already redeemed a code from this batch. Use a different batch.',
     invalid_password:'Use a password containing 12 to 256 bytes.',
     invalid_email:'Enter a valid email address.',
     invalid_email_token:'This password reset link is invalid, expired or already used. Request a new link.',

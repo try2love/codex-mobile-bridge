@@ -3718,6 +3718,7 @@ const en={
 "服务器未开放公开注册，请联系管理员创建账号。":"Public registration is disabled. Ask the server administrator to create an account.",
 "自部署模式不提供服务天数兑换。":"Service-day redemption is not available in self-host mode.",
 "服务天数兑换码无效或已不可用。":"The redemption code is invalid or no longer available.",
+"此账号已使用过这批兑换码，请使用其他批次。":"This account has already redeemed a code from this batch. Use a different batch.",
 "云账号密码长度必须为 12 至 256 字节。":"Use a password containing 12 to 256 bytes.",
 "请输入有效的云账号邮箱地址。":"Enter a valid email address.",
 "密码重置链接无效、已过期或已使用，请重新申请。":"This password reset link is invalid, expired or already used. Request a new link.",
