@@ -26,7 +26,7 @@ test('standalone bundle preserves instance identity and refuses duplicate writer
     assert.equal(binding.packageDirectory,bundle);assert.equal(connection.token.length,64);
     if(process.platform!=='win32')assert.equal((await stat(join(directory,'connection.json'))).mode&0o777,0o600);
     const response=await fetch(`http://127.0.0.1:${endpoint.port}/mobile`,{method:'POST',headers:{Authorization:'Bearer '+connection.token},body:JSON.stringify({action:'status'})});
-    const status=await response.json();assert.equal(status.bridgeRevision,9);assert.deepEqual(status.plugin,binding.plugin);assert.equal(status.plugin.version,'0.2.1');
+    const status=await response.json();assert.equal(status.bridgeRevision,10);assert.deepEqual(status.plugin,binding.plugin);assert.equal(status.plugin.version,'0.2.1');
     await assert.rejects(apply(ctx),/已有 Bridge 接入/);
     assert.deepEqual(await json('endpoint.json'),endpoint);
     await disposers.pop()();

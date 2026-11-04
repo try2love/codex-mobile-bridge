@@ -23,7 +23,7 @@
   },
   "dshBridge": {
     "protocol": 1,
-    "revision": 9
+    "revision": 10
   },
   "author": "try2love",
   "homepage": "https://github.com/try2love/dsh-codex-mobile-bridge",
@@ -33,5 +33,9 @@
   },
   "bugs": {
     "url": "https://github.com/try2love/dsh-codex-mobile-bridge/issues"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "pack:local": "python3 scripts/package.py"
   }
 }

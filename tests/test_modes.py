@@ -765,6 +765,10 @@ class ReasoningRowTests(unittest.TestCase):
                                          'content': ['only content']})['text'], 'only content')
         self.assertEqual(normalize_item({'type': 'reasoning', 'content': None})['text'], '')
 
+    def test_malformed_containers_do_not_render_characters_or_dict_keys(self):
+        self.assertEqual(normalize_item({'type':'reasoning', 'summary':'not-a-list', 'content':['fallback']})['text'], 'fallback')
+        self.assertEqual(normalize_item({'type':'reasoning', 'summary':['  ', None], 'content':{'secret':'not-text'}})['text'], '')
+
 
 if __name__ == '__main__':
     unittest.main()

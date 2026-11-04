@@ -25,7 +25,7 @@ def connection_modes(config, *, installed, pipe_supported, official, official_su
              'configured': official.get('configured') is True,
              'available': bool(official_supported and official.get('configured')),
              'connected': selected == 'official-remote' and official.get('connected') is True,
-             'reason': ('此 Test 的官方远控暂只支持 macOS' if not official_supported else
+             'reason': ('此系统暂不支持官方远控' if not official_supported else
                         '' if official.get('configured') else '请先在电脑网关配置并登录官方远控')},
         ],
     }

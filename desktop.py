@@ -24,6 +24,16 @@ if sys.argv[1:2] == ['zcode-pipe-host']:
     serve(options.data_dir, options.application)
     raise SystemExit(0)
 
+if sys.argv[1:2] == ['local-service-host']:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--data-dir', required=True)
+    parser.add_argument('--name', choices=['zcode-official'], required=True)
+    parser.add_argument('--parent-pid', type=int, required=True)
+    options = parser.parse_args(sys.argv[2:])
+    from bridge.clients.local_rpc_host import serve
+    serve(options.data_dir, options.name, options.parent_pid)
+    raise SystemExit(0)
+
 from bridge.app.desktop import Desktop
 
 

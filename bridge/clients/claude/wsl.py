@@ -325,15 +325,19 @@ class ClaudeCliRemotes:
     def contains(self, sid):
         return self.ssh.contains(sid) or self.wsl.contains(sid)
 
-    def projects(self):
+    def projects(self, host_id=None):
+        if host_id is not None:
+            return (self.wsl if host_id.startswith('wsl-claude:') else self.ssh).projects(host_id=host_id)
         return self.ssh.projects()+self.wsl.projects()
 
-    def project_environments(self):
+    def project_environments(self, host_id=None):
+        if host_id is not None:
+            return (self.wsl if host_id.startswith('wsl-claude:') else self.ssh).project_environments(host_id=host_id)
         return self.ssh.project_environments()+self.wsl.project_environments()
 
-    def create(self, host_id, *args):
+    def create(self, host_id, *args, **options):
         target = self.wsl if host_id.startswith('wsl-claude:') else self.ssh
-        return target.create(host_id, *args)
+        return target.create(host_id, *args, **options)
 
     def call(self, action, sid, body):
         target = self.wsl if self.wsl.contains(sid) else self.ssh

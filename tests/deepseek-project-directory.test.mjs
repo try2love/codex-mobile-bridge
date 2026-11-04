@@ -9,9 +9,10 @@ const endpoint=join(folder,'endpoint.json'),configPath=join(folder,'config.json'
 await writeFile(configPath,JSON.stringify({token:'project-fixture',endpoint}));
 const calls=[],disposers=[],workspaces=[];
 const ctx={
-  sessionController:{list:async()=>({items:[]}),
+  sessionController:{list:async()=>({items:workspaces.flatMap(workspace=>workspace.sessionIds.map(sessionId=>({sessionId,cwd:workspace.path,running:false})))}),
     create:async value=>{calls.push(value);const workspace=workspaces.find(row=>row.id===value.workspaceId);assert.ok(workspace,'Native project creation must include workspaceId');workspace.sessionIds.push(value.sessionId);return {sessionId:value.sessionId};},
     rename:async value=>calls.push(value),
+    selectModel:async value=>{calls.push({selection:value});return {selected:{provider:value.provider,model:value.model,reasoningEffort:value.reasoningEffort}};},
     prompt:async()=>{throw Error('Project creation must not call a model');}},
   workspaceRegistry:{list:()=>workspaces,
     resolveByPath:async path=>workspaces.find(row=>row.path===path),
@@ -40,6 +41,11 @@ try{
   await request('create',{id:'same-project',projectDirectory});
   assert.equal(workspaces.length,1,'A second chat reuses the native workspace');
   assert.deepEqual(workspaces[0].sessionIds,['session-explicit-project','session-same-project']);
+  const selectionStart=calls.length;
+  const selected=await request('create',{id:'selected-model',projectDirectory,model:'fixture-provider/fixture-model',effort:'low',manualModel:true,manualEffort:true});
+  assert.equal(selected.status,200);assert.deepEqual(calls.slice(selectionStart),[
+    {sessionId:'session-selected-model',workspaceId:'native-workspace'},
+    {selection:{sessionId:'session-selected-model',provider:'fixture-provider',model:'fixture-model',reasoningEffort:'low'}}]);
   const before=calls.length;
   assert.equal((await request('create',{id:'changed-directory',projectDirectory:{...projectDirectory,inode:identity.ino+1}})).status,400);
   assert.equal((await request('create',{id:'missing-directory',projectDirectory:{...projectDirectory,cwd:join(cwd,'missing')}})).status,400);

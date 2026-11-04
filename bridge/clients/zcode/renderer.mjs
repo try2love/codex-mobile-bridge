@@ -105,9 +105,30 @@ export async function nativeRequest(request, environment) {
   const listTasks = (tree, snapshotFor) => ({ sessions: tree.tasks.filter(row => !row.deleted && (!row.hostId || row.hostId === 'local'))
     .map(row => {
       const snapshot = snapshotFor?.(row.taskId);
-      return snapshot ? { snapshot, cwd: row.workspacePath } : { id: row.taskId, title: row.title,
+      const nativeRename = !row.archived && typeof services.zcodeTaskService?.renameTask === 'function';
+      return snapshot ? { snapshot, title: row.title, cwd: row.workspacePath, nativeRename } : { id: row.taskId, title: row.title, nativeRename,
         cwd: row.workspacePath, model: row.model, effort: row.thoughtLevel, updatedAt: row.updatedAt, archived: row.archived };
     }) });
+  if (request.action === 'rename') {
+    const title = request.body?.title;
+    if (typeof title !== 'string' || !title.trim() || [...title.trim()].length > 120 || /[\u0000-\u001f\u007f]/u.test(title))
+      throw Error('标题为 1–120 字，不能包含控制字符');
+    if (typeof services.zcodeTaskService?.renameTask !== 'function')
+      return { notSent: true, message: '原 App 未提供已验证的原生改名接口' };
+    const before = targetTask(await services.projectService.readTree({}));
+    if (before.workspacePath !== request.workspace)
+      return { notSent: true, message: '原会话工作目录已变化，未执行改名' };
+    checkDeadline();
+    const renamed = await services.zcodeTaskService.renameTask({ taskId: request.sessionId,
+      workspacePath: request.workspace, title: title.trim() });
+    // The native task service reconciles CLI facts into its durable task index.
+    // Do not rename only a live conversation projection or acquire the chat.
+    const after = targetTask(await services.projectService.readTree({}));
+    if (renamed?.taskId !== request.sessionId || renamed.workspacePath !== before.workspacePath ||
+        renamed.title !== title.trim() || after.title !== title.trim() || after.workspacePath !== before.workspacePath)
+      throw Error('改名结果待核对，请检查原客户端；不会重复提交');
+    return { status: 'confirmed', scope: 'native', result: { id: request.sessionId, title: title.trim() } };
+  }
   if (['projects', 'target'].includes(request.action) || request.action === 'list' && !request.sessionId) {
     const tree = await services.projectService.readTree({});
     if (request.action === 'list') return listTasks(tree);
@@ -127,16 +148,21 @@ export async function nativeRequest(request, environment) {
     return { identity: digest ? [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('') : '',
       provider, name: profile.name || profile.displayName || profile.email || 'ZCode', email: profile.email || '' };
   };
-  const models = async () => {
+  const models = async (knownView) => {
     if (!hasModels) throw Error('ZCode 原 App 未提供模型目录');
-    const view = await services.modelSelectionService.getView();
+    const view = knownView || await services.modelSelectionService.getView();
     return view.providers.flatMap(provider => provider.models.filter(model => model.config.enabled !== false).map(model => ({
       id: provider.providerId + '/' + model.modelId, name: model.modelId + ' · ' + provider.providerName,
       provider: provider.providerId, model: model.modelId,
       efforts: model.config.optionSpecs?.reasoningLevel?.values || [],
     })));
   };
-  if (request.action === 'account') return { account: await account(), models: await models(), capabilities: { models: true } };
+  if (request.action === 'account') {
+    const view = await services.modelSelectionService.getView(), selection = view.preferredSelection;
+    return { account: await account(), models: await models(view), capabilities: { models: true },
+      ...(selection?.providerId && selection?.modelId ? { currentModel: selection.providerId+'/'+selection.modelId,
+        currentEffort: selection.options?.reasoningLevel || '' } : {}) };
+  }
   if (request.action === 'quota') {
     const body = request.body || {};
     if (Object.keys(body).some(key => key !== 'refresh') ||
@@ -391,7 +417,12 @@ export async function nativeRequest(request, environment) {
     if (anchor && (previous.status !== 'live' || previous.snapshot?.sessionId !== request.sessionId))
       throw Error('ZCode 原生会话连接尚未就绪');
     let selection;
-    if (previous) {
+    if (body.model !== undefined) {
+      const slash = typeof body.model === 'string' ? body.model.indexOf('/') : -1;
+      if (slash < 1) throw Error('请选择有效的 ZCode 模型');
+      selection = { providerId: body.model.slice(0, slash), modelId: body.model.slice(slash + 1),
+                    options: { reasoningLevel: body.effort } };
+    } else if (previous) {
       const config = previous.snapshot.config;
       selection = { providerId: config.provider, modelId: config.model, options: { reasoningLevel: config.thought } };
     } else {
@@ -477,7 +508,7 @@ export async function nativeRequest(request, environment) {
     const hasAccount = typeof services.oauthService?.getActiveProvider === 'function' &&
       typeof services.credentialService?.load === 'function';
     return { binding: current, snapshot: before, ...(hasAccount ? { account: await account() } : {}),
-      capabilities: { models: hasModels, effort: hasModels, create: hasModels, skills: hasSkills,
+      capabilities: { rename: typeof services.zcodeTaskService?.renameTask === 'function', models: hasModels, effort: hasModels, create: hasModels, skills: hasSkills,
         attachments: hasAttachments, uploadFiles: hasAttachments, projectReferences: hasAttachments } };
   }
   if (request.action === 'tasks') return { tasks: (before.backgroundWorks || []).map(work => ({
@@ -548,9 +579,6 @@ export async function nativeRequest(request, environment) {
       }
     }
     if (attachments.length) payload.attachments = attachments;
-  } else if (request.action === 'rename') {
-    if (typeof body.title !== 'string' || !body.title.trim() || body.title.trim().length > 120) throw Error('请输入 1–120 字的聊天名称');
-    type = 'renameSession'; payload = { title: body.title.trim() };
   } else if (request.action === 'fork' || request.action === 'edit-message') {
     const edit = request.action === 'edit-message', target = body.target;
     const row = before.rows.window.find(row => row.rowId === target?.rowId && row.entityId === target?.entityId);

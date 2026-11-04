@@ -1156,3 +1156,20 @@ test('Codex quota remains visible in the client overview and pauses off the page
  ui.nodes.get('clients-page').hidden=false;ui.context.document.hidden=true;assert.equal(ui.run('accountsPanel.visible()'),false);
  ui.context.document.hidden=false;ui.nodes.get('clients-page').classList.contains=()=>true;assert.equal(ui.run('accountsPanel.visible()'),false);
 });
+
+test('update reminder routes directly to the maintenance update tab without a synthetic tab click',async()=>{
+ const fs=require('node:fs'),vm=require('node:vm'),ui=await renderer();
+ const panels=Object.fromEntries(['advanced','updates','logs'].map(name=>[name,{dataset:{panel:name},hidden:false}]));
+ const tabs=['general','updates','logs'].map(name=>({dataset:{maintenanceTab:name},classList:{toggle(_name,value){this.active=value;}}}));
+ const scope=vm.createContext({window:{},maintenance:panels.advanced,maintenanceTabs:{querySelectorAll:()=>tabs},description:{dataset:{}},back:{},client:null,
+   descriptions:{advanced:'Application maintenance'},t:value=>value,selectClient(){},hasClient(){},clientPage(){},document:{querySelector:selector=>panels[selector.match(/data-panel="([^"]+)"/)[1]]}});
+ const layout=fs.readFileSync(path.join(__dirname,'../desktop/shell/layout.js'),'utf8');
+ vm.runInContext(layout.split('\n').find(line=>line.trim().startsWith('function maintenanceTab('))+'\n'+layout.split('\n').find(line=>line.trim().startsWith('window.GatewayLayout=')),scope);
+ ui.context.window.GatewayLayout=scope.window.GatewayLayout;
+ const banner=ui.nodes.get('update-banner'),html=fs.readFileSync(path.join(__dirname,'../desktop/index.html'),'utf8');banner.dataset.jump=html.match(/id="update-banner" data-jump="([^"]+)"/)[1];
+ ui.context.document.querySelectorAll=selector=>selector==='[data-panel]'?Object.values(panels):selector==='[data-jump]'?[banner]:[];
+ const code=fs.readFileSync(path.join(__dirname,'../desktop/shell/renderer.js'),'utf8');ui.run(code.split('\n').find(line=>line.startsWith("document.querySelectorAll('[data-jump]')")));
+ banner.onclick();assert.equal(ui.run('activeTab'),'advanced');assert.equal(panels.updates.hidden,false);assert.equal(panels.advanced.hidden,true);assert.equal(panels.logs.hidden,true);assert.equal(tabs[1].classList.active,true);
+ ui.run("tab('logs')");assert.equal(panels.logs.hidden,false);assert.equal(panels.updates.hidden,true);
+ ui.run("tab('advanced')");assert.equal(panels.advanced.hidden,false);assert.equal(panels.updates.hidden,true);assert.equal(tabs[0].classList.active,true);
+});

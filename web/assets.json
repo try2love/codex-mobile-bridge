@@ -65,7 +65,7 @@
     "layouts/compact/desktop-sessions.css",
     "features/clients/desktop-session-controls.css"
   ],
-  "/project-picker.js": "shared/project-picker.js",
+  "/project-picker.js": ["shared/creation-model-picker.js", "shared/project-picker.js"],
   "/desktop-sessions.js": "features/clients/desktop-sessions.js",
   "/agents-panel.js": "features/workspace/agents-panel.js",
   "/command-terminal-panel.js": "features/workspace/command-terminal-panel.js",

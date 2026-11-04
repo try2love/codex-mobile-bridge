@@ -29,3 +29,19 @@ class DesktopProjectHTTP(unittest.TestCase):
         self.manager.register_project.assert_called_once_with('zcode', 'native', '/project', False)
         self.assertEqual(self.request('POST', base+'register', {**body, 'cwd': '/other'}, headers)[0], 400)
         self.assertEqual(self.request('GET', base+'browse', headers=headers)[0], 405)
+
+    def test_creation_model_catalog_is_authenticated_read_only_and_keeps_environment_scope(self):
+        value={'models':[{'id':'model','efforts':['low']}],'cache':{'identity':'scope'}}
+        self.manager.call.return_value=value
+        path='/api/desktop-sessions/zcode/create-models?environment=desktop%7Clocal%7Cscope&projectKey=project&refresh=true'
+        self.assertEqual(self.request('GET',path)[0],401)
+        headers=self.login();self.assertEqual(self.request('GET',path,headers=headers)[2],value)
+        self.manager.call.assert_called_once_with('zcode','create-models',None,{'environment':'desktop|local|scope','projectKey':'project','refresh':True})
+        self.assertEqual(self.request('POST',path,{},headers)[0],404)
+
+    def test_codex_creation_route_passes_model_with_the_original_idempotency_request(self):
+        self.server.bridge.create_chat=Mock(return_value={'id':'created','host':'local'})
+        fields={'id':'request','project':'project','title':'Title','model':'chosen','effort':'low','modelCatalogIdentity':'scope'}
+        headers=self.login();status,_,_=self.request('POST','/api/sessions',fields,headers)
+        self.assertEqual(status,200)
+        self.server.bridge.create_chat.assert_called_once_with('project','Title','request',model_options={'model':'chosen','effort':'low','modelCatalogIdentity':'scope'})

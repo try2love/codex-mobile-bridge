@@ -8,8 +8,8 @@ const {serveLocal}=require('../../shared/local-service.cjs');
 const ACTIONS=new Set(['application','projects','target','account','quota','lifecycle','attach','detach','list','create','detail','history','receipt','tasks','stop-task','catalog','send','stop','respond','settings','access','work-mode','goal','compact','fork','edit-message','rename']);
 const failure=message=>Object.assign(Error(message),{publicMessage:message});
 class OfficialRemote {
-  constructor({electron,profile,rendererPath}){
-    this.electron=electron;this.profile=profile;this.rendererPath=rendererPath;
+  constructor({electron,profile,rendererPath,localServiceWorker}){
+    this.electron=electron;this.profile=profile;this.rendererPath=rendererPath;this.localServiceWorker=localServiceWorker;this.serviceAvailable=false;
     this.authFile=path.join(profile,'zcode-official-auth.enc');this.settingsFile=path.join(profile,'zcode-official.json');
     this.link='';this.reason='请登录与 ZCode 原 App 相同的官方账号。';
     this.generation=0;this.runtime=null;this.loginWindow=null;this.auth=null;
@@ -23,11 +23,11 @@ class OfficialRemote {
     return parsed;
   }
   targetLink(){return this.link||this.auth?.link||'';}
-  status(){const config=this.config();return {configured:!!this.auth&&!!this.targetLink(),connected:!!this.runtime,owner:this.runtime?this.owner:null,
+  status(){const config=this.config(),available=this.serviceAvailable&&this.stopServer?.alive?.()!==false;return {configured:!!this.auth&&!!this.targetLink(),connected:available&&!!this.runtime,owner:available&&this.runtime?this.owner:null,available,secureStorageAvailable:this.secure(),
     accountName:this.auth?.name||'',provider:this.auth?.provider||'',reason:this.reason,
     link:this.targetLink(),selected:config.zcodeConnectionMode==='official-remote'||!config.zcodeConnectionMode&&config.zcodeOfficialRemote===true};}
   secure(){const s=this.electron.safeStorage;
-    return s.isEncryptionAvailable()&&(process.platform!=='linux'||s.getSelectedStorageBackend()!=='basic_text');}
+    return s.isEncryptionAvailable()&&(process.platform!=='linux'||['gnome_libsecret','kwallet','kwallet5','kwallet6'].includes(s.getSelectedStorageBackend?.()));}
   restore(){
     try{if(fs.existsSync(this.settingsFile))this.link=this.localLink(JSON.parse(fs.readFileSync(this.settingsFile,'utf8')).link).url;}catch{this.reason='官方远控链接无法读取，请重新保存本机链接。';}
     try{if(fs.existsSync(this.authFile)&&this.secure()){
@@ -44,9 +44,12 @@ class OfficialRemote {
     return this.status();
   }
   async start(){
-    if(process.platform==='win32')return; // This isolated build exposes the tested macOS path only.
+    if(this.serviceAvailable&&this.stopServer?.alive?.()!==false)return true;
+    this.stopServer?.();this.serviceAvailable=false;
     this.restore();
-    this.stopServer=await serveLocal(this.profile,'zcode-official',request=>this.handle(request));
+    if(!this.auth&&!this.secure())this.reason='系统安全存储不可用，暂不能保存官方登录。';
+    try{this.stopServer=await serveLocal(this.profile,'zcode-official',request=>this.handle(request),{worker:this.localServiceWorker});this.serviceAvailable=true;return true;}
+    catch{this.reason='本机控制接口暂不可用，请重试；其他网关功能不受影响。';return false;}
   }
   async disconnect(){
     this.generation++;this.connectAbort?.abort();this.runtime?.dispose();this.runtime=null;this.owner=null;this.environment=null;
@@ -137,6 +140,6 @@ class OfficialRemote {
     await win.loadURL(parsed.url);return this.status();
   }
   async forget(){this.loginWindow?.destroy();this.loginWindow=null;await this.disconnect();this.auth=null;try{fs.unlinkSync(this.authFile);}catch(error){if(error.code!=='ENOENT')throw error;}return this.status();}
-  dispose(){this.disconnect();this.loginWindow?.destroy();this.stopServer?.();}
+  dispose(){this.serviceAvailable=false;this.disconnect();this.loginWindow?.destroy();this.stopServer?.();}
 }
 module.exports={OfficialRemote};

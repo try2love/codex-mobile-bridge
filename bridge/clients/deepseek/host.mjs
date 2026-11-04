@@ -83,7 +83,8 @@ export async function apply(ctx,config){
         roundsStarted:goal.roundsStarted,maxGoalRounds:goal.maxGoalRounds}:null};
   };
   const workspaceCapable=()=>typeof ctx.workspaceRegistry.get==='function'&&typeof ctx.workspaceRegistry.list==='function'&&ctx.workspaceRegistry.list().every(w=>Array.isArray(w.sessionIds)&&typeof w.attachSession==='function'&&typeof w.detachSession==='function');
-  const capabilities=row=>({tasks:typeof ctx.get?.('jobs')?.list==='function'||!!ctx.get?.('subagents'),compact:!!row&&row.running===false&&modeServices(row).compact,resume:!!row&&typeof ctx.agents?.get==='function'&&!ctx.agents.get(row.sessionId)&&typeof ctx.sessionController.resolveAgent==='function',plan:!!modeServices(row).plan,goal:!!modeServices(row).goals,goalEdit:true,goalPause:!row||workState(row).goal?.status==='active',goalResume:!!row&&['paused','blocked'].includes(workState(row).goal?.status),goalPauseStops:true,models:typeof ctx.sessionController.selectModel==='function',manualModels:typeof ctx.sessionController.selectModel==='function',manualEffort:typeof ctx.sessionController.selectModel==='function',effort:typeof ctx.sessionController.selectModel==='function',permissions:typeof ctx.permissionPresets?.set==='function',attachments:typeof ctx.sessionController.prompt==='function',skills:typeof ctx.sessionSkillCatalog?.list==='function',queue:typeof ctx.sessionController.prompt==='function',steer:typeof ctx.sessionController.prompt==='function',fork:typeof ctx.sessionController.fork==='function',rename:!!row&&!!ctx.agents?.get?.(row.sessionId)?.session&&typeof ctx.get?.('sessionTitle')?.rename==='function',organization:workspaceCapable(),archive:typeof ctx.workspaceRegistry.archiveSession==='function'&&typeof ctx.workspaceRegistry.unarchiveSession==='function',unarchive:typeof ctx.workspaceRegistry.archiveSession==='function'&&typeof ctx.workspaceRegistry.unarchiveSession==='function'});
+  const nativeSession=id=>ctx.sessions?.get?.(id)||ctx.agents?.get?.(id)?.session;
+  const capabilities=row=>({tasks:typeof ctx.get?.('jobs')?.list==='function'||!!ctx.get?.('subagents'),compact:!!row&&row.running===false&&modeServices(row).compact,resume:!!row&&typeof ctx.agents?.get==='function'&&!ctx.agents.get(row.sessionId)&&typeof ctx.sessionController.resolveAgent==='function',plan:!!modeServices(row).plan,goal:!!modeServices(row).goals,goalEdit:true,goalPause:!row||workState(row).goal?.status==='active',goalResume:!!row&&['paused','blocked'].includes(workState(row).goal?.status),goalPauseStops:true,models:typeof ctx.sessionController.selectModel==='function',manualModels:typeof ctx.sessionController.selectModel==='function',manualEffort:typeof ctx.sessionController.selectModel==='function',effort:typeof ctx.sessionController.selectModel==='function',permissions:typeof ctx.permissionPresets?.set==='function',attachments:typeof ctx.sessionController.prompt==='function',skills:typeof ctx.sessionSkillCatalog?.list==='function',queue:typeof ctx.sessionController.prompt==='function',steer:typeof ctx.sessionController.prompt==='function',fork:typeof ctx.sessionController.fork==='function',rename:!!row&&!!nativeSession(row.sessionId)&&typeof ctx.get?.('sessionTitle')?.rename==='function',organization:workspaceCapable(),archive:typeof ctx.workspaceRegistry.archiveSession==='function'&&typeof ctx.workspaceRegistry.unarchiveSession==='function',unarchive:typeof ctx.workspaceRegistry.archiveSession==='function'&&typeof ctx.workspaceRegistry.unarchiveSession==='function'});
   const membership=row=>{
     if(!workspaceCapable())return {};
     const members=ctx.workspaceRegistry.list().filter(w=>w.sessionIds.includes(row.sessionId));
@@ -166,7 +167,8 @@ export async function apply(ctx,config){
     const groups=raw.groups.filter(g=>configured.has(g.id)).map(g=>({id:g.id,name:g.name||g.id,models:g.models.map(m=>({id:g.id+'/'+m.id,name:m.name,efforts:(m.reasoning?.efforts||[]).map(e=>e.id),defaultEffort:m.reasoning?.defaultEffort}))}));
     const session=sid?normalize(await find(sid)):null,provider=session?.model.split('/')[0]||raw.default?.provider;
     const current=sources.find(s=>s.id===provider)||null;
-    return {provider:'deepseek',readOnly:true,canManage:false,status:sources.length?'configured':'unconfigured',current,sources,groups,models:groups.flatMap(g=>g.models)};
+    return {provider:'deepseek',readOnly:true,canManage:false,status:sources.length?'configured':'unconfigured',current,sources,groups,models:groups.flatMap(g=>g.models),
+      ...(raw.default?.provider&&raw.default?.model?{currentModel:raw.default.provider+'/'+raw.default.model,currentEffort:raw.default.reasoningEffort||''}:{})};
   };
   // Desktop and mobile share one pending request. First explicit answer wins.
   for (const event of ['user-questions/request','approval/request']) {
@@ -221,7 +223,7 @@ export async function apply(ctx,config){
       quitting=true;
       return {status:'accepted',pid:process.pid,generation};
     }
-    if(action==='status')return {connected:true,bridgeRevision:9,...config.plugin?{plugin:config.plugin}:{},projectDirectories:true,nativeQuit:typeof ctx.get?.('appExit')==='function',configured:(await account()).status==='configured'};
+    if(action==='status')return {connected:true,bridgeRevision:10,...config.plugin?{plugin:config.plugin}:{},projectDirectories:true,createModels:true,nativeQuit:typeof ctx.get?.('appExit')==='function',configured:(await account()).status==='configured'};
     if(action==='account')return account(sid);
     if(action==='list')return {connected:true,sessions:(await list()).filter(r=>r.origin!=='subagent').map(r=>({...normalize(r),archived:(ctx.workspaceRegistry.archivedSessionIds||[]).includes(r.sessionId)})).sort((a,b)=>Number(a.archived)-Number(b.archived))};
     if(action==='projects'){const seen=new Map();for(const row of await list())if(row.cwd)seen.set(row.cwd,{key:row.cwd,cwd:row.cwd,name:row.cwd.replaceAll('\\','/').split('/').pop()});for(const w of ctx.workspaceRegistry.list())seen.set(w.path,{key:w.path,cwd:w.path,name:w.title||w.name||w.path,workspaceId:w.id});return {projects:[...seen.values()]};}
@@ -240,6 +242,8 @@ export async function apply(ctx,config){
       const workspace=await ctx.workspaceRegistry.resolveByPath(canonical)||await ctx.workspaceRegistry.create(canonical);
       if(!workspace?.id||workspace.path!==canonical)throw Error('原生项目目录未确认，请在 Harness 检查工作区');
       const result=await ctx.sessionController.create({sessionId:'session-'+body.id,workspaceId:workspace.id});
+      if(body.model!==undefined)await dispatch('settings',result.sessionId,{model:body.model,
+        ...(body.effort!==undefined?{effort:body.effort}:{}),...(body.manualModel?{manualModel:true}:{}),...(body.manualEffort?{manualEffort:true}:{})});
       if(body.title)await ctx.sessionController.rename({sessionId:result.sessionId,title:body.title});
       return {status:'ready',result:{id:result.sessionId,title:body.title||'新会话'}};
     }
@@ -258,13 +262,17 @@ export async function apply(ctx,config){
     if(action==='rename'){
       const title=typeof body.title==='string'?body.title.trim():'';
       if(!title||[...title].length>120||/[\u0000-\u001f\u007f]/u.test(body.title))throw Error('标题为 1–120 字，不能包含控制字符');
-      // sessionController.rename resumes cold sessions. Rename only the exact
-      // already-live native session through the title service instead.
-      const agent=ctx.agents?.get?.(sid),titles=ctx.get?.('sessionTitle');
-      if(!agent?.session||agent.session.id!==sid||typeof titles?.rename!=='function')return {notSent:true,message:'当前会话未加载，未执行原生改名'};
-      const accepted=titles.rename(agent.session,title),fresh=await find(sid);
-      if(accepted?.title!==title||values(fresh).title!==title||fresh.cwd!==row.cwd)throw Error('改名结果待核对，请检查原客户端；不会重复提交');
-      return {status:'confirmed',scope:'native',result:{id:sid,title}};
+      // The native Session store can retain a loaded chat without an Agent.
+      // Never use sessionController.rename here: it resumes a cold Agent.
+      const session=nativeSession(sid),titles=ctx.get?.('sessionTitle');
+      if(!session||session.id!==sid||typeof titles?.rename!=='function')return {notSent:true,message:'请先连接原会话，再执行原生改名'};
+      const limit=titles.config?.maxTitleBytes;
+      if(!Number.isInteger(limit)||limit<=0)return {notSent:true,message:'无法核验原客户端的标题长度限制，尚未执行改名'};
+      if(title.replace(/\s+/gu,' ')!==title||/[\u007f-\u009f\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff]/u.test(title))return {notSent:true,message:'名称包含原客户端会改写的空白或不可见字符，请调整后重试'};
+      if(Buffer.byteLength(title,'utf8')>limit)return {notSent:true,message:'名称超出原客户端的长度限制，请缩短后重试'};
+      const accepted=await titles.rename(session,title),fresh=await find(sid);
+      if(accepted?.title!==title||values(fresh).title!==title||fresh.cwd!==row.cwd||nativeSession(sid)!==session)throw Error('改名结果待核对，请检查原客户端；不会重复提交');
+      return {status:'confirmed',scope:'native',result:{id:sid,title},...(Number.isSafeInteger(accepted.eventSeq)?{nativeEventSeq:accepted.eventSeq}:{})};
     }
     if(action==='organization'){
       const before=await organization(row);

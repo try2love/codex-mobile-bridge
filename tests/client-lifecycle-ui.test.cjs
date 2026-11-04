@@ -5,7 +5,7 @@ function fixture(language='zh'){
  function element(tag){
   const listeners={};return {tag,children:[],dataset:{},attributes:{},open:false,_text:'',
    get textContent(){return this._text+this.children.map(child=>child.textContent).join('');},set textContent(value){this._text=value;},
-   append(...children){for(const child of children){child.parent=this;this.children.push(child);}},
+   append(...children){for(const child of children){child.parent=this;this.children.push(child);}},replaceChildren(...children){this.children=[];this.append(...children);},
    setAttribute(key,value){this.attributes[key]=value;},addEventListener(type,handler){listeners[type]=handler;},
    emit(type,event={}){listeners[type]?.(event);},showModal(){this.open=true;},close(){this.open=false;this.emit('close');},
    remove(){this.parent.children=this.parent.children.filter(child=>child!==this);},focus(){document.activeElement=this;}
@@ -131,18 +131,14 @@ test('ZCode initialization uses only private pipes and keeps restart consent sep
  const failed=new Map([['zcode',{action:'initialize',uncertain:true,connectionMode:'private-pipe'}]]);lifecycle.reconcile(failed,[ready]);assert.equal(failed.size,0);
 });
 
-test('shared connection chooser shows saved methods and never activates an unavailable option',async()=>{
- for(const language of ['zh','en'])for(const selected of ['private-pipe','official-remote',null]){
-  const ui=fixture(language),lifecycle=vm.runInContext('ClientLifecycle',ui.context);
-  const client={id:'zcode',name:'ZCode',connectionMode:'private-pipe',connectionModes:[
-   {id:'private-pipe',label:'本机连接',configured:true,available:true},
-   {id:'official-remote',label:'官方远控',configured:true,available:true},
-   {id:'future',label:'Other',configured:false,available:true}]};
-  const result=lifecycle.chooseConnectionMode(client),dialog=ui.dialog(),buttons=dialog.children.at(-1).children;
-  assert.equal(buttons.length,4);assert.equal(buttons[0].attributes['aria-pressed'],'true');assert.equal(buttons[2].disabled,true);assert.equal(ui.document.activeElement,buttons[3]);
-  assert.match(dialog.textContent,language==='en'?/Switching does not automatically quit/:/切换不会自动退出/);if(language==='en')assert.doesNotMatch(dialog.textContent,/[一-鿿]/);
-  buttons[2].onclick();assert.equal(dialog.open,true);
-  buttons[selected==='private-pipe'?0:selected==='official-remote'?1:3].onclick();assert.equal(await result,selected);
+test('shared inline connection methods show both options and never open another chooser',()=>{
+ for(const language of ['zh','en']){
+  const ui=fixture(language),lifecycle=vm.runInContext('ClientLifecycle',ui.context),root=ui.document.createElement('div'),selected=[];
+  const client={id:'zcode',name:'ZCode',connected:true,connectionMode:'private-pipe',connectionModes:[{id:'private-pipe',label:'本机连接',configured:true,available:true},{id:'official-remote',label:'官方远控',configured:true,available:true},{id:'future',label:'Other',configured:false,available:true}]};
+  const methods=lifecycle.mountConnectionModes(root);methods.update(client,{select:mode=>selected.push(mode)});const buttons=root.children[0].children[1].children;
+  assert.equal(buttons.length,3);assert.equal(buttons[0].attributes['aria-pressed'],'true');assert.equal(buttons[0].disabled,true);assert.equal(buttons[2].disabled,true);buttons[2].onclick();assert.equal(selected.length,0);buttons[1].onclick();assert.deepEqual(selected,['official-remote']);assert.equal(ui.document.body.children.length,0);
+  methods.update({...client,connectionMode:'official-remote'},{select:mode=>selected.push(mode)});assert.equal(root.children[0].children[1].children[0],buttons[0]);assert.equal(buttons[1].attributes['aria-pressed'],'true');
+  if(language==='en')assert.doesNotMatch(root.textContent,/[一-鿿]/);
  }
 });
 
@@ -153,7 +149,7 @@ test('desktop and remote mode selection submit the same explicit connectionMode 
   const client={id:'zcode',name:'ZCode',enabled:true,configured:true,running:true,connectionMode:'private-pipe',connectionModes:[{id:'private-pipe',label:'本机连接',configured:true,available:true},{id:'official-remote',label:'官方远控',configured:true,available:true}]};
   const save=async body=>{calls.push(JSON.parse(JSON.stringify(body)));return {clients:[{...client,connectionMode:body.connectionMode}]};};
   Object.assign(panel,{clients:[client],clientsRevision:0,statusRevision:0,revision:0,pending:new Set(),provider:'zcode',renderClients(){},renderScan(){},paint(){},notify(){},refreshClients:async()=>{},applyClients(data){this.clients=data.clients;},api:{desktopSessions:save},request:(url,body)=>save(body)});
-  const result=panel.selectConnectionMode('zcode'),buttons=ui.dialog().children.at(-1).children;assert.equal(calls.length,0);buttons[choice?1:2].onclick();await result;
+  const result=panel.selectConnectionMode('zcode','official-remote'),dialog=ui.dialog(),buttons=dialog.children.at(-1).children;assert.equal(calls.length,0);assert.match(dialog.textContent,/切换应用接入方式/);assert.match(dialog.textContent,/不会退出或重启电脑 App/);buttons[choice?0:1].onclick();await result;
   assert.deepEqual(calls,choice?[{...(desktop?{action:'toggle-client'}:{}),provider:'zcode',enabled:true,connectionMode:'official-remote'}]:[]);
  }
 });

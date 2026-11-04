@@ -22,6 +22,8 @@ from bridge.features.sessions.goal import GoalError, GoalUnavailable, GoalUnsupp
 from bridge.features.sessions import linux_permissions
 from bridge.features.sessions.store import SessionStore, StoreUnavailable
 
+MAX_REASONING_PARTS = 1024
+
 
 def _managed_cli(home):
     """Mirror the 0.162 daemon's selected package without installing one."""
@@ -204,10 +206,12 @@ class CliSessions:
         """Fail closed on unknown native status before a local account change."""
         return self.daemon_status() != 'stopped'
 
-    def create(self, cwd, title, on_start=None, on_created=None):
+    def create(self, cwd, title, on_start=None, on_created=None, model=None, effort=None):
         """An explicit new CLI chat; no turn is started."""
         if not isinstance(cwd, str) or not cwd or (self.alias is None and not Path(cwd).is_dir()):
             raise AppServerUnavailable('CLI 项目目录不存在')
+        from bridge.features.sessions.create import model_overrides
+        overrides = model_overrides(model, effort)
         info = self._connect_explicit()
         if self.alias is None and Path(info['codexHome']) != self.home:
             raise AppServerUnavailable('Codex CLI runtime belongs to another home')
@@ -218,7 +222,7 @@ class CliSessions:
             self.remote_home = remote_home
         if on_start is not None:
             on_start()
-        params = {'cwd': cwd, 'ephemeral': False, 'threadSource': 'cli'}
+        params = {'cwd': cwd, 'ephemeral': False, 'threadSource': 'cli', **overrides}
         result = self.client.request('thread/start', params)
         thread = result.get('thread') or {}
         thread_id = thread.get('id')
@@ -227,6 +231,8 @@ class CliSessions:
         uuid.UUID(thread_id)
         if on_created is not None:
             on_created(thread_id)
+        if model is not None and (result.get('model') != model or effort is not None and result.get('reasoningEffort') != effort):
+            raise AppServerUnsupported('新聊天已创建，但模型或思考强度未确认；请检查原会话，不要重复创建')
         with self.lock:
             self.joined[thread_id] = self.client.process
             self.metadata[thread_id] = {'connectionToken': str(uuid.uuid4()), 'cwd': cwd, 'modelProvider': thread['modelProvider'],
@@ -705,6 +711,93 @@ class CliSessions:
         except AppServerError:
             return {'data': []}
 
+    def creation_context(self, cwd):
+        info = self._connect_explicit()
+        expected = self.remote_home if self.alias is not None else self.home
+        actual = Path(info['codexHome'])
+        if not actual.is_absolute() or expected is not None and actual != expected:
+            raise AppServerUnavailable('Codex CLI runtime belongs to another home')
+        if self.alias is not None:
+            self.remote_home = actual
+        config = self.client.request('config/read', {'cwd': cwd, 'includeLayers': False}, replay_safe=True).get('config') or {}
+        profile = (config.get('profiles') or {}).get(config.get('profile')) or {}
+        return {**config, **profile}
+
+    def model_catalog(self, cwd, provider, state=None):
+        state = state or {}
+        config = self.client.request('config/read', {'includeLayers': False, 'cwd': cwd},
+                                     replay_safe=True).get('config') or {}
+        profile = (config.get('profiles') or {}).get(config.get('profile')) or {}
+        effective = {**config, **profile}
+        custom = Catalog.custom_provider(effective, provider)
+        configured_catalog = (bool(effective.get('model_catalog_json')) and
+                              provider == (effective.get('model_provider') or 'openai'))
+        account = {}
+        if not custom and not configured_catalog:
+            account = self.client.request('account/read', {'refreshToken': False},
+                                          replay_safe=True).get('account') or {}
+            custom = account.get('type') == 'apiKey'
+        if custom and not configured_catalog:
+            if self.alias is not None:
+                try:
+                    metadata = self._optional_model_metadata('model/list', {
+                        'cursor': None, 'limit': 100, 'includeHidden': False})
+                    catalog = remote_model_catalog(self.alias, self.remote_home, cwd, provider,
+                                                   config, account, metadata.get('data') or [])
+                except CatalogError as exc:
+                    catalog = {'models': [], 'modelError': str(exc)}
+                return {'kind': 'models', 'models': catalog['models'], 'modelSource': 'api',
+                        'fastMode': {'allowed': False}, 'modelError': catalog.get('modelError'),
+                        'currentModel': state.get('latestModel'),
+                        'currentEffort': state.get('latestReasoningEffort')}
+            reader = Catalog(self.home, self.configured_cli, allow_background_refresh=False)
+            try:
+                environment, _ = self.model_environment(config, provider, account)
+            except DaemonEnvironmentUnavailable:
+                return {'kind': 'models', 'models': [], 'modelSource': 'api',
+                        'fastMode': {'allowed': False},
+                        'modelError': '无法核验当前 CLI 后台服务的启动环境，请重新连接后刷新模型列表',
+                        'currentModel': state.get('latestModel'),
+                        'currentEffort': state.get('latestReasoningEffort')}
+            catalog = reader.read_models(
+                lambda method, params: self.client.request(method, params, replay_safe=True),
+                cwd, provider, metadata_request=lambda method, params: self._optional_model_metadata(method, params),
+                environment=environment)
+            models = [{'id': m['model'], 'name': m.get('displayName') or m['model'],
+                       'description': m.get('description', ''),
+                       'efforts': [e['reasoningEffort'] for e in m.get('supportedReasoningEfforts', [])],
+                       'defaultEffort': m.get('defaultReasoningEffort'),
+                       'isDefault': False, 'fastTier': None, 'defaultServiceTier': None}
+                      for m in catalog['models']]
+            return {'kind': 'models', 'models': models, 'modelSource': 'api',
+                    'fastMode': {'allowed': False}, 'modelError': catalog.get('modelError'),
+                    'currentModel': state.get('latestModel'),
+                    'currentEffort': state.get('latestReasoningEffort')}
+        native_models, cursor = [], None
+        for _ in range(10):
+            raw = self.client.request('model/list', {'cursor': cursor, 'limit': 100,
+                                                      'includeHidden': False}, replay_safe=True)
+            native_models.extend(raw.get('data', []))
+            cursor = raw.get('nextCursor')
+            if not cursor:
+                break
+        models = [{'id': m['model'], 'name': m.get('displayName') or m['model'],
+                   'description': m.get('description', ''),
+                   'efforts': [e['reasoningEffort'] for e in m.get('supportedReasoningEfforts', [])],
+                   'defaultEffort': m.get('defaultReasoningEffort'),
+                   'isDefault': m.get('isDefault', False), 'fastTier': Catalog.fast_tier(m),
+                   'defaultServiceTier': m.get('defaultServiceTier')}
+                  for m in native_models if not m.get('hidden') and m.get('model')]
+        try:
+            fast_mode = Catalog.fast_mode(lambda method, params: self.client.request(
+                method, params, replay_safe=True), cwd)
+        except AppServerError:
+            fast_mode = {'allowed': False}
+        return {'kind': 'models', 'models': models, 'modelSource': 'codex',
+                'fastMode': fast_mode,
+                'modelError': None, 'currentModel': state.get('latestModel'),
+                'currentEffort': state.get('latestReasoningEffort')}
+
     def get_kind(self, thread_id, kind, refresh=False, query='', offset=0, limit=200, ids=None):
         self._check_joined_identity(thread_id)
         if kind == 'models':
@@ -712,78 +805,7 @@ class CliSessions:
                 state = self.states[thread_id]
                 cwd = self.metadata[thread_id]['cwd']
                 provider = self.metadata[thread_id]['modelProvider']
-            config = self.client.request('config/read', {'includeLayers': False, 'cwd': cwd},
-                                         replay_safe=True).get('config') or {}
-            profile = (config.get('profiles') or {}).get(config.get('profile')) or {}
-            effective = {**config, **profile}
-            custom = Catalog.custom_provider(effective, provider)
-            configured_catalog = (bool(effective.get('model_catalog_json')) and
-                                  provider == (effective.get('model_provider') or 'openai'))
-            account = {}
-            if not custom and not configured_catalog:
-                account = self.client.request('account/read', {'refreshToken': False},
-                                              replay_safe=True).get('account') or {}
-                custom = account.get('type') == 'apiKey'
-            if custom and not configured_catalog:
-                if self.alias is not None:
-                    try:
-                        metadata = self._optional_model_metadata('model/list', {
-                            'cursor': None, 'limit': 100, 'includeHidden': False})
-                        catalog = remote_model_catalog(self.alias, self.remote_home, cwd, provider,
-                                                       config, account, metadata.get('data') or [])
-                    except CatalogError as exc:
-                        catalog = {'models': [], 'modelError': str(exc)}
-                    return {'kind': 'models', 'models': catalog['models'], 'modelSource': 'api',
-                            'fastMode': {'allowed': False}, 'modelError': catalog.get('modelError'),
-                            'currentModel': state.get('latestModel'),
-                            'currentEffort': state.get('latestReasoningEffort')}
-                reader = Catalog(self.home, self.configured_cli, allow_background_refresh=False)
-                try:
-                    environment, _ = self.model_environment(config, provider, account)
-                except DaemonEnvironmentUnavailable:
-                    return {'kind': 'models', 'models': [], 'modelSource': 'api',
-                            'fastMode': {'allowed': False},
-                            'modelError': '无法核验当前 CLI 后台服务的启动环境，请重新连接后刷新模型列表',
-                            'currentModel': state.get('latestModel'),
-                            'currentEffort': state.get('latestReasoningEffort')}
-                catalog = reader.read_models(
-                    lambda method, params: self.client.request(method, params, replay_safe=True),
-                    cwd, provider, metadata_request=lambda method, params: self._optional_model_metadata(method, params),
-                    environment=environment)
-                models = [{'id': m['model'], 'name': m.get('displayName') or m['model'],
-                           'description': m.get('description', ''),
-                           'efforts': [e['reasoningEffort'] for e in m.get('supportedReasoningEfforts', [])],
-                           'defaultEffort': m.get('defaultReasoningEffort'),
-                           'isDefault': False, 'fastTier': None, 'defaultServiceTier': None}
-                          for m in catalog['models']]
-                return {'kind': 'models', 'models': models, 'modelSource': 'api',
-                        'fastMode': {'allowed': False}, 'modelError': catalog.get('modelError'),
-                        'currentModel': state.get('latestModel'),
-                        'currentEffort': state.get('latestReasoningEffort')}
-            native_models, cursor = [], None
-            for _ in range(10):
-                raw = self.client.request('model/list', {'cursor': cursor, 'limit': 100,
-                                                          'includeHidden': False}, replay_safe=True)
-                native_models.extend(raw.get('data', []))
-                cursor = raw.get('nextCursor')
-                if not cursor:
-                    break
-            models = [{'id': m['model'], 'name': m.get('displayName') or m['model'],
-                       'description': m.get('description', ''),
-                       'efforts': [e['reasoningEffort'] for e in m.get('supportedReasoningEfforts', [])],
-                       'defaultEffort': m.get('defaultReasoningEffort'),
-                       'isDefault': m.get('isDefault', False), 'fastTier': Catalog.fast_tier(m),
-                       'defaultServiceTier': m.get('defaultServiceTier')}
-                      for m in native_models if not m.get('hidden') and m.get('model')]
-            try:
-                fast_mode = Catalog.fast_mode(lambda method, params: self.client.request(
-                    method, params, replay_safe=True), cwd)
-            except AppServerError:
-                fast_mode = {'allowed': False}
-            return {'kind': 'models', 'models': models, 'modelSource': 'codex',
-                    'fastMode': fast_mode,
-                    'modelError': None, 'currentModel': state.get('latestModel'),
-                    'currentEffort': state.get('latestReasoningEffort')}
+            return self.model_catalog(cwd, provider, state)
         if kind != 'skills':
             raise ValueError('未知目录类型')
         rows, errors = self._native_skills(thread_id, force_reload=bool(refresh))
@@ -1021,6 +1043,10 @@ class CliSessions:
                     items = turn['items']
                     for index, existing in enumerate(items):
                         if existing.get('id') == item.get('id'):
+                            if method == 'item/started' and item.get('type') == existing.get('type') == 'reasoning':
+                                # A late start must not erase deltas already received.
+                                item = {**item, **{field: existing[field] for field in ('summary', 'content')
+                                                  if not item.get(field) and isinstance(existing.get(field), list)}}
                             items[index] = item
                             break
                     else:
@@ -1047,21 +1073,24 @@ class CliSessions:
                 turn = next((item for item in state['turns'] if item['turnId'] == params.get('turnId')), None)
                 delta = params.get('delta')
                 if turn and isinstance(delta, str):
+                    summary = method.endswith('summaryTextDelta')
+                    field = 'summary' if summary else 'content'
+                    slot = params.get('summaryIndex' if summary else 'contentIndex', 0)
+                    if type(slot) is not int or not 0 <= slot < MAX_REASONING_PARTS or not isinstance(params.get('itemId'), str) or not params['itemId']:
+                        return  # Untrusted sparse indices must not allocate an unbounded list.
                     item = next((item for item in turn['items'] if item.get('id') == params.get('itemId')), None)
                     if item is None:
                         item = {'id': params.get('itemId'), 'type': 'reasoning', 'summary': [], 'content': []}
                         turn['items'].append(item)
-                    summary = method.endswith('summaryTextDelta')
-                    field = 'summary' if summary else 'content'
-                    index = params.get('summaryIndex' if summary else 'contentIndex')
+                    if item.get('type') != 'reasoning':
+                        return
                     parts = item.get(field)
                     if not isinstance(parts, list):
                         parts = []
                         item[field] = parts
-                    slot = index if isinstance(index, int) and index >= 0 else 0
                     while len(parts) <= slot:
                         parts.append('')
-                    parts[slot] = (parts[slot] or '') + delta
+                    parts[slot] = (parts[slot] if isinstance(parts[slot], str) else '') + delta
             else:
                 return
             snapshot = copy.deepcopy(state)

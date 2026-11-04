@@ -67,3 +67,22 @@ test('private IPC authenticates before dispatch and redacts internal errors',asy
  assert.deepEqual(await request(record,record.token,{}),{ok:true,value:{safe:true}});
  const error=await request(record,record.token,{fail:true});assert.equal(error.ok,false);assert.equal(JSON.stringify(error).includes('secret-token'),false);
 });
+
+function platformController(platform,serveLocal){
+ const vm=require('node:vm'),{createRequire}=require('node:module'),filename=require.resolve('../desktop/features/zcode-official/controller.cjs'),nativeRequire=createRequire(filename);
+ const scope=vm.createContext({require:name=>name==='../../shared/local-service.cjs'?{serveLocal}:nativeRequire(name),module:{exports:{}},process:{platform},Buffer,setTimeout,clearTimeout,setInterval,clearInterval});
+ vm.runInContext(fs.readFileSync(filename,'utf8'),scope);return scope.module.exports.OfficialRemote;
+}
+test('optional IPC startup failure remains isolated and never advertises a usable connection',async t=>{
+ const Controller=platformController('win32',async()=>{throw Error('private-path-or-token');}),p=profile(t),c=new Controller({electron:{safeStorage:{isEncryptionAvailable:()=>true}},profile:p,rendererPath:__filename,localServiceWorker:{executable:'gateway.exe'}});
+ assert.equal(await c.start(),false);assert.equal(c.status().available,false);assert.equal(c.status().connected,false);assert.match(c.status().reason,/其他网关功能不受影响/);assert.equal(JSON.stringify(c.status()).includes('private-path-or-token'),false);
+});
+test('Linux credentials require a real keyring and never permit plaintext or pre-ready storage',async t=>{
+ const Controller=platformController('linux',async()=>()=>{}),p=profile(t);
+ for(const backend of ['basic_text','unknown','gnome_libsecret','kwallet','kwallet5','kwallet6']){
+  const c=new Controller({electron:{safeStorage:{isEncryptionAvailable:()=>true,getSelectedStorageBackend:()=>backend}},profile:p,rendererPath:__filename});
+  assert.equal(c.secure(),!['basic_text','unknown'].includes(backend));assert.equal(await c.start(),true);
+  assert.equal(c.status().available,true);assert.equal(c.status().secureStorageAvailable,c.secure());
+  if(!c.secure())assert.match(c.status().reason,/系统安全存储不可用/);c.dispose();
+ }
+});

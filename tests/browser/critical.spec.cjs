@@ -496,8 +496,11 @@ test('shared client shell preserves navigation scroll and switches exact instanc
  const clients=[{id:'codex',name:'Codex'}, {id:'claude',name:'Claude'}, {id:'deepseek',name:'DSH'}, {id:'zcode',name:'ZCode'}, {id:entry,name:'工作 Codex'}, {id:other,name:'个人 Codex'}].map(row=>({...row,enabled:true,configured:true,connected:true,capabilities:{accounts:true,create:true}}));
  await page.route('**/api/clients',route=>route.fulfill({json:{clients}}));
  await page.route('**/api/sessions?*',route=>{reads.push(new URL(route.request().url()).searchParams.get('host'));return route.fulfill({json:{sessions:[],remoteHosts:[],availableSources:[],complete:true}});});
- await page.setViewportSize({width:390,height:844});await ready(page,'session-menu');
+ await ready(page,'session-menu');
  await expect(page.locator('.client-switch button')).toHaveCount(6);
+ await expect(page.locator('.client-picker')).not.toContainText('聊天');
+ const aligned=await page.locator('.client-picker').evaluate(node=>{const icon=node.querySelector('.client-icon').getBoundingClientRect(),name=node.querySelector('.client-badge-name').getBoundingClientRect();return Math.abs(icon.top+icon.height/2-name.top-name.height/2)<1;});expect(aligned).toBe(true);
+ await info.attach('client-header',{body:await page.locator('.list-heading').screenshot(),contentType:'image/png'});
  await page.locator('.client-switch').hover();await page.mouse.wheel(140,0);
  await page.evaluate(()=>{window.__firstSwitch=document.querySelector('.client-switch button');});
  await expect.poll(()=>page.locator('.client-switch').evaluate(node=>Math.round(node.scrollLeft))).toBe(140);
@@ -636,5 +639,66 @@ test('shared native API save actions match Codex and remain reachable by dialog 
     expect(result.visible).toBe(true);expect(result.oneRow).toBe(true);expect(result.primaryMatches).toBe(true);
     await testInfo.attach(provider+'-api-footer',{body:await page.locator('#native-api-footer').screenshot(),contentType:'image/png'});
     await page.evaluate(()=>{__nativeApiFooter.panel.dispose();__nativeApiFooter.dialog.remove();delete globalThis.__nativeApiFooter;});
+  }
+});
+
+test('inline account connection methods confirm switches and keep normal lists quiet',async({page},testInfo)=>{
+ const modes=[{id:'private-pipe',label:'本机连接',description:'从网关启动 ZCode，沿用原 App 的账号和项目。',configured:true,available:true},{id:'official-remote',label:'官方远控',description:'使用原 App 的同一官方账号；会话经过官方中继。',configured:true,available:true}];
+ let client={id:'zcode',name:'ZCode',enabled:true,configured:true,installed:true,connected:true,running:true,historyAvailable:true,connectionMode:'private-pipe',connectionModes:modes,capabilities:{accounts:true,create:true}},writes=[];
+ const clients=()=>[{id:'codex',name:'Codex',enabled:true,configured:true,connected:true},client];
+ await page.route('**/api/clients',route=>{if(route.request().method()==='POST'){const body=route.request().postDataJSON();writes.push(body);client={...client,connectionMode:body.connectionMode};}return route.fulfill({json:{clients:clients(),gatewayRunning:true}});});
+ await page.route('**/api/desktop-sessions/zcode/list',route=>route.fulfill({json:{sessions:[{id:'sess_fixture',title:'独立布局验收聊天',cwd:'/fixture',backend:'desktop'}],connected:false,readOnly:true,sessionAccess:true}}));
+ await page.route('**/api/desktop-sessions/zcode/accounts',route=>route.fulfill({json:{accounts:[],activeIds:[],current:{name:'官方账号'},capabilities:{quota:false,addApi:false}}}));
+ await ready(page,'session-menu');await page.evaluate(()=>clientNavigation.choose('zcode'));
+ await expect(page.locator('.ds-list-status')).toHaveText('');await expect(page.locator('.ds-list-status')).toBeHidden();
+ await page.locator('#accounts-button').click();
+ const options=page.locator('.accounts-management-action .client-connection-options'),local=options.locator('[data-connection-mode="private-pipe"]'),official=options.locator('[data-connection-mode="official-remote"]');
+ await expect(local).toBeVisible();await expect(official).toBeVisible();await expect(official).toBeEnabled();
+ const layout=await options.evaluate(node=>{const box=node.getBoundingClientRect(),buttons=[...node.children].map(button=>button.getBoundingClientRect());return {sameRow:Math.abs(buttons[0].top-buttons[1].top)<1,fits:buttons.every(b=>b.left>=box.left&&b.right<=box.right+1),labels:[...node.children].map(b=>b.textContent)};});
+ expect(layout.sameRow).toBe(true);expect(layout.fits).toBe(true);expect(layout.labels).toEqual(['本机连接','官方远控']);
+ await testInfo.attach('inline-account-methods',{body:await page.locator('dialog[open]').screenshot(),contentType:'image/png'});
+ await official.click();const confirm=page.locator('.client-disable-dialog');await expect(confirm).toBeVisible();await expect(confirm).toContainText('切换应用接入方式');await expect(confirm).toContainText('不会退出或重启电脑 App');expect(writes).toHaveLength(0);
+ await confirm.getByRole('button',{name:'取消',exact:true}).click();expect(writes).toHaveLength(0);await expect(local).toHaveAttribute('aria-pressed','true');
+ await official.click();await expect(confirm).toBeVisible();await testInfo.attach('mode-switch-confirmation',{body:await confirm.screenshot(),contentType:'image/png'});
+ await confirm.getByRole('button',{name:'确认切换',exact:true}).click();await expect(official).toHaveAttribute('aria-pressed','true');expect(writes).toEqual([{provider:'zcode',enabled:true,connectionMode:'official-remote'}]);await expect(page.locator('dialog[open]')).toHaveCount(1);
+ await page.evaluate(()=>document.querySelector('dialog[open]').close());
+ await page.evaluate(()=>clientNavigation.applyClients({clients:clientNavigation.clients.map(row=>row.id==='zcode'?{...row,connected:false,retryable:true,setupStatus:'needs-retry',reason:'测试断线提示'}:row)}));
+ await expect(page.locator('.ds-list-status')).toContainText('测试断线提示');await expect(page.locator('.ds-list-status')).toBeVisible();
+});
+
+test('new-chat models use shared choices before the first input', async ({page}, testInfo) => {
+  test.setTimeout(30000);page.setDefaultTimeout(7000);
+  const codexRequests=[];
+  const catalog={models:[{id:'expensive-first',efforts:['high']},{id:'preferred',efforts:['low','high'],defaultEffort:'low'},{id:'alternate',efforts:['low','high'],defaultEffort:'low'}],currentModel:'preferred',currentEffort:'low',cache:{identity:'fixture-account'},capabilities:{models:true,effort:true}};
+  await page.route('**/api/projects**',async route=>{
+    const url=new URL(route.request().url());
+    const value=url.pathname.endsWith('/models')?catalog:url.pathname.endsWith('/trust')?{required:false}:{createModels:true,projects:[{key:'local|fixture',host:'local',cwd:'/fixture/project',name:'Project',type:'desktop'}],environments:[{key:'desktop|local',type:'desktop',surface:'desktop',host:'local',name:'Local'}]};
+    if(url.pathname.endsWith('/models'))codexRequests.push(url.search);
+    await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(value)});
+  });
+  await page.route('**/api/sessions',async route=>{
+    if(route.request().method()!=='POST')return route.continue();
+    codexRequests.push(route.request().postDataJSON());
+    await route.fulfill({status:400,contentType:'application/json',body:JSON.stringify({error:'Fixture intentionally stops before creating a thread'})});
+  });
+  await ready(page,'session-menu');await page.evaluate(async()=>{await BridgeFeatures.load('chat');BridgeI18n.setLanguage('zh');await document.fonts.ready;});
+  await page.locator('#new-chat').click();
+  const dialog=page.locator('#new-chat-dialog');
+  await expect(dialog.locator('[aria-label="模型"]')).toHaveValue('preferred');
+  await expect(dialog.locator('[aria-label="思考强度"]')).toHaveValue('low');
+  await dialog.getByRole('button',{name:'刷新模型',exact:true}).click();
+  await expect(dialog.getByRole('button',{name:'刷新模型',exact:true})).toBeEnabled();
+  expect(codexRequests.some(value=>typeof value==='string'&&value.includes('refresh=true'))).toBe(true);
+  await dialog.locator('[aria-label="模型"]').selectOption('alternate');await dialog.locator('[aria-label="思考强度"]').selectOption('high');
+  expect(await dialog.evaluate(node=>node.scrollWidth<=node.clientWidth+1)).toBe(true);
+  await testInfo.attach('creation-models-codex',{body:await page.screenshot(),contentType:'image/png'});
+  await dialog.locator('#new-chat-submit').click();await expect.poll(()=>codexRequests.some(value=>value?.model==='alternate')).toBe(true);
+  const submitted=codexRequests.find(value=>value?.model==='alternate');expect(submitted.effort).toBe('high');expect(submitted.modelCatalogIdentity).toBe('fixture-account');
+  await dialog.getByRole('button',{name:'关闭新建聊天',exact:true}).click();
+  await page.evaluate(readFileSync(path.join(__dirname,'creation-models.browser.js'),'utf8'));
+  for(const provider of ['claude','deepseek','zcode']){
+    expect((await page.evaluate(provider=>runCreationModelsBrowserChecks(provider),provider)).passed).toBeGreaterThan(8);
+    await testInfo.attach('creation-models-'+provider,{body:await page.screenshot(),contentType:'image/png'});
+    expect((await page.evaluate(()=>window.__creationModelsPreview.submit())).passed).toBeGreaterThan(10);
   }
 });

@@ -48,6 +48,7 @@ SSH_SOURCES = {
     'bridge/features/sessions/create.py': ['create_empty', 'fork_copy', 'rename_thread'],
     'bridge/features/sessions/organization.py': ['organization'],
     'bridge/features/accounts/models.py': ['model_ids'],
+    'bridge/clients/claude/creation.py': ['creation_launch_options'],
     'bridge/features/accounts/draft_identity.py': ['draft_identity', 'codex_account_identity'],
     'bridge/features/auth/tls.py': ['client_context'],
     'bridge/features/workspace/workspace.py': ['Workspace', 'operate'],

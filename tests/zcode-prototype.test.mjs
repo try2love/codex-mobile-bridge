@@ -163,7 +163,7 @@ test('partial optional services keep text working and never begin an unsupported
   const f=fixture();delete f.services.modelSelectionService;delete f.services.oauthService;delete f.agent.attachmentChunkV4;
   await f.request('attach');
   const detail=await f.request('detail');
-  assert.deepEqual(detail.capabilities,{models:false,effort:false,create:false,skills:false,attachments:false,uploadFiles:false,projectReferences:false});
+  assert.deepEqual(detail.capabilities,{rename:false,models:false,effort:false,create:false,skills:false,attachments:false,uploadFiles:false,projectReferences:false});
   assert.equal(detail.account,undefined);
   await assert.rejects(f.request('send',{id:'file',text:'one',files:[{name:'a.txt',data:'MQ==',mime:'text/plain'}]}),/附件/);
   assert.deepEqual(f.calls,['acquire']);
@@ -456,6 +456,21 @@ test('new native chat uses atomic firstInput and independent shared lease withou
  const before=f.calls.length;await assert.rejects(f.request('create',{id:'empty',firstMessage:''}),/首条消息/);assert.equal(f.calls.length,before);
 });
 
+test('explicit new-chat model and effort override the anchor before firstInput admission',async()=>{
+ const f=fixture();await f.request('attach');
+ f.services.modelSelectionService.getView=async()=>({providers:[{providerId:'account:test',models:[
+  {modelId:'Flash',config:{enabled:true,optionSpecs:{reasoningLevel:{values:['low','high']}}}},
+  {modelId:'Selected',config:{enabled:true,optionSpecs:{reasoningLevel:{values:['low']}}}}]}]});
+ f.agent.sendConversationCommandV4=async p=>{f.calls.push(p);return {status:'accepted',result:{sessionId:p.envelope.payload.sessionId}};};
+ await f.request('create',{id:'chosen-new',firstMessage:'FIRST',model:'account:test/Selected',effort:'low'});
+ const command=f.calls.find(value=>value.envelope?.type==='createSession');
+ assert.deepEqual(command.envelope.payload.firstInput.modelSelection,{providerId:'account:test',modelId:'Selected',options:{reasoningLevel:'low'}});
+ assert.equal(command.envelope.payload.config.model,'Selected');assert.equal(command.envelope.payload.firstInput.text,'FIRST');
+ const before=f.calls.filter(value=>value.envelope?.type==='createSession').length;
+ await assert.rejects(f.request('create',{id:'bad-new',firstMessage:'FIRST',model:'account:test/Selected',effort:'high'}),/有效的模型和思考/);
+ assert.equal(f.calls.filter(value=>value.envelope?.type==='createSession').length,before);
+});
+
 test('new project uses the original project service and workspace registry, preserving the old lease', async()=>{
   const f=fixture();await f.request('attach');
   const scopes=[],released=[];
@@ -551,7 +566,32 @@ test('native message actions bind the row entity and epoch and preserve files an
   await assert.rejects(f.request('fork',{id:'wrong',target}),/消息已变化/);
   await f.request('fork',{id:'fork',target:{rowId:4,entityId:'assistant-message',logEpoch:'epoch'}});
   assert.equal(f.calls.at(-1).envelope.type,'forkAssistant');
-  await f.request('rename',{id:'rename',title:'New title'});assert.deepEqual(f.calls.at(-1).envelope.payload,{title:'New title'});
+});
+
+test('native rename uses the original task service and durable list title without acquiring a chat',async()=>{
+ const f=fixture(),task={taskId:'sess-test',workspacePath:'/project',hostId:'local',title:'Original'};let writes=0;
+ f.services.projectService.readTree=async()=>({tasks:[{...task}]});
+ f.services.zcodeTaskService={renameTask:async request=>{
+  assert.deepEqual(request,{taskId:'sess-test',workspacePath:'/project',title:'原生标题'});
+  writes++;task.title=request.title;return {...task};
+ }};
+ const listing=await f.request('list',{}, {sessionId:null});assert.equal(listing.sessions[0].nativeRename,true);
+ const result=await f.request('rename',{title:' 原生标题 '},{binding:null});
+ assert.deepEqual(result,{status:'confirmed',scope:'native',result:{id:'sess-test',title:'原生标题'}});
+ assert.equal((await f.request('list',{}, {sessionId:null})).sessions[0].title,'原生标题');
+ assert.equal(writes,1);assert.deepEqual(f.calls,[]);
+ for(const title of ['', 'bad\nname', 'x'.repeat(121)])await assert.rejects(f.request('rename',{title}),/标题/);
+ const changed=await f.request('rename',{title:'Other'},{workspace:'/other'});
+ assert.equal(changed.notSent,true);assert.equal(writes,1);
+});
+
+test('native rename never retries an unconfirmed write or uses a missing task service',async()=>{
+ const f=fixture(),task={taskId:'sess-test',workspacePath:'/project',hostId:'local',title:'Before'};let writes=0;
+ f.services.projectService.readTree=async()=>({tasks:[{...task}]});
+ assert.equal((await f.request('rename',{title:'New'})).notSent,true);
+ f.services.zcodeTaskService={renameTask:async()=>{writes++;return {...task};}};
+ await assert.rejects(f.request('rename',{title:'New'}),/待核对/);
+ assert.equal(writes,1);assert.deepEqual(f.calls,[]);
 });
 
 test('native access switch requires confirmation for full access and preserves revision and original owner',async()=>{

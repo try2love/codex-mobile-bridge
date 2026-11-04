@@ -35,13 +35,16 @@ class OfficialZCodeTests(unittest.TestCase):
         self.adapter = ZCodeOfficial(self.root, {'dataDirectory': self.root/'native'}, self.client)
 
     def native(self, request):
+        if request['action'] == 'rename':
+            return {'status': 'confirmed', 'scope': 'native',
+                    'result': {'id': request['sessionId'], 'title': request['body']['title']}}
         return {'application': {'ready': True, 'canCreate': True},
                 'target': {'workspace': str(self.project)},
                 'attach': {'binding': self.binding, 'subscriptionId': 'original-session-subscription'},
                 'detail': {'snapshot': self.snapshot},
                 'send': {'status': 'accepted'},
                 'account': {'provider': 'official-account'},
-                'list': {'sessions': [{'id': 'sess_test', 'cwd': str(self.project)}]}}[request['action']]
+                'list': {'sessions': [{'id': 'sess_test', 'cwd': str(self.project), 'nativeRename': True}]}}[request['action']]
 
     def connect_session(self):
         self.adapter.connect_application()
@@ -93,6 +96,21 @@ class OfficialZCodeTests(unittest.TestCase):
         self.assertEqual(request['body']['text'], 'unchanged user message')
         self.assertEqual(request['body']['files'][0]['name'], 'file.md')
         self.assertTrue(request['expiresAt'] > 0)
+
+    def test_native_rename_uses_application_identity_without_acquiring_a_conversation(self):
+        self.adapter.connect_application()
+        self.assertTrue(self.adapter.call('list')['sessions'][0]['capabilities']['rename'])
+        self.client.call.reset_mock()
+        rid = str(uuid.uuid4())
+        result = self.adapter.call('rename', 'sess_test', {'id': rid, 'title': ' 原生标题 '})
+        self.assertEqual(result['status'], 'confirmed')
+        self.assertEqual(result['result'], {'id': 'sess_test', 'title': '原生标题'})
+        self.assertEqual([call.args[0]['action'] for call in self.client.call.call_args_list], ['target', 'rename'])
+        request = self.client.call.call_args.args[0]
+        self.assertEqual(request['expectedProcess'], self.owner)
+        self.assertEqual(request['body']['id'], rid)
+        self.assertIsNone(self.adapter.sid)
+        self.assertIsNone(self.adapter.binding)
 
     def test_changed_relay_or_device_blocks_old_binding_before_dispatch(self):
         self.connect_session()

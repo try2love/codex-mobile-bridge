@@ -9,6 +9,15 @@ from pathlib import Path
 MAX_PAGE_BYTES = 4 * 1024 * 1024
 
 
+def session_custom_title(event, native):
+    """Read the CLI's own title event; never write or infer a title mutation."""
+    title = event.get('customTitle')
+    if (event.get('type') == 'custom-title' and event.get('sessionId') == native
+            and isinstance(title, str) and title.strip()):
+        return title.strip()
+    return None
+
+
 def image_event(path, source):
     """Read only an evidenced event; never resolve an image's arbitrary path."""
     if not isinstance(source, dict) or not isinstance(source.get('event'), str):

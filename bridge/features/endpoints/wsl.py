@@ -785,8 +785,31 @@ class WslEntry(WslFeatures):
         if result.get('error'): raise ValueError(result['error'])
         return result
 
+    def creation_models(self, project_key=None, kind=None, refresh=False, host=None, path=None):
+        if project_key == self.host+'|independent':
+            cwd = self.row['home']
+        elif project_key:
+            project = next((row for row in self.projects() if row['key'] == project_key), None)
+            if not project:
+                raise ValueError('请选择此 WSL 应用的项目')
+            cwd = project['cwd']
+        elif path and host == self.host:
+            source = source_text('features/sessions/create.py')+'\nprint(json.dumps(project_directory(**'+payload({'value': path})+')))\n'
+            cwd = self.read(self.row['distribution'], source)['cwd']
+        else:
+            raise ValueError('请先选择新会话的项目目录')
+        runtime = self.runtime(allow_start=True)
+        config = runtime.request('config/read', {'includeLayers': False, 'cwd': cwd}).get('config') or {}
+        metadata, thread = {'cwd': cwd}, {'modelProvider': config.get('model_provider') or 'openai'}
+        value = self.model_catalog.get(None, metadata, thread, config, refresh,
+            lambda: self._models(runtime, metadata, thread, config))
+        return {**value, 'currentModel': config.get('model'), 'currentEffort': config.get('model_reasoning_effort'),
+                'capabilities': {'models': True, 'effort': True}}
+
     @_entry_write
-    def create_chat(self, project_key, title, request_id):
+    def create_chat(self, project_key, title, request_id, model_options=None):
+        from bridge.features.sessions.creation_models import intent
+        model_options = model_options or {}
         if not isinstance(request_id, str):
             raise ValueError('创建请求标识无效')
         uuid.UUID(request_id)
@@ -799,12 +822,15 @@ class WslEntry(WslFeatures):
         with self.create_lock:
             receipt = self.creations.get(request_id)
             if receipt:
-                if receipt['project'] != project_key or receipt['title'] != title:
+                if receipt['project'] != project_key or receipt['title'] != title or intent(receipt.get('modelOptions', {})) != intent(model_options):
                     raise ValueError('同一创建请求不能用于不同内容')
                 if not receipt.get('id'):
                     raise IPCError('创建结果待核对，请先刷新聊天列表；不会重复创建')
                 identifier = receipt['id']
             else:
+                if model_options:
+                    from bridge.features.sessions.creation_models import validate
+                    validate(model_options, self.creation_models(project_key))
                 runtime = self.runtime(allow_start=True)
                 project = None if independent else next((p for p in self.projects() if p['key'] == project_key), None)
                 if not independent and project is None:
@@ -819,10 +845,15 @@ class WslEntry(WslFeatures):
                 cwd = self.read(self.row['distribution'], source)['cwd']
                 proof = self._check_account_route(runtime, {'cwd': cwd}, new=True)
                 receipt = self.creations[request_id] = {'project': project_key, 'title': title, 'cwd': cwd}
+                if model_options:
+                    receipt['modelOptions'] = model_options
                 self.data_dir.mkdir(parents=True, exist_ok=True)
                 private_json(self.creations_path, self.creations)
                 try:
-                    created = runtime.request('thread/start', {'cwd': cwd, 'ephemeral': False})['thread']
+                    from bridge.features.sessions.create import model_overrides
+                    started = runtime.request('thread/start', {'cwd': cwd, 'ephemeral': False,
+                        **model_overrides(model_options.get('model'), model_options.get('effort'))})
+                    created = started['thread']
                     identifier = created['id']
                     uuid.UUID(identifier)
                     if created.get('cwd') != cwd or created.get('parentThreadId'):
@@ -833,6 +864,9 @@ class WslEntry(WslFeatures):
                         self._managed_routes[identifier] = (*proof[:-1], created.get('model'))
                     receipt['id'] = identifier
                     private_json(self.creations_path, self.creations)
+                    if model_options and (started.get('model') != model_options['model'] or
+                            'effort' in model_options and started.get('reasoningEffort') != model_options['effort']):
+                        raise IPCError('新聊天已创建，但模型或思考强度未确认；请检查原会话')
                     runtime.request('thread/name/set', {'threadId': identifier, 'name': title})
                     # Force durable empty-thread history before exposing it in lists.
                     runtime.request('thread/read', {'threadId': identifier, 'includeTurns': True})

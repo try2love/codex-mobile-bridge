@@ -14,8 +14,8 @@ from pathlib import Path
 from bridge.clients.claude import model
 from bridge.clients.claude.context import context_fields
 from bridge.clients.claude.cli_session import (_Owned, _message_content, _skill_catalog, _cli_catalog,
-                                                _set_cli_settings, _supports_compact, _compact_cli, MODES,
-                                                PERMISSION_OPTIONS, ResumePreflightBlocked)
+                                                _set_cli_settings, _supports_compact, _compact_cli, _supports_rename, _rename_cli, MODES,
+                                                _verify_creation_settings, PERMISSION_OPTIONS, ResumePreflightBlocked)
 from bridge.clients.codex.remote import ssh_command
 from bridge.clients.errors import BridgeUnavailable
 from bridge.features.network.retry import ConnectionUnavailable, TransportUnavailable, ssh_connection
@@ -27,14 +27,20 @@ import ast
 
 def worker_source():
     source = source_text('clients/claude/remote_worker.py')
+    source = source.replace('from bridge.clients.claude.creation import creation_launch_options',
+                            source_text('clients/claude/creation.py'))
     marker = 'from bridge.clients.claude.file_archive import archive_paths, state as archive_file_state, change as archive_file_change, supported as archive_supported, assert_no_cli as archive_assert_no_cli'
     if source.count(marker) != 1:
         raise ValueError('Claude Code 远端归档模块无法加载')
     helper = source_text('clients/claude/file_archive.py')
     source = source.replace(marker, helper + '\narchive_file_state = state\narchive_file_change = change\narchive_supported = supported\narchive_assert_no_cli = assert_no_cli\n')
     history = source_text('clients/claude/history.py')
-    reader = next(node for node in ast.parse(history).body if isinstance(node, ast.FunctionDef) and node.name == 'image_event')
-    return source.replace('from bridge.clients.claude.history import image_event', ast.get_source_segment(history, reader))
+    readers = [node for node in ast.parse(history).body if isinstance(node, ast.FunctionDef) and
+               node.name in ('image_event', 'session_custom_title')]
+    if len(readers) != 2:
+        raise ValueError('Claude Code 远端历史读取模块无法加载')
+    return source.replace('from bridge.clients.claude.history import image_event, session_custom_title',
+                          '\n\n'.join(ast.get_source_segment(history, node) for node in readers))
 
 
 def _command(alias):
@@ -183,10 +189,12 @@ class RemoteClaudeCli:
         with self.lock:
             return sid in self.index
 
-    def projects(self):
+    def projects(self, host_id=None):
         if self.closed or self.hosts is None:
             return []
         configured = self.hosts.hosts()
+        if host_id is not None:
+            configured = {host_id: configured[host_id]} if host_id in configured else {}
         known = self.hosts.projects()
         rows = []
         def discover(host_id, host):
@@ -216,12 +224,15 @@ class RemoteClaudeCli:
                 rows.extend(future.result())
         return rows
 
-    def project_environments(self):
+    def project_environments(self, host_id=None):
         """Discover configured CLI hosts even when they have no saved project."""
         if self.closed or self.hosts is None:
             return []
         rows = []
-        for host_id, host in self.hosts.hosts().items():
+        selected = self.hosts.hosts()
+        if host_id is not None:
+            selected = {host_id: selected[host_id]} if host_id in selected else {}
+        for host_id, host in selected.items():
             try:
                 result = self._remote(host['alias'], {'operation': 'projects'}, timeout=12)
             except BridgeUnavailable:
@@ -274,6 +285,8 @@ class RemoteClaudeCli:
                                 'input': event['request'].get('input', {}),
                                 'needsInput': event['request'].get('tool_name') == 'AskUserQuestion'}
                                for rid, event in pending.items()])
+        value['capabilities'] = {**value.get('capabilities', {}), 'rename': bool(live and not row.get('archived') and
+                                 not row.get('archiveIncomplete') and _supports_rename(owned.catalog))}
         if live:
             value['model'] = owned.model or value['model']
             value['permissionMode'] = owned.permission or value['permissionMode']
@@ -336,7 +349,7 @@ class RemoteClaudeCli:
             time.sleep(.2)
         return None
 
-    def create(self, host_id, alias, origin, cwd, message, directory_identity=None):
+    def create(self, host_id, alias, origin, cwd, message, directory_identity=None, selection=None):
         host = self.hosts.hosts().get(host_id) if self.hosts else None
         if not host or host['alias'] != alias:
             raise ValueError('原 SSH 主机配置已变化')
@@ -351,6 +364,7 @@ class RemoteClaudeCli:
         try:
             process.stdin.write(json.dumps({'operation': 'create', 'origin': origin,
                 'native': native, 'cwd': cwd, 'directoryIdentity': directory_identity,
+                **({'selection': selection} if selection else {}),
                 'scope': DesktopUploads.scope('claude', sid)})+'\n')
             process.stdin.flush()
         except OSError:
@@ -372,6 +386,8 @@ class RemoteClaudeCli:
             if owned.error:
                 raise BridgeUnavailable(owned.error)
             owned.permission = owned.catalog.get('current_permission_mode')
+            if selection:
+                _verify_creation_settings(owned, selection)
             with self.lock:
                 self.owned[sid] = owned
             message_id = str(uuid.uuid4())
@@ -516,7 +532,8 @@ class RemoteClaudeCli:
                         'capabilities': {**row.get('capabilities', {}), 'resume': not live and not row.get('archived') and ready, 'send': live and public['connectionState'] == 'ready',
                                          'models': live, 'permissions': live, 'stop': live,
                                          'compact': live and not owned.active and not owned.pending and _supports_compact(owned.catalog),
-                                         'attachments': True, 'queue': False, 'steer': False, 'skills': live}}
+                                         'attachments': True, 'queue': False, 'steer': False, 'skills': live,
+                                         'rename': public['capabilities']['rename']}}
             if row.get('archived'):
                 raise BridgeUnavailable('请先恢复归档的 Claude Code 会话')
             if action == 'catalog':
@@ -569,6 +586,8 @@ class RemoteClaudeCli:
                 return {'status': 'ready'}
             if not live:
                 raise BridgeUnavailable('请先继续这条 SSH Claude Code 会话')
+            if action == 'rename':
+                return _rename_cli(owned, row, body.get('title'), lambda: self._get(sid))
             if action == 'send':
                 if body.get('mode') in ('queue', 'steer'):
                     raise ValueError('Claude Code CLI 暂不支持此发送选项')

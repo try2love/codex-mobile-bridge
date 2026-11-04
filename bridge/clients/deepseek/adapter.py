@@ -9,16 +9,16 @@ import urllib.request
 from pathlib import Path
 from bridge.features.accounts.models import NoRedirect
 from bridge.app.lifecycle import private_json
-from bridge.clients.errors import BridgeUnavailable
+from bridge.clients.errors import BridgeUnavailable, ResumePreflightBlocked
 from bridge.clients.file_mentions import file_mentions, display_file_mentions
 from bridge.features.sessions.create import ArchiveNotSent
 from bridge.clients.deepseek.setup import MARKER, insertion, verified_directory, legacy_account_configured
 
 PLUGIN_ID = re.compile(r'''["']?id["']?\s*:\s*["']?codex-mobile-desktop(?:["'\s,}]|$)''')
-BRIDGE_REVISION = 9
-# Revisions 3–8 share the complete native-agent lifecycle schema; presentation
+BRIDGE_REVISION = 10
+# Revisions 3–9 share the complete native-agent lifecycle schema; presentation
 # and fork capability additions do not invalidate an older idle snapshot.
-LIFECYCLE_REVISIONS = (3, 4, 5, 6, 7, 8, BRIDGE_REVISION)
+LIFECYCLE_REVISIONS = (3, 4, 5, 6, 7, 8, 9, BRIDGE_REVISION)
 UPDATE_REASON = 'Harness 接入需要更新，请结束任务后点击“重启并接入”'
 
 
@@ -175,6 +175,8 @@ class DeepSeek:
         return {'installed': False, 'restartRequired': True}
 
     def call(self, action, sid=None, body=None):
+        if action == 'create' and body and 'model' in body and self.call('status').get('createModels') is not True:
+            raise ResumePreflightBlocked('Harness 接入需要更新后才能预设新会话模型；尚未创建会话')
         if action == 'send' and body and body.get('resolvedReferences'):
             body = {**body, 'text': file_mentions(body.get('text', ''), body['resolvedReferences'])}
             body.pop('resolvedReferences')

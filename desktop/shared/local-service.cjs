@@ -3,8 +3,9 @@
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),net=require('node:net');
 const {randomBytes,timingSafeEqual}=require('node:crypto');
 const MAX=64*1024*1024;
-async function serveLocal(profile,name,handler){
+async function serveLocal(profile,name,handler,{worker}={}){
   if(!/^[a-z-]+$/.test(name))throw Error('Invalid local service name');
+  if(process.platform==='win32')return require('./local-service-windows.cjs').serveWindowsLocal(profile,name,handler,worker);
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'cmb-rpc-'));fs.chmodSync(directory,0o700);
   const endpoint=path.join(directory,'s'),record=path.join(profile,name+'-ipc.json'),token=randomBytes(32).toString('hex');
   const peers=new Set();

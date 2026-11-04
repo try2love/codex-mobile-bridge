@@ -135,10 +135,12 @@ def project_snapshot(snapshot, workspace, reply_models=None):
 
 
 def detached_session(row, workspace):
+    row = dict(row)
+    native_rename = row.pop('nativeRename', False) is True
     return {**row, 'provider': 'zcode', 'host': 'local', 'cwd': workspace, 'backend': 'desktop',
             **composer_presentation(row.get('model'), row.get('effort')),
             'status': 'unknown', 'runtimeKnown': False, 'requests': [], 'connectionState': 'detached',
-            'capabilities': {'send': False, 'resume': True, 'plan': False, 'goal': False}}
+            'capabilities': {'send': False, 'resume': True, 'plan': False, 'goal': False, 'rename': native_rename}}
 
 
 class _NoLocalTransport(BridgeUnavailable):
@@ -556,6 +558,33 @@ class ZCodePrototype(ZCodeDesktop):
     def _call_live(self, action, sid=None, body=None):
         if action == 'resume':
             return self._resume_debug(sid, body)
+        if action == 'rename':
+            body = dict(body or {})
+            title = body.get('title')
+            if (not isinstance(sid, str) or not sid.startswith('sess_') or
+                    not isinstance(title, str) or not 1 <= len(title.strip()) <= 120 or
+                    any(ord(char) < 32 or ord(char) == 127 for char in title) or set(body)-{'title', 'id'}):
+                raise ResumePreflightBlocked('原生改名请求无效')
+            body.setdefault('id', str(uuid.uuid4()))
+            uuid.UUID(body['id'])
+            body['title'] = title.strip()
+            try:
+                owner = self._live_process()
+                if self.application_owner != owner:
+                    raise ValueError('ZCode 原 App 连接已变化，请先重新连接')
+                target = self.transport({'action': 'target', 'sessionId': sid, 'expectedProcess': owner})
+                workspace = target['workspace']
+                if not isinstance(workspace, str) or not Path(workspace).is_absolute():
+                    raise ValueError('原会话工作目录无法确认')
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                raise ResumePreflightBlocked(str(error)) from error
+            result = self.transport({'action': 'rename', 'sessionId': sid, 'workspace': workspace,
+                                     'expectedProcess': owner, 'body': body})
+            if result.get('notSent') is True:
+                return result
+            if result.get('status') != 'confirmed' or result.get('result') != {'id': sid, 'title': body['title']}:
+                raise BridgeUnavailable('改名结果待核对，请检查原客户端；不会重复提交')
+            return {**result, 'id': body['id']}
         if action in ('account', 'quota') and self.application_owner is not None:
             return self.transport({'action': action, 'expectedProcess': self.application_owner,
                                    **({'body': body or {}} if action == 'quota' else {})})
@@ -576,8 +605,14 @@ class ZCodePrototype(ZCodeDesktop):
         if action == 'list':
             result = self.transport({'action': 'list', 'workspace': self.workspace, 'sessionId': self.sid,
                                      'binding': self.binding})
-            rows = [project_snapshot(row['snapshot'], row['cwd'])['session'] if 'snapshot' in row
-                    else detached_session(row, row['cwd']) for row in result['sessions']]
+            rows = []
+            for item in result['sessions']:
+                row = (project_snapshot(item['snapshot'], item['cwd'])['session'] if 'snapshot' in item
+                       else detached_session(item, item['cwd']))
+                if 'title' in item:
+                    row['title'] = item['title']
+                row['capabilities'] = {**row.get('capabilities', {}), 'rename': item.get('nativeRename') is True}
+                rows.append(row)
             self.workspaces.update({row['id']: row['cwd'] for row in rows})
             return {'sessions': rows, 'connected': True}
         if action == 'projects':

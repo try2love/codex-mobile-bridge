@@ -225,7 +225,7 @@ def _local_path(address):
     return address
 
 
-def local_listener(address):
+def local_listener(address, *, security_attributes=0):
     import _winapi
     from multiprocessing.connection import BUFSIZE, PipeListener
 
@@ -235,8 +235,13 @@ def local_listener(address):
             if first:
                 flags |= _winapi.FILE_FLAG_FIRST_PIPE_INSTANCE
             mode = _winapi.PIPE_TYPE_MESSAGE | _winapi.PIPE_READMODE_MESSAGE | 8  # PIPE_REJECT_REMOTE_CLIENTS
-            return _winapi.CreateNamedPipe(self._address, flags, mode, _winapi.PIPE_UNLIMITED_INSTANCES,
-                                           BUFSIZE, BUFSIZE, _winapi.NMPWAIT_WAIT_FOREVER, _winapi.NULL)
+            def create(attributes):
+                return _winapi.CreateNamedPipe(self._address, flags, mode, _winapi.PIPE_UNLIMITED_INSTANCES,
+                                               BUFSIZE, BUFSIZE, _winapi.NMPWAIT_WAIT_FOREVER, attributes)
+            if callable(security_attributes):
+                with security_attributes() as attributes:
+                    return create(ctypes.addressof(attributes))
+            return create(security_attributes)
 
     return LocalPipeListener(_local_path(address))
 

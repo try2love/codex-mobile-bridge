@@ -46,7 +46,7 @@ function fixture({storage=new Map(),sessionStore=new Map()}={}){
  const root=new Node('div');root.className='app';document.body.append(root);const select=new Node('select'),calls=[],notices=[];let uploadHandler=async()=>({ok:true,status:200,json:async()=>({image:true,size:16,name:'image.png'})}),handler=async(url,body)=>body?{status:'accepted'}:url.includes('/detail')?{session:{id:'a',title:'Chat',model:'model-a',effort:'high',status:'idle',capabilities:{}},messages:[]}:url.includes('/workspace')?{entries:[],total:0,project:'/project'}:{sessions:[]};
  const context=vm.createContext({document,window:{addEventListener:(type,fn)=>listeners['window:'+type]=fn,dispatchEvent:event=>listeners['window:'+event.type]?.(event)},navigator:{},location:{pathname:'/'},history:{replaceState(){}},localStorage:{get length(){return storage.size;},key:i=>[...storage.keys()][i],getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},sessionStorage:{get length(){return sessionStore.size;},key:i=>[...sessionStore.keys()][i],getItem:k=>sessionStore.get(k),setItem:(k,v)=>sessionStore.set(k,v),removeItem:k=>sessionStore.delete(k)},crypto:{getRandomValues:array=>webcrypto.getRandomValues(array)},Uint8Array,TextEncoder,Option:class extends Node{constructor(text,value){super('option');this.textContent=text;this.value=value;this.setAttribute('value',value);}},ResizeObserver:class{observe(){}},MutationObserver:class{observe(){}},AbortController,URLSearchParams,requestAnimationFrame:fn=>fn(),cancelAnimationFrame(){},getComputedStyle:()=>({getPropertyValue:()=>8}),setTimeout(){return 1;},clearTimeout(){},fetch:async(url,options)=>{calls.push({url,upload:options});return uploadHandler(url,options);},renderMarkdown:(node,text)=>node.textContent=text,CustomEvent:class{constructor(type,options){this.type=type;Object.assign(this,options);}}});
  vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/shell/app.js'),'utf8').match(/^function uuid\(\).*$/m)[0],context);
- for(const file of ['web/layouts/viewport.js','web/features/chat/activity.js','web/features/chat/composer-drafts.js','web/features/chat/composer-quotes.js','web/features/chat/attachments.js','web/shared/i18n.js','web/features/clients/client-lifecycle.js','web/features/chat/message-actions.js','web/features/chat/permissions.js','web/features/chat/modes.js','web/features/workspace/workbench.js','web/features/chat/list-sync.js','web/features/clients/desktop-sessions.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
+ for(const file of ['web/layouts/viewport.js','web/features/chat/activity.js','web/features/chat/composer-drafts.js','web/features/chat/composer-quotes.js','web/features/chat/attachments.js','web/shared/i18n.js','web/features/clients/client-lifecycle.js','web/features/chat/message-actions.js','web/features/chat/permissions.js','web/features/chat/modes.js','web/features/workspace/workbench.js','web/features/chat/list-sync.js','web/shared/creation-model-picker.js','web/features/clients/desktop-sessions.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
  const View=vm.runInContext('DesktopSessionsView',context),view=new View({root,select,request:(url,body,signal)=>{calls.push({url,body});return handler(url,body,signal);},notify:text=>notices.push(text),onSelect(){},csrf:()=>'csrf-test',onUnauthorized(){}});
  return {view,root,document,calls,notices,storage,sessionStore,setHandler:fn=>handler=fn,setUploadHandler:fn=>uploadHandler=fn,run:s=>vm.runInContext(s,context),text:n=>n.textContent};
 }
@@ -1235,6 +1235,44 @@ test('ZCode native create reuses firstMessage contract and omits hidden title',a
  const sent=ui.calls.find(c=>c.url.endsWith('/create')).body;assert.equal(sent.firstMessage,'first message');assert.equal(sent.title,undefined);assert.equal(sent.projectKey,'p');
 });
 
+test('all desktop creation surfaces pass the selected model before their first message',async()=>{
+ for(const provider of ['claude','deepseek','zcode']){
+  const ui=fixture();ui.view.provider=provider;ui.view.generation=1;
+  const environment={key:'scope',surface:provider==='claude'?'code':'desktop',host:'local',createRequiresMessage:provider!=='deepseek',createTitle:provider!=='zcode'};
+  ui.setHandler(async(url,body)=>url.endsWith('/projects')?{createModels:true,projects:[{key:'p',environment:'scope',surface:environment.surface,host:'local',cwd:'/p',name:'Project'}],environments:[environment],browseDirectories:false}:url.includes('/create-models?')?{models:[{id:'expensive-first',efforts:['high']},{id:'chosen',efforts:['low','high'],defaultEffort:'low'}],currentModel:'chosen',currentEffort:'low',cache:{identity:'account'},capabilities:{models:true,effort:true}}:url.endsWith('/create')?{status:'accepted',result:{id:'native'}}:url.includes('/detail')?{session:{id:'native',title:'Native',status:'idle'},messages:[]}:{sessions:[]});
+  await ui.view.create();await new Promise(setImmediate);const dialog=ui.document.querySelector('dialog');
+  assert.equal(dialog.querySelector('[aria-label="模型"]').value,'chosen');assert.equal(dialog.querySelector('[aria-label="思考强度"]').value,'low');assert.equal(ui.calls.some(call=>call.body),false);
+  dialog.querySelector('[aria-label="思考强度"]').value='high';dialog.querySelector('[aria-label="思考强度"]').onchange();dialog.querySelector('textarea').value='FIRST';
+  await dialog.querySelector('form').onsubmit({preventDefault(){}});
+  const sent=ui.calls.find(call=>call.url.endsWith('/create')).body;assert.equal(sent.model,'chosen');assert.equal(sent.effort,'high');assert.equal(sent.modelCatalogIdentity,'account');assert.equal(sent.environment,'scope');
+  if(provider!=='deepseek')assert.equal(sent.firstMessage,'FIRST');
+ }
+});
+
+test('creation picker never chooses the first model and shares cache refresh with isolated scopes',async()=>{
+ const ui=fixture(),Picker=ui.run('window.BridgeCreationModelPicker'),root=ui.document.createElement('section'),cache=new Map();let finished,requests=[];
+ const known={models:[{id:'first-expensive',efforts:['high']},{id:'flash',efforts:['low']}],currentModel:'flash',currentEffort:'low',cache:{identity:'account-a'}};cache.set('create:a',known);
+ const picker=new Picker({root,cache});const read=refresh=>{requests.push(refresh);return new Promise(resolve=>finished=resolve);};const pending=picker.load('a',read);
+ assert.equal(picker.model.value,'flash');assert.equal(picker.valid(),true);finished(known);await pending;
+ await picker.load('a',read);assert.equal(requests.length,1,'Opening the same scope reuses its loaded catalog');
+ const refresh=picker.refresh.onclick();assert.equal(requests[1],true);finished({...known,cache:{identity:'account-a',updatedAt:42}});await refresh;assert.equal(cache.get('create:a').cache.updatedAt,42);
+ const other=picker.load('b',async()=>({models:known.models,cache:{identity:'account-b'}}));await other;assert.equal(picker.model.value,'');assert.equal(picker.valid(),false);
+ let stale;const old=picker.load('c',()=>new Promise(resolve=>stale=resolve));await picker.load('d',async()=>({...known,cache:{identity:'account-d'}}));stale({...known,cache:{identity:'old'}});await old;assert.equal(picker.catalog.cache.identity,'account-d');
+ picker.dispose();
+});
+
+test('refreshing creation catalog identity never rotates an uncertain creation request',async()=>{
+ const ui=fixture();ui.view.provider='zcode';ui.view.generation=1;
+ ui.setHandler(async()=>({status:'unknown',message:'receipt unknown'}));
+ const body={projectKey:'p',firstMessage:'FIRST',model:'chosen',effort:'low',modelCatalogIdentity:'old',environment:'old-scope'};
+ await ui.view.mutate('create',body,null);
+ await ui.view.mutate('create',{...body,modelCatalogIdentity:'refreshed',environment:'refreshed-scope'},null);
+ const sent=ui.calls.filter(call=>call.body);assert.equal(sent.length,2);assert.equal(sent[0].body.id,sent[1].body.id);
+ ui.setHandler(async()=>({status:'blocked',message:'no input sent'}));await ui.view.mutate('create',{...body,firstMessage:'BLOCKED'},null);
+ const blocked=ui.calls.filter(call=>call.body).at(-1).body.id;await ui.view.mutate('create',{...body,firstMessage:'BLOCKED',modelCatalogIdentity:'fixed'},null);
+ assert.notEqual(ui.calls.filter(call=>call.body).at(-1).body.id,blocked,'A known preflight block can be explicitly retried');
+});
+
 test('native per-mode availability reuses the shared composer without disabling queue and guide',async()=>{
  const ui=await opened(),v=ui.view;v.provider='zcode';v.applyDetail({connected:true,session:{id:'a',status:'active',capabilities:{send:true,queue:true,steer:true,sendModes:{send:false,queue:true,steer:true}}},messages:[]});
  v.mode.value='send';v.updateComposer();assert.equal(v.send.disabled,true);
@@ -1376,7 +1414,7 @@ test('ready connection methods hide retry without placing a chooser above the ch
  const ui=fixture(),view=ui.view;view.provider='zcode';
  const client={id:'zcode',enabled:true,setupStatus:'session-access',connected:false,historyAvailable:true,retryable:true,connectionMode:'official-remote',connectionModes:[{id:'private-pipe',label:'本机连接',configured:true},{id:'official-remote',label:'官方远控',configured:true}]};
  view.setClientStates([client]);
- assert.equal(view.connectionRetry.hidden,true);assert.equal(view.connectionMode,undefined);assert.equal(view.listStatus.textContent,'已连接 · 官方远控');
+ assert.equal(view.connectionRetry.hidden,true);assert.equal(view.connectionMode,undefined);assert.equal(view.listStatus.textContent,'');
  assert.equal(view.list.querySelectorAll('button').some(button=>button.textContent==='连接方式'),false);
 });
 
@@ -1416,4 +1454,13 @@ test('presentation-only work mode does not add unsupported commands to a plain m
  view.applyDetail({session:{id:'a',title:'Limited',status:'idle',connectionState:'ready',composerCapabilities:{plan:true,goal:true}},capabilities:{send:true,plan:false,goal:false},messages:[]});
  assert.equal(view.workMode.hidden,false);assert.equal(view.workMode.disabled,true);view.input.value='plain message';ui.setHandler(async()=>({status:'unknown'}));await view.submit();
  const sent=ui.calls.find(call=>call.body);assert.ok(sent);assert.equal(sent.body.workMode,undefined);
+});
+
+
+test('normal connection summaries disappear without swallowing later loading and read failures',async()=>{
+ const ui=fixture(),view=ui.view;view.provider='zcode';const client={id:'zcode',enabled:true,connected:false,retryable:true,historyAvailable:true,connectionMode:'official-remote',connectionModes:[{id:'official-remote',label:'官方远控',configured:true}]};
+ view.setClientStates([client]);assert.match(view.listStatus.textContent,/尚未连接.*官方远控/);view.refresh=async()=>{};await view.setClientStates([{...client,connected:true}]);assert.equal(view.listStatus.textContent,'');
+ view.listStatusKind='loading';view.listStatus.textContent='正在读取聊天…';view.renderConnectionStatus();assert.equal(view.listStatus.textContent,'正在读取聊天…');
+ view.listStatusKind='error';view.listStatus.textContent='列表读取失败';view.renderConnectionStatus();assert.equal(view.listStatus.textContent,'列表读取失败');assert.equal(view.listStatus.hidden,false);
+ await view.setClientStates([client]);assert.match(view.listStatus.textContent,/尚未连接/);assert.equal(view.connectionRetry.hidden,false);
 });

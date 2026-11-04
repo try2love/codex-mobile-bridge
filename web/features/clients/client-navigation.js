@@ -40,7 +40,7 @@ class ClientNavigation {
     this.footer.append(this.manage,this.home);this.syncHome();new MutationObserver(()=>this.syncHome()).observe(document.documentElement,{attributes:true,attributeFilter:['class']});
     document.getElementById('logout').hidden=true;
     this.badge=document.createElement('span');this.badge.className='client-badge';
-    const headingTitle=this.heading.querySelector('h2');this.clientPicker=document.createElement('button');this.clientPicker.type='button';this.clientPicker.className='client-picker plain';this.clientPicker.setAttribute('aria-haspopup','dialog');this.clientPicker.setAttribute('aria-expanded','false');this.clientPicker.append(...headingTitle.childNodes,this.badge);headingTitle.append(this.clientPicker);this.clientPicker.onclick=()=>this.openClientPicker();
+    const headingTitle=this.heading.querySelector('h2');this.clientPicker=document.createElement('button');this.clientPicker.type='button';this.clientPicker.className='client-picker plain';this.clientPicker.setAttribute('aria-haspopup','dialog');this.clientPicker.setAttribute('aria-expanded','false');this.clientPicker.append(this.badge);headingTitle.replaceChildren(this.clientPicker);this.clientPicker.onclick=()=>this.openClientPicker();
     this.switchPosition=0;this.switchNodes=new Map();
     this.switcher.addEventListener('scroll',()=>{if(this.restoringSwitch||!this.switcher.clientWidth)return;this.switchPosition=this.switcher.scrollLeft;this.paintSwitchOverflow();},{passive:true});
     for(const [direction,label,symbol] of [[-1,'向左滚动应用','‹'],[1,'向右滚动应用','›']]){const arrow=document.createElement('button');arrow.type='button';arrow.className='client-switch-arrow '+(direction<0?'previous':'next');arrow.textContent=symbol;arrow.dataset.i18nAriaLabel=label;arrow.setAttribute('aria-label',BridgeI18n.t(label));arrow.hidden=true;arrow.onclick=()=>this.switcher.scrollBy({left:direction*this.switcher.clientWidth*.7,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'});this.switchDock.append(arrow);}
@@ -291,19 +291,19 @@ class ClientNavigation {
     try{confirmed=await ClientLifecycle.chooseInitialize(client);}finally{this.choosing=null;this.paint();}
     if(confirmed)return this.toggle(id,true,{initialization:confirmed});
   }
-  async selectConnectionMode(id){
+  async selectConnectionMode(id,mode){
     const client=this.managementClients().find(row=>row.id===id);if(!client||this.pending.size||this.choosing||this.hasUncertain())return;
-    this.choosing=id;++this.revision;this.paint();let mode;
-    try{mode=await ClientLifecycle.chooseConnectionMode(client);}finally{this.choosing=null;this.paint();}
-    if(mode){await this.toggle(id,true,{connectionMode:mode});this.notify('已选择连接方式');}
+    this.choosing=id;++this.revision;this.paint();let accepted;
+    try{accepted=await ClientLifecycle.confirmConnectionMode(client,mode);}finally{this.choosing=null;this.paint();}
+    if(accepted){await this.toggle(id,true,{connectionMode:mode});this.notify('已选择连接方式');}
   }
   bindAccountManagement(panel,id){
     const render=()=>{
-      const client=this.managementClients().find(row=>row.id===id),state=client&&this.connection(client);
+      const client=this.managementClients().find(row=>row.id===id);
       panel.setManagementAction(ClientLifecycle.connectionModes(client).length>1?{
-        label:'连接方式',description:[state?.modeLabel,state?.label].filter(Boolean).map(value=>BridgeI18n.t(value)).join(' · '),
+        client,
         disabled:this.pending.size>0||!!this.choosing||this.hasUncertain(),
-        onClick:()=>this.selectConnectionMode(id).catch(error=>this.notify(error.message))
+        select:mode=>this.selectConnectionMode(id,mode).catch(error=>this.notify(error.message))
       }:null);
     };
     this.accountManagementRenderers??=new Set();this.accountManagementRenderers.add(render);render();
@@ -338,7 +338,7 @@ class ClientNavigation {
     for(const render of this.accountManagementRenderers||[])render();
     if((this.listGesture||this.swipePreview)&&(!this.clients.some(c=>c.id===this.activeClient()&&c.enabled)||this.swipePreview&&this.swipePreview.provider!==this.activeClient()))this.cancelListSwipe();
     this.syncViewClients();
-    const provider=this.provider,row=this.clients.find(c=>c.id===this.activeClient()),badgeName=row?.name||'Codex';if(this.badge.dataset.provider!==provider||this.badge.dataset.name!==badgeName){this.badge.replaceChildren();if(provider)this.badge.append(this.icon(provider),document.createTextNode(badgeName));this.badge.dataset.provider=provider||'';this.badge.dataset.name=badgeName;}
+    const provider=this.provider,row=this.clients.find(c=>c.id===this.activeClient()),badgeName=row?.name||(provider?'Codex':BridgeI18n.t('应用'));if(this.badge.dataset.provider!==provider||this.badge.dataset.name!==badgeName){const name=document.createElement('span');name.className='client-badge-name';name.textContent=badgeName;this.badge.replaceChildren();if(provider)this.badge.append(this.icon(provider));this.badge.append(name);this.badge.dataset.provider=provider||'';this.badge.dataset.name=badgeName;}
     if(this.switcher.clientWidth&&!this.restoringSwitch)this.switchPosition=this.switcher.scrollLeft;
     const target=provider&&!isCodexClient(provider)?this.view.list:this.sidebar,navigationMoved=this.navigation.parentElement!==target;let switchChanged=navigationMoved;if(this.heading.parentElement!==target)target.prepend(this.heading);if(navigationMoved)target.append(this.navigation);
     this.account.classList.toggle('navigation-hidden',!provider||row?.capabilities?.accounts===false||(isCodexClient(provider)&&!!window.BridgeSharedRelay));this.notifications.classList.toggle('navigation-hidden',!provider||row?.capabilities?.notifications===false);this.manage.hidden=!this.preference('clients');
@@ -394,7 +394,7 @@ class ClientNavigation {
       toggle.type='button';toggle.className='client-management-switch';toggle.setAttribute('role','switch');toggle.setAttribute('aria-checked',String(client.enabled));toggle.setAttribute('aria-label',BridgeI18n.t('启用')+' '+client.name);toggle.setAttribute('aria-busy',String(this.pending.has(client.id)));toggle.disabled=(!client.enabled&&!(client.selectable??client.configured))||this.pending.size>0||!!this.choosing||this.hasUncertain();
       toggle.append(document.createElement('span'));control.append(toggle,label);row.append(this.icon(client.id),text,control);parent.append(row);
       toggle.onclick=()=>this.toggle(client.id,!client.enabled).catch(error=>this.notify(error.message));
-      if(ClientLifecycle.connectionModes(client).length>1){const choose=document.createElement('button');choose.type='button';choose.textContent=BridgeI18n.t('连接方式');choose.disabled=this.pending.size>0||!!this.choosing||this.hasUncertain();choose.onclick=()=>this.selectConnectionMode(client.id).catch(error=>this.notify(error.message));control.append(choose);}
+      if(ClientLifecycle.connectionModes(client).length>1){const methods=document.createElement('div');text.append(methods);ClientLifecycle.mountConnectionModes(methods).update(client,{disabled:this.pending.size>0||!!this.choosing||this.hasUncertain(),select:mode=>this.selectConnectionMode(client.id,mode).catch(error=>this.notify(error.message))});}
       if(!client.enabled&&client.running&&client.canQuitDesktop!==false&&this.gatewayRunning!==false){const quit=document.createElement('button');quit.type='button';quit.textContent=BridgeI18n.t('关闭电脑 App…');quit.disabled=this.pending.size>0||!!this.choosing||this.hasUncertain();quit.onclick=()=>this.toggle(client.id,false).catch(error=>this.notify(error.message));control.append(quit);}
       if(client.enabled){const open=document.createElement('button');open.type='button';open.textContent=BridgeI18n.t('查看聊天');open.onclick=()=>{manager.dialog.close();this.choose(client.id).catch(error=>this.notify(error.message));};control.append(open);}
       if(failure){const retry=document.createElement('button');retry.type='button';retry.textContent=BridgeI18n.t(failure.uncertain?'刷新状态':ClientLifecycle.retryLabel(failure.action));retry.disabled=this.pending.size>0||!!this.choosing||!!this.loading||(!failure.uncertain&&this.hasUncertain());retry.onclick=()=>Promise.resolve(failure.uncertain?this.refresh():this.retryOperation(client.id)).catch(error=>this.notify(error.message));control.append(retry);}

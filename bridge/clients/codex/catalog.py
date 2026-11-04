@@ -381,13 +381,25 @@ class Catalog:
                 files.append(hashlib.sha256((self.home / name).read_bytes()).hexdigest())
             except OSError:
                 files.append(None)
+        project_files = []
+        directory = Path(cwd).resolve()
+        # Project layers can override model_provider and its auth/base URL.
+        # Hash ancestor candidates conservatively; never cache another route
+        # merely because CODEX_HOME and the project directory stayed the same.
+        for parent in (directory, *directory.parents):
+            path = parent/'.codex/config.toml'
+            try:
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            except OSError:
+                digest = None
+            project_files.append((str(path), digest))
         variables = {name: hashlib.sha256(value.encode()).hexdigest()
                      for name, value in os.environ.items()
                      if name in ('CODEX_HOME', 'OPENAI_API_KEY', 'OPENAI_BASE_URL')
                      or name.endswith(('_API_KEY', '_AUTH_TOKEN', '_BEARER_TOKEN', '_BASE_URL'))}
         # Do not reuse catalogs cached before desktop requests stopped borrowing
         # gateway environment credentials.
-        return ModelStore.key('codex-desktop-v2', str(self.home.resolve()), str(Path(cwd).resolve()), provider, files, variables)
+        return ModelStore.key('codex-desktop-v2', str(self.home.resolve()), str(directory), provider, files, variables, project_files)
 
     def _start_model_refresh(self, cwd, provider, identity):
         if not self.allow_background_refresh:

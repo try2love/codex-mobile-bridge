@@ -135,7 +135,7 @@ function register(){
   for(const action of ['snapshot','save','start','stop','logs','test-notification','webhook-endpoint','network-adaptation','check-entry','tailscale-setup','devices','account', 'accounts', 'cli-access', 'harness', 'desktop-sessions','notification-watches', 'transfer-settings'])ipcMain.handle('bridge:'+action,async(event,payload)=>{
     authorize(event);
     if(action==='desktop-sessions'&&payload?.action?.startsWith('zcode-official-')){
-      if(process.platform!=='darwin'||!officialRemote)throw Error('此实验 Test 暂只支持 macOS 官方远控。');
+      if(!officialRemote)throw Error('官方远控连接服务不可用。');
       if(updater?.busy)throw Error('正在更新应用，请稍候。');
       if(payload.action==='zcode-official-state')return officialRemote.status();
       if(payload.action==='zcode-official-save')return officialRemote.save(payload.link);
@@ -340,7 +340,8 @@ else{
     language=normalize(app.getLocale());
     try{language=normalize(JSON.parse(fs.readFileSync(path.join(app.getPath('userData'),'language.json'),'utf8')).language);}catch{}
     dataDir=loadDataDir();publishLanguage(dataDir,language);
-    officialRemote=new OfficialRemote({electron:require('electron'),profile:dataDir,rendererPath:app.isPackaged?
+    officialRemote=new OfficialRemote({electron:require('electron'),profile:dataDir,
+      localServiceWorker:workerFor({packaged:app.isPackaged,resources:process.resourcesPath,root,dataDir}),rendererPath:app.isPackaged?
       path.join(process.resourcesPath,'gateway/_internal/bridge/clients/zcode/renderer.mjs'):path.join(root,'bridge/clients/zcode/renderer.mjs')});
     await officialRemote.start();setupUpdater();register();
     if(process.platform==='win32')app.setAppUserModelId('io.github.try2love.codexmobilebridge');

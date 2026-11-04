@@ -700,6 +700,9 @@ class Handler(BaseHTTPRequestHandler):
                                                         if parts[3] == 'catalog' else
                                                         {'refresh': query.get('refresh') == ['true']} if parts[3] == 'account' else {})
                 sid = body.pop('sessionId', None) if write else query.get('sessionId', [None])[0]
+                if not write and parts[3] == 'create-models':
+                    body = {key: query[key][0] for key in ('environment', 'projectKey', 'path') if key in query}
+                    body['refresh'] = query.get('refresh') == ['true']
                 if not write and parts[3] == 'detail':
                     body['historyLimit'] = max(1, min(100, int(query.get('historyLimit', ['40'])[0])))
                     if query.get('historyBefore'):
@@ -988,7 +991,7 @@ class Handler(BaseHTTPRequestHandler):
                 if set(body) != {'action', 'id', 'enabled'} or body['action'] != 'configure':
                     raise ValueError('Codex 入口请求无效')
                 return self.output(200, entries.configure(body['id'], body['enabled']))
-            if path in ('/api/projects', '/api/projects/browse', '/api/projects/trust'):
+            if path in ('/api/projects', '/api/projects/browse', '/api/projects/trust', '/api/projects/models'):
                 entry = query.get('entry', ['desktop'])[0]
                 if self.server.desktop_sessions:
                     self.server.desktop_sessions.require_enabled(entry if entry.startswith(('wsl:', 'codex:')) else 'codex')
@@ -996,6 +999,11 @@ class Handler(BaseHTTPRequestHandler):
                     target = self.server.bridge.entries.get(entry)
                 else:
                     target = self.server.bridge
+                if path.endswith('/models'):
+                    if write: return self.output(405, {'error': '模型目录只支持读取'})
+                    options = {key: query[key][0] for key in ('kind', 'host', 'path') if key in query}
+                    return self.output(200, target.creation_models(query.get('project', [None])[0],
+                        refresh=query.get('refresh') == ['true'], **options))
                 if path.endswith('/trust'):
                     if not write: return self.output(405, {'error': '请通过项目确认操作信任'})
                     body = self.read_json()
@@ -1021,7 +1029,8 @@ class Handler(BaseHTTPRequestHandler):
                 if project_host is not None and entry != 'desktop':
                     raise ValueError('项目环境请求无效')
                 return self.output(200, {'projects': target.projects(host=project_host) if project_host is not None else target.projects(),
-                    'environments': target.project_environments() if hasattr(target, 'project_environments') else []})
+                    'environments': target.project_environments() if hasattr(target, 'project_environments') else [],
+                    'createModels': hasattr(target, 'creation_models')})
             if write and path == '/api/activity':
                 groups = self.read_json().get('hosts')
                 if not isinstance(groups, dict) or len(groups) > 20:
@@ -1034,15 +1043,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self.output(200, {'sessions': rows})
             if write and path == '/api/sessions':
                 body = self.read_json()
+                from bridge.features.sessions.creation_models import requested
+                selected = requested(body)
+                model_options = {'model_options': selected} if selected else {}
                 entry = query.get('entry', ['desktop'])[0]
                 if self.server.desktop_sessions:
                     self.server.desktop_sessions.require_enabled(entry if entry.startswith(('wsl:', 'codex:')) else 'codex')
                 if entry != 'desktop':
                     return self.output(200, self.server.bridge.entries.get(entry).create_chat(
-                        body.get('project'), body.get('title'), body.get('id')))
+                        body.get('project'), body.get('title'), body.get('id'), **model_options))
                 fields = (body.get('project'), body.get('title'), body.get('id'))
-                result = (self.server.bridge.create_chat(*fields, kind=body['kind']) if 'kind' in body
-                          else self.server.bridge.create_chat(*fields))
+                result = (self.server.bridge.create_chat(*fields, kind=body['kind'], **model_options) if 'kind' in body
+                          else self.server.bridge.create_chat(*fields, **model_options))
                 return self.output(200, result)
             if path == '/api/notifications/defaults':
                 if self.server.notifications is None:

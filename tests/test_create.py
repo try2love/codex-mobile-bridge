@@ -198,6 +198,23 @@ class CreationTests(unittest.TestCase):
             self.assertEqual(create.call_count, 1)
             with self.assertRaises(ValueError):self.bridge.create_chat('local|p', 'Other', request)
 
+    def test_creation_model_identity_and_choice_are_part_of_the_durable_request(self):
+        selected = {'model': 'fixture-model', 'effort': 'low', 'modelCatalogIdentity': 'account-scope'}
+        catalog = {'models': [{'id': 'fixture-model', 'efforts': ['low', 'high']}], 'cache': {'identity': 'account-scope'}}
+        request = str(uuid.uuid4())
+        with patch.object(self.bridge, 'creation_models', return_value=catalog), \
+             patch('bridge.app.service.create_empty', return_value=self.tid) as create, patch('bridge.app.service.open_in_desktop'):
+            self.bridge.create_chat('local|p', 'Model test', request, model_options=selected)
+            self.bridge.create_chat('local|p', 'Model test', request, model_options={**selected, 'modelCatalogIdentity': 'new-precondition'})
+            self.bridge.create_chat('local|p', 'Model test', request, model_options=selected)
+            self.assertEqual(create.call_count, 1)
+            self.assertEqual(create.call_args.kwargs['model'], 'fixture-model'); self.assertEqual(create.call_args.kwargs['effort'], 'low')
+            with self.assertRaisesRegex(ValueError, '不同内容'):
+                self.bridge.create_chat('local|p', 'Model test', request, model_options={**selected, 'effort': 'high'})
+            with self.assertRaisesRegex(ValueError, '账号或运行环境'):
+                self.bridge.create_chat('local|p', 'Changed account', str(uuid.uuid4()), model_options={**selected, 'modelCatalogIdentity': 'other'})
+            self.assertEqual(create.call_count, 1)
+
     def test_independent_chat_needs_no_saved_project_and_is_idempotent(self):
         self.bridge.hosts.state = lambda: {}
         request = str(uuid.uuid4())

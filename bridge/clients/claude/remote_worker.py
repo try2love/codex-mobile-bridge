@@ -12,7 +12,8 @@ import uuid
 from pathlib import Path
 
 from bridge.clients.claude.file_archive import archive_paths, state as archive_file_state, change as archive_file_change, supported as archive_supported, assert_no_cli as archive_assert_no_cli
-from bridge.clients.claude.history import image_event
+from bridge.clients.claude.history import image_event, session_custom_title
+from bridge.clients.claude.creation import creation_launch_options
 
 MODES = {'default', 'acceptEdits', 'plan', 'dontAsk', 'auto', 'bypassPermissions'}
 
@@ -299,6 +300,9 @@ def saved(path, found, *, include_events=False):
                 if include_events:
                     history.append(event)
                 kind = event.get('type')
+                custom_title = session_custom_title(event, native)
+                if custom_title is not None:
+                    title = custom_title
                 if kind == 'user' and not event.get('isSidechain'):
                     if title is None:
                         message = event.get('message') if isinstance(event.get('message'), dict) else {}
@@ -658,6 +662,11 @@ def create(request):
                  '--add-dir', str(directory)]
     env = os.environ.copy()
     env['CLAUDE_CONFIG_DIR'] = found['directory']
+    selected_args, selected_env = creation_launch_options(request.get('selection'))
+    arguments.extend(selected_args)
+    for key, value in selected_env.items():
+        if value is None: env.pop(key, None)
+        else: env[key] = value
     os.chdir(cwd)
     print(json.dumps({'type': 'bridge_preflight', 'status': 'ready', 'cwd': str(cwd)}), flush=True)
     os.execvpe(found['binary'], arguments, env)

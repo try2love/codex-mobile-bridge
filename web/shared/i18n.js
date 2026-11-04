@@ -2,6 +2,16 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"模型与思考强度":"Model and reasoning effort",
+"请选择思考强度":"Select reasoning effort",
+"沿用原生默认":"Use the native default",
+"正在核对模型目录…":"Checking model catalog…",
+"请选择模型；不会自动选用目录中的第一个模型。":"Select a model; the first catalog entry is not selected automatically.",
+"请先选择新会话的模型与思考强度":"Select a model and reasoning effort for the new chat first",
+"此环境尚无可复用模型目录，可手动填写；不会为读取目录启动 CLI 会话。":"No reusable model catalog is available for this environment. Enter the model manually; reading this list will not start a CLI session.",
+"切换应用接入方式？":"Switch the app connection method?",
+"切换为":"Switch to",
+"这将切换此应用的接入方式，不会退出或重启电脑 App。未完成的操作需先处理。":"This switches how the app connects without quitting or restarting the desktop app. Resolve unfinished operations first.",
 "在网关管理账号与API":"Manage accounts and APIs in the gateway",
 "已获取模型，可选择添加或手动填写。":"Models fetched. Select models to add or enter IDs manually.",
 "官方登录已失效，请在电脑网关重新登录。":"Official authentication has expired. Sign in again in the desktop gateway.",

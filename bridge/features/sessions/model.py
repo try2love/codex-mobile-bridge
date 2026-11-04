@@ -185,11 +185,11 @@ def normalize_item(item, *, image_cache=None):
         if path:
             row["attachments"] = [{"type": "localImage", "path": path, "name": Path(path).name}]
     elif kind == "reasoning":
-        summary = [x for x in (item.get("summary") or []) if isinstance(x, str) and x.strip()]
+        summary = [x for x in item.get("summary", []) if isinstance(x, str) and x.strip()] if isinstance(item.get("summary"), list) else []
         # Third-party Responses backends often leave `summary` empty and put the
         # chain of thought in `content` only. Fall back to it so the row is not
         # an expandable but visually empty panel.
-        content = [x for x in (item.get("content") or []) if isinstance(x, str) and x.strip()]
+        content = [x for x in item.get("content", []) if isinstance(x, str) and x.strip()] if isinstance(item.get("content"), list) else []
         row.update(role="activity", title="思考摘要", text="\n".join(summary or content))
     elif kind == "commandExecution":
         row.update(role="activity", title="执行命令", text=item.get("command", ""), output=item.get("aggregatedOutput", ""), exitCode=item.get("exitCode"))

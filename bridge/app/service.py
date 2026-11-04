@@ -664,8 +664,8 @@ class Bridge:
     def project_host(self, key):
         if not isinstance(key, str):
             raise ValueError('请选择电脑 App 中已保存的项目')
-        if key == 'local|independent':
-            return 'local'
+        if key in ('local|independent', self.host+'|independent') and self.local:
+            return self.host
         hosts = {self.host} if self.host.startswith('codex:') else {'local', *self.hosts.hosts()}
         project = self.directory_projects.get(key)
         if project is None:
@@ -840,8 +840,47 @@ class Bridge:
         self._save_creations()
         return dict(project, nativeProject=True, name=native.get('name') or project.get('name'))
 
+    def creation_models(self, project_key=None, kind='desktop', refresh=False, host=None, path=None):
+        if self.host.startswith('codex:'):
+            kind = 'cli'
+        if kind not in ('desktop', 'cli'):
+            raise ValueError('未知聊天类型')
+        if project_key in ('local|independent', self.host+'|independent') and self.local:
+            root = self.data_dir/'independent-chats'
+            project = {'host': self.host, 'cwd': str((root if root.is_dir() else self.data_dir).resolve())}
+        elif project_key:
+            project = next((row for row in self.projects(host=self.project_host(project_key))
+                            if row['key'] == project_key and (row.get('type') or 'desktop') == kind), None)
+        elif path and host:
+            environment = next((row for row in self.project_environments() if row['host'] == host and
+                                (row.get('type') or row.get('kind') or row.get('surface') or 'desktop') == kind), None)
+            if environment is None:
+                raise ValueError('运行环境已变化，请重新选择')
+            if host == self.host and self.local:
+                cwd = project_directory(path)['cwd']
+            else:
+                source = source_text('features/sessions/create.py')+'\nprint(json.dumps(project_directory(**'+payload({'value': path})+')))\n'
+                cwd = ssh_read(self.hosts.hosts()[host]['alias'], source)['cwd']
+            project = {'host': host, 'cwd': cwd}
+        else:
+            project = None
+        if project is None:
+            raise ValueError('请选择电脑 App 中已保存的项目')
+        target = self.for_host(project['host'])
+        if kind == 'cli':
+            config = target.cli_sessions.creation_context(project['cwd'])
+            provider = config.get('model_provider') or 'openai'
+            value = target._native_models(None, project['cwd'], provider, refresh=refresh)
+            value = {**value, 'currentModel': config.get('model'), 'currentEffort': config.get('model_reasoning_effort')}
+        else:
+            value = target.catalog_reader.get_kind('models', project['cwd'], refresh=refresh)
+        api = value.get('modelSource') == 'api'
+        return {**value, 'capabilities': {'models': True, 'effort': True, 'manualModels': api, 'manualEffort': api}}
+
     @operation(project='project_key')
-    def create_chat(self, project_key, title, request_id, kind='desktop'):
+    def create_chat(self, project_key, title, request_id, kind='desktop', model_options=None):
+        from bridge.features.sessions.creation_models import intent
+        model_options = model_options or {}
         if self.host.startswith('codex:'):
             kind = 'cli'
         if not isinstance(request_id, str):
@@ -854,8 +893,8 @@ class Bridge:
         available = [project for project in self.projects(host=self.project_host(project_key))
                      if (project.get('type') or 'desktop') == kind]
         project = next((p for p in available if p['key'] == project_key), None)
-        if kind == 'desktop' and project_key == 'local|independent':
-            project = {'host': 'local', 'cwd': None}
+        if self.local and project_key in ('local|independent', self.host+'|independent'):
+            project = {'host': self.host, 'cwd': None}
         if project is None:
             raise ValueError('请选择电脑 App 中已保存的项目')
         title = title.strip()
@@ -864,11 +903,15 @@ class Bridge:
             if entry:
                 if (entry['project'] != project_key or entry['title'] != title or
                         entry.get('kind', 'desktop') != kind or
+                        intent(entry.get('modelOptions', {})) != intent(model_options) or
                         entry.get('cwd', project['cwd']) != project['cwd']):
                     raise ValueError('同一创建请求不能用于不同内容')
                 if not entry.get('id') and entry.get('phase') not in ('registering-project', 'project-ready'):
                     raise CreationError('上次创建结果尚不确定，请先刷新聊天列表并检查电脑 App，避免重复创建')
             else:
+                if model_options:
+                    from bridge.features.sessions.creation_models import validate
+                    validate(model_options, self.creation_models(project_key, kind))
                 if project.get('hostIdentity') and self.hosts.hosts().get(project['host'], {}).get('alias') != project['hostIdentity']:
                     raise ValueError('原 SSH 主机配置已变化，请重新选择项目')
                 if kind == 'cli':
@@ -881,6 +924,8 @@ class Bridge:
                 entry = {'project': project_key, 'title': title, 'kind': kind,
                          'cwd': project['cwd'], 'host': project['host'],
                          'directoryIdentity': project.get('directoryIdentity'), 'at': time.time()}
+                if model_options:
+                    entry['modelOptions'] = model_options
                 self.creations[request_id] = entry
                 self._save_creations()
             if not entry.get('id'):
@@ -908,8 +953,10 @@ class Bridge:
                         if (not cli_bridge.local and
                                 cli_bridge.cli_sessions.alias != self.hosts.hosts().get(project['host'], {}).get('alias')):
                             raise ValueError('原 SSH 主机配置已变化，请重启网关后重新选择项目')
+                        runtime_cwd = project['cwd'] or independent_directory(self.data_dir, request_id)
                         state = cli_bridge.cli_sessions.create(
-                            project['cwd'], title, on_start=mark_started, on_created=mark_created)
+                            runtime_cwd, title, on_start=mark_started, on_created=mark_created,
+                            **{key: model_options[key] for key in ('model', 'effort') if key in model_options})
                         thread_id = state['id']
                     except AppServerUnavailable:
                         if not entry.get('started'):
@@ -926,7 +973,7 @@ class Bridge:
                             entry['phase'] = 'creating-thread'
                             self._save_creations()
                         thread_id = create_empty(self.catalog_reader.executable, self.codex_home, cwd, title,
-                                                 project=native_project)
+                                                 project=native_project, **{key: model_options[key] for key in ('model', 'effort') if key in model_options})
                     except CreationUnavailable:
                         # No thread mutation happened: retrying this request cannot
                         # create a duplicate. Keep uncertain post-start results recorded.
@@ -943,7 +990,8 @@ class Bridge:
                     source += 'runtime=shutil.which("codex") or str(Path.home()/".local/bin/codex")\n'
                     if project.get('directoryIdentity'):
                         source += 'project_directory(**' + payload({'value': project['cwd'], 'expected': project['directoryIdentity']}) + ')\n'
-                    source += 'print(json.dumps({"id":create_empty(runtime, home, **' + payload({'cwd': project['cwd'], 'title': title}) + ')}))\n'
+                    source += 'print(json.dumps({"id":create_empty(runtime, home, **' + payload({'cwd': project['cwd'], 'title': title,
+                        **{key: model_options[key] for key in ('model', 'effort') if key in model_options}}) + ')}))\n'
                     if entry.get('phase') == 'project-ready':
                         entry['phase'] = 'creating-thread'
                         self._save_creations()
@@ -958,7 +1006,7 @@ class Bridge:
                     with session.condition:
                         session.origin = 'cli'
                         session.origin_verified = True
-                        session.saved_cwd = project['cwd']
+                        session.saved_cwd = runtime_cwd
                         session.saved_provider = state['modelProvider']
                         session.runtime = 'cli'
                         session.owner = 'cli:' + thread_id
@@ -2870,6 +2918,8 @@ class Bridge:
                               environment_identity)
 
     def _schedule_native_model_refresh(self, key, thread_id, cwd, provider, updated_at, replace=False):
+        if thread_id is None:
+            return
         with self.native_model_lock:
             if replace and key in self.native_model_timers:
                 self.native_model_timers.pop(key).cancel()
@@ -2928,8 +2978,9 @@ class Bridge:
                 if persisted:
                     return {**stable(persisted[1]), 'cache': {'state': 'fresh', 'updatedAt': persisted[0], 'identity': identity}}
             try:
-                value = self.cli_sessions.get_kind(thread_id, 'models', refresh=refresh,
-                                                   query='', offset=0, limit=200, ids=None)
+                value = (self.cli_sessions.model_catalog(cwd, provider) if thread_id is None else
+                         self.cli_sessions.get_kind(thread_id, 'models', refresh=refresh,
+                                                    query='', offset=0, limit=200, ids=None))
             except (OSError, ValueError, AppServerError):
                 if persisted:
                     return {**stable(persisted[1]), 'modelError': '模型列表刷新失败，已保留上次结果',

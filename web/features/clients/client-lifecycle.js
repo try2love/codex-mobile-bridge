@@ -88,24 +88,32 @@ const ClientLifecycle=(()=>{
       dialog.addEventListener('cancel',event=>{event.preventDefault();finish(false);});dialog.addEventListener('close',()=>{dialog.remove();resolve(choice);},{once:true});document.body.append(dialog);dialog.showModal();cancel.focus();
     });
   }
-  function chooseConnectionMode(client){
-    const modes=connectionModes(client);if(modes.length<2)return Promise.resolve(null);
-    return new Promise(resolve=>{
-      const dialog=document.createElement('dialog');dialog.className='client-disable-dialog';
-      const node=(tag,text)=>{const element=document.createElement(tag);element.textContent=BridgeI18n.t(text);return element;};
-      const title=node('h2','连接方式'),identity=node('p',client.name||client.id),description=node('p','一次使用一种连接方式；切换不会自动退出电脑 App。');
-      const id='client-connection-'+(++sequence);title.id=id+'-title';description.id=id+'-description';dialog.setAttribute('aria-labelledby',title.id);dialog.setAttribute('aria-describedby',description.id);
-      const actions=document.createElement('div');actions.className='client-disable-options';let choice=null;
-      const finish=value=>{choice=value;dialog.close();};
+  function mountConnectionModes(root){
+    const field=document.createElement('fieldset'),title=document.createElement('legend'),options=document.createElement('div'),note=document.createElement('p');
+    field.className='client-connection-methods';title.textContent=BridgeI18n.t('连接方式');options.className='client-connection-options';note.className='account-muted';note.setAttribute('role','status');field.append(title,options,note);root.append(field);
+    const buttons=new Map();let current,onSelect,order='';
+    return {element:field,update(client,{disabled=false,select}={}){
+      current=client;onSelect=select;const modes=connectionModes(client),next=modes.map(mode=>mode.id).join('|');field.hidden=modes.length<2;title.textContent=BridgeI18n.t('连接方式');
       for(const mode of modes){
-        const button=node('button',''),name=node('strong',mode.label);button.type='button';button.dataset.connectionMode=mode.id;button.setAttribute('aria-pressed',String(mode.id===client.connectionMode));button.disabled=mode.available===false||mode.configured!==true;if(mode.id===client.connectionMode)name.textContent+=' ✓';button.append(name);
-        if(mode.description)button.append(node('small',mode.description));
-        if(mode.reason)button.append(node('small',mode.reason));
-        if(!mode.configured&&!mode.reason)button.append(node('small','请先在电脑网关中配置此连接方式。'));
-        button.onclick=()=>{if(!button.disabled)finish(mode.id);};actions.append(button);
+        let button=buttons.get(mode.id);if(!button){button=document.createElement('button');button.type='button';button.dataset.connectionMode=mode.id;button.onclick=()=>{if(!button.disabled)onSelect?.(mode.id);};buttons.set(mode.id,button);}
+        const selected=mode.id===current.connectionMode;button.textContent=BridgeI18n.t(mode.label);button.setAttribute('aria-pressed',String(selected));button.disabled=disabled||mode.available===false||mode.configured!==true||selected&&connection(current).ready;button.title=BridgeI18n.t(mode.reason||mode.description||'');
       }
-      const cancel=node('button','取消');cancel.type='button';cancel.onclick=()=>finish(null);actions.append(cancel);dialog.append(title,identity,description,actions);
-      dialog.addEventListener('cancel',event=>{event.preventDefault();finish(null);});dialog.addEventListener('close',()=>{dialog.remove();resolve(choice);},{once:true});document.body.append(dialog);dialog.showModal();cancel.focus();
+      if(order!==next){options.replaceChildren(...modes.map(mode=>buttons.get(mode.id)));order=next;}
+      const selected=modes.find(mode=>mode.id===client?.connectionMode),messages=[selected?.description,...modes.filter(mode=>mode.available===false||mode.configured!==true).map(mode=>mode.reason||'请先在电脑网关中配置此连接方式。')].filter(Boolean);
+      note.textContent=[...new Set(messages)].map(value=>BridgeI18n.t(value)).join(' ');note.hidden=!note.textContent;
+    }};
+  }
+  function confirmConnectionMode(client,mode){
+    const choice=connectionModes(client).find(value=>value.id===mode&&value.available!==false&&value.configured===true);
+    if(!choice)return Promise.resolve(false);if(mode===client.connectionMode)return Promise.resolve(true);
+    return new Promise(resolve=>{
+      const node=(tag,text)=>{const value=document.createElement(tag);value.textContent=BridgeI18n.t(text);return value;},dialog=document.createElement('dialog');dialog.className='client-disable-dialog';
+      const title=node('h2','切换应用接入方式？'),identity=node('p',client.name||client.id),target=node('p','切换为');target.textContent+='：'+BridgeI18n.t(choice.label);
+      const description=node('p','这将切换此应用的接入方式，不会退出或重启电脑 App。未完成的操作需先处理。');
+      const id='client-mode-confirm-'+(++sequence);title.id=id;description.id=id+'-description';dialog.setAttribute('aria-labelledby',title.id);dialog.setAttribute('aria-describedby',description.id);
+      const actions=document.createElement('div');actions.className='client-disable-options';let accepted=false;const finish=value=>{accepted=value;dialog.close();};
+      const confirm=node('button','确认切换'),cancel=node('button','取消');confirm.type=cancel.type='button';confirm.onclick=()=>finish(true);cancel.onclick=()=>finish(false);actions.append(confirm,cancel);dialog.append(title,identity,target,description);if(choice.description)dialog.append(node('p',choice.description));dialog.append(actions);
+      dialog.addEventListener('cancel',event=>{event.preventDefault();finish(false);});dialog.addEventListener('close',()=>{dialog.remove();resolve(accepted);},{once:true});document.body.append(dialog);dialog.showModal();cancel.focus();
     });
   }
   async function chooseDisable(client){
@@ -156,6 +164,6 @@ const ClientLifecycle=(()=>{
       dialog.addEventListener('cancel',event=>{event.preventDefault();finish(null);});dialog.addEventListener('close',()=>{dialog.remove();resolve(choice);},{once:true});document.body.append(dialog);dialog.showModal();cancel.focus();
     });
   }
-  return {chooseDisable,chooseForce,chooseInitialize,chooseConnectionMode,connectionModes,connectionModeLabel,initializationFields,connection,request,failure,failureMessage,retryLabel,reconcile,sessionNotice};
+  return {chooseDisable,chooseForce,chooseInitialize,mountConnectionModes,confirmConnectionMode,connectionModes,connectionModeLabel,initializationFields,connection,request,failure,failureMessage,retryLabel,reconcile,sessionNotice};
 })();
 if(typeof module!=='undefined')module.exports=ClientLifecycle;

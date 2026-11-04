@@ -18,6 +18,7 @@
 | CLI 原生接入与 SSH 发现 | `bridge/clients/codex/app_server.py`、`cli_session.py`、`remote.py` | `features/sessions/store.py`、`app/service.py`；[接入边界](../codex-cli.md) |
 | 会话历史、审批、计划/目标、侧边聊天 | `bridge/features/sessions/` | `bridge/app/service.py`，`web/features/chat/` |
 | 各接入的新建项目、目录浏览与登记 | `bridge/features/sessions/create.py`、`projects.py`、`bridge/clients/manager.py` | `web/shared/project-picker.js`、[新建项目聊天](../project-chats.md) |
+| 新建聊天的模型、思考强度与同账号缓存 | `bridge/features/sessions/creation_models.py`、`bridge/features/accounts/models.py` | `web/shared/creation-model-picker.js`；原生首条输入配置仍归各客户端适配器 |
 | 共用会话菜单、原生改名与项目、Bridge 显示分类 | `web/features/chat/session-menu.js`、`bridge/features/sessions/organization.py`、`display_metadata.py` | `app/service.py`、`features/endpoints/wsl.py`；`sessions/store.py` 读取原生项目归属 |
 | 文件、图片、上传下载、Git | `bridge/features/workspace/` | `web/features/workspace/`、`web/shared/image-viewer.js` |
 | 源码高亮、PDF/HTML 预览与全屏、目录返回 | `web/features/workspace/` | `bridge/api/html_preview.py`、`httpd.py`、原生手机导航；[模块约定](../../web/README.md#文件阅读模块) |

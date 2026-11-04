@@ -646,36 +646,39 @@ class Claude:
             projects.extend(self.remote_cli.projects())
         return projects
 
-    def project_environments(self):
+    def project_environments(self, host_id=None):
         rows = []
-        if self.status()['connected'] and self.desktop:
+        if host_id in (None, 'local') and self.status()['connected'] and self.desktop:
             for kind in ('code', 'cowork'):
                 if 'start' in self.desktop.capabilities.get(kind, []):
                     rows.append({'surface': kind, 'host': 'local', 'hostLabel': '此电脑',
                         'name': 'Claude Desktop · '+kind,
                         'scope': self.discovery.get('dataHome') or str(self.directory),
                         'createRequiresMessage': True})
-        profile = self.cli.profile_resolver()
+        profile = self.cli.profile_resolver() if host_id in (None, 'local') else None
         if profile and self.cli._ready(profile):
             account_identity = project_account_identity(profile)
             rows.append({'surface': 'cli', 'host': 'local', 'hostLabel': '此电脑',
                 'name': 'Claude Code · 此电脑', 'scope': profile['origin']+'|'+account_identity,
                 'origin': profile['origin'], 'accountFingerprint': account_identity,
                 'createRequiresMessage': True})
-        rows.extend(self.remote_cli.project_environments())
+        if host_id != 'local':
+            rows.extend(self.remote_cli.project_environments(**({'host_id': host_id} if host_id is not None else {})))
         return rows
 
     def create_cli(self, project, body):
         message = body.get('firstMessage', body.get('text', ''))
         if not isinstance(message, str) or not message.strip() or len(message) > 100000:
             raise ValueError('请输入首条消息，Claude 将创建会话并发送此消息')
+        selection = {key: body[key] for key in ('model', 'effort', 'manualModel', 'manualEffort') if key in body}
+        options = {'selection': selection} if selection else {}
         if project['host'] == 'local':
             if project.get('directoryIdentity'):
                 return self.cli.create(project['cwd'], project['origin'], message, project['directoryIdentity'],
-                                       project.get('accountFingerprint'))
-            return self.cli.create(project['cwd'], project['origin'], message)
+                                       project.get('accountFingerprint'), **options)
+            return self.cli.create(project['cwd'], project['origin'], message, **options)
         return self.remote_cli.create(project['host'], project['alias'], project['origin'],
-                                      project['cwd'], message, project.get('directoryIdentity'))
+                                      project['cwd'], message, project.get('directoryIdentity'), **options)
 
     async def _start_desktop_project(self, project, options):
         try:
@@ -708,7 +711,8 @@ class Claude:
             message = body.get('firstMessage', '')
             if not isinstance(message, str) or not message.strip() or len(message) > 100000:
                 raise ValueError('请输入首条消息，Claude 将创建会话并发送此消息')
-            options = {'title': body.get('title') or '新会话', 'message': message}
+            options = {'title': body.get('title') or '新会话', 'message': message,
+                       **{key: body[key] for key in ('model', 'effort') if key in body}}
             if project['surface'] == 'code':
                 options.update(cwd=project['cwd'], useWorktree=False)
             else:
@@ -771,7 +775,8 @@ class Claude:
             message = body.get('firstMessage', body.get('text', ''))
             if not isinstance(message, str) or not message.strip() or len(message) > 100000:
                 raise ValueError('请输入首条消息，Claude 将创建会话并发送此消息')
-            options = {'title': body.get('title') or '新会话', 'message': message}
+            options = {'title': body.get('title') or '新会话', 'message': message,
+                       **{key: body[key] for key in ('model', 'effort') if key in body}}
             if project['surface'] == 'code':
                 options.update(cwd=project['cwd'], useWorktree=False)
             else:

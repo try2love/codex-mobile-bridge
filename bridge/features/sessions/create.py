@@ -292,16 +292,29 @@ def _native_project(request, cwd, project):
     raise CreationUnavailable('电脑 App 项目与运行时尚未对应，请检查所用 Codex App 和运行时配置后重试')
 
 
-def create_empty(executable, codex_home, cwd, title, project=None):
+def model_overrides(model=None, effort=None):
+    if model is None and effort is None:
+        return {}
+    if not isinstance(model, str) or not model or len(model) > 300 or any(c.isspace() or ord(c) < 32 for c in model):
+        raise CreationUnavailable('新会话模型无效')
+    if effort is not None and effort not in ('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'):
+        raise CreationUnavailable('新会话思考强度无效')
+    return {'model': model, **({'config': {'model_reasoning_effort': effort}} if effort is not None else {})}
+
+
+def create_empty(executable, codex_home, cwd, title, project=None, model=None, effort=None):
+    overrides = model_overrides(model, effort)
     supported = project is not None and _native_project_support(executable, project.get('required', False))
     def create(request):
         project_id = _native_project(request, cwd, project) if supported else None
-        params = {'cwd': cwd, 'ephemeral': False}
+        params = {'cwd': cwd, 'ephemeral': False, **overrides}
         if project_id is not None:
             params['projectId'] = project_id
         result = request('thread/start', params)
         thread_id = result['thread']['id']
         uuid.UUID(thread_id)
+        if model is not None and (result.get('model') != model or effort is not None and result.get('reasoningEffort') != effort):
+            raise CreationError('聊天已创建，但模型或思考强度尚未确认，请检查原会话；不会重复创建')
         if project_id is not None and result['thread'].get('projectId') != project_id:
             raise CreationError('聊天已创建但原生项目归属未确认，请检查电脑 App，不要重复创建')
         request('thread/name/set', {'threadId': thread_id, 'name': title})

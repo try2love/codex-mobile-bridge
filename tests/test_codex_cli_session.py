@@ -662,6 +662,14 @@ class CliSessionTests(unittest.TestCase):
         self.assertTrue(result['modelError'])
         self.assertFalse(any(method == 'model/list' for method, _ in self.fake.sent))
 
+    def test_creation_catalog_reads_original_daemon_without_joining_any_thread(self):
+        with patch.object(self.sessions,'_connect_explicit',return_value={'codexHome':str(self.sessions.home)}):
+            config=self.sessions.creation_context('/work/project')
+            value=self.sessions.model_catalog('/work/project',config.get('model_provider') or 'openai')
+        self.assertIsInstance(value['models'],list)
+        self.assertFalse(self.sessions.joined)
+        self.assertFalse(any(method in ('thread/start','thread/resume','turn/start') for method,_ in self.fake.sent))
+
     def test_local_native_api_catalog_uses_verified_config_and_upstream_models(self):
         self.sessions.attach('thread-a', explicit=True)
         self.sessions.metadata['thread-a']['modelProvider'] = 'custom'
@@ -888,6 +896,22 @@ class CliSessionTests(unittest.TestCase):
             'threadId': 'thread-a', 'turnId': 'turn-1', 'itemId': 'rs-2', 'delta': 'partial'}})
         item = self.states[-1][1]['turns'][0]['items'][0]
         self.assertEqual((item['id'], item['type'], item['content']), ('rs-2', 'reasoning', ['partial']))
+        self.sessions._event({'method': 'item/started', 'params': {'threadId': 'thread-a', 'turnId': 'turn-1',
+            'item': {'id': 'rs-2', 'type': 'reasoning', 'summary': [], 'content': []}}})
+        self.assertEqual(self.states[-1][1]['turns'][0]['items'][0]['content'], ['partial'])
+        self.sessions._event({'method': 'item/completed', 'params': {'threadId': 'thread-a', 'turnId': 'turn-1',
+            'item': {'id': 'rs-2', 'type': 'reasoning', 'summary': ['final'], 'content': []}}})
+        self.assertEqual(self.states[-1][1]['turns'][0]['items'][0]['summary'], ['final'])
+        self.assertEqual(self.states[-1][1]['turns'][0]['items'][0]['content'], [])
+
+    def test_reasoning_rejects_sparse_invalid_indices_without_allocating_items(self):
+        self.sessions.attach('thread-a', explicit=True)
+        self.sessions._event({'method': 'turn/started', 'params': {
+            'threadId': 'thread-a', 'turn': {'id': 'turn-1', 'status': 'inProgress', 'items': []}}})
+        for index in (10**9, -1, True, '2', None):
+            self.sessions._event({'method': 'item/reasoning/textDelta', 'params': {
+                'threadId': 'thread-a', 'turnId': 'turn-1', 'itemId': 'rs-1', 'delta': 'x', 'contentIndex': index}})
+        self.assertEqual(self.states[-1][1]['turns'][0]['items'], [])
 
     def test_capacity_error_distinguishes_native_retry_and_required_intervention(self):
         self.sessions.attach('thread-a', explicit=True)

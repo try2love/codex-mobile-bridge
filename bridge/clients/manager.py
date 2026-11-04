@@ -33,7 +33,7 @@ from bridge.features.sessions.create import project_directory, project_directory
 from bridge.clients.codex.remote import ssh_read, payload
 from bridge.resources import source_text
 
-READS = {'list', 'detail', 'catalog', 'projects', 'account', 'access', 'organization', 'tasks'}
+READS = {'list', 'detail', 'catalog', 'projects', 'create-models', 'account', 'access', 'organization', 'tasks'}
 WRITES = {'send', 'stop', 'settings', 'respond', 'create', 'access', 'resume', 'fork', 'pin', 'archive', 'rename', 'organization', 'goal', 'compact', 'stop-task', 'edit-message'}
 
 
@@ -326,7 +326,7 @@ class DesktopSessions:
         # Consumers may annotate rows. Sharing a result object crosses requests.
         return result
 
-    def _model_identity(self, provider, sid):
+    def _model_identity(self, provider, sid, creation=None):
         adapter = self.adapters[provider]
         if provider == 'zcode':
             return ModelStore.key('desktop', provider, getattr(adapter, 'binding', None), adapter.account_scope())
@@ -336,6 +336,9 @@ class DesktopSessions:
             with adapter.cli.lock, adapter.remote_cli.lock:
                 local = adapter.cli.index.get(sid)
                 remote = adapter.remote_cli.index.get(sid)
+            if creation is not None:
+                local = creation if creation.get('host', 'local') == 'local' else None
+                remote = creation if local is None else None
             if remote:
                 host = adapter.remote_cli.hosts.hosts().get(remote['host']) if adapter.remote_cli.hosts else None
                 if not host or host['alias'] != remote['alias']:
@@ -627,7 +630,8 @@ class DesktopSessions:
                 raise BridgeUnavailable(self.deepseek_restore_error)
             adapter._connection()
             endpoint = self._deepseek_endpoint(adapter)
-            return ModelStore.key('manual-dsh-account', adapter.binding, endpoint)
+            return ModelStore.key('manual-dsh-account', adapter.binding, endpoint,
+                                  self._model_identity(provider, None))
         store = self._account_store(provider)
         paths = []
         if provider == 'claude':
@@ -681,10 +685,6 @@ class DesktopSessions:
         return value
 
     def _account_models(self, provider, refresh=False):
-        if provider == 'deepseek' and self.config.get('deepseekManualBinding'):
-            if self.deepseek_restore_error:
-                raise BridgeUnavailable(self.deepseek_restore_error)
-            return self._read(provider, 'account')
         identity = self._account_model_identity(provider)
         try:
             persisted = self.model_store.read(identity)
@@ -811,14 +811,18 @@ class DesktopSessions:
             scoped = str(uuid.uuid5(uuid.NAMESPACE_URL, scope + '\n' + sid))
             capabilities = row.get('capabilities') or {}
             if action == 'rename':
-                if capabilities.get('rename') is not True:
-                    return self.display_metadata.change(scope, sid, {**body, 'kind': 'rename'})
                 def read_name():
                     latest = self._metadata_row(provider, sid)
                     return {'title': latest.get('title'), 'identity': {key: latest.get(key)
                         for key in ('id', 'cwd', 'host', 'backend', 'provider', 'modelProvider')}}
-                result = self.rename_commands.perform(scoped, body, read_name,
-                    lambda title: self._adapter_call(provider, 'rename', sid, {'title': title}))
+                def dispatch_title(title):
+                    if capabilities.get('rename') is not True:
+                        raise OrganizationNotSent('当前会话尚不能原生改名，请先连接原会话；若仍不可用，请在原客户端修改')
+                    try:
+                        return self._adapter_call(provider, 'rename', sid, {'title': title, 'id': body['id']})
+                    except ResumePreflightBlocked as exc:
+                        raise OrganizationNotSent(str(exc)) from exc
+                result = self.rename_commands.perform(scoped, body, read_name, dispatch_title)
                 self.display_metadata.clear_alias(scope, sid)
                 return result
             native = capabilities.get('organization') is True
@@ -888,15 +892,16 @@ class DesktopSessions:
                     self.activity_pending.discard(provider)
         threading.Thread(target=refresh, daemon=True, name='desktop-activity-'+provider).start()
 
-    def _project_environments(self, provider):
+    def _project_environments(self, provider, host_id=None):
         if provider == 'zcode':
             scope = hashlib.sha256(self.adapters[provider].account_scope().encode()).hexdigest()[:24]
             return [{'key': 'desktop|local|'+scope, 'host': 'local', 'hostLabel': '此电脑', 'surface': 'desktop',
                      'name': 'ZCode', 'createRequiresMessage': True, 'createTitle': False}]
         adapter = self.adapters[provider]
-        rows = (adapter.remote_cli.wsl.project_environments() if provider == 'claude' and
+        scoped = {'host_id': host_id} if host_id is not None and provider == 'claude' else {}
+        rows = (adapter.remote_cli.wsl.project_environments(**scoped) if provider == 'claude' and
                 not self.config.get('enabled', {}).get('claude', False) and self._wsl_claude_enabled()
-                else adapter.project_environments())
+                else adapter.project_environments(**scoped))
         result = []
         for row in rows:
             scope = row['scope']
@@ -916,10 +921,79 @@ class DesktopSessions:
 
     def _project_environment(self, provider, key):
         self.require_enabled(provider)
-        selected = next((row for row in self._project_environments(provider) if row['key'] == key), None)
+        parts = key.split('|', 2) if isinstance(key, str) else []
+        if len(parts) != 3:
+            raise ValueError('运行环境或账号已变化，请重新选择项目')
+        selected = next((row for row in self._project_environments(provider, host_id=parts[1]) if row['key'] == key), None)
         if selected is None:
             raise ValueError('运行环境或账号已变化，请重新选择项目')
         return selected
+
+    def creation_models(self, provider, body):
+        """Read account/project catalogs without creating or claiming a CLI session."""
+        environment = self._project_environment(provider, body.get('environment'))
+        project = self.directory_projects.get(body.get('projectKey'))
+        if project:
+            if project.get('provider') != provider or project.get('environment') != environment['key']:
+                raise ValueError('项目或运行环境已变化，请重新选择')
+        elif body.get('projectKey'):
+            if provider == 'claude':
+                adapter = self.adapters[provider]
+                if environment['surface'] == 'cli':
+                    rows = (adapter.cli_projects(include_remote=False) if environment['host'] == 'local' else
+                            adapter.remote_cli.projects(host_id=environment['host']))
+                else:
+                    rows = []
+                    for row in adapter.index.values():
+                        if row.get('backend') != environment['surface']:
+                            continue
+                        cwd = (row.get('folders') or [''])[0] if environment['surface'] == 'cowork' else row.get('cwd')
+                        if cwd: rows.append({'key': environment['surface']+':'+cwd, 'cwd': cwd,
+                                             'surface': environment['surface'], 'host': 'local'})
+            else:
+                rows = self._adapter_call(provider, 'projects', None, {}).get('projects', [])
+            project = next((row for row in rows if row['key'] == body['projectKey']), None)
+            if not project or project.get('surface', 'desktop') != environment['surface'] or project.get('host', 'local') != environment['host']:
+                raise ValueError('项目或运行环境已变化，请重新选择')
+        elif body.get('path'):
+            project = {'cwd': self._project_directory(environment, body['path'])['cwd']}
+        else:
+            raise ValueError('请先选择新会话的项目目录')
+        refresh = body.get('refresh') is True
+        if environment['surface'] == 'cli':
+            adapter = self.adapters[provider]
+            target = {**environment, **project}
+            target.setdefault('origin', environment.get('origin'))
+            with adapter.cli.lock, adapter.remote_cli.lock:
+                index = adapter.cli.index if target['host'] == 'local' else adapter.remote_cli.index
+                found = next((row for row in index.values() if row['cwd'] == target['cwd'] and row['origin'] == target['origin'] and row.get('host', 'local') == target['host']), None)
+            if found:
+                target = {**target, **found}
+            identity = self._model_identity(provider, None, creation=target)
+            try:
+                persisted = self.model_store.read(identity)
+            except (OSError, sqlite3.DatabaseError, ValueError):
+                persisted = None
+            if found and (refresh or not persisted):
+                value = self._catalog_models(provider, found['id'], {'refresh': refresh, 'section': 'models'})
+                if value.get('models'):
+                    return {**value, 'capabilities': {'models': True, 'effort': True, 'manualModels': True, 'manualEffort': True}}
+            if persisted:
+                return {**_copy_read(persisted[1]), 'cache': {'identity': identity, 'updatedAt': persisted[0],
+                        'state': 'stale' if refresh or time.time()-persisted[0]>=MODEL_REFRESH_SECONDS else 'fresh'},
+                        **({'notice': '当前 CLI 未接入，已保留模型缓存；不会为刷新目录占用会话。'} if refresh and not found else {}),
+                        'capabilities': {'models': True, 'effort': True, 'manualModels': True, 'manualEffort': True}}
+            return {'models': [], 'cache': {'identity': identity, 'updatedAt': None, 'state': 'unavailable'},
+                    'capabilities': {'models': True, 'effort': True, 'manualModels': True, 'manualEffort': True},
+                    'notice': '此环境尚无可复用模型目录，可手动填写；不会为读取目录启动 CLI 会话。'}
+        value = self._account_models(provider, refresh=refresh)
+        if provider == 'claude':
+            group = next((row for row in value.get('groups', []) if row.get('surface') == environment['surface']), None)
+            if group is not None:
+                value = {**value, 'models': group.get('models', [])}
+        capabilities = {'models': True, 'effort': True, 'manualModels': provider == 'deepseek',
+                        'manualEffort': provider == 'deepseek'}
+        return {**value, 'capabilities': capabilities}
 
     def _project_alias(self, environment):
         hosts = self.bridge.hosts if self.bridge else self.adapters['claude'].hosts
@@ -1027,7 +1101,7 @@ class DesktopSessions:
             raise ValueError('不支持的桌面操作')
         if provider == 'deepseek' and self.deepseek_restore_error:
             raise BridgeUnavailable(self.deepseek_restore_error)
-        if action not in ('list', 'projects', 'create', 'account') and (not isinstance(sid, str) or not sid or len(sid) > 512):
+        if action not in ('list', 'projects', 'create', 'create-models', 'account') and (not isinstance(sid, str) or not sid or len(sid) > 512):
             raise ValueError('会话标识无效')
         body = body or {}
         if any(key in body for key in ('directoryProject', 'projectDirectory')):
@@ -1044,6 +1118,8 @@ class DesktopSessions:
             return self._session_metadata(provider, action, sid, body)
         if action == 'account':
             return self._account_models(provider, refresh=body.get('refresh') is True)
+        if action == 'create-models':
+            return self.creation_models(provider, body)
         if action == 'catalog' and body.get('section') == 'models':
             return self._catalog_models(provider, sid, body)
         if action in READS and not (action == 'access' and 'mode' in body):
@@ -1058,6 +1134,7 @@ class DesktopSessions:
                 result['session'] = self.display_metadata.decorate(self._display_scope(provider, row), row)
             if action == 'projects':
                 environments = self._project_environments(provider)
+                result['createModels'] = True
                 for project in result.get('projects', []):
                     environment = next((row for row in environments
                         if row['host'] == project.get('host', 'local') and
@@ -1132,7 +1209,8 @@ class DesktopSessions:
                                  not isinstance(body.get('messageId'), str) or
                                  not body['messageId'].strip() or len(body['messageId']) > 512):
             raise ValueError('请选择原会话中可分支的消息')
-        fingerprint = hashlib.sha256(json.dumps([provider, action, sid, body], sort_keys=True).encode()).hexdigest()
+        from bridge.features.sessions.creation_models import intent as creation_intent
+        fingerprint = hashlib.sha256(json.dumps([provider, action, sid, creation_intent(body) if action == 'create' else body], sort_keys=True).encode()).hexdigest()
         # Normal chat writes keep progress reads available; account/lifecycle
         # operations additionally invalidate the connector binding.
         with self._changing(provider, rebind=False):
@@ -1199,6 +1277,14 @@ class DesktopSessions:
                         environment = self._project_environment(provider, project['environment'])
                         self._project_directory(environment, project['cwd'], expected=project['directoryIdentity'])
                         dispatched = {**body, 'directoryProject': {**environment, **project}}
+                    from bridge.features.sessions.creation_models import requested, validate
+                    if requested(body):
+                        try:
+                            validate(body, self.creation_models(provider, body))
+                        except (OSError, ValueError) as error:
+                            raise ResumePreflightBlocked(str(error)) from error
+                    dispatched = {key: value for key, value in dispatched.items()
+                                  if key not in ('environment', 'modelCatalogIdentity')}
                 work_mode = dispatched.get('workMode') if action == 'send' else None
                 if work_mode is not None:
                     detail = self._adapter_call(provider, 'detail', sid, {})
@@ -1877,7 +1963,7 @@ class DesktopSessions:
                 return self.clients(refresh=True)
 
     def _zcode_official_status(self):
-        if sys.platform != 'darwin':
+        if sys.platform not in ('darwin', 'win32', 'linux'):
             return {}
         from bridge.clients.local_rpc import LocalService
         return LocalService(self.directory.parent, 'zcode-official').status()
@@ -1889,7 +1975,7 @@ class DesktopSessions:
             raise ValueError('ZCode 连接方式无效')
         previous = selected_mode(self.config)
         if mode == 'official-remote':
-            if sys.platform != 'darwin' or not self._zcode_official_status().get('configured'):
+            if not self._zcode_official_status().get('configured'):
                 raise ValueError('请先在电脑网关配置并登录官方远控')
         elif not self.zcode_pipe or not self.zcode_pipe.supported():
             raise ValueError('当前安装暂不能使用本机连接')
@@ -2009,7 +2095,7 @@ class DesktopSessions:
                 from bridge.clients.zcode.connections import connection_modes
                 modes = connection_modes(self.config, installed=zcode['installed'],
                                          pipe_supported=zcode['pipeSupported'],
-                                         official=self._zcode_official_status(), official_supported=sys.platform == 'darwin')
+                                         official=self._zcode_official_status(), official_supported=sys.platform in ('darwin', 'win32', 'linux'))
                 modes['connectionModes'][0]['connected'] = bool(modes['connectionMode'] == 'private-pipe' and
                                                               (connected or status.get('sessionAccess')))
                 installed = zcode['installed']
@@ -2700,7 +2786,7 @@ class DesktopSessions:
             return self.clients(refresh=value.get('refresh') is True)
         if action == 'zcode-official':
             if (set(value) != {'action', 'enabled'} or type(value['enabled']) is not bool or
-                    sys.platform != 'darwin' or 'zcode' not in self.adapters):
+                    sys.platform not in ('darwin', 'win32', 'linux') or 'zcode' not in self.adapters):
                 raise ValueError('ZCode 官方远控设置无效')
             if value['enabled']:
                 return self.toggle_client({'provider': 'zcode', 'enabled': True, 'connectionMode': 'official-remote'})

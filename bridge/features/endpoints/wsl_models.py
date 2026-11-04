@@ -90,6 +90,8 @@ class WslModelCatalog:
             return self._public((at, stable), identity)
 
     def _schedule(self, identity, identifier, at, replace=False):
+        if identifier is None:
+            return  # Creation catalogs have no session to watch or activate.
         with self.lock:
             if replace and identity in self.timers:
                 self.timers.pop(identity).cancel()

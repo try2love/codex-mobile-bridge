@@ -33,6 +33,12 @@ class DesktopClientAccountsPanel {
   setManagementAction(value){
     this.managementAction=value;this.managementSlot.hidden=!value;
     if(!value)return;
+    if(value.client){
+      this.managementDescription.hidden=this.managementButton.hidden=true;
+      this.managementConnection??=ClientLifecycle.mountConnectionModes(this.managementSlot);
+      this.managementConnection.update(value.client,{disabled:!!value.disabled||this.busy||this.loading,select:value.select});return;
+    }
+    if(this.managementConnection)this.managementConnection.element.hidden=true;this.managementButton.hidden=false;
     this.managementDescription.textContent=this.text(value.description||'');this.managementDescription.hidden=!value.description;
     this.managementButton.textContent=this.text(value.label);this.managementButton.disabled=!!value.disabled||this.busy||this.loading;
     this.managementButton.onclick=()=>{if(!this.managementButton.disabled)return value.onClick?.();};

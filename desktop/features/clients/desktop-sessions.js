@@ -155,12 +155,12 @@ class DesktopConnectionsPanel {
     catch(error){this.operationFailures.set(id,{...ClientLifecycle.failure(initializeDesktop?'initialize':enabled?'enable':forceDesktop?'force':quitDesktop?'quit':'disable',error,'desktop'),connectionMode:intent.connectionMode});this.clients=before;this.feedback(error.message,true);}
     finally{this.busy=false;this.pendingClient=null;this.renderClients();this.renderScan();await this.refreshClients(true);}
   }
-  async selectConnectionMode(id){
+  async selectConnectionMode(id,mode){
     const client=this.managementClients().find(row=>row.id===id);
     if(!client||this.busy||this.scanning||this.choosingClient||this.hasUncertain())return;
-    this.choosingClient=id;this.clientsRevision++;this.statusRevision++;this.renderClients();this.renderScan();let mode;
-    try{mode=await ClientLifecycle.chooseConnectionMode(client);}finally{this.choosingClient=null;this.renderClients();this.renderScan();}
-    if(mode){await this.toggleClient(id,true,{connectionMode:mode});if(id==='zcode')await this.zcodeOfficial?.refresh();}
+    this.choosingClient=id;this.clientsRevision++;this.statusRevision++;this.renderClients();this.renderScan();let accepted;
+    try{accepted=await ClientLifecycle.confirmConnectionMode(client,mode);}finally{this.choosingClient=null;this.renderClients();this.renderScan();}
+    if(accepted){await this.toggleClient(id,true,{connectionMode:mode});if(id==='zcode')await this.zcodeOfficial?.refresh();}
   }
   addClient(){
     const dialog=document.createElement('dialog');dialog.className='client-disable-dialog';dialog.setAttribute('aria-labelledby','client-add-title');
@@ -229,7 +229,6 @@ class DesktopConnectionsPanel {
         const quit=node('button','退出 Claude…');quit.type='button';quit.disabled=!!this.busy||!!this.scanning;quit.onclick=()=>this.quitClaude();buttons.append(quit);
       }
       if(!client.enabled&&client.running&&client.canQuitDesktop!==false&&this.gatewayRunning!==false){const quit=node('button','关闭电脑 App…');quit.type='button';quit.disabled=this.busy||this.scanning||!!this.choosingClient||this.hasUncertain();quit.onclick=()=>this.toggleClient(client.id,false);buttons.append(quit);}
-      if(ClientLifecycle.connectionModes(client).length>1){const connection=node('button','连接方式');connection.type='button';connection.disabled=this.busy||this.scanning||!!this.choosingClient||this.hasUncertain();connection.onclick=()=>this.selectConnectionMode(client.id);buttons.append(connection);}
       manage.type='button';manage.onclick=()=>this.manageClient(client);buttons.append(manage);actions.append(buttons);row.append(identity,access,status,account,actions);body.append(row);
     }
     root.replaceChildren(this.visibleClients().length?table:node('p','尚未发现客户端，请添加接入或重新扫描。','hint'));this.renderAccount(this.accountValue);
@@ -269,10 +268,9 @@ class DesktopConnectionsPanel {
     }catch(error){this.feedback(error.message,true);}
   }
   mountConnectionModes(article,before,client){
-    const node=(tag,text,cls='')=>{const value=document.createElement(tag);value.className=cls;if(text!==undefined)value.textContent=BridgeI18n.t(text);return value;};
-    const section=node('section',undefined,'accounts-panel'),heading=node('div',undefined,'account-heading'),title=node('h3','连接方式'),change=node('button','连接方式','accounts-refresh'),current=node('p'),help=node('div');
-    change.type='button';change.onclick=()=>this.selectConnectionMode(client.id);section.dataset.clientConnectionModes=client.id;heading.append(title,change);section.append(heading,current,help);article.insertBefore(section,before);
-    const render=value=>{const modes=ClientLifecycle.connectionModes(value);section.hidden=modes.length<2;current.textContent=BridgeI18n.t('当前连接方式')+'：'+BridgeI18n.t(ClientLifecycle.connectionModeLabel(value)||'尚未选择');current.setAttribute('role','status');change.disabled=this.busy||this.scanning||!!this.choosingClient||this.hasUncertain();help.replaceChildren();for(const mode of modes){const row=node('p',undefined,'account-muted'),description=node('span');description.textContent='：'+BridgeI18n.t(mode.description||mode.reason||'');row.append(node('strong',mode.label),description);help.append(row);}};
+    const section=document.createElement('section');section.className='accounts-panel';section.dataset.clientConnectionModes=client.id;article.insertBefore(section,before);
+    const methods=ClientLifecycle.mountConnectionModes(section);
+    const render=value=>methods.update(value,{disabled:this.busy||this.scanning||!!this.choosingClient||this.hasUncertain(),select:mode=>this.selectConnectionMode(client.id,mode)});
     this.connectionModePanels??=new Map();this.connectionModePanels.set(client.id,{render});render(client);
   }
   mountZcodeOfficial(article,before){
@@ -296,13 +294,13 @@ class DesktopConnectionsPanel {
       reason.textContent=BridgeI18n.t(busy?({state:'正在刷新状态…',save:'正在保存连接配置…',login:'正在打开官方登录…',connect:'正在连接官方远控…',disconnect:'正在断开官方远控…',forget:'正在清除官方登录…'})[pendingAction]:error||value?.reason||'');reason.className=error?'error':'hint';
       saved.textContent=BridgeI18n.t(edited?'连接配置已修改，尚未保存。':loadedLink?'连接配置已保存。登录失效时需要重新验证。':'请保存此电脑的官方远控链接，再完成官方登录。');label.dataset.dirty=String(edited);
       link.disabled=busy;refresh.disabled=busy;for(const button of Object.values(buttons))button.disabled=busy||unavailable;
-      buttons.save.disabled=busy||unavailable||!link.value.trim()||!edited;buttons.login.disabled=busy||unavailable||!loadedLink||edited;buttons.connect.disabled=busy||unavailable||!value?.configured||!loadedLink||edited||value?.connected===true;
+      buttons.save.disabled=busy||unavailable||!link.value.trim()||!edited;buttons.login.disabled=busy||unavailable||!loadedLink||edited||value?.secureStorageAvailable===false;buttons.connect.disabled=busy||unavailable||!value?.configured||!loadedLink||edited||value?.connected===true;
       buttons.disconnect.disabled=busy||!value?.connected;buttons.forget.disabled=busy||!value?.configured;
     };
     const perform=async action=>{
       if(busy||this.busy||this.scanning||this.choosingClient)return;
       if(action!=='state'&&buttons[action].disabled)return;
-      if(action==='connect'){await this.toggleClient('zcode',true,{connectionMode:'official-remote'});await panel.refresh();return;}
+      if(action==='connect')return this.selectConnectionMode('zcode','official-remote');
       if(action==='forget'&&!window.confirm(BridgeI18n.t('清除网关保存的官方登录并断开官方远控？已保存的链接、ZCode 原 App 的账号和任务会保留。')))return;
       const edited=link.value!==loadedLink;busy=true;pendingAction=action;error='';this.busy=true;render();this.renderClients();this.renderScan();
       try{
