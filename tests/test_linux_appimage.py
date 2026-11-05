@@ -99,7 +99,7 @@ class AppImageTests(unittest.TestCase):
         (self.proc/'12/fd/0').unlink();(self.proc/'12/fd/0').symlink_to(old)
         self.assertEqual(zcode_pipe.runtime_candidates(self.app),[])
 
-    def test_bad_formats_brand_and_mid_read_change_are_not_accepted(self):
+    def test_bad_formats_and_brand_are_not_accepted(self):
         original=self.app.read_bytes()
         for offset,replacement in ((8,b'XX\2'),(40,b'\xff'*8),(60,b'\xff\xff'),(128,b'nope')):
             data=bytearray(original);data[offset:offset+len(replacement)]=replacement;self.app.write_bytes(data)
@@ -108,10 +108,13 @@ class AppImageTests(unittest.TestCase):
         with patch.object(appimage,'_parser',return_value='/usr/bin/unsquashfs'), \
                 patch.object(appimage,'_read_desktop',return_value=DESKTOP.replace(b'Name=ZCode',b'Name=Other')):
             self.assertIsNone(zcode_pipe.installation(self.app))
-        self.app.write_bytes(original)
+
+    def test_source_change_during_uncached_metadata_read_is_rejected(self):
+        original=self.app.read_bytes()
         def changed(*args):self.app.write_bytes(original+b'changed');return DESKTOP
-        with patch.object(appimage,'_parser',return_value='/usr/bin/unsquashfs'),patch.object(appimage,'_read_desktop',side_effect=changed):
+        with patch.object(appimage,'_parser',return_value='/usr/bin/unsquashfs'),patch.object(appimage,'_read_desktop',side_effect=changed) as read:
             self.assertIsNone(appimage.metadata(self.app,'zcode.desktop'))
+            read.assert_called_once()
 
     def test_owned_parser_is_size_and_time_bounded(self):
         parser=self.root/'parser';parser.write_text('#!'+sys.executable+'\nimport sys\nsys.stdout.buffer.write(b"x"*70000)\n');parser.chmod(0o700)
