@@ -262,22 +262,23 @@ class ProfileProcessTests(unittest.TestCase):
             self.assertEqual(popen.call_args.kwargs['env']['ANTHROPIC_API_KEY'], 'fixture-only')
 
     def test_selects_one_native_main_and_its_children_without_foreign_default_or_profile(self):
-        profile = resolve_profile('deepseek', '/tmp/fixture-a', platform='linux')
+        home = (ROOT/'.tmp/fixture-a').resolve()
+        profile = resolve_profile('deepseek', home, platform='linux')
         commands = {10: '/app', 11: '/app --user-data-dir='+str(profile.roots['userData']),
                     12: '/app --type=utility --utility-sub-type=node.mojom.NodeService',
-                    13: '/app --user-data-dir=/tmp/fixture-ab/desktop-user-data',
+                    13: '/app --user-data-dir='+str(home.with_name('fixture-ab')/'desktop-user-data'),
                     14: '/app --type=utility', 15: '/app --type=renderer'}
         identities = {pid: {'parent': parent, 'start': str(pid)} for pid, parent in
                       [(10, 1), (11, 1), (12, 11), (13, 1), (14, 13), (15, 10)]}
         with patch('bridge.clients.deepseek.recovery._identities', return_value=identities):
             own, _ = scope_processes({'nativeProfile': profile}, list(commands), commands)
             default, _ = scope_processes({'id': 'deepseek', 'dataDirectory': '/default',
-                'excludeProfiles': ['/tmp/fixture-a']}, list(commands), commands)
+                'excludeProfiles': [str(home)]}, list(commands), commands)
         self.assertEqual(set(own), {11, 12})
         self.assertEqual(set(default), {10, 15})
 
     def test_matching_profile_without_launch_identity_is_not_attached(self):
-        descriptor = {'nativeProfile': resolve_profile('deepseek', '/tmp/fixture', platform='linux'),
+        descriptor = {'nativeProfile': resolve_profile('deepseek', (ROOT/'.tmp/fixture').resolve(), platform='linux'),
                       'profileLaunchReceipt': '/not-present/receipt.json'}
         with self.assertRaisesRegex(ValueError, '不是由网关启动'):
             require_owned(descriptor, {'running': True, 'unknown': False, 'mainPids': [22]})

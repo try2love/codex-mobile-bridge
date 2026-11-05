@@ -34,6 +34,7 @@ class ProfileRelaunchTests(unittest.TestCase):
                            'profileLaunchReceipt': self.receipt, 'profileGuard': self.guard}
         self.state = {'running': True, 'unknown': False, 'mainPids': [20]}
         for target, value in [('bridge.clients.profile_process.sys', SimpleNamespace(platform='darwin')),
+                              ('bridge.clients.profiles.sys', SimpleNamespace(platform='darwin')),
                               ('bridge.clients.profile_process._identity', Mock(return_value=self.current)),
                               ('bridge.clients.lifecycle.inspect_client', Mock(return_value=self.state)),
                               ('bridge.platforms.macos.desktop.verify_relaunch', Mock())]:
@@ -121,7 +122,9 @@ class ProfileRelaunchTests(unittest.TestCase):
 
 class MacRelaunchEvidenceTests(unittest.TestCase):
     def setUp(self):
-        self.exe = Path('/Applications/Claude.app/Contents/MacOS/Claude')
+        uid = patch('os.getuid', return_value=501, create=True)
+        uid.start(); self.addCleanup(uid.stop)
+        self.exe = Path('/Applications/Claude.app/Contents/MacOS/Claude').resolve()
         self.old = {'pid': 10}
         self.identity = {'pid': 20, 'uid': os.getuid(), 'ruid': os.getuid(), 'zombie': False,
                          'image': str(self.exe), 'birth': (2, 3), 'started': (4, 5)}

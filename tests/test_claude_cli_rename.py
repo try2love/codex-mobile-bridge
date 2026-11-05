@@ -98,7 +98,7 @@ class ClaudeCliRenameTests(unittest.TestCase):
         source = worker_source()
         scope = {'__name__': 'isolated_worker'}
         exec(compile(source, 'isolated_worker', 'exec'), scope)
-        with patch.dict(os.environ, {}, clear=True):
+        with patch.dict(os.environ, {}, clear=True), patch.object(Path, 'home', return_value=self.home):
             row = scope['saved'](path, {'origin': 'fixture', 'directory': str(self.home), 'binary': '/fixture/claude'})
         self.assertEqual(row['title'], '原生中文标题')
         self.assertEqual(path.read_bytes(), before)

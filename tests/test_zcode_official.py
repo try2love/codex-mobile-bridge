@@ -190,7 +190,7 @@ class OfficialManagerTests(unittest.TestCase):
         for mapping in (self.manager.read_epochs, self.manager.read_changes,
                         self.manager.binding_epochs, self.manager.binding_changes):
             mapping['zcode'] = 0
-        self.manager.config['discovered'] = {'zcode': {'installed': True, 'application': '/Fixture/ZCode.app',
+        self.manager.config['discovered'] = {'zcode': {'installed': True, 'application': str(Path(temp.name)/'ZCode.app'),
                                                        'dataDirectory': str(Path(temp.name)/'native')}}
 
     def test_selecting_official_reuses_adapter_and_never_launches_native_app(self):
@@ -202,7 +202,7 @@ class OfficialManagerTests(unittest.TestCase):
             self.assertTrue(m.config['enabled']['zcode'])
             factory.assert_called_once()
             self.assertEqual(factory.call_args.args[1]['dataDirectory'], m.config['discovered']['zcode']['dataDirectory'])
-            self.assertEqual(str(m.zcode_pipe.application), '/Fixture/ZCode.app')
+            self.assertEqual(str(m.zcode_pipe.application), str(Path(m.config['discovered']['zcode']['application']).resolve()))
             launch.assert_not_called()
             factory.return_value.config = factory.call_args.args[1]
             m._configure_zcode()

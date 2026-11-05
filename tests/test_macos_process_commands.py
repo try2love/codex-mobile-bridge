@@ -29,7 +29,8 @@ class MacOSProcessCommandsTests(unittest.TestCase):
             self.assertEqual(options['env']['KEEP_FIXTURE'], 'untouched')
             return SimpleNamespace(returncode=0, stdout=' 701 '+command+'\n')
         with patch.dict(os.environ, {'LC_ALL': 'C', 'KEEP_FIXTURE': 'untouched'}), \
-                patch('bridge.platforms.macos.desktop.subprocess.run', side_effect=ps):
+                patch('bridge.platforms.macos.desktop.subprocess.run', side_effect=ps), \
+                patch('os.getuid', return_value=501, create=True):
             self.assertEqual(commands([701]), {701: command})
             self.assertEqual(processes(lambda value: value == command), [701])
             self.assertEqual(os.environ['LC_ALL'], 'C')
