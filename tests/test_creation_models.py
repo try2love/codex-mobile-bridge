@@ -119,8 +119,11 @@ class CreationCatalogScope(unittest.TestCase):
         self.manager._account_models=Mock(return_value=catalog)
         request={'environment':'scope','projectKey':'code:/fixture'}
         result=self.manager.creation_models('claude',request)
-        self.assertEqual(result['models'],catalog['groups'][0]['models'])
-        self.assertEqual(result['cache'],catalog['cache'])
+        self.assertEqual(result['models'], result['groups'][0]['models'])
+        self.assertEqual([row['id'] for row in result['models']], ['code-model'])
+        self.assertEqual(result['cache']['directoryIdentity'], catalog['cache']['identity'])
+        self.assertEqual(result['cache']['surface'], 'code')
+        self.assertEqual(result['cache']['identity'], self.manager._surface_model_identity('account-cache', 'code'))
         self.manager._account_models.assert_called_once_with('claude',refresh=False)
         self.manager.creation_models('claude',{**request,'refresh':True})
         self.manager._account_models.assert_called_with('claude',refresh=True)

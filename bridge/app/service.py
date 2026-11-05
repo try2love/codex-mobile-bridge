@@ -2487,8 +2487,10 @@ class Bridge:
             provider = view.get('provider')
             if cwd:
                 try:
-                    selected = self.accounts.current_model_identity() if self.host == 'local' and self.accounts else None
-                    view['modelCatalogIdentity'] = selected or self.catalog_reader.model_identity(cwd, provider)
+                    identity = (self.catalog_reader.model_identity(cwd, provider) if provider else
+                                self.catalog_reader.model_identity(cwd, provider, require_verified=True))
+                    if identity:
+                        view['modelCatalogIdentity'] = identity
                 except (OSError, ValueError, KeyError):
                     pass
         view["goalTransport"] = 'cli' if session.connected and session.runtime == 'cli' else self.goal_transport
@@ -2903,6 +2905,7 @@ class Bridge:
         if not isinstance(profile, dict):
             profile = {}
         effective = {**config, **profile}
+        provider = provider or effective.get('model_provider') or 'openai'
         configured_catalog = (bool(effective.get('model_catalog_json')) and
                               provider == (effective.get('model_provider') or 'openai'))
         environment_identity = None
@@ -2954,9 +2957,7 @@ class Bridge:
             timer.start()
 
     def _native_models(self, thread_id, cwd, provider, refresh=False):
-        def stable(value):
-            return {key: copy.deepcopy(item) for key, item in value.items()
-                    if key not in ('currentModel', 'currentEffort')}
+        stable = ModelStore.directory
 
         identity = self._native_model_identity(cwd, provider)
         try:
@@ -3025,10 +3026,8 @@ class Bridge:
             skills = self.cli_sessions.get_kind(thread_id, 'skills', refresh=refresh)
             return {**models, **skills, 'currentModel': model or models.get('currentModel'),
                     'currentEffort': effort or models.get('currentEffort')}
-        selected = (self.accounts.current_models(refresh) if session.origin not in ('cli', 'ide') and
-                    self.host == 'local' and self.accounts and kind != 'skills' else None)
         if kind in ('models', 'skills'):
-            value = selected if kind == 'models' and selected is not None else self.catalog_reader.get_kind(
+            value = self.catalog_reader.get_kind(
                 kind, cwd, refresh=refresh, provider=provider,
                 **({'query':query, 'offset':offset, 'limit':limit, 'ids':ids} if kind == 'skills' else {}))
             if kind == 'models':
@@ -3039,8 +3038,7 @@ class Bridge:
                         'fastMode': {**value.get('fastMode', {}), 'allowed': view.get('provider') == value.get('fastMode', {}).get('provider', 'openai') and value.get('fastMode', {}).get('allowed') is True},
                         **({'currentServiceTier': view['serviceTier']} if 'serviceTier' in view else {})}
             return {**value, 'kind': 'skills'}
-        catalog = ({**self.catalog_reader.get_kind('skills', cwd, refresh=refresh, provider=provider), **selected}
-                   if selected is not None else self.catalog_reader.get(cwd, refresh=refresh, provider=provider))
+        catalog = self.catalog_reader.get(cwd, refresh=refresh, provider=provider)
         with session.condition:
             view = session.view()
         return {**catalog, "currentModel": model or catalog.get("currentModel"),

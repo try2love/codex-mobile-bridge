@@ -4,6 +4,7 @@ This short-lived helper only reads models, skills, login and configuration capab
 All thread mutations and all turns remain on the existing desktop IPC owner.
 """
 import hashlib
+import copy
 import json
 import logging
 import os
@@ -45,6 +46,17 @@ class ModelStore:
     @staticmethod
     def key(*parts):
         return hashlib.sha256(json.dumps(parts, sort_keys=True, default=str).encode()).hexdigest()
+
+    @staticmethod
+    def directory(value):
+        """Share discovery metadata, never a conversation's current state."""
+        result = {key: copy.deepcopy(value[key]) for key in
+                  ('models', 'groups', 'modelSource', 'source', 'modelSourcesVersion', 'fastMode') if key in value}
+        if isinstance(result.get('groups'), list):
+            result['groups'] = [{key: item for key, item in group.items()
+                if key in ('id', 'name', 'label', 'surface', 'source', 'models', 'modelSourcesVersion')}
+                for group in result['groups'] if isinstance(group, dict)]
+        return result
 
     def _connect(self):
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -330,6 +342,7 @@ class Catalog:
         self.kind_locks = {'models': threading.Lock(), 'skills': threading.Lock()}
         self.kind_caches = {'models': {}, 'skills': {}}
         self.model_store = ModelStore(self.home)
+        self.model_provider_aliases = {}
         self.model_refreshing = set()
         self.model_retry_at = {}
         self.model_refresh_lock = threading.Lock()
@@ -357,6 +370,7 @@ class Catalog:
             self.cache.clear()
         with self.kind_locks['models']:
             self.kind_caches['models'].clear()
+            self.model_provider_aliases.clear()
         with self.model_refresh_lock:
             for timer in self.model_timers.values():
                 timer.cancel()
@@ -373,8 +387,8 @@ class Catalog:
                 timer.cancel()
             self.model_timers.clear()
 
-    def model_identity(self, cwd, provider):
-        """Bind cached models to local/remote home, account and API configuration."""
+    def _model_scope(self, cwd):
+        """Fingerprint account and project configuration without guessing its provider."""
         files = []
         for name in ('auth.json', 'config.toml'):
             try:
@@ -399,7 +413,40 @@ class Catalog:
                      or name.endswith(('_API_KEY', '_AUTH_TOKEN', '_BEARER_TOKEN', '_BASE_URL'))}
         # Do not reuse catalogs cached before desktop requests stopped borrowing
         # gateway environment credentials.
-        return ModelStore.key('codex-desktop-v2', str(self.home.resolve()), str(directory), provider, files, variables, project_files)
+        return ModelStore.key('codex-desktop-scope-v3', str(self.home.resolve()), str(directory), files, variables, project_files)
+
+    def _model_provider(self, scope, provider):
+        if provider:
+            return provider
+        if scope not in self.model_provider_aliases:
+            record = None
+            if self.model_store.path.is_file():
+                try:
+                    record = self.model_store.read(ModelStore.key('native-default-provider-v1', scope))
+                except (OSError, sqlite3.DatabaseError, ValueError):
+                    pass
+            value = record[1].get('provider') if record and isinstance(record[1], dict) else None
+            self.model_provider_aliases[scope] = value if isinstance(value, str) and value else None
+        return self.model_provider_aliases[scope]
+
+    def model_identity(self, cwd, provider, *, require_verified=False):
+        scope = self._model_scope(cwd)
+        resolved = self._model_provider(scope, provider)
+        if require_verified and resolved is None:
+            return None
+        return ModelStore.key('codex-desktop-v3', scope, resolved)
+
+    def _remember_model_provider(self, scope, raw):
+        # Only the existing native config/read may resolve the default route.
+        # No helper or network request is allowed merely to render an identity.
+        provider = raw.get('_defaultProvider')
+        if not isinstance(provider, str) or not provider:
+            return
+        self.model_provider_aliases[scope] = provider
+        try:
+            self.model_store.write(ModelStore.key('native-default-provider-v1', scope), {'provider': provider})
+        except (OSError, sqlite3.DatabaseError):
+            logger.warning('Could not persist native model provider identity', exc_info=True)
 
     def _start_model_refresh(self, cwd, provider, identity):
         if not self.allow_background_refresh:
@@ -665,7 +712,8 @@ class Catalog:
         config = request('config/read', {'includeLayers': False, 'cwd': cwd}).get('config', {})
         profile = (config.get('profiles') or {}).get(config.get('profile')) or {}
         effective = {**config, **profile}
-        provider = provider or effective.get('model_provider') or 'openai'
+        default_provider = effective.get('model_provider') or 'openai'
+        provider = provider or default_provider
         definition = (effective.get('model_providers') or {}).get(provider) or {}
         if magpie_managed(config=effective) and provider == (effective.get('model_provider') or 'openai'):
             models, cursor = [], None
@@ -675,7 +723,7 @@ class Catalog:
                 cursor = response.get('nextCursor')
                 if not cursor:
                     break
-            return {'models': models, 'modelSource': 'magpie',
+            return {'models': models, 'modelSource': 'magpie', '_defaultProvider': default_provider,
                     'currentEffort': effective.get('model_reasoning_effort'), 'fastMode': {'allowed': False}}
         base = definition.get('base_url') or (effective.get('openai_base_url') or environment.get('OPENAI_BASE_URL') if provider == 'openai' else None)
         custom = self.custom_provider(effective, provider)
@@ -683,7 +731,8 @@ class Catalog:
         configured_catalog = bool(effective.get('model_catalog_json')) and provider == (effective.get('model_provider') or 'openai')
         auth = {} if custom or configured_catalog else request('account/read', {'refreshToken': False}).get('account') or {}
         if not configured_catalog and (custom or auth.get('type') == 'apiKey'):
-            result = {'models': [], 'modelSource': 'api', 'currentEffort': effective.get('model_reasoning_effort')}
+            result = {'models': [], 'modelSource': 'api', '_defaultProvider': default_provider,
+                      'currentEffort': effective.get('model_reasoning_effort')}
             try:
                 if any(definition.get(k) for k in ('auth', 'gateway_oauth', 'aws')):
                     raise ValueError('此 API 接入使用额外认证配置，请手动填写模型 ID')
@@ -748,7 +797,8 @@ class Catalog:
             cursor = response.get('nextCursor')
             if not cursor:
                 break
-        return {'models': models, 'modelSource': 'codex', 'currentEffort': effective.get('model_reasoning_effort')}
+        return {'models': models, 'modelSource': 'codex', '_defaultProvider': default_provider,
+                'currentEffort': effective.get('model_reasoning_effort')}
 
     @staticmethod
     def fast_mode(request, cwd, provider=None):
@@ -856,6 +906,7 @@ class Catalog:
         offset = max(0, int(offset))
         limit = min(SKILL_MAX_PAGE_LIMIT, max(1, int(limit)))
         if kind == 'models':
+            scope = self._model_scope(cwd)
             identity = self.model_identity(cwd, provider)
             try:
                 persisted = self.model_store.read(identity)
@@ -868,23 +919,29 @@ class Catalog:
                     self._start_model_refresh(cwd, provider, identity)
                 else:
                     self._schedule_model_refresh(cwd, provider, identity, persisted[0])
-                return {**persisted[1], 'cache': {'state': 'stale' if stale else 'fresh', 'updatedAt': persisted[0], 'identity': identity}}
+                return {**ModelStore.directory(persisted[1]), 'kind': 'models', 'cache': {'state': 'stale' if stale else 'fresh', 'updatedAt': persisted[0], 'identity': identity}}
             with self.kind_locks[kind]:
-                # A second request may have completed while this one waited.
+                # A second request may have learned the native provider while this one waited.
+                scope = self._model_scope(cwd)
+                identity = self.model_identity(cwd, provider)
                 if not refresh:
                     try:
                         persisted = self.model_store.read(identity)
                     except (OSError, sqlite3.DatabaseError, ValueError):
                         persisted = None
                     if persisted:
-                        return {**persisted[1], 'cache': {'state': 'fresh', 'updatedAt': persisted[0], 'identity': identity}}
+                        return {**ModelStore.directory(persisted[1]), 'kind': 'models', 'cache': {'state': 'fresh', 'updatedAt': persisted[0], 'identity': identity}}
                 try:
                     raw = self._fetch(cwd, provider, kind)
                 except CatalogError as exc:
                     if persisted:
-                        return {**persisted[1], 'modelError': str(exc),
+                        return {**ModelStore.directory(persisted[1]), 'kind': 'models', 'modelError': str(exc),
                                 'cache': {'state': 'stale', 'updatedAt': persisted[0], 'identity': identity}}
                     raise
+                if self._model_scope(cwd) != scope:
+                    raise CatalogError('模型接入已变化，请重试')
+                self._remember_model_provider(scope, raw)
+                identity = self.model_identity(cwd, provider)
                 models = self.normalize_models(raw['models'])
                 value = {'models': models, 'kind': 'models', 'modelSource': raw.get('modelSource', 'codex'),
                          'fastMode': raw.get('fastMode', {'allowed': False}),
@@ -893,15 +950,16 @@ class Catalog:
                 if self.model_identity(cwd, provider) != identity:
                     raise CatalogError('模型接入已变化，请重试')
                 if value.get('modelError'):
-                    return ({**persisted[1], 'modelError': value['modelError'],
+                    return ({**ModelStore.directory(persisted[1]), 'kind': 'models', 'modelError': value['modelError'],
                              'cache': {'state': 'stale', 'updatedAt': persisted[0], 'identity': identity}} if persisted else value)
                 try:
-                    updated_at = self.model_store.write(identity, value)
+                    updated_at = self.model_store.write(identity, ModelStore.directory(value))
                 except (OSError, sqlite3.DatabaseError):
                     logger.warning('Could not persist model catalog', exc_info=True)
                     updated_at = time.time()
                 self._schedule_model_refresh(cwd, provider, identity, updated_at, replace=True)
-                return {**value, 'cache': {'state': 'fresh', 'updatedAt': updated_at, 'identity': identity}}
+                return {**ModelStore.directory(value), 'kind': 'models',
+                        'cache': {'state': 'fresh', 'updatedAt': updated_at, 'identity': identity}}
 
         bucket = self.skill_store.bucket(cwd)
         with self.kind_locks['skills']:
@@ -973,15 +1031,31 @@ class Catalog:
     def get(self, cwd, refresh=False, provider=None):
         cwd = str(Path(cwd).resolve())
         with self.lock:
-            key = (cwd, provider)
+            scope = self._model_scope(cwd)
+            identity = self.model_identity(cwd, provider)
+            key = (cwd, identity)
             cached = self.cache.get(key)
             if cached and not refresh and time.monotonic() - cached[0] < 300:
-                return cached[1]
+                value = copy.deepcopy(cached[1])
+                try:
+                    persisted = self.model_store.read(identity)
+                except (OSError, sqlite3.DatabaseError, ValueError):
+                    persisted = None
+                if persisted:
+                    value.update(ModelStore.directory(persisted[1]))
+                    value['cache'] = {'state': 'stale' if time.time()-persisted[0] >= MODEL_REFRESH_SECONDS else 'fresh',
+                                      'updatedAt': persisted[0], 'identity': identity}
+                return value
             try:
                 raw = self._fetch(cwd, provider)
             except CatalogError:
                 self.cache.pop(key, None)
                 raise
+            if self._model_scope(cwd) != scope:
+                raise CatalogError('模型接入已变化，请重试')
+            self._remember_model_provider(scope, raw)
+            identity = self.model_identity(cwd, provider)
+            key = (cwd, identity)
             models = self.normalize_models(raw['models'])
             skills, errors = [], []
             for entry in raw['skillEntries']:
@@ -996,10 +1070,20 @@ class Catalog:
             value = {'models': models, 'skills': skills, 'errors': errors, 'fastMode': raw.get('fastMode', {'allowed': False}),
                      'modelSource': raw.get('modelSource', 'codex'), 'modelError': raw.get('modelError'),
                      'currentModel': raw.get('currentModel'), 'currentEffort': raw.get('currentEffort')}
+            # The legacy combined endpoint uses the same directory as the picker;
+            # only Skill results retain its short in-memory lifetime.
+            value = {key: item for key, item in value.items() if item is not None}
             if value.get('modelError'):
                 self.cache.pop(key, None)
             else:
-                self.cache[key] = (time.monotonic(), value)
+                directory = ModelStore.directory(value)
+                try:
+                    updated_at = self.model_store.write(identity, directory)
+                except (OSError, sqlite3.DatabaseError):
+                    updated_at = time.time()
+                value['cache'] = {'state': 'fresh', 'updatedAt': updated_at, 'identity': identity}
+                self.cache[key] = (time.monotonic(), {**directory, 'skills': skills, 'errors': errors,
+                                                     'cache': value['cache']})
             return value
 
 

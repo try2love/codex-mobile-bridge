@@ -10,6 +10,7 @@ import subprocess
 import secrets
 import sys
 import uuid
+import weakref
 from pathlib import Path
 from contextlib import closing, contextmanager, nullcontext
 from concurrent.futures import Future
@@ -123,6 +124,7 @@ class DesktopSessions:
         self.model_locks = {}
         self.model_refreshing = set()
         self.model_retry_at = {}
+        self.model_capabilities = weakref.WeakKeyDictionary()
         self.model_timers = {}
         self.model_lock = threading.Lock()
         self.config_path = self.directory/'settings.json'
@@ -363,8 +365,10 @@ class DesktopSessions:
 
     def _model_identity(self, provider, sid, creation=None):
         adapter = self.adapters[provider]
-        if provider == 'zcode':
-            return ModelStore.key('desktop', provider, getattr(adapter, 'binding', None), adapter.account_scope())
+        if provider in ('deepseek', 'zcode'):
+            return self._account_model_identity(provider)
+        if provider == 'claude' and creation is None and sid in adapter.index:
+            return self._surface_model_identity(self._account_model_identity(provider), adapter.index[sid]['backend'])
         paths = []
         scope = None
         if provider == 'claude':
@@ -392,23 +396,7 @@ class DesktopSessions:
                          tuple((name, os.environ.get(name)) for name in ('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN',
                            'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_CUSTOM_HEADERS')))
             else:
-                row = adapter.index.get(sid)
-                if not row:
-                    raise ValueError('找不到 Claude 会话')
-                store = self._account_store('claude')
-                with store.lock:
-                    kind, fingerprint, _ = store._current()
-                scope = ('desktop', row['backend'], row.get('cwd'), tuple(row.get('folders') or []),
-                         str(store.home), str(store.threep), kind, fingerprint)
-        elif self.config.get('deepseekManualBinding'):
-            adapter._connection()
-            paths.append(Path(adapter.binding['profileDirectory'])/'cordis.patch.yml')
-            paths.append(adapter.home/'.credentials.yaml')
-            scope = ('manual', adapter.binding['instanceId'], str(adapter.directory), self._deepseek_endpoint(adapter))
-        else:
-            paths.append(adapter.home/'profiles/desktop/cordis.patch.yml')
-            paths.append(adapter.home/'.credentials.yaml')
-            scope = ('desktop', str(adapter.home), os.environ.get('DEEPSEEK_API_KEY'))
+                raise ValueError('找不到 Claude 会话')
         stamps = []
         for path in paths:
             try:
@@ -416,6 +404,65 @@ class DesktopSessions:
             except OSError:
                 stamps.append(None)
         return ModelStore.key('desktop', provider, scope, stamps)
+
+    @staticmethod
+    def _surface_model_identity(directory_identity, surface):
+        return ModelStore.key('desktop-surface-models-v1', directory_identity, surface)
+
+    def _desktop_model_directory(self, provider, surface=None, *, refresh=False):
+        value = self._account_models(provider, refresh=refresh)
+        if provider != 'claude' or surface is None:
+            return value
+        directory_identity = value['cache']['identity']
+        groups = []
+        for row in value.get('groups', []):
+            if isinstance(row, dict):
+                groups.append({**row, **_claude_catalog_sources(row)})
+        group = next((row for row in groups if row.get('surface') == surface), None)
+        api_only = bool(groups) and all(row.get('surface') == 'api' for row in groups)
+        if group is not None:
+            selected = group
+        elif api_only:
+            rows = {row['id']: row for group in groups for row in group['models']}
+            selected = {'models': list(rows.values())}
+        elif not groups:
+            selected = {'models': value.get('models', []), 'source': value.get('source', 'account-catalog')}
+        else:
+            selected = {'models': []}
+        projected = _claude_catalog_sources(selected)
+        return {**value, **projected, 'groups': groups, 'cache': {**value['cache'],
+            'identity': self._surface_model_identity(directory_identity, surface),
+            'directoryIdentity': directory_identity, 'surface': surface}}
+
+    def _cli_model_capabilities(self, sid, identity, value=None):
+        """Keep verified controls on the current owner, outside shared catalogs."""
+        adapter = self.adapters['claude']
+        with adapter.cli.lock, adapter.remote_cli.lock:
+            row = adapter.cli.index.get(sid)
+            owned = adapter.cli.owned.get(row['nativeId']) if row else adapter.remote_cli.owned.get(sid)
+            row = row or adapter.remote_cli.index.get(sid)
+            if (not row or not owned or owned.origin != row['origin'] or
+                    owned.process.poll() is not None or owned.error):
+                return {'models': False, 'effort': False, 'manualModels': False, 'manualEffort': False}
+        evidence = self.model_capabilities.get(owned)
+        epoch = self.binding_epochs['claude']
+        if value is None and evidence and evidence[:2] == (identity, epoch):
+            return _copy_read(evidence[2])
+        if value is None:
+            # The native helper uses the existing process's initialize catalog
+            # and reads get_settings; it does not list models or claim a chat.
+            value = self._read('claude', 'catalog', sid, {'section': 'models'})
+        if self._model_identity('claude', sid) != identity:
+            raise BridgeUnavailable('客户端账号或配置已变化，请重试')
+        source = value.get('capabilities', {})
+        capabilities = {key: source.get(key) is True for key in ('models', 'effort', 'manualModels', 'manualEffort')}
+        with adapter.cli.lock, adapter.remote_cli.lock:
+            current = adapter.cli.owned.get(row['nativeId']) if sid in adapter.cli.index else adapter.remote_cli.owned.get(sid)
+            if (current is not owned or owned.process.poll() is not None or owned.error or
+                    self.binding_epochs['claude'] != epoch):
+                return {'models': False, 'effort': False, 'manualModels': False, 'manualEffort': False}
+            self.model_capabilities[owned] = (identity, epoch, capabilities)
+        return _copy_read(capabilities)
 
     def _draft_account_identity(self, provider, sid, detail):
         """Use verified account ownership only; unknown routes stay transient."""
@@ -515,38 +562,16 @@ class DesktopSessions:
                      adapter.remote_cli.owned.get(sid))
         return bool(owned and getattr(owned, 'model_list_unsupported', False))
 
-    def _claude_model_account(self, *, refresh=False, cached_only=False):
-        store = self._account_store('claude')
-        with store.lock:
-            if store._current()[0] != 'api':
-                return None
-        if not cached_only:
-            try:
-                return self._account_models('claude', refresh=refresh)
-            except (OSError, sqlite3.DatabaseError, ValueError, BridgeUnavailable):
-                return None
-        identity = self._account_model_identity('claude')
-        try:
-            persisted = self.model_store.read(identity)
-        except (OSError, sqlite3.DatabaseError, ValueError):
-            persisted = None
-        if self._account_model_identity('claude') != identity:
-            raise BridgeUnavailable('客户端账号或配置已变化，请重试')
-        return persisted[1] if persisted else None
-
     def _cached_model_result(self, provider, sid, identity, persisted, *, error=None, unavailable=False):
         if self._model_identity(provider, sid) != identity:
             raise BridgeUnavailable('客户端账号或配置已变化，请重试')
-        result = _copy_read(persisted[1])
-        if (provider == 'claude' and sid in self.adapters[provider].index
-                and result.get('modelSourcesVersion') != 1):
-            # Old caches dropped provenance, including whether API models were merged.
-            # Repair the response using only this account's cache; retain its original age.
-            result = _claude_catalog_sources(result, self._claude_model_account(cached_only=True), legacy=True)
+        result = ModelStore.directory(persisted[1])
         live = self._model_live(provider, sid)
         if not live or unavailable:
             result['capabilities'] = {**result.get('capabilities', {}), 'models': False, 'effort': False}
             result['notice'] = '请先继续这条会话' if provider == 'claude' else '桌面客户端未连接'
+        elif provider == 'claude':
+            result['capabilities'] = self._cli_model_capabilities(sid, identity)
         result['cache'] = {'state': 'stale' if error or time.time()-persisted[0] >= MODEL_REFRESH_SECONDS else 'fresh',
                            'updatedAt': persisted[0], 'identity': identity}
         if error:
@@ -558,6 +583,22 @@ class DesktopSessions:
         return result
 
     def _catalog_models(self, provider, sid, body):
+        native_claude = provider == 'claude' and sid in self.adapters[provider].index
+        if provider in ('deepseek', 'zcode') or native_claude:
+            identity = self._model_identity(provider, sid)
+            surface = self.adapters[provider].index[sid]['backend'] if native_claude else None
+            value = self._desktop_model_directory(provider, surface, refresh=body.get('refresh') is True)
+            if self._model_identity(provider, sid) != identity or value.get('cache', {}).get('identity') != identity:
+                raise BridgeUnavailable('客户端账号或配置已变化，请重试')
+            value = {**ModelStore.directory(value), **{key: value[key] for key in
+                     ('cache', 'notice', 'modelError') if key in value}}
+            if not self._model_live(provider, sid):
+                value['capabilities'] = {'models': False, 'effort': False}
+                value['notice'] = '桌面客户端未连接'
+            elif native_claude:
+                native = self.adapters[provider].session_capabilities(surface)
+                value['capabilities'] = {key: native[key] for key in ('models', 'effort', 'manualModels', 'manualEffort')}
+            return value
         identity = self._model_identity(provider, sid)
         refresh = body.get('refresh') is True
         try:
@@ -590,18 +631,17 @@ class DesktopSessions:
                              '模型目录刷新失败，已保留上次结果')
                     return self._cached_model_result(provider, sid, identity, persisted, error=error)
                 raise
-            if provider == 'claude' and sid in self.adapters[provider].index:
-                value = _claude_catalog_sources(value, self._claude_model_account(refresh=refresh))
             if self._model_identity(provider, sid) != identity:
                 raise BridgeUnavailable('客户端账号或配置已变化，请重试')
+            if provider == 'claude':
+                self._cli_model_capabilities(sid, identity, value)
             value['cache'] = {'state': 'unavailable', 'updatedAt': None, 'identity': identity}
             if (value.get('modelError') or value.get('capabilities', {}).get('models') is False) and persisted:
                 return self._cached_model_result(provider, sid, identity, persisted,
                     error=value.get('modelError') or '模型目录刷新失败，已保留上次结果',
                     unavailable=value.get('capabilities', {}).get('models') is False)
             if isinstance(value.get('models'), list) and value.get('capabilities', {}).get('models') is not False:
-                stable = {key: _copy_read(value[key]) for key in
-                          ('models', 'capabilities', 'notice', 'source', 'modelSourcesVersion') if key in value}
+                stable = ModelStore.directory(value)
                 try:
                     updated_at = self.model_store.write(identity, stable)
                     self._schedule_model_refresh(provider, sid, identity, updated_at, replace=True)
@@ -659,14 +699,22 @@ class DesktopSessions:
     def _account_model_identity(self, provider):
         adapter = self.adapters[provider]
         if provider == 'zcode':
-            return ModelStore.key('desktop-account', provider, adapter.account_scope())
+            return ModelStore.key('desktop-model-directory-v2', provider, str(adapter.home),
+                                  adapter.account_scope())
         if provider == 'deepseek' and self.config.get('deepseekManualBinding'):
             if self.deepseek_restore_error:
                 raise BridgeUnavailable(self.deepseek_restore_error)
             adapter._connection()
             endpoint = self._deepseek_endpoint(adapter)
-            return ModelStore.key('manual-dsh-account', adapter.binding, endpoint,
-                                  self._model_identity(provider, None))
+            paths = [Path(adapter.binding['profileDirectory'])/'cordis.patch.yml',
+                     adapter.home/'.credentials.yaml', adapter.home/'settings.yaml']
+            stamps = []
+            for path in paths:
+                try:
+                    stamps.append(hashlib.sha256(path.read_bytes()).hexdigest())
+                except OSError:
+                    stamps.append(None)
+            return ModelStore.key('desktop-model-directory-v2', provider, adapter.binding, endpoint, stamps)
         store = self._account_store(provider)
         paths = []
         if provider == 'claude':
@@ -680,15 +728,16 @@ class DesktopSessions:
             from bridge.clients.deepseek.accounts import _read, _document
             with store.lock:
                 source = _document(_read(store.path))
-            scope = (str(adapter.home), source, os.environ.get('DEEPSEEK_API_KEY'))
+            scope = (str(adapter.home), source, os.environ.get('DEEPSEEK_API_KEY') if getattr(self, 'instance', None) is None else None)
             paths.append(adapter.home/'profiles/desktop/cordis.patch.yml')
+            paths.extend((adapter.home/'settings.yaml', adapter.home/'cordis.patch.yml'))
         stamps = []
         for path in paths:
             try:
                 stamps.append(hashlib.sha256(path.read_bytes()).hexdigest())
             except OSError:
                 stamps.append(None)
-        return ModelStore.key('desktop-account', provider, scope, stamps)
+        return ModelStore.key('desktop-model-directory-v2', provider, scope, stamps)
 
     def _account_model_live(self, provider):
         adapter = self.adapters[provider]
@@ -710,7 +759,7 @@ class DesktopSessions:
     def _account_model_result(self, provider, identity, persisted, error=None):
         if self._account_model_identity(provider) != identity:
             raise BridgeUnavailable('客户端账号或配置已变化，请重试')
-        value = _copy_read(persisted[1])
+        value = ModelStore.directory(persisted[1])
         value['cache'] = {'state': 'stale' if error or time.time()-persisted[0] >= MODEL_REFRESH_SECONDS else 'fresh',
                           'updatedAt': persisted[0], 'identity': identity}
         if error:
@@ -745,12 +794,21 @@ class DesktopSessions:
                     with store.lock:
                         kind = store._current()[0]
                     value = store.models()
-                    if kind == 'official' and self._account_model_live(provider):
+                    adapter = self.adapters[provider]
+                    connected = bool(adapter.desktop and adapter.desktop.connected and not adapter.setup_cancel.is_set()
+                                     and not adapter.connection_probe_failed)
+                    if connected:
                         native = self._read(provider, 'account')
                         if isinstance(native.get('groups'), list):
-                            models = {row['id']: row for group in native['groups'] if isinstance(group, dict)
+                            groups = []
+                            for group in native['groups']:
+                                if not isinstance(group, dict):
+                                    continue
+                                catalog = _claude_catalog_sources(group, value if kind == 'api' else None)
+                                groups.append({**group, **catalog})
+                            models = {row['id']: row for group in groups if isinstance(group, dict)
                                       for row in group.get('models', []) if isinstance(row, dict) and isinstance(row.get('id'), str)}
-                            value = {**native, 'models': list(models.values())}
+                            value = {**native, 'groups': groups, 'models': list(models.values()), 'modelSourcesVersion': 1}
                 else:
                     value = self._read(provider, 'account')
             except (OSError, ValueError, BridgeUnavailable):
@@ -759,7 +817,8 @@ class DesktopSessions:
                 raise
             if self._account_model_identity(provider) != identity:
                 raise BridgeUnavailable('客户端账号或配置已变化，请重试')
-            if (value.get('modelError') or not isinstance(value.get('models'), list)
+            if (value.get('modelError') or value.get('capabilities', {}).get('models') is False
+                    or not isinstance(value.get('models'), list)
                     or provider == 'claude' and not value.get('models')):
                 if persisted:
                     return self._account_model_result(provider, identity, persisted,
@@ -768,7 +827,7 @@ class DesktopSessions:
                     raise BridgeUnavailable('客户端账号或配置已变化，请重试')
                 return {**value, 'cache': {'state': 'unavailable', 'updatedAt': None, 'identity': identity}}
             try:
-                updated_at = self.model_store.write(identity, value)
+                updated_at = self.model_store.write(identity, ModelStore.directory(value))
                 self._schedule_account_model_refresh(provider, identity, updated_at, replace=True)
             except (OSError, sqlite3.DatabaseError):
                 updated_at = time.time()
@@ -1021,11 +1080,7 @@ class DesktopSessions:
             return {'models': [], 'cache': {'identity': identity, 'updatedAt': None, 'state': 'unavailable'},
                     'capabilities': {'models': True, 'effort': True, 'manualModels': True, 'manualEffort': True},
                     'notice': '此环境尚无可复用模型目录，可手动填写；不会为读取目录启动 CLI 会话。'}
-        value = self._account_models(provider, refresh=refresh)
-        if provider == 'claude':
-            group = next((row for row in value.get('groups', []) if row.get('surface') == environment['surface']), None)
-            if group is not None:
-                value = {**value, 'models': group.get('models', [])}
+        value = self._desktop_model_directory(provider, environment['surface'], refresh=refresh)
         capabilities = {'models': True, 'effort': True, 'manualModels': provider == 'deepseek',
                         'manualEffort': provider == 'deepseek'}
         return {**value, 'capabilities': capabilities}
