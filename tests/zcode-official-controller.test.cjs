@@ -6,7 +6,7 @@ const {serveLocal}=require('../desktop/shared/local-service.cjs');
 const root=path.resolve(__dirname,'../.tmp');
 function profile(t){const p=fs.mkdtempSync(path.join(root,'official-controller-'));t.after(()=>fs.rmSync(p,{recursive:true,force:true}));return p;}
 const link='https://zcode.z.ai/remote/v4?sid=native-session&mid=this-machine';
-function storage(extra={}){return {isEncryptionAvailable(){throw Error('synchronous storage probe');},isAsyncEncryptionAvailable:async()=>true,encryptStringAsync:async text=>Buffer.from('sealed:'+text),decryptStringAsync:async data=>({result:data.toString().replace(/^sealed:/,'')}),...extra};}
+function storage(extra={}){return {isEncryptionAvailable(){throw Error('synchronous storage probe');},isAsyncEncryptionAvailable:async()=>true,getSelectedStorageBackend:()=> 'gnome_libsecret',encryptStringAsync:async text=>Buffer.from('v11sealed:'+text),decryptStringAsync:async data=>({result:data.toString().replace(/^v11sealed:/,'')}),...extra};}
 function fixture(t){const p=profile(t),home=path.join(p,'native');fs.mkdirSync(home);fs.mkdirSync(path.join(p,'desktop-sessions'));
 fs.writeFileSync(path.join(home,'telemetry-state.json'),JSON.stringify({deviceMid:'this-machine'}));
 fs.writeFileSync(path.join(p,'desktop-sessions/settings.json'),JSON.stringify({discovered:{zcode:{dataDirectory:home}}}));
@@ -24,7 +24,7 @@ test('public state never contains authentication and preserves explicit local/of
 test('saved link and encrypted login survive controller restart and a local-mode selection',async t=>{
  const c=fixture(t);c.electron.safeStorage=storage();
  c.save(link);assert.equal(c.status().configured,false);
- fs.writeFileSync(c.authFile,'sealed:'+JSON.stringify({jwt:'private-secret',provider:'zai',name:'Fixture',link}),{mode:0o600});
+ fs.writeFileSync(c.authFile,await c.electron.safeStorage.encryptStringAsync(JSON.stringify({jwt:'private-secret',provider:'zai',name:'Fixture',link})),{mode:0o600});
  const restored=new OfficialRemote({electron:c.electron,profile:c.profile,rendererPath:__filename});await restored.restore();
  assert.equal(restored.status().configured,true);assert.equal(restored.status().connected,false);assert.equal(restored.status().selected,false);
  assert.equal(restored.status().link,link);assert.equal(restored.status().accountName,'Fixture');
@@ -39,7 +39,7 @@ test('saving configuration cannot silently move a live connection to a different
 });
 test('legacy encrypted login supplies the target and forget retains the saved link',async t=>{
  const c=fixture(t);c.electron.safeStorage=storage();
- fs.writeFileSync(c.authFile,JSON.stringify({jwt:'fixture-only',provider:'zai',link}));await c.restore();assert.equal(c.targetLink(),link);
+ fs.writeFileSync(c.authFile,await c.electron.safeStorage.encryptStringAsync(JSON.stringify({jwt:'fixture-only',provider:'zai',link})));await c.restore();assert.equal(c.targetLink(),link);
  await c.forget();assert.equal(c.status().configured,false);assert.equal(c.status().link,link);
  const restored=new OfficialRemote({electron:c.electron,profile:c.profile,rendererPath:__filename});await restored.restore();
  assert.equal(restored.status().configured,false);assert.equal(restored.status().link,link);
