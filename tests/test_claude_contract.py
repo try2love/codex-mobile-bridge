@@ -215,6 +215,9 @@ class DesktopActionContract(unittest.IsolatedAsyncioTestCase):
         self.manager.adapters['claude'] = self.adapter
 
     def test_account_and_permission_reads_do_not_claim_mutation_receipts(self):
+        self.adapter.desktop.connected = True
+        self.adapter.setup_cancel = threading.Event()
+        self.adapter.connection_probe_failed = False
         store = Mock()
         store.lock = threading.RLock()
         store._current.return_value = ('official', 'fixture-login', None)

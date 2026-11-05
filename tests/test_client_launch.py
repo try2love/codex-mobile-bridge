@@ -198,7 +198,7 @@ class ClaudeQuitTests(unittest.TestCase):
         stop_claude(self.descriptor, state=self.state)
 
     def test_submitted_waits_for_all_processes_without_resending_exit(self):
-        self.app.processes.side_effect = [[11, 12], [12], []]
+        self.inspect.side_effect = [self.state, *({**self.state, 'pids': pids} for pids in ([11, 12], [12], []))]
         self.stop()
         self.native.assert_called_once_with('quit', pid=11, executable=str(self.app.executable))
         self.assertEqual(self.sleep.call_count, 2)
@@ -206,9 +206,9 @@ class ClaudeQuitTests(unittest.TestCase):
 
     def test_native_exited_claim_is_still_checked(self):
         self.native.return_value['quitState'] = 'exited'
-        self.app.processes.side_effect = [[12], []]
+        self.inspect.side_effect = [self.state, {**self.state, 'pids': [12]}, {**self.state, 'pids': []}]
         self.stop()
-        self.assertEqual(self.app.processes.call_count, 2)
+        self.assertEqual(self.inspect.call_count, 3)
 
     def test_pending_or_failed_never_reports_success(self):
         for result in ('pending', 'failed'):
@@ -227,7 +227,7 @@ class ClaudeQuitTests(unittest.TestCase):
         self.native.assert_not_called()
 
     def test_new_process_during_cleanup_is_not_closed(self):
-        self.app.processes.return_value = [13]
+        self.inspect.side_effect = [self.state, {**self.state, 'pids': [13]}]
         with self.assertRaisesRegex(ValueError, '进程已变化'):
             self.stop()
         self.app.stop.assert_not_called()

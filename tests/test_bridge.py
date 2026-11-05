@@ -687,20 +687,31 @@ class IntegrationTests(unittest.TestCase):
             self.bridge.settings(THREAD, 'official-missing', 'minimal')
         self.assertFalse(any(r['method'] == 'thread-follower-update-thread-settings' for r in self.fixture.requests))
 
-    def test_managed_catalog_uses_selected_access_instead_of_old_chat_provider(self):
+    def test_desktop_catalog_keeps_project_scope_instead_of_global_account_models(self):
         from unittest.mock import Mock
         from types import SimpleNamespace
-        self.bridge.session(THREAD)
-        selected={'models':[{'id':'gemini-fixture','efforts':[]}],'modelSource':'api','modelAccessName':'Gemini access'}
-        self.bridge.accounts=SimpleNamespace(current_models=Mock(return_value=selected))
-        self.bridge.catalog_reader.get=Mock(side_effect=AssertionError('must not query old provider models'))
-        self.bridge.catalog_reader.get_kind=Mock(return_value={'skills':[],'errors':[]})
-        for kind in ('models',None):
-            result=self.bridge.catalog(THREAD,refresh=True,kind=kind)
-            self.assertEqual(result['models'],selected['models'])
-            self.assertEqual(result['modelAccessName'],'Gemini access')
-        self.assertEqual([c.args[0] for c in self.bridge.catalog_reader.get_kind.call_args_list],['skills'])
-        self.bridge.accounts=None
+        session = SimpleNamespace(origin='desktop', connected=True, runtime='desktop',
+                                  condition=threading.Condition(), state={'cwd': '/fixture/project', 'modelProvider': 'project-api'},
+                                  view=lambda: {'provider': 'project-api'})
+        self.bridge.session = Mock(return_value=session)
+        selected = {'models': [{'id': 'project-model', 'efforts': []}],
+                    'modelSource': 'api', 'modelAccessName': 'Project access'}
+        self.bridge.accounts = SimpleNamespace(current_models=Mock(
+            side_effect=AssertionError('global account models bypass project configuration')))
+        self.bridge.catalog_reader.get = Mock(return_value={**selected, 'skills': []})
+        self.bridge.catalog_reader.get_kind = Mock(return_value=selected)
+        try:
+            for kind in ('models', None):
+                result = self.bridge.catalog(THREAD, refresh=True, kind=kind)
+                self.assertEqual(result['models'], selected['models'])
+                self.assertEqual(result['modelAccessName'], 'Project access')
+            with session.condition:
+                cwd, provider = session.state['cwd'], session.state.get('modelProvider')
+            self.bridge.catalog_reader.get_kind.assert_called_once_with('models', cwd, refresh=True, provider=provider)
+            self.bridge.catalog_reader.get.assert_called_once_with(cwd, refresh=True, provider=provider)
+            self.bridge.accounts.current_models.assert_not_called()
+        finally:
+            self.bridge.accounts = None
 
     def test_cold_model_catalog_reads_saved_settings_without_desktop_attach(self):
         from unittest.mock import Mock, patch
@@ -1292,6 +1303,7 @@ class HttpTests(unittest.TestCase):
         bridge.timeline_read = Mock(side_effect=AssertionError('Disabled native timeline read'))
         bridge.register_project = Mock(side_effect=AssertionError('Disabled native project write'))
         manager = self.server.desktop_sessions = DesktopSessions.__new__(DesktopSessions)
+        manager.instance = manager.instances = None
         manager.bridge = bridge
         manager.config = {'enabled': {'codex': False}}
         headers = self.login()
@@ -1395,6 +1407,7 @@ class HttpTests(unittest.TestCase):
         from bridge.clients.manager import DesktopSessions
         entry = 'wsl:' + 'a' * 32
         manager = DesktopSessions.__new__(DesktopSessions)
+        manager.instance = manager.instances = None
         manager.read_lock = threading.Lock()
         manager.adapters = {'claude': Mock(), 'deepseek': Mock()}
         manager.config = {'enabled': {'codex': False, 'claude': True, 'deepseek': False}}
