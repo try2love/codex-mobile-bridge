@@ -1539,5 +1539,9 @@ test('account directory refresh updates known Code and Cowork projections withou
  shared.write(cache,namespace,{models:[{id:'verified-code'}],groups:[],cache:{identity:'code-identity',directoryIdentity:'directory',surface:'code',updatedAt:5}});
  assert.equal(shared.forScope(cache,'code').models[0].id,'verified-code','Missing grouping metadata keeps only the verified projection');
  assert.equal(shared.forScope(cache,'cowork').models[0].id,'api-only','Ungrouped result cannot overwrite another surface');
+ shared.write(cache,namespace,{models:[{id:'stale-code'}],groups:groups('stale-code','stale-cowork'),cache:{identity:'code-identity',directoryIdentity:'directory',surface:'code',updatedAt:1}});
+ assert.equal(shared.forScope(cache,'code').models[0].id,'verified-code','An older grouped response cannot replace a newer ungrouped projection');
+ assert.equal(shared.forScope(cache,'code').cache.updatedAt,5);
+
  shared.forget(cache,namespace);assert.equal(shared.forScope(cache,'code'),null);assert.equal(shared.forScope(cache,'cowork'),null);
 });

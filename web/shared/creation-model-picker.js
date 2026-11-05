@@ -16,14 +16,16 @@ window.BridgeModelCatalogCache={
   },
   write(cache,namespace,value){
     const identity=value?.cache?.identity;if(!identity||!Array.isArray(value.models)||value.cache.state==='unavailable')return null;
+    const key=this.key(namespace,identity),previous=this.read(cache,namespace,identity),stamp=value.cache.updatedAt;
+    const older=previous&&Number.isFinite(previous.cache.updatedAt)&&(!Number.isFinite(stamp)||previous.cache.updatedAt>stamp);
     const {directoryIdentity,surface}=value.cache;
     if(directoryIdentity&&directoryIdentity!==identity&&surface&&Array.isArray(value.groups)&&value.groups.length){
       this.write(cache,namespace,{...value,models:value.groups.flatMap(group=>group.models||[]),cache:{...value.cache,identity:directoryIdentity,directoryIdentity:undefined,surface:undefined}});
-      cache.set(this.key(namespace,identity),{projection:{directoryIdentity,surface}});
+      if(older)return previous;
+      cache.set(key,{projection:{directoryIdentity,surface}});
       return this.read(cache,namespace,identity);
     }
-    const key=this.key(namespace,identity),previous=this.read(cache,namespace,identity),stamp=value.cache.updatedAt;
-    if(previous&&Number.isFinite(previous.cache.updatedAt)&&(!Number.isFinite(stamp)||previous.cache.updatedAt>stamp))return this.read(cache,namespace,identity);
+    if(older)return previous;
     const stable=Object.fromEntries(['models','groups','cache','modelSource','source','modelSourcesVersion'].filter(field=>field in value).map(field=>[field,value[field]]));
     cache.set(key,JSON.parse(JSON.stringify(stable)));return this.read(cache,namespace,identity);
   },
