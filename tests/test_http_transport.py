@@ -3,6 +3,7 @@ import http.client
 import json
 import logging
 import socketserver
+import time
 import unittest
 from unittest.mock import patch
 
@@ -38,6 +39,10 @@ class TransportTests(unittest.TestCase):
         with self.assertLogs('bridge.api.httpd', level='INFO') as logs:
             status, response, _ = self.request('POST', '/api/sessions/' + test_bridge.THREAD + '/send',
                 {'id': 'ab7bd811-51aa-4a8c-b89f-4ad4d64c0ac0', 'text': 'PRIVATE_MESSAGE', 'mode': 'send'}, headers)
+            # Receiving the body can precede the server's final response log.
+            deadline = time.monotonic() + 2
+            while len(logs.records) < 2 and time.monotonic() < deadline:
+                time.sleep(.01)
         self.assertEqual(status, 200)
         identifier = response['X-Bridge-Request-Id']
         self.assertRegex(identifier, r'^[a-f0-9]{16}$')
