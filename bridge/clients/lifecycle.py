@@ -296,10 +296,10 @@ def stop_deepseek(descriptor, adapter, *, state):
         time.sleep(.25)
 
 
-def launch_client(descriptor):
+def launch_client(descriptor, *, allow_native_relaunch=False):
     if descriptor.get('nativeProfile'):
         from bridge.clients.profile_process import launch_profile
-        return launch_profile(descriptor)
+        return launch_profile(descriptor, allow_native_relaunch=allow_native_relaunch)
     if descriptor.get('id') == 'deepseek':
         return launch_deepseek(descriptor)
     app = _app(descriptor)
@@ -325,7 +325,7 @@ def launch_client(descriptor):
     return {'running': True, 'launched': True}
 
 
-def profile_running_app(descriptor, restart=False, cancelled=None, allow_launch=True):
+def profile_running_app(descriptor, restart=False, cancelled=None, allow_launch=True, *, allow_native_relaunch=False):
     """Reuse Claude initialization against one selected native main process."""
     from bridge.clients.profile_process import require_owned, launch_profile
     state = inspect_client(descriptor)
@@ -333,7 +333,7 @@ def profile_running_app(descriptor, restart=False, cancelled=None, allow_launch=
         raise ValueError('已取消 Claude 连接')
     if restart:
         raise ValueError('请先核验任务并正常退出该配置，再重新连接')
-    require_owned(descriptor, state)
+    require_owned(descriptor, state, allow_native_relaunch=allow_native_relaunch, cancelled=cancelled)
     if not state['running']:
         if not allow_launch:
             raise ValueError('请先开启此 Claude 配置，再重新连接')

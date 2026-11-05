@@ -89,7 +89,7 @@ def _identity(descriptor, pid):
             'executable': str(app.executable), 'home': str(profile.home)}
 
 
-def require_owned(descriptor, state):
+def require_owned(descriptor, state, *, allow_native_relaunch=False, cancelled=None):
     if not descriptor.get('nativeProfile'):
         return
     guard = descriptor.get('profileGuard')
@@ -103,11 +103,43 @@ def require_owned(descriptor, state):
         saved = json.loads(Path(descriptor['profileLaunchReceipt']).read_text())
     except (OSError, ValueError, KeyError):
         raise ValueError('此独立配置不是由网关启动，请正常退出该配置后从网关开启') from None
-    if saved != _identity(descriptor, state['mainPids'][0]):
-        raise ValueError('独立客户端启动身份已变化，请正常退出该配置后从网关开启')
+    current = _identity(descriptor, state['mainPids'][0])
+    if saved != current:
+        if allow_native_relaunch and sys.platform == 'darwin' and descriptor['nativeProfile'].family == 'claude':
+            _recover_relaunch(descriptor, saved, current, cancelled=cancelled)
+        else:
+            raise ValueError('独立客户端启动身份已变化，请正常退出该配置后从网关开启')
 
 
-def launch_profile(descriptor, *, cancelled=None):
+def _recover_relaunch(descriptor, saved, current, *, cancelled=None):
+    """An explicit reconnect may follow the original App's own restart."""
+    from bridge.clients.lifecycle import inspect_client
+    from bridge.platforms.macos.desktop import verify_relaunch
+    changed = '独立客户端重启后的身份无法确认，请检查该配置后重新连接'
+    profile = descriptor['nativeProfile']
+    if (not isinstance(saved, dict) or type(saved.get('pid')) is not int or saved['pid'] <= 0
+            or saved.get('executable') != current['executable'] or saved.get('home') != current['home']
+            or not isinstance(saved.get('command'), str)
+            or not _path_argument(saved['command'], '--user-data-dir', profile.roots['userData'])
+            or not callable(descriptor.get('profileGuard'))):
+        raise ValueError(changed)
+    if cancelled is not None and cancelled.is_set():
+        raise ValueError('已取消客户端连接')
+    verify_relaunch(Path(current['executable']), saved, current, launch_parameters(profile)['environment'])
+    # Never consume a stale display snapshot or overwrite a newer reconnect.
+    descriptor['profileGuard']()
+    fresh = inspect_client(descriptor)
+    path = Path(descriptor['profileLaunchReceipt'])
+    if (fresh.get('unknown') or fresh.get('mainPids') != [current['pid']]
+            or _identity(descriptor, current['pid']) != current
+            or json.loads(path.read_text()) != saved):
+        raise ValueError(changed)
+    if cancelled is not None and cancelled.is_set():
+        raise ValueError('已取消客户端连接')
+    replace_session_file(path, json.dumps(current).encode())
+
+
+def launch_profile(descriptor, *, cancelled=None, allow_native_relaunch=False):
     from bridge.clients.lifecycle import inspect_client
     from bridge.platforms import desktop
     profile = descriptor['nativeProfile']
@@ -115,7 +147,7 @@ def launch_profile(descriptor, *, cancelled=None):
         descriptor['profileGuard']()
     state = inspect_client(descriptor)
     if state['running']:
-        require_owned(descriptor, state)
+        require_owned(descriptor, state, allow_native_relaunch=allow_native_relaunch, cancelled=cancelled)
         return {'running': True, 'launched': False}
     params = launch_parameters(profile)
     if cancelled is not None and cancelled.is_set():

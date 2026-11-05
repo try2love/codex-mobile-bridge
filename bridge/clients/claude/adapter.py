@@ -439,7 +439,8 @@ class Claude:
                 descriptor = self.native_descriptor() if self.native_descriptor is not None else None
                 if descriptor and (descriptor.get('nativeProfile') or descriptor.get('excludeProfiles')):
                     from bridge.clients.lifecycle import profile_running_app
-                    pid = profile_running_app(descriptor, restart=restart, cancelled=cancel, allow_launch=not existing_only)
+                    pid = profile_running_app(descriptor, restart=restart, cancelled=cancel, allow_launch=not existing_only,
+                                              allow_native_relaunch=foreground and not restart and not existing_only)
                 else:
                     pid = running_app(executable, data_home, restart=restart, cancelled=cancel, allow_launch=not existing_only)
                 restart = False

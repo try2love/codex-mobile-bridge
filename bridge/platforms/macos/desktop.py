@@ -1,4 +1,5 @@
 """macOS process inventory and Launch Services operations."""
+import errno
 import json
 import os
 import subprocess
@@ -64,6 +65,44 @@ def _bundle(executable):
     if bundle is None:
         raise ValueError('macOS 桌面程序必须位于应用程序包中')
     return bundle
+
+
+def verify_relaunch(executable, previous, current, environment):
+    """Verify one same-user signed App generation without activating it."""
+    from bridge.platforms.macos.force_exit import Native
+    from bridge.platforms.macos.codex_daemon_env import read_process_environment
+    changed = '独立客户端重启后的原生身份无法确认'
+    native = Native()
+    try:
+        native.identity(previous['pid'])
+    except OSError as exc:
+        if exc.errno != errno.ESRCH:
+            raise ValueError(changed) from None
+    else:
+        # Even a recycled PID is not evidence that this is the intended restart.
+        raise ValueError(changed)
+    before = native.identity(current['pid'])
+    identity = current['identity']
+    if (before['uid'] != os.getuid() or before['ruid'] != os.getuid() or before['zombie']
+            or before['image'] != str(executable.resolve())
+            or list(before['birth']) != identity.get('birth')
+            or list(before['started']) != identity.get('started')):
+        raise ValueError(changed)
+    record = {'processIdentity': {'uniqueId': before['birth'][0],
+                                 'startSeconds': before['started'][0], 'startMicroseconds': before['started'][1]}}
+    try:
+        values, _ = read_process_environment(current['pid'], record, executable, environment)
+    except (OSError, ValueError):
+        raise ValueError(changed) from None
+    if values != environment:
+        raise ValueError('独立客户端重启后的配置环境不一致')
+    try:
+        subprocess.run(['/usr/bin/codesign', '--verify', '--strict', '-R=anchor apple generic', str(_bundle(executable))],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        raise ValueError('无法核验独立客户端的应用签名') from None
+    if native.identity(current['pid']) != before:
+        raise ValueError(changed)
 
 
 _QUIT_SCRIPT = '''ObjC.import('AppKit');

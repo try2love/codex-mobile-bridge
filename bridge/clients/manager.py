@@ -1944,7 +1944,7 @@ class DesktopSessions:
             if restart:
                 self._stop_client('claude', descriptor, inspect_client(descriptor))
             if sys.platform != 'win32':
-                result = launch_client(descriptor)
+                result = launch_client(descriptor, allow_native_relaunch=not restart)
                 if not result.get('running'):
                     raise ValueError('客户端尚未启动，请在电脑端检查后重试')
             self.adapters['claude'].connect()
