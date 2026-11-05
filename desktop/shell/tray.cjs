@@ -10,7 +10,7 @@ function primaryUrl(urls=[]){
 
 function createTray({Tray,Menu,icon,show,worker,open,copy,quit,onError,t=text=>text,setTimer=setInterval,clearTimer=clearInterval}){
   const tray=new Tray(icon);
-  let snapshot,busy=false,refreshing=false,disposed=false;
+  let snapshot,busy=false,refreshing=false,disposed=false,rendered;
   async function action(callback){
     if(busy||disposed)return;
     busy=true;render();
@@ -23,6 +23,9 @@ function createTray({Tray,Menu,icon,show,worker,open,copy,quit,onError,t=text=>t
     const running=Boolean(snapshot?.runtime.running);
     const url=running?primaryUrl(snapshot.urls):null;
     const status=!snapshot?'正在读取状态':running?'网关运行中':snapshot.runtime.portOccupied?'端口已占用':'网关未启动';
+    const signature=JSON.stringify([running,url,status,busy]);
+    if(signature===rendered)return;
+    rendered=signature;
     tray.setToolTip(t('Codex 手机网关')+' · '+t(status));
     tray.setContextMenu(Menu.buildFromTemplate([
       {label:'打开控制面板',click:show},
@@ -46,7 +49,7 @@ function createTray({Tray,Menu,icon,show,worker,open,copy,quit,onError,t=text=>t
   render();
   const timer=setTimer(refresh,5000);
   refresh();
-  return {refresh,relabel:render,dispose(){disposed=true;clearTimer(timer);tray.destroy();}};
+  return {refresh,relabel(){rendered=undefined;render();},dispose(){disposed=true;clearTimer(timer);tray.destroy();}};
 }
 
 module.exports={createTray,primaryUrl};

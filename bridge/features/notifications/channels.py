@@ -732,6 +732,12 @@ class Notifications:
     def desktop_provider(host):
         return desktop_provider(host)
 
+    def _client_enabled(self, host):
+        if self.desktop_sessions is None:
+            return not self.desktop_provider(host)
+        client = desktop_client(host) or (host if host.startswith(('wsl:', 'codex:')) else 'codex')
+        return self.desktop_sessions.enabled(client)
+
     def policy(self, thread_id, host, value=None):
         provider = self.desktop_provider(host)
         if provider:
@@ -776,7 +782,8 @@ class Notifications:
             host, identifier = key.rsplit('|', 1)
             rows.setdefault((host, identifier), {'id': identifier, 'host': host})
         effective = [self._effective(row, policies, legacy_rows) for row in rows.values()]
-        return [row for row in effective if row['notifyOnRequest'] or row['notifyOnCompletion']]
+        return [row for row in effective if self._client_enabled(row['host']) and
+                (row['notifyOnRequest'] or row['notifyOnCompletion'])]
 
     def watch(self, thread_id, host, enabled=None, notify_on_completion=None, *, existing_only=False):
         uuid.UUID(thread_id)
@@ -1011,7 +1018,7 @@ class Notifications:
             if self._targets(config).get(channel) != target:
                 return False
             provider = self.desktop_provider(row['host'])
-            if provider and (self.desktop_sessions is None or not self.desktop_sessions.enabled(desktop_client(row['host']))):
+            if not self._client_enabled(row['host']):
                 return False
             current = self._effective(row)
             if not current['notifyOnCompletion' if completed is True else 'notifyOnRequest']:
@@ -1120,7 +1127,7 @@ class Notifications:
                 host, identifier, target = json.loads(key)
                 row = {'host': host, 'id': identifier}
                 provider = self.desktop_provider(host)
-                if provider and (self.desktop_sessions is None or not self.desktop_sessions.enabled(desktop_client(host))):
+                if not self._client_enabled(host):
                     continue
                 if target not in targets.values() or not self._effective(row, policies, legacy_rows)['notifyOnCompletion']:
                     del self.completions[key]

@@ -280,11 +280,44 @@ class RuntimeProofTests(unittest.TestCase):
             proof={('darwin','fixture-version'):digest}
             with patch.object(archive.sys,'platform','darwin'),patch.object(archive,'VERIFIED_PICKER_VERSIONS',proof),patch.object(archive.subprocess,'run',return_value=SimpleNamespace(returncode=0,stdout='fixture-version (Claude Code)')) as run:
                 self.assertTrue(archive.supported(str(binary),{}))
+                for _ in range(10):
+                    self.assertTrue(archive.supported(str(binary),{}))
                 run.assert_called_once()
                 binary.write_bytes(b'changed unverified distribution')
                 run.reset_mock()
                 self.assertFalse(archive.supported(str(binary),{}))
                 run.assert_not_called()
+
+    def test_version_failures_are_not_cached_and_replacement_invalidates_success(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as temporary:
+            binary = Path(temporary)/'synthetic-native'
+            binary.write_bytes(b'synthetic program')
+            proof = {('darwin', 'fixture-version'): hashlib.sha256(binary.read_bytes()).hexdigest()}
+            with patch.object(archive.sys, 'platform', 'darwin'), patch.object(archive, 'VERIFIED_PICKER_VERSIONS', proof), \
+                    patch.object(archive.subprocess, 'run') as run:
+                run.return_value = SimpleNamespace(returncode=1, stdout='')
+                self.assertFalse(archive.supported(str(binary), {}))
+                run.return_value = SimpleNamespace(returncode=0, stdout='fixture-version')
+                self.assertTrue(archive.supported(str(binary), {}))
+                replacement = binary.with_suffix('.new')
+                replacement.write_bytes(binary.read_bytes())
+                replacement.replace(binary)
+                self.assertTrue(archive.supported(str(binary), {}))
+                self.assertEqual(run.call_count, 3)
+
+    def test_program_change_during_version_probe_is_not_cached(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as temporary:
+            binary = Path(temporary)/'synthetic-native'
+            binary.write_bytes(b'synthetic program')
+            proof = {('darwin', 'fixture-version'): hashlib.sha256(binary.read_bytes()).hexdigest()}
+            def version(*args, **kwargs):
+                binary.write_bytes(b'changed program')
+                return SimpleNamespace(returncode=0, stdout='fixture-version')
+            with patch.object(archive.sys, 'platform', 'darwin'), patch.object(archive, 'VERIFIED_PICKER_VERSIONS', proof), \
+                    patch.object(archive.subprocess, 'run', side_effect=version):
+                self.assertFalse(archive.supported(str(binary), {}))
 
     def test_binary_update_during_hash_disables_capability(self):
         with tempfile.TemporaryDirectory() as temporary:

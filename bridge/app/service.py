@@ -241,8 +241,13 @@ def _runtime_scope(host):
 
 
 class Bridge:
-    def __init__(self, codex_home, data_dir, host="local", alias=None, ipc_path=None, codex_bin=None, goal_rpc=None, owner_goal=None, cli_sessions=None, entry_label=None, owner_guard=None):
+    def observation_enabled(self):
+        return True
+
+    def __init__(self, codex_home, data_dir, host="local", alias=None, ipc_path=None, codex_bin=None, goal_rpc=None, owner_goal=None, cli_sessions=None, entry_label=None, owner_guard=None, observation_enabled=None):
         self.host = host
+        if observation_enabled is not None:
+            self.observation_enabled = observation_enabled
         self.entry_label = entry_label
         self.owner_guard = owner_guard
         self.entry_gate = OperationGate() if host.startswith('codex:') else None
@@ -275,7 +280,8 @@ class Bridge:
         self.notification_event = threading.Event()
         self.notification_slots = threading.BoundedSemaphore(4)
         self.store = RemoteStore(alias) if alias else SessionStore(codex_home)
-        self.catalog_reader = RemoteCatalog(alias) if alias else Catalog(codex_home, codex_bin)
+        self.catalog_reader = RemoteCatalog(alias) if alias else Catalog(codex_home, codex_bin,
+            observation_enabled=lambda: self.observation_enabled())
         self.terminals = TerminalManager()
         self.uploads = Uploads(data_dir, (lambda *args: upload_file(alias, *args)) if alias else None)
         executable_getter = (lambda: self.catalog_reader.executable) if self.local else None
@@ -328,7 +334,8 @@ class Bridge:
 
     def _local_entry(self, row, directory, codex_bin):
         target = Bridge(row['home'], directory, host=row['id'], entry_label=row['label'],
-                        codex_bin=codex_bin, owner_guard=lambda sid: self.entries.check_ipc_scope(row['id'], sid, self.store))
+                        codex_bin=codex_bin, owner_guard=lambda sid: self.entries.check_ipc_scope(row['id'], sid, self.store),
+                        observation_enabled=lambda: self.entries.enabled(row['id']))
         target.accounts.monitor.notification_data_dir = self.data_dir
         if self.accounts.monitor.worker is not None:
             target.accounts.monitor.start()
@@ -1173,7 +1180,8 @@ class Bridge:
         with self.lock:
             if host not in self.remote_bridges:
                 folder = self.data_dir / 'hosts' / hashlib.sha256(host.encode()).hexdigest()[:16]
-                self.remote_bridges[host] = Bridge(self.codex_home, folder, host, available[host]['alias'], ipc_path=self.ipc.path)
+                self.remote_bridges[host] = Bridge(self.codex_home, folder, host, available[host]['alias'], ipc_path=self.ipc.path,
+                                                  observation_enabled=lambda: self.observation_enabled())
                 self.remote_bridges[host].accounts = self.accounts
             return self.remote_bridges[host]
 
@@ -1723,16 +1731,21 @@ class Bridge:
         return rows
 
     def notification_candidates(self):
-        sources = [self]
-        if self.host == 'local':
+        sources = [self] if self.observation_enabled() else []
+        if self.host == 'local' and sources:
             sources.extend(self.for_host(host, cached=True) for host in self.hosts.hosts(cached=True))
         rows = []
         for source in sources:
+            if not source.observation_enabled():
+                continue
             source.notification_event = self.notification_event
             try:
                 # A new IPC connection needs one fresh discovery, even if the
                 # desktop resumed a task without changing its saved metadata.
                 source.ipc.connect()
+                if not source.observation_enabled():
+                    source.suspend_observation()
+                    continue
                 if source.notification_client_id != source.ipc.client_id:
                     source.notification_cursor = 0
                     source.notification_boundary.clear()
@@ -1760,6 +1773,8 @@ class Bridge:
         sources = [self] + list(self.remote_bridges.values()) if self.host == 'local' else [self]
         rows = []
         for source in sources:
+            if not source.observation_enabled():
+                continue
             with source.lock:
                 identifiers = source.notification_dirty
                 source.notification_dirty = set()
@@ -1804,6 +1819,8 @@ class Bridge:
 
     def notification_session(self, thread_id):
         # Follow only; never parse saved history or activate an unloaded owner.
+        if not self.observation_enabled():
+            raise IPCError('此应用已停用手机接入')
         with self.lock:
             session = self.live.get(thread_id)
             if session is None:
@@ -1972,7 +1989,7 @@ class Bridge:
 
     def _refresh_async(self, session, force=False):
         with session.condition:
-            if (session.connected and not session.activity_only) or session.connecting or self.closed.is_set():
+            if (session.connected and not session.activity_only) or session.connecting or self.closed.is_set() or not self.observation_enabled():
                 return
             if not force and time.monotonic() < session.retry_at and not session.activity_only:
                 return
@@ -2041,7 +2058,7 @@ class Bridge:
         with session.attach_lock:
             if self.released_cli.contains(session.id):
                 return
-            if session.connected or self.closed.is_set():
+            if session.connected or self.closed.is_set() or not self.observation_enabled():
                 return
             if isinstance(self.store, RemoteStore):
                 try:
@@ -2063,6 +2080,9 @@ class Bridge:
                     if sys.platform == 'win32' and self.owner_guard:
                         self.owner_guard(session.id)
                     self.ipc.connect()
+                    if not self.observation_enabled():
+                        self.suspend_observation()
+                        return
                     ipc_connected = True
                     owner = self.ipc.owner(session.id, host=self.native_host)
                     if not isinstance(owner, str) or not owner:
@@ -2096,6 +2116,9 @@ class Bridge:
                 # Owners answer a follow with a fresh snapshot. This also works
                 # for remote/background owners absent from owner-discovery.
                 self.ipc.connect()
+                if not self.observation_enabled():
+                    self.suspend_observation()
+                    return
                 with session.condition:
                     session.owner = None
                     session.revision = None
@@ -2342,9 +2365,18 @@ class Bridge:
                 self._invalidate(session, "桌面 App 连接已断开，正在等待重连", runtime='desktop',
                                  reason='desktop_ipc_disconnected')
 
+    def suspend_observation(self):
+        """Release only desktop followers; native/CLI tasks and saved state survive."""
+        with self.ipc.connect_lock:
+            self.ipc.close()
+        for source in list(self.remote_bridges.values()):
+            source.suspend_observation()
+
     def _maintain(self):
         delay = 3
         while not self.closed.wait(delay):
+            if not self.observation_enabled():
+                continue
             if isinstance(self.store, RemoteStore):
                 current = self.hosts.hosts(cached=True).get(self.host)
                 if current and current['alias'] == self.store.alias:
@@ -2921,7 +2953,7 @@ class Bridge:
                               environment_identity)
 
     def _schedule_native_model_refresh(self, key, thread_id, cwd, provider, updated_at, replace=False):
-        if thread_id is None:
+        if thread_id is None or not self.observation_enabled():
             return
         with self.native_model_lock:
             if replace and key in self.native_model_timers:
@@ -2932,7 +2964,7 @@ class Bridge:
             def due():
                 with self.native_model_lock:
                     self.native_model_timers.pop(key, None)
-                    if key in self.native_model_refreshing or self.closed.is_set():
+                    if key in self.native_model_refreshing or self.closed.is_set() or not self.observation_enabled():
                         return
                     self.native_model_refreshing.add(key)
                 try:
@@ -2943,7 +2975,7 @@ class Bridge:
                 finally:
                     with self.native_model_lock:
                         self.native_model_refreshing.discard(key)
-                    if not self.closed.is_set():
+                    if not self.closed.is_set() and self.observation_enabled():
                         try:
                             record = self.native_model_store.read(key)
                         except (OSError, sqlite3.DatabaseError, ValueError):

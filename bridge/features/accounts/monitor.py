@@ -179,6 +179,8 @@ class AccountMonitor:
     def scan(self):
         if self.closed.is_set() or not any(self.preferences.values()):
             return
+        if not getattr(self.manager.bridge, 'observation_enabled', lambda: True)():
+            return
         # No quota polling when all delivery channels are disabled.
         if not channels(settings(self.notification_data_dir)):
             return

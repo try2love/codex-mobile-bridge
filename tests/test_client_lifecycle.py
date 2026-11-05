@@ -103,7 +103,7 @@ class ClientLifecycleTests(unittest.TestCase):
         self.accounts = SimpleNamespace(gate=threading.RLock(), lock=threading.RLock(),
             assert_editable=Mock(), idle=Mock(), index={}, runtime=None,
             info=SimpleNamespace(current=lambda: {'status': 'ready', 'kind': 'chatgpt'}), home=self.root)
-        self.bridge = SimpleNamespace(accounts=self.accounts, assert_desktop_idle=Mock())
+        self.bridge = SimpleNamespace(accounts=self.accounts, assert_desktop_idle=Mock(), suspend_observation=Mock())
         self.bridge.for_host = lambda _: self.bridge
         for name, value in [('Claude', self.claude), ('DeepSeek', self.dsh)]:
             patcher = patch('bridge.clients.manager.'+name, return_value=value)
@@ -317,6 +317,28 @@ class ClientLifecycleTests(unittest.TestCase):
             self.assertTrue(self.running)
         finally:
             reopened.close()
+
+    def test_disabled_running_apps_do_not_receive_periodic_status_or_catalog_reads(self):
+        self.manager.clients(refresh=True)
+        self.manager.config['enabled'].update(codex=False, claude=False, deepseek=False)
+        self.accounts.info.current = Mock(return_value={'status': 'ready', 'kind': 'chatgpt'})
+        self.claude.reset_mock(); self.dsh.reset_mock()
+        for _ in range(5):
+            rows = self.manager.clients(refresh=True)['clients']
+            for row in rows:
+                if row['id'] in ('claude', 'deepseek'):
+                    self.assertTrue(row['running'])
+                    self.assertFalse(row['connected'])
+        self.claude.status.assert_not_called()
+        self.claude.desktop_listing.assert_not_called()
+        self.claude.call.assert_not_called()
+        self.dsh.call.assert_not_called()
+        self.accounts.info.current.assert_not_called()
+        self.stop.assert_not_called()
+        self.manager.config['enabled'].update(claude=True, deepseek=True)
+        self.manager.clients(refresh=True)
+        self.claude.status.assert_called_once_with()
+        self.dsh.call.assert_called_once_with('status')
 
     def test_explicit_quit_keeps_busy_guard_and_enabled_preference(self):
         self.claude.desktop_listing.return_value = {'complete': True, 'sessions': [
@@ -840,6 +862,7 @@ class ClientLifecycleTests(unittest.TestCase):
 
     def test_claude_desktop_launch_capability_requires_confirmed_stopped_supported_app(self):
         self.running = False
+        self.claude.discovery = {'automaticConnection': 'native-console'}
         self.claude.status.return_value = {'connected': False, 'installed': True,
                                            'automaticConnection': 'native-console', 'cliAvailable': True}
         row = next(row for row in self.manager.clients(refresh=True)['clients'] if row['id'] == 'claude')

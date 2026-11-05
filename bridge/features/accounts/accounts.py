@@ -214,7 +214,8 @@ class Accounts:
             home = self.directory(identifier)
             catalog = self.saved_model_catalogs.get(identifier)
             if catalog is None:
-                catalog = Catalog(home, self.runtime)
+                catalog = Catalog(home, self.runtime,
+                    observation_enabled=lambda: getattr(self.bridge, 'observation_enabled', lambda: True)())
                 self.saved_model_catalogs[identifier] = catalog
             return catalog
 
@@ -545,6 +546,8 @@ class Accounts:
             return result(models, updated_at)
 
     def _schedule_api_model_refresh(self, row, identity, updated_at, replace=False):
+        if not getattr(self.bridge, 'observation_enabled', lambda: True)():
+            return
         with self.lock:
             if getattr(self.bridge, 'closed', None) is not None and self.bridge.closed.is_set():
                 return
@@ -556,6 +559,8 @@ class Accounts:
             def due():
                 with self.lock:
                     self.api_model_timers.pop(identity, None)
+                    if not getattr(self.bridge, 'observation_enabled', lambda: True)():
+                        return
                     if getattr(self.bridge, 'closed', None) is not None and self.bridge.closed.is_set():
                         return
                 try:

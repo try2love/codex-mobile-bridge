@@ -182,6 +182,7 @@ class DesktopSessions:
         self._codex_guard = lambda: self.require_enabled('codex')
         if self.bridge is not None:
             self.bridge.accounts.require_client_enabled = self._codex_guard
+            self.bridge.observation_enabled = lambda: self.enabled('codex')
         if instance is None:
             from bridge.clients.instances import ClientInstances
             self.instances = ClientInstances(self)
@@ -598,6 +599,8 @@ class DesktopSessions:
         return draft_identity('deepseek', 'desktop', kind, owner) if owner else ''
 
     def _model_live(self, provider, sid):
+        if not self.enabled(provider):
+            return False
         adapter = self.adapters[provider]
         if provider == 'zcode':
             return adapter.status().get('connected') is True
@@ -608,11 +611,13 @@ class DesktopSessions:
             remote = adapter.remote_cli.index.get(sid)
             if local:
                 owned = adapter.cli.owned.get(local['nativeId'])
-                return bool(owned and owned.origin == local['origin'] and owned.process.poll() is None and not owned.error)
+                return self.native_enabled(provider) and bool(owned and owned.origin == local['origin'] and owned.process.poll() is None and not owned.error)
             if remote:
+                if not self.native_enabled(provider) and not remote.get('host', '').startswith('wsl-claude:'):
+                    return False
                 owned = adapter.remote_cli.owned.get(sid)
                 return bool(owned and owned.origin == remote['origin'] and owned.process.poll() is None and not owned.error)
-        return bool(adapter.desktop and adapter.desktop.connected and not adapter.setup_cancel.is_set()
+        return self.native_enabled(provider) and bool(adapter.desktop and adapter.desktop.connected and not adapter.setup_cancel.is_set()
                     and not adapter.connection_probe_failed and sid in adapter.index)
 
     def _model_refresh_unsupported(self, provider, sid):
@@ -745,7 +750,7 @@ class DesktopSessions:
         with self.model_lock:
             if replace and identity in self.model_timers:
                 self.model_timers.pop(identity).cancel()
-            if self.closed.is_set() or self._model_refresh_unsupported(provider, sid) or identity in self.model_timers:
+            if self.closed.is_set() or not self.enabled(provider) or self._model_refresh_unsupported(provider, sid) or identity in self.model_timers:
                 return
             delay = max(60 if retry else 1, updated_at + MODEL_REFRESH_SECONDS - time.time())
             def due():
@@ -803,6 +808,8 @@ class DesktopSessions:
         return ModelStore.key('desktop-model-directory-v2', provider, scope, stamps)
 
     def _account_model_live(self, provider):
+        if not self.native_enabled(provider):
+            return False
         adapter = self.adapters[provider]
         if provider == 'zcode':
             return adapter.status().get('connected') is True
@@ -902,7 +909,7 @@ class DesktopSessions:
         with self.model_lock:
             if replace and identity in self.model_timers:
                 self.model_timers.pop(identity).cancel()
-            if self.closed.is_set() or not self.gateway_running or identity in self.model_timers:
+            if self.closed.is_set() or not self.gateway_running or not self.enabled(provider) or identity in self.model_timers:
                 return
             delay = max(1, updated_at + MODEL_REFRESH_SECONDS - time.time())
             def due():
@@ -915,7 +922,7 @@ class DesktopSessions:
                 except (OSError, ValueError, BridgeUnavailable):
                     pass
                 finally:
-                    if not self.closed.is_set():
+                    if not self.closed.is_set() and self.enabled(provider):
                         try:
                             if self._account_model_identity(provider) == identity:
                                 record = self.model_store.read(identity)
@@ -1481,7 +1488,7 @@ class DesktopSessions:
             if not self.enabled(provider):
                 continue
             try:
-                status = adapter.call('status') if provider == 'deepseek' else adapter.status()
+                status = self._client_status(provider)
                 if status.get('connected') is not True and not (provider == 'claude' and status.get('cliAvailable') is True):
                     continue
                 listing = self._read(provider, 'list')
@@ -1502,13 +1509,23 @@ class DesktopSessions:
                     continue
         return rows
 
+    def _client_status(self, provider, *, probe=False):
+        # Disabled native access must not probe a running App, CLI or SSH hosts.
+        # WSL Claude remains a separate enabled endpoint, without a native probe.
+        if not probe and not self.native_enabled(provider):
+            discovery = getattr(self.adapters[provider], 'discovery', {})
+            return {'connected': False, 'cliAvailable': provider == 'claude' and self._wsl_claude_enabled(),
+                    'automaticConnection': discovery.get('automaticConnection') if isinstance(discovery, dict) else None}
+        adapter = self.adapters[provider]
+        return adapter.call('status') if provider == 'deepseek' else adapter.status()
+
     def status(self):
         result = {}
         for provider, adapter in self.adapters.items():
             try:
                 if provider == 'deepseek' and self.deepseek_restore_error:
                     raise BridgeUnavailable(self.deepseek_restore_error)
-                value = adapter.call('status') if provider == 'deepseek' else adapter.status()
+                value = self._client_status(provider)
             except (ValueError, OSError):
                 value = {'connected': False}
             result[provider] = value
@@ -1568,18 +1585,23 @@ class DesktopSessions:
             [row['id'] for row in self.instances.metadata() if row['enabled'] and row['family'] != 'codex']
             if self.instances is not None else [])
 
-    def enabled(self, provider):
+    def native_enabled(self, provider):
         if self.instance is not None:
             if provider != self.instance.family:
                 return False
             return any(row['id'] == self.instance.id and row['enabled']
                        for row in self.instance_owner.registry.list(provider))
+        return bool(self.config.get('enabled', {}).get(provider, provider == 'codex'))
+
+    def enabled(self, provider):
+        if self.instance is not None:
+            return self.native_enabled(provider)
         if isinstance(provider, str) and provider.startswith(('claude:', 'deepseek:', 'zcode:')):
             return any(row['id'] == provider and row['enabled'] for row in self.instances.metadata())
         if isinstance(provider, str) and provider.startswith(('wsl:', 'codex:')):
             entries = getattr(self.bridge, 'entries', None)
             return bool(entries and entries.enabled(provider))
-        native = self.config.get('enabled', {}).get(provider, provider == 'codex')
+        native = self.native_enabled(provider)
         return bool(native or provider == 'claude' and self._wsl_claude_enabled())
 
     def require_enabled(self, provider):
@@ -2224,7 +2246,7 @@ class DesktopSessions:
             private_json(self.config_path, self.config)
             self.client_cache = None
 
-    def clients(self, refresh=False):
+    def clients(self, refresh=False, *, probe=None):
         with self.client_lock:
             if self.instance is not None:
                 selected = self.instance_owner.registry.resolve(self.instance.family, self.instance.id,
@@ -2239,7 +2261,16 @@ class DesktopSessions:
             discovered = self.config.get('discovered', {})
             ready = False
             reason = '请在电脑端安装 Codex 并配置账号或 API'
-            if self.bridge is not None:
+            if self.bridge is not None and not self.native_enabled('codex') and probe != 'codex':
+                # Preserve display knowledge without AccountInfo.current() spawning
+                # another auth/runtime probe. Explicit enable always probes afresh.
+                previous = next((row for row in (self.client_snapshot or {}).get('clients', [])
+                                 if row['id'] == 'codex'), {})
+                ready = (discovered.get('codex', {}).get('installed', True) is not False and
+                         bool(previous.get('nativeConfigured', previous.get('configured'))))
+                if ready:
+                    reason = '接入配置已就绪'
+            elif self.bridge is not None:
                 try:
                     from bridge.clients.desktop_app import DesktopApp
                     accounts = self.bridge.for_host('local').accounts
@@ -2267,7 +2298,7 @@ class DesktopSessions:
                     adapter = self.adapters[provider]
                     if provider == 'deepseek' and self.deepseek_restore_error:
                         raise BridgeUnavailable(self.deepseek_restore_error)
-                    status = adapter.call('status') if provider == 'deepseek' else adapter.status()
+                    status = self._client_status(provider, probe=probe == provider)
                     if provider == 'claude':
                         setup_status = status.get('setupState', setup_status)
                         reason = status.get('reason') or reason
@@ -2700,13 +2731,15 @@ class DesktopSessions:
                 if provider == 'zcode' and selected_mode(self.config) == 'official-remote':
                     self.adapters[provider].disconnect()
                 self.config.setdefault('enabled', {})[provider] = False
+                if provider == 'codex' and self.bridge is not None:
+                    self.bridge.suspend_observation()
                 private_json(self.config_path, self.config)
                 self.client_cache = None
                 return self.clients()
             if accounts:
                 accounts.assert_editable()
             if enabled:
-                row = next(row for row in self.clients(refresh=True)['clients'] if row['id'] == provider)
+                row = next(row for row in self.clients(refresh=True, probe=provider)['clients'] if row['id'] == provider)
                 if provider == 'codex':
                     row = row['entries'][0]
                 if not row['selectable']:
@@ -2778,6 +2811,8 @@ class DesktopSessions:
                                   **({'acknowledge_unavailable': True} if acknowledge_unavailable else {}))
             # Persist only after the native lifecycle operation succeeds.
             self.config.setdefault('enabled', {})[provider] = enabled
+            if provider == 'codex' and not enabled and self.bridge is not None:
+                self.bridge.suspend_observation()
             private_json(self.config_path, self.config)
             if not enabled and hasattr(self, 'terminals'):
                 identifiers = {str(uuid.uuid5(uuid.NAMESPACE_URL, p + ':' + sid)) for p, sid in self.workspace_roots if p == provider}

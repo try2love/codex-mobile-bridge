@@ -333,7 +333,7 @@ class Catalog:
 
     METHODS = {"initialize", "model/list", "skills/list", "config/read", "account/read", "getAuthStatus", "configRequirements/read"}
 
-    def __init__(self, codex_home, executable=None, allow_background_refresh=True, auth_status_only=False):
+    def __init__(self, codex_home, executable=None, allow_background_refresh=True, auth_status_only=False, observation_enabled=None):
         self.home = Path(codex_home)
         self._automatic_runtime = not executable
         self._executable = Path(executable) if executable else self.find_runtime()
@@ -350,6 +350,7 @@ class Catalog:
         self.skill_store = SkillStore(self.home)
         self.skill_refreshing = set()
         self.allow_background_refresh = allow_background_refresh
+        self.observation_enabled = observation_enabled or (lambda: True)
         self.auth_status_only = auth_status_only
 
     @property
@@ -449,7 +450,7 @@ class Catalog:
             logger.warning('Could not persist native model provider identity', exc_info=True)
 
     def _start_model_refresh(self, cwd, provider, identity):
-        if not self.allow_background_refresh:
+        if not self.allow_background_refresh or not self.observation_enabled():
             return
         with self.model_refresh_lock:
             if identity in self.model_refreshing or time.time() < self.model_retry_at.get(identity, 0):
@@ -457,14 +458,15 @@ class Catalog:
             self.model_refreshing.add(identity)
         def run():
             try:
-                self.get_kind('models', cwd, refresh=True, provider=provider)
+                if self.allow_background_refresh and self.observation_enabled():
+                    self.get_kind('models', cwd, refresh=True, provider=provider)
             except (CatalogError, OSError, ValueError):
                 logger.warning('Background model refresh failed', exc_info=True)
             finally:
                 with self.model_refresh_lock:
                     self.model_retry_at[identity] = time.time() + 60
                     self.model_refreshing.discard(identity)
-                if self.model_identity(cwd, provider) == identity:
+                if self.allow_background_refresh and self.observation_enabled() and self.model_identity(cwd, provider) == identity:
                     try:
                         record = self.model_store.read(identity)
                     except (OSError, sqlite3.DatabaseError, ValueError):
@@ -473,7 +475,7 @@ class Catalog:
         threading.Thread(target=run, daemon=True, name='codex-model-refresh').start()
 
     def _schedule_model_refresh(self, cwd, provider, identity, updated_at, retry=False, replace=False):
-        if not self.allow_background_refresh:
+        if not self.allow_background_refresh or not self.observation_enabled():
             return
         with self.model_refresh_lock:
             if replace and identity in self.model_timers:
@@ -484,7 +486,7 @@ class Catalog:
             def due():
                 with self.model_refresh_lock:
                     self.model_timers.pop(identity, None)
-                if self.model_identity(cwd, provider) == identity:
+                if self.allow_background_refresh and self.observation_enabled() and self.model_identity(cwd, provider) == identity:
                     self._start_model_refresh(cwd, provider, identity)
             timer = threading.Timer(delay, due)
             timer.daemon = True
@@ -863,11 +865,13 @@ class Catalog:
                                   refreshed_at=0, bucket_id=bucket, state='legacy', selected=selected)
 
     def _start_skill_refresh(self, cwd, provider, bucket):
-        if not self.allow_background_refresh or bucket in self.skill_refreshing:
+        if not self.allow_background_refresh or not self.observation_enabled() or bucket in self.skill_refreshing:
             return bucket in self.skill_refreshing
         self.skill_refreshing.add(bucket)
         def run():
             try:
+                if not self.allow_background_refresh or not self.observation_enabled():
+                    return
                 raw = self._fetch(cwd, provider, 'skills', 90)
                 skills, errors = self._skill_rows(raw, cwd)
                 try:

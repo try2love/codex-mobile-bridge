@@ -20,11 +20,11 @@ test('tray prefers public HTTPS and rejects non-web addresses',()=>{
 });
 
 async function trayFixture(t){
-  let menu,timer,destroyed=false,cleared=false,quit=false,opened=false,copied,error,failStop=false;
+  let menu,timer,destroyed=false,cleared=false,quit=false,opened=false,copied,error,failStop=false,renders=0;
   const state={runtime:{running:true},urls:['http://127.0.0.1:8787','https://example.com']};
   const actions=[];
   const tray=createTray({
-    Tray:class{on(){}setToolTip(){}setContextMenu(value){menu=value;}destroy(){destroyed=true;}},
+    Tray:class{on(){}setToolTip(){}setContextMenu(value){menu=value;renders++;}destroy(){destroyed=true;}},
     Menu:{buildFromTemplate:value=>value},icon:'icon',show:()=>{opened=true;},t,
     worker:async action=>{if(action==='snapshot')return state;actions.push(action);if(failStop)throw Error('stop failed');state.runtime.running=false;},
     open:async()=>{opened=true;},copy:async value=>{copied=value;},quit:()=>{quit=true;},onError:value=>{error=value;},
@@ -32,8 +32,19 @@ async function trayFixture(t){
   });
   await new Promise(setImmediate);
   return {tray,state,actions,find:text=>menu.find(item=>item.label?.includes(text)),poll:()=>timer(),
-    fail:()=>{failStop=true;},result:()=>({destroyed,cleared,quit,opened,copied,error})};
+    fail:()=>{failStop=true;},result:()=>({destroyed,cleared,quit,opened,copied,error,renders})};
 }
+
+test('unchanged tray snapshots reuse the menu; URL and busy changes remain immediate',async()=>{
+  const ui=await trayFixture(),before=ui.result().renders;
+  for(let i=0;i<10;i++)await ui.poll();
+  assert.equal(ui.result().renders,before);
+  ui.state.urls=['https://new.example.com'];await ui.poll();
+  assert.equal(ui.result().renders,before+1);
+  await ui.find('复制手机').click();
+  assert.equal(ui.result().copied,'https://new.example.com');
+  assert.equal(ui.result().renders,before+3);ui.tray.dispose();
+});
 
 test('tray can stop then quit and dispose without duplicate operations',async()=>{
   const ui=await trayFixture();await ui.find('复制手机').click();assert.equal(ui.result().copied,'https://example.com');
