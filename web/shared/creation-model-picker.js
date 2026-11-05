@@ -1,9 +1,47 @@
 'use strict';
+// Only catalog data is shared. Selection, permissions and connection state belong
+// to the requesting view; an older in-flight read must not undo a newer refresh.
+window.BridgeModelCatalogCache={
+  key(namespace,identity){return JSON.stringify(['models',...namespace,identity]);},
+  read(cache,namespace,identity){
+    let value=identity&&cache.get(this.key(namespace,identity));
+    if(value?.projection){
+      const {directoryIdentity,surface}=value.projection,base=cache.get(this.key(namespace,directoryIdentity));
+      if(!base)return null;
+      const groups=base.groups||[],group=groups.find(row=>row.surface===surface);
+      const models=group?.models||(groups.length&&groups.every(row=>row.surface==='api')?groups.flatMap(row=>row.models||[]):[]);
+      value={...base,models,cache:{...base.cache,identity,directoryIdentity,surface}};
+    }
+    return value?JSON.parse(JSON.stringify(value)):null;
+  },
+  write(cache,namespace,value){
+    const identity=value?.cache?.identity;if(!identity||!Array.isArray(value.models)||value.cache.state==='unavailable')return null;
+    const {directoryIdentity,surface}=value.cache;
+    if(directoryIdentity&&directoryIdentity!==identity&&surface&&Array.isArray(value.groups)&&value.groups.length){
+      this.write(cache,namespace,{...value,models:value.groups.flatMap(group=>group.models||[]),cache:{...value.cache,identity:directoryIdentity,directoryIdentity:undefined,surface:undefined}});
+      cache.set(this.key(namespace,identity),{projection:{directoryIdentity,surface}});
+      return this.read(cache,namespace,identity);
+    }
+    const key=this.key(namespace,identity),previous=this.read(cache,namespace,identity),stamp=value.cache.updatedAt;
+    if(previous&&Number.isFinite(previous.cache.updatedAt)&&(!Number.isFinite(stamp)||previous.cache.updatedAt>stamp))return this.read(cache,namespace,identity);
+    const stable=Object.fromEntries(['models','groups','cache','modelSource','source','modelSourcesVersion'].filter(field=>field in value).map(field=>[field,value[field]]));
+    cache.set(key,JSON.parse(JSON.stringify(stable)));return this.read(cache,namespace,identity);
+  },
+  forScope(cache,scope){const alias=cache.get('create:'+scope);return alias?this.read(cache,alias.namespace,alias.identity):null;},
+  bind(cache,scope,namespace,value){const saved=this.write(cache,namespace,value);if(saved)cache.set('create:'+scope,{namespace:[...namespace],identity:value.cache.identity});return saved;},
+  forget(cache,namespace){
+    const scope=JSON.stringify(namespace);
+    for(const [key,value] of cache){
+      if(key.startsWith('create:')){if(JSON.stringify(value.namespace)===scope)cache.delete(key);}
+      else if(key.startsWith('["models",')&&JSON.stringify(JSON.parse(key).slice(1,-1))===scope)cache.delete(key);
+    }
+  }
+};
 // Account-bound catalog shape and choices are shared by all new-chat surfaces.
 class CreationModelPicker {
   static intent(value){return Object.fromEntries(Object.entries(value).filter(([key])=>!['modelCatalogIdentity','environment'].includes(key)));}
-  constructor({root,cache=new Map(),isCurrent=()=>true,onChange=()=>{}}){
-    Object.assign(this,{root,cache,isCurrent,onChange});this.revision=0;this.busy=false;this.catalog=null;this.scope='';
+  constructor({root,cache=new Map(),namespace=()=>[],isCurrent=()=>true,onChange=()=>{}}){
+    Object.assign(this,{root,cache,namespace,isCurrent,onChange});this.revision=0;this.busy=false;this.catalog=null;this.scope='';
     const node=(tag,text)=>{const result=document.createElement(tag);if(text!==undefined)result.textContent=BridgeI18n.t(text);return result;};this.node=node;
     root.classList.add('project-picker-models');
     const header=node('div'),label=node('strong','模型与思考强度');header.className='project-picker-model-head';
@@ -59,12 +97,14 @@ class CreationModelPicker {
     if(this.busy||!this.isCurrent())return;
     if(scope===this.scope&&this.read&&(!refresh||this.loading))return;
     const changed=scope!==this.scope;this.scope=scope;this.read=read;const revision=++this.revision;
-    if(changed)this.show(this.cache.get('create:'+scope)||null);
+    const namespace=this.namespace();
+    if(changed)this.show(window.BridgeModelCatalogCache.forScope(this.cache,scope));
     this.loading=true;this.error.textContent='';this.feedback.textContent=BridgeI18n.t(this.catalog?'正在核对模型目录…':'正在读取模型…');this.changed();
     try{
-      const value=await read(refresh);if(revision!==this.revision||!this.isCurrent())return;
+      let value=await read(refresh);if(revision!==this.revision||!this.isCurrent())return;
+      value={...value,...window.BridgeModelCatalogCache.bind(this.cache,scope,namespace,value)};
       const identityChanged=!!this.catalog?.cache?.identity&&this.catalog.cache.identity!==value.cache?.identity,preserve=!changed&&!identityChanged;
-      this.show(value,preserve,!identityChanged);if(value.cache?.identity)this.cache.set('create:'+scope,value);
+      this.show(value,preserve,!identityChanged);
       this.feedback.textContent=BridgeI18n.t(identityChanged?'账号或配置已变化，请重新选择模型与思考强度':value.notice||value.modelError||(!value.currentModel&&!this.model.value?'请选择模型；不会自动选用目录中的第一个模型。':''));
     }catch(error){if(revision===this.revision&&this.isCurrent())this.error.textContent=BridgeI18n.t(error.message);}
     finally{if(revision===this.revision&&this.isCurrent()){this.loading=false;this.changed();}}

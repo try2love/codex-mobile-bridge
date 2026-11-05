@@ -569,7 +569,7 @@ let newChatRequest=0,newChatModelsEnabled=false,newChatModelPicker=null;
 function updateNewChatSubmit(){const selected=$('new-chat-project').value;$('new-chat-submit').disabled=creatingChat||!selected||selected==='__directory__'&&!$('new-chat-directory-path').value||newChatModelsEnabled&&(!newChatModelPicker||!newChatModelPicker.valid());}
 function syncNewChatModels(){
   if(!newChatModelsEnabled){if(newChatModelPicker){newChatModelPicker.dispose();newChatModelPicker.root.remove();newChatModelPicker=null;}return;}
-  if(!newChatModelPicker){const root=el('section');$('new-chat-form').insertBefore(root,$('new-chat-title').parentElement);newChatModelPicker=new window.BridgeCreationModelPicker({root,cache:modelCatalogs,isCurrent:()=>$('new-chat-dialog').open,onChange:updateNewChatSubmit});}
+  if(!newChatModelPicker){const root=el('section');$('new-chat-form').insertBefore(root,$('new-chat-title').parentElement);newChatModelPicker=new window.BridgeCreationModelPicker({root,cache:modelCatalogs,namespace:()=>[listIdentity,newChatEnvironment().host,'codex'],isCurrent:()=>$('new-chat-dialog').open,onChange:updateNewChatSubmit});}
   const project=$('new-chat-project').value,path=$('new-chat-directory-path').value,kind=$('new-chat-type').value==='wsl'?'cli':$('new-chat-type').value;
   if(!project||project==='__directory__'&&!path){newChatModelPicker.clear();return;}
   const query=new URLSearchParams({kind,...(project==='__directory__'?{path,host:$('new-chat-directory-host').value}:{project})});
@@ -1188,7 +1188,7 @@ async function loadCatalogKind(kind,refresh=false){
     }).filter(Boolean);
     const result={...value,kind,[kind]:catalogData[kind],_scope:identity};
     catalogResults[kind]=result;
-    if(accountIdentity&&value?.cache?.identity===accountIdentity)modelCatalogs.set(JSON.stringify([gatewayIdentity,targetHost,provider,sessionAccess(state?.access).source,accountIdentity]),result);
+    if(accountIdentity&&value?.cache?.identity===accountIdentity){Object.assign(result,window.BridgeModelCatalogCache.write(modelCatalogs,[gatewayIdentity,targetHost,'codex'],result));catalogData[kind]=result[kind];}
     return result;
   }).finally(()=>{if(catalogTasks[kind]===request)catalogTasks[kind]=null;});
   request.identity=identity;catalogTasks[kind]=request;
@@ -1314,7 +1314,7 @@ async function openModelDialog(forceRefresh=false){
   $('model-refresh').disabled=true;
   const request=++modelRequest,target=chatKey();modelTarget=target;fastModeControl.reset();
   $('model-form').querySelectorAll('input,select,button').forEach(n=>n.disabled=false);
-  const identity=state?.modelCatalogIdentity||'',key=identity?JSON.stringify([listIdentity,currentHost,state?.provider,sessionAccess(state?.access).source,identity]):'',scope=JSON.stringify([listIdentity,currentId,currentHost,state?.provider,identity]),cached=(key?modelCatalogs.get(key):null)||(catalogResults.models?._scope===scope?catalogResults.models:null);
+  const identity=state?.modelCatalogIdentity||'',scope=JSON.stringify([listIdentity,currentId,currentHost,state?.provider,identity]),cached=window.BridgeModelCatalogCache.read(modelCatalogs,[listIdentity,currentHost,'codex'],identity)||(catalogResults.models?._scope===scope?catalogResults.models:null);
   const showCatalog=catalog=>{
     catalogData.models=catalog.models;catalogResults.models=catalog;
     $('model-select').replaceChildren(...(catalog.modelSource==='api'?[new Option(t('请选择上游模型'),'')]:[]),...(Array.isArray(catalog.models)?catalog.models:[]).map(m=>new Option(m.name,m.id)),new Option(t('自定义模型…'),'__custom__'));
@@ -1689,7 +1689,7 @@ function openCurrentAccounts(){
   const panel=new DesktopClientAccountsPanel({root:content,provider,toolbar,
     read:()=>api(ClientIdentity.path(entry,'accounts')),
     request:value=>api(ClientIdentity.path(entry,'accounts'),value),
-    readModels:(refresh=false)=>api(ClientIdentity.path(entry,'account',null,refresh?{refresh:'true'}:{})),
+    readModels:async(refresh=false)=>{const namespace=[desktopSessions.listCacheIdentity,desktopSessions.listCacheHost||'local',entry],value=await api(ClientIdentity.path(entry,'account',null,refresh?{refresh:'true'}:{}));return {...value,...window.BridgeModelCatalogCache.write(desktopSessions.modelCatalogs,namespace,value)};},
     onChanged:(value,previous)=>desktopSessions.accountChanged(entry,previous,value)
   });
   const unbindConnection=clientNavigation.bindAccountManagement(panel,entry);

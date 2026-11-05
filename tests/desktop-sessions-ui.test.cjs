@@ -1278,12 +1278,12 @@ test('all desktop creation surfaces pass the selected model before their first m
 
 test('creation picker never chooses the first model and shares cache refresh with isolated scopes',async()=>{
  const ui=fixture(),Picker=ui.run('window.BridgeCreationModelPicker'),root=ui.document.createElement('section'),cache=new Map();let finished,requests=[];
- const known={models:[{id:'first-expensive',efforts:['high']},{id:'flash',efforts:['low']}],currentModel:'flash',currentEffort:'low',cache:{identity:'account-a'}};cache.set('create:a',known);
+ const known={models:[{id:'first-expensive',efforts:['high']},{id:'flash',efforts:['low'],isDefault:true,defaultEffort:'low'}],currentModel:'flash',currentEffort:'low',cache:{identity:'account-a'}};ui.run('window.BridgeModelCatalogCache').bind(cache,'a',[],known);
  const picker=new Picker({root,cache});const read=refresh=>{requests.push(refresh);return new Promise(resolve=>finished=resolve);};const pending=picker.load('a',read);
  assert.equal(picker.model.value,'flash');assert.equal(picker.valid(),true);finished(known);await pending;
  await picker.load('a',read);assert.equal(requests.length,1,'Opening the same scope reuses its loaded catalog');
- const refresh=picker.refresh.onclick();assert.equal(requests[1],true);finished({...known,cache:{identity:'account-a',updatedAt:42}});await refresh;assert.equal(cache.get('create:a').cache.updatedAt,42);
- const other=picker.load('b',async()=>({models:known.models,cache:{identity:'account-b'}}));await other;assert.equal(picker.model.value,'');assert.equal(picker.valid(),false);
+ const refresh=picker.refresh.onclick();assert.equal(requests[1],true);finished({...known,cache:{identity:'account-a',updatedAt:42}});await refresh;assert.equal(ui.run('window.BridgeModelCatalogCache').forScope(cache,'a').cache.updatedAt,42);
+ const other=picker.load('b',async()=>({models:known.models.map(row=>({...row,isDefault:false})),cache:{identity:'account-b'}}));await other;assert.equal(picker.model.value,'');assert.equal(picker.valid(),false);
  let stale;const old=picker.load('c',()=>new Promise(resolve=>stale=resolve));await picker.load('d',async()=>({...known,cache:{identity:'account-d'}}));stale({...known,cache:{identity:'old'}});await old;assert.equal(picker.catalog.cache.identity,'account-d');
  picker.dispose();
 });
@@ -1490,4 +1490,54 @@ test('normal connection summaries disappear without swallowing later loading and
  view.listStatusKind='loading';view.listStatus.textContent='正在读取聊天…';view.renderConnectionStatus();assert.equal(view.listStatus.textContent,'正在读取聊天…');
  view.listStatusKind='error';view.listStatus.textContent='列表读取失败';view.renderConnectionStatus();assert.equal(view.listStatus.textContent,'列表读取失败');assert.equal(view.listStatus.hidden,false);
  await view.setClientStates([client]);assert.match(view.listStatus.textContent,/尚未连接/);assert.equal(view.connectionRetry.hidden,false);
+});
+
+
+test('chat and creation share refreshed catalogs without sharing selection or crossing instances',async()=>{
+ const ui=await opened(),view=ui.view,shared=ui.run('window.BridgeModelCatalogCache'),Picker=ui.run('window.BridgeCreationModelPicker');
+ view.provider='zcode';view.listCacheIdentity='gateway';view.listCacheHost='local';
+ view.state={...view.state,model:'flash',effort:'low',modelCatalogIdentity:'identity-a',capabilities:{models:true,effort:true}};
+ const namespace=['gateway','local','zcode'],cache=view.modelCatalogs,scope='new-project';
+ const catalog=(id,time)=>({models:[{id,name:id,efforts:['low']}],cache:{identity:'identity-a',updatedAt:time},capabilities:{models:true,effort:true},currentModel:id,currentEffort:'low'});
+ const first=catalog('flash',1);shared.bind(cache,scope,namespace,first);
+ ui.setHandler(async()=>catalog('new-flash',2));await view.models();
+ const fromChat=shared.forScope(cache,scope);assert.equal(fromChat.models[0].id,'new-flash');assert.equal(fromChat.currentModel,undefined);assert.equal(fromChat.capabilities,undefined);
+ view.modelDialog.close();
+ const picker=new Picker({root:ui.document.createElement('section'),cache,namespace:()=>namespace});let finish;
+ const pending=picker.load(scope,()=>new Promise(resolve=>finish=resolve));
+ assert.equal(picker.rows[0].id,'new-flash','Creation immediately paints the refreshed chat catalog');assert.equal(picker.model.value,'','Another chat selection is never inherited');
+ finish(catalog('new-flash',2));await pending;
+ picker.read=async()=>catalog('latest',3);await picker.refresh.onclick();
+ let resolveRead;ui.setHandler(()=>new Promise(resolve=>resolveRead=resolve));const opening=view.models();
+ assert.ok(view.modelDialog.querySelector('input[value="latest"]')||view.modelDialog.textContent.includes('latest'),'Chat immediately paints creation refresh');
+ resolveRead(catalog('latest',3));await opening;view.modelDialog.close();
+ shared.write(cache,namespace,catalog('late-old',2));assert.equal(shared.forScope(cache,scope).models[0].id,'latest','Late older reads cannot overwrite a successful refresh');
+ assert.equal(shared.read(cache,['other-gateway','local','zcode'],'identity-a'),null);
+ assert.equal(shared.read(cache,['gateway','other-host','zcode'],'identity-a'),null);
+ assert.equal(shared.read(cache,['gateway','local','zcode:other'],'identity-a'),null);
+ assert.equal(shared.read(cache,namespace,'identity-b'),null);
+ shared.bind(cache,'other-project',['gateway','local','claude'],first);shared.forget(cache,namespace);
+ assert.equal(shared.forScope(cache,scope),null);assert.equal(shared.read(cache,namespace,'identity-a'),null);assert.ok(shared.forScope(cache,'other-project'));
+ picker.dispose();view.clear();assert.equal(cache.size,0,'Logging out clears cached catalogs and aliases');
+});
+
+
+test('account directory refresh updates known Code and Cowork projections without mixing their models',()=>{
+ const ui=fixture(),shared=ui.run('window.BridgeModelCatalogCache'),cache=new Map(),namespace=['gateway','local','claude'];
+ const groups=(code,cowork)=>[{surface:'code',models:[{id:code}]},{surface:'cowork',models:[{id:cowork}]}];
+ for(const surface of ['code','cowork'])shared.bind(cache,surface,namespace,{models:[{id:surface+'-old'}],groups:groups('code-old','cowork-old'),cache:{identity:surface+'-identity',directoryIdentity:'directory',surface,updatedAt:1}});
+ shared.write(cache,namespace,{models:[{id:'code-new'},{id:'cowork-new'}],groups:groups('code-new','cowork-new'),cache:{identity:'directory',updatedAt:2}});
+ assert.equal(shared.forScope(cache,'code').models[0].id,'code-new');assert.equal(shared.forScope(cache,'cowork').models[0].id,'cowork-new');
+ assert.equal(shared.forScope(cache,'code').cache.identity,'code-identity');assert.equal(shared.forScope(cache,'cowork').cache.updatedAt,2);
+ shared.write(cache,namespace,{models:[{id:'stale-code'}],groups:groups('stale-code','stale-cowork'),cache:{identity:'code-identity',directoryIdentity:'directory',surface:'code',updatedAt:1}});
+ assert.equal(shared.forScope(cache,'code').models[0].id,'code-new');
+ shared.write(cache,namespace,{models:[{id:'cowork-only'}],groups:[{surface:'cowork',models:[{id:'cowork-only'}]}],cache:{identity:'directory',updatedAt:3}});
+ assert.equal(shared.forScope(cache,'code').models.length,0,'Missing Code group never borrows Cowork models');
+ shared.write(cache,namespace,{models:[{id:'api-only'}],groups:[{surface:'api',models:[{id:'api-only'}]}],cache:{identity:'directory',updatedAt:4}});
+ assert.equal(shared.forScope(cache,'code').models[0].id,'api-only','Explicit shared API catalog is available to each surface');
+ assert.equal(shared.forScope(cache,'cowork').models[0].id,'api-only');
+ shared.write(cache,namespace,{models:[{id:'verified-code'}],groups:[],cache:{identity:'code-identity',directoryIdentity:'directory',surface:'code',updatedAt:5}});
+ assert.equal(shared.forScope(cache,'code').models[0].id,'verified-code','Missing grouping metadata keeps only the verified projection');
+ assert.equal(shared.forScope(cache,'cowork').models[0].id,'api-only','Ungrouped result cannot overwrite another surface');
+ shared.forget(cache,namespace);assert.equal(shared.forScope(cache,'code'),null);assert.equal(shared.forScope(cache,'cowork'),null);
 });
