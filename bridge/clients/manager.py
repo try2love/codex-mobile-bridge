@@ -205,6 +205,69 @@ class DesktopSessions:
             raise ValueError('请从网关管理独立接入')
         return self.instances.control(value)
 
+    def zcode_application_capability(self):
+        """Adding ZCode only repairs discovery of the one native default App."""
+        capability = {'family': 'zcode', 'kind': 'default-application', 'supported': False}
+        if sys.platform not in ('darwin', 'win32', 'linux'):
+            return {**capability, 'reason': '此系统暂不支持 ZCode 客户端'}
+        from bridge.clients.zcode.installation import installation
+        row = self.config.get('discovered', {}).get('zcode', {})
+        adapter = self.adapters.get('zcode')
+        legacy = self.config.get('zcodePrototype') or {}
+        paths = [row.get('application') or row.get('executable'), self.config.get('zcodeApplication'),
+                 legacy.get('application'), (adapter.config.get('application') if adapter else None)]
+        for application in dict.fromkeys(path for path in paths if path):
+            try:
+                if installation(application):
+                    return {**capability, 'reason': 'ZCode 客户端已存在，请使用已有管理入口'}
+            except (ValueError, OSError):
+                continue
+        if self.enabled('zcode'):
+            return {**capability, 'reason': '请先停用 ZCode 手机接入，再重新选择客户端应用'}
+        return {**capability, 'supported': True}
+
+    def register_zcode_application(self, application):
+        from bridge.clients.discovery import discover_clients
+        from bridge.clients.zcode.installation import installation
+        if (not isinstance(application, str) or not application.strip() or
+                any(ord(character) < 32 or ord(character) == 127 for character in application)):
+            raise ValueError('请选择 ZCode 应用的完整路径')
+        path = Path(application)
+        if not path.is_absolute() or sys.platform == 'win32' and path.drive.startswith('\\\\'):
+            raise ValueError('请选择本机 ZCode 应用的完整路径')
+        with self.client_lock:
+            capability = self.zcode_application_capability()
+            if not capability['supported']:
+                raise ValueError(capability['reason'])
+            # The dialog may be stale: never replace an installation discovered
+            # since it opened, including an App started outside this gateway.
+            discovered = discover_clients(self._discovery_preferences())
+            if discovered.get('zcode', {}).get('installed'):
+                raise ValueError('ZCode 客户端已存在，请使用已有管理入口')
+            if self.zcode_pipe and self.zcode_pipe.owner():
+                raise ValueError('ZCode 客户端仍有活动连接，请先停用并正常退出后重试')
+            if self._zcode_official_status().get('connected'):
+                raise ValueError('ZCode 客户端仍有活动连接，请先停用后重试')
+            try:
+                path = path.resolve(strict=True)
+                found = installation(path)
+            except (ValueError, OSError) as exc:
+                raise ValueError('所选路径不是可用的 ZCode 客户端应用') from exc
+            if not found:
+                raise ValueError('所选路径不是可用的 ZCode 客户端应用')
+            row = {**found, 'id': 'zcode', 'name': 'ZCode', 'installed': True,
+                   'application': str(path), 'dataDirectory': str(Path.home()/'.zcode/v2')}
+            updated = {**self.config, 'zcodeApplication': str(path),
+                       'discovered': {**self.config.get('discovered', {}), 'zcode': row},
+                       'enabled': {**self.config.get('enabled', {}), 'zcode': False}}
+            private_json(self.config_path, updated)
+            self.config = updated
+            with self.read_lock:
+                self._configure_zcode()
+            self.client_cache = None
+            instance = next(row for row in self.clients(refresh=True)['clients'] if row['id'] == 'zcode')
+            return {'entry': 'zcode', 'instance': instance}
+
     def _configure_zcode(self):
         if self.instance is not None:
             return
@@ -1557,19 +1620,25 @@ class DesktopSessions:
         # it reloaded. Only an explicit restart can clear that uncertain case.
         return setup.get('restartConnected', True)
 
+    def _discovery_preferences(self):
+        from bridge.app.desktop import Desktop
+        preferences = {**Desktop(self.directory.parent).preferences(),
+                       **{key: value for key, value in self.config.items() if key.endswith('Home')}}
+        if self.config.get('zcodeApplication'):
+            preferences['zcodeApplication'] = self.config['zcodeApplication']
+        if self.bridge:
+            preferences['desktopExecutable'] = self.bridge.accounts.index.get('desktopExecutable')
+        return preferences
+
     def scan(self, setup=True, *, scan_wsl=True):
         if self.instance is not None:
             from bridge.clients.instances import scan_profile
             return scan_profile(self)
         # Discovery only: neither a GUI refresh nor a manual rescan launches apps.
         # Keep the old setup argument for callers from older desktop packages.
-        from bridge.app.desktop import Desktop
         from bridge.clients.discovery import discover_clients
         with self.client_lock:
-            preferences = {**Desktop(self.directory.parent).preferences(),
-                           **{k: v for k, v in self.config.items() if k.endswith('Home')}}
-            if self.bridge:
-                preferences['desktopExecutable'] = self.bridge.accounts.index.get('desktopExecutable')
+            preferences = self._discovery_preferences()
             custom_claude = bool(self.instances and self.instances.metadata('claude'))
             if custom_claude and not preferences.get('claudeHome'):
                 preferences['claudeHome'] = self.instances.default_claude_home()

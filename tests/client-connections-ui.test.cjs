@@ -514,7 +514,7 @@ test('shared independent profile form scans, picks and manually saves the select
   inputs[1].value='/fixture/manual';inputs[0].value='Manual profile';await form.onsubmit({preventDefault(){}});
   assert.deepEqual(JSON.parse(JSON.stringify(ui.calls.find(c=>c.operation==='save'))),{action:'client-profiles',operation:'save',family,kind,home:'/fixture/manual',label:'Manual profile'});
   assert.ok(!ui.calls.some(c=>['initialize','resume','start','toggle-client'].includes(c.action)));
-  assert.equal(dialog.open,false);assert.ok(ui.errors.includes(label+' 接入已保存'));assert.equal(ui.selected.at(-1),profile.id);
+  assert.equal(dialog.open,false);assert.ok(ui.errors.includes(label+' 客户端已保存'));assert.equal(ui.selected.at(-1),profile.id);
  }
 });
 
@@ -535,4 +535,33 @@ test('profile errors retain the form and unsupported capabilities never open a d
  ui.setHandler(async body=>{if(body.operation==='save')throw Error('Configuration directory is already used');return {capabilities:[{family:'claude',kind:'desktop-profile',supported:true}]};});
  await ui.panel.clientProfile('claude');const dialog=ui.document.body.children[0],form=dialog.querySelector('form');form.querySelectorAll('input')[1].value='/duplicate';await form.onsubmit({preventDefault(){}});
  assert.equal(dialog.open,true);assert.match(form.querySelector('.error').textContent,/already used/);assert.equal(ui.selected.length,0);
+});
+
+
+test('missing ZCode can be added through the shared client form without creating an independent profile',async()=>{
+ for(const english of [false,true]){
+  const ui=fixture();if(english)ui.english();const chosen=[];
+  const capability={family:'zcode',kind:'default-application',supported:true};
+  const client={id:'zcode',name:'ZCode',installed:true,configured:false,enabled:false};
+  ui.setHandler(async body=>body.action==='client-profiles'?body.operation==='save'?{entry:'zcode',instance:client}:{capabilities:[capability]}:body.action==='clients'?{clients:[client]}:{});
+  ui.panel.api.choose=async kind=>{chosen.push(kind);return 'F:\\Portable Apps\\ZCode\\ZCode.exe';};
+  await ui.panel.addClient();let dialog=ui.document.body.children[0];
+  assert.equal(dialog.querySelector('h2').textContent,english?'Add client':'添加客户端');
+  const zcode=dialog.querySelectorAll('button').find(button=>button.textContent==='ZCode');assert.equal(zcode.disabled,false);await zcode.onclick();
+  dialog=ui.document.body.children[0];const form=dialog.querySelector('form'),inputs=form.querySelectorAll('input');
+  assert.equal(inputs.length,1,'Default ZCode has an installation path, not a second home or account');
+  await form.querySelectorAll('button').find(button=>button.textContent===(english?'Choose application':'选择应用程序')).onclick();
+  assert.deepEqual(chosen,['file']);assert.match(inputs[0].value,/Portable Apps/);
+  inputs[0].value='/custom/ZCode.AppImage';await form.onsubmit({preventDefault(){}});
+  const saved=JSON.parse(JSON.stringify(ui.calls.find(call=>call.operation==='save')));
+  assert.deepEqual(saved,{action:'client-profiles',operation:'save',family:'zcode',kind:'default-application',application:'/custom/ZCode.AppImage'});
+  assert.equal(ui.selected.at(-1),'zcode');assert.equal(dialog.open,false);
+  assert.ok(!ui.calls.some(call=>['toggle-client','connect-claude','zcode-official-login'].includes(call.action)));
+ }
+});
+
+test('already present ZCode is not offered as a duplicate client',async()=>{
+ const ui=fixture();ui.setHandler(async()=>({capabilities:[{family:'zcode',kind:'default-application',supported:false,reason:'ZCode 客户端已存在，请使用已有管理入口'}]}));
+ await ui.panel.addClient();const button=ui.document.body.children[0].querySelectorAll('button').find(node=>node.textContent.startsWith('ZCode'));
+ assert.equal(button.textContent,'ZCode · 已添加');assert.equal(button.disabled,true);button.onclick();assert.equal(ui.calls.length,1);
 });

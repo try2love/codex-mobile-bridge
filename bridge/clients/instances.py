@@ -63,10 +63,13 @@ class ClientInstances:
         if entries is not None and entries.desktop_home:
             yield NativeProfile('codex', 'default', entries.desktop_home, {'config': entries.desktop_home})
 
-    def capabilities(self):
-        result = [{'family': 'codex', 'kind': 'codex-local',
-                   'supported': self.registry.codex is not None}]
+    def capabilities(self, family=None):
+        target = family
+        result = ([{'family': 'codex', 'kind': 'codex-local',
+                    'supported': self.registry.codex is not None}] if target in (None, 'codex') else [])
         for family in ('claude', 'deepseek'):
+            if target not in (None, family):
+                continue
             reason = ''
             try:
                 resolve_profile(family, self.manager.directory.parent)
@@ -76,8 +79,8 @@ class ClientInstances:
                 reason = str(exc)
             result.append({'family': family, 'kind': 'desktop-profile', 'supported': not reason,
                            **({'reason': reason} if reason else {})})
-        result.append({'family': 'zcode', 'kind': 'desktop-profile', 'supported': False,
-                       'reason': 'ZCode 仅使用默认接入，不新增第二套配置'})
+        if target in (None, 'zcode'):
+            result.append(self.manager.zcode_application_capability())
         return result
 
     def metadata(self, family=None):
@@ -126,7 +129,7 @@ class ClientInstances:
             return self.manager
         if family == 'codex':
             raise ValueError('Codex 独立配置使用已有 Codex 会话接口')
-        supported = next(row for row in self.capabilities() if row['family'] == family)
+        supported = next(row for row in self.capabilities(family) if row['family'] == family)
         if not supported['supported']:
             raise ValueError(supported['reason'])
         with self.lock:
@@ -160,7 +163,7 @@ class ClientInstances:
             'profileInitialized': lambda: self.registry.pin_initialized_roots(selected.id)}
 
     def control(self, value):
-        allowed = {'action', 'operation', 'family', 'kind', 'label', 'home'}
+        allowed = {'action', 'operation', 'family', 'kind', 'label', 'home', 'application'}
         if not isinstance(value, dict) or set(value)-allowed:
             raise ValueError('独立配置管理请求无效')
         operation = value.get('operation', 'list')
@@ -180,6 +183,10 @@ class ClientInstances:
                 # registrations; choosing a folder does not import any accounts.
                 result['candidates'] = candidates
             return result
+        if operation == 'save' and family == 'zcode' and value.get('kind') == 'default-application':
+            if set(value)-{'action', 'operation'} != {'family', 'kind', 'application'}:
+                raise ValueError('客户端保存请求无效')
+            return self.manager.register_zcode_application(value['application'])
         if operation != 'save' or set(value)-{'action', 'operation'} != {'family', 'kind', 'label', 'home'}:
             raise ValueError('独立配置保存请求无效')
         capability = next((row for row in self.capabilities() if row['family'] == family), None)
