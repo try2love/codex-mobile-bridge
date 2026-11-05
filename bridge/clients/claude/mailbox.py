@@ -181,7 +181,9 @@ class FileDesktop:
         try:
             stat = path.stat()
             stamp = (stat.st_mtime_ns, stat.st_size)
-            if stamp == self.stamp:
+            # A late signed acknowledgement can reuse file size and timestamp.
+            # Reconcile uncertain writes outside the active call's polling loop.
+            if stamp == self.stamp and (not self.unconfirmed_mutations or self.lock.locked()):
                 return self.cached
             if stat.st_size > MAX_PACKET:
                 return {}
