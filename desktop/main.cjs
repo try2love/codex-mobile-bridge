@@ -343,7 +343,7 @@ else{
     officialRemote=new OfficialRemote({electron:require('electron'),profile:dataDir,
       localServiceWorker:workerFor({packaged:app.isPackaged,resources:process.resourcesPath,root,dataDir}),rendererPath:app.isPackaged?
       path.join(process.resourcesPath,'gateway/_internal/bridge/clients/zcode/renderer.mjs'):path.join(root,'bridge/clients/zcode/renderer.mjs')});
-    await officialRemote.start();setupUpdater();register();
+    setupUpdater();register();
     if(process.platform==='win32')app.setAppUserModelId('io.github.try2love.codexmobilebridge');
     if(['win32','darwin'].includes(process.platform)){
       const icon=process.platform==='darwin'?nativeImage.createFromPath(path.join(__dirname,'assets/icon.png')).resize({width:18,height:18}):path.join(__dirname,'assets/icon.ico');
@@ -352,6 +352,11 @@ else{
         onError:error=>{showWindow();dialog.showErrorBox(t('网关操作未完成'),t(error.message));}});
     }
     createWindow(!!tray&&loginStartup.hidden(process.argv,true));
+    // Optional account storage must not hold the controller window or other clients.
+    officialRemote.start().catch(()=>{
+      officialRemote.serviceAvailable=false;
+      officialRemote.reason='官方远控连接服务不可用。';
+    });
   });
   app.on('before-quit',releaseTray);
   app.on('activate',showWindow);

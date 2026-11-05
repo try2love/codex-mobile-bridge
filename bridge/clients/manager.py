@@ -2209,7 +2209,8 @@ class DesktopSessions:
             raise ValueError('ZCode 连接方式无效')
         previous = selected_mode(self.config)
         if mode == 'official-remote':
-            if not self._zcode_official_status().get('configured'):
+            official = self._zcode_official_status()
+            if not (official.get('configured') or official.get('loginSaved') and official.get('restoring')):
                 raise ValueError('请先在电脑网关配置并登录官方远控')
         elif not self.zcode_pipe or not self.zcode_pipe.supported():
             raise ValueError('当前安装暂不能使用本机连接')

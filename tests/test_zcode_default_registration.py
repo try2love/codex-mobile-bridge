@@ -146,6 +146,19 @@ class ZCodeDefaultRegistration(unittest.TestCase):
                 self.manager.instance_control({**self.request, 'application': r'\\server\share\ZCode.exe'})
         self.discovery.assert_not_called()
 
+    def test_official_connection_gate_waits_only_for_a_saved_login_being_restored(self):
+        from contextlib import nullcontext
+        self.manager._configure_zcode = Mock()
+        self.manager._changing = Mock(side_effect=lambda *args, **kwargs: nullcontext())
+        for state in ({'loginSaved': True, 'restoring': False}, {'restoring': True}, {}):
+            self.manager._zcode_official_status.return_value = state
+            with self.assertRaisesRegex(ValueError, '请先在电脑网关'):
+                self.manager._select_zcode_connection('official-remote')
+        self.manager._zcode_official_status.return_value = {'loginSaved': True, 'restoring': True, 'configured': False}
+        self.manager._select_zcode_connection('official-remote')
+        self.assertEqual(self.manager.config['zcodeConnectionMode'], 'official-remote')
+        self.assertFalse(self.manager._zcode_official_status()['configured'])
+
     def test_targeted_profile_capabilities_do_not_validate_unrelated_zcode_installation(self):
         self.manager.config['discovered'] = {'zcode': {'installed': True, 'application': str(self.app)}}
         with patch('bridge.clients.zcode.installation.installation', side_effect=AssertionError('unrelated ZCode validation')):

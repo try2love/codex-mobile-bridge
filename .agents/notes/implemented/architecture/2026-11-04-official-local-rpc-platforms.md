@@ -6,6 +6,8 @@ Status: implemented
 
 官方远控实验原先只开放 Mac，Python 客户端固定使用 Unix socket。直接把 Node 服务地址换成 Windows 命名管道，不能保留私有目录、用户/会话与拒绝远端访问的边界。三端界面必须表达真实可用性，不能因一个可选客户端初始化失败而停止整个网关。
 
+Linux 成品检查进一步复现：登录钥匙串锁定时，同步 `safeStorage.isEncryptionAvailable()` 在 `app.ready` 之后阻塞，控制器尚未建立 IPC、主窗口也未创建；未配置官方登录的用户同样受影响。`status()` 重复同步探测还会让保存、断开和退出再次受阻，因此只调整窗口创建顺序不足以解决问题。
+
 ## 决策
 
 macOS/Linux 继续使用原 Unix socket、0700 临时目录和 0600 发现记录。Windows 使用随网关打包的 Python `local-service-host`，由 Electron 通过匿名 stdio 持有；不安装额外软件，不开放 TCP，不复制官方账号或聊天业务。业务仍只由 `OfficialRemote.handle` 执行。
@@ -14,7 +16,11 @@ Windows holder 复用已有命名管道创建、对端 PID、用户、交互桌�
 
 Windows 发现记录位于当前资料目录的 `.local-services/<name>/ipc.json`。目录和记录只允许当前用户，DACL 禁止继承；读取通过句柄核验所有者、DACL、重解析点和硬链接，并核对资料目录、服务名与本机管道地址。256-bit 随机令牌在派发前认证，沿用四字节长度帧、64 MiB 上限、16 个并发连接和既有等待预算。重建连接不重放请求；内部异常只返回安全提示。父进程关闭匿名 stdin 后 holder 正常退出，只移除仍属于自身令牌的记录，不影响原 Agent。
 
-官方服务启动失败返回不可用状态与安全提示，其他客户端继续运行。公开状态只增加 `available` 与 `secureStorageAvailable`，不包含 IPC 地址或令牌。Windows 凭据仍使用 Electron safeStorage 的 DPAPI；Linux 只接受真实的 libsecret/KWallet 后端，拒绝 `basic_text`、`unknown` 和不可用的安全存储。既有加密文件保持原地，不跨机器复制登录数据。
+官方服务初始化不阻塞主窗口与核心 IPC 注册；官方本机服务就绪后在后台恢复已保存登录。未配置加密登录文件时，启动、状态、保存链接和退出均不探测钥匙串。状态只返回缓存的安全存储可用性及 `secureStoragePending`、`restoring`、`loginSaved`，不返回 IPC 地址或凭据。`configured` 仍表示实际恢复成功；已保存且正在恢复时，连接请求可等待同一恢复任务，不伪报登录或连接成功。
+
+加密、解密和可用性检查使用当前打包 Electron 的异步 safeStorage API；同一原生检查的在途请求合并，本机存储等待12秒后给出可重试反馈，不改变网络和模型等待预算。世代、窗口引用和文件身份约束晚回调；忘记登录、关闭窗口、切换链接或外部文件变化后，旧结果不得重写凭据或连接旧目标。显式点击登录可重试安全存储，若旧密文尚在则先恢复它；已有有效登录时仍可正常进入账号登录流程。
+
+Windows 凭据沿用 DPAPI，Mac 沿用钥匙串；同应用身份和安全存储未变时，异步实现兼容旧同步密文，恢复不主动重写密文。Linux 除检查 libsecret/KWallet 后端外，还要求密文为原生钥匙串的 `v11` 格式，拒绝 `v10` 固定密钥回退和未知格式。异步可用性为真不等于安全钥匙串已可用。既有加密文件保持原地，不跨机器复制登录数据；没有同步或明文回退。
 
 ## 备选方案
 
@@ -22,7 +28,12 @@ Windows 发现记录位于当前资料目录的 `.local-services/<name>/ipc.json
 
 Linux 允许明文 fallback 能减少首次配置失败，但不满足登录持久保存的保密要求；[Electron safeStorage 文档](https://www.electronjs.org/docs/latest/api/safe-storage)明确指出 `basic_text` 不提供可靠保护，因此保持失败关闭，不自动安装密钥环或修改系统安全设置。
 
+把同步检查放进 Promise 或延迟到窗口创建后，仍会阻塞主线程；独立加密子进程又增加运行身份和协议。当前 Electron 44.5.1 已有异步接口，直接复用即可。其锁定的 Chromium 实现保留 Mac/Windows 的 `v10` 和 Linux 钥匙串的 `v11` 兼容参数，但同时提供 Linux 固定密钥 `v10` 回退，因此不能仅凭异步 API 返回可用就保存登录。[异步接口](https://github.com/electron/electron/blob/v44.5.1/docs/api/safe-storage.md)与[Linux 回退实现](https://github.com/chromium/chromium/blob/152.0.7977.130/components/os_crypt/async/browser/posix_key_provider.cc)为此边界的依据。
+
 ## 验证
+
+- 锁定的 Ubuntu 登录钥匙串上，单次有界探针到达 `app.ready` 和 `before-sync` 后停在同步可用性调用，7秒后仅结束自有探针；没有加解密或输入凭据。用户手动解锁后原 Test 的状态接口恢复，验证了实际阻塞点。
+- 22个控制器场景覆盖未配置零探测、在途合并、超时、拒绝 Linux 弱密文、旧格式兼容、迟到恢复/保存拒绝、显式登录恢复及启动途中关闭时清理迟到监听；核心窗口不等待可选服务及界面显式重试分别有定向检查。模拟密文用例不代替真实用户密文恢复，成品复核单独记录。
 
 - macOS：共享帧与损坏记录检查通过；Node holder 转发、异常脱敏和启动失败隔离测试通过；既有 Unix socket 认证测试在允许本机 socket 后通过。Linux 存储后端枚举的定向测试拒绝 `basic_text` 和 `unknown`。
 - Windows 实机：原生私有 ACL/硬链接拒绝与命名管道 PID/字节流检查通过；SSH session 0 按原边界拒绝身份接入。临时、非提权的交互计划任务进一步通过 Node → holder → Python → Node 正向链路，错误脱敏、两次处理、父进程继续运行与发现记录移除均确认；任务随后注销。没有退出原 App 或发送模型消息。

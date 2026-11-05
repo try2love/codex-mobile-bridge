@@ -565,3 +565,17 @@ test('already present ZCode is not offered as a duplicate client',async()=>{
  await ui.panel.addClient();const button=ui.document.body.children[0].querySelectorAll('button').find(node=>node.textContent.startsWith('ZCode'));
  assert.equal(button.textContent,'ZCode · 已添加');assert.equal(button.disabled,true);button.onclick();assert.equal(ui.calls.length,1);
 });
+
+test('official login can explicitly retry unavailable storage without status polling probing it',async()=>{
+ const ui=fixture(),client={id:'zcode',name:'ZCode',installed:true,configured:true,connectionModes};ui.panel.clients=[client];
+ const state={configured:false,available:true,secureStorageAvailable:false,link:'https://zcode.z.ai/pair?fixture=storage'};let attempts=0;
+ ui.setHandler(async request=>{
+  if(request.action==='clients')return {clients:[client]};
+  if(request.action==='zcode-official-login'){attempts++;if(attempts===1)throw Error('Keyring locked');state.secureStorageAvailable=true;state.configured=true;}
+  return {...state};
+ });
+ await ui.panel.manageClient(client);const login=ui.pages.get('zcode').querySelector('[data-official-action="login"]');
+ assert.equal(login.disabled,false);await login.onclick();assert.equal(attempts,1);assert.equal(login.disabled,false);
+ await ui.poll();assert.equal(attempts,1,'Background status never starts another login/storage operation');
+ await login.onclick();assert.equal(attempts,2);assert.equal(state.configured,true);
+});
