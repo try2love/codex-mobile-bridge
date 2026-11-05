@@ -30,6 +30,7 @@ test('provider title delegates native ID and provider to the shared renderer',()
  for(const provider of ['codex','claude','deepseek','zcode']){
   const native=provider==='claude'?'native-claude-session':'session-'+provider,chat={id:'session-'+provider,nativeId:native};
   const c=vm.createContext({listIdentity:'gateway',csrf:'token',sessionAccess:()=>({}),sourceLabel:()=> 'APP',clientNavigation:{provider,clients:[]},currentId:chat.id,currentHost:'local',state:chat,desktopSessions:{provider,sid:chat.id,state:chat},sessionPins:{value:()=>false},window:{BridgeSessionLinks:{text:()=>null}},t:v=>v,uuid:()=> 'request'});
+  vm.runInContext(fs.readFileSync(require('node:path').join(__dirname,'../web/features/clients/client-lifecycle.js'),'utf8'),c);
   vm.runInContext(source.slice(start,end),c);const menu=c.sessionMenuContext(chat,provider);
   assert.equal(menu.sessionId,native);assert.equal(menu.details.find(row=>row[0]==='会话 ID')[1],native);assert.equal(chat.id,'session-'+provider);
   if(provider==='claude'){delete chat.nativeId;assert.equal(c.sessionMenuContext(chat,provider).sessionId,null,'legacy cached gateway ID is not advertised as native');}
