@@ -7,6 +7,8 @@
 
 > **v2.1.7 正式版**：[发布页](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.1.7) · [完整更新说明](RELEASE_NOTES.md#v217) · [手机安装说明](mobile/README.md)。完善手机通知、会话整理、项目引用与连接恢复。
 
+> **v2.2.0-preview.3 预览版**：[发布页](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.0-preview.3) · [双语更新说明](RELEASE_NOTES.md)。新增 ZCode 双通道接入、新建模型选择与实验性独立客户端配置。
+
 [简体中文](README.md) · [English](README_EN.md)
 
 **[双语介绍与使用演示 ↗](https://try2love.github.io/codex-mobile-bridge/?lang=zh)** · **[下载桌面与手机 App](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.1.7)**
@@ -918,6 +920,8 @@ python3 -B -m unittest discover -s tests -v
 感谢 [@jasongzy](https://github.com/jasongzy) 通过 [Issue #60](https://github.com/try2love/codex-mobile-bridge/issues/60) 提出通用 Webhook 通知需求。
 
 感谢 [@tiancai123123](https://github.com/tiancai123123) 通过 [Issue #54](https://github.com/try2love/codex-mobile-bridge/issues/54) 定位并复现弱网下静态资源重复下载问题，并在 [PR #56](https://github.com/try2love/codex-mobile-bridge/pull/56) 中贡献内容哈希、浏览器缓存及条件请求的实现与测试。整合保留其原始提交，并与项目已有的缓存失效和资源版本处理统一。
+
+感谢 [@tiancai123123](https://github.com/tiancai123123) 在 [PR #130](https://github.com/try2love/codex-mobile-bridge/pull/130) 中贡献第三方 Codex 思考正文与增量展示修复（[Issue #110](https://github.com/try2love/codex-mobile-bridge/issues/110)），并提供 Windows 和 Android 验证。原作者提交完整保留。
 
 ## 许可证与参考
 
