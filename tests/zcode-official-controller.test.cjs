@@ -28,7 +28,7 @@ test('saved link and encrypted login survive controller restart and a local-mode
  const restored=new OfficialRemote({electron:c.electron,profile:c.profile,rendererPath:__filename});await restored.restore();
  assert.equal(restored.status().configured,true);assert.equal(restored.status().connected,false);assert.equal(restored.status().selected,false);
  assert.equal(restored.status().link,link);assert.equal(restored.status().accountName,'Fixture');
- assert.equal(fs.statSync(c.settingsFile).mode&0o777,0o600);assert.equal(JSON.stringify(restored.status()).includes('private-secret'),false);
+ if(process.platform!=='win32')assert.equal(fs.statSync(c.settingsFile).mode&0o777,0o600);assert.equal(JSON.stringify(restored.status()).includes('private-secret'),false);
  const config=JSON.parse(fs.readFileSync(path.join(c.profile,'desktop-sessions/settings.json')));config.zcodeConnectionMode='official-remote';
  fs.writeFileSync(path.join(c.profile,'desktop-sessions/settings.json'),JSON.stringify(config));assert.equal(restored.status().selected,true);
 });
@@ -59,7 +59,7 @@ async function request(record,token,request){return new Promise((resolve,reject)
  socket.on('end',()=>{const data=Buffer.concat(chunks);resolve(data.length?JSON.parse(data.subarray(4)):null);});
  socket.on('connect',()=>{const data=Buffer.from(JSON.stringify({token,request})),head=Buffer.alloc(4);head.writeUInt32BE(data.length);socket.write(Buffer.concat([head,data]));});
 });}
-test('private IPC authenticates before dispatch and redacts internal errors',async t=>{
+test('POSIX private IPC authenticates before dispatch and redacts internal errors',{skip:process.platform==='win32'},async t=>{
  const p=profile(t);let calls=0;const stop=await serveLocal(p,'zcode-official',value=>{calls++;if(value.fail)throw Error('secret-token');return {safe:true};});t.after(stop);
  const record=JSON.parse(fs.readFileSync(path.join(p,'zcode-official-ipc.json')));
  assert.equal(fs.statSync(path.join(p,'zcode-official-ipc.json')).mode&0o777,0o600);

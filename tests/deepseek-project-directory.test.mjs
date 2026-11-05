@@ -47,7 +47,10 @@ try{
     {sessionId:'session-selected-model',workspaceId:'native-workspace'},
     {selection:{sessionId:'session-selected-model',provider:'fixture-provider',model:'fixture-model',reasoningEffort:'low'}}]);
   const before=calls.length;
-  assert.equal((await request('create',{id:'changed-directory',projectDirectory:{...projectDirectory,inode:identity.ino+1}})).status,400);
+  // NTFS inode values can exceed Number.MAX_SAFE_INTEGER, so +1 may be unchanged.
+  const changedInode=identity.ino===0?1:identity.ino*2;
+  assert.notEqual(changedInode,identity.ino);
+  assert.equal((await request('create',{id:'changed-directory',projectDirectory:{...projectDirectory,inode:changedInode}})).status,400);
   assert.equal((await request('create',{id:'missing-directory',projectDirectory:{...projectDirectory,cwd:join(cwd,'missing')}})).status,400);
   assert.equal(calls.length,before);
 }finally{
