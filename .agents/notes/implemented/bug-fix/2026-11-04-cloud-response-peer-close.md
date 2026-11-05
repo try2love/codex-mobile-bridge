@@ -2,6 +2,8 @@
 
 Status: implemented
 
+按请求等待外层关闭的收尾方式由[持久中继 v2](../architecture/2026-11-05-persistent-relay-v2.md)的流级确认取代。本篇保留旧竞态与复现证据。
+
 ## Problem
 
 用户报告退出云服务重新登录后聊天列表为空并显示网关连接中断。手机新令牌登记、端到端握手和桌面本地认证成功，桌面也收到 `/api/sessions`，但此前仅分层测试未覆盖 Python 桌面到 Rust 手机的完整结束时序。Go 中继 + 生产桌面 Connector/Channel + 实际 Rust DLL/Dart Repository 的合成链路复现首次列表读取失败。把桌面在发送 response_end 后立即退出改为等待手机关闭，同一链路连续四轮退出重登、32 次列表读取通过，证明不是单纯登录凭据失效。

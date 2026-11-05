@@ -46,8 +46,8 @@ not exposed as new unauthenticated gateway HTTP administration endpoints.
    selfhost mode uses administrator-created accounts and no official payment service.
 2. Log in to that selected origin/account. Hosted registration, verification,
    password-reset requests and service-days redemption have explicit desktop
-   controls. Service status also refreshes automatically, with a manual refresh
-   retained for troubleshooting. Redemption does not appear as a mobile purchase or
+   controls. Service qualification is queried on login, confirmed redemption and
+   explicit refresh; no client timer polls it. Redemption does not appear as a mobile purchase or
    external-purchase link. The dialog closes after the login result and current
    account are confirmed; errors stay visible without replaying the operation.
    Closing or dismissing the dialog clears passwords and the verification code.
@@ -69,11 +69,19 @@ not exposed as new unauthenticated gateway HTTP administration endpoints.
    retained as a separate flow.
 3. The sign-in button disappears after confirmed login and returns after local
    logout. There is no manual relay-enable button. A verified active hosted
-   entitlement automatically enables the relay until its expiry; eligible
+   entitlement is enforced by the server when opening and maintaining the relay; eligible
    selfhost accounts do not need paid service days. Start the ordinary gateway
    runtime separately if it is stopped. Account management does not start a
    coding client, gateway or session. The first encrypted identity check needs
    both devices online; previously verified devices remain listed while offline.
+   The first verified active cloud entitlement also enables **Mobile app handoff →
+   Enable mobile app notification inbox** and saves that default locally. Existing
+   cloud installations receive this default once on their next successful service
+   check. A later manual disable is preserved through refresh, reconnect and restart.
+   This does not enable native notification permissions, per-chat reminders or
+   **Open notification links in the mobile app**. The
+   [inbox default decision](../.agents/notes/implemented/feature/2026-11-05-cloud-mobile-inbox-default.md)
+   records the initialization and opt-out boundary.
 4. Sign in on the phone. Device enrollment creates stable pending relationships
    with every non-revoked same-account desktop, regardless of login order. There
    is no **Request pairing** button, target selection, QR, camera request or expiry.
@@ -123,24 +131,22 @@ the original provider, host, conversation, owner, authentication or working dire
   concurrency limits, but not direct-login auth, sessions, cookie namespaces or
   pairing authority. Closing it does not close the shared business services.
 - Account configuration in the private data directory stores origin, account ID,
-  login, gateway ID and server-derived enabled state, not passwords/tokens/private
-  keys. Old disabled configurations are rechecked, not treated as a permanent
-  opt-out from the requested automatic relay policy.
+  login and gateway ID, not passwords/tokens/private keys. Historical enabled
+  values do not grant or prevent server authorization. Signing out clears local activation.
 - Account/device tokens and control/preview key material use the native OS vault,
   scoped by exact origin and account ID. Vault failure is an error; no plaintext
   credential fallback is permitted.
-- `cloud-entitlement.json` caches scoped service metadata for display only. It
-  cannot authorize an offline relay. The connector verifies service eligibility
-  before connecting and periodically while the window is closed, no later than
-  its monotonic expiry deadline or the next 60-second check. Missing, inactive,
-  malformed or failed checks fence the relay, not direct connections. Network
-  latency cannot extend a server grant. UI polling also refreshes service status
-  periodically; changing the display language only repaints cached state.
+- `cloud-entitlement.json` caches scoped display metadata. Neither the connector
+  nor the panel schedules qualification queries. Hosted eligibility, real expiry,
+  account/session validity and revocation are checked by the cloud server;
+  changing client code or clocks cannot bypass them. A failed display query does
+  not interrupt an independently authorized live connection.
 - Confirmed service-days redemption immediately reads entitlement and returns
   the receipt plus updated service status. If that read fails, the desktop says
   the code was redeemed but the status refresh failed; it must not submit the
   code again automatically. Lost/unconfirmed redemption writes keep the existing
-  scoped request journal and are not replayed. Only service reads retry.
+  scoped request journal and are not replayed. Service display reads retry only
+  when explicitly requested.
 - Local approval pins and runtime status remain private. Account change, expiry,
   logout or binding revocation fences old channels and unapproved device proofs.
   Logout clears local account activation and vault tokens before attempting remote
@@ -172,6 +178,16 @@ the original provider, host, conversation, owner, authentication or working dire
   another account's device or keys. The cloud service view and chat busy lock do
   not own this sync. Cloud device info is read-only; only direct connections can
   be removed from the phone.
+- Control transport uses `bridge-relay-v2`, with one persistent Noise session per
+  binding and eight concurrent logical request streams. Four-chunk credits bound
+  each direction; response completion/cancellation affects only its stream.
+  Idle heartbeat is 20 seconds with a 10-second response deadline. Reconnection
+  uses bounded jittered backoff and never replays uncertain writes. Preview and
+  pairing identity formats remain unchanged. Upgrade the three components together;
+  this transport upgrade retains current accounts, databases and paired keys.
+- Refresh requests persist a `request_id` before networking. The server recovers
+  the same encrypted rotation result for five minutes without extending the old
+  session lifetime. A different request ID using a spent token still revokes the session.
 - `cloud-notifications.sqlite3` is the private durable notification outbox. It
   stores event/binding identity, random notification ID, expiry, encrypted preview
   and bounded retry/cancellation state. It contains no command queue. Initialization

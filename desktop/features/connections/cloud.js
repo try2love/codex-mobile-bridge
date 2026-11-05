@@ -57,6 +57,9 @@
     device_access_superseded:'This permission change was superseded. Connection remains blocked locally.',
     device_access_storage_error:'Connection is blocked for this gateway run, but its disabled state could not be saved. Fix storage permissions before restarting.',
     connection_failed:'Cloud connection failed. Check the server and network.',
+    protocol_upgrade_required:'Update the server, desktop and phone together to use automatic device discovery.',
+    capacity:'Too many attempts. Wait before trying again.',
+    gateway_already_connected:'The cloud gateway is not connected. Keep the gateway running and wait for automatic connection.',
     cloud_dependencies_missing:'Cloud relay dependencies are missing. Complete the gateway runtime setup.',
     invalid_credentials:'Incorrect credentials or account unavailable. Hosted accounts must verify their email first.',
     authentication_required:'Your cloud session has expired. Sign in again.',
@@ -121,7 +124,7 @@
   };
   const codeRetries=new Map();
   let state={},busy=false,authView='login',registrationProof=null,originEdited=false,draftOrigin=officialOrigin,devices=[],directoryPolling=false,entitlement=null,resultMessage='',resultIsError=false,directoryError='';
-  let servicePending=null,serviceRevision=0,nextServiceRead=0,directoryRevision=0;
+  let directoryRevision=0;
   function accountScope(value=state){return value.configured?value.origin+'\0'+value.account_id+'\0'+value.gateway_id:'';}
   function selectedOrigin(){return $('server').value==='official'?officialOrigin:$('origin').value.trim();}
   function authAction(){return authView==='register'?'signup-verify':authView==='password'?'register':authView;}
@@ -147,7 +150,7 @@
   }
   function update(value){
     if(!value)return;
-    if(accountScope()!==accountScope(value)){entitlement=null;serviceRevision++;nextServiceRead=0;setResult('');}
+    if(accountScope()!==accountScope(value)){entitlement=null;setResult('');}
     if(Object.hasOwn(value,'entitlement'))entitlement=value.entitlement;
     if(accountScope()!==accountScope(value))resetDirectory();
     state=value;
@@ -157,7 +160,6 @@
       if(!$('login').value)$('login').value=value.login||'';
     }
     render();
-    if(!busy&&value.configured&&Date.now()>=nextServiceRead)refreshService();
   }
   // Language changes only repaint cached state; they never replay cloud operations.
   function render(){
@@ -253,27 +255,6 @@
       devices=result.devices||[];directoryError='';renderDirectory();
     }catch(error){if(expected===accountScope()&&revision===directoryRevision){directoryError=error.message;renderDirectory();}}finally{directoryPolling=false;}
   }
-  function refreshService(){
-    if(busy||servicePending||!state.configured)return;
-    const expected=accountScope(),revision=serviceRevision;
-    nextServiceRead=Date.now()+60000;
-    servicePending=(async()=>{
-      try{
-        const value=await api.cloud({action:'entitlement'});
-        if(revision!==serviceRevision||expected!==accountScope())return;
-        entitlement=value;render();
-        const current=await api.cloud({action:'status'});
-        if(revision===serviceRevision&&expected===accountScope()&&expected===accountScope(current))update(current);
-      }catch{
-        if(revision!==serviceRevision||expected!==accountScope())return;
-        nextServiceRead=Date.now()+5000;
-        try{
-          const current=await api.cloud({action:'status'});
-          if(revision===serviceRevision&&expected===accountScope()&&expected===accountScope(current))update(current);
-        }catch{}
-      }
-    })().finally(()=>{servicePending=null;});
-  }
   async function call(action,extra={}){
     if(busy)return;
     if(action==='signup-code'&&(authView!=='register'||!$('login').reportValidity()||($('server').value==='custom'&&!$('origin').reportValidity())))return;
@@ -289,7 +270,6 @@
       devices=devices.map(item=>item.binding_id===extra.binding_id?{...item,allowed:false,sync_state:'unconfirmed'}:item);
       state={...state,bindings:(state.bindings||[]).map(item=>item.binding_id===extra.binding_id?{...item,allowed:false,sync_state:'unconfirmed'}:item)};
     }
-    if(['login','logout','redeem','entitlement'].includes(action)){serviceRevision++;nextServiceRead=Date.now()+60000;}
     busy=true;setResult('Working...');render();
     try{
       const origin=selectedOrigin();
@@ -343,11 +323,9 @@
       }
       if(action==='login')signedIn=state.configured&&state.origin===origin&&state.account_id===result.account_id;
       if(action==='login'&&!signedIn)throw Error('The cloud sign-in result could not be confirmed. Refresh status before trying again.');
-      if(refreshError)nextServiceRead=Date.now()+5000;
       setResult(action==='access'?refreshError?errors.device_access_unconfirmed:extra.allowed?'Connection allowed on this desktop.':'Connection disabled. Verified keys are kept for a later restore.':action==='signup-verify'?'':action==='register'?'Account created. Sign in to continue.':Object.hasOwn(completionMessages,action)?completionMessages[action]:action==='redeem'&&refreshError?serviceMessages.redeemRefreshFailed:action==='login'&&refreshError?serviceMessages.loginRefreshFailed:Object.hasOwn(serviceMessages,action)?serviceMessages[action]:'Done. If a write times out, refresh status; do not blindly replay it.',!!refreshError);
     }catch(error){
       if(action==='register'){clearRegistration();authView='login';}
-      nextServiceRead=Date.now()+5000;
       if(action==='logout')try{
         const current=await api.cloud({action:'status'});
         if(expectedAccount&&state.configured&&expectedAccount!==accountScope())return;
@@ -385,7 +363,6 @@
   setInterval(async()=>{
     if(registrationProof&&registrationProof.deadline<=Date.now()&&!busy){clearRegistration();if(authView==='password')authView='register';setResult(errors.invalid_registration_token,true);render();}
     renderCodeRetry();
-    if(state.configured&&Date.now()>=nextServiceRead)refreshService();
     await refreshDirectory();
   },2000);
   document.addEventListener('bridge-language',render);

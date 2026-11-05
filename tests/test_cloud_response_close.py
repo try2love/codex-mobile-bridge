@@ -37,7 +37,7 @@ class CloudResponseClose(unittest.IsolatedAsyncioTestCase):
         channel = AsyncMock()
         channel.receive.side_effect = asyncio.TimeoutError
         await Connector.wait_response_close(channel)
-        channel.receive.assert_awaited_once_with(5)
+        channel.receive.assert_awaited_once_with(10)
 
     async def test_wait_has_total_deadline_even_if_peer_drips_credits(self):
         channel = AsyncMock()
@@ -48,7 +48,7 @@ class CloudResponseClose(unittest.IsolatedAsyncioTestCase):
             raise asyncio.TimeoutError
         with patch('bridge.features.network.cloud_connector.asyncio.wait_for', timeout):
             await Connector.wait_response_close(channel)
-        self.assertEqual(observed, [5])
+        self.assertEqual(observed, [10])
         channel.receive.assert_not_awaited()
 
     async def test_forwarded_http_response_does_not_finish_before_receiver_close(self):
@@ -77,7 +77,7 @@ class CloudResponseClose(unittest.IsolatedAsyncioTestCase):
             return await queue.get()
         channel = SimpleNamespace(binding='binding', mobile=b'\x01' + b'\0' * 31,
             send=send, receive=receive, cipher=SimpleNamespace(encrypt=lambda data: data),
-            record=AsyncMock(side_effect=lambda data: payloads.append(data)))
+            send_body=AsyncMock(side_effect=lambda data: payloads.append(data)))
         await queue.put({'kind': 'credit', 'count': 4})
         task = asyncio.create_task(connector.forward_http(channel,
             {'method': 'GET', 'path': '/api/sessions', 'content_type': 'application/json', 'headers': {}}, b''))
@@ -86,7 +86,6 @@ class CloudResponseClose(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
         self.assertFalse(task.done(), 'completed HTTP response raced its receiver with outer Close')
         self.assertEqual([v['kind'] for v in controls], ['response_start', 'response_end'])
-        self.assertEqual(payloads, [b'\x01' + body])
-        task.cancel()
-        with self.assertRaises(asyncio.CancelledError):
-            await task
+        self.assertEqual(payloads, [body])
+        await queue.put({'kind': 'response_ack'})
+        await asyncio.wait_for(task, 1)

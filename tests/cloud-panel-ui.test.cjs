@@ -143,14 +143,14 @@ test('confirmed redemption immediately displays refreshed expiry without another
   assert.deepEqual(ui.calls.filter(call=>!['devices'].includes(call.action)).map(call=>call.action),['redeem','status']);
 });
 
-test('a confirmed redemption with refresh failure warns against redeeming again and retries only reads',async()=>{
+test('a confirmed redemption with refresh failure waits for an explicit refresh',async()=>{
   const ui=fixture();await signedIn(ui);
   ui.responses.redeem={redeemed:true,entitlement:null,refresh_error:'network_or_certificate_error',cloud:{...account,enabled:false,entitlement:null,entitlement_error:'network_or_certificate_error'}};
   ui.node('code').value='TEST-ONLY-CODE';await ui.action('redeem');ui.language('en');
   assert.equal(ui.node('result').textContent,'Service days redeemed, but service status could not be refreshed. Refresh status; do not redeem again.');
   ui.language('zh');assert.match(ui.node('result').textContent,/\u4e0d\u8981\u518d\u6b21\u5151\u6362/);
   await ui.tick(5000);
-  assert.deepEqual(ui.calls.filter(call=>!['devices'].includes(call.action)).map(call=>call.action),['redeem','status','entitlement','status']);
+  assert.deepEqual(ui.calls.filter(call=>!['devices'].includes(call.action)).map(call=>call.action),['redeem','status']);
 });
 
 test('a failed local status read after confirmed redemption does not misreport the redeemed write',async()=>{
@@ -165,26 +165,25 @@ test('unknown redemption outcomes never replay on language changes or automatic 
   ui.node('code').value='TEST-ONLY-CODE';await ui.action('redeem');
   ui.language('en');ui.language('zh');await ui.tick(60000);
   assert.equal(ui.calls.filter(call=>call.action==='redeem').length,1);assert.equal(ui.node('code').value,'');
-  assert.deepEqual(ui.calls.filter(call=>!['devices'].includes(call.action)).map(call=>call.action),['redeem','entitlement','status']);
+  assert.deepEqual(ui.calls.filter(call=>!['devices'].includes(call.action)).map(call=>call.action),['redeem']);
 });
 
-test('a late background read cannot replace a confirmed redemption state',async()=>{
-  const ui=fixture();await signedIn(ui);let finish;
-  ui.setRequest(payload=>payload.action==='entitlement'?new Promise(resolve=>finish=resolve):ui.respond(payload));
+test('background timers never query qualification before or after redemption',async()=>{
+  const ui=fixture();await signedIn(ui);
   await ui.tick(60000);const renewed={...grant,expires_at:'2030-08-01T00:00:00Z'};
   ui.responses.redeem={redeemed:true,entitlement:renewed,refresh_error:'',cloud:{...account,entitlement:renewed}};
-  await ui.action('redeem');finish({...grant,active:false});await ui.flush();ui.language('en');
+  await ui.action('redeem');await ui.tick(3600000);ui.language('en');
   assert.equal(ui.node('entitlement').textContent,'Active until '+new Date(renewed.expires_at).toLocaleString('en-US'));
-  assert.deepEqual(ui.calls.filter(call=>!['devices'].includes(call.action)).map(call=>call.action),['entitlement','redeem','status']);
+  assert.deepEqual(ui.calls.filter(call=>!['devices'].includes(call.action)).map(call=>call.action),['redeem','status']);
 });
 
 test('late service reads cannot cross server, account or gateway identity',async()=>{
   for(const change of [{origin:'https://other.example.test'},{account_id:'other-account'},{gateway_id:'other-gateway'}]){
     const ui=fixture();await signedIn(ui);let finish;
     ui.setRequest(payload=>payload.action==='entitlement'?new Promise(resolve=>finish=resolve):ui.respond(payload));
-    await ui.tick(60000);
+    const pending=ui.action('entitlement');
     const selfhost={...grant,required:false,expires_at:null};ui.update({...account,...change,entitlement:selfhost});
-    finish({...grant,active:false});await ui.flush();ui.language('en');
+    finish({...grant,active:false});await pending;ui.language('en');
     assert.equal(ui.node('entitlement').textContent,'Active (selfhost)');assert.equal(ui.node('redeem').hidden,true);
     assert.deepEqual(ui.calls.filter(call=>!['devices'].includes(call.action)).map(call=>call.action),['entitlement']);
   }
@@ -281,13 +280,12 @@ test('a late logout response cannot clear a different configured account',async(
   assert.deepEqual(ui.calls.filter(call=>!['devices'].includes(call.action)).map(call=>call.action),['logout']);
 });
 
-test('a service read completing after logout cannot restore entitlement or retry cloud work',async()=>{
-  const ui=fixture();await signedIn(ui);let finish;
-  ui.setRequest(payload=>payload.action==='entitlement'?new Promise(resolve=>finish=resolve):ui.respond(payload));
-  await ui.tick(60000);await ui.action('logout');finish(copy(grant));await ui.flush();ui.language('en');
+test('timers after logout cannot restore entitlement or retry cloud work',async()=>{
+  const ui=fixture();await signedIn(ui);
+  await ui.tick(60000);await ui.action('logout');await ui.flush();ui.language('en');
   assert.equal(ui.node('open-login').hidden,false);assert.equal(ui.node('entitlement').textContent,'');
   assert.equal(ui.node('result').textContent,'Signed out of the cloud account.');
-  await ui.tick(60000);assert.deepEqual(ui.calls.filter(call=>!['devices'].includes(call.action)).map(call=>call.action),['entitlement','logout']);
+  await ui.tick(60000);assert.deepEqual(ui.calls.filter(call=>!['devices'].includes(call.action)).map(call=>call.action),['logout']);
 });
 
 test('account phones appear automatically without a popup and default to no connection',async()=>{

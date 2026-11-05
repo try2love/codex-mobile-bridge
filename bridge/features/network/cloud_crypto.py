@@ -1,4 +1,4 @@
-"""Bridge v1 wire cryptography. No TLS-only or legacy shared-relay fallback."""
+"""Bridge v2 control cryptography; preview and pairing identities remain v1."""
 
 import base64
 import hashlib
@@ -74,7 +74,7 @@ def decode_key(encoded):
 def control_prologue(origin, gateway, binding, channel, desktop_key, mobile_key):
     if len(desktop_key) != 32 or len(mobile_key) != 32:
         raise ValueError("invalid key size")
-    return (b"bridge/control/v1\0" + _origin_bytes(origin)
+    return (b"bridge/control/v2\0" + _origin_bytes(origin)
             + uuid.UUID(gateway).bytes + uuid.UUID(binding).bytes + uuid.UUID(channel).bytes
             + desktop_key + mobile_key)
 
@@ -184,11 +184,11 @@ def encode_frame(kind, binding, channel, payload=b""):
     if kind not in (1, 2, 3) or (kind == 1 and len(payload) != 32) or (
             kind == 2 and not 16 <= len(payload) <= MAX_CHUNK + 16) or (kind == 3 and payload):
         raise ValueError("invalid relay frame")
-    return bytes((1, kind)) + uuid.UUID(binding).bytes + uuid.UUID(channel).bytes + payload
+    return bytes((2, kind)) + uuid.UUID(binding).bytes + uuid.UUID(channel).bytes + payload
 
 
 def decode_frame(data):
-    if len(data) < 34 or data[0] != 1:
+    if len(data) < 34 or data[0] != 2:
         raise ValueError("invalid relay version")
     kind, binding, channel, payload = (data[1], str(uuid.UUID(bytes=data[2:18])),
                                        str(uuid.UUID(bytes=data[18:34])), data[34:])

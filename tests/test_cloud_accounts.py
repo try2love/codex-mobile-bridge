@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from bridge.features.network.cloud_account import CloudError, Controller, scope, verified_entitlement
 from bridge.features.network.cloud_connector import Connector, validate_request
 from bridge.features.network.cloud_crypto import exact_origin, new_key, public_key
-from bridge.features.notifications.channels import write_json
+from bridge.features.notifications.channels import Notifications, read_json, save_settings, settings, write_json
 
 
 class Vault:
@@ -63,6 +63,66 @@ class CloudAccountsTests(unittest.TestCase):
         self.addCleanup(connector.notifications.close)
         return connector
 
+    def test_active_cloud_enables_mobile_inbox_once_and_preserves_other_channels(self):
+        prior = save_settings(self.directory, {
+            'mobileEnabled': False, 'mobileAppLinks': False,
+            'barkEnabled': True, 'barkKey': 'synthetic-bark-key',
+            'includeTitle': False, 'addressEnabled': False,
+        })
+        self.controller.request = Mock(return_value=self.entitlement())
+        self.controller.refresh_entitlement()
+        saved = settings(self.directory)
+        self.assertTrue(saved['mobileEnabled'])
+        self.assertTrue(saved['cloudMobileDefaultApplied'])
+        self.assertEqual({key: saved[key] for key in prior if key != 'mobileEnabled'},
+                         {key: value for key, value in prior.items() if key != 'mobileEnabled'})
+        manager = Notifications(None, self.directory)
+        self.assertTrue(manager.mobile_snapshot()['enabled'])
+        self.assertEqual(manager.mobile.read()['events'], [])
+
+        save_settings(self.directory, {'mobileEnabled': False})
+        self.controller.refresh_entitlement()
+        self.assertFalse(settings(self.directory)['mobileEnabled'])
+        # An outage/restart must not reinterpret a saved manual choice as a new default.
+        self.controller.request = Mock(side_effect=CloudError('network_or_certificate_error'))
+        with self.assertRaises(CloudError):
+            self.controller.refresh_entitlement()
+        restored = Controller(self.directory)
+        restored._vault = self.controller._vault
+        restored.request = Mock(return_value=self.entitlement())
+        restored.refresh_entitlement()
+        self.assertFalse(settings(self.directory)['mobileEnabled'])
+        self.assertFalse(manager.mobile_snapshot()['enabled'])
+
+    def test_cloud_readiness_is_required_before_mobile_default_is_applied(self):
+        self.assertFalse(settings(self.directory)['mobileEnabled'])
+        self.controller.status()
+        self.assertFalse((self.directory / 'notifications.json').exists())
+        self.controller.request = Mock(return_value=self.entitlement(active=False))
+        self.controller.refresh_entitlement()
+        self.assertFalse(settings(self.directory)['mobileEnabled'])
+        self.assertFalse((self.directory / 'notifications.json').exists())
+        self.controller.request = Mock(side_effect=CloudError('network_or_certificate_error'))
+        with self.assertRaises(CloudError):
+            self.controller.refresh_entitlement()
+        self.assertFalse((self.directory / 'notifications.json').exists())
+        self.controller.request = Mock(return_value=self.entitlement(required=False))
+        self.controller.refresh_entitlement()
+        self.assertTrue(settings(self.directory)['mobileEnabled'])
+        self.assertFalse(settings(self.directory)['mobileAppLinks'])
+
+    def test_notification_writes_preserve_cloud_default_and_explicit_mobile_choice(self):
+        self.controller.request = Mock(return_value=self.entitlement())
+        self.controller.refresh_entitlement()
+        save_settings(self.directory, {'addressName': 'Synthetic gateway'})
+        self.assertTrue(settings(self.directory)['mobileEnabled'])
+        save_settings(self.directory, {'mobileEnabled': False})
+        self.controller.refresh_entitlement()
+        raw = read_json(self.directory / 'notifications.json', {})
+        self.assertFalse(raw['mobileEnabled'])
+        self.assertTrue(raw['cloudMobileDefaultApplied'])
+        self.assertEqual(raw['addressName'], 'Synthetic gateway')
+
     def test_exact_origin_and_scope_isolation(self):
         for origin in ('https://relay.example.test:08443', 'https://relay.example.test:0',
                        'https://127.1', 'https://0177.0.0.1', 'https://0x7f000001',
@@ -79,20 +139,22 @@ class CloudAccountsTests(unittest.TestCase):
         with self.assertRaises(CloudError):
             self.controller.save_secret(other, self.secret)
 
-    def test_refresh_is_consumed_before_network_and_never_replayed(self):
+    def test_refresh_attempt_is_persisted_and_same_request_recovers(self):
         self.secret['access_deadline'] = 0
         self.controller.save_secret(self.config, self.secret)
         def lost_response(origin, path, method, value, token=''):
             self.assertEqual(path, '/v1/auth/refresh')
-            self.assertEqual(self.controller.secret()['refresh_token'], '')
+            self.assertEqual(self.controller.secret()['refresh_token'], 'test-refresh')
+            self.assertEqual(self.controller.secret()['refresh_request_id'], value['request_id'])
             raise CloudError('network_or_certificate_error')
         self.controller.request = Mock(side_effect=lost_response)
         with self.assertRaises(CloudError):
             self.controller.account_request('/v1/account/entitlement')
         with self.assertRaises(CloudError) as error:
             self.controller.account_request('/v1/account/entitlement')
-        self.assertEqual(error.exception.code, 'login_required')
-        self.assertEqual(self.controller.request.call_count, 1)
+        self.assertEqual(error.exception.code, 'network_or_certificate_error')
+        self.assertEqual(self.controller.request.call_count, 2)
+        self.assertEqual(self.controller.request.call_args_list[0].args[3], self.controller.request.call_args_list[1].args[3])
 
     def test_parallel_account_reads_rotate_once(self):
         self.secret['access_deadline'] = 0
@@ -248,7 +310,7 @@ class CloudAccountsTests(unittest.TestCase):
         self.controller.request.assert_called_once()
 
     def test_entitlement_read_enables_active_service_without_changing_keys_or_pins(self):
-        write_json(self.controller.path, {**self.config, 'enabled': False})
+        write_json(self.controller.path, self.config)
         vault = dict(self.vault.values)
         value = self.entitlement()
         self.controller.request = Mock(return_value=value)
@@ -269,9 +331,9 @@ class CloudAccountsTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.controller.request = Mock(return_value=value)
                 result = self.controller.refresh_entitlement()
-                self.assertEqual(self.controller.config()['enabled'], enabled)
+                self.assertTrue(self.controller.config()['enabled'])
                 self.assertEqual(result['active'], enabled)
-                self.assertEqual(self.controller.status()['enabled'], enabled)
+                self.assertTrue(self.controller.status()['enabled'])
 
     def test_failed_or_malformed_entitlement_disables_without_offline_authority(self):
         valid = self.entitlement()
@@ -286,7 +348,7 @@ class CloudAccountsTests(unittest.TestCase):
                 with self.assertRaises(CloudError):
                     self.controller.refresh_entitlement()
                 status = self.controller.status()
-                self.assertFalse(status['enabled'])
+                self.assertTrue(status['enabled'])
                 self.assertIsNone(status['entitlement'])
                 self.assertTrue(status['entitlement_error'])
 
@@ -302,10 +364,10 @@ class CloudAccountsTests(unittest.TestCase):
                        {'checked_at': time.time() - 60}, {'checked_at': float('nan')}):
             with self.subTest(change=change):
                 write_json(path, {**cached, **change})
-                self.assertFalse(self.controller.status()['enabled'])
+                self.assertTrue(self.controller.status()['enabled'])
         write_json(path, cached)
         write_json(self.controller.path, {**self.config, 'gateway_id': str(uuid.uuid4())})
-        self.assertFalse(self.controller.status()['enabled'])
+        self.assertTrue(self.controller.status()['enabled'])
         self.assertEqual(self.controller.status()['runtime']['state'], 'stopped')
 
     def test_confirmed_redemption_refreshes_service_once_and_returns_receipt(self):
@@ -328,7 +390,7 @@ class CloudAccountsTests(unittest.TestCase):
         self.assertEqual(result['id'], receipt['id'])
         self.assertEqual(result['refresh_error'], 'network_or_certificate_error')
         self.assertIsNone(result['entitlement'])
-        self.assertFalse(result['cloud']['enabled'])
+        self.assertTrue(result['cloud']['enabled'])
         self.assertEqual(self.controller.request.call_count, 2)
 
     def test_unconfirmed_redemption_receipts_never_refresh_or_replay_the_write(self):
@@ -362,7 +424,7 @@ class CloudAccountsTests(unittest.TestCase):
                     response])
                 result = self.controller.login({'origin': self.config['origin'], 'login': self.config['login'], 'password': 'synthetic-password'})
                 self.assertTrue(result['configured'])
-                self.assertEqual(result['enabled'], not isinstance(response, Exception))
+                self.assertTrue(result['enabled'])
                 self.assertEqual(self.controller.request.call_args_list[-1].args[1], '/v1/account/entitlement')
                 self.assertEqual(self.controller.secret()['control_private'], self.secret['control_private'])
                 self.assertFalse((self.directory / 'cloud-bindings.json').exists())
@@ -478,104 +540,59 @@ class CloudAccountsTests(unittest.TestCase):
         connector.server.auth.logout.assert_called_once_with('local-cookie')
         self.assertEqual(connector.sessions, {})
 
-    def test_connector_rechecks_old_disabled_config_before_connecting(self):
+    def test_connector_attempts_server_authorization_without_refreshing_qualification(self):
         connector = self.connector()
         write_json(self.controller.path, {**self.config, 'enabled': False})
-        self.controller.request = Mock(return_value=self.entitlement())
+        self.controller.request = Mock(side_effect=AssertionError('qualification must not be polled'))
         async def connect(remote):
-            self.assertTrue(self.controller.config()['enabled'])
-            self.assertEqual(connector.policy_identity, connector.account_identity(self.config))
             connector.closed.set()
         connector.connect = AsyncMock(side_effect=connect)
         asyncio.run(connector.run())
         connector.connect.assert_awaited_once()
-        self.controller.request.assert_called_once()
+        self.controller.request.assert_not_called()
 
-    def test_connector_never_uses_display_cache_as_offline_authority(self):
+    def test_display_query_failure_does_not_fence_a_live_connection(self):
         connector = self.connector()
         connector.config = self.config
-        self.controller.request = Mock(return_value=self.entitlement())
-        self.controller.refresh_entitlement()
-        self.assertTrue(self.controller.status()['enabled'])
-        self.assertFalse(connector.relay_current())
+        self.assertTrue(connector.relay_current())
         self.controller.request = Mock(side_effect=CloudError('network_or_certificate_error'))
         with self.assertRaises(CloudError):
-            asyncio.run(connector.refresh_policy())
-        self.assertFalse(connector.relay_current())
-
-    def test_connector_policy_is_bound_to_server_account_and_gateway(self):
-        connector = self.connector()
-        self.controller.request = Mock(return_value=self.entitlement())
-        self.assertTrue(asyncio.run(connector.refresh_policy()))
-        connector.config = self.controller.config()
+            self.controller.refresh_entitlement()
         self.assertTrue(connector.relay_current())
+
+    def test_connection_is_bound_to_current_server_account_and_gateway(self):
+        connector = self.connector()
+        connector.config = self.config
         for change in ({'origin': 'https://other.example.test'},
                        {'account_id': str(uuid.uuid4())}, {'gateway_id': str(uuid.uuid4())}):
             with self.subTest(change=change):
-                changed = {**self.config, **change}
-                write_json(self.controller.path, changed)
-                connector.config = changed
+                write_json(self.controller.path, {**self.config, **change})
                 self.assertFalse(connector.relay_current())
                 self.assertIsNone(connector.pin(str(uuid.uuid4())))
-        self.assertEqual(self.controller.request.call_count, 1)
 
-    def test_request_latency_cannot_extend_server_entitlement_deadline(self):
-        connector = self.connector()
-        clock = [100]
-        def request(*args):
-            clock[0] = 115
-            return self.entitlement(seconds=10)
-        self.controller.request = Mock(side_effect=request)
-        with patch('bridge.features.network.cloud_connector.time', SimpleNamespace(monotonic=lambda: clock[0])):
-            self.assertFalse(asyncio.run(connector.refresh_policy()))
-            connector.config = self.controller.config()
-            self.assertFalse(connector.relay_current())
-            self.assertEqual(connector.entitlement_deadline, 110)
-
-    def test_periodic_service_check_keeps_an_eligible_socket_connected(self):
+    def test_periodic_watcher_only_observes_local_configuration(self):
         connector = self.connector()
         connector.config = self.config
-        connector.policy_identity = connector.account_identity(self.config)
-        connector.entitlement_deadline = time.monotonic() + 100
         connector.ws = SimpleNamespace(closed=False)
-        self.controller.request = Mock(return_value=self.entitlement())
+        self.controller.request = Mock()
         connector.disconnect = AsyncMock()
         async def finish(seconds):
             connector.closed.set()
         with patch('bridge.features.network.cloud_connector.asyncio.sleep', finish):
             asyncio.run(connector.watch_policy())
-        self.controller.request.assert_called_once()
+        self.controller.request.assert_not_called()
         connector.disconnect.assert_not_awaited()
 
-    def test_expiry_fences_pairing_and_closes_the_socket_without_writes(self):
+    def test_logout_fences_frames_waiting_for_the_send_lock(self):
         connector = self.connector()
         connector.config = self.config
-        connector.policy_identity = connector.account_identity(self.config)
-        connector.entitlement_deadline = time.monotonic() - 1
-        connector.ws = SimpleNamespace(closed=False)
-        self.controller.request = Mock()
-        with self.assertRaises(ValueError):
-            connector.control({'action': 'pairing'})
-        async def disconnect():
-            connector.closed.set()
-        connector.disconnect = AsyncMock(side_effect=disconnect)
-        with patch('bridge.features.network.cloud_connector.asyncio.sleep', AsyncMock()):
-            asyncio.run(connector.watch_policy())
-        connector.disconnect.assert_awaited_once()
-        self.controller.request.assert_not_called()
-
-    def test_frames_waiting_for_the_send_lock_cannot_outlive_entitlement(self):
-        connector = self.connector()
-        connector.config = self.config
-        connector.policy_identity = connector.account_identity(self.config)
-        connector.entitlement_deadline = time.monotonic() + 100
         connector.ws = SimpleNamespace(closed=False, send_bytes=AsyncMock())
         async def send():
             connector.send_lock = asyncio.Lock()
             await connector.send_lock.acquire()
             queued = asyncio.create_task(connector.send_frame(2, str(uuid.uuid4()), str(uuid.uuid4()), b'synthetic-record'))
             await asyncio.sleep(0)
-            connector.entitlement_deadline = time.monotonic() - 1
+            write_json(self.controller.path, {})
             connector.send_lock.release()
             await queued
         with self.assertRaises(CloudError):
@@ -587,6 +604,7 @@ class CloudAccountsTests(unittest.TestCase):
                  'path': '/api/sessions/' + str(uuid.uuid4()) + '/events',
                  'content_type': 'application/json', 'headers': {}, 'length': 0}
         validate_request(value)
+        validate_request({**value, 'path':'/api/mobile/events?after=0'})
         for change in ({'path': '//evil.example/api/sessions'}, {'path': '/api/admin'},
                        {'headers': {'Cookie': 'stolen'}}, {'length': True},
                        {'method': 'DELETE'}, {'path': '/api/sessions/x/events'}):

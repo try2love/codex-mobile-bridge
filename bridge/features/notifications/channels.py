@@ -217,6 +217,19 @@ def settings(data_dir):
             **read_json(Path(data_dir)/'notifications.json', {})}
 
 
+def enable_mobile_for_cloud(data_dir):
+    """Apply the cloud inbox default once, preserving later explicit opt-outs."""
+    with SETTINGS_LOCK:
+        path = Path(data_dir)/'notifications.json'
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with session_file_lock(path):
+            saved = read_json(path, {})
+            if saved.get('cloudMobileDefaultApplied') is True:
+                return
+            write_json(path, {**saved, 'mobileEnabled': True,
+                              'cloudMobileDefaultApplied': True})
+
+
 def merge_webhook_config(prior, value):
     result = {key: value.get(key, prior.get(key, DEFAULTS[key])) for key in WEBHOOK_CONFIG_FIELDS}
     if any(not isinstance(result[key], bool) for key in ('webhookEnabled', 'webhookSignEnabled')):

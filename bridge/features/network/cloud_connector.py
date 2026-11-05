@@ -3,6 +3,8 @@ import asyncio
 import base64
 import hmac
 import json
+import logging
+import secrets
 import threading
 import time
 import uuid
@@ -12,15 +14,16 @@ from urllib.parse import urlsplit
 from relay.protocol import MAX_BODY, content_type, download_headers, validate
 from bridge.features.auth.tls import client_context
 from bridge.features.auth.auth import session_file_lock
-from bridge.features.network.cloud_account import Controller, CloudError, scope, entitlement_seconds
+from bridge.features.network.cloud_account import Controller, CloudError, scope
 from bridge.features.network.cloud_crypto import (ControlCipher, control_prologue, decode_frame,
                                                  decode_key, encode_frame, encode_message, public_key,
                                                  pairing_safety_code)
 from bridge.features.notifications.channels import read_json, write_json
 from bridge.features.notifications.cloud import CloudNotifications
 
-MAX_CHANNELS = 12
+MAX_CHANNELS = 16
 WINDOW = 4
+LOG = logging.getLogger(__name__)
 
 
 def validate_request(value):
@@ -32,7 +35,7 @@ def validate_request(value):
         raise ValueError('invalid request fields')
     if value['path'] == '/api/auth' and value['method'] == 'GET' and value['length'] == 0:
         pass
-    elif value['method'] == 'GET' and urlsplit(value['path']).path.endswith('/events') and value['path'] != '/api/mobile/events':
+    elif value['method'] == 'GET' and urlsplit(value['path']).path.endswith('/events') and urlsplit(value['path']).path != '/api/mobile/events':
         # SSE is the same authenticated session resource; not an arbitrary socket/RPC endpoint.
         path, separator, query = value['path'].partition('?')
         validate('GET', path.removesuffix('/events') + '/poll' + separator + query, value['length'])
@@ -45,7 +48,7 @@ def validate_request(value):
 class Channel:
     def __init__(self, owner, binding, channel, mobile):
         self.owner, self.binding, self.channel, self.mobile = owner, binding, channel, mobile
-        self.queue = asyncio.Queue(8)
+        self.queue = asyncio.Queue(128)
         self.cipher = None
         self.task = None
 
@@ -96,27 +99,8 @@ class Channel:
         if authorize.get('kind') == 'authorize' and authorize.get('preview_public_key') != pin['preview_public_key']:
             raise PermissionError('preview key replacement requires re-pairing')
         await self.send({'kind': 'authorized', 'desktop_preview_public_key': o.preview_public_key()})
-        request = await self.receive()
-        validate_request(request)
-        size = request['length']
-        if type(size) is not int or not 0 <= size <= MAX_BODY:
-            raise ValueError('request size limit')
-        body = bytearray()
-        await self.send({'kind': 'credit', 'count': WINDOW})
-        while True:
-            part = await self.receive()
-            if isinstance(part, bytes):
-                if not part or len(body) + len(part) > size:
-                    raise ValueError('request length mismatch')
-                body.extend(part)
-                await self.send({'kind': 'credit', 'count': 1})
-            elif part == {'kind': 'request_end'}:
-                if len(body) != size:
-                    raise ValueError('request length mismatch')
-                break
-            else:
-                raise ValueError('unexpected request record')
-        await o.forward_http(self, request, body)
+        from bridge.features.network.cloud_session import Session
+        await Session(self).run()
 
 
 class Connector:
@@ -127,6 +111,7 @@ class Connector:
         self.lock = threading.RLock()
         self.access_lock = threading.Lock()
         self.channels = {}
+        self.large_streams = 0
         self.blocked_bindings = set()
         self.access_generations = {}
         self.thread = self.http_thread = None
@@ -134,9 +119,6 @@ class Connector:
         self.config = self.secret = None
         self.sessions = {}
         self.notifications = CloudNotifications(directory)
-        self.entitlement_deadline = 0
-        self.policy_identity = None
-        self.next_entitlement_check = 0
         self.wake = None
 
     def preview_public_key(self):
@@ -163,39 +145,12 @@ class Connector:
 
     def relay_current(self, config=None):
         config = self.accounts.config() if config is None else config
-        return bool(not self.closed.is_set() and config and config.get('enabled') and self.config == config
-                    and self.policy_identity == self.account_identity(config)
-                    and (self.entitlement_deadline is None or self.entitlement_deadline > time.monotonic()))
+        # Entitlement is enforced by the server. Cached display data is not authority.
+        return bool(not self.closed.is_set() and config and self.config == config)
 
     @staticmethod
     def account_identity(config):
         return tuple(config.get(key) for key in ('origin', 'account_id', 'gateway_id'))
-
-    async def refresh_policy(self):
-        started = time.monotonic()
-        before = self.accounts.config()
-        if not before:
-            self.entitlement_deadline = 0
-            self.policy_identity = None
-            return False
-        try:
-            value = await asyncio.to_thread(self.accounts.refresh_entitlement)
-        except (Exception, asyncio.CancelledError):
-            self.entitlement_deadline = 0
-            self.policy_identity = None
-            raise
-        after = self.accounts.config()
-        if self.account_identity(before) != self.account_identity(after):
-            self.entitlement_deadline = 0
-            self.policy_identity = None
-            return False
-        remaining = entitlement_seconds(value)
-        # Start before the request so network latency cannot extend a server grant.
-        self.entitlement_deadline = None if remaining is None else started + remaining
-        self.policy_identity = self.account_identity(after)
-        self.next_entitlement_check = started + (min(60, remaining) if remaining else 60)
-        return bool(not self.closed.is_set() and after.get('enabled') and value['active']
-                    and (self.entitlement_deadline is None or self.entitlement_deadline > time.monotonic()))
 
     async def wait_for_change(self, seconds):
         if self.closed.is_set():
@@ -213,9 +168,6 @@ class Connector:
                 try:
                     if not self.relay_current():
                         await self.disconnect()
-                    elif time.monotonic() >= self.next_entitlement_check:
-                        if not await self.refresh_policy() or not self.relay_current():
-                            await self.disconnect()
                 except CloudError as exc:
                     self.status('unavailable', exc.code)
                     await self.disconnect()
@@ -371,16 +323,25 @@ class Connector:
                 if length > MAX_BODY:
                     raise ValueError('response size limit')
                 result_headers['Content-Length'] = str(length)
+                if length > 1024 * 1024:
+                    await channel.promote_large()
             await channel.send({'kind': 'response_start', 'status': response.status, 'headers': result_headers})
             credits = 0
+            transferred = 0
+            event_stream = result_headers['Content-Type'].startswith('text/event-stream')
             async def chunks():
                 if decorated is not None:
-                    for offset in range(0, len(decorated), 32767):
-                        yield decorated[offset:offset + 32767]
+                    for offset in range(0, len(decorated), 32759):
+                        yield decorated[offset:offset + 32759]
                 else:
-                    async for part in response.content.iter_chunked(32767):
+                    async for part in response.content.iter_chunked(32759):
                         yield part
             async for chunk in chunks():
+                transferred += len(chunk)
+                if not event_stream and transferred > MAX_BODY:
+                    raise ValueError('response size limit')
+                if not event_stream and transferred > 1024 * 1024:
+                    await channel.promote_large()
                 if not self.pin(channel.binding):
                     raise PermissionError('binding revoked')
                 while not credits:
@@ -389,26 +350,27 @@ class Connector:
                         raise ValueError('invalid response credit')
                     credits += credit['count']
                 credits -= 1
-                await channel.record(channel.cipher.encrypt(b'\1' + chunk))
+                await channel.send_body(chunk)
             await channel.send({'kind': 'response_end'})
+            channel.response_complete = True
             await self.wait_response_close(channel)
 
     @staticmethod
     async def wait_response_close(channel):
-        # The phone can still be sending window credits while response_end is
-        # in flight. Let the receiver close the channel instead of racing it
-        # with an immediate outer Close from the worker's finally block.
+        # A stream acknowledgement releases this HTTP task, not the Noise session.
         async def drain():
             remaining = WINDOW
             while True:
-                value = await channel.receive(5)
+                value = await channel.receive(10)
+                if value == {'kind': 'response_ack'}:
+                    return
                 if (not isinstance(value, dict) or set(value) != {'kind', 'count'}
                         or value['kind'] != 'credit' or type(value['count']) is not int
                         or not 1 <= value['count'] <= remaining):
                     raise ValueError('invalid final response credit')
                 remaining -= value['count']
         try:
-            await asyncio.wait_for(drain(), 5)
+            await asyncio.wait_for(drain(), 10)
         except asyncio.TimeoutError:
             pass
 
@@ -442,17 +404,20 @@ class Connector:
         self.send_lock = asyncio.Lock()
         url = self.config['origin'].replace('https://', 'wss://', 1) + '/v1/ws/gateway'
         async with remote.ws_connect(url, headers={'Authorization': 'Bearer ' + self.secret['device_token']},
-                                     protocols=('bridge-relay-v1',), compress=0, max_msg_size=32818,
+                                     # aiohttp rejects >= max_msg_size; wire decoder still enforces <=32818.
+                                     protocols=('bridge-relay-v2',), compress=0, max_msg_size=32819,
                                      heartbeat=20, autoping=True) as ws:
             self.ws = ws
             if not self.relay_current():
                 raise CloudError('entitlement_required')
-            if ws.protocol != 'bridge-relay-v1':
+            if ws.protocol != 'bridge-relay-v2':
                 raise ValueError('relay protocol downgrade')
             self.status('connected')
             async for message in ws:
                 if message.type != aiohttp.WSMsgType.BINARY:
                     if message.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSED):
+                        LOG.warning('relay_socket_end close_code=%s reason=%s', ws.close_code,
+                                    type(ws.exception()).__name__ if ws.exception() else 'peer_close')
                         break
                     raise ValueError('binary records required')
                 kind, binding, channel_id, data = decode_frame(message.data)
@@ -465,8 +430,10 @@ class Connector:
                     async def worker(channel=channel):
                         try:
                             await channel.run()
-                        except (Exception, asyncio.CancelledError):
-                            pass  # Do not log private business data, pairing proofs or crypto errors.
+                        except asyncio.CancelledError:
+                            pass
+                        except Exception as error:
+                            LOG.warning('relay_session_end channel=%s reason=%s', channel.channel, type(error).__name__)
                         finally:
                             self.channels.pop(channel.channel, None)
                             if self.ws and not self.ws.closed:
@@ -499,23 +466,26 @@ class Connector:
                                              cookie_jar=aiohttp.DummyCookieJar(), trust_env=True, trace_configs=[trace]) as remote:
                 pump = asyncio.create_task(self.notification_pump())
                 policy = asyncio.create_task(self.watch_policy())
+                failures = 0
                 try:
                     while not self.closed.is_set():
+                        started = time.monotonic()
                         try:
                             if not self.accounts.config():
                                 self.status('disabled')
                                 await self.wait_for_change(1)
                                 continue
-                            if not await self.refresh_policy():
-                                self.status('disabled', 'entitlement_required')
-                                await self.wait_for_change(30)
-                                continue
                             self.status('connecting')
                             await self.connect(remote)
                         except CloudError as exc:
                             self.status('unavailable', exc.code)
-                        except Exception:
-                            self.status('unavailable', 'connection_failed')
+                        except Exception as error:
+                            status = getattr(error, 'status', 0)
+                            code = {401: 'login_required', 402: 'entitlement_required', 403: 'access_denied',
+                                    409: 'gateway_already_connected', 426: 'protocol_upgrade_required',
+                                    429: 'capacity'}.get(status, 'connection_failed')
+                            self.status('unavailable', code)
+                            LOG.warning('relay_connect_failed reason=%s', code)
                         finally:
                             tasks = [c.task for c in self.channels.values()]
                             for task in tasks:
@@ -526,7 +496,8 @@ class Connector:
                             self.clear_authority()
                             self.config = self.secret = None
                         # Only the outbound link reconnects. In-flight HTTP operations are never replayed.
-                        await self.wait_for_change(3)
+                        failures = 0 if time.monotonic() - started >= 60 else min(failures + 1, 5)
+                        await self.wait_for_change(min(15, 2 ** max(0, failures - 1) + secrets.randbelow(500) / 1000))
                 finally:
                     pump.cancel()
                     policy.cancel()

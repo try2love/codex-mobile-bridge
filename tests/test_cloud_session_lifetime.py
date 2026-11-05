@@ -77,7 +77,7 @@ class CloudSessionLifetimeTests(unittest.IsolatedAsyncioTestCase):
             send=AsyncMock(side_effect=records.append),
             receive=AsyncMock(return_value={'kind': 'credit', 'count': 4}),
             cipher=SimpleNamespace(encrypt=lambda value: value),
-            record=AsyncMock(side_effect=lambda value: chunks.append(value[1:])))
+            send_body=AsyncMock(side_effect=chunks.append))
         await self.connector.forward_http(channel, {'method': method, 'path': path,
             'content_type': 'application/json', 'headers': {}}, body)
         self.assertEqual(records[0]['status'], 200)
@@ -119,11 +119,10 @@ class CloudSessionLifetimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((await self.forward())['authenticated'])
         self.assertNotEqual(self.connector.sessions[self.binding][0], old)
 
-    async def test_logout_entitlement_expiry_and_changed_keys_cannot_use_cached_session(self):
+    async def test_local_entitlement_is_display_only_but_logout_and_keys_still_block(self):
         await self.forward()
         self.connector.entitlement_deadline = time.monotonic() - 1
-        with self.assertRaisesRegex(PermissionError, 'binding revoked'):
-            await self.forward()
+        self.assertTrue((await self.forward())['authenticated'])
         self.connector.entitlement_deadline = None
         write_json(self.connector.accounts.path, {})
         with self.assertRaisesRegex(PermissionError, 'binding revoked'):

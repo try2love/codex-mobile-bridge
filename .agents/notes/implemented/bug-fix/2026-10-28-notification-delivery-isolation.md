@@ -53,6 +53,8 @@ UI、第三方接收地址、认证和用户原会话 owner/provider/auth/cwd �
 
 [原生运行失败与阻塞通知](2026-10-28-terminal-attention-notifications.md)复用本篇发送隔离与目的地账本，增加 `attention` 事件及恢复后撤销；失败仍不会被当作成功完成。
 
+[云服务默认开启手机收件箱](../feature/2026-11-05-cloud-mobile-inbox-default.md)补充云服务首次成功启用时的配置初始化，并保留之后手动关闭；本篇的投递隔离、逐聊天策略和第三方通道边界继续适用。
+
 ## 关联接入
 
 [SSH 离线隔离与退避](2026-10-30-ssh-offline-isolation-and-backoff.md)进一步将远端元数据发现移到有限后台读取，避免 SSH 离线超时阻塞本机通知扫描；本篇投递及去重契约保留。

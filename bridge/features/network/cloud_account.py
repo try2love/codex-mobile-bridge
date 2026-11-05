@@ -16,7 +16,7 @@ from bridge.features.auth.auth import session_file_lock
 from bridge.features.auth.tls import client_context
 from bridge.features.network.cloud_crypto import exact_origin, new_key, public_key
 from bridge.features.network.cloud_access import BindingAccess
-from bridge.features.notifications.channels import read_json, write_json
+from bridge.features.notifications.channels import enable_mobile_for_cloud, read_json, write_json
 from bridge.features.notifications.cloud import CloudNotifications
 
 
@@ -160,14 +160,18 @@ class Controller:
             token = secret.get('refresh_token', '')
             if not token:
                 raise CloudError('login_required', 401)
-            # Never retry a spent refresh token after a lost response.
-            secret['refresh_token'] = ''
+            # Persist the same attempt before networking, including across process restarts.
+            request_id = secret.get('refresh_request_id') or str(uuid.uuid4())
+            secret['refresh_request_id'] = request_id
             self.save_secret(config, secret)
-            result = self.request(config['origin'], '/v1/auth/refresh', 'POST', {'refresh_token': token})
+            started = time.time()
+            result = self.request(config['origin'], '/v1/auth/refresh', 'POST',
+                                  {'refresh_token': token, 'request_id': request_id})
             if result['account']['id'] != config['account_id']:
                 raise CloudError('credential_scope_mismatch')
             secret.update(access_token=result['access_token'], refresh_token=result['refresh_token'],
-                          access_deadline=time.time() + result['expires_in'])
+                          access_deadline=started + result['expires_in'])
+            secret.pop('refresh_request_id', None)
             self.save_secret(config, secret)
         if not secret.get('access_token'):
             raise CloudError('login_required', 401)
@@ -182,10 +186,8 @@ class Controller:
         write_json(self.directory / 'cloud-entitlement.json', {
             'scope': scope(config['origin'], config['account_id']), 'gateway_id': config['gateway_id'],
             'entitlement': value, 'code': code, 'checked_at': time.time()})
-        enabled = value is not None and value['active'] is True
-        if config['enabled'] != enabled:
-            config['enabled'] = enabled
-            write_json(self.path, config)
+        if config.get('enabled') and value is not None and value.get('active'):
+            enable_mobile_for_cloud(self.directory)
 
     def _refresh_entitlement_locked(self):
         config = self.config()
@@ -241,7 +243,7 @@ class Controller:
         self.request(origin, '/v1/capabilities')
         result = self.request(origin, '/v1/auth/login', 'POST', {'login': login, 'password': password})
         account = result['account']
-        config = {'origin': origin, 'account_id': account['id'], 'login': account['login'], 'enabled': False}
+        config = {'origin': origin, 'account_id': account['id'], 'login': account['login'], 'enabled': True}
         try:
             old = self.secret(config)
         except CloudError as exc:
@@ -262,6 +264,7 @@ class Controller:
             raise CloudError('device_identity_mismatch')
         old.update(access_token=result['access_token'], refresh_token=result['refresh_token'],
                    access_deadline=time.time() + result['expires_in'], device_token=device['device_token'])
+        old.pop('refresh_request_id', None)
         self.save_secret(config, old)
         write_json(self.path, config)
         try:
@@ -320,7 +323,7 @@ class Controller:
         if not isinstance(runtime, dict) or runtime.get('scope') != current_scope or runtime.get('gateway_id') != config.get('gateway_id'):
             runtime = {'state': 'stopped'}
         return {'configured': bool(config), **config,
-                'enabled': bool(config.get('enabled') and entitlement and entitlement['active']),
+                'enabled': bool(config),
                 'entitlement': entitlement, 'entitlement_error': error,
                 'runtime': {k: runtime[k] for k in ('state', 'code', 'pid') if k in runtime},
                 'bindings': [{'binding_id': k, **{name: pin[name] for name in ('gateway_id', 'mobile_public_key', 'preview_public_key', 'device_name', 'safety_code') if name in pin},
@@ -409,8 +412,6 @@ class Controller:
                 raise CloudError('device_access_unavailable')
             mobile = record['mobile_public_key']
             if allowed:
-                if not config.get('enabled'):
-                    raise CloudError('entitlement_required')
                 proof = pin or read_json(self.directory / 'cloud-device-proofs.json', {}).get(key + ':' + config['gateway_id'], {}).get(binding)
                 if (not proof or proof.get('mobile_public_key') != mobile
                         or not pin and (proof.get('installation_id') != record.get('installation_id')
