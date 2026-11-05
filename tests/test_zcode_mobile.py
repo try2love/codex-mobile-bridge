@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from bridge.clients.manager import DesktopSessions
-from bridge.clients.zcode.adapter import ZCodePrototype, project_snapshot
+from bridge.clients.zcode.adapter import ZCodeDesktop, ZCodePrototype, project_snapshot
 from bridge.clients.uploads import DesktopUploads
 
 
@@ -28,14 +28,17 @@ class MobileContracts(unittest.TestCase):
             return {'sessions': [{'snapshot': self.snapshot, 'cwd': str(self.root)}]}
         return {'snapshot': self.snapshot} if request['action'] == 'detail' else {'models': [], 'capabilities': {'models': True}} if request['action'] == 'account' else {'status': 'accepted'}
 
-    def test_opt_in_registers_in_shared_manager_without_native_activation(self):
+    def test_legacy_registration_stays_detached_until_explicit_transport_is_ready(self):
         settings = self.root/'desktop-sessions/settings.json'
         settings.parent.mkdir()
-        settings.write_text(json.dumps({'zcodePrototype': self.config, 'enabled': {'zcode': True}}))
+        settings.write_text(json.dumps({'zcodePrototype': {**self.config, 'dataDirectory': str(self.root/'zcode')}, 'enabled': {'zcode': True}}))
         with patch('bridge.clients.manager.sys.platform', 'darwin'):
             manager = DesktopSessions(self.root)
         self.addCleanup(manager.close)
-        manager.adapters['zcode'].transport = self.transport
+        self.assertIsInstance(manager.adapters['zcode'], ZCodeDesktop)
+        self.assertEqual(manager.adapters['zcode'].home, self.root/'zcode')
+        self.assertEqual(self.calls, [])
+        manager.adapters['zcode'] = ZCodePrototype(self.root, self.config, self.transport)
         detail = manager.call('zcode', 'detail', 'sess_test')
         self.assertEqual(detail['session']['stopTarget'], {'executionId': 'execution'})
         self.assertEqual(detail['draftAccountIdentity'], '')

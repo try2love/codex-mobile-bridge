@@ -120,7 +120,7 @@ class ProcessLifecycleTests(unittest.TestCase):
         with patch('bridge.clients.lifecycle.inspect_client', return_value=state), \
                 patch('bridge.clients.lifecycle._app') as factory:
             stop_client({'id': 'codex'}, state=state)
-        factory.return_value.stop.assert_called_once_with(runtime_pids=[], gui_pids=[11], provider='codex')
+        factory.return_value.stop.assert_called_once_with(runtime_pids=[], gui_pids=[11], provider='codex', selected_pids=[11])
 
     def test_windows_claude_cannot_be_quit_by_closing_its_window(self):
         from bridge.clients.lifecycle import stop_client

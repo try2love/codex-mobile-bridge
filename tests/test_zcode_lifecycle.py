@@ -353,7 +353,7 @@ class ZCodeLifecycleTests(unittest.TestCase):
     def test_matched_running_app_is_not_restarted_or_given_debug_flags(self):
         from bridge.clients.lifecycle import launch_client
         descriptor = self.manager._descriptor('zcode')
-        with patch('bridge.clients.desktop_app.DesktopApp.processes', side_effect=[[], [77]]), \
+        with patch('bridge.clients.lifecycle.inspect_client', side_effect=[{**self.state, 'running': False, 'pids': []}, self.state]), \
                 patch('bridge.platforms.macos.desktop.start') as start:
             self.assertTrue(launch_client(descriptor)['launched'])
             args, kwargs = start.call_args

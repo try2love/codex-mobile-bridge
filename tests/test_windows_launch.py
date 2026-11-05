@@ -29,6 +29,8 @@ class WindowsDesktopLaunchTests(unittest.TestCase):
             mocked = patch(target, value, create=True); mocked.start(); self.addCleanup(mocked.stop)
         inventory = patch('bridge.platforms.windows.discovery_ext.windows_installations', return_value=self.inventory)
         self.snapshot = inventory.start(); self.addCleanup(inventory.stop)
+        commands = patch('bridge.clients.lifecycle._commands', side_effect=lambda app, pids: {pid: str(app.executable) for pid in pids})
+        commands.start(); self.addCleanup(commands.stop)
         self.denied = PermissionError('Store executable denies CreateProcess')
         self.denied.winerror = 5
 
