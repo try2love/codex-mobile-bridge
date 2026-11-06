@@ -18,6 +18,8 @@ Status: implemented
 
 Windows 构建禁用不需要的 Windows 7 thunk 下载，以 IP Helper 替代 pnet 的 Packet.dll 依赖，不安装抓包驱动。上游 v2.6.4 移动 launcher 无条件引用 TUN/DNS 类型，因此移动构建编入这两项特性；运行仍 no_tun、无 fd、无 VPN 权限。smoltcp 出站 ACL 在源地址恢复前执行，精确允许内部 192.88.99.254:8899 响应，入站仍只放行 Bridge 端口；真实收发和其他端口拒绝测试覆盖此取舍。
 
+桌面构建工作流准备 Rust 与各平台 Protobuf 编译器，缓存锁定依赖，并把对应源码作为独立附件与安装包同时上传。移动源码快照包含共享核心的独立锁文件，使 Windows/macOS 能直接运行其双节点互通测试。Windows 打包复用字节完全相同的辅助进程文件，避免覆盖正在运行的程序。
+
 ## 记录归属
 
 [持久中继 v2](../../implemented/architecture/2026-11-05-persistent-relay-v2.md)部分重叠，保留其流控和未知写入边界；本篇持有 P2P 生命周期及延迟撤销的新增决定。[云监听注入](../../implemented/architecture/2026-11-02-cloud-listener-injection.md)部分重叠，保留受限本地 HTTP 服务的归属。检索未发现其他 EasyTier/P2P 提案，无完全吸收或需删除记录。
@@ -32,6 +34,8 @@ Windows 构建禁用不需要的 Windows 7 thunk 下载，以 IP Helper 替代 p
 ## Testing
 
 真实 EasyTier 两节点测试验证双端 ACL 收发、引导丢失后持续传输，以及关闭发送端 ACL 后仍不能访问桌面其他端口。真实 Go/Python/Rust 夹具通过线上 WSS 引导，验证 P2P 字节增长而中继业务字节不变、20 MiB 文件、未知写入只执行一次、云服务不可达后仍读取、恢复后撤销关闭。原始日志在 `D:/github/.codex-tools/easytier-p2p-20261106/`。Python 云回归、模块边界、Go/PostgreSQL、Rust 和 Flutter 验证单独保留日志；实际手机交付与 iOS CI 仍以对应产物和运行记录为准。
+
+续接验证通过 95 项 Python 云连接回归、1,368 项 Node 测试和模块边界检查。Windows NSIS 与 ZIP 构建完成，已检查包内 LGPL 对应源码及许可，并实际启动、关闭随包辅助进程。Lenovo 手机现有绑定显示 P2P 直连；这不代表跨运营商成功率或耗电已完成验收。
 
 ## Consequences
 

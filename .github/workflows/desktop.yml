@@ -9,7 +9,7 @@ on:
   push:
     # Main receives source updates without building Apps; use manual or release builds.
     branches: [feature/desktop-ntfy, codex/windows-desktop-app, integration/desktop-cross-platform, codex/ubuntu-support]
-    paths: ['desktop/**', 'desktop.py', 'bridge/**', 'web/**', 'run.py', 'scripts/**', 'tests/**', 'package*.json', 'requirements-*.txt', '.github/workflows/desktop.yml']
+    paths: ['desktop/**', 'desktop.py', 'bridge/**', 'native/**', 'web/**', 'run.py', 'scripts/**', 'tests/**', 'package*.json', 'requirements-*.txt', '.github/workflows/desktop.yml']
 permissions:
   contents: read
 jobs:
@@ -38,6 +38,13 @@ jobs:
         with:
           node-version: '24'
           cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native/bridge-p2p
+      - name: Install P2P protobuf compiler on macOS
+        if: runner.os == 'macOS'
+        run: command -v protoc || brew install protobuf
       - run: python -m pip install -r requirements-desktop.txt
       - run: npm ci
       - run: python -B -m unittest discover -s tests -v
@@ -101,6 +108,7 @@ jobs:
             dist/desktop/*.dmg
             dist/desktop/*.zip
             dist/desktop/*.exe
+            dist/p2p/bridge-p2p-corresponding-source.tar.gz
 
   linux:
     strategy:
@@ -127,10 +135,14 @@ jobs:
         with:
           node-version: '24'
           cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native/bridge-p2p
       - name: Install Linux build and display dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-0 libnss3 libgbm1 libasound2 libxss1 libsecret-1-0 libfuse2 xvfb xauth dbus-x11 xdg-utils iproute2 zsh
+          sudo apt-get install -y libgtk-3-0 libnss3 libgbm1 libasound2 libxss1 libsecret-1-0 libfuse2 xvfb xauth dbus-x11 xdg-utils iproute2 zsh protobuf-compiler
       - run: python -m pip install -r requirements-desktop.txt
       - run: npm ci
       - run: python -B -m unittest discover -s tests -v
@@ -170,6 +182,7 @@ jobs:
           path: |
             dist/desktop/*.deb
             dist/desktop/*.AppImage
+            dist/p2p/bridge-p2p-corresponding-source.tar.gz
       - uses: actions/upload-artifact@v4
         if: always()
         with:
