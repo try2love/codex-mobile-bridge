@@ -12,6 +12,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from relay.protocol import MAX_BODY, content_type, download_headers, validate
+from bridge.features.accounts.cloud_summary import SUMMARY_PATH, summary_query
 from bridge.features.auth.tls import client_context
 from bridge.features.auth.auth import session_file_lock
 from bridge.features.network.cloud_account import Controller, CloudError, scope
@@ -32,7 +33,14 @@ def validate_request(value):
     if (not isinstance(value['path'], str) or not isinstance(value['method'], str)
             or type(value['length']) is not int or not 0 <= value['length'] <= MAX_BODY):
         raise ValueError('invalid request fields')
-    if value['path'] == '/api/auth' and value['method'] == 'GET' and value['length'] == 0:
+    path = urlsplit(value['path']).path
+    if path == SUMMARY_PATH:
+        summary_query(value['method'], value['path'], value['length'])
+        if value['headers']:
+            raise PermissionError('云账号摘要不接受转发头')
+    elif path == '/api/cli-access':
+        raise PermissionError('云账号管理只提供当前接入的只读摘要')
+    elif value['path'] == '/api/auth' and value['method'] == 'GET' and value['length'] == 0:
         pass
     elif value['method'] == 'GET' and urlsplit(value['path']).path.endswith('/events') and urlsplit(value['path']).path != '/api/mobile/events':
         # SSE is the same authenticated session resource; not an arbitrary socket/RPC endpoint.

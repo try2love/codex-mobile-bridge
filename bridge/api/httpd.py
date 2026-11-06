@@ -499,6 +499,11 @@ class Handler(BaseHTTPRequestHandler):
             auth = self.authorized(write)
             if not auth:
                 return
+            if path == '/api/cloud/accounts':
+                summary = getattr(self.server, 'cloud_account_summary', None)
+                if write or summary is None:
+                    raise PermissionError('此接口仅供已授权的云设备读取')
+                return self.output(200, summary(self.path))
             terminal_socket = re.fullmatch(r'/api/sessions/([0-9a-f-]{36})/terminal', path)
             if path == '/api/connection/routes':
                 discovery = getattr(self.server, 'connection_discovery', None)

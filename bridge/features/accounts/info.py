@@ -151,7 +151,7 @@ class AccountInfo:
                 self.checked_at = time.time()
                 self.probing = False
 
-    def request(self, value):
+    def request(self, value, *, snapshot=True):
         manager = self.manager
         section = value.get('section')
         if section not in ('usage','models') or not isinstance(value.get('refresh', False), bool):
@@ -173,14 +173,14 @@ class AccountInfo:
                 cached = {}
             ttl = 0 if value.get('refresh') else (12 * 60 * 60 if section == 'models' else 300)
             if cached.get('status') == 'loading' or time.time()-cached.get('checkedAt', 0) < ttl:
-                return manager.public()
+                return manager.public() if snapshot else None
             info[section] = {**cached, 'status':'loading', 'error':None}
             if route_key:
                 info[section]['_routeCacheKey'] = route_key
             if row.get('transient'):
                 info[section]['accountKey'] = row['accountKey']
             threading.Thread(target=self.read, args=(row,section,value.get('refresh',False),info[section]), daemon=True).start()
-            return manager.public()
+            return manager.public() if snapshot else None
 
     def read(self, row, section, refresh=False, pending=None):
         with self.manager.lock:

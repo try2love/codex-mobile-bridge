@@ -15,6 +15,14 @@ def create_cloud_server(gateway):
         for name in ('transfer_directory', 'mobile_updates', 'notifications', 'desktop_sessions',
                      'desktop_uploads', 'harness', 'ui_language_path', 'slots', 'terminal_sockets'):
             setattr(server, name, getattr(gateway, name, None))
+        from bridge.features.accounts.cloud_summary import current_summary, summary_query
+        def account_summary(path):
+            entry, section, refresh = summary_query('GET', path)
+            if not gateway.desktop_sessions:
+                raise PermissionError('应用接入不可用')
+            gateway.desktop_sessions.require_enabled('codex' if entry == 'desktop' else entry)
+            return current_summary(gateway.bridge.account_target(entry).accounts, section, refresh)
+        server.cloud_account_summary = account_summary
         origin = 'http://127.0.0.1:' + str(server.server_port)
         server.origins.add(origin)
         server.hosts.add(origin.removeprefix('http://'))
