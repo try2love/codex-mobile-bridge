@@ -1,5 +1,6 @@
 package io.github.try2love.codexbridge;
 
+import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -45,15 +46,18 @@ final class UURemote {
     .put("pip",context.getPackageManager().hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)).toString();
   }catch(Exception e){return "{}";}
  }
- private boolean compatible(Intent intent) throws PackageManager.NameNotFoundException {
-  PackageManager manager=context.getPackageManager();
-  if(intent.resolveActivity(manager)==null)return false;
-  String version=manager.getPackageInfo(PACKAGE,0).versionName;
+ private String installedVersion(){
+  try{return context.getPackageManager().getPackageInfo(PACKAGE,0).versionName;}
+  catch(PackageManager.NameNotFoundException|SecurityException unavailable){return null;}
+ }
+ private static boolean knownTooOld(String version){
   if(version==null)return false;
   java.util.regex.Matcher numbers=java.util.regex.Pattern.compile("^(\\d+)\\.(\\d+)").matcher(version);
   if(!numbers.find())return false;
-  int major=Integer.parseInt(numbers.group(1)),minor=Integer.parseInt(numbers.group(2));
-  return major>4||major==4&&minor>=42;
+  try{
+   int major=Integer.parseInt(numbers.group(1)),minor=Integer.parseInt(numbers.group(2));
+   return major<4||major==4&&minor<42;
+  }catch(NumberFormatException unknown){return false;}
  }
  private String scheme(){return context.getPackageName()+".uu";}
  private Uri.Builder base(String action){return new Uri.Builder().scheme("uuremote").authority("external").appendPath("device").appendPath(action);}
@@ -71,11 +75,19 @@ final class UURemote {
    if(kind.equals("pip"))request.appendQueryParameter("callback",callback.appendQueryParameter("nonce",nonce).toString());
   }
   Intent intent=new Intent(Intent.ACTION_VIEW,request.build()).setPackage(PACKAGE);
+  String version=installedVersion();
+  if(knownTooOld(version))return "请安装或更新 UU 远程至 4.42.0 及以上版本";
   try{
-   if(!compatible(intent))return "请安装或更新 UU 远程至 4.42.0 及以上版本";
    if(!kind.equals("full"))prefs.edit().putString(PENDING,new JSONObject().put("scope",scope).put("kind",kind)
       .put("nonce",nonce).put("until",System.currentTimeMillis()+600000).toString()).apply();
+   // Android can launch the package even when a resolver query would hide it.
    context.startActivity(intent);return "";
+  }catch(ActivityNotFoundException missing){
+   prefs.edit().remove(PENDING).apply();
+   return version!=null?"系统未能打开已安装的 UU 远程的远控入口":"找不到 UU 远控入口，请确认 UU 安装在当前手机用户下";
+  }catch(SecurityException denied){
+   prefs.edit().remove(PENDING).apply();
+   return "系统阻止了应用跳转，请允许 Codex Bridge 打开 UU 远程";
   }catch(Exception e){prefs.edit().remove(PENDING).apply();return "无法打开 UU 远程";}
  }
  private static String one(Uri uri,String name){List<String> values=uri.getQueryParameters(name);return values.size()==1?values.get(0):null;}

@@ -3,6 +3,9 @@ import android.content.Context;
 final class MobileStrings {
  private static final java.util.Map<String,String> values=new java.util.HashMap<>();
  static {
+  values.put("系统未能打开已安装的 UU 远程的远控入口","Android could not open the remote control link in the installed UU Remote app");
+  values.put("找不到 UU 远控入口，请确认 UU 安装在当前手机用户下","No UU Remote link handler was found. Check that UU Remote is installed in this Android profile.");
+  values.put("系统阻止了应用跳转，请允许 Codex Bridge 打开 UU 远程","Android blocked the launch. Allow Codex Bridge to open UU Remote.");
   values.put("UU 请求正在处理中","A UU request is already in progress");
   values.put("请安装或更新 UU 远程至 4.42.0 及以上版本","Install or update UU Remote to version 4.42.0 or later");
   values.put("无法打开 UU 远程","Could not open UU Remote");
