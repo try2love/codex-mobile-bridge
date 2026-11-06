@@ -26,6 +26,45 @@ class ServiceBoundary(unittest.TestCase):
             client.start()
         self.assertIsNone(client.signature)
 
+    def test_moved_holder_must_be_the_same_product_and_exact_prior_broker(self):
+        signature = host.SignedGatewayPeer.__new__(host.SignedGatewayPeer)
+        layout = Path("Contents/Resources/gateway/codex-mobile-gateway")
+        signature.image = str(Path("/Applications/Test.app") / layout)
+        previous = Path("/Applications/previous.app")
+        digest = b"d" * 20
+        with patch("bridge.platforms.macos.signed_peer.subprocess.run") as codesign, \
+                patch.object(signature, "_starter_requirement") as starter:
+            codesign.return_value.stdout = ""
+            codesign.return_value.stderr = 'designated => identifier "com.example.test"'
+            signature._verify_previous_build(str(previous / layout), digest)
+            self.assertEqual(codesign.call_args.args[0], [
+                "/usr/bin/codesign", "--verify", "--strict", '-R=identifier "com.example.test"', str(previous)])
+            starter.assert_called_once_with(previous / "Contents/Helpers/CMBZCodePipeStarter.app", digest)
+            codesign.reset_mock()
+            for bad in (Path("/tmp/previous.app") / layout, previous / "Contents/MacOS/codex-mobile-gateway"):
+                with self.assertRaises(PermissionError):
+                    signature._verify_previous_build(str(bad), digest)
+            codesign.assert_not_called()
+
+    def test_relocation_does_not_authorize_a_different_gateway_or_pid_generation(self):
+        import struct
+
+        signature = host.SignedGatewayPeer.__new__(host.SignedGatewayPeer)
+        signature.image = "/Applications/Test.app/Contents/Resources/gateway/codex-mobile-gateway"
+        signature.native = Mock()
+        proc = {'pid': 321, 'uid': os.getuid(), 'zombie': False, 'birth': (9, 7), 'started': (1, 0),
+                'image': '/Applications/previous.app/Contents/Resources/gateway/codex-mobile-gateway'}
+        signature.native.identity.return_value = proc
+        channel = Mock(family=socket.AF_UNIX)
+        channel.getsockopt.return_value = struct.pack("=8I", 0, os.getuid(), 0, os.getuid(), 0, 321, 0, 7)
+        with self.assertRaisesRegex(PermissionError, "executable or process generation"):
+            signature.require(channel, 321)
+        relocated = Mock()
+        proc['birth'] = (9, 8)
+        with self.assertRaisesRegex(PermissionError, "executable or process generation"):
+            signature.require(channel, 321, relocated_holder=relocated)
+        relocated.assert_not_called()
+
     def test_only_supported_native_request_shapes_reach_the_pipe(self):
         with tempfile.TemporaryDirectory(dir=ROOT / ".tmp") as tmp:
             holder = host.Holder(tmp, None, None)
