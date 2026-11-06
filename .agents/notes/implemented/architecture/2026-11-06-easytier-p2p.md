@@ -24,6 +24,8 @@ Windows 构建禁用不需要的 Windows 7 thunk 下载，以 IP Helper 替代 p
 
 共享适配另包含 `netdev 0.31.0` 的 MIT 源码，为 iOS 提供 Apple Darwin `route.h` 中的 `RTAX_MAX=8`；当前 libc 未在 iOS 导出该常量。iOS 另省略依赖内部 `SCNetworkInterface` API 的可选显示信息，地址仍从公开的 `getifaddrs` 获取。其他平台和路由 ABI 保持上游行为，避免整体升级 EasyTier 依赖图。
 
+`libc` 锁定 0.2.189 以兼容 EasyTier 的 `nix 0.29`；0.2.190 删除了旧 nix 仍引用的 Apple 移动内核控制类型。运行不启用内核控制或 TUN，待上游更新 nix 后重新评估该锁定。
+
 ## 记录归属
 
 [持久中继 v2](../../implemented/architecture/2026-11-05-persistent-relay-v2.md)部分重叠，保留其流控和未知写入边界；本篇持有 P2P 生命周期及延迟撤销的新增决定。[云监听注入](../../implemented/architecture/2026-11-02-cloud-listener-injection.md)部分重叠，保留受限本地 HTTP 服务的归属。检索未发现其他 EasyTier/P2P 提案，无完全吸收或需删除记录。

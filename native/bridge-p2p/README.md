@@ -35,6 +35,9 @@ Never put configuration, credentials or network secrets in arguments or logs.
   `RTAX_MAX` on iOS, where libc does not export that constant. macOS keeps using
   libc's constant. iOS omits optional interface display metadata, whose
   SCNetworkInterface APIs are private on iOS; addresses still use getifaddrs.
+- `libc` stays at 0.2.189 for EasyTier's nix 0.29 dependency. libc 0.2.190 removed
+  Apple mobile definitions still referenced by that older nix release. The
+  wrapper does not enable kernel control sockets or system TUN operation.
 
 ## Licenses and corresponding source
 

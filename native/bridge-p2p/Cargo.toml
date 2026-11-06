@@ -16,6 +16,8 @@ futures-util = "0.3"
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-platform-verifier = "0.7"
+# EasyTier 2.6.4 uses nix 0.29, which predates libc's Apple removals in 0.2.190.
+libc = "=0.2.189"
 
 # v2.6.4's mobile launcher has unconditional references to these compiled types.
 # Runtime remains no_tun=true; Bridge never supplies a TUN descriptor or enables DNS.
