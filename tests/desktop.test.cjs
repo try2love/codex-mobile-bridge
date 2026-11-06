@@ -52,6 +52,22 @@ test('tray can stop then quit and dispose without duplicate operations',async()=
   ui.tray.dispose();assert.equal(ui.result().destroyed,true);assert.equal(ui.result().cleared,true);
 });
 
+test('window observations defer tray reads and a late fallback cannot replace a newer address',async()=>{
+  const timers=new Map();let serial=0,menu,reads=0,resolve;
+  const state=url=>({runtime:{running:true},urls:[url]});
+  const tray=createTray({Tray:class{on(){}setToolTip(){}setContextMenu(value){menu=value;}destroy(){}},
+    Menu:{buildFromTemplate:v=>v},worker:()=>{reads++;return new Promise(done=>{resolve=done;});},
+    setTimer:(cb,ms)=>{const id=++serial;timers.set(id,{cb,ms});return id;},clearTimer:id=>timers.delete(id),copy:()=>{}});
+  resolve(state('https://first.test'));await new Promise(setImmediate);
+  for(let i=0;i<10;i++)tray.observe(state('https://first.test'));
+  assert.equal(reads,1);assert.equal(timers.size,1);
+  const [id,fallback]=[...timers][0];assert.equal(fallback.ms,5000);timers.delete(id);
+  const read=fallback.cb();assert.equal(reads,2);
+  tray.observe(state('https://new.test'));const newest=menu;
+  resolve(state('https://stale.test'));await read;assert.equal(menu,newest);
+  tray.dispose();assert.equal(timers.size,0);
+});
+
 test('tray can relabel without changing gateway state',async()=>{
   let language='zh-CN';const ui=await trayFixture(text=>i18n.translate(text,language));
   assert.ok(ui.find('打开控制面板'));language='en';ui.tray.relabel();

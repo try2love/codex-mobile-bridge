@@ -170,6 +170,7 @@ function register(){
     try{
       const value=await worker(action,payload);
       if(action==='save'&&payload?.loginStartup!==undefined){loginStartup.set(payload.loginStartup);value.loginStartup=loginStartup.status();}
+      if(action==='snapshot')tray?.observe(value);
       return value;
     }catch(error){if(error.validation)return {validationError:{message:error.message,...error.validation}};throw error;}
   });
