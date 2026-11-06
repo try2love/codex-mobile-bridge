@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import zipfile
+import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
@@ -40,12 +41,27 @@ run(build_tools/'aapt2','compile','--dir',source/'res','-o',work/'resources.zip'
 manifest = source/'AndroidManifest.xml'
 if options.cloud_libs:
     manifest = work/'AndroidManifest.xml'
-    manifest.write_text((source/manifest.name).read_text().replace('io.github.try2love.codexbridge.preview','io.github.try2love.codexbridge.cloudprototype').replace('android:label="Codex Bridge"','android:label="Bridge Cloud Test"'))
+    namespace='http://schemas.android.com/apk/res/android'
+    ET.register_namespace('android',namespace)
+    template=(source/manifest.name).read_text().replace('io.github.try2love.codexbridge.preview','io.github.try2love.codexbridge.cloudprototype')
+    app_manifest=ET.fromstring(template)
+    app_manifest.set('{'+namespace+'}versionName','2.2.0-preview.test.132.2')
+    app_manifest.set('{'+namespace+'}versionCode',str(int(app_manifest.attrib['{'+namespace+'}versionCode'])+1))
+    app_manifest.find('application').set('{'+namespace+'}label','Bridge Cloud Test')
+    ET.ElementTree(app_manifest).write(manifest,encoding='utf-8',xml_declaration=True)
 run(build_tools/'aapt2','link','-I',android,'--manifest',manifest,'--java',work/'gen','-o',work/'base.apk',work/'resources.zip')
 java = list((source/'src').rglob('*.java')) + list((work/'gen').rglob('*.java'))
 run(jdk/'bin/javac','-encoding','UTF-8','--release','8','-classpath',str(android)+os.pathsep+str(zxing),'-d',work/'classes',*java)
-extra_jars = [options.cloud_libs/'verifier.jar', options.cloud_libs/'kotlin-stdlib.jar'] if options.cloud_libs else []
-run(build_tools/'d8','--lib',android,'--min-api','26','--output',work/'dex',*list((work/'classes').rglob('*.class')),zxing,*extra_jars)
+classes = sorted((work/'classes').rglob('*.class'))
+if options.cloud_libs:
+    # Ship the existing Android entry points and all three Android TLS verifier
+    # classes intact. R8 only removes unreachable library code such as unused Kotlin APIs.
+    rules = ROOT/'mobile/shared/cloud/android/shrink.pro'
+    run(jdk/'bin/java','-cp',build_tools/'lib/d8.jar','com.android.tools.r8.R8',
+        '--release','--lib',android,'--min-api','26','--pg-conf',rules,'--output',work/'dex',
+        *classes,zxing,options.cloud_libs/'verifier.jar',options.cloud_libs/'kotlin-stdlib.jar')
+else:
+    run(build_tools/'d8','--lib',android,'--min-api','26','--output',work/'dex',*classes,zxing)
 shutil.copy2(work/'base.apk',work/'unsigned.apk')
 with zipfile.ZipFile(work/'unsigned.apk','a') as archive:
     if options.cloud_libs:
