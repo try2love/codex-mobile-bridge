@@ -3,7 +3,7 @@ const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const official={visible:true,loginType:'chatgpt',accountKey:'a'.repeat(64),limits:[],resetCredits:null,canReset:false,updatedAt:1900000000};
 
-async function fixture(read,kind='chatgpt',catalog=null,gatewayLanguage,accountSnapshot=null){
+async function fixture(read,kind='chatgpt',catalog=null,gatewayLanguage,accountSnapshot=null,cloud=false){
   const nodes=new Map(),timers=new Map(),requests=[],intervals=[],events={},responses=[];let timerId=0,delayNextSkill=null,failNextSkill=false;
   const node=(tag='div')=>({tagName:tag.toUpperCase(),getBoundingClientRect(){return {width:0};},value:'',checked:false,disabled:false,hidden:false,open:false,textContent:'',dataset:{},options:[],children:[],style:{setProperty(k,v){this[k]=v;}},scrollTop:0,parentElement:{},
     classList:{add(){},remove(){},toggle(){},contains(){return false;}},addEventListener(){},setAttribute(k,v){this[k]=v;},closest(selector){return selector==='dialog'?nodes.get('accounts-dialog'):selector==='.picker-head'?this:null;},
@@ -16,13 +16,14 @@ async function fixture(read,kind='chatgpt',catalog=null,gatewayLanguage,accountS
   const storage=()=>({getItem(){return null;},setItem(){},clear(){}});
   const response=(data,status=200)=>({ok:status===200,status,json:async()=>data});
   const context=vm.createContext({CliConnectionsPanel:class{clear(){}},ClientNavigation:class{constructor(){this.provider="codex";this.clients=[];}async refresh(){}async openChatLink(hash){assert.equal(hash,'','This fixture enters without a chat deep link');return false;}},DesktopSessionsView:class{bindListCache(){}previewCachedList(){return false;}clear(){}},Workbench:class{open(){}reset(){}setThumbnails(){}relabel(){}},AbortController,Event:class{constructor(type){this.type=type;}},navigator:{userAgent:'test'},Date,Option:function(text,value){return {...node('option'),textContent:text,value};},document:{addEventListener(){},dispatchEvent(){},documentElement:{classList:{contains(){return false;}}},getElementById:id=>nodes.get(id),querySelector:()=>({classList:{toggle(){}}}),querySelectorAll:()=>[],createElement:node},
-    window:{addEventListener:(name,fn)=>events[name]=fn},localStorage:storage(),sessionStorage:storage(),
+    window:{BridgeCloudWorkbench:cloud,addEventListener:(name,fn)=>events[name]=fn},localStorage:storage(),sessionStorage:storage(),
     location:{hash:'',pathname:'/',search:''},history:{state:null,replaceState(state){this.state=state;},pushState(state){this.state=state;},back(){}},
     setTimeout(fn,delay){timers.set(++timerId,{fn,delay});return timerId;},clearTimeout(id){timers.delete(id);},setInterval(fn,delay){intervals.push({fn,delay});},
     fetch:async(url,options={})=>{
       requests.push(url);
       if(url==='/api/auth')return response({authenticated:true,csrf:'fixture',uiLanguage:gatewayLanguage});
       if(url.startsWith('/api/sessions?'))return response({sessions:[]});
+      if(url.startsWith('/api/cloud/accounts'))return response({cloudReadOnly:true,accounts:[],activeId:null,current:{kind:'signedOut',status:'ready',name:''},capabilities:{usage:false,models:false},canSwitch:false,canManageDesktop:false});
       if(url.startsWith('/api/accounts?entry='))return response({accounts:[],current:{status:'ready',kind:'external',name:'Fixture WSL'},management:{external:true},canSwitch:false,canManageDesktop:false});
       if(url==='/api/accounts')return response(accountSnapshot||{accounts:[],activeId:null,current:{kind,status:'ready',name:'Fixture'},switch:{phase:'idle'}});
       if(url.includes('/catalog?kind=skills')){
@@ -487,4 +488,17 @@ test('deferred startup refresh is discarded after leaving the authenticated page
  await ui.run("location.hash='#target';clientNavigation.chatTarget=()=>({id:'target'});clientNavigation.openChatLink=async()=>true;enter({authenticated:true,enabledClients:['codex']})");
  ui.run("clientNavigation.refresh=()=>{throw Error('stale refresh')};csrf='';");
  const timer=[...ui.timers.values()].find(timer=>timer.delay===0);assert.ok(timer);await timer.fn();
+});
+
+test('approved cloud desktop page loads the summary only when opened and cannot post an account change',async()=>{
+ const ui=await fixture(r=>r(official),'chatgpt',null,undefined,null,true);
+ assert.equal(ui.requests.some(url=>url.startsWith('/api/cloud/accounts')||url.startsWith('/api/accounts')||url==='/api/cli-access'),false);
+ await ui.run('openCurrentAccounts()');await new Promise(setImmediate);
+ assert.equal(ui.run('accountsPanel.readOnly'),true);
+ assert.equal(ui.run('codexCliDetails.hidden'),true);
+ assert.ok(ui.requests.includes('/api/cloud/accounts'));
+ await ui.run("codexAccountEntry='codex:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';requestCodexAccount({action:'details',section:'models',refresh:true})");
+ assert.ok(ui.requests.includes('/api/cloud/accounts?section=models&refresh=1&entry=codex%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'));
+ assert.throws(()=>ui.run("requestCodexAccount({action:'switch',id:'other'})"));
+ assert.equal(ui.requests.some(url=>url.startsWith('/api/accounts')||url.startsWith('/api/cli-access')),false);
 });

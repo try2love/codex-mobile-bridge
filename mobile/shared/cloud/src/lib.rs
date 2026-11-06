@@ -622,3 +622,59 @@ mod verified_open_tests {
         assert!(result.unwrap_err().to_string().contains("access_denied"));
     }
 }
+
+#[cfg(test)]
+mod profile_edit_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_removed_edit_target_fails_before_login_or_vault_write() {
+        let result = action(
+            json!({"op":"login","serverType":"official","login":"fixture","password":"fixture",
+                   "replaceProfile":"no-longer-here"}),
+            Profiles::default(),
+            |_| panic!("edit target absent; must not persist"),
+        ).await;
+        assert!(result.unwrap_err().to_string().contains("配置已删除"));
+    }
+
+    #[tokio::test]
+    async fn changing_to_an_existing_account_rejects_before_installation_enrollment() {
+        use std::io::{Read,Write};
+        use std::time::Duration;
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1",0)).unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let account = uuid::Uuid::new_v4().to_string();
+        let expected_account = account.clone();
+        let server = std::thread::spawn(move ||{
+            let mut paths = Vec::new();
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut header = Vec::new();
+                while !header.ends_with(b"\r\n\r\n") && header.len() < 8192 {
+                    let mut byte=[0;1];stream.read_exact(&mut byte).unwrap();header.push(byte[0]);
+                }
+                let header = String::from_utf8(header).unwrap();
+                let path = header.split_whitespace().nth(1).unwrap();
+                let length = header.lines().find_map(|line|line.to_ascii_lowercase().strip_prefix("content-length: ")
+                    .and_then(|v| v.parse::<usize>().ok())).unwrap_or(0);
+                stream.read_exact(&mut vec![0;length]).unwrap();
+                let body = match path {
+                    "/v1/capabilities" => json!({"control_noise":"Noise_KK_25519_ChaChaPoly_BLAKE2s",
+                        "preview_noise":"Noise_K_25519_ChaChaPoly_BLAKE2s","relay_protocols":[2]}),
+                    "/v1/auth/login" => json!({"account":{"id":expected_account,"login":"fixture"},"access_token":"fixture-only"}),
+                    "/v1/auth/logout" => json!({}),
+                    _ => panic!("unexpected cloud endpoint: {path}"),
+                }.to_string();
+                paths.push(path.to_string());
+                write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
+            }
+            paths
+        });
+        let result = relay::login(origin, "fixture".into(), "fixture".into(), Vec::new(), &[&account]).await;
+        assert!(result.unwrap_err().to_string().contains("已有独立配置"));
+        assert_eq!(server.join().unwrap(),["/v1/capabilities","/v1/auth/login","/v1/auth/logout"]);
+    }
+}
