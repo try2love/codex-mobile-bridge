@@ -160,7 +160,8 @@ final class GatewayReachability: NSObject, URLSessionDataDelegate {
 }
 
 final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelegate, UIDocumentPickerDelegate, UIDocumentInteractionControllerDelegate, PHPickerViewControllerDelegate, UIAdaptivePresentationControllerDelegate {
-    private var cloudView = false
+    private var cloudComputerName: String?
+    private var cloudView: Bool { cloudComputerName != nil }
 #if CMB_CLOUD_PROTOTYPE
     private weak var cloudRows:UIStackView?
     private var cloudLastDirectory:[String:Any]?
@@ -900,7 +901,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         if cloudView || cloudOpening {MobileCloud.run(["op":"close"]){_ in}}
         cloudOpening=false
 #endif
-        cloudView=false
+        if cloudView { origin = ""; cloudComputerName = nil }
         clear(); navigation(home: true); subtitle.isHidden = true
         let container = UIView(); page.addArrangedSubview(container); let content = scrollContent(in: container)
         let visual = UIImageView(image: UIImage(systemName: "desktopcomputer")); visual.tintColor = .label; visual.contentMode = .scaleAspectFit; visual.heightAnchor.constraint(equalToConstant: 54).isActive = true
@@ -1215,7 +1216,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             cloudOpening=false;cloudRefreshing=false;cloudRevision+=1;cloudRows=nil
         }
 #endif
-        clear(); navigation(home: false); subtitle.isHidden = false; origin = address; documentAddress=address;cloudView=cloudName != nil;if !cloudView {var all = saved; if !all.contains(address) { all.append(address) }; defaults.set(all, forKey: "origins"); defaults.set(address, forKey: "active"); defaults.set(Date().timeIntervalSince1970, forKey: "last-opened:" + address)}; subtitle.text = MobileStrings.text("正在连接 · ") + (cloudName ?? computerName(address))
+        clear(); navigation(home: false); subtitle.isHidden = false; origin = address; documentAddress=address;cloudComputerName=cloudName;if !cloudView {var all = saved; if !all.contains(address) { all.append(address) }; defaults.set(all, forKey: "origins"); defaults.set(address, forKey: "active"); defaults.set(Date().timeIntervalSince1970, forKey: "last-opened:" + address)}; subtitle.text = MobileStrings.text("正在连接 · ") + (cloudName ?? computerName(address))
         let configuration = WKWebViewConfiguration(); configuration.websiteDataStore = cloudView ? .nonPersistent() : .default(); configuration.applicationNameForUserAgent = "BridgeMobile/0.1-iOS"
         configuration.preferences.javaScriptCanOpenWindowsAutomatically=true
         configuration.ignoresViewportScaleLimits = false
@@ -1838,7 +1839,9 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             ]))
         }
         content.addArrangedSubview(label(MobileStrings.text("当前电脑"), size: 19, weight: .semibold))
-        if origin.isEmpty {
+        if let name = cloudComputerName {
+            content.addArrangedSubview(card([label(name, size: 17, weight: .semibold), label(MobileStrings.text("云服务"), secondary: true)]))
+        } else if origin.isEmpty {
             content.addArrangedSubview(card([label(MobileStrings.text("尚未选择电脑"), size: 17), label(MobileStrings.text("返回首页扫码或输入网关地址。"), secondary: true)]))
         } else {
             content.addArrangedSubview(card([
