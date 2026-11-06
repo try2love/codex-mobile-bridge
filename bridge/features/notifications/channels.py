@@ -5,6 +5,7 @@ import hmac
 from bridge.api.validation import FieldError, at_field
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -181,9 +182,24 @@ def write_json(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     temporary = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
-    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
-    temporary.chmod(0o600)
-    temporary.replace(path)
+    try:
+        temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+        temporary.chmod(0o600)
+        deadline = time.monotonic() + 2 if os.name == 'nt' else 0
+        while True:
+            try:
+                temporary.replace(path)
+                break
+            except PermissionError as exc:
+                # Windows readers briefly block replacement; never fall back to truncation.
+                if os.name != 'nt' or getattr(exc, 'winerror', None) not in (5, 32, 33):
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise
+                time.sleep(min(.05, remaining))
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def valid_url(value, allow_path=False):
@@ -199,6 +215,19 @@ def valid_url(value, allow_path=False):
 def settings(data_dir):
     return {'webhookEndpoints': [], 'webhookName': '默认 Webhook', **DEFAULTS,
             **read_json(Path(data_dir)/'notifications.json', {})}
+
+
+def enable_mobile_for_cloud(data_dir):
+    """Apply the cloud inbox default once, preserving later explicit opt-outs."""
+    with SETTINGS_LOCK:
+        path = Path(data_dir)/'notifications.json'
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with session_file_lock(path):
+            saved = read_json(path, {})
+            if saved.get('cloudMobileDefaultApplied') is True:
+                return
+            write_json(path, {**saved, 'mobileEnabled': True,
+                              'cloudMobileDefaultApplied': True})
 
 
 def merge_webhook_config(prior, value):
