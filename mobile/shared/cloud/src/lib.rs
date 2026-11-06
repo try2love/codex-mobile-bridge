@@ -156,20 +156,22 @@ async fn action(
     }
     if op == "login" {
         let origin = login_origin(&input)?;
-        let existing = store
-            .profiles
-            .values()
-            .filter(|p| p.origin == origin)
-            .map(|p| p.credentials.clone())
-            .collect();
+        let replace = input.get("replaceProfile")
+            .map(|_| field(&input, "replaceProfile")).transpose()?;
+        if let Some(id) = replace {
+            ensure!(store.profiles.contains_key(id), "云配置已删除，请刷新");
+        }
+        let existing = store.profiles.values().filter(|p| p.origin == origin)
+            .map(|p| p.credentials.clone()).collect();
+        let reserved = store.profiles.iter()
+            .filter(|(id, p)| p.origin == origin && replace.is_some_and(|old| old != id.as_str()))
+            .map(|(_, p)| p.account.as_str()).collect::<Vec<_>>();
         let login = relay::login(
-            origin.into(),
-            field(&input, "login")?.into(),
-            field(&input, "password")?.into(),
-            existing,
-        )
-        .await?;
+            origin.into(), field(&input,"login")?.into(), field(&input,"password")?.into(),
+            existing, &reserved,
+        ).await?;
         let id = profile_id(origin, &login.account_id);
+        let old = replace.filter(|old| *old != id).and_then(|old| store.profiles.remove(old));
         let p = store.profiles.entry(id.clone()).or_default();
         p.origin = origin.into();
         p.account = login.account_id;
@@ -177,7 +179,14 @@ async fn action(
         p.credentials = login.credentials;
         p.signed_out = false;
         save(&store)?;
-        return Ok(json!({"profile":id}));
+        let mut confirmed = true;
+        if let (Some(old_id), Some(old)) = (replace, old) {
+            web::close_profile(old_id).await;
+            if !old.signed_out {
+                confirmed = relay::account_logout(&old.credentials, &old.origin, &old.account).await.is_ok();
+            }
+        }
+        return Ok(json!({"profile":id,"remoteConfirmed":confirmed}));
     }
     if op == "devices" {
         use futures_util::{StreamExt, stream};
@@ -222,7 +231,7 @@ async fn action(
                 v["name"].as_str().unwrap_or("").to_string(),
             )
         });
-        return Ok(json!({"devices":rows,"errors":errors}));
+        return Ok(json!({"devices":rows,"errors":errors,"profiles":shared.lock().unwrap().list()}));
     }
     let id = field(&input, "profile")?.to_owned();
     let mut vault = store
@@ -289,18 +298,38 @@ async fn action(
     };
     vault.renew(&mut checkpoint).await?;
     let binding = field(&input, "binding")?;
+    if op == "open" {
+        if let Some((client, safety)) = verified_client(&vault, binding)? {
+            let name = device_name(&vault, binding);
+            // The pinned identity selects the peer; the relay still verifies
+            // the account, installation token, peer key and desktop permission.
+            client.ensure_session().await?;
+            return Ok(json!({"status":"active","entry":web::open(id,client).await?,"safety":safety,"name":name}));
+        }
+    }
     let devices = relay::devices(&vault.credentials, &vault.origin, &vault.account).await?;
-    let item = devices
-        .into_iter()
-        .find(|d| d.binding_id == binding)
-        .context("同账号设备列表中找不到此电脑")?;
-    let (client, state) =
-        verified_device(&mut vault, item, field(&input, "name")?, &mut checkpoint).await?;
+    let item = devices.into_iter().find(|d| d.binding_id == binding).context("同账号设备列表中找不到此电脑")?;
+    let (client, state) = verified_device(&mut vault, item, field(&input, "name")?, &mut checkpoint).await?;
     if op == "verify" || state.status != "active" {
         return Ok(json!({"status":state.status,"safety":state.safety_code}));
     }
     client.ensure_session().await?;
-    Ok(json!({"status":"active","entry":web::open(id,client).await?,"safety":state.safety_code}))
+    let name = device_name(&vault, binding);
+    Ok(json!({"status":"active","entry":web::open(id,client).await?,"safety":state.safety_code,"name":name}))
+}
+
+fn verified_client(vault: &Vault, binding: &str) -> Result<Option<(Arc<relay::Relay>, String)>> {
+    if !vault.bindings.contains_key(binding) {
+        return Ok(None);
+    }
+    let client = Arc::new(vault.device(binding)?);
+    let safety = client.saved_safety_code()?;
+    Ok((!safety.is_empty()).then_some((client, safety)))
+}
+
+fn device_name<'a>(vault: &'a Vault, binding: &str) -> Option<&'a String> {
+    let gateway = &vault.bindings.get(binding)?.0.gateway_id;
+    vault.aliases.get(gateway).or_else(|| vault.known.get(gateway))
 }
 
 async fn device_rows(
@@ -324,6 +353,9 @@ async fn device_rows(
         let mut row = serde_json::to_value(&item)?;
         row["profile"] = json!(id);
         row["source"] = json!(vault.label());
+        row["sourceKind"]=json!(if vault.origin==OFFICIAL{"official"}else{"custom"});
+        row["sourceLogin"]=json!(vault.login);
+        row["customOrigin"]=json!(if vault.origin==OFFICIAL{None}else{Some(&vault.origin)});
         row["name"] = json!(
             vault
                 .aliases
@@ -541,5 +573,52 @@ mod profiles_tests {
         assert_eq!(original.credentials, legacy["credentials"]);
         assert_eq!(original.login, "fixture");
         assert!(!original.signed_out);
+    }
+}
+
+#[cfg(test)]
+mod verified_open_tests {
+    use super::*;
+    use base64::{Engine,engine::general_purpose::STANDARD};
+    use std::io::{Read,Write};
+    use std::net::TcpListener;
+    use std::time::{SystemTime,UNIX_EPOCH};
+
+    #[tokio::test]
+    async fn verified_open_attempts_only_the_real_authorization_and_honors_denial() {
+        let listener=TcpListener::bind(("127.0.0.1",0)).unwrap();
+        let origin=format!("http://{}",listener.local_addr().unwrap());
+        let remote=std::thread::spawn(move||{
+            let (mut stream,_)=listener.accept().unwrap();
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(4))).unwrap();
+            let mut headers=Vec::new();
+            let mut byte=[0;1];
+            while !headers.ends_with(b"\r\n\r\n") && headers.len()<8192 {
+                stream.read_exact(&mut byte).unwrap();headers.push(byte[0]);
+            }
+            stream.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            String::from_utf8(headers).unwrap().lines().next().unwrap().to_string()
+        });
+        let account=uuid::Uuid::new_v4().to_string();
+        let installation=uuid::Uuid::new_v4().to_string();
+        let gateway=uuid::Uuid::new_v4();let binding=uuid::Uuid::new_v4();
+        let device_token="t".repeat(43);
+        let private=[7;32];let mobile=cloud_crypto::public_key(&private).unwrap();
+        let desktop=cloud_crypto::public_key(&[9;32]).unwrap();
+        let preview=cloud_crypto::public_key(&[5;32]).unwrap();let desktop_preview=cloud_crypto::public_key(&[4;32]).unwrap();
+        let safety=cloud_crypto::pairing_safety_code(&origin,gateway,binding,&private,&desktop,&desktop,&mobile,&desktop_preview,&preview).unwrap();
+        let connection=RelayConnection{origin:origin.clone(),account_id:account.clone(),gateway_id:gateway.to_string(),binding_id:binding.to_string(),desktop_public_key:STANDARD.encode(desktop)};
+        let raw=json!({"origin":origin,"account_id":account,"login":"fixture","access_token":"a".repeat(43),"refresh_token":"r".repeat(43),
+            "access_deadline":SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()+3600,"installation_id":installation,
+            "control_private":STANDARD.encode(private),"device_token":device_token}).to_string();
+        let saved=json!({"connection":connection,"installation_id":installation,"device_token":device_token,
+            "control_private":STANDARD.encode(private),"control_public":STANDARD.encode(mobile),"preview_private":STANDARD.encode([5;32]),
+            "preview_public":STANDARD.encode(preview),"desktop_preview_public":STANDARD.encode(desktop_preview),"device_name":"fixture","pairing_code":safety}).to_string();
+        let vault=Vault{origin:origin.clone(),account:account.clone(),credentials:raw,bindings:BTreeMap::from([(binding.to_string(),(connection,saved))]),..Default::default()};
+        let profile=profile_id(&origin,&account);
+        let store=Profiles{profiles:BTreeMap::from([(profile.clone(),vault)])};
+        let result=action(json!({"op":"open","profile":profile,"binding":binding.to_string(),"name":"fixture"}),store,|_|panic!("unexpected mutation")).await;
+        assert_eq!(remote.join().unwrap(),"GET /v1/ws/mobile HTTP/1.1");
+        assert!(result.unwrap_err().to_string().contains("access_denied"));
     }
 }

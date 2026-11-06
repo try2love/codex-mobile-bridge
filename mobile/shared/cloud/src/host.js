@@ -2,6 +2,7 @@
 // per-view capability to another origin, to a redirect or to an asset URL.
 (()=>{
   'use strict';
+  window.BridgeCloudWorkbench=true;
   const prefix='#cmb-cloud=';
   let grant='';
   if(location.hash.startsWith(prefix)){

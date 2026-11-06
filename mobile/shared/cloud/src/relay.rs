@@ -184,6 +184,7 @@ pub(crate) async fn login(
     login: String,
     mut password: String,
     saved: Vec<String>,
+    reserved_accounts: &[&str],
 ) -> Result<CloudLogin> {
     capabilities(&origin).await?;
     let response = api(
@@ -198,6 +199,15 @@ pub(crate) async fn login(
     let v = response?;
     let account = v["account"]["id"].as_str().ok_or_else(invalid)?.to_owned();
     id(&account)?;
+    if reserved_accounts.contains(&account.as_str()) {
+        // The authenticated target already has a different local configuration;
+        // never enroll or rotate that configuration's installation.
+        if let Some(token) = v["access_token"].as_str() {
+            let _ = api(&origin, "/v1/auth/logout", Method::POST, Some(json!({})), token).await;
+        }
+        return Err(BridgeError::Invalid("这个云账号已有独立配置，请使用对应配置".into()));
+    }
+
     // Select the installation by the verified server identity, never by a typed login label.
     let prior = saved.iter().map(|raw|serde_json::from_str::<AccountSecrets>(raw))
         .collect::<std::result::Result<Vec<_>,_>>()?.into_iter()

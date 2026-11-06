@@ -933,7 +933,7 @@ $('appearance-reset-dynamic').onchange=async event=>{
 };
 let notificationDefaultsRequest=0;
 window.loadNotificationDefaults=async()=>{
-  if(window.BridgeSharedRelay){$('appearance-reset-dynamic').closest('fieldset').hidden=true;return;}
+  if(window.BridgeSharedRelay||window.BridgeCloudWorkbench){$('appearance-reset-dynamic').closest('fieldset').hidden=true;return;}
   loadResetDynamicSetting();
   const request=++notificationDefaultsRequest;
   for(const id of ['notification-requests','notification-completions'])$(id).disabled=true;
@@ -1092,7 +1092,7 @@ function renderQueue(rows){
         ignore.disabled=true;
         try{accountsPanel?.accept(await ignoreSubmission({threadId:target,submissionId:row.id,host}));toast('已忽略未确认记录');}
         catch(e){ignore.disabled=false;toast(e.message);}
-      };if(!window.BridgeSharedRelay)card.append(ignore);
+      };if(!window.BridgeSharedRelay&&!window.BridgeCloudWorkbench)card.append(ignore);
     }
     $('queued').append(card);
   }
