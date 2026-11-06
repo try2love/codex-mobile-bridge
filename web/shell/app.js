@@ -1641,8 +1641,8 @@ async function notificationChannelAction(test){
 $('pushplus-form').onsubmit=event=>{event.preventDefault();return notificationChannelAction(false);};
 $('pushplus-test').onclick=()=>notificationChannelAction(true);
 
-const cloudAccountView=window.BridgeCloudWorkbench===true;
 const codexCliRoot=el('div');
+const cloudAccountView=window.BridgeCloudWorkbench===true;
 const codexCliDetails=el('details'),codexCliSummary=el('summary','',t('新建 Codex API 接入'));codexCliSummary.dataset.i18n='新建 Codex API 接入';codexCliDetails.append(codexCliSummary,codexCliRoot);$('accounts-dialog').append(codexCliDetails);
 const codexCliAccessPanel=cloudAccountView||typeof CliAccessPanel==='undefined'?null:new CliAccessPanel({root:codexCliRoot,provider:'codex',formOnly:true,onChanged:()=>accountsPanel?.refresh(),read:()=>api('/api/cli-access'),request:value=>api('/api/cli-access',value)});
 let codexWslRoot=null,codexWslAccounts=null,accountEntryControls=null,accountEntrySelect=null;

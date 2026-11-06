@@ -1,7 +1,7 @@
 import json
 import http.client
 from pathlib import Path
-from threading import RLock, Thread
+from threading import BoundedSemaphore, RLock, Thread
 from types import SimpleNamespace
 import unittest
 import uuid
@@ -96,7 +96,8 @@ class CloudAccountSummaryTests(unittest.TestCase):
         bridge=Mock()
         bridge.account_target.return_value=SimpleNamespace(accounts=manager)
         sessions=Mock()
-        gateway=SimpleNamespace(bridge=bridge,desktop_sessions=sessions,web_dir=ROOT/'web')
+        gateway=SimpleNamespace(bridge=bridge,desktop_sessions=sessions,web_dir=ROOT/'web',
+                                slots=BoundedSemaphore(8),terminal_sockets=BoundedSemaphore(1))
         server=create_cloud_server(gateway)
         th=Thread(target=server.serve_forever,daemon=True);th.start()
         self.addCleanup(server.server_close);self.addCleanup(server.shutdown)
