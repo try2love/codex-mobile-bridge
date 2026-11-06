@@ -164,68 +164,91 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
 #if CMB_CLOUD_PROTOTYPE
     private weak var cloudRows:UIStackView?
     private var cloudLastDirectory:[String:Any]?
-    private var cloudBusy=false
+    private var cloudProfiles:[[String:Any]]?
+    private var cloudRefreshing=false,cloudOpening=false
     private var cloudRevision=0
-    private func cloudAction(_ input:[String:Any], done:@escaping ([String:Any])->Void){
-        guard !cloudBusy else {return}
-        cloudBusy=true;let rev=cloudRevision
+    private let lastCloudKey="last-cloud-view"
+    private func cloudAction(_ input:[String:Any],failed:((String)->Void)?=nil,done:@escaping ([String:Any])->Void){
+        let revision=cloudRevision
         MobileCloud.run(input){[weak self] result in
-            guard let self=self else{return};self.cloudBusy=false
-            guard rev==self.cloudRevision else {
-                if input["op"] as? String=="open" {MobileCloud.run(["op":"close"]){_ in}}
-                return
+            guard let self=self,revision==self.cloudRevision else{return}
+            switch result{
+            case .success(let value):done(value)
+            case .failure(let error):
+                let reason=MobileStrings.text(error.localizedDescription)
+                if let failed {failed(reason)}else{self.info(reason)}
             }
-            switch result{case .success(let value):done(value);case .failure(let error):self.info(error.localizedDescription)}
         }
+    }
+    private func cloudTitle(_ kind:String?,_ origin:String?,_ login:String?)->String{
+        let server=kind=="custom" ? String((origin ?? "").dropFirst("https://".count)) : MobileStrings.text("官方云服务")
+        return server+" · "+(login ?? "")
+    }
+    private func profileTitle(_ p:[String:Any])->String{
+        cloudTitle(p["serverType"] as? String,p["customOrigin"] as? String,p["login"] as? String)
+    }
+    private func clearCloudSelection(_ id:String){
+        if defaults.dictionary(forKey:lastCloudKey)?["profile"] as? String==id {defaults.set(["home":true],forKey:lastCloudKey)}
+    }
+    private func restoreCloud()->Bool{
+        guard let route=defaults.dictionary(forKey:lastCloudKey) else{return false}
+        if route["home"] as? Bool==true{home();return true}
+        guard MobileCloud.enabled,let profile=route["profile"] as? String,let binding=route["binding"] as? String,let name=route["name"] as? String else{
+            defaults.set(["home":true],forKey:lastCloudKey);home();info("上次使用的云配置不可用");return true
+        }
+        openCloud(profile,binding,name);return true
     }
     private func addCloud(_ profile:[String:Any]?=nil){
         let form=CloudLoginForm();form.profile=profile
-        form.submit={ [weak self] input in self?.cloudAction(input){_ in
-            self?.cloudLastDirectory=nil;self?.defaults.set(true,forKey:"cloud-account-enabled");self?.home()
+        form.submit={ [weak self] input in self?.cloudAction(input){value in
+            if let old=profile?["id"] as? String,old != value["profile"] as? String {self?.clearCloudSelection(old)}
+            self?.cloudLastDirectory=nil;self?.cloudProfiles=nil;self?.defaults.set(true,forKey:"cloud-account-enabled");self?.home()
+            if value["remoteConfirmed"] as? Bool==false{self?.info("本机配置已更新，远端退出暂未确认。")}
         }}
         let nav=UINavigationController(rootViewController:form);nav.modalPresentationStyle = .formSheet;present(nav,animated:true)
     }
-    private func cloudAccount(){
+    private func cloudAccount(_ selected:String?=nil){
         if !MobileCloud.enabled {addCloud();return}
-        cloudAction(["op":"profiles"]){value in
-            let menu=UIAlertController(title:MobileStrings.text("云服务"),message:nil,preferredStyle:.alert)
-            menu.addAction(UIAlertAction(title:MobileStrings.text("添加云服务"),style:.default){_ in self.addCloud()})
-            for profile in value["profiles"] as? [[String:Any]] ?? []{
-                let label=(profile["label"] as? String ?? "")+((profile["signedOut"] as? Bool)==true ? "（已退出）":"")
-                menu.addAction(UIAlertAction(title:label,style:.default){_ in self.manageCloud(profile)})
+        let (page,body)=sheet(MobileStrings.text(selected==nil ? "云服务":"管理云服务"))
+        let next: (@escaping ()->Void)->Void={ [weak page] action in page?.dismiss(animated:true,completion:action) }
+        func draw(_ profiles:[[String:Any]]){
+            body.arrangedSubviews.forEach{$0.removeFromSuperview()}
+            if let selected {
+                guard let profile=profiles.first(where:{$0["id"] as? String==selected}) else{return}
+                body.addArrangedSubview(label(profileTitle(profile),size:16,weight:.semibold))
+                let off=profile["signedOut"] as? Bool==true
+                body.addArrangedSubview(button(MobileStrings.text(off ? "重新登录":"编辑登录配置")){[weak self] in next{self?.addCloud(profile)}})
+                if !off {body.addArrangedSubview(button(MobileStrings.text("退出云账号")){[weak self] in next{self?.confirmCloud(profile,remove:false)}})}
+                body.addArrangedSubview(button(MobileStrings.text("删除云服务配置")){[weak self] in next{self?.confirmCloud(profile,remove:true)}})
+            }else{
+                body.addArrangedSubview(button(MobileStrings.text("添加云服务"),symbol:"plus"){[weak self] in next{self?.addCloud()}})
+                for p in profiles {
+                    guard let id=p["id"] as? String else{continue}
+                    let text=profileTitle(p)+(p["signedOut"] as? Bool==true ? " · "+MobileStrings.text("已退出"):"")
+                    body.addArrangedSubview(button(text){[weak self] in next{self?.cloudAccount(id)}})
+                }
             }
-            menu.addAction(UIAlertAction(title:MobileStrings.text("取消"),style:.cancel));self.present(menu,animated:true)
         }
-    }
-    private func manageCloud(_ profile:[String:Any]){
-        let menu=UIAlertController(title:profile["label"] as? String,message:nil,preferredStyle:.alert)
-        if profile["signedOut"] as? Bool==true{
-            menu.addAction(UIAlertAction(title:MobileStrings.text("登录"),style:.default){_ in self.addCloud(profile)})
-        }else{
-            menu.addAction(UIAlertAction(title:MobileStrings.text("刷新云设备"),style:.default){_ in self.refreshCloud()})
-            menu.addAction(UIAlertAction(title:MobileStrings.text("退出云账号"),style:.default){_ in self.confirmCloud(profile,remove:false)})
-        }
-        menu.addAction(UIAlertAction(title:MobileStrings.text("删除云服务配置"),style:.destructive){_ in self.confirmCloud(profile,remove:true)})
-        menu.addAction(UIAlertAction(title:MobileStrings.text("取消"),style:.cancel));present(menu,animated:true)
+        if let cached=cloudProfiles {draw(cached)}else{body.addArrangedSubview(label(MobileStrings.text("正在读取…"),secondary:true))}
+        present(page,animated:true)
+        if cloudProfiles==nil {cloudAction(["op":"profiles"]){[weak page] value in
+            self.cloudProfiles=value["profiles"] as? [[String:Any]]
+            if page?.presentingViewController != nil{draw(self.cloudProfiles ?? [])}
+        }}
     }
     private func confirmCloud(_ profile:[String:Any],remove:Bool){
         guard let id=profile["id"] as? String else{return}
         let title=MobileStrings.text(remove ? "删除云服务配置":"退出云账号")
         let names=profile["computers"] as? [String] ?? []
-        let message=(profile["label"] as? String ?? "")+"\n"+(remove ? "从本机清除此配置、设备别名和配对密钥。":"退出此账号下所有电脑，保留配置和设备别名。")+(names.isEmpty ? "":"\n"+names.joined(separator:"、"))
+        let message=profileTitle(profile)+"\n"+MobileStrings.text(remove ? "从本机清除此配置、设备别名和配对密钥。":"退出此账号下所有电脑，保留配置和设备别名。")+(names.isEmpty ? "":"\n"+names.joined(separator:"、"))
         let dialog=UIAlertController(title:title,message:message,preferredStyle:.alert)
         dialog.addAction(UIAlertAction(title:MobileStrings.text("取消"),style:.cancel))
         dialog.addAction(UIAlertAction(title:title,style:.destructive){_ in
             self.cloudAction(["op":remove ? "remove":"logout","profile":id]){v in
-                self.cloudLastDirectory=nil;self.defaults.set(!(v["profiles"] as? [[String:Any]] ?? []).isEmpty,forKey:"cloud-account-enabled");self.home()
+                self.clearCloudSelection(id);self.cloudLastDirectory=nil;self.cloudProfiles=v["profiles"] as? [[String:Any]];self.defaults.set(!(v["profiles"] as? [[String:Any]] ?? []).isEmpty,forKey:"cloud-account-enabled");self.home()
                 if v["remoteConfirmed"] as? Bool==false {self.info("本机配置已更新，远端退出暂未确认。")}
             }
         });present(dialog,animated:true)
-    }
-    private func cloudCardLogout(_ id:String){
-        cloudAction(["op":"profiles"]){v in
-            if let p=(v["profiles"] as? [[String:Any]])?.first(where:{($0["id"] as? String)==id}){self.confirmCloud(p,remove:false)}
-        }
     }
     private func renameCloud(_ id:String,_ gateway:String,_ name:String){
         let form=UIAlertController(title:MobileStrings.text("重命名"),message:nil,preferredStyle:.alert)
@@ -243,11 +266,13 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
     private func refreshCloud(){
         guard MobileCloud.enabled,cloudRows != nil else{return}
         if let cached=cloudLastDirectory{renderCloud(cached)}
-        guard !cloudBusy else{return}
-        cloudAction(["op":"devices","name":"iOS Bridge Test"]){self.renderCloud($0)}
+        guard !cloudRefreshing else{return};cloudRefreshing=true
+        cloudAction(["op":"devices","name":"iOS Bridge Test"],failed:{reason in
+            self.cloudRefreshing=false;self.cloudRows?.addArrangedSubview(self.label(reason,size:14,secondary:true))
+        }){self.cloudRefreshing=false;self.renderCloud($0)}
     }
     private func renderCloud(_ value:[String:Any]){
-        cloudLastDirectory=value
+        cloudLastDirectory=value;if let profiles=value["profiles"] as? [[String:Any]] {cloudProfiles=profiles}
             guard let stack=self.cloudRows else{return}
             stack.arrangedSubviews.forEach{$0.removeFromSuperview()}
             for row in value["devices"] as? [[String:Any]] ?? []{
@@ -256,20 +281,31 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
                 let open=self.button(name){[weak self] in self?.openCloud(profile,id,name)}
                 open.isEnabled=online && ["pending","active"].contains(status ?? "")
                 let hint = !online ? "离线" : status=="active" ? "已允许连接" : status=="pending" ? "待电脑允许" : "已停用"
-                var items:[UIView]=[open,self.label((row["source"] as? String ?? "云设备")+" · "+hint,size:14,secondary:true)]
+                open.contentHorizontalAlignment = .leading;open.configuration?.baseBackgroundColor = .clear
+                let source=cloudTitle(row["sourceKind"] as? String,row["customOrigin"] as? String,row["sourceLogin"] as? String)
+                var items:[UIView]=[open,self.label(source+" · "+MobileStrings.text(hint),size:14,secondary:true)]
                 if status=="pending",let safety=row["safety"] as? String,!safety.isEmpty {items.append(self.label(safety,size:13,secondary:true))}
-                if let why=row["proofError"] as? String {items.append(self.label(why,size:13,secondary:true))}
-                let actions=UIStackView(arrangedSubviews:[self.button(MobileStrings.text("重命名")){self.renameCloud(profile,computer,name)},self.button(MobileStrings.text("退出云账号")){self.cloudCardLogout(profile)}])
-                actions.axis = .horizontal;actions.distribution = .fillEqually;actions.spacing=8;items.append(actions)
+                if let why=row["proofError"] as? String {items.append(self.label(MobileStrings.text(why),size:13,secondary:true))}
+                items.append(computerActions("管理云服务",{self.renameCloud(profile,computer,name)},{self.cloudAccount(profile)}))
                 stack.addArrangedSubview(self.card(items))
             }
             for error in value["errors"] as? [String] ?? [] {stack.addArrangedSubview(self.label(error,size:14,secondary:true))}
     }
     private func openCloud(_ profile:String,_ id:String,_ name:String){
-        cloudAction(["op":"open","profile":profile,"binding":id,"name":"iOS Bridge Test"]){value in
+        guard !cloudOpening else{return}
+        cloudRows=nil;cloudRevision+=1;cloudRefreshing=false;cloudOpening=true
+        clear();navigation(home:false)
+        let panel=connectionProgress(name)
+        panel.addArrangedSubview(button(MobileStrings.text("取消")){[weak self] in self?.home()})
+        cloudAction(["op":"open","profile":profile,"binding":id,"name":"iOS Bridge Test"],failed:{ reason in
+            self.cloudOpening=false;self.home();self.info(reason)
+        }){value in
+            self.cloudOpening=false
             if let entry=value["entry"] as? String,let url=URL(string:entry),let address=try? GatewayURL.origin(entry.components(separatedBy:"#")[0]){
-                self.connect(url,address:address,cloudName:name)
-            }else{self.info("在电脑的云设备列表核对安全码并开启允许连接。\n"+(value["safety"] as? String ?? ""))}
+                let resolved=value["name"] as? String ?? name
+                self.defaults.set(["profile":profile,"binding":id,"name":resolved],forKey:self.lastCloudKey);self.defaults.removeObject(forKey:"active")
+                self.connect(url,address:address,cloudName:resolved)
+            }else{self.home();self.info(MobileStrings.text("在电脑核对安全码并允许连接。")+"\n"+(value["safety"] as? String ?? ""))}
         }
     }
 #endif
@@ -507,17 +543,21 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         })
         return true
     }
+    private func connectionProgress(_ name:String)->UIStackView{
+        subtitle.isHidden=true
+        let container=UIView(),panel=column()
+        panel.addArrangedSubview(label(MobileStrings.text("正在连接 · ")+name,size:20,weight:.semibold))
+        entryProgress=container;page.addArrangedSubview(container);container.addSubview(panel);panel.translatesAutoresizingMaskIntoConstraints=false
+        NSLayoutConstraint.activate([panel.centerYAnchor.constraint(equalTo:container.centerYAnchor),panel.leadingAnchor.constraint(equalTo:container.leadingAnchor,constant:24),panel.trailingAnchor.constraint(equalTo:container.trailingAnchor,constant:-24)])
+        return panel
+    }
     private func openComputer(_ address:String,_ url:URL){
         guard !addresses(address).isEmpty else{manageComputer(address);return}
         guard let d=channelRecord(address) else{connect(url,address:address);return}
         clear();navigation(home:false);origin=address;subtitle.isHidden=false
         let screen=generation,targets=addresses(address)
         var progress=[String:String]()
-        subtitle.isHidden=true
-        let container=UIView(),panel=column(),title=label(MobileStrings.text("正在连接 · ")+computerName(address),size:20,weight:.semibold)
-        let rows=column(spacing:8);panel.addArrangedSubview(title);panel.addArrangedSubview(rows)
-        entryProgress=container;page.addArrangedSubview(container);container.addSubview(panel);panel.translatesAutoresizingMaskIntoConstraints=false
-        NSLayoutConstraint.activate([panel.centerYAnchor.constraint(equalTo:container.centerYAnchor),panel.leadingAnchor.constraint(equalTo:container.leadingAnchor,constant:24),panel.trailingAnchor.constraint(equalTo:container.trailingAnchor,constant:-24)])
+        let panel=connectionProgress(computerName(address)),rows=column(spacing:8);panel.addArrangedSubview(rows)
         var labels=[String:UILabel]()
         for url in targets{
             let time=label("",size:14,secondary:true);time.setContentCompressionResistancePriority(.required,for:.horizontal)
@@ -703,7 +743,14 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             downloadPanel.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
             downloadPanel.leadingAnchor.constraint(greaterThanOrEqualTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12)])
         downloadPanel.render(downloadState)
-        if let active = defaults.string(forKey: "active"), saved.contains(active) { openSaved(active) } else { home() }
+#if CMB_CLOUD_PROTOTYPE
+        let restoredCloud=restoreCloud()
+#else
+        let restoredCloud=false
+#endif
+        if !restoredCloud{
+            if let active = defaults.string(forKey: "active"), saved.contains(active) { openSaved(active) } else { home() }
+        }
         NotificationCenter.default.addObserver(self, selector: #selector(active), name: UIApplication.didBecomeActiveNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(inactive), name: UIApplication.willResignActiveNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(keyboardChanged), name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
@@ -839,10 +886,19 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         navigationItem.rightBarButtonItems = [settings, inbox]
     }
     private func clear() { hideEntryProgress();pageReady=false;pendingPeer=nil;for child in Array(peerViews.keys){child.stopLoading();webViewDidClose(child)};cancelChannelJobs();connectionDeadline?.cancel(); connectionDeadline = nil; updateSystemBars(reset: true); connectionError = nil; pendingStorage = nil; nativeMainNavigation = nil; routeDiscovery?.cancel(); routeDiscovery = nil; cancelSync(); finishUpload(nil); if let folder = mediaUploadDirectory { try? FileManager.default.removeItem(at: folder); mediaUploadDirectory = nil }; stopComputerChecks(); computerStates.removeAll();addressLists.removeAll();computerTitles.removeAll();arrivingVia=nil;deferredRoute=nil; computerNotifications.removeAll(); gatewayMenuTop?.isActive = false; gatewayMenuTop = nil; generation += 1; web?.stopLoading(); web?.navigationDelegate = nil; web?.uiDelegate = nil; web = nil; for v in page.arrangedSubviews where v !== subtitle { page.removeArrangedSubview(v); v.removeFromSuperview() } }
+    private func computerActions(_ manageTitle:String,_ rename:@escaping ()->Void,_ manage:@escaping ()->Void)->UIStackView{
+        let renameButton=button(MobileStrings.text("重命名"),symbol:"pencil",action:rename)
+        let manageButton=button(MobileStrings.text(manageTitle),symbol:"slider.horizontal.3",action:manage)
+        manageButton.configuration?.contentInsets=NSDirectionalEdgeInsets(top:17,leading:8,bottom:17,trailing:8)
+        let row=UIStackView(arrangedSubviews:[renameButton,manageButton]);row.axis = .horizontal;row.distribution = .fillEqually;row.spacing=8
+        return row
+    }
     @objc func home() {
 #if CMB_CLOUD_PROTOTYPE
-        cloudRevision += 1;cloudRows=nil
-        if cloudView {MobileCloud.run(["op":"close"]){_ in}}
+        if web != nil || cloudOpening{defaults.set(["home":true],forKey:lastCloudKey)}
+        cloudRevision += 1;cloudRows=nil;cloudRefreshing=false
+        if cloudView || cloudOpening {MobileCloud.run(["op":"close"]){_ in}}
+        cloudOpening=false
 #endif
         cloudView=false
         clear(); navigation(home: true); subtitle.isHidden = true
@@ -887,10 +943,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
                 let list=UIStackView();list.axis = .vertical;list.spacing=4;addressLists[address]=list;paintAddresses(address)
                 let apps = UIStackView(); apps.axis = .horizontal; apps.spacing = 0; apps.setContentHuggingPriority(.required, for: .horizontal); apps.setContentCompressionResistancePriority(.required, for: .horizontal); computerNotifications[address] = apps
                 let heading = UIStackView(arrangedSubviews: [row, apps]); heading.axis = .horizontal; heading.alignment = .center; heading.spacing = 10
-                let rename = button(MobileStrings.text("重命名"), symbol: "pencil") { [weak self] in self?.renameComputer(address) }
-                let remove = button(MobileStrings.text("管理这台电脑"), symbol: "slider.horizontal.3") { [weak self] in self?.manageComputer(address) }
-                remove.configuration?.contentInsets=NSDirectionalEdgeInsets(top:17,leading:8,bottom:17,trailing:8)
-                let actions = UIStackView(arrangedSubviews: [rename, remove]); actions.axis = .horizontal; actions.distribution = .fillEqually; actions.spacing = 8
+                let actions=computerActions("管理这台电脑",{[weak self] in self?.renameComputer(address)},{[weak self] in self?.manageComputer(address)})
                 content.addArrangedSubview(card([heading,list,actions]))
                 updateComputerNotifications(computerSnapshots[address], address: address)
             }
@@ -1148,13 +1201,20 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         } else { finish() }
     }
     private func connect(_ url: URL, address: String, cloudName:String?=nil) {
-        if saved.contains(address),!channelEnabled(address){openComputer(address,url);return}
+        if cloudName==nil,saved.contains(address),!channelEnabled(address){openComputer(address,url);return}
         let entering=web==nil ? entryProgress:nil
         routeAttempted = false; requestedRoute = url
         let scripts: WebScripts
         do { scripts = try WebScripts() }
         catch { info(error.localizedDescription); return }
         if origin != address, #available(iOS 16.2, *) { Task { await LiveActivityController.shared.stop() } }
+#if CMB_CLOUD_PROTOTYPE
+        if cloudName==nil{
+            defaults.removeObject(forKey:lastCloudKey)
+            if cloudView || cloudOpening{MobileCloud.run(["op":"close"]){_ in}}
+            cloudOpening=false;cloudRefreshing=false;cloudRevision+=1;cloudRows=nil
+        }
+#endif
         clear(); navigation(home: false); subtitle.isHidden = false; origin = address; documentAddress=address;cloudView=cloudName != nil;if !cloudView {var all = saved; if !all.contains(address) { all.append(address) }; defaults.set(all, forKey: "origins"); defaults.set(address, forKey: "active"); defaults.set(Date().timeIntervalSince1970, forKey: "last-opened:" + address)}; subtitle.text = MobileStrings.text("正在连接 · ") + (cloudName ?? computerName(address))
         let configuration = WKWebViewConfiguration(); configuration.websiteDataStore = cloudView ? .nonPersistent() : .default(); configuration.applicationNameForUserAgent = "BridgeMobile/0.1-iOS"
         configuration.preferences.javaScriptCanOpenWindowsAutomatically=true
@@ -1163,7 +1223,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         configuration.userContentController.addUserScript(WKUserScript(source: "window.BridgeMobileCapabilities = Object.freeze({ diagnosticsExport: true });", injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         clipboardToken = UUID().uuidString
         let connectionName = String(decoding: (try? JSONEncoder().encode(cloudName ?? computerName(address))) ?? Data("null".utf8), as: UTF8.self)
-        let nativeLanguage = (defaults.string(forKey: "bridge-language") ?? Locale.preferredLanguages.first ?? "zh").hasPrefix("en") ? "en" : "zh"
+        let nativeLanguage = MobileStrings.language
         routeScript=scripts.route
         let appearanceScript = (scripts.route+"\n"+scripts.appearance).replacingOccurrences(of: "__BRIDGE_CLIPBOARD_TOKEN__", with: clipboardToken).replacingOccurrences(of:"__BRIDGE_ROUTE_BOUND__",with:channelRecord(address)==nil ? "no":"yes").replacingOccurrences(of: "'__BRIDGE_CONNECTION_NAME__'", with: connectionName) + "\ndocument.addEventListener('bridge-authenticated', () => window.prompt('codexbridge-session:" + clipboardToken + "', ''));document.addEventListener('bridge-logged-out', () => window.prompt('codexbridge-logout:" + clipboardToken + "', ''));document.addEventListener('bridge-auth-lost', () => window.prompt('codexbridge-auth-lost:" + clipboardToken + "', ''));"
         configuration.userContentController.addUserScript(WKUserScript(source: appearanceScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
@@ -1345,7 +1405,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         if prompt == "codexbridge-language:" + clipboardToken {
             guard webView === web, frame.isMainFrame, let source = frame.request.url, GatewayURL.same(source, documentAddress),
                   let current = webView.url, GatewayURL.same(current, documentAddress), let language = defaultText, ["zh", "en"].contains(language) else { completionHandler(nil); return }
-            defaults.set(language, forKey: "bridge-language");updateGatewayMenu();completionHandler("saved");return
+            if MobileStrings.language != language {defaults.set(language,forKey:"bridge-language")};updateGatewayMenu();completionHandler("saved");return
         }
         guard prompt == "codexbridge-copy:" + clipboardToken, webView === web,
               UIApplication.shared.applicationState == .active, frame.isMainFrame,
@@ -1742,6 +1802,18 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             self.defaults.set(themes[index], forKey: "settingsTheme"); self.applyTheme()
         }, for: .valueChanged)
         content.addArrangedSubview(card([label(MobileStrings.text("主题"), size: 17, weight: .semibold), choice]))
+        let languages=["system","zh","en"],languageChoice=UISegmentedControl(items:[MobileStrings.text("跟随系统"),"简体中文","English"])
+        languageChoice.accessibilityLabel=MobileStrings.text("语言")
+        languageChoice.selectedSegmentIndex=languages.firstIndex(of:MobileStrings.languageMode) ?? 0
+        languageChoice.addAction(UIAction{[weak self, weak sheet, weak languageChoice] _ in
+            guard let self,let index=languageChoice?.selectedSegmentIndex,languages.indices.contains(index) else{return}
+            self.defaults.set(languages[index],forKey:"bridge-language");self.updateGatewayMenu()
+            if let web=self.web,let url=web.url,GatewayURL.same(url,self.documentAddress){
+                web.evaluateJavaScript("window.BridgeNativeLanguage?.apply('"+MobileStrings.language+"')")
+            }
+            sheet?.dismiss(animated:false){if self.web==nil{self.home()};self.settings()}
+        },for:.valueChanged)
+        content.addArrangedSubview(card([label(MobileStrings.text("语言"),size:17,weight:.semibold),languageChoice]))
         content.addArrangedSubview(label(MobileStrings.text("通知"), size: 19, weight: .semibold))
         content.addArrangedSubview(card([
             label(MobileStrings.text("前台任务提醒"), size: 17, weight: .semibold),
@@ -2001,7 +2073,7 @@ enum MobileStrings {
         "连接中…": "Connecting…",
         "当前信道不可达，请手动切换连接信道": "Current channel is unreachable. Choose another channel.",
         "移除此电脑": "Remove this computer",
-        "管理这台电脑": "Manage this computer",
+        "管理这台电脑": "Manage",
         "仅控制这台手机的任务提醒，不影响聊天和通知收件箱。": "Choose task alerts for this phone. Chats and notification inboxes remain available.",
         "尚未保存电脑连接": "No saved computer connections",
         "主题": "Theme",
@@ -2091,6 +2163,41 @@ enum MobileStrings {
 "查看新版与安装指引": "View update and installation guide",
 "iOS App 需要使用自己的 Apple 账号重新签名安装，暂不支持 App 内直接覆盖更新。": "The iOS app requires signing the new build with your own Apple account. Direct in-app installation is not available yet.",
 
+        "云服务不可用": "Cloud service unavailable",
+        "密码": "Password",
+        "已停用": "Disabled",
+        "已登录": "Signed in",
+        "接入": "Connection",
+        "正在登录…": "Signing in…",
+        "正在读取…": "Loading…",
+        "离线": "Offline",
+        "账号": "Account",
+        "云登录密钥不可用": "Cloud credentials are unavailable",
+        "云设备尚未登记": "Cloud computer not registered",
+        "电脑不属于此云配置": "This computer belongs to a different profile",
+        "云配置已删除，请刷新": "This cloud profile was removed. Refresh the list.",
+        "云连接中断": "Cloud connection interrupted",
+        "云操作未完成": "Cloud operation did not finish",
+        "云设备身份不匹配": "The cloud device identity does not match",
+        "请先登录此云配置": "Sign in to this cloud profile first",
+        "同账号设备列表中找不到此电脑": "This computer is missing from the cloud directory",
+        "电脑已关闭手机访问": "This computer has disabled phone access",
+        "电脑离线": "Computer offline",
+        "电脑身份已变化": "Computer identity changed",
+        "云登录存储损坏": "Cloud credentials could not be read",
+        "云服务请求未完成": "Cloud request did not finish",
+        "云登录存储暂不可用": "Cloud credential storage is unavailable",
+        "电脑名称": "Computer name",
+        "登录": "Sign in",
+        "请输入自建服务的 HTTPS 地址": "Enter the HTTPS address of your server",
+        "管理云服务": "Manage", "编辑登录配置": "Edit sign-in", "更新登录配置？": "Update sign-in?",
+        "验证成功后替换此配置；更换服务器或账号需重新配对。": "This profile is replaced after verification. Changing the server or account requires pairing again.",
+        "从本机清除此配置、设备别名和配对密钥。": "Remove this profile, its computer names, and its pairing keys from this phone.",
+        "退出此账号下所有电脑，保留配置和设备别名。": "Sign out from all computers in this account. The profile and computer names are kept.",
+        "本机配置已更新，远端退出暂未确认。": "The local profile was updated. Remote sign-out is unconfirmed.",
+        "在电脑核对安全码并允许连接。": "Compare the safety code on your computer and allow the connection.",
+        "已允许连接": "Allowed", "待电脑允许": "Pending approval", "已退出": "Signed out",
+        "上次使用的云配置不可用": "The previous cloud connection is unavailable", "语言": "Language",
         "添加云服务": "Add cloud service", "退出云账号": "Sign out of cloud account", "删除云服务配置": "Delete cloud configuration",
         "刷新云设备": "Refresh cloud devices",
         "云服务": "Cloud service", "官方云服务": "Official cloud", "自建云服务": "Self-hosted cloud",
@@ -2201,8 +2308,14 @@ enum MobileStrings {
         "检查中…": "Checking…", "在线": "Online", "暂不可达": "Unreachable",
         "取消扫码": "Cancel scan"
     ]
-    static func text(_ value: String) -> String {
-        let language = UserDefaults.standard.string(forKey: "bridge-language") ?? Locale.preferredLanguages.first ?? "zh"
-        return language.hasPrefix("en") ? values[value] ?? value : value
+    static var languageMode:String {
+        UserDefaults.standard.string(forKey:"bridge-language") ?? "system"
+    }
+    static var language:String {
+        let value=languageMode=="system" ? (Locale.preferredLanguages.first ?? "zh"):languageMode
+        return value.hasPrefix("en") ? "en":"zh"
+    }
+    static func text(_ value:String)->String {
+        language=="en" ? values[value] ?? value : value
     }
 }

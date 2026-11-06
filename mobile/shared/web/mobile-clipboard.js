@@ -10,7 +10,19 @@
     const language = BridgeI18n.language();
     if (language !== nativeLanguage && nativePrompt('codexbridge-language:__BRIDGE_CLIPBOARD_TOKEN__', language) === 'saved') nativeLanguage = language;
   };
-  document.addEventListener('bridge-language', syncLanguage); syncLanguage();
+  window.BridgeNativeLanguage = {
+    get value() { return nativeLanguage; },
+    apply(language) {
+      if (!['zh','en'].includes(language)) return;
+      nativeLanguage = language;
+      const field = document.getElementById?.('phone-language');
+      if (typeof field?.onchange === 'function' && typeof BridgeI18n !== 'undefined' && BridgeI18n.language() !== language) {
+        field.value = language;field.onchange();
+      }
+    }
+  };
+  document.addEventListener('bridge-language', syncLanguage);
+  window.BridgeNativeLanguage.apply(nativeLanguage);
   let clicked = false;
   document.addEventListener('click', event => {
     clicked = event.isTrusted && !!event.target.closest?.('.message-copy, .code-copy');

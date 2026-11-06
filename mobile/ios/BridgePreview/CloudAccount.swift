@@ -67,6 +67,15 @@ final class CloudLoginForm:UIViewController {
     @objc private func send(){
         var input:[String:Any]=["op":"login","serverType":type.selectedSegmentIndex==0 ? "official":"custom","login":(login.text ?? "").trimmingCharacters(in:.whitespacesAndNewlines),"password":password.text ?? ""]
         if type.selectedSegmentIndex==1 {input["origin"]=(server.text ?? "").trimmingCharacters(in:.whitespacesAndNewlines)}
+        if let profile,let id=profile["id"] as? String {
+            input["replaceProfile"]=id
+            let confirmation=UIAlertController(title:MobileStrings.text("更新登录配置？"),message:MobileStrings.text("验证成功后替换此配置；更换服务器或账号需重新配对。"),preferredStyle:.alert)
+            confirmation.addAction(UIAlertAction(title:MobileStrings.text("取消"),style:.cancel))
+            confirmation.addAction(UIAlertAction(title:MobileStrings.text("继续"),style:.default){[weak self] _ in self?.finish(input)})
+            present(confirmation,animated:true)
+        }else{finish(input)}
+    }
+    private func finish(_ input:[String:Any]){
         password.text="";let callback=submit;dismiss(animated:true){callback?(input)}
     }
 }

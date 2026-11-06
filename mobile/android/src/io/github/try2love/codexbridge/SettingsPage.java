@@ -48,7 +48,7 @@ final class SettingsPage extends Dialog implements SharedPreferences.OnSharedPre
   backgroundToggle=ui.toggle(notifications,"后台通知",prefs.getBoolean("backgroundNotifications",false),owner::toggleBackgroundNotifications);backgroundDivider=notifications.getChildAt(1);
   ui.hint(backgroundToggle.row,"后台通知功能说明",()->new AlertDialog.Builder(getContext()).setTitle(ui.L("后台通知功能说明")).setMessage(ui.L("后台通知仍在完善中，开启后可能增加耗电或发热。\n遇到问题或有改进建议，欢迎提交 Issue 或 PR。感谢支持！")).setPositiveButton(ui.L("关闭"),null).show());
   systemHost=ui.column();systemHost.setPadding(0,ui.dp(16),0,0);notificationHost.addView(systemHost);buildNotifications();
-  LinearLayout app=ui.section(body,"应用");themeRow(app);
+  LinearLayout app=ui.section(body,"应用");themeRow(app);languageRow(app);
   LinearLayout update=ui.action(app,"检查更新","",()->{});TextView value=ui.value(update,owner.appVersion());
   android.view.ViewGroup.LayoutParams valueLayout=value.getLayoutParams();update.removeView(value);update.addView(value,update.getChildCount()-1,valueLayout);
   update.setOnClickListener(v->owner.checkUpdate(this,update,value));
@@ -82,7 +82,7 @@ final class SettingsPage extends Dialog implements SharedPreferences.OnSharedPre
  @Override protected void onStart(){super.onStart();prefs.registerOnSharedPreferenceChangeListener(this);handler.post(refreshStatus);}
  @Override protected void onStop(){prefs.unregisterOnSharedPreferenceChangeListener(this);handler.removeCallbacksAndMessages(null);if(pageAnimator!=null){pageAnimator.cancel();pageAnimator=null;}releaseFrame();TransitionManager.endTransitions(body);if(themePicker!=null)themePicker.dismiss();super.onStop();}
  @Override public void onSharedPreferenceChanged(SharedPreferences preferences,String key){
-  if("settingsTheme".equals(key)){owner.reopenSettings(this);return;}
+  if("settingsTheme".equals(key)||"language".equals(key)){owner.reopenSettings(this);return;}
   if("alerts".equals(key)||"backgroundNotifications".equals(key))refresh(true);
  }
  void refresh(){refresh(false);}
@@ -162,6 +162,13 @@ final class SettingsPage extends Dialog implements SharedPreferences.OnSharedPre
  }
  private Intent detailsIntent(){return new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,Uri.parse("package:"+owner.getPackageName()));}
  private void openSetting(Intent intent){try{owner.startActivity(intent);}catch(RuntimeException unavailable){try{owner.startActivity(detailsIntent());}catch(RuntimeException denied){Toast.makeText(getContext(),ui.L("请从系统设置打开本应用的详情页。"),Toast.LENGTH_LONG).show();}}}
+ private void languageRow(LinearLayout list){
+  String[] ids={"system","zh","en"}, names={ui.L("跟随系统"),"简体中文","English"};
+  int active=Math.max(0,java.util.Arrays.asList(ids).indexOf(prefs.getString("language","system")));
+  ui.action(list,"语言",names[active],()->new AlertDialog.Builder(getContext()).setTitle(ui.L("语言"))
+   .setSingleChoiceItems(names,active,(d,w)->{d.dismiss();prefs.edit().putString("language",ids[w]).apply();})
+   .setNegativeButton(ui.L("取消"),null).show());
+ }
  private void themeRow(LinearLayout app){
   LinearLayout row=ui.action(app,"主题",themeName(),this::chooseTheme);
   ui.hint(row,"主题功能说明",()->Toast.makeText(getContext(),ui.L("待开发项，暂时只支持设置页主题切换"),Toast.LENGTH_LONG).show());

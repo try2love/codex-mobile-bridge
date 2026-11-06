@@ -27,7 +27,7 @@ final class MobileStrings {
         values.put("连接中…","Connecting…");
         values.put("当前信道不可达，请手动切换连接信道","Current channel is unreachable. Choose another channel.");
         values.put("移除此电脑","Remove this computer");
-        values.put("管理这台电脑","Manage this computer");
+        values.put("管理这台电脑","Manage");
   values.put("仅控制这台手机的任务提醒，不影响聊天和通知收件箱。","Choose task alerts for this phone. Chats and notification inboxes remain available.");
   values.put("尚未保存电脑连接","No saved computer connections");
   values.put("后台通知功能说明","Background notification information");
@@ -200,6 +200,40 @@ values.put("请填写完整的 HTTPS 网关地址，或局域网 HTTP 地址，�
   values.put("继续聊天、查看结果，让电脑替你运行。","Continue chats and view results while your computer does the work.");
   values.put("添加云服务","Add cloud service");values.put("退出云账号","Sign out of cloud account");
   values.put("删除云服务配置","Delete cloud configuration");values.put("刷新云设备","Refresh cloud devices");
+  values.put("云服务不可用","Cloud service unavailable");
+  values.put("密码","Password");
+  values.put("已停用","Disabled");
+  values.put("已登录","Signed in");
+  values.put("接入","Connection");
+  values.put("正在登录…","Signing in…");
+  values.put("正在读取…","Loading…");
+  values.put("离线","Offline");
+  values.put("账号","Account");
+  values.put("重新登录","Sign in again");
+  values.put("云登录密钥不可用","Cloud credentials are unavailable");
+  values.put("云设备尚未登记","Cloud computer not registered");
+  values.put("电脑不属于此云配置","This computer belongs to a different profile");
+  values.put("云连接中断","Cloud connection interrupted");
+  values.put("云操作未完成","Cloud operation did not finish");
+  values.put("云设备身份不匹配","The cloud device identity does not match");
+  values.put("请先登录此云配置","Sign in to this cloud profile first");
+  values.put("同账号设备列表中找不到此电脑","This computer is missing from the cloud directory");
+  values.put("电脑已关闭手机访问","This computer has disabled phone access");
+  values.put("电脑离线","Computer offline");
+  values.put("电脑身份已变化","Computer identity changed");
+  values.put("云登录存储损坏","Cloud credentials could not be read");
+  values.put("管理云服务","Manage");values.put("云服务配置","Cloud profiles");values.put("服务类型","Service");values.put("登录信息","Sign-in details");
+  values.put("编辑登录配置","Edit sign-in");values.put("更新登录配置？","Update sign-in?");
+  values.put("验证成功后替换此配置；更换服务器或账号需重新配对。","This profile is replaced after verification. Changing the server or account requires pairing again.");
+  values.put("退出此账号下所有电脑，保留配置和设备别名。","Sign out from all computers in this account. The profile and computer names are kept.");
+  values.put("从本机清除此配置、设备别名和配对密钥。","Remove this profile, its computer names, and its pairing keys from this phone.");
+  values.put("本机配置已更新，远端退出暂未确认。","The local profile was updated. Remote sign-out is unconfirmed.");
+  values.put("上次使用的云配置不可用","The previous cloud connection is unavailable");
+  values.put("在电脑核对安全码并允许连接。","Compare the safety code on your computer and allow the connection.");
+  values.put("待电脑允许","Pending approval");values.put("已允许连接","Allowed");values.put("已退出","Signed out");
+  values.put("云配置已删除，请刷新","This cloud profile was removed. Refresh the list.");
+  values.put("电脑名称","Computer name");values.put("语言","Language");values.put("简体中文","简体中文");values.put("登录","Sign in");
+  values.put("请输入自建服务的 HTTPS 地址","Enter the HTTPS address of your server");values.put("请输入账号","Enter your account");values.put("请输入密码","Enter your password");
   values.put("云服务","Cloud service");values.put("官方云服务","Official cloud");values.put("自建云服务","Self-hosted cloud");
   values.put("登录云账号","Sign in to cloud");values.put("服务器地址","Server address");
   values.put("扫码连接电脑","Scan to connect");
@@ -319,5 +353,10 @@ values.put("请填写完整的 HTTPS 网关地址，或局域网 HTTP 地址，�
   values.put("未获得相机权限，请粘贴网关地址。","Camera access denied. Paste the gateway address instead.");
   values.put("取消扫码","Cancel scan");
  }
- static String text(Context context,String value){String language=context.getSharedPreferences("bridge",0).getString("language",java.util.Locale.getDefault().getLanguage());return language.startsWith("en")?values.getOrDefault(value,value):value;}
+ static String language(Context context){
+  String setting=context.getSharedPreferences("bridge",0).getString("language","system");
+  String choice="system".equals(setting)?java.util.Locale.getDefault().getLanguage():setting;
+  return choice.startsWith("en")?"en":"zh";
+ }
+ static String text(Context context,String value){return "en".equals(language(context))?values.getOrDefault(value,value):value;}
 }

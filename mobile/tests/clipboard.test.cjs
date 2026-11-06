@@ -106,3 +106,18 @@ test('both native hosts load the shared clipboard resource', () => {
   assert.match(java, /"mobile-clipboard\.js"/);
   assert.equal(fs.existsSync(path.join(root, 'mobile/android/assets/mobile-clipboard.js')), false);
 });
+
+test('native settings own the chat language without saving a resolved system choice as an override', () => {
+  let language='zh';
+  const events={},writes=[];
+  const field={value:language,onchange(){language=this.value;events['bridge-language']();}};
+  const context={BridgeI18n:{language:()=>language},document:{addEventListener:(name,fn)=>{events[name]=fn;},getElementById:()=>field},
+    prompt:(_command,value)=>{writes.push(value);return 'saved';}};
+  context.window=context;context.top=context;
+  vm.runInNewContext(script.replace("'__BRIDGE_NATIVE_LANGUAGE__'","'en'"),context);
+  assert.equal(language,'en');assert.deepEqual(writes,[]);
+  context.BridgeNativeLanguage.apply('zh');
+  assert.equal(language,'zh');assert.deepEqual(writes,[]);
+  field.value='en';field.onchange();
+  assert.deepEqual(writes,['en']);assert.equal(context.BridgeNativeLanguage.value,'en');
+});
