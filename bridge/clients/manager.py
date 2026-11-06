@@ -32,8 +32,7 @@ from bridge.features.sessions.create import project_directory, project_directory
 from bridge.clients.codex.remote import ssh_read, payload
 from bridge.resources import source_text
 
-READS = {'list', 'detail', 'catalog', 'projects', 'create-models', 'account', 'access', 'organization', 'tasks'}
-WRITES = {'send', 'stop', 'settings', 'respond', 'create', 'access', 'resume', 'fork', 'pin', 'archive', 'rename', 'organization', 'goal', 'compact', 'stop-task', 'edit-message'}
+from bridge.features.sessions.operations import READS, WRITES
 
 
 CLAUDE_HISTORY_NOTICE = '客户端尚未提供当前可选模型，历史模型仅供查看'

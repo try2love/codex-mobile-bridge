@@ -9,10 +9,11 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from relay.protocol import MAX_BODY, content_type, download_headers, validate
 from bridge.features.accounts.cloud_summary import SUMMARY_PATH, summary_query
+from bridge.features.network.cloud_account_routes import authorize_account_route, validate_account_route
+from bridge.features.network.cloud_routes import cloud_target, session_route
 from bridge.features.auth.tls import client_context
 from bridge.features.auth.auth import session_file_lock
 from bridge.features.network.cloud_account import Controller, CloudError, scope
@@ -33,21 +34,17 @@ def validate_request(value):
     if (not isinstance(value['path'], str) or not isinstance(value['method'], str)
             or type(value['length']) is not int or not 0 <= value['length'] <= MAX_BODY):
         raise ValueError('invalid request fields')
-    path = urlsplit(value['path']).path
+    method, target, size = value['method'], value['path'], value['length']
+    path, query = cloud_target(method, target, size)
     if path == SUMMARY_PATH:
-        summary_query(value['method'], value['path'], value['length'])
+        summary_query(method, target, size)
         if value['headers']:
             raise PermissionError('云账号摘要不接受转发头')
-    elif path == '/api/cli-access':
-        raise PermissionError('云账号管理只提供当前接入的只读摘要')
-    elif value['path'] == '/api/auth' and value['method'] == 'GET' and value['length'] == 0:
-        pass
-    elif value['method'] == 'GET' and urlsplit(value['path']).path.endswith('/events') and urlsplit(value['path']).path != '/api/mobile/events':
-        # SSE is the same authenticated session resource; not an arbitrary socket/RPC endpoint.
-        path, separator, query = value['path'].partition('?')
-        validate('GET', path.removesuffix('/events') + '/poll' + separator + query, value['length'])
-    else:
-        validate(value['method'], value['path'], value['length'])
+    elif validate_account_route(method, target, size):
+        if value['headers']:
+            raise PermissionError('账号管理不接受转发头')
+    elif not (method == 'GET' and target == '/api/auth' or session_route(method, path, query)):
+        validate(method, target, size)
     content_type(value['content_type'])
     download_headers(value['headers'])
 
@@ -305,6 +302,7 @@ class Connector:
         token, session = self.sessions[channel.binding]
         if not self.server.auth.get(token) or not self.server.auth.permitted('127.0.0.1'):
             raise PermissionError('local session revoked')
+        authorize_account_route(self.server.desktop_sessions, value['method'], value['path'], body)
         headers = {'Cookie': self.server.auth.cookie_name + '=' + token, 'Origin': self.local_origin,
                    'X-CSRF-Token': session['csrf'], 'Accept-Encoding': 'identity',
                    'Content-Type': value['content_type'], **value['headers']}
