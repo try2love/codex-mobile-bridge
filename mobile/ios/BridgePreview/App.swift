@@ -160,6 +160,119 @@ final class GatewayReachability: NSObject, URLSessionDataDelegate {
 }
 
 final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelegate, UIDocumentPickerDelegate, UIDocumentInteractionControllerDelegate, PHPickerViewControllerDelegate, UIAdaptivePresentationControllerDelegate {
+    private var cloudView = false
+#if CMB_CLOUD_PROTOTYPE
+    private weak var cloudRows:UIStackView?
+    private var cloudLastDirectory:[String:Any]?
+    private var cloudBusy=false
+    private var cloudRevision=0
+    private func cloudAction(_ input:[String:Any], done:@escaping ([String:Any])->Void){
+        guard !cloudBusy else {return}
+        cloudBusy=true;let rev=cloudRevision
+        MobileCloud.run(input){[weak self] result in
+            guard let self=self else{return};self.cloudBusy=false
+            guard rev==self.cloudRevision else {
+                if input["op"] as? String=="open" {MobileCloud.run(["op":"close"]){_ in}}
+                return
+            }
+            switch result{case .success(let value):done(value);case .failure(let error):self.info(error.localizedDescription)}
+        }
+    }
+    private func addCloud(_ profile:[String:Any]?=nil){
+        let form=CloudLoginForm();form.profile=profile
+        form.submit={ [weak self] input in self?.cloudAction(input){_ in
+            self?.cloudLastDirectory=nil;self?.defaults.set(true,forKey:"cloud-account-enabled");self?.home()
+        }}
+        let nav=UINavigationController(rootViewController:form);nav.modalPresentationStyle = .formSheet;present(nav,animated:true)
+    }
+    private func cloudAccount(){
+        if !MobileCloud.enabled {addCloud();return}
+        cloudAction(["op":"profiles"]){value in
+            let menu=UIAlertController(title:MobileStrings.text("云服务"),message:nil,preferredStyle:.alert)
+            menu.addAction(UIAlertAction(title:MobileStrings.text("添加云服务"),style:.default){_ in self.addCloud()})
+            for profile in value["profiles"] as? [[String:Any]] ?? []{
+                let label=(profile["label"] as? String ?? "")+((profile["signedOut"] as? Bool)==true ? "（已退出）":"")
+                menu.addAction(UIAlertAction(title:label,style:.default){_ in self.manageCloud(profile)})
+            }
+            menu.addAction(UIAlertAction(title:MobileStrings.text("取消"),style:.cancel));self.present(menu,animated:true)
+        }
+    }
+    private func manageCloud(_ profile:[String:Any]){
+        let menu=UIAlertController(title:profile["label"] as? String,message:nil,preferredStyle:.alert)
+        if profile["signedOut"] as? Bool==true{
+            menu.addAction(UIAlertAction(title:MobileStrings.text("登录"),style:.default){_ in self.addCloud(profile)})
+        }else{
+            menu.addAction(UIAlertAction(title:MobileStrings.text("刷新云设备"),style:.default){_ in self.refreshCloud()})
+            menu.addAction(UIAlertAction(title:MobileStrings.text("退出云账号"),style:.default){_ in self.confirmCloud(profile,remove:false)})
+        }
+        menu.addAction(UIAlertAction(title:MobileStrings.text("删除云服务配置"),style:.destructive){_ in self.confirmCloud(profile,remove:true)})
+        menu.addAction(UIAlertAction(title:MobileStrings.text("取消"),style:.cancel));present(menu,animated:true)
+    }
+    private func confirmCloud(_ profile:[String:Any],remove:Bool){
+        guard let id=profile["id"] as? String else{return}
+        let title=MobileStrings.text(remove ? "删除云服务配置":"退出云账号")
+        let names=profile["computers"] as? [String] ?? []
+        let message=(profile["label"] as? String ?? "")+"\n"+(remove ? "从本机清除此配置、设备别名和配对密钥。":"退出此账号下所有电脑，保留配置和设备别名。")+(names.isEmpty ? "":"\n"+names.joined(separator:"、"))
+        let dialog=UIAlertController(title:title,message:message,preferredStyle:.alert)
+        dialog.addAction(UIAlertAction(title:MobileStrings.text("取消"),style:.cancel))
+        dialog.addAction(UIAlertAction(title:title,style:.destructive){_ in
+            self.cloudAction(["op":remove ? "remove":"logout","profile":id]){v in
+                self.cloudLastDirectory=nil;self.defaults.set(!(v["profiles"] as? [[String:Any]] ?? []).isEmpty,forKey:"cloud-account-enabled");self.home()
+                if v["remoteConfirmed"] as? Bool==false {self.info("本机配置已更新，远端退出暂未确认。")}
+            }
+        });present(dialog,animated:true)
+    }
+    private func cloudCardLogout(_ id:String){
+        cloudAction(["op":"profiles"]){v in
+            if let p=(v["profiles"] as? [[String:Any]])?.first(where:{($0["id"] as? String)==id}){self.confirmCloud(p,remove:false)}
+        }
+    }
+    private func renameCloud(_ id:String,_ gateway:String,_ name:String){
+        let form=UIAlertController(title:MobileStrings.text("重命名"),message:nil,preferredStyle:.alert)
+        form.addTextField{$0.text=name;$0.placeholder=MobileStrings.text("电脑名称")}
+        form.addAction(UIAlertAction(title:MobileStrings.text("取消"),style:.cancel))
+        form.addAction(UIAlertAction(title:MobileStrings.text("保存"),style:.default){_ in
+            self.cloudAction(["op":"rename","profile":id,"gateway":gateway,"name":form.textFields?.first?.text ?? ""]){v in
+                guard var cached=self.cloudLastDirectory,var devices=cached["devices"] as? [[String:Any]] else{return}
+                if let i=devices.firstIndex(where:{($0["profile"] as? String)==id && (($0["gateway"] as? [String:Any])?["id"] as? String)==gateway}){
+                    devices[i]["name"]=v["name"];cached["devices"]=devices;self.renderCloud(cached)
+                }
+            }
+        });present(form,animated:true)
+    }
+    private func refreshCloud(){
+        guard MobileCloud.enabled,cloudRows != nil else{return}
+        if let cached=cloudLastDirectory{renderCloud(cached)}
+        guard !cloudBusy else{return}
+        cloudAction(["op":"devices","name":"iOS Bridge Test"]){self.renderCloud($0)}
+    }
+    private func renderCloud(_ value:[String:Any]){
+        cloudLastDirectory=value
+            guard let stack=self.cloudRows else{return}
+            stack.arrangedSubviews.forEach{$0.removeFromSuperview()}
+            for row in value["devices"] as? [[String:Any]] ?? []{
+                guard let id=row["binding_id"] as? String,let profile=row["profile"] as? String,let gateway=row["gateway"] as? [String:Any],let computer=gateway["id"] as? String,let name=row["name"] as? String else{continue}
+                let status=row["status"] as? String,online=gateway["online"] as? Bool==true
+                let open=self.button(name){[weak self] in self?.openCloud(profile,id,name)}
+                open.isEnabled=online && ["pending","active"].contains(status ?? "")
+                let hint = !online ? "离线" : status=="active" ? "已允许连接" : status=="pending" ? "待电脑允许" : "已停用"
+                var items:[UIView]=[open,self.label((row["source"] as? String ?? "云设备")+" · "+hint,size:14,secondary:true)]
+                if status=="pending",let safety=row["safety"] as? String,!safety.isEmpty {items.append(self.label(safety,size:13,secondary:true))}
+                if let why=row["proofError"] as? String {items.append(self.label(why,size:13,secondary:true))}
+                let actions=UIStackView(arrangedSubviews:[self.button(MobileStrings.text("重命名")){self.renameCloud(profile,computer,name)},self.button(MobileStrings.text("退出云账号")){self.cloudCardLogout(profile)}])
+                actions.axis = .horizontal;actions.distribution = .fillEqually;actions.spacing=8;items.append(actions)
+                stack.addArrangedSubview(self.card(items))
+            }
+            for error in value["errors"] as? [String] ?? [] {stack.addArrangedSubview(self.label(error,size:14,secondary:true))}
+    }
+    private func openCloud(_ profile:String,_ id:String,_ name:String){
+        cloudAction(["op":"open","profile":profile,"binding":id,"name":"iOS Bridge Test"]){value in
+            if let entry=value["entry"] as? String,let url=URL(string:entry),let address=try? GatewayURL.origin(entry.components(separatedBy:"#")[0]){
+                self.connect(url,address:address,cloudName:name)
+            }else{self.info("在电脑的云设备列表核对安全码并开启允许连接。\n"+(value["safety"] as? String ?? ""))}
+        }
+    }
+#endif
     private var web: WKWebView?
     private var nativeMainNavigation: (web: WKWebView, generation: Int, url: String)?
     private var origin = ""
@@ -336,6 +449,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         }
     }
     @discardableResult private func checkChannels(failure:Bool,forced:String?=nil,inspect:Bool=false,reason:String="signal")->Bool{
+        if cloudView{return false}
         guard channelRecord(origin) != nil,let web else{return false}
         if forced != nil || inspect {return raceChannels(failure:failure,forced:forced,inspect:inspect)}
         if pageReady {web.evaluateJavaScript("window.BridgeChannelLink?.check('\(reason)')",completionHandler:nil)}
@@ -726,6 +840,11 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
     }
     private func clear() { hideEntryProgress();pageReady=false;pendingPeer=nil;for child in Array(peerViews.keys){child.stopLoading();webViewDidClose(child)};cancelChannelJobs();connectionDeadline?.cancel(); connectionDeadline = nil; updateSystemBars(reset: true); connectionError = nil; pendingStorage = nil; nativeMainNavigation = nil; routeDiscovery?.cancel(); routeDiscovery = nil; cancelSync(); finishUpload(nil); if let folder = mediaUploadDirectory { try? FileManager.default.removeItem(at: folder); mediaUploadDirectory = nil }; stopComputerChecks(); computerStates.removeAll();addressLists.removeAll();computerTitles.removeAll();arrivingVia=nil;deferredRoute=nil; computerNotifications.removeAll(); gatewayMenuTop?.isActive = false; gatewayMenuTop = nil; generation += 1; web?.stopLoading(); web?.navigationDelegate = nil; web?.uiDelegate = nil; web = nil; for v in page.arrangedSubviews where v !== subtitle { page.removeArrangedSubview(v); v.removeFromSuperview() } }
     @objc func home() {
+#if CMB_CLOUD_PROTOTYPE
+        cloudRevision += 1;cloudRows=nil
+        if cloudView {MobileCloud.run(["op":"close"]){_ in}}
+#endif
+        cloudView=false
         clear(); navigation(home: true); subtitle.isHidden = true
         let container = UIView(); page.addArrangedSubview(container); let content = scrollContent(in: container)
         let visual = UIImageView(image: UIImage(systemName: "desktopcomputer")); visual.tintColor = .label; visual.contentMode = .scaleAspectFit; visual.heightAnchor.constraint(equalToConstant: 54).isActive = true
@@ -733,10 +852,28 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         let heading = label(MobileStrings.text("电脑上的工作，\n带在身边。"), size: 30, weight: .semibold); heading.textAlignment = .center; hero.addArrangedSubview(heading)
         let hint = label(MobileStrings.text("继续聊天、查看结果，让电脑替你运行。"), secondary: true); hint.textAlignment = .center; hero.addArrangedSubview(hint)
         hero.setCustomSpacing(24, after: visual); content.addArrangedSubview(hero)
-        content.addArrangedSubview(card([button(MobileStrings.text("扫码连接电脑"), symbol: "qrcode.viewfinder", primary: true) { [weak self] in self?.scan() }, button(MobileStrings.text("输入网关地址"), symbol: "link") { [weak self] in self?.manualAddress() }, button("DSH Mobile", symbol: "link") { [weak self] in self?.manualDsh() }]))
-        let computersHeading = UIStackView(arrangedSubviews: [label(MobileStrings.text("我的电脑"), size: 19, weight: .semibold), button(MobileStrings.text("刷新状态"), symbol: "arrow.clockwise") { [weak self] in self?.checkComputers(); self?.sync() }])
+        var connectActions:[UIView]=[]
+#if CMB_CLOUD_PROTOTYPE
+        connectActions.append(button(MobileStrings.text("云服务"),symbol:"icloud",primary:true){[weak self] in self?.cloudAccount()})
+#endif
+        connectActions.append(button(MobileStrings.text("扫码连接电脑"),symbol:"qrcode.viewfinder",primary:true){[weak self] in self?.scan()})
+        connectActions.append(button(MobileStrings.text("输入网关地址"),symbol:"link"){[weak self] in self?.manualAddress()})
+        connectActions.append(button("DSH Mobile",symbol:"link"){[weak self] in self?.manualDsh()})
+        content.addArrangedSubview(card(connectActions))
+        let computersHeading = UIStackView(arrangedSubviews: [label(MobileStrings.text("我的电脑"), size: 19, weight: .semibold), button(MobileStrings.text("刷新状态"), symbol: "arrow.clockwise") { [weak self] in
+            self?.checkComputers();self?.sync()
+#if CMB_CLOUD_PROTOTYPE
+            self?.refreshCloud()
+#endif
+        }])
         computersHeading.axis = .horizontal; computersHeading.alignment = .center; computersHeading.spacing = 8; content.addArrangedSubview(computersHeading)
-        if saved.isEmpty && DshMobileStore.ids.isEmpty {
+#if CMB_CLOUD_PROTOTYPE
+        let cloud=column(spacing:8);content.addArrangedSubview(cloud);cloudRows=cloud;refreshCloud()
+        let emptyCloud = !MobileCloud.enabled
+#else
+        let emptyCloud = true
+#endif
+        if saved.isEmpty && DshMobileStore.ids.isEmpty && emptyCloud {
             content.addArrangedSubview(card([label(MobileStrings.text("还没有连接的电脑"), size: 17, weight: .medium), label(MobileStrings.text("在电脑网关中展开“扫码登录”，然后用上方按钮扫描。"), secondary: true)]))
         } else {
             for address in recentComputers {
@@ -955,7 +1092,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         nativeMainNavigation = request.url.map { (web, generation, $0.absoluteString) }
         web.load(request)
     }
-    private func recoverConnection() { if !checkChannels(failure: true) { recoverLegacy() } }
+    private func recoverConnection() { if cloudView{return};if !checkChannels(failure: true) { recoverLegacy() } }
     private func recoverLegacy() {
         guard !routeAttempted, UIApplication.shared.applicationState == .active, let requested = requestedRoute,
               let descriptor = defaults.dictionary(forKey: "connection:" + origin) as? [String: String] else { return }
@@ -1010,7 +1147,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             }
         } else { finish() }
     }
-    private func connect(_ url: URL, address: String) {
+    private func connect(_ url: URL, address: String, cloudName:String?=nil) {
         if saved.contains(address),!channelEnabled(address){openComputer(address,url);return}
         let entering=web==nil ? entryProgress:nil
         routeAttempted = false; requestedRoute = url
@@ -1018,14 +1155,14 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         do { scripts = try WebScripts() }
         catch { info(error.localizedDescription); return }
         if origin != address, #available(iOS 16.2, *) { Task { await LiveActivityController.shared.stop() } }
-        clear(); navigation(home: false); subtitle.isHidden = false; origin = address; documentAddress=address; var all = saved; if !all.contains(address) { all.append(address) }; defaults.set(all, forKey: "origins"); defaults.set(address, forKey: "active"); defaults.set(Date().timeIntervalSince1970, forKey: "last-opened:" + address); subtitle.text = MobileStrings.text("正在连接 · ") + computerName(address)
-        let configuration = WKWebViewConfiguration(); configuration.websiteDataStore = .default(); configuration.applicationNameForUserAgent = "BridgeMobile/0.1-iOS"
+        clear(); navigation(home: false); subtitle.isHidden = false; origin = address; documentAddress=address;cloudView=cloudName != nil;if !cloudView {var all = saved; if !all.contains(address) { all.append(address) }; defaults.set(all, forKey: "origins"); defaults.set(address, forKey: "active"); defaults.set(Date().timeIntervalSince1970, forKey: "last-opened:" + address)}; subtitle.text = MobileStrings.text("正在连接 · ") + (cloudName ?? computerName(address))
+        let configuration = WKWebViewConfiguration(); configuration.websiteDataStore = cloudView ? .nonPersistent() : .default(); configuration.applicationNameForUserAgent = "BridgeMobile/0.1-iOS"
         configuration.preferences.javaScriptCanOpenWindowsAutomatically=true
         configuration.ignoresViewportScaleLimits = false
         configuration.userContentController.addUserScript(WKUserScript(source: WebScripts.fixedViewport, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         configuration.userContentController.addUserScript(WKUserScript(source: "window.BridgeMobileCapabilities = Object.freeze({ diagnosticsExport: true });", injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         clipboardToken = UUID().uuidString
-        let connectionName = String(decoding: (try? JSONEncoder().encode(computerName(address))) ?? Data("null".utf8), as: UTF8.self)
+        let connectionName = String(decoding: (try? JSONEncoder().encode(cloudName ?? computerName(address))) ?? Data("null".utf8), as: UTF8.self)
         let nativeLanguage = (defaults.string(forKey: "bridge-language") ?? Locale.preferredLanguages.first ?? "zh").hasPrefix("en") ? "en" : "zh"
         routeScript=scripts.route
         let appearanceScript = (scripts.route+"\n"+scripts.appearance).replacingOccurrences(of: "__BRIDGE_CLIPBOARD_TOKEN__", with: clipboardToken).replacingOccurrences(of:"__BRIDGE_ROUTE_BOUND__",with:channelRecord(address)==nil ? "no":"yes").replacingOccurrences(of: "'__BRIDGE_CONNECTION_NAME__'", with: connectionName) + "\ndocument.addEventListener('bridge-authenticated', () => window.prompt('codexbridge-session:" + clipboardToken + "', ''));document.addEventListener('bridge-logged-out', () => window.prompt('codexbridge-logout:" + clipboardToken + "', ''));document.addEventListener('bridge-auth-lost', () => window.prompt('codexbridge-auth-lost:" + clipboardToken + "', ''));"
@@ -1954,6 +2091,10 @@ enum MobileStrings {
 "查看新版与安装指引": "View update and installation guide",
 "iOS App 需要使用自己的 Apple 账号重新签名安装，暂不支持 App 内直接覆盖更新。": "The iOS app requires signing the new build with your own Apple account. Direct in-app installation is not available yet.",
 
+        "添加云服务": "Add cloud service", "退出云账号": "Sign out of cloud account", "删除云服务配置": "Delete cloud configuration",
+        "刷新云设备": "Refresh cloud devices",
+        "云服务": "Cloud service", "官方云服务": "Official cloud", "自建云服务": "Self-hosted cloud",
+        "登录云账号": "Sign in to cloud", "服务器地址": "Server address",
         "返回电脑列表": "Back to computers",
         "暂时无法连接电脑": "Can’t reach the computer",
         "网关暂时无法访问。请检查电脑和网络后重试，或返回电脑列表。": "The gateway is temporarily unreachable. Check your computer and network, then retry or go back to your computers.",

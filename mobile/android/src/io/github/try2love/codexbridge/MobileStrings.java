@@ -198,6 +198,10 @@ values.put("请填写完整的 HTTPS 网关地址，或局域网 HTTP 地址，�
   values.put("好","OK");
   values.put("电脑上的工作，\n带在身边。","Your computer’s work,\nalways with you.");
   values.put("继续聊天、查看结果，让电脑替你运行。","Continue chats and view results while your computer does the work.");
+  values.put("添加云服务","Add cloud service");values.put("退出云账号","Sign out of cloud account");
+  values.put("删除云服务配置","Delete cloud configuration");values.put("刷新云设备","Refresh cloud devices");
+  values.put("云服务","Cloud service");values.put("官方云服务","Official cloud");values.put("自建云服务","Self-hosted cloud");
+  values.put("登录云账号","Sign in to cloud");values.put("服务器地址","Server address");
   values.put("扫码连接电脑","Scan to connect");
   values.put("输入网关地址","Enter gateway address");
   values.put("我的电脑","My computers");

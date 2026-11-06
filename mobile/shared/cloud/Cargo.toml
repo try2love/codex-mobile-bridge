@@ -1,0 +1,47 @@
+[package]
+name = "cmb_cloud"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+anyhow = "*"
+base64 = "*"
+chacha20poly1305 = "0.10"
+bytes = "1"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+futures-util = "*"
+http = "*"
+reqwest = { version = "*", features = ["json", "stream"] }
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std", "tls12"] }
+rustls-platform-verifier = "*"
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+sha2 = "*"
+snow = "*"
+zeroize = { version = "*", features = ["derive"] }
+getrandom = "*"
+tokio-tungstenite = { version = "*", features = ["rustls-tls-native-roots"] }
+thiserror = "*"
+tokio = { version = "*", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+tokio-util = { version = "*", features = ["rt"] }
+url = "*"
+uuid = { version = "*", features = ["v4", "serde"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "*"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+
+
+[profile.dev]
+debug = 0
+incremental = false

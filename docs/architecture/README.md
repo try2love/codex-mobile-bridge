@@ -30,6 +30,8 @@
 | 网关更新或 Codex 更新 | `bridge/features/updates/` | `desktop/features/updates/`、签名与构建脚本 |
 | 共享聊天功能、应用切换 | `web/features/chat/`、`web/features/clients/` | `web/shell/` |
 | 窄屏、横屏、宽屏分屏 | `web/layouts/` | 工作台自身标签/草稿状态仍归 `web/features/workspace/` |
+| 手机云账号、设备证明与加密通道 | `mobile/shared/cloud/` | 两端原生电脑卡片和系统安全存储；工作台沿用 `web/` |
+| 桌面云接入生命周期 | `bridge/app/cloud.py`、`bridge/features/network/cloud_*.py` | `desktop/features/connections/cloud.js`；仅已登录时分配私有监听器 |
 | 浏览器与手机 App 的差别 | `web/hosts/` | `mobile/shared/web/` 共同注入脚本 |
 | Android 原生菜单、返回、下载、通知 | `mobile/android/` | 可选推送壳 `mobile/android-push/` |
 | iOS 原生菜单、导航、下载、通知 | `mobile/ios/` | Xcode 的 Sources/Resources 与 `WebScripts.swift` |

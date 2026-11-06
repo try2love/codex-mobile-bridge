@@ -1,10 +1,15 @@
-(() => {
+(function mountNativeLayout() {
   if (document.documentElement.classList.contains('bridge-mobile')) return;
-  const sheet = Array.from(document.styleSheets).find(s => s.href && new URL(s.href).origin === location.origin);
   const app = document.getElementById('app');
-  if (!sheet || !app) return;
+  if (!app) {
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mountNativeLayout, {once:true});
+    return;
+  }
+  // WKWebView's document-end hook can precede stylesheet readiness on a cold load.
+  // Mark the native shell first so navigation can give it ownership of the menu.
+  document.documentElement.classList.add('bridge-mobile');
   // Reuse a same-origin sheet: the gateway intentionally disallows inline styles.
-  for (const rule of [
+  const layoutRules = [
     '.bridge-mobile .phone-header { min-height: 56px; padding: 4px 64px 4px 16px; }',
     '.bridge-mobile.bridge-authenticated .phone-header { display: none !important; }',
     '.bridge-mobile aside { padding-top: 0; }',
@@ -22,8 +27,24 @@
     '.bridge-mobile .sidebar-foot > span { display: none; }',
     '.bridge-mobile .composer { padding-bottom: 8px; }',
     '.bridge-mobile input:not([type=checkbox]):not([type=radio]), .bridge-mobile textarea { font-size: max(16px, 1em); }'
-  ]) sheet.insertRule(rule, sheet.cssRules.length);
-  document.documentElement.classList.add('bridge-mobile');
+  ];
+  let waitingForSheet = false;
+  function installRules() {
+    const sheet = Array.from(document.styleSheets).find(s => s.href && new URL(s.href).origin === location.origin);
+    if (!sheet) return false;
+    let index;
+    try { index = sheet.cssRules.length; } catch { return false; }
+    for (const rule of layoutRules) sheet.insertRule(rule, index++);
+    if (waitingForSheet) {
+      document.removeEventListener('load', installRules, true);
+      waitingForSheet = false;
+    }
+    return true;
+  }
+  if (!installRules()) {
+    waitingForSheet = true;
+    document.addEventListener('load', installRules, true);
+  }
   if (window === window.top) document.addEventListener('bridge-theme-change', event => {
     if (['system', 'light', 'dark'].includes(event.detail?.theme)) window.prompt('codexbridge-theme:__BRIDGE_CLIPBOARD_TOKEN__', event.detail.theme);
   });

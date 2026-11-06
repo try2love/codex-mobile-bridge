@@ -14,6 +14,8 @@ import java.util.concurrent.*;
 
 public final class MainActivity extends Activity implements SharedPreferences.OnSharedPreferenceChangeListener {
  private GatewayMenu gatewayPopup;
+ private CloudComputers cloud;
+ private boolean cloudView;
  private int channelTicket; private long lastProbeMs; private String lastProbeNetwork="";
  private android.net.ConnectivityManager.NetworkCallback channelNetwork;
  private final Runnable routeChanged=()->{if(this.resumed){if(this.web!=null)checkChannels(this.web.getUrl(),false,"network");else checkComputers();}};
@@ -137,6 +139,7 @@ public final class MainActivity extends Activity implements SharedPreferences.On
  }
  private boolean checkChannels(String requested,boolean failure){return checkChannels(requested,failure,"signal");}
  private boolean checkChannels(String requested,boolean failure,String reason){
+  if(cloudView)return false;
   if(web==null||GatewayChannels.record(prefs,origin)==null)return false;
   if(pageReady)web.evaluateJavascript("window.BridgeChannelLink?.check("+JSONObject.quote(reason)+")",null);
   else if(failure && !"manual".equals(prefs.getString(preferenceKey("channel-mode",origin),"auto"))){
@@ -313,7 +316,7 @@ public final class MainActivity extends Activity implements SharedPreferences.On
   return address;
  }
  private LinearLayout root,bar;private WebView web;private String origin="";private TextView status;private SystemBars systemBars;
- private android.content.SharedPreferences prefs;private final ExecutorService worker=Executors.newSingleThreadExecutor();
+ android.content.SharedPreferences prefs;private final ExecutorService worker=Executors.newSingleThreadExecutor();
  private final ExecutorService probes=Executors.newFixedThreadPool(3);
  private Future<?> connectionTask;private Runnable connectionDeadline;
  private final Handler homeHandler=new Handler(Looper.getMainLooper());
@@ -411,7 +414,7 @@ public final class MainActivity extends Activity implements SharedPreferences.On
    });
   });
  }
- void recoverConnection(String requested){if(!checkChannels(requested,true))recoverLegacy(requested);}
+ void recoverConnection(String requested){if(cloudView)return;if(!checkChannels(requested,true))recoverLegacy(requested);}
  void recoverLegacy(String requested){
   if(routeAttempted||!resumed||web==null)return;routeAttempted=true;
   final String address=origin,encoded=prefs.getString("connection:"+address,null),cookie=EventClient.sessionCookie(CookieManager.getInstance().getCookie(address+"/"),address);final int ticket=generation;
@@ -466,7 +469,7 @@ public final class MainActivity extends Activity implements SharedPreferences.On
 
  void message(String value){resetExitGesture();new AlertDialog.Builder(ui.context).setMessage(L(value)).setPositiveButton(L("好"),null).show();}
  Set<String> saved(){return new LinkedHashSet<>(prefs.getStringSet("origins",new HashSet<>()));}
- @Override public void onCreate(Bundle state){super.onCreate(state);prefs=getSharedPreferences("bridge",0);ui=new SettingsUi(SettingsUi.themed(this));prefs.registerOnSharedPreferenceChangeListener(this);for(String address:prefs.getStringSet("origins",java.util.Collections.emptySet()))EventClient.setName(address,prefs.getString("cookieName:"+address,null));root=new LinearLayout(ui.context);root.setOrientation(1);root.setBackgroundColor(pageColor());screen=new FrameLayout(this);screen.addView(root,new FrameLayout.LayoutParams(-1,-1));setContentView(screen);systemBars=new SystemBars(this,screen,()->{if(downloadCard!=null)downloadCard.post(downloadCard::place);});
+ @Override public void onCreate(Bundle state){super.onCreate(state);prefs=getSharedPreferences("bridge",0);try(java.io.InputStream marker=getAssets().open("cmb-cloud.enabled")){cloud=new CloudComputers(this);}catch(java.io.IOException notBundled){}ui=new SettingsUi(SettingsUi.themed(this));prefs.registerOnSharedPreferenceChangeListener(this);for(String address:prefs.getStringSet("origins",java.util.Collections.emptySet()))EventClient.setName(address,prefs.getString("cookieName:"+address,null));root=new LinearLayout(ui.context);root.setOrientation(1);root.setBackgroundColor(pageColor());screen=new FrameLayout(this);screen.addView(root,new FrameLayout.LayoutParams(-1,-1));setContentView(screen);systemBars=new SystemBars(this,screen,()->{if(downloadCard!=null)downloadCard.post(downloadCard::place);});
   if(state!=null){choosingUpdateFile=state.getString("choosingUpdateFile");pendingSaveResult=state.getBundle("pendingSaveResult");}
   if(Build.VERSION.SDK_INT>=33)getOnBackInvokedDispatcher().registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,this::handleBack);
   bar=new LinearLayout(ui.context);bar.setGravity(Gravity.CENTER_VERTICAL);bar.setPadding(dp(20),dp(4),dp(12),dp(4));root.addView(bar);header(false);
@@ -483,13 +486,20 @@ public final class MainActivity extends Activity implements SharedPreferences.On
   };homeHandler.postDelayed(connectionDeadline,12000);
  }
  void clear(){hideEntryProgress();pageReady=false;pendingPeer=null;for(WebView peer:new ArrayList<>(peerViews))closePeer(peer);cancelChannelJobs();dismissGatewayMenu();cancelConnectionDeadline();if(connectionTask!=null){connectionTask.cancel(true);connectionTask=null;}if(preparingUpdate!=null){preparingUpdate.cancel();preparingUpdate=null;}pendingStorage=null;if(routeDiscovery!=null){routeDiscovery.cancel();routeDiscovery=null;}if(files!=null){files.onReceiveValue(null);files=null;fileView=null;}stopComputerChecks();homeStates.clear();addressLists.clear();computerTitles.clear();arrivingVia=null;deferredRoute=null;homeNotifications.clear();resetExitGesture();generation++;if(web!=null){web.stopLoading();web.destroy();web=null;}systemBars.update(pageColor(),pageColor());while(root.getChildCount()>2)root.removeViewAt(2);}
- void home(){clear();header(false);status.setVisibility(View.GONE);ScrollView scroll=new ScrollView(ui.context);scroll.setFillViewport(true);LinearLayout content=column();content.setPadding(dp(20),dp(16),dp(20),dp(24));scroll.addView(content);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
+ private Button primaryConnectionButton(String title,Runnable open){
+  Button item=button(L(title),open);item.setTextColor(surfaceColor());item.setBackground(background(textColor(),16));return item;
+ }
+ void home(){if(cloud!=null){cloud.leave();if(cloudView)cloud.closeView();}cloudView=false;clear();header(false);status.setVisibility(View.GONE);ScrollView scroll=new ScrollView(ui.context);scroll.setFillViewport(true);LinearLayout content=column();content.setPadding(dp(20),dp(16),dp(20),dp(24));scroll.addView(content);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
   ImageView icon=new ImageView(ui.context);icon.setImageResource(getResources().getIdentifier("ic_computer","drawable",getPackageName()));icon.setColorFilter(textColor());icon.setScaleType(ImageView.ScaleType.FIT_CENTER);LinearLayout.LayoutParams ip=new LinearLayout.LayoutParams(dp(64),dp(58));ip.gravity=Gravity.CENTER;ip.bottomMargin=dp(24);content.addView(icon,ip);
   TextView headline=text(L("电脑上的工作，\n带在身边。"),30);headline.setTypeface(null,android.graphics.Typeface.BOLD);headline.setGravity(Gravity.CENTER);add(headline,content,10);
   TextView intro=text(L("继续聊天、查看结果，让电脑替你运行。"),15);intro.setTextColor(mutedColor());intro.setGravity(Gravity.CENTER);add(intro,content,26);
-  LinearLayout connection=card();Button scan=button(L("扫码连接电脑"),this::scan);scan.setTextColor(surfaceColor());scan.setBackground(background(textColor(),16));add(scan,connection,8);add(button(L("输入网关地址"),this::manualAddress),connection,8);add(button("DSH Mobile",()->manualDsh()),connection,0);add(connection,content,24);
-  LinearLayout sectionRow=new LinearLayout(ui.context);sectionRow.setGravity(Gravity.CENTER_VERTICAL);TextView section=text(L("我的电脑"),19);section.setTypeface(null,android.graphics.Typeface.BOLD);sectionRow.addView(section,new LinearLayout.LayoutParams(0,-2,1));sectionRow.addView(button(L("刷新状态"),()->{checkComputers();MonitorService.refresh();}));add(sectionRow,content,12);
-  if(saved().isEmpty()&&DshMobileStore.ids(this).isEmpty()){LinearLayout empty=card();add(text(L("还没有连接的电脑"),17),empty,6);TextView hint=text(L("在电脑网关中展开“扫码登录”，然后用上方按钮扫描。"),14);hint.setTextColor(mutedColor());add(hint,empty,0);add(empty,content,18);}
+  LinearLayout connection=card();
+  if(cloud!=null)add(primaryConnectionButton("云服务",cloud::account),connection,8);
+  add(primaryConnectionButton("扫码连接电脑",this::scan),connection,8);
+  add(button(L("输入网关地址"),this::manualAddress),connection,8);add(button("DSH Mobile",this::manualDsh),connection,0);add(connection,content,24);
+  LinearLayout sectionRow=new LinearLayout(ui.context);sectionRow.setGravity(Gravity.CENTER_VERTICAL);TextView section=text(L("我的电脑"),19);section.setTypeface(null,android.graphics.Typeface.BOLD);sectionRow.addView(section,new LinearLayout.LayoutParams(0,-2,1));sectionRow.addView(button(L("刷新状态"),()->{checkComputers();MonitorService.refresh();if(cloud!=null)cloud.refresh();}));add(sectionRow,content,12);
+  if(cloud!=null)cloud.show(content);
+  if(saved().isEmpty()&&DshMobileStore.ids(this).isEmpty()&&(cloud==null||!cloud.enabled())){LinearLayout empty=card();add(text(L("还没有连接的电脑"),17),empty,6);TextView hint=text(L("在电脑网关中展开“扫码登录”，然后用上方按钮扫描。"),14);hint.setTextColor(mutedColor());add(hint,empty,0);add(empty,content,18);}
   for(String entry:recentComputers()){
    if(entry.startsWith("dsh:")){add(dshComputer(entry.substring(4)),content,12);continue;}
    LinearLayout computer=card(),heading=new LinearLayout(ui.context);heading.setGravity(Gravity.CENTER_VERTICAL);
@@ -552,8 +562,9 @@ public final class MainActivity extends Activity implements SharedPreferences.On
  void openDsh(String id,String url){prefs.edit().putLong("last-opened:dsh:"+id,System.currentTimeMillis()).apply();home();if(Build.VERSION.SDK_INT<28){new AlertDialog.Builder(ui.context).setMessage(L("Android 8 请使用浏览器打开 DSH Mobile；App 内连接需要 Android 9 或更高版本。")).setPositiveButton(L("打开"),(d,w)->startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(url)))).setNegativeButton(L("取消"),null).show();return;}startActivity(new Intent(this,DshMobileActivity.class).putExtra("url",url).putExtra("theme",SettingsUi.theme(this)));}
  void choose(String value){resetExitGesture();try{String target=GatewayURL.connection(value);String base=GatewayURL.origin(value);new AlertDialog.Builder(ui.context).setTitle(L("连接到这台电脑？")).setMessage(base+L("\n请确认这是你自己的网关。")).setPositiveButton(L("连接"),(d,w)->connect(target)).setNeutralButton("DSH Mobile",(d,w)->chooseDsh(value)).setNegativeButton(L("取消"),null).show();}catch(Exception e){chooseDsh(value);}}
 
- void connect(String url){routeAttempted=false;try{String base=GatewayURL.targetBase(url);if(saved().contains(base)&&!GatewayChannels.enabled(prefs,base,base)){openComputer(base,url.substring(base.length()));return;}LinearLayout entering=web==null?entryProgress:null;clear();header(true);status.setVisibility(View.VISIBLE);origin=base;pageOrigin=base;Set<String> saved=saved();saved.add(origin);prefs.edit().putStringSet("origins",saved).putString("active",origin).putLong("last-opened:"+origin,System.currentTimeMillis()).apply();status.setText(L("正在连接 · ")+computerName(origin));
-  FrameLayout viewport=new FrameLayout(this);root.addView(viewport,new LinearLayout.LayoutParams(-1,0,1));web=new WebView(ui.context);web.setBackgroundColor(pageColor());viewport.addView(web,new FrameLayout.LayoutParams(-1,-1));if(entering!=null){entryProgress=entering;entering.setBackgroundColor(pageColor());viewport.addView(entering,new FrameLayout.LayoutParams(-1,-1));status.setVisibility(View.GONE);}ImageButton menu=icon("ic_more",L("电脑与聊天选项"),()->{});chatMenu=menu;menu.setOnClickListener(v->gatewayMenu(v));FrameLayout.LayoutParams menuPosition=new FrameLayout.LayoutParams(dp(48),dp(48),Gravity.TOP|Gravity.END);menuPosition.topMargin=dp(4);menuPosition.setMarginEnd(dp(8));viewport.addView(menu,menuPosition);final String clipboardToken=UUID.randomUUID().toString();final String appearance=MobileWebScripts.appearance(getAssets()).replace("__BRIDGE_CLIPBOARD_TOKEN__",clipboardToken).replace("__BRIDGE_ROUTE_BOUND__",GatewayChannels.record(prefs,origin)==null?"no":"yes").replace("'__BRIDGE_CONNECTION_NAME__'",JSONObject.quote(computerName(origin))).replace("'__BRIDGE_NATIVE_LANGUAGE__'",JSONObject.quote(prefs.getString("language",java.util.Locale.getDefault().getLanguage()).startsWith("en")?"en":"zh"));WebSettings s=web.getSettings();s.setJavaScriptEnabled(true);s.setDomStorageEnabled(true);s.setAllowFileAccess(false);s.setAllowContentAccess(true);s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);s.setSupportMultipleWindows(false);s.setUserAgentString(s.getUserAgentString()+" BridgeMobile/0.1-Android");CookieManager.getInstance().setAcceptThirdPartyCookies(web,false);
+ void connect(String url){connect(url,null);}
+ void connect(String url,String cloudName){routeAttempted=false;try{String base=GatewayURL.targetBase(url);if(saved().contains(base)&&!GatewayChannels.enabled(prefs,base,base)){openComputer(base,url.substring(base.length()));return;}LinearLayout entering=web==null?entryProgress:null;clear();header(true);status.setVisibility(View.VISIBLE);origin=base;pageOrigin=base;cloudView=cloudName!=null;if(!cloudView){Set<String> saved=saved();saved.add(origin);prefs.edit().putStringSet("origins",saved).putString("active",origin).putLong("last-opened:"+origin,System.currentTimeMillis()).apply();}status.setText(L("正在连接 · ")+(cloudView?cloudName:computerName(origin)));
+  FrameLayout viewport=new FrameLayout(this);root.addView(viewport,new LinearLayout.LayoutParams(-1,0,1));web=new WebView(ui.context);web.setBackgroundColor(pageColor());viewport.addView(web,new FrameLayout.LayoutParams(-1,-1));if(entering!=null){entryProgress=entering;entering.setBackgroundColor(pageColor());viewport.addView(entering,new FrameLayout.LayoutParams(-1,-1));status.setVisibility(View.GONE);}ImageButton menu=icon("ic_more",L("电脑与聊天选项"),()->{});chatMenu=menu;menu.setOnClickListener(v->gatewayMenu(v));FrameLayout.LayoutParams menuPosition=new FrameLayout.LayoutParams(dp(48),dp(48),Gravity.TOP|Gravity.END);menuPosition.topMargin=dp(4);menuPosition.setMarginEnd(dp(8));viewport.addView(menu,menuPosition);final String clipboardToken=UUID.randomUUID().toString();final String appearance=MobileWebScripts.appearance(getAssets()).replace("__BRIDGE_CLIPBOARD_TOKEN__",clipboardToken).replace("__BRIDGE_ROUTE_BOUND__",GatewayChannels.record(prefs,origin)==null?"no":"yes").replace("'__BRIDGE_CONNECTION_NAME__'",JSONObject.quote(cloudView?cloudName:computerName(origin))).replace("'__BRIDGE_NATIVE_LANGUAGE__'",JSONObject.quote(prefs.getString("language",java.util.Locale.getDefault().getLanguage()).startsWith("en")?"en":"zh"));WebSettings s=web.getSettings();s.setJavaScriptEnabled(true);s.setDomStorageEnabled(true);s.setAllowFileAccess(false);s.setAllowContentAccess(true);s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);s.setSupportMultipleWindows(false);s.setUserAgentString(s.getUserAgentString()+" BridgeMobile/0.1-Android");CookieManager.getInstance().setAcceptThirdPartyCookies(web,false);
   // Keep the WebView glyph size aligned with the terminal's 6px lower bound.
   s.setMinimumFontSize(6);s.setMinimumLogicalFontSize(6);
   web.setWebViewClient(new WebViewClient(){
@@ -626,7 +637,7 @@ public final class MainActivity extends Activity implements SharedPreferences.On
    }});
 
   web.setDownloadListener((target,agent,disposition,mime,length)->downloadArtifact(target));
-  watchConnection(url,web,generation);loadWithRecovery(base,url,web,generation);monitor();
+  watchConnection(url,web,generation);if(cloudView)web.loadUrl(url);else{loadWithRecovery(base,url,web,generation);monitor();}
  }catch(Exception e){message(e.getMessage());}}
  void renderDownload(){downloadCard.render(downloadTask,savingDownload||choosingDownload!=null,openingDownload,updateSession!=null);}
  void downloadArtifact(String target){
@@ -905,5 +916,5 @@ public final class MainActivity extends Activity implements SharedPreferences.On
  void resetExitGesture(){homeBackAt=0;if(exitToast!=null){exitToast.cancel();exitToast=null;}}
  @Override public void onBackPressed(){handleBack();}
  void handleBack(){if(gatewayPopup!=null){dismissGatewayMenu();return;}if(web==null){long now=SystemClock.elapsedRealtime();if(homeBackAt!=0&&now-homeBackAt<=2000){resetExitGesture();finishAndRemoveTask();}else{homeBackAt=now;if(exitToast!=null)exitToast.cancel();exitToast=Toast.makeText(this,L("再按一次返回退出 App"),Toast.LENGTH_SHORT);exitToast.show();}return;}resetExitGesture();if(!GatewayURL.sameOrigin(web.getUrl(),pageOrigin)){home();return;}final int ticket=generation;web.evaluateJavascript("(()=>{const dialog=document.querySelector('dialog[open]');if(dialog){if(dialog.dispatchEvent(new Event('cancel',{cancelable:true})))dialog.close();return true;}if(typeof window.BridgeNavigation?.back==='function')return window.BridgeNavigation.back();if(window.BridgeWorkbench?.back())return true;if(document.getElementById('app')?.classList.contains('chat-open')){document.getElementById('back')?.click();return true;}return false;})()",result->{if(ticket==generation&&!"true".equals(result))home();});}
- @Override public void onDestroy(){prefs.unregisterOnSharedPreferenceChangeListener(this);if(settingsPage!=null)settingsPage.dismiss();if(downloadTask!=null&&(updateSession==null||downloadTask.state!=ArtifactDownload.State.COMPLETE))downloadTask.cancel();downloads.shutdownNow();clear();probes.shutdownNow();worker.shutdownNow();if(monitor!=null)getApplicationContext().unbindService(monitor);super.onDestroy();}
+ @Override public void onDestroy(){if(cloud!=null){cloud.leave();if(cloudView)cloud.closeView();}prefs.unregisterOnSharedPreferenceChangeListener(this);if(settingsPage!=null)settingsPage.dismiss();if(downloadTask!=null&&(updateSession==null||downloadTask.state!=ArtifactDownload.State.COMPLETE))downloadTask.cancel();downloads.shutdownNow();clear();probes.shutdownNow();worker.shutdownNow();if(monitor!=null)getApplicationContext().unbindService(monitor);super.onDestroy();}
 }
