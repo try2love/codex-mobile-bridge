@@ -294,6 +294,8 @@ public final class MainActivity extends Activity implements SharedPreferences.On
   ((WebView.WebViewTransport)reply.obj).setWebView(child);reply.sendToTarget();parent.post(()->{if(pendingPeer==p)endPeerWindow();});return true;
  }
  private void clearChannels(String address){
+  JSONObject known=GatewayChannels.record(prefs,address);
+  uu.remove(known==null?UURemote.device(prefs.getString("cookieName:"+address,"")):known.optString("deviceId"));
   JSONObject record=GatewayChannels.record(prefs,address);prefs.edit().remove(preferenceKey("disabled-channels",address)).remove(preferenceKey("channel-mode",address)).apply();if(record==null)return;
   String id=record.optString("deviceId");channelTicket++;
   DeviceBinding.clear(this,GatewayChannels.vault(id));prefs.edit().remove("name:"+id).apply();
@@ -331,6 +333,7 @@ public final class MainActivity extends Activity implements SharedPreferences.On
  private String choosingUpdateFile;private Bundle pendingSaveResult;
  private GatewayUpdate preparingUpdate;
  private ServiceConnection monitor;private ValueCallback<Uri[]> files;private WebView fileView;private int fileGeneration;private int generation;private int navigationRequest;private boolean authLossAttempted;
+ private UURemote uu;
  private SettingsPage settingsPage;private SettingsUi ui;private ImageButton chatMenu;
  private int pageColor(){return ui.dark?ui.page:0xfff5f5f3;}
  private int textColor(){return ui.dark?ui.text:0xff202124;}
@@ -376,6 +379,10 @@ public final class MainActivity extends Activity implements SharedPreferences.On
       prefs.edit().putString("channels:"+address,channels.toString()).putString("channel-anchor:"+id,channels.getString("anchor")).putStringSet("origins",addresses).apply();
      }
     }catch(Exception ignored){}}
+    JSONObject computer=auth.optJSONObject("computer");
+    String platform=computer==null?"":computer.optString("platform");
+    uu.scope=auth.optBoolean("authenticated")&&("Windows".equals(platform)||"Darwin".equals(platform))?UURemote.device(name):"";
+    if(web!=null)web.evaluateJavascript("window.BridgeUURemote?.refresh()",null);
     if(channels!=null&&web!=null)web.evaluateJavascript("window.BridgeMobileChannels?.bound()",null);
     if(data!=null)prefs.edit().putString("connection:"+address,data.toString()).apply();else prefs.edit().remove("connection:"+address).apply();});
   }catch(Exception ignored){}});
@@ -447,6 +454,20 @@ public final class MainActivity extends Activity implements SharedPreferences.On
   menu.add(L("手机设置"),"ic_menu_settings",this::settings);
   menu.separator();
   menu.add(L("刷新页面"),"ic_menu_refresh_cw",()->{if(web==current&&generation==ticket){routeAttempted=false;if(origin.equals(pageOrigin))current.reload();else connect(origin+current.getUrl().substring(pageOrigin.length()));}});
+  final String uuDevice=uu.scope;
+  if(uu.enabled()&&uuContext())current.evaluateJavascript("window.BridgeUURemote?.menu("+uu.settings("read")+")||[]", value->{
+   if(web!=current||generation!=ticket||gatewayPopup!=menu||!uuDevice.equals(uu.scope)||!uuContext())return;
+   try{JSONArray actions=new JSONArray(value);
+    for(int i=0;i<actions.length();i++){
+     JSONObject action=actions.getJSONObject(i);String mode=action.getString("mode");
+     if(!("pip".equals(mode)||"full".equals(mode)))continue;
+     menu.add(action.getString("title"),"ic_menu_monitor",()->{
+      if(web==current&&generation==ticket&&uuDevice.equals(uu.scope)&&uuContext())uuNotice(uu.open(mode));
+     });
+    }
+    menu.resize(anchor);
+   }catch(org.json.JSONException ignored){}
+  });
   final LinearLayout appIcons=menu.add(L("隐藏底部 APP 图标"),"ic_menu_eye_off",()->{if(web==current&&generation==ticket)webAction("#client-switch-toggle");});
   appIcons.setVisibility(View.GONE);
   current.evaluateJavascript("(()=>{const button=document.getElementById('client-switch-toggle');return document.getElementById('app')?.hidden===false&&button&&!button.hidden?button.getAttribute('aria-expanded')==='false':null;})()",value->{
@@ -464,15 +485,22 @@ public final class MainActivity extends Activity implements SharedPreferences.On
   anchor.postDelayed(()->{if(web==current&&generation==ticket&&gatewayPopup==menu&&anchor.isShown()&&anchor.isEnabled()&&!menu.isShowing())menu.show(anchor);},120);
  }
 
+ private boolean uuContext(){
+  if(web==null||!resumed||!saved().contains(origin)||!GatewayURL.sameOrigin(web.getUrl(),pageOrigin))return false;
+  String cookie=prefs.getString("cookieName:"+origin,"");
+  return !uu.scope.isEmpty()&&uu.scope.equals(UURemote.device(cookie))&&!BindingSelection.cookie(CookieManager.getInstance().getCookie(origin+"/"),cookie).isEmpty();
+ }
+ private void uuNotice(String text){if(text!=null&&!text.isEmpty())Toast.makeText(this,L(text),Toast.LENGTH_LONG).show();}
  void message(String value){resetExitGesture();new AlertDialog.Builder(ui.context).setMessage(L(value)).setPositiveButton(L("好"),null).show();}
  Set<String> saved(){return new LinkedHashSet<>(prefs.getStringSet("origins",new HashSet<>()));}
- @Override public void onCreate(Bundle state){super.onCreate(state);prefs=getSharedPreferences("bridge",0);ui=new SettingsUi(SettingsUi.themed(this));prefs.registerOnSharedPreferenceChangeListener(this);for(String address:prefs.getStringSet("origins",java.util.Collections.emptySet()))EventClient.setName(address,prefs.getString("cookieName:"+address,null));root=new LinearLayout(ui.context);root.setOrientation(1);root.setBackgroundColor(pageColor());screen=new FrameLayout(this);screen.addView(root,new FrameLayout.LayoutParams(-1,-1));setContentView(screen);systemBars=new SystemBars(this,screen,()->{if(downloadCard!=null)downloadCard.post(downloadCard::place);});
+ @Override public void onCreate(Bundle state){super.onCreate(state);prefs=getSharedPreferences("bridge",0);uu=new UURemote(this,prefs);ui=new SettingsUi(SettingsUi.themed(this));prefs.registerOnSharedPreferenceChangeListener(this);for(String address:prefs.getStringSet("origins",java.util.Collections.emptySet()))EventClient.setName(address,prefs.getString("cookieName:"+address,null));root=new LinearLayout(ui.context);root.setOrientation(1);root.setBackgroundColor(pageColor());screen=new FrameLayout(this);screen.addView(root,new FrameLayout.LayoutParams(-1,-1));setContentView(screen);systemBars=new SystemBars(this,screen,()->{if(downloadCard!=null)downloadCard.post(downloadCard::place);});
   if(state!=null){choosingUpdateFile=state.getString("choosingUpdateFile");pendingSaveResult=state.getBundle("pendingSaveResult");}
   if(Build.VERSION.SDK_INT>=33)getOnBackInvokedDispatcher().registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,this::handleBack);
   bar=new LinearLayout(ui.context);bar.setGravity(Gravity.CENTER_VERTICAL);bar.setPadding(dp(20),dp(4),dp(12),dp(4));root.addView(bar);header(false);
   downloadCard=new DownloadCard(this,screen,this::downloadAction,this::openDownload,this::cancelDownload);
   status=text("",12);status.setTextColor(mutedColor());status.setGravity(Gravity.CENTER);root.addView(status);
-  if(!openIntent(getIntent())){String active=prefs.getString("active","");if(saved().contains(active))connect(active+"/");else home();}monitor();root.post(this::requestStartupNotifications);restoreUpdate();
+  String uuResult=uu.callback(getIntent().getData());uuNotice(uuResult);
+  if(uuResult!=null||!openIntent(getIntent())){String active=prefs.getString("active","");if(saved().contains(active))connect(active+"/");else home();}monitor();root.post(this::requestStartupNotifications);restoreUpdate();
   if(state!=null&&state.getBoolean("settingsOpen",false)){int offset=state.getInt("settingsScroll",0);root.post(()->{settingsPage=new SettingsPage(this,offset,false);settingsPage.show();});}
  }
  void cancelConnectionDeadline(){if(connectionDeadline!=null){homeHandler.removeCallbacks(connectionDeadline);connectionDeadline=null;}}
@@ -482,7 +510,7 @@ public final class MainActivity extends Activity implements SharedPreferences.On
    connectionDeadline=null;hideEntryProgress();status.setVisibility(View.VISIBLE);status.setText(L("连接失败，请在更多菜单中刷新"));recoverConnection(url);
   };homeHandler.postDelayed(connectionDeadline,12000);
  }
- void clear(){hideEntryProgress();pageReady=false;pendingPeer=null;for(WebView peer:new ArrayList<>(peerViews))closePeer(peer);cancelChannelJobs();dismissGatewayMenu();cancelConnectionDeadline();if(connectionTask!=null){connectionTask.cancel(true);connectionTask=null;}if(preparingUpdate!=null){preparingUpdate.cancel();preparingUpdate=null;}pendingStorage=null;if(routeDiscovery!=null){routeDiscovery.cancel();routeDiscovery=null;}if(files!=null){files.onReceiveValue(null);files=null;fileView=null;}stopComputerChecks();homeStates.clear();addressLists.clear();computerTitles.clear();arrivingVia=null;deferredRoute=null;homeNotifications.clear();resetExitGesture();generation++;if(web!=null){web.stopLoading();web.destroy();web=null;}systemBars.update(pageColor(),pageColor());while(root.getChildCount()>2)root.removeViewAt(2);}
+ void clear(){if(uu!=null)uu.scope="";hideEntryProgress();pageReady=false;pendingPeer=null;for(WebView peer:new ArrayList<>(peerViews))closePeer(peer);cancelChannelJobs();dismissGatewayMenu();cancelConnectionDeadline();if(connectionTask!=null){connectionTask.cancel(true);connectionTask=null;}if(preparingUpdate!=null){preparingUpdate.cancel();preparingUpdate=null;}pendingStorage=null;if(routeDiscovery!=null){routeDiscovery.cancel();routeDiscovery=null;}if(files!=null){files.onReceiveValue(null);files=null;fileView=null;}stopComputerChecks();homeStates.clear();addressLists.clear();computerTitles.clear();arrivingVia=null;deferredRoute=null;homeNotifications.clear();resetExitGesture();generation++;if(web!=null){web.stopLoading();web.destroy();web=null;}systemBars.update(pageColor(),pageColor());while(root.getChildCount()>2)root.removeViewAt(2);}
  void home(){clear();header(false);status.setVisibility(View.GONE);ScrollView scroll=new ScrollView(ui.context);scroll.setFillViewport(true);LinearLayout content=column();content.setPadding(dp(20),dp(16),dp(20),dp(24));scroll.addView(content);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
   ImageView icon=new ImageView(ui.context);icon.setImageResource(getResources().getIdentifier("ic_computer","drawable",getPackageName()));icon.setColorFilter(textColor());icon.setScaleType(ImageView.ScaleType.FIT_CENTER);LinearLayout.LayoutParams ip=new LinearLayout.LayoutParams(dp(64),dp(58));ip.gravity=Gravity.CENTER;ip.bottomMargin=dp(24);content.addView(icon,ip);
   TextView headline=text(L("电脑上的工作，\n带在身边。"),30);headline.setTypeface(null,android.graphics.Typeface.BOLD);headline.setGravity(Gravity.CENTER);add(headline,content,10);
@@ -574,6 +602,11 @@ public final class MainActivity extends Activity implements SharedPreferences.On
     if(prompt.equals("codexbridge-system-bars:"+clipboardToken)){
      if(view==web&&view.hasWindowFocus()&&GatewayURL.sameOrigin(url,pageOrigin)&&GatewayURL.sameOrigin(view.getUrl(),pageOrigin)&&value!=null&&value.length()<100){try{JSONObject colors=new JSONObject(value);String top=colors.getString("top"),bottom=colors.getString("bottom");if(top.matches("#[0-9a-fA-F]{6}")&&bottom.matches("#[0-9a-fA-F]{6}")){systemBars.update(android.graphics.Color.parseColor(top),android.graphics.Color.parseColor(bottom));result.confirm("saved");return true;}}catch(Exception ignored){}}
      result.cancel();return true;
+    }
+    if(prompt.equals("codexbridge-uu:"+clipboardToken)){
+     if(view==web&&view.hasWindowFocus()&&GatewayURL.sameOrigin(url,pageOrigin)&&uuContext()&&
+       ("read".equals(value)||"enable".equals(value)||"disable".equals(value)||"forget".equals(value)))result.confirm(uu.settings(value));else result.cancel();
+     return true;
     }
     if(prompt.equals("codexbridge-modal:"+clipboardToken)){
      if(view==web&&view.hasWindowFocus()&&GatewayURL.sameOrigin(url,pageOrigin)&&GatewayURL.sameOrigin(view.getUrl(),pageOrigin)&&("open".equals(value)||"closed".equals(value))){boolean open="open".equals(value);menu.setVisibility(open?View.GONE:View.VISIBLE);menu.setEnabled(!open);if(open)dismissGatewayMenu();result.confirm("saved");}else result.cancel();return true;
@@ -704,7 +737,7 @@ public final class MainActivity extends Activity implements SharedPreferences.On
   });
   return true;
  }
- @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);openIntent(intent);}
+ @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);String result=uu.callback(intent.getData());if(result==null)openIntent(intent);else uuNotice(result);}
  Dialog panel(String title,LinearLayout content){
   resetExitGesture();
   Dialog dialog=new Dialog(ui.context);dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);

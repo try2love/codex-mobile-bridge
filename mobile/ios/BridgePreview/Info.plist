@@ -61,6 +61,8 @@
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
+	<key>LSApplicationQueriesSchemes</key>
+	<array><string>uuremote</string></array>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -69,6 +71,7 @@
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>codexbridge</string>
+				<string>$(PRODUCT_BUNDLE_IDENTIFIER).uu</string>
 			</array>
 		</dict>
 	</array>

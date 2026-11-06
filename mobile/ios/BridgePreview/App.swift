@@ -190,6 +190,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
     }
     private var lastChannelProbe: (key: String, time: TimeInterval)?
     private func clearChannels(_ address: String) {
+        uu.remove(channelRecord(address)?["deviceId"] as? String ?? UURemote.device(cookieName(address)))
         defaults.removeObject(forKey:preferenceKey("disabled-channels",address));defaults.removeObject(forKey:preferenceKey("channel-mode",address))
         guard let id=channelRecord(address)?["deviceId"] as? String else { return }
         channelTicket += 1; lastChannelProbe=nil
@@ -484,6 +485,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
     private var connectionError: UIView?
     private var connectionDeadline: DispatchWorkItem?
     private var pendingStorage: String?
+    private lazy var uu = UURemote(defaults)
     private var clipboardToken = ""
     private var downloadState = DownloadManager.Snapshot()
     private let downloadPanel = DownloadPanel()
@@ -697,6 +699,28 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             }
         }
     }
+    private func uuContext() -> Bool {
+        guard let current = web?.url, GatewayURL.same(current, documentAddress), saved.contains(origin),
+              connectionError == nil, !uu.scope.isEmpty else { return false }
+        return UURemote.device(cookieName(origin)) == uu.scope
+    }
+    private func uuMenu() -> UIDeferredMenuElement {
+        UIDeferredMenuElement.uncached { [weak self] complete in
+            guard let self, let web = self.web, self.uu.enabled, self.uuContext() else { complete([]); return }
+            let ticket = self.generation, device = self.uu.scope
+            web.evaluateJavaScript("window.BridgeUURemote?.menu(" + self.uu.settings("read") + ")||[]") { result, _ in
+                guard self.generation == ticket, self.web === web, self.uu.scope == device, self.uuContext(),
+                      let rows = result as? [[String:String]] else { complete([]); return }
+                complete(rows.compactMap { row -> UIAction? in
+                    guard let title = row["title"], let mode = row["mode"], ["pip","full"].contains(mode) else { return nil }
+                    return UIAction(title:title,image:UIImage(systemName:mode == "pip" ? "pip" : "desktopcomputer")) { [weak self] _ in
+                        guard let self, self.generation == ticket, self.web === web, self.uu.scope == device, self.uuContext() else { return }
+                        self.uu.open(mode) { self.routeNotice(MobileStrings.text($0)) }
+                    }
+                })
+            }
+        }
+    }
     private func updateGatewayMenu() {
         gatewayMenu.accessibilityLabel = MobileStrings.text("电脑与通知")
         gatewayMenu.menu = UIMenu(children: [
@@ -707,6 +731,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             UIAction(title: MobileStrings.text("通知收件箱"), image: UIImage(systemName: "bell")) { [weak self] _ in self?.inbox() },
             UIAction(title: MobileStrings.text("刷新页面"), image: UIImage(systemName: "arrow.clockwise")) { [weak self] _ in self?.refresh() },
             UIAction(title: MobileStrings.text("外观与显示"), image: UIImage(systemName: "paintpalette")) { [weak self] _ in self?.web?.evaluateJavaScript("document.querySelector('[data-open-appearance]')?.click()") },
+            uuMenu(),
             appIconsMenu(),
             UIAction(title: MobileStrings.text("手机设置"), image: UIImage(systemName: "gearshape")) { [weak self] _ in self?.settings() }
         ])
@@ -724,7 +749,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         let inbox = UIBarButtonItem(image: UIImage(systemName: "bell"), style: .plain, target: self, action: #selector(self.inbox)); inbox.accessibilityLabel = MobileStrings.text("通知")
         navigationItem.rightBarButtonItems = [settings, inbox]
     }
-    private func clear() { hideEntryProgress();pageReady=false;pendingPeer=nil;for child in Array(peerViews.keys){child.stopLoading();webViewDidClose(child)};cancelChannelJobs();connectionDeadline?.cancel(); connectionDeadline = nil; updateSystemBars(reset: true); connectionError = nil; pendingStorage = nil; nativeMainNavigation = nil; routeDiscovery?.cancel(); routeDiscovery = nil; cancelSync(); finishUpload(nil); if let folder = mediaUploadDirectory { try? FileManager.default.removeItem(at: folder); mediaUploadDirectory = nil }; stopComputerChecks(); computerStates.removeAll();addressLists.removeAll();computerTitles.removeAll();arrivingVia=nil;deferredRoute=nil; computerNotifications.removeAll(); gatewayMenuTop?.isActive = false; gatewayMenuTop = nil; generation += 1; web?.stopLoading(); web?.navigationDelegate = nil; web?.uiDelegate = nil; web = nil; for v in page.arrangedSubviews where v !== subtitle { page.removeArrangedSubview(v); v.removeFromSuperview() } }
+    private func clear() { uu.scope = ""; hideEntryProgress();pageReady=false;pendingPeer=nil;for child in Array(peerViews.keys){child.stopLoading();webViewDidClose(child)};cancelChannelJobs();connectionDeadline?.cancel(); connectionDeadline = nil; updateSystemBars(reset: true); connectionError = nil; pendingStorage = nil; nativeMainNavigation = nil; routeDiscovery?.cancel(); routeDiscovery = nil; cancelSync(); finishUpload(nil); if let folder = mediaUploadDirectory { try? FileManager.default.removeItem(at: folder); mediaUploadDirectory = nil }; stopComputerChecks(); computerStates.removeAll();addressLists.removeAll();computerTitles.removeAll();arrivingVia=nil;deferredRoute=nil; computerNotifications.removeAll(); gatewayMenuTop?.isActive = false; gatewayMenuTop = nil; generation += 1; web?.stopLoading(); web?.navigationDelegate = nil; web?.uiDelegate = nil; web = nil; for v in page.arrangedSubviews where v !== subtitle { page.removeArrangedSubview(v); v.removeFromSuperview() } }
     @objc func home() {
         clear(); navigation(home: true); subtitle.isHidden = true
         let container = UIView(); page.addArrangedSubview(container); let content = scrollContent(in: container)
@@ -906,6 +931,10 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
                         DeviceBinding.save(address, .init(name: cookie.name, token: cookie.value))
                     } else if auth["authenticated"] as? Bool == false { DeviceBinding.clear(address) }
                     if auth["authenticated"] as? Bool==true && self.arrivingVia==address {self.arrivingVia=nil;self.routeNotice(MobileStrings.text("已切换连接信道")+" · "+address)}
+                    let platform = (auth["computer"] as? [String:Any])?["platform"] as? String ?? ""
+                    self.uu.scope = auth["authenticated"] as? Bool == true && ["Darwin","Windows"].contains(platform)
+                        ? UURemote.device(cookie.name) : ""
+                    self.web?.evaluateJavaScript("window.BridgeUURemote?.refresh()",completionHandler:nil)
                     self.enrollChannels(auth,address:address,cookie:cookie,ticket:ticket)
                     self.defaults.set(ConnectionDiscovery.descriptor(auth, secret: cookie.value), forKey: "connection:" + address)
                 }
@@ -1145,6 +1174,12 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
                   let value = defaultText, ["photos", "files", "photos-images"].contains(value) else { completionHandler(nil); return }
             uploadSource = (value, Date()); completionHandler("selected"); return
         }
+        if prompt == "codexbridge-uu:" + clipboardToken {
+            guard uuContext(), UIApplication.shared.applicationState == .active, frame.isMainFrame,
+                  let source = frame.request.url, GatewayURL.same(source, documentAddress),
+                  let command = defaultText, ["read","enable","disable","forget"].contains(command) else { completionHandler(nil); return }
+            completionHandler(uu.settings(command)); return
+        }
         if prompt == "codexbridge-theme:" + clipboardToken {
             guard webView === web, connectionError == nil, UIApplication.shared.applicationState == .active,
                   frame.isMainFrame, let source = frame.request.url, GatewayURL.same(source, documentAddress),
@@ -1343,6 +1378,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         if controller === exportPicker { exportPicker = nil }
     }
     func openLink(_ url: URL) {
+        if let result = uu.callback(url) { if !result.isEmpty { routeNotice(MobileStrings.text(result)) }; return }
         guard let c = URLComponents(url: url, resolvingAgainstBaseURL: false), c.scheme == "codexbridge", c.host == "open" else { return }
         let q = c.queryItems ?? []; func get(_ key: String) -> String? { q.first(where: { $0.name == key })?.value }
         guard let original = get("origin"), let thread = get("thread"), saved.contains(activeChannel(original)), let target = try? GatewayURL.chat(activeChannel(original), thread: thread, host: get("host") ?? "local") else { info(MobileStrings.text("请先扫码保存通知对应的电脑，再打开聊天。")); return }
@@ -1849,6 +1885,16 @@ enum ComputerNotificationSummary {
 
 enum MobileStrings {
     static let values: [String: String] = [
+        "UU 请求正在处理中": "A UU request is already in progress",
+        "请安装或更新 UU 远程至 4.42.0 及以上版本": "Install or update UU Remote to version 4.42.0 or later",
+        "无法打开 UU 远程": "Could not open UU Remote",
+        "UU 设备已绑定，请再次选择小窗或远控": "Device linked. Select picture-in-picture or remote control again.",
+        "UU 绑定未完成，请在 UU 中确认账号和设备": "Device linking did not finish. Check your account and device in UU Remote.",
+        "UU 小窗已开启": "UU picture-in-picture is open",
+        "UU 设备已失效，请重新绑定": "The UU device is no longer available. Link it again.",
+        "UU 设备离线": "The UU device is offline",
+        "当前设备不支持 UU 小窗，请使用全屏远控": "Picture-in-picture is unavailable. Use full-screen control.",
+        "UU 小窗未能开启，请检查设备或重试": "Could not open picture-in-picture. Check the device and try again.",
         "此设备无法使用相机": "Camera is unavailable on this device",
         "粘贴 DSH 客户端 Mobile 功能提供的完整链接": "Paste the full link from your DSH client’s Mobile feature",
         "连接 DSH Mobile？": "Connect to DSH Mobile?",

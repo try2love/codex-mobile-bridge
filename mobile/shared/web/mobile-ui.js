@@ -98,6 +98,52 @@
   const resyncModal = () => { modalOpen = undefined; syncModal(); };
   window.addEventListener('focus', resyncModal);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) resyncModal(); });
+  // The phone owns binding and launch. Every agent uses these same native menu choices.
+  const uuDialog = document.getElementById('appearance-dialog');
+  if (uuDialog) {
+    const state = action => {
+      try { return JSON.parse(window.prompt('codexbridge-uu:__BRIDGE_CLIPBOARD_TOKEN__', action) || '{}'); }
+      catch { return {}; }
+    };
+    const section = document.createElement('fieldset');
+    section.className = 'appearance-section'; section.hidden = true;
+    const legend = document.createElement('legend'), option = document.createElement('label');
+    option.className = 'display-option';
+    const caption = document.createElement('span'), title = document.createElement('strong');
+    const hint = document.createElement('small'), toggle = document.createElement('input');
+    const forget = document.createElement('button');
+    toggle.type = 'checkbox'; forget.type = 'button'; forget.className = 'plain';
+    caption.append(title, hint); option.append(caption, toggle); section.append(legend, option, forget);
+    const end = uuDialog.querySelector('.appearance-actions');
+    (end?.parentNode || uuDialog).insertBefore(section, end);
+    const label = (zh, en) => document.documentElement.lang.startsWith('en') ? en : zh;
+    function render(action = 'read') {
+      const value = state(action);
+      section.hidden = app.hidden || !value.supported;
+      legend.textContent = label('远程控制', 'Remote control');
+      title.textContent = label('使用 UU 远程', 'Use UU Remote');
+      hint.textContent = label('需要 UU 远程 4.42 或更高版本。首次使用时在 UU 中选择这台电脑。',
+        'Requires UU Remote 4.42 or later. Select this computer in UU the first time.');
+      toggle.checked = value.enabled === true;
+      forget.hidden = !toggle.checked || !value.bound;
+      forget.textContent = label('解除 UU 设备绑定', 'Unlink UU device');
+      return value;
+    }
+    toggle.onchange = event => { if (event.isTrusted) render(toggle.checked ? 'enable' : 'disable'); };
+    forget.onclick = event => { if (event.isTrusted) render('forget'); };
+    window.BridgeUURemote = {
+      refresh() { if (uuDialog.open) render(); },
+      menu(value) {
+        if (app.hidden || !value.supported || !value.enabled) return [];
+        const actions = [];
+        if (value.pip) actions.push({mode:'pip', title:label('小窗显示电脑画面','View computer in a small window')});
+        actions.push({mode:'full', title:label('发起远程控制','Control computer')});
+        return actions;
+      }
+    };
+    new MutationObserver(() => { if (uuDialog.open) render(); }).observe(uuDialog, {attributes:true, attributeFilter:['open']});
+    document.addEventListener('bridge-computer', () => { if (uuDialog.open) render(); });
+  }
   const account = document.getElementById('accounts-button');
   if (account) {
     const labelAccount = () => {
