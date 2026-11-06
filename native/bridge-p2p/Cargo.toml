@@ -1,0 +1,36 @@
+[package]
+name = "bridge-p2p"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[dependencies]
+anyhow = "1"
+easytier = { git = "https://github.com/EasyTier/EasyTier.git", rev = "8428a89d2dabc94c97d370ec607c6ca142473626", default-features = false, features = ["socks5", "aes-gcm"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "net", "time", "sync"] }
+url = "2"
+futures-util = "0.3"
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-platform-verifier = "0.7"
+
+# v2.6.4's mobile launcher has unconditional references to these compiled types.
+# Runtime remains no_tun=true; Bridge never supplies a TUN descriptor or enables DNS.
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+easytier = { git = "https://github.com/EasyTier/EasyTier.git", rev = "8428a89d2dabc94c97d370ec607c6ca142473626", default-features = false, features = ["tun", "magic-dns"] }
+
+[dev-dependencies]
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+lto = "thin"
+strip = "debuginfo"
+
+[patch."https://github.com/easytier/thunk.git"]
+thunk-rs = { path = "vendor/thunk-rs" }
+
+[patch.crates-io]
+pnet_datalink = { path = "vendor/pnet_datalink" }

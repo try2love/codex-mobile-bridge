@@ -51,6 +51,7 @@ class Channel:
         self.queue = asyncio.Queue(128)
         self.cipher = None
         self.task = None
+        self.p2p = False
 
     async def record(self, data):
         await self.owner.send_frame(2, self.binding, self.channel, data)
@@ -98,7 +99,8 @@ class Channel:
             raise PermissionError('unapproved mobile identity')
         if authorize.get('kind') == 'authorize' and authorize.get('preview_public_key') != pin['preview_public_key']:
             raise PermissionError('preview key replacement requires re-pairing')
-        await self.send({'kind': 'authorized', 'desktop_preview_public_key': o.preview_public_key()})
+        await self.send({'kind': 'authorized', 'desktop_preview_public_key': o.preview_public_key(),
+                         'p2p': bool(not self.p2p and o.p2p.enabled)})
         from bridge.features.network.cloud_session import Session
         await Session(self).run()
 
@@ -120,6 +122,10 @@ class Connector:
         self.sessions = {}
         self.notifications = CloudNotifications(directory)
         self.wake = None
+        from bridge.features.network.cloud_p2p import P2P
+        self.p2p = P2P(self)
+        self.p2p_tx = self.p2p_rx = 0
+        self.policy_generation = 0
 
     def preview_public_key(self):
         return base64.b64encode(public_key(base64.b64decode(self.secret['preview_private'], validate=True))).decode('ascii')
@@ -141,12 +147,17 @@ class Connector:
         write_json(self.directory / 'cloud-status.json', {
             'state': state, 'code': code, 'pid': __import__('os').getpid(),
             'scope': scope(config['origin'], config['account_id']) if config else '',
-            'gateway_id': config.get('gateway_id')})
+            'gateway_id': config.get('gateway_id'), 'p2p_tx': self.p2p_tx, 'p2p_rx': self.p2p_rx,
+            'p2p_active': self.p2p.active()})
 
     def relay_current(self, config=None):
         config = self.accounts.config() if config is None else config
         # Entitlement is enforced by the server. Cached display data is not authority.
         return bool(not self.closed.is_set() and config and self.config == config)
+
+    def credentials_current(self):
+        return bool(self.relay_current() and self.secret and
+                    self.secret.get('device_token') == self.accounts.secret(self.config).get('device_token'))
 
     @staticmethod
     def account_identity(config):
@@ -164,9 +175,10 @@ class Connector:
 
     async def watch_policy(self):
         while not self.closed.is_set():
-            if self.ws and not self.ws.closed:
+            if self.config:
                 try:
                     if not self.relay_current():
+                        await self.stop_authority()
                         await self.disconnect()
                 except CloudError as exc:
                     self.status('unavailable', exc.code)
@@ -216,6 +228,7 @@ class Connector:
             return self.accounts.control(value)
         finally:
             if action in ('login', 'logout', 'entitlement', 'redeem') and self.loop:
+                self.policy_generation += 1
                 changed = before != self.accounts.config()
                 def reconcile():
                     self.next_entitlement_check = 0
@@ -379,6 +392,14 @@ class Connector:
             await self.ws.close()
 
     async def block_binding(self, binding):
+        # Deliver the WebSocket close while the overlay still exists. Killing the
+        # helper first loses FIN/close and leaves the phone waiting for heartbeat.
+        sockets = [c.socket for c in list(self.channels.values()) if c.binding == binding and getattr(c, 'socket', None)]
+        for socket in sockets:
+            try:
+                await asyncio.wait_for(socket.close(code=1008, message=b'access_denied'), 3)
+            except (TimeoutError, ConnectionError):
+                pass
         tasks = [channel.task for channel in list(self.channels.values()) if channel.binding == binding and channel.task]
         for task in tasks:
             task.cancel()
@@ -387,6 +408,13 @@ class Connector:
             self.server.auth.logout(token)
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        await self.p2p.block(binding)
+
+    async def stop_authority(self):
+        await asyncio.gather(*(self.block_binding(binding) for binding in
+            {channel.binding for channel in list(self.channels.values())}), return_exceptions=True)
+        await self.p2p.close()
+        self.clear_authority()
 
     def clear_authority(self):
         if hasattr(self, 'server'):
@@ -396,14 +424,26 @@ class Connector:
 
     async def connect(self, remote):
         import aiohttp
+        if self.config and self.config != self.accounts.config():
+            await self.stop_authority()
         self.config = self.accounts.config()
         if not self.relay_current():
             raise CloudError('entitlement_required')
         self.secret = self.accounts.secret(self.config)
+        try:
+            capabilities = await asyncio.to_thread(self.accounts.request, self.config['origin'], '/v1/capabilities')
+            from bridge.features.network.cloud_p2p import helper_path
+            self.p2p.enabled = bool(capabilities.get('p2p', {}).get('enabled') and helper_path())
+            if capabilities.get('p2p', {}).get('enabled') is False:
+                for binding in {c.binding for c in list(self.channels.values()) if c.p2p}:
+                    await self.block_binding(binding)
+        except Exception:
+            self.p2p.enabled = False
         self.server.auth.cookie_name = 'codex_cloud_' + scope(self.config['origin'], self.config['account_id']) + '_' + self.config['gateway_id']
         self.send_lock = asyncio.Lock()
         url = self.config['origin'].replace('https://', 'wss://', 1) + '/v1/ws/gateway'
-        async with remote.ws_connect(url, headers={'Authorization': 'Bearer ' + self.secret['device_token']},
+        async with remote.ws_connect(url, headers={'Authorization': 'Bearer ' + self.secret['device_token'],
+                                                  'X-Bridge-Control': 'access-v1'},
                                      # aiohttp rejects >= max_msg_size; wire decoder still enforces <=32818.
                                      protocols=('bridge-relay-v2',), compress=0, max_msg_size=32819,
                                      heartbeat=20, autoping=True) as ws:
@@ -414,6 +454,19 @@ class Connector:
                 raise ValueError('relay protocol downgrade')
             self.status('connected')
             async for message in ws:
+                if message.type == aiohttp.WSMsgType.TEXT:
+                    signal = json.loads(message.data)
+                    if (signal.get('kind') != 'access_changed' or signal.get('origin') != self.config['origin']
+                            or signal.get('account_id') != self.config['account_id']
+                            or signal.get('device_id') != self.config['gateway_id']):
+                        raise ValueError('invalid authority signal')
+                    # Recheck protects a newer local opening/renewal from a delayed notice.
+                    try:
+                        await asyncio.to_thread(self.drain_notifications)
+                    except CloudError as error:
+                        if error.status in (401, 402, 403):
+                            await self.stop_authority()
+                    continue
                 if message.type != aiohttp.WSMsgType.BINARY:
                     if message.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSED):
                         LOG.warning('relay_socket_end close_code=%s reason=%s', ws.close_code,
@@ -478,6 +531,8 @@ class Connector:
                             self.status('connecting')
                             await self.connect(remote)
                         except CloudError as exc:
+                            if exc.code in ('entitlement_required', 'access_denied', 'authentication_required', 'login_required') and self.credentials_current():
+                                await self.stop_authority()
                             self.status('unavailable', exc.code)
                         except Exception as error:
                             status = getattr(error, 'status', 0)
@@ -485,39 +540,64 @@ class Connector:
                                     409: 'gateway_already_connected', 426: 'protocol_upgrade_required',
                                     429: 'capacity'}.get(status, 'connection_failed')
                             self.status('unavailable', code)
+                            if status in (401, 402, 403) and self.credentials_current():
+                                await self.stop_authority()
                             LOG.warning('relay_connect_failed reason=%s', code)
                         finally:
-                            tasks = [c.task for c in self.channels.values()]
+                            tasks = [c.task for c in self.channels.values() if not c.p2p]
                             for task in tasks:
                                 task.cancel()
                             await asyncio.gather(*tasks, return_exceptions=True)
-                            self.channels.clear()
+                            self.channels = {key: c for key, c in self.channels.items() if c.p2p}
                             self.ws = None
-                            self.clear_authority()
-                            self.config = self.secret = None
+                            if not self.p2p.active():
+                                self.clear_authority()
                         # Only the outbound link reconnects. In-flight HTTP operations are never replayed.
                         failures = 0 if time.monotonic() - started >= 60 else min(failures + 1, 5)
                         await self.wait_for_change(min(15, 2 ** max(0, failures - 1) + secrets.randbelow(500) / 1000))
                 finally:
+                    await self.stop_authority()
                     pump.cancel()
                     policy.cancel()
                     await asyncio.gather(pump, policy, return_exceptions=True)
 
     async def notification_pump(self):
         while not self.closed.is_set():
+            config = dict(self.config) if self.config else None
+            generation = self.policy_generation
             try:
-                if self.ws and not self.ws.closed and self.relay_current():
+                if self.relay_current() and ((self.ws and not self.ws.closed) or self.p2p.active()):
                     await asyncio.to_thread(self.drain_notifications)
+            except CloudError as error:
+                if (error.status in (401, 402, 403) and config == self.config
+                        and generation == self.policy_generation and self.credentials_current()):
+                    await self.stop_authority()
             except Exception:
                 pass  # Neither notification content nor provider errors enter public status/logs.
             await asyncio.sleep(5)
 
     def drain_notifications(self):
         config = dict(self.config)
+        policy_generation = self.policy_generation
+        generations = dict(self.access_generations)
+        token = self.accounts.secret(config)['device_token']
         manager = self.gateway.notifications
+        response = self.accounts.device_request('/v1/gateway/bindings', 'GET')
+        if (config != self.accounts.config() or policy_generation != self.policy_generation
+                or token != self.accounts.secret(config)['device_token']):
+            return
+        bindings = response['bindings']
+        access = response.get('access', {})
+        if (access.get('version') == 1 and access.get('origin') == config['origin']
+                and access.get('account_id') == config['account_id'] and access.get('device_id') == config['gateway_id']):
+            for binding in bindings:
+                if (binding.get('access_allowed') is False and binding.get('status') != 'pending'
+                        and config == self.accounts.config()
+                        and generations.get((self.account_identity(config), binding['id']), 0)
+                            == self.access_generations.get((self.account_identity(config), binding['id']), 0)):
+                    asyncio.run_coroutine_threadsafe(self.block_binding(binding['id']), self.loop).result(timeout=10)
         if manager is None:
             return
-        bindings = self.accounts.device_request('/v1/gateway/bindings', 'GET')['bindings']
         def current():
             return not self.closed.is_set() and config == self.accounts.config() and self.relay_current(config)
         def send(path, body):

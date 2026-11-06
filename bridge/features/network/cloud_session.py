@@ -126,6 +126,7 @@ class Session:
         self.highest = 0
         self.seen = set()
         self.large = False
+        self.controls = set()
 
     async def run(self):
         writer = asyncio.create_task(self.writer.run())
@@ -135,7 +136,7 @@ class Session:
             for task in done:
                 task.result()
         finally:
-            tasks = [writer, reader, *(s.task for s in list(self.streams.values()))]
+            tasks = [writer, reader, *self.controls, *(s.task for s in list(self.streams.values()))]
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -157,6 +158,12 @@ class Session:
             if type(identity) is not int or not 0 <= identity <= 2**53 - 1:
                 raise ValueError('invalid stream identity')
             if identity == 0:
+                if isinstance(value, dict) and value.get('kind') == 'p2p_prepare' and not self.channel.p2p:
+                    if not self.controls:
+                        task = asyncio.create_task(self.prepare_p2p())
+                        self.controls.add(task)
+                        task.add_done_callback(self.controls.discard)
+                    continue
                 if not isinstance(value, dict) or value.get('kind') != 'ping':
                     raise ValueError('invalid heartbeat')
                 await self.writer.put(0, b'\0' + encode_message(
@@ -194,3 +201,10 @@ class Session:
                 self.streams.pop(identity, None)
             else:
                 stream.queue.put_nowait(value)
+
+    async def prepare_p2p(self):
+        try:
+            offer = await self.channel.owner.p2p.offer(self.channel)
+        except Exception:
+            offer = {'kind': 'p2p_unavailable'}
+        await self.writer.put(0, b'\0' + encode_message(dict(offer, stream_id=0)))

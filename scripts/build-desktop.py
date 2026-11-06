@@ -17,6 +17,7 @@ for module in runtime_packages.values():
     except ImportError:
         raise SystemExit('Missing desktop runtime dependency: '+module+'. Install requirements-desktop.txt with this Python before building.') from None
 subprocess.run([sys.executable, str(root/'scripts/build-client-helpers.py')], check=True)
+subprocess.run([sys.executable, str(root/'scripts/build-p2p.py')], check=True)
 subprocess.run([sys.executable, str(root/'scripts/bundle-cloudflared.py')], check=True)
 if sys.platform == 'win32':
     subprocess.run([sys.executable, str(root/'scripts/bundle-conpty.py')], check=True)
@@ -24,6 +25,7 @@ command = [sys.executable, '-m', 'PyInstaller', '--noconfirm', '--clean', '--one
            '--distpath', str(root/'dist'), '--workpath', str(root/'.tmp/pyinstaller'), '--specpath', str(root/'.tmp'),
            '--add-data', str(root/'web')+':web']
 command.extend(['--add-data', str(root/'dist/cloudflared')+':cloudflared'])
+command.extend(['--add-data', str(root/'dist/p2p')+':p2p'])
 for package in runtime_packages:
     command.extend(['--collect-all', package])
 if sys.platform == 'darwin':
