@@ -88,6 +88,18 @@ class Desktop:
             return bridge.cli_access_control(value)
         return bridge.accounts_control(value) if action == 'accounts' else bridge.accounts.account(value)
 
+    def cloud(self, value):
+        from bridge.features.network.cloud_account import Controller
+        if not isinstance(value, dict):
+            raise ValueError('Invalid cloud operation')
+        record = read_record(self.data_dir/'gateway-control.json')
+        if record:
+            if not self.status()['running'] or not record.get('cloudManagement'):
+                raise ValueError('Restart the gateway to enable cloud management')
+            return request_pairing(self.data_dir, {'action': 'cloud', 'value': value}, timeout=90)
+        # Cloud account management must never initialize an agent/runtime service.
+        return Controller(self.data_dir).control(value)
+
     def config(self):
         if not self.config_path.exists():
             password = secrets.token_urlsafe(18)
@@ -218,7 +230,20 @@ class Desktop:
                 'networkInterfaces': rows, 'networkStatus': network_status,
                 'networkAdaptation': {**adaptation_settings(self.data_dir),
                                       'running': runtime['running']},
-                'runtime': runtime, 'urls': urls, 'externalStatus': external, 'cloudflared': cloudflared, 'quickTunnel': quick}
+                'runtime': runtime, 'urls': urls, 'externalStatus': external, 'cloudflared': cloudflared, 'quickTunnel': quick,
+                'cloud': self.cloud_status(runtime)}
+
+    def cloud_status(self, runtime):
+        if not (self.data_dir/'cloud-account.json').is_file():
+            return {'configured': False, 'runtime': {'state': 'disabled'}, 'bindings': []}
+        from bridge.features.network.cloud_account import Controller
+        try:
+            value = Controller(self.data_dir).status()
+        except (OSError, ValueError):
+            return {'configured': False, 'runtime': {'state': 'unavailable', 'code': 'connection_failed'}, 'bindings': []}
+        if not runtime['running'] or value['runtime'].get('pid') != runtime.get('pid'):
+            value['runtime'] = {'state': 'stopped'}
+        return value
 
     def network_adaptation(self, value):
         if not isinstance(value, dict) or not (value == {'action': 'status'} or

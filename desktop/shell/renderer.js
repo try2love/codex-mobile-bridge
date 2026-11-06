@@ -260,6 +260,7 @@ function renderGatewayActions(){
   if(snapshot)window.GatewayLayout?.update(snapshot,{starting,stopping:stopPending});
 }
 function render(value,watchRevision=watchPanel.revision){
+  window.CloudPanel?.update(value.cloud);
   $('login-startup-setting').hidden=$('login-startup-hint').hidden=!value.loginStartup?.supported;
   $('login-startup-hint').textContent=t(value.loginStartup?.requiresApproval?'请在系统设置的登录项中允许此应用。':'开启后，登录电脑时自动启动网关。');
   if(snapshot&&(snapshot.runtime.instanceId!==value.runtime.instanceId||snapshot.dataDir!==value.dataDir)){resetPairing();connectionSetupState.clear();}
