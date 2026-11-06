@@ -109,3 +109,20 @@ class P2PLifetime(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(owner.channels, {})
             finally:
                 owner.notifications.close()
+
+    async def test_queued_denial_does_not_close_a_reauthorized_binding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            owner = Connector(Path(directory), SimpleNamespace())
+            owner.config = {'origin': 'https://server.test', 'account_id': 'account', 'gateway_id': 'desktop'}
+            owner.accounts = SimpleNamespace(config=lambda: owner.config, secret=lambda config: {'device_token': 'token'})
+            owner.block_binding = AsyncMock()
+            context = owner.authority_context()
+            identity = (owner.account_identity(owner.config), 'binding')
+            owner.access_generations[identity] = 2
+            try:
+                await owner.block_if_current('binding', context, 1)
+                owner.block_binding.assert_not_awaited()
+                await owner.block_if_current('binding', context, 2)
+                owner.block_binding.assert_awaited_once_with('binding')
+            finally:
+                owner.notifications.close()

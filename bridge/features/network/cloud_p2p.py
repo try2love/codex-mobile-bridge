@@ -118,6 +118,11 @@ class P2P:
             raise web.HTTPForbidden()
         ws = web.WebSocketResponse(protocols=('bridge-p2p-v1',), max_msg_size=32819, compress=False)
         await ws.prepare(request)
+        if (not owner.authority_matches(context) or not owner.pin(binding_id)
+                or self.offers.get(binding_id) is not offer
+                or generation != owner.access_generations.get((owner.account_identity(config), binding_id), 0)):
+            await ws.close(code=1008, message=b'access_changed')
+            return ws
         channel_id = str(uuid.uuid4())
         channel = Channel(owner, binding_id, channel_id, decode_key(pin['mobile_public_key']))
         channel.p2p = True

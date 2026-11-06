@@ -177,6 +177,11 @@ class Connector:
             if error.status in (401, 402, 403) and self.authority_matches(context):
                 await self.stop_authority()
 
+    async def block_if_current(self, binding, context, generation):
+        identity = (self.account_identity(context[0]), binding)
+        if self.authority_matches(context) and generation == self.access_generations.get(identity, 0):
+            await self.block_binding(binding)
+
     @staticmethod
     def account_identity(config):
         return tuple(config.get(key) for key in ('origin', 'account_id', 'gateway_id'))
@@ -603,7 +608,9 @@ class Connector:
                         and config == self.accounts.config()
                         and generations.get((self.account_identity(config), binding['id']), 0)
                             == self.access_generations.get((self.account_identity(config), binding['id']), 0)):
-                    asyncio.run_coroutine_threadsafe(self.block_binding(binding['id']), self.loop).result(timeout=10)
+                    asyncio.run_coroutine_threadsafe(self.block_if_current(
+                        binding['id'], (config, token, policy_generation),
+                        generations.get((self.account_identity(config), binding['id']), 0)), self.loop).result(timeout=10)
         if manager is None:
             return
         def current():
