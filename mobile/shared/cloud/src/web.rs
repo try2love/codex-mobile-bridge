@@ -100,6 +100,13 @@ fn failure(code: u16, reason: &str) -> Response<Body> {
         Bytes::from(serde_json::json!({"error":reason}).to_string()),
     )
 }
+fn relay_failure(error: crate::error::BridgeError) -> Response<Body> {
+    let status = match &error {
+        crate::error::BridgeError::Relay(code) if code == "access_denied" => 403,
+        _ => 503,
+    };
+    failure(status, &error.to_string())
+}
 async fn serve(
     grant: Arc<(String, String, Arc<Relay>)>,
     req: Request<Incoming>,
@@ -160,7 +167,7 @@ async fn serve(
     };
     let response = match relay.request(method, &target, Some(body), &kind).await {
         Ok(res) => res,
-        Err(err) => return Ok(failure(503, &err.to_string())),
+        Err(err) => return Ok(relay_failure(err)),
     };
     let mut reply =
         Response::builder().status(StatusCode::from_u16(response.status().as_u16()).unwrap());
@@ -185,6 +192,12 @@ async fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn denied_operations_do_not_trigger_the_workbench_network_handoff() {
+        use crate::error::BridgeError;
+        assert_eq!(relay_failure(BridgeError::Relay("access_denied".into())).status(), StatusCode::FORBIDDEN);
+        assert_eq!(relay_failure(BridgeError::Network).status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
     #[test]
     fn workbench_bootstraps_before_the_gateway_scripts() {
         let (_, bytes) = asset("/").unwrap();
