@@ -31,6 +31,9 @@ Never put configuration, credentials or network secrets in arguments or logs.
   `no_tun=true`, supplies no TUN descriptor, enables no DNS service and requests
   no VPN entitlement. This is a compile compatibility requirement, not a system
   VPN integration.
+- `vendor/netdev` retains netdev 0.31.0 (MIT) and supplies Darwin's eight-slot
+  `RTAX_MAX` on iOS, where libc does not export that constant. macOS keeps using
+  libc's constant; interface and route discovery behavior is otherwise unchanged.
 
 ## Licenses and corresponding source
 

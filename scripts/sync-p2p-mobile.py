@@ -12,6 +12,7 @@ source = root / 'native/bridge-p2p'
 destination = args.app / 'third_party/bridge-p2p'
 files = ['Cargo.toml', 'Cargo.lock', 'src/lib.rs', 'src/bootstrap.rs', 'build_support.py', 'vendor/thunk-rs/Cargo.toml', 'vendor/thunk-rs/src/lib.rs']
 files += [p.relative_to(source).as_posix() for p in (source / 'vendor/pnet_datalink').rglob('*') if p.is_file()]
+files += [p.relative_to(source).as_posix() for p in (source / 'vendor/netdev').rglob('*') if p.is_file()]
 files += ['LICENSE', 'README.md']
 files += [p.relative_to(source).as_posix() for p in (source / 'licenses').glob('*') if p.is_file()]
 manifest = {}

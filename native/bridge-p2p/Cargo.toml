@@ -34,3 +34,4 @@ thunk-rs = { path = "vendor/thunk-rs" }
 
 [patch.crates-io]
 pnet_datalink = { path = "vendor/pnet_datalink" }
+netdev = { path = "vendor/netdev" }
