@@ -219,8 +219,9 @@ class ManualPluginTests(unittest.TestCase):
         self.binding['instanceId'] = str(uuid.uuid4()); self.save('binding.json', self.binding)
         restored = DesktopSessions(self.root/'gateway', gateway_running=True)
         self.addCleanup(restored.close)
-        self.assertIn('不会切换到其他实例', restored.deepseek_restore_error)
+        self.assertIsNone(restored.adapters.get('deepseek'))
         with self.assertRaisesRegex(Exception, '无法验证'): restored.call('deepseek', 'list')
+        self.assertIn('不会切换到其他实例', restored.deepseek_restore_error)
         with self.assertRaisesRegex(Exception, '无法验证'): restored.client_accounts('deepseek', {})
 
 

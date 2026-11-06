@@ -25,7 +25,7 @@ class OfficialRemote {
   }
   targetLink(){return this.link||this.auth?.link||'';}
   status(){const config=this.config(),available=this.serviceAvailable&&this.stopServer?.alive?.()!==false;return {configured:!!this.auth&&!!this.targetLink(),connected:available&&!!this.runtime,owner:available&&this.runtime?this.owner:null,available,secureStorageAvailable:this.secureStorageAvailable,
-    secureStoragePending:!!this.storageCheck,restoring:!!this.restorePending,loginSaved:fs.existsSync(this.authFile),
+    secureStoragePending:!!this.storageCheck,restoring:!!this.restorePending,loginDeferred:this.loginDeferred===true,loginSaved:fs.existsSync(this.authFile),
     accountName:this.auth?.name||'',provider:this.auth?.provider||'',reason:this.reason,
     link:this.targetLink(),selected:config.zcodeConnectionMode==='official-remote'||!config.zcodeConnectionMode&&config.zcodeOfficialRemote===true};}
   storageBackendAllowed(){return process.platform!=='linux'||['gnome_libsecret','kwallet','kwallet5','kwallet6'].includes(this.electron.safeStorage.getSelectedStorageBackend?.());}
@@ -87,11 +87,24 @@ class OfficialRemote {
     fs.writeFileSync(this.settingsFile+'.tmp',JSON.stringify({link}),{mode:0o600});
     fs.renameSync(this.settingsFile+'.tmp',this.settingsFile);this.link=link;
   }
-  async start(){
+  async start({standby=false}={}){
     if(this.disposed)return false;
-    if(this.serviceAvailable&&this.stopServer?.alive?.()!==false)return true;
+    if(!this.serviceAvailable||this.stopServer?.alive?.()===false){
+      if(!this.startPending)this.startPending=this.startServer().finally(()=>{this.startPending=null;});
+      if(!await this.startPending)return false;
+    }
+    const config=this.config();
+    if(!standby||config.enabled?.zcode&&(config.zcodeConnectionMode==='official-remote'||!config.zcodeConnectionMode&&config.zcodeOfficialRemote)){
+      this.restoreOnDemand();
+    }
+    return true;
+  }
+  restoreOnDemand(){
+    if(this.loginDeferred){this.loginDeferred=false;void this.restore();}
+  }
+  async startServer(){
     this.stopServer?.();this.serviceAvailable=false;
-    try{const stop=await serveLocal(this.profile,'zcode-official',request=>this.handle(request),{worker:this.localServiceWorker});if(this.disposed){stop();return false;}this.stopServer=stop;this.serviceAvailable=true;void this.restore();return true;}
+    try{const stop=await serveLocal(this.profile,'zcode-official',request=>this.handle(request),{worker:this.localServiceWorker});if(this.disposed){stop();return false;}this.stopServer=stop;this.serviceAvailable=true;this.loginDeferred=true;return true;}
     catch{this.reason='本机控制接口暂不可用，请重试；其他网关功能不受影响。';return false;}
   }
   async disconnect(){
@@ -102,6 +115,7 @@ class OfficialRemote {
     if(this.runtime)return this.owner;
     if(this.connecting)return this.connecting;
     const expectedGeneration=this.generation,expectedAuthGeneration=this.authGeneration;
+    this.restoreOnDemand();
     if(this.restorePending)await this.restorePending;
     if(expectedGeneration!==this.generation||expectedAuthGeneration!==this.authGeneration)throw failure('此次连接已取消。');
     if(this.disposed)throw failure('官方远控连接服务已关闭。');

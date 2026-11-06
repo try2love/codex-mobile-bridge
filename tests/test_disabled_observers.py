@@ -21,6 +21,38 @@ class DisabledObserversTests(unittest.TestCase):
         self.manager = DesktopSessions(self.temp.name)
         self.addCleanup(self.manager.close)
 
+    def test_only_codex_starts_even_with_other_desktops_installed(self):
+        manager = self.manager
+        manager.gateway_running = True
+        discovered = {name: {'id': name, 'installed': True, 'executable': '/fixture/'+name,
+                             'dataDirectory': str(manager.directory/name)}
+                      for name in ('codex', 'claude', 'deepseek')}
+        discovered['zcode'] = {'id': 'zcode', 'installed': True,
+                              'application': str(manager.directory/'ZCode.app'),
+                              'dataDirectory': str(manager.directory/'zcode-test')}
+        with patch('bridge.clients.discovery.discover_clients', return_value=discovered), \
+                patch('bridge.clients.lifecycle.inspect_clients', return_value={}), \
+                patch.object(manager, '_zcode_official_status', side_effect=AssertionError('unexpected private RPC')), \
+                patch('bridge.clients.zcode.adapter.ZCodeDesktop', side_effect=AssertionError('unexpected ZCode adapter')), \
+                patch.object(manager, 'toggle_client') as toggle, \
+                patch('bridge.clients.claude.adapter.Claude') as claude, \
+                patch('bridge.clients.manager.DeepSeek') as deepseek:
+            manager.start_enabled()
+            toggle.assert_called_once_with({'provider': 'codex', 'enabled': True}, startup=True)
+            for _ in range(3):
+                manager.control({'action': 'status'})
+                self.assertEqual(len(manager.clients(refresh=True)['clients']), 4)
+                self.assertEqual(manager.cli_connections(), [])
+                self.assertEqual(manager.notification_rows(), [])
+            self.assertIsNone(manager.adapters.get('claude'))
+            self.assertIsNone(manager.adapters.get('deepseek'))
+            self.assertIsNone(manager.adapters.get('zcode'))
+            claude.assert_not_called()
+            deepseek.assert_not_called()
+            self.assertIs(manager.adapters['claude'], manager.adapters['claude'])
+            claude.assert_called_once()
+            deepseek.assert_not_called()
+
     def test_disabled_status_does_not_probe_native_or_cli_adapters(self):
         for provider in ('claude', 'deepseek', 'zcode'):
             self.manager.adapters[provider] = Mock()

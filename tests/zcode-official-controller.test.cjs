@@ -32,6 +32,18 @@ test('saved link and encrypted login survive controller restart and a local-mode
  const config=JSON.parse(fs.readFileSync(path.join(c.profile,'desktop-sessions/settings.json')));config.zcodeConnectionMode='official-remote';
  fs.writeFileSync(path.join(c.profile,'desktop-sessions/settings.json'),JSON.stringify(config));assert.equal(restored.status().selected,true);
 });
+test('standby pairing waits for explicit access before reading the keychain and shares one private listener',async t=>{
+ const c=fixture(t);t.after(()=>c.dispose());c.save(link);
+ fs.writeFileSync(c.authFile,await c.electron.safeStorage.encryptStringAsync(JSON.stringify({jwt:'fixture',provider:'zai',link})));
+ let decrypts=0;const decode=c.electron.safeStorage.decryptStringAsync;
+ c.electron.safeStorage.decryptStringAsync=async bytes=>{decrypts++;return decode(bytes);};
+ let listeners=0;const start=c.startServer.bind(c);c.startServer=()=>{listeners++;return start();};
+ await Promise.all([c.start({standby:true}),c.start({standby:true})]);
+ assert.equal(listeners,1);assert.equal(decrypts,0);assert.equal((await c.handle({command:'status'})).loginDeferred,true);
+ await c.start();await c.restorePending;
+ assert.equal(listeners,1);assert.equal(decrypts,1);assert.equal(c.status().configured,true);
+ assert.equal(c.status().connected,false);
+});
 test('saving configuration cannot silently move a live connection to a different target',t=>{
  const c=fixture(t);c.save(link);c.runtime={};
  assert.throws(()=>c.save(link.replace('native-session','another-session')),/先断开/);

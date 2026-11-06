@@ -89,7 +89,7 @@ class Entries:
 
     def public(self):
         with self.lock:
-            running = set(self.wsl.running_distributions()) if self.wsl else set()
+            running = self.wsl.displayed_distributions((*self.entries, *self.candidates.values())) if self.wsl else set()
             values = {r['id']: self.public_row(r, r.get('enabled', True), r.get('kind') == 'codex-local' or r.get('distribution') in running)
                       for r in self.entries}
             for key, row in self.candidates.items():

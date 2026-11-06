@@ -105,7 +105,7 @@ test('development launch keeps script as its own argument',()=>{
 
 // Exercise the real renderer's start and polling handlers with a controlled
 // backend and clock. DOM layout and input editing are outside these checks.
-async function renderer(initialLanguage='zh-CN',{autoStart=false,hidden=false,loginStartup,AccountsPanel,platform='darwin'}={}){
+async function renderer(initialLanguage='zh-CN',{autoStart=false,hidden=false,loginStartup,AccountsPanel,DesktopConnectionsPanel,platform='darwin'}={}){
   const fs=require('node:fs'),vm=require('node:vm');
   const nodes=new Map();
   function node(){return {parentNode:{insertBefore(){}},getAnimations(){return [];},animate(){},scrollIntoView(){},focus(){},addEventListener(){},closest(){return null;},value:'',checked:false,hidden:false,textContent:'',dataset:{},
@@ -122,7 +122,7 @@ async function renderer(initialLanguage='zh-CN',{autoStart=false,hidden=false,lo
   const api={platform,account:async()=>({visible:false}),language:async()=>initialLanguage,setLanguage:async value=>value,snapshot:async()=>{calls.push('snapshot');return structuredClone(value);},start:async()=>{calls.push('start');return {started:true,message:'正在启动网关'};},
     save:async payload=>{value.preferences={...value.preferences,...payload.preferences};return structuredClone(value);},logs:async()=>({text:''})};
   api.cliAccess=async payload=>{calls.push({cliAccess:structuredClone(payload)});return payload.operation==='environments'?{provider:payload.provider,environments:[]}:{provider:payload.provider,entry:payload.entry,identity:'fixture-identity',available:true,accounts:[],blockers:[],capabilities:{switch:true,models:true}};};
-  const context=vm.createContext({window:{bridgeDesktop:api},AccountsPanel,Option:function(text,value){return Object.assign(node(),{textContent:text,value});},
+  const context=vm.createContext({window:{bridgeDesktop:api},AccountsPanel,DesktopConnectionsPanel,Option:function(text,value){return Object.assign(node(),{textContent:text,value});},
     localStorage:{getItem(){return null;},setItem(){}},document:{head:{append(script){script.onload?.();}},hidden,addEventListener(name,fn){this[name]=fn;},documentElement:{},getElementById:id=>nodes.get(id),createElement:node,querySelectorAll:()=>[]},
     URL,Date:class extends Date{static now(){return now;}},setTimeout(){},clearTimeout(){},clearInterval(){},setInterval:(callback,ms)=>{if(callback.name==='refresh')poll=callback;}});
   for(const name of ['web/shared/i18n.js','desktop/shared/secret-fields.js','desktop/features/connections/connections.js','desktop/features/connections/pairing.js','web/features/accounts/account.js','desktop/features/notifications/watches.js','web/features/accounts/wsl-accounts.js','desktop/shell/renderer.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',name),'utf8'),context);
@@ -1177,8 +1177,9 @@ for(const platform of ['darwin','linux'])test(platform+' desktop does not initia
 
 
 test('Codex quota remains visible in the client overview and pauses off the page',async()=>{
- const ui=await renderer('zh-CN',{AccountsPanel:class{visible(){return false;}resume(){}render(){}refresh(){}}});
- ui.nodes.get('clients-page').hidden=false;assert.equal(ui.run('accountsPanel.visible()'),true);
+ const ui=await renderer('zh-CN',{DesktopConnectionsPanel:class{managementClients(){return this.rows||[];}},AccountsPanel:class{visible(){return false;}resume(){}render(){}refresh(){}}});
+ ui.nodes.get('clients-page').hidden=false;assert.equal(ui.run('accountsPanel.visible()'),false);
+ ui.run("desktopConnections.rows=[{id:'codex',enabled:true}]");assert.equal(ui.run('accountsPanel.visible()'),true);
  ui.nodes.get('clients-page').hidden=true;assert.equal(ui.run('accountsPanel.visible()'),false);
  ui.nodes.get('clients-page').hidden=false;ui.context.document.hidden=true;assert.equal(ui.run('accountsPanel.visible()'),false);
  ui.context.document.hidden=false;ui.nodes.get('clients-page').classList.contains=()=>true;assert.equal(ui.run('accountsPanel.visible()'),false);

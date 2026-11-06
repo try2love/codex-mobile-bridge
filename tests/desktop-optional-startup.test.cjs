@@ -2,7 +2,7 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const main=path.resolve(__dirname,'../desktop/main.cjs'),requireMain=require('node:module').createRequire(main);
 
-test('optional official storage cannot hold the window or core IPC registration',async()=>{
+for(const paired of [false,true])test('optional official service starts after the window only for saved pairings: '+paired,async()=>{
   const calls=[];let ready,rejectStart;
   class OfficialRemote {
     constructor(){this.serviceAvailable=false;}
@@ -12,12 +12,12 @@ test('optional official storage cannot hold the window or core IPC registration'
   const context=vm.createContext({__dirname:path.dirname(main),process:{env:{},platform:'linux'},calls,
     require(name){
       if(name==='electron')return {app};
-      if(name==='./features/zcode-official/controller.cjs')return {OfficialRemote};
+      if(name==='./features/zcode-official/controller.cjs'){calls.push('load-official');return {OfficialRemote};}
       if(name==='./features/connections/qr.cjs')return {};
       if(name==='./shared/gateway-language.cjs')return {publishLanguage(){}};
       if(name==='./login-startup.cjs')return {restoreDevelopmentEnvironment(){},createLoginStartup:()=>({hidden:()=>false})};
       if(name==='./shared/controller.cjs')return {createSnapshotWorker:()=>({}),createManagementWorker:()=>({}),workerFor:()=>({})};
-      if(name==='node:fs')return {...fs,readFileSync(){throw Error('No fixture preferences');}};
+      if(name==='node:fs')return {...fs,existsSync:file=>paired&&file==='/fixture/zcode-official-auth.enc',readFileSync(){throw Error('No fixture preferences');}};
       return requireMain(name);
     }});
   vm.runInContext(fs.readFileSync(main,'utf8'),context);
@@ -25,7 +25,8 @@ test('optional official storage cannot hold the window or core IPC registration'
   let timer;
   const outcome=await Promise.race([ready().then(()=> 'ready'),new Promise(resolve=>{timer=setTimeout(()=>resolve('blocked'),100);})]);
   clearTimeout(timer);
-  assert.equal(outcome,'ready');assert.deepEqual(calls,['updater','register','window','official']);
+  assert.equal(outcome,'ready');assert.deepEqual(calls,['updater','register','window',...(paired?['load-official','official']:[])]);
+  if(!paired){assert.equal(vm.runInContext('officialRemote',context),undefined);vm.runInContext('officialService().start().catch(()=>{})',context);}
   rejectStart(Error('Synthetic optional storage failure'));await new Promise(setImmediate);
   assert.equal(vm.runInContext('officialRemote.serviceAvailable',context),false);
   assert.equal(calls.filter(value=>value==='window').length,1);

@@ -98,7 +98,7 @@ class ClientScanTests(unittest.TestCase):
         self.patch('bridge.clients.lifecycle.inspect_client', side_effect=lambda _: {'running': self.running, 'pids': [221, 222] if self.running else [], 'mainPids': [221] if self.running else [], 'runtimePids': [222] if self.running else [], 'unknown': False})
         self.patch('bridge.clients.lifecycle.stop_client', side_effect=lambda *args, **kwargs: setattr(self, 'running', False))
         self.patch('bridge.clients.manager.DeepSeek', return_value=self.deepseek)
-        self.patch('bridge.clients.manager.Claude', return_value=self.claude)
+        self.patch('bridge.clients.claude.adapter.Claude', return_value=self.claude)
         self.discovery = self.patch('bridge.clients.discovery.discover_clients', side_effect=lambda _: self.discovered)
         self.patch('bridge.app.desktop.Desktop.preferences', return_value={})
         self.manager = DesktopSessions(self.root, self.bridge)

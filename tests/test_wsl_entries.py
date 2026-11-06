@@ -34,8 +34,11 @@ class RegistryTests(unittest.TestCase):
         self.info = {'user': 'fixture', 'homes': [{'home': '/home/fixture/.codex', 'daemon': None}]}
 
     def test_only_explicit_scan_probes_running_distributions(self):
-        with patch.object(wsl, 'running_distributions', return_value=['Ubuntu']), patch.object(wsl, 'probe', return_value=self.info) as probe:
+        with patch.object(wsl, 'running_distributions', return_value=['Ubuntu']) as status, patch.object(wsl, 'probe', return_value=self.info) as probe:
             self.entries.public()
+            from bridge.clients.claude.wsl import WslClaudeEntries
+            self.assertEqual(WslClaudeEntries(self.temp.name).applications(), [])
+            status.assert_not_called()
             probe.assert_not_called()
             result = self.entries.scan()
             probe.assert_called_once_with('Ubuntu')

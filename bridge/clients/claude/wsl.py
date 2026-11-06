@@ -83,11 +83,11 @@ class WslClaudeEntries:
         return {'errors': errors}
 
     def applications(self):
-        running = set(wsl.running_distributions())
         with self.lock:
             rows = {r['id']: dict(r) for r in self.entries}
             for key, row in self.candidates.items():
                 rows.setdefault(key, {**row, 'enabled': False})
+        running = wsl.displayed_distributions(rows.values())
         return [{**row, 'kind': 'wsl-claude-cli', 'name': 'WSL Claude Code · '+row['distribution'],
                  'icon': 'claude', 'installed': True, 'configured': True,
                  'enabled': row.get('enabled', True), 'selectable': True,

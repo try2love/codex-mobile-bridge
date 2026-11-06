@@ -418,19 +418,18 @@ class DeepSeekMigrationTests(unittest.TestCase):
                                         'deepseekAdapterDirectory': str(self.root/'unrelated-directory')}))
         manager = DesktopSessions(data)
         try:
-            self.assertEqual(manager.adapters['deepseek'].directory, settings.parent/'deepseek')
-            self.assertFalse(manager.adapters['deepseek'].reused)
-            self.assertEqual(manager.config['setup']['deepseek']['setupStatus'], 'failed')
+            self.assertIsNone(manager.adapters.get('deepseek'))
             manager.config['enabled'] = {'deepseek': True}
-            manager.adapters['deepseek'].call = Mock(return_value={'connected': True, 'configured': True})
-            with self.assertRaisesRegex(ValueError, '请重新扫描'):
-                manager.call('deepseek', 'list')
-            with self.assertRaisesRegex(ValueError, '请重新扫描'):
-                manager.require_enabled('deepseek')
-            row = next(row for row in manager.clients()['clients'] if row['id'] == 'deepseek')
-            self.assertFalse(row['configured'])
-            self.assertFalse(row['connected'])
-            manager.adapters['deepseek'].call.assert_not_called()
+            with patch.object(DeepSeek, 'call') as native:
+                with self.assertRaisesRegex(ValueError, '请重新扫描'):
+                    manager.call('deepseek', 'list')
+                self.assertEqual(manager.config['setup']['deepseek']['setupStatus'], 'failed')
+                with self.assertRaisesRegex(ValueError, '请重新扫描'):
+                    manager.require_enabled('deepseek')
+                row = next(row for row in manager.clients()['clients'] if row['id'] == 'deepseek')
+                self.assertFalse(row['configured'])
+                self.assertFalse(row['connected'])
+                native.assert_not_called()
         finally:
             manager.close()
 
@@ -564,6 +563,7 @@ class DeepSeekMigrationTests(unittest.TestCase):
     def test_confirmed_restart_updates_source_and_waits_for_new_loaded_revision(self):
         self.legacy()
         manager = self.migration_manager()
+        manager.config['enabled'] = {'deepseek': True}
         live = {'connected': True, 'configured': True, 'updateRequired': True, 'bridgeRevision': 3}
         def call(adapter, action, *args):
             return dict(live) if action == 'status' else {'complete': True, 'bridgeRevision': 3, 'sessions': []}

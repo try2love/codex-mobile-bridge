@@ -91,7 +91,7 @@ class LocalPipeClient:
         self.profile = Path(profile).resolve()
         self.application = Path(application).resolve()
 
-    def supported(self):
+    def supported(self, *, inventory=False):
         return platform_pipe().is_supported(self.application)
 
     def close(self):

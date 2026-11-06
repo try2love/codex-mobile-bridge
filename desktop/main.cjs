@@ -16,7 +16,6 @@ const loginStartup=createLoginStartup(app);
 const {spawn}=require('node:child_process');
 const {randomUUID}=require('node:crypto');
 const {interfaces}=require('./features/connections/network.cjs');
-const {OfficialRemote}=require('./features/zcode-official/controller.cjs');
 let language='zh-CN';
 const t=text=>translate(text,language);
 const root=path.resolve(__dirname,'..');
@@ -29,6 +28,21 @@ const managementWorker=createManagementWorker();
 let connectionSecrets={},setupPending=false;
 const entry=pathToFileURL(path.join(__dirname,'index.html')).href;
 function releaseTray(){officialRemote?.dispose();snapshotWorker.close();managementWorker.close();quitting=true;tray?.dispose();tray=null;}
+function officialService(){
+  if(!officialRemote){
+    const {OfficialRemote}=require('./features/zcode-official/controller.cjs');
+    officialRemote=new OfficialRemote({electron:require('electron'),profile:dataDir,
+      localServiceWorker:workerFor({packaged:app.isPackaged,resources:process.resourcesPath,root,dataDir}),rendererPath:app.isPackaged?
+      path.join(process.resourcesPath,'gateway/_internal/bridge/clients/zcode/renderer.mjs'):path.join(root,'bridge/clients/zcode/renderer.mjs')});
+  }
+  return officialRemote;
+}
+function restoreOfficialService(){
+  // Saved pairings can be selected from the phone before the desktop panel is opened.
+  if(!fs.existsSync(path.join(dataDir,'zcode-official-auth.enc')))return;
+  const service=officialService();
+  service.start({standby:true}).catch(()=>{service.serviceAvailable=false;service.reason='官方远控连接服务不可用。';});
+}
 function updateTarget(){return process.platform==='darwin'?path.resolve(process.execPath,'../../..'):path.dirname(process.execPath);}
 let handoff=null;
 function currentHandoff(){return activeUpdateHandoff(process.env,updateTarget(),app.getVersion(),process.pid);}
@@ -135,23 +149,25 @@ function register(){
   for(const action of ['snapshot','save','start','stop','logs','test-notification','webhook-endpoint','network-adaptation','check-entry','tailscale-setup','devices','account', 'accounts', 'cli-access', 'harness', 'desktop-sessions','notification-watches', 'transfer-settings'])ipcMain.handle('bridge:'+action,async(event,payload)=>{
     authorize(event);
     if(action==='desktop-sessions'&&payload?.action?.startsWith('zcode-official-')){
-      if(!officialRemote)throw Error('官方远控连接服务不可用。');
       if(updater?.busy)throw Error('正在更新应用，请稍候。');
-      if(payload.action==='zcode-official-state')return officialRemote.status();
-      if(payload.action==='zcode-official-save')return officialRemote.save(payload.link);
-      if(payload.action==='zcode-official-login')return officialRemote.login(payload.link);
+      const service=officialService();
+      await service.start();
+      if(service!==officialRemote||service.disposed)throw Error('网关资料目录已变化，请重新打开管理页。');
+      if(payload.action==='zcode-official-state')return service.status();
+      if(payload.action==='zcode-official-save')return service.save(payload.link);
+      if(payload.action==='zcode-official-login')return service.login(payload.link);
       if(payload.action==='zcode-official-connect'){
-        if(officialRemote.localLink(payload.link).url!==officialRemote.targetLink())throw Error('远控链接已变化，请先保存连接配置。');
+        if(service.localLink(payload.link).url!==service.targetLink())throw Error('远控链接已变化，请先保存连接配置。');
         await worker('desktop-sessions',{action:'toggle-client',provider:'zcode',enabled:true,connectionMode:'official-remote'});
       }else if(payload.action==='zcode-official-disconnect'){
-        await officialRemote.disconnect();
+        await service.disconnect();
       }else if(payload.action==='zcode-official-forget'){
-        return officialRemote.forget();
+        return service.forget();
       }else if(payload.action==='zcode-official-local'){
-        await officialRemote.disconnect();
+        await service.disconnect();
         await worker('desktop-sessions',{action:'zcode-official',enabled:false});
       }else throw Error('未知官方远控操作');
-      return officialRemote.status();
+      return service.status();
     }
     if(action==='accounts'){
       if(updater?.busy&&payload?.action!=='list')throw Error('正在更新应用，请稍候。');
@@ -272,8 +288,11 @@ function register(){
       if(installPending)throw Error('正在安装 cloudflared，请完成后再切换数据目录。');
       if(setupPending)throw Error('请等待服务器操作完成。');
       installStatus={};connectionSecrets={};
+      const changed=selected!==dataDir;
+      if(changed){officialRemote?.dispose();officialRemote=null;}
       publishLanguage(selected,language);dataDir=selected;fs.mkdirSync(app.getPath('userData'),{recursive:true});
       fs.writeFileSync(path.join(app.getPath('userData'),'bridge-location.json'),JSON.stringify({dataDir}),{mode:0o600});
+      if(changed)restoreOfficialService();
     }
     return selected;
   });
@@ -341,9 +360,6 @@ else{
     language=normalize(app.getLocale());
     try{language=normalize(JSON.parse(fs.readFileSync(path.join(app.getPath('userData'),'language.json'),'utf8')).language);}catch{}
     dataDir=loadDataDir();publishLanguage(dataDir,language);
-    officialRemote=new OfficialRemote({electron:require('electron'),profile:dataDir,
-      localServiceWorker:workerFor({packaged:app.isPackaged,resources:process.resourcesPath,root,dataDir}),rendererPath:app.isPackaged?
-      path.join(process.resourcesPath,'gateway/_internal/bridge/clients/zcode/renderer.mjs'):path.join(root,'bridge/clients/zcode/renderer.mjs')});
     setupUpdater();register();
     if(process.platform==='win32')app.setAppUserModelId('io.github.try2love.codexmobilebridge');
     if(['win32','darwin'].includes(process.platform)){
@@ -353,11 +369,7 @@ else{
         onError:error=>{showWindow();dialog.showErrorBox(t('网关操作未完成'),t(error.message));}});
     }
     createWindow(!!tray&&loginStartup.hidden(process.argv,true));
-    // Optional account storage must not hold the controller window or other clients.
-    officialRemote.start().catch(()=>{
-      officialRemote.serviceAvailable=false;
-      officialRemote.reason='官方远控连接服务不可用。';
-    });
+    restoreOfficialService();
   });
   app.on('before-quit',releaseTray);
   app.on('activate',showWindow);

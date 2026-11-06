@@ -92,6 +92,8 @@ class ClientLifecycleTests(unittest.TestCase):
             {'id': 'one', 'status': 'idle', 'runtimeKnown': True, 'requests': []}]}
         self.claude.call.side_effect = lambda action, *args: ({'connected': True, 'complete': True,
             'sessions': [{'id': 'one', 'status': 'idle', 'runtimeKnown': True, 'requests': []}]} if action == 'list' else {'models': [{'id': 'model'}]})
+        self.claude.configure.return_value = {'setupState': 'discovered'}
+        self.dsh.discover_existing.return_value = {'installed': False}
         self.dsh.reused = False
         self.dsh.home = self.root
         profile = self.root/'profiles/desktop/cordis.patch.yml'
@@ -106,7 +108,7 @@ class ClientLifecycleTests(unittest.TestCase):
         self.bridge = SimpleNamespace(accounts=self.accounts, assert_desktop_idle=Mock(), suspend_observation=Mock())
         self.bridge.for_host = lambda _: self.bridge
         for name, value in [('Claude', self.claude), ('DeepSeek', self.dsh)]:
-            patcher = patch('bridge.clients.manager.'+name, return_value=value)
+            patcher = patch(('bridge.clients.claude.adapter.' if name == 'Claude' else 'bridge.clients.manager.')+name, return_value=value)
             patcher.start(); self.addCleanup(patcher.stop)
         self.manager = DesktopSessions(self.root, self.bridge, gateway_running=True)
         self.addCleanup(self.manager.close)
@@ -311,7 +313,7 @@ class ClientLifecycleTests(unittest.TestCase):
         try:
             with patch.object(reopened, 'scan') as scan, patch.object(reopened, 'toggle_client') as toggle:
                 reopened.start_enabled()
-            scan.assert_called_once_with(scan_wsl=False)
+            scan.assert_called_once_with(scan_wsl=False, inventory_only=True)
             toggle.assert_not_called()
             self.assertEqual([row['enabled'] for row in reopened.clients(refresh=True)['clients']], [False] * 3)
             self.assertTrue(self.running)

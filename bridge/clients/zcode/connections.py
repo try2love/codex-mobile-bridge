@@ -12,6 +12,7 @@ def selected_mode(config):
 
 def connection_modes(config, *, installed, pipe_supported, official, official_supported):
     selected = selected_mode(config)
+    paired = official.get('configured') is True or official.get('loginSaved') is True and official.get('loginDeferred') is True
     return {
         'connectionMode': selected,
         'connectionModes': [
@@ -22,10 +23,10 @@ def connection_modes(config, *, installed, pipe_supported, official, official_su
              'reason': '' if pipe_supported else '当前安装暂不能使用本机连接'},
             {'id': 'official-remote', 'label': '官方远控',
              'description': '在电脑网关保存原 App 远控链接并完成同账号登录；会话数据经过 ZCode 官方中继。',
-             'configured': official.get('configured') is True,
-             'available': bool(official_supported and official.get('configured')),
+             'configured': paired,
+             'available': bool(official_supported and paired),
              'connected': selected == 'official-remote' and official.get('connected') is True,
              'reason': ('此系统暂不支持官方远控' if not official_supported else
-                        '' if official.get('configured') else '请先在电脑网关配置并登录官方远控')},
+                        '' if paired else '请先在电脑网关配置并登录官方远控')},
         ],
     }

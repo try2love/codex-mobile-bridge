@@ -191,9 +191,15 @@ function moduleName(name){return ({account:'accounts','desktop-sessions':'accoun
 function tab(name){const requested=name;name=moduleName(name);activeTab=name;
   if(name!=='notifications')hideWebhookUrl();
   if(name!=='accounts'&&typeof claudeCliAccessPanel!=='undefined')claudeCliAccessPanel?.clear();
-  if(name==='accounts'){desktopConnections?.refresh();desktopConnections?.refreshClients();harnessPanel?.refresh();if(typeof wslAccountScopes!=='undefined')for(const scope of wslAccountScopes)scope.load();}
   document.querySelectorAll('[data-panel]').forEach(node=>node.hidden=moduleName(node.dataset.panel)!==name);
-  if(name==='accounts'&&!$('accounts-content').hidden)accountsPanel?.refresh();else accountsPanel?.resume();
+  desktopConnections?.syncPolling();
+  if(name==='accounts'){
+    if(!desktopConnections?.clients)desktopConnections?.scan();
+    else {desktopConnections.refresh();desktopConnections.refreshClients();}
+    if(!$('harness-panel').classList.contains('client-config-hidden'))harnessPanel?.refresh();
+    if(typeof wslAccountScopes!=='undefined')for(const scope of wslAccountScopes)scope.loadVisible();
+  }
+  if(name==='accounts'&&!$('accounts-content').hidden&&!$('accounts-content').closest('[data-client-config]')?.classList.contains('client-config-hidden'))accountsPanel?.refresh();else accountsPanel?.resume();
   document.querySelectorAll('[data-tab]').forEach(node=>node.classList.toggle('active',node.dataset.tab===name));
   window.GatewayLayout?.tab(name,{section:requested});$('page-title').textContent=t(titles[name]);if(snapshot)updateDirty();if(name==='advanced')loadLogs();if(name==='devices')loadDevices();if(snapshot)renderUpdate();
   if(['desktop-sessions','harness'].includes(requested))document.querySelectorAll('[data-panel="'+requested+'"] > details').forEach(node=>node.open=true);
@@ -257,7 +263,7 @@ function render(value,watchRevision=watchPanel.revision){
   $('login-startup-setting').hidden=$('login-startup-hint').hidden=!value.loginStartup?.supported;
   $('login-startup-hint').textContent=t(value.loginStartup?.requiresApproval?'请在系统设置的登录项中允许此应用。':'开启后，登录电脑时自动启动网关。');
   if(snapshot&&(snapshot.runtime.instanceId!==value.runtime.instanceId||snapshot.dataDir!==value.dataDir)){resetPairing();connectionSetupState.clear();}
-  if(snapshot&&snapshot.dataDir!==value.dataDir){hideWebhookUrl();webhookSavedFields=null;webhookCreating=false;webhookSelectedId='legacy';resetSecretFields();harnessPanel?.clear();if(activeTab==='accounts')harnessPanel?.refresh();watchPanel.clear();watchRevision=watchPanel.revision;devicesState=null;devicesDirty=false;$('device-list').replaceChildren();$('auto-blocks').replaceChildren();}
+  if(snapshot&&snapshot.dataDir!==value.dataDir){hideWebhookUrl();webhookSavedFields=null;webhookCreating=false;webhookSelectedId='legacy';resetSecretFields();harnessPanel?.clear();if(activeTab==='accounts'&&!$('harness-panel').classList.contains('client-config-hidden'))harnessPanel?.refresh();watchPanel.clear();watchRevision=watchPanel.revision;devicesState=null;devicesDirty=false;$('device-list').replaceChildren();$('auto-blocks').replaceChildren();}
   snapshot=value;const running=value.runtime.running;
   if(!networkAdaptationBusy){if(typeof value.networkAdaptation?.enabled==='boolean')networkAdaptationError='';renderNetworkAdaptation(value.networkAdaptation??null);}
   if(running||value.runtime.portOccupied)startingUntil=0;
@@ -433,7 +439,7 @@ $('cloudflared').oninput=()=>{renderCloudflared();updateDirty();};
 async function loadLogs(){try{$('log-output').textContent=(await api.logs()).text||t('暂无运行日志');$('log-output').scrollTop=0;}catch(e){feedback(e.message,true);}}
 $('refresh-logs').onclick=loadLogs;
 for(const id of ['password','ntfy-token','bark-key','pushplus-token'])secretControl($(id));
-api.language().then(applyLanguage).catch(error=>feedback(error.message,true)).then(()=>refresh(true)).then(()=>desktopConnections?.scan()).then(()=>{if(snapshot?.preferences.autoStart&&!snapshot.updateManaged&&!snapshot.runtime.running&&!snapshot.runtime.portOccupied)$('start').click();});
+api.language().then(applyLanguage).catch(error=>feedback(error.message,true)).then(()=>refresh(true)).then(()=>{if(snapshot?.preferences.autoStart&&!snapshot.updateManaged&&!snapshot.runtime.running&&!snapshot.runtime.portOccupied)$('start').click();});
 let refreshTimer=setInterval(refresh,3000);
 document.addEventListener('visibilitychange',()=>{clearInterval(refreshTimer);refreshTimer=null;if(!document.hidden){refresh();refreshTimer=setInterval(refresh,3000);}});
 
@@ -578,13 +584,14 @@ $('device-policy').oninput=$('device-policy').onchange=()=>{devicesDirty=true;$(
 $('device-policy').onsubmit=event=>{event.preventDefault();return changeDevices({action:'save',policy:devicePolicy()});};
 
 const claudeCliAccessPanel=typeof CliAccessPanel==='undefined'?null:new CliAccessPanel({root:$('cli-access-claude-content'),provider:'claude',read:()=>api.cliAccess({action:'list'}),request:value=>api.cliAccess(value)});
-document.addEventListener('bridge-client-config',event=>{claudeCliAccessPanel?.clear();if(event.detail==='claude'&&!$('cli-access-claude-content').hidden)claudeCliAccessPanel?.refresh();});
+document.addEventListener('bridge-client-config',event=>{if(event.detail==='deepseek')harnessPanel?.refresh();claudeCliAccessPanel?.clear();if(event.detail==='claude'&&!$('cli-access-claude-content').hidden)claudeCliAccessPanel?.refresh();});
 let codexAccountEntry='desktop';
 document.addEventListener('bridge-client-config',event=>{const next=event.detail?.startsWith('codex:')?event.detail:'desktop';if(codexAccountEntry!==next){codexAccountEntry=next;accountsPanel?.clear();accountsPanel?.resetForm();}if(event.detail==='codex'||next!=='desktop')accountsPanel?.refresh();});
 const accountsPanel=typeof AccountsPanel==='undefined'?null:new AccountsPanel({root:$('accounts-content'),desktop:true,read:force=>api.accounts({entry:codexAccountEntry,action:'list',resetForecast:accountsPanel?.visible()&&accountsPanel?.value?.resetDynamicEnabled?(force?'refresh':true):false}),request:value=>api.accounts({...value,entry:codexAccountEntry}),onUpdate:value=>{if(codexAccountEntry==='desktop')desktopConnections?.renderAccount(value);}});
 if(accountsPanel){
+  if(desktopConnections)desktopConnections.onClientsRendered=()=>accountsPanel.resume();
   const visible=accountsPanel.visible.bind(accountsPanel);
-  accountsPanel.visible=()=>visible()||(!document.hidden&&!$('clients-page').hidden&&!$('clients-page').classList.contains('configuration-open'));
+  accountsPanel.visible=()=>visible()||(!document.hidden&&!$('clients-page').hidden&&!$('clients-page').classList.contains('configuration-open')&&!!desktopConnections?.managementClients().some(row=>row.id==='codex'&&row.enabled));
 }
 
 let wslAccountsLoading;
@@ -602,7 +609,7 @@ const wslAccountScopes=[];
 function createWslAccountScopes(){
 for(const provider of ['codex','claude']){
   const localRoot=provider==='codex'?$('accounts-content'):desktopConnections?.accountPanels?.claude?.root;
-  if(!localRoot)continue;
+  if(!localRoot||wslAccountScopes.some(scope=>scope.provider===provider))continue;
   const wrapper=document.createElement('div'),label=document.createElement('label'),select=document.createElement('select'),caption=document.createElement('span'),root=document.createElement('div');
   caption.dataset.i18n='运行环境';caption.textContent=t('运行环境');label.append(caption,select);wrapper.append(label,root);localRoot.before(wrapper);
   const request=value=>api.cliAccess({action:'wslAccounts',provider,entry:select.value,operation:value.action,...Object.fromEntries(Object.entries(value).filter(([key])=>key!=='action'))});
@@ -614,8 +621,8 @@ for(const provider of ['codex','claude']){
   const choose=()=>{const local=select.value==='local',returning=local&&selectedWsl;selectedWsl=!local;localRoot.hidden=!local;if(localCli)localCli.hidden=!local;if(local){panel.clear();if(returning){localPanel?.refresh();if(localCli&&!localCli.hidden)(provider==='claude'?claudeCliAccessPanel:null)?.refresh();}}else {(provider==='claude'?claudeCliAccessPanel:null)?.clear();if(localPanel){if(localPanel.clear)localPanel.clear();else{localPanel.generation++;localPanel.modelsRevision++;localPanel.loading=false;localPanel.busy=false;localPanel.closeEditor?.();clearTimeout(localPanel.timer);}}panel.select(select.value);}};
   let revision=0;
   const load=async()=>{const current=++revision;try{const value=await api.cliAccess({action:'wslAccounts',provider,operation:'environments'});if(current!==revision)return;const previous=select.value||'local';select.replaceChildren(new Option(t('此电脑'),'local'),...(value.environments||[]).map(row=>new Option([row.label||row.distribution,row.user,row.configDir].filter(Boolean).join(' · '),row.id)));select.value=[...select.options].some(row=>row.value===previous)?previous:'local';label.hidden=!(value.environments||[]).length;choose();}catch(error){if(current===revision){label.hidden=true;select.replaceChildren(new Option(t('此电脑'),'local'));choose();}}};
-  select.onchange=choose;select.append(new Option(t('此电脑'),'local'));root.hidden=true;label.hidden=true;wslAccountScopes.push({panel,load});
+  select.onchange=choose;select.append(new Option(t('此电脑'),'local'));root.hidden=true;label.hidden=true;wslAccountScopes.push({provider,panel,load,loadVisible(){if(activeTab==='accounts'&&!localRoot.closest('[data-client-config]')?.classList.contains('client-config-hidden'))return load();}});
 }
 }
-if(api.platform==='win32')window.loadWslAccounts().then(()=>{createWslAccountScopes();if(activeTab==='accounts')for(const scope of wslAccountScopes)scope.load();}).catch(error=>feedback(error.message,true));
-document.addEventListener('bridge-client-config',event=>{for(const scope of wslAccountScopes){scope.panel.clear();scope.load();}});
+if(api.platform==='win32')window.loadWslAccounts().then(()=>{createWslAccountScopes();if(activeTab==='accounts')for(const scope of wslAccountScopes)scope.loadVisible();}).catch(error=>feedback(error.message,true));
+document.addEventListener('bridge-client-config',event=>{if(api.platform==='win32'&&typeof WslAccountsPanel!=='undefined')createWslAccountScopes();for(const scope of wslAccountScopes){scope.panel.clear();scope.loadVisible();}});

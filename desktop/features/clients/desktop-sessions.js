@@ -5,23 +5,29 @@ class DesktopConnectionsPanel {
     this.deepseekHome=root.querySelector('[data-deepseek-home]');
     const add=document.getElementById('add-client');if(add)add.onclick=()=>this.addClient();
     const refresh=document.getElementById('refresh-clients');if(refresh)refresh.onclick=()=>this.scan(true);
-    setInterval(()=>this.pollClients(),15000);setInterval(()=>this.pollClients(true),2000);
-    document.addEventListener('visibilitychange',()=>{if(!document.hidden)this.pollClients();});
+    document.addEventListener('visibilitychange',()=>{this.syncPolling();if(!document.hidden)this.pollClients();});
     root.querySelectorAll('[data-desktop-action]').forEach(button=>button.onclick=()=>button.dataset.desktopAction==='scan'?this.scan(true):this.action(button.dataset.desktopAction));
     root.querySelector('[data-desktop-choose]').onclick=async()=>{try{const path=await api.choose('folder');if(path)this.deepseekHome.value=path;}catch(error){feedback(error.message,true);}};
     document.addEventListener('bridge-language',()=>{this.renderClients();this.renderScan();});
     this.accountPanels={};this.managementPages=new Map();
-    if(typeof DesktopClientAccountsPanel!=='undefined')for(const provider of ['claude','deepseek']){
-      const article=root.querySelector('[data-client-config="'+provider+'"]');if(!article)continue;
-      const content=document.createElement('div');article.querySelector('.client-auto-setup').after(content);
-      this.accountPanels[provider]=new DesktopClientAccountsPanel({root:content,provider,desktop:true,
-        read:()=>api.desktopSessions({action:'accounts',provider,operation:'list'}),
-        request:({action,...value})=>api.desktopSessions({action:'accounts',provider,operation:action,...value}),
-        readModels:(refresh=false)=>api.desktopSessions({action:'account',provider,refresh}),
-        visible:()=>!document.hidden&&!document.getElementById('clients-page').hidden&&(!document.getElementById('clients-page').classList.contains('configuration-open')||!article.classList.contains('client-config-hidden')),
-        onUpdate:value=>this.renderClientAccount(provider,value),onChanged:()=>this.refreshClients(true)});
-    }
-    document.addEventListener('bridge-client-config',()=>this.resumeAccounts());
+    document.addEventListener('bridge-client-config',event=>{this.ensureAccountPanel(event.detail);this.resumeAccounts();});
+  }
+  ensureAccountPanel(provider){
+    if(!['claude','deepseek'].includes(provider)||typeof DesktopClientAccountsPanel==='undefined')return;
+    if(this.accountPanels[provider])return this.accountPanels[provider];
+    const article=this.root.querySelector('[data-client-config="'+provider+'"]');if(!article)return;
+    const content=document.createElement('div');article.querySelector('.client-auto-setup').after(content);
+    this.accountPanels[provider]=new DesktopClientAccountsPanel({root:content,provider,desktop:true,
+      read:()=>this.api.desktopSessions({action:'accounts',provider,operation:'list'}),
+      request:({action,...value})=>this.api.desktopSessions({action:'accounts',provider,operation:action,...value}),
+      readModels:(refresh=false)=>this.api.desktopSessions({action:'account',provider,refresh}),
+      visible:()=>{
+        const page=document.getElementById('clients-page'),client=this.clients?.find(row=>row.id===provider);
+        return !document.hidden&&!page.hidden&&(page.classList.contains('configuration-open')
+          ?!article.classList.contains('client-config-hidden'):!!(client?.nativeEnabled??client?.enabled));
+      },
+      onUpdate:value=>this.renderClientAccount(provider,value),onChanged:()=>this.refreshClients(true)});
+    return this.accountPanels[provider];
   }
   renderDetails(){
     const value=this.connectionValue;
@@ -51,12 +57,17 @@ class DesktopConnectionsPanel {
       this.renderDetails();
     }catch(error){if(revision!==this.statusRevision)return;this.statusError=error.message;this.scanMessage=error.message;this.scanError=true;this.renderScan();this.renderDetails();}
   }
+  applyClientSnapshot(value){
+    ClientLifecycle.reconcile(this.operationFailures,this.managementClients(value.clients));
+    this.clients=value.clients;this.instanceError=value.instanceError||'';
+    this.gatewayRunning=value.gatewayRunning??this.gatewayRunning;this.windowsSession=value.windowsSession??this.windowsSession;
+  }
   async refreshClients(refresh=false){
     const root=document.getElementById('client-overview');if(!root||this.scanning||this.choosingClient||(this.busy&&!refresh))return;
     if(this.clientsLoading){await this.clientsLoading;if(refresh)return this.refreshClients(true);return;}
     const revision=this.clientsRevision;
     const pending=(async()=>{
-      try{const value=await ClientLifecycle.request(()=>this.api.desktopSessions({action:'clients',refresh}),{timeout:this.statusTimeout??10000,uncertain:false,message:'客户端状态读取超时，请重试。'});if(revision!==this.clientsRevision)return;ClientLifecycle.reconcile(this.operationFailures,this.managementClients(value.clients));this.clients=value.clients;this.instanceError=value.instanceError||'';this.gatewayRunning=value.gatewayRunning??this.gatewayRunning;this.windowsSession=value.windowsSession??this.windowsSession;this.renderClients();this.renderScan();}
+      try{const value=await ClientLifecycle.request(()=>this.api.desktopSessions({action:'clients',refresh}),{timeout:this.statusTimeout??10000,uncertain:false,message:'客户端状态读取超时，请重试。'});if(revision!==this.clientsRevision)return;this.applyClientSnapshot(value);this.renderClients();this.renderScan();}
       catch(error){if(revision!==this.clientsRevision)return;this.scanMessage=error.message;this.scanError=true;this.renderScan();}
     })();
     this.clientsLoading=pending;try{await pending;}finally{if(this.clientsLoading===pending)this.clientsLoading=null;this.renderClients();}
@@ -72,15 +83,23 @@ class DesktopConnectionsPanel {
     if(failure.action==='initialize')return id==='claude'?this.action('connect-claude'):this.toggleClient(id,true,{initializeDesktop:true});
     return this.toggleClient(id,failure.action==='enable',{connectionMode:failure.connectionMode});
   }
+  syncPolling(){
+    const visible=!document.hidden&&!document.getElementById('clients-page').hidden;
+    const interval=visible?(this.managementClients().some(client=>this.connection(client).waiting)?2000:15000):0;
+    if(interval===(this.pollInterval||0))return;
+    clearInterval(this.pollTimer);this.pollInterval=interval;
+    if(interval)this.pollTimer=setInterval(()=>this.pollClients(),interval);
+  }
   pollClients(fast=false){
     if(document.hidden||document.getElementById('clients-page').hidden||this.hasUncertain()||(fast&&!this.managementClients().some(client=>this.connection(client).waiting)))return;
     return this.refreshClients();
   }
   async scan(manual=false){
     if(this.scanning||this.busy||this.choosingClient)return;this.scanning=true;this.clientsRevision++;this.statusRevision++;this.scanMessage='正在扫描本机客户端…';this.scanError=false;this.renderScan();
-    try{const value=await this.api.desktopSessions({action:'scan',setup:false});if(value.clients){this.clients=value.clients;this.gatewayRunning=value.gatewayRunning??this.gatewayRunning;this.renderClients();}this.scanMessage='扫描完成；各客户端的接入状态如下。';}
+    let gotSnapshot=false;
+    try{const value=await this.api.desktopSessions({action:'scan',setup:false,inventoryOnly:!manual});if(value.clients){this.applyClientSnapshot(value);gotSnapshot=true;}this.scanMessage='扫描完成；各客户端的接入状态如下。';}
     catch(error){this.scanMessage=error.message;this.scanError=true;if(manual)this.feedback(error.message,true);}
-    finally{this.scanning=false;this.renderScan();await this.refreshClients(true);await this.refresh();}
+    finally{this.scanning=false;this.renderScan();if(gotSnapshot)this.renderClients();else await this.refreshClients(true);await this.refresh();}
     await this.showClaudeSetup(true);
   }
   async showClaudeSetup(automatic=false){
@@ -88,7 +107,7 @@ class DesktopConnectionsPanel {
     if(this.claudeSetupOpen||this.busy||this.scanning||this.choosingClient||this.hasUncertain()||!client?.installed||client.setupStatus==='unsupported')return;
     const workspace=this.connectionValue?.claudeWorkspace;if(!workspace)return;
     const key='claude:setup-guide:'+workspace;
-    if(automatic&&(client.connected||this.claudeSetupOffered||localStorage.getItem(key)==='seen'))return;
+    if(automatic&&(!(client.nativeEnabled??client.enabled)||client.connected||this.claudeSetupOffered||localStorage.getItem(key)==='seen'))return;
     this.claudeSetupOpen=true;this.claudeSetupOffered=true;this.choosingClient='claude';this.renderClients();this.renderScan();
     const release=()=>{this.claudeSetupOpen=false;this.choosingClient=null;this.renderClients();this.renderScan();};
     try{
@@ -242,7 +261,7 @@ class DesktopConnectionsPanel {
     root.replaceChildren(this.visibleClients().length?table:node('p','尚未发现客户端，请添加客户端或重新扫描。','hint'));this.renderAccount(this.accountValue);
     for(const [provider,panel] of Object.entries(this.accountPanels)){this.renderClientAccount(provider,panel.value);}
     for(const [id,panel] of this.connectionModePanels||[])panel.render(this.managementClients().find(row=>row.id===id));
-    this.resumeAccounts();
+    this.resumeAccounts();this.onClientsRendered?.();this.syncPolling();
   }
   async manageClient(client){
     const layout=window.GatewayLayout,request=this.managementRequest=(this.managementRequest||0)+1;
@@ -334,7 +353,11 @@ class DesktopConnectionsPanel {
     for(const [action,button] of Object.entries(buttons))button.onclick=()=>perform(action);
     refresh.onclick=panel.refresh=()=>perform('state');link.oninput=render;render();
   }
-  resumeAccounts(){for(const panel of Object.values(this.accountPanels))panel.resume();}
+  resumeAccounts(){
+    if(!document.hidden&&!document.getElementById('clients-page').hidden)
+      for(const client of this.clients||[])if(client.nativeEnabled??client.enabled)this.ensureAccountPanel(client.id);
+    for(const panel of Object.values(this.accountPanels))panel.resume();
+  }
   renderClientAccount(provider,value){
     const cell=document.querySelector('[data-client-account="'+provider+'"]');if(!cell||!value)return;
     const node=(tag,text)=>{const n=document.createElement(tag);n.textContent=BridgeI18n.t(text);return n;};

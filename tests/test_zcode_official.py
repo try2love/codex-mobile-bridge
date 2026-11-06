@@ -200,7 +200,8 @@ class OfficialManagerTests(unittest.TestCase):
             self.assertEqual(m.config['zcodeConnectionMode'], 'official-remote')
             self.assertNotIn('zcodeOfficialRemote', m.config)
             self.assertTrue(m.config['enabled']['zcode'])
-            factory.assert_called_once()
+            factory.assert_not_called()  # Selection with the gateway stopped needs only metadata.
+            self.assertIs(m.adapters['zcode'], factory.return_value)
             self.assertEqual(factory.call_args.args[1]['dataDirectory'], m.config['discovered']['zcode']['dataDirectory'])
             self.assertEqual(str(m.zcode_pipe.application), str(Path(m.config['discovered']['zcode']['application']).resolve()))
             launch.assert_not_called()

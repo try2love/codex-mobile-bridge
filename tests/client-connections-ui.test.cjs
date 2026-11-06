@@ -9,18 +9,18 @@ function fixture({accounts=false}={}){
   const calls=[],errors=[],prompts=[],choices=[],initializations=[];let closeChoice=true,finishChoice,initializeChoice=true,finishInitialize,chosen='',confirmed=true,handler=async body=>body.action==='status'?{backends:{},deepseekHome:'/fixture'}:body.action==='accounts'?{accounts:[]}:{clients:[]};
   const listeners={},timers=[],storage=new Map(),pages=new Map(),selected=[];
   const layout={hasClient:id=>['codex','claude','deepseek'].includes(id)||id.startsWith('codex:')||pages.has(id),clientPage(id){if(pages.has(id))return pages.get(id);const page=node('section');pages.set(id,page);return page;},selectClient(id){selected.push(id);listeners['bridge-client-config']?.({detail:id});}};
-  const context=vm.createContext({ClientLifecycle:{...require('../web/features/clients/client-lifecycle.js'),chooseDisable(client){choices.push(client.id);return closeChoice==='pending'?new Promise(resolve=>finishChoice=resolve):closeChoice;}},CustomEvent:class{constructor(type){this.type=type;}},document:{body:node('body'),documentElement:{},getElementById:id=>nodes[id],createElement:node,querySelector:()=>null,querySelectorAll:selector=>selector==='[data-i18n]'?Object.values(statuses):[],hidden:false,addEventListener(type,fn){listeners[type]=fn;},removeEventListener(type,fn){if(listeners[type]===fn)delete listeners[type];},dispatchEvent(event){listeners[event.type]?.(event);}},setInterval(fn){timers.push(fn);},setTimeout(){},clearTimeout(){},localStorage:{getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value)},window:{confirm:message=>{prompts.push(message);return confirmed;},GatewayLayout:layout}});
+  const context=vm.createContext({ClientLifecycle:{...require('../web/features/clients/client-lifecycle.js'),chooseDisable(client){choices.push(client.id);return closeChoice==='pending'?new Promise(resolve=>finishChoice=resolve):closeChoice;}},CustomEvent:class{constructor(type){this.type=type;}},document:{body:node('body'),documentElement:{},getElementById:id=>nodes[id],createElement:node,querySelector:()=>null,querySelectorAll:selector=>selector==='[data-i18n]'?Object.values(statuses):[],hidden:false,addEventListener(type,fn){listeners[type]=fn;},removeEventListener(type,fn){if(listeners[type]===fn)delete listeners[type];},dispatchEvent(event){listeners[event.type]?.(event);}},setInterval(fn,ms){timers.push({fn,ms});return timers.length;},clearInterval(id){if(id)timers[id-1]=null;},setTimeout(){},clearTimeout(){},localStorage:{getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value)},window:{confirm:message=>{prompts.push(message);return confirmed;},GatewayLayout:layout}});
   context.ClientLifecycle.chooseInitialize=client=>{initializations.push(client.id);return initializeChoice==='pending'?new Promise(resolve=>finishInitialize=resolve):initializeChoice;};
   for(const file of ['web/shared/i18n.js','web/features/accounts/wsl-accounts.js',...(accounts?['web/features/accounts/api-editor.js','web/features/accounts/client-accounts.js']:[]),'desktop/features/clients/desktop-sessions.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
   context.ClientLifecycle.mountConnectionModes=vm.runInContext('(function(){'+fs.readFileSync('web/features/clients/client-lifecycle.js','utf8')+';return ClientLifecycle.mountConnectionModes;})()',context);context.ClientLifecycle.confirmConnectionMode=async()=>confirmed;
   const Class=vm.runInContext('DesktopConnectionsPanel',context),panel=new Class({root,api:{choose:async()=>chosen,cliAccess:body=>{calls.push(body);return handler(body);},desktopSessions:body=>{calls.push(body);return handler(body);}},feedback:message=>errors.push(message)});
   const all=n=>[n,...n.children.flatMap(all)];
-  return {panel,nodes,calls,errors,scan,pages,selected,storage,prompts,choices,initializations,setInitializeChoice:value=>initializeChoice=value,decideInitialize:value=>finishInitialize(value),setChoice:value=>closeChoice=value,decide:value=>finishChoice(value),statuses,workspace,claudeHome,claudeData,input,choose,root,document:context.document,setChosen:value=>chosen=value,poll:async()=>{await timers[0]();},apply:()=>vm.runInContext('BridgeI18n.apply()',context),confirm:value=>confirmed=value,setHandler:fn=>handler=fn,all:()=>all(nodes['client-overview']),text:()=>all(nodes['client-overview']).map(n=>n.textContent).join('\n'),english:()=>vm.runInContext("BridgeI18n.setLanguage('en')",context)};
+  return {panel,nodes,timers,calls,errors,scan,pages,selected,storage,prompts,choices,initializations,setInitializeChoice:value=>initializeChoice=value,decideInitialize:value=>finishInitialize(value),setChoice:value=>closeChoice=value,decide:value=>finishChoice(value),statuses,workspace,claudeHome,claudeData,input,choose,root,document:context.document,setChosen:value=>chosen=value,poll:async()=>{panel.syncPolling();await timers.find(Boolean)?.fn();},apply:()=>vm.runInContext('BridgeI18n.apply()',context),confirm:value=>confirmed=value,setHandler:fn=>handler=fn,all:()=>all(nodes['client-overview']),text:()=>all(nodes['client-overview']).map(n=>n.textContent).join('\n'),english:()=>vm.runInContext("BridgeI18n.setLanguage('en')",context)};
 }
 
 test('first Claude setup guides both permissions without launching, trusting or copying the connector',async()=>{
   const ui=fixture(),workspace='/Users/fixture/本地文稿/想法/claude';
-  ui.panel.clients=[{id:'claude',installed:true,connected:false}];ui.panel.connectionValue={claudeWorkspace:workspace};
+  ui.panel.clients=[{id:'claude',installed:true,enabled:true,connected:false}];ui.panel.connectionValue={claudeWorkspace:workspace};
   let granted=false;
   ui.setHandler(async body=>body.action==='claude-prerequisites'?{supported:true,platform:'darwin',workspace,gatewayRunning:false,accessibility:{setupState:(granted||=body.requestPermission===true)?'ready':'needs-permission'}}:{copied:true});
   await ui.panel.showClaudeSetup(true);const dialog=ui.document.body.children[0],buttons=dialog.children.at(-1).children;
@@ -55,7 +55,7 @@ test('connected and unsupported Claude do not interrupt startup with a setup dia
 
 test('DSH directory refresh targets its field after real account forms are inserted',async()=>{
   assert.match(fs.readFileSync(path.join(__dirname,'../desktop/index.html'),'utf8'),/<input[^>]*data-deepseek-home/);
-  const ui=fixture({accounts:true}),name=ui.panel.accountPanels.deepseek.nameInput;
+  const ui=fixture({accounts:true}),name=ui.panel.ensureAccountPanel('deepseek').nameInput;
   const apiName=ui.panel.accountPanels.deepseek.editName.input;assert.equal(ui.root.querySelector('input'),apiName,'an account editor still precedes the advanced directory');apiName.value='API draft';
   name.value='Saved access';await ui.panel.refresh();assert.equal(ui.input.value,'/fixture');assert.equal(name.value,'Saved access');assert.equal(apiName.value,'API draft');
   ui.input.value='/editing';ui.document.activeElement=ui.input;await ui.panel.refresh();assert.equal(ui.input.value,'/editing');
@@ -76,7 +76,7 @@ test('desktop fast polling is limited to visible startup states and deduplicates
 });
 
 test('DSH directory picker and plugin actions never use the account name field',async()=>{
-  const ui=fixture({accounts:true}),name=ui.panel.accountPanels.deepseek.nameInput;name.value='Saved access';
+  const ui=fixture({accounts:true}),name=ui.panel.ensureAccountPanel('deepseek').nameInput;name.value='Saved access';
   const selected='F:\\Harness 数据\\profile';ui.setChosen(selected);await ui.choose.onclick();
   assert.equal(ui.input.value,selected);assert.equal(name.value,'Saved access');
   for(const action of ['install-deepseek','remove-deepseek']){ui.input.value=' '+selected+' ';await ui.panel.action(action);assert.equal(ui.calls.find(call=>call.action===action).home,selected);assert.equal(name.value,'Saved access');}
@@ -85,7 +85,7 @@ test('scan discovers clients without connecting apps and ignores duplicate scans
   const ui=fixture();let finish;
   ui.setHandler(body=>body.action==='scan'?new Promise(resolve=>finish=resolve):Promise.resolve(body.action==='status'?{backends:{}}:{clients:[]}));
   const pending=ui.panel.scan();await ui.panel.scan();assert.equal(ui.calls.length,1);assert.equal(ui.calls[0].action,'scan');assert.equal(ui.calls[0].setup,false);assert.ok(ui.nodes['refresh-clients'].disabled);
-  finish({clients:[]});await pending;assert.equal(ui.nodes['refresh-clients'].disabled,false);assert.deepEqual(ui.calls.map(c=>c.action),['scan','clients','status']);
+  finish({clients:[]});await pending;assert.equal(ui.nodes['refresh-clients'].disabled,false);assert.deepEqual(ui.calls.map(c=>c.action),['scan','status']);
 });
 test('Claude unknown-state quit is a separate explicitly confirmed desktop action',async()=>{
   const ui=fixture(),client={id:'claude',name:'Claude',installed:true,configured:true,connected:false,enabled:true,running:true,canConfirmQuit:true,reason:'连接已断开'};
@@ -578,4 +578,17 @@ test('official login can explicitly retry unavailable storage without status pol
  assert.equal(login.disabled,false);await login.onclick();assert.equal(attempts,1);assert.equal(login.disabled,false);
  await ui.poll();assert.equal(attempts,1,'Background status never starts another login/storage operation');
  await login.onclick();assert.equal(attempts,2);assert.equal(state.configured,true);
+});
+
+test('Codex alone creates no other account editors or account reads; invisible lists stop their timer',async()=>{
+  const ui=fixture({accounts:true});
+  ui.panel.clients=[{id:'codex',enabled:true},{id:'claude',enabled:true,nativeEnabled:false},{id:'deepseek',enabled:false}];
+  ui.panel.renderClients();
+  assert.deepEqual(Object.keys(ui.panel.accountPanels),[]);assert.equal(ui.calls.length,0);
+  assert.deepEqual(ui.timers.filter(Boolean).map(timer=>timer.ms),[15000]);
+  ui.nodes['clients-page'].hidden=true;ui.panel.syncPolling();
+  assert.equal(ui.timers.filter(Boolean).length,0);
+  ui.nodes['clients-page'].hidden=false;ui.panel.clients[2].enabled=true;ui.panel.renderClients();
+  assert.deepEqual(Object.keys(ui.panel.accountPanels),['deepseek']);assert.ok(ui.calls.some(call=>call.provider==='deepseek'));
+  assert.ok(!ui.calls.some(call=>call.provider==='claude'));
 });

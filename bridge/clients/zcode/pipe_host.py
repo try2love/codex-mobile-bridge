@@ -315,11 +315,13 @@ class PipeHostClient:
                 self.signature = SignedGatewayPeer()
             return self.signature
 
-    def supported(self):
+    def supported(self, *, inventory=False):
         if not zcode_pipe.is_supported(self.application):
             return False
         try:
             private_dir(self.profile)
+            if inventory:
+                return bool(getattr(sys, 'frozen', False) and Path(sys.executable).name == 'codex-mobile-gateway')
             if not self._verified_starter:
                 self._signing().verify_starter(zcode_pipe.starter_path())
                 self._verified_starter = True
