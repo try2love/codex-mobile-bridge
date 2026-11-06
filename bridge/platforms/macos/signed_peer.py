@@ -91,7 +91,7 @@ class SignedGatewayPeer:
             raise PermissionError("Missing signing data")
         return ct.string_at(self.cf.CFDataGetBytePtr(data), self.cf.CFDataGetLength(data))
 
-    def verify_starter(self, bundle):
+    def _starter_requirement(self, bundle, broker_hash):
         identifier = "io.github.try2love.codexmobilebridge.zcode-pipe-starter"
         clause = f'identifier "{identifier}" and certificate leaf = H"{self.leaf_hash}"'
         result = subprocess.run(
@@ -103,10 +103,14 @@ class SignedGatewayPeer:
         if result.returncode:
             raise PermissionError("Invalid private ZCode starter signature")
         info = plistlib.loads((bundle / "Contents/Info.plist").read_bytes())
-        if info.get("CFBundleIdentifier") != identifier or self.cdhash not in info.get(
+        if info.get("CFBundleIdentifier") != identifier or broker_hash not in info.get(
             "CMBGatewayBrokerCDHashes", []
         ):
             raise PermissionError("ZCode starter does not authorize this gateway build")
+        return clause
+
+    def verify_starter(self, bundle):
+        clause = self._starter_requirement(bundle, self.cdhash)
         if self.helper_requirement is None:
             text = self.cf.CFStringCreateWithCString(None, clause.encode(), 0x08000100)
             if not text:
@@ -127,7 +131,31 @@ class SignedGatewayPeer:
             self.cf.CFRelease(self.requirement)
             self.requirement = None
 
-    def require(self, connection, expected_pid, *, starter=None):
+    def _verify_previous_build(self, moved_image, broker_hash):
+        # This exception is only for a live holder of a previous installation.
+        # Require the same installed product and its independently signed starter
+        # authorizing this exact broker hash, not just another gateway certificate.
+        current = Path(self.image)
+        previous = Path(moved_image)
+        layout = Path("Contents/Resources/gateway/codex-mobile-gateway")
+        if (tuple(current.parts[-4:]) != layout.parts or tuple(previous.parts[-4:]) != layout.parts):
+            raise PermissionError("Unexpected ZCode gateway layout")
+        current_app, previous_app = current.parents[3], previous.parents[3]
+        if (previous_app.suffix != ".app" or current_app.suffix != ".app"
+                or previous_app.parent != current_app.parent):
+            raise PermissionError("ZCode holder is outside this installation")
+        requirement = subprocess.run(
+            ["/usr/bin/codesign", "--display", "-r-", str(current_app)],
+            capture_output=True, text=True, timeout=5, check=True)
+        rules = [line.removeprefix("designated => ") for line in
+                 (requirement.stdout + "\n" + requirement.stderr).splitlines() if line.startswith("designated => ")]
+        if len(rules) != 1 or not rules[0]:
+            raise PermissionError("Missing gateway application requirement")
+        subprocess.run(["/usr/bin/codesign", "--verify", "--strict", "-R=" + rules[0], str(previous_app)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=12, check=True)
+        self._starter_requirement(previous_app / "Contents/Helpers/CMBZCodePipeStarter.app", broker_hash)
+
+    def require(self, connection, expected_pid, *, starter=None, relocated_holder=None):
         if connection.family != socket.AF_UNIX or (expected_pid is None and starter is None):
             raise PermissionError("Invalid private peer")
         # LOCAL_PEERTOKEN, sys/un.h. audit_token_t includes EUID, PID and pidversion.
@@ -145,7 +173,7 @@ class SignedGatewayPeer:
         before = self.native.identity(expected_pid)
         expected_image = str(starter / "Contents/MacOS/CMBZCodePipeStarter") if starter else self.image
         if (
-            before["image"] != expected_image
+            (before["image"] != expected_image and (starter is not None or relocated_holder is None))
             or before["uid"] != os.getuid()
             or before["zombie"]
             or before["birth"][1] != audit[7]
@@ -167,6 +195,17 @@ class SignedGatewayPeer:
             requirement = self.helper_requirement if starter else self.requirement
             if not requirement or self.sec.SecCodeCheckValidity(guest, 0, requirement):
                 raise PermissionError("Gateway signature changed")
+            if before["image"] != expected_image:
+                # Audit/DR checks above are performed on every connection. Reuse
+                # expensive bundle checks only for the same immutable process.
+                identity = (expected_pid, before["birth"], before["started"], before["image"])
+                if getattr(self, "_previous_holder", None) != identity:
+                    static = self._copy(refs, self.sec.SecCodeCopyStaticCode, guest, 0)
+                    info = self._copy(refs, self.sec.SecCodeCopySigningInformation, static, 2)
+                    digest = self._bytes(self.cf.CFDictionaryGetValue(info, P.in_dll(self.sec, "kSecCodeInfoUnique")))
+                    self._verify_previous_build(before["image"], digest)
+                    relocated_holder(before)
+                    self._previous_holder = identity
         if self.native.identity(expected_pid) != before:
             raise PermissionError("Gateway process changed")
         return before

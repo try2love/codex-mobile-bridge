@@ -334,6 +334,29 @@ class PipeHostClient:
             self.signature.close()
             self.signature = None
 
+    def _verify_holder_lock(self, process):
+        import fcntl
+
+        lock = self.profile / "zcode-pipe-host.lock"
+        fd = os.open(lock, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            st = os.fstat(fd)
+            if (not stat.S_ISREG(st.st_mode) or stat.S_IMODE(st.st_mode) != 0o600 or
+                    st.st_uid != os.getuid() or st.st_nlink != 1):
+                raise PermissionError("Untrusted ZCode holder lock")
+            conflict = fcntl.fcntl(fd, fcntl.F_GETLK, struct.pack("=qqihh", 0, 0, 0, fcntl.F_WRLCK, os.SEEK_SET))
+            if struct.unpack("=qqihh", conflict)[3] != fcntl.F_WRLCK:
+                raise PermissionError("ZCode holder has no active profile lock")
+            # macOS reports PID -1 for a flock. Verify the authenticated process
+            # itself has this precise locked inode open, without inspecting other files.
+            opened = subprocess.run(
+                ["/usr/sbin/lsof", "-nP", "-a", "-p", str(process["pid"]), "-Fpi", str(lock)],
+                capture_output=True, text=True, timeout=4, check=True).stdout.splitlines()
+            if "p" + str(process["pid"]) not in opened or "i" + str(st.st_ino) not in opened:
+                raise PermissionError("ZCode profile lock belongs to another holder")
+        finally:
+            os.close(fd)
+
     def _request(self, request, timeout=15):
         if not self.supported():
             raise ValueError("ZCode 私有会话组件不可用")
@@ -353,9 +376,10 @@ class PipeHostClient:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
             channel.settimeout(2)
             channel.connect(str(path))
-            identity = self._signing().require(channel, record["pid"])
+            signature = self._signing()
+            identity = signature.require(channel, record["pid"], relocated_holder=self._verify_holder_lock)
             expected = (
-                identity["image"]
+                signature.image
                 + " zcode-pipe-host --data-dir "
                 + str(self.profile)
                 + " --application "
