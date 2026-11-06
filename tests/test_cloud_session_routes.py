@@ -24,7 +24,12 @@ def packet(method, target, data):
 class CloudSessionRoutesTests(unittest.TestCase):
     def setUp(self):
         self.manager = Mock()
-        gateway = SimpleNamespace(bridge=Mock(), desktop_sessions=self.manager,
+        self.source_auth = SimpleNamespace(config={'mode': 'password'})
+        self.adaptation = Mock()
+        self.notifications = Mock()
+        self.notifications.mobile.checkpoint.return_value = {'streamId': 's', 'cursor': 1}
+        gateway = SimpleNamespace(bridge=Mock(), desktop_sessions=self.manager, auth=self.source_auth,
+                                  network_adaptation=self.adaptation, notifications=self.notifications,
                                   web_dir=ROOT / 'web', slots=BoundedSemaphore(8),
                                   terminal_sockets=BoundedSemaphore(1))
         self.server = create_cloud_server(gateway)
@@ -104,6 +109,28 @@ class CloudSessionRoutesTests(unittest.TestCase):
                              ('POST', '/api/mobile/events/read')):
             with self.subTest(path=path):
                 validate_request(packet(method, path, b'{}' if method == 'POST' else b''))
+
+    def test_cloud_network_and_notifications_reuse_live_gateway_policy(self):
+        self.adaptation.public.return_value = {'enabled': False}
+        self.adaptation.control.return_value = {'enabled': True}
+        self.notifications.defaults.return_value = {'requests': True, 'completion': False}
+        for mode in ('password', 'none'):
+            with self.subTest(mode=mode):
+                self.source_auth.config['mode'] = mode
+                editable = mode == 'password'
+                status, data = self.request('GET', '/api/network-adaptation')
+                self.assertEqual((status, data['canEdit']), (200, editable))
+                self.adaptation.control.reset_mock()
+                status, _ = self.request('POST', '/api/network-adaptation', {'enabled': True})
+                self.assertEqual(status, 200 if editable else 403)
+                if editable:
+                    self.adaptation.control.assert_called_once_with({'action': 'set', 'enabled': True})
+                else:
+                    self.adaptation.control.assert_not_called()
+                self.assertEqual(self.request('GET', '/api/notifications/defaults')[0], 200)
+                self.notifications.defaults.assert_called_with(None)
+                self.assertEqual(self.request('POST', '/api/notifications/defaults', {'completion': True})[0], 200)
+                self.notifications.defaults.assert_called_with({'completion': True})
 
     def test_disabled_entry_csrf_and_revoked_session_cannot_submit(self):
         target = '/api/desktop-sessions/zcode/resume'

@@ -32,7 +32,7 @@ def cloud_target(method, target, size):
             method not in ('GET', 'POST') or (method == 'GET' and size)):
         raise ValueError('Invalid API target or method')
     query = parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True,
-                     max_num_fields=64, errors='strict')
+                     max_num_fields=64, errors='strict') if parsed.query else {}
     for key, values in query.items():
         if (any(ord(c) < 32 or ord(c) == 127 for text in (key, *values) for c in text)
                 or key in ('entry', 'sessionId', 'host', 'side') and (len(values) != 1 or not values[0])):
@@ -61,7 +61,7 @@ def session_route(method, path, query):
         return (action in DESKTOP_WRITE
                 or action in ('projects/browse', 'projects/register', 'projects/trust')
                 or re.fullmatch('uploads/' + UUID + '/thumb', action) is not None)
-    if path == '/api/cli-connections':
+    if path in ('/api/cli-connections', '/api/network-adaptation', '/api/notifications/defaults'):
         return not query
     if path in _PROJECT_ROUTES:
         return method in _PROJECT_ROUTES[path]
