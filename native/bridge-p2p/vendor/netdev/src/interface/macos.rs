@@ -1,7 +1,9 @@
 use crate::interface::InterfaceType;
 use std::collections::HashMap;
+#[cfg(target_os = "macos")]
 use system_configuration::network_configuration;
 
+#[cfg(target_os = "macos")]
 fn get_if_type_from_id(type_id: String) -> InterfaceType {
     match type_id.as_str() {
         "Bridge" => InterfaceType::Bridge,
@@ -22,6 +24,14 @@ pub struct SCInterface {
     pub interface_type: InterfaceType,
 }
 
+#[cfg(target_os = "ios")]
+pub fn get_if_type_map() -> HashMap<String, SCInterface> {
+    // SCNetworkInterfaceCopyAll and its metadata accessors are SPI on iOS.
+    // Public getifaddrs() still provides the addresses used by the transport.
+    HashMap::new()
+}
+
+#[cfg(target_os = "macos")]
 pub fn get_if_type_map() -> HashMap<String, SCInterface> {
     let mut map: HashMap<String, SCInterface> = HashMap::new();
     let interfaces = network_configuration::get_interfaces();

@@ -22,7 +22,7 @@ Windows 构建禁用不需要的 Windows 7 thunk 下载，以 IP Helper 替代 p
 
 桌面构建工作流准备 Rust 与各平台 Protobuf 编译器，缓存锁定依赖，并把对应源码作为独立附件与安装包同时上传。移动源码快照包含共享核心的独立锁文件，使 Windows/macOS 能直接运行其双节点互通测试。Windows 打包复用字节完全相同的辅助进程文件，避免覆盖正在运行的程序。
 
-共享适配另包含 `netdev 0.31.0` 的 MIT 源码，仅为 iOS 提供 Apple Darwin `route.h` 中的 `RTAX_MAX=8`；当前 libc 未在 iOS 导出该常量。其他平台和路由 ABI 保持上游行为，避免为单个编译缺口整体升级 EasyTier 依赖图。
+共享适配另包含 `netdev 0.31.0` 的 MIT 源码，为 iOS 提供 Apple Darwin `route.h` 中的 `RTAX_MAX=8`；当前 libc 未在 iOS 导出该常量。iOS 另省略依赖内部 `SCNetworkInterface` API 的可选显示信息，地址仍从公开的 `getifaddrs` 获取。其他平台和路由 ABI 保持上游行为，避免整体升级 EasyTier 依赖图。
 
 ## 记录归属
 

@@ -33,7 +33,8 @@ Never put configuration, credentials or network secrets in arguments or logs.
   VPN integration.
 - `vendor/netdev` retains netdev 0.31.0 (MIT) and supplies Darwin's eight-slot
   `RTAX_MAX` on iOS, where libc does not export that constant. macOS keeps using
-  libc's constant; interface and route discovery behavior is otherwise unchanged.
+  libc's constant. iOS omits optional interface display metadata, whose
+  SCNetworkInterface APIs are private on iOS; addresses still use getifaddrs.
 
 ## Licenses and corresponding source
 
