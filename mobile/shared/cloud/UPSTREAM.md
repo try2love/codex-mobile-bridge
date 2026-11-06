@@ -10,5 +10,5 @@
 - 云 Test APK 使用 release Rust 库与 R8；保留 JNI 入口和系统证书验证器，只裁剪未引用的字节码。
 - iOS 用同一脚本的 `ios-sim` 或 `ios` 目标构建对应的静态库。在主 App 目标加入 Swift 编译条件 `CMB_CLOUD_PROTOTYPE`、链接 `libcmb_cloud.a`、Security、SystemConfiguration、CoreFoundation、libc++ 和 libresolv。使用独立 Test 身份及自身的钥匙串访问组。模拟器的 application-identifier 通过 Mach-O 的 `__TEXT,__entitlements` 传入；真机使用 Apple 签名与描述文件。
 - 与桌面相同的公开 Web 资源清单在编译期组装。已配对且获准、用户选择电脑后才开启私有回环页面。该页面的 API 请求需要当前页面的随机凭据，并继续经过桌面中继的逐次授权检查。退出或离开云工作台关闭本机入口。
-- 已验证的设备再次打开会重新建立加密连接并检查授权。云工作台可以通过专用只读接口查看当前 Codex 接入的订阅、用量和可用模型。
-- 本原型以 Codex 原会话为验收范围。ZCode、终端 WebSocket、所有附件类型以及推送服务没有因此获得云兼容声明。
+- 已验证的设备再次打开会重新建立加密连接并检查授权。云工作台和直连共用账号页面、会话控件及桌面处理函数。每次请求仍须匹配已允许的设备、当前启用的 Agent 和所属配置。账号切换、API 接入、SSH 重连由对应配置原有的入口执行；免密网关原有的写操作限制同样适用。
+- 四个平台按各自的原生能力提供接续、发送、停止和审批。云原型尚未验收终端 WebSocket、全部附件类型及推送服务。
