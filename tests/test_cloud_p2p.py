@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, Mock
 
 from bridge.features.network.cloud_connector import Connector
 from bridge.features.network.cloud_p2p import P2P
+from bridge.features.network.cloud_account import CloudError
 
 
 class P2PLifetime(unittest.IsolatedAsyncioTestCase):
@@ -55,6 +56,7 @@ class P2PLifetime(unittest.IsolatedAsyncioTestCase):
         owner = SimpleNamespace(config=config, channels={}, access_generations={},
             pin=Mock(return_value={'mobile_public_key': 'unused'}),
             accounts=SimpleNamespace(device_request=Mock(side_effect=OSError('offline')), config=Mock(return_value=config)),
+            authority_context=lambda: (config, 'token', 0),
             account_identity=lambda c: ('server', 'account', 'desktop'))
         p2p = P2P(owner)
         p2p.offers['binding'] = {'public': {'offer_id': 'offer'}}
@@ -62,3 +64,48 @@ class P2PLifetime(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(web.HTTPServiceUnavailable):
             await p2p.accept(request)
         owner.accounts.device_request.assert_called_once()
+
+    async def test_delayed_denial_does_not_close_renewed_authority(self):
+        for changed in ('token', 'policy', 'account', None):
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as directory:
+                connector = Connector(Path(directory), SimpleNamespace())
+                connector.config = {'origin': 'https://server.test', 'account_id': 'account', 'gateway_id': 'desktop'}
+                credentials = {'device_token': 'old'}
+                connector.accounts = SimpleNamespace(config=lambda: connector.config, secret=lambda config: credentials)
+                connector.stop_authority = AsyncMock()
+                def denied():
+                    if changed == 'token':
+                        credentials['device_token'] = 'renewed'
+                    elif changed == 'policy':
+                        connector.policy_generation += 1
+                    elif changed == 'account':
+                        connector.config = dict(connector.config, account_id='other')
+                    raise CloudError('access_denied', 403)
+                connector.drain_notifications = denied
+                try:
+                    await connector.recheck_access()
+                    self.assertEqual(connector.stop_authority.await_count, int(changed is None))
+                finally:
+                    connector.notifications.close()
+
+    async def test_delayed_p2p_grant_does_not_use_renewed_credentials(self):
+        from aiohttp import web
+        with tempfile.TemporaryDirectory() as directory:
+            owner = Connector(Path(directory), SimpleNamespace())
+            owner.config = {'origin': 'https://server.test', 'account_id': 'account', 'gateway_id': 'desktop'}
+            credentials = {'device_token': 'old'}
+            def grant(*args):
+                credentials['device_token'] = 'renewed'
+                return {'origin': owner.config['origin'], 'account_id': 'account', 'device_id': 'desktop',
+                        'binding': {'access_revision': 1}}
+            owner.accounts = SimpleNamespace(config=lambda: owner.config, secret=lambda config: credentials,
+                                             device_request=grant)
+            owner.pin = Mock(return_value={'mobile_public_key': 'unused'})
+            owner.p2p.offers['binding'] = {'public': {'offer_id': 'offer', 'access_revision': 1}}
+            request = SimpleNamespace(headers={'X-Bridge-Binding': 'binding', 'X-Bridge-P2P': 'offer'})
+            try:
+                with self.assertRaises(web.HTTPForbidden):
+                    await owner.p2p.accept(request)
+                self.assertEqual(owner.channels, {})
+            finally:
+                owner.notifications.close()

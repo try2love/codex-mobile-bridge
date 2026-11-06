@@ -45,12 +45,13 @@ class P2P:
 
     async def offer(self, channel):
         owner = self.owner
-        config = dict(owner.config)
+        context = owner.authority_context()
+        config = context[0]
         generation = owner.access_generations.get((owner.account_identity(config), channel.binding), 0)
         response = await asyncio.to_thread(owner.accounts.device_request,
             '/v1/gateway/bindings/' + channel.binding + '/p2p', 'GET')
         binding = response.get('binding', {})
-        if (config != owner.accounts.config() or config != owner.config or not owner.pin(channel.binding)
+        if (not owner.authority_matches(context) or not owner.pin(channel.binding)
                 or generation != owner.access_generations.get((owner.account_identity(config), channel.binding), 0)
                 or response.get('origin') != config['origin'] or response.get('account_id') != config['account_id']
                 or response.get('device_id') != config['gateway_id'] or binding.get('id') != channel.binding
@@ -75,7 +76,9 @@ class P2P:
                 process.stdin.write((json.dumps(settings) + '\n').encode())
                 await process.stdin.drain()
                 ready = json.loads(await asyncio.wait_for(process.stdout.readline(), 30))
-                if ready.get('ready') is not True or not owner.pin(channel.binding) or config != owner.config:
+                if (ready.get('ready') is not True or not owner.pin(channel.binding)
+                        or not owner.authority_matches(context)
+                        or generation != owner.access_generations.get((owner.account_identity(config), channel.binding), 0)):
                     raise PermissionError('P2P setup invalidated')
                 public = {'kind': 'p2p_offer', 'protocol': 'easytier-v1', 'binding_id': channel.binding,
                           'offer_id': network, 'access_revision': binding['access_revision'],
@@ -98,14 +101,16 @@ class P2P:
                 or any(getattr(c, 'p2p', False) and c.binding == binding_id for c in owner.channels.values())):
             raise web.HTTPForbidden()
         # A new Noise session always checks the server. This is not an offline ticket.
-        config = dict(owner.config)
+        context = owner.authority_context()
+        config = context[0]
         generation = owner.access_generations.get((owner.account_identity(config), binding_id), 0)
         try:
             result = await asyncio.to_thread(owner.accounts.device_request,
                 '/v1/gateway/bindings/' + binding_id + '/p2p', 'GET')
         except Exception:
             raise web.HTTPServiceUnavailable() from None
-        if (config != owner.accounts.config() or config != owner.config or not owner.pin(binding_id)
+        if (not owner.authority_matches(context) or not owner.pin(binding_id)
+                or self.offers.get(binding_id) is not offer
                 or generation != owner.access_generations.get((owner.account_identity(config), binding_id), 0)
                 or result.get('origin') != config['origin'] or result.get('account_id') != config['account_id']
                 or result.get('device_id') != config['gateway_id']

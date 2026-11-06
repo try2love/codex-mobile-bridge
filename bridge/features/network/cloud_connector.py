@@ -159,6 +159,24 @@ class Connector:
         return bool(self.relay_current() and self.secret and
                     self.secret.get('device_token') == self.accounts.secret(self.config).get('device_token'))
 
+    def authority_context(self):
+        config = dict(self.config)
+        return config, self.accounts.secret(config)['device_token'], self.policy_generation
+
+    def authority_matches(self, context):
+        config, token, generation = context
+        return (self.relay_current(config) and config == self.accounts.config()
+                and generation == self.policy_generation
+                and token == self.accounts.secret(config)['device_token'])
+
+    async def recheck_access(self):
+        context = self.authority_context()
+        try:
+            await asyncio.to_thread(self.drain_notifications)
+        except CloudError as error:
+            if error.status in (401, 402, 403) and self.authority_matches(context):
+                await self.stop_authority()
+
     @staticmethod
     def account_identity(config):
         return tuple(config.get(key) for key in ('origin', 'account_id', 'gateway_id'))
@@ -461,11 +479,7 @@ class Connector:
                             or signal.get('device_id') != self.config['gateway_id']):
                         raise ValueError('invalid authority signal')
                     # Recheck protects a newer local opening/renewal from a delayed notice.
-                    try:
-                        await asyncio.to_thread(self.drain_notifications)
-                    except CloudError as error:
-                        if error.status in (401, 402, 403):
-                            await self.stop_authority()
+                    await self.recheck_access()
                     continue
                 if message.type != aiohttp.WSMsgType.BINARY:
                     if message.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSED):
@@ -563,15 +577,9 @@ class Connector:
 
     async def notification_pump(self):
         while not self.closed.is_set():
-            config = dict(self.config) if self.config else None
-            generation = self.policy_generation
             try:
                 if self.relay_current() and ((self.ws and not self.ws.closed) or self.p2p.active()):
-                    await asyncio.to_thread(self.drain_notifications)
-            except CloudError as error:
-                if (error.status in (401, 402, 403) and config == self.config
-                        and generation == self.policy_generation and self.credentials_current()):
-                    await self.stop_authority()
+                    await self.recheck_access()
             except Exception:
                 pass  # Neither notification content nor provider errors enter public status/logs.
             await asyncio.sleep(5)
