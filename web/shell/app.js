@@ -933,8 +933,10 @@ $('appearance-reset-dynamic').onchange=async event=>{
 };
 let notificationDefaultsRequest=0;
 window.loadNotificationDefaults=async()=>{
-  if(window.BridgeSharedRelay||window.BridgeCloudWorkbench){$('appearance-reset-dynamic').closest('fieldset').hidden=true;return;}
-  loadResetDynamicSetting();
+  const resetSettings=$('appearance-reset-dynamic').closest('fieldset');
+  if(window.BridgeSharedRelay){resetSettings.hidden=true;return;}
+  resetSettings.hidden=clientNavigation.clients.find(row=>row.id==='codex')?.enabled===false;
+  if(!resetSettings.hidden)loadResetDynamicSetting();
   const request=++notificationDefaultsRequest;
   for(const id of ['notification-requests','notification-completions'])$(id).disabled=true;
   $('notification-settings-error').textContent='';
