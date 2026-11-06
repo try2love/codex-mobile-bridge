@@ -107,7 +107,7 @@ class AccountsPanel {
     finally{if(generation===this.generation){this.busy=false;this.render();if(this.resumePending&&this.visible()){this.resumePending=false;this.refresh();}else this.schedule();if(focused?.refresh.isConnected&&(document.activeElement===document.body||document.activeElement===focused.refresh)&&!focused.touching)focused.refresh.focus({preventScroll:true});}}
   }
   async refresh(forceReset=false){
-    if(this.readOnly&&!this.visible())return;
+    if((this.readOnly||window.BridgeCloudWorkbench)&&!this.visible())return;
     if(this.visible()!==this.lastVisible)return this.resume();
     clearTimeout(this.timer);if(this.loading||this.busy)return;this.loading=true;const generation=this.generation,visit=this.visit;
     try{const value=await this.read(forceReset);if(generation===this.generation&&visit===this.visit){this.readFailed=false;if(forceReset)this.finishGlobalResetRefresh(value.globalReset,true);if(!this.operationError)this.error.textContent='';this.accept(value);await this.loadUsage(generation);}}

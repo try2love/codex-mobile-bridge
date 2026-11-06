@@ -48,6 +48,14 @@ class WslAccountWorkerTests(unittest.TestCase):
         self.store.change(value)
         return self.store.store['accounts'][-1]['id']
 
+    def test_reusing_a_saved_key_requires_the_same_endpoint_and_scheme(self):
+        identifier = self.save()
+        for fields in ({'baseUrl':'https://different.invalid'}, {'authScheme':'bearer'}):
+            with self.subTest(fields=fields),self.assertRaises(worker.AccountError):
+                self.save(id=identifier, apiKey='', **fields)
+        self.save(id=identifier, apiKey='', name='Renewed')
+        self.assertEqual(self.store.row(identifier)['key'], 'fixture-private-key')
+
     def switch(self, identifier):
         return self.store.change({'action': 'switch', 'id': identifier,
                                   'expectedIdentity': self.store.public()['identity']})

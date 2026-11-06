@@ -40,7 +40,7 @@ def validate_request(value):
         summary_query(method, target, size)
         if value['headers']:
             raise PermissionError('云账号摘要不接受转发头')
-    elif validate_account_route(method, target, size):
+    elif validate_account_route(method, path, query, size):
         if value['headers']:
             raise PermissionError('账号管理不接受转发头')
     elif not (method == 'GET' and target == '/api/auth' or session_route(method, path, query)):

@@ -25,7 +25,8 @@ from bridge.features.notifications.channels import settings as notification_sett
 from socketserver import TCPServer
 from urllib.parse import parse_qs, parse_qsl, urlsplit, quote
 
-from bridge.clients.manager import DesktopSessions, READS, WRITES
+from bridge.clients.manager import DesktopSessions
+from bridge.features.sessions.operations import DESKTOP_PROVIDERS, READS, WRITES
 from bridge.app.service import SubmissionRejected
 from bridge.clients.uploads import DesktopUploads
 from bridge.clients.deepseek.legacy_gateway import Harness
@@ -318,6 +319,14 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return ""
 
+    def password_protected(self):
+        # Approved cloud devices authenticate on an independent listener, but
+        # app-management permissions follow the live desktop gateway policy.
+        gateway_policy = getattr(self.server, 'gateway_password_protected', None)
+        if gateway_policy is not None:
+            return gateway_policy()
+        return self.server.auth.config.get('mode') != 'none'
+
     def check_request(self, write=False):
         if len(self.headers.get_all("Host", [])) != 1 or self.headers.get("Host") not in self.server.hosts:
             raise PermissionError("此访问地址未在网关配置中允许")
@@ -512,7 +521,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.output(200, discovery.renew(self.token(), self.read_json()) if write else discovery.mobile_routes(self.token()))
             desktop_socket = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude)/terminal', path)
             if not write and self.headers.get('Upgrade', '').lower() == 'websocket' and (terminal_socket or desktop_socket):
-                if self.server.auth.config.get('mode') == 'none':
+                if not self.password_protected():
                     raise PermissionError('终端需要启用网关密码保护')
                 # Browser WebSocket cannot set a custom header. The CSRF secret
                 # is sent as a subprotocol, never as a URL or cookie substitute.
@@ -551,7 +560,7 @@ class Handler(BaseHTTPRequestHandler):
                                    'text/html; charset=utf-8', mermaid_shell=True)
             mobile_update = re.fullmatch(r'/api/mobile/update(?:/(prepare|status/([a-f0-9]{64})|packages/([a-f0-9]{64})))?', path)
             if mobile_update:
-                if self.server.auth.config.get('mode') == 'none':
+                if not self.password_protected():
                     raise PermissionError('请启用密码保护后使用电脑协助更新')
                 updates = self.server.mobile_updates
                 if updates is None:
@@ -579,7 +588,7 @@ class Handler(BaseHTTPRequestHandler):
                 value = self.read_json()
                 if value != {}:
                     raise ValueError('重新连接请求无效')
-                if self.server.auth.config.get('mode') == 'none':
+                if not self.password_protected():
                     raise PermissionError('请启用密码保护后再重新连接客户端')
                 manager, _, _ = self.desktop_context('claude', query)
                 if manager is None:
@@ -597,13 +606,13 @@ class Handler(BaseHTTPRequestHandler):
                 if adaptation is None:
                     return self.output(503, {'error': '此网关暂不支持网络变化自动恢复'})
                 if write:
-                    if self.server.auth.config.get('mode') == 'none':
+                    if not self.password_protected():
                         raise PermissionError('请启用密码保护后更改网络恢复设置')
                     value = self.read_json()
                     if not isinstance(value, dict) or set(value) != {'enabled'}:
                         raise ValueError('网络变化自动恢复请求无效')
                     return self.output(200, {**adaptation.control({'action': 'set', **value}), 'canEdit': True})
-                return self.output(200, {**adaptation.public(), 'canEdit': self.server.auth.config.get('mode') != 'none'})
+                return self.output(200, {**adaptation.public(), 'canEdit': self.password_protected()})
             if path == '/api/clients':
                 manager = self.server.desktop_sessions
                 if manager is None:
@@ -615,7 +624,7 @@ class Handler(BaseHTTPRequestHandler):
                     if not isinstance(value, dict) or not {'provider', 'enabled'} <= set(value) or set(value) - {'provider', 'enabled', 'quitDesktop', 'initializeDesktop', 'connectionMode', 'forceDesktop', 'forceConfirmed', 'acknowledgeUnavailable'}:
                         raise ValueError('应用开关无效')
                     if (value.get('provider') == 'zcode' and value.get('enabled') is True
-                            and self.server.auth.config.get('mode') == 'none'):
+                            and not self.password_protected()):
                         raise PermissionError('请启用密码保护后再连接 ZCode')
                     return self.output(200, manager.toggle_client(value))
                 return self.output(200, manager.clients_status())
@@ -673,7 +682,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.output(403, {'error': '添加、修改与删除账号请在电脑端完成。'})
                 if write and operation == 'switch' and (set(value) - {'action', 'id', 'syncLocalCli'} or not isinstance(value.get('id'), str) or value.get('syncLocalCli', False) not in (True, False)):
                     raise ValueError('账号切换请求包含不支持的字段')
-                if operation == 'switch' and self.server.auth.config.get('mode') == 'none':
+                if operation == 'switch' and not self.password_protected():
                     raise PermissionError('请启用密码保护后再切换账号')
                 return self.output(200, manager.client_accounts(desktop_accounts.group(1), {**value, 'operation': operation}))
             desktop_notifications = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode)/notifications', path)
@@ -720,7 +729,7 @@ class Handler(BaseHTTPRequestHandler):
                 manager = self.server.desktop_sessions
                 if manager is None:
                     return self.output(503, {'error': '桌面会话接入不可用'})
-                if len(parts) != 4 or parts[2] not in ('deepseek', 'claude', 'zcode') or parts[3] not in (WRITES if write else READS):
+                if len(parts) != 4 or parts[2] not in DESKTOP_PROVIDERS or parts[3] not in (WRITES if write else READS):
                     return self.output(404, {'error': '接口不存在'})
                 manager, uploads, _ = self.desktop_context(parts[2], query)
                 manager.require_enabled(parts[2])
@@ -765,7 +774,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.output(503, {'error': '手机推送暂不可用'})
                 if not write:
                     return self.output(200, manager.mobile_push.status())
-                if self.server.auth.config.get('mode') == 'none':
+                if not self.password_protected():
                     raise PermissionError('请启用密码保护后注册系统推送')
                 origin = self.headers.get('Origin', '')
                 if origin not in self.server.origins:
@@ -826,7 +835,7 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError('仅 Codex WSL 支持恢复共享服务')
                     if 'refresh' in body and type(body['refresh']) is not bool:
                         raise ValueError('模型刷新参数无效')
-                    if body['action'] != 'models' and self.server.auth.config.get('mode') == 'none':
+                    if body['action'] != 'models' and not self.password_protected():
                         raise PermissionError('免密访问不能管理 WSL 账号')
                     return self.output(200, manager.change(body, desktop=False))
                 fields = {'provider'} if path.endswith('/environments') else {'provider', 'entry'}
@@ -836,7 +845,7 @@ class Handler(BaseHTTPRequestHandler):
                 if path.endswith('/environments'):
                     return self.output(200, manager.environments(provider))
                 result = manager.read(provider, query['entry'][0])
-                if self.server.auth.config.get('mode') == 'none':
+                if not self.password_protected():
                     result = {**result, 'capabilities': {**result.get('capabilities', {}),
                         'save': False, 'import': False, 'capture': False, 'switch': False, 'restore': False,
                         'attemptSwitch': False, 'attemptRestore': False, 'recoverRestart': False}}
@@ -847,11 +856,13 @@ class Handler(BaseHTTPRequestHandler):
                 manager = self.server.bridge.cli_access
                 if manager is None:
                     return self.output(503, {'error': '本机 CLI 接入不可用'})
+                cloud_scope = getattr(self.server, 'cloud_cli_providers', None)
+                scope = {'providers': cloud_scope()} if cloud_scope else {}
                 if write:
-                    if self.server.auth.config.get('mode') == 'none':
+                    if not self.password_protected():
                         raise PermissionError('免密访问不能修改 CLI 接入')
-                    return self.output(200, manager.change(self.read_json()))
-                return self.output(200, manager.public())
+                    return self.output(200, manager.change(self.read_json(), **scope))
+                return self.output(200, manager.public(**scope))
             account_bridge = self.server.bridge
             if path == '/api/account' or path.startswith('/api/accounts') or path == '/api/account/reset':
                 entry = query.get('entry', ['desktop'])[0]
@@ -875,8 +886,8 @@ class Handler(BaseHTTPRequestHandler):
                 if query.get('resetForecast') in (['1'], ['refresh']) and account_bridge.accounts.reset_dynamic_enabled:
                     account_bridge.accounts.reset_forecast.request(refresh=query['resetForecast'] == ['refresh'])
                 result = account_bridge.accounts.public()
-                result['canSwitch'] = result.get('canSwitch', True) and self.server.auth.config.get('mode') != 'none'
-                result['canManageDesktop'] = account_bridge is self.server.bridge and self.server.auth.config.get('mode') != 'none'
+                result['canSwitch'] = result.get('canSwitch', True) and self.password_protected()
+                result['canManageDesktop'] = account_bridge is self.server.bridge and self.password_protected()
                 return self.output(200, result)
             if write and path == '/api/accounts/reset-dynamic':
                 body = self.read_json()
@@ -893,7 +904,7 @@ class Handler(BaseHTTPRequestHandler):
             if write and path == '/api/accounts/desktop-update':
                 if account_bridge is not self.server.bridge:
                     raise ValueError('独立配置不管理默认 Codex Desktop')
-                if self.server.auth.config.get('mode') == 'none':
+                if not self.password_protected():
                     raise PermissionError('免密访问不能操作桌面更新，请在桌面端操作')
                 body = self.read_json()
                 if body == {'action':'checkDesktopUpdate'}:
@@ -917,7 +928,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError('忽略请求包含不支持的字段')
                 return self.output(200, account_bridge.accounts.ignore_submission(body))
             if write and path == '/api/accounts/switch':
-                if self.server.auth.config.get('mode') == 'none':
+                if not self.password_protected():
                     raise PermissionError('免密访问不能切换账号，请在桌面端操作')
                 body = self.read_json()
                 if (set(body) - {'id', 'requestId', 'confirmed', 'tasksConfirmed', 'syncLocalCli'}
@@ -1183,11 +1194,11 @@ class Handler(BaseHTTPRequestHandler):
                     host = query.get('host', ['local'])[0]
                     self.server.desktop_sessions.require_enabled(host if host.startswith(('wsl:', 'codex:')) else 'codex')
             side = query.get('side', [None])[0]
-            if side is not None and self.server.auth.config.get('mode') == 'none':
+            if side is not None and not self.password_protected():
                 raise PermissionError('侧边聊天需要启用网关密码保护')
             side_match = re.fullmatch(r"/api/sessions/([0-9a-f-]{36})/side-chat", path)
             if side_match:
-                if self.server.auth.config.get('mode') == 'none':
+                if not self.password_protected():
                     raise PermissionError('侧边聊天需要启用网关密码保护')
                 owner = self.server.auth.key(self.token())
                 body = self.read_json() if write else {}
@@ -1207,7 +1218,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.output(200, bridge.subagents(agent_match[1], query.get('id', [None])[0]))
             terminal_match = re.fullmatch(r"/api/sessions/([0-9a-f-]{36})/terminal", path)
             if terminal_match:
-                if self.server.auth.config.get('mode') == 'none':
+                if not self.password_protected():
                     raise PermissionError('终端需要启用网关密码保护')
                 owner = self.server.auth.key(self.token())
                 if write:

@@ -23,7 +23,7 @@ async function fixture(read,kind='chatgpt',catalog=null,gatewayLanguage,accountS
       requests.push(url);
       if(url==='/api/auth')return response({authenticated:true,csrf:'fixture',uiLanguage:gatewayLanguage});
       if(url.startsWith('/api/sessions?'))return response({sessions:[]});
-      if(url.startsWith('/api/cloud/accounts'))return response({cloudReadOnly:true,accounts:[],activeId:null,current:{kind:'signedOut',status:'ready',name:''},capabilities:{usage:false,models:false},canSwitch:false,canManageDesktop:false});
+      if(options.method==='POST'&&url.startsWith('/api/accounts/')){responses.push(JSON.parse(options.body));return response(accountSnapshot||{});}
       if(url.startsWith('/api/accounts?entry='))return response({accounts:[],current:{status:'ready',kind:'external',name:'Fixture WSL'},management:{external:true},canSwitch:false,canManageDesktop:false});
       if(url==='/api/accounts')return response(accountSnapshot||{accounts:[],activeId:null,current:{kind,status:'ready',name:'Fixture'},switch:{phase:'idle'}});
       if(url.includes('/catalog?kind=skills')){
@@ -490,15 +490,16 @@ test('deferred startup refresh is discarded after leaving the authenticated page
  const timer=[...ui.timers.values()].find(timer=>timer.delay===0);assert.ok(timer);await timer.fn();
 });
 
-test('approved cloud desktop page loads the summary only when opened and cannot post an account change',async()=>{
+test('approved cloud workbench opens the existing account manager and preserves the selected account entry on writes',async()=>{
  const ui=await fixture(r=>r(official),'chatgpt',null,undefined,null,true);
- assert.equal(ui.requests.some(url=>url.startsWith('/api/cloud/accounts')||url.startsWith('/api/accounts')||url==='/api/cli-access'),false);
+ assert.equal(ui.requests.some(url=>url.startsWith('/api/accounts')||url==='/api/cli-access'),false);
  await ui.run('openCurrentAccounts()');await new Promise(setImmediate);
- assert.equal(ui.run('accountsPanel.readOnly'),true);
- assert.equal(ui.run('codexCliDetails.hidden'),true);
- assert.ok(ui.requests.includes('/api/cloud/accounts'));
- await ui.run("codexAccountEntry='codex:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';requestCodexAccount({action:'details',section:'models',refresh:true})");
- assert.ok(ui.requests.includes('/api/cloud/accounts?section=models&refresh=1&entry=codex%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'));
- assert.throws(()=>ui.run("requestCodexAccount({action:'switch',id:'other'})"));
- assert.equal(ui.requests.some(url=>url.startsWith('/api/accounts')||url.startsWith('/api/cli-access')),false);
+ assert.equal(ui.run('accountsPanel.readOnly'),false);
+ assert.equal(ui.run('codexCliDetails.hidden'),false);
+ assert.ok(ui.requests.includes('/api/accounts'));
+ await ui.run("requestCodexAccount({action:'retrySsh',host:'saved-ssh'})");
+ assert.ok(ui.requests.includes('/api/accounts/ssh-retry'));assert.equal(ui.responses.at(-1).host,'saved-ssh');
+ await ui.run("codexAccountEntry='codex:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';requestCodexAccount({action:'switch',id:'saved',requestId:'test',confirmed:true,tasksConfirmed:true})");
+ assert.ok(ui.requests.includes('/api/accounts/switch?entry=codex%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'));assert.equal(ui.responses.at(-1).id,'saved');
+ assert.equal(ui.requests.some(url=>url.startsWith('/api/cloud/accounts')),false);
 });

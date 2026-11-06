@@ -75,33 +75,35 @@ class CliAccess:
         manager = getattr(self.bridge, 'desktop_sessions', None)
         return manager.adapters['claude'].cli if manager else None
 
-    def public(self):
+    def public(self, providers=('codex', 'claude')):
         with self.lock:
-            accounts = self.bridge.accounts
-            codex = accounts.public()
-            native = _profile()
-            selected = self.claude_profile()
-            rows = [{key: row[key] for key in ('id', 'name', 'kind', 'baseUrl', 'model', 'authScheme') if key in row}
-                    | {'active': row['id'] == self.index.get('activeClaude'),
-                       'keySaved': row['kind'] == 'api' and Path(row['secretPath']).is_file()}
-                    for row in self.index['claude']]
-            for provider, cards in (('codex', codex['accounts']), ('claude', rows)):
-                for card in cards:
+            result = {}
+            if 'codex' in providers:
+                codex = self.bridge.accounts.public()
+                result['codex'] = {'accounts': codex['accounts'], 'activeId': codex['activeId'],
+                                   'activeVerified': codex['activeVerified'], 'sharedWithDesktop': True,
+                                   'switch': codex['switch'], 'cliSwitch': self.codex_switch, 'blockers': codex['blockers']}
+            if 'claude' in providers:
+                native, selected = _profile(), self.claude_profile()
+                rows = [{key: row[key] for key in ('id', 'name', 'kind', 'baseUrl', 'model', 'authScheme') if key in row}
+                        | {'active': row['id'] == self.index.get('activeClaude'),
+                           'keySaved': row['kind'] == 'api' and Path(row['secretPath']).is_file()}
+                        for row in self.index['claude']]
+                result['claude'] = {'accounts': rows, 'activeId': self.index.get('activeClaude'),
+                                    'nativeDirectory': str(native['directory']) if native else None,
+                                    'selectedDirectory': str(selected['directory']) if selected else None,
+                                    'available': bool(selected), 'sharedWithDesktop': False,
+                                    'verification': (self.claude_verification['result']
+                                                     if self.claude_verification and selected
+                                                     and self.claude_verification['origin'] == selected['origin'] else None)}
+            for provider, data in result.items():
+                for card in data['accounts']:
                     if card['kind'] == 'api':
                         try:
                             card['modelCatalogIdentity'] = self._probe_source(provider, card['id'])[-1]
                         except (OSError, ValueError, KeyError, TypeError):
                             pass
-            return {'codex': {'accounts': codex['accounts'], 'activeId': codex['activeId'],
-                              'activeVerified': codex['activeVerified'], 'sharedWithDesktop': True,
-                              'switch': codex['switch'], 'cliSwitch': self.codex_switch, 'blockers': codex['blockers']},
-                    'claude': {'accounts': rows, 'activeId': self.index.get('activeClaude'),
-                               'nativeDirectory': str(native['directory']) if native else None,
-                               'selectedDirectory': str(selected['directory']) if selected else None,
-                               'available': bool(selected), 'sharedWithDesktop': False,
-                               'verification': (self.claude_verification['result']
-                                                if self.claude_verification and selected
-                                                and self.claude_verification['origin'] == selected['origin'] else None)}}
+            return result
 
     @staticmethod
     def _name(value):
@@ -139,6 +141,8 @@ class CliAccess:
         secret_path = private_dir/'api.json'
         key = value.get('apiKey', '')
         if not key and existing:
+            if url != existing['baseUrl'] or scheme != existing['authScheme']:
+                raise ValueError('修改 API 地址或认证方式后，请重新填写 API Key')
             key = read_json(secret_path, {}).get('key', '')
         if not isinstance(key, str) or not 1 <= len(key) <= 8192 or any(c in key for c in '\r\n\x00'):
             raise ValueError('请填写有效 API Key')
@@ -181,10 +185,12 @@ class CliAccess:
                                          'directory': str(directory), 'originBase': origin})
         self._save()
 
-    def change(self, value):
+    def change(self, value, *, providers=('codex', 'claude')):
         if not isinstance(value, dict) or value.get('provider') not in ('codex', 'claude'):
             raise ValueError('CLI 接入请求无效')
         provider, action = value['provider'], value.get('action')
+        if provider not in providers:
+            raise PermissionError('此 CLI 接入未启用')
         if action == 'modelsDraft':
             if provider != 'codex' or set(value) - {'provider', 'action', 'id', 'baseUrl', 'apiKey'}:
                 raise ValueError('API 模型查询参数无效')
@@ -203,7 +209,7 @@ class CliAccess:
                     return {'baseUrl': url, 'apiKey': key, 'apiFormat': 'openai-responses'}
             return model_draft(value, saved=saved)
         if action in ('models', 'test'):
-            return self._probe_api(provider, value)
+            return self._probe_api(provider, value, providers)
         saved_id = None
         with ExitStack() as locks:
             # ClaudeCli.call holds cli.lock while resolving this manager's
@@ -216,10 +222,7 @@ class CliAccess:
             if provider == 'codex':
                 accounts = self.bridge.accounts
                 if action == 'saveApi':
-                    request = dict(value)
-                    if request.get('id') and not request.get('apiKey'):
-                        request['apiKey'] = read_json(accounts.directory(request['id'])/'api.json', {}).get('key', '')
-                    accounts.add_api(request)
+                    accounts.add_api(value)
                 elif action == 'importCurrent':
                     accounts.scan({'source': str(accounts.home)})
                     identity = accounts.info.read_identity()
@@ -236,7 +239,7 @@ class CliAccess:
                 elif action in ('rename', 'delete'):
                     accounts.control({'action': action, 'id': value.get('id'), 'name': value.get('name')})
                 elif action == 'switch':
-                    return self._switch(provider, accounts.row(value.get('id')), value)
+                    return self._switch(provider, accounts.row(value.get('id')), value, providers)
                 else:
                     raise ValueError('不支持的 CLI 接入操作')
             elif action == 'saveApi':
@@ -260,15 +263,15 @@ class CliAccess:
                     Path(row['secretPath']).unlink(missing_ok=True)
                     Path(row['secretPath']).parent.rmdir()
             elif action == 'switch':
-                return self._switch(provider, self._claude_row(value.get('id')), value)
+                return self._switch(provider, self._claude_row(value.get('id')), value, providers)
             else:
                 raise ValueError('不支持的 CLI 接入操作')
-            result = self.public()
+            result = self.public(providers)
             if saved_id:
                 result['savedId'] = saved_id
             return result
 
-    def _probe_api(self, provider, value):
+    def _probe_api(self, provider, value, providers=('codex', 'claude')):
         refresh = value.get('refresh') is True
         if (set(value) not in ({'provider', 'action', 'id'}, {'provider', 'action', 'id', 'refresh'}) or
                 'refresh' in value and (value['action'] != 'models' or not isinstance(value['refresh'], bool))):
@@ -278,7 +281,7 @@ class CliAccess:
             models = model_ids(url, key, **headers)
             if self._probe_source(provider, row['id'])[-1] != identity:
                 raise ValueError('CLI 接入已变化，请重新读取模型列表')
-            return self._probe_result(provider, row, models)
+            return self._probe_result(provider, row, models, providers)
         try:
             persisted = self.model_store.read(identity)
         except (OSError, sqlite3.DatabaseError, ValueError):
@@ -288,7 +291,7 @@ class CliAccess:
                 self._start_model_refresh(provider, row['id'], identity)
             else:
                 self._schedule_model_refresh(provider, row['id'], identity, persisted[0])
-            return self._probe_result(provider, row, persisted[1], identity, persisted[0])
+            return self._probe_result(provider, row, persisted[1], providers, identity, persisted[0])
         with self.model_lock:
             lock = self.model_reads.setdefault(identity, threading.Lock())
         with lock:
@@ -298,12 +301,12 @@ class CliAccess:
                 except (OSError, sqlite3.DatabaseError, ValueError):
                     persisted = None
                 if persisted:
-                    return self._probe_result(provider, row, persisted[1], identity, persisted[0])
+                    return self._probe_result(provider, row, persisted[1], providers, identity, persisted[0])
             try:
                 models = model_ids(url, key, **headers)
             except (OSError, ValueError):
                 if persisted:
-                    return self._probe_result(provider, row, persisted[1], identity, persisted[0], error=True)
+                    return self._probe_result(provider, row, persisted[1], providers, identity, persisted[0], error=True)
                 raise
             if self._probe_source(provider, row['id'])[-1] != identity:
                 raise ValueError('CLI 接入已变化，请重新读取模型列表')
@@ -312,7 +315,7 @@ class CliAccess:
                 self._schedule_model_refresh(provider, row['id'], identity, updated_at, replace=True)
             except (OSError, sqlite3.DatabaseError):
                 updated_at = time.time()
-            return self._probe_result(provider, row, models, identity, updated_at)
+            return self._probe_result(provider, row, models, providers, identity, updated_at)
 
     def _probe_source(self, provider, identifier):
         if provider == 'codex':
@@ -339,10 +342,10 @@ class CliAccess:
                                   row.get('authScheme'), row.get('directory'))
         return row, url, key, headers, identity
 
-    def _probe_result(self, provider, row, models, identity=None, updated_at=None, error=False):
+    def _probe_result(self, provider, row, models, providers, identity=None, updated_at=None, error=False):
         if identity and self._probe_source(provider, row['id'])[-1] != identity:
             raise ValueError('CLI 接入已变化，请重新读取模型列表')
-        result = self.public()
+        result = self.public(providers)
         result['probe'] = {'provider': provider, 'id': row['id'], 'status': 'reachable',
                            'scope': 'models', 'models': models if identity else None,
                            'modelCount': len(models)}
@@ -403,7 +406,7 @@ class CliAccess:
     def control(self, value):
         return self.public() if value.get('action') == 'list' else self.change(value)
 
-    def _switch(self, provider, row, value):
+    def _switch(self, provider, row, value, providers):
         if value.get('confirmed') is not True:
             raise ValueError('请确认切换此电脑的 CLI 接入')
         if provider == 'claude' and _profile() is None:
@@ -421,7 +424,7 @@ class CliAccess:
             self.codex_switch = {'phase': 'pending', 'targetId': row['id']}
             threading.Thread(target=self._verify_codex_desktop_switch,
                              args=(row['id'], accounts.thread), daemon=True).start()
-            return self.public()
+            return self.public(providers)
         if provider == 'codex':
             accounts = self.bridge.accounts
             with accounts.gate, self.bridge.account.lock:
@@ -438,7 +441,7 @@ class CliAccess:
                     if applied and applied.get('mutated') is True:
                         sync.restore(provider, before)
                     raise
-            return self.public()
+            return self.public(providers)
         cli = self._claude_cli() if provider == 'claude' else None
         before = sync.snapshot(provider)
         previous_claude = self.index.get('activeClaude')
@@ -462,7 +465,7 @@ class CliAccess:
             if pointer_changed:
                 self._save()
             raise
-        return self.public()
+        return self.public(providers)
 
     def _verify_codex_desktop_switch(self, identifier, thread):
         thread.join(timeout=180)

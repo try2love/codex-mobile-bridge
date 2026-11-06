@@ -28,6 +28,7 @@ ERROR_MESSAGES = {
     'claude_managed': '此 Claude Code 接入由外部认证或组织策略管理',
     'native_exists': '已保存原始登录；请保留现有快照',
     'active_edit': '请先切换到其他接入，再编辑当前接入；名称可直接重命名',
+    'key_origin': '修改 API 地址或认证方式后，请重新填写 API Key',
     'missing_account': '接入不存在',
     'toml_unavailable': '需要支持 TOML 核验的 WSL Python，或配置无法解析',
     'incomplete': '切换未完成；已保留原始快照，请刷新核验配置',
@@ -351,12 +352,16 @@ class AccountStore:
                 raise AccountError('接入标识无效')
             if row and self.store.get('activeId') == identifier:
                 raise AccountError(ERROR_MESSAGES['active_edit'])
-            key = value.get('apiKey') or (row or {}).get('key')
-            if not isinstance(key, str) or not 1 <= len(key) <= 8192 or any(c in key for c in '\0\r\n'):
-                raise AccountError('API Key 无效')
             scheme = value.get('authScheme', 'x-api-key')
             if scheme not in ('x-api-key', 'bearer'):
                 raise AccountError('认证方式无效')
+            key = value.get('apiKey')
+            if not key and row:
+                if url.rstrip('/') != row.get('baseUrl') or scheme != row.get('authScheme','x-api-key'):
+                    raise AccountError(ERROR_MESSAGES['key_origin'])
+                key = row.get('key')
+            if not isinstance(key, str) or not 1 <= len(key) <= 8192 or any(c in key for c in '\0\r\n'):
+                raise AccountError('API Key 无效')
             saved = {'id': identifier, 'kind': 'api', 'name': name.strip(), 'baseUrl': url.rstrip('/'),
                      'model': model, 'key': key, 'authScheme': scheme}
             if row:

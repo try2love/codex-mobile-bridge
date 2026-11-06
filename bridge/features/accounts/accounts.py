@@ -358,6 +358,8 @@ class Accounts:
         if key == '' and value.get('id'):
             old = self.row(value['id'])
             if old['kind'] == 'api':
+                if url != self.api_url(old['baseUrl']):
+                    raise ValueError('修改 API 地址后，请重新填写 API Key')
                 key = read_json(self.directory(old['id'])/'api.json', {}).get('key', '')
         if not isinstance(key, str) or not 1 <= len(key) <= 8192 or any(c in key for c in '\r\n\x00'):
             raise ValueError('请填写有效 API Key')

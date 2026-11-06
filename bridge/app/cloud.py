@@ -13,7 +13,8 @@ def create_cloud_server(gateway):
     server = GatewayServer(('127.0.0.1', 0), gateway.bridge, config, gateway.web_dir)
     try:
         for name in ('transfer_directory', 'mobile_updates', 'notifications', 'desktop_sessions',
-                     'desktop_uploads', 'harness', 'ui_language_path', 'slots', 'terminal_sockets'):
+                     'desktop_uploads', 'harness', 'ui_language_path', 'slots', 'terminal_sockets', 'cli_connections',
+                     'network_adaptation'):
             setattr(server, name, getattr(gateway, name, None))
         from bridge.features.accounts.cloud_summary import current_summary, summary_query
         def account_summary(path):
@@ -23,6 +24,9 @@ def create_cloud_server(gateway):
             gateway.desktop_sessions.require_enabled('codex' if entry == 'desktop' else entry)
             return current_summary(gateway.bridge.account_target(entry).accounts, section, refresh)
         server.cloud_account_summary = account_summary
+        server.gateway_password_protected = lambda: gateway.auth.config.get('mode') != 'none'
+        from bridge.features.network.cloud_account_routes import enabled_cli_providers
+        server.cloud_cli_providers = lambda: enabled_cli_providers(server.desktop_sessions)
         origin = 'http://127.0.0.1:' + str(server.server_port)
         server.origins.add(origin)
         server.hosts.add(origin.removeprefix('http://'))

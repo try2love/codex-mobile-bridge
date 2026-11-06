@@ -76,11 +76,11 @@ class CloudAccountSummaryTests(unittest.TestCase):
         self.assertEqual(result['accounts'],[])
         manager.row.assert_not_called()
 
-    def test_query_allowlist_is_specific_to_cloud_and_never_grants_account_management(self):
+    def test_legacy_summary_schema_remains_specific_to_cloud(self):
         for path in (SUMMARY_PATH,SUMMARY_PATH+'?section=models&refresh=1',SUMMARY_PATH+'?entry=codex%3A'+'a'*32):
             validate_request(envelope(path))
             with self.assertRaises(PermissionError): validate('GET',path,0)
-        for path in ('/api/accounts','/api/account','/api/cli-access','/api/accounts/details','/api/accounts/switch',
+        for path in ('/api/accounts/details','/api/accounts/switch',
                      SUMMARY_PATH+'?section=models&id=other',SUMMARY_PATH+'?refresh=1',SUMMARY_PATH+'?entry=wsl%3A'+'a'*32,
                      SUMMARY_PATH+'?entry=local',SUMMARY_PATH+'?section=usage&section=models',SUMMARY_PATH+'#fragment',
                      '//elsewhere'+SUMMARY_PATH,'https://elsewhere'+SUMMARY_PATH,SUMMARY_PATH+'?section=unknown'):

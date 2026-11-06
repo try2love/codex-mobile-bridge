@@ -206,6 +206,7 @@ class AccountsTests(unittest.TestCase):
         row=self.api()
         self.assertNotIn('secret-fixture',json.dumps(self.manager.desktop_status()))
         self.assertNotIn('desktopExecutable',self.manager.public())
+        with self.assertRaises(ValueError):self.api(id=row['id'],apiKey='',baseUrl='https://different.invalid')
         self.api(id=row['id'],apiKey='',name='Renamed',model='other-model')
         self.assertEqual(len(self.manager.public()['accounts']),1)
         self.assertEqual(json.loads((self.manager.directory(row['id'])/'api.json').read_text())['key'],'secret-fixture')
