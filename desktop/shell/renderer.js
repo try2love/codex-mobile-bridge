@@ -192,7 +192,7 @@ function tab(name){const requested=name;name=moduleName(name);activeTab=name;
   if(name!=='notifications')hideWebhookUrl();
   if(name!=='accounts'&&typeof claudeCliAccessPanel!=='undefined')claudeCliAccessPanel?.clear();
   document.querySelectorAll('[data-panel]').forEach(node=>node.hidden=moduleName(node.dataset.panel)!==name);
-  desktopConnections?.syncPolling();
+  desktopConnections?.syncPolling();window.CloudPanel?.syncPolling();
   if(name==='accounts'){
     if(!desktopConnections?.clients)desktopConnections?.scan();
     else {desktopConnections.refresh();desktopConnections.refreshClients();}

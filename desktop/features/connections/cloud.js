@@ -9,9 +9,9 @@
     <p data-cloud-state role="status"></p>
     <div data-cloud-account hidden><p data-cloud-identity></p>
     <div class="actions"><button type="button" data-cloud-action="entitlement" data-i18n="Refresh Entitlement">Refresh Entitlement</button><button type="button" data-cloud-action="logout" data-i18n="Log Out">Log Out</button></div>
-    <p data-cloud-entitlement></p><div data-cloud-redeem hidden><label><span data-i18n="Service-days redemption code">Service-days redemption code</span><input data-cloud-code autocomplete="off" maxlength="128"></label><button type="button" data-cloud-action="redeem" data-i18n="Redeem">Redeem</button></div>
-    <h3 data-i18n="Cloud Devices">Cloud Devices</h3><p class="hint" data-i18n="Phones signed in to this account appear automatically. Allow each phone to connect on this desktop.">Phones signed in to this account appear automatically. Allow each phone to connect on this desktop.</p>
-    <p data-cloud-directory-error class="hint" role="status"></p><div data-cloud-devices></div></div>
+    <p data-cloud-entitlement></p><div data-cloud-redeem hidden><label for="cloud-service-days-code" data-i18n="Service-days redemption code">Service-days redemption code</label><div class="cloud-field-row"><input id="cloud-service-days-code" data-cloud-code autocomplete="off" maxlength="128"><button type="button" data-cloud-action="redeem" data-i18n="Redeem">Redeem</button></div></div>
+    <details class="module-setting" data-cloud-directory><summary><span data-i18n="Cloud Devices">Cloud Devices</span><span class="module-status" data-cloud-device-count></span></summary><div class="cloud-directory-body"><p class="hint" data-i18n="Phones signed in to this account appear automatically. Allow each phone to connect on this desktop.">Phones signed in to this account appear automatically. Allow each phone to connect on this desktop.</p>
+    <p data-cloud-directory-error class="hint" role="status"></p><div data-cloud-devices></div></div></details></div>
     <p data-cloud-result role="status"></p>`;
   dialog.id='cloud-login-dialog';dialog.className='cloud-login-dialog';
   dialog.setAttribute('aria-labelledby','cloud-login-title');dialog.setAttribute('aria-describedby','cloud-login-help');
@@ -21,7 +21,7 @@
       <label><span data-i18n="Cloud server">Cloud server</span><select data-cloud-server><option value="official" data-i18n="Official Cloud">Official Cloud</option><option value="custom" data-i18n="Custom Server">Custom Server</option></select></label>
       <label data-cloud-custom-origin hidden><span data-i18n="Exact HTTPS server origin">Exact HTTPS server origin</span><input data-cloud-origin type="url" placeholder="https://relay.example.com:8443" autocomplete="off" maxlength="2048" required></label>
       <label><span data-cloud-login-label></span><input data-cloud-login autocomplete="username" maxlength="320" required></label>
-      <label data-cloud-email-code-field hidden><span data-i18n="Email verification code">Email verification code</span><div class="cloud-email-code-row"><input data-cloud-email-code type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" minlength="6" maxlength="6" required><button type="button" data-cloud-resend-code data-cloud-action="signup-code">Get code</button></div></label>
+      <label data-cloud-email-code-field hidden><span data-i18n="Email verification code">Email verification code</span><div class="cloud-field-row"><input data-cloud-email-code type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" minlength="6" maxlength="6" required><button type="button" data-cloud-resend-code data-cloud-action="signup-code">Get code</button></div></label>
       <div data-cloud-password-field class="cloud-password-field"><div class="cloud-field-heading"><label for="cloud-login-password" data-cloud-password-label></label><button type="button" class="cloud-auth-link" data-cloud-view="forgot" data-cloud-forgot-link data-i18n="Forgot password?">Forgot password?</button></div><input id="cloud-login-password" data-cloud-password type="password" autocomplete="current-password" maxlength="1024" required></div>
       <p data-cloud-password-help class="hint cloud-password-help" data-i18n="Use at least 12 characters for your new password." hidden>Use at least 12 characters for your new password.</p>
       <label data-cloud-confirm-field hidden><span data-i18n="Confirm password">Confirm password</span><input data-cloud-password-confirm type="password" autocomplete="new-password" maxlength="1024" required></label>
@@ -32,7 +32,8 @@
       <p class="cloud-auth-switch" data-cloud-email-back hidden><button type="button" class="cloud-auth-link" data-cloud-restart-registration data-i18n="Use a different email">Use a different email</button></p>
     </form>
     <p class="cloud-auth-security hint" data-i18n="Signing in does not authorize a phone. Pairing still requires approval on this desktop.">Signing in does not authorize a phone. Pairing still requires approval on this desktop.</p>`;
-  document.querySelector('[data-panel="network"]').prepend(root);
+  const network=document.querySelector('[data-panel="network"]');
+  network.prepend(root);
   // Keep the login form outside the desktop settings form.
   document.body.append(dialog);
   const $=key=>root.querySelector('[data-cloud-'+key+']')||dialog.querySelector('[data-cloud-'+key+']');
@@ -123,8 +124,8 @@
     redeemRefreshFailed:'Service days redeemed, but service status could not be refreshed. Refresh status; do not redeem again.'
   };
   const codeRetries=new Map();
-  let state={},busy=false,authView='login',registrationProof=null,originEdited=false,draftOrigin=officialOrigin,devices=[],directoryPolling=false,entitlement=null,resultMessage='',resultIsError=false,directoryError='';
-  let directoryRevision=0;
+  let state={},busy=false,authView='login',registrationProof=null,originEdited=false,draftOrigin=officialOrigin,devices=null,directoryPolling=false,entitlement=null,resultMessage='',resultIsError=false,directoryError='';
+  let directoryRevision=0,directoryTimer=null,authTimer=null,lastRows=null;
   function accountScope(value=state){return value.configured?value.origin+'\0'+value.account_id+'\0'+value.gateway_id:'';}
   function selectedOrigin(){return $('server').value==='official'?officialOrigin:$('origin').value.trim();}
   function authAction(){return authView==='register'?'signup-verify':authView==='password'?'register':authView;}
@@ -142,7 +143,7 @@
   }
   function renderResult(){const text=resultIsError?errorText(resultMessage):t(resultMessage);$('result').textContent=text;$('login-result').textContent=text;$('login-result').classList.toggle('is-error',resultIsError);}
   function setResult(message,error=false){resultMessage=message;resultIsError=error;renderResult();}
-  function resetDirectory(){directoryRevision++;devices=[];directoryError='';$('devices').replaceChildren();}
+  function resetDirectory(){directoryRevision++;devices=null;directoryError='';lastRows=null;$('directory').open=false;$('devices').replaceChildren();}
   function completeLogout(value){
     resetDirectory();clearRegistration();authView='login';$('code').value='';update(value);
     const uncleared=!!value.credential_clear_error,unconfirmed=value.remote_logout_confirmed!==true;
@@ -181,6 +182,7 @@
     renderResult();
     renderAuth();
     renderDirectory();
+    syncPolling();
   }
   function renderAuth(){
     const login=authView==='login',register=authView==='register',password=authView==='password',needsPassword=login||password;
@@ -213,14 +215,22 @@
     if(authView!==view){clearRegistration();setResult('');}
     authView=view;render();$('login').focus();
   }
+  function directoryVisible(){return state.configured&&!network.hidden&&!document.hidden&&$('directory').open;}
   function renderDirectory(){
-    const directory=new Map(devices.map(item=>[item.binding_id,item]));
+    const directory=new Map((devices||[]).map(item=>[item.binding_id,item]));
     for(const pin of state.bindings||[]){
       const item=directory.get(pin.binding_id);
       if(!item||pin.generation>item.generation)directory.set(pin.binding_id,{...item,...pin,trusted:true,proof_verified:!!pin.safety_code});
     }
+    $('device-count').textContent=devices===null?'':String(directory.size);
+    if(!directoryVisible())return;
     $('directory-error').textContent=directoryError?errorText(directoryError):'';
-    renderDevices($('devices'),[...directory.values()]);
+    const rows=[...directory.values()],signature=JSON.stringify([rows,busy,state.enabled,BridgeI18n.language()]);
+    if(signature===lastRows)return;
+    lastRows=signature;
+    const focused=document.activeElement?.dataset.cloudAllow;
+    renderDevices($('devices'),rows);
+    if(focused)Array.from($('devices').querySelectorAll('[data-cloud-allow]')).find(node=>node.dataset.cloudAllow===focused)?.focus();
   }
   function renderDevices(container,devices){
     container.replaceChildren();
@@ -247,7 +257,7 @@
     }
   }
   async function refreshDirectory(){
-    if(busy||directoryPolling||!state.configured||document.hidden)return;
+    if(busy||directoryPolling||!directoryVisible())return;
     const expected=accountScope(),revision=directoryRevision;directoryPolling=true;
     try{
       const result=await api.cloud({action:'devices'});
@@ -267,7 +277,7 @@
     const expectedAccount=accountScope();
     if(action==='access')directoryRevision++;
     if(action==='access'){
-      devices=devices.map(item=>item.binding_id===extra.binding_id?{...item,allowed:false,sync_state:'unconfirmed'}:item);
+      if(devices)devices=devices.map(item=>item.binding_id===extra.binding_id?{...item,allowed:false,sync_state:'unconfirmed'}:item);
       state={...state,bindings:(state.bindings||[]).map(item=>item.binding_id===extra.binding_id?{...item,allowed:false,sync_state:'unconfirmed'}:item)};
     }
     busy=true;setResult('Working...');render();
@@ -317,7 +327,7 @@
         if(expectedAccount&&action!=='login'&&expectedAccount!==accountScope(current)){update(current);return;}
         update(current);
       }
-      if(action==='access'&&expectedAccount===accountScope()){
+      if(action==='access'&&expectedAccount===accountScope()&&directoryVisible()){
         const current=await api.cloud({action:'devices'});
         if(expectedAccount===accountScope()){devices=current.devices||[];directoryError='';}
       }
@@ -344,12 +354,12 @@
     draftOrigin=origin;render();
   }
   $('server').onchange=changeServer;$('origin').addEventListener('input',changeServer);
-  $('open-login').onclick=()=>{if(busy||dialog.open||state.configured)return;clearRegistration();originEdited=true;authView='login';render();dialog.showModal();$('server').focus();};
+  $('open-login').onclick=()=>{if(busy||dialog.open||state.configured)return;clearRegistration();originEdited=true;authView='login';render();dialog.showModal();syncPolling();$('server').focus();};
   $('close-login').onclick=()=>{if(!busy)dialog.close();};
   $('restart-registration').onclick=()=>showView('register');
   dialog.addEventListener('cancel',event=>{if(busy)event.preventDefault();});
-  dialog.addEventListener('close',()=>{clearRegistration();if(!$('open-login').hidden&&!$('open-login').disabled)$('open-login').focus();});
-  $('login').addEventListener('input',()=>{if(busy)return;clearRegistration();if(authView==='password')authView='register';setResult('');renderAuth();});
+  dialog.addEventListener('close',()=>{clearRegistration();syncPolling();if(!$('open-login').hidden&&!$('open-login').disabled)$('open-login').focus();});
+  $('login').addEventListener('input',()=>{if(busy)return;clearRegistration();if(authView==='password')authView='register';setResult('');renderAuth();syncPolling();});
   $('email-code').addEventListener('input',renderAuth);
   $('password').addEventListener('input',renderAuth);$('password-confirm').addEventListener('input',renderAuth);
   $('login-form').onsubmit=event=>{event.preventDefault();event.stopPropagation();if(dialog.open)call(authAction());};
@@ -360,12 +370,26 @@
       event.preventDefault();event.stopPropagation();call('redeem');
     }
   });
-  setInterval(async()=>{
+  function tickAuth(){
     if(registrationProof&&registrationProof.deadline<=Date.now()&&!busy){clearRegistration();if(authView==='password')authView='register';setResult(errors.invalid_registration_token,true);render();}
     renderCodeRetry();
-    await refreshDirectory();
-  },2000);
+    syncPolling();
+  }
+  function syncPolling(){
+    if(directoryVisible()){
+      if(directoryTimer===null){
+        directoryTimer=setInterval(refreshDirectory,2000);
+        renderDirectory();
+        refreshDirectory();
+      }
+    }else if(directoryTimer!==null){clearInterval(directoryTimer);directoryTimer=null;}
+    const countdown=!document.hidden&&!network.hidden&&dialog.open&&(registrationProof||authView==='register'&&(codeRetries.get(emailCodeScope())||0)>Date.now());
+    if(countdown&&authTimer===null)authTimer=setInterval(tickAuth,2000);
+    else if(!countdown&&authTimer!==null){clearInterval(authTimer);authTimer=null;}
+  }
+  $('directory').addEventListener('toggle',syncPolling);
+  document.addEventListener('visibilitychange',syncPolling);
   document.addEventListener('bridge-language',render);
   render();
-  window.CloudPanel={update};
+  window.CloudPanel={update,syncPolling};
 })();

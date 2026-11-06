@@ -72,11 +72,14 @@ function fixture(){
   }
   let request=respond;
   class Clock extends Date{static now(){return now;}}
-  const context=vm.createContext({document,Date:Clock,TextEncoder,CustomEvent:class{constructor(type){this.type=type;}},localStorage:{getItem(){return null;},setItem(){}},setInterval:fn=>{timers.push(fn);return timers.length;},window:{confirm:()=>false,bridgeDesktop:{cloud:async payload=>{calls.push(copy(payload));return request(payload);}}}});
+  const context=vm.createContext({document,Date:Clock,TextEncoder,CustomEvent:class{constructor(type){this.type=type;}},localStorage:{getItem(){return null;},setItem(){}},setInterval:fn=>{timers.push(fn);return timers.length;},clearInterval:id=>{timers[id-1]=null;},window:{confirm:()=>false,bridgeDesktop:{cloud:async payload=>{calls.push(copy(payload));return request(payload);}}}});
   for(const file of ['web/shared/i18n.js','desktop/features/connections/cloud.js'])vm.runInContext(fs.readFileSync(path.join(root,file),'utf8'),context,{filename:file});
   const node=key=>document.querySelector('[data-cloud-'+key+']');
   const flush=()=>new Promise(resolve=>setImmediate(resolve));
-  return {calls,responses,respond,node,context,flush,setRequest:fn=>request=fn,setStatus:value=>status=copy(value),update(value){status=copy(value);context.window.CloudPanel.update(copy(value));},language:value=>vm.runInContext('BridgeI18n.setLanguage('+JSON.stringify(value)+')',context),async action(name){await document.querySelector('[data-cloud-action="'+name+'"]').onclick();await flush();},async tick(ms){now+=ms;for(const timer of timers)await timer();await flush();},root:()=>document.querySelector('#cloud-account'),dialog:()=>document.querySelector('#cloud-login-dialog'),async login(){node('open-login').onclick();node('server').value='custom';node('origin').value=account.origin;node('login').value=account.login;node('password').value='synthetic-password';node('login-form').onsubmit({preventDefault(){},stopPropagation(){}});await flush();}};
+  return {calls,responses,respond,node,context,flush,clocks:()=>timers.filter(Boolean).length,
+    async directory(open){const details=node('directory');details.open=open;details.listeners.get('toggle')?.();await flush();},
+    async network(visible){panel.hidden=!visible;context.window.CloudPanel.syncPolling();await flush();},
+    async visible(value){document.hidden=!value;document.dispatchEvent({type:'visibilitychange'});await flush();},setRequest:fn=>request=fn,setStatus:value=>status=copy(value),update(value){status=copy(value);context.window.CloudPanel.update(copy(value));},language:value=>vm.runInContext('BridgeI18n.setLanguage('+JSON.stringify(value)+')',context),async action(name){await document.querySelector('[data-cloud-action="'+name+'"]').onclick();await flush();},async tick(ms){now+=ms;for(const timer of timers.filter(Boolean))await timer();await flush();},root:()=>document.querySelector('#cloud-account'),dialog:()=>document.querySelector('#cloud-login-dialog'),async login(){node('open-login').onclick();node('server').value='custom';node('origin').value=account.origin;node('login').value=account.login;node('password').value='synthetic-password';node('login-form').onsubmit({preventDefault(){},stopPropagation(){}});await flush();}};
 }
 
 async function signedIn(ui,value=account){ui.update(value);await ui.flush();ui.calls.length=0;}
@@ -291,7 +294,7 @@ test('timers after logout cannot restore entitlement or retry cloud work',async(
 test('account phones appear automatically without a popup and default to no connection',async()=>{
   const ui=fixture();await signedIn(ui);
   ui.responses.devices={devices:[{binding_id:'request-one',device_name:'Test phone',safety_code:'12345678 ABCDEF90 12345678 ABCDEF90 12345678 ABCDEF90 12345678 ABCDEF90',proof_verified:true,mobile_public_key:'mobile',preview_public_key:'preview',allowed:false,remote_status:'pending',remote_revision:0,generation:0}]};
-  await ui.tick(2000);
+  await ui.directory(true);
   assert.equal(ui.context.document.querySelector('#cloud-pairing-dialog'),null);
   const toggle=ui.node('devices').querySelector('[data-cloud-allow]');assert.equal(toggle.checked,false);assert.equal(toggle.disabled,false);
   assert.equal(ui.root().querySelector('[data-cloud-qr]'),null);assert.equal(ui.root().querySelector('[data-cloud-action="pairing"]'),null);
@@ -307,7 +310,7 @@ test('account phones appear automatically without a popup and default to no conn
 test('a discovered phone without encrypted proof cannot be enabled or deleted',async()=>{
   const ui=fixture();await signedIn(ui);
   ui.responses.devices={devices:[{binding_id:'unverified',device_name:'Unknown phone',proof_verified:false,mobile_public_key:'unknown',allowed:false,remote_status:'pending'}]};
-  await ui.tick(2000);
+  await ui.directory(true);
   assert.equal(ui.node('devices').querySelector('[data-cloud-allow]').disabled,true);
   assert.equal(ui.context.document.querySelector('#cloud-pairing-dialog'),null);
   assert.equal(ui.node('devices').querySelector('button'),null);
@@ -317,7 +320,7 @@ test('a discovered phone without encrypted proof cannot be enabled or deleted',a
 test('a late directory response cannot undo a confirmed permission change',async()=>{
   const ui=fixture();await signedIn(ui);
   const candidate={binding_id:'late-request',device_name:'Test phone',safety_code:'12345678 ABCDEF90 12345678 ABCDEF90 12345678 ABCDEF90 12345678 ABCDEF90',proof_verified:true,mobile_public_key:'mobile',preview_public_key:'preview',allowed:false,remote_status:'pending',remote_revision:0,generation:0};
-  ui.responses.devices={devices:[copy(candidate)]};await ui.tick(2000);let finish,first=true;
+  ui.responses.devices={devices:[copy(candidate)]};await ui.directory(true);let finish,first=true;
   ui.setRequest(payload=>payload.action==='devices'&&first?(first=false,new Promise(resolve=>finish=resolve)):ui.respond(payload));
   const pending=ui.tick(2000);ui.context.window.confirm=()=>true;
   const toggle=ui.node('devices').querySelector('[data-cloud-allow]');toggle.checked=true;await toggle.onchange();await ui.flush();
@@ -327,6 +330,7 @@ test('a late directory response cannot undo a confirmed permission change',async
 
 test('a trusted phone can be disabled while offline and remote uncertainty stays explicit',async()=>{
   const ui=fixture();await signedIn(ui,{...account,runtime:{state:'unavailable'},bindings:[{binding_id:'offline-phone',device_name:'Offline phone',allowed:true,remote_status:'active',remote_revision:7,generation:1,safety_code:'verified'}]});
+  await ui.directory(true);
   const toggle=ui.node('devices').querySelector('[data-cloud-allow]');assert.equal(toggle.disabled,false);assert.equal(toggle.checked,true);
   ui.responses.access={allowed:false,remote_access_confirmed:false,access_error:'network_or_certificate_error'};
   toggle.checked=false;await toggle.onchange();await ui.flush();ui.language('en');
@@ -334,4 +338,38 @@ test('a trusted phone can be disabled while offline and remote uncertainty stays
   assert.match(ui.node('devices').textContent,/Offline phone/);
   assert.equal(ui.node('result').textContent,'Connection is blocked locally. The cloud permission change could not be confirmed; refresh before trying again.');
   assert.equal(ui.calls.filter(call=>call.action==='access').length,1);
+});
+
+test('cloud phones refresh immediately only in an expanded visible network page',async()=>{
+  const ui=fixture();await signedIn(ui);ui.node('code').value='draft';
+  ui.responses.devices={devices:[{binding_id:'verified-phone',device_name:'Phone',allowed:false}]};
+  assert.equal(ui.node('directory').open,false);
+  await ui.tick(2000);assert.equal(ui.clocks(),0);assert.deepEqual(ui.calls,[]);
+  await ui.directory(true);assert.equal(ui.clocks(),1);assert.deepEqual(ui.calls.map(x=>x.action),['devices']);
+  assert.equal(ui.node('device-count').textContent,'1');
+  const toggle=ui.node('devices').querySelector('[data-cloud-allow]');
+  await ui.tick(2000);assert.equal(ui.node('devices').querySelector('[data-cloud-allow]'),toggle);
+  await ui.network(false);await ui.tick(2000);assert.equal(ui.calls.length,2);assert.equal(ui.clocks(),0);
+  await ui.network(true);assert.equal(ui.calls.length,3);assert.equal(ui.node('directory').open,true);
+  await ui.visible(false);await ui.tick(2000);assert.equal(ui.calls.length,3);assert.equal(ui.clocks(),0);
+  await ui.visible(true);assert.equal(ui.calls.length,4);
+  await ui.directory(false);await ui.tick(2000);assert.equal(ui.calls.length,4);assert.equal(ui.clocks(),0);
+  assert.equal(ui.node('device-count').textContent,'1');assert.equal(ui.node('code').value,'draft');
+  assert.equal(ui.node('code').parentElement,ui.context.document.querySelector('[data-cloud-action="redeem"]').parentElement);
+});
+
+test('registration countdown follows the current email and stops when dismissed',async()=>{
+  const ui=fixture(),email=ui.node('login');
+  ui.node('open-login').onclick();
+  ui.context.document.querySelector('[data-cloud-view="register"]').onclick();
+  const enter=value=>{email.value=value;email.listeners.get('input')();};
+  enter('one@example.invalid');
+  ui.responses['signup-code']={accepted:true,verification_method:'code',retry_after:30};
+  await ui.action('signup-code');assert.equal(ui.clocks(),1);
+  enter('two@example.invalid');assert.equal(ui.clocks(),0);
+  enter('one@example.invalid');assert.equal(ui.clocks(),1);
+  await ui.tick(31000);
+  assert.equal(ui.node('resend-code').disabled,false);assert.equal(ui.clocks(),0);
+  await ui.action('signup-code');assert.equal(ui.clocks(),1);
+  ui.dialog().close();assert.equal(ui.clocks(),0);
 });

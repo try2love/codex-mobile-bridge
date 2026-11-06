@@ -3026,7 +3026,7 @@ const en={
   "这是网关的访问地址允许列表。只有你已在其他地方配置好 HTTPS 反向代理或隧道，并且需要额外域名访问时，才在这里填写，例如 https://codex.try2love.com。填写地址不会创建隧道、配置 DNS 或申请证书；代理仍须保留该域名的 Host。上方连接配置中的固定域名会自动加入，无需重复填写；只用局域网或临时 Cloudflare 时留空即可。": "This is the gateway's address allowlist. Use it only for extra domains whose HTTPS reverse proxy or tunnel is already configured elsewhere, such as https://codex.try2love.com. Adding a URL does not create a tunnel, configure DNS or request a certificate; the proxy must preserve the domain's Host header. Fixed domains in the connection cards are added automatically. Leave this empty for LAN or temporary Cloudflare access alone.",
   "连接与状态": "Overview",
   "连接中": "Connecting",
-  "连接你的 Codex": "Connect to your Codex",
+  "连接你的 Agent": "Connect to your agent",
   "连接名称": "Connection name",
   "连接名称最多 100 个字符": "Connection names can contain up to 100 characters",
   "连接方式": "Connections",
