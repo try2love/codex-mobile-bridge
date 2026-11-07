@@ -36,3 +36,7 @@ Bridge 的临时侧边聊天由独立运行时持有，无法作为原生侧边�
 
 - [VS Code 共享 owner](../bug-fix/2026-11-03-vscode-shared-owner.md)：部分重叠，保留其 owner 与完整界面复用约束；本记录取代其中新建临时侧边聊天的决定。
 - [WSL 接入](../architecture/2026-10-24-codex-wsl-unified.md)：相关边界继续有效，不把本机 Desktop 的原生侧边聊天能力推定为 WSL 能力。
+
+## 共享运行时隔离验证
+
+[Codex 共享运行时提案](../../proposed/architecture/2026-11-08-codex-shared-desktop-runtime.md)记录原 App 持有时创建、删除的隔离证据及尚未通过的侧边标签同步。该提案尚未取代本篇已实现的生产路径，不能据此声称完整双端同步已通过。

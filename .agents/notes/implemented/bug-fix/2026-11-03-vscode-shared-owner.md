@@ -25,3 +25,7 @@ Windows 本机的旧扩展 26.602 采用 v7 流且缺少当前 owner 发现与�
 本决定修订[独立客户端管理](../feature/2026-11-02-independent-codex-management.md)中关于 IDE 探测超时的接续策略，沿用[独立配置接入](../feature/2026-11-01-independent-codex-home.md)及[共享客户端外壳](../architecture/2026-11-02-shared-client-shell.md)的入口隔离。
 
 新建侧边聊天的临时存储决定已由[原生持久侧边聊天](../feature/2026-11-07-native-attached-side-chats.md)替代；以上旧临时运行时验证保留为历史证据，owner 归属与配置隔离约束不变。
+
+## 共享运行时隔离验证
+
+[Codex 共享运行时提案](../../proposed/architecture/2026-11-08-codex-shared-desktop-runtime.md)记录原 App 持有时创建、删除的隔离证据及尚未通过的侧边标签同步。该提案尚未取代本篇已实现的生产路径，不能据此声称完整双端同步已通过。
