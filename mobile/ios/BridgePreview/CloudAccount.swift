@@ -20,7 +20,12 @@ enum MobileCloud {
                 let status=SecItemCopyMatching(query as CFDictionary,&data)
                 guard status==errSecSuccess || status==errSecItemNotFound else {throw CloudFailure("云登录存储暂不可用")}
                 let saved=String(decoding:(data as? Data) ?? Data(),as:UTF8.self)
-                let raw=try JSONSerialization.data(withJSONObject:input)
+                var commandInput=input
+                let drafts=try FileManager.default.url(for:.applicationSupportDirectory,in:.userDomainMask,appropriateFor:nil,create:true).appendingPathComponent("cloud-state-v1",isDirectory:true)
+                try FileManager.default.createDirectory(at:drafts,withIntermediateDirectories:true,attributes:[.protectionKey:FileProtectionType.completeUntilFirstUserAuthentication])
+                var excluded=drafts,values=URLResourceValues();values.isExcludedFromBackup=true;try excluded.setResourceValues(values)
+                commandInput["stateRoot"]=drafts.path
+                let raw=try JSONSerialization.data(withJSONObject:commandInput)
                 let result=String(decoding:raw,as:UTF8.self).withCString { command in saved.withCString { vault in
                     cloudCall(command,vault,{ text,_ in
                         guard let text=text else {return 0}

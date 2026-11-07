@@ -26,6 +26,31 @@ test('temporarily missing turn history does not resurrect a read completion',()=
  a.update([{id:'a',host:'local',connected:true,status:'idle',turnId:null,turnStatus:null}]);
  a.update([status('a','local','idle')]);assert.equal(a.indicator('local|a'),null);
 });
+test('cloud unread completions survive a new WebView origin and stay cleared after reading',()=>{
+ const saved=storage(),source=fs.readFileSync(path.join(__dirname,'../web/features/chat/activity.js'),'utf8');
+ function page(){
+  // Each cloud entry has fresh browser storage, but the native adapter is scoped
+  // to the same verified cloud account and computer across those origins.
+  const context=vm.createContext({localStorage:storage(),BridgeLocalStateStorage:saved});
+  vm.runInContext(source+';globalThis.Activity=SessionActivity;',context);
+  return key=>new context.Activity({key});
+ }
+ let opened=page();
+ for(const [key,hosts] of [['bridge-session-activity',['local','codex:independent']],['bridge-desktop-session-activity',['claude','deepseek','zcode','claude:independent']]]){
+  const activity=opened(key);
+  for(const host of hosts){activity.update([status('test',host,'active')]);activity.update([status('test',host,'idle')]);assert.equal(activity.indicator(host+'|test').kind,'completed');}
+ }
+ opened=page();
+ for(const [key,hosts] of [['bridge-session-activity',['local','codex:independent']],['bridge-desktop-session-activity',['claude','deepseek','zcode','claude:independent']]]){
+  const activity=opened(key);
+  for(const host of hosts){activity.update([status('test',host,'idle')]);assert.equal(activity.indicator(host+'|test')?.kind,'completed');activity.read(host+'|test');}
+ }
+ opened=page();
+ for(const key of ['bridge-session-activity','bridge-desktop-session-activity']){
+  const activity=opened(key);for(const id of Object.keys(activity.rows))assert.equal(activity.indicator(id),null);
+  activity.clear();assert.equal(saved.getItem(key),undefined);
+ }
+});
 function fixture(){
  let count=0,thumbCalls=[],upload=async(key,id,file)=>({id,name:file.name,size:file.size,image:null});
  const calls=[],saved=storage(),events=new Map();

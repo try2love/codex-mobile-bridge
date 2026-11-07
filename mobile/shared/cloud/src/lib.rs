@@ -5,6 +5,7 @@ mod api {
     }
 }
 mod cloud_crypto;
+mod local_state;
 mod error;
 mod origin;
 mod relay;
@@ -268,6 +269,7 @@ async fn action(
             let origin = vault.origin.clone();
             let account = vault.account.clone();
             if op == "remove" {
+                local_state::Store::remove_profile(field(&input,"stateRoot")?,&id)?;
                 store.profiles.remove(&id);
             } else {
                 vault.credentials =
@@ -304,7 +306,7 @@ async fn action(
             // The pinned identity selects the peer; the relay still verifies
             // the account, installation token, peer key and desktop permission.
             client.ensure_session().await?;
-            return Ok(json!({"status":"active","entry":web::open(id,client).await?,"safety":safety,"name":name}));
+            return Ok(json!({"status":"active","entry":web::open(id.clone(),client,local_state::Store::open(field(&input,"stateRoot")?,&id,&vault.bindings[binding].0)?).await?,"safety":safety,"name":name}));
         }
     }
     let devices = relay::devices(&vault.credentials, &vault.origin, &vault.account).await?;
@@ -315,7 +317,7 @@ async fn action(
     }
     client.ensure_session().await?;
     let name = device_name(&vault, binding);
-    Ok(json!({"status":"active","entry":web::open(id,client).await?,"safety":state.safety_code,"name":name}))
+    Ok(json!({"status":"active","entry":web::open(id.clone(),client,local_state::Store::open(field(&input,"stateRoot")?,&id,&vault.bindings[binding].0)?).await?,"safety":state.safety_code,"name":name}))
 }
 
 fn verified_client(vault: &Vault, binding: &str) -> Result<Option<(Arc<relay::Relay>, String)>> {

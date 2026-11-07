@@ -64,7 +64,7 @@ function renderChatProgress(node,{agentName='',active=false,waiting=false,blocke
   const label=document.createElement('span');label.textContent=[agentName,BridgeI18n.t(text)].filter(Boolean).join(' ');node.append(label);return state;
 }
 class SessionActivity {
-  constructor({storage=localStorage,key='bridge-session-activity'}={}){this.storage=storage;this.key=key;try{this.rows=JSON.parse(storage.getItem(key)||'{}');}catch{this.rows={};}}
+  constructor({storage=globalThis.BridgeLocalStateStorage||localStorage,key='bridge-session-activity'}={}){this.storage=storage;this.key=key;try{this.rows=JSON.parse(storage.getItem(key)||'{}');}catch{this.rows={};}}
   id(row){return row.host+'|'+row.id;}
   save(){try{this.storage.setItem(this.key,JSON.stringify(this.rows));}catch{}}
   update(rows,visible=null){

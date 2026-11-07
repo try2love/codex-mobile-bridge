@@ -117,6 +117,10 @@ class GatewayServer(ThreadingHTTPServer):
                     self.desktop_sessions.close()
             raise
 
+    @property
+    def draft_identity(self):
+        return self.auth.draft_identity
+
     def ui_language(self):
         try:
             value = json.loads(self.ui_language_path.read_text(encoding='utf-8')) if self.ui_language_path else {}
@@ -469,7 +473,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.output(200, {"uiLanguage": self.server.ui_language(), "authenticated": bool(session), "trustedDevice": bool(session and session.get("trustedDevice")), "csrf": session["csrf"] if session else None,
                                          "loginStatus": self.server.auth.login_status(self.client()["ip"]),
                                          "instanceId": self.server.instance_id, "cookieName": self.server.auth.cookie_name,
-                                         **({'draftIdentity': self.server.auth.draft_identity} if session else {}),
+                                         **({'draftIdentity': self.server.draft_identity} if session else {}),
                                          **({'enabledClients': self.server.desktop_sessions.navigation_clients() if self.server.desktop_sessions else ['codex']} if session else {}),
                                          **({'listCacheIdentity': hashlib.sha256((self.server.instance_id + '\0' + session['csrf']).encode()).hexdigest()} if session else {}),
                                          **({"computer": {"name": socket.gethostname(), "platform": platform.system()}} if session else {}),
@@ -1420,7 +1424,11 @@ class Handler(BaseHTTPRequestHandler):
                 if 'rebuild' in body and (body.get('rebuild') is not True or body.get('activate') is not True or set(body) != {'activate', 'rebuild'}):
                     raise ValueError('重建连接请求无效')
                 if body.get('activate') is True:
-                    session = bridge.rebuild_connection(thread_id) if body.get('rebuild') else bridge.activate(thread_id)
+                    if hasattr(bridge, 'reconnect_session'):
+                        session = bridge.reconnect_session(thread_id, rebuild=bool(body.get('rebuild')))
+                    else:
+                        # WSL entries own their CLI runtime, not a Desktop IPC follower.
+                        session = bridge.rebuild_connection(thread_id) if body.get('rebuild') else bridge.activate(thread_id)
                     result = {'ok': True, 'connected': session.connected}
                 elif body.get('progressive'):
                     bridge.session(thread_id, background=True, force=True)

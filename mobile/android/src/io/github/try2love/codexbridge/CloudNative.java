@@ -17,10 +17,12 @@ import org.json.JSONObject;
 final class CloudNative {
     private static final String ALIAS="cmb-cloud-account-v1";
     private final AtomicFile file;
+    private final File stateRoot;
     private final SecretKey key;
     CloudNative(Context context) throws Exception {
         System.loadLibrary("cmb_cloud");System.loadLibrary("cmb_cloud_android");
         initializeTls(context.getApplicationContext());
+        stateRoot=new File(context.getNoBackupFilesDir(),"cloud-state-v1");
         file=new AtomicFile(new File(context.getNoBackupFilesDir(),"cloud-account-v1"));
         KeyStore keys=KeyStore.getInstance("AndroidKeyStore");keys.load(null);
         SecretKey prior=(SecretKey)keys.getKey(ALIAS,null);
@@ -51,6 +53,7 @@ final class CloudNative {
             Cipher c=Cipher.getInstance("AES/GCM/NoPadding");c.init(Cipher.DECRYPT_MODE,key,new GCMParameterSpec(128,sealed,0,12));
             state=c.doFinal(sealed,12,sealed.length-12);
         }
+        cmd.put("stateRoot",stateRoot.getAbsolutePath());
         byte[] input=cmd.toString().getBytes(StandardCharsets.UTF_8);
         try{
             byte[] result=dispatch(input,state);

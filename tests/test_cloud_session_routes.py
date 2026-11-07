@@ -3,7 +3,7 @@ import http.client
 import json
 import unittest
 from pathlib import Path
-from threading import BoundedSemaphore, Thread
+from threading import BoundedSemaphore, Condition, Event, Thread
 from types import SimpleNamespace
 from unittest.mock import Mock
 from uuid import uuid4
@@ -29,6 +29,7 @@ class CloudSessionRoutesTests(unittest.TestCase):
         self.notifications = Mock()
         self.notifications.mobile.checkpoint.return_value = {'streamId': 's', 'cursor': 1}
         gateway = SimpleNamespace(bridge=Mock(), desktop_sessions=self.manager, auth=self.source_auth,
+                                  draft_identity='fixture-gateway',
                                   network_adaptation=self.adaptation, notifications=self.notifications,
                                   web_dir=ROOT / 'web', slots=BoundedSemaphore(8),
                                   terminal_sockets=BoundedSemaphore(1))
@@ -99,9 +100,9 @@ class CloudSessionRoutesTests(unittest.TestCase):
         self.assertEqual(self.request('GET', root + '?host=' + host), (200, {'id': THREAD}))
         self.server.bridge.for_host.assert_called_with(host)
         self.manager.require_enabled.assert_called_with(host)
-        target.activate.return_value = SimpleNamespace(connected=True)
+        target.reconnect_session.return_value = SimpleNamespace(connected=True)
         self.assertEqual(self.request('POST', root + '/reconnect?host=' + host, {'activate': True})[1]['connected'], True)
-        target.activate.assert_called_once_with(THREAD)
+        target.reconnect_session.assert_called_once_with(THREAD, rebuild=False)
         for method, path in (('GET', root + '/events'), ('GET', root + '/poll'), ('GET', root + '/changes'),
                              ('GET', root + '/permissions'), ('POST', root + '/compact'), ('POST', root + '/cli-network'),
                              ('GET', '/api/projects/models'), ('POST', '/api/desktop-sessions/zcode/projects/browse'),
@@ -199,5 +200,67 @@ class CloudSessionRoutesTests(unittest.TestCase):
                 with self.assertRaises(PermissionError):
                     await Connector.forward_http(owner, channel, record, body)
                 self.assertEqual(self.manager.call.call_count, 1)
+
+        asyncio.run(exchange())
+
+    def test_runtime_changes_survive_cloud_forwarding_for_every_client(self):
+        try:
+            import aiohttp
+        except ImportError:
+            self.skipTest('requires gateway relay dependencies')
+        from base64 import b64encode
+        from unittest.mock import AsyncMock
+        mobile = bytes(range(32))
+        pin = {'mobile_public_key': b64encode(mobile).decode()}
+        target = self.server.bridge.for_host.return_value
+        live = SimpleNamespace(condition=Condition(), sequence=1, viewers=0,
+                               timeline=SimpleNamespace(epoch='fixture'), touched=0)
+        target.session.return_value = live
+        target.closed = Event()
+
+        async def exchange():
+            origin = 'http://127.0.0.1:' + str(self.server.server_port)
+            async with aiohttp.ClientSession() as local:
+                owner = SimpleNamespace(server=self.server, sessions={}, local_origin=origin, local=local,
+                                        pin=Mock(return_value=pin), wait_response_close=AsyncMock())
+
+                async def forwarded(method, path, value=None):
+                    body = json.dumps(value).encode() if value is not None else b''
+                    record = packet(method, path, body)
+                    validate_request(record)
+                    channel = SimpleNamespace(binding='fixture', mobile=mobile, send=AsyncMock(),
+                                              send_body=AsyncMock(), promote_large=AsyncMock(),
+                                              receive=AsyncMock(return_value={'kind': 'credit', 'count': 1}))
+                    await Connector.forward_http(owner, channel, record, body)
+                    status = channel.send.await_args_list[0].args[0]['status']
+                    payload = b''.join(call.args[0] for call in channel.send_body.await_args_list)
+                    result = status, json.loads(payload)
+                    self.assertEqual(result, self.request(method, path, value))
+                    return result[1]
+
+                for status, turn_status in (('active', 'inProgress'), ('idle', 'completed')):
+                    with self.subTest(status=status):
+                        row = {'id': THREAD, 'host': 'local', 'connected': True, 'status': status,
+                               'turnId': 'fixture-turn', 'turnStatus': turn_status}
+                        target.activity.return_value = [row]
+                        activity = await forwarded('POST', '/api/activity', {'hosts': {'local': [THREAD]}})
+                        self.assertEqual(activity['sessions'], [row])
+                        target.activity.assert_called_with([THREAD])
+                        page = {'sequence': live.sequence, 'epoch': 'fixture', 'rows': [],
+                                'meta': {'connected': True, 'status': status, 'requests': []}}
+                        target.timeline_read.return_value = page
+                        root = '/api/sessions/' + THREAD
+                        self.assertEqual(await forwarded('GET', root + '/timeline?host=local'), page)
+                        changed = await forwarded('GET', root + '/changes?host=local&epoch=fixture&after=0')
+                        self.assertEqual(changed['meta']['status'], status)
+                        self.assertEqual(live.viewers, 0)
+                        for provider in ('claude', 'deepseek', 'zcode'):
+                            self.manager.list_with_activity.return_value = {'sessions': [row]}
+                            self.manager.call.return_value = {'connected': True, 'session': row}
+                            prefix = '/api/desktop-sessions/' + provider + '/'
+                            listed = await forwarded('GET', prefix + 'list')
+                            detail = await forwarded('GET', prefix + 'detail?sessionId=' + THREAD)
+                            self.assertEqual(listed['sessions'][0]['status'], status)
+                            self.assertEqual(detail['session']['status'], status)
 
         asyncio.run(exchange())

@@ -48,14 +48,14 @@ pub(crate) async fn close_profile(profile: &str) {
         view.relay.pause().await;
     }
 }
-pub(crate) async fn open(profile: String, relay: Arc<Relay>) -> Result<String> {
+pub(crate) async fn open(profile: String, relay: Arc<Relay>, drafts: crate::local_state::Store) -> Result<String> {
     close().await;
     // Allocated only for a user-selected, proven binding; never when displaying the directory.
     let socket = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
     let addr = socket.local_addr()?.to_string();
     let capability = uuid::Uuid::new_v4().simple().to_string();
     let entry = format!("http://{addr}/#cmb-cloud={capability}");
-    let grant = Arc::new((addr, capability, relay.clone()));
+    let grant = Arc::new((addr, capability, relay.clone(), drafts));
     let stop = CancellationToken::new();
     *current().lock().await = Some(View {
         profile,
@@ -108,10 +108,10 @@ fn relay_failure(error: crate::error::BridgeError) -> Response<Body> {
     failure(status, &error.to_string())
 }
 async fn serve(
-    grant: Arc<(String, String, Arc<Relay>)>,
+    grant: Arc<(String, String, Arc<Relay>, crate::local_state::Store)>,
     req: Request<Incoming>,
 ) -> Result<Response<Body>, Infallible> {
-    let (host, cap, relay) = grant.as_ref();
+    let (host, cap, relay, drafts) = grant.as_ref();
     let origin = format!("http://{host}");
     if req.headers().get("host").and_then(|v| v.to_str().ok()) != Some(host.as_str())
         || req
@@ -122,7 +122,7 @@ async fn serve(
         return Ok(failure(403, "Invalid origin"));
     }
     let path = req.uri().path();
-    if !path.starts_with("/api/") {
+    if !path.starts_with("/api/") && path != "/cmb-cloud-state" {
         if req.method() != Method::GET {
             return Ok(failure(405, "Unsupported method"));
         }
@@ -150,6 +150,20 @@ async fn serve(
     let method = req.method().clone();
     if !matches!(method, Method::GET | Method::POST) {
         return Ok(failure(405, "Unsupported method"));
+    }
+    if path == "/cmb-cloud-state" {
+        let result = if method == Method::GET {
+            drafts.snapshot()
+        } else {
+            match Limited::new(req.into_body(), crate::local_state::MAX_VALUE + 16384).collect().await {
+                Ok(body) => drafts.apply(&body.to_bytes()),
+                Err(_) => return Ok(failure(413, "Draft too large")),
+            }
+        };
+        return Ok(match result {
+            Ok(value) => bytes(200, "application/json", Bytes::from(value.to_string())),
+            Err(_) => failure(503, "Draft storage unavailable"),
+        });
     }
     let target = req.uri().path_and_query().unwrap().as_str().to_owned();
     let kind = req

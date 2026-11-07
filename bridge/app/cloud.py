@@ -4,13 +4,21 @@ import threading
 from bridge.api.httpd import GatewayServer
 
 
+class CloudServer(GatewayServer):
+    @property
+    def draft_identity(self):
+        # Stable display scope only; cloud cookies and pairing remain independent.
+        return self.gateway_draft_identity()
+
+
 def create_cloud_server(gateway):
     # Internal credentials live only for this relay connection. Connector checks
     # binding authority per request and revokes them on access close/disconnect;
     # an independent browser timeout must not strand an approved Noise channel.
     config = {'auth': {'mode': 'password', 'sessionHours': 0}, 'origins': [], 'localAccess': True}
     # Reuse business services and limits, not the direct listener's auth or pairing.
-    server = GatewayServer(('127.0.0.1', 0), gateway.bridge, config, gateway.web_dir)
+    server = CloudServer(('127.0.0.1', 0), gateway.bridge, config, gateway.web_dir)
+    server.gateway_draft_identity = lambda: gateway.draft_identity
     try:
         for name in ('transfer_directory', 'mobile_updates', 'notifications', 'desktop_sessions',
                      'desktop_uploads', 'harness', 'ui_language_path', 'slots', 'terminal_sockets', 'cli_connections',

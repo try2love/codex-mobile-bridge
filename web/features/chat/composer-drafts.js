@@ -2,7 +2,7 @@
 
 // Drafts stay on this device. Every read requires a verified gateway and account scope.
 class ComposerDrafts {
-  constructor(storage=localStorage,coordinator=globalThis.indexedDB){this.storage=storage;this.coordinator=coordinator;this.temporaryPending=new Map();}
+  constructor(storage=globalThis.BridgeLocalStateStorage||localStorage,coordinator=globalThis.indexedDB){this.storage=storage;this.coordinator=coordinator;this.temporaryPending=new Map();}
   key(scope,kind='draft'){
     if(!scope||!['gateway','provider','account','host','session'].every(name=>typeof scope[name]==='string'&&scope[name]))return null;
     return 'composer-v1:'+kind+':'+JSON.stringify([scope.gateway,scope.provider,scope.account,scope.host,scope.session]);
