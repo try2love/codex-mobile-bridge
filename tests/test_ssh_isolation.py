@@ -199,6 +199,8 @@ class SshIsolationTests(unittest.TestCase):
         bridge = Bridge.__new__(Bridge)
         bridge.store = SimpleNamespace()
         bridge.closed = threading.Event()
+        bridge.submit_lock = threading.Lock()
+        bridge.submissions = {}
         session = LiveSession('saved-thread')
         with session.condition:
             session.set_history({'id': session.id, 'title': 'Before', 'turns': []})

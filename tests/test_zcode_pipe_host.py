@@ -46,17 +46,18 @@ class ServiceBoundary(unittest.TestCase):
                     signature._verify_previous_build(str(bad), digest)
             codesign.assert_not_called()
 
-    def test_relocation_does_not_authorize_a_different_gateway_or_pid_generation(self):
+    @patch("bridge.platforms.macos.signed_peer.os.getuid", return_value=501, create=True)
+    def test_relocation_does_not_authorize_a_different_gateway_or_pid_generation(self, _getuid):
         import struct
 
         signature = host.SignedGatewayPeer.__new__(host.SignedGatewayPeer)
         signature.image = "/Applications/Test.app/Contents/Resources/gateway/codex-mobile-gateway"
         signature.native = Mock()
-        proc = {'pid': 321, 'uid': os.getuid(), 'zombie': False, 'birth': (9, 7), 'started': (1, 0),
+        proc = {'pid': 321, 'uid': 501, 'zombie': False, 'birth': (9, 7), 'started': (1, 0),
                 'image': '/Applications/previous.app/Contents/Resources/gateway/codex-mobile-gateway'}
         signature.native.identity.return_value = proc
         channel = Mock(family=socket.AF_UNIX)
-        channel.getsockopt.return_value = struct.pack("=8I", 0, os.getuid(), 0, os.getuid(), 0, 321, 0, 7)
+        channel.getsockopt.return_value = struct.pack("=8I", 0, 501, 0, 501, 0, 321, 0, 7)
         with self.assertRaisesRegex(PermissionError, "executable or process generation"):
             signature.require(channel, 321)
         relocated = Mock()
