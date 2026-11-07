@@ -3624,6 +3624,13 @@ const en={
   "内容与跳转": "Content & links",
   "帮助与测试": "Help & testing",
 "已编辑 {count} 个文件":"Edited {count} files",
+"已编辑":"Edited",
+"等 {count} 个文件":"and {count} more files",
+"执行命令":"Run command",
+"正在运行":"Running",
+"已运行":"Ran",
+"运行失败":"Failed to run",
+"文件变更":"File change",
 "累计修改":"Recorded edits",
 "请在电脑端完成连接":"Complete the connection on your computer"
 };

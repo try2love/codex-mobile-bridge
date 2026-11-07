@@ -106,9 +106,9 @@ async function runTimelineVisibilityTests() {
   const rows=[
     {key:'user',role:'user',kind:'userMessage',text:'User message'},
     {key:'reasoning',role:'activity',kind:'reasoning',text:'Reasoning summary'},
-    {key:'command',role:'activity',kind:'commandExecution',text:'Command output'},
+    {key:'command',role:'activity',kind:'commandExecution',text:'git status --short\n\nCommand output'},
     {key:'tool',role:'activity',kind:'storedToolEvent',text:'Tool output'},
-    {key:'files',role:'activity',kind:'fileChange',text:'File changes'},
+    {key:'files',role:'activity',kind:'fileChange',text:'timeline.js\n@@ -1 +1 @@'},
     {key:'progress',role:'assistant',kind:'agentMessage',phase:'commentary',text:'Progress update'},
     {key:'final',role:'assistant',kind:'agentMessage',phase:'final_answer',text:'Final reply\n'+('Reply text '.repeat(250))},
     {key:'legacy',role:'assistant',kind:'agentMessage',text:'Reply without a phase'},
@@ -117,10 +117,24 @@ async function runTimelineVisibilityTests() {
   let requested=0,meta;
   const page=(items,sequence=1,hasMore=false)=>({rows:items,sequence,epoch:'visibility',before:'visibility.'+items[0]?.key,hasMore,meta:{requests:[{id:'pending'}]},files:[]});
   const timeline=new ChatTimeline({url:action=>'/fixture/'+action+'?host=local',request:async()=>{requested++;return page(rows);},renderMeta:value=>meta=value,renderText:(node,text)=>node.textContent=text,status:()=>{}});
-  const visible=()=>[...timeline.container.children].filter(node=>!node.hidden).map(node=>node.dataset.key);
+  const visible=()=>[...timeline.nodes].filter(([,entry])=>!entry.node.hidden&&!entry.node.closest('.activity-group[hidden]')).map(([key])=>key);
   timeline.setVisibility({showReasoning:true,showProcess:true});
   timeline.apply(page(rows),true);await frame();
   check(visible().length===9,'Default display retains all message categories');
+  const activityGroup=timeline.container.querySelector('.activity-group');
+  check(activityGroup&&!activityGroup.open&&activityGroup.dataset.key==='files','Consecutive activity steps collapse behind the latest step by default');
+  check(timeline.activityStepLabel(rows[2])==='已运行 git status --short','Command summaries include the actual command');
+  check(timeline.activityStepLabel(rows[4])==='已编辑 timeline.js','File summaries include the actual changed path');
+  check(activityGroup.firstElementChild.textContent==='已编辑 timeline.js','Collapsed group exposes the latest command or file detail');
+  const groupSummaryStyle=getComputedStyle(activityGroup.firstElementChild);
+  check(groupSummaryStyle.whiteSpace==='nowrap'&&groupSummaryStyle.textOverflow==='ellipsis'&&groupSummaryStyle.overflow==='hidden','Primary fold summary is truncated to one line');
+  check(getComputedStyle(timeline.nodes.get('reasoning').node).display==='none','Collapsed secondary steps do not occupy the timeline');
+  activityGroup.open=true;await frame();
+  const commandSummary=timeline.nodes.get('command').node.querySelector(':scope>summary'),commandSummaryStyle=getComputedStyle(commandSummary);
+  check(commandSummary.textContent==='已运行 git status --short','Secondary step summaries include the actual command');
+  check(commandSummaryStyle.whiteSpace==='nowrap'&&commandSummaryStyle.textOverflow==='ellipsis'&&commandSummaryStyle.overflow==='hidden','Secondary fold summary is truncated to one line');
+  check(getComputedStyle(timeline.nodes.get('reasoning').node).display!=='none','Opening the secondary group reveals every step');
+  activityGroup.open=false;await frame();
   timeline.details.set('command',{version:'v1',text:'Command output',next:null});
   timeline.nodes.get('command').node.open=true;
   timeline.setVisibility({showReasoning:false,showProcess:true});
@@ -142,6 +156,20 @@ async function runTimelineVisibilityTests() {
   check(visible().length===9&&timeline.nodes.get('command').node.open,'Restoring activity preserves its expansion state');
   timeline.dispose();
   timeline.container.replaceChildren();
+  const reasoningRows=[
+    {key:'reason-user',order:0,role:'user',kind:'userMessage',text:'Check',version:'r1'},
+    {key:'reason-command',order:1,role:'activity',kind:'commandExecution',text:'echo before-thinking\n\nDone',version:'r1'},
+    {key:'reasoning-latest',order:2,role:'activity',kind:'reasoning',text:'Inspecting the current configuration',version:'r1'},
+    {key:'reason-final',order:3,role:'assistant',kind:'agentMessage',phase:'final_answer',text:'Finished',version:'r1'},
+  ];
+  const reasoned=new ChatTimeline({url:action=>'/fixture/'+action+'?host=local',request:async()=>{},renderMeta:()=>{},renderText:(node,text)=>node.textContent=text,status:()=>{}});
+  reasoned.apply({...page(reasoningRows,5),rows:reasoningRows},true);await frame();
+  check(reasoned.container.querySelector('.activity-group>summary').textContent==='已运行 echo before-thinking','A completed thought is replaced by the nearest prior step when text follows the group');
+  check(reasoned.nodes.get('reasoning-latest').node.querySelector(':scope>summary').textContent==='已运行 echo before-thinking','A completed thought step also falls back to the nearest prior step when text follows the group');
+  reasoned.apply({...page(reasoningRows.slice(0,-1),6),rows:reasoningRows.slice(0,-1)},true);await frame();
+  check(reasoned.container.querySelector('.activity-group>summary').textContent==='Inspecting the current configuration','The primary fold uses reasoning content as its summary');
+  check(reasoned.nodes.get('reasoning-latest').node.querySelector(':scope>summary').textContent==='思考摘要','The secondary reasoning fold retains the generic title');
+  reasoned.dispose();reasoned.container.replaceChildren();
   const backfill=new ChatTimeline({url:action=>'/fixture/'+action+'?host=local',request:async()=>{requested++;return page(rows);},renderMeta:()=>{},renderText:(node,text)=>node.textContent=text,status:()=>{}});
   backfill.setVisibility({showReasoning:false,showProcess:false});requested=0;
   backfill.apply(page([{...rows[2],key:'latest-command',order:20}],4,true),true);
@@ -206,6 +234,8 @@ async function runTimelineNativeFileChangesTests(){
   timeline.setVisibility({showProcess:false});
   const card=timeline.nodes.get('native-footer').node;
   check(!card.hidden&&card.classList.contains('edited-files-card'),'Native edited-files card stays visible with process hidden');
+  check(card.querySelector('.edited-files-label').textContent.includes('/repo/space name.py'),'Native file summary includes the first changed path');
+  check(getComputedStyle(card.querySelector('.edited-files-label')).textOverflow==='ellipsis','Native file summary truncates to one line');
   check(card.getBoundingClientRect().width>250&&card.scrollWidth<=card.clientWidth,'Native card fits the available message width');
   check(card.querySelector('.edited-files-basis').textContent===timelineText('累计修改'),'Recorded patch totals are labeled separately from net edits');
   check(!card.open&&card.querySelector('.edited-files-list').textContent.includes('/repo/space name.py'),'Native card starts collapsed and contains per-file paths and counts');
