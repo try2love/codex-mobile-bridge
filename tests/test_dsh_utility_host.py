@@ -78,10 +78,11 @@ class DshNativeQuitTests(unittest.TestCase):
         return stop_deepseek({'id': 'deepseek'}, self.adapter, state=self.state)
 
     def test_requests_native_shutdown_and_waits_for_observed_exit(self):
+        self.inspect.side_effect = [self.state, self.state, {**self.state, 'pids': [12]}, {**self.state, 'pids': []}]
         self.stop()
         self.adapter.call.assert_any_call('quit', body={'expectedPid': 12,
                                                       'expectedGeneration': 'fixture-generation'})
-        self.assertEqual(self.app.processes.call_count, 2)
+        self.assertEqual(self.inspect.call_count, 4)
         self.app.stop.assert_not_called()
 
     def test_old_plugin_does_not_fall_back_to_process_termination(self):
@@ -94,6 +95,7 @@ class DshNativeQuitTests(unittest.TestCase):
         self.app.stop.assert_not_called()
 
     def test_legacy_plugin_uses_supported_installer_handoff_after_idle_check(self):
+        self.inspect.side_effect = [self.state, self.state, {**self.state, 'pids': [12]}, {**self.state, 'pids': []}]
         self.status.pop('nativeQuit')
         self.adapter.call.side_effect = [self.status, {'bridgeRevision': 3, 'complete': True,
                                                      'sessions': [{'status': 'idle', 'runtimeKnown': True, 'requests': []}]}]

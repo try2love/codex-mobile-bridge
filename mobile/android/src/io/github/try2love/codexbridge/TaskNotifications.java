@@ -20,8 +20,9 @@ final class TaskNotifications {
   if (!manager.areNotificationsEnabled()) throw new java.io.IOException("Notifications disabled");
   createChannel(context, channel);
   String thread = event.optString("threadId"), host = event.optString("host", "local");
-  String tag = thread.isEmpty() ? "inbox|" + origin + "|" + stream + "|" + event.getString("id")
-      : chatTag(origin, host, thread);
+  String gateway = gatewayIdentity(context, origin);
+  String tag = thread.isEmpty() ? "inbox|" + gateway + "|" + stream + "|" + event.getString("id")
+      : chatTag(gateway, host, thread);
   String eventKey = new org.json.JSONArray().put(stream)
       .put(event.optString("sequence", event.getString("id"))).toString();
   boolean repeated = false;
@@ -46,10 +47,10 @@ final class TaskNotifications {
   metadata.putLong("bridgeSequence", event.optLong("sequence"));
   metadata.putString("bridgeEvent", eventKey);
   String provider = event.optString("provider");
-  if (!Arrays.asList("codex", "claude", "deepseek").contains(provider)) {
-   provider = host.equals("desktop:claude") ? "claude" : host.equals("desktop:deepseek") ? "deepseek" : "codex";
+  if (!Arrays.asList("codex", "claude", "deepseek", "zcode").contains(provider)) {
+   provider = host.matches("desktop:(claude|deepseek)(:[0-9a-f]{32})?") ? host.split(":")[1] : host.equals("desktop:zcode") ? "zcode" : "codex";
   }
-  String source = provider.equals("claude") ? "Claude" : provider.equals("deepseek") ? "DeepSeek Harness" : "Codex";
+  String source = provider.equals("claude") ? "Claude" : provider.equals("deepseek") ? "DeepSeek Harness" : provider.equals("zcode") ? "ZCode" : "Codex";
   Notification.Builder notification = new Notification.Builder(context, channel)
       .setSmallIcon(context.getResources().getIdentifier("ic_notification", "drawable", context.getPackageName()))
       .addExtras(metadata).setContentTitle(event.getString("title")).setContentText(event.getString("body"))
@@ -62,12 +63,17 @@ final class TaskNotifications {
   }
  }
 
+ private static String gatewayIdentity(Context context, String origin) {
+  JSONObject channel = GatewayChannels.record(context.getSharedPreferences("bridge",0), origin);
+  return channel == null ? origin : channel.optString("deviceId", origin);
+ }
+
  private static String chatTag(String origin, String host, String thread) {
   return "chat|" + new org.json.JSONArray().put(origin).put(host).put(thread);
  }
 
  static void clearChat(Context context, String origin, String thread, String host) {
-  String tag = chatTag(origin, host, thread);
+  String tag = chatTag(gatewayIdentity(context, origin), host, thread);
   ((NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE)).cancel(tag, tag.hashCode() & 0x7fffffff);
  }
 

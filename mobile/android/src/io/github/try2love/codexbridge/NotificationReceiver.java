@@ -51,6 +51,7 @@ final class NotificationReceiver implements AutoCloseable {
     if (closed) return;
     Map<String, String> bindings = new HashMap<>();
     if (active) for (String origin : new HashSet<>(prefs.getStringSet("origins", Collections.emptySet()))) {
+      if(!GatewayChannels.enabled(prefs,origin,origin))continue;
       EventClient.setName(origin, prefs.getString("cookieName:" + origin, null));
       String binding = binding(origin);
       if (!binding.isEmpty()) bindings.put(origin, binding);
@@ -117,6 +118,7 @@ final class NotificationReceiver implements AutoCloseable {
 
   private boolean current(Computer computer) {
     return !closed && computers.get(computer.origin) == computer
+        && GatewayChannels.enabled(prefs,computer.origin,computer.origin)
         && computer.sourceRevision == NotificationSources.revision(prefs, computer.origin)
         && prefs.getStringSet("origins", Collections.emptySet()).contains(computer.origin)
         && computer.binding.equals(binding(computer.origin));

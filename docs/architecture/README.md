@@ -18,6 +18,7 @@
 | CLI 原生接入与 SSH 发现 | `bridge/clients/codex/app_server.py`、`cli_session.py`、`remote.py` | `features/sessions/store.py`、`app/service.py`；[接入边界](../codex-cli.md) |
 | 会话历史、审批、计划/目标、侧边聊天 | `bridge/features/sessions/` | `bridge/app/service.py`，`web/features/chat/` |
 | 各接入的新建项目、目录浏览与登记 | `bridge/features/sessions/create.py`、`projects.py`、`bridge/clients/manager.py` | `web/shared/project-picker.js`、[新建项目聊天](../project-chats.md) |
+| 新建聊天的模型、思考强度与同账号缓存 | `bridge/features/sessions/creation_models.py`、`bridge/features/accounts/models.py` | `web/shared/creation-model-picker.js`；原生首条输入配置仍归各客户端适配器 |
 | 共用会话菜单、原生改名与项目、Bridge 显示分类 | `web/features/chat/session-menu.js`、`bridge/features/sessions/organization.py`、`display_metadata.py` | `app/service.py`、`features/endpoints/wsl.py`；`sessions/store.py` 读取原生项目归属 |
 | 文件、图片、上传下载、Git | `bridge/features/workspace/` | `web/features/workspace/`、`web/shared/image-viewer.js` |
 | 源码高亮、PDF/HTML 预览与全屏、目录返回 | `web/features/workspace/` | `bridge/api/html_preview.py`、`httpd.py`、原生手机导航；[模块约定](../../web/README.md#文件阅读模块) |
@@ -87,7 +88,7 @@ flowchart TD
 
 **Claude/DSH 会话操作：**共享页面模块 `web/features/clients/desktop-sessions.js` 调用 HTTP，`clients/manager.py` 处理客户端启用状态、并发只读合并及写入记录，再调用对应 `adapter.py`。Claude 的 mailbox 与 `connector.js`、DSH 的 `host.mjs` 是实际连接协议边界。某种模型或权限差异应在其客户端适配器内处理。
 
-**新增 Agent 的共用边界：**消息展示、任务状态、附件预览和文件定位优先复用 `web/features/chat/`、`web/shared/` 与 `bridge/features/` 中的现有功能。适配器转换原生数据、报告已核验能力并执行原生操作；共享组件依据能力与规范化数据工作，不按 Agent 名称复制流程。已有共享任务状态入口是 `renderChatProgress`，规则见 [共用原生任务状态提示](../../.agents/notes/implemented/feature/2026-10-29-shared-chat-progress.md)。尚未核验的原生能力必须保留限制，不能由共享层推测实现。
+**新增 Agent 的共用边界：**消息展示、任务状态、附件预览和文件定位优先复用 `web/features/chat/`、`web/shared/` 与 `bridge/features/` 中的现有功能。ZCode Mac Test 接入也遵循这一边界，模型、Skill、提醒与账号事务见 [共享能力记录](../../.agents/notes/implemented/feature/2026-10-31-zcode-shared-capabilities.md)。适配器转换原生数据、报告已核验能力并执行原生操作；共享组件依据能力与规范化数据工作，不按 Agent 名称复制流程。已有共享任务状态入口是 `renderChatProgress`，规则见 [共用原生任务状态提示](../../.agents/notes/implemented/feature/2026-10-29-shared-chat-progress.md)。尚未核验的原生能力必须保留限制，不能由共享层推测实现。
 
 消息排队、旧版未确认记录恢复和各接入支持范围见 [消息管理](../message-management.md)。
 
@@ -123,7 +124,9 @@ flowchart TD
 - `web/assets.json` 映射单一文件或按声明顺序组合的 CSS 源文件；`bridge/api/assets.py` 的固定白名单决定可公开访问的 URL。新增映射不会自动开放任意文件。中继使用同一映射。
 - `scripts/gateway-resources.json` 列出必须随网关分发的 SSH 源文件、连接脚本和许可；移动它们时同步清单。CA 证书仍按 TLS 模块的相邻位置分发。
 - 桌面页面直接引用一部分 Web 共享文件，需同时更新 `desktop/index.html` 和 `package.json` 资源清单；不要把磁盘路径改动误用为浏览器公开 URL 改动。
-- 本机 CLI 接入由网关管理。Codex CLI 与 Desktop 共用原始 `CODEX_HOME`，切换使用账号存储与原生配置核验；Claude Code API 凭据保存在网关私有目录，选择时更新原始 Claude 配置目录中的认证环境项，保留该目录的会话历史与其他设置。
+- 客户端管理页面、顶部切换菜单和底部导航按接入实例 ID 复用，配置内创建的项目与聊天归该实例；详见[共享客户端外壳](../../.agents/notes/implemented/architecture/2026-11-02-shared-client-shell.md)。
+- 独立 Desktop 配置的目录身份、登记与冲突规则归 `features/clients/instances.py`，原生路径和懒加载执行上下文归 `clients/profiles.py`、`clients/instances.py`。HTTP 以 `family + entry` 选择同一账号、附件与工作区上下文；Web 草稿和通知跳转保留完整实例 ID。ZCode 仅保留默认配置；默认入口不受额外登记损坏影响。支持范围与验证边界见[独立客户端实例](../../.agents/notes/implemented/architecture/2026-11-05-independent-client-instances.md)。
+- 本机 CLI 接入由网关管理。默认 Codex CLI 与 Desktop 共用原始 `CODEX_HOME`；独立 Codex 客户端复用同一 Bridge、账号管理与聊天组件，以入口 ID 隔离配置目录、账号和远程导航（详见[独立客户端管理](../../.agents/notes/implemented/feature/2026-11-02-independent-codex-management.md)），切换使用账号存储与原生配置核验；Claude Code API 凭据保存在网关私有目录，选择时更新原始 Claude 配置目录中的认证环境项，保留该目录的会话历史与其他设置。
 - 资源路径回归会在无本地 `bridge` 包的隔离 Python 中执行 SSH 源码定义；这不等于真实 SSH、冻结程序或原生助手已验证。
 
 ## 本轮保留的边界

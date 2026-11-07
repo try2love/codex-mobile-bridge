@@ -1,6 +1,209 @@
-<a id="v217"></a>
+## v2.2.0 · 多客户端接入、手机连接切换与后台资源优化
+
+v2.2.0 将 ZCode 纳入统一工作台，完善 Codex、Claude 和 DSH 的会话与账号体验，支持手机在同一电脑的多个连接地址间切换，并减少网关闲置时的后台工作。
+
+### 新增与改进
+
+- **ZCode 原生会话接入。** 在支持的 macOS、Windows 和 Linux 桌面环境中，从手机和 Web 查看已保存的历史、继续原聊天、发送附件和处理审批。支持新建项目聊天、改名、从回复分支，以及原客户端提供的模型、思考强度、Skill 和执行模式。读取历史不切换桌面窗口；发送前确认原会话连接。[#107](https://github.com/try2love/codex-mobile-bridge/issues/107) · [#116](https://github.com/try2love/codex-mobile-bridge/issues/116) · [#117](https://github.com/try2love/codex-mobile-bridge/issues/117) · [#123](https://github.com/try2love/codex-mobile-bridge/issues/123) · [#126](https://github.com/try2love/codex-mobile-bridge/issues/126) · [#128](https://github.com/try2love/codex-mobile-bridge/issues/128)
+- **ZCode 本机连接与官方远控。** 在桌面网关完成配置后，手机和 Web 可选择已准备好的连接方式。支持启动未运行的 ZCode、接回原聊天或正常退出；切换连接保留草稿、附件和阅读位置。账号管理支持保存原客户端兼容的自定义 API，并主动查询官方账号各模型的每日额度、显示更新时间。 macOS 正式包也支持本机连接。[#124](https://github.com/try2love/codex-mobile-bridge/issues/124) · [#128](https://github.com/try2love/codex-mobile-bridge/issues/128) · [#129](https://github.com/try2love/codex-mobile-bridge/issues/129)
+- **新建聊天前选择模型。** Codex、Claude、DSH 和 ZCode 共用模型与思考强度选择入口；可选内容以实际接入能力为准。新建聊天、聊天设置和账号管理复用同一接入的模型缓存，一处刷新后同步更新；不同电脑、账号、项目与独立配置保持隔离。[#131](https://github.com/try2love/codex-mobile-bridge/issues/131)
+- **一台电脑，多条连接线路。** 手机 App 可把同一网关的局域网、固定 HTTPS 和临时 HTTPS 地址放在一张电脑卡片中。自动选择通过身份验证的可用线路，也可查看延迟并手动切换；换线保留当前聊天、草稿和阅读位置。[#125](https://github.com/try2love/codex-mobile-bridge/issues/125)
+- **独立客户端与 VS Code 接入。** 支持登记 VS Code Codex 扩展使用的独立配置，在原生能力允许时将发送、审批和停止交给原扩展。增加实验性的 Claude、DSH 独立桌面配置，分别管理账号、会话、模型缓存、草稿和通知。[#106](https://github.com/try2love/codex-mobile-bridge/issues/106)
+- **连接释放、上下文与后台任务。** 可管理本网关持有的本机、SSH 和 WSL CLI 连接，任务结束后释放并保留历史。支持的会话可查看原生上下文用量、空闲时手动压缩；DSH 和 ZCode 可查看并单独停止当前聊天的后台任务。[#118](https://github.com/try2love/codex-mobile-bridge/issues/118) · [#119](https://github.com/try2love/codex-mobile-bridge/issues/119) · [#121](https://github.com/try2love/codex-mobile-bridge/issues/121) · [#122](https://github.com/try2love/codex-mobile-bridge/issues/122)
+- **手机 UU 远程入口。** Android 和 iOS 可按电脑启用 UU 远程，绑定后从菜单打开电脑画中画或发起远程控制。默认关闭，适用于支持的 Windows、macOS 被控电脑，需要安装并配置 UU 远程。[#113](https://github.com/try2love/codex-mobile-bridge/issues/113)
+- **减少闲置开销。** 未启用的客户端不再持续执行相关后台观测和模型刷新，可选服务按需启动。网关窗口与托盘复用状态快照；配对查询和倒计时只在需要展示二维码时运行。已运行的原生任务与已保存缓存保持不变。
+
+### 问题修复
+
+- 修复部分 Codex 连接仍指向旧桌面通信入口、反复重连无法恢复的问题，合并重复重连请求，并限制关闭操作的排队等待；不自动重发结果未知的消息。
+- 修复 Windows 商店版 Claude 开发者模式误判，改善首次初始化、登录数据库暂时占用及迟到发送回执的确认恢复。[#127](https://github.com/try2love/codex-mobile-bridge/issues/127)
+- 完善 Claude Desktop、支持的 Claude Code CLI、DSH 和 ZCode 原生改名与结果确认。[#120](https://github.com/try2love/codex-mobile-bridge/issues/120)
+- 修复第三方 Codex Responses 接入仅返回思考正文时，思考区域为空的问题；补齐 CLI 思考增量展示，有摘要时仍优先显示摘要。[#110](https://github.com/try2love/codex-mobile-bridge/issues/110) · [PR #130](https://github.com/try2love/codex-mobile-bridge/pull/130)
+- 改善长思考与工具输出的阅读位置保持、会话菜单一键复制和图片原图保存；修复手机冷加载时导航重复及四个 Agent 标签的布局问题。[#112](https://github.com/try2love/codex-mobile-bridge/issues/112) · [#114](https://github.com/try2love/codex-mobile-bridge/issues/114) · [#115](https://github.com/try2love/codex-mobile-bridge/issues/115)
+- 改善 Linux AppImage 与旧 Python 运行时兼容、macOS 中文路径识别、Windows 打包长参数处理，以及 DSH 旧接入组件升级。
+- 修复 Codex 原生侧边聊天被重复显示为普通独立会话的问题；保留原侧边聊天和历史，转为独立会话后正常显示。
+- 修复可选 ZCode 登录恢复阻塞网关启动、覆盖安装后本机连接无法接回，以及同机多份网关更新时数据目录选错的问题。
+
+### 升级
+
+请覆盖安装对应平台的原 App，不要先卸载或清除数据。建议同时更新桌面网关与手机 App，以使用多地址切换和 UU 远程入口。Linux 覆盖安装对应架构的 DEB 或替换 AppImage；iOS 仍需沿用原应用标识和签名身份自行签名安装。
+
+### 贡献
+
+感谢 [@tiancai123123](https://github.com/tiancai123123) 在 [PR #130](https://github.com/try2love/codex-mobile-bridge/pull/130) 中贡献第三方 Codex 思考内容修复，并提供 Windows、Android 验证；感谢 [@heiqiu47](https://github.com/heiqiu47) 提出 [UU 远程需求 #113](https://github.com/try2love/codex-mobile-bridge/issues/113)、[@SOFdian](https://github.com/SOFdian) 提出 [VS Code 独立配置需求 #106](https://github.com/try2love/codex-mobile-bridge/issues/106)，以及 [@xtayavij](https://github.com/xtayavij) 提供 [Windows 商店版 Claude 复现 #127](https://github.com/try2love/codex-mobile-bridge/issues/127)。感谢参与三个预览版测试与反馈的用户。
+
+---
+
+### English · Multi-client access, mobile route switching and lower idle overhead
+
+v2.2.0 brings ZCode into the shared workspace, improves Codex, Claude and DSH account and chat workflows, adds mobile switching between a computer's connection addresses, and reduces unnecessary background work.
+
+### New and improved
+
+- **Native ZCode chats.** Read saved history, resume the original chat, send attachments and handle approvals on supported macOS, Windows and Linux desktop environments. Create project chats, rename or branch conversations, and use the model, reasoning, Skill and execution controls exposed by the native client. Reading history does not switch the desktop window; sending verifies the original connection. [#107](https://github.com/try2love/codex-mobile-bridge/issues/107) · [#116](https://github.com/try2love/codex-mobile-bridge/issues/116) · [#117](https://github.com/try2love/codex-mobile-bridge/issues/117) · [#123](https://github.com/try2love/codex-mobile-bridge/issues/123) · [#126](https://github.com/try2love/codex-mobile-bridge/issues/126) · [#128](https://github.com/try2love/codex-mobile-bridge/issues/128)
+- **Local and official ZCode remote access.** Configure connections in the desktop gateway, then select a prepared mode from mobile or the web. Start ZCode, reconnect to an existing chat or quit normally. Switching preserves drafts, attachments and reading position. Account management supports compatible custom API providers and manual per-model daily quota queries with update timestamps. The macOS release package also supports local connections. [#124](https://github.com/try2love/codex-mobile-bridge/issues/124) · [#128](https://github.com/try2love/codex-mobile-bridge/issues/128) · [#129](https://github.com/try2love/codex-mobile-bridge/issues/129)
+- **Choose a model before starting a chat.** Codex, Claude, DSH and ZCode share model and reasoning selectors according to each connection's capabilities. Chat creation, conversation settings and account management reuse verified catalogs; refreshes propagate across screens while computers, accounts, projects and profiles remain isolated. [#131](https://github.com/try2love/codex-mobile-bridge/issues/131)
+- **Multiple routes for one computer.** Group LAN, fixed HTTPS and temporary HTTPS addresses under one mobile computer card. Select an authenticated route automatically, or inspect latency and switch manually without losing the chat, draft or reading position. [#125](https://github.com/try2love/codex-mobile-bridge/issues/125)
+- **Independent clients and VS Code access.** Register the Codex extension's independent configuration and route supported operations to the original extension. Experimental independent Claude and DSH Desktop profiles keep accounts, chats, model caches, drafts and notifications separate. [#106](https://github.com/try2love/codex-mobile-bridge/issues/106)
+- **CLI release, context and background tasks.** Manage local, SSH and WSL CLI connections held by the gateway and release them after tasks finish without removing history. Supported chats expose native context usage and idle manual compaction. DSH and ZCode can list and individually stop background tasks for the current chat. [#118](https://github.com/try2love/codex-mobile-bridge/issues/118) · [#119](https://github.com/try2love/codex-mobile-bridge/issues/119) · [#121](https://github.com/try2love/codex-mobile-bridge/issues/121) · [#122](https://github.com/try2love/codex-mobile-bridge/issues/122)
+- **UU Remote from mobile.** Enable UU Remote per computer on Android or iOS, bind a device, then open picture-in-picture or remote control from the menu. Disabled by default; requires a configured UU Remote installation and a supported Windows or macOS target. [#113](https://github.com/try2love/codex-mobile-bridge/issues/113)
+- **Less background work while idle.** Disabled clients stop related observation and scheduled model refreshes; optional services start on demand. The window and tray reuse status snapshots, and pairing queries and countdowns run only when the QR view needs them. Existing native tasks and saved caches are preserved.
+
+### Fixes
+
+- Recover Codex connections left on a replaced desktop communication endpoint, coalesce duplicate reconnect attempts and bound close-operation queueing. Messages with uncertain outcomes are not replayed automatically.
+- Correct Windows MSIX Claude developer-mode detection and improve initialization, temporarily locked login databases and late acknowledgement reconciliation. [#127](https://github.com/try2love/codex-mobile-bridge/issues/127)
+- Verify native renames for Claude Desktop, supported Claude Code CLI connections, DSH and ZCode. [#120](https://github.com/try2love/codex-mobile-bridge/issues/120)
+- Display reasoning text from third-party Codex Responses providers when no summary is supplied, including CLI reasoning deltas; summaries retain priority when present. [#110](https://github.com/try2love/codex-mobile-bridge/issues/110) · [PR #130](https://github.com/try2love/codex-mobile-bridge/pull/130)
+- Preserve reading position in long activity blocks, improve first-tap copying and original-image saving, and fix duplicate mobile navigation during cold loading and the four-Agent tab layout. [#112](https://github.com/try2love/codex-mobile-bridge/issues/112) · [#114](https://github.com/try2love/codex-mobile-bridge/issues/114) · [#115](https://github.com/try2love/codex-mobile-bridge/issues/115)
+- Improve Linux AppImage and older Python-runtime compatibility, macOS Unicode-path recognition, Windows packaging with long argument lists, and upgrades of older DSH connectors.
+- Keep attached native Codex side chats out of the standalone chat list while preserving access and history; promoted independent chats remain visible.
+- Prevent optional ZCode login restoration from blocking gateway startup, restore local connections after replacing the gateway bundle, and retain the correct data directory when updating one of multiple gateway installations.
+
+### Upgrading
+
+Install over the matching existing app without uninstalling it or clearing data. Update both the gateway and mobile app to use mobile route switching and UU Remote integration. On Linux, install the matching DEB over the previous version or replace the AppImage. iOS still requires self-signing with the same application identifier and signing identity.
+
+### Credits
+
+Thanks to [@tiancai123123](https://github.com/tiancai123123) for the reasoning-content fix and Windows/Android validation in [PR #130](https://github.com/try2love/codex-mobile-bridge/pull/130); [@heiqiu47](https://github.com/heiqiu47) for [UU Remote request #113](https://github.com/try2love/codex-mobile-bridge/issues/113); [@SOFdian](https://github.com/SOFdian) for [VS Code configuration request #106](https://github.com/try2love/codex-mobile-bridge/issues/106); and [@xtayavij](https://github.com/xtayavij) for the [Windows MSIX Claude reproduction #127](https://github.com/try2love/codex-mobile-bridge/issues/127). Thank you to everyone who tested the three preview releases.
+
+---
+
+## v2.2.0-preview.3 · ZCode 双通道接入、新建模型选择与独立客户端配置
+
+本次预览版继续完善 ZCode 接入、账号与模型管理，让新建聊天前的设置更明确，并修复会话改名、模型缓存和网关启动中的问题。
+
+### 新增与优化
+
+- **ZCode 支持本机连接与官方远控两种方式。** 在桌面网关完成官方账号登录和远控链接配置后，可在手机和 Web 的账号管理中选择已准备好的连接方式。官方模式可正常启动尚未运行的 ZCode，并接回原聊天；切换方式保留输入草稿、附件和阅读位置，不自动重发消息。首次配置增加分步引导，登录状态加密保存。原 TCP 兼容端口入口由这两种方式替代。[#107](https://github.com/try2love/codex-mobile-bridge/issues/107) · [#124](https://github.com/try2love/codex-mobile-bridge/issues/124) · [#128](https://github.com/try2love/codex-mobile-bridge/issues/128)
+- **新建聊天时选择模型和思考强度。** Codex、Claude、DSH、ZCode 共用模型选择入口，覆盖支持的桌面、CLI、SSH 和 WSL 接入。Claude 和 ZCode 创建聊天时，首条消息直接使用所选模型；思考强度以当前接入实际支持的档位为准。[#131](https://github.com/try2love/codex-mobile-bridge/issues/131)
+- **模型列表更充分地复用缓存。** 新建聊天、聊天设置和账号管理共享同一接入下已核验的模型目录；一处刷新后，其他入口同步更新。不同电脑、账号、项目和独立配置继续隔离，较晚返回的旧结果不会覆盖较新的目录，也不会改变其他聊天已选的模型。
+- **账号配置界面统一，ZCode 可保存自定义 API。** 复用共同的地址、密钥和模型选择表单，支持在保存前读取上游提供的模型。ZCode 可保存原客户端支持的 Anthropic Messages、OpenAI Chat Completions 和 OpenAI Responses 接入；保存配置与实际应用分开，应用时保留现有任务检查。
+- **ZCode 额度支持主动刷新。** 通过原客户端查询当前官方账号各模型的每日剩余额度，显示更新时间并复用缓存；查询失败保留同账号仍有效的旧值，同时说明未更新。额度查询不调用模型。[#129](https://github.com/try2love/codex-mobile-bridge/issues/129)
+- **独立客户端配置，实验性开放。** 在已有 Codex 独立配置入口基础上，增加 Claude、DSH 的独立桌面配置，与默认接入并存。分别管理账号、会话、附件、草稿、模型缓存和通知，启动、重连及退出按当前实例执行。ZCode 可手动指定未被自动发现的安装位置，仍使用默认配置，不新增第二套独立 ZCode。
+
+### 修复
+
+- **会话改名同步到原客户端。** 完善 Claude Desktop、Claude Code CLI、DSH 和 ZCode 的原生改名与结果确认；不再把仅修改 Bridge 显示名称当作原 App 改名成功。未连接或原生版本不支持时给出明确提示。[#120](https://github.com/try2love/codex-mobile-bridge/issues/120)
+- **第三方 Codex 思考内容能够显示。** 当兼容 Responses API 只返回思考正文、未返回摘要时，使用上游已提供的正文补充展示，并支持 CLI 思考增量；有摘要时仍优先显示摘要。[#110](https://github.com/try2love/codex-mobile-bridge/issues/110) · [PR #130](https://github.com/try2love/codex-mobile-bridge/pull/130)
+- **可选登录恢复不再卡住整个网关。** 修复系统钥匙串未就绪时，ZCode 官方登录恢复阻塞主窗口的问题。未配置官方登录时不读取其钥匙串；已保存的登录在后台恢复，失败可单独重试。
+- **补齐平台与升级兼容。** 改善 Linux ZCode AppImage 的发现和原安装位置识别；修复 macOS 中文路径下的进程识别，以及 Windows 打包参数过长导致的构建失败。修复 DSH 旧连接插件升级与可选服务读取问题，并完善独立 Claude 开启开发者模式、自行重启后的显式连接恢复。
+
+感谢 [@tiancai123123](https://github.com/tiancai123123) 在 [PR #130](https://github.com/try2love/codex-mobile-bridge/pull/130) 中提供第三方 Codex 思考内容修复及 Windows、Android 验证。
+
+---
+
+### English · ZCode connection modes, model selection and independent client profiles
+
+This preview improves ZCode connectivity and account management, adds model selection before starting a chat, and fixes native renaming, model cache reuse and gateway startup.
+
+- **Choose local or official ZCode remote access.** Configure the official login and remote link in the desktop gateway, then choose a prepared connection mode in account management on mobile or the web. Official mode can start ZCode when it is closed and reconnect to the original chat. Switching modes keeps drafts, attachments and reading position without replaying messages. Setup guidance and encrypted login persistence are included. These two modes replace the previous TCP compatibility-port option. [#107](https://github.com/try2love/codex-mobile-bridge/issues/107) · [#124](https://github.com/try2love/codex-mobile-bridge/issues/124) · [#128](https://github.com/try2love/codex-mobile-bridge/issues/128)
+- **Choose a model before creating a chat.** Codex, Claude, DSH and ZCode share a model picker across supported Desktop, CLI, SSH and WSL connections. Claude and ZCode use the selected model for the first message. Reasoning levels follow the capabilities of the selected connection. [#131](https://github.com/try2love/codex-mobile-bridge/issues/131)
+- **Reuse model catalogs across screens.** Chat creation, conversation settings and account management share verified catalogs for the same connection. Refreshes propagate between screens while computers, accounts, projects and independent profiles stay separate. Late responses cannot replace newer catalogs or change another conversation's model selection.
+- **Use a shared API account editor.** Reuse the endpoint, key and model-selection form, including upstream model discovery before saving. ZCode can save providers using its supported Anthropic Messages, OpenAI Chat Completions and OpenAI Responses protocols. Saving and applying remain separate operations, with existing task checks preserved.
+- **Refresh official ZCode quotas.** Query the original client for the current account's per-model daily allowance, with timestamps and caching. A failed refresh preserves valid values for the same account and reports that they were not updated. Quota queries do not make model requests. [#129](https://github.com/try2love/codex-mobile-bridge/issues/129)
+- **Try independent client profiles.** Experimental Claude and DSH Desktop profiles can coexist with the default connection, extending the existing independent Codex entry. Accounts, history, attachments, drafts, model catalogs, notifications and lifecycle operations are scoped to the selected instance. ZCode supports manually selecting an installation missed by discovery, but continues to use its default profile.
+
+**Fixes**
+
+- Native renames in Claude Desktop, supported Claude Code CLI connections, DSH and ZCode are verified against the original client. Changing a Bridge-only display alias is no longer reported as a successful native rename. [#120](https://github.com/try2love/codex-mobile-bridge/issues/120)
+- Codex third-party Responses providers that return reasoning text without a summary can display that text, including CLI reasoning deltas. An available summary still takes precedence. [#110](https://github.com/try2love/codex-mobile-bridge/issues/110) · [PR #130](https://github.com/try2love/codex-mobile-bridge/pull/130)
+- Optional ZCode login restoration no longer blocks the gateway window when the system keyring is unavailable. Unconfigured logins do not access the keyring; saved logins restore in the background and can be retried separately.
+- Improved Linux ZCode AppImage discovery, macOS process identification under Unicode paths, Windows packaging with long resource argument lists, DSH connector upgrades and optional-service access, and explicit reconnection after an independent Claude instance relaunches to enable developer mode.
+
+Thanks to [@tiancai123123](https://github.com/tiancai123123) for the reasoning-content fix and Windows/Android validation in [PR #130](https://github.com/try2love/codex-mobile-bridge/pull/130).
+
+---
+
+## v2.2.0-preview.2 · ZCode 历史、桌面接入与模型额度
+
+**这次预览版把「看历史」和「操作桌面」分开了。** 手机和 Web 可以直接打开 ZCode 已保存的聊天；要继续发送或处理审批时，Bridge 再确认连接的是原来的桌面会话。
+
+- **看历史不用切换桌面窗口。** 在 macOS、Windows 和 Linux 桌面网关上，可以直接读取已保存的 ZCode 聊天。如果 ZCode 只保留了列表条目，仍可打开空会话；原 App 已找不到的聊天不会取得发送权限。读取失败可以原地重试。打开聊天先看最新消息，向上翻阅时，后台刷新会保留阅读位置。[#128](https://github.com/try2love/codex-mobile-bridge/issues/128)
+- **看清每条回复用的模型，也能找回附件。** 如果原记录提供了模型和思考强度，聊天会按回复显示当时的值。历史图片可以点缩略图看原图；来自当前项目、且来源可核实的附件可以点击文件名定位。原记录缺少信息时不会用当前模型或同名文件代替。
+- **从手机管理 ZCode 或新建项目聊天。** 可以在网关、手机或 Web 启动 ZCode、正常退出，或只关闭远程接入，让电脑上的任务继续运行。Windows 支持从原生托盘正常退出。「第三方通知」可以直接从列表打开；原 App 的项目服务就绪后，即可新建项目聊天，不必先找一个可发送的旧会话。[#128](https://github.com/try2love/codex-mobile-bridge/issues/128)
+- **弱网下接回原聊天。** 如果手机没有收到接续结果，恢复连接后会继续查询同一次请求，无需反复点启用，也不会重发聊天消息。接续期间不会反复加载整份历史。
+- **按模型查看 ZCode 每日额度。** 账号页可分别显示 GLM-5.3、GLM-5.3-Flash 等模型的剩余额度及更新时间。数据来自 ZCode 官方账号已取得的记录；没有记录时不会估算，点击刷新也不会消耗模型额度。[#129](https://github.com/try2love/codex-mobile-bridge/issues/129)
+- **继续 VS Code 里正在使用的 Codex 聊天。** 对于单独配置了 `CODEX_HOME` 的 VS Code 扩展，Bridge 优先把发送、审批和停止交给原来持有会话的扩展，减少电脑和手机争用同一聊天的问题。修复了 Windows 上同一目录因路径写法不同而未被识别的情况。可用操作取决于扩展版本。[#106](https://github.com/try2love/codex-mobile-bridge/issues/106)
+- **连接与更新。** 会话连接重建失败后仍可重试；网关设置会指出尚未保存的字段。修复同一台电脑装有多份网关时，更新重启可能用错数据目录的问题。
+
+**兼容范围：** Windows 和 Linux 桌面默认通过本机私有管道接入，不必开启 TCP 调试端口。网关按原进程身份和实际协议能力开放操作，不再只看版本号。已在 Windows x64 的 ZCode 3.17.1 和 Ubuntu 22.04 x64 已登录图形桌面验收。macOS 公开包普通启动即可看历史；要继续聊天，可在「应用管理」启用本机兼容端口。Mac Test 的锁屏无端口启动器不包含在公开包中。
+
+**从 preview.1 更新：** macOS 和 Windows 网关可在「检查更新」中选择「更新并重启」；Android 可在 App 内检查更新、下载并确认安装。Linux 请覆盖安装对应架构的 DEB，或替换原 AppImage；iOS 可在 App 内检查更新并打开发布页，仍需使用与原安装一致的签名身份和应用标识覆盖安装。无需先卸载 preview.1。使用稳定版的用户不会收到此次预览更新。
+
+---
+
+### English · ZCode history, desktop access and model quotas
+
+You can now open saved ZCode chats on mobile and the web without switching the desktop window. Before sending a message or handling an approval, Bridge verifies that it is connected to the original desktop session.
+
+- **Read saved chats.** macOS, Windows and Linux desktop gateways read ZCode history locally. An indexed chat with no transcript opens as an empty conversation. A chat missing from the original app stays read-only. Failed reads can be retried in place. Chats open at the latest message and keep your place while you read older replies. [#128](https://github.com/try2love/codex-mobile-bridge/issues/128)
+- **Inspect replies and attachments.** Replies show the model and reasoning effort recorded at the time, when available. Tap image thumbnails to see the original, or select a verified project attachment to locate its file.
+- **Manage the desktop or start a project chat.** Start ZCode, quit normally (including via its native Windows tray), or turn off remote access while leaving local work running. Open third-party notifications from the list or start a project chat once ZCode’s project service is ready, without first opening a writable chat. [#128](https://github.com/try2love/codex-mobile-bridge/issues/128)
+- **Resume over a slow connection.** If a phone misses the response, it can check the original request after reconnecting. It does not resend chat messages or repeatedly reload the full history.
+- **See daily quota by model.** The account page shows the remaining allowance and update time for models such as GLM-5.3 and GLM-5.3-Flash when ZCode has recorded an official quota response. Refresh rereads those records; it does not make a model request or estimate missing values. [#129](https://github.com/try2love/codex-mobile-bridge/issues/129)
+- **Continue the original VS Code Codex chat.** For extensions registered with a separate `CODEX_HOME`, Bridge routes sending, approvals and stop requests to the extension that owns the session when supported. Windows paths that refer to the same directory are now recognised consistently. [#106](https://github.com/try2love/codex-mobile-bridge/issues/106)
+- **Connection and update fixes.** Retry a failed reconnection, identify unsaved gateway settings and keep the correct data directory when an update restarts one of several gateway installations.
+
+**Compatibility:** Windows and Linux desktop gateways use a private local pipe by default, without a TCP debugging port. Controls are enabled according to the identity and capabilities of the running app, rather than its version alone. Verified with ZCode 3.17.1 on Windows x64 and a signed-in graphical desktop on Ubuntu 22.04 x64. The public macOS build reads saved chats without special setup; enable the local compatibility port in app management to continue a chat. The port-free locked-screen Mac Test launcher is not included.
+
+**Upgrading from preview.1:** Use **Check for updates → Update and restart** on macOS or Windows. Android can check, download and prompt to install in the app. On Linux, install the matching DEB over the previous package or replace the AppImage. On iOS, the update check opens the release page; sign and install over the existing app using the same identity and bundle ID. Stable installations will not be offered this preview.
+
+---
+
+## v2.2.0-preview.1 · ZCode 原生会话与手机连接切换
+
+这次预览版把 ZCode 原生聊天带到手机和 Web。手机 App 也开始按网关整理电脑。同一个网关的局域网、固定 HTTPS 和临时 HTTPS 地址可以放在一张卡片里，在家和外出时都能继续原来的聊天。
+
+### ZCode 原生接入预览
+
+- **继续桌面上的聊天。** 在已配置 ZCode 接入的 macOS 或 Windows 网关上，可以从手机和 Web 浏览历史、继续原会话、发送附件、回答问题和处理审批。ZCode 重启后，即使桌面还停在首页，也可以从 Bridge 主动恢复旧聊天。接入使用网关自带运行时，无需另装 Node.js 或 Homebrew。[#107](https://github.com/try2love/codex-mobile-bridge/issues/107) · [#123](https://github.com/try2love/codex-mobile-bridge/issues/123) · [#124](https://github.com/try2love/codex-mobile-bridge/issues/124)
+- **在项目里新建和整理会话。** 可以选已有项目，也可以登记新目录，用第一条消息创建原生聊天。支持改名、从指定回复分支，以及编辑原消息后重新发送。[#116](https://github.com/try2love/codex-mobile-bridge/issues/116) · [#120](https://github.com/try2love/codex-mobile-bridge/issues/120)
+- **控制下一步怎样执行。** 可切换模型和思考强度、引用 Skill、选择计划或目标模式，以及调整访问权限。任务进行中可选择「完成后发送」或「补充当前任务」。如果 ZCode 将补充内容排入队列，Bridge 会显示「已入队」。[#107](https://github.com/try2love/codex-mobile-bridge/issues/107) · [#117](https://github.com/try2love/codex-mobile-bridge/issues/117) · [#126](https://github.com/try2love/codex-mobile-bridge/issues/126)
+
+### 手机连接与会话管理
+
+- **一台网关，一张电脑卡片。** 进入电脑时，App 会使用最先通过网关身份验证的已启用地址。自动模式下，回到同一局域网后优先走局域网，离开后可切回可用的公网入口。也可以查看延迟、手动选线。换线时保留当前聊天、草稿和阅读位置。[#125](https://github.com/try2love/codex-mobile-bridge/issues/125)
+- **接入独立的 VS Code Codex 配置。** 在桌面网关添加扩展使用的 `CODEX_HOME` 后，手机和 Web 会把它显示为独立客户端，分别管理会话、账号和草稿。[#106](https://github.com/try2love/codex-mobile-bridge/issues/106)
+- **用完 CLI 后，把连接交还给电脑。** 可在会话菜单中释放单条连接，也可在设置里集中管理本网关持有的本机、SSH 和 WSL 连接。默认等任务结束再释放，原聊天和历史保留。Codex 原生服务有时会延迟释放，电脑端接手可能需要稍候。[#122](https://github.com/try2love/codex-mobile-bridge/issues/122)
+- **管理长聊天与后台任务。** 支持的 Codex、Claude、DSH 和 ZCode 会话可查看原客户端提供的上下文用量，并在空闲时发起手动压缩。DSH 和 ZCode 还可查看当前聊天的后台任务，单独停止其中一项。[#118](https://github.com/try2love/codex-mobile-bridge/issues/118) · [#119](https://github.com/try2love/codex-mobile-bridge/issues/119) · [#121](https://github.com/try2love/codex-mobile-bridge/issues/121)
+
+### 修复与阅读体验
+
+- **Claude Desktop 连接。** 修复 Windows 商店版（MSIX）已开启开发者模式却被误判的问题。macOS 和 Windows 上的首次初始化可在已信任目录完成握手，避免空消息触发模型调用。登录数据库暂时被占用时，仍可打开原生聊天历史，待账号身份重新确认后再恢复模型设置和对应账号的草稿。[#127](https://github.com/try2love/codex-mobile-bridge/issues/127)
+- **阅读、复制与图片保存。** 展开 Claude 或 DSH 的长段思考或工具输出后，后台刷新会保留阅读位置。会话菜单中的复制操作首次点击即可生效，并给出反馈。图片预览新增保存原图入口，文件保存到当前手机或电脑。[#112](https://github.com/try2love/codex-mobile-bridge/issues/112) · [#114](https://github.com/try2love/codex-mobile-bridge/issues/114) · [#115](https://github.com/try2love/codex-mobile-bridge/issues/115)
+- **Ubuntu 网关启动。** 修复部分使用 Python 3.11 之前运行时的打包网关因缺少 TOML 读取组件而无法启动的问题。
+
+**预览范围。** ZCode 接入目前面向已有接入配置的 macOS 和 Windows 网关，已验证 ZCode 3.17.1。手机多地址切换需要配套的 Android 或 iOS 预览 App。欢迎重点反馈 ZCode 冷启动后继续旧聊天、手机在 Wi-Fi 与蜂窝之间切换，以及 Claude 登录库被占用时打开历史这三个场景。
+
+感谢 [@SOFdian](https://github.com/SOFdian) 提出独立 VS Code 配置的接入需求，感谢 [@xtayavij](https://github.com/xtayavij) 提供 Windows 商店版 Claude 的复现步骤。[#106](https://github.com/try2love/codex-mobile-bridge/issues/106) · [#127](https://github.com/try2love/codex-mobile-bridge/issues/127)
+
+---
+
+### English · Native ZCode chats and mobile connection switching
+
+This preview brings native ZCode chats to mobile and the web. The mobile app can group LAN, fixed HTTPS and temporary HTTPS addresses for the same gateway under one computer entry.
+
+- **Native ZCode chats.** On a configured macOS or Windows gateway, read history, resume a desktop chat, send attachments, answer questions and handle approvals. Chats can also be resumed after ZCode restarts at its home screen. The gateway includes the connection runtime, so no separate Node.js or Homebrew installation is required. [#107](https://github.com/try2love/codex-mobile-bridge/issues/107) · [#123](https://github.com/try2love/codex-mobile-bridge/issues/123) · [#124](https://github.com/try2love/codex-mobile-bridge/issues/124)
+- **Projects and chat controls.** Choose an existing project or register a directory, then create a native chat with its first message. Rename chats, branch from a reply, or edit and resend a message. Choose the model, reasoning effort, Skills, work mode and access permissions. Follow-up input is shown as queued when ZCode accepts it into the queue. [#116](https://github.com/try2love/codex-mobile-bridge/issues/116) · [#117](https://github.com/try2love/codex-mobile-bridge/issues/117) · [#120](https://github.com/try2love/codex-mobile-bridge/issues/120) · [#126](https://github.com/try2love/codex-mobile-bridge/issues/126)
+- **One computer entry per gateway.** The mobile app opens the first enabled address that proves it belongs to the paired gateway. Automatic mode prefers a verified LAN connection when it becomes available and can fall back to a public address when LAN is lost. You can also view latency and choose a route manually. Switching keeps the current chat, draft and reading position. [#125](https://github.com/try2love/codex-mobile-bridge/issues/125)
+- **Independent VS Code configurations.** Add the Codex extension’s `CODEX_HOME` in the desktop gateway to manage its chats, accounts and drafts separately on mobile and the web. [#106](https://github.com/try2love/codex-mobile-bridge/issues/106)
+- **Release CLI connections.** Release a single connection from the chat menu, or manage local, SSH and WSL connections held by the gateway in Settings. Release waits for the task to finish by default and preserves chat history. Codex’s native service can take additional time before another terminal can resume the chat. [#122](https://github.com/try2love/codex-mobile-bridge/issues/122)
+- **Context and background tasks.** Supported Codex, Claude, DSH and ZCode chats show the context usage reported by the client and offer manual compaction when idle. In DSH and ZCode, you can inspect background tasks for the current chat and stop an individual task. [#118](https://github.com/try2love/codex-mobile-bridge/issues/118) · [#119](https://github.com/try2love/codex-mobile-bridge/issues/119) · [#121](https://github.com/try2love/codex-mobile-bridge/issues/121)
+- **Claude Desktop recovery.** Fixed developer-mode detection for Windows MSIX installations. On macOS and Windows, initialization in a trusted directory completes without sending an empty model message. Native history stays readable if the sign-in database is temporarily locked. Account-specific drafts and model settings become available once account identity can be verified again. [#127](https://github.com/try2love/codex-mobile-bridge/issues/127)
+- **Reading, copying and saving images.** Expanded Claude and DSH activity keeps its reading position during refresh. Copying from a chat menu works on the first tap and gives feedback. The image viewer can save the original image to the device you are using. [#112](https://github.com/try2love/codex-mobile-bridge/issues/112) · [#114](https://github.com/try2love/codex-mobile-bridge/issues/114) · [#115](https://github.com/try2love/codex-mobile-bridge/issues/115)
+- **Ubuntu startup.** Fixed a missing TOML reader that prevented packaged gateways using Python runtimes older than 3.11 from starting.
+
+**Preview coverage.** Native ZCode access has been tested with ZCode 3.17.1 on configured macOS and Windows gateways. Mobile connection switching requires the matching Android or iOS preview app. Feedback on cold-start chat recovery, Wi-Fi/cellular switching and reading history while Claude’s sign-in database is locked is especially welcome.
+
+Thanks to [@SOFdian](https://github.com/SOFdian) for the independent VS Code configuration request and [@xtayavij](https://github.com/xtayavij) for the Windows MSIX reproduction. [#106](https://github.com/try2love/codex-mobile-bridge/issues/106) · [#127](https://github.com/try2love/codex-mobile-bridge/issues/127)
+
+---
 
 ## v2.1.7 · 手机通知、会话整理与连接恢复
+
+<a id="v217"></a>
 
 本次更新完善手机通知和会话管理，增加项目文件引用与历史图片预览，并修复弱网发送、SSH 离线和部分桌面会话连接异常。桌面与手机 App 版本为 **2.1.7**，Android/iOS 构建号为 **40**。
 

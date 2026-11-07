@@ -254,6 +254,18 @@ def windows_claude_profile_paths(executable, fallback, *, env=None, package_fami
     return {'official': official, 'thirdparty': thirdparty}
 
 
+def running_profile_path(executable, observed, env, package_family):
+    """MSIX can report its logical Roaming path outside the package container."""
+    groups = windows_claude_profile_paths(executable, observed, env=env, package_family=package_family)
+    official = groups.get('official', [])
+    if len(official) == 3 and observed == official[-1]:
+        redirected = official[1]
+        if any((redirected / name).is_file() for name in
+               ('Local State', 'Preferences', 'developer_settings.json', 'claude_desktop_config.json')):
+            return redirected
+    return observed
+
+
 def stopped_profile(executable, fallback, env, package_family):
     groups = windows_claude_profile_paths(executable, fallback, env=env, package_family=package_family)
     if not groups:

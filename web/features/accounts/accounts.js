@@ -40,9 +40,9 @@ class AccountsPanel {
     this.rows=this.node('div',undefined,'accounts-list');
     this.currentReset=this.button('查看并使用重置卡',()=>this.onReset?.());this.currentReset.hidden=true;
     this.current=this.node('p',undefined,'accounts-current');this.blocked=this.node('div',undefined,'account-muted');this.root.append(this.current,this.status,this.error,this.currentReset,this.blocked,this.globalReset,this.rows);
-    this.management=this.node('div',undefined,'accounts-management');this.root.append(this.management);
+    this.management=ApiAccessEditor.management(this.root,this.node.bind(this));
     this.sshHosts=this.node('section');this.sshHosts.hidden=true;this.root.append(this.sshHosts);
-    this.tools=this.node('details');this.tools.append(this.node('summary','提醒与 Codex Desktop 更新'));
+    this.tools=this.node('details');this.toolsTitle=this.node('summary');this.tools.append(this.toolsTitle);
     this.reminders=this.node('div');this.updates=this.node('section');this.tools.append(this.reminders,this.updates);this.management.append(this.tools);
     if(!this.desktop){this.root.append(this.node('p','官方账号登录请在电脑端完成。','account-muted'));return;}
     const scanDetails=this.node('details');scanDetails.append(this.node('summary','扫描本机配置'));
@@ -63,19 +63,19 @@ class AccountsPanel {
     this.model=this.field('默认模型');this.model.input.maxLength=200;
     this.modelOptions=this.node('select');this.modelOptions.setAttribute('aria-label',this.text('上游模型'));this.modelOptions.hidden=true;
     this.modelOptions.onchange=()=>{if(this.modelOptions.value)this.model.input.value=this.modelOptions.value;};
-    this.modelsButton=this.button('获取上游模型',async()=>{
-      const context=()=>JSON.stringify([this.importId,this.editId,this.kind.value,this.url.input.value,this.key.input.value]),started=context();
-      const payload=this.importId?{action:'models',candidateId:this.importId}:{action:'models',id:this.editId,baseUrl:this.url.input.value,apiKey:this.key.input.value};
-      if(await this.perform(payload)){if(started!==context())return;this.modelOptions.replaceChildren(this.node('option','请选择模型'));
-        this.modelOptions.children[0].value='';for(const id of this.value.models||[]){const option=this.node('option');option.textContent=id;option.value=id;this.modelOptions.append(option);}
-        if(!this.model.input.value.trim()&&this.value.models?.length){this.model.input.value=this.value.models[0];this.modelOptions.value=this.value.models[0];}
-        this.modelOptions.hidden=false;this.modelMessage.textContent=this.text('模型列表不保证支持 Responses API，请选择可用于对话的模型。');}
-    });
+    this.modelsButton=this.button('获取上游模型',()=>ApiAccessEditor.discover(this.apiEditor));
     this.modelMessage=this.node('p',undefined,'account-muted');
-    const clearModels=()=>{this.modelOptions.replaceChildren();this.modelOptions.hidden=true;this.modelMessage.textContent='';};
+    this.submit=this.node('button','继续');this.submit.type='submit';
+    const panel=this,asField=value=>({label:value.wrap,input:value.input});
+    this.apiEditor={t:this.text.bind(this),node:this.node.bind(this),get busy(){return panel.busy;},draftRevision:0,draftModelMode:'legacy',draftManualToggle:false,
+      model:asField(this.model),baseUrl:asField(this.url),key:asField(this.key),save:this.submit,modelSelect:this.modelOptions,modelCaption:this.model.wrap,modelFeedback:this.modelMessage,fetchModels:this.modelsButton,manualModel:this.button('手动填写',()=>{}),request:payload=>this.request(payload),
+      draftModelContext:()=>JSON.stringify([this.generation,this.importId,this.editId,this.kind.value,this.url.input.value,this.key.input.value]),
+      draftModelRequest:()=>this.importId?{action:'models',candidateId:this.importId}:{action:'models',id:this.editId,baseUrl:this.url.input.value,apiKey:this.key.input.value},
+      onDraftStart:()=>{this.operationError=false;this.error.textContent='';},onDraftError:error=>{this.operationError=true;this.error.textContent=this.text(String(error.message).replace(/^Error invoking remote method '[^']+': (?:Error: )?/,''));},
+      draftModelSuccess:'模型列表不保证支持 Responses API，请选择可用于对话的模型。'};
+    const clearModels=()=>ApiAccessEditor.clear(this.apiEditor);
     this.url.input.oninput=clearModels;this.key.input.oninput=clearModels;this.clearModels=clearModels;
     const fields=()=>{this.modelsButton.hidden=this.kind.value!=='api';if(this.kind.value!=='api')clearModels();for(const field of [this.url,this.key,this.model])field.wrap.hidden=this.kind.value!=='api';};this.kind.onchange=fields;fields();
-    this.submit=this.node('button','继续');this.submit.type='submit';
     this.cancelEdit=this.button('取消编辑',()=>{this.resetForm();fields();});
     this.form.append(this.name.wrap,this.kind,this.url.wrap,this.key.wrap,this.model.wrap,this.modelsButton,this.modelOptions,this.modelMessage,this.submit,this.cancelEdit);
     this.form.onsubmit=async event=>{
@@ -90,7 +90,7 @@ class AccountsPanel {
     const settings=this.node('details');settings.append(this.node('summary','桌面程序与恢复'));
     this.executable=this.field('桌面程序路径');this.executable.input.placeholder=this.text('可选择 .app 应用程序包或桌面可执行文件');
     this.scanDesktop=this.button('扫描桌面程序',()=>this.perform({action:'scanDesktop'}));
-    settings.append(this.executable.wrap,this.scanDesktop,this.button('保存程序路径',()=>this.perform({action:'configure',desktopExecutable:this.executable.input.value})));
+    this.desktopSettings=settings;settings.append(this.executable.wrap,this.scanDesktop,this.button('保存程序路径',()=>this.perform({action:'configure',desktopExecutable:this.executable.input.value})));
     this.recover=this.button('恢复原接入',()=>{if(window.confirm(this.text('确认恢复原接入并重启 Codex 桌面应用？')))this.perform({action:'recover',confirmed:true});});
     settings.append(this.recover);this.management.append(settings);
   }
@@ -239,14 +239,14 @@ class AccountsPanel {
     controls.append(refresh);return controls;
   }
   accept(value){const old=this.value;if(!this.desktop&&old?.canSwitch===false&&value.canSwitch===undefined)value={...value,canSwitch:false};this.value=value;if(!value.resetDynamicEnabled)this.globalResetRefreshIntent=null;this.finishGlobalResetRefresh(value.globalReset);if(old&&(old.activeId!==value.activeId||old.current?.kind!==value.current?.kind||old.current?.name!==value.current?.name||old.switch?.phase!==value.switch?.phase))this.onChanged(value);this.onUpdate(value);this.render();}
-  clear(){clearTimeout(this.resetMidnightTimer);this.resetMidnightTimer=null;this.globalResetRefreshIntent=null;this.globalResetMessage='';this.globalResetKey=null;this.globalReset.hidden=true;this.resetDialog?.close();clearTimeout(this.timer);this.generation++;this.value=null;this.loading=false;this.busy=false;this.readFailed=false;this.resumePending=false;this.operationError=false;this.modelBoxes.clear();this.error.textContent='';this.rows.replaceChildren();this.sshHosts.replaceChildren();this.sshHosts.hidden=true;}
+  clear(){clearTimeout(this.resetMidnightTimer);this.resetMidnightTimer=null;this.globalResetRefreshIntent=null;this.globalResetMessage='';this.globalResetKey=null;this.globalReset.hidden=true;this.resetDialog?.close();clearTimeout(this.timer);this.generation++;this.clearModels?.();this.value=null;this.loading=false;this.busy=false;this.readFailed=false;this.resumePending=false;this.operationError=false;this.modelBoxes.clear();this.error.textContent='';this.rows.replaceChildren();this.sshHosts.replaceChildren();this.sshHosts.hidden=true;}
   requestId(){
     if(typeof crypto.randomUUID==='function')return crypto.randomUUID();
     const bytes=crypto.getRandomValues(new Uint8Array(16));bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;
     const h=[...bytes].map(x=>x.toString(16).padStart(2,'0')).join('');return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);
   }
   async choose(row){
-    if(!window.confirm(this.text('确认所有任务（包括未在网页显示的任务）已结束，并切换此电脑的 Codex 接入？桌面运行时会重启。')+'\n'+row.name))return;
+    if(!window.confirm(this.text(this.value?.scope==='profile'?'确认此配置中的所有任务已结束，并切换其 Codex 账号？此配置的空闲运行服务会正常退出。':'确认所有任务（包括未在网页显示的任务）已结束，并切换此电脑的 Codex 接入？桌面运行时会重启。')+'\n'+row.name))return;
     try{await this.perform({action:'switch',id:row.id,requestId:this.requestId(),confirmed:true,tasksConfirmed:true,
       syncLocalCli:true});this.refresh();}
     catch(error){this.operationError=true;this.error.textContent=this.text('无法创建切换请求，请刷新页面后重试');}
@@ -256,7 +256,7 @@ class AccountsPanel {
     this.reminders.replaceChildren();
     this.reminders.append(this.node('p','提醒通过电脑端已配置的 Bark、ntfy 或 PushPlus 发送，电脑与网关需要保持运行。','account-muted'));
     const labels={globalReset:'重置动态提醒',lowQuota:'额度不足 10% 时提醒',quotaReset:'确认额度恢复后提醒',resetExpiry:'重置卡到期前 24 小时提醒',subscriptionExpiry:'订阅周期截止前 7／3／1 天提醒',desktopUpdate:'Codex Desktop 新版本提醒'};
-    for(const [key,label] of Object.entries(labels)){
+    for(const [key,label] of Object.entries(labels)){if(value.scope==='profile'&&key==='desktopUpdate')continue;
       const wrap=this.node('label',undefined,'account-reminder'),input=document.createElement('input');input.type='checkbox';input.checked=!!value.reminders?.[key];input.disabled=this.busy;
       input.onchange=()=>this.perform({action:'reminders',preferences:{[key]:input.checked}});wrap.append(input,this.node('span',label));this.reminders.append(wrap);
     }
@@ -423,8 +423,13 @@ class AccountsPanel {
     this.renderSshHosts();
     const external=value.management?.external===true;
     this.switchHint.hidden=external;
+    this.switchHint.textContent=this.text(value.scope==='profile'?'此配置的账号与默认 Codex 独立；切换仅作用于此配置。':'此电脑的 Codex Desktop 与 CLI 共用接入；桌面运行时切换会重启桌面应用。');
+    this.toolsTitle.textContent=this.text(value.scope==='profile'?'账号提醒':'提醒与 Codex Desktop 更新');
+    this.updates.hidden=value.scope==='profile';
+    if(this.desktopSettings)this.desktopSettings.hidden=value.scope==='profile';
+    if(this.recover)this.recover.hidden=value.scope==='profile';
     this.tools.hidden=value.scope==='wsl';
-    this.managementNotice.textContent=[value.scopeLabel,this.text(value.management?.reason||'')].filter(Boolean).join(' · ');this.managementNotice.hidden=!external;
+    this.managementNotice.textContent=[value.scopeLabel,value.scope==='profile'?value.codexHome:'',this.text(value.management?.reason||'')].filter(Boolean).join(' · ');this.managementNotice.hidden=!external&&value.scope!=='profile';
     if(this.managementMode){this.managementMode.value=value.management?.mode||'auto';this.managementMode.disabled=this.busy;}
     const phase=value.switch?.phase||'idle',labels={idle:'请选择已保存的接入',preparing:'正在准备账号',stopping:'正在退出 Codex 桌面应用',applying:'正在应用接入配置',starting:'正在启动 Codex 桌面应用',verifying:'正在核验账号与桌面连接',complete:'切换完成',restoring:'正在恢复原接入',restored:'已恢复原接入',failed:'切换未完成',interrupted:'需要在桌面端恢复原接入'};
     const switching=!['idle','complete','restored','failed'].includes(phase);
@@ -476,7 +481,7 @@ class AccountsPanel {
     if(!this.desktop&&value.canSwitch===false&&!external)cards.push(this.node('p','免密访问不能切换账号，请在桌面端操作'));
     this.reconcileRows(cards);
     if(this.desktop){
-      this.scanDesktop.disabled=this.busy||switching;this.renameSave.disabled=this.busy||switching;this.scanButton.disabled=this.busy||switching;this.modelsButton.disabled=this.busy||switching;
+      this.scanDesktop.disabled=this.busy||switching;this.renameSave.disabled=this.busy||switching;this.scanButton.disabled=this.busy||switching;this.modelsButton.disabled=this.busy||switching||!!this.apiEditor?.draftLoading;this.submit.disabled=this.busy||switching||!!this.apiEditor?.draftLoading;
       this.scanSource.input.placeholder=value.codexHome||this.text('留空使用当前 Codex 数据目录');this.scanRows.replaceChildren();
       if(value.discovery){const scan=value.discovery;const source=this.node('p',undefined,'account-muted');source.textContent=scan.source||'';this.scanRows.append(source);
         if(scan.notice)this.scanRows.append(this.node('p',scan.notice,'account-muted'));

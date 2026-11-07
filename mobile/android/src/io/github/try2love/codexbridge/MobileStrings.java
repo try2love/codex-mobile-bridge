@@ -3,6 +3,19 @@ import android.content.Context;
 final class MobileStrings {
  private static final java.util.Map<String,String> values=new java.util.HashMap<>();
  static {
+  values.put("系统未能打开已安装的 UU 远程的远控入口","Android could not open the remote control link in the installed UU Remote app");
+  values.put("找不到 UU 远控入口，请确认 UU 安装在当前手机用户下","No UU Remote link handler was found. Check that UU Remote is installed in this Android profile.");
+  values.put("系统阻止了应用跳转，请允许 Codex Bridge 打开 UU 远程","Android blocked the launch. Allow Codex Bridge to open UU Remote.");
+  values.put("UU 请求正在处理中","A UU request is already in progress");
+  values.put("请安装或更新 UU 远程至 4.42.0 及以上版本","Install or update UU Remote to version 4.42.0 or later");
+  values.put("无法打开 UU 远程","Could not open UU Remote");
+  values.put("UU 设备已绑定，请再次选择小窗或远控","Device linked. Select picture-in-picture or remote control again.");
+  values.put("UU 绑定未完成，请在 UU 中确认账号和设备","Device linking did not finish. Check your account and device in UU Remote.");
+  values.put("UU 小窗已开启","UU picture-in-picture is open");
+  values.put("UU 设备已失效，请重新绑定","The UU device is no longer available. Link it again.");
+  values.put("UU 设备离线","The UU device is offline");
+  values.put("当前设备不支持 UU 小窗，请使用全屏远控","Picture-in-picture is unavailable. Use full-screen control.");
+  values.put("UU 小窗未能开启，请检查设备或重试","Could not open picture-in-picture. Check the device and try again.");
   values.put("粘贴 DSH 客户端 Mobile 功能提供的完整链接","Paste the full link from your DSH client’s Mobile feature");
   values.put("连接 DSH Mobile？","Connect to DSH Mobile?");
   values.put("\n请确认这是你自己的 DSH 客户端。将打开它自带的手机界面。","\nConfirm this is your DSH client. Its own mobile interface will open.");
@@ -24,6 +37,10 @@ final class MobileStrings {
   values.put("待开发项，暂时只支持设置页主题切换","In development. Theme changes currently apply to Settings only.");
   values.put("任务通知","Task notifications");
   values.put("通知来源","Notification sources");
+        values.put("连接中…","Connecting…");
+        values.put("当前信道不可达，请手动切换连接信道","Current channel is unreachable. Choose another channel.");
+        values.put("移除此电脑","Remove this computer");
+        values.put("管理这台电脑","Manage this computer");
   values.put("仅控制这台手机的任务提醒，不影响聊天和通知收件箱。","Choose task alerts for this phone. Chats and notification inboxes remain available.");
   values.put("尚未保存电脑连接","No saved computer connections");
   values.put("后台通知功能说明","Background notification information");

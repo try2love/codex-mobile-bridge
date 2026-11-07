@@ -14,11 +14,13 @@ from collections import deque
 from pathlib import Path
 
 from bridge.clients.claude import model, file_archive
-from bridge.clients.claude.history import file_stamp, page as history_page, image_event
+from bridge.clients.claude.history import file_stamp, page as history_page, image_event, session_custom_title
 from bridge.clients.claude.context import context_fields
 from bridge.clients.claude.session_registry import assert_session_closed
+from bridge.clients.claude.creation import creation_launch_options
 from bridge.clients.errors import BridgeUnavailable, ResumePreflightBlocked
 from bridge.clients.uploads import DesktopUploads
+from bridge.features.sessions.display_metadata import confirm_native_title
 
 
 MODES = {'default', 'acceptEdits', 'plan', 'dontAsk', 'auto', 'bypassPermissions'}
@@ -72,6 +74,63 @@ def _permission_prompt_args(binary, env):
     return ['--permission-prompts', 'host']
 
 
+def _supports_compact(catalog, *, desktop_projection=False):
+    for row in catalog.get('commands') or []:
+        if not isinstance(row, dict) or row.get('name') != 'compact':
+            continue
+        if row.get('builtin') is True:
+            return True
+        # Desktop projects SDK commands to name/description/argumentHint and
+        # drops builtin. Match its observed native descriptor, never name alone:
+        # custom commands can shadow compact and carry a source in description.
+        if (desktop_projection and 'builtin' not in row and
+                row.get('description') == 'Free up context by summarizing the conversation so far' and
+                row.get('argumentHint') == '<optional custom summarization instructions>'):
+            return True
+    return False
+
+
+def _compact_cli(owned, request_id):
+    # The native slash dispatcher owns compaction; never substitute a model prompt.
+    with owned.condition:
+        if not _supports_compact(owned.catalog):
+            raise BridgeUnavailable('当前 Claude Code 未提供原生上下文压缩命令')
+        if owned.active or owned.pending or owned.error or owned.finished:
+            raise BridgeUnavailable('请等待当前 Claude Code 任务结束后再压缩上下文')
+        owned.active = True
+        owned.write({'type': 'user', 'uuid': request_id,
+                     'message': {'role': 'user', 'content': '/compact'}})
+
+
+def _supports_rename(catalog):
+    return ('ui_surface_v1' in (catalog.get('capabilities') or []) and
+            any(isinstance(row, dict) and row.get('name') == 'rename' for row in catalog.get('commands') or []))
+
+
+def _rename_cli(owned, row, title, readback):
+    if (not isinstance(title, str) or not 1 <= len(title.strip()) <= 120 or
+            re.search(r'[\x00-\x1f\x7f]', title)):
+        raise ResumePreflightBlocked('标题为 1–120 字，不能包含控制字符')
+    with owned.condition:
+        if (not _supports_rename(owned.catalog) or owned.error or owned.finished or
+                owned.native != row['nativeId'] or owned.cwd != row['cwd'] or owned.origin != row['origin']):
+            raise ResumePreflightBlocked('当前 Claude Code 连接尚未提供已确认的原生改名能力')
+    title = title.strip()
+    # This is the official non-model control request. Do not send /rename as a
+    # user prompt, append JSONL ourselves, or start a second CLI for metadata.
+    owned.control({'subtype': 'rename_session', 'title': title, 'source': 'host', 'session_id': row['nativeId']})
+    identity = {key: row.get(key) for key in ('nativeId', 'origin', 'cwd')}
+    def read_title():
+        after = readback()
+        return ({'title': after.get('title'), 'identity': {key: after.get(key) for key in identity}}
+                if after is not None else None)
+    try:
+        confirm_native_title(read_title, identity, title)
+    except ValueError as error:
+        raise BridgeUnavailable('改名结果待核对，请检查原 Claude Code 会话；不会重复提交') from error
+    return {'status': 'confirmed', 'scope': 'native', 'result': {'id': row['id'], 'title': title}}
+
+
 def _skill_catalog(catalog):
     """Use commands loaded by the native CLI with this profile and project."""
     rows = {}
@@ -107,6 +166,7 @@ def _model_catalog(catalog):
                    if isinstance(levels, list) and item.get('supportsEffort') is True else [])
         rows[identifier] = {'id': identifier, 'name': name,
                             'efforts': ['auto', *dict.fromkeys(efforts)] if efforts else [],
+                            **({'supportsEffort': item['supportsEffort']} if type(item.get('supportsEffort')) is bool else {}),
                             **({'defaultEffort': 'auto'} if efforts else {})}
     return list(rows.values())
 
@@ -191,6 +251,19 @@ def _set_cli_settings(owned, body):
                                 source.get('settings', {}).get('effortLevel') is not None
                                 for source in sources if isinstance(source, dict))):
         raise BridgeUnavailable('Claude Code 未确认默认思考强度，请刷新检查')
+    owned.model = applied['model']
+
+
+def _verify_creation_settings(owned, selection):
+    applied = _applied_settings(owned)['applied']
+    target = next((row for row in owned.catalog.get('models') or [] if isinstance(row, dict) and
+                   selection['model'] in (row.get('value'), row.get('resolvedModel'))), None)
+    expected = (target.get('resolvedModel') or target.get('value')) if target else selection['model']
+    effort = selection.get('effort')
+    if ((expected != 'default' and applied.get('model') != expected) or
+            effort not in (None, 'auto') and applied.get('effort') != effort or
+            effort == 'auto' and applied.get('effort') not in (None, 'auto')):
+        raise ResumePreflightBlocked('新会话模型或思考强度尚未确认，首条消息未发送')
     owned.model = applied['model']
 
 IMAGE_URL = re.compile(r'data:(image/(?:png|jpeg|gif|webp));base64,([A-Za-z0-9+/]+={0,2})\Z')
@@ -314,6 +387,9 @@ def _saved(path, origin):
                 if not isinstance(event, dict):
                     continue
                 kind = event.get('type')
+                custom_title = session_custom_title(event, native)
+                if custom_title is not None:
+                    title = custom_title
                 if kind == 'user' and not event.get('isSidechain'):
                     if title is None:
                         message = event.get('message') if isinstance(event.get('message'), dict) else {}
@@ -385,6 +461,7 @@ def _saved(path, origin):
 class _Owned:
     def __init__(self, process, origin, native, cwd):
         self.process, self.origin, self.native, self.cwd = process, origin, native, cwd
+        self.connection_token = str(uuid.uuid4())
         self.condition = threading.Condition()
         self.responses = {}
         self.pending = {}
@@ -491,6 +568,9 @@ class _Owned:
         return response.get('response') or {}
 
     def release_for_archive(self, timeout=20):
+        return self.release_connection(stop=True, timeout=timeout)
+
+    def release_connection(self, stop=False, timeout=20):
         """Finish this owned CLI only; never terminate a foreign or shared process."""
         deadline = time.monotonic() + timeout
         with self.condition:
@@ -499,22 +579,25 @@ class _Owned:
             active = self.active or bool(self.pending)
         if self.process.poll() is not None:
             return
+        if active and not stop:
+            return {'status': 'waiting'}
         if active:
             self.control({'subtype': 'interrupt'}, timeout=max(.1, deadline-time.monotonic()))
         with self.condition:
             while (self.active or self.pending) and not self.finished and time.monotonic() < deadline:
                 self.condition.wait(max(0, deadline-time.monotonic()))
             if self.error or self.active or self.pending:
-                raise BridgeUnavailable('停止结果待核对，尚未发送归档请求')
+                raise BridgeUnavailable('停止结果待核对，连接尚未释放')
         # EOF lets the original executor flush and exit; no terminate/kill fallback.
         self.process.stdin.close()
         try:
             code = self.process.wait(timeout=max(.1, deadline-time.monotonic()))
             # Native print mode exits 1 after an acknowledged user interruption.
             if code != 0 and not (active and code == 1):
-                raise BridgeUnavailable('原会话未正常退出，尚未发送归档请求')
+                raise BridgeUnavailable('原会话未正常退出，连接释放结果待核对')
         except subprocess.TimeoutExpired:
-            raise BridgeUnavailable('原会话连接尚未释放，尚未发送归档请求') from None
+            raise BridgeUnavailable('原会话连接尚未释放，请核对原会话') from None
+        return {'status': 'released', 'notice': '连接已释放，可在电脑端继续'}
 
     def close(self):
         try:
@@ -578,6 +661,9 @@ class ClaudeCli:
         finally:
             with self.lock:
                 self.auth_refreshing = False
+
+    def cli_connections(self):
+        return owned_connections(self)
 
     def busy(self):
         with self.lock:
@@ -647,6 +733,8 @@ class ClaudeCli:
                                 'input': event['request'].get('input', {}),
                                 'needsInput': event['request'].get('tool_name') == 'AskUserQuestion'}
                                for rid, event in pending.items()])
+        value['capabilities'] = {**value.get('capabilities', {}), 'rename': bool(live and not row.get('archived') and
+                                 not row.get('archiveIncomplete') and _supports_rename(owned.catalog))}
         if live:
             value['model'] = owned.model or value['model']
             value['permissionMode'] = owned.permission or value['permissionMode']
@@ -699,7 +787,7 @@ class ClaudeCli:
         self.listing()
         return sid in self.index
 
-    def create(self, cwd, origin, message, directory_identity=None, account_identity=None):
+    def create(self, cwd, origin, message, directory_identity=None, account_identity=None, selection=None):
         profile = self.profile_resolver()
         if not profile or profile['origin'] != origin or not self._ready(profile, fresh=True):
             raise BridgeUnavailable('原 Claude Code 账号配置已变化或不可用')
@@ -720,6 +808,11 @@ class ClaudeCli:
                    '--output-format', 'stream-json', '--verbose', '--replay-user-messages',
                    '--setting-sources', 'user,project,local', '--permission-prompt-tool', 'stdio',
                    *_permission_prompt_args(profile['binary'], env), '--allow-dangerously-skip-permissions']
+        arguments, environment = creation_launch_options(selection)
+        command.extend(arguments)
+        for name, value in environment.items():
+            if value is None: env.pop(name, None)
+            else: env[name] = value
         if self.upload_root is not None:
             upload_dir = self.upload_root/DesktopUploads.scope('claude', sid)
             upload_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -741,6 +834,9 @@ class ClaudeCli:
             if owned.error:
                 raise BridgeUnavailable(owned.error)
             owned.permission = owned.catalog.get('current_permission_mode')
+            if selection:
+                # Initialize and verify the native settings before any user input.
+                _verify_creation_settings(owned, selection)
             with self.lock:
                 self.owned[native] = owned
             message_id = str(uuid.uuid4())
@@ -845,8 +941,9 @@ class ClaudeCli:
                             'resume': can_resume,
                             'send': live and public['connectionState'] == 'ready',
                             'models': live, 'permissions': live, 'stop': live,
+                            'compact': live and not owned.active and not owned.pending and _supports_compact(owned.catalog),
                             'attachments': True, 'queue': False, 'steer': False, 'skills': live,
-                            **row.get('capabilities', {})}}
+                            **row.get('capabilities', {}), 'rename': public['capabilities']['rename']}}
             if action == 'catalog':
                 if not live:
                     return {'models': [], 'capabilities': {'models': False}, 'notice': '请先继续这条 Claude Code 会话'}
@@ -908,6 +1005,8 @@ class ClaudeCli:
                 return {'status': 'ready'}
             if not live:
                 raise BridgeUnavailable('请先继续这条 Claude Code 会话')
+            if action == 'rename':
+                return _rename_cli(owned, row, body.get('title'), lambda: self._get(sid))
             if action == 'send':
                 if body.get('mode') in ('queue', 'steer'):
                     raise ValueError('Claude Code CLI 暂不支持此发送选项')
@@ -928,6 +1027,8 @@ class ClaudeCli:
                         raise BridgeUnavailable('请等待当前 Claude Code 任务结束后再发送')
                     owned.active = True
                     owned.write({'type': 'user', 'message': {'role': 'user', 'content': content}})
+            elif action == 'compact':
+                _compact_cli(owned, body['id'])
             elif action == 'stop':
                 owned.control({'subtype': 'interrupt'})
             elif action == 'settings':
@@ -984,3 +1085,26 @@ class ClaudeCli:
             for owned in self.owned.values():
                 owned.close()
             self.owned.clear()
+
+
+def owned_connections(client, remote=False):
+    """Local, SSH and WSL share the same owned print-session shutdown path."""
+    with client.lock:
+        rows = []
+        for sid, row in client.index.items():
+            owned = client.owned.get(sid if remote else row['nativeId'])
+            if not owned or owned.origin != row['origin'] or owned.process.poll() is not None:
+                continue
+            token = owned.connection_token
+            def release(stop, owned=owned, sid=sid, native=row['nativeId'], token=token):
+                with client.lock:
+                    if client.owned.get(sid if remote else native) is not owned or owned.connection_token != token:
+                        raise BridgeUnavailable('原 CLI 连接已变化；未操作新的连接')
+                    result = owned.release_connection(stop)
+                    if result and result['status'] == 'released':
+                        client.owned.pop(sid if remote else native, None)
+                    return result or {'status': 'released'}
+            rows.append({'key': token, 'provider': 'claude', 'sessionId': sid,
+                         'host': row.get('host', 'local'), 'title': row.get('title') or sid,
+                         'location': row.get('hostLabel') or row.get('host', '本机 CLI'), '_release': release})
+        return rows

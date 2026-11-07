@@ -15,13 +15,15 @@ def build():
     if sys.platform == 'darwin':
         compiler = shutil.which('swiftc')
         if not compiler:
-            raise RuntimeError('Swift compiler required for the macOS Claude connector')
+            raise RuntimeError('Swift compiler required for macOS client helpers')
         cache = root/'.tmp/claude-helper/module-cache'
         cache.mkdir(parents=True, exist_ok=True)
-        subprocess.run([compiler, '-O', '-module-cache-path', str(cache),
-                        str(source/'macos/claude-helper.swift'), '-o', str(target/'claude-bridge-helper')], check=True)
-        subprocess.run(['/usr/bin/codesign', '--force', '--sign', '-', str(target/'claude-bridge-helper')], check=True)
-        subprocess.run([str(target/'claude-bridge-helper'), '--self-check'], check=True)
+        for native_source, output_name in [(source/'macos/claude-helper.swift', 'claude-bridge-helper'),
+                                           (source/'macos/zcode-helper.swift', 'zcode-bridge-helper')]:
+            helper = str(target/output_name)
+            subprocess.run([compiler, '-O', '-module-cache-path', str(cache), str(native_source), '-o', helper], check=True)
+            subprocess.run(['/usr/bin/codesign', '--force', '--sign', '-', helper], check=True)
+            subprocess.run([helper, '--self-check'], check=True, timeout=10)
     elif sys.platform == 'win32':
         framework = Path(os.environ.get('WINDIR', 'C:/Windows'))/'Microsoft.NET/Framework64/v4.0.30319'
         for native_source, output_name in [(source/'windows/claude-helper.cs', 'claude-bridge-helper.exe'),

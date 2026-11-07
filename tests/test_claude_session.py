@@ -184,6 +184,7 @@ class ClaudeSessionTests(unittest.TestCase):
 
     def test_cached_clients_refresh_session_without_disconnecting_live_clients(self):
         manager = object.__new__(DesktopSessions); manager.client_lock = threading.RLock()
+        manager.instance = None
         cached = {'clients': [{'id': 'claude', 'connected': True, 'connectionState': 'connected'}]}
         manager.client_cache = (time.monotonic(), cached)
         with patch('bridge.clients.manager.sys', SimpleNamespace(platform='win32')):

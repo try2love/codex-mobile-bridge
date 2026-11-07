@@ -83,11 +83,11 @@ class WslClaudeEntries:
         return {'errors': errors}
 
     def applications(self):
-        running = set(wsl.running_distributions())
         with self.lock:
             rows = {r['id']: dict(r) for r in self.entries}
             for key, row in self.candidates.items():
                 rows.setdefault(key, {**row, 'enabled': False})
+        running = wsl.displayed_distributions(rows.values())
         return [{**row, 'kind': 'wsl-claude-cli', 'name': 'WSL Claude Code · '+row['distribution'],
                  'icon': 'claude', 'installed': True, 'configured': True,
                  'enabled': row.get('enabled', True), 'selectable': True,
@@ -308,6 +308,9 @@ class ClaudeCliRemotes:
         with self.lock:
             return {**self.ssh.owned, **self.wsl.owned}
 
+    def cli_connections(self):
+        return self.ssh.cli_connections() + self.wsl.cli_connections()
+
     def available(self):
         return self.ssh.available() or self.wsl.available()
 
@@ -322,15 +325,19 @@ class ClaudeCliRemotes:
     def contains(self, sid):
         return self.ssh.contains(sid) or self.wsl.contains(sid)
 
-    def projects(self):
+    def projects(self, host_id=None):
+        if host_id is not None:
+            return (self.wsl if host_id.startswith('wsl-claude:') else self.ssh).projects(host_id=host_id)
         return self.ssh.projects()+self.wsl.projects()
 
-    def project_environments(self):
+    def project_environments(self, host_id=None):
+        if host_id is not None:
+            return (self.wsl if host_id.startswith('wsl-claude:') else self.ssh).project_environments(host_id=host_id)
         return self.ssh.project_environments()+self.wsl.project_environments()
 
-    def create(self, host_id, *args):
+    def create(self, host_id, *args, **options):
         target = self.wsl if host_id.startswith('wsl-claude:') else self.ssh
-        return target.create(host_id, *args)
+        return target.create(host_id, *args, **options)
 
     def call(self, action, sid, body):
         target = self.wsl if self.wsl.contains(sid) else self.ssh

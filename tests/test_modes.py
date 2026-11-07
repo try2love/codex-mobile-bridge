@@ -739,5 +739,36 @@ class ModeTests(unittest.TestCase):
         self.assertEqual(result['status'], 'unknown')
 
 
+class ReasoningRowTests(unittest.TestCase):
+    def test_summary_text_is_preferred_when_present(self):
+        row = normalize_item({'type': 'reasoning', 'id': 'r1',
+                              'summary': ['Plan the edit'], 'content': ['raw chain of thought']})
+        self.assertEqual(row['role'], 'activity')
+        self.assertEqual(row['title'], '思考摘要')
+        self.assertEqual(row['text'], 'Plan the edit')
+
+    def test_raw_content_fills_empty_summary(self):
+        # Third-party Responses backends return chain of thought only in `content`.
+        row = normalize_item({'type': 'reasoning', 'id': 'r2',
+                              'summary': [], 'content': ['first', 'second']})
+        self.assertEqual(row['title'], '思考摘要')
+        self.assertEqual(row['text'], 'first\nsecond')
+
+    def test_reasoning_row_survives_when_both_fields_are_empty(self):
+        row = normalize_item({'type': 'reasoning', 'id': 'r3'})
+        self.assertEqual(row['role'], 'activity')
+        self.assertEqual(row['title'], '思考摘要')
+        self.assertEqual(row['text'], '')
+
+    def test_missing_and_null_fields_do_not_break_normalization(self):
+        self.assertEqual(normalize_item({'type': 'reasoning', 'summary': None,
+                                         'content': ['only content']})['text'], 'only content')
+        self.assertEqual(normalize_item({'type': 'reasoning', 'content': None})['text'], '')
+
+    def test_malformed_containers_do_not_render_characters_or_dict_keys(self):
+        self.assertEqual(normalize_item({'type':'reasoning', 'summary':'not-a-list', 'content':['fallback']})['text'], 'fallback')
+        self.assertEqual(normalize_item({'type':'reasoning', 'summary':['  ', None], 'content':{'secret':'not-text'}})['text'], '')
+
+
 if __name__ == '__main__':
     unittest.main()

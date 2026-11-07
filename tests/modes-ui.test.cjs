@@ -164,3 +164,11 @@ test('editing is only available paused and preserves draft across streamed rende
  let payload;ui.panel.onEdit=p=>{payload=p;};await ui.panel.saveEdit();
  assert.equal(payload.objective,'Revised');assert.equal(payload.expected.status,'paused');assert.equal(ui.panel.editing,false);
 });
+
+test('native agent capabilities reuse goal controls without claiming unsupported Claude goals',()=>{
+ const ui=fixture();ui.panel.open('claude|chat');ui.panel.render({...idle,capabilities:{plan:true,goal:false}},'send',false);
+ assert.equal(ui.goalOption.disabled,true);assert.match(ui.goalOption.title,/原生目标/);
+ ui.panel.open('zcode|chat');const view={...idle,capabilities:{plan:true,goal:true,goalEdit:false},goal:{goalId:'native',objective:'target',status:'paused'}};
+ ui.panel.render(view,'send',false);assert.match(ui.text(),/恢复目标/);assert.doesNotMatch(ui.text(),/修改目标/);
+ const details=ui.goalRoot.firstElementChild;ui.panel.render(view,'send',false);assert.equal(ui.goalRoot.firstElementChild,details,'unchanged polling preserves reading position');
+});

@@ -6,6 +6,7 @@ function fixture(host,reply='copied'){
   class Element{
     constructor(tag){this.tag=tag;this.children=[];this.dataset={};this.attributes={};this.className='';this.disabled=false;this.textContent='';this.classList={add:name=>{this.className+=' '+name;}};}
     append(...nodes){for(const node of nodes){node.parent=this;this.children.push(node);}}
+    replaceChildren(...nodes){this.children=[];this.append(...nodes);}
     setAttribute(key,value){this.attributes[key]=value;}
     addEventListener(){} showModal(){this.open=true;}close(){this.open=false;}
     closest(selector){return selector.split(',').some(value=>this.className.split(/\s+/).includes(value.trim().replace(/^\./,'')))?this:null;}
@@ -21,6 +22,27 @@ function fixture(host,reply='copied'){
   return {c,get,body,Element,writes,notices,click};
 }
 for(const host of ['ios','android']){
+  test(host+': first click on a rendered session-menu action copies and dismisses before feedback',async()=>{
+    for(const [sessionId,link,label,text] of [
+      ['codex-id','codex://threads/019d0000-1234-7123-8123-123456789abc','复制深度链接','codex://threads/019d0000-1234-7123-8123-123456789abc'],
+      ['claude-native-id',null,'复制 Session ID','claude-native-id'],
+      ['dsh-native-id',null,'复制 Session ID','dsh-native-id'],
+      ['sess_zcode',null,'复制 Session ID','sess_zcode']
+    ]){
+      const f=fixture(host);vm.runInContext(read('web/features/chat/session-menu.js'),f.c);
+      const Menu=vm.runInContext('SessionMenu',f.c),menu=Object.create(Menu.prototype);
+      Object.assign(menu,{context:{title:'fixture',sessionId,link,pin(){}},box:new f.Element('dialog'),t:x=>x,
+        position(){},icon:()=>new f.Element('svg'),close(){this.box=null;},
+        notify:message=>{assert.equal(menu.box,null,'success toast is no longer obscured by a modal');f.notices.push(message);}});
+      menu.render();
+      const copy=menu.box.children.find(node=>node.children.some(child=>child.textContent===label));
+      assert.ok(copy,'expected provider copy action');
+      await f.click(copy,false);assert.equal(f.writes.filter(write=>write.command.startsWith('codexbridge-copy:')).length,0);
+      await f.click(copy);
+      assert.deepEqual(f.writes.filter(write=>write.command.startsWith('codexbridge-copy:')).map(write=>write.text),[text]);
+      assert.deepEqual(f.notices,['已复制']);
+    }
+  });
   test(host+': old native injection copies title link and acknowledges visibly',async()=>{
     const f=fixture(host),id='019d0000-1234-7123-8123-123456789abc';
     vm.runInContext(`let currentId=${JSON.stringify(id)},currentHost='local';`,f.c);
@@ -40,7 +62,7 @@ for(const host of ['ios','android']){
   });
   test(host+': DSH title action copies exact native Session ID',async()=>{
     const f=fixture(host),source=read('web/features/clients/desktop-sessions.js');
-    const method=source.slice(source.indexOf('  chatDetails(){'),source.indexOf('  async notifications(){'));
+    const method=source.slice(source.indexOf('  chatDetails(){'),source.indexOf('  async loadNotificationPolicy(){'));
     const invoke=vm.runInContext('({'+method+'}).chatDetails',f.c);
     vm.runInContext(read('web/features/chat/session-menu.js'),f.c);const SessionMenu=vm.runInContext('SessionMenu',f.c);
     const copy=new f.Element('button');copy.className='message-copy';copy.textContent='复制 Session ID';

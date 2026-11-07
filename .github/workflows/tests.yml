@@ -18,7 +18,8 @@ jobs:
           fetch-depth: 0
       - id: scope
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          # Release tags check the entire tree; the previous tag object may no longer be reachable.
+          BASE_SHA: ${{ github.ref_type != 'tag' && (github.event.pull_request.base.sha || github.event.before) || '' }}
           HEAD_SHA: ${{ github.sha }}
         run: python3 scripts/ci-mobile-scope.py
   android-compile:
@@ -76,8 +77,8 @@ jobs:
       - name: Verify Windows native Claude controls before the full suite
         if: runner.os == 'Windows'
         run: python -B -m unittest discover -s tests -p test_claude_native_helper.py -v
-      - name: Install optional shared relay transport for integration tests
-        run: python -m pip install -r requirements-relay.txt
+      - name: Install relay transport and Claude encrypted-reply support for integration tests
+        run: python -m pip install -r requirements-relay.txt cryptography
       - run: python -B -m unittest discover -s tests -v
 
   desktop-tests:

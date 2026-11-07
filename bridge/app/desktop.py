@@ -35,6 +35,7 @@ class Desktop:
         self.local_bridge = None
         self.local_sessions = None
         self.starting_until = 0
+        self.watch_hosts = None
 
     def close_local(self, check_busy=False):
         if self.local_bridge:
@@ -85,7 +86,7 @@ class Desktop:
             return sessions.control(value)
         if action == 'cli-access':
             return bridge.cli_access_control(value)
-        return bridge.accounts.control(value) if action == 'accounts' else bridge.accounts.account(value)
+        return bridge.accounts_control(value) if action == 'accounts' else bridge.accounts.account(value)
 
     def config(self):
         if not self.config_path.exists():
@@ -183,7 +184,6 @@ class Desktop:
         hosts = ['127.0.0.1', 'localhost'] + static_addresses if preferences['lan'] else ['127.0.0.1', 'localhost']
         if not preferences['localAccess']:
             hosts = [host for host in hosts if host not in ('127.0.0.1', 'localhost')]
-        urls = [f'http://{host}:{preferences["port"]}/' for host in hosts if host != 'localhost']
         quick = read_json(self.data_dir/'cloudflare-status.json', {})
         if not runtime['running'] or quick.get('pid') != runtime.get('pid'):
             quick = {}
@@ -195,8 +195,7 @@ class Desktop:
             value = public.read_text(encoding='utf-8').splitlines()[0]
             if value.startswith('https://'):
                 quick_url = value
-                urls.insert(0, value)
-        urls = [url+'/' for url in access.public_urls(preferences)] + urls
+        urls = [url if url == quick_url else url+'/' for url in access.phone_urls(preferences, hosts, quick_url)]
         external = {}
         for entry in preferences['connections']:
             status = read_json(self.data_dir/('ssh-status-'+entry['id']+'.json'), {})
@@ -210,7 +209,7 @@ class Desktop:
         notifications = settings(self.data_dir)
         return {'preferences': preferences, 'auth': {'username': config['auth'].get('username', 'admin'), 'mode': config['auth']['mode'], 'sessionHours': config['auth'].get('sessionHours', 12)},
                 'origins': config.get('origins', []), 'notifications': {**notifications, 'token': '', 'hasToken': bool(notifications['token']), 'barkKey': '', 'hasBarkKey': bool(notifications['barkKey']), 'pushplusToken': '', 'hasPushplusToken': bool(notifications['pushplusToken']), **visible_webhook(notifications)},
-                'watches': self.notification_watches({'action': 'list'})['watches'],
+                'watches': self.notification_watches({'action': 'list'}, preferences=preferences)['watches'],
                 'notificationUrls': notification_urls,
                 'securityNotificationStatus': read_json(self.data_dir/'security-notifications.json', {}),
                 'addressNotificationStatus': read_json(self.data_dir/'address-notifications.json', {}),
@@ -445,7 +444,7 @@ class Desktop:
             raise ValueError('网关状态暂不可用，请稍后刷新设备列表')
         return Auth(self.config()['auth'], self.data_dir).manage(value)
 
-    def notification_watches(self, value):
+    def notification_watches(self, value, *, preferences=None):
         if value.get('action') != 'list':
             record = read_record(self.data_dir/'gateway-control.json')
             if self.status()['running']:
@@ -457,8 +456,15 @@ class Desktop:
             else:
                 Notifications(None, self.data_dir).control(value)
         rows = read_json(self.data_dir/'notification-watches.json', [])
-        home = Path(self.preferences()['codexHome']).expanduser()
-        store, hosts = SessionStore(home), AppHosts(home).hosts()
+        if not rows:
+            return {'watches': rows}
+        home = Path((preferences or self.preferences())['codexHome']).expanduser()
+        store = SessionStore(home) if any(row['host'] == 'local' for row in rows) else None
+        hosts = {}
+        if any(row['host'] != 'local' for row in rows):
+            if self.watch_hosts is None or self.watch_hosts.home != home:
+                self.watch_hosts = AppHosts(home)
+            hosts = self.watch_hosts.hosts(cached=True)
         for row in rows:
             row['hostLabel'] = '此电脑' if row['host'] == 'local' else hosts.get(row['host'], {}).get('displayName') or hosts.get(row['host'], {}).get('alias') or row['host']
             if row['host'] == 'local':

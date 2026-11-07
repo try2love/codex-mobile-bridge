@@ -5,12 +5,12 @@ function fixture(){
  class Node{
   constructor(tag){this.localName=tag;this.children=[];this.dataset={};this.style={};this.attributes={};this.listeners={};this.hidden=false;this.isConnected=true;this.classList={add(){},remove(){},toggle(){}};nodes.push(this);}
   append(...values){this.children.push(...values);}replaceChildren(...values){this.children=values;}
-  setAttribute(name,value){this.attributes[name]=value;}querySelector(tag){return this.children.find(node=>node.localName===tag);}
+  setAttribute(name,value){this.attributes[name]=value;}removeAttribute(name){delete this.attributes[name];}querySelector(tag){return this.children.find(node=>node.localName===tag);}
   addEventListener(name,handler){this.listeners[name]=handler;}hasPointerCapture(){return false;}
   showModal(){this.open=true;}close(){this.open=false;this.listeners.close?.();}focus(){this.focused=true;}
  }
  const document={body:new Node('body'),createElement:tag=>new Node(tag),addEventListener:(name,handler)=>events[name]=handler},window={};
- vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../web/shared/image-viewer.js'),'utf8'),{document,window,URL,location:new URL('https://gateway.test/'),ResizeObserver:class{observe(){}disconnect(){}},requestAnimationFrame(){return 1;},cancelAnimationFrame(){},performance:{now:()=>1}});
+ vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../web/shared/image-viewer.js'),'utf8'),{document,window,URL,BridgeDownload:require('../web/features/workspace/downloads.js'),location:new URL('https://gateway.test/'),ResizeObserver:class{observe(){}disconnect(){}},requestAnimationFrame(){return 1;},cancelAnimationFrame(){},performance:{now:()=>1}});
  const open=target=>{target.closest=()=>target;events.click({target,button:0,preventDefault(){}});};
  const node=id=>nodes.find(node=>node.id===id),source='/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/uploads/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/preview?host=local&variant=original';
  return {api:window.BridgeImageViewer,open,node,create:tag=>new Node(tag),source};
@@ -39,4 +39,11 @@ test('an old asynchronous add cannot close the preview opened afterwards',async(
  const ui=fixture(),first=ui.create('img'),next=ui.create('img');first.dataset.imagePreview=ui.source;next.dataset.imagePreview=ui.source;next.dataset.imageName='next.png';
  let finish;ui.api.configureComposer({scope:()=> 'same-draft',canReuse:()=>true,add:()=>new Promise(resolve=>finish=resolve)});
  ui.open(first);const pending=ui.node('image-preview-reuse').onclick();ui.open(next);finish();await pending;assert.equal(ui.node('image-preview-dialog').open,true);
+});
+
+test('ZCode history previews share exact same-origin and session-bound URL validation',()=>{
+ for(const url of ['https://other.test/api/desktop-sessions/zcode/images/'+ 'a'.repeat(64)+'?sessionId=sess-test','/api/desktop-sessions/zcode/images/'+ 'a'.repeat(64)]){
+  const ui=fixture(),target=ui.create('img');target.dataset.imagePreview=url;ui.open(target);assert.equal(ui.node('image-preview-dialog'),undefined);
+ }
+ const ui=fixture(),target=ui.create('img');target.dataset.imagePreview='/api/desktop-sessions/zcode/images/'+ 'a'.repeat(64)+'?sessionId=sess-test';target.dataset.imageName='native.png';ui.open(target);assert.equal(ui.node('image-preview-dialog').open,true);assert.equal(ui.node('image-preview-title').textContent,'native.png');
 });

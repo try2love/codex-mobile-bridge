@@ -34,7 +34,7 @@
         typeof state.suspended === 'boolean' && typeof state.writing === 'boolean' :
         state?.transport === 'cdp' && typeof state.busy === 'boolean';
       canHandoff = state?.transport === 'file' &&
-        state.connectorRevision === config.connectorRevision && typeof existing.handoff === 'function';
+        (state.connectorRevision === config.connectorRevision || state.connectorRevision === 14 && config.connectorRevision === 15) && typeof existing.handoff === 'function';
       if (typeof existing.owns === 'function') sameOwner = existing.owns(config.cwd) === true;
       else if (state?.transport === 'file' && state.sessionId) {
         // Legacy connectors expose only a session ID. Check Desktop's live
@@ -84,8 +84,8 @@
     const payload = JSON.stringify(value);
     return JSON.stringify({payload, signature: hex(await crypto.subtle.sign('HMAC', key, encoder.encode(payload)))});
   }
-  async function read() {
-    const file = await api.LocalSessions.readFileAtCwd(config.cwd, config.request);
+  async function read(name = config.request) {
+    const file = await api.LocalSessions.readFileAtCwd(config.cwd, name);
     if (!file) throw new Error('无法读取桥接请求文件');
     const envelope = JSON.parse(file.contents);
     if (typeof envelope.signature !== 'string' || !/^[a-f0-9]{64}$/.test(envelope.signature)) return null;
@@ -439,25 +439,22 @@
   const initial = await read();
   if (!initial || (initial.generation !== config.generation && (initial.type !== 'idle' || initial.seq !== 0)))
     throw new Error('连接脚本已过期，请通过手机 Claude 标题选择启动以重新连接');
-  // Reusing this dedicated session never changes another project's workspace.
-  const normalize = path => String(path || '').replaceAll('\\', '/').replace(/\/$/, '').toLowerCase();
   const sessions = await api.LocalSessions.getAll();
   knownSessions.set(api.LocalSessions,Array.isArray(sessions)?sessions:[]);
-  let session = sessions.find(row => row.title === 'Codex Bridge Connector'
-    && normalize(row.cwd) === normalize(config.cwd) && !row.isArchived);
-  // Reuse a session already belonging to this workspace; file calls do not send a turn.
-  session ||= sessions.find(row => normalize(row.cwd) === normalize(config.cwd) && !row.isArchived);
-  if (!session) {
-    try { session = await api.LocalSessions.start({cwd: config.cwd, message: '',
-      title: 'Codex Bridge Connector', useWorktree: false}); }
-    catch (error) {
-      if (/trust_required|WorkspaceTrustError/.test(String(error)))
-        throw new Error('Claude 尚未信任目录：' + config.cwd + '。请在 Claude Code 页面选择此目录并确认信任，再在网关的“Claude 接入准备”中点击“初始化连接”。');
-      throw error;
-    }
+  const matching = sessions.filter(row => !row.isArchived && sameWorkspace(row.cwd));
+  const sessionId = (matching.find(row => row.title === 'Codex Bridge Connector') || matching[0])?.sessionId;
+  let staging = null;
+  if (!sessionId) {
+    const trust = await api.LocalSessions.checkTrust?.(config.cwd);
+    if (trust?.trusted !== true)
+      throw new Error('Claude 尚未信任目录：' + config.cwd + '。请在 Claude Code 页面选择此目录并确认信任，再初始化连接。');
+    if (typeof api.FileSystem?.savePastedFile !== 'function')
+      throw new Error('当前 Claude Desktop 不支持无消息初始化，请更新 Claude Desktop 后重试');
+    const digest = prefix => crypto.subtle.digest('SHA-256',encoder.encode(prefix + config.token));
+    staging = {name:'cmb-' + hex(await digest('cmb-reply-name:')).slice(0,32) + '.bin',
+      key:await crypto.subtle.importKey('raw',await digest('cmb-reply-key:'),{name:'AES-GCM'},false,['encrypt']),
+      pending:null};
   }
-  const sessionId = session.sessionId;
-  if (!sessionId) throw new Error('无法创建文件桥接会话；请在 Code 页面确认目录信任');
   let generation = initial.generation;
   const generations = new Set([generation]);
   let stopped = false, suspended = initial.type === 'stop', busy = false, inFlight = 0, writing = 0, highWater = initial.seq, lastWrite = 0, dirty = true;
@@ -504,9 +501,15 @@
   async function publish() {
     writing++;
     try {
+      if (staging?.pending?.generation === generation) {
+        const ack = await read('staged-ack.json').catch(() => null);
+        if (ack?.generation !== generation || ack.receipt !== staging.pending.receipt) {dirty=true;return;}
+        staging.pending=null;
+      }
       let value = {...state, generation, connected: !stopped && !suspended && !handoff?.id,
         ...(handoff?.id ? {handoffId:handoff.id} : {}),
         timestamp: Date.now() / 1000, connectorRevision:config.connectorRevision, surfaces: capabilities};
+      if (staging) value.receipt=hex(crypto.getRandomValues(new Uint8Array(16)));
       let text = await pack(value);
       if (stopped) return;
       if (encoder.encode(text).length > 32 * 1024 * 1024) {
@@ -514,8 +517,21 @@
         text = await pack({...value, ...state, result: undefined});
       }
       if (stopped) return;
-      const result = await api.LocalSessions.writeSessionFile(sessionId, config.response, text);
-      if (!result?.hash) throw new Error('Claude 拒绝写入桥接文件，请检查目录信任和文件权限');
+      if (staging) {
+        const nonce=crypto.getRandomValues(new Uint8Array(12));
+        const ciphertext=new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM',iv:nonce},staging.key,encoder.encode(text)));
+        const packet=new Uint8Array(nonce.length+ciphertext.length);packet.set(nonce);packet.set(ciphertext,nonce.length);
+        const chunks=[];
+        for(let offset=0;offset<packet.length;offset+=24576)
+          chunks.push(btoa(String.fromCharCode(...packet.subarray(offset,offset+24576))));
+        if (staging.pending?.generation===generation || generation!==value.generation || stopped) {dirty=true;return;}
+        staging.pending={generation,receipt:value.receipt};
+        const saved=await api.FileSystem.savePastedFile(chunks.join(''),'application/octet-stream',staging.name);
+        if (!saved?.path) throw new Error('Claude 未能暂存连接回执，请重新初始化连接');
+      } else {
+        const result = await api.LocalSessions.writeSessionFile(sessionId, config.response, text);
+        if (!result?.hash) throw new Error('Claude 拒绝写入桥接文件，请检查目录信任和文件权限');
+      }
       lastWrite = Date.now();
     } finally { writing--; }
   }

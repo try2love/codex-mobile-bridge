@@ -195,7 +195,8 @@ def _public_usage(value):
 
 
 class DeepSeekAccounts:
-    def __init__(self, directory, data_home):
+    def __init__(self, directory, data_home, *, inherit_environment=True):
+        self.inherit_environment = inherit_environment
         self.directory = Path(directory).expanduser()
         self.home = Path(data_home).expanduser()
         if self.directory.is_symlink():
@@ -244,7 +245,7 @@ class DeepSeekAccounts:
                     value = _credential(document, kind)
                     if value is not None:
                         routes.append(PROVIDERS[kind])
-                        if kind != 'api' or not os.environ.get(API_REF):
+                        if kind != 'api' or not self.inherit_environment or not os.environ.get(API_REF):
                             stamp = _fingerprint(kind, value)
                             found = [row['id'] for row in rows if row['kind'] == kind and row['fingerprint'] == stamp]
                             if not found:
@@ -285,7 +286,7 @@ class DeepSeekAccounts:
             value = _credential(document, kind)
             if value is None:
                 raise ValueError('未找到 Harness 当前接入，请先在客户端登录或配置 API')
-            if kind == 'api' and os.environ.get(API_REF):
+            if kind == 'api' and self.inherit_environment and os.environ.get(API_REF):
                 raise ValueError('Harness API 由启动环境指定，无法切换本地凭据')
             stamp = _fingerprint(kind, value)
             row = next((item for item in self.index['accounts'] if item['kind'] == kind and item['fingerprint'] == stamp), None)
@@ -356,6 +357,15 @@ class DeepSeekAccounts:
                 self._snapshot(row)
                 result['api'] = {'hasKey': True}
             return result
+
+    def api_credentials(self, identifier):
+        """Private model-draft lookup for the official API route only."""
+        with self.lock:
+            row = self._row(identifier)
+            if row['kind'] != 'api':
+                raise ValueError('请选择已保存的 API 接入')
+            return {'baseUrl': 'https://api.deepseek.com', 'apiKey': self._snapshot(row),
+                    'apiFormat': 'openai-chat-completions'}
 
     def rename(self, identifier, name):
         with self.lock:
@@ -446,7 +456,7 @@ class DeepSeekAccounts:
         """Called only after the manager proves idle and fully quits the desktop."""
         with self.lock, self._writer():
             row = self._row(identifier)
-            if row['kind'] == 'api' and os.environ.get(API_REF):
+            if row['kind'] == 'api' and self.inherit_environment and os.environ.get(API_REF):
                 raise ValueError('Harness API 由启动环境指定，无法切换本地凭据')
             value = self._snapshot(row)
             before = _read(self.path)

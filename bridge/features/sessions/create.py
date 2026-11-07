@@ -28,12 +28,20 @@ class ForkUnavailable(CreationUnavailable):
     """The capability check failed before any thread could be created."""
 
 
-def _runtime_operation(executable, codex_home, cwd, operation, *, failure_message=None):
+def runtime_environment(codex_home, *, isolated_home=False):
+    # Only a separately registered home has an enforced database boundary.
+    env = dict(os.environ, CODEX_HOME=str(codex_home))
+    if isolated_home:
+        env.pop('CODEX_SQLITE_HOME', None)
+    return env
+
+
+def _runtime_operation(executable, codex_home, cwd, operation, *, failure_message=None, isolated_home=False):
     if not executable:
         raise CreationUnavailable('找不到 Codex 运行时，请在电脑启动器的运行配置中指定路径')
     if not Path(cwd).is_dir():
         raise CreationUnavailable('项目目录不存在，请先在电脑 App 中检查项目')
-    env = dict(os.environ, CODEX_HOME=str(codex_home))
+    env = runtime_environment(codex_home, isolated_home=isolated_home)
     kwargs = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
     try:
         process = subprocess.Popen([str(executable), 'app-server', '--listen', 'stdio://'],
@@ -284,16 +292,29 @@ def _native_project(request, cwd, project):
     raise CreationUnavailable('电脑 App 项目与运行时尚未对应，请检查所用 Codex App 和运行时配置后重试')
 
 
-def create_empty(executable, codex_home, cwd, title, project=None):
+def model_overrides(model=None, effort=None):
+    if model is None and effort is None:
+        return {}
+    if not isinstance(model, str) or not model or len(model) > 300 or any(c.isspace() or ord(c) < 32 for c in model):
+        raise CreationUnavailable('新会话模型无效')
+    if effort is not None and effort not in ('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'):
+        raise CreationUnavailable('新会话思考强度无效')
+    return {'model': model, **({'config': {'model_reasoning_effort': effort}} if effort is not None else {})}
+
+
+def create_empty(executable, codex_home, cwd, title, project=None, model=None, effort=None):
+    overrides = model_overrides(model, effort)
     supported = project is not None and _native_project_support(executable, project.get('required', False))
     def create(request):
         project_id = _native_project(request, cwd, project) if supported else None
-        params = {'cwd': cwd, 'ephemeral': False}
+        params = {'cwd': cwd, 'ephemeral': False, **overrides}
         if project_id is not None:
             params['projectId'] = project_id
         result = request('thread/start', params)
         thread_id = result['thread']['id']
         uuid.UUID(thread_id)
+        if model is not None and (result.get('model') != model or effort is not None and result.get('reasoningEffort') != effort):
+            raise CreationError('聊天已创建，但模型或思考强度尚未确认，请检查原会话；不会重复创建')
         if project_id is not None and result['thread'].get('projectId') != project_id:
             raise CreationError('聊天已创建但原生项目归属未确认，请检查电脑 App，不要重复创建')
         request('thread/name/set', {'threadId': thread_id, 'name': title})
@@ -304,7 +325,7 @@ def create_empty(executable, codex_home, cwd, title, project=None):
     return _runtime_operation(executable, codex_home, cwd, create)
 
 
-def fork_copy(executable, codex_home, cwd, source_id, turn_id, title, settings):
+def fork_copy(executable, codex_home, cwd, source_id, turn_id, title, settings, *, thread_source=None, isolated_home=False):
     if not executable:
         raise ForkUnavailable('找不到 Codex 运行时，请在电脑启动器的运行配置中指定路径')
     # Check the bundled runtime, not a guessed version. Older servers can silently
@@ -320,12 +341,15 @@ def fork_copy(executable, codex_home, cwd, source_id, turn_id, title, settings):
         if result.returncode or not paths:
             raise ForkUnavailable('此 Codex 版本暂不支持安全分支，请更新电脑 Codex App')
         properties = json.loads(paths[0].read_text(encoding='utf-8')).get('properties', {})
-        if not {'lastTurnId', 'deferGoalContinuation'} <= properties.keys():
+        required = {'lastTurnId', 'deferGoalContinuation'}
+        if thread_source is not None:
+            required.add('threadSource')
+        if not required <= properties.keys():
             raise ForkUnavailable('此 Codex 版本暂不支持安全分支，请更新电脑 Codex App')
     def fork(request):
         result = request('thread/fork', {'threadId': source_id, 'lastTurnId': turn_id,
                                         'deferGoalContinuation': True, 'ephemeral': False,
-                                        'cwd': cwd, **settings})
+                                        'cwd': cwd, **settings, **({'threadSource': thread_source} if thread_source else {})})
         thread = result['thread']
         uuid.UUID(thread['id'])
         if thread['id'] == source_id:
@@ -337,7 +361,7 @@ def fork_copy(executable, codex_home, cwd, source_id, turn_id, title, settings):
             raise CreationError('分支模型提供商不一致，请检查桌面聊天列表')
         request('thread/name/set', {'threadId': thread['id'], 'name': title})
         return thread['id']
-    return _runtime_operation(executable, codex_home, cwd, fork)
+    return _runtime_operation(executable, codex_home, cwd, fork, isolated_home=isolated_home)
 
 
 def open_project_in_desktop(cwd):
@@ -370,10 +394,11 @@ def _open_desktop_url(url):
         raise CreationError('请在支持 Codex App 的 Mac 或 Windows 电脑运行网关')
 
 
-def rename_thread(executable, codex_home, thread_id, title):
+def rename_thread(executable, codex_home, thread_id, title, *, isolated_home=False):
     uuid.UUID(thread_id)
     return _runtime_operation(executable, codex_home, str(codex_home),
-                              lambda request: request('thread/name/set', {'threadId': thread_id, 'name': title}))
+                              lambda request: request('thread/name/set', {'threadId': thread_id, 'name': title}),
+                              isolated_home=isolated_home)
 
 
 class ArchiveRejected(CreationError):
@@ -457,7 +482,7 @@ def stop_archive_runtime(request, identifiers, timeout=20):
             time.sleep(.1)
 
 
-def archive_thread(executable, codex_home, thread_id, archived, identifiers):
+def archive_thread(executable, codex_home, thread_id, archived, identifiers, *, isolated_home=False):
     uuid.UUID(thread_id)
     sent = False
     def dispatch(request):
@@ -466,7 +491,7 @@ def archive_thread(executable, codex_home, thread_id, archived, identifiers):
         sent = True
         return request('thread/archive' if archived else 'thread/unarchive', {'threadId': thread_id})
     try:
-        return _runtime_operation(executable, codex_home, str(codex_home), dispatch)
+        return _runtime_operation(executable, codex_home, str(codex_home), dispatch, isolated_home=isolated_home)
     except Exception as exc:
         if not sent:
             raise ArchiveNotSent(str(exc)) from exc

@@ -79,11 +79,11 @@ test('both native shells accept only a validated current-page modal signal',()=>
   const ios=fs.readFileSync(path.join(root,'mobile/ios/BridgePreview/App.swift'),'utf8');
   const a=android.slice(android.indexOf('if(prompt.equals("codexbridge-modal:"'),android.indexOf('if(prompt.equals("codexbridge-session:"'));
   const i=ios.slice(ios.indexOf('if prompt == "codexbridge-modal:"'),ios.indexOf('if prompt == "codexbridge-logout:"'));
-  assert.match(a,/view==web&&view\.hasWindowFocus\(\)&&GatewayURL\.sameOrigin\(url,origin\)&&GatewayURL\.sameOrigin\(view\.getUrl\(\),origin\)/);
+  assert.match(a,/view==web&&view\.hasWindowFocus\(\)&&GatewayURL\.sameOrigin\(url,pageOrigin\)&&GatewayURL\.sameOrigin\(view\.getUrl\(\),pageOrigin\)/);
   assert.match(a,/"open"\.equals\(value\)\|\|"closed"\.equals\(value\)/);
   assert.match(a,/menu\.setVisibility\(open\?View\.GONE:View\.VISIBLE\);menu\.setEnabled\(!open\)/);
   assert.match(i,/webView === web, connectionError == nil, UIApplication\.shared\.applicationState == \.active/);
-  assert.match(i,/frame\.isMainFrame.*GatewayURL\.same\(source, origin\)/s);
+  assert.match(i,/frame\.isMainFrame.*GatewayURL\.same\(source, documentAddress\)/s);
   assert.match(i,/gatewayMenu\.isHidden = state == "open"; gatewayMenu\.isEnabled = state == "closed"/);
   assert.match(ios,/gatewayMenu\.isHidden = home\s+gatewayMenu\.isEnabled = true/);
 });

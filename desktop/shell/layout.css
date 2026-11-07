@@ -23,3 +23,11 @@ button{font-size:12px;padding:8px 12px;color:#444;border-color:#dedede;border-ra
 #network-adaptation-setting .check{flex-wrap:wrap}
 #network-adaptation-setting input{flex:none}
 #network-adaptation-state{margin-left:auto;color:var(--muted);font-size:12px;font-weight:400}
+
+#dirty-details{position:relative;min-width:0}
+#dirty-details>summary{cursor:pointer;list-style:none}
+#dirty-details>summary::after{content:'⌃';margin-left:3px}
+#dirty-details[open]>summary::after{transform:rotate(180deg)}
+#dirty-fields{position:absolute;bottom:calc(100% + 10px);left:0;min-width:230px;max-width:50vw;max-height:45vh;overflow:auto;padding:6px;background:white;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 18px #0002}
+#dirty-fields button{display:block;width:100%;text-align:left;border:0;white-space:normal;overflow-wrap:anywhere}
+[data-unsaved="true"]{outline:2px solid #b56a14;outline-offset:2px}

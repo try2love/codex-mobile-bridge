@@ -5,7 +5,7 @@ const android=fs.readFileSync(path.join(root,'mobile/android/src/io/github/try2l
 const ios=fs.readFileSync(path.join(root,'mobile/ios/BridgePreview/App.swift'),'utf8');
 function method(source,signature){const start=source.indexOf(signature);assert.ok(start>=0);const open=source.indexOf('{',start);let depth=1,end=open+1;for(;depth;end++){if(source[end]==='{')depth++;if(source[end]==='}')depth--;}return source.slice(open+1,end-1);}
 function fixture(){
- const pending=new Map(),calls=[],web={},scope={generation:4,web,connectionDeadline:null,View:{VISIBLE:0},L:value=>value,status:{setVisibility:value=>calls.push(['visible',value]),setText:value=>calls.push(['text',value])},recoverConnection:url=>calls.push(['recover',url])};
+ const pending=new Map(),calls=[],web={},scope={generation:4,web,connectionDeadline:null,hideEntryProgress:()=>calls.push(['hide-progress']),View:{VISIBLE:0},L:value=>value,status:{setVisibility:value=>calls.push(['visible',value]),setText:value=>calls.push(['text',value])},recoverConnection:url=>calls.push(['recover',url])};
  scope.homeHandler={postDelayed:(fn,ms)=>pending.set(fn,ms),removeCallbacks:fn=>pending.delete(fn)};
  vm.createContext(scope);
  vm.runInContext('function cancelConnectionDeadline(){'+method(android,'void cancelConnectionDeadline()')+'}\nfunction watchConnection(url,current,ticket){'+method(android,'void watchConnection(').replace('()->','()=>')+'}',scope);
@@ -15,14 +15,14 @@ test('initial native connection deadline shows a retry path for a document stall
  const f=fixture();f.scope.watchConnection('https://computer/',f.scope.web,4);
  const [[deadline,ms]]=f.pending;assert.equal(ms,12000);assert.deepEqual(f.calls,[]);
  deadline();assert.equal(f.scope.connectionDeadline,null);
- assert.deepEqual(f.calls,[['visible',0],['text','连接失败，请在更多菜单中刷新'],['recover','https://computer/']]);
+ assert.deepEqual(f.calls,[['hide-progress'],['visible',0],['text','连接失败，请在更多菜单中刷新'],['recover','https://computer/']]);
 });
 test('entry watchdog cannot update another computer, and document commit cancels its timer',()=>{
  for(const invalidate of [scope=>scope.generation++,scope=>scope.web={}]){
   const f=fixture();f.scope.watchConnection('https://old/',f.scope.web,4);const [deadline]=f.pending.keys();invalidate(f.scope);deadline();assert.deepEqual(f.calls,[]);
  }
  const f=fixture();f.scope.watchConnection('https://computer/',f.scope.web,4);f.scope.cancelConnectionDeadline();assert.equal(f.pending.size,0);assert.equal(f.scope.connectionDeadline,null);
- assert.match(method(android,'public void onPageCommitVisible('),/view==web&&GatewayURL.sameOrigin\(target,origin\).*cancelConnectionDeadline\(\)/s);
+ assert.match(method(android,'public void onPageCommitVisible('),/view==web&&GatewayURL.sameOrigin\(target,pageOrigin\).*cancelConnectionDeadline\(\)/s);
 });
 test('matching retained bindings bypass the network queue and recovery retains every identity guard',()=>{
  const entry=method(android,'void loadWithRecovery(');

@@ -13,8 +13,10 @@ import subprocess
 import tempfile
 import threading
 import uuid
+from functools import partial
 from pathlib import Path
 
+from bridge.features.sessions.create import runtime_environment
 from bridge.features.sessions.model import attachment_prompt, normalize_state, normalize_request
 from bridge.features.sessions.tool_images import TOOL_IMAGE_CACHE, public_turns
 from bridge.features.workspace.uploads import Uploads
@@ -36,7 +38,7 @@ class SideChatError(ValueError):
 
 
 class SideRuntime:
-    def __init__(self, executable, home, cwd, event):
+    def __init__(self, executable, home, cwd, event, *, isolated_home=False):
         self.event = event
         self.lock = threading.RLock()
         self.pending = {}
@@ -44,7 +46,7 @@ class SideRuntime:
         self.closed = False
         options = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
         self.process = subprocess.Popen([str(executable), 'app-server', '--listen', 'stdio://'],
-            cwd=cwd, env={**os.environ, 'CODEX_HOME': str(home)}, stdin=subprocess.PIPE,
+            cwd=cwd, env=runtime_environment(home, isolated_home=isolated_home), stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding='utf-8', **options)
         self.reader = threading.Thread(target=self._read, daemon=True)
 
@@ -525,7 +527,7 @@ class SideChat:
 
 
 class SideChats:
-    def __init__(self, executable, home, directory, host, factory=SideChat, *, executable_getter=None):
+    def __init__(self, executable, home, directory, host, factory=SideChat, *, executable_getter=None, isolated_home=False):
         self.executable, self.home, self.directory, self.host = executable, home, directory, host
         self.executable_getter = executable_getter
         if factory is SideChat:
@@ -533,6 +535,8 @@ class SideChats:
             if enabled(host):
                 from bridge.features.sessions.linux_side_chat import LinuxSideChat
                 factory = LinuxSideChat
+        if isolated_home:
+            factory = partial(factory, runtime_factory=partial(SideRuntime, isolated_home=True))
         self.factory = factory
         self.lock = threading.RLock()
         self.chats = {}

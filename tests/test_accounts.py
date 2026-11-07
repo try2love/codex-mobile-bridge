@@ -94,7 +94,7 @@ class AccountsTests(unittest.TestCase):
         (self.home/'config.toml').write_text('# existing config\nmodel="original"\n')
         (self.home/'auth.json').write_text('{"tokens":{"account_id":"original"}}')
         (self.home/'history.jsonl').write_text('preserve history')
-        self.bridge = SimpleNamespace(codex_home=self.home, data_dir=self.root,
+        self.bridge = SimpleNamespace(codex_home=self.home, data_dir=self.root, native_host="local",
             catalog_reader=SimpleNamespace(executable=self.root/'runtime', cache={'old': 1}),
             remote_bridges={}, live={}, submissions={}, lock=threading.RLock(),
             account=Account(self.home,self.root,executable=self.root/'runtime'), ipc=Mock(), _disconnected=Mock())

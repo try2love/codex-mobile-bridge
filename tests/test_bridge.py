@@ -687,20 +687,31 @@ class IntegrationTests(unittest.TestCase):
             self.bridge.settings(THREAD, 'official-missing', 'minimal')
         self.assertFalse(any(r['method'] == 'thread-follower-update-thread-settings' for r in self.fixture.requests))
 
-    def test_managed_catalog_uses_selected_access_instead_of_old_chat_provider(self):
+    def test_desktop_catalog_keeps_project_scope_instead_of_global_account_models(self):
         from unittest.mock import Mock
         from types import SimpleNamespace
-        self.bridge.session(THREAD)
-        selected={'models':[{'id':'gemini-fixture','efforts':[]}],'modelSource':'api','modelAccessName':'Gemini access'}
-        self.bridge.accounts=SimpleNamespace(current_models=Mock(return_value=selected))
-        self.bridge.catalog_reader.get=Mock(side_effect=AssertionError('must not query old provider models'))
-        self.bridge.catalog_reader.get_kind=Mock(return_value={'skills':[],'errors':[]})
-        for kind in ('models',None):
-            result=self.bridge.catalog(THREAD,refresh=True,kind=kind)
-            self.assertEqual(result['models'],selected['models'])
-            self.assertEqual(result['modelAccessName'],'Gemini access')
-        self.assertEqual([c.args[0] for c in self.bridge.catalog_reader.get_kind.call_args_list],['skills'])
-        self.bridge.accounts=None
+        session = SimpleNamespace(origin='desktop', connected=True, runtime='desktop',
+                                  condition=threading.Condition(), state={'cwd': '/fixture/project', 'modelProvider': 'project-api'},
+                                  view=lambda: {'provider': 'project-api'})
+        self.bridge.session = Mock(return_value=session)
+        selected = {'models': [{'id': 'project-model', 'efforts': []}],
+                    'modelSource': 'api', 'modelAccessName': 'Project access'}
+        self.bridge.accounts = SimpleNamespace(current_models=Mock(
+            side_effect=AssertionError('global account models bypass project configuration')))
+        self.bridge.catalog_reader.get = Mock(return_value={**selected, 'skills': []})
+        self.bridge.catalog_reader.get_kind = Mock(return_value=selected)
+        try:
+            for kind in ('models', None):
+                result = self.bridge.catalog(THREAD, refresh=True, kind=kind)
+                self.assertEqual(result['models'], selected['models'])
+                self.assertEqual(result['modelAccessName'], 'Project access')
+            with session.condition:
+                cwd, provider = session.state['cwd'], session.state.get('modelProvider')
+            self.bridge.catalog_reader.get_kind.assert_called_once_with('models', cwd, refresh=True, provider=provider)
+            self.bridge.catalog_reader.get.assert_called_once_with(cwd, refresh=True, provider=provider)
+            self.bridge.accounts.current_models.assert_not_called()
+        finally:
+            self.bridge.accounts = None
 
     def test_cold_model_catalog_reads_saved_settings_without_desktop_attach(self):
         from unittest.mock import Mock, patch
@@ -1227,6 +1238,33 @@ class HttpTests(unittest.TestCase):
         self.server.bridge.entries.hosts = lambda: {}
         self.assertEqual(self.request('GET', path, headers=headers)[0], 400)
 
+    def test_independent_codex_hosts_are_only_read_from_their_own_list(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        profile, wsl = 'codex:' + 'a' * 32, 'wsl:' + 'b' * 32
+        registry = {profile: {'kind': 'codex-local', 'displayName': 'Work Codex'},
+                    wsl: {'kind': 'wsl-cli', 'label': 'Ubuntu'}}
+        self.server.bridge.entries = SimpleNamespace(hosts=lambda: registry)
+        self.server.bridge.hosts = SimpleNamespace(hosts=lambda: {'ssh-host': {'label': 'SSH'}})
+        target = Mock()
+        target.list.return_value = ([{'id': THREAD, 'host': profile}], ['cli', 'ide'])
+        target.host_errors = []
+        self.server.bridge.for_host = lambda host: target if host == profile else self.server.bridge
+        manager = self.server.desktop_sessions = Mock()
+        headers = self.login()
+        status, _, body = self.request('GET', '/api/sessions?scope=host&host=local', headers=headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(body['remoteHosts'], ['ssh-host', wsl])
+        target.list.assert_not_called()
+        status, _, body = self.request('GET', '/api/sessions?scope=host&host=' + profile, headers=headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(body['remoteHosts'], [])
+        self.assertEqual(body['sessions'][0]['host'], profile)
+        self.assertEqual(body['availableSources'], ['cli', 'ide'])
+        manager.require_enabled.assert_called_with(profile)
+        registry.pop(profile)
+        self.assertEqual(self.request('GET', '/api/sessions?scope=host&host=' + profile, headers=headers)[0], 400)
+
     def test_host_scoped_wsl_failure_reports_incomplete_without_other_hosts(self):
         from types import SimpleNamespace
         from unittest.mock import Mock
@@ -1265,6 +1303,7 @@ class HttpTests(unittest.TestCase):
         bridge.timeline_read = Mock(side_effect=AssertionError('Disabled native timeline read'))
         bridge.register_project = Mock(side_effect=AssertionError('Disabled native project write'))
         manager = self.server.desktop_sessions = DesktopSessions.__new__(DesktopSessions)
+        manager.instance = manager.instances = None
         manager.bridge = bridge
         manager.config = {'enabled': {'codex': False}}
         headers = self.login()
@@ -1368,7 +1407,9 @@ class HttpTests(unittest.TestCase):
         from bridge.clients.manager import DesktopSessions
         entry = 'wsl:' + 'a' * 32
         manager = DesktopSessions.__new__(DesktopSessions)
+        manager.instance = manager.instances = None
         manager.read_lock = threading.Lock()
+        manager.adapters = {'claude': Mock(), 'deepseek': Mock()}
         manager.config = {'enabled': {'codex': False, 'claude': True, 'deepseek': False}}
         manager.bridge = SimpleNamespace(entries=SimpleNamespace(hosts=lambda: {entry: {}}))
         manager.applications = Mock(side_effect=AssertionError('runtime scan during authentication'))

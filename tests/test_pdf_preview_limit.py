@@ -62,7 +62,7 @@ class PdfPreviewLimitTests(unittest.TestCase):
     def test_ssh_and_relay_keep_bounded_download_parameters(self):
         store = RemoteStore('fixture-host')
         store.get = lambda thread: {'cwd': '/synthetic/project'}
-        bridge = SimpleNamespace(host='remote:fixture', store=store)
+        bridge = SimpleNamespace(host='remote:fixture', local=False, store=store)
         params = {'path': 'sample.pdf', 'limit': MAX_TRANSFER, 'range_header': 'bytes=0-1023', 'if_range': ''}
         with patch('bridge.app.service.ssh_download', return_value='synthetic-stream') as download:
             self.assertEqual(Bridge.workspace(bridge, support.THREAD, 'download-stream', params), 'synthetic-stream')

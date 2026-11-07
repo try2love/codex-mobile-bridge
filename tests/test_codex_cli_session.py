@@ -111,6 +111,15 @@ class CliSessionTests(unittest.TestCase):
         start.assert_called_once_with()
         self.assertEqual(self.fake.connect.call_count, 2)
 
+    def test_incomplete_cli_package_returns_actionable_diagnostic(self):
+        from unittest.mock import patch
+        self.sessions.allow_installed_runtime = True
+        response = Mock(returncode=1, stderr='Error: this CLI has no complete local package')
+        with patch('bridge.clients.codex.cli_session._managed_cli', return_value=self.home/'codex'), \
+                patch('subprocess.run', return_value=response):
+            with self.assertRaisesRegex(AppServerUnavailable, '安装或修复完整的 Codex CLI'):
+                self.sessions._start_daemon()
+
     def test_explicit_attach_resumes_saved_thread_and_preserves_identity(self):
         self.fake.loaded = False
         saved = {'id': 'thread-a', 'origin': 'cli', 'cwd': '/original/project',
@@ -141,7 +150,8 @@ class CliSessionTests(unittest.TestCase):
         samefile = Mock(return_value=True)
         windows = SimpleNamespace(name='nt', path=SimpleNamespace(samefile=samefile))
         with patch.object(self.sessions.store, 'get', return_value=saved), \
-                patch('bridge.clients.codex.cli_session.os', windows):
+                patch('bridge.clients.codex.cli_session.os', windows), \
+                patch('bridge.features.sessions.identity.os', windows):
             state = self.sessions.attach('thread-a', explicit=True)
         self.assertEqual(state['id'], 'thread-a')
         samefile.assert_called_once_with(r'\\?\C:\project', r'C:\project')
@@ -153,7 +163,8 @@ class CliSessionTests(unittest.TestCase):
                  'cwd': r'\\?\C:\other', 'model_provider': 'original-provider'}
         windows = SimpleNamespace(name='nt', path=SimpleNamespace(samefile=Mock(return_value=False)))
         with patch.object(self.sessions.store, 'get', return_value=saved), \
-                patch('bridge.clients.codex.cli_session.os', windows):
+                patch('bridge.clients.codex.cli_session.os', windows), \
+                patch('bridge.features.sessions.identity.os', windows):
             with self.assertRaises(AppServerUnsupported):
                 self.sessions.attach('thread-a', explicit=True)
         self.assertFalse(any(method == 'thread/resume' for method, _ in self.fake.sent))
@@ -165,7 +176,8 @@ class CliSessionTests(unittest.TestCase):
         windows = SimpleNamespace(name='nt', path=SimpleNamespace(
             samefile=Mock(side_effect=OSError('inaccessible'))))
         with patch.object(self.sessions.store, 'get', return_value=saved), \
-                patch('bridge.clients.codex.cli_session.os', windows):
+                patch('bridge.clients.codex.cli_session.os', windows), \
+                patch('bridge.features.sessions.identity.os', windows):
             with self.assertRaises(AppServerUnsupported):
                 self.sessions.attach('thread-a', explicit=True)
         self.assertFalse(any(method == 'thread/resume' for method, _ in self.fake.sent))
@@ -177,7 +189,8 @@ class CliSessionTests(unittest.TestCase):
         samefile = Mock(return_value=True)
         posix = SimpleNamespace(name='posix', path=SimpleNamespace(samefile=samefile))
         with patch.object(self.sessions.store, 'get', return_value=saved), \
-                patch('bridge.clients.codex.cli_session.os', posix):
+                patch('bridge.clients.codex.cli_session.os', posix), \
+                patch('bridge.features.sessions.identity.os', posix):
             with self.assertRaises(AppServerUnsupported):
                 self.sessions.attach('thread-a', explicit=True)
         samefile.assert_not_called()
@@ -191,7 +204,8 @@ class CliSessionTests(unittest.TestCase):
         samefile = Mock(return_value=True)
         windows = SimpleNamespace(name='nt', path=SimpleNamespace(samefile=samefile))
         with patch.object(self.sessions.store, 'get', return_value=saved), \
-                patch('bridge.clients.codex.cli_session.os', windows):
+                patch('bridge.clients.codex.cli_session.os', windows), \
+                patch('bridge.features.sessions.identity.os', windows):
             with self.assertRaises(AppServerUnsupported):
                 self.sessions.attach('thread-a', explicit=True)
         samefile.assert_not_called()
@@ -648,6 +662,14 @@ class CliSessionTests(unittest.TestCase):
         self.assertTrue(result['modelError'])
         self.assertFalse(any(method == 'model/list' for method, _ in self.fake.sent))
 
+    def test_creation_catalog_reads_original_daemon_without_joining_any_thread(self):
+        with patch.object(self.sessions,'_connect_explicit',return_value={'codexHome':str(self.sessions.home)}):
+            config=self.sessions.creation_context('/work/project')
+            value=self.sessions.model_catalog('/work/project',config.get('model_provider') or 'openai')
+        self.assertIsInstance(value['models'],list)
+        self.assertFalse(self.sessions.joined)
+        self.assertFalse(any(method in ('thread/start','thread/resume','turn/start') for method,_ in self.fake.sent))
+
     def test_local_native_api_catalog_uses_verified_config_and_upstream_models(self):
         self.sessions.attach('thread-a', explicit=True)
         self.sessions.metadata['thread-a']['modelProvider'] = 'custom'
@@ -842,6 +864,54 @@ class CliSessionTests(unittest.TestCase):
         self.sessions._event({'method': 'turn/completed', 'params': {
             'threadId': 'thread-a', 'turn': {'id': 'turn-1', 'status': 'completed'}}})
         self.assertEqual(self.states[-1][1]['turns'][0]['status'], 'completed')
+
+    def test_reasoning_deltas_stream_before_completion(self):
+        # Third-party Responses backends stream chain of thought as raw text
+        # deltas and leave `summary` empty until (never) filled upstream.
+        self.sessions.attach('thread-a', explicit=True)
+        self.sessions._event({'method': 'turn/started', 'params': {
+            'threadId': 'thread-a', 'turn': {'id': 'turn-1', 'status': 'inProgress', 'items': []}}})
+        self.sessions._event({'method': 'item/started', 'params': {
+            'threadId': 'thread-a', 'turnId': 'turn-1',
+            'item': {'id': 'rs-1', 'type': 'reasoning', 'summary': [], 'content': []}}})
+        for delta in ('Think', 'ing'):
+            self.sessions._event({'method': 'item/reasoning/textDelta', 'params': {
+                'threadId': 'thread-a', 'turnId': 'turn-1', 'itemId': 'rs-1',
+                'delta': delta, 'contentIndex': 0}})
+        item = self.states[-1][1]['turns'][0]['items'][0]
+        self.assertEqual(item['content'], ['Thinking'])
+        self.assertEqual(item['summary'], [])
+        self.sessions._event({'method': 'item/reasoning/summaryTextDelta', 'params': {
+            'threadId': 'thread-a', 'turnId': 'turn-1', 'itemId': 'rs-1',
+            'delta': 'Summary', 'summaryIndex': 0}})
+        item = self.states[-1][1]['turns'][0]['items'][0]
+        self.assertEqual(item['summary'], ['Summary'])
+        self.assertEqual(item['content'], ['Thinking'])
+
+    def test_reasoning_delta_without_started_item_is_buffered(self):
+        self.sessions.attach('thread-a', explicit=True)
+        self.sessions._event({'method': 'turn/started', 'params': {
+            'threadId': 'thread-a', 'turn': {'id': 'turn-1', 'status': 'inProgress', 'items': []}}})
+        self.sessions._event({'method': 'item/reasoning/textDelta', 'params': {
+            'threadId': 'thread-a', 'turnId': 'turn-1', 'itemId': 'rs-2', 'delta': 'partial'}})
+        item = self.states[-1][1]['turns'][0]['items'][0]
+        self.assertEqual((item['id'], item['type'], item['content']), ('rs-2', 'reasoning', ['partial']))
+        self.sessions._event({'method': 'item/started', 'params': {'threadId': 'thread-a', 'turnId': 'turn-1',
+            'item': {'id': 'rs-2', 'type': 'reasoning', 'summary': [], 'content': []}}})
+        self.assertEqual(self.states[-1][1]['turns'][0]['items'][0]['content'], ['partial'])
+        self.sessions._event({'method': 'item/completed', 'params': {'threadId': 'thread-a', 'turnId': 'turn-1',
+            'item': {'id': 'rs-2', 'type': 'reasoning', 'summary': ['final'], 'content': []}}})
+        self.assertEqual(self.states[-1][1]['turns'][0]['items'][0]['summary'], ['final'])
+        self.assertEqual(self.states[-1][1]['turns'][0]['items'][0]['content'], [])
+
+    def test_reasoning_rejects_sparse_invalid_indices_without_allocating_items(self):
+        self.sessions.attach('thread-a', explicit=True)
+        self.sessions._event({'method': 'turn/started', 'params': {
+            'threadId': 'thread-a', 'turn': {'id': 'turn-1', 'status': 'inProgress', 'items': []}}})
+        for index in (10**9, -1, True, '2', None):
+            self.sessions._event({'method': 'item/reasoning/textDelta', 'params': {
+                'threadId': 'thread-a', 'turnId': 'turn-1', 'itemId': 'rs-1', 'delta': 'x', 'contentIndex': index}})
+        self.assertEqual(self.states[-1][1]['turns'][0]['items'], [])
 
     def test_capacity_error_distinguishes_native_retry_and_required_intervention(self):
         self.sessions.attach('thread-a', explicit=True)

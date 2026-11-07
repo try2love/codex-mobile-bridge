@@ -12,6 +12,36 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class StoreTests(unittest.TestCase):
+    def test_attached_native_chats_are_not_standalone_list_rows(self):
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute('ALTER TABLE threads ADD COLUMN attached_thread_parent_id TEXT')
+            db.executemany('INSERT INTO threads VALUES (?,?,?,?,?,?,?,?)', [
+                ('attached', 'Side question', '/project', 9, 0, 'Codex Desktop', 'vscode', 'test'),
+                ('fork', 'Ordinary fork', '/project', 8, 0, 'Codex Desktop', 'vscode', None),
+                ('cli-child', 'Side question', '/project', 7, 0, 'codex_cli_rs', 'cli', 'test'),
+                ('archived-child', 'Side question', '/project', 6, 1, 'Codex Desktop', 'vscode', 'test'),
+            ])
+        self.assertEqual([r['id'] for r in self.store.list(limit=1, pinned_ids=['attached'])], ['fork'])
+        self.assertEqual([r['id'] for r in self.store.list(offset=1, limit=1)], ['test'])
+        self.assertEqual(self.store.list(query='Side question'), [])
+        self.assertEqual(self.store.list(archived=True), [])
+        self.assertEqual(self.store.available_sources(), ['desktop'])
+        self.assertEqual(SessionStore(self.root, source='cli').list(), [])
+        # Hiding a list entry must not delete it or weaken native task checks.
+        self.assertEqual(self.store.get('attached')['attached_thread_parent_id'], 'test')
+        self.assertIn('attached', {r['id'] for r in self.store.lifecycle_threads()})
+        self.assertIn('attached', {r['id'] for r in self.store.notification_changes()})
+
+    def test_promoted_native_chat_returns_to_the_list_without_changing_its_origin(self):
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute('ALTER TABLE threads ADD COLUMN attached_thread_parent_id TEXT')
+            db.execute("UPDATE threads SET attached_thread_parent_id='parent'")
+        self.assertEqual(self.store.list(), [])
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute('UPDATE threads SET attached_thread_parent_id=NULL')
+        self.assertEqual(self.store.list()[0]['origin'], 'desktop')
+        self.assertEqual(self.store.available_sources(), ['desktop'])
+
     def test_native_project_assignment_and_clear_are_read_from_the_database(self):
         with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.execute('ALTER TABLE threads ADD COLUMN project_id TEXT')
@@ -22,6 +52,23 @@ class StoreTests(unittest.TestCase):
         with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.execute('UPDATE threads SET project_id=NULL')
         self.assertIsNone(self.store.list()[0]['_nativeProject'])
+
+    def test_native_cli_metadata_controls_read_list_and_source_filters(self):
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute('ALTER TABLE threads ADD COLUMN thread_source TEXT')
+            db.executemany('INSERT INTO threads VALUES (?,?,?,?,?,?,?,?)', [
+                ('created', 'Created in profile', '/project', 5, 0, 'Codex Desktop', 'vscode', 'cli'),
+                ('ide', 'VS Code', '/project', 6, 0, 'codex_vscode', 'vscode', 'cli'),
+                ('legacy', 'Old desktop', '/project', 2, 0, None, 'vscode', None),
+                ('child', 'Worker', '/project', 7, 0, 'Codex Desktop', 'vscode', 'subagent'),
+            ])
+        self.assertEqual(self.store.get('created')['origin'], 'cli')
+        self.assertEqual(self.store.get('ide')['origin'], 'ide')
+        self.assertEqual([r['id'] for r in self.store.list(source='cli')], ['created'])
+        self.assertEqual({r['id'] for r in self.store.list(source='desktop')}, {'test', 'legacy'})
+        self.assertEqual([r['id'] for r in self.store.list(exclude_sources=('ide',), limit=1)], ['created'])
+        self.assertEqual({r['id'] for r in self.store.list(exclude_sources=('ide',))}, {'test', 'legacy', 'created'})
+        self.assertEqual(self.store.available_sources(), ['cli', 'desktop', 'ide'])
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=ROOT / '.tmp')
@@ -124,7 +171,7 @@ class StoreTests(unittest.TestCase):
                 self.store.get(thread_id)
         self.assertEqual({r['id'] for r in self.store.lifecycle_threads()}, {'test'})
         report = self.store.discovery_diagnostics('cli')
-        self.assertEqual(report['counts'], {'desktop': 1, 'cli': 7, 'other': 2, 'subagent': 1,
+        self.assertEqual(report['counts'], {'desktop': 1, 'cli': 7, 'ide': 0, 'other': 2, 'subagent': 1,
                                             'visible': 7, 'archived': 1})
         self.assertEqual(report['target'], {'found': True, 'origin': 'cli', 'archived': False,
                                             'reason': 'rollout_missing', 'read': 'unavailable'})

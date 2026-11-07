@@ -9,7 +9,7 @@ from pathlib import Path, PureWindowsPath
 
 
 PRODUCT_NAMES = {'codex': ('Codex', 'ChatGPT'), 'claude': ('Claude', 'Claude Desktop'),
-                 'deepseek': ('DSH Desktop', 'DeepSeek Harness', 'DeepSeekHarness', 'deepseek-harness')}
+                 'deepseek': ('DSH Desktop', 'DeepSeek Harness', 'DeepSeekHarness', 'deepseek-harness'), 'zcode': ('ZCode',)}
 PACKAGE_NAMES = {'openai.codex': 'codex', 'claude': 'claude'}
 
 # Appx registration is readable even when enumerating WindowsApps is forbidden.
@@ -24,8 +24,8 @@ try {
         Where-Object {$_.Name -in @('OpenAI.Codex', 'Claude')} |
         Select-Object Name,InstallLocation,PackageFamilyName)
 } catch {}
-$product = '^(Codex|ChatGPT|Claude( Desktop)?|DSH Desktop|DeepSeek Harness|DeepSeekHarness|deepseek-harness)(\s+\d[\w. -]*)?$'
-$binary = '^(Codex|ChatGPT|Claude( Desktop)?|DSH Desktop|DeepSeek Harness|DeepSeekHarness|deepseek-harness)\.exe$'
+$product = '^(Codex|ChatGPT|Claude( Desktop)?|DSH Desktop|DeepSeek Harness|DeepSeekHarness|deepseek-harness|ZCode)(\s+\d[\w. -]*)?$'
+$binary = '^(Codex|ChatGPT|Claude( Desktop)?|DSH Desktop|DeepSeek Harness|DeepSeekHarness|deepseek-harness|ZCode)\.exe$'
 foreach ($base in @('HKCU:\Software', 'HKLM:\Software', 'HKCU:\Software\WOW6432Node', 'HKLM:\Software\WOW6432Node')) {
     try {
         $result.uninstall += @(Get-ItemProperty -Path ($base + '\Microsoft\Windows\CurrentVersion\Uninstall\*') |

@@ -436,6 +436,27 @@ class ClaudeConnectionProbe(unittest.TestCase):
         self.reply({'seq': 1, 'done': True, 'result': True}); self.desktop.read()
         self.assertEqual(self.desktop.unconfirmed_mutations, set())
 
+    def test_late_signed_ack_is_rechecked_when_file_size_and_timestamp_are_unchanged(self):
+        import os
+        response = self.adapter.directory/'response.json'
+        stamp = 1_700_000_000_000_000_000
+        self.desktop.unconfirmed_mutations.add(1)
+        self.reply({'timestamp': 1_700_000_000, 'seq': 2, 'done': True, 'result': None})
+        os.utime(response, ns=(stamp, stamp))
+        before = response.stat()
+        self.desktop.read()
+        self.assertEqual(self.desktop.unconfirmed_mutations, {1})
+        self.reply({'timestamp': 1_700_000_000, 'seq': 1, 'done': True, 'result': True})
+        os.utime(response, ns=(stamp, stamp))
+        self.assertEqual((response.stat().st_mtime_ns, response.stat().st_size),
+                         (before.st_mtime_ns, before.st_size))
+        with patch.object(self.desktop.lock, 'locked', return_value=True):
+            self.assertEqual(self.desktop.read()['seq'], 2)
+            self.assertEqual(self.desktop.unconfirmed_mutations, {1})
+        self.assertFalse(self.desktop.lock.locked())
+        self.assertEqual(self.desktop.read()['seq'], 1)
+        self.assertEqual(self.desktop.unconfirmed_mutations, set())
+
     def test_remote_reinjection_preserves_owner_and_blocks_new_calls_until_finished(self):
         for stopped in (False, True):
             with self.subTest(stopped=stopped):

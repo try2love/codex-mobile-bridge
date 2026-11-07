@@ -95,3 +95,18 @@ class AccountsHttpTests(unittest.TestCase):
         self.server.auth.config['mode']='none'
         self.assertEqual(self.request('POST','/api/accounts/desktop-update',{'action':'checkDesktopUpdate'},headers)[0],403)
         manager.updates.request.assert_not_called()
+
+    def test_independent_scope_routes_reads_and_writes_without_default_fallback(self):
+        default=self.manager();headers=self.login();entry='codex:'+'a'*32
+        scoped=SimpleNamespace(public=Mock(return_value={'accounts':[],'scope':'profile','canSwitch':True}),
+            switch=Mock(return_value={'scope':'profile'}),reset_dynamic_enabled=False)
+        target=SimpleNamespace(host=entry,accounts=scoped)
+        self.server.bridge.account_target=Mock(return_value=target)
+        value={'id':'fixture','requestId':'fixture','confirmed':True,'tasksConfirmed':True}
+        self.assertEqual(self.request('GET','/api/accounts?entry='+entry,headers=headers)[0],200)
+        self.assertEqual(self.request('POST','/api/accounts/switch?entry='+entry,value,headers)[0],202)
+        scoped.switch.assert_called_once_with(value);default.switch.assert_not_called();default.public.assert_not_called()
+        self.assertEqual(self.request('POST','/api/accounts/desktop-update?entry='+entry,{'action':'checkDesktopUpdate'},headers)[0],400)
+        self.server.bridge.account_target.side_effect=ValueError('Unknown profile')
+        self.assertEqual(self.request('POST','/api/accounts/switch?entry='+entry,value,headers)[0],400)
+        self.assertEqual(scoped.switch.call_count,1);default.switch.assert_not_called()

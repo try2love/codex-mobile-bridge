@@ -41,6 +41,8 @@ jobs:
   build:
     needs: validate
     uses: ./.github/workflows/desktop.yml
+    secrets:
+      UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
     with:
       source_ref: ${{ inputs.source_ref || github.ref }}
   ios:

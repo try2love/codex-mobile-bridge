@@ -44,6 +44,29 @@ class Adapters(unittest.TestCase):
             self.assertEqual(detail['messages'][0]['text'], '')
             self.assertEqual(detail['files'][0]['path'], file.name)
 
+    def test_native_work_mode_routes_once_through_shared_write_receipts(self):
+        adapter = Mock(); adapter.receipts_path = None
+        self.manager.adapters['deepseek'] = adapter
+        def native(action, sid=None, body=None):
+            if action == 'detail':
+                return {'capabilities': {'plan': True, 'goal': True}, 'session': {'collaborationMode': 'default'}}
+            return {'status': 'accepted'}
+        adapter.call.side_effect = native
+        body = {'id': str(uuid.uuid4()), 'text': 'plan this', 'workMode': 'plan'}
+        self.assertEqual(self.manager.call('deepseek', 'send', 'chat', body)['status'], 'accepted')
+        self.manager.call('deepseek', 'send', 'chat', body)
+        self.assertEqual([c.args[0] for c in adapter.call.call_args_list], ['detail', 'work-mode', 'send'])
+        self.assertNotIn('workMode', adapter.call.call_args.args[2])
+        adapter.call.reset_mock()
+        body = {'id': str(uuid.uuid4()), 'text': 'finish this', 'workMode': 'goal'}
+        self.assertEqual(self.manager.call('deepseek', 'send', 'chat', body)['status'], 'accepted')
+        self.assertEqual([c.args[0] for c in adapter.call.call_args_list], ['detail', 'goal'])
+        self.assertEqual(adapter.call.call_args.args[2]['objective'], 'finish this')
+        adapter.call.reset_mock()
+        body.update(id=str(uuid.uuid4()), mode='queue')
+        with self.assertRaises(ValueError): self.manager.call('deepseek', 'send', 'chat', body)
+        adapter.call.assert_not_called()
+
     def test_claude_preparation_is_available_without_starting_gateway(self):
         self.manager.gateway_running = False
         adapter = self.manager.adapters['claude']
@@ -88,20 +111,20 @@ class Adapters(unittest.TestCase):
         with self.assertRaises(ValueError): self.manager.call('deepseek', 'eval', 'session-one')
         with self.assertRaises(ValueError): self.manager.call('deepseek', 'send', 'session-one', {'id':str(uuid.uuid4()),'text':''})
 
-    def test_desktop_claude_reuses_only_its_current_api_account_catalog(self):
+    def test_desktop_claude_uses_same_surface_projection_as_creation(self):
         adapter = self.manager.adapters['claude']
         adapter.index['session'] = {'backend': 'cowork'}
-        store = Mock(); store.lock = __import__('threading').RLock()
-        store._current.return_value = ('api', 'fingerprint', {})
-        native = {'models': [{'id': 'native', 'efforts': ['high']}], 'capabilities': {'models': True}}
-        with patch.object(self.manager, '_model_identity', return_value='same-account'), \
-             patch.object(self.manager, '_account_store', return_value=store), \
-             patch.object(self.manager, '_account_models', return_value={'models': [{'id': 'upstream', 'efforts': []}]}) as account, \
-             patch.object(self.manager, '_read', return_value=native):
+        directory = {'models': [{'id': 'code'}, {'id': 'cowork'}],
+                     'groups': [{'surface': 'code', 'models': [{'id': 'code'}]},
+                                {'surface': 'cowork', 'models': [{'id': 'cowork'}]}],
+                     'cache': {'identity': 'same-account'}}
+        with patch.object(self.manager, '_account_model_identity', return_value='same-account'), \
+             patch.object(self.manager, '_account_models', return_value=directory) as account:
             result = self.manager._catalog_models('claude', 'session', {'section': 'models'})
-            self.assertEqual([row['id'] for row in result['models']], ['upstream', 'native'])
-            account.assert_called_once_with('claude', refresh=False)
-        self.assertEqual(result['cache']['identity'], 'same-account')
+        self.assertEqual([row['id'] for row in result['models']], ['cowork'])
+        self.assertEqual(result['cache']['directoryIdentity'], 'same-account')
+        self.assertEqual(result['cache']['identity'], self.manager._surface_model_identity('same-account', 'cowork'))
+        account.assert_called_once_with('claude', refresh=False)
 
     def test_manual_settings_captured_account_is_checked_before_native_write(self):
         adapter = self.manager.adapters['deepseek']
@@ -156,6 +179,8 @@ class Adapters(unittest.TestCase):
         self.assertEqual(self.manager.model_store.read('legacy')[0], updated_at)
 
     def test_model_picker_uses_persisted_catalog_and_refresh_bypasses_it(self):
+        self.manager._account_model_identity = Mock(return_value='deepseek-account')
+        self.manager._account_model_live = Mock(return_value=False)
         adapter = self.manager.adapters['deepseek']
         adapter.call = Mock(return_value={'models': [{'id': 'provider/first', 'efforts': ['high']}],
                                           'currentModel': 'provider/first', 'capabilities': {'models': True}})
@@ -166,6 +191,8 @@ class Adapters(unittest.TestCase):
         adapter.call.assert_called_once()
         second = DesktopSessions(self.root)
         try:
+            second._account_model_identity = Mock(return_value='deepseek-account')
+            second._account_model_live = Mock(return_value=False)
             second_adapter = second.adapters['deepseek']
             second_adapter.call = Mock(side_effect=AssertionError('opened picker queried desktop'))
             self.assertEqual(second.call('deepseek', 'catalog', 'session-one', body)['models'], first['models'])
@@ -183,7 +210,7 @@ class Adapters(unittest.TestCase):
             second_adapter.call.side_effect = ValueError('temporary upstream failure')
             self.assertEqual(second.call('deepseek', 'catalog', 'session-one', {'section': 'models', 'refresh': True})['models'], refreshed['models'])
             second_adapter.call.side_effect = None
-            second_adapter.home = self.root/'changed-home'
+            second._account_model_identity.return_value = 'different-account'
             second_adapter.call.return_value = {'models': [{'id': 'provider/new-account'}], 'capabilities': {'models': True}}
             self.assertEqual(second.call('deepseek', 'catalog', 'session-one', body)['models'][0]['id'], 'provider/new-account')
         finally:
@@ -348,12 +375,13 @@ class Adapters(unittest.TestCase):
 
     def test_cached_deepseek_catalog_does_not_read_session_list(self):
         manager = self.manager
-        manager._model_identity = Mock(return_value='shared-access')
+        manager._account_model_identity = Mock(return_value='shared-access')
+        manager._account_model_live = Mock(return_value=False)
         manager._model_live = Mock(return_value=True)
         calls = []
         def native(action, sid, body):
             calls.append(action)
-            if action == 'catalog':
+            if action == 'account':
                 return {'models': [{'id': 'provider/first'}, {'id': 'provider/second'}],
                         'capabilities': {'models': True}}
             if action == 'list':
@@ -364,11 +392,12 @@ class Adapters(unittest.TestCase):
         manager.call('deepseek', 'catalog', 'session-one', {'section': 'models'})
         cached = manager.call('deepseek', 'catalog', 'session-one', {'section': 'models'})
         self.assertNotIn('currentModel', cached)
-        self.assertEqual(calls, ['catalog'])
+        self.assertEqual(calls, ['account'])
 
     def test_session_account_change_after_catalog_write_rejects_old_response(self):
         manager = self.manager
-        manager._model_identity = Mock(side_effect=['old-account', 'old-account', 'new-account'])
+        manager._account_model_identity = Mock(side_effect=['old-account', 'old-account', 'new-account'])
+        manager._account_model_live = Mock(return_value=False)
         manager._read = Mock(return_value={'models':[{'id':'old-model'}], 'capabilities':{'models':True}})
         with self.assertRaisesRegex(ValueError, '账号或配置已变化'):
             manager.call('deepseek', 'catalog', 'session-one', {'section':'models'})
@@ -596,6 +625,18 @@ class HttpAdapters(unittest.TestCase):
         self.server.desktop_sessions.control.assert_not_called()
         self.server.desktop_sessions.call.assert_not_called()
         self.server.desktop_sessions.toggle_client.assert_not_called()
+
+    def test_zcode_initialization_requires_authenticated_gateway(self):
+        manager = self.server.desktop_sessions = Mock()
+        manager.toggle_client.return_value = {'clients': []}
+        body = {'provider': 'zcode', 'enabled': True, 'initializeDesktop': True}
+        headers = self.login()
+        self.assertEqual(self.request('POST', '/api/clients', body, headers)[0], 200)
+        manager.toggle_client.assert_called_once_with(body)
+        manager.reset_mock()
+        self.server.auth.config['mode'] = 'none'
+        self.assertEqual(self.request('POST', '/api/clients', body, headers)[0], 403)
+        manager.toggle_client.assert_not_called()
 
     def test_client_disable_choice_is_forwarded_with_auth_and_csrf(self):
         self.server.desktop_sessions = Mock()

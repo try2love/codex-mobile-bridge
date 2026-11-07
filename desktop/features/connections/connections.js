@@ -93,7 +93,7 @@ function renderConnections(){
         ['tailscaleMode','访问范围',[['funnel','公网访问 · Funnel'],['serve','私有组网 · Serve']]],
         ['tailscalePort','HTTPS 端口',[[443,'443（默认）'],[8443,'8443'],[10000,'10000']]]
       ]){
-        const wrap=document.createElement('label'),text=document.createElement('span'),select=document.createElement('select');text.textContent=t(label);select.dataset.connectionField=key;
+        const wrap=document.createElement('label'),text=document.createElement('span'),select=document.createElement('select');text.textContent=t(label);select.dataset.connectionField=key;select.id='connection-'+row.id+'-'+key;
         for(const [value,label] of values){const option=document.createElement('option');option.value=value;option.textContent=t(label);select.append(option);}
         select.value=row[key]??(key==='tailscaleMode'?'funnel':443);select.disabled=!!snapshot?.runtime.running;
         select.onchange=()=>{row[key]=key==='tailscalePort'?Number(select.value):select.value;if(key==='tailscalePort'){row.publicUrl='';row.tailscaleNodeId='';}connectionSetupState.delete(row.id);renderConnections();updateDirty();};
@@ -130,7 +130,7 @@ function renderConnections(){
       const advanced=document.createElement('details');advanced.className='guide-more connection-advanced';advanced.open=connectionAdvancedExpanded.get(row.id)??(row.accessMode==='nas');
       const advancedHead=document.createElement('summary');advancedHead.textContent=t('高级：目标所在位置');advanced.append(advancedHead);card.append(advanced);
       const locationWrap=document.createElement('label'),locationText=document.createElement('span'),location=document.createElement('select');
-      locationText.textContent=t('穿透或反向代理运行在');location.dataset.connectionField='targetLocation';
+      locationText.textContent=t('穿透或反向代理运行在');location.dataset.connectionField='targetLocation';location.id='connection-'+row.id+'-accessMode';
       for(const [value,label] of [['external','这台电脑'],['nas','NAS 或另一台设备']]){const option=document.createElement('option');option.value=value;option.textContent=t(label);location.append(option);}
       location.value=row.accessMode;location.disabled=!!snapshot?.runtime.running||busyActions.size>0;
       location.onchange=()=>{row.accessMode=location.value;advanced.open=true;connectionSetupState.delete(row.id);renderConnections();updateDirty();};

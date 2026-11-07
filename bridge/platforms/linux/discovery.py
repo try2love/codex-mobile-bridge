@@ -7,6 +7,7 @@ from pathlib import Path
 
 BINARIES = {'codex': ('ChatGPT', 'chatgpt', 'Codex', 'codex-desktop', 'codex'),
             'claude': ('claude-desktop', 'Claude', 'claude'),
+            'zcode': ('zcode', 'ZCode'),
             'deepseek': ('deepseek-harness', 'DeepSeek Harness', 'DeepSeekHarness', 'dsh-desktop')}
 
 
@@ -28,6 +29,9 @@ def candidate(path, provider):
                     if stream.read(4) == b'\x7fELF':
                         return candidate(sibling, provider)
             return None
+        if provider == 'zcode':
+            from bridge.platforms.linux.zcode_pipe import installation
+            return installation(path)
         # A PATH codex/claude command can be a standalone CLI. Only accept
         # these ambiguous names when an Electron desktop package is present.
         if path.name in ('codex', 'claude') and not (path.parent/'resources/app.asar').is_file():

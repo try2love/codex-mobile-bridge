@@ -19,6 +19,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from contextlib import nullcontext
 from urllib.parse import urlsplit
 
 from bridge.features.accounts.account import AccountRPC, AccountError, Account
@@ -75,14 +76,25 @@ def token_owner(auth):
         return None
 
 
-def operation(method=None, *, host=None, project=None):
+def operation(method=None, *, host=None, project=None, entry_only=False):
     """Host operations are independent; account and lifecycle changes stay exclusive."""
     if method is None:
-        return functools.partial(operation, host=host, project=project)
+        return functools.partial(operation, host=host, project=project, entry_only=entry_only)
     signature = inspect.signature(method) if host or project else None
     @functools.wraps(method)
     def call(self, *args, **kwargs):
-        manager = getattr(self, 'accounts', None)
+        entry_gate = getattr(self, 'entry_gate', None)
+        if entry_gate is not None:
+            with entry_gate.host(self.host):
+                if self.closed.is_set():
+                    raise ValueError('Codex 入口已关闭，请重新打开接入')
+                manager = None if entry_only else getattr(self, 'accounts', None)
+                if manager is None:
+                    return method(self, *args, **kwargs)
+                with manager.gate.host(self.host):
+                    manager.check_ready()
+                    return method(self, *args, **kwargs)
+        manager = None if entry_only else getattr(self, 'accounts', None)
         if manager is None:
             return method(self, *args, **kwargs)
         host_id = getattr(self, 'host', 'local')
@@ -183,6 +195,10 @@ class Accounts:
         self.thread = None
 
     @property
+    def independent(self):
+        return getattr(self.bridge, 'host', 'local').startswith('codex:')
+
+    @property
     def runtime(self):
         return self.bridge.catalog_reader.executable
 
@@ -198,7 +214,8 @@ class Accounts:
             home = self.directory(identifier)
             catalog = self.saved_model_catalogs.get(identifier)
             if catalog is None:
-                catalog = Catalog(home, self.runtime)
+                catalog = Catalog(home, self.runtime,
+                    observation_enabled=lambda: getattr(self.bridge, 'observation_enabled', lambda: True)())
                 self.saved_model_catalogs[identifier] = catalog
             return catalog
 
@@ -265,13 +282,15 @@ class Accounts:
                                  for row in self.index['accounts']],
                     'activeId': current.get('id'), 'activeVerified': verified, 'current': current, 'blockers': self.blockers(),
                     'externalChange': bool(self.index.get('activeId')) and not verified,
-                    'sharedWithLocalCli': True, 'switch': dict(self.state),
+                    'sharedWithLocalCli': True, 'scope': 'profile' if self.independent else 'desktop',
+                    'scopeLabel': getattr(self.bridge, 'host_label', '此电脑'), 'codexHome': str(self.home),
+                    'canManageDesktop': not self.independent, 'switch': dict(self.state),
                     'loginAccount': copy.deepcopy(self.info.current_login()),
                     'resetDynamicEnabled':self.reset_dynamic_enabled,
                     'globalReset':self.reset_forecast.status() if self.reset_dynamic_enabled else None,
                     'reminders':dict(self.monitor.preferences), 'reminderError':self.monitor.last_error,
                     'desktopUpdate':self.updates.status(), 'management': management,
-                    'sshHosts': self.bridge.ssh_status() if hasattr(self.bridge, 'ssh_status') else [],
+                    'sshHosts': self.bridge.ssh_status() if not self.independent and hasattr(self.bridge, 'ssh_status') else [],
                     'canSwitch': not management['external']}
 
     def set_reset_dynamic(self, enabled):
@@ -303,7 +322,7 @@ class Accounts:
     def desktop_status(self):
         result = self.public()
         with self.lock:
-            result.update(desktopExecutable=self.index.get('desktopExecutable') or DesktopApp.discover(self.runtime),
+            result.update(desktopExecutable=None if self.independent else self.index.get('desktopExecutable') or DesktopApp.discover(self.runtime),
                           enrollment=self.enrollment, discovery=self.discovery, codexHome=str(self.home))
         return result
 
@@ -527,6 +546,8 @@ class Accounts:
             return result(models, updated_at)
 
     def _schedule_api_model_refresh(self, row, identity, updated_at, replace=False):
+        if not getattr(self.bridge, 'observation_enabled', lambda: True)():
+            return
         with self.lock:
             if getattr(self.bridge, 'closed', None) is not None and self.bridge.closed.is_set():
                 return
@@ -538,6 +559,8 @@ class Accounts:
             def due():
                 with self.lock:
                     self.api_model_timers.pop(identity, None)
+                    if not getattr(self.bridge, 'observation_enabled', lambda: True)():
+                        return
                     if getattr(self.bridge, 'closed', None) is not None and self.bridge.closed.is_set():
                         return
                 try:
@@ -779,6 +802,8 @@ class Accounts:
 
     def control(self, value):
         action = value.get('action', 'list')
+        if self.independent and action in ('retrySsh', 'checkDesktopUpdate', 'requestDesktopUpdate', 'scanDesktop', 'configure', 'recover'):
+            raise ValueError('独立配置不管理默认 Codex Desktop')
         if action == 'retrySsh':
             if set(value) != {'action', 'host'}:
                 raise ValueError('SSH 重试请求包含不支持的字段')
@@ -895,7 +920,9 @@ class Accounts:
         request_id = value.get('requestId')
         if not isinstance(request_id, str) or str(uuid.UUID(request_id)) != request_id:
             raise ValueError('切换请求标识无效')
-        with self.gate, self.lock:
+        with getattr(self.bridge, 'entry_gate', None) or nullcontext(), self.gate, self.bridge.account.lock, self.lock:
+            if self.independent and self.bridge.closed.is_set():
+                raise ValueError('Codex 入口已关闭，请重新打开管理页面')
             row = dict(self.row(value.get('id')))
             sync_cli = True
             ledger = read_json(self.root/'requests.json', {})
@@ -906,22 +933,24 @@ class Accounts:
             # One local account home always verifies CLI effectiveness.
             from bridge.features.accounts.cli_sync import LocalCliSync
             sync = LocalCliSync(self.bridge)
+            self.assert_editable()
+            if self.info.current().get('id') != row['id']:
+                sync.prepare_profile_switch()
             preflight = sync.preflight('codex')
             self.assert_editable()
             if self.info.current().get('id') == row['id']:
                 return self.public()
             self.idle()
             if not preflight['desktopRunning']:
-                with self.bridge.account.lock:
-                    before = sync.snapshot('codex')
-                    applied = None
-                    try:
-                        applied = sync.apply('codex', row)
-                        sync.verify('codex', row)
-                    except Exception:
-                        if applied and applied.get('mutated') is True:
-                            sync.restore('codex', before)
-                        raise
+                before = sync.snapshot('codex')
+                applied = None
+                try:
+                    applied = sync.apply('codex', row)
+                    sync.verify('codex', row)
+                except Exception:
+                    if applied and applied.get('mutated') is True:
+                        sync.restore('codex', before)
+                    raise
                 ledger[request_id] = row['id']
                 private_json(self.root/'requests.json', ledger)
                 self.state = {'phase': 'complete', 'requestId': request_id, 'targetId': row['id'],

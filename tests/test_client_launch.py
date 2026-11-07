@@ -120,7 +120,7 @@ class ProcessLifecycleTests(unittest.TestCase):
         with patch('bridge.clients.lifecycle.inspect_client', return_value=state), \
                 patch('bridge.clients.lifecycle._app') as factory:
             stop_client({'id': 'codex'}, state=state)
-        factory.return_value.stop.assert_called_once_with(runtime_pids=[], gui_pids=[11], provider='codex')
+        factory.return_value.stop.assert_called_once_with(runtime_pids=[], gui_pids=[11], provider='codex', selected_pids=[11])
 
     def test_windows_claude_cannot_be_quit_by_closing_its_window(self):
         from bridge.clients.lifecycle import stop_client
@@ -175,7 +175,7 @@ class ProcessLifecycleTests(unittest.TestCase):
     def test_mac_process_paths_are_never_truncated_at_terminal_width(self):
         from bridge.clients.desktop_app import DesktopApp
         app = DesktopApp('/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness', '/fixture/home')
-        with patch('bridge.clients.desktop_app.sys.platform', 'darwin'), patch('bridge.clients.desktop_app.os.getuid', return_value=1000, create=True), patch('bridge.clients.desktop_app.subprocess.run', return_value=Mock(stdout='42 '+str(app.executable))) as run:
+        with patch('bridge.clients.desktop_app.sys.platform', 'darwin'), patch('bridge.clients.desktop_app.os.getuid', return_value=1000, create=True), patch('bridge.clients.desktop_app.subprocess.run', return_value=Mock(stdout='42 '+app.executable.as_posix()[len(app.executable.drive):])) as run:
             self.assertEqual(app.processes(), [42])
             self.assertIn('-ww', run.call_args.args[0])
 
@@ -198,7 +198,7 @@ class ClaudeQuitTests(unittest.TestCase):
         stop_claude(self.descriptor, state=self.state)
 
     def test_submitted_waits_for_all_processes_without_resending_exit(self):
-        self.app.processes.side_effect = [[11, 12], [12], []]
+        self.inspect.side_effect = [self.state, *({**self.state, 'pids': pids} for pids in ([11, 12], [12], []))]
         self.stop()
         self.native.assert_called_once_with('quit', pid=11, executable=str(self.app.executable))
         self.assertEqual(self.sleep.call_count, 2)
@@ -206,9 +206,9 @@ class ClaudeQuitTests(unittest.TestCase):
 
     def test_native_exited_claim_is_still_checked(self):
         self.native.return_value['quitState'] = 'exited'
-        self.app.processes.side_effect = [[12], []]
+        self.inspect.side_effect = [self.state, {**self.state, 'pids': [12]}, {**self.state, 'pids': []}]
         self.stop()
-        self.assertEqual(self.app.processes.call_count, 2)
+        self.assertEqual(self.inspect.call_count, 3)
 
     def test_pending_or_failed_never_reports_success(self):
         for result in ('pending', 'failed'):
@@ -227,7 +227,7 @@ class ClaudeQuitTests(unittest.TestCase):
         self.native.assert_not_called()
 
     def test_new_process_during_cleanup_is_not_closed(self):
-        self.app.processes.return_value = [13]
+        self.inspect.side_effect = [self.state, {**self.state, 'pids': [13]}]
         with self.assertRaisesRegex(ValueError, '进程已变化'):
             self.stop()
         self.app.stop.assert_not_called()

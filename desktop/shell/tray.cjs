@@ -8,9 +8,9 @@ function primaryUrl(urls=[]){
   return usable.find(url=>url.startsWith('https:'))||usable.find(url=>!['127.0.0.1','localhost','[::1]'].includes(new URL(url).hostname))||usable[0];
 }
 
-function createTray({Tray,Menu,icon,show,worker,open,copy,quit,onError,t=text=>text,setTimer=setInterval,clearTimer=clearInterval}){
+function createTray({Tray,Menu,icon,show,worker,open,copy,quit,onError,t=text=>text,setTimer=setTimeout,clearTimer=clearTimeout}){
   const tray=new Tray(icon);
-  let snapshot,busy=false,refreshing=false,disposed=false;
+  let snapshot,busy=false,refreshing=false,disposed=false,rendered,timer,revision=0;
   async function action(callback){
     if(busy||disposed)return;
     busy=true;render();
@@ -20,9 +20,11 @@ function createTray({Tray,Menu,icon,show,worker,open,copy,quit,onError,t=text=>t
   }
   function render(){
     if(disposed)return;
-    const running=Boolean(snapshot?.runtime.running);
-    const url=running?primaryUrl(snapshot.urls):null;
-    const status=!snapshot?'正在读取状态':running?'网关运行中':snapshot.runtime.portOccupied?'端口已占用':'网关未启动';
+    const running=Boolean(snapshot?.running),url=snapshot?.url;
+    const status=!snapshot?'正在读取状态':running?'网关运行中':snapshot.portOccupied?'端口已占用':'网关未启动';
+    const signature=JSON.stringify([running,url,status,busy]);
+    if(signature===rendered)return;
+    rendered=signature;
     tray.setToolTip(t('Codex 手机网关')+' · '+t(status));
     tray.setContextMenu(Menu.buildFromTemplate([
       {label:'打开控制面板',click:show},
@@ -35,18 +37,27 @@ function createTray({Tray,Menu,icon,show,worker,open,copy,quit,onError,t=text=>t
       {label:'退出控制面板（保留网关）',enabled:!busy,click:quit},
     ].map(item=>item.label?{...item,label:t(item.label)}:item)));
   }
+  function observe(value){
+    if(disposed)return;
+    revision++;
+    snapshot=value&&{running:value.runtime.running,portOccupied:value.runtime.portOccupied,
+      url:value.runtime.running?primaryUrl(value.urls):null};
+    render();
+    if(timer!==undefined)clearTimer(timer);
+    timer=setTimer(refresh,5000);
+  }
   async function refresh(){
     if(refreshing||disposed)return;
     refreshing=true;
-    try{snapshot=await worker('snapshot');}
-    catch{snapshot=undefined;}
-    finally{refreshing=false;render();}
+    const before=revision;
+    try{const value=await worker('snapshot');if(before===revision)observe(value);}
+    catch{if(before===revision)observe(undefined);}
+    finally{refreshing=false;}
   }
   tray.on('double-click',show);
   render();
-  const timer=setTimer(refresh,5000);
   refresh();
-  return {refresh,relabel:render,dispose(){disposed=true;clearTimer(timer);tray.destroy();}};
+  return {refresh,observe,relabel(){rendered=undefined;render();},dispose(){disposed=true;if(timer!==undefined)clearTimer(timer);tray.destroy();}};
 }
 
 module.exports={createTray,primaryUrl};

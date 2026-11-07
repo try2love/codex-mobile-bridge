@@ -69,11 +69,11 @@ function clearListSnapshot(){
   listIdentity='';listFilterKey='';listHostIds=[];listRows=[];listOffset=0;listHasMore=false;listComplete=false;listReadFinished=false;availableSources=[];listRenderStamp='';listGeneration++;
 }
 function authLost(){hideWebhookUrl();clearListSnapshot();if(!$('app').hidden)document.dispatchEvent(new Event('bridge-auth-lost'));showLogin();}
-async function api(path,body,signal,authCurrent){const options={signal,credentials:'same-origin',cache:'no-store',headers:{}};if(body!==undefined){options.method='POST';options.headers={'Content-Type':'application/json','X-CSRF-Token':csrf};options.body=JSON.stringify(body);}const response=await fetch(hostUrl(path),options);let data;try{data=await response.json();}catch(error){throw Object.assign(error,{status:response.status});}if(!response.ok){if(response.status===401&&(!authCurrent||authCurrent()))authLost();throw Object.assign(Error(data.error||t('请求失败')),{loginStatus:data.loginStatus,status:response.status,code:data.code});}return data;}
+async function api(path,body,signal,authCurrent){const options={signal,credentials:'same-origin',cache:'no-store',headers:{}};if(body!==undefined){options.method='POST';options.headers={'Content-Type':'application/json','X-CSRF-Token':csrf};options.body=JSON.stringify(body);}let response;try{response=await fetch(hostUrl(path),options);}catch(error){if(!signal?.aborted&&error.name!=='AbortError')window.BridgeMobileHandoff?.unreachable();throw error;}if([502,503,504,522,523,524,530].includes(response.status))window.BridgeMobileHandoff?.unreachable();let data;try{data=await response.json();}catch(error){throw Object.assign(error,{status:response.status});}if(!response.ok){if(response.status===401&&(!authCurrent||authCurrent()))authLost();throw Object.assign(Error(data.error||t('请求失败')),{loginStatus:data.loginStatus,status:response.status,code:data.code});}return data;}
 const workbench=window.BridgeWorkbench=new Workbench({chat:$('chat'),request:api,csrf:()=>csrf,notify:toast,onUnauthorized:authLost,openChat,composer:$('message'),onReference:()=>window.BridgePresentation?.openChat()});
 async function sendSessionPin(identity,body,token){
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15000);
-  try{return await api(identity.provider==='codex'?sessionUrl(identity.id,'pin',identity.host):'/api/desktop-sessions/'+identity.provider+'/pin',identity.provider==='codex'?body:{...body,sessionId:identity.id},controller.signal,()=>sessionPins.current(token));}finally{clearTimeout(timer);}
+  try{return await api(identity.provider==='codex'?sessionUrl(identity.id,'pin',identity.host):ClientIdentity.path(identity.provider,'pin'),identity.provider==='codex'?body:{...body,sessionId:identity.id},controller.signal,()=>sessionPins.current(token));}finally{clearTimeout(timer);}
 }
 const sessionPins=new LocalSessionPins({newId:uuid,send:sendSessionPin,onChange:()=>{listRenderStamp='';renderList();desktopSessions.listStamp='';desktopSessions.renderList();if(listFilterKey)saveListSnapshot(listFilterKey);desktopSessions.rememberView();}});
 function pinRow(row,provider='codex'){const identity={provider,id:row.id,host:row.host||'local'};return {...row,bridgePinned:sessionPins.value(identity,row.bridgePinned),pinPending:sessionPins.pending(identity)};}
@@ -91,11 +91,11 @@ const browserNavigation=new BrowserNavigation({
     if(!isCurrent())return;
     if(!auth.authenticated||$('app').hidden){history.replaceState(browserNavigation.entry(null),'',browserNavigation.url(null));return;}
     if(listIdentity&&listAuthIdentity(auth)!==listIdentity){browserNavigation.invalidate();return;}
-    const entry=route.provider==='codex'?(route.host.startsWith('wsl:')?route.host:'codex'):route.provider;
+    const entry=route.provider==='codex'?(isCodexEntry(route.host)?route.host:'codex'):route.provider;
     if(!clientNavigation.managementClients().some(client=>client.id===entry&&client.enabled)){
       toast('尚未启用应用，请打开应用管理。');history.replaceState(browserNavigation.entry(browserNavigation.read()),'',browserNavigation.url(browserNavigation.read()));return;
     }
-    await clientNavigation.choose(route.provider,{activate:false});
+    await clientNavigation.choose(entry,{activate:false});
     if(!isCurrent())return;
     if(route.provider==='codex')await openChat(route.id,route.host);
     else await desktopSessions.open(route.id);
@@ -105,18 +105,21 @@ browserNavigation.paused=true;
 desktopSessions.onNavigation=()=>browserNavigation.sync();
 desktopSessions.onHistoryInvalidated=()=>browserNavigation.invalidate();
 
-let codexAccountEntry='desktop',preferredWslEntry=clientNavigation.initialHost||'';
-function codexEntries(){return clientNavigation.clients.find(row=>row.id==='codex')?.entries||[];}
+let codexAccountEntry='desktop',preferredWslEntry=clientNavigation.initialHost||'',selectedCodexEntry=clientNavigation.initialHost?.startsWith('codex:')?clientNavigation.initialHost:null;
+currentHost=clientNavigation.initialHost||currentHost;
+function codexEntries(){return [...(clientNavigation.clients.find(row=>row.id==='codex')?.entries||[]),...clientNavigation.clients.filter(row=>row.kind==='codex-local')];}
 function wslEntries(){return clientNavigation.wslSupported===true?codexEntries().filter(row=>row.kind==='wsl-cli'&&row.enabled):[];}
 function accountUrl(path){return codexAccountEntry==='desktop'?path:path+(path.includes('?')?'&':'?')+'entry='+encodeURIComponent(codexAccountEntry);}
 function refreshEntryAccounts(){
-  const entries=wslEntries();
-  codexAccountEntry=currentHost.startsWith('wsl:')&&entries.some(row=>row.id===currentHost)?currentHost:'desktop';
+  const entries=codexEntries();
+  codexAccountEntry=isCodexEntry(currentHost)&&entries.some(row=>row.id===currentHost)?currentHost:'desktop';
   accountsPanel?.clear();if($('accounts-dialog').open){renderAccountEntries();refreshSelectedAccounts();}
 }
 clientNavigation.onApplicationChange=(previous,provider,{host,loadList:readList=true}={})=>{
+  if(provider==='codex')selectedCodexEntry=host?.startsWith('codex:')?host:null;
+  if(host?.startsWith('codex:')){preferredWslEntry=host;listSource='all';}
   if(host?.startsWith('wsl:')){preferredWslEntry=host;listSource='wsl';localStorage.setItem('codex-source-filter',listSource);}
-  listGeneration++;saveDraft();listRows=[];availableSources=[];listOffset=0;listHasMore=true;listComplete=false;listReadFinished=false;listFilterKey='';listRenderStamp='';sourceFilterStamp='';
+  listGeneration++;saveDraft();if(host==='local'||isCodexEntry(host))currentHost=host;listRows=[];availableSources=[];listOffset=0;listHasMore=true;listComplete=false;listReadFinished=false;listFilterKey='';listRenderStamp='';sourceFilterStamp='';
   $('sessions').replaceChildren();$('host-errors').hidden=true;chatTimeline?.dispose();chatTimeline=null;currentId=null;state=null;workbench.reset();$('chat').hidden=true;$('welcome').hidden=false;$('app').classList.remove('chat-open');if(!browserNavigation.enabled())history.replaceState(null,'',location.pathname);browserNavigation.sync();
   $('new-chat').hidden=false;refreshEntryAccounts();renderSourceFilter();
   if(provider==='codex'&&readList&&!$('app').hidden)return loadList(true).catch(e=>toast(e.message));
@@ -125,7 +128,7 @@ clientNavigation.onClientStates=clients=>{
   const previousSource=listSource;renderSourceFilter();
   if(previousSource!==listSource&&clientNavigation.provider==='codex'&&!$('app').hidden)loadList(true).catch(error=>toast(error.message));
   if(!currentId||clientNavigation.provider!=='codex')return;
-  const codex=clients.find(row=>row.id==='codex'),entry=currentHost.startsWith('wsl:')?codex?.entries?.find(row=>row.id===currentHost):codex?.entries?.find(row=>row.id==='desktop')||codex;
+  const codex=clients.find(row=>row.id==='codex'),entry=isCodexEntry(currentHost)?codexEntries().find(row=>row.id===currentHost):codex?.entries?.find(row=>row.id==='desktop')||codex;
   if(!entry?.enabled)clientNavigation.onApplicationChange('codex','codex');
 };
 desktopSessions.onListEnter=()=>{clientNavigation.listReadDone=false;clientNavigation.listVisit=(clientNavigation.listVisit||0)+1;if(!isCodexClient(clientNavigation.provider))desktopSessions.refresh();};
@@ -238,7 +241,11 @@ $('logout').onclick=async()=>{await api('/api/logout',{});hideWebhookUrl();docum
 function dateText(value){if(!value)return '';return new Date(value*1000).toLocaleDateString(BridgeI18n.locale(),{month:'numeric',day:'numeric'});}
 function listAuthIdentity(auth){return auth?.authenticated&&/^[0-9a-f]{64}$/.test(auth.listCacheIdentity||'')?auth.listCacheIdentity:'';}
 function listSnapshotKey(filter){return listIdentity?'codex-list-v1:'+listIdentity+':'+filter:'';}
-function currentListFilter(){return JSON.stringify([$('search').value,$('archived').checked,listSource,$('list-mode').value]);}
+function currentListFilter(){
+  const fields=[$('search').value,$('archived').checked,listSource,$('list-mode').value];
+  if(selectedCodexEntry)fields.push(selectedCodexEntry);
+  return JSON.stringify(fields);
+}
 function restoreListSnapshot(filter=currentListFilter()){
   const key=listSnapshotKey(filter);if(!key)return false;
   let saved,legacy=false;
@@ -269,15 +276,15 @@ function saveListSnapshot(filter){
 }
 $('list-mode').value=localStorage.getItem('list-mode')||'recent';
 $('list-mode').onchange=()=>{localStorage.setItem('list-mode',$('list-mode').value);loadList(true).catch(e=>toast(e.message));};
-listSource=clientNavigation.initialHost?'wsl':localStorage.getItem('codex-source-filter')||'all';
-if(!['all','desktop','cli','wsl'].includes(listSource))listSource='all';
+listSource=clientNavigation.initialHost?.startsWith('wsl:')?'wsl':localStorage.getItem('codex-source-filter')||'all';
+if(!['all','desktop','cli','ide','wsl'].includes(listSource))listSource='all';
 $('source-filter').onchange=()=>{listSource=$('source-filter').value;localStorage.setItem('codex-source-filter',listSource);return loadList(true).catch(e=>toast(e.message));};
 function renderSourceFilter(){
   $('source-filter-label').hidden=false;
   const wsl=clientNavigation.wslSupported===true,stamp=BridgeI18n.locale()+':'+wsl;
   if(clientNavigation.wslSupported===false&&listSource==='wsl'){listSource='all';localStorage.setItem('codex-source-filter',listSource);}
   if(stamp!==sourceFilterStamp){
-    const options=[['all',t('全部会话')],['cli','CLI'],['desktop','APP'],...(wsl?[['wsl','WSL']]:[])];
+    const options=[['all',t('全部会话')],['cli','CLI'],['ide','VS Code'],['desktop','APP'],...(wsl?[['wsl','WSL']]:[])];
     $('source-filter').replaceChildren(...options.map(([value,label])=>{const option=el('option','',label);option.value=value;return option;}));
     sourceFilterStamp=stamp;
   }
@@ -293,7 +300,7 @@ function sessionAccess(access){
   return {...access,source:access.source||'unknown',runtime:access.runtime||null,canSend:allowed('canSend'),canInterrupt:allowed('canInterrupt'),canApprove:allowed('canApprove'),canReconnect:allowed('canReconnect'),canConfigure:allowed('canConfigure'),canChangePermissions:specific('canChangePermissions'),canChangeModel:specific('canChangeModel'),canSelectSkills:specific('canSelectSkills'),canUseModes:allowed('canUseModes'),canUseGoal:allowed('canUseGoal'),canUseSideChat:allowed('canUseSideChat'),canEditMessages:allowed('canEditMessages'),readOnly:access.readOnly===true};
 }
 function currentAccess(){return sessionAccess(state?.access||listRows.find(row=>row.id===currentId&&row.host===currentHost)?.access);}
-function sourceLabel(access){return access?.runtime==='wsl'?'WSL':access?.source==='cli'?'CLI':access?.source==='ide'?'IDE':access?.source==='unknown'?t('其他来源'):'APP';}
+function sourceLabel(access){return access?.runtime==='wsl'?'WSL':access?.source==='cli'?'CLI':access?.source==='ide'?'VS Code':access?.source==='unknown'?t('其他来源'):'APP';}
 function renderList(){
   const displayedRows=listRows.map(row=>pinRow(row));
   const stamp=JSON.stringify([$('list-mode').value,currentId,currentHost,listHasMore,BridgeI18n.locale(),availableSources,listRows.length?null:[listComplete,listReadFinished],displayedRows.map(row=>[row.id,row.host,row.title,row.projectKey,row.projectName,row.hostLabel,row.recency,row.bridgePinned,row.pinPending,row.archived,row.access])]);
@@ -335,13 +342,16 @@ function getSessionMenu(){return sharedSessionMenu||(sharedSessionMenu=new Sessi
 function bindSessionMenu(button,chat,provider='codex'){
   getSessionMenu().bind(button,()=>sessionMenuContext(chat,provider));
 }
+const cliConnectionsPanel=new CliConnectionsPanel({request:api,notify:toast,translate:t,
+  identity:()=>csrf+'|'+listIdentity});
+$('cli-connections-button').onclick=()=>{ $('appearance-dialog').close();cliConnectionsPanel.open(); };
 function sessionMenuContext(chat,provider='codex'){
   const identity={provider,id:chat.id,host:chat.host||'local',runtime:chat.access?.runtime||chat.runtime};
   const scope=listIdentity,token=csrf,isCurrent=()=>!!scope&&scope===listIdentity&&token===csrf;
   const current=()=>provider==='codex'?clientNavigation.provider==='codex'&&currentId===chat.id&&currentHost===identity.host:
     desktopSessions.provider===provider&&desktopSessions.sid===chat.id;
   const detail=current()?(provider==='codex'?state:desktopSessions.state):null;
-  const view={...chat,...detail},access=sessionAccess(view.access),caps=view.capabilities||{};
+  const view={...chat,...detail},access=sessionAccess(view.access),caps=view.capabilities||{},nativeId=view.nativeId||(ClientIdentity.family(provider)==='claude'?null:chat.id);
   const ensure=async()=>{
     if(!isCurrent())throw Error('连接或账号已变化，请重新打开会话菜单');
     if(!current()){
@@ -351,32 +361,41 @@ function sessionMenuContext(chat,provider='codex'){
     }
     if(!isCurrent()||!current())throw Error('聊天已切换，请重新打开会话菜单');
   };
-  const context={title:view.title,subtitle:[provider==='codex'?'Codex':provider==='claude'?'Claude':'DSH',view.hostLabel||t('此电脑')].join(' · '),
-    isCurrent,pinned:sessionPins.value(identity,chat.bridgePinned),archived:!!view.archived,
+  const context={title:view.title,subtitle:[clientNavigation.clients.find(client=>client.id===provider)?.name||provider,view.hostLabel||t('此电脑')].join(' · '),
+    isCurrent,sessionId:nativeId,pinned:sessionPins.value(identity,chat.bridgePinned),archived:!!view.archived,
     pin:pinned=>{sessionPins.set(identity,pinned);toast(t('已在此设备保存，等待同步'));},
-    link:window.BridgeSessionLinks.text(identity),linkLabel:provider==='deepseek'?'复制 Session ID':'复制深度链接',
+    link:provider==='codex'?window.BridgeSessionLinks.text(identity):null,
     nativeOrganization:true,projectName:view.projectName,
     organizationScope:provider==='codex'||caps.organization===true?'native':'bridge',
     renameScope:provider==='codex'||caps.rename===true?'native':'bridge',
     organization:async change=>{
       if(!isCurrent())throw Error('连接或账号已变化，请重新打开会话菜单');
       const result=await api(provider==='codex'?sessionUrl(chat.id,'organization',identity.host):
-        '/api/desktop-sessions/'+provider+'/organization'+(change?'':'?sessionId='+encodeURIComponent(chat.id)),
+        ClientIdentity.path(provider,'organization',change?null:chat.id),
         provider==='codex'||!change?change:{...change,sessionId:chat.id},undefined,isCurrent);
       if(!isCurrent())throw Error('连接或账号已变化，请重新打开会话菜单');
       if(change)(provider==='codex'?loadList(true):desktopSessions.refresh()).catch(error=>toast(t(error.message)));
       return result;
     },
-    details:[['客户端',provider==='codex'?'Codex':provider==='claude'?'Claude':'DSH'],['会话 ID',chat.id,true],
+    details:[['客户端',clientNavigation.clients.find(client=>client.id===provider)?.name||provider],['会话 ID',nativeId,true],
       ['运行位置',view.hostLabel||t('此电脑')],['会话类型',provider==='codex'?sourceLabel(view.access):(view.backend||view.runtime||'Desktop')],
       ['工作目录',view.cwd,true],['模型',[view.model,view.effort].filter(Boolean).join(' · ')],['提供商',view.provider],['项目',view.projectName]],
     notifications:async()=>{await ensure();if(provider==='codex')return $('notify-button').onclick();return desktopSessions.notifications();},
     manage:async()=>{try{await ensure();await openMessageManagement();}catch(error){toast(t(error.message));}}};
+  if(['cli','ide'].includes(access.source)||view.backend==='cli'||view.runtime==='wsl')context.releaseCli=()=>cliConnectionsPanel.open({provider,sessionId:chat.id,host:identity.host});
+  if(provider==='codex' && ['cli','ide'].includes(access.source) && (identity.host==='local'||identity.host.startsWith('codex:')))context.cliNetwork=async()=>{
+    const url=sessionUrl(chat.id,'cli-network',identity.host), value=await api(url);
+    if(!isCurrent())return;
+    if(!value.canRecover){toast(t(value.message));return;}
+    if(!window.confirm(t(value.message)+' '+t('正常重启此配置的 CLI 并恢复连接？')))return;
+    const result=await api(url,{confirmed:true,generation:value.generation},undefined,isCurrent);
+    toast(t(result.connected?'CLI 连接已恢复':'请重新连接原会话'));
+  };
   const renameIds=new Map();
   if(provider!=='codex'||access.canConfigure)context.rename=async title=>{
     if(!isCurrent())throw Error('连接或账号已变化，请重新打开会话菜单');
     if(!renameIds.has(title))renameIds.set(title,uuid());
-    const result=await api(provider==='codex'?sessionUrl(chat.id,'rename',identity.host):'/api/desktop-sessions/'+provider+'/rename',
+    const result=await api(provider==='codex'?sessionUrl(chat.id,'rename',identity.host):ClientIdentity.path(provider,'rename'),
       provider==='codex'?{title}:{title,id:renameIds.get(title),sessionId:chat.id},undefined,isCurrent);
     if(provider!=='codex'&&result.status!=='confirmed')throw Error('改名结果待核对；不会重复提交，请先在原客户端核对');
     if(!isCurrent())return;
@@ -403,7 +422,7 @@ function sessionMenuContext(chat,provider='codex'){
   const archiveId=uuid();
   if(provider==='codex'||caps[view.archived?'unarchive':'archive']===true)context.archive=async()=>{
     const body={archived:!view.archived,id:archiveId,...(!view.archived?{disconnect:true}:{})};
-    const result=await api(provider==='codex'?sessionUrl(chat.id,'archive',identity.host):'/api/desktop-sessions/'+provider+'/archive',
+    const result=await api(provider==='codex'?sessionUrl(chat.id,'archive',identity.host):ClientIdentity.path(provider,'archive'),
       provider==='codex'?body:{...body,sessionId:chat.id},undefined,isCurrent);
     if(result.status!=='confirmed')throw Error(t('归档结果待核对，请检查原聊天；不会重复提交'));
     if(!isCurrent())return;
@@ -423,7 +442,7 @@ async function loadList(reset=false){
   if(!reset&&(listLoading||!listHasMore))return;
   const generation=++listGeneration,offset=reset?0:listOffset,pinRead=sessionPins.capture();
   const query=$('search').value,archived=$('archived').checked,source=listSource,mode=$('list-mode').value;
-  const filter=JSON.stringify([query,archived,source,mode]);
+  const filter=currentListFilter();
   if(reset&&filter!==listFilterKey){
     if(!restoreListSnapshot(filter)){listRows=[];availableSources=[];listOffset=0;listHasMore=false;listHostIds=[];listFilterKey=filter;}
     $('sessions').scrollTop=0;
@@ -458,9 +477,9 @@ async function loadList(reset=false){
     }catch(error){if(generation===listGeneration){errors.push({host,label:host,error:error.message});publish();}return null;}
   };
   try{
-    const local=await read('local');
+    const entry=selectedCodexEntry,local=await read(entry||'local');
     if(generation!==listGeneration)return;
-    await Promise.all(listHostIds.map(read));
+    if(!entry)await Promise.all(listHostIds.map(read));
     if(generation!==listGeneration)return;
     const merged=publish();listReadFinished=true;listComplete=errors.length===0;
     if(listComplete){
@@ -533,14 +552,32 @@ $('session-diagnostics-copy').onclick=()=>window.BridgeClipboard.copyWithFeedbac
 $('session-diagnostics-export').onclick=event=>{if(BridgeHost.isNativeApp()&&window.BridgeMobileCapabilities?.diagnosticsExport!==true){event.preventDefault();return;}event.currentTarget.href=window.BridgeRelayURL?.(diagnosticsPath)||diagnosticsPath;};
 $('archived').onchange=()=>loadList(true).catch(e=>toast(e.message));
 const listSync=window.BridgeListSync=new ListSync({root:$('sessions'),status:$('list-sync'),refresh:()=>loadList(true),visible:()=>!$('app').hidden&&$('sidebar').getBoundingClientRect().width>0,ready:()=>!listLoading&&document.activeElement!==$('search')});
-const contextUsageControl=new ContextUsageControl();$('permissions-button').after(contextUsageControl.button);
+const contextCompactions=new Map(),contextCompacting=new Set();
+const contextUsageControl=new ContextUsageControl({onCompact:async()=>{
+  const id=currentId,host=currentHost,key=chatKey(id,host);if(contextCompacting.has(key)||!state?.connected)return false;
+  const requestId=contextCompactions.get(key)||uuid();contextCompactions.set(key,requestId);contextCompacting.add(key);contextUsageControl.update({...state,busy:true});
+  try{const result=await api(sessionUrl(id,'compact',host),{id:requestId});if(result.status!=='accepted')throw Error(result.message||t('结果待核对，请检查桌面原会话'));contextCompactions.delete(key);toast(t('已提交上下文压缩'));return true;}
+  catch(error){toast(error.message);return false;}
+  finally{contextCompacting.delete(key);if(currentId===id&&currentHost===host)contextUsageControl.update(state);}
+}});$('permissions-button').after(contextUsageControl.button);
 let newChatProjects=[],newChatEnvironments=[],newChatCanBrowse=false,newChatEntry='desktop',newChatPreferredHost='local',creatingChat=false,approvalBusy=0;
-const newChatUrl=path=>path+(newChatEntry.startsWith('wsl:')?'?entry='+encodeURIComponent(newChatEntry):'');
-const independentProject=()=>newChatEntry.startsWith('wsl:')?newChatEntry+'|independent':'local|independent';
+const newChatUrl=path=>path+(isCodexEntry(newChatEntry)?'?entry='+encodeURIComponent(newChatEntry):'');
+const independentProject=()=>newChatEntry.startsWith('wsl:')||newChatEntry.startsWith('codex:')?newChatEntry+'|independent':'local|independent';
 $('new-chat-title').value=t('新聊天');
 $('new-chat-title').oninput=()=>{$('new-chat-title').dataset.edited='true';};
-let newChatRequest=0;
-function newChatEnvironment(){return newChatEnvironments.find(row=>row.key===$('new-chat-entry').value)||{host:newChatEntry.startsWith('wsl:')?newChatEntry:'local',name:newChatEntry.startsWith('wsl:')?wslEntries().find(row=>row.id===newChatEntry)?.name:t('此电脑')};}
+let newChatRequest=0,newChatModelsEnabled=false,newChatModelPicker=null;
+function updateNewChatSubmit(){const selected=$('new-chat-project').value;$('new-chat-submit').disabled=creatingChat||!selected||selected==='__directory__'&&!$('new-chat-directory-path').value||newChatModelsEnabled&&(!newChatModelPicker||!newChatModelPicker.valid());}
+function syncNewChatModels(){
+  if(!newChatModelsEnabled){if(newChatModelPicker){newChatModelPicker.dispose();newChatModelPicker.root.remove();newChatModelPicker=null;}return;}
+  if(!newChatModelPicker){const root=el('section');$('new-chat-form').insertBefore(root,$('new-chat-title').parentElement);newChatModelPicker=new window.BridgeCreationModelPicker({root,cache:modelCatalogs,namespace:()=>[listIdentity,newChatEnvironment().host,'codex'],isCurrent:()=>$('new-chat-dialog').open,onChange:updateNewChatSubmit});}
+  const project=$('new-chat-project').value,path=$('new-chat-directory-path').value,kind=$('new-chat-type').value==='wsl'?'cli':$('new-chat-type').value;
+  if(!project||project==='__directory__'&&!path){newChatModelPicker.clear();return;}
+  const query=new URLSearchParams({kind,...(project==='__directory__'?{path,host:$('new-chat-directory-host').value}:{project})});
+  const base=newChatUrl('/api/projects/models'),scope=JSON.stringify([listIdentity,codexActiveAccountId,newChatEntry,query.toString()]);
+  newChatModelPicker.load(scope,refresh=>api(base+(base.includes('?')?'&':'?')+query+(refresh?'&refresh=true':'')));
+}
+$('new-chat-dialog').addEventListener('close',()=>{newChatModelPicker?.dispose();newChatModelPicker?.root.remove();newChatModelPicker=null;newChatModelsEnabled=false;});
+function newChatEnvironment(){return newChatEnvironments.find(row=>row.key===$('new-chat-entry').value)||{host:isCodexEntry(newChatEntry)?newChatEntry:'local',name:newChatEntry.startsWith('wsl:')?wslEntries().find(row=>row.id===newChatEntry)?.name:t('此电脑')};}
 function renderNewChatProjects(){
   const kind=$('new-chat-type').value,wsl=kind==='wsl',environment=newChatEnvironment(),host=environment.host;
   $('new-chat-project').disabled=false;
@@ -548,7 +585,7 @@ function renderNewChatProjects(){
   $('new-chat-directory').hidden=true;$('new-chat-directory-path').value='';
   const projects=newChatProjects.filter(row=>(wsl||(row.type||'desktop')===kind)&&row.host===host);
   $('new-chat-project').replaceChildren();
-  if(wsl||kind==='desktop'&&host==='local')$('new-chat-project').append(new Option(t('不选择项目'),independentProject()));
+  if(wsl||newChatEntry.startsWith('codex:')||kind==='desktop'&&host==='local')$('new-chat-project').append(new Option(t('不选择项目'),independentProject()));
   if(newChatCanBrowse)$('new-chat-project').append(new Option(t('选择其他目录…'),'__directory__'));
   $('new-chat-directory-browse').hidden=!newChatCanBrowse;$('new-chat-directory-browse').disabled=false;
   for(const project of projects)$('new-chat-project').append(new Option(project.name,project.key));
@@ -561,7 +598,7 @@ function renderNewChatProjects(){
 async function loadSelectedNewChatProjects(){
   const generation=++newChatRequest,host=newChatEnvironment().host;
   renderNewChatProjects();
-  if($('new-chat-type').value!=='cli'||host==='local')return;
+  if($('new-chat-type').value!=='cli'||host==='local'||newChatEntry.startsWith('codex:'))return;
   $('new-chat-submit').disabled=true;$('new-chat-directory-browse').disabled=true;$('new-chat-project').disabled=true;
   $('new-chat-path').textContent=t('正在读取电脑项目…');$('new-chat-error').textContent='';
   try{
@@ -573,7 +610,7 @@ async function loadSelectedNewChatProjects(){
 }
 async function loadNewChatProjects(){
   const generation=++newChatRequest,kind=$('new-chat-type').value,wsl=kind==='wsl';
-  newChatEntry=wsl?$('new-chat-entry').value:'desktop';
+  newChatEntry=wsl?$('new-chat-entry').value:currentHost.startsWith('codex:')?currentHost:'desktop';
   const entry=newChatEntry;
   $('new-chat-description').textContent=wsl?'Codex · WSL':kind==='cli'?'Codex CLI':'Codex App';
   $('new-chat-error').textContent='';$('new-chat-submit').disabled=true;$('new-chat-directory-browse').disabled=true;
@@ -585,7 +622,7 @@ async function loadNewChatProjects(){
   try{
     const value=await api(newChatUrl('/api/projects'));
     if(generation!==newChatRequest||entry!==newChatEntry||!$('new-chat-dialog').open)return;
-    newChatProjects=value.projects||[];newChatCanBrowse=wsl||kind==='desktop'||Array.isArray(value.environments);
+    newChatModelsEnabled=value.createModels===true;newChatProjects=value.projects||[];newChatCanBrowse=wsl||kind==='desktop'||Array.isArray(value.environments);
     if(!wsl){
       const environments=Array.isArray(value.environments)?value.environments.filter(row=>(row.type||row.surface)===kind):[];
       if(!Array.isArray(value.environments)){const hosts=new Map([['local',t('此电脑')]]);for(const row of newChatProjects)hosts.set(row.host,row.host==='local'?t('此电脑'):row.hostLabel||row.host);for(const [host,name] of hosts)environments.push({key:kind+'|'+host,host,name});}
@@ -609,7 +646,8 @@ $('new-chat').onclick=async()=>{
   const preferred=currentHost.startsWith('wsl:')?currentHost:preferredWslEntry;
   if(entries.some(row=>row.id===preferred))$('new-chat-entry').value=preferred;
   newChatPreferredHost=currentHost;newChatEnvironments=[];
-  type.value=native?.enabled===false&&entries.length?'wsl':listSource==='wsl'&&entries.length?'wsl':listSource==='cli'?'cli':listSource==='all'&&currentHost.startsWith('wsl:')&&entries.length?'wsl':'desktop';
+  type.disabled=currentHost.startsWith('codex:');
+  type.value=currentHost.startsWith('codex:')?'cli':native?.enabled===false&&entries.length?'wsl':listSource==='wsl'&&entries.length?'wsl':listSource==='cli'?'cli':listSource==='all'&&currentHost.startsWith('wsl:')&&entries.length?'wsl':'desktop';
   $('new-chat-dialog').showModal();await loadNewChatProjects();
 };
 $('new-chat-type').onchange=()=>{
@@ -625,7 +663,7 @@ $('new-chat-project').onchange=()=>{
   $('new-chat-location-summary').textContent=path.split(/[\\/]/).filter(Boolean).slice(-2).join(' / ')||path;
   $('new-chat-location').open=false;
   const browseLabel=$('new-chat-directory-browse').querySelector('[data-i18n]');browseLabel.dataset.i18n=path?'更换目录':'选择目录';browseLabel.textContent=t(browseLabel.dataset.i18n);
-  $('new-chat-submit').disabled=!value||(custom&&!path);
+  syncNewChatModels();updateNewChatSubmit();
 };
 let folderPickerData=null;
 $('new-chat-directory-host').onchange=()=>{$('new-chat-directory-path').value='';$('new-chat-project').onchange();};
@@ -640,17 +678,19 @@ $('new-chat-directory-browse').onclick=async()=>{
 $('new-chat-dialog').addEventListener('cancel',event=>{if(creatingChat)event.preventDefault();});
 $('new-chat-form').onsubmit=async event=>{
   event.preventDefault();if(creatingChat)return;
-  const project=$('new-chat-project').value,title=$('new-chat-title').value.trim(),kind=newChatEntry.startsWith('wsl:')?'wsl':$('new-chat-type').value;
+  const project=$('new-chat-project').value,title=$('new-chat-title').value.trim(),kind=newChatEntry.startsWith('wsl:')?'wsl':newChatEntry.startsWith('codex:')?'cli':$('new-chat-type').value;
   const directory=project==='__directory__'?{path:$('new-chat-directory-path').value.trim(),createDirectory:false,host:$('new-chat-directory-host').value,...(kind==='cli'?{kind:'cli'}:{})}:null;
   if(directory&&!directory.path){$('new-chat-error').textContent=t('请输入完整的项目目录');return;}
+  if(newChatModelsEnabled&&(!newChatModelPicker||!newChatModelPicker.valid()))return;
+  const modelOptions=newChatModelsEnabled?newChatModelPicker.selection():{};
   const selection=directory?JSON.stringify(directory):project;
   if(!project||!title){$('new-chat-error').textContent=t('请选择项目或不选择项目，并填写聊天名称。');return;}
   let attempt;
   try{attempt=JSON.parse(sessionStorage.getItem('new-chat-attempt')||'null');}catch{}
   const attemptKind=kind==='wsl'?undefined:kind;
-  if(!attempt||attempt.selection!==selection||attempt.title!==title||attempt.entry!==newChatEntry||attempt.kind!==attemptKind)attempt={id:uuid(),selection,project,title,entry:newChatEntry,...(attemptKind?{kind:attemptKind}:{})};
-  sessionStorage.setItem('new-chat-attempt',JSON.stringify(attempt));
-  newChatRequest++;creatingChat=true;setLanguageBusy();$('new-chat-error').textContent='';$('new-chat-submit').textContent=t('正在创建…');
+  if(!attempt||attempt.selection!==selection||attempt.title!==title||attempt.entry!==newChatEntry||attempt.kind!==attemptKind||JSON.stringify(window.BridgeCreationModelPicker?.intent(attempt.modelOptions||{})||attempt.modelOptions||{})!==JSON.stringify(window.BridgeCreationModelPicker?.intent(modelOptions)||modelOptions))attempt={id:uuid(),selection,project,title,entry:newChatEntry,modelOptions,...(attemptKind?{kind:attemptKind}:{})};
+  attempt.modelOptions=modelOptions;sessionStorage.setItem('new-chat-attempt',JSON.stringify(attempt));
+  newChatRequest++;creatingChat=true;newChatModelPicker?.setBusy(true);setLanguageBusy();$('new-chat-error').textContent='';$('new-chat-submit').textContent=t('正在创建…');
   $('new-chat-form').querySelectorAll('input,select,button').forEach(n=>n.disabled=true);
   document.querySelector('[data-close="new-chat-dialog"]').disabled=true;
   try{
@@ -663,7 +703,7 @@ $('new-chat-form').onsubmit=async event=>{
         await api('/api/projects/trust',{key:attempt.project,confirmed:true,confirmation:trust.confirmation});
       }
     }
-    const result=await api(newChatUrl('/api/sessions'),{id:attempt.id,project:attempt.project,title:attempt.title,...(attempt.kind?{kind:attempt.kind}:{})});
+    const result=await api(newChatUrl('/api/sessions'),{id:attempt.id,project:attempt.project,title:attempt.title,...attempt.modelOptions,...(attempt.kind?{kind:attempt.kind}:{})});
     sessionStorage.removeItem('new-chat-attempt');$('new-chat-dialog').close();
     $('search').value='';$('archived').value='false';
     loadList(true).catch(e=>toast(e.message));toast(result.message);
@@ -675,11 +715,12 @@ $('new-chat-form').onsubmit=async event=>{
     creatingChat=false;setLanguageBusy();$('new-chat-submit').textContent=t(kind==='desktop'?'创建并打开':'创建聊天');
     $('new-chat-form').querySelectorAll('input,select,button').forEach(n=>n.disabled=false);
     const selected=$('new-chat-project').value;
-    $('new-chat-submit').disabled=!selected||(selected==='__directory__'&&!$('new-chat-directory-path').value);
+    newChatModelPicker?.setBusy(false);updateNewChatSubmit();
     document.querySelector('[data-close="new-chat-dialog"]').disabled=false;
   }
 };
 const messageActions=new MessageActions({request:api,openChat,refresh:()=>loadList(true).catch(e=>toast(e.message)),uuid,notify:toast,busy:value=>{approvalBusy+=value?1:-1;setLanguageBusy();}});
+desktopSessions.messageActions=messageActions;
 document.addEventListener('bridge-message-error',event=>toast(event.detail));
 function messageManagementTarget(){
   if(clientNavigation.provider!=='codex'){
@@ -736,7 +777,7 @@ function composerImageSource(value,target,capture=false){
   if(url.origin!==location.origin||url.username||url.password||url.hash)return null;
   const path=window.BridgeRelayPath?.(url.pathname)??url.pathname;
   const codex=/^\/api\/sessions\/([0-9a-f-]{36})\/(uploads\/[0-9a-f-]{36}\/preview|desktop-images\/[a-f0-9]{64}|files\/[a-f0-9]{64})$/.exec(path);
-  const desktop=/^\/api\/desktop-sessions\/(claude|deepseek)\/uploads\/[0-9a-f-]{36}\/preview$/.exec(path);
+  const desktop=/^\/api\/desktop-sessions\/(claude|deepseek|zcode)\/uploads\/[0-9a-f-]{36}\/preview$/.exec(path);
   const identityKey=codex?'host':'sessionId',identity=codex?target.host:target.id;
   if(codex?target.provider!=='codex'||codex[1]!==target.id:!desktop||desktop[1]!==target.provider)return null;
   if(url.searchParams.getAll(identityKey).length!==1||url.searchParams.get(identityKey)!==identity)return null;
@@ -923,7 +964,7 @@ function applyEntryCapabilities(view){
 }
 function renderState(view){
   applyEntryCapabilities(view);
-  contextUsageControl.update(view);state=view;if(typeof bindCodexDraft==='function')bindCodexDraft(view);
+  contextUsageControl.update({...view,busy:contextCompacting.has(chatKey(currentId,currentHost))});state=view;if(typeof bindCodexDraft==='function')bindCodexDraft(view);
   if(typeof messageManagement!=='undefined')messageManagement?.reconcile();
   if(typeof document!=='undefined')for(const dialog of document.querySelectorAll('dialog[data-permission-runtime]')){
     if(!view.connected||dialog.dataset.permissionThread!==currentId||dialog.dataset.permissionHost!==currentHost||
@@ -942,9 +983,10 @@ function renderState(view){
   $('status').textContent=!view.connected?(view.loadingHistory?t('读取历史中'):view.activating?t('正在恢复会话…'):access.source==='cli'?t('历史记录'):view.connecting?t('连接桌面中'):t('历史记录')):view.requests.length?t('等待回应'):view.status==='active'?t('运行中'):t('已连接');
   $('status').classList.toggle('offline',!view.connected);
   $('notice').hidden=view.connected;
-  $('notice-text').textContent=view.readOnlyReason?t(view.readOnlyReason):access.source==='cli'?(t(reconnectFailure||view.connectionError)||t(access.canReconnect?'可先阅读聊天历史；继续时将连接或恢复原 CLI 会话。':access.reason||'CLI 聊天历史可阅读；当前无法继续此会话。')):limited&&!access.canReconnect?(t(access.reason)||t('已保存的历史可阅读；当前来源未提供远程控制。')):view.desktopRestartRecommended?t('重建连接后仍无法连接原桌面会话。可在应用管理中正常退出并重新启动 Codex；退出前请核对任务。'):view.activating?t('正在自动连接；必要时会在电脑 Codex 中打开此聊天。'):view.connecting?t('正在连接桌面，可先阅读已保存的历史。'):reconnectFailure?t(reconnectFailure):view.rebuildRecommended?t('桌面连接已失效，建议重建连接。聊天历史和草稿会保留。'):t(view.connectionError)||t('暂未连接，可先阅读历史或点击重新连接。');
+  $('notice-text').textContent=view.readOnlyReason?t(view.readOnlyReason):access.source==='cli'?(t(reconnectFailure||view.connectionError)||t(access.canReconnect?'可先阅读聊天历史；继续时将连接或恢复原 CLI 会话。':access.reason||'CLI 聊天历史可阅读；当前无法继续此会话。')):limited&&!access.canReconnect?(t(access.reason)||t('已保存的历史可阅读；当前来源未提供远程控制。')):view.desktopRestartRecommended?t('尚未连接原桌面会话。可再次重建连接；若仍失败，可在应用管理中核对任务后重启 Codex。'):view.activating?t('正在自动连接；必要时会在电脑 Codex 中打开此聊天。'):view.connecting?t('正在连接桌面，可先阅读已保存的历史。'):reconnectFailure?t(reconnectFailure):view.rebuildRecommended?t('桌面连接已失效，建议重建连接。聊天历史和草稿会保留。'):t(view.connectionError)||t('暂未连接，可先阅读历史或点击重新连接。');
   $('reconnect').hidden=limited&&!access.canReconnect;
-  $('reconnect').textContent=t(access.source==='cli'?'继续会话':view.desktopRestartRecommended?'应用管理':view.rebuildRecommended?'重建连接':'重新连接');
+  $('reconnect').textContent=t(access.source==='cli'?'继续会话':view.rebuildRecommended||view.desktopRestartRecommended?'重建连接':'重新连接');
+  $('reconnect-manager').hidden=view.connected||!view.desktopRestartRecommended;
   $('history').hidden=view.historyComplete||!view.connected;
   renderChatProgress($('working'),{agentName:'Codex',active:view.status==='active',waiting:!!view.requests.length,connected:!!view.connected});if(!view.connected&&view.status!=='active')$('working').hidden=true;$('stop').hidden=view.status!=='active'||!view.connected||!access.canInterrupt;
   $('send').disabled=view.loadingHistory||view.activating||sending||!attachments.ready()||!access.canSend;
@@ -1114,7 +1156,15 @@ $('composer').onsubmit=async event=>{
 $('message').onkeydown=event=>{if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)){event.preventDefault();$('composer').requestSubmit();}};
 $('stop').onclick=async()=>{if(!currentAccess().canInterrupt)return;try{await api(sessionUrl(currentId,'stop'),{});toast('已请求停止');}catch(e){toast(e.message);}};
 $('history').onclick=async()=>{$('history').disabled=true;try{await api('/api/sessions/'+currentId+'/history',{});}catch(e){toast(e.message);}finally{$('history').disabled=false;}};
-$('reconnect').onclick=async()=>{if(state?.desktopRestartRecommended){clientNavigation.openManager();return;}const access=currentAccess();if(!access.canReconnect)return;const id=currentId,host=currentHost,rebuild=state?.rebuildRecommended===true;$('reconnect').disabled=true;reconnectFailure=null;try{await api(sessionUrl(id,'reconnect',host),{activate:true,...(rebuild?{rebuild:true}:{})});}catch(e){if(id===currentId&&host===currentHost){reconnectFailure=e.message;$('notice').hidden=false;$('notice-text').textContent=t(e.message);}toast(e.message);}finally{$('reconnect').disabled=false;}};
+$('reconnect').onclick=async()=>{
+  const access=currentAccess();if(!access.canReconnect||$('reconnect').disabled)return;
+  const id=currentId,host=currentHost,rebuild=state?.rebuildRecommended||state?.desktopRestartRecommended;
+  $('reconnect').disabled=true;reconnectFailure=null;
+  try{await api(sessionUrl(id,'reconnect',host),{activate:true,...(rebuild?{rebuild:true}:{})});}
+  catch(e){if(id===currentId&&host===currentHost){reconnectFailure=e.message;$('notice').hidden=false;$('notice-text').textContent=t(e.message);}toast(e.message);}
+  finally{$('reconnect').disabled=false;}
+};
+$('reconnect-manager').onclick=()=>clientNavigation.openManager();
 document.querySelectorAll('[data-close]').forEach(button=>button.onclick=()=>$(button.dataset.close).close());
 async function loadCatalogKind(kind,refresh=false){
   if(kind!=='models')throw Error(t('未知目录类型'));
@@ -1138,7 +1188,7 @@ async function loadCatalogKind(kind,refresh=false){
     }).filter(Boolean);
     const result={...value,kind,[kind]:catalogData[kind],_scope:identity};
     catalogResults[kind]=result;
-    if(accountIdentity&&value?.cache?.identity===accountIdentity)modelCatalogs.set(JSON.stringify([gatewayIdentity,targetHost,provider,sessionAccess(state?.access).source,accountIdentity]),result);
+    if(accountIdentity&&value?.cache?.identity===accountIdentity){Object.assign(result,window.BridgeModelCatalogCache.write(modelCatalogs,[gatewayIdentity,targetHost,'codex'],result));catalogData[kind]=result[kind];}
     return result;
   }).finally(()=>{if(catalogTasks[kind]===request)catalogTasks[kind]=null;});
   request.identity=identity;catalogTasks[kind]=request;
@@ -1264,7 +1314,7 @@ async function openModelDialog(forceRefresh=false){
   $('model-refresh').disabled=true;
   const request=++modelRequest,target=chatKey();modelTarget=target;fastModeControl.reset();
   $('model-form').querySelectorAll('input,select,button').forEach(n=>n.disabled=false);
-  const identity=state?.modelCatalogIdentity||'',key=identity?JSON.stringify([listIdentity,currentHost,state?.provider,sessionAccess(state?.access).source,identity]):'',scope=JSON.stringify([listIdentity,currentId,currentHost,state?.provider,identity]),cached=(key?modelCatalogs.get(key):null)||(catalogResults.models?._scope===scope?catalogResults.models:null);
+  const identity=state?.modelCatalogIdentity||'',scope=JSON.stringify([listIdentity,currentId,currentHost,state?.provider,identity]),cached=window.BridgeModelCatalogCache.read(modelCatalogs,[listIdentity,currentHost,'codex'],identity)||(catalogResults.models?._scope===scope?catalogResults.models:null);
   const showCatalog=catalog=>{
     catalogData.models=catalog.models;catalogResults.models=catalog;
     $('model-select').replaceChildren(...(catalog.modelSource==='api'?[new Option(t('请选择上游模型'),'')]:[]),...(Array.isArray(catalog.models)?catalog.models:[]).map(m=>new Option(m.name,m.id)),new Option(t('自定义模型…'),'__custom__'));
@@ -1600,7 +1650,7 @@ async function loadWslAccounts(){
   return clientNavigation.wslSupported===true;
 }
 async function refreshSelectedAccounts(){
-  if(codexAccountEntry==='desktop'){codexWslAccounts?.clear();accountsPanel?.refresh();codexCliAccessPanel?.refresh();return;}
+  if(codexAccountEntry==='desktop'||codexAccountEntry.startsWith('codex:')){codexWslAccounts?.clear();accountsPanel?.refresh();if(codexAccountEntry==='desktop')codexCliAccessPanel?.refresh();return;}
   const entry=codexAccountEntry;
   try{
     if(!await loadWslAccounts()||!$('accounts-dialog').open||codexAccountEntry!==entry)return;
@@ -1610,40 +1660,41 @@ async function refreshSelectedAccounts(){
 }
 $('accounts-dialog').addEventListener('close',()=>{codexCliAccessPanel?.clear();codexWslAccounts?.clear();});
 function renderAccountEntries(){
-  const entries=wslEntries();
-  if(clientNavigation.wslSupported===true&&!accountEntryControls){
+  const independent=codexAccountEntry.startsWith('codex:'),entries=codexEntries().filter(row=>row.enabled&&(independent?row.id===codexAccountEntry:clientNavigation.wslSupported===true&&row.kind==='wsl-cli'));
+  if(entries.length&&!accountEntryControls){
     accountEntryControls=el('div','accounts-runtime-controls');const label=el('label','',t('运行环境'));accountEntrySelect=el('select');accountEntrySelect.setAttribute('aria-label',t('运行环境'));label.append(accountEntrySelect);accountEntryControls.append(label);$('accounts-heading').closest('.picker-head').after(accountEntryControls);
     codexWslRoot=el('div');$('accounts-dialog').append(codexWslRoot);
     accountEntrySelect.onchange=()=>{codexAccountEntry=accountEntrySelect.value;accountsPanel?.clear();renderAccountEntries();refreshSelectedAccounts();};
   }
   if(codexAccountEntry!=='desktop'&&!entries.some(row=>row.id===codexAccountEntry))codexAccountEntry='desktop';
-  if(accountEntrySelect){accountEntrySelect.replaceChildren(new Option(t('此电脑'),'desktop'),...entries.map(row=>new Option(row.name||row.label,row.id)));accountEntrySelect.value=codexAccountEntry;accountEntryControls.hidden=!entries.length;}
-  codexCliDetails.hidden=codexAccountEntry!=='desktop';$('accounts-content').hidden=codexAccountEntry!=='desktop';if(codexWslRoot)codexWslRoot.hidden=codexAccountEntry==='desktop';if(typeof accountsPanel!=='undefined'&&accountsPanel)accountsPanel.refreshButton.hidden=codexAccountEntry!=='desktop';
+  if(accountEntrySelect){accountEntrySelect.replaceChildren(new Option(t('此电脑'),'desktop'),...entries.map(row=>new Option(row.name||row.label,row.id)));accountEntrySelect.value=codexAccountEntry;accountEntryControls.hidden=independent||!entries.length;}
+  codexCliDetails.hidden=codexAccountEntry!=='desktop';$('accounts-content').hidden=codexAccountEntry.startsWith('wsl:');if(codexWslRoot)codexWslRoot.hidden=!codexAccountEntry.startsWith('wsl:');if(typeof accountsPanel!=='undefined'&&accountsPanel)accountsPanel.refreshButton.hidden=codexAccountEntry.startsWith('wsl:');
   if(codexCliDetails.hidden)codexCliAccessPanel?.clear();
 }
 
 const accountsPanel=window.BridgeSharedRelay||typeof AccountsPanel==='undefined'?null:new AccountsPanel({root:$('accounts-content'),toolbar:$('accounts-heading'),read:force=>api(accountUrl('/api/accounts'+(accountsPanel?.visible()&&accountsPanel?.value?.resetDynamicEnabled?'?resetForecast='+(force?'refresh':'1'):''))),request:({action,...value})=>action==='ignoreSubmission'?ignoreSubmission(value):api(accountUrl(action==='retrySsh'?'/api/accounts/ssh-retry':action==='account'?'/api/accounts/account':action==='details'?'/api/accounts/details':action==='reminders'?'/api/accounts/reminders':action==='checkDesktopUpdate'||action==='requestDesktopUpdate'?'/api/accounts/desktop-update':'/api/accounts/switch'),action==='checkDesktopUpdate'||action==='requestDesktopUpdate'?{action,...value}:value),onChanged:value=>{if(codexActiveAccountId!==undefined&&codexActiveAccountId!==value.activeId){browserNavigation.invalidate();if(typeof ChatTimeline!=='undefined')ChatTimeline.clearCache?.();clearCodexProvisionalDrafts();clearQuoteComposer();codexDraftScope=null;codexDraftTouched=false;}resetModelCatalog();},onUpdate:value=>{codexActiveAccountId=value.activeId;const label='账号管理';$('accounts-button').setAttribute('data-i18n',label);$('accounts-button').textContent=t(label);}});
 accountsPanel?.attachApiAccess(codexCliAccessPanel,codexCliDetails);
 function openCurrentAccounts(){
-  const activeProvider=clientNavigation.provider,provider=activeProvider?.startsWith('wsl-claude:')?'claude':activeProvider;
+  const activeProvider=clientNavigation.provider,provider=ClientIdentity.family(activeProvider),entry=ClientIdentity.entry(activeProvider)?activeProvider:provider;
   if(!provider)return false;
   if(isCodexClient(provider)){
     if(!accountsPanel)return false;
     refreshEntryAccounts();renderAccountEntries();$('accounts-dialog').showModal();refreshSelectedAccounts();return true;
   }
-  const name=clientNavigation.clients.find(row=>row.id===provider)?.name||provider;
+  const name=clientNavigation.clients.find(row=>row.id===activeProvider)?.name||provider;
   const dialog=desktopSessions.dialog('账号与接入'),content=el('div','provider-account');
   const head=dialog.querySelector('.picker-head'),title=head.querySelector('h2'),toolbar=el('div','accounts-dialog-heading');
   title.classList.add('dialog-content-start');title.tabIndex=-1;title.autofocus=true;title.replaceWith(toolbar);toolbar.append(title);
   dialog.append(el('p','account-muted',name),content);
   const panel=new DesktopClientAccountsPanel({root:content,provider,toolbar,
-    read:()=>api('/api/desktop-sessions/'+provider+'/accounts'),
-    request:value=>api('/api/desktop-sessions/'+provider+'/accounts',value),
-    readModels:(refresh=false)=>api('/api/desktop-sessions/'+provider+'/account'+(refresh?'?refresh=true':'')),
-    onChanged:(value,previous)=>desktopSessions.accountChanged(provider,previous,value)
+    read:()=>api(ClientIdentity.path(entry,'accounts')),
+    request:value=>api(ClientIdentity.path(entry,'accounts'),value),
+    readModels:async(refresh=false)=>{const namespace=[desktopSessions.listCacheIdentity,desktopSessions.listCacheHost||'local',entry],value=await api(ClientIdentity.path(entry,'account',null,refresh?{refresh:'true'}:{}));return {...value,...window.BridgeModelCatalogCache.write(desktopSessions.modelCatalogs,namespace,value)};},
+    onChanged:(value,previous)=>desktopSessions.accountChanged(entry,previous,value)
   });
+  const unbindConnection=clientNavigation.bindAccountManagement(panel,entry);
   let claudeWslAccounts=null,selectClaudeAccounts=null;
-  if(provider==='claude'&&typeof CliAccessPanel!=='undefined'){
+  if(provider==='claude'&&!ClientIdentity.entry(entry)&&typeof CliAccessPanel!=='undefined'){
     const details=el('details','account-compact'),root=el('div'),summary=el('summary','',t('Claude Code CLI 接入'));summary.dataset.i18n='Claude Code CLI 接入';details.append(summary,root);dialog.append(details);
     claudeCliAccessPanel=new CliAccessPanel({root,provider:'claude',read:()=>api('/api/cli-access'),request:value=>api('/api/cli-access',value)});
     const initializeWsl=async()=>{
@@ -1658,7 +1709,7 @@ function openCurrentAccounts(){
     };
     selectClaudeAccounts=()=>{if(clientNavigation.wslSupported===true)initializeWsl().catch(error=>{if(dialog.open)toast(error.message);});else{panel.resume();claudeCliAccessPanel.refresh();}};
   }
-  dialog.addEventListener('close',()=>{panel.dispose();claudeWslAccounts?.dispose();claudeCliAccessPanel?.dispose();claudeCliAccessPanel=null;});dialog.showModal();if(selectClaudeAccounts)selectClaudeAccounts();else panel.resume();
+  dialog.addEventListener('close',()=>{unbindConnection();panel.dispose();claudeWslAccounts?.dispose();claudeCliAccessPanel?.dispose();claudeCliAccessPanel=null;});dialog.showModal();if(selectClaudeAccounts)selectClaudeAccounts();else panel.resume();
   return true;
 }
 $('accounts-button').onclick=openCurrentAccounts;

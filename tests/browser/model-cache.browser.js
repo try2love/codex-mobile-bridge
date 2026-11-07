@@ -19,6 +19,22 @@ async function runModelCacheTests(){
     $('model-dialog').close();next=deferred();const stale=openModelDialog();state={...state,modelCatalogIdentity:accountB,model:'model-b'};next.resolve(response(catalog(accountA,'model-a',2000)));await stale;
     $('model-dialog').close();next=deferred();const switched=openModelDialog();check(!$('model-options').querySelector('input[value="model-a"]'),'New account does not paint old catalog');next.resolve(response(catalog(accountB,'model-b',3000)));await switched;check($('model-options').querySelector('input[value="model-b"]'),'New account paints its own catalog');
     const newTime=$('model-updated').textContent;check(newTime!==originalTime,'Successful new catalog updates the timestamp');
+    $('model-dialog').close();
+    const root=document.createElement('section');document.body.append(root);
+    const picker=new BridgeCreationModelPicker({root,cache:modelCatalogs,namespace:()=>[listIdentity,currentHost,'codex']});
+    try{
+      await picker.load('fixture-create',async()=>catalog(accountB,'model-b',3000));
+      picker.read=async()=>catalog(accountB,'model-created-refresh',4000);await picker.refresh.onclick();
+      next=deferred();const shared=openModelDialog();
+      check($('model-options').querySelector('input[value="model-created-refresh"]'),'Chat immediately paints the catalog refreshed in creation');
+      next.resolve(response(catalog(accountB,'model-created-refresh',4000)));await shared;$('model-dialog').close();
+      next=deferred();const chatRefresh=openModelDialog(true);next.resolve(response(catalog(accountB,'model-chat-refresh',5000)));await chatRefresh;$('model-dialog').close();
+      const reopened=new BridgeCreationModelPicker({root:document.createElement('section'),cache:modelCatalogs,namespace:()=>[listIdentity,currentHost,'codex']});
+      let finish;const pending=reopened.load('fixture-create',()=>new Promise(resolve=>finish=resolve));
+      check(reopened.rows.some(row=>row.id==='model-chat-refresh'),'Creation immediately paints the catalog refreshed in chat');
+      check(!reopened.model.value,'Catalog reuse never borrows a chat selection');
+      finish(catalog(accountB,'model-chat-refresh',5000));await pending;reopened.dispose();
+    }finally{picker.dispose();root.remove();}
     return {passed:checks.length,checks,reads};
   }finally{next?.resolve(response(catalog(accountB,'model-b',3000)));$('model-dialog').close();window.fetch=originalFetch;currentId=old.currentId;currentHost=old.currentHost;state=old.state;listIdentity=old.listIdentity;}
 }

@@ -1,4 +1,5 @@
 """macOS process inventory and Launch Services operations."""
+import errno
 import json
 import os
 import subprocess
@@ -9,11 +10,26 @@ from bridge.platforms.posix.desktop import terminate
 
 def _process_rows():
     output = subprocess.run(['ps', '-ww', '-u', str(os.getuid()), '-o', 'pid=,comm='],
-                            capture_output=True, text=True, check=True, timeout=10).stdout
+                            capture_output=True, text=True, encoding='utf-8', check=True, timeout=10,
+                            env={**os.environ, 'LC_ALL': 'en_US.UTF-8'}).stdout
+    native = None
     for line in output.splitlines():
         fields = line.strip().split(None, 1)
         if len(fields) == 2:
-            yield int(fields[0]), fields[1]
+            pid, executable = int(fields[0]), fields[1]
+            if not executable.startswith('/'):
+                # Electron may replace ps comm with its display name. Resolve the
+                # same-user kernel image instead of mistaking a running App for closed.
+                from bridge.platforms.macos.force_exit import Native
+                native = native or Native()
+                try:
+                    identity = native.identity(pid)
+                except (OSError, ValueError):
+                    continue  # Process exited during enumeration.
+                if identity['uid'] != os.getuid() or identity['zombie']:
+                    continue
+                executable = identity['image']
+            yield pid, executable
 
 
 def inventory(result, match):
@@ -36,7 +52,8 @@ def commands(pids):
     if not pids:
         return {}
     result = subprocess.run(['ps', '-ww', '-p', ','.join(map(str, pids)), '-o', 'pid=,args='],
-                            capture_output=True, text=True, timeout=10)
+                            capture_output=True, text=True, encoding='utf-8', timeout=10,
+                            env={**os.environ, 'LC_ALL': 'en_US.UTF-8'})
     if result.returncode not in (0, 1):
         result.check_returncode()
     return {int(parts[0]): parts[1] for line in result.stdout.splitlines()
@@ -48,6 +65,44 @@ def _bundle(executable):
     if bundle is None:
         raise ValueError('macOS 桌面程序必须位于应用程序包中')
     return bundle
+
+
+def verify_relaunch(executable, previous, current, environment):
+    """Verify one same-user signed App generation without activating it."""
+    from bridge.platforms.macos.force_exit import Native
+    from bridge.platforms.macos.codex_daemon_env import read_process_environment
+    changed = '独立客户端重启后的原生身份无法确认'
+    native = Native()
+    try:
+        native.identity(previous['pid'])
+    except OSError as exc:
+        if exc.errno != errno.ESRCH:
+            raise ValueError(changed) from None
+    else:
+        # Even a recycled PID is not evidence that this is the intended restart.
+        raise ValueError(changed)
+    before = native.identity(current['pid'])
+    identity = current['identity']
+    if (before['uid'] != os.getuid() or before['ruid'] != os.getuid() or before['zombie']
+            or before['image'] != str(executable.resolve())
+            or list(before['birth']) != identity.get('birth')
+            or list(before['started']) != identity.get('started')):
+        raise ValueError(changed)
+    record = {'processIdentity': {'uniqueId': before['birth'][0],
+                                 'startSeconds': before['started'][0], 'startMicroseconds': before['started'][1]}}
+    try:
+        values, _ = read_process_environment(current['pid'], record, executable, environment)
+    except (OSError, ValueError):
+        raise ValueError(changed) from None
+    if values != environment:
+        raise ValueError('独立客户端重启后的配置环境不一致')
+    try:
+        subprocess.run(['/usr/bin/codesign', '--verify', '--strict', '-R=anchor apple generic', str(_bundle(executable))],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        raise ValueError('无法核验独立客户端的应用签名') from None
+    if native.identity(current['pid']) != before:
+        raise ValueError(changed)
 
 
 _QUIT_SCRIPT = '''ObjC.import('AppKit');
@@ -100,11 +155,18 @@ def quit_application(executable, *, pids=None):
     raise ValueError('无法核验 macOS 退出请求结果，请检查客户端状态（quit: invalid-response）')
 
 
-def start(executable, home, environment):
+def start(executable, home, environment, *, arguments=(), new_instance=False, environment_unset=()):
     # Keep Launch Services' GUI privacy identity without activating the app or
     # stealing focus from the user's current app / screen saver. The client may
     # still present its own first-run, login or system permission prompts.
     args = ['/usr/bin/open', '-g', '-a', str(_bundle(executable))]
-    for name, value in environment.items():
+    if new_instance:
+        args.insert(2, '-n')
+    # Launch Services merges its environment. Explicit empty values also mask
+    # launchd's inherited authentication inputs, without changing global state.
+    for name, value in {**dict.fromkeys(environment_unset, ''), **environment}.items():
         args += ['--env', name+'='+str(value)]
-    subprocess.run(args, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=25)
+    if arguments:
+        args += ['--args', *arguments]
+    options = {'env': {key: value for key, value in os.environ.items() if key not in environment_unset}} if environment_unset else {}
+    subprocess.run(args, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=25, **options)

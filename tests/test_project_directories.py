@@ -29,11 +29,22 @@ class ProjectDirectories(unittest.TestCase):
         self.environment = {'surface': 'cli', 'host': 'local', 'hostLabel': '此电脑',
             'name': 'Claude Code', 'origin': 'original-account', 'scope': 'original-account',
             'createRequiresMessage': True}
-        self.adapter.project_environments = Mock(side_effect=lambda: [dict(self.environment)])
+        self.adapter.project_environments = Mock(side_effect=lambda host_id=None: [dict(self.environment)] if host_id in (None,self.environment['host']) else [])
         self.adapter.call = Mock(return_value={'projects': []})
 
     def env(self):
         return self.manager.call('claude', 'projects')['environments'][0]['key']
+
+    def test_catalog_refresh_cannot_replay_unknown_creation(self):
+        environment=self.env();project=self.manager.register_project('claude',environment,str(self.root))
+        body={'id':str(uuid.uuid4()),'projectKey':project['key'],'firstMessage':'FIRST',
+              'environment':environment,'model':'chosen','effort':'low','modelCatalogIdentity':'old'}
+        self.manager.creation_models=Mock(return_value={'models':[{'id':'chosen','efforts':['low']}], 'cache':{'identity':'old'}})
+        self.adapter.call=Mock(side_effect=RuntimeError('lost after dispatch'))
+        first=self.manager.call('claude','create',body=body)
+        self.assertEqual(first['status'],'unknown')
+        second=self.manager.call('claude','create',body={**body,'modelCatalogIdentity':'refreshed','environment':'new-precondition'})
+        self.assertEqual(second,first);self.assertEqual(self.adapter.call.call_count,1)
 
     def test_empty_runtime_can_browse_and_register_without_creating_or_calling_model(self):
         environment = self.env()

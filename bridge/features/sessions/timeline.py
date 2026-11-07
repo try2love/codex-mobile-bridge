@@ -104,6 +104,9 @@ class Timeline:
             else:
                 key = hashlib.sha256(encoded([turn['id'], 'error'])).hexdigest()[:24] + '-error'
                 text = turn['error'] if isinstance(turn['error'], str) else json.dumps(turn['error'], ensure_ascii=False)
+                error = turn['error']
+                if isinstance(error, dict) and isinstance(error.get('codexErrorInfo'), dict) and 'responseStreamDisconnected' in error['codexErrorInfo'] and error.get('additionalDetails') == 'Connection failed: error sending request':
+                    text = '电脑上的 Codex 无法连接模型服务。使用本机 CLI 时，可在聊天详情中检查 CLI 网络。'
                 rows.append(dict(key=key, turnId=turn['id'], order=len(rows), role='error', text=text[:TEXT_PREVIEW],
                                  truncated=len(text) > TEXT_PREVIEW, version=hashlib.sha256(text.encode()).hexdigest()[:24]))
                 details[key] = text

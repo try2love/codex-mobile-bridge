@@ -107,13 +107,13 @@ class CliAccessTests(unittest.TestCase):
         self.accounts.api_credentials = lambda value: Accounts.api_credentials(self.accounts, value)
         before = {str(path.relative_to(self.root)): path.read_bytes() for path in self.root.rglob('*') if path.is_file()}
         request = {'provider': 'codex', 'action': 'modelsDraft', 'baseUrl': 'https://fixture.invalid/v1', 'apiKey': 'fake-draft-key'}
-        with patch('bridge.features.accounts.cli_access.model_ids', return_value=['model-a']) as models:
+        with patch('bridge.features.accounts.api_drafts.model_ids', return_value=['model-a']) as models:
             self.assertEqual(self.manager.change(request), {'models': ['model-a']})
             models.assert_called_once_with(request['baseUrl'], request['apiKey'])
         self.assertFalse(self.manager.codex_switch)
         after = {str(path.relative_to(self.root)): path.read_bytes() for path in self.root.rglob('*') if path.is_file()}
         self.assertEqual(before, after)
-        with patch('bridge.features.accounts.cli_access.model_ids') as models:
+        with patch('bridge.features.accounts.api_drafts.model_ids') as models:
             for invalid in ({'baseUrl': 'file:///etc/passwd'}, {'apiKey': ''}, {'apiKey': 'bad\nkey'}, {'provider': 'claude'}, {'confirmed': True}):
                 with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                     self.manager.change({**request, **invalid})
@@ -125,7 +125,7 @@ class CliAccessTests(unittest.TestCase):
         self.accounts.row = Mock(return_value={'kind': 'api', 'baseUrl': 'https://original.invalid/v1'})
         self.accounts.api_credentials = Mock(return_value=('https://original.invalid/v1', 'fake-saved-key'))
         request = {'provider': 'codex', 'action': 'modelsDraft', 'id': 'saved', 'apiKey': '', 'baseUrl': 'https://different.invalid/v1'}
-        with patch('bridge.features.accounts.cli_access.model_ids', return_value=['model-a']) as models:
+        with patch('bridge.features.accounts.api_drafts.model_ids', return_value=['model-a']) as models:
             with self.assertRaisesRegex(ValueError, '重新填写 API Key'):
                 self.manager.change(request)
             self.accounts.api_credentials.assert_not_called()

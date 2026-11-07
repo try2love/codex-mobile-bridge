@@ -27,11 +27,18 @@ final class ConnectionDiscovery {
   return new JSONObject(d.toString()).put("binding",hash(secret));
  }
  JSONObject read(String address,String discoveryKey)throws Exception {
+  return request(address,discoveryKey,null,null,null);
+ }
+ JSONObject request(String address,String discoveryKey,String cookie,String csrf,JSONObject body)throws Exception {
   if(cancelled)throw new InterruptedIOException();
   HttpURLConnection c=(HttpURLConnection)new URL(address).openConnection();active=c;
   c.setInstanceFollowRedirects(false);c.setUseCaches(false);c.setConnectTimeout(1800);c.setReadTimeout(1800);c.setRequestProperty("Accept","application/json");
   if(discoveryKey!=null)c.setRequestProperty("X-Discovery-Key",discoveryKey);
   try{
+   if(cookie!=null){
+    c.setRequestProperty("Cookie",cookie);c.setRequestProperty("User-Agent",EventClient.USER_AGENT);
+    if(body!=null){c.setRequestMethod("POST");c.setDoOutput(true);c.setRequestProperty("Origin",GatewayURL.httpOrigin(address));c.setRequestProperty("X-CSRF-Token",csrf);c.setRequestProperty("Content-Type","application/json");try(OutputStream out=c.getOutputStream()){out.write(body.toString().getBytes(StandardCharsets.UTF_8));}}
+   }
    if(cancelled||c.getResponseCode()!=200||c.getContentLengthLong()>32768)throw new IOException();
    try(InputStream in=c.getInputStream();ByteArrayOutputStream out=new ByteArrayOutputStream()){
     byte[] bytes=new byte[2048];int n;long deadline=System.nanoTime()+2_000_000_000L;
