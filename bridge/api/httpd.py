@@ -1464,7 +1464,7 @@ class Handler(BaseHTTPRequestHandler):
         except (IPCError, GoalError, CatalogError, RemoteUnavailable, CreationError, StoreUnavailable, AccountError) as exc:
             self.close_connection = True
             self.output(409, {"error": str(exc), "code": "desktop_unavailable"})
-        except (BrokenPipeError, ConnectionResetError, socket.timeout):
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError, socket.timeout):
             self.close_connection = True
         except Exception:
             LOG.exception("Gateway operation failed")
@@ -1634,7 +1634,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write(b": heartbeat\n\n")
                 self.wfile.flush()
                 bridge.closed.wait(0.2)
-        except (BrokenPipeError, ConnectionResetError, socket.timeout):
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError, socket.timeout):
             pass
         finally:
             with session.condition:

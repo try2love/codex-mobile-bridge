@@ -150,6 +150,7 @@ def main(connections=None, connection_secrets=None):
     tunnel = None
     tunnel_thread = None
     ssh_tunnels = []
+    route_rechecks = []
     monitor = RuntimeNetworkMonitor(args.config.parent, preferences, args.port, listener_manager,
                                     server.instance_id, pid=os.getpid(),
                                     enabled=adaptation_settings(args.config.parent)['enabled'],
@@ -217,8 +218,20 @@ def main(connections=None, connection_secrets=None):
         for entry in entries:
             if entry['enabled'] and entry['accessMode'] == 'tailscale':
                 from bridge.features.network.tailscale import TailscaleTunnel
-                tailscale = TailscaleTunnel(entry, tailscale_port, args.config.parent)
+                def tailscale_target_is_current(value):
+                    parsed = urlsplit(value)
+                    try:
+                        port = parsed.port
+                    except ValueError:
+                        return False
+                    return (parsed.scheme == 'http' and parsed.hostname == '127.0.0.1'
+                            and parsed.path in ('', '/') and not parsed.query
+                            and not parsed.fragment and port is not None
+                            and gateway_ready(port, server.instance_id))
+                tailscale = TailscaleTunnel(entry, tailscale_port, args.config.parent,
+                                            target_validator=tailscale_target_is_current)
                 ssh_tunnels.append(tailscale)
+                route_rechecks.append(tailscale.network_changed)
                 tailscale.start()
             if entry['enabled'] and entry['accessMode'] == 'cloudflare':
                 from bridge.features.network.named_tunnel import NamedTunnel
@@ -247,7 +260,7 @@ def main(connections=None, connection_secrets=None):
             tunnel = QuickTunnel(args.cloudflared, args.port, args.config.parent, allow_origin)
             # Let the existing tunnel recover first. Its origin remains valid
             # until a replacement is actually ready, not merely on a route event.
-            monitor.network_changed = tunnel.network_changed
+            route_rechecks.append(tunnel.network_changed)
             monitor.network_cancelled = tunnel.cancel_network_check
             def connect_tunnel():
                 try:
@@ -258,6 +271,8 @@ def main(connections=None, connection_secrets=None):
                     print(str(exc), flush=True)
             tunnel_thread = threading.Thread(target=connect_tunnel, daemon=True)
             tunnel_thread.start()
+        if route_rechecks:
+            monitor.network_changed = lambda: [callback() for callback in route_rechecks]
         for listener in servers:
             listener.connection_discovery = discovery
         notifications.start()

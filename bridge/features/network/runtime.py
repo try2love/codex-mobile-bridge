@@ -311,7 +311,7 @@ class RuntimeNetworkMonitor:
                 try:
                     self.network_changed()
                 except Exception:
-                    LOGGER.exception('Quick Tunnel route check failed')
+                    LOGGER.exception('Network route check failed')
             return list(self.active)
 
     def _wait_interval(self):
