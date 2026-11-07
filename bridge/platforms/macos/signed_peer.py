@@ -12,6 +12,7 @@ from contextlib import ExitStack
 from pathlib import Path
 
 from bridge.platforms.macos.force_exit import Native
+from bridge.platforms.macos import release_identity
 
 P = ct.c_void_p
 I = ct.c_uint32
@@ -55,25 +56,26 @@ class SignedGatewayPeer:
         self.sec.SecCertificateCopyData.argtypes = [P]
         self.sec.SecCertificateCopyData.restype = P
         self.helper_requirement = None
+        self.published = None
+        self.leaf_hash = None
         with ExitStack() as refs:
             code = self._copy(refs, self.sec.SecCodeCopySelf, 0)
             static = self._copy(refs, self.sec.SecCodeCopyStaticCode, code, 0)
             info = self._copy(refs, self.sec.SecCodeCopySigningInformation, static, 2)
             certs = self.cf.CFDictionaryGetValue(info, P.in_dll(self.sec, "kSecCodeInfoCertificates"))
-            if (
-                not certs
-                or self.cf.CFArrayGetCount(certs) < 1
-                or self.sec.SecCodeCheckValidity(code, 0, None)
-            ):
-                raise PermissionError("Gateway must have a valid certificate signature")
-            cert = self.sec.SecCertificateCopyData(self.cf.CFArrayGetValueAtIndex(certs, 0))
-            if not cert:
-                raise PermissionError("Missing gateway certificate")
-            refs.callback(self.cf.CFRelease, cert)
-            self.leaf_hash = hashlib.sha1(self._bytes(cert)).hexdigest()
+            if self.sec.SecCodeCheckValidity(code, 0, None):
+                raise PermissionError("Gateway must have a valid code signature")
             self.cdhash = self._bytes(
                 self.cf.CFDictionaryGetValue(info, P.in_dll(self.sec, "kSecCodeInfoUnique"))
             )
+            if certs and self.cf.CFArrayGetCount(certs) > 0:
+                cert = self.sec.SecCertificateCopyData(self.cf.CFArrayGetValueAtIndex(certs, 0))
+                if not cert:
+                    raise PermissionError("Missing gateway certificate")
+                refs.callback(self.cf.CFRelease, cert)
+                self.leaf_hash = hashlib.sha1(self._bytes(cert)).hexdigest()
+            else:
+                self.published = release_identity.read(self.image, self.cdhash)
             req = P()
             if self.sec.SecCodeCopyDesignatedRequirement(static, 0, ct.byref(req)) or not req:
                 raise PermissionError("Missing gateway signature requirement")
@@ -93,7 +95,13 @@ class SignedGatewayPeer:
 
     def _starter_requirement(self, bundle, broker_hash):
         identifier = "io.github.try2love.codexmobilebridge.zcode-pipe-starter"
-        clause = f'identifier "{identifier}" and certificate leaf = H"{self.leaf_hash}"'
+        if self.published is not None:
+            image = bundle.parents[2] / release_identity.BROKER
+            published = release_identity.read(image, broker_hash)
+            hashes = published['components']['starter']['cdhashes']
+            clause = f'identifier "{identifier}" and (' + ' or '.join(f'cdhash H"{h}"' for h in hashes) + ')'
+        else:
+            clause = f'identifier "{identifier}" and certificate leaf = H"{self.leaf_hash}"'
         result = subprocess.run(
             ["/usr/bin/codesign", "--verify", "--strict", "-R=" + clause, str(bundle)],
             stdout=subprocess.DEVNULL,
@@ -144,6 +152,10 @@ class SignedGatewayPeer:
         if (previous_app.suffix != ".app" or current_app.suffix != ".app"
                 or previous_app.parent != current_app.parent):
             raise PermissionError("ZCode holder is outside this installation")
+        if getattr(self, "published", None) is not None:
+            release_identity.read(previous, broker_hash)
+            self._starter_requirement(previous_app / "Contents/Helpers/CMBZCodePipeStarter.app", broker_hash)
+            return
         requirement = subprocess.run(
             ["/usr/bin/codesign", "--display", "-r-", str(current_app)],
             capture_output=True, text=True, timeout=5, check=True)
@@ -193,8 +205,20 @@ class SignedGatewayPeer:
             refs.callback(self.cf.CFRelease, attributes)
             guest = self._copy(refs, self.sec.SecCodeCopyGuestWithAttributes, None, attributes, 0)
             requirement = self.helper_requirement if starter else self.requirement
-            if not requirement or self.sec.SecCodeCheckValidity(guest, 0, requirement):
+            if not requirement:
                 raise PermissionError("Gateway signature changed")
+            if self.sec.SecCodeCheckValidity(guest, 0, requirement):
+                # An ad-hoc DR binds one exact build. A different published build
+                # must prove its publisher and live hash, never just its filename.
+                if starter is not None or self.published is None or self.sec.SecCodeCheckValidity(guest, 0, None):
+                    raise PermissionError("Gateway signature changed")
+                static = self._copy(refs, self.sec.SecCodeCopyStaticCode, guest, 0)
+                info = self._copy(refs, self.sec.SecCodeCopySigningInformation, static, 2)
+                digest = self._bytes(self.cf.CFDictionaryGetValue(info, P.in_dll(self.sec, "kSecCodeInfoUnique")))
+                identity = (expected_pid, before["birth"], before["started"], before["image"], digest)
+                if getattr(self, "_published_peer", None) != identity:
+                    release_identity.read(before["image"], digest)
+                    self._published_peer = identity
             if before["image"] != expected_image:
                 # Audit/DR checks above are performed on every connection. Reuse
                 # expensive bundle checks only for the same immutable process.

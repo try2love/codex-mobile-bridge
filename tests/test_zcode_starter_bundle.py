@@ -53,6 +53,12 @@ int main(void) {
 @unittest.skipUnless(sys.platform == 'darwin', 'macOS signed process identities')
 class ZCodeStarterBundle(unittest.TestCase):
     def test_only_the_signed_broker_in_the_expected_package_can_transfer_descriptors(self):
+        self.exercise_bundle(bundle.TEST_ID)
+
+    def test_production_bundle_preserves_the_same_peer_boundary(self):
+        self.exercise_bundle(bundle.PRODUCT_ID)
+
+    def exercise_bundle(self, product):
         temp = ROOT/'.tmp'
         temp.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=temp) as work:
@@ -60,7 +66,7 @@ class ZCodeStarterBundle(unittest.TestCase):
             app = root/'Test.app'
             broker = app/'Contents/Resources/gateway/codex-mobile-gateway'
             broker.parent.mkdir(parents=True)
-            (app/'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier': bundle.TEST_ID}))
+            (app/'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier': product}))
             broker_source = root/'broker.c'
             broker_source.write_text(BROKER)
             subprocess.run(['/usr/bin/clang', broker_source, '-o', broker], check=True)

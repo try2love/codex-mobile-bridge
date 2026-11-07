@@ -35,6 +35,7 @@
     "productName": "Codex Mobile Bridge",
     "beforePack": "./scripts/verify-build.cjs",
     "afterPack": "./scripts/verify-packaged-qr.cjs",
+    "afterSign": "./scripts/sign-zcode-launcher.cjs",
     "directories": {
       "output": "dist/desktop"
     },
