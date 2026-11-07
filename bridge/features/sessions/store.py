@@ -239,7 +239,7 @@ class SessionStore:
         labels, matches = self._cli_inputs(query)
         with self._connect() as conn:
             columns = {r[1] for r in conn.execute("PRAGMA table_info(threads)")}
-            fields = [name for name in ("id", "name", "title", "cwd", "updated_at", "updated_at_ms", "recency_at", "recency_at_ms", "model_provider", "model", "originator", "source", "thread_source", "archived", "is_pinned", "project_id") if name in columns]
+            fields = [name for name in ("id", "name", "title", "cwd", "updated_at", "updated_at_ms", "recency_at", "recency_at_ms", "model_provider", "model", "originator", "source", "thread_source", "archived", "is_pinned", "project_id", "attached_thread_parent_id") if name in columns]
             where = ["archived = ?"]
             params = [int(archived)]
             where.append(self._user_origin_filter(columns))
@@ -256,6 +256,17 @@ class SessionStore:
                 if excluded not in ('desktop', 'cli', 'ide'):
                     raise ValueError('不支持的会话来源')
                 where.append('NOT (' + self._source_filter(columns, excluded) + ')')
+            if 'attached_thread_parent_id' in columns:
+                # Only the native attachment relation hides a child. A normal
+                # fork remains a root; a missing/out-of-scope parent must not
+                # make its child disappear from the registered configuration.
+                parent_filter = self._owner_filter(columns)
+                for excluded in exclude_sources:
+                    parent_filter += ' AND NOT (' + self._source_filter(columns, excluded) + ')'
+                parent_filter = re.sub(r'\b(' + '|'.join(re.escape(name) for name in columns) + r')\b',
+                                       lambda match: 'parent.' + match.group(), parent_filter)
+                where.append("(attached_thread_parent_id IS NULL OR attached_thread_parent_id = '' OR NOT EXISTS "
+                             '(SELECT 1 FROM threads AS parent WHERE parent.id = threads.attached_thread_parent_id AND ' + parent_filter + '))')
             if query:
                 search_fields = [name for name in ("name", "title", "cwd") if name in columns]
                 # History can contain many matching IDs; a read-only function
@@ -283,6 +294,9 @@ class SessionStore:
                 if self.source == 'cli' and self._matches(item):
                     origin = 'cli'
                 item['origin'] = origin
+                if item.get('attached_thread_parent_id'):
+                    item['attachedParentId'] = item['attached_thread_parent_id']
+                    item['orphanedSideChat'] = True
                 if self.source == 'cli':
                     item['display_title'] = item.get('name') or labels.get(item['id']) or item.get('title')
                 result.append(item)
@@ -365,10 +379,10 @@ class SessionStore:
                     ' AS changed_at FROM threads WHERE ' + ' AND '.join(filters), (since,))]
 
     def lifecycle_threads(self, root_id=None):
-        """Desktop roots and their complete agent subtree, using metadata only."""
+        """Desktop roots and complete attached/agent subtree, using metadata only."""
         with self._connect() as conn:
             columns = {r[1] for r in conn.execute('PRAGMA table_info(threads)')}
-            fields = [name for name in ('id', 'originator', 'source') if name in columns]
+            fields = [name for name in ('id', 'originator', 'source', 'thread_source', 'attached_thread_parent_id') if name in columns]
             rows = [dict(row) for row in conn.execute('SELECT ' + ','.join(fields) + ' FROM threads')]
         if root_id is not None:
             if not any(row['id'] == root_id for row in rows):
@@ -382,9 +396,9 @@ class SessionStore:
             roots = {row['id'] for row in rows if self._matches(row)}
         children = {}
         for row in rows:
-            parent = self._agent_source(row).get('parent_thread_id')
-            if isinstance(parent, str):
-                children.setdefault(parent, []).append(row['id'])
+            for parent in (self._agent_source(row).get('parent_thread_id'), row.get('attached_thread_parent_id')):
+                if isinstance(parent, str) and parent:
+                    children.setdefault(parent, []).append(row['id'])
         pending = list(roots)
         while pending:
             for child in children.get(pending.pop(), []):
@@ -392,6 +406,37 @@ class SessionStore:
                     roots.add(child)
                     pending.append(child)
         return [{'id': identifier} for identifier in sorted(roots)]
+
+    def attached_children(self, thread_id):
+        """All native children, including archives; no process or owner activation."""
+        self.get(thread_id)
+        with self._connect() as conn:
+            columns = {row[1] for row in conn.execute('PRAGMA table_info(threads)')}
+            if 'attached_thread_parent_id' not in columns:
+                return []
+            fields = [name for name in ('id', 'name', 'title', 'cwd', 'archived', 'updated_at', 'originator', 'source', 'thread_source') if name in columns]
+            rows = conn.execute('SELECT ' + ','.join(fields) + ' FROM threads WHERE attached_thread_parent_id = ? ORDER BY updated_at DESC,id DESC', (thread_id,)).fetchall()
+            return [dict(row, attachedParentId=thread_id) for row in rows if self._matches(dict(row)) and self._origin(dict(row)) in ('desktop', 'cli', 'ide')]
+
+    def attached_parent(self, thread_id):
+        row = self.get(thread_id)
+        parent = row.get('attached_thread_parent_id')
+        if not parent:
+            return None
+        try:
+            source = self.get(parent)
+        except KeyError:
+            return {'id': parent, 'available': False}
+        return {'id': parent, 'available': True, 'title': source.get('name') or source.get('title') or '未命名聊天'}
+
+    def existing_ids(self, identifiers):
+        """Metadata receipts for an already authorized lifecycle scope."""
+        identifiers = tuple(set(identifiers))
+        if not identifiers:
+            return set()
+        with self._connect() as conn:
+            return {row['id'] for row in conn.execute('SELECT id FROM threads WHERE id IN (' +
+                    ','.join('?' for _ in identifiers) + ')', identifiers)}
 
     def archive_flags(self, thread_id):
         """Complete archive metadata for one authorized root and its descendants."""

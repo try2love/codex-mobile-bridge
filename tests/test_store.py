@@ -12,6 +12,45 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class StoreTests(unittest.TestCase):
+    def test_attached_children_are_grouped_only_under_accessible_native_parent(self):
+        with closing(sqlite3.connect(self.path)) as conn, conn:
+            conn.execute('ALTER TABLE threads ADD COLUMN attached_thread_parent_id TEXT')
+            conn.execute('ALTER TABLE threads ADD COLUMN forked_from_id TEXT')
+            conn.executemany('INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?)', [
+                ('side', 'Native side', '/project', 20, 0, 'Codex Desktop', 'vscode', 'test', None),
+                ('archived-side', 'Saved side', '/project', 19, 1, 'Codex Desktop', 'vscode', 'test', None),
+                ('ordinary-fork', 'Ordinary fork', '/project', 18, 0, 'Codex Desktop', 'vscode', None, 'test'),
+                ('orphan', 'Orphan', '/project', 17, 0, 'Codex Desktop', 'vscode', 'missing', None),
+                ('ide-parent', 'IDE parent', '/other', 16, 0, 'codex_vscode', 'vscode', None, None),
+                ('other-parent-side', 'Unlisted parent', '/project', 15, 0, 'Codex Desktop', 'vscode', 'ide-parent', None),
+            ])
+        rows = self.store.list(exclude_sources=('ide',))
+        self.assertEqual([row['id'] for row in rows], ['ordinary-fork', 'orphan', 'other-parent-side', 'test'])
+        self.assertEqual(self.store.list(exclude_sources=('ide',), limit=1)[0]['id'], 'ordinary-fork')
+        self.assertTrue(next(row for row in rows if row['id'] == 'orphan')['orphanedSideChat'])
+        self.assertEqual({row['id'] for row in self.store.attached_children('test')}, {'side', 'archived-side'})
+        self.assertEqual(self.store.attached_parent('side'), {'id': 'test', 'available': True, 'title': 'Saved chat'})
+        self.assertEqual(self.store.attached_parent('orphan'), {'id': 'missing', 'available': False})
+        self.assertIsNone(self.store.attached_parent('ordinary-fork'))
+        self.assertEqual(SessionStore(self.root, source='desktop').attached_parent('other-parent-side'),
+                         {'id': 'ide-parent', 'available': False})
+
+    def test_attached_and_spawned_descendants_both_belong_to_lifecycle_scope(self):
+        with closing(sqlite3.connect(self.path)) as conn, conn:
+            conn.execute('ALTER TABLE threads ADD COLUMN attached_thread_parent_id TEXT')
+            conn.executemany('INSERT INTO threads VALUES (?,?,?,?,?,?,?,?)', [
+                ('side', 'Side', '/project', 2, 1, 'Codex Desktop', 'vscode', 'test'),
+                ('nested', 'Nested side', '/project', 3, 0, 'Codex Desktop', 'vscode', 'side'),
+                ('worker', 'Worker', '/project', 4, 0, 'Codex Desktop', '{"subagent":{"thread_spawn":{"parent_thread_id":"nested"}}}', None),
+            ])
+        self.assertEqual({row['id'] for row in self.store.lifecycle_threads(root_id='test')},
+                         {'test', 'side', 'nested', 'worker'})
+        self.assertEqual(self.store.existing_ids({'test', 'worker', 'missing'}), {'test', 'worker'})
+
+    def test_older_store_has_no_attached_chats(self):
+        self.assertEqual(self.store.attached_children('test'), [])
+        self.assertIsNone(self.store.attached_parent('test'))
+
     def test_native_project_assignment_and_clear_are_read_from_the_database(self):
         with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.execute('ALTER TABLE threads ADD COLUMN project_id TEXT')
