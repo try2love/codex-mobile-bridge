@@ -203,6 +203,7 @@ class CreationTests(unittest.TestCase):
         catalog = {'models': [{'id': 'fixture-model', 'efforts': ['low', 'high']}], 'cache': {'identity': 'account-scope'}}
         request = str(uuid.uuid4())
         with patch.object(self.bridge, 'creation_models', return_value=catalog), \
+             patch.object(self.bridge, '_complete_creation_settings'), \
              patch('bridge.app.service.create_empty', return_value=self.tid) as create, patch('bridge.app.service.open_in_desktop'):
             self.bridge.create_chat('local|p', 'Model test', request, model_options=selected)
             self.bridge.create_chat('local|p', 'Model test', request, model_options={**selected, 'modelCatalogIdentity': 'new-precondition'})

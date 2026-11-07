@@ -154,6 +154,65 @@ test('answering one pending card leaves the other independently answerable', asy
   ]);
 });
 
+test('skipping one async question preserves other drafts and never submits them', async ({page}) => {
+  await ready(page);
+  const result = await page.evaluate(async () => {
+    await BridgeFeatures.load('chat');
+    const originalApi=api,originalId=currentId,originalHost=currentHost,sent=[];
+    const cards=['first','other'].map(id=>({id:'async:skip:'+id,method:'bridge/requestUserInputAsync',supported:true,
+      params:{questions:(id==='first'?['one','two']:['three']).map(id=>({id,question:id,options:[]}))}}));
+    try{
+      currentId='synthetic-skip';currentHost='local';renderApprovals(cards);
+      const before=[...$('approvals').querySelectorAll('textarea')];
+      ['discard','retain same card','retain other card'].forEach((value,index)=>before[index].value=value);
+      api=async(url,body)=>{
+        sent.push(body);
+        if(body.response.action==='skip')return {status:'skipped',requests:[
+          {...cards[0],params:{questions:[cards[0].params.questions[1]]}},cards[1]]};
+        return {status:'accepted'};
+      };
+      $('approvals').querySelector('[data-action="skip-question"]').click();
+      await Promise.resolve();await Promise.resolve();
+      const remaining=[...$('approvals').querySelectorAll('textarea')];
+      const afterSkip={drafts:remaining.map(node=>node.value),sameNodes:remaining[0]===before[1]&&remaining[1]===before[2],count:sent.length};
+      $('approvals').firstElementChild.querySelector('form').dispatchEvent(new Event('submit',{cancelable:true}));
+      await Promise.resolve();await Promise.resolve();
+      return {afterSkip,sent};
+    }finally{
+      api=originalApi;currentId=originalId;currentHost=originalHost;
+      cards.forEach(card=>submittedRequestIds.delete(card.id));renderApprovals([]);
+    }
+  });
+  expect(result.afterSkip).toEqual({drafts:['retain same card','retain other card'],sameNodes:true,count:1});
+  expect(result.sent).toEqual([
+    {requestId:'async:skip:first',response:{action:'skip',questionId:'one'}},
+    {requestId:'async:skip:first',response:{answers:{two:['retain same card']}}},
+  ]);
+});
+
+test('late skip receipts cannot restore cards removed by newer snapshots', async ({page}) => {
+  await ready(page);
+  const result = await page.evaluate(async () => {
+    await BridgeFeatures.load('chat');
+    const originalApi=api,originalId=currentId,originalHost=currentHost,resolve=[];
+    const cards=['one','two'].map(id=>({id:'async:race:'+id,method:'bridge/requestUserInputAsync',supported:true,
+      params:{questions:[{id,question:id,options:[]}]}}));
+    try{
+      currentId='synthetic-race';currentHost='local';api=()=>new Promise(done=>resolve.push(done));
+      renderApprovals(cards);
+      for(const button of $('approvals').querySelectorAll('[data-action="skip-question"]'))button.click();
+      // Newer live state has already removed both questions.
+      renderApprovals([]);
+      resolve[1]({status:'skipped',questionId:'two',requests:[]});
+      await Promise.resolve();await Promise.resolve();
+      resolve[0]({status:'skipped',questionId:'one',requests:[cards[1]]});
+      await Promise.resolve();await Promise.resolve();
+      return {count:$('approvals').children.length,calls:resolve.length};
+    }finally{api=originalApi;currentId=originalId;currentHost=originalHost;renderApprovals([]);}
+  });
+  expect(result).toEqual({count:0,calls:2});
+});
+
 for (const scenario of ['success', 'css-once', 'js-twice', 'js-fatal', 'runtime',
   'opaque-error', 'external-runtime', 'external-rejection', 'app-cached-failure']) {
   test('startup and login: ' + scenario, async ({page}, testInfo) => {
@@ -701,4 +760,26 @@ test('new-chat models use shared choices before the first input', async ({page},
     await testInfo.attach('creation-models-'+provider,{body:await page.screenshot(),contentType:'image/png'});
     expect((await page.evaluate(()=>window.__creationModelsPreview.submit())).passed).toBeGreaterThan(10);
   }
+});
+
+test('cached new-chat choices survive catalog verification', async ({page}) => {
+  await ready(page,'session-menu');await page.evaluate(async()=>{await BridgeFeatures.load('chat');BridgeI18n.setLanguage('zh');});
+  await page.evaluate(()=>{
+    const catalog={models:[{id:'native-default',efforts:['high']},{id:'chosen',efforts:['low','high'],defaultEffort:'high'}],currentModel:'native-default',currentEffort:'high',cache:{identity:'account-a'},capabilities:{models:true,effort:true}};
+    const cache=new Map(),root=document.createElement('section');root.id='creation-cache-race';root.style.cssText='position:fixed;inset:0;background:var(--page);z-index:30';document.body.append(root);
+    BridgeModelCatalogCache.bind(cache,'scope',[],catalog);
+    const picker=new BridgeCreationModelPicker({root,cache});
+    window.__creationCacheRace={picker,catalog,root};
+    window.__creationCacheRace.pending=picker.load('scope',()=>new Promise(resolve=>window.__creationCacheRace.finish=resolve));
+  });
+  const root=page.locator('#creation-cache-race'),model=root.locator('[aria-label="模型"]'),effort=root.locator('[aria-label="思考强度"]');
+  await model.selectOption('chosen');await effort.selectOption('low');
+  await page.evaluate(async()=>{const value=window.__creationCacheRace;value.finish(value.catalog);await value.pending;});
+  await expect(model).toHaveValue('chosen');await expect(effort).toHaveValue('low');
+  expect(await page.evaluate(()=>window.__creationCacheRace.picker.selection())).toEqual({model:'chosen',effort:'low',modelCatalogIdentity:'account-a'});
+  await page.evaluate(()=>{const value=window.__creationCacheRace;value.picker.clear();value.pending=value.picker.load('scope',()=>new Promise(resolve=>value.finish=resolve));});
+  await model.selectOption('chosen');await effort.selectOption('low');
+  await page.evaluate(async()=>{const value=window.__creationCacheRace;value.finish({...value.catalog,cache:{identity:'account-b'}});await value.pending;});
+  await expect(model).toHaveValue('');expect(await page.evaluate(()=>window.__creationCacheRace.picker.valid())).toBe(false);
+  await page.evaluate(()=>{window.__creationCacheRace.picker.dispose();window.__creationCacheRace.root.remove();delete window.__creationCacheRace;});
 });

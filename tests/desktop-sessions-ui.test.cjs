@@ -1288,6 +1288,44 @@ test('creation picker never chooses the first model and shares cache refresh wit
  picker.dispose();
 });
 
+test('cached creation choices survive the initial background catalog read for every desktop provider',async()=>{
+ for(const provider of ['claude','deepseek','zcode']){
+  const ui=fixture();ui.view.provider=provider;ui.view.generation=1;ui.view.open=async()=>{};
+  const environment={key:'scope',surface:provider==='claude'?'code':'desktop',host:'local',createRequiresMessage:provider!=='deepseek',createTitle:provider!=='zcode'};
+  const catalog={models:[{id:'native-default',efforts:['high']},{id:'chosen',efforts:['low','high'],defaultEffort:'high'}],currentModel:'native-default',currentEffort:'high',cache:{identity:'account'},capabilities:{models:true,effort:true}};
+  let pending=false,finish;
+  ui.setHandler(async(url,body)=>url.endsWith('/projects')?{createModels:true,projects:[{key:'p',environment:'scope',surface:environment.surface,host:'local',cwd:'/p',name:'Project'}],environments:[environment],browseDirectories:false}:url.includes('/create-models?')?(pending?new Promise(resolve=>finish=resolve):catalog):url.endsWith('/create')?{status:'accepted',result:{id:'native'}}:{sessions:[]});
+  await ui.view.create();await new Promise(setImmediate);ui.document.querySelector('dialog').close();
+  pending=true;await ui.view.create();
+  const dialog=ui.document.querySelectorAll('dialog').find(node=>node.open),model=dialog.querySelector('[aria-label="模型"]'),effort=dialog.querySelector('[aria-label="思考强度"]');
+  model.value='chosen';model.onchange();effort.value='low';effort.onchange();
+  finish(catalog);await new Promise(setImmediate);
+  assert.equal(model.value,'chosen',provider+' keeps the explicit choice made while verifying cached models');assert.equal(effort.value,'low');
+  dialog.querySelector('textarea').value='FIRST';await dialog.querySelector('form').onsubmit({preventDefault(){}});
+  const body=ui.calls.find(call=>call.url.endsWith('/create')).body;assert.equal(body.model,'chosen');assert.equal(body.effort,'low');
+ }
+});
+
+test('creation captures its model before directory registration and account changes still invalidate edited choices',async()=>{
+ const ui=fixture();ui.view.provider='deepseek';ui.view.generation=1;ui.view.open=async()=>{};
+ ui.run('window.BridgeProjectPicker={choose:async options=>options.onSelect({path:"/new"})}');
+ const catalog={models:[{id:'original',efforts:['low'],defaultEffort:'low',isDefault:true},{id:'later',efforts:['high']}],currentModel:'original',currentEffort:'low',cache:{identity:'account'},capabilities:{models:true,effort:true}};
+ let pending=false,modelsReady,registered;
+ ui.setHandler(async(url,body)=>url.endsWith('/projects')?{createModels:true,projects:[],environments:[{key:'scope',surface:'desktop',host:'local'}]}:url.includes('/create-models?')?(pending?new Promise(resolve=>modelsReady=resolve):catalog):url.endsWith('/register')?new Promise(resolve=>registered=resolve):url.endsWith('/create')?{status:'ready',result:{id:'native'}}:{sessions:[]});
+ const open=async()=>{await ui.view.create();const dialog=ui.document.querySelectorAll('dialog').find(node=>node.open);await dialog.querySelector('.project-picker-browse').onclick();await new Promise(setImmediate);return dialog;};
+ (await open()).close();pending=true;const dialog=await open();
+ const sending=dialog.querySelector('form').onsubmit({preventDefault(){}});
+ modelsReady({...catalog,currentModel:'later',currentEffort:'high'});await new Promise(setImmediate);
+ registered({project:{key:'registered',cwd:'/new'}});await sending;
+ const body=ui.calls.find(call=>call.url.endsWith('/create')).body;assert.equal(body.model,'original');assert.equal(body.effort,'low');
+
+ const Picker=ui.run('window.BridgeCreationModelPicker'),cache=new Map();ui.run('window.BridgeModelCatalogCache').bind(cache,'scope',[],catalog);
+ const picker=new Picker({root:ui.document.createElement('section'),cache});let finish;const reading=picker.load('scope',()=>new Promise(resolve=>finish=resolve));
+ picker.model.value='later';picker.model.onchange();picker.effort.value='high';picker.effort.onchange();
+ finish({...catalog,cache:{identity:'different-account'}});await reading;
+ assert.equal(picker.model.value,'');assert.equal(picker.valid(),false,'An edited choice cannot survive a changed account identity');picker.dispose();
+});
+
 test('refreshing creation catalog identity never rotates an uncertain creation request',async()=>{
  const ui=fixture();ui.view.provider='zcode';ui.view.generation=1;
  ui.setHandler(async()=>({status:'unknown',message:'receipt unknown'}));

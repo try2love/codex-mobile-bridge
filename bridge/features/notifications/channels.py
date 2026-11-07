@@ -1175,7 +1175,7 @@ class Notifications:
                                 self.candidates.pop(key, None)
                                 self.attached.pop(key, None)
                             continue  # Saved history is not a live pending approval.
-                        requests = pending_requests(session.state)
+                        requests = session.pending_requests()
                         live_running = session.state.get('threadRuntimeStatus', {}).get('type') == 'active' or any(t.get('status') == 'inProgress' for t in ordered_turns(session.state))
                         self.mobile_push.update_activity(row, 'waiting' if requests else 'running' if live_running else 'ready')
                         title = session.state.get('title') or '聊天'
@@ -1192,7 +1192,7 @@ class Notifications:
                     with session.condition:
                         state = session.state or {}
                         runtime = state.get('threadRuntimeStatus', {}).get('type')
-                        active = bool(pending_requests(state)) or runtime == 'active' or any(t.get('status') == 'inProgress' for t in ordered_turns(state))
+                        active = bool(session.pending_requests()) or runtime == 'active' or any(t.get('status') == 'inProgress' for t in ordered_turns(state))
                         if not active and source.release_notification_session(session):
                             key = (row['host'], row['id'])
                             self.dormant.add(key)

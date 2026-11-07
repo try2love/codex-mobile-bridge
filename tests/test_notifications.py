@@ -709,6 +709,22 @@ class NotificationTests(unittest.TestCase):
         with patch('bridge.features.notifications.channels.publish') as send:
             self.manager.scan();self.assertEqual(send.call_count, 1)
 
+    def test_skipped_async_questions_do_not_emit_pending_notifications(self):
+        from bridge.app.lifecycle import private_json
+        from bridge.features.sessions.question_skips import QuestionSkips
+        self.session.state = {'turns': [{'turnId': 't', 'status': 'inProgress', 'items': [
+            {'type': 'agentMessage', 'id': 'q', 'questions': [{'title': 'Choose', 'options': None}]}]}]}
+        self.session.question_skips = QuestionSkips(self.directory, 'remote-fixture', private_json)
+        pending = self.session.pending_requests()[0]
+        self.session.question_skips.skip(self.thread, pending['id'], pending['params']['questions'][0]['id'])
+        with patch('bridge.features.notifications.channels.publish') as send:
+            self.manager.scan()
+            self.assertFalse(send.called)
+            self.session.state['requests'] = [{'id': 'approval', 'method': 'item/commandExecution/requestApproval',
+                                               'params': {'command': 'fixture'}}]
+            self.manager.scan()
+            self.assertEqual(send.call_count, 1)
+
     def turns(self, *rows):
         self.session.state = {'title': 'Private project', 'turns': [
             {'turnId': turn_id, 'status': status, 'items': []} for turn_id, status in rows]}

@@ -49,6 +49,7 @@ from bridge.features.sessions.cli_release import ReleasedSessions
 from bridge.features.sessions.organization_commands import OrganizationCommands
 from bridge.features.sessions.organization import OrganizationNotSent
 from bridge.features.sessions.pins import SessionPins
+from bridge.features.sessions.question_skips import QuestionSkips
 from bridge.features.sessions.organization import organization as native_organization
 from bridge.features.sessions.projects import Projects
 from bridge.features.sessions.timeline import Timeline
@@ -68,8 +69,9 @@ class SubmissionRejected(ValueError):
 
 
 class LiveSession:
-    def __init__(self, thread_id, *, image_cache=None):
+    def __init__(self, thread_id, *, image_cache=None, question_skips=None):
         self.id = thread_id
+        self.question_skips = question_skips
         self.owner = None
         self.origin = "desktop"
         self.origin_verified = False
@@ -171,11 +173,17 @@ class LiveSession:
                 self.saved_file_changes.setdefault(turn['id'], (turn['fileChanges'], turn.get('fileChangesBasis', 'recorded')))
         self.changed()
 
+    def pending_requests(self):
+        requests = pending_requests(self.state or {})
+        return self.question_skips.project(self.id, requests) if self.question_skips else requests
+
     def view(self, *, item_limit=None):
         with self.condition:
             source = (self.state if self.connected else self.history_state or self.state) or {"id": self.id}
             result = normalize_state(source, self.connected,
                                      image_cache=self.tool_image_cache, item_limit=item_limit)
+            if self.question_skips:
+                result['requests'] = self.question_skips.project(self.id, result['requests'])
             if not self.connected:
                 # Persisted history never grants authority to answer a request.
                 result['requests'] = []
@@ -260,6 +268,7 @@ class Bridge:
         self._draft_remote_pending = set()
         self.data_dir = Path(data_dir)
         self.session_pins = SessionPins(data_dir, host + ":" + str(self.codex_home))
+        self.question_skips = QuestionSkips(data_dir, host + ":" + str(self.codex_home.resolve()), private_json)
         self.archive_commands = ArchiveCommands(data_dir)
         self.delete_commands = DeleteCommands(data_dir, private_json)
         self.compact_commands = CompactCommands(data_dir, private_json)
@@ -333,7 +342,7 @@ class Bridge:
 
         for key, value in self.submissions.items():
             if value.get("status") == "queued":
-                self.live.setdefault(key.split(":")[0], LiveSession(key.split(":")[0]))
+                self.live.setdefault(key.split(":")[0], LiveSession(key.split(":")[0], question_skips=self.question_skips))
         threading.Thread(target=self._maintain, daemon=True).start()
         threading.Thread(target=self._upload_gc, daemon=True).start()
 
@@ -986,6 +995,7 @@ class Bridge:
                             self._save_creations()
                         thread_id = create_empty(self.catalog_reader.executable, self.codex_home, cwd, title,
                                                  project=native_project, **{key: model_options[key] for key in ('model', 'effort') if key in model_options})
+                        entry['runtimeCwd'] = cwd
                     except CreationUnavailable:
                         # No thread mutation happened: retrying this request cannot
                         # create a duplicate. Keep uncertain post-start results recorded.
@@ -1010,11 +1020,13 @@ class Bridge:
                     thread_id = ssh_read(host['alias'], source, timeout=90)['id']
                 uuid.UUID(thread_id)
                 entry['id'] = thread_id
+                if kind == 'desktop' and model_options:
+                    entry['modelSettingsPhase'] = 'pending'
                 self._save_creations()
                 if kind == 'cli':
                     bridge = cli_bridge
                     with bridge.lock:
-                        session = bridge.live.setdefault(thread_id, LiveSession(thread_id))
+                        session = bridge.live.setdefault(thread_id, LiveSession(thread_id, question_skips=bridge.question_skips))
                     with session.condition:
                         session.origin = 'cli'
                         session.origin_verified = True
@@ -1038,8 +1050,63 @@ class Bridge:
                 opened = True
             except (OSError, CreationError, subprocess.SubprocessError):
                 opened = False
+            self._complete_creation_settings(entry, bridge)
             return {'id': entry['id'], 'host': entry['host'], 'opened': opened,
                     'message': '已创建，正在连接桌面 App' if opened else '聊天已创建，请在电脑 App 打开后重新连接'}
+
+    def _complete_creation_settings(self, entry, bridge):
+        # An empty thread's temporary creator does not own Desktop's composer.
+        # Complete the explicit creation through that original owner, never from
+        # passive history/attachment or by overriding the account's defaults.
+        phase = entry.get('modelSettingsPhase')
+        if phase not in ('pending', 'unknown'):
+            return
+        try:
+            session = bridge._target(entry['id'])
+        except (IPCError, StoreUnavailable) as exc:
+            raise CreationError('聊天已创建，所选模型尚未应用；请重试本次创建以继续连接同一聊天，不会重复创建') from exc
+        choice = entry['modelOptions']
+        effort = choice.get('effort')
+        with session.action_lock:
+            with session.condition:
+                state = session.state or {}
+                expected_cwd = entry.get('runtimeCwd') or entry.get('cwd')
+                if (session.runtime != 'desktop' or state.get('id') != entry['id'] or
+                        not same_cwd(expected_cwd, state.get('cwd'), bridge.local and os.name == 'nt') or
+                        not state.get('modelProvider') or
+                        session.saved_provider and session.saved_provider != state['modelProvider']):
+                    raise CreationError('聊天已创建，但原桌面会话身份尚未确认；请重新连接同一聊天，不要重复创建')
+                confirmed = state.get('latestModel') == choice['model'] and (effort is None or session.view().get('effort') == effort)
+                if not confirmed and phase == 'unknown':
+                    raise CreationError('聊天已创建，但此前模型设置结果仍待核对；请在该聊天确认模型，不会重复提交')
+                if not confirmed and (ordered_turns(state) or
+                        state.get('threadRuntimeStatus', {}).get('type') != 'idle'):
+                    raise CreationError('聊天已有内容或正在运行，未覆盖原生模型设置；请在该聊天确认模型')
+            if not confirmed:
+                entry['modelSettingsPhase'] = 'unknown'
+                self._save_creations()
+                try:
+                    if effort is not None:
+                        result = bridge._apply_settings(session, choice['model'], effort)
+                    else:
+                        # API catalogs can explicitly omit reasoning controls.
+                        # Preserve native effort rather than inventing a default.
+                        result = bridge._call(session, 'thread-follower-update-thread-settings',
+                                              {'threadSettings': {'model': choice['model']}})
+                        with session.condition:
+                            result['confirmed'] = bool(result.get('applied')) and session.condition.wait_for(
+                                lambda: session.state.get('latestModel') == choice['model'], timeout=5)
+                except ValueError as exc:
+                    # Model/catalog validation rejects before dispatching a write.
+                    entry['modelSettingsPhase'] = 'pending'
+                    self._save_creations()
+                    raise CreationError('聊天已创建，所选模型尚未应用：' + str(exc)) from exc
+                except IPCError as exc:
+                    raise CreationError('聊天已创建，但模型设置结果仍待核对；请在该聊天确认模型，不会重复提交') from exc
+                if not result.get('confirmed'):
+                    raise CreationError('聊天已创建，但模型设置尚未确认；请在该聊天确认模型，不会重复提交')
+            entry['modelSettingsPhase'] = 'applied'
+            self._save_creations()
 
     def _save_actions(self):
         target = self.actions_path.with_suffix('.tmp')
@@ -1700,7 +1767,7 @@ class Bridge:
                     continue
                 session = self.live.get(identifier)
                 if session is None:
-                    session = self.live[identifier] = LiveSession(identifier)
+                    session = self.live[identifier] = LiveSession(identifier, question_skips=self.question_skips)
                     session.activity_only = True
                     session.origin = self.origins.get(identifier, "desktop")
                     session.access = self._access(session.origin, session)
@@ -1829,7 +1896,7 @@ class Bridge:
         with self.lock:
             session = self.live.get(thread_id)
             if session is None:
-                session = self.live[thread_id] = LiveSession(thread_id)
+                session = self.live[thread_id] = LiveSession(thread_id, question_skips=self.question_skips)
                 session.activity_only = True
         if not session.watched:
             session.notification_probe_until = time.monotonic() + 10
@@ -1990,7 +2057,7 @@ class Bridge:
             session = self.live.get(thread_id)
         if session is None:
             with self.lock:
-                session = self.live.setdefault(thread_id, LiveSession(thread_id))
+                session = self.live.setdefault(thread_id, LiveSession(thread_id, question_skips=self.question_skips))
         self._load_session_origin(session)
         session.touched = time.monotonic()
         if background:
@@ -3457,11 +3524,16 @@ class Bridge:
         if fast_mode is not None and not isinstance(fast_mode, bool):
             raise ValueError('Fast 模式开关无效')
         session = self._target(thread_id)
+        return self._apply_settings(session, model, effort, fast_mode=fast_mode)
+
+    def _apply_settings(self, session, model, effort, *, fast_mode=None):
+        # Callers already hold the host gate and resolved/activated this session.
+        # Re-entering _target under action_lock reverses release's lock order.
         if not self._access(session.origin, session)['canChangeModel']:
             raise ValueError('此会话暂不能修改模型设置')
         with session.action_lock:
             # Recheck login/model/policy on the execution host before a speed change.
-            catalog = self.catalog(thread_id, refresh=fast_mode is not None, kind='models')
+            catalog = self.catalog(session.id, refresh=fast_mode is not None, kind='models')
             known = next((m for m in catalog["models"] if m["id"] == model), None)
             if catalog.get('modelSource') == 'codex' and (not known or not known.get('efforts')):
                 raise ValueError('未能读取此模型的推理能力，请重新打开模型设置')
@@ -3653,7 +3725,7 @@ class Bridge:
         uuid.UUID(thread_id)
         # Do not load history or attach merely to edit the durable queue.
         with self.lock:
-            session = self.live.setdefault(thread_id, LiveSession(thread_id))
+            session = self.live.setdefault(thread_id, LiveSession(thread_id, question_skips=self.question_skips))
         with session.action_lock, self.goal_lock, self.submit_lock:
             identity = self._management_identity(thread_id)
             if not identity or body.get('expectedAccount') != identity:
@@ -3711,7 +3783,8 @@ class Bridge:
 
     @operation
     def send(self, thread_id, text, submission_id, mode="send", skills=None, *, work_mode=None,
-             plan_response=None, attachments=None, references=None, ui_locale=None, activation=None):
+             plan_response=None, attachments=None, references=None, ui_locale=None, activation=None,
+             _async_response=None):
         uuid.UUID(submission_id)
         identifiers = [] if attachments is None else attachments
         files = self.uploads.resolve(thread_id, identifiers)
@@ -3776,6 +3849,12 @@ class Bridge:
                         raise ValueError("同一消息标识不能用于不同内容")
                     return {"status": prior["status"], "duplicate": True, "id": submission_id}
             with session.condition:
+                if _async_response is not None:
+                    request_id, response = _async_response
+                    pending = next((r for r in session.pending_requests()
+                                    if r['id'] == request_id and r['method'] == 'bridge/requestUserInputAsync'), None)
+                    if not pending or self._async_reply_text(pending, response) != text:
+                        raise ValueError('此请求已处理或已过期')
                 active = (session.state or {}).get("threadRuntimeStatus", {}).get("type") == "active"
                 if active and mode == "send":
                     raise SubmissionRejected("Codex 正在执行。请选择「排队发送」或「补充当前任务」。")
@@ -3935,7 +4014,40 @@ class Bridge:
         session = self._target(thread_id)
         return self._call(session, "thread-follower-load-complete-history", {}, timeout=180)
 
+    def _skip_question(self, thread_id, request_id, response):
+        if (set(response) != {'action', 'questionId'} or not isinstance(request_id, str)
+                or not isinstance(response.get('questionId'), str)):
+            raise ValueError('跳过问题的请求无效')
+        question_id = response['questionId']
+        # This only changes gateway presentation; it never activates a native owner.
+        session = self.session(thread_id, attach=False)
+        with session.action_lock, session.condition:
+            if not self.question_skips.contains(thread_id, request_id, question_id):
+                if not session.connected:
+                    raise ValueError('请先连接原会话')
+                pending = next((r for r in async_requests(session.state) if r['id'] == request_id), None)
+                if not pending or question_id not in {q['id'] for q in pending['params']['questions']}:
+                    raise ValueError('此请求已处理或已过期')
+                self.question_skips.skip(thread_id, request_id, question_id)
+                session.changed()
+            return {'status': 'skipped', 'questionId': question_id}
+
+    @staticmethod
+    def _async_reply_text(pending, response):
+        questions = pending['params']['questions']
+        answers = response.get('answers', {})
+        if (set(response) != {'answers'} or not isinstance(answers, dict)
+                or set(answers) != {q['id'] for q in questions}
+                or any(not isinstance(v, list) or len(v) != 1 or not isinstance(v[0], str)
+                       or not v[0].strip() or len(v[0]) > 20000 for v in answers.values())):
+            raise ValueError('请回答所有问题')
+        replies = [{'questionItemId': q['id'], 'question': q['question'], 'answer': answers[q['id']][0]}
+                   for q in questions]
+        return '<send_user_message_question_reply>\n' + json.dumps(replies, ensure_ascii=False, separators=(',', ':')) + '\n</send_user_message_question_reply>'
+
     def respond(self, thread_id, request_id, response):
+        if response.get('action') == 'skip':
+            return self._skip_question(thread_id, request_id, response)
         session = self._target(thread_id)
         plan_id = str(uuid.uuid5(uuid.UUID(thread_id), "plan:" + str(request_id)))
         with self.submit_lock:
@@ -3945,18 +4057,15 @@ class Bridge:
                 raise ValueError("此计划已经提交了不同操作，请查看会话结果")
             return {"status": prior["status"], "duplicate": True, "id": plan_id}
         with session.condition:
-            async_pending = next((r for r in async_requests(session.state) if r["id"] == request_id), None)
+            async_pending = next((r for r in session.pending_requests() if r["id"] == request_id and r["method"] == "bridge/requestUserInputAsync"), None)
+            active = (session.state or {}).get("threadRuntimeStatus", {}).get("type") == "active"
         if async_pending:
-            questions = async_pending["params"]["questions"]
-            answers = response.get("answers", {})
-            if set(answers) != {q["id"] for q in questions} or any(not isinstance(v, list) or len(v) != 1 or not isinstance(v[0], str) or not v[0].strip() or len(v[0]) > 20000 for v in answers.values()):
-                raise ValueError("请回答所有问题")
-            replies = [{"questionItemId": q["id"], "question": q["question"], "answer": answers[q["id"]][0]} for q in questions]
-            text = "<send_user_message_question_reply>\n" + json.dumps(replies, ensure_ascii=False, separators=(",", ":")) + "\n</send_user_message_question_reply>"
+            text = self._async_reply_text(async_pending, response)
             submission = str(uuid.uuid5(uuid.UUID(thread_id), request_id + text))
-            with session.condition:
-                active = (session.state or {}).get("threadRuntimeStatus", {}).get("type") == "active"
-            return self.send(thread_id, text, submission, "steer" if active else "send")
+            # Resolve the owner before taking action_lock, then recheck questions
+            # inside send's lock so a concurrent skip cannot submit a stale answer.
+            return self.send(thread_id, text, submission, "steer" if active else "send",
+                             _async_response=(request_id, response))
         with session.condition:
             pending = next((r for r in session.state.get("requests", []) if str(r.get("id")) == str(request_id)), None)
             if not pending:

@@ -746,12 +746,13 @@ class DesktopSessionsView {
         if(!cli&&env?.createTitle!==false&&!title.value.trim()||message.required&&!message.value.trim()){error.textContent=BridgeI18n.t(cli||env?.createTitle===false?'请输入首条消息':message.required?'请填写聊天名称和首条消息':'请输入聊天名称');return;}
         saving=true;modelPicker?.setBusy(true);error.textContent='';form.querySelectorAll('input,textarea,select,button').forEach(node=>node.disabled=true);
         try{
+          const selection=modelPicker?{environment:env.key,...modelPicker.selection()}:{};
           let projectKey=project.value;
           if(projectKey==='__directory__'){
             const registered=await this.request(this.path('projects/register',null,provider),{environment:env.key,path:directory.path,createDirectory:false});
             if(!current())return;const row=registered.project;projects.push(row);project.add(new Option(row.name,row.key));project.value=row.key;projectKey=row.key;
           }
-          const body={projectKey,...(modelPicker?{environment:env.key,...modelPicker.selection()}:{})};if(!cli&&env?.createTitle!==false)body.title=title.value.trim();if(message.required)body.firstMessage=message.value.trim();
+          const body={projectKey,...selection};if(!cli&&env?.createTitle!==false)body.title=title.value.trim();if(message.required)body.firstMessage=message.value.trim();
           const result=await this.mutate('create',body,null);
           if(current()&&result?.code==='workspace-trust-required'&&result.canConfirmTrust&&canBrowse&&result.workspace===path()){
             trustTarget={environment:env.key,path:result.workspace};trust.hidden=false;

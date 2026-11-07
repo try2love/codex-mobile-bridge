@@ -646,6 +646,101 @@ class IntegrationTests(unittest.TestCase):
         self.bridge.respond(THREAD, pending['id'], {'answers': {question['id']: ['Yes']}})
         self.assertEqual(self.fixture.requests[-1]['method'], 'thread-follower-start-turn')
 
+    def test_skip_async_question_preserves_other_answers_without_native_write(self):
+        self.fixture.state['turns'] = [{'turnId': 'questions', 'status': 'completed', 'items': [
+            {'id': 'card', 'type': 'agentMessage', 'questions': [
+                {'title': 'First?', 'options': []}, {'title': 'Second?', 'options': []}]},
+            {'id': 'other', 'type': 'agentMessage', 'questions': [{'title': 'Other?', 'options': []}]}]}]
+        first, other = self.bridge.view(THREAD)['requests']
+        one, two = first['params']['questions']
+        before = len(self.fixture.requests)
+        reply = self.bridge.respond(THREAD, first['id'], {'action': 'skip', 'questionId': one['id']})
+        self.assertEqual(reply['status'], 'skipped')
+        self.assertEqual(len(self.fixture.requests), before)
+        self.assertEqual(self.bridge.view(THREAD)['requests'], [
+            {**first, 'params': {'questions': [two]}}, other])
+        self.assertEqual(self.bridge.respond(THREAD, first['id'],
+            {'action': 'skip', 'questionId': one['id']})['status'], 'skipped')
+        with self.assertRaises(ValueError):
+            self.bridge.respond(THREAD, first['id'], {'answers': {one['id']: ['stale'], two['id']: ['Yes']}})
+        self.bridge.respond(THREAD, first['id'], {'answers': {two['id']: ['Yes']}})
+        call = self.fixture.requests[-1]
+        self.assertEqual(call['method'], 'thread-follower-start-turn')
+        reply_text = call['params']['turnStart']['request']['input'][0]['text']
+        self.assertEqual(json.loads(reply_text.split('\n')[1]), [
+            {'questionItemId': two['id'], 'question': 'Second?', 'answer': 'Yes'}])
+
+    def test_skip_async_question_survives_new_gateway_and_rejects_approvals(self):
+        self.fixture.state['turns'] = [{'turnId': 'questions', 'status': 'completed', 'items': [
+            {'id': 'card', 'type': 'agentMessage', 'questions': [{'title': 'First?', 'options': []}]}]}]
+        self.fixture.state['requests'] = [{'id': 'approval', 'method': 'item/commandExecution/requestApproval',
+                                         'params': {'command': 'fixture'}}]
+        pending = self.bridge.view(THREAD)['requests'][-1]
+        question = pending['params']['questions'][0]['id']
+        with self.assertRaises(ValueError):
+            self.bridge.respond(THREAD, 'approval', {'action': 'skip', 'questionId': question})
+        with self.assertRaises(ValueError):
+            self.bridge.respond(THREAD, pending['id'], {'action': 'skip', 'questionId': 'wrong'})
+        self.bridge.respond(THREAD, pending['id'], {'action': 'skip', 'questionId': question})
+        self.bridge.close()
+        self.bridge = Bridge(self.root, self.root / 'data', codex_bin=self.root / 'fixture-codex-not-installed')
+        self.bridge.ipc.path = self.fixture.path
+        remaining = self.bridge.view(THREAD)['requests']
+        self.assertEqual([r['id'] for r in remaining], ['approval'])
+        self.assertEqual(len(self.bridge.session(THREAD).state['turns'][0]['items'][0]['questions']), 1)
+
+    def test_async_answer_and_cli_release_do_not_invert_locks(self):
+        self.fixture.state['turns'] = [{'turnId': 'questions', 'status': 'completed', 'items': [
+            {'id': 'card', 'type': 'agentMessage', 'questions': [{'title': 'First?', 'options': []}]}]}]
+        pending = self.bridge.view(THREAD)['requests'][0]
+        question = pending['params']['questions'][0]['id']
+        original_send = self.bridge.send
+        workers, results = [], []
+
+        def send_after_release(*args, **kwargs):
+            # Interleave before send takes the host gate. Release takes that gate
+            # and activation_lock before action_lock; respond must hold none.
+            released = threading.Event()
+            def release():
+                results.append(self.bridge._release_cli_connection(
+                    THREAD, lambda stop: {'status': 'waiting'}, False))
+                released.set()
+            worker = threading.Thread(target=release, daemon=True)
+            workers.append(worker)
+            worker.start()
+            self.assertTrue(released.wait(2), 'answer holds action_lock before entering send')
+            return original_send(*args, **kwargs)
+
+        try:
+            with patch.object(self.bridge, 'send', side_effect=send_after_release):
+                self.bridge.respond(THREAD, pending['id'], {'answers': {question: ['Yes']}})
+        finally:
+            for worker in workers:
+                worker.join(timeout=2)
+        self.assertEqual(results, [{'status': 'waiting'}])
+        self.assertEqual(self.fixture.requests[-1]['method'], 'thread-follower-start-turn')
+
+    def test_async_answer_rechecks_a_skip_during_owner_resolution(self):
+        self.fixture.state['turns'] = [{'turnId': 'questions', 'status': 'completed', 'items': [
+            {'id': 'card', 'type': 'agentMessage', 'questions': [{'title': 'First?', 'options': []}]}]}]
+        pending = self.bridge.view(THREAD)['requests'][0]
+        question = pending['params']['questions'][0]['id']
+        original_target = self.bridge._target
+        calls = []
+
+        def resolve_target(thread_id):
+            calls.append(thread_id)
+            if len(calls) == 2:
+                self.bridge.respond(THREAD, pending['id'], {'action': 'skip', 'questionId': question})
+            return original_target(thread_id)
+
+        with patch.object(self.bridge, '_target', side_effect=resolve_target):
+            with self.assertRaisesRegex(ValueError, '已处理或已过期'):
+                self.bridge.respond(THREAD, pending['id'], {'answers': {question: ['stale']}})
+        self.assertFalse(self.bridge.submissions)
+        self.assertFalse(any(r['method'] in ('thread-follower-start-turn', 'thread-follower-steer-turn')
+                             for r in self.fixture.requests))
+
     def test_reply_to_one_async_card_keeps_other_card_across_turns(self):
         self.fixture.state['turns'] = [{'turnId': 'questions', 'status': 'completed', 'items': [
             {'id': name, 'type': 'agentMessage', 'questions': [{'title': name, 'options': ['Yes', 'No']}]}
