@@ -250,6 +250,10 @@ class SessionStore:
                 where.append("COALESCE(thread_source, '') != 'subagent'")
             if "source" in columns:
                 where.append("COALESCE(source, '') NOT LIKE '%\"subagent\"%'")
+            if 'attached_thread_parent_id' in columns:
+                # Native side chats belong to their parent, not the root list.
+                # Keep get/lifecycle/notifications intact; detaching clears this field.
+                where.append("COALESCE(attached_thread_parent_id, '') = ''")
             if source != 'all':
                 where.append(self._source_filter(columns, source))
             for excluded in exclude_sources:
@@ -297,6 +301,8 @@ class SessionStore:
                 where.append("COALESCE(thread_source, '') != 'subagent'")
             if 'source' in columns:
                 where.append("COALESCE(source, '') NOT LIKE '%\"subagent\"%'")
+            if 'attached_thread_parent_id' in columns:
+                where.append("COALESCE(attached_thread_parent_id, '') = ''")
             fields = [name for name in ('originator', 'source', 'thread_source') if name in columns]
             if not fields:
                 return []

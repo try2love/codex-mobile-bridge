@@ -12,6 +12,36 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class StoreTests(unittest.TestCase):
+    def test_attached_native_chats_are_not_standalone_list_rows(self):
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute('ALTER TABLE threads ADD COLUMN attached_thread_parent_id TEXT')
+            db.executemany('INSERT INTO threads VALUES (?,?,?,?,?,?,?,?)', [
+                ('attached', 'Side question', '/project', 9, 0, 'Codex Desktop', 'vscode', 'test'),
+                ('fork', 'Ordinary fork', '/project', 8, 0, 'Codex Desktop', 'vscode', None),
+                ('cli-child', 'Side question', '/project', 7, 0, 'codex_cli_rs', 'cli', 'test'),
+                ('archived-child', 'Side question', '/project', 6, 1, 'Codex Desktop', 'vscode', 'test'),
+            ])
+        self.assertEqual([r['id'] for r in self.store.list(limit=1, pinned_ids=['attached'])], ['fork'])
+        self.assertEqual([r['id'] for r in self.store.list(offset=1, limit=1)], ['test'])
+        self.assertEqual(self.store.list(query='Side question'), [])
+        self.assertEqual(self.store.list(archived=True), [])
+        self.assertEqual(self.store.available_sources(), ['desktop'])
+        self.assertEqual(SessionStore(self.root, source='cli').list(), [])
+        # Hiding a list entry must not delete it or weaken native task checks.
+        self.assertEqual(self.store.get('attached')['attached_thread_parent_id'], 'test')
+        self.assertIn('attached', {r['id'] for r in self.store.lifecycle_threads()})
+        self.assertIn('attached', {r['id'] for r in self.store.notification_changes()})
+
+    def test_promoted_native_chat_returns_to_the_list_without_changing_its_origin(self):
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute('ALTER TABLE threads ADD COLUMN attached_thread_parent_id TEXT')
+            db.execute("UPDATE threads SET attached_thread_parent_id='parent'")
+        self.assertEqual(self.store.list(), [])
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute('UPDATE threads SET attached_thread_parent_id=NULL')
+        self.assertEqual(self.store.list()[0]['origin'], 'desktop')
+        self.assertEqual(self.store.available_sources(), ['desktop'])
+
     def test_native_project_assignment_and_clear_are_read_from_the_database(self):
         with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.execute('ALTER TABLE threads ADD COLUMN project_id TEXT')
