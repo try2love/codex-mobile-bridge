@@ -96,7 +96,7 @@ class ChatTimeline {
   activityGroupSummary(rows,visible,followedByText){
     const latest=visible[visible.length-1]||rows[rows.length-1];
     if(!latest||latest.kind!=='reasoning'||!followedByText)return latest;
-    return visible.slice(0,-1).reverse().find(row=>row.kind!=='reasoning')||null;
+    return visible.slice(0,-1).reverse().find(row=>row.kind!=='reasoning')||latest;
   }
   releaseActivityGroups(){
     if(!this.groupNodes)return;
@@ -130,15 +130,6 @@ class ChatTimeline {
           summary.textContent=label;summary.title=label;
           group.append(summary);cluster[0].parentNode.insertBefore(group,cluster[0]);
           for(const node of cluster){node.classList.add('activity-group-step');group.append(node);}
-          if(followedByText){
-            for(const node of cluster){
-              const row=this.rows.get(node.dataset.key)?.row;
-              if(row?.kind!=='reasoning'||!this.rowVisible(row))continue;
-              const index=visible.indexOf(row),prior=index>0?visible.slice(0,index).reverse().find(item=>item.kind!=='reasoning'):null;
-              const heading=node.tagName==='DETAILS'?node.querySelector(':scope>summary'):node.querySelector('details.activity>summary');
-              if(heading){const value=prior?this.activityStepLabel(prior):timelineText('执行步骤');heading.textContent=value;heading.title=value;}
-            }
-          }
           group.hidden=visible.length===0;group.open=!!this.groupStates.get(firstKey);
           group.ontoggle=()=>this.groupStates.set(firstKey,group.open);
           this.groupNodes.set(firstKey,group);

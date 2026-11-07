@@ -164,11 +164,23 @@ async function runTimelineVisibilityTests() {
   ];
   const reasoned=new ChatTimeline({url:action=>'/fixture/'+action+'?host=local',request:async()=>{},renderMeta:()=>{},renderText:(node,text)=>node.textContent=text,status:()=>{}});
   reasoned.apply({...page(reasoningRows,5),rows:reasoningRows},true);await frame();
-  check(reasoned.container.querySelector('.activity-group>summary').textContent==='已运行 echo before-thinking','A completed thought is replaced by the nearest prior step when text follows the group');
-  check(reasoned.nodes.get('reasoning-latest').node.querySelector(':scope>summary').textContent==='已运行 echo before-thinking','A completed thought step also falls back to the nearest prior step when text follows the group');
-  reasoned.apply({...page(reasoningRows.slice(0,-1),6),rows:reasoningRows.slice(0,-1)},true);await frame();
-  check(reasoned.container.querySelector('.activity-group>summary').textContent==='Inspecting the current configuration','The primary fold uses reasoning content as its summary');
+  check(reasoned.container.querySelector('.activity-group>summary').textContent==='已运行 echo before-thinking','A thought followed by text falls back to the nearest prior step');
   check(reasoned.nodes.get('reasoning-latest').node.querySelector(':scope>summary').textContent==='思考摘要','The secondary reasoning fold retains the generic title');
+  const belowOnly=reasoningRows.slice(1).map((row,order)=>({...row,order}));
+  reasoned.apply({...page(belowOnly,6),rows:belowOnly},true);await frame();
+  check(reasoned.container.querySelector('.activity-group>summary').textContent==='已运行 echo before-thinking','A thought followed by text without preceding text falls back to the nearest prior step');
+  check(reasoned.nodes.get('reasoning-latest').node.querySelector(':scope>summary').textContent==='思考摘要','Falling back the primary fold does not remove the secondary thought summary');
+  const latestOnly=belowOnly.slice(0,-1);
+  reasoned.apply({...page(latestOnly,7),rows:latestOnly},true);await frame();
+  check(reasoned.container.querySelector('.activity-group>summary').textContent==='Inspecting the current configuration','The latest primary fold uses reasoning content as its summary');
+  const reasoningOnly=[
+    {key:'reason-before',order:0,role:'activity',kind:'reasoning',text:'First reasoning step',version:'r2'},
+    {key:'reasoning-latest',order:1,role:'activity',kind:'reasoning',text:'Inspecting without a prior tool step',version:'r2'},
+    {key:'reason-final',order:2,role:'assistant',kind:'agentMessage',phase:'final_answer',text:'Finished',version:'r2'},
+  ];
+  reasoned.apply({...page(reasoningOnly,8),rows:reasoningOnly},true);await frame();
+  check(reasoned.container.querySelector('.activity-group>summary').textContent==='Inspecting without a prior tool step','A thought followed by text uses reasoning content when no prior step exists');
+  check(reasoned.nodes.get('reasoning-latest').node.querySelector(':scope>summary').textContent==='思考摘要','Reasoning-only fallback still retains the secondary generic title');
   reasoned.dispose();reasoned.container.replaceChildren();
   const backfill=new ChatTimeline({url:action=>'/fixture/'+action+'?host=local',request:async()=>{requested++;return page(rows);},renderMeta:()=>{},renderText:(node,text)=>node.textContent=text,status:()=>{}});
   backfill.setVisibility({showReasoning:false,showProcess:false});requested=0;
