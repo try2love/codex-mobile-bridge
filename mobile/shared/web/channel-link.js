@@ -17,6 +17,11 @@
   const native = action => window.prompt('codexbridge-channels:__BRIDGE_CLIPBOARD_TOKEN__',action);
   let confirmAt=0;
   let nextLanCheck=0, lastProof=-Infinity, lastTraffic=-Infinity;
+  let measurement=null, measured=null, fallback=0;
+  function healthy(){
+    failures=0;backoff=3000;lastRace=0;confirmAt=0;
+    if(down)state(false);
+  }
   // The gateway publishes private LAN listeners as HTTP and public entries as HTTPS.
   function autoRoute(reason){
     let menu;try{menu=JSON.parse(native('read'));}catch{return;}
@@ -118,6 +123,42 @@
     get address(){return target;},
     get alternate(){return !!current;},
     get down(){return down;},
+    get latency(){return !down && measured?.target===target && performance.now()-measured.at<90000 ? measured.ms : null;},
+    measure(){
+      if(document.hidden || preview || typeof csrf!=='string' || !csrf)return Promise.resolve(false);
+      if(measurement)return measurement;
+      const peer=current,address=target,expected=csrf,started=performance.now(),abort=new AbortController();
+      const deadline=setTimeout(()=>abort.abort(),5000);
+      measurement=(async()=>{
+        try{
+          // A native probe and a WebView can use different network paths. Only
+          // the already authenticated current route may use this fallback; it
+          // never authorizes another origin or supplies credentials to one.
+          const response=await routed(new URL('/api/auth',location.origin).href,{credentials:'same-origin',cache:'no-store',redirect:'error',signal:abort.signal});
+          if(response.status!==200 || response.redirected)return false;
+          const reader=response.body?.getReader();if(!reader)return false;
+          const cancel=()=>{reader.cancel().catch(()=>{});};
+          abort.signal.addEventListener('abort',cancel,{once:true});
+          let text='',bytes=0;
+          try{
+            const decoder=new TextDecoder();
+            while(!abort.signal.aborted){
+              const chunk=await reader.read();if(chunk.done)break;
+              bytes+=chunk.value.byteLength;if(bytes>32768)return false;
+              text+=decoder.decode(chunk.value,{stream:true});
+            }
+            text+=decoder.decode();
+          }finally{abort.signal.removeEventListener('abort',cancel);cancel();}
+          const auth=JSON.parse(text);
+          if(abort.signal.aborted || document.hidden || preview || peer!==current || address!==target || csrf!==expected ||
+             auth.authenticated!==true || auth.trustedDevice!==true || auth.csrf!==expected)return false;
+          measured={target:address,ms:Math.max(0,Math.round(performance.now()-started)),at:performance.now()};
+          healthy();window.dispatchEvent(new Event('bridge-channel-sample'));return true;
+        }catch{return false;}
+        finally{clearTimeout(deadline);measurement=null;}
+      })();
+      return measurement;
+    },
     start(){
       if(window.fetch===routed)return;
       window.fetch=routed;
@@ -144,8 +185,19 @@
     },
     result(id,ok){
       if(id!==verifying)return;
+      if(document.hidden){clearTimeout(timer);verifying=0;return;}
+      if(!ok && typeof csrf==='string' && csrf){
+        if(fallback===id)return;
+        fallback=id;clearTimeout(timer);
+        return this.measure().then(verified=>{if(id===verifying)this.complete(id,verified);});
+      }
+      this.complete(id,ok);
+    },
+    complete(id,ok){
+      if(id!==verifying)return;
       clearTimeout(timer);verifying=0;
-      if(ok){failures=0;backoff=3000;lastRace=0;lastProof=performance.now();if(down)state(false);preferLan();return;}
+      if(document.hidden)return;
+      if(ok){healthy();lastProof=performance.now();preferLan();return;}
       if(++failures===1){confirmAt=performance.now()+1150;timer=setTimeout(()=>this.check(),1200);return;}
       const first=!down;if(first)state(true);
       const now=performance.now();if(first || now-lastRace>=backoff){
@@ -163,7 +215,7 @@
         if(preview!==peer)return;
         if(native('ready:'+nonce)!=='accepted'){reject();return;}
         detach();const prev=current;current=peer.port?peer:null;preview=null;target=next;
-        ++cycle;verifying=0;clearTimeout(timer);failures=0;backoff=3000;lastRace=0;lastTraffic=-Infinity;lastProof=performance.now();nextLanCheck=0;
+        ++cycle;verifying=0;clearTimeout(timer);measured=null;failures=0;backoff=3000;lastRace=0;lastTraffic=-Infinity;lastProof=performance.now();nextLanCheck=0;
         for(const a of reads)a.abort();
         for(const c of [...requests.values()])if(c.peer===prev && c.method!=='POST')c.abort();
         reap(prev);if(!current)reap(peer);state(false);

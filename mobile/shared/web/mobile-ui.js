@@ -200,7 +200,7 @@
       heading.textContent=en?'Connection channels':'连接信道';
       const refresh=document.createElement('button');refresh.type='button';refresh.className='channel-refresh';
       refresh.textContent='↻';refresh.title=en?'Refresh channel latency':'刷新信道延迟';refresh.setAttribute('aria-label',refresh.title);
-      refresh.onclick=()=>{if(navigator.userActivation?.isActive)render('probe');};
+      refresh.onclick=()=>{if(navigator.userActivation?.isActive){render('probe');window.BridgeChannelLink?.measure();}};
       heading.append(refresh);
       modes.className='channel-modes';modes.setAttribute('role','group');modes.setAttribute('aria-label',en?'Switching mode':'切换模式');
       options.className='client-picker-options channel-options';section.append(heading,modes,options);
@@ -216,6 +216,7 @@
         for(const [value,button] of modeButtons)button.setAttribute('aria-pressed',String((state.mode||'auto')===value));
         for(const [url,button] of entries)if(!state.rows.some(x=>x.url===url)){button.remove();entries.delete(url);}
         state.rows.forEach(({url,ms},i)=>{
+          if(url===state.current && window.BridgeChannelLink?.latency!=null)ms=window.BridgeChannelLink.latency;
           let button=entries.get(url);
           if(!button){
             button=document.createElement('button');button.type='button';button.className='channel-option';
@@ -234,6 +235,7 @@
       }
       dialog.append(section);
       render('probe');
+      window.BridgeChannelLink?.measure();
       const update = () => render('read');
       window.addEventListener('bridge-channel-sample',update);
       dialog.addEventListener('close',()=>window.removeEventListener('bridge-channel-sample',update),{once:true});

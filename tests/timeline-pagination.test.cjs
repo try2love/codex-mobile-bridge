@@ -52,3 +52,13 @@ test('a live reset keeps the visible message during a mobile handoff and resumes
  viewport.scrollTop=1500;timeline.restore(null,true);assert.equal(viewport.scrollTop,830);
  delete window.BridgeMobileHandoff;timeline.restore(null,true);assert.equal(timeline.following,true);
 });
+
+test('changing a verified mobile channel retries its interrupted poll without a false reconnect label',async()=>{
+ for(const [error,warning,delay] of [[new DOMException('Channel changed','AbortError'),false,200],[new TypeError('Failed to fetch'),true,3000]]){
+  const {ui}=fixture(),labels=[],pauses=[];let reads=0,applied=false;
+  Object.assign(ui,{status:text=>labels.push(text),
+   read:async()=>{if(!reads++)throw error;return {rows:[],meta:{},sequence:1};},
+   pause:async ms=>pauses.push(ms),apply:()=>{applied=true;ui.abort.abort();}});
+  await ui.updates();assert.equal(applied,true);assert.equal(labels.includes('重新连接中'),warning);assert.equal(pauses[0],delay);
+ }
+});

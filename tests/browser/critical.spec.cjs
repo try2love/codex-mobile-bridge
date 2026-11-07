@@ -18,6 +18,44 @@ async function ready(page, scenario = 'success') {
   });
 }
 
+test('mobile channel refresh measures the authenticated route when native probes fail',async({page})=>{
+  await ready(page,'session-menu');
+  await page.waitForFunction(()=>!!csrf);
+  const token=await page.evaluate(()=>csrf);
+  expect(token).toBeTruthy();
+  let reads=0;
+  await page.route('**/api/auth',async route=>{
+    reads++;
+    await route.fulfill({json:{authenticated:true,trustedDevice:true,csrf:token}});
+  });
+  await page.evaluate(()=>{
+    window.channelCalls=[];
+    window.prompt=(_,action)=>{
+      channelCalls.push(action);
+      if(action.startsWith('verify:'))return 'started';
+      return JSON.stringify({current:location.origin,mode:'manual',rows:[{url:location.origin,ms:-1},{url:'https://unverified.example',ms:-1}]});
+    };
+  });
+  await page.evaluate(readFileSync(path.join(__dirname,'../../mobile/shared/web/channel-link.js'),'utf8'));
+  await page.evaluate(readFileSync(path.join(__dirname,'../../mobile/shared/web/mobile-ui.js'),'utf8'));
+  expect(await page.evaluate(async()=>{
+    for(let id=1;id<=2;id++){BridgeChannelLink.check();await BridgeChannelLink.result(id,false);}
+    return {down:BridgeChannelLink.down,unreachable:channelCalls.includes('unreachable')};
+  })).toEqual({down:false,unreachable:false});
+  await page.evaluate(()=>{
+    const dialog=document.createElement('dialog');dialog.id='channel-regression';document.body.append(dialog);
+    BridgeMobileChannels.mount(dialog);dialog.showModal();
+  });
+  const current=page.locator('#channel-regression .channel-option').first();
+  await expect(current.locator('small')).toHaveText(/^\d+ ms$/);
+  await expect(page.locator('#channel-regression .channel-option').last().locator('small')).toHaveText('○');
+  const before=reads;
+  await page.locator('#channel-regression .channel-refresh').click();
+  await expect.poll(()=>reads).toBeGreaterThan(before);
+  await expect(current.locator('small')).toHaveText(/^\d+ ms$/);
+  expect(await page.evaluate(()=>BridgeChannelLink.down)).toBe(false);
+});
+
 test('image preview has one header row and a bottom save icon', async ({page}, testInfo) => {
   for (const width of [320,390,844,1280]) {
     await page.setViewportSize({width,height:844});

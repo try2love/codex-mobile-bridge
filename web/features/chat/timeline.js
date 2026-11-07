@@ -312,7 +312,12 @@ class ChatTimeline {
         // Polls never replace the oldest loaded cursor.
         this.apply(page,!!page.reset);
         await this.pause(200);
-      }catch(e){if(this.abort.signal.aborted)return;this.status(timelineText('重新连接中'));await this.pause(3000);}
+      }catch(e){
+        if(this.abort.signal.aborted)return;
+        // A verified mobile channel handoff cancels the old read, not the chat.
+        if(e.name!=='AbortError')this.status(timelineText('重新连接中'));
+        await this.pause(e.name==='AbortError'?200:3000);
+      }
     }
   }
   pause(ms){return new Promise(resolve=>{const done=()=>{clearTimeout(timer);this.abort.signal.removeEventListener('abort',done);resolve();};const timer=setTimeout(done,ms);this.abort.signal.addEventListener('abort',done,{once:true});});}
