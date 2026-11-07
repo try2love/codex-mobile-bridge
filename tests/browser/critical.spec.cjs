@@ -501,25 +501,28 @@ test('shared client shell preserves navigation scroll and switches exact instanc
  await expect(page.locator('.client-picker')).not.toContainText('聊天');
  const aligned=await page.locator('.client-picker').evaluate(node=>{const icon=node.querySelector('.client-icon').getBoundingClientRect(),name=node.querySelector('.client-badge-name').getBoundingClientRect();return Math.abs(icon.top+icon.height/2-name.top-name.height/2)<1;});expect(aligned).toBe(true);
  await info.attach('client-header',{body:await page.locator('.list-heading').screenshot(),contentType:'image/png'});
- await page.locator('.client-switch').hover();await page.mouse.wheel(140,0);
+ // Font metrics differ by platform; test the middle, not an almost-reached edge.
+ const scrollPosition=await page.locator('.client-switch').evaluate(node=>Math.floor((node.scrollWidth-node.clientWidth)/2));
+ expect(scrollPosition).toBeGreaterThan(0);
+ await page.locator('.client-switch').hover();await page.mouse.wheel(scrollPosition,0);
  await page.evaluate(()=>{window.__firstSwitch=document.querySelector('.client-switch button');});
- await expect.poll(()=>page.locator('.client-switch').evaluate(node=>Math.round(node.scrollLeft))).toBe(140);
+ await expect.poll(()=>page.locator('.client-switch').evaluate(node=>Math.round(node.scrollLeft))).toBe(scrollPosition);
  await page.locator('.client-picker').click();await expect(page.locator('.client-picker-options button')).toHaveCount(6);
  await page.locator('.client-picker-options [data-client-id="'+entry+'"]').click();
  await expect.poll(()=>page.evaluate(()=>clientNavigation.activeClient())).toBe(entry);
  await expect.poll(()=>page.evaluate(()=>selectedCodexEntry)).toBe(entry);
  await expect.poll(()=>reads.at(-1)).toBe(entry);
  await page.evaluate(()=>clientNavigation.applyClients({clients:clientNavigation.clients.map(row=>({...row}))}));
- await expect.poll(()=>page.locator('.client-switch').evaluate(node=>Math.round(node.scrollLeft))).toBe(140);
+ await expect.poll(()=>page.locator('.client-switch').evaluate(node=>Math.round(node.scrollLeft))).toBe(scrollPosition);
  expect(await page.evaluate(()=>window.__firstSwitch===document.querySelector('.client-switch button'))).toBe(true);
  await expect(page.locator('.client-switch-arrow.previous')).toBeVisible();await expect(page.locator('.client-switch-arrow.next')).toBeVisible();
  // Moving the same shell between provider lists must retain the user's position.
  await page.locator('.client-picker').click();await page.locator('.client-picker-options [data-client-id="claude"]').click();
  await expect.poll(()=>page.evaluate(()=>clientNavigation.activeClient())).toBe('claude');
- await expect.poll(()=>page.locator('.client-switch').evaluate(node=>Math.round(node.scrollLeft))).toBe(140);
+ await expect.poll(()=>page.locator('.client-switch').evaluate(node=>Math.round(node.scrollLeft))).toBe(scrollPosition);
  await page.locator('.client-picker').click();await page.locator('.client-picker-options [data-client-id="'+other+'"]').click();
  await expect.poll(()=>page.evaluate(()=>selectedCodexEntry)).toBe(other);
- await expect.poll(()=>page.locator('.client-switch').evaluate(node=>Math.round(node.scrollLeft))).toBe(140);
+ await expect.poll(()=>page.locator('.client-switch').evaluate(node=>Math.round(node.scrollLeft))).toBe(scrollPosition);
  await page.evaluate(()=>{clientNavigation.preference('switch:zcode',false);clientNavigation.paint();});
  await page.locator('.client-picker').click();await expect(page.locator('.client-picker-options [data-client-id="zcode"]')).toBeVisible();
  expect(await page.locator('.client-picker-options button').evaluateAll(nodes=>nodes.map(n=>n.dataset.clientId))).toEqual(clients.map(row=>row.id));
