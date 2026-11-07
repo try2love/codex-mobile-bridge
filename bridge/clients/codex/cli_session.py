@@ -275,6 +275,28 @@ class CliSessions:
             return self.client.request('thread/archive' if archived else 'thread/unarchive', {'threadId': thread_id})
         return call
 
+    def delete_call(self, snapshot, recheck):
+        info = self._connect_explicit()
+        if Path(info.get('codexHome', '')) != self.home or self.alias:
+            raise AppServerUnavailable('Codex CLI runtime belongs to another home')
+        from bridge.features.sessions.deletion import delete_native, DeleteNotSent
+        from bridge.features.sessions.create import DeleteRejected
+        process = self.client.process
+        def call():
+            def request(method, params):
+                if self.client.process is not process:
+                    raise AppServerUnavailable('原运行时连接已变化，删除结果待核对')
+                try:
+                    return self.client.request(method, params, replay_safe=method.endswith(('/read', '/list')))
+                except AppServerUnsupported as exc:
+                    if method == 'thread/delete':
+                        raise DeleteRejected('当前原生运行时不支持永久删除，请在原客户端操作') from exc
+                    raise
+            if self.client.process is not process:
+                raise DeleteNotSent('原运行时连接已变化，未发送删除')
+            return delete_native(request, snapshot, recheck)
+        return call
+
     def attach(self, thread_id, explicit=False):
         """Passive inspection never starts or resumes a runtime."""
         if not explicit:

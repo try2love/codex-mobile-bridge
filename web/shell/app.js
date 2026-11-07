@@ -431,6 +431,20 @@ function sessionMenuContext(chat,provider='codex'){
     }
     if(provider==='codex')await loadList(true);else await desktopSessions.refresh();
   };
+  if(provider==='codex'&&(identity.host==='local'||identity.host.startsWith('codex:'))){
+    const deleteId=uuid(),url=sessionUrl(chat.id,'delete',identity.host);
+    context.deletion=async snapshot=>{
+      if(!isCurrent())throw Error('连接或账号已变化，请重新打开会话菜单');
+      const result=await api(url,snapshot?{id:deleteId,scope:snapshot.scope,confirmed:true}:undefined,undefined,isCurrent);
+      if(snapshot){
+        if(result.status!=='confirmed')throw Error('删除结果待核对；不会重复提交，请在原客户端检查');
+        if(!isCurrent())return result;
+        if(currentHost===identity.host&&result.scope.includes(currentId))$('back').click();
+        await loadList(true);
+      }
+      return result;
+    };
+  }
   if(view.forkedFrom)context.source={title:view.forkedFrom.title,open:()=>openChat(view.forkedFrom.id,view.forkedFrom.host)};
   return context;
 }

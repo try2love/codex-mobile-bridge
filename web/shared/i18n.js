@@ -2,6 +2,12 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"永久删除…":"Delete permanently…",
+"永久删除聊天？":"Permanently delete these chats?",
+"正在核对删除范围…":"Checking affected chats…",
+"以下聊天及其子任务的历史与原生关联内容将永久删除，无法撤销。正在运行的任务须先停止。":"These chats, their subtasks, history and native associated content will be permanently deleted. This cannot be undone. Stop running tasks first.",
+"包含子任务：":"Included subtasks: ",
+"确认永久删除":"Delete permanently",
 "模型与思考强度":"Model and reasoning effort",
 "请选择思考强度":"Select reasoning effort",
 "沿用原生默认":"Use the native default",

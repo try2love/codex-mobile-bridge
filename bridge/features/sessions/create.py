@@ -28,6 +28,10 @@ class ForkUnavailable(CreationUnavailable):
     """The capability check failed before any thread could be created."""
 
 
+class DeleteRejected(CreationError):
+    """The native server explicitly rejected this delete, before mutation."""
+
+
 def runtime_environment(codex_home, *, isolated_home=False):
     # Only a separately registered home has an enforced database boundary.
     env = dict(os.environ, CODEX_HOME=str(codex_home))
@@ -85,6 +89,8 @@ def _runtime_operation(executable, codex_home, cwd, operation, *, failure_messag
             if 'error' in result:
                 if method in ('thread/archive', 'thread/unarchive'):
                     raise ArchiveRejected(result['error'])
+                if method == 'thread/delete' and result['error'].get('code') == -32601:
+                    raise DeleteRejected('当前原生运行时不支持永久删除，请在原客户端操作')
                 raise CreationError(result['error'].get('message', failure_message or '创建聊天失败'))
             return result['result']
 

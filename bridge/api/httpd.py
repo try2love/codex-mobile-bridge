@@ -63,7 +63,7 @@ def _prepared_static(data, content_type, use_gzip):
 from bridge.features.sessions.cli_release import CliConnections
 from bridge.app.lifecycle import private_json
 
-THREAD_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})(?:/(events|send|stop|history|respond|reconnect|cli-network|queue|catalog|settings|permissions|poll|timeline|changes|detail|notifications|uploads|message-action|message-management|rename|pin|archive|organization|compact))?$")
+THREAD_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})(?:/(events|send|stop|history|respond|reconnect|cli-network|queue|catalog|settings|permissions|poll|timeline|changes|detail|notifications|uploads|message-action|message-management|rename|pin|archive|delete|organization|compact))?$")
 UPLOAD_PREVIEW_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})/uploads/([0-9a-f-]{36})/preview$")
 UPLOAD_THUMB_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})/uploads/([0-9a-f-]{36})/thumb$")
 DESKTOP_IMAGE_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})/desktop-images/([0-9a-f]{64})$")
@@ -1303,6 +1303,16 @@ class Handler(BaseHTTPRequestHandler):
                 if not hasattr(bridge, 'cli_network'):
                     raise ValueError('只支持本机 Codex CLI')
                 return self.output(200, bridge.cli_network(thread_id, self.read_json() if write else None))
+            if action == 'delete':
+                if not hasattr(bridge, 'deletion'):
+                    raise ValueError('此接入暂不支持永久删除，请在原客户端操作')
+                if not write:
+                    return self.output(200, bridge.deletion(thread_id))
+                body = self.read_json()
+                if (set(body) != {'id', 'scope', 'confirmed'} or body['confirmed'] is not True
+                        or not isinstance(body['id'], str)):
+                    raise ValueError('请确认永久删除及受影响的聊天范围')
+                return self.output(200, bridge.deletion(thread_id, body['id'], body['scope']))
             if action == 'organization':
                 if not hasattr(bridge, 'organization'):
                     raise ValueError('此客户端暂未提供原生项目与分区')

@@ -43,6 +43,7 @@ from bridge.features.sessions.create import (
     project_directory_listing, project_trust, apply_desktop_config,
 )
 from bridge.features.sessions.archive import ArchiveCommands
+from bridge.features.sessions.deletion import DeleteCommands, deletion_scope, delete_native
 from bridge.features.sessions.compaction import CompactCommands
 from bridge.features.sessions.cli_release import ReleasedSessions
 from bridge.features.sessions.organization_commands import OrganizationCommands
@@ -258,6 +259,7 @@ class Bridge:
         self.data_dir = Path(data_dir)
         self.session_pins = SessionPins(data_dir, host + ":" + str(self.codex_home))
         self.archive_commands = ArchiveCommands(data_dir)
+        self.delete_commands = DeleteCommands(data_dir, private_json)
         self.compact_commands = CompactCommands(data_dir, private_json)
         self.released_cli = ReleasedSessions(data_dir, private_json)
         self.organization_commands = OrganizationCommands(data_dir, private_json)
@@ -3193,6 +3195,35 @@ class Bridge:
                     archive_thread(self.catalog_reader.executable, self.codex_home, thread_id, archived, identifiers, **_runtime_scope(self.host))
             return call
         result = self.archive_commands.perform(thread_id, archived, request_id, read, prepare)
+        return {**result, 'host': self.host}
+
+    @operation
+    def deletion(self, thread_id, request_id=None, expected=None):
+        uuid.UUID(thread_id)
+        if isinstance(self.store, RemoteStore):
+            raise ValueError('此 SSH 接入暂不支持永久删除，请在原客户端操作')
+        read = lambda: deletion_scope(self.store, thread_id)
+        if request_id is None:
+            return read()
+
+        def prepare(snapshot):
+            identifiers = snapshot['scope']
+            metadata = self.store.get(thread_id)
+            with self.submit_lock:
+                ledgers = (self.submissions, self.goal_commands, self.message_actions)
+                if any((key.split(':')[0] in identifiers or row.get('source') in identifiers or row.get('id') in identifiers)
+                       and row.get('status', row.get('state')) in ('queued', 'unknown', 'pending', 'sent')
+                       for ledger in ledgers for key, row in ledger.items()):
+                    raise ValueError('聊天有排队或待核对操作，请先处理后再删除')
+            if metadata.get('origin') in ('cli', 'ide'):
+                return self.cli_sessions.delete_call(snapshot, read)
+            self.assert_desktop_idle(identifiers=identifiers, allow_stopped_app=True)
+            from bridge.features.sessions.create import _runtime_operation
+            return lambda: _runtime_operation(self.catalog_reader.executable, self.codex_home, str(self.codex_home),
+                lambda request: delete_native(request, snapshot, read),
+                failure_message='删除结果待核对，请检查原聊天；不会重复提交', **_runtime_scope(self.host))
+
+        result = self.delete_commands.perform(thread_id, request_id, expected, read, self.store.existing_ids, prepare)
         return {**result, 'host': self.host}
 
     @operation

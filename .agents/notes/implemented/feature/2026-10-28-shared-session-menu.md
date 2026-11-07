@@ -51,3 +51,7 @@ PR 作者的两个原始提交作为合并祖先保留；整合修正单独体�
 
 
 后续 [DSH 双路线接入](2026-10-29-dsh-mobile-and-plugin-compatibility.md) 增加独立 Mobile 浏览容器与插件协议校验；本篇 Bridge 路径的既有约束保持。
+
+## 永久删除
+
+[原生永久删除](2026-11-07-native-session-deletion.md)复用本篇菜单、身份和确认布局；仅有已验证原生通道的接入提供入口，关闭菜单不删除。

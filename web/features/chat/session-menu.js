@@ -186,6 +186,9 @@ class SessionMenu {
     }else if(view==='project'||view==='section'){
       box.append(this.node('h3','sm-heading',this.t(view==='project'?'项目':'分区')));
       this.loadOrganization(view,c,box);
+    }else if(view==='delete'){
+      box.append(this.node('h3','sm-heading',this.t('永久删除聊天？')),this.node('p','sm-explanation',c.subtitle||''));
+      this.loadDeletion(c,box);
     }else if(view==='archive'){
       box.append(this.node('h3','sm-heading',this.t('停止任务并归档？')),this.node('p','sm-explanation',c.title),this.node('p','sm-explanation',c.subtitle||''),this.node('p','sm-explanation',this.t('将停止此聊天及其子任务，并在确认停止后归档。聊天记录会保留，未完成任务需要手动继续。')));
       const actions=this.node('div','sm-confirm-actions'),confirm=this.node('button','primary',this.t('确认归档')),cancel=this.node('button','primary',this.t('取消'));
@@ -206,8 +209,25 @@ class SessionMenu {
       if(c.releaseCli)this.row('释放 CLI 连接','link',()=>{this.close();c.releaseCli();});
       this.row('会话详情','info',()=>this.render('details'),{end:true});
       if(c.archive){this.separator();this.row(c.archived?'恢复会话':'停止任务并归档…','archive',button=>c.archived?this.execute(c.archive,button):this.render('archive'),{danger:!c.archived});}
+      if(c.deletion)this.row('永久删除…','close',()=>this.render('delete'),{danger:true});
     }
     this.position();
+  }
+  async loadDeletion(context,box){
+    const pending=this.node('p','sm-explanation',this.t('正在核对删除范围…'));box.append(pending);
+    const active=()=>this.box===box&&this.context===context&&this.view==='delete'&&pending.isConnected;
+    try{
+      this.valid();const snapshot=await context.deletion();
+      if(!active())return;this.valid();pending.remove();
+      box.append(this.node('p','sm-explanation',this.t('以下聊天及其子任务的历史与原生关联内容将永久删除，无法撤销。正在运行的任务须先停止。')));
+      const list=this.node('ul','sm-explanation');for(const row of snapshot.sessions)list.append(this.node('li','',row.title));box.append(list);
+      if(snapshot.subagentCount)box.append(this.node('p','sm-explanation',this.t('包含子任务：')+snapshot.subagentCount));
+      const actions=this.node('div','sm-confirm-actions'),confirm=this.node('button','primary',this.t('确认永久删除')),cancel=this.node('button','primary',this.t('取消'));
+      confirm.type=cancel.type='button';confirm.onclick=()=>this.execute(()=>context.deletion(snapshot),confirm);cancel.onclick=()=>this.render();
+      actions.append(confirm,cancel);box.append(actions);this.position();cancel.focus();
+    }catch(error){
+      if(!active())return;pending.remove();const message=this.node('p','sm-error',this.t(error.message));message.setAttribute('role','alert');box.append(message);this.position();
+    }
   }
   async loadOrganization(view,context,box){
     const pending=this.node('p','sm-explanation',this.t('正在读取原生侧边栏…'));box.append(pending);
