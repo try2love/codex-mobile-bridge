@@ -19,7 +19,7 @@ Tasks run on the original computer, or the original SSH host for Codex remote se
 
 ## v2.2.0 updates
 
-- Native ZCode chats, local and official remote access, custom API providers and model quotas; shared model selection and caches. In the macOS release package, use official remote access; the local private pipe is currently available only in the certificate-signed Test build.
+- Native ZCode chats, local and official remote access, custom API providers and model quotas; shared model selection and caches. The macOS release package also supports local connections.
 - Mobile multi-address switching, optional UU Remote, independent client profiles and VS Code Codex access.
 - Less background work for disabled clients and idle UI, with fixes for reconnection, native renaming, reasoning display and platform startup.
 
