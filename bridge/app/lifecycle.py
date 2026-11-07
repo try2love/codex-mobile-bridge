@@ -18,6 +18,24 @@ def read_record(path):
         return None
 
 
+def _remove_owned(path, record):
+    for attempt in range(5):
+        if read_record(path) != record:
+            return
+        try:
+            path.unlink(missing_ok=True)
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            if attempt == 4:
+                # Shutdown must not fail because a scanner or reader briefly
+                # holds the control record. A stale record cannot claim a live
+                # owner without the matching health and control checks.
+                return
+            time.sleep(.05)
+
+
 class GatewayControl:
     def __init__(self, data_dir):
         self.path = Path(data_dir) / 'gateway-control.json'
@@ -87,8 +105,7 @@ class GatewayControl:
         # Removing the control record acknowledges shutdown. Finish request
         # cleanup first so a new instance cannot race the old owner's cleanup.
         for path in (self.request_path, self.path):
-            if read_record(path) == self.record:
-                path.unlink(missing_ok=True)
+            _remove_owned(path, self.record)
 
 
 def request_stop(data_dir, timeout=15):
