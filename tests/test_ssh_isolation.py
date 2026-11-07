@@ -251,6 +251,37 @@ class ConnectionRetryTests(unittest.TestCase):
 
 
 class OperationGateTests(unittest.TestCase):
+    def test_timed_exclusive_timeout_leaves_host_and_later_retry_intact(self):
+        gate = OperationGate()
+        entered, release = threading.Event(), threading.Event()
+        def operation():
+            with gate.host('local'):
+                entered.set()
+                release.wait(2)
+        worker = threading.Thread(target=operation)
+        worker.start()
+        try:
+            self.assertTrue(entered.wait(1))
+            started = time.monotonic()
+            self.assertFalse(gate.acquire(timeout=.02))
+            self.assertLess(time.monotonic() - started, .5)
+            self.assertIsNone(gate.exclusive)
+            self.assertEqual(gate.depth, 0)
+            self.assertIn('local', gate.active)
+        finally:
+            release.set()
+            worker.join(1)
+        self.assertTrue(gate.acquire(timeout=.02))
+        try:
+            self.assertTrue(gate.acquire(timeout=0))
+            gate.release()
+            with gate.host('local'):
+                self.assertEqual(gate.depth, 1)
+        finally:
+            gate.release()
+        self.assertIsNone(gate.exclusive)
+        self.assertFalse(gate.active)
+
     def test_global_mutation_waits_for_remote_then_excludes_all_hosts(self):
         gate = OperationGate()
         entered, release, requested, exclusive = [threading.Event() for _ in range(4)]

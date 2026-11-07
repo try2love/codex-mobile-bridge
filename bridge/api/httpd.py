@@ -1404,7 +1404,11 @@ class Handler(BaseHTTPRequestHandler):
                 if 'rebuild' in body and (body.get('rebuild') is not True or body.get('activate') is not True or set(body) != {'activate', 'rebuild'}):
                     raise ValueError('重建连接请求无效')
                 if body.get('activate') is True:
-                    session = bridge.rebuild_connection(thread_id) if body.get('rebuild') else bridge.activate(thread_id)
+                    if hasattr(bridge, 'reconnect_session'):
+                        session = bridge.reconnect_session(thread_id, rebuild=bool(body.get('rebuild')))
+                    else:
+                        # WSL entries own their CLI runtime, not a Desktop IPC follower.
+                        session = bridge.rebuild_connection(thread_id) if body.get('rebuild') else bridge.activate(thread_id)
                     result = {'ok': True, 'connected': session.connected}
                 elif body.get('progressive'):
                     bridge.session(thread_id, background=True, force=True)

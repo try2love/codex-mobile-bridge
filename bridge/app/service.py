@@ -1,7 +1,7 @@
 import copy
 from contextlib import nullcontext
 import hashlib
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 import json
 import logging
 import os
@@ -300,6 +300,7 @@ class Bridge:
         self.origins = {}
         self.cli_sessions = cli_sessions or CliSessions(self.codex_home, self._cli_state, self._cli_disconnected, alias=alias, allow_installed_runtime=host.startswith('codex:'))
         self.lock = threading.RLock()
+        self.reconnect_pending = {}
         self.ipc = DesktopIPC(ipc_path or ipc_endpoint(codex_home), self._event, self._disconnected)
         self.side_chats = SideChats(codex_bin, self.codex_home, self.data_dir, self.native_host,
                                    executable_getter=executable_getter, **_runtime_scope(host))
@@ -2141,6 +2142,42 @@ class Bridge:
             return any(session.desktop_restart_recommended and not session.connected
                        for session in self.live.values())
 
+    def reconnect_session(self, thread_id, *, rebuild=False):
+        # Join duplicate phone reconnects before they queue behind the host gate.
+        # Only connection reads are shared; writes keep their existing receipts.
+        key = (thread_id, rebuild)
+        with self.lock:
+            pending = self.reconnect_pending.get(key)
+            if pending is None:
+                pending = self.reconnect_pending[key] = Future()
+                leader = True
+            else:
+                leader = False
+        if not leader:
+            return pending.result()
+        try:
+            result = self.rebuild_connection(thread_id) if rebuild else self.activate(thread_id)
+            pending.set_result(result)
+            return result
+        except Exception as exc:
+            pending.set_exception(exc)
+            raise
+        finally:
+            with self.lock:
+                self.reconnect_pending.pop(key, None)
+
+    def _rebuild_desktop_transport(self):
+        # Caller holds the host operation gate: wait for writes before replacing
+        # this follower, and never replay an operation whose result is unknown.
+        self.ipc.reconnect()
+        with self.lock:
+            sessions = list(self.live.values())
+        for followed in sessions:
+            if followed.runtime == 'desktop':
+                with followed.condition:
+                    followed.last_activation = None
+                    followed.retry_at = 0
+
     @operation
     def rebuild_connection(self, thread_id):
         session = self.session(thread_id, background=True)
@@ -2149,40 +2186,56 @@ class Bridge:
             raise IPCError('此会话不使用桌面连接，请使用继续会话。')
         # The host operation gate drains pending writes before this read-only
         # follower connection is replaced. Native tasks keep their original owner.
+        rebuilt = False
         try:
-            self.ipc.reconnect()
-            with self.lock:
-                sessions = list(self.live.values())
-            for followed in sessions:
-                if followed.runtime == 'desktop':
-                    with followed.condition:
-                        followed.last_activation = None
-                        followed.retry_at = 0
-            return self.activate(thread_id)
+            self._rebuild_desktop_transport()
+            rebuilt = True
+            return self.activate(thread_id, _transport_rebuilt=True)
         except IPCError as exc:
             with session.condition:
                 if session.connected:
                     return session
                 session.rebuild_recommended = True
                 session.desktop_restart_recommended = True
-                session.error = '尚未连接原桌面会话。可再次重建连接；若仍失败，可在应用管理中核对任务后重启 Codex。'
+                session.error = ('已重建网关连接，但原桌面会话仍未恢复。可在应用管理中核对任务后重启 Codex；操作未发送。'
+                                 if rebuilt else '尚未连接原桌面会话。可再次重建连接；若仍失败，可在应用管理中核对任务后重启 Codex。')
                 session.changed()
                 raise IPCError(session.error) from exc
 
     @operation
-    def activate(self, thread_id, *, allow_ide_resume=True):
+    def activate(self, thread_id, *, allow_ide_resume=True, _transport_rebuilt=False):
         """Explicit phone operation only; reads and notification watches never navigate."""
         session = self.session(thread_id, background=True)
         if self.host.startswith('codex:') and self.store.get(thread_id).get('origin') == 'desktop':
             raise ValueError('此独立入口只接入原 VS Code / CLI 会话')
         with session.activation_lock:
             self.released_cli.set(thread_id, False)
-            if session.connected:
+            endpoint_changed = not _transport_rebuilt and session.runtime == 'desktop' and self.ipc.endpoint_changed()
+            replace_transport = endpoint_changed or (not _transport_rebuilt and session.runtime == 'desktop' and
+                not session.connected and session.rebuild_recommended)
+            if session.connected and not replace_transport:
                 return session
             with session.condition:
                 session.activating = True
                 session.changed()
             try:
+                # VS Code can replace the public router without closing an old
+                # follower socket. Re-entering a chat must not trust that socket's
+                # cached connected snapshot. A prior owner disconnect also gets
+                # one fresh connection, including on Windows named pipes.
+                if replace_transport:
+                    if endpoint_changed and session.connected:
+                        # Another router can coexist with a still-working owner.
+                        # Ask for a current snapshot before abandoning that route.
+                        with session.condition:
+                            session.connected = False
+                        self._attach(session)
+                        if session.connected:
+                            return session
+                    self._rebuild_desktop_transport()
+                    _transport_rebuilt = True
+                if session.connected:
+                    return session
                 # Reuse this in-flight passive owner probe once. If none is
                 # running, the explicit action performs its own fresh probe.
                 with session.condition:
@@ -2241,8 +2294,12 @@ class Bridge:
             except IPCError as exc:
                 with session.condition:
                     session.rebuild_recommended = session.origin == 'desktop' and self.host == 'local'
-                    session.error = ('桌面执行连接尚未恢复，建议点击“重建连接”。操作未发送。'
-                                     if session.rebuild_recommended else str(exc))
+                    if session.rebuild_recommended and _transport_rebuilt:
+                        session.desktop_restart_recommended = True
+                        session.error = '已重建网关连接，但原桌面会话仍未恢复。可在应用管理中核对任务后重启 Codex；操作未发送。'
+                    else:
+                        session.error = ('桌面执行连接尚未恢复，建议点击“重建连接”。操作未发送。'
+                                         if session.rebuild_recommended else str(exc))
                     error = session.error
                 raise IPCError(error) from exc
             finally:

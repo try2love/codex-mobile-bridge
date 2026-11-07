@@ -1,5 +1,6 @@
 """Allowlisted desktop integrations with durable at-most-once mutation receipts."""
 import hashlib
+import logging
 import os
 import json
 import sqlite3
@@ -37,6 +38,39 @@ WRITES = {'send', 'stop', 'settings', 'respond', 'create', 'access', 'resume', '
 
 
 CLAUDE_HISTORY_NOTICE = '客户端尚未提供当前可选模型，历史模型仅供查看'
+
+LIFECYCLE_GATE_WAIT = 2
+
+
+@contextmanager
+def _closing_gate(gate):
+    # Do not let a close command wait behind a stalled reconnect until the
+    # phone times out, then unexpectedly quit later. This limits queueing only;
+    # fresh task verification and normal native shutdown keep their own budgets.
+    started = time.monotonic()
+    if not gate.acquire(timeout=LIFECYCLE_GATE_WAIT):
+        logging.getLogger(__name__).warning(
+            'Client lifecycle provider=codex stage=operation-wait outcome=busy elapsed_ms=%.1f',
+            (time.monotonic() - started) * 1000)
+        raise ValueError('有 Codex 操作正在进行，尚未执行关闭，请稍后重试')
+    try:
+        yield
+    finally:
+        gate.release()
+
+
+@contextmanager
+def _lifecycle_phase(provider, phase):
+    started, completed = time.monotonic(), False
+    try:
+        yield
+        completed = True
+    finally:
+        elapsed = (time.monotonic() - started) * 1000
+        if not completed or elapsed >= 2000:
+            logging.getLogger(__name__).warning(
+                'Client lifecycle provider=%s stage=%s outcome=%s elapsed_ms=%.1f',
+                provider, phase, 'completed' if completed else 'failed', elapsed)
 
 
 def _claude_catalog_sources(value, account=None, *, legacy=False):
@@ -1967,7 +2001,8 @@ class DesktopSessions:
             return
         try:
             if not force:
-                self._assert_idle(provider, state, native_confirmation=native_confirmation)
+                with _lifecycle_phase(provider, 'task-check'):
+                    self._assert_idle(provider, state, native_confirmation=native_confirmation)
         except TaskStateUnavailable:
             # Only explicitly confirmed normal quit may accept unavailable task
             # evidence. Known activity, writes and ambiguous identities still block.
@@ -1978,19 +2013,20 @@ class DesktopSessions:
             # Cancel the monitor before native quit, so it cannot relaunch Claude.
             self.adapters[provider].cancel(persist=False)
         try:
-            if force:
-                from bridge.clients.lifecycle import force_stop_client
-                force_stop_client(descriptor, state=state)
-            elif provider == 'zcode' and sys.platform == 'win32' and getattr(self.adapters['zcode'], 'pipe', None):
-                from bridge.platforms.windows.codex_quit import stop_private_zcode
-                pipe = self.adapters['zcode'].pipe
-                owner = pipe.owner()
-                if owner is None or stop_private_zcode(descriptor['executable'], state['mainPids'], owner, lambda: pipe.request_quit(owner)) is False:
+            with _lifecycle_phase(provider, 'native-stop'):
+                if force:
+                    from bridge.clients.lifecycle import force_stop_client
+                    force_stop_client(descriptor, state=state)
+                elif provider == 'zcode' and sys.platform == 'win32' and getattr(self.adapters['zcode'], 'pipe', None):
+                    from bridge.platforms.windows.codex_quit import stop_private_zcode
+                    pipe = self.adapters['zcode'].pipe
+                    owner = pipe.owner()
+                    if owner is None or stop_private_zcode(descriptor['executable'], state['mainPids'], owner, lambda: pipe.request_quit(owner)) is False:
+                        stop_client(descriptor, state=state)
+                elif provider == 'deepseek' and sys.platform == 'win32':
+                    stop_deepseek(descriptor, self.adapters[provider], state=state)
+                else:
                     stop_client(descriptor, state=state)
-            elif provider == 'deepseek' and sys.platform == 'win32':
-                stop_deepseek(descriptor, self.adapters[provider], state=state)
-            else:
-                stop_client(descriptor, state=state)
         except Exception:
             if provider == 'claude':
                 try:
@@ -2770,7 +2806,9 @@ class DesktopSessions:
                 return self.clients(refresh=True)
         from bridge.clients.lifecycle import inspect_client, launch_client
         accounts = self.bridge.accounts if provider == 'codex' and self.bridge else None
-        with self.client_lock, self._changing(provider, rebind='connectionMode' not in value), accounts.gate if accounts else nullcontext(), accounts.lock if accounts else nullcontext():
+        account_gate = (_closing_gate(accounts.gate) if accounts and not enabled and quit_desktop
+                        else accounts.gate if accounts else nullcontext())
+        with self.client_lock, self._changing(provider, rebind='connectionMode' not in value), account_gate, accounts.lock if accounts else nullcontext():
             if provider == 'zcode' and 'connectionMode' in value:
                 self._select_zcode_connection(value['connectionMode'])
             if not enabled and not quit_desktop:

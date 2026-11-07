@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 
 from bridge.clients.manager import DesktopSessions, DesktopWorkspace
 from bridge.clients.errors import BridgeUnavailable
+from bridge.features.accounts.operation_gate import OperationGate
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -780,6 +781,42 @@ class ClientLifecycleTests(unittest.TestCase):
         self.accounts.assert_editable.assert_called_once()
         self.stop.assert_called_once()
         self.assertFalse(self.manager.enabled('codex'))
+
+    def test_codex_close_does_not_queue_behind_an_unresponsive_connection(self):
+        from concurrent.futures import Future
+        self.accounts.gate = OperationGate()
+        entered, release = threading.Event(), threading.Event()
+        result = Future()
+        def connection():
+            with self.accounts.gate.host('local'):
+                entered.set()
+                release.wait(3)
+        def close():
+            try:
+                result.set_result(self.manager.toggle_client(
+                    {'provider': 'codex', 'enabled': False, 'quitDesktop': True}))
+            except BaseException as error:
+                result.set_exception(error)
+        owner = threading.Thread(target=connection)
+        closer = threading.Thread(target=close)
+        owner.start()
+        try:
+            self.assertTrue(entered.wait(1))
+            with patch('bridge.clients.manager.LIFECYCLE_GATE_WAIT', .05):
+                closer.start()
+                with self.assertRaisesRegex(ValueError, '操作正在进行'):
+                    result.result(timeout=.5)
+            self.stop.assert_not_called()
+            self.bridge.assert_desktop_idle.assert_not_called()
+            self.assertTrue(self.manager.config['enabled']['codex'])
+        finally:
+            release.set()
+            owner.join(1)
+            closer.join(1)
+        # Explicit retry obtains the gate and still performs the full fresh audit.
+        self.manager.toggle_client({'provider': 'codex', 'enabled': False, 'quitDesktop': True})
+        self.bridge.assert_desktop_idle.assert_called_once()
+        self.stop.assert_called_once()
 
     def test_claude_toggle_cancels_autoconnect_and_stops_actual_app(self):
         self.toggle('claude', False)

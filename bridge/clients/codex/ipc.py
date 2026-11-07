@@ -7,7 +7,7 @@ import threading
 import uuid
 from concurrent.futures import Future, TimeoutError
 
-from bridge.clients.codex.transport import connect_stream
+from bridge.clients.codex.transport import connect_stream, endpoint_identity
 
 
 class IPCError(Exception):
@@ -44,6 +44,7 @@ class DesktopIPC:
         self.on_disconnect = on_disconnect or (lambda: None)
         self.socket = None
         self.client_id = None
+        self.endpoint_identity = None
         self.pending = {}
         self.lock = threading.RLock()
         self.write_lock = threading.Lock()
@@ -56,15 +57,24 @@ class DesktopIPC:
             self.close()
         self.connect()
 
+    def endpoint_changed(self):
+        """Report a replacement, without interrupting any pending operation."""
+        current = endpoint_identity(self.path)
+        with self.lock:
+            return bool(self.socket and self.endpoint_identity is not None and
+                        current is not None and current != self.endpoint_identity)
+
     def connect(self):
         with self.connect_lock:
             if self.client_id and self.socket:
                 return
             try:
+                identity = endpoint_identity(self.path)
                 sock = connect_stream(self.path)
             except OSError as exc:
                 raise IPCError("桌面 App 未连接，请打开 Codex App。") from exc
             self.socket = sock
+            self.endpoint_identity = identity
             threading.Thread(target=self._read_loop, args=(sock,), daemon=True).start()
             try:
                 result = self.request("initialize", {"clientType": "codex-mobile-bridge"}, timeout=5)
@@ -191,6 +201,7 @@ class DesktopIPC:
                 if disconnected:
                     self.socket = None
                     self.client_id = None
+                    self.endpoint_identity = None
                     for future in self.pending.values():
                         if not future.done():
                             future.set_exception(IPCError("桌面连接已断开"))
