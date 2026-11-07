@@ -228,7 +228,8 @@ class ClaudeCliContract(unittest.TestCase):
                           {'models': ['fixture-model']} if action == 'catalog' else
                           self.fail('Desktop readiness scanned merged CLI history')), \
              patch('bridge.clients.lifecycle.inspect_clients', return_value={}):
-            rows = manager.clients(refresh=True)['clients']
+            # Disabled clients are not probed by passive refreshes.
+            rows = manager.clients(refresh=True, probe='claude')['clients']
         adapter.desktop_listing.assert_called_once_with()
         self.assertTrue(next(row for row in rows if row['id'] == 'claude')['configured'])
 

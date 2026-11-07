@@ -43,8 +43,11 @@ class SshIsolationTests(unittest.TestCase):
         local.host, remote.host = 'local', 'remote:fixture'
         local.accounts = remote.accounts = accounts
         local.released_cli = Mock()
-        local.session = lambda *args, **kwargs: SimpleNamespace(
-            activation_lock=threading.Lock(), connected=True)
+        session = LiveSession('local-thread')
+        session.connected = True
+        local.ipc = Mock()
+        local.ipc.endpoint_changed.return_value = False
+        local.session = lambda *args, **kwargs: session
 
         def offline(*args, **kwargs):
             entered.set()
