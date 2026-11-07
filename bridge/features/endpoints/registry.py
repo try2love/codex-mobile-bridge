@@ -161,6 +161,28 @@ class Entries:
         with self.lock:
             return any(row['id'] == identifier and row.get('enabled', True) for row in self.entries)
 
+    def remove_local(self, identifier):
+        with self.lock:
+            row = next((row for row in self.entries if row['id'] == identifier and row.get('kind') == 'codex-local'), None)
+            if row is None:
+                raise ValueError('Codex 接入实例未登记')
+            if row.get('enabled', True):
+                raise ValueError('请先停用此客户端的手机接入，再移除配置')
+            owner = self.bridges.get(identifier)
+            if owner and not owner.entry_gate.acquire(timeout=3):
+                raise ValueError('此客户端正在处理操作，请稍后再移除配置')
+            try:
+                if owner:
+                    owner.assert_detachable()
+                    self.bridges.pop(identifier, None)
+                    owner.close()
+                remaining = [row for row in self.entries if row['id'] != identifier]
+                private_json(self.path, {'version': 1, 'entries': remaining})
+                self.entries = remaining
+            finally:
+                if owner:
+                    owner.entry_gate.release()
+
     def hosts(self):
         with self.lock:
             return {row['id']: {'label': row['label'], 'kind': row.get('kind', 'wsl-cli')}

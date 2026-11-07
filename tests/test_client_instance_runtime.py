@@ -46,6 +46,28 @@ class InstanceRuntimeTests(unittest.TestCase):
             self.assertNotIn(row['id'], self.manager.navigation_clients())
             self.assertFalse((self.manager.directory.parent/'client-instances'/row['id'].replace(':','-')/'desktop-sessions').exists())
 
+    def test_remove_requires_confirmation_and_settled_scoped_owner(self):
+        row = self.register('deepseek', 'one')
+        other = self.register('deepseek', 'two')
+        child = self.manager.resolve_instance('deepseek', row['id'], require_enabled=False)
+        request = {'action':'client-profiles','operation':'remove','family':'deepseek','entry':row['id'],'confirmed':True}
+        with self.assertRaises(ValueError):self.manager.control({**request,'confirmed':False})
+        child.db.execute('INSERT INTO requests VALUES (?,?,?)', ('unknown','fixture','{"status":"unknown"}'))
+        child.db.commit()
+        with self.assertRaisesRegex(ValueError, '待核对'):self.manager.control(request)
+        self.assertFalse(child.closed.is_set())
+        child.db.execute('UPDATE requests SET result=?', ('{"status":"complete"}',));child.db.commit()
+        with patch.object(child, 'close', wraps=child.close) as close:
+            result = self.manager.control(request)
+        close.assert_called_once()
+        self.assertEqual([r['id'] for r in result['instances']], [other['id']])
+        self.assertNotIn(row['id'], self.manager.instances.children)
+        self.assertTrue((self.root/'one').is_dir())
+        with self.assertRaises(ValueError):
+            self.manager.resolve_instance('deepseek', row['id'], require_enabled=False)
+        with self.assertRaises(ValueError):
+            child.require_enabled('deepseek')
+
     def test_two_native_owners_use_distinct_account_cache_upload_and_receipt_roots(self):
         a, b = self.register('deepseek', 'one'), self.register('deepseek', 'two')
         first = self.manager.resolve_instance('deepseek', a['id'], require_enabled=False)

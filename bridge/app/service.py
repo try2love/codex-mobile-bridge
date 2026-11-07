@@ -3242,13 +3242,13 @@ class Bridge:
         return {**result, 'host': self.host}
 
     @operation
-    def deletion(self, thread_id, request_id=None, expected=None):
+    def deletion(self, thread_id, request_id=None, expected=None, retry=None):
         uuid.UUID(thread_id)
         if isinstance(self.store, RemoteStore):
             raise ValueError('此 SSH 接入暂不支持永久删除，请在原客户端操作')
         read = lambda: deletion_scope(self.store, thread_id)
         if request_id is None:
-            return read()
+            return self.delete_commands.preview(read, self.store.existing_ids)
 
         def prepare(snapshot):
             identifiers = snapshot['scope']
@@ -3267,7 +3267,7 @@ class Bridge:
                 lambda request: delete_native(request, snapshot, read),
                 failure_message='删除结果待核对，请检查原聊天；不会重复提交', **_runtime_scope(self.host))
 
-        result = self.delete_commands.perform(thread_id, request_id, expected, read, self.store.existing_ids, prepare)
+        result = self.delete_commands.perform(thread_id, request_id, expected, read, self.store.existing_ids, prepare, retry=retry)
         return {**result, 'host': self.host}
 
     @operation
@@ -3980,6 +3980,29 @@ class Bridge:
                     validate_form(content, params.get("requestedSchema", {}))
                 payload["response"] = {"action": action, "content": content if action == "accept" else None}
         return self._call(session, mapping[method], payload)
+
+    def assert_detachable(self):
+        """Check gateway-owned work before removing an already disabled entry."""
+        with self.submit_lock, self.create_lock, self.message_lock:
+            for ledger in (self.submissions, self.creations, self.message_actions, self.goal_commands):
+                if any(row.get('status', row.get('state')) in ('queued', 'unknown', 'pending', 'sent')
+                       for row in ledger.values()):
+                    raise ValueError('此客户端有排队或待核对操作，请先处理后再移除')
+            if any(not row.get('id') for row in self.creations.values()):
+                raise ValueError('此客户端有待核对的新建聊天，请先处理后再移除')
+        if self.accounts:
+            with self.accounts.lock:
+                if (self.accounts.enrollment or {}).get('phase') in ('starting', 'waiting'):
+                    raise ValueError('此客户端正在登录，请完成或取消登录后再移除')
+        with self.terminals.lock:
+            if any(not job.done.is_set() for job in
+                   (*self.terminals.jobs.values(), *self.terminals.sessions.values())):
+                raise ValueError('此客户端有未关闭的终端，请先关闭后再移除')
+        if self.cli_sessions.cli_connections():
+            raise ValueError('请先释放此客户端的 CLI 连接，再移除配置')
+        with self.side_chats.lock:
+            if any(not chat.closed for chat in self.side_chats.chats.values()):
+                raise ValueError('请先结束此客户端的旧侧边聊天，再移除配置')
 
     def close(self):
         with self.entry_gate if self.entry_gate is not None else nullcontext():

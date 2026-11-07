@@ -9,8 +9,8 @@ class DesktopConnectionsPanel {
     root.querySelectorAll('[data-desktop-action]').forEach(button=>button.onclick=()=>button.dataset.desktopAction==='scan'?this.scan(true):this.action(button.dataset.desktopAction));
     root.querySelector('[data-desktop-choose]').onclick=async()=>{try{const path=await api.choose('folder');if(path)this.deepseekHome.value=path;}catch(error){feedback(error.message,true);}};
     document.addEventListener('bridge-language',()=>{this.renderClients();this.renderScan();});
-    this.accountPanels={};this.managementPages=new Map();
-    document.addEventListener('bridge-client-config',event=>{this.ensureAccountPanel(event.detail);this.resumeAccounts();});
+    this.accountPanels={};this.managementPages=new Map();this.removalControls=new Map();
+    document.addEventListener('bridge-client-config',event=>{for(const [id,control] of this.removalControls)control.hidden=id!==event.detail;this.ensureAccountPanel(event.detail);this.resumeAccounts();});
   }
   ensureAccountPanel(provider){
     if(!['claude','deepseek'].includes(provider)||typeof DesktopClientAccountsPanel==='undefined')return;
@@ -204,12 +204,12 @@ class DesktopConnectionsPanel {
     const kind=capability.kind,application=kind==='default-application',t=BridgeI18n.t,dialog=document.createElement('dialog');dialog.className='client-disable-dialog';
     const title=document.createElement('h2');title.textContent=t('添加 Codex 客户端').replace('Codex',label);
     const form=document.createElement('form'),nameLabel=document.createElement('label'),homeLabel=document.createElement('label');
-    form.className='client-config-form';nameLabel.textContent=t('客户端名称');homeLabel.textContent=application?t('应用程序路径'):t('Codex 配置目录').replace('Codex',label);
+    form.className='client-config-form';nameLabel.textContent=t('客户端名称');homeLabel.textContent=application?t('应用程序路径'):family==='codex'?t('Codex 配置目录（.codex 文件夹）'):t('Codex 配置目录').replace('Codex',label);
     const name=document.createElement('input'),home=document.createElement('input');name.required=true;name.maxLength=80;name.value=t('Codex 独立配置').replace('Codex',label);home.required=true;home.placeholder=t(application?'选择应用程序，或输入完整路径':'输入完整路径，或选择文件夹');nameLabel.append(name);homeLabel.append(home);
     const help=document.createElement('p');help.className='hint';help.textContent=application?t('选择已安装的 ZCode 应用，保存后在管理页选择连接方式并启用。'):t('选择此电脑上的独立 Codex 配置目录，保留其中的账号和会话。默认 Codex 接入保持不变。').replaceAll('Codex',label);
     const actions=document.createElement('div');actions.className='actions';
     const choose=document.createElement('button'),scan=document.createElement('button'),save=document.createElement('button'),cancel=document.createElement('button');
-    choose.type=scan.type=cancel.type='button';save.type='submit';choose.textContent=t(application?'选择应用程序':'选择文件夹');scan.textContent=t('扫描配置');scan.hidden=application;save.textContent=t('保存');cancel.textContent=t('关闭');
+    choose.type=scan.type=cancel.type='button';save.type='submit';choose.textContent=t(application?'选择应用程序':'选择文件夹');scan.textContent=t('扫描配置');scan.hidden=application;save.textContent=t('保存配置');cancel.textContent=t('关闭');
     const error=document.createElement('p');error.className='error';error.setAttribute('role','alert');
     const candidates=document.createElement('div');candidates.className='client-config-candidates';let busy=false,closed=false;
     const run=async task=>{if(busy||closed)return;busy=true;error.textContent='';for(const b of [choose,scan,save])b.disabled=true;try{await task();}catch(e){if(!closed)error.textContent=t(e.message);}finally{busy=false;for(const b of [choose,scan,save])b.disabled=false;}};
@@ -290,9 +290,30 @@ class DesktopConnectionsPanel {
           this.accountPanels[client.id]=panel;this.managementPages.set(client.id,{panel,open:()=>panel.resume()});
         }
       }
+      if(['codex-local','desktop-profile'].includes(client.kind))this.mountClientRemoval(layout.clientPage(client.id),client);
       layout.selectClient(client.id);this.managementPages.get(client.id)?.open();
       if(client.id==='zcode')await this.zcodeOfficial?.refresh();
     }catch(error){this.feedback(error.message,true);}
+  }
+  mountClientRemoval(page,client){
+    if(this.removalControls.has(client.id))return;
+    const section=document.createElement('article'),hint=document.createElement('p'),button=document.createElement('button');
+    hint.className='hint';hint.dataset.i18n='移除仅取消网关中的客户端登记，保留原应用、账号、聊天和配置文件。';hint.textContent=BridgeI18n.t(hint.dataset.i18n);
+    button.type='button';button.dataset.i18n='移除此客户端配置';button.textContent=BridgeI18n.t(button.dataset.i18n);button.onclick=()=>this.removeClient(client.id);
+    section.dataset.removeClient=client.id;section.append(hint,button);page.append(section);this.removalControls.set(client.id,section);
+  }
+  async removeClient(id){
+    if(this.busy||this.scanning||this.removingClient)return;
+    const client=this.managementClients().find(row=>row.id===id);if(!client||!['codex-local','desktop-profile'].includes(client.kind))return;
+    if(client.enabled){this.feedback(BridgeI18n.t('请先停用此客户端的手机接入，再移除配置'),true);return;}
+    if(!window.confirm(BridgeI18n.t('确认移除此客户端配置？原应用、账号、聊天和配置文件都会保留。')+'\n'+client.name))return;
+    this.removingClient=id;const control=this.removalControls.get(id),button=control?.querySelector('button');if(button)button.disabled=true;
+    try{
+      await this.api.desktopSessions({action:'client-profiles',operation:'remove',family:client.family||'codex',entry:id,confirmed:true});
+      this.accountPanels[id]?.dispose();delete this.accountPanels[id];this.managementPages.delete(id);control?.remove();this.removalControls.delete(id);
+      window.GatewayLayout.forgetClient(id);await this.refreshClients(true);this.feedback(BridgeI18n.t('客户端配置已移除'));
+    }catch(error){this.feedback(error.message,true);}
+    finally{this.removingClient=null;if(button)button.disabled=false;}
   }
   mountConnectionModes(article,before,client){
     const section=document.createElement('section');section.className='accounts-panel';section.dataset.clientConnectionModes=client.id;article.insertBefore(section,before);

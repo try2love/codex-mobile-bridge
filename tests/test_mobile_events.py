@@ -10,7 +10,7 @@ from unittest.mock import patch
 from bridge.features.auth.auth import password_record
 from bridge.api.httpd import GatewayServer
 from bridge.features.notifications.events import MobileEvents
-from bridge.features.notifications.channels import Notifications, save_settings
+from bridge.features.notifications.channels import Notifications, save_settings, settings
 
 ROOT = Path(__file__).resolve().parents[1]
 THREAD = '00000000-0000-4000-8000-000000000001'
@@ -39,6 +39,33 @@ class MobileEventTests(unittest.TestCase):
         self.assertEqual(len(loaded.read(205)['events']), 1)
         with self.assertRaises(ValueError): loaded.read(-1)
         with self.assertRaises(ValueError): loaded.read(True)
+
+    def test_notification_defaults_preserve_existing_opt_outs(self):
+        initial = settings(self.path)
+        self.assertTrue(initial['mobileEnabled'])
+        self.assertTrue(initial['includeTitle'])
+        for channel in ('enabled', 'barkEnabled', 'pushplusEnabled', 'webhookEnabled'):
+            self.assertFalse(initial[channel])
+        save_settings(self.path, {'mobileEnabled': False, 'includeTitle': False})
+        self.assertFalse(settings(self.path)['mobileEnabled'])
+        self.assertFalse(settings(self.path)['includeTitle'])
+        save_settings(self.path, {'addressName': 'Test gateway'})
+        self.assertFalse(settings(self.path)['mobileEnabled'])
+        self.assertFalse(settings(self.path)['includeTitle'])
+        # A legacy partial config receives defaults only for fields it never saved.
+        (self.path / 'notifications.json').write_text('{"mobileEnabled": false}')
+        self.assertFalse(settings(self.path)['mobileEnabled'])
+        self.assertTrue(settings(self.path)['includeTitle'])
+
+    def test_fresh_gateway_default_delivers_title_to_mobile_inbox(self):
+        manager = Notifications(None, self.path)
+        self.addCleanup(manager.close)
+        config = settings(self.path)
+        row = {'id': THREAD, 'host': 'local'}
+        target = manager._targets(config)['mobile']
+        key = manager._delivery_key(row, 'decision', target=target)
+        self.assertTrue(manager._send_keys(config, row, 'Test chat', 'mobile', target, [key], False))
+        self.assertEqual(manager.mobile.read()['events'][0]['body'], 'Test chat')
 
     def test_summary_is_bounded_private_and_independent_of_incremental_cursor(self):
         feed = MobileEvents(self.path)
@@ -73,7 +100,7 @@ class MobileEventTests(unittest.TestCase):
 
     def test_inbox_delivery_preserves_global_policy_and_hides_private_title(self):
         manager = Notifications(None, self.path, lambda: ['https://gateway.example'])
-        config = save_settings(self.path, {'mobileEnabled': True})
+        config = save_settings(self.path, {'mobileEnabled': True, 'includeTitle': False})
         row = {'id': THREAD, 'host': 'local'}
         self.assertTrue(manager.policy(THREAD, 'local')['available'])
         self.assertFalse(manager.defaults()['completion'])

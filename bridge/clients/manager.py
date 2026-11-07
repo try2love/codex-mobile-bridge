@@ -3310,6 +3310,22 @@ class DesktopSessions:
             self.client_cache = None
             return {**self.clients(refresh=True), 'errors': result.get('errors', []) + claude.get('errors', [])}
 
+    def assert_detachable(self):
+        """An unregistered owner must not discard work still held by Bridge."""
+        with self.db_lock:
+            if any(json.loads(row[0]).get('status') in ('unknown', 'queued', 'pending')
+                   for db in (self.db, *self.receipt_dbs.values())
+                   for row in db.execute('SELECT result FROM requests')):
+                raise ValueError('此接入有排队或待核对操作，请先在原客户端处理')
+        terminals = getattr(self, 'terminals', None)
+        if terminals is not None:
+            with terminals.lock:
+                if any(not job.done.is_set() for jobs in (terminals.jobs, terminals.sessions)
+                       for job in jobs.values()):
+                    raise ValueError('此客户端仍有网关终端或命令运行，请先关闭终端')
+        if self.instance.family == 'claude' and self._claude_native_cli_busy():
+            raise ValueError('有 Claude Code 任务运行或等待确认，请先结束任务')
+
     def close(self):
         self.closed.set()
         if self.instances is not None:

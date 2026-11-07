@@ -135,6 +135,9 @@ class CodexAppServer:
                 raise AppServerUnknownResult('Codex runtime response timed out; request may have completed') from exc
             if 'error' in response:
                 error = response['error']
+                if method == 'thread/delete' and isinstance(error, dict):
+                    from bridge.features.sessions.create import native_delete_error
+                    raise native_delete_error(error, (params or {}).get('threadId'))
                 code = error.get('code') if isinstance(error, dict) else None
                 detail = error.get('message', 'App-server request failed') if isinstance(error, dict) else str(error)
                 if method in ('thread/archive', 'thread/unarchive'):

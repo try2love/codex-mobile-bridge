@@ -46,9 +46,14 @@ class AccountsPanel {
     this.reminders=this.node('div');this.updates=this.node('section');this.tools.append(this.reminders,this.updates);this.management.append(this.tools);
     if(!this.desktop){this.root.append(this.node('p','官方账号登录请在电脑端完成。','account-muted'));return;}
     const scanDetails=this.node('details');scanDetails.append(this.node('summary','扫描本机配置'));
-    this.scanSource=this.field('Codex 配置目录');this.scanSource.input.placeholder=this.text('留空使用当前 Codex 数据目录');
-    this.scanButton=this.button('扫描配置',()=>this.perform({action:'scan',source:this.scanSource.input.value}));
-    this.scanRows=this.node('div');scanDetails.append(this.scanSource.wrap,this.scanButton,this.scanRows);this.management.append(scanDetails);
+    this.scanSource=this.field('Codex 配置目录（.codex 文件夹）');this.scanSource.input.placeholder=this.text('留空使用当前 Codex 数据目录');
+    this.scanSource.input.oninput=()=>{this.scannedSource=null;this.scanSelection='';this.render();};
+    this.scanChoice=document.createElement('select');this.scanChoice.setAttribute('aria-label',this.text('选择要保存的配置'));this.scanChoice.hidden=true;
+    this.scanChoice.onchange=()=>{this.scanSelection=this.scanChoice.value;this.render();};
+    this.scanButton=this.button('扫描配置',async()=>{const source=this.scanSource.input.value;if(await this.perform({action:'scan',source})){this.scannedSource=source;const rows=this.scanCandidates();this.scanSelection=rows.length===1?rows[0].id:'';this.render();}});
+    this.saveScanButton=this.button('保存配置',()=>{const row=this.scanCandidates().find(value=>value.id===this.scanSelection);if(row)return this.importCandidate(row);});
+    const scanActions=this.node('div',undefined,'account-actions');scanActions.append(this.scanButton,this.saveScanButton);
+    this.scanRows=this.node('div');scanDetails.append(this.scanSource.wrap,this.scanChoice,scanActions,this.scanRows);this.management.append(scanDetails);
     this.renameForm=this.node('form');this.renameForm.hidden=true;this.renameName=this.field('名称');this.renameName.input.maxLength=80;this.renameName.input.required=true;
     this.renameSave=this.node('button','保存名称');this.renameSave.type='submit';
     this.renameForm.append(this.renameName.wrap,this.renameSave,this.button('取消编辑',()=>{this.renameForm.hidden=true;}));
@@ -95,8 +100,9 @@ class AccountsPanel {
     settings.append(this.recover);this.management.append(settings);
   }
   resetForm(){this.editId=null;this.importId=null;this.form.reset();this.key.input.value='';this.kind.disabled=false;this.url.input.disabled=false;this.key.input.disabled=false;this.clearModels();}
+  scanCandidates(){return this.scannedSource===this.scanSource.input.value?(this.value?.discovery?.candidates||[]).filter(row=>row.canImport&&!row.imported):[];}
   importCandidate(row){
-    if(row.kind==='chatgpt'){this.perform({action:'import',candidateId:row.id});return;}
+    if(row.kind==='chatgpt')return this.perform({action:'import',candidateId:row.id});
     this.resetForm();this.importId=row.id;this.addDetails.open=true;this.name.input.value=row.name;this.kind.value='api';this.kind.disabled=true;this.kind.onchange();
     this.url.input.value=row.baseUrl;this.model.input.value=row.model||'';this.url.input.disabled=true;this.key.input.disabled=true;this.model.input.focus();
   }
@@ -239,7 +245,7 @@ class AccountsPanel {
     controls.append(refresh);return controls;
   }
   accept(value){const old=this.value;if(!this.desktop&&old?.canSwitch===false&&value.canSwitch===undefined)value={...value,canSwitch:false};this.value=value;if(!value.resetDynamicEnabled)this.globalResetRefreshIntent=null;this.finishGlobalResetRefresh(value.globalReset);if(old&&(old.activeId!==value.activeId||old.current?.kind!==value.current?.kind||old.current?.name!==value.current?.name||old.switch?.phase!==value.switch?.phase))this.onChanged(value);this.onUpdate(value);this.render();}
-  clear(){clearTimeout(this.resetMidnightTimer);this.resetMidnightTimer=null;this.globalResetRefreshIntent=null;this.globalResetMessage='';this.globalResetKey=null;this.globalReset.hidden=true;this.resetDialog?.close();clearTimeout(this.timer);this.generation++;this.clearModels?.();this.value=null;this.loading=false;this.busy=false;this.readFailed=false;this.resumePending=false;this.operationError=false;this.modelBoxes.clear();this.error.textContent='';this.rows.replaceChildren();this.sshHosts.replaceChildren();this.sshHosts.hidden=true;}
+  clear(){clearTimeout(this.resetMidnightTimer);this.resetMidnightTimer=null;this.globalResetRefreshIntent=null;this.globalResetMessage='';this.globalResetKey=null;this.globalReset.hidden=true;this.resetDialog?.close();clearTimeout(this.timer);this.generation++;this.clearModels?.();this.value=null;this.scannedSource=null;this.scanSelection='';this.loading=false;this.busy=false;this.readFailed=false;this.resumePending=false;this.operationError=false;this.modelBoxes.clear();this.error.textContent='';this.rows.replaceChildren();this.sshHosts.replaceChildren();this.sshHosts.hidden=true;}
   requestId(){
     if(typeof crypto.randomUUID==='function')return crypto.randomUUID();
     const bytes=crypto.getRandomValues(new Uint8Array(16));bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;
@@ -482,6 +488,10 @@ class AccountsPanel {
     this.reconcileRows(cards);
     if(this.desktop){
       this.scanDesktop.disabled=this.busy||switching;this.renameSave.disabled=this.busy||switching;this.scanButton.disabled=this.busy||switching;this.modelsButton.disabled=this.busy||switching||!!this.apiEditor?.draftLoading;this.submit.disabled=this.busy||switching||!!this.apiEditor?.draftLoading;
+      const candidates=this.scanCandidates();this.scanChoice.replaceChildren();this.scanChoice.hidden=candidates.length<2;
+      const choose=this.node('option','选择要保存的配置');choose.value='';this.scanChoice.append(choose);
+      for(const row of candidates){const option=this.node('option');option.value=row.id;option.textContent=row.name;this.scanChoice.append(option);}this.scanChoice.value=this.scanSelection||'';
+      this.saveScanButton.disabled=this.busy||switching||!candidates.some(row=>row.id===this.scanSelection);
       this.scanSource.input.placeholder=value.codexHome||this.text('留空使用当前 Codex 数据目录');this.scanRows.replaceChildren();
       if(value.discovery){const scan=value.discovery;const source=this.node('p',undefined,'account-muted');source.textContent=scan.source||'';this.scanRows.append(source);
         if(scan.notice)this.scanRows.append(this.node('p',scan.notice,'account-muted'));

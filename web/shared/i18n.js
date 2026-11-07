@@ -2,6 +2,13 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"此前删除未确认，以上为仍存在的聊天。不会自动重试；请先在原客户端核对，再决定是否重新删除。":"The earlier deletion is unconfirmed. These chats still exist. Check the original client before deciding whether to delete them again; there is no automatic retry.",
+"已核对，重新删除以上仍存在的聊天":"I have checked; delete the remaining chats listed above again",
+"原客户端仍持有此聊天，尚未删除；请在原客户端删除，或释放该聊天后重新确认":"The original client still holds this chat. Nothing was deleted. Delete it there, or release the chat and confirm again.",
+"此前删除结果仍待核对；不会重复提交，请重新打开删除菜单核对":"The earlier deletion is unconfirmed and will not be resubmitted. Reopen the delete menu to check.",
+"删除记录已变化，请重新打开菜单核对":"Deletion records changed. Reopen the menu to check.",
+"请重新核对待确认的删除记录":"Check the unconfirmed deletion records again.",
+
 "永久删除…":"Delete permanently…",
 "永久删除聊天？":"Permanently delete these chats?",
 "正在核对删除范围…":"Checking affected chats…",
@@ -149,6 +156,18 @@ const en={
 "客户端保存请求无效":"Invalid client configuration request.",
 "接入名称":"Connection name",
 "Codex 配置目录":"Codex configuration directory",
+"Codex 配置目录（.codex 文件夹）":"Codex configuration directory (.codex folder)",
+"选择要保存的配置":"Choose a configuration to save",
+"移除此客户端配置":"Remove this client configuration",
+"移除仅取消网关中的客户端登记，保留原应用、账号、聊天和配置文件。":"Removing this client only unregisters it from the gateway. Its application, accounts, chats and configuration files are preserved.",
+"确认移除此客户端配置？原应用、账号、聊天和配置文件都会保留。":"Remove this client configuration? Its application, accounts, chats and configuration files will be preserved.",
+"客户端配置已移除":"Client configuration removed",
+"请先停用此客户端的手机接入，再移除配置":"Disable mobile access for this client before removing its configuration.",
+"请确认移除此客户端配置":"Confirm removal of this client configuration.",
+"只能移除已添加的独立客户端":"Only added independent clients can be removed.",
+"此接入有排队或待核对操作，请先在原客户端处理":"This connection has queued or unconfirmed operations. Resolve them in the original client first.",
+"此客户端仍有网关终端或命令运行，请先关闭终端":"A gateway terminal or command is still running for this client. Close it first.",
+"此客户端正在处理操作，请稍后再移除配置":"This client is processing an operation. Try removing its configuration again later.",
 "输入完整路径，或选择文件夹":"Enter a full path or choose a folder",
 "选择此电脑上的独立 Codex 配置目录，保留其中的账号和会话。默认 Codex 接入保持不变。":"Choose an independent Codex configuration directory on this computer. Its accounts and chats are preserved, along with the default connection.",
 "扫描配置":"Scan configurations",

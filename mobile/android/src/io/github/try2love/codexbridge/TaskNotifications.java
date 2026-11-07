@@ -21,10 +21,10 @@ final class TaskNotifications {
   createChannel(context, channel);
   String thread = event.optString("threadId"), host = event.optString("host", "local");
   String gateway = gatewayIdentity(context, origin);
-  String tag = thread.isEmpty() ? "inbox|" + gateway + "|" + stream + "|" + event.getString("id")
-      : chatTag(gateway, host, thread);
-  String eventKey = new org.json.JSONArray().put(stream)
-      .put(event.optString("sequence", event.getString("id"))).toString();
+  // Sequence is unique within a stream and also survives optional FCM delivery.
+  String eventId = event.optString("sequence", event.getString("id"));
+  String eventKey = new org.json.JSONArray().put(stream).put(eventId).toString();
+  String tag = "event|" + new org.json.JSONArray().put(gateway).put(stream).put(eventId);
   boolean repeated = false;
   // A new event may alert again; retrying the same event only updates its existing card.
   for (android.service.notification.StatusBarNotification note : manager.getActiveNotifications()) {
@@ -73,6 +73,8 @@ final class TaskNotifications {
  }
 
  static void clearChat(Context context, String origin, String thread, String host) {
+  // Only migrate the old per-chat card. New event cards survive viewing the chat;
+  // each is dismissed by its own tap/swipe or the explicit inbox-clear action.
   String tag = chatTag(gatewayIdentity(context, origin), host, thread);
   ((NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE)).cancel(tag, tag.hashCode() & 0x7fffffff);
  }

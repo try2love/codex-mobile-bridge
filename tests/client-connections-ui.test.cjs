@@ -8,7 +8,7 @@ function fixture({accounts=false}={}){
   const root={hidden:false,querySelector(selector){const provider=selector.includes('deepseek')?'deepseek':'claude';if(selector.includes('.client-auto-setup'))return articles[provider]?.querySelector('.client-auto-setup')||null;if(selector.startsWith('[data-client-config='))return articles[provider]||null;if(selector==='input')return accounts?articles.deepseek.querySelector('input'):input;if(selector==='[data-deepseek-home]')return input;if(selector==='[data-desktop-choose]')return choose;if(selector==='[data-claude-workspace]')return workspace;if(selector==='[data-claude-home]')return claudeHome;if(selector==='[data-claude-data]')return claudeData;return statuses[provider];},querySelectorAll(selector){if(selector==='[data-desktop-status]')return Object.values(statuses);if(selector.includes('data-desktop-action'))return [scan];return Object.values(articles).flatMap(article=>article.querySelectorAll(selector));}};
   const calls=[],errors=[],prompts=[],choices=[],initializations=[];let closeChoice=true,finishChoice,initializeChoice=true,finishInitialize,chosen='',confirmed=true,handler=async body=>body.action==='status'?{backends:{},deepseekHome:'/fixture'}:body.action==='accounts'?{accounts:[]}:{clients:[]};
   const listeners={},timers=[],storage=new Map(),pages=new Map(),selected=[];
-  const layout={hasClient:id=>['codex','claude','deepseek'].includes(id)||id.startsWith('codex:')||pages.has(id),clientPage(id){if(pages.has(id))return pages.get(id);const page=node('section');pages.set(id,page);return page;},selectClient(id){selected.push(id);listeners['bridge-client-config']?.({detail:id});}};
+  const layout={hasClient:id=>['codex','claude','deepseek'].includes(id)||id.startsWith('codex:')||pages.has(id),clientPage(id){if(pages.has(id))return pages.get(id);const page=node('section');pages.set(id,page);return page;},forgetClient(id){pages.delete(id);this.selectClient(null);},selectClient(id){selected.push(id);listeners['bridge-client-config']?.({detail:id});}};
   const context=vm.createContext({ClientLifecycle:{...require('../web/features/clients/client-lifecycle.js'),chooseDisable(client){choices.push(client.id);return closeChoice==='pending'?new Promise(resolve=>finishChoice=resolve):closeChoice;}},CustomEvent:class{constructor(type){this.type=type;}},document:{body:node('body'),documentElement:{},getElementById:id=>nodes[id],createElement:node,querySelector:()=>null,querySelectorAll:selector=>selector==='[data-i18n]'?Object.values(statuses):[],hidden:false,addEventListener(type,fn){listeners[type]=fn;},removeEventListener(type,fn){if(listeners[type]===fn)delete listeners[type];},dispatchEvent(event){listeners[event.type]?.(event);}},setInterval(fn,ms){timers.push({fn,ms});return timers.length;},clearInterval(id){if(id)timers[id-1]=null;},setTimeout(){},clearTimeout(){},localStorage:{getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value)},window:{confirm:message=>{prompts.push(message);return confirmed;},GatewayLayout:layout}});
   context.ClientLifecycle.chooseInitialize=client=>{initializations.push(client.id);return initializeChoice==='pending'?new Promise(resolve=>finishInitialize=resolve):initializeChoice;};
   for(const file of ['web/shared/i18n.js','web/features/accounts/wsl-accounts.js',...(accounts?['web/features/accounts/api-editor.js','web/features/accounts/client-accounts.js']:[]),'desktop/features/clients/desktop-sessions.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
@@ -508,6 +508,7 @@ test('shared independent profile form scans, picks and manually saves the select
   if(family==='codex')await ui.panel.codexProfile();else await ui.panel.clientProfile(family);
   const dialog=ui.document.body.children[0],form=dialog.querySelector('form'),inputs=form.querySelectorAll('input'),button=text=>form.querySelectorAll('button').find(b=>b.textContent===text);
   assert.equal(ui.calls.length,1);assert.equal(ui.calls[0].operation,'list');assert.equal(form.querySelector('.error').textContent,'');
+  assert.ok(button('保存配置'));if(family==='codex')assert.match(form.querySelectorAll('label')[1].textContent,/\.codex 文件夹/);
   await button('扫描配置').onclick();assert.deepEqual(JSON.parse(JSON.stringify(ui.calls.at(-1))),{action:'client-profiles',operation:'scan',family,kind});assert.equal(button('/wrong'),undefined);
   button(profile.home).onclick();assert.equal(inputs[1].value,profile.home);
   ui.setChosen('/fixture/chosen');await button('选择文件夹').onclick();assert.equal(inputs[1].value,'/fixture/chosen');
@@ -527,6 +528,25 @@ test('independent native management reuses account controls and scopes every acc
   assert.deepEqual(JSON.parse(JSON.stringify(ui.calls)),[{action:'accounts',provider:family,entry,operation:'list'},{action:'accounts',provider:family,entry,operation:'models-draft',baseUrl:'https://fixture.invalid'},{action:'account',provider:family,entry,refresh:true}]);
   await ui.panel.manageClient(client);assert.equal(ui.pages.size,1);assert.equal(ui.panel.accountPanels[entry],account);
  }
+});
+
+test('independent client removal confirms scope and does not quit or erase native data',async()=>{
+ for(const family of ['codex','claude','deepseek']){
+  const ui=fixture(),id=family+':'+'b'.repeat(32),client={id,family,kind:family==='codex'?'codex-local':'desktop-profile',name:'Independent',enabled:true,configured:true};ui.panel.clients=[client];
+  ui.setHandler(async body=>body.action==='clients'?{clients:[]}:{removed:id});
+  await ui.panel.manageClient(client);const control=ui.panel.removalControls.get(id);assert.ok(control);const remove=control.querySelector('button');
+  await remove.onclick();assert.equal(ui.calls.length,0);assert.match(ui.errors.at(-1),/先停用/);
+  client.enabled=false;ui.confirm(false);await remove.onclick();assert.equal(ui.calls.length,0);assert.match(ui.prompts.at(-1),/原应用、账号、聊天和配置文件都会保留/);
+  ui.confirm(true);await remove.onclick();assert.deepEqual(JSON.parse(JSON.stringify(ui.calls[0])),{action:'client-profiles',operation:'remove',family,entry:id,confirmed:true});
+  assert.equal(ui.panel.removalControls.has(id),false);assert.equal(ui.selected.at(-1),null);assert.ok(!ui.calls.some(row=>['stop','quit','initialize'].includes(row.action)));
+ }
+ const ui=fixture();await ui.panel.manageClient({id:'codex',name:'Codex'});assert.equal(ui.panel.removalControls.size,0);
+});
+
+test('failed removal preserves the independent management page for retry',async()=>{
+ const ui=fixture(),id='deepseek:'+'d'.repeat(32),client={id,family:'deepseek',kind:'desktop-profile',name:'Independent',enabled:false};ui.panel.clients=[client];
+ ui.setHandler(async()=>{throw Error('Pending operation');});await ui.panel.manageClient(client);const control=ui.panel.removalControls.get(id);
+ await control.querySelector('button').onclick();assert.equal(ui.panel.removalControls.get(id),control);assert.equal(control.querySelector('button').disabled,false);assert.equal(ui.selected.at(-1),id);
 });
 
 test('profile errors retain the form and unsupported capabilities never open a default page',async()=>{

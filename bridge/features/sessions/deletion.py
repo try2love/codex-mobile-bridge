@@ -65,7 +65,26 @@ class DeleteCommands:
         self.write_json = write_json
         self.lock = threading.RLock()
 
-    def perform(self, identifier, request_id, expected, read, existing, prepare):
+    def _pending(self, entries, scope, existing):
+        pending = []
+        for key, row in entries.items():
+            if row['status'] == 'unknown' and set(row['scope']) & set(scope):
+                if existing(row['scope']):
+                    pending.append(key)
+                else:
+                    row['status'] = 'confirmed'
+        return sorted(pending)
+
+    def preview(self, read, existing):
+        with self.lock:
+            snapshot = read()
+            entries = json.loads(self.path.read_text(encoding='utf-8')) if self.path.exists() else {}
+            pending = self._pending(entries, snapshot['scope'], existing)
+            if entries:
+                self.write_json(self.path, entries)
+            return {**snapshot, **({'retry': pending} if pending else {})}
+
+    def perform(self, identifier, request_id, expected, read, existing, prepare, retry=None):
         uuid.UUID(identifier)
         uuid.UUID(request_id)
         if (not isinstance(expected, list) or not expected or not all(isinstance(sid, str) for sid in expected)
@@ -75,17 +94,22 @@ class DeleteCommands:
         for sid in expected:
             uuid.UUID(sid)
         scope = sorted(expected)
+        if retry is not None:
+            if not isinstance(retry, list) or not all(isinstance(key, str) for key in retry) or len(set(retry)) != len(retry):
+                raise ValueError('请重新核对待确认的删除记录')
+            for key in retry:
+                uuid.UUID(key)
         with self.lock:
             entries = json.loads(self.path.read_text(encoding='utf-8')) if self.path.exists() else {}
             old = entries.get(request_id)
             if old and (old['id'] != identifier or old['scope'] != scope):
                 raise ValueError('相同请求标识不能用于不同删除操作')
             # Missing metadata is evidence only for a previously persisted scope.
-            for row in entries.values():
-                if row['status'] == 'unknown' and set(row['scope']) & set(scope):
-                    if existing(row['scope']):
-                        raise ValueError('此前删除结果仍待核对；不会重复提交，请在原客户端检查')
-                    row['status'] = 'confirmed'
+            pending = self._pending(entries, scope, existing)
+            if pending and (old or sorted(retry or []) != pending):
+                raise ValueError('此前删除结果仍待核对；不会重复提交，请重新打开删除菜单核对')
+            if retry and sorted(retry) != pending:
+                raise ValueError('删除记录已变化，请重新打开菜单核对')
             if old:
                 self.write_json(self.path, entries)
                 return dict(old)
@@ -93,6 +117,7 @@ class DeleteCommands:
             if snapshot['scope'] != scope:
                 raise ValueError('聊天或侧边聊天已变化，请重新确认删除范围')
             call = prepare(snapshot)
+            covered = [key for key in pending if set(existing(entries[key]['scope'])) <= set(scope)]
             result = {'id': identifier, 'scope': scope, 'status': 'unknown'}
             entries[request_id] = result
             self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -104,7 +129,13 @@ class DeleteCommands:
                 self.write_json(self.path, entries)
                 raise
             except Exception as exc:
+                for key in covered:
+                    entries[key].update(status='superseded', supersededBy=request_id)
+                self.write_json(self.path, entries)
                 raise CreationError('删除结果待核对；不会重复提交，请在原客户端检查') from exc
+            for key in covered:
+                entries[key].update(status='superseded', supersededBy=request_id)
+            self.write_json(self.path, entries)
             if existing(scope):
                 raise CreationError('删除结果待核对；不会重复提交，请在原客户端检查')
             result['status'] = 'confirmed'

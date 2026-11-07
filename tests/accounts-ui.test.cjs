@@ -127,6 +127,21 @@ test('scanned APIs fetch models using opaque candidate IDs and import the select
  ui.panel.modelOptions.value='model-two';ui.panel.modelOptions.onchange();await ui.panel.form.onsubmit({preventDefault(){}});
  assert.equal(ui.requests[1].action,'import');assert.equal(ui.requests[1].model,'model-two');assert.equal(ui.requests[1].candidateId,'candidate');
 });
+test('scan then save reuses candidate import and never changes the active configuration directory',async()=>{
+ const ui=fixture(true);await ui.panel.refresh();ui.panel.scanSource.input.value='/fixture/.codex-custom';
+ assert.equal(ui.panel.saveScanButton.disabled,true);
+ ui.setRequest(async request=>({...ui.value(),discovery:{source:'/fixture/.codex-custom',candidates:[{id:'official',kind:'chatgpt',name:'Login',canImport:true,imported:request.action==='import'}]}}));
+ await ui.panel.scanButton.onclick();assert.equal(ui.panel.saveScanButton.disabled,false);await ui.panel.saveScanButton.onclick();
+ assert.deepEqual(JSON.parse(JSON.stringify(ui.requests)),[{action:'scan',source:'/fixture/.codex-custom'},{action:'import',candidateId:'official'}]);assert.equal(ui.panel.saveScanButton.disabled,true);
+ ui.panel.scanSource.input.value='/fixture/other';ui.panel.scanSource.input.oninput();assert.equal(ui.panel.saveScanButton.disabled,true);
+});
+test('multiple scan results require selection and API save keeps existing model validation',async()=>{
+ const ui=fixture(true);await ui.panel.refresh();ui.setRequest(async()=>({...ui.value(),discovery:{candidates:[{id:'one',kind:'chatgpt',name:'Login',canImport:true},{id:'two',kind:'api',name:'API',baseUrl:'https://fixture.test/v1',canImport:true}]}}));
+ await ui.panel.scanButton.onclick();assert.equal(ui.panel.saveScanButton.disabled,true);assert.equal(ui.panel.scanChoice.hidden,false);
+ ui.panel.scanChoice.value='two';ui.panel.scanChoice.onchange();assert.equal(ui.panel.saveScanButton.disabled,false);await ui.panel.saveScanButton.onclick();
+ assert.equal(ui.requests.length,1);assert.equal(ui.panel.importId,'two');assert.equal(ui.panel.addDetails.open,true);assert.equal(ui.panel.key.input.disabled,true);assert.equal(ui.panel.model.input.value,'');
+ ui.panel.clear();assert.equal(ui.panel.scanSelection,'');
+});
 test('a delayed model response does not refill a changed API form',async()=>{
  const ui=fixture(true);await ui.panel.refresh();ui.panel.kind.value='api';ui.panel.url.input.value='https://first.test/v1';ui.panel.key.input.value='fixture-key';
  let finish;ui.setRequest(()=>new Promise(r=>finish=r));const pending=ui.panel.modelsButton.onclick();ui.panel.url.input.value='https://second.test/v1';ui.panel.url.input.oninput();

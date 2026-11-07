@@ -1,5 +1,6 @@
 """Lazy execution owners for registered native profiles; default owners stay put."""
 from functools import partial
+from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
@@ -122,6 +123,10 @@ class ClientInstances:
         return result
 
     def resolve(self, family, entry, require_enabled=True):
+        with self.lock:
+            return self._resolve(family, entry, require_enabled)
+
+    def _resolve(self, family, entry, require_enabled):
         selected = self.registry.resolve(family, entry, require_enabled=require_enabled)
         if selected is None:
             if require_enabled:
@@ -163,7 +168,7 @@ class ClientInstances:
             'profileInitialized': lambda: self.registry.pin_initialized_roots(selected.id)}
 
     def control(self, value):
-        allowed = {'action', 'operation', 'family', 'kind', 'label', 'home', 'application'}
+        allowed = {'action', 'operation', 'family', 'kind', 'label', 'home', 'application', 'entry', 'confirmed'}
         if not isinstance(value, dict) or set(value)-allowed:
             raise ValueError('独立配置管理请求无效')
         operation = value.get('operation', 'list')
@@ -183,6 +188,33 @@ class ClientInstances:
                 # registrations; choosing a folder does not import any accounts.
                 result['candidates'] = candidates
             return result
+        if operation == 'remove':
+            if set(value)-{'action', 'operation'} != {'family', 'entry', 'confirmed'} or value['confirmed'] is not True:
+                raise ValueError('请确认移除此客户端配置')
+            entry = value['entry']
+            with self.manager.client_lock, self.lock:
+                row = next((row for row in self.registry.list(family) if row['id'] == entry), None)
+                if row is None:
+                    raise ValueError('接入实例未登记')
+                if row['enabled']:
+                    raise ValueError('请先停用此客户端的手机接入，再移除配置')
+                child = self.children.get(entry)
+                lock = child.locks[family] if child else None
+                if lock and not lock.acquire(timeout=3):
+                    raise ValueError('此客户端正在处理操作，请稍后再移除配置')
+                try:
+                    with child._changing(family) if child else nullcontext():
+                        if child:
+                            child.assert_detachable()
+                        if child:
+                            self.children.pop(entry, None)
+                            child.close()
+                        self.registry.remove(family, entry)
+                finally:
+                    if lock:
+                        lock.release()
+                self.manager.client_cache = None
+            return {'removed': entry, 'instances': self.registry.list(), 'capabilities': self.capabilities()}
         if operation == 'save' and family == 'zcode' and value.get('kind') == 'default-application':
             if set(value)-{'action', 'operation'} != {'family', 'kind', 'application'}:
                 raise ValueError('客户端保存请求无效')

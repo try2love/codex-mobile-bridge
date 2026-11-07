@@ -39,6 +39,11 @@ async function runSessionMenuBrowserChecks(){
     check(menu.box.textContent.includes('原生侧边聊天')&&document.activeElement.textContent==='取消','delete shows native scope and defaults to cancel');
     await click('取消');check(!calls.some(row=>row[0]==='delete'),'cancel never deletes');
     await click('永久删除…');await click('确认永久删除');check(calls.filter(row=>row[0]==='delete').length===1&&calls.at(-1)[1]===deletion,'delete dispatches precisely the confirmed scope once');
+    const retrySnapshot={...deletion,retry:['previous-delete']};
+    menu.show({...deleteContext,deletion:async snapshot=>{if(snapshot)calls.push(['retryDelete',snapshot]);return retrySnapshot;}},{element:anchor});await click('永久删除…');
+    check(menu.box.textContent.includes('此前删除未确认')&&[...menu.box.querySelectorAll('button')].find(b=>b.textContent==='确认永久删除').disabled,'unconfirmed deletion needs explicit re-confirmation');
+    const retryCheck=menu.box.querySelector('input[type=checkbox]');retryCheck.checked=true;retryCheck.dispatchEvent(new Event('change'));
+    await click('确认永久删除');check(calls.filter(row=>row[0]==='retryDelete').length===1&&calls.at(-1)[1]===retrySnapshot,'reconfirmation submits exact old receipt and current scope');
     let deletionLoaded;menu.show({...deleteContext,deletion:()=>new Promise(done=>{deletionLoaded=done;})},{element:anchor});await click('永久删除…');await click('返回会话菜单');deletionLoaded(deletion);await new Promise(done=>setTimeout(done,0));check(!menu.box.textContent.includes('确认永久删除'),'late scope does not replace a returned menu');
     const before=calls.length;menu.show({...context(),isCurrent:()=>false},{element:anchor});await click('置顶会话');check(calls.length===before&&menu.box.querySelector('[role="alert"]'),'stale authentication blocks write');
     let resolve;menu.show({...context(),organization:()=>new Promise(done=>{resolve=done;})},{element:anchor});await click('项目');await click('返回会话菜单');resolve({projects:[],sections:[]});await new Promise(done=>setTimeout(done,0));check(!menu.box.textContent.includes('移出项目'),'late native list never paints another view');

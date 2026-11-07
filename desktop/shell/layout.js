@@ -32,9 +32,11 @@
   let client=null;const clientPages=new Map();
   function hasClient(id){return id?.startsWith('codex:')||!!document.querySelector('[data-client-config="'+id+'"]');}
   function clientPage(id){
+    if(id==='codex'||id?.startsWith('codex:'))return accounts;
     if(clientPages.has(id))return clientPages.get(id);
     const page=module('accounts');page.dataset.clientConfig=id;page.classList.add('client-config-hidden');page.hidden=$('clients-page').hidden;clientPages.set(id,page);return page;
   }
+  function forgetClient(id){const page=clientPages.get(id);if(page){page.remove();clientPages.delete(id);}if(client===id)selectClient(null);}
   function selectClient(id){client=id;const section=id?.startsWith('codex:')?'codex':id;native.classList.toggle('client-config-hidden',!['claude','deepseek'].includes(id));back.hidden=!id;clients.classList.toggle('configuration-open',!!id);document.querySelectorAll('[data-client-config]').forEach(n=>n.classList.toggle('client-config-hidden',n.dataset.clientConfig!==section));codexPaths.classList.toggle('client-config-hidden',section!=='codex'||!!id?.startsWith('codex:'));(id?back:clients).scrollIntoView({block:'start'});document.dispatchEvent(new CustomEvent('bridge-client-config',{detail:id}));}
   back.onclick=()=>selectClient(null);selectClient(null);
   // Keep connection setup and device controls visible; secondary settings stay compact.
@@ -52,5 +54,5 @@
   const footer=document.createElement('div');footer.className='entrance-footer';const network=text('button','管理网络访问 →');network.type='button';network.dataset.jump='network';footer.append(network);entrances.append(footer);
   let state;
   document.querySelectorAll('[data-open-workbench]').forEach(b=>b.onclick=()=>{const url=state?.urls?.find(url=>url.startsWith('https:'))||state?.urls?.[0];if(url)window.bridgeDesktop.open(url);});
-  window.GatewayLayout={selectClient,hasClient,clientPage,tab(name,{section='general'}={}){description.dataset.i18n=descriptions[name];description.textContent=t(descriptions[name]);back.hidden=name!=='accounts'||!client;maintenanceTabs.hidden=name!=='advanced';if(name==='advanced')maintenanceTab(['updates','logs'].includes(section)?section:'general');},update(value,{starting=false,stopping=false}={}){state=value;document.querySelectorAll('[data-gateway-status]').forEach(n=>n.textContent=t(stopping?'正在停止网关':starting?'正在启动网关':value.runtime.running?'网关运行中':'网关未启动'));document.querySelectorAll('[data-open-workbench]').forEach(b=>b.disabled=!value.runtime.running||!value.urls?.length);}};
+  window.GatewayLayout={selectClient,hasClient,clientPage,forgetClient,tab(name,{section='general'}={}){description.dataset.i18n=descriptions[name];description.textContent=t(descriptions[name]);back.hidden=name!=='accounts'||!client;maintenanceTabs.hidden=name!=='advanced';if(name==='advanced')maintenanceTab(['updates','logs'].includes(section)?section:'general');},update(value,{starting=false,stopping=false}={}){state=value;document.querySelectorAll('[data-gateway-status]').forEach(n=>n.textContent=t(stopping?'正在停止网关':starting?'正在启动网关':value.runtime.running?'网关运行中':'网关未启动'));document.querySelectorAll('[data-open-workbench]').forEach(b=>b.disabled=!value.runtime.running||!value.urls?.length);}};
 })();

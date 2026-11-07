@@ -283,6 +283,23 @@ class Instances:
                             for row in self._codex_rows())
             return rows
 
+    def remove(self, family, entry):
+        """Forget an explicit registration, never its native or private files."""
+        self._family(family)
+        if not isinstance(entry, str) or not ENTRY.fullmatch(entry) or entry.split(':')[0] != family:
+            raise ValueError('只能移除已添加的独立客户端')
+        with self._registration_lock():
+            if family == 'codex' and self.codex is not None:
+                self.codex.remove_local(entry)
+                return
+            rows = self._load()
+            row = next((row for row in rows if row['id'] == entry), None)
+            if row is None:
+                raise ValueError('接入实例未登记')
+            if self._enabled(row):
+                raise ValueError('请先停用此客户端的手机接入，再移除配置')
+            self._write([row for row in rows if row['id'] != entry])
+
     def _checked(self, row):
         profile, roots = self._native(row['family'], row['kind'], row['home'])
         if instance_id(row['family'], profile.home) != row['id'] or set(roots) != set(row['roots']):

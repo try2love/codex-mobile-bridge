@@ -26,7 +26,7 @@ DEFAULTS = {'enabled': False, 'server': 'https://ntfy.sh', 'topic': '', 'token':
             'webhookEnabled': False, 'webhookUrl': '', 'webhookHeaders': {},
             'webhookProvider': 'auto', 'webhookSignEnabled': False, 'webhookSignSecret': '',
             'webhookBodyTemplate': '{\n  "event": "{{event}}",\n  "title": "{{title}}",\n  "body": "{{body}}",\n  "session_name": "{{session_name}}",\n  "url": "{{url}}"\n}',
-            'clickBase': '', 'includeTitle': False, 'addressEnabled': True, 'addressName': '', 'securityEnabled': True, 'mobileEnabled': False, 'mobileAppLinks': False}
+            'clickBase': '', 'includeTitle': True, 'addressEnabled': True, 'addressName': '', 'securityEnabled': True, 'mobileEnabled': True, 'mobileAppLinks': False}
 
 WEBHOOK_FIELDS = frozenset(('event', 'event_id', 'title', 'body', 'session_name', 'url', 'client', 'host', 'count'))
 WEBHOOK_TEMPLATES = {

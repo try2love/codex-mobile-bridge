@@ -1309,10 +1309,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not write:
                     return self.output(200, bridge.deletion(thread_id))
                 body = self.read_json()
-                if (set(body) != {'id', 'scope', 'confirmed'} or body['confirmed'] is not True
+                if (set(body) - {'retry'} != {'id', 'scope', 'confirmed'} or body['confirmed'] is not True
                         or not isinstance(body['id'], str)):
                     raise ValueError('请确认永久删除及受影响的聊天范围')
-                return self.output(200, bridge.deletion(thread_id, body['id'], body['scope']))
+                return self.output(200, bridge.deletion(thread_id, body['id'], body['scope'],
+                    **({'retry': body['retry']} if 'retry' in body else {})))
             if action == 'organization':
                 if not hasattr(bridge, 'organization'):
                     raise ValueError('此客户端暂未提供原生项目与分区')

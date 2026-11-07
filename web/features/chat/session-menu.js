@@ -222,8 +222,20 @@ class SessionMenu {
       box.append(this.node('p','sm-explanation',this.t('以下聊天及其子任务的历史与原生关联内容将永久删除，无法撤销。正在运行的任务须先停止。')));
       const list=this.node('ul','sm-explanation');for(const row of snapshot.sessions)list.append(this.node('li','',row.title));box.append(list);
       if(snapshot.subagentCount)box.append(this.node('p','sm-explanation',this.t('包含子任务：')+snapshot.subagentCount));
+      let verified;
+      if(snapshot.retry?.length){
+        box.append(this.node('p','sm-explanation',this.t('此前删除未确认，以上为仍存在的聊天。不会自动重试；请先在原客户端核对，再决定是否重新删除。')));
+        const label=this.node('label','sm-explanation');verified=document.createElement('input');verified.type='checkbox';
+        label.append(verified,this.node('span','',this.t('已核对，重新删除以上仍存在的聊天')));box.append(label);
+      }
       const actions=this.node('div','sm-confirm-actions'),confirm=this.node('button','primary',this.t('确认永久删除')),cancel=this.node('button','primary',this.t('取消'));
-      confirm.type=cancel.type='button';confirm.onclick=()=>this.execute(()=>context.deletion(snapshot),confirm);cancel.onclick=()=>this.render();
+      if(verified){confirm.disabled=true;verified.onchange=()=>{confirm.disabled=!verified.checked;};}
+      confirm.type=cancel.type='button';confirm.onclick=async()=>{
+        if(verified&&!verified.checked)return;
+        if(verified)verified.disabled=true;
+        try{await this.execute(()=>context.deletion(snapshot),confirm);}
+        finally{if(verified){verified.disabled=false;confirm.disabled=!verified.checked;}}
+      };cancel.onclick=()=>this.render();
       actions.append(confirm,cancel);box.append(actions);this.position();cancel.focus();
     }catch(error){
       if(!active())return;pending.remove();const message=this.node('p','sm-error',this.t(error.message));message.setAttribute('role','alert');box.append(message);this.position();

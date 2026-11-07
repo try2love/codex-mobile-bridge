@@ -35,13 +35,13 @@ IPC 集成用例先证实旧实现返回空列表，再验证修正后第二张�
 
 ## 原生跳过状态的边界（#133）
 
-上述“已回答”归并不能消除原生界面中仅点击“跳过”的问题。2026-11-07 对本机 Codex `26.1103.31037`（build `25241`）的只读核对确认，这一动作与提交回复走不同路径：
+上述“已回答”归并不能消除原生界面中仅点击“跳过”的问题。2026-11-07 对本机 Codex `26.1103.31037`（build `25241`）以及 2026-11-08 对已改名为 `ChatGPT.app` 的 `26.1103.41825`（build `25679`）的只读核对均确认，这一动作与提交回复走不同路径：
 
 - 原生问题组件调用 `HAYt._E`，只把当前问题的 `HAYt.TH` 状态更新为 `isSkipped: true`，同时隐藏对应桌面通知。该状态以 `hostId/threadId/entityKey/itemId` 定位，不写入问题回复消息。
 - `TH` 使用 `zTeN.bD → jwtq.bD → Nmf8.T` 的 renderer 内存 signal-family；`owner` 只用于内存状态的归属和释放。原生 `Lezo` 从历史重建时仅取得问题与已接受回复，`HAYt.zJ` 在没有既有内存状态时初始化 `isSkipped: false`，没有从历史读取跳过字段。
 - 当前安装包的原生 IPC 方法表以及对应处理器没有异步问题跳过的读写或广播方法。`thread-follower-submit-user-input` 调用 `replyWithUserInputResponse`，处理的是有原生 `requestId` 的同步输入请求，不能拿异步问题 ID 代替它。Bridge 当前接收的线程历史也不能据此推断桌面已经跳过某一个问题。
 
-证据定位于安装包 `webview/assets/async/182735.e33af7cdca.js` 的 `HAYt/Lezo/uHDr`，`webview/assets/async/42793.61ccb40e22.js` 的原生跳过事件，以及 `.vite/build/early-bootstrap.js` 的 IPC 版本表。这些名称只记录本次版本的核查位置，不作为 Bridge 对其他版本的稳定接口。
+旧版证据定位于安装包 `webview/assets/async/182735.e33af7cdca.js` 的 `HAYt/Lezo/uHDr`。新版对应文件为 `182735.d1916dd704.js`，状态 family 的实现位于 `189497.7105543924.js`；`42793.61ccb40e22.js` 的原生跳过事件仍只调用通知隐藏与 `HAYt._E`。新版 `.vite/build/early-bootstrap.js` 包含 18 个 `thread-follower-*` 操作，没有问题跳过或读取跳过状态的方法。两版的 `Lezo` 都只按已接受回复重建状态，`zJ` 都在新建内存项时将 `isSkipped` 设为 `false`。这些名称只记录核查位置，不作为 Bridge 对其他版本的稳定接口。
 
 因此 #133 的原生双向跳过仍未实现。本轮不添加会伪造回复、触发模型或只清除 Bridge 卡片的“跳过”入口，也不修改原 App、读取或注入 renderer 内存、操作真实用户聊天来绕过该接口缺口。保留现有未答集合比把未同步的局部隐藏宣称为双端一致更符合数据语义。
 

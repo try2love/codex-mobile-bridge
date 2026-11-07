@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import threading
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
@@ -233,8 +235,58 @@ class ClientInstancesTests(unittest.TestCase):
         other.configure(first['id'], False)
         self.assertFalse(self.registry.list('claude')[0]['enabled'])
 
+    def test_remove_only_disabled_registration_preserves_native_and_gateway_data(self):
+        home = self.home('one')
+        (home/'account.json').write_text('preserve native account')
+        one = self.registry.register(self.request(home))
+        two = self.registry.register(self.request(self.home('two'), family='deepseek'))
+        state = self.registry.resolve('claude', one['id'], require_enabled=False).state_root
+        state.mkdir(parents=True)
+        (state/'receipts.json').write_text('preserve receipts')
+        self.registry.configure(one['id'], True)
+        with self.assertRaisesRegex(ValueError, '停用'):
+            self.registry.remove('claude', one['id'])
+        self.registry.configure(one['id'], False)
+        home.rename(self.root/'moved-native')
+        self.registry.remove('claude', one['id'])
+        self.assertEqual(self.registry.list(), [two])
+        self.assertEqual((state/'receipts.json').read_text(), 'preserve receipts')
+        self.assertEqual((self.root/'moved-native/account.json').read_text(), 'preserve native account')
+        for family, entry in [('claude', 'claude'), ('deepseek', one['id']), ('claude', one['id'])]:
+            with self.subTest(entry=entry), self.assertRaises(ValueError):
+                self.registry.remove(family, entry)
+
 
 class DelegatedCodexInstancesTests(unittest.TestCase):
+    def test_remove_disabled_management_owner_drains_work_and_forgets_only_registration(self):
+        from bridge.app.service import Bridge
+        from bridge.features.accounts.operation_gate import OperationGate
+        with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as directory:
+            root=Path(directory);home=root/'.codex-custom';home.mkdir();(home/'config.toml').write_text('model="fixture"')
+            owner=SimpleNamespace(entry_gate=OperationGate(),submit_lock=threading.RLock(),create_lock=threading.RLock(),message_lock=threading.RLock(),
+                submissions={},creations={},message_actions={},goal_commands={},terminals=SimpleNamespace(lock=threading.RLock(),jobs={},sessions={}),
+                cli_sessions=SimpleNamespace(cli_connections=lambda:[]),side_chats=SimpleNamespace(lock=threading.RLock(),chats={}),
+                accounts=SimpleNamespace(lock=threading.RLock(),enrollment=None))
+            owner.assert_detachable=functools.partial(Bridge.assert_detachable,owner);owner.close=Mock()
+            entries=Entries(root/'gateway',local_factory=lambda row,directory:owner)
+            registry=Instances(root/'gateway',codex=entries)
+            row=registry.register({'family':'codex','kind':'codex-local','home':str(home),'label':'Independent'})
+            registry.configure(row['id'],False);self.assertIs(entries.get(row['id'],management=True),owner)
+            owner.submissions['fixture']={'status':'unknown'}
+            with self.assertRaisesRegex(ValueError,'待核对'):registry.remove('codex',row['id'])
+            owner.submissions.clear();owner.terminals.jobs['fixture']=SimpleNamespace(done=threading.Event())
+            with self.assertRaisesRegex(ValueError,'终端'):registry.remove('codex',row['id'])
+            owner.terminals.jobs.clear()
+            with patch.object(owner.entry_gate,'acquire',return_value=False) as acquire:
+                with self.assertRaisesRegex(ValueError,'正在处理'):registry.remove('codex',row['id'])
+                acquire.assert_called_once_with(timeout=3)
+            owner.close.assert_not_called()
+            registry.remove('codex',row['id']);owner.close.assert_called_once()
+            self.assertEqual(registry.list(),[]);self.assertNotIn(row['id'],entries.bridges)
+            self.assertTrue((home/'config.toml').is_file())
+            with self.assertRaises(KeyError):entries.get(row['id'],management=True)
+            self.assertEqual(Entries(root/'gateway').entries,[])
+
     def test_existing_codex_ids_and_storage_remain_and_no_factory_is_called(self):
         with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as directory:
             root = Path(directory).resolve();default = root/'codex';default.mkdir();home = root/'other';home.mkdir()

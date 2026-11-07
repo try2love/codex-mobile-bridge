@@ -70,6 +70,8 @@ npm run test:browser
 
 Android 后台通知定向验证：`python scripts/test-mobile-events.py` 通过真实 JSON 和回环 HTTP 覆盖增量读取、服务重建续收、事件去重、流重置、登录/删除竞态、多电脑隔离与暂停，以及四地址来源选择、禁用时在途响应、重新开启的历史基线；首次运行下载并校验固定版本的 JVM JSON 测试依赖。`python scripts/test-mobile-notification-permissions.py --android-only` 验证 Android 通知权限、手动后台开关与启动失败回退。两者读取 `JAVA_HOME`。系统服务、锁屏通知、点击跳转与电池行为在 Android 设备或模拟器上另行验收。
 
+`python scripts/test-android-task-notifications.py` 复用已准备的 JVM JSON 依赖，编译生产通知呈现器并用系统服务替身验证不同事件独立保留、重试去重、点击路由及清理边界；不代表 Android 厂商通知分组或真机点击体验已通过。
+
 `python scripts/test-mobile-urls.py --android-only` 编译并执行 Android URL 与通知页面复用的边界验证；完整双平台入口还需 macOS 的 Swift 工具链。
 
 iOS 通知回归在 macOS 上运行 `scripts/test-ios-events.py`、`scripts/test-ios-notification-routing.py`、`scripts/test-ios-notification-source.py` 和 `scripts/test-ios-notification-sources.py`，并进入现有移动端 CI 作业。分别覆盖真实 HTTP 的多电脑隔离与生命周期、场景与通知点击去重、来源图标文件在提交通知时仍可读，以及按地址选择提醒、在途回调失效和重新开启的基线。后两项的通知系统类型使用替身，系统授权与实际送达仍需 iPhone 验收。

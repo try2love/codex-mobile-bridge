@@ -18,6 +18,8 @@ Android 原生设置采用 PR 的独立全屏窗口，主题仅作用于设置�
 
 原设置页局部主题的范围由[安卓 App 统一主题](../bug-fix/2026-10-28-android-app-theme.md)部分取代；本篇保留原采用范围及通知、权限、导航决定。
 
+Android 系统通知的会话级覆盖与查看后清理由[按事件独立保留](../bug-fix/2026-11-08-independent-mobile-notification-events.md)部分取代；不同事件保留各自卡片，后台服务与权限决定继续适用。
+
 ### 既有记录核对
 
 - [网关 Cookie 隔离](../../implemented/bug-fix/2026-10-13-gateway-cookie-namespace.md)互补：继续按连接地址选择 Cookie，检查点绑定令牌，不改变旧认证决定。

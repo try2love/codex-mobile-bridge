@@ -57,7 +57,8 @@ class NotificationTests(unittest.TestCase):
                 return session
         self.source = Source()
         self.manager = Notifications(self.source, self.directory, lambda: ['http://10.0.0.1:8787', 'https://example.com'])
-        save_settings(self.directory, {'enabled': True, 'topic': 'test', 'token': 'secret-token'})
+        save_settings(self.directory, {'enabled': True, 'topic': 'test', 'token': 'secret-token',
+                                       'includeTitle': False, 'mobileEnabled': False})
         self.manager.watch(self.thread, 'remote', True)
 
     def test_global_defaults_monitor_unwatched_chats_without_loading_history(self):
