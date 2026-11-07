@@ -2612,7 +2612,7 @@ const en={
   "在手机 ntfy 订阅相同服务与主题。公共匿名主题的 Token 留空；受保护主题按服务要求填写。": "Subscribe to the same server and topic in ntfy on your phone. Leave the token empty for public anonymous topics; use the required token for protected topics.",
   "发送 ntfy 测试通知": "Send ntfy test notification",
   "通知内容与跳转": "Notification content and links",
-  "两个通道共用聊天订阅与完成通知开关，分别发送和重试。默认只发送状态提醒，不包含聊天标题或内容。": "Both channels use the same chat subscriptions and completion options, with separate delivery and retries. By default, notifications contain status only, without chat titles or content.",
+  "两个通道共用聊天订阅与完成通知开关，分别发送和重试。通知默认显示聊天标题，可在下方关闭；不包含聊天正文。": "Both channels use the same chat subscriptions and completion options, with separate delivery and retries. Notifications show chat titles by default; you can turn this off below. Chat content is not included.",
   "手动填写的跳转地址优先；留空自动选择网关入口。局域网链接需要手机在同一网络。临时域名变化后，旧通知的链接可能失效。": "A manually entered click URL takes priority. Leave it empty to select a gateway address automatically. LAN links require the same network. Old temporary links may expire.",
   "填写 Bark App 中的 Device Key": "Enter the Device Key from the Bark app",
   "Bark Device Key 格式不正确，请仅填写密钥，不要粘贴完整推送地址": "Invalid Bark Device Key. Enter only the key, not the full push URL.",
