@@ -16,6 +16,12 @@ ENTRY = {**access.DEFAULTS, 'id': 'ts', 'name': '', 'enabled': True, 'accessMode
          'publicUrl': 'https://computer.example.ts.net', 'tailscaleNodeId': 'n123'}
 STATUS = {'Version': '1.102.4', 'BackendState': 'Running',
           'Self': {'DNSName': 'computer.example.ts.net.', 'ID': 'n123'}}
+OWNED_CONFIG = {
+    'TCP': {'443': {'HTTPS': True}},
+    'Web': {'computer.example.ts.net:443': {
+        'Handlers': {'/': {'Proxy': 'http://127.0.0.1:8787'}}}},
+    'AllowFunnel': {'computer.example.ts.net:443': True},
+}
 
 
 class TailscaleTests(unittest.TestCase):
@@ -77,6 +83,44 @@ class TailscaleTests(unittest.TestCase):
                     self.assertEqual(tunnel.last_status['state'], 'blocked')
                     tunnel.close()
         self.assertFalse(tailscale.port_in_use({'TCP': {'8443': {'HTTPS': True}}}, 443))
+
+    def test_matching_background_route_is_adopted_but_other_targets_are_not(self):
+        self.assertEqual(tailscale.route_state(OWNED_CONFIG, ENTRY, 8787), 'same')
+        different_target = json.loads(json.dumps(OWNED_CONFIG))
+        different_target['Web']['computer.example.ts.net:443']['Handlers']['/']['Proxy'] = 'http://127.0.0.1:9999'
+        self.assertEqual(tailscale.route_state(different_target, ENTRY, 8787), 'other')
+        self.assertEqual(tailscale.route_state(
+            different_target, ENTRY, 8787,
+            target_validator=lambda value: value == 'http://127.0.0.1:9999'), 'same')
+        private_rule = json.loads(json.dumps(OWNED_CONFIG))
+        private_rule['AllowFunnel']['computer.example.ts.net:443'] = False
+        self.assertEqual(tailscale.route_state(private_rule, ENTRY, 8787), 'other')
+        private_entry = {**ENTRY, 'tailscaleMode': 'serve'}
+        self.assertEqual(tailscale.route_state(private_rule, private_entry, 8787), 'same')
+        self.assertEqual(tailscale.route_state(OWNED_CONFIG, private_entry, 8787), 'other')
+
+    def test_matching_route_is_monitored_without_a_foreground_child(self):
+        with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as folder:
+            tunnel = tailscale.TailscaleTunnel(ENTRY, 8787, folder)
+            connected = threading.Event()
+            original = tunnel.status
+            def status(state, message, auth_url=''):
+                original(state, message, auth_url)
+                if state == 'connected' and '接管' in message:
+                    connected.set()
+            tunnel.status = status
+            with patch.object(tailscale, 'require_identity'), \
+                 patch.object(tailscale, 'executable', return_value='/tailscale'), \
+                 patch.object(tailscale, 'command_json', return_value=OWNED_CONFIG), \
+                 patch.object(tailscale.subprocess, 'Popen') as spawn:
+                try:
+                    tunnel.start()
+                    self.assertTrue(connected.wait(2))
+                    spawn.assert_not_called()
+                finally:
+                    tunnel.close()
+            self.assertFalse(tunnel.thread.is_alive())
+            self.assertEqual(tunnel.last_status['state'], 'stopped')
 
     def test_foreground_process_and_only_owned_process_are_stopped(self):
         with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as folder:
