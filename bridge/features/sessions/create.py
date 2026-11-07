@@ -370,6 +370,70 @@ def fork_copy(executable, codex_home, cwd, source_id, turn_id, title, settings, 
     return _runtime_operation(executable, codex_home, cwd, fork, isolated_home=isolated_home)
 
 
+SIDE_CHAT_BOUNDARY = """You are in a side conversation, separate from the main thread.
+Inherited history is reference context only. Do not continue any task, goal, plan,
+request, approval, or tool call from before this boundary. Wait for a new user
+message in this side conversation. Do not interact with inherited subagents.
+Answer questions and perform lightweight exploration without disrupting the main
+thread. Do not modify files, Git state, settings, or permissions unless the user
+explicitly requests that mutation in this side conversation. Shared files are
+live, not a snapshot. Keep explicitly requested changes local to the request."""
+
+
+def fork_attached(executable, codex_home, cwd, source_id, title, settings, created, *, isolated_home=False):
+    """Persist a native attached child; never start a turn or retain an owner.
+
+    The capability check precedes the durable intent's first native mutation.
+    Unknown fields are ignored by older servers, so a regular fork is not a
+    safe substitute. `created` records the child before subsequent writes.
+    """
+    if not executable:
+        raise ForkUnavailable('找不到 Codex 运行时，请检查电脑客户端配置')
+    kwargs = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
+    with tempfile.TemporaryDirectory(prefix='attached-schema-') as folder:
+        try:
+            result = subprocess.run([str(executable), 'app-server', 'generate-json-schema', '--experimental', '--out', folder],
+                                    capture_output=True, timeout=30, **kwargs)
+            def properties(name):
+                paths = list(Path(folder).rglob(name + '.json'))
+                return json.loads(paths[0].read_text(encoding='utf-8')).get('properties', {}) if paths else {}
+            supported = (not result.returncode and
+                         {'attachToSource', 'excludeTurns'} <= properties('ThreadForkParams').keys() and
+                         {'attachedToThreadId', 'useStateDbOnly'} <= properties('ThreadListParams').keys())
+        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+            raise ForkUnavailable('无法检查 Codex 原生侧边聊天支持，请检查运行时后重试') from exc
+    if not supported:
+        raise ForkUnavailable('此 Codex 版本不支持原生侧边聊天，请更新 Codex App 后重试')
+
+    def fork(request):
+        result = request('thread/fork', {**settings, 'threadId': source_id, 'cwd': cwd,
+                         'attachToSource': True, 'excludeTurns': True,
+                         'developerInstructions': SIDE_CHAT_BOUNDARY})
+        child = result['thread']['id']
+        uuid.UUID(child)
+        if child == source_id or result['thread'].get('ephemeral') is True:
+            raise CreationError('原生侧边聊天身份未确认，请检查父聊天，不会重复创建')
+        created(child)
+        if result.get('modelProvider') != settings['modelProvider'] or result.get('model') != settings['model'] or result.get('cwd') != cwd:
+            raise CreationError('侧边聊天的运行配置未确认，请检查父聊天，不会重复创建')
+        cursor, seen = None, set()
+        while True:
+            page = request('thread/list', {'attachedToThreadId': source_id, 'archived': False,
+                           'useStateDbOnly': True, 'limit': 100, 'cursor': cursor})
+            if any(row.get('id') == child for row in page.get('data', [])):
+                break
+            cursor = page.get('nextCursor')
+            if not cursor or cursor in seen:
+                raise CreationError('原生侧边聊天归属未确认，请检查父聊天，不会重复创建')
+            seen.add(cursor)
+        request('thread/inject_items', {'threadId': child, 'items': [{'type': 'message', 'role': 'user',
+                'content': [{'type': 'input_text', 'text': SIDE_CHAT_BOUNDARY}]}]})
+        request('thread/name/set', {'threadId': child, 'name': title})
+        return child
+    return _runtime_operation(executable, codex_home, cwd, fork, isolated_home=isolated_home,
+                              failure_message='侧边聊天创建结果尚未确认，请查看父聊天；不会重复创建')
+
+
 def open_project_in_desktop(cwd):
     # Native newThread navigation registers the folder and opens an empty
     # composer. Never include a prompt, message, or submit instruction.

@@ -1186,14 +1186,14 @@ class Handler(BaseHTTPRequestHandler):
                     raise PermissionError('侧边聊天需要启用网关密码保护')
                 owner = self.server.auth.key(self.token())
                 body = self.read_json() if write else {}
-                action = body.get('action') if write else 'read'
+                action = body.get('action') if write else 'list' if query.get('view') == ['native'] else 'read'
                 fields = {'create': {'action', 'creationId'}, 'send': {'action', 'id', 'text', 'submissionId', 'attachments', 'skills', 'mode', 'workMode'},
                           'catalog': {'action', 'id'}, 'skills': {'action', 'id', 'query', 'offset', 'refresh', 'selected'},
                           'linux-permission-options': {'action', 'id'},
                           'permissions': {'action', 'id', 'preset', 'confirmed'}, 'cancel-queued': {'action', 'id', 'submissionId'}, 'settings': {'action', 'id', 'model', 'effort'},
                           'close': {'action', 'id'}, 'stop': {'action', 'id'},
-                          'respond': {'action', 'id', 'requestId', 'response'}, 'read': set()}
-                if action not in fields or set(body) - fields[action] or (write and action == 'read'):
+                          'respond': {'action', 'id', 'requestId', 'response'}, 'read': set(), 'list': set()}
+                if action not in fields or set(body) - fields[action] or (write and action in ('read', 'list')):
                     raise ValueError('无效侧边聊天操作')
                 return self.output(200, bridge.side_chat(side_match[1], owner, action, body))
             agent_match = re.fullmatch(r"/api/sessions/([0-9a-f-]{36})/subagents", path)

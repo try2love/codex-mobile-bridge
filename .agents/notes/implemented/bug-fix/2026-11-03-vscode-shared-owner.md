@@ -23,3 +23,5 @@ Mac 实测使用临时 VS Code 用户目录、Codex 扩展 26.1021.22027、独�
 Windows 本机的旧扩展 26.602 采用 v7 流且缺少当前 owner 发现与跟随方法，不能据此宣称它具备新版双端同步能力。Windows 的目录同一性合同、未知归属和旧协议的隔离都有定向回归。上述 Mac 真实扩展验证不能替代 Windows 原 App 验收。
 
 本决定修订[独立客户端管理](../feature/2026-11-02-independent-codex-management.md)中关于 IDE 探测超时的接续策略，沿用[独立配置接入](../feature/2026-11-01-independent-codex-home.md)及[共享客户端外壳](../architecture/2026-11-02-shared-client-shell.md)的入口隔离。
+
+新建侧边聊天的临时存储决定已由[原生持久侧边聊天](../feature/2026-11-07-native-attached-side-chats.md)替代；以上旧临时运行时验证保留为历史证据，owner 归属与配置隔离约束不变。

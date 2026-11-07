@@ -186,16 +186,44 @@ class SideChatServiceTests(unittest.TestCase):
         bridge = self.bridge
         # The fixture runtime also needs an explicit catalog identity; CI has no Codex installation.
         bridge.catalog_reader.executable = 'fixture-runtime'
-        bridge.side_chats.factory = lambda *args: SideChat(*args, runtime_factory=RuntimeFixture)
         self.fixture.state['cwd'] = str(self.root)
         before = copy.deepcopy(self.fixture.state)
-        with patch('bridge.features.sessions.side_chat.check_runtime'), patch.object(bridge, 'activate', side_effect=AssertionError('Parent must not activate')):
-            view = bridge.side_chat(support.THREAD, 'phone', 'create', {'creationId': str(uuid.uuid4())})
-        self.assertTrue(view['connected'])
-        self.assertEqual(bridge.side_chat(support.THREAD, 'browser', 'read', {})['id'], view['id'])
+        child, creation = str(uuid.uuid4()), {'creationId': str(uuid.uuid4())}
+        def create(*args, **kwargs):
+            args[6](child)
+            self.assertEqual(args[3], support.THREAD)
+            self.assertEqual(args[5]['modelProvider'], before['modelProvider'])
+            self.assertEqual(args[2], str(self.root))
+            return child
+        with patch('bridge.app.service.fork_attached', side_effect=create) as fork, \
+             patch.object(bridge, 'activate', side_effect=AssertionError('Parent must not activate')):
+            view = bridge.side_chat(support.THREAD, 'phone', 'create', creation)
+            self.assertEqual(bridge.side_chat(support.THREAD, 'browser', 'create', creation), view)
+            self.assertEqual(fork.call_count, 1)
+        self.assertEqual(view, {'id': child, 'host': 'local', 'parentId': support.THREAD})
+        self.assertFalse(bridge.side_chats.chats)
         self.assertEqual(self.fixture.state, before)
         self.assertFalse(any(r['method'] == 'thread-follower-start-turn' for r in self.fixture.requests))
-        bridge.side_chat(support.THREAD, 'browser', 'close', {'id': view['id']})
+
+    def test_unknown_native_creation_is_not_replayed_or_replaced_with_temporary_chat(self):
+        from bridge.features.sessions.create import CreationError
+        self.fixture.state['cwd'] = str(self.root)
+        body = {'creationId': str(uuid.uuid4())}
+        with patch('bridge.app.service.fork_attached', side_effect=CreationError('lost receipt')) as fork:
+            with self.assertRaises(CreationError):
+                self.bridge.side_chat(support.THREAD, 'phone', 'create', body)
+            with self.assertRaisesRegex(CreationError, '不会重复创建'):
+                self.bridge.side_chat(support.THREAD, 'phone', 'create', body)
+            self.assertEqual(fork.call_count, 1)
+        self.assertFalse(self.bridge.side_chats.chats)
+
+    def test_native_directory_does_not_discover_or_activate_an_owner(self):
+        rows = [{'id': str(uuid.uuid4()), 'title': 'Native side', 'archived': 1}]
+        with patch.object(self.bridge.store, 'attached_children', return_value=rows), \
+             patch.object(self.bridge, 'session', side_effect=AssertionError('passive list must not attach')):
+            result = self.bridge.side_chat(support.THREAD, 'phone', 'list', {})
+        self.assertEqual(result['chats'][0]['archived'], 1)
+        self.assertEqual(result['parentId'], support.THREAD)
 
 
 class SideChatHttpTests(unittest.TestCase):
@@ -212,6 +240,8 @@ class SideChatHttpTests(unittest.TestCase):
         calls = []
         self.server.bridge.side_chat = lambda *args: calls.append(args) or {'connected': True}
         self.assertEqual(self.request('GET', path, headers=auth)[0], 200)
+        self.assertEqual(self.request('GET', path+'?view=native', headers=auth)[0], 200)
+        self.assertEqual(calls[-1][2], 'list')
         for body in ({'action': 'create', 'creationId': str(uuid.uuid4())},
                      {'action': 'close', 'id': support.THREAD}, {'action': 'stop', 'id': support.THREAD},
                      {'action': 'respond', 'id': support.THREAD, 'requestId': 1, 'response': {'decision': 'decline'}},

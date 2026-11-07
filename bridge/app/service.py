@@ -38,7 +38,7 @@ from bridge.clients.codex.catalog import Catalog, CatalogError, ModelStore, MODE
 from bridge.platforms.codex_daemon_env import DaemonEnvironmentUnavailable
 from bridge.clients.codex.remote import AppHosts, RemoteStore, RemoteCatalog, RemoteUnavailable, ssh_read, ssh_download, payload, project_path_name, ssh_connection, retry_ssh
 from bridge.features.sessions.create import (
-    archive_thread, rename_thread, independent_directory, create_empty, fork_copy, open_in_desktop, open_project_in_desktop,
+    archive_thread, rename_thread, independent_directory, create_empty, fork_copy, fork_attached, open_in_desktop, open_project_in_desktop,
     CreationError, CreationUnavailable, ForkUnavailable, project_directory,
     project_directory_listing, project_trust, apply_desktop_config,
 )
@@ -76,6 +76,7 @@ class LiveSession:
         self.runtime = "desktop"
         self.saved_cwd = None
         self.saved_provider = None
+        self.attached_parent = None
         self.desktop_owner_probe = None
         self.native_attaching = False
         self.native_goal_supported = None
@@ -211,6 +212,7 @@ class LiveSession:
             result["savedHistoryMore"] = bool(self.saved_view and not result["historyComplete"] and not self.saved_view["historyComplete"])
             result["sequence"] = self.sequence
             result["connectionError"] = self.error
+            result['attachedParent'] = self.attached_parent
             result["rebuildRecommended"] = self.rebuild_recommended and not self.connected
             result["desktopRestartRecommended"] = self.desktop_restart_recommended and not self.connected
             result["connecting"] = self.connecting
@@ -1047,7 +1049,7 @@ class Bridge:
 
     def _fork_origin(self, thread_id):
         with self.message_lock:
-            entry = next((v for v in self.message_actions.values() if v.get('id') == thread_id and v['action'] != 'edit'), None)
+            entry = next((v for v in self.message_actions.values() if v.get('id') == thread_id and v['action'] in ('fork', 'edit-fork')), None)
             return {'id': entry['source'], 'title': entry['sourceTitle'], 'turnId': entry['turnId'], 'host': self.host} if entry else None
 
     @staticmethod
@@ -1866,7 +1868,13 @@ class Bridge:
     @operation
     def side_chat(self, thread_id, owner, action, body):
         self.store.get(thread_id)
-        snapshot = settings = None
+        if action == 'list':
+            if not self.local:
+                raise ValueError('此接入暂不支持读取原生侧边聊天')
+            rows = self.store.attached_children(thread_id)
+            for row in rows:
+                row.update(host=self.host, title=row.get('name') or row.get('title') or '未命名聊天')
+            return {'parentId': thread_id, 'chats': rows}
         if action == 'create':
             self._require_desktop_feature(thread_id)
             if not self.local:
@@ -1883,9 +1891,43 @@ class Bridge:
             if not settings.get('permissions') and policy.get('type'):
                 modes = {'readOnly': 'read-only', 'workspaceWrite': 'workspace-write', 'dangerFullAccess': 'danger-full-access'}
                 if policy['type'] not in modes:
-                    raise ValueError('当前权限配置暂不支持临时侧边聊天')
+                    raise ValueError('当前权限配置暂不支持原生侧边聊天')
                 settings['sandbox'] = modes[policy['type']]
-        result = self.side_chats.operate(thread_id, action, body, snapshot, settings, self.catalog_reader)
+            identifier = body.get('creationId')
+            if not isinstance(identifier, str):
+                raise ValueError('创建请求标识无效')
+            uuid.UUID(identifier)
+            # Share the existing durable mutation ledger. A lost fork response
+            # must never turn a retry/reload into another persisted child.
+            with self.message_lock:
+                entry = self.message_actions.get(identifier)
+                if entry:
+                    if entry.get('action') != 'side-chat' or entry.get('source') != thread_id:
+                        raise ValueError('同一操作标识不能用于不同聊天')
+                    if entry.get('status') != 'created':
+                        raise CreationError('侧边聊天创建结果尚未确认，请查看父聊天；不会重复创建')
+                    return {'id': entry['id'], 'host': self.host, 'parentId': thread_id}
+                entry = {'action': 'side-chat', 'source': thread_id, 'status': 'unknown', 'at': time.time()}
+                self.message_actions[identifier] = entry
+                self._save_actions()
+                def created(child):
+                    entry['id'] = child
+                    self._save_actions()
+                try:
+                    child = fork_attached(self.catalog_reader.executable, self.codex_home,
+                                          snapshot['cwd'], thread_id,
+                                          (snapshot.get('title') or '未命名聊天')[:90] + ' · 侧边聊天',
+                                          settings, created, isolated_home=self.host.startswith('codex:'))
+                except CreationUnavailable:
+                    del self.message_actions[identifier]
+                    self._save_actions()
+                    raise
+                entry.update(id=child, status='created')
+                self._save_actions()
+                return {'id': child, 'host': self.host, 'parentId': thread_id}
+        # Existing temporary views may finish their current lifecycle, but no
+        # endpoint creates another temporary runtime after the native migration.
+        result = self.side_chats.operate(thread_id, action, body, None, None, self.catalog_reader)
         if (self.local and isinstance(result, dict) and result.get('id') and
                 result.get('cwd') and result.get('provider')):
             result['modelCatalogIdentity'] = self.catalog_reader.model_identity(result['cwd'], result['provider'])
@@ -1934,10 +1976,12 @@ class Bridge:
         # Restored queued entries have no verified source until this read.
         # Keep SSH/SQLite IO outside the shared live-session lock.
         metadata = self.store.get(session.id)
+        parent = self.store.attached_parent(session.id) if self.local and hasattr(self.store, 'attached_parent') else None
         with session.condition:
             session.origin = metadata.get("origin", "desktop")
             session.saved_cwd = metadata.get('cwd')
             session.saved_provider = metadata.get('model_provider')
+            session.attached_parent = dict(parent, host=self.host) if parent else None
             session.origin_verified = True
             session.access = self._access(session.origin, session)
 
