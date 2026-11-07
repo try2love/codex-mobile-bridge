@@ -2,7 +2,13 @@
 
 手机扫描网关二维码后连接 Codex、Claude Desktop 和 DeepSeek Harness，电脑继续执行任务。手机 App 保存多台电脑，提供原生扫码、剪贴板、文件下载和通知；浏览器入口同时保留。
 
-**[v2.1.7 发布页](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.1.7)** · [完整更新说明](../RELEASE_NOTES.md) · [桌面客户端接入](../docs/deepseek-harness.md)
+**[v2.2.0 发布页](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.0)** · [完整更新说明](../RELEASE_NOTES.md) · [桌面客户端接入](../docs/deepseek-harness.md)
+
+## v2.2.0：多线路连接与客户端接入 / Multiple routes and client access
+
+桌面与手机版本统一为 **2.2.0**，Android/iOS 构建号 **54**。同一电脑可保存多条连接地址，支持经过身份核验的自动选路与手动换线；新增按电脑启用的 UU 远程入口。ZCode 与其他客户端的聊天、模型和账号能力由所连接网关提供。覆盖安装时保留原应用标识、签名与数据，即可保留电脑列表和绑定；iOS 仍需自行签名。
+
+**English:** v2.2.0/build 54 adds authenticated route selection and manual switching for each computer, plus an optional UU Remote entry. ZCode and other client capabilities are supplied by the connected gateway. Upgrade with the same application identifier, signing identity and app data to retain computer entries and bindings; iOS requires self-signing. See the [bilingual release notes](../RELEASE_NOTES.md).
 
 ## v2.1.7：通知与聊天恢复 / Notifications and chat recovery
 

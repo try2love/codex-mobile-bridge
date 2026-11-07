@@ -19,7 +19,7 @@ Tasks run on the original computer, or the original SSH host for Codex remote se
 
 ## v2.2.0 updates
 
-- Native ZCode chats, local and official remote access, custom API providers and model quotas; shared model selection and caches.
+- Native ZCode chats, local and official remote access, custom API providers and model quotas; shared model selection and caches. In the macOS release package, use official remote access; the local private pipe is currently available only in the certificate-signed Test build.
 - Mobile multi-address switching, optional UU Remote, independent client profiles and VS Code Codex access.
 - Less background work for disabled clients and idle UI, with fixes for reconnection, native renaming, reasoning display and platform startup.
 
@@ -153,18 +153,18 @@ Supports macOS, Windows and experimental Ubuntu x64/ARM64. See the [Linux guide]
 
 ## Download and quick start (recommended)
 
-Download the desktop App for everyday use. **No deployment Agent, Python, Node.js or terminal is required.** The links below target **v2.1.3 (stable)**.
+Download the desktop App for everyday use. **No deployment Agent, Python, Node.js or terminal is required.** The links below target **v2.2.0 (stable)**.
 
 | Platform | Download | Open |
 | --- | --- | --- |
-| Windows x64 (recommended installer) | [Download Setup.exe](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.1.7/Codex-Mobile-Bridge-2.1.7-Windows-x64-Setup.exe) | Run the installer and launch from the shortcut |
-| Windows x64 (no installation) | [Download full ZIP](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.1.7/Codex-Mobile-Bridge-2.1.7-Windows-x64.zip) | Extract the entire ZIP and run `Codex Mobile Bridge.exe`; do not move just the exe |
-| macOS Apple Silicon (M series) | [Download arm64 DMG](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.1.7/Codex-Mobile-Bridge-2.1.7-macOS-arm64.dmg) | Open the DMG and drag the App to Applications |
-| macOS Intel | [Download x64 DMG](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.1.7/Codex-Mobile-Bridge-2.1.7-macOS-x64.dmg) | Open the DMG and drag the App to Applications |
-| Ubuntu x64 (experimental) | [Download .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.1.7/Codex-Mobile-Bridge-2.1.7-Linux-amd64.deb) | Ubuntu 22.04; launch as a regular user |
-| Ubuntu ARM64 (experimental) | [Download .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.1.7/Codex-Mobile-Bridge-2.1.7-Linux-arm64.deb) | Ubuntu 22.04 ARM64; no 32-bit ARM build |
+| Windows x64 (recommended installer) | [Download Setup.exe](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.2.0/Codex-Mobile-Bridge-2.2.0-Windows-x64-Setup.exe) | Run the installer and launch from the shortcut |
+| Windows x64 (no installation) | [Download full ZIP](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.2.0/Codex-Mobile-Bridge-2.2.0-Windows-x64.zip) | Extract the entire ZIP and run `Codex Mobile Bridge.exe`; do not move just the exe |
+| macOS Apple Silicon (M series) | [Download arm64 DMG](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.2.0/Codex-Mobile-Bridge-2.2.0-macOS-arm64.dmg) | Open the DMG and drag the App to Applications |
+| macOS Intel | [Download x64 DMG](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.2.0/Codex-Mobile-Bridge-2.2.0-macOS-x64.dmg) | Open the DMG and drag the App to Applications |
+| Ubuntu x64 (experimental) | [Download .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.2.0/Codex-Mobile-Bridge-2.2.0-Linux-amd64.deb) | Ubuntu 22.04; launch as a regular user |
+| Ubuntu ARM64 (experimental) | [Download .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.2.0/Codex-Mobile-Bridge-2.2.0-Linux-arm64.deb) | Ubuntu 22.04 ARM64; no 32-bit ARM build |
 
-[All releases and release notes](https://github.com/try2love/codex-mobile-bridge/releases) · [Download SHA256 checksums](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.1.7/SHA256SUMS.txt). Both Mac architectures also include ZIPs for in-app updates or manual replacement. Windows ARM packages are not available. The Mac build is ad-hoc signed but not notarized and may require manual approval; Windows builds have no certificate signature. See the macOS first-launch instructions below.
+[All releases and release notes](https://github.com/try2love/codex-mobile-bridge/releases) · [Download SHA256 checksums](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.2.0/SHA256SUMS.txt). Both Mac architectures also include ZIPs for in-app updates or manual replacement. Windows ARM packages are not available. The Mac build is ad-hoc signed but not notarized and may require manual approval; Windows builds have no certificate signature. See the macOS first-launch instructions below.
 
 1. Install and sign in to the desktop clients you need. Open **Codex Mobile Bridge**, inspect **Clients and access**, complete required permissions and enable configured clients.
 2. Keep LAN access or add an HTTPS entry under **Network access**, save, and select **Start gateway** from Overview or Clients. Preserve your configured port.
@@ -173,7 +173,7 @@ Download the desktop App for everyday use. **No deployment Agent, Python, Node.j
 
 For remote access, choose [Tailscale HTTPS](docs/tailscale.md), bundled temporary Cloudflare HTTPS, a [fixed Cloudflare tunnel](docs/fixed-domain.md), an [existing HTTPS tunnel](docs/external-tunnel.md), [your own SSH server](docs/server-ssh.md) or an advanced NAS proxy. See [Parallel connections](#parallel-connections). Fixed addresses do not guarantee mainland China performance; test the actual cellular network.
 
-Android APK, unsigned iOS IPA and Xcode source downloads are in the same [v2.1.7 Release](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.1.7). Install Android over the existing app; iOS requires your own signing, with no App Store/TestFlight distribution. Source/custom setups are covered by the [Deployment Agent instructions](#deployment-agent-instructions).
+Android APK, unsigned iOS IPA and Xcode source downloads are in the same [v2.2.0 Release](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.0). Install Android over the existing app; iOS requires your own signing, with no App Store/TestFlight distribution. Source/custom setups are covered by the [Deployment Agent instructions](#deployment-agent-instructions).
 
 ### In-app updates
 
