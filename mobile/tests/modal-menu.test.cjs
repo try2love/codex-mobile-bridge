@@ -24,11 +24,12 @@ function fixture(initialDialogs=[],frame=false){
     constructor(callback){this.callback=callback;observers.push(this);}
     observe(target,options){this.target=target;this.options=options;}
   }
-  vm.runInNewContext(source,{URL,location:{origin:'https://gateway.test',host:'gateway.test'},document,window,MutationObserver});
+  vm.runInNewContext(source,{URL,location:{origin:'https://gateway.test',host:'gateway.test',href:'https://gateway.test/'},document,window,MutationObserver,
+    BridgeDownload:require('../../web/features/workspace/downloads.js')});
   const modalObserver=observers.find(observer=>observer.target===document.documentElement);
   assert.ok(modalObserver,'shared script observes the document for modal changes');
   const changed=()=>modalObserver.callback();
-  return {prompts,dialogs,document,windowEvents,documentEvents,changed};
+  return {prompts,dialogs,document,window,windowEvents,documentEvents,changed};
 }
 
 test('native menu follows any open dialog through long scrolling, nesting, and close',()=>{
@@ -62,6 +63,29 @@ test('foreground return resends the current modal state to both native shells',(
 });
 test('an already open modal is reported on initial injection',()=>{
   const f=fixture([{open:true}]);assert.deepEqual(f.prompts.map(call=>call.value),['open']);
+});
+
+test('cloud download clicks use the native transfer for every client, preserving direct navigation',()=>{
+  const f=fixture();
+  const paths=['/api/sessions/01a1867c-7fa0-7802-9bd0-c7635935e4a5/workspace/download?path=note.txt',
+    ...['claude','deepseek','zcode'].map(p=>'/api/desktop-sessions/'+p+'/workspace/download?path=note.txt')];
+  const click=(href,extra={})=>{
+    const event={isTrusted:true,button:0,target:{closest:()=>({href,hasAttribute:()=>false})},
+      preventDefault(){this.defaultPrevented=true;},...extra};
+    f.documentEvents.click(event);return event;
+  };
+  f.window.BridgeMobileCapabilities={fileDownload:true};
+  assert.ok(!click('https://gateway.test'+paths[0]).defaultPrevented,'direct WebView keeps its download path');
+  f.window.BridgeCloudWorkbench=true;
+  for(const path of paths)assert.ok(click('https://gateway.test'+path).defaultPrevented);
+  assert.deepEqual(f.prompts.filter(v=>v.name.startsWith('codexbridge-download:')).map(v=>v.value),paths.map(p=>'https://gateway.test'+p));
+  const before=f.prompts.length;
+  for(const extra of [{isTrusted:false},{defaultPrevented:true},{button:1},{metaKey:true},{ctrlKey:true},{shiftKey:true},{altKey:true}])click('https://gateway.test'+paths[0],extra);
+  click('https://elsewhere.test'+paths[0]);click('https://gateway.test/api/accounts');
+  click('https://gateway.test'+paths[0],{target:{closest:()=>({href:'https://gateway.test'+paths[0],hasAttribute:()=>true})}});
+  f.window.BridgeMobileCapabilities.fileDownload=false;click('https://gateway.test'+paths[0]);
+  assert.equal(f.prompts.length,before,'preview, untrusted and unsupported actions do not reach the native downloader');
+  assert.equal(fixture([],true).documentEvents.click,undefined);
 });
 
 test('both mobile apps forward only supported theme preferences from the main frame',()=>{

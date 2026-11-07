@@ -48,6 +48,17 @@
   if (window === window.top) document.addEventListener('bridge-theme-change', event => {
     if (['system', 'light', 'dark'].includes(event.detail?.theme)) window.prompt('codexbridge-theme:__BRIDGE_CLIPBOARD_TOKEN__', event.detail.theme);
   });
+  // Cloud authorization lives in the native view; a browser navigation cannot carry it.
+  if (window === window.top) document.addEventListener('click', event => {
+    if (!window.BridgeCloudWorkbench || !window.BridgeMobileCapabilities?.fileDownload
+        || !event.isTrusted || event.defaultPrevented || event.button !== 0
+        || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const anchor = event.target.closest?.('a[href]');
+    if (!anchor || anchor.hasAttribute('data-image-preview') || typeof BridgeDownload === 'undefined'
+        || !BridgeDownload.eligible(anchor.href, location.href)) return;
+    event.preventDefault();
+    window.prompt('codexbridge-download:__BRIDGE_CLIPBOARD_TOKEN__', anchor.href);
+  });
   let focusedAnswer = null, answerTimer = 0, answerDeadline = 0;
   const stopAnswerVisibility = () => {
     clearTimeout(answerTimer);clearTimeout(answerDeadline);answerTimer=answerDeadline=0;

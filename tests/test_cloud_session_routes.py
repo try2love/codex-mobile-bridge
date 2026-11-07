@@ -264,3 +264,65 @@ class CloudSessionRoutesTests(unittest.TestCase):
                             self.assertEqual(detail['session']['status'], status)
 
         asyncio.run(exchange())
+
+    def test_download_ranges_and_original_filename_survive_cloud_for_every_client(self):
+        import aiohttp
+        import tempfile
+        from base64 import b64encode
+        from urllib.parse import quote
+        from unittest.mock import AsyncMock
+        from bridge.features.workspace.workspace import operate
+
+        mobile = bytes(range(32))
+        pin = {'mobile_public_key': b64encode(mobile).decode()}
+        with tempfile.TemporaryDirectory(dir=ROOT / '.tmp') as directory:
+            name = 'cloud-下载.bin'
+            data = bytes(range(256)) * 8193
+            file = Path(directory) / name
+            file.write_bytes(data)
+            target = self.server.bridge.for_host.return_value
+            target.identifier = THREAD
+            target.workspace.side_effect = lambda thread, action, params: operate(directory, action, params)
+            self.manager.workspace_bridge.return_value = target
+
+            async def exchange():
+                origin = 'http://127.0.0.1:' + str(self.server.server_port)
+                async with aiohttp.ClientSession() as local:
+                    owner = SimpleNamespace(server=self.server, sessions={}, local_origin=origin, local=local,
+                                            pin=Mock(return_value=pin), wait_response_close=AsyncMock())
+                    async def download(path, headers):
+                        record = packet('GET', path, b'')
+                        record['headers'] = headers
+                        validate_request(record)
+                        channel = SimpleNamespace(binding='fixture', mobile=mobile, send=AsyncMock(),
+                                                  send_body=AsyncMock(), promote_large=AsyncMock(),
+                                                  receive=AsyncMock(return_value={'kind': 'credit', 'count': 4}))
+                        await Connector.forward_http(owner, channel, record, b'')
+                        start = channel.send.await_args_list[0].args[0]
+                        return start, b''.join(call.args[0] for call in channel.send_body.await_args_list)
+
+                    for provider in ('codex', 'claude', 'deepseek', 'zcode'):
+                        path = ('/api/sessions/' + THREAD if provider == 'codex' else
+                                '/api/desktop-sessions/' + provider) + '/workspace/download?path=' + quote(name) + '&explicit=1'
+                        if provider != 'codex':
+                            path += '&sessionId=' + THREAD
+                        result, etag = bytearray(), None
+                        for offset in range(0, len(data), 1024 * 1024):
+                            headers = {'Range': 'bytes=%d-%d' % (offset, offset + 1024 * 1024 - 1)}
+                            if etag:
+                                headers['If-Range'] = etag
+                            start, chunk = await download(path, headers)
+                            self.assertEqual(start['status'], 206, provider)
+                            self.assertEqual(start['headers']['Content-Disposition'], "attachment; filename*=UTF-8''" + quote(name))
+                            self.assertEqual(start['headers']['ETag'], etag or start['headers']['ETag'])
+                            self.assertNotIn('Set-Cookie', start['headers'])
+                            etag = start['headers']['ETag']
+                            result.extend(chunk)
+                        self.assertEqual(bytes(result), data)
+                    file.write_bytes(b'changed')
+                    start, chunk = await download(path, {'Range': 'bytes=2-4', 'If-Range': etag})
+                    self.assertEqual((start['status'], chunk), (200, b'changed'))
+                    owner.pin.return_value = None
+                    with self.assertRaises(PermissionError):
+                        await download(path, {'Range': 'bytes=0-1'})
+            asyncio.run(exchange())

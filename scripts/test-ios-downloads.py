@@ -35,7 +35,7 @@ class Handler(BaseHTTPRequestHandler):
         if urlsplit(self.path).path == '/api/sessions/diagnostics':
             slow = parse_qs(urlsplit(self.path).query).get('thread') == ['aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee']
             body = b'x' * (2 * 1024 * 1024) if slow else b'{"hosts":[],"phase":"discovery"}'
-            requests.append(('diagnostic', 0, self.headers.get('If-Range'), self.headers.get('Cookie'), self.headers.get('User-Agent')))
+            requests.append(('diagnostic', 0, self.headers.get('If-Range'), self.headers.get('Cookie'), self.headers.get('User-Agent'), self.headers.get('X-CMB-Cloud-View')))
             if self.headers.get('Cookie') != 'codex_mobile_session=fixture':
                 self.send_response(401); self.send_header('Content-Length', '0'); self.end_headers(); return
             self.send_response(200)
@@ -52,13 +52,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         scenario = parse_qs(urlsplit(self.path).query)['case'][0]
         start, end = map(int, re.fullmatch(r'bytes=(\d+)-(\d+)', self.headers['Range']).groups())
-        requests.append((scenario, start, self.headers.get('If-Range'), self.headers.get('Cookie'), self.headers.get('User-Agent')))
+        requests.append((scenario, start, self.headers.get('If-Range'), self.headers.get('Cookie'), self.headers.get('User-Agent'), self.headers.get('X-CMB-Cloud-View')))
+        if scenario.startswith('cloud') and (self.headers.get('X-CMB-Cloud-View') != 'a' * 32 or self.headers.get('Cookie')):
+            self.send_response(403); self.send_header('Content-Length', '0'); self.end_headers(); return
         if scenario == 'unauthorized':
             self.send_response(401); self.send_header('Content-Length', '0'); self.end_headers(); return
         if scenario in ('changed-409', 'offline-409') and start:
             body = json.dumps({'code': 'download_changed' if scenario == 'changed-409' else 'desktop_unavailable'}).encode()
             self.send_response(409); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body); return
-        if scenario == 'redirect':
+        if scenario in ('redirect', 'cloud-redirect'):
             self.send_response(302); self.send_header('Location', '/capture'); self.send_header('Content-Length', '0'); self.end_headers(); return
         if scenario == 'empty' or scenario == 'unknown-range' and start == len(content):
             self.send_response(416); self.send_header('Content-Range', f'bytes */{start}'); self.send_header('Content-Length', '0'); self.send_header('ETag', '"fixture"'); self.end_headers(); return
@@ -84,20 +86,70 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError): pass
 
 
+# Compile the production prompt branch with small frame/view stand-ins. This
+# exercises its native identity/origin/generation decisions without UI automation.
+app_source = (ROOT/'mobile/ios/BridgePreview/App.swift').read_text()
+prompt_start = app_source.index('        guard webView===web else{completionHandler(nil);return}',
+                                app_source.index('runJavaScriptTextInputPanelWithPrompt'))
+prompt_end = app_source.index('        if prompt == "codexbridge-upload-source:"', prompt_start)
+prompt_fixture = WORK/'CloudDownloadPrompt.swift'
+prompt_fixture.write_text('''import Foundation
+final class DownloadWebView { var url: URL?; init(_ url: URL?) { self.url = url } }
+struct DownloadFrame { var isMainFrame = true; var request: URLRequest }
+final class UIApplication {
+    enum State { case active, inactive }
+    static let shared = UIApplication()
+    var applicationState = State.active
+}
+final class CloudDownloadPromptFixture {
+    var web: DownloadWebView?
+    var connectionError: Bool?
+    var cloudView = true
+    var documentAddress: String
+    var origin: String
+    var generation = 7
+    var clipboardToken = "test-token"
+    var cloudDownloadAuthorization: DownloadManager.CloudAuthorization?
+    var request: URLRequest?
+    var acceptsDownload = true
+    init(_ origin: String, entry: URL) {
+        self.origin = origin; self.documentAddress = origin
+        web = DownloadWebView(URL(string: origin + "/"))
+        cloudDownloadAuthorization = DownloadManager.CloudAuthorization(entry: entry, origin: origin, generation: generation)
+    }
+    func downloadArtifact(_ request: URLRequest) -> Bool { self.request = request; return acceptsDownload }
+    func handle(_ prompt: String, defaultText: String?, webView: DownloadWebView, frame: DownloadFrame, completionHandler: (String?) -> Void) {
+''' + app_source[prompt_start:prompt_end] + '''        completionHandler(nil)
+    }
+    func invoke(_ target: URL, token: String = "test-token", source: URL? = nil, main: Bool = true, view: DownloadWebView? = nil) -> String? {
+        request = nil
+        var result: String?
+        handle("codexbridge-download:" + token, defaultText: target.absoluteString, webView: view ?? web!,
+               frame: DownloadFrame(isMainFrame: main, request: URLRequest(url: source ?? URL(string: origin + "/")!))) { result = $0 }
+        return result
+    }
+}
+''')
+
 server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 try:
     subprocess.run(['xcrun', 'swiftc', '-module-cache-path', str(WORK/'module-cache'),
                     str(ROOT/'mobile/ios/BridgePreview/GatewayURL.swift'),
-                    str(ROOT/'mobile/ios/BridgePreview/DownloadManager.swift'),
+                    str(ROOT/'mobile/ios/BridgePreview/DownloadManager.swift'), str(prompt_fixture),
                     str(ROOT/'mobile/tests/DownloadManagerTests.swift'), '-o', str(WORK/'download-tests')], check=True)
     subprocess.run([str(WORK/'download-tests'), f'http://127.0.0.1:{server.server_port}', str(scratch)], check=True, timeout=60)
     assert not redirected, 'Downloader leaked a request to the redirect target'
-    assert all(agent == 'BridgeMobile/0.1-iOS' for _, _, _, _, agent in requests)
+    assert all(agent == 'BridgeMobile/0.1-iOS' for _, _, _, _, agent, _ in requests)
     resumed = [row for row in requests if row[0] == 'pause' and row[1] > 0]
     assert resumed and all(row[2] == '"fixture"' and row[3] == 'codex_mobile_session=renewed' for row in resumed)
     assert sum(row[0] == 'revoked' for row in requests) == 1, 'Resume sent a request without current credentials'
     assert not any(row[0] == 'cancel-before-auth' for row in requests), 'Delayed credentials started a cancelled task'
-    print('HTTP request range, refreshed credentials, UA and redirect assertions passed')
+    cloud = [row for row in requests if row[0] == 'cloud']
+    assert len(cloud) >= 4 and all(row[3] is None and row[5] == 'a' * 32 for row in cloud)
+    assert all(row[2] == '"fixture"' for row in cloud if row[1] > 0), 'Cloud chunks lost If-Range'
+    assert sum(row[0] == 'cloud-revoked' for row in requests) == 1, 'Revoked view capability reached HTTP'
+    assert not any(row[0] == 'cloud-invalid-headers' for row in requests), 'Unapproved header reached HTTP'
+    print('HTTP range, cookie/cloud authorization, generation revocation, UA and redirect assertions passed')
 finally:
     server.shutdown(); server.server_close()

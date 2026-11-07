@@ -312,6 +312,11 @@ class Connector:
                 raise PermissionError('local redirects forbidden')
             result_headers = {'Content-Type': response.headers.get('Content-Type', 'application/octet-stream')}
             result_headers.update(download_headers({k: response.headers[k] for k in ('ETag', 'Content-Range', 'Accept-Ranges') if k in response.headers}, response=True))
+            disposition = response.headers.get('Content-Disposition')
+            if disposition is not None:
+                if len(disposition) > 4096 or any(ord(c) < 32 or ord(c) > 126 for c in disposition):
+                    raise ValueError('invalid download filename')
+                result_headers['Content-Disposition'] = disposition
             length = response.content_length
             if length is not None:
                 if length > MAX_BODY:

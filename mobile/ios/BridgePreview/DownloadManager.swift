@@ -21,8 +21,28 @@ final class DownloadManager: NSObject, URLSessionDataDelegate, @unchecked Sendab
     static let limit: Int64 = 9_007_199_254_740_991 // Gateway policy; the native transfer streams to disk.
     static let chunk: Int64 = 1024 * 1024
     var onChange: ((Snapshot) -> Void)?
-    // Return only a current, matching authenticated cookie, never a cached login.
+    // Revalidate authorization for every chunk/resume. Cloud capabilities belong
+    // to the current native view; they are never cookies or saved gateway logins.
+    var authorizationHeaders: ((String, URL, @escaping ([String: String]?) -> Void) -> Void)?
     var credentials: ((String, URL, @escaping (String?) -> Void) -> Void)?
+    struct CloudAuthorization {
+        let origin: String
+        let generation: Int
+        private let capability: String
+        init?(entry: URL, origin: String, generation: Int) {
+            guard entry.scheme == "http", entry.host == "127.0.0.1", entry.port != nil,
+                  entry.path == "/", entry.query == nil, GatewayURL.same(entry, origin),
+                  let fragment = entry.fragment,
+                  fragment.range(of: "^cmb-cloud=[a-f0-9]{32}$", options: .regularExpression) != nil else { return nil }
+            self.origin = origin; self.generation = generation
+            self.capability = String(fragment.dropFirst("cmb-cloud=".count))
+        }
+        func headers(for target: URL, origin: String, generation: Int) -> [String: String]? {
+            guard self.origin == origin, self.generation == generation,
+                  DownloadManager.allows(target, origin: origin) else { return nil }
+            return ["X-CMB-Cloud-View": capability]
+        }
+    }
     private let queue = DispatchQueue(label: "bridge.download")
     private let scratch: URL
     private lazy var delegateQueue: OperationQueue = {
@@ -157,18 +177,26 @@ final class DownloadManager: NSObject, URLSessionDataDelegate, @unchecked Sendab
         publish()
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.credentials?(origin, url) { cookie in
+            let ready: ([String: String]?) -> Void = { headers in
                 self.queue.async {
                     guard ticket == self.epoch, [.connecting, .downloading].contains(self.value.phase) else { return }
-                    guard let cookie, !cookie.isEmpty else { self.fail("登录已失效，请重新连接电脑"); return }
-                    self.request(url, cookie: cookie)
+                    guard let headers, headers.count == 1,
+                          let field = headers.first, ["Cookie", "X-CMB-Cloud-View"].contains(field.key),
+                          !field.value.isEmpty, !field.value.contains("\r"), !field.value.contains("\n"),
+                          field.key != "X-CMB-Cloud-View" || field.value.range(of: "^[a-f0-9]{32}$", options: .regularExpression) != nil
+                    else { self.fail("登录已失效，请重新连接电脑"); return }
+                    self.request(url, headers: headers)
                 }
             }
+            if let authorize = self.authorizationHeaders { authorize(origin, url, ready) }
+            else if let credentials = self.credentials { credentials(origin, url) { ready($0.map { ["Cookie": $0] }) } }
+            else { ready(nil) }
         }
     }
-    private func request(_ url: URL, cookie: String) {
+    private func request(_ url: URL, headers: [String: String]) {
         var request = URLRequest(url: url); request.cachePolicy = .reloadIgnoringLocalCacheData
-        request.setValue(cookie, forHTTPHeaderField: "Cookie"); request.setValue(value.origin, forHTTPHeaderField: "Origin")
+        for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
+        request.setValue(value.origin, forHTTPHeaderField: "Origin")
         request.setValue("BridgeMobile/0.1-iOS", forHTTPHeaderField: "User-Agent")
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
         requestedEnd = min(Self.limit, value.received + Self.chunk) - 1

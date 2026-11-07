@@ -986,6 +986,7 @@ impl Relay {
         path: &str,
         body: Option<Vec<u8>>,
         content_type: &str,
+        headers: serde_json::Map<String, serde_json::Value>,
     ) -> Result<Response> {
         if !matches!(method, Method::GET | Method::POST) {
             return Err(invalid());
@@ -1007,7 +1008,7 @@ impl Relay {
             channel.large()?;
         }
         channel.send(json!({"kind":"request","id":Uuid::new_v4(),"method":method.as_str(),"path":path,
-            "content_type":if content_type.is_empty() { "application/json" } else { content_type },"headers":{},"length":body.len()})).await?;
+            "content_type":if content_type.is_empty() { "application/json" } else { content_type },"headers":headers,"length":body.len()})).await?;
         let mut credits = credit(&channel.control(15).await?)?;
         for chunk in body.chunks(MAX_CHUNK - 9) {
             if credits == 0 {
@@ -1045,6 +1046,7 @@ impl Relay {
                 "ETag",
                 "Content-Range",
                 "Accept-Ranges",
+                "Content-Disposition",
             ]
             .contains(&key.as_str())
             {
@@ -1052,7 +1054,8 @@ impl Relay {
             }
             let text = value
                 .as_str()
-                .filter(|v| v.len() <= 256)
+                .filter(|v| v.len() <= if key == "Content-Disposition" { 4096 } else { 256 }
+                    && v.bytes().all(|byte| (32..=126).contains(&byte)))
                 .ok_or_else(invalid)?;
             if key == "Content-Length"
                 && text.parse::<u64>().map_err(|_| invalid())? > MAX_FILE as u64

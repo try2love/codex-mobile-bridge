@@ -31,6 +31,7 @@ public final class ArtifactDownload {
   return name.isEmpty()||name.equals(".")||name.equals("..")?"download":name;
  }
  public interface Cookies {String read();}
+ public interface RequestHeaders {java.util.Map<String,String> read(String url)throws IOException;}
  public interface Observer {void changed(Task task);}
  public enum State {READY,RUNNING,PAUSING,PAUSED,FAILED,COMPLETE,CANCELLED}
  public static final class Result {
@@ -51,8 +52,10 @@ public final class ArtifactDownload {
   public volatile String name="download",error="";public volatile boolean restartRequired;
   private volatile HttpURLConnection connection;private volatile boolean pause,cancelled;
   private File file;private String etag;private boolean running;private Observer observer;
+  private RequestHeaders requestHeaders;
   private long lastSample,lastBytes;
   public Task(String url,String origin,File directory)throws IOException {this(url,origin,directory,-1,null,null);}
+  public Task(String url,String origin,File directory,RequestHeaders headers)throws IOException {this(url,origin,directory);requestHeaders=headers;}
   public Task(String url,String origin,File directory,long expectedSize,String expectedSha256,String fallbackName)throws IOException {
    this(url,origin,directory,expectedSize,expectedSha256,fallbackName,false);
   }
@@ -111,7 +114,8 @@ public final class ArtifactDownload {
      active=(HttpURLConnection)new URL(target).openConnection();
      active.setConnectTimeout(15000);active.setReadTimeout(30000);active.setInstanceFollowRedirects(false);
      active.setRequestProperty("Range","bytes="+start+"-"+end);active.setRequestProperty("Accept-Encoding","identity");active.setRequestProperty("User-Agent","BridgeMobile/0.1-Android");
-     if(!update||gatewayUpdate){String cookie=cookies.read();if(cookie!=null&&!cookie.isEmpty())active.setRequestProperty("Cookie",cookie);}if(etag!=null)active.setRequestProperty("If-Range",etag);
+     if(requestHeaders!=null){for(java.util.Map.Entry<String,String> header:requestHeaders.read(target).entrySet())active.setRequestProperty(header.getKey(),header.getValue());}
+     else if(!update||gatewayUpdate){String cookie=cookies.read();if(cookie!=null&&!cookie.isEmpty())active.setRequestProperty("Cookie",cookie);}if(etag!=null)active.setRequestProperty("If-Range",etag);
      synchronized(this){stopped();connection=active;}
      int redirectStatus=active.getResponseCode();
      // GitHub release assets redirect to their CDN. Only this credential-free

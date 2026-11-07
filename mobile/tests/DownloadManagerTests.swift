@@ -13,6 +13,65 @@ import Foundation
         precondition(DownloadManager.allows(URL(string: origin + path + "?path=a")!, origin: origin))
         precondition(!DownloadManager.allows(URL(string: "https://other.invalid" + path)!, origin: origin))
         precondition(!DownloadManager.allows(URL(string: origin + "/api/desktop-sessions/claude/send")!, origin: origin))
+        let capability = String(repeating: "a", count: 32)
+        let cloudEntry = URL(string: origin + "/#cmb-cloud=" + capability)!
+        let cloudGrant = DownloadManager.CloudAuthorization(entry: cloudEntry, origin: origin, generation: 7)!
+        let cloudTarget = URL(string: origin + path + "?case=cloud")!
+        precondition(cloudGrant.headers(for: cloudTarget, origin: origin, generation: 7) == ["X-CMB-Cloud-View": capability])
+        precondition(cloudGrant.headers(for: cloudTarget, origin: origin, generation: 8) == nil)
+        precondition(cloudGrant.headers(for: cloudTarget, origin: "https://other.invalid", generation: 7) == nil)
+        precondition(cloudGrant.headers(for: URL(string: origin + "/api/sessions")!, origin: origin, generation: 7) == nil)
+        precondition(cloudGrant.headers(for: URL(string: "http://127.0.0.1:1" + path)!, origin: origin, generation: 7) == nil)
+        precondition(DownloadManager.CloudAuthorization(entry: URL(string: origin + "/#cmb-cloud=bad")!, origin: origin, generation: 7) == nil)
+        precondition(DownloadManager.CloudAuthorization(entry: URL(string: "https://other.invalid/#cmb-cloud=" + capability)!, origin: "https://other.invalid", generation: 7) == nil)
+        let prompt = CloudDownloadPromptFixture(origin, entry: cloudEntry)
+        precondition(prompt.invoke(cloudTarget) == "started" && prompt.request?.url == cloudTarget)
+        prompt.acceptsDownload = false; precondition(prompt.invoke(cloudTarget) == "rejected"); prompt.acceptsDownload = true
+        precondition(prompt.invoke(cloudTarget, token: "old-token") == nil && prompt.request == nil)
+        precondition(prompt.invoke(cloudTarget, source: URL(string: "https://other.invalid/")!) == "rejected" && prompt.request == nil)
+        precondition(prompt.invoke(cloudTarget, main: false) == "rejected" && prompt.request == nil)
+        precondition(prompt.invoke(cloudTarget, view: DownloadWebView(prompt.web?.url)) == nil && prompt.request == nil)
+        prompt.generation += 1; precondition(prompt.invoke(cloudTarget) == "rejected" && prompt.request == nil); prompt.generation -= 1
+        prompt.cloudView = false; precondition(prompt.invoke(cloudTarget) == "rejected" && prompt.request == nil); prompt.cloudView = true
+        UIApplication.shared.applicationState = .inactive
+        precondition(prompt.invoke(cloudTarget) == "rejected" && prompt.request == nil)
+        UIApplication.shared.applicationState = .active
+        prompt.web?.url = URL(string: "https://other.invalid/")!
+        precondition(prompt.invoke(cloudTarget) == "rejected" && prompt.request == nil)
+        prompt.web?.url = URL(string: origin + "/")!
+        precondition(prompt.invoke(URL(string: origin + "/api/sessions")!) == "rejected" && prompt.request == nil)
+        precondition(prompt.invoke(URL(string: "https://other.invalid" + path)!) == "rejected" && prompt.request == nil)
+        print("cloud native download prompt boundaries passed")
+        for scenario in ["cloud", "cloud-revoked", "cloud-redirect", "cloud-invalid-headers"] {
+            let manager = DownloadManager(scratch: scratch)
+            var state = DownloadManager.Snapshot(), generation = 7, reads = 0, paused = false
+            manager.credentials = { _, _, _ in preconditionFailure("Cloud authorization fell back to gateway cookies") }
+            manager.authorizationHeaders = { address, target, done in
+                reads += 1
+                if scenario == "cloud-invalid-headers" { done(["Authorization": "not-allowed"]); return }
+                done(cloudGrant.headers(for: target, origin: address, generation: generation))
+            }
+            manager.onChange = { value in
+                state = value
+                if scenario == "cloud-revoked", !paused, value.phase == .downloading, value.received > 65536 {
+                    paused = true; manager.pause()
+                }
+            }
+            manager.start(URL(string: origin + path + "?case=" + scenario)!, origin: origin)
+            if scenario == "cloud-revoked" {
+                wait("cloud pause") { state.phase == .paused }
+                generation += 1; manager.resume()
+            }
+            wait("cloud transfer did not settle") { [.complete, .failed].contains(state.phase) }
+            if scenario == "cloud" {
+                precondition(state.phase == .complete && reads >= 4)
+                let data = try Data(contentsOf: state.file!)
+                precondition(data.count == 3 * 1024 * 1024 + 301)
+                precondition(data.enumerated().allSatisfy { $0.element == UInt8($0.offset % 251) })
+            } else { precondition(state.phase == .failed) }
+            manager.cancel(); wait("cloud cleanup") { state.phase == .cancelled }
+            print(scenario + " passed")
+        }
         let diagnostic = "/api/sessions/diagnostics", thread = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
         for imagePath in ["/api/sessions/\(thread)/uploads/\(thread)/preview", "/api/sessions/\(thread)/desktop-images/" + String(repeating: "a", count: 64), "/api/desktop-sessions/zcode/uploads/\(thread)/preview", "/api/desktop-sessions/deepseek/images/" + String(repeating: "a", count: 64)] {
             precondition(DownloadManager.allows(URL(string: origin + imagePath + "?download=1&sessionId=fixture")!, origin: origin))

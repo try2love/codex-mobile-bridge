@@ -166,6 +166,10 @@ async fn serve(
         });
     }
     let target = req.uri().path_and_query().unwrap().as_str().to_owned();
+    let headers = match crate::transport::download_headers(req.headers()) {
+        Ok(headers) => headers,
+        Err(_) => return Ok(failure(400, "Invalid download range")),
+    };
     let kind = req
         .headers()
         .get("content-type")
@@ -179,7 +183,7 @@ async fn serve(
         Ok(body) => body.to_bytes().to_vec(),
         Err(_) => return Ok(failure(413, "Request too large")),
     };
-    let response = match relay.request(method, &target, Some(body), &kind).await {
+    let response = match relay.request(method, &target, Some(body), &kind, headers).await {
         Ok(res) => res,
         Err(err) => return Ok(relay_failure(err)),
     };
@@ -188,7 +192,7 @@ async fn serve(
     for (key, val) in response.headers() {
         if matches!(
             key.as_str(),
-            "content-type" | "content-length" | "etag" | "accept-ranges" | "content-range"
+            "content-type" | "content-length" | "etag" | "accept-ranges" | "content-range" | "content-disposition"
         ) {
             reply = reply.header(key, val);
         }

@@ -641,6 +641,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
     private var pendingStorage: String?
     private var clipboardToken = ""
     private var downloadState = DownloadManager.Snapshot()
+    private var cloudDownloadAuthorization: DownloadManager.CloudAuthorization?
     private let downloadPanel = DownloadPanel()
     private var exportPicker: UIDocumentPickerViewController?
     private var openDocument: UIDocumentInteractionController?
@@ -651,14 +652,21 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             guard let self else { return }; self.downloadState = state; self.downloadPanel.render(state)
             self.view.bringSubviewToFront(self.downloadPanel)
         }
-        manager.credentials = { [weak self] address, target, done in
-            guard let self, self.saved.contains(address), DownloadManager.allows(target, origin: address) else { done(nil); return }
+        manager.authorizationHeaders = { [weak self] address, target, done in
+            guard let self, DownloadManager.allows(target, origin: address) else { done(nil); return }
+            if self.cloudView {
+                guard address == self.origin, address == self.documentAddress,
+                      let current = self.web?.url, GatewayURL.same(current, address) else { done(nil); return }
+                done(self.cloudDownloadAuthorization?.headers(for: target, origin: address, generation: self.generation))
+                return
+            }
+            guard self.saved.contains(address) else { done(nil); return }
             WKWebsiteDataStore.default().httpCookieStore.getAllCookies { [weak self] cookies in
-                guard let self, self.saved.contains(address) else { done(nil); return }
+                guard let self, !self.cloudView, self.saved.contains(address) else { done(nil); return }
                 let matching = cookies.filter { cookie in
                     self.cookieMatches(cookie, address: address)
                 }
-                done(matching.isEmpty ? nil : HTTPCookie.requestHeaderFields(with: matching)["Cookie"])
+                done(matching.isEmpty ? nil : HTTPCookie.requestHeaderFields(with: matching))
             }
         }
         return manager
@@ -886,7 +894,13 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         let inbox = UIBarButtonItem(image: UIImage(systemName: "bell"), style: .plain, target: self, action: #selector(self.inbox)); inbox.accessibilityLabel = MobileStrings.text("通知")
         navigationItem.rightBarButtonItems = [settings, inbox]
     }
-    private func clear() { hideEntryProgress();pageReady=false;pendingPeer=nil;for child in Array(peerViews.keys){child.stopLoading();webViewDidClose(child)};cancelChannelJobs();connectionDeadline?.cancel(); connectionDeadline = nil; updateSystemBars(reset: true); connectionError = nil; pendingStorage = nil; nativeMainNavigation = nil; routeDiscovery?.cancel(); routeDiscovery = nil; cancelSync(); finishUpload(nil); if let folder = mediaUploadDirectory { try? FileManager.default.removeItem(at: folder); mediaUploadDirectory = nil }; stopComputerChecks(); computerStates.removeAll();addressLists.removeAll();computerTitles.removeAll();arrivingVia=nil;deferredRoute=nil; computerNotifications.removeAll(); gatewayMenuTop?.isActive = false; gatewayMenuTop = nil; generation += 1; web?.stopLoading(); web?.navigationDelegate = nil; web?.uiDelegate = nil; web = nil; for v in page.arrangedSubviews where v !== subtitle { page.removeArrangedSubview(v); v.removeFromSuperview() } }
+    private func clear() {
+        if let authorization = cloudDownloadAuthorization, downloadState.origin == authorization.origin,
+           [.connecting, .downloading].contains(downloadState.phase) {
+            downloads.pause()
+        }
+        cloudDownloadAuthorization = nil
+        hideEntryProgress();pageReady=false;pendingPeer=nil;for child in Array(peerViews.keys){child.stopLoading();webViewDidClose(child)};cancelChannelJobs();connectionDeadline?.cancel(); connectionDeadline = nil; updateSystemBars(reset: true); connectionError = nil; pendingStorage = nil; nativeMainNavigation = nil; routeDiscovery?.cancel(); routeDiscovery = nil; cancelSync(); finishUpload(nil); if let folder = mediaUploadDirectory { try? FileManager.default.removeItem(at: folder); mediaUploadDirectory = nil }; stopComputerChecks(); computerStates.removeAll();addressLists.removeAll();computerTitles.removeAll();arrivingVia=nil;deferredRoute=nil; computerNotifications.removeAll(); gatewayMenuTop?.isActive = false; gatewayMenuTop = nil; generation += 1; web?.stopLoading(); web?.navigationDelegate = nil; web?.uiDelegate = nil; web = nil; for v in page.arrangedSubviews where v !== subtitle { page.removeArrangedSubview(v); v.removeFromSuperview() } }
     private func computerActions(_ manageTitle:String,_ rename:@escaping ()->Void,_ manage:@escaping ()->Void)->UIStackView{
         let renameButton=button(MobileStrings.text("重命名"),symbol:"pencil",action:rename)
         let manageButton=button(MobileStrings.text(manageTitle),symbol:"slider.horizontal.3",action:manage)
@@ -1217,11 +1231,12 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         }
 #endif
         clear(); navigation(home: false); subtitle.isHidden = false; origin = address; documentAddress=address;cloudComputerName=cloudName;if !cloudView {var all = saved; if !all.contains(address) { all.append(address) }; defaults.set(all, forKey: "origins"); defaults.set(address, forKey: "active"); defaults.set(Date().timeIntervalSince1970, forKey: "last-opened:" + address)}; subtitle.text = MobileStrings.text("正在连接 · ") + (cloudName ?? computerName(address))
+        cloudDownloadAuthorization = cloudView ? DownloadManager.CloudAuthorization(entry: url, origin: address, generation: generation) : nil
         let configuration = WKWebViewConfiguration(); configuration.websiteDataStore = cloudView ? .nonPersistent() : .default(); configuration.applicationNameForUserAgent = "BridgeMobile/0.1-iOS"
         configuration.preferences.javaScriptCanOpenWindowsAutomatically=true
         configuration.ignoresViewportScaleLimits = false
         configuration.userContentController.addUserScript(WKUserScript(source: WebScripts.fixedViewport, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
-        configuration.userContentController.addUserScript(WKUserScript(source: "window.BridgeMobileCapabilities = Object.freeze({ diagnosticsExport: true });", injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        configuration.userContentController.addUserScript(WKUserScript(source: "window.BridgeMobileCapabilities = Object.freeze({ diagnosticsExport: true, fileDownload: true });", injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         clipboardToken = UUID().uuidString
         let connectionName = String(decoding: (try? JSONEncoder().encode(cloudName ?? computerName(address))) ?? Data("null".utf8), as: UTF8.self)
         let nativeLanguage = MobileStrings.language
@@ -1336,6 +1351,16 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
     func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) { guard frame.isMainFrame else { completionHandler(false); return }; let a = UIAlertController(title: nil, message: message, preferredStyle: .alert); a.addAction(UIAlertAction(title: MobileStrings.text("取消"), style: .cancel) { _ in completionHandler(false) }); a.addAction(UIAlertAction(title: MobileStrings.text("确认"), style: .default) { _ in completionHandler(true) }); present(a, animated: true) }
     func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (String?) -> Void) {
         guard webView===web else{completionHandler(nil);return}
+        if prompt == "codexbridge-download:" + clipboardToken {
+            guard cloudView, connectionError == nil, UIApplication.shared.applicationState == .active,
+                  frame.isMainFrame, let source = frame.request.url, GatewayURL.same(source, documentAddress),
+                  let current = webView.url, GatewayURL.same(current, documentAddress),
+                  let text = defaultText, text.utf16.count <= 8192, let target = URL(string: text),
+                  DownloadManager.allows(target, origin: documentAddress),
+                  cloudDownloadAuthorization?.headers(for: target, origin: origin, generation: generation) != nil
+            else { completionHandler("rejected"); return }
+            completionHandler(downloadArtifact(URLRequest(url: target)) ? "started" : "rejected"); return
+        }
         if prompt == "codexbridge-upload-source:" + clipboardToken {
             guard webView === web, connectionError == nil, UIApplication.shared.applicationState == .active,
                   frame.isMainFrame, let source = frame.request.url, GatewayURL.same(source, documentAddress),
@@ -1438,10 +1463,12 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
     private func isIsolatedShell(_ url: URL) -> Bool {
         url.absoluteString == documentAddress + "/html-preview-shell" || url.absoluteString == documentAddress + "/mermaid-render-shell"
     }
-    private func downloadArtifact(_ request: URLRequest) {
-        guard !downloadState.busy else { downloadPanel.expand(); info(MobileStrings.text("已有下载进行中，请稍候")); return }
-        guard let url = request.url, isArtifact(url) else { return }
-        guard let physical=URL(string:origin+url.absoluteString.dropFirst(documentAddress.count)) else{return};downloadPanel.expand(); downloads.start(physical, origin: origin)
+    @discardableResult
+    private func downloadArtifact(_ request: URLRequest) -> Bool {
+        guard !downloadState.busy else { downloadPanel.expand(); info(MobileStrings.text("已有下载进行中，请稍候")); return false }
+        guard let url = request.url, isArtifact(url) else { return false }
+        guard let physical=URL(string:origin+url.absoluteString.dropFirst(documentAddress.count)) else{return false};downloadPanel.expand(); downloads.start(physical, origin: origin)
+        return true
     }
     private func openDownload() {
         guard downloadState.phase == .complete, let file = downloadState.file, presentedViewController == nil else { return }

@@ -18,11 +18,13 @@ subprocess.run([java_tool('javac'), '-encoding', 'UTF-8', '-d', str(work),
                 str(root / 'mobile/android/src/io/github/try2love/codexbridge/GatewayURL.java'),
                 str(root / 'mobile/android/src/io/github/try2love/codexbridge/MobileRelease.java'),
                 str(root / 'mobile/android/src/io/github/try2love/codexbridge/ArtifactDownload.java'),
+                str(root / 'mobile/android/src/io/github/try2love/codexbridge/CloudDownloadGrant.java'),
                 str(root / 'mobile/android/src/io/github/try2love/codexbridge/UpdateInstallSession.java'),
                 str(root / 'mobile/tests/UpdateDownloadTests.java'),
                 str(root / 'mobile/tests/UpdateInstallSessionTests.java'),
                 str(root / 'mobile/tests/GatewayUpdateDownloadTests.java'),
                 str(root / 'mobile/tests/ArtifactDownloadTests.java'),
+                str(root / 'mobile/tests/CloudDownloadTests.java'),
                 str(root / 'mobile/tests/ArtifactRangeTests.java')], check=True)
-for test in ('ArtifactDownloadTests', 'ArtifactRangeTests', 'UpdateDownloadTests', 'UpdateInstallSessionTests', 'GatewayUpdateDownloadTests'):
+for test in ('ArtifactDownloadTests', 'ArtifactRangeTests', 'UpdateDownloadTests', 'UpdateInstallSessionTests', 'GatewayUpdateDownloadTests', 'io.github.try2love.codexbridge.CloudDownloadTests'):
     subprocess.run([java_tool('java'), '-cp', str(work), test, str(work / test)], check=True)
