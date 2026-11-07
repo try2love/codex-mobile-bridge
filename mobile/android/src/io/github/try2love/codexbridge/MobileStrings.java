@@ -229,7 +229,9 @@ values.put("请填写完整的 HTTPS 网关地址，或局域网 HTTP 地址，�
   values.put("电脑与聊天选项","Computer and chat options");
   values.put("在浏览器打开外部链接？\n","Open external link in browser?\n");
   values.put("打开","Open");
-  values.put("连接失败，请在更多菜单中刷新","Connection failed. Reload from the More menu.");
+  values.put("暂时无法连接电脑","Could not connect to this computer");
+  values.put("网关暂时无法访问。请检查电脑和网络后重试，或返回电脑列表。","The gateway is unavailable. Check the computer and network, then retry or return to the computer list.");
+  values.put("重试","Retry");
   values.put("没有可用的文件选择器","No file picker available");
   values.put("已有下载进行中，请稍候","A download is in progress. Please wait.");
   values.put("此下载不是当前电脑的附件，请在浏览器中打开","This download is not an attachment from the current computer. Open it in your browser.");

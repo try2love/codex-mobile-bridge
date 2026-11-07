@@ -12,7 +12,7 @@ final class ConnectionDiscovery: NSObject, URLSessionTaskDelegate, @unchecked Se
     private lazy var session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.httpShouldSetCookies = false; config.httpCookieStorage = nil; config.urlCredentialStorage = nil; config.urlCache = nil
-        config.timeoutIntervalForRequest = 2; config.timeoutIntervalForResource = 3
+        config.timeoutIntervalForRequest = 6; config.timeoutIntervalForResource = 10
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
     func cancel() { cancelled = true; session.invalidateAndCancel() }

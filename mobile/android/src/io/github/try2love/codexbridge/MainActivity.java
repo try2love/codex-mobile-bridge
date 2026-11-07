@@ -42,6 +42,7 @@ public final class MainActivity extends Activity implements SharedPreferences.On
   return capabilities!=null&&(capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)||capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET));
  }
  private final Map<String,Map<String,Long>> routeTimes=new HashMap<>();
+ private final Map<String,Long> routeTraffic=new HashMap<>();
  private final Map<String,LinearLayout> addressLists=new HashMap<>();
  private final Map<String,TextView> computerTitles=new HashMap<>();
  private final Map<String,Long> manifestReads=new HashMap<>();
@@ -127,7 +128,11 @@ public final class MainActivity extends Activity implements SharedPreferences.On
   channelJobs.add(probes.submit(()->{try{
    GatewayChannels.probe(d,primary.token,targets,(url,ms)->runOnUiThread(()->{
     if(!current.getAsBoolean())return;
-    times(d).put(url,ms);
+    DeviceBinding.Credential live=DeviceBinding.load(this,GatewayChannels.vault(d.optString("deviceId")));
+    if(live==null||!live.token.equals(primary.token))return;
+    long trafficAt=routeTraffic.getOrDefault(url,-30000L);
+    long result=ms<0&&pageReady&&url.equals(origin)&&android.os.SystemClock.elapsedRealtime()-trafficAt<30000?times(d).getOrDefault(url,-1L):ms;
+    times(d).put(url,result);
     boolean first=ms>=0&&!any[0];
     if(first){any[0]=true;refreshRoutes(address,d,url,primary);}
     JSONObject policy=d.optJSONObject("race");
@@ -154,6 +159,10 @@ public final class MainActivity extends Activity implements SharedPreferences.On
    java.util.function.BooleanSupplier valid=()->resumed&&web==page&&address.equals(origin);
    sweep(address,d,Collections.singletonList(address),valid,(u,ms,first)->{if(ms>=0)page.evaluateJavascript("window.BridgeChannelLink?.result("+id+",true)",null);},
     ()->page.evaluateJavascript("window.BridgeChannelLink?.result("+id+",false)",null));return "started";
+  }
+  if(cmd.startsWith("traffic:")&&cmd.substring(8).matches("[0-9]{1,6}")){
+   long ms=Long.parseLong(cmd.substring(8));if(ms>120000)return "invalid";
+   routeTraffic.put(origin,android.os.SystemClock.elapsedRealtime());times(d).put(origin,ms);return "ok";
   }
   if(cmd.equals("unreachable")){channelUnavailable();return "ok";}
   if(cmd.startsWith("prefer:")||cmd.startsWith("outage:")||cmd.startsWith("retry:")){
@@ -224,8 +233,8 @@ public final class MainActivity extends Activity implements SharedPreferences.On
    if(!opening&&sourceCookie.isEmpty())return;
    String existing=BindingSelection.cookie(CookieManager.getInstance().getCookie(next+"/"),primary.name);
    if(!existing.isEmpty()&&!existing.equals(primary.name+"="+nextToken)){
-    DeviceBinding.Credential saved=DeviceBinding.load(this,next);JSONObject known=GatewayChannels.record(prefs,next);
-    if(known==null||!d.optString("deviceId").equals(known.optString("deviceId"))||saved==null||!saved.cookie().equals(existing)){
+    DeviceBinding.Credential saved=DeviceBinding.load(this,next);
+    if(!d.optString("deviceId").equals(GatewayChannels.identity(this,prefs,next))||saved==null||!saved.cookie().equals(existing)){
      if(opening&&addresses(address).contains(address))connect(requested);android.widget.Toast.makeText(this,L("此地址的登录绑定已变化，请重新验证"),android.widget.Toast.LENGTH_SHORT).show();return;
     }
    }
@@ -361,7 +370,7 @@ public final class MainActivity extends Activity implements SharedPreferences.On
  void rememberConnection(){
   final String address=origin;final int ticket=generation;final String snapshot=CookieManager.getInstance().getCookie(address+"/");
   worker.execute(()->{try{JSONObject auth=EventClient.request(address,"/api/auth",null,null);String name=auth.optString("cookieName","codex_mobile_session");String binding=BindingSelection.cookie(CookieManager.getInstance().getCookie(address+"/"),name);JSONObject data=ConnectionDiscovery.descriptor(auth,binding);
-   JSONObject channels=auth.optBoolean("trustedDevice")?GatewayChannels.enroll(this,prefs,address,auth.optJSONObject("mobileRoutes"),name,EventClient.tokenValue(binding)):null;
+   GatewayChannels.Enrollment enrollment=auth.optBoolean("authenticated")&&auth.optBoolean("trustedDevice")?GatewayChannels.enroll(this,prefs,address,auth.optJSONObject("mobileRoutes"),name,EventClient.tokenValue(binding)):null;
    runOnUiThread(()->{String current=BindingSelection.match(snapshot,CookieManager.getInstance().getCookie(address+"/"),name);
     if(ticket!=generation||!saved().contains(address)||current.isEmpty()||!binding.equals(current))return;
     if(auth.optBoolean("authenticated")){
@@ -370,20 +379,33 @@ public final class MainActivity extends Activity implements SharedPreferences.On
     }
     if(auth.optBoolean("authenticated")&&auth.optBoolean("trustedDevice")&&DeviceBinding.name(name))try{DeviceBinding.save(this,address,name,EventClient.tokenValue(current));}catch(Exception ignored){}
     else if(!auth.optBoolean("authenticated"))DeviceBinding.clear(this,address);
-    if(channels!=null){try{
-     String id=channels.getString("deviceId"),vault=GatewayChannels.vault(id);
-     if(DeviceBinding.load(this,vault)==null)DeviceBinding.save(this,vault,name,EventClient.tokenValue(current));
-     if(DeviceBinding.load(this,vault)!=null){
-      if(!prefs.contains("name:"+id)&&prefs.contains("name:"+address))prefs.edit().putString("name:"+id,prefs.getString("name:"+address,"")).apply();
-      Set<String> addresses=saved();addresses.removeIf(other->{JSONObject item=GatewayChannels.record(prefs,other);return !other.equals(address)&&item!=null&&id.equals(item.optString("deviceId"));});
-      prefs.edit().putString("channels:"+address,channels.toString()).putString("channel-anchor:"+id,channels.getString("anchor")).putStringSet("origins",addresses).apply();
+    if(enrollment!=null){try{
+     JSONObject channels=enrollment.descriptor;String id=channels.getString("deviceId"),vault=GatewayChannels.vault(id);
+     DeviceBinding.Credential live=DeviceBinding.load(this,vault);
+     if((live==null&&enrollment.previous==null)||(live!=null&&enrollment.previous!=null&&live.token.equals(enrollment.previous.token))){
+      boolean replaced=live==null||!live.token.equals(enrollment.root.token)||!live.name.equals(enrollment.root.name);
+      if(replaced)DeviceBinding.save(this,vault,enrollment.root.name,enrollment.root.token);
+      live=DeviceBinding.load(this,vault);
+      if(live!=null&&live.token.equals(enrollment.root.token)){
+       Set<String> entries=saved();SharedPreferences.Editor edit=prefs.edit();Set<String> migrated=new HashSet<>();
+       List<String> aliases=new ArrayList<>(entries);aliases.remove(address);aliases.add(address);
+       for(String other:aliases)if(id.equals(GatewayChannels.identity(this,prefs,other))||other.equals(address)){
+        for(String key:new String[]{"name:","channel-mode:","disabled-channels:"})if(!prefs.contains(key+id)&&prefs.contains(key+other)&&migrated.add(key)){
+         Object value=prefs.getAll().get(key+other);if(value instanceof String)edit.putString(key+id,(String)value);
+         if(value instanceof Set)edit.putStringSet(key+id,new HashSet<>((Set<String>)value));
+        }
+       }
+       entries.removeIf(other->!other.equals(address)&&id.equals(GatewayChannels.identity(this,prefs,other)));
+       edit.putString("channels:"+address,channels.toString()).putString("channel-anchor:"+id,channels.getString("anchor")).putStringSet("origins",entries).apply();
+       if(replaced){manifestReads.remove(id);MonitorService.bindingsChanged();}
+      }
      }
     }catch(Exception ignored){}}
     JSONObject computer=auth.optJSONObject("computer");
     String platform=computer==null?"":computer.optString("platform");
     uu.scope=auth.optBoolean("authenticated")&&("Windows".equals(platform)||"Darwin".equals(platform))?UURemote.device(name):"";
     if(web!=null)web.evaluateJavascript("window.BridgeUURemote?.refresh()",null);
-    if(channels!=null&&web!=null)web.evaluateJavascript("window.BridgeMobileChannels?.bound()",null);
+    if(enrollment!=null&&web!=null)web.evaluateJavascript("window.BridgeMobileChannels?.bound()",null);
     if(data!=null)prefs.edit().putString("connection:"+address,data.toString()).apply();else prefs.edit().remove("connection:"+address).apply();});
   }catch(Exception ignored){}});
  }
@@ -503,14 +525,28 @@ public final class MainActivity extends Activity implements SharedPreferences.On
   if(uuResult!=null||!openIntent(getIntent())){String active=prefs.getString("active","");if(saved().contains(active))connect(active+"/");else home();}monitor();root.post(this::requestStartupNotifications);restoreUpdate();
   if(state!=null&&state.getBoolean("settingsOpen",false)){int offset=state.getInt("settingsScroll",0);root.post(()->{settingsPage=new SettingsPage(this,offset,false);settingsPage.show();});}
  }
+ private View connectionError;private boolean navigationFailed;
+ void hideConnectionError(){if(connectionError!=null){((ViewGroup)connectionError.getParent()).removeView(connectionError);connectionError=null;}if(chatMenu!=null)chatMenu.setVisibility(View.VISIBLE);}
+ void showConnectionError(String url){
+  if(web==null||connectionError!=null)return;
+  hideEntryProgress();status.setVisibility(View.GONE);if(chatMenu!=null)chatMenu.setVisibility(View.GONE);
+  final String address=origin;final int ticket=generation;LinearLayout content=column();connectionError=content;
+  content.setGravity(Gravity.CENTER_VERTICAL);content.setPadding(dp(24),dp(24),dp(24),dp(24));content.setBackgroundColor(pageColor());
+  TextView title=text(L("暂时无法连接电脑"),22);title.setTypeface(null,android.graphics.Typeface.BOLD);add(title,content,12);
+  add(text(L("网关暂时无法访问。请检查电脑和网络后重试，或返回电脑列表。"),15),content,20);
+  add(button(L("重试"),()->{if(ticket==generation&&saved().contains(address))openComputer(address,url.substring(pageOrigin.length()));}),content,12);
+  add(button(L("管理这台电脑"),()->{if(ticket==generation)manageComputer(address);}),content,12);
+  add(button(L("返回电脑列表"),this::home),content,0);
+  ((FrameLayout)web.getParent()).addView(content,new FrameLayout.LayoutParams(-1,-1));
+ }
  void cancelConnectionDeadline(){if(connectionDeadline!=null){homeHandler.removeCallbacks(connectionDeadline);connectionDeadline=null;}}
  void watchConnection(String url,WebView current,int ticket){
   cancelConnectionDeadline();connectionDeadline=()->{
    if(ticket!=generation||web!=current)return;
-   connectionDeadline=null;hideEntryProgress();status.setVisibility(View.VISIBLE);status.setText(L("连接失败，请在更多菜单中刷新"));recoverConnection(url);
-  };homeHandler.postDelayed(connectionDeadline,12000);
+   connectionDeadline=null;showConnectionError(url);recoverConnection(url);
+  };homeHandler.postDelayed(connectionDeadline,30000);
  }
- void clear(){if(uu!=null)uu.scope="";hideEntryProgress();pageReady=false;pendingPeer=null;for(WebView peer:new ArrayList<>(peerViews))closePeer(peer);cancelChannelJobs();dismissGatewayMenu();cancelConnectionDeadline();if(connectionTask!=null){connectionTask.cancel(true);connectionTask=null;}if(preparingUpdate!=null){preparingUpdate.cancel();preparingUpdate=null;}pendingStorage=null;if(routeDiscovery!=null){routeDiscovery.cancel();routeDiscovery=null;}if(files!=null){files.onReceiveValue(null);files=null;fileView=null;}stopComputerChecks();homeStates.clear();addressLists.clear();computerTitles.clear();arrivingVia=null;deferredRoute=null;homeNotifications.clear();resetExitGesture();generation++;if(web!=null){web.stopLoading();web.destroy();web=null;}systemBars.update(pageColor(),pageColor());while(root.getChildCount()>2)root.removeViewAt(2);}
+ void clear(){hideConnectionError();navigationFailed=false;routeTraffic.clear();if(uu!=null)uu.scope="";hideEntryProgress();pageReady=false;pendingPeer=null;for(WebView peer:new ArrayList<>(peerViews))closePeer(peer);cancelChannelJobs();dismissGatewayMenu();cancelConnectionDeadline();if(connectionTask!=null){connectionTask.cancel(true);connectionTask=null;}if(preparingUpdate!=null){preparingUpdate.cancel();preparingUpdate=null;}pendingStorage=null;if(routeDiscovery!=null){routeDiscovery.cancel();routeDiscovery=null;}if(files!=null){files.onReceiveValue(null);files=null;fileView=null;}stopComputerChecks();homeStates.clear();addressLists.clear();computerTitles.clear();arrivingVia=null;deferredRoute=null;homeNotifications.clear();resetExitGesture();generation++;if(web!=null){web.stopLoading();web.destroy();web=null;}systemBars.update(pageColor(),pageColor());while(root.getChildCount()>2)root.removeViewAt(2);}
  void home(){clear();header(false);status.setVisibility(View.GONE);ScrollView scroll=new ScrollView(ui.context);scroll.setFillViewport(true);LinearLayout content=column();content.setPadding(dp(20),dp(16),dp(20),dp(24));scroll.addView(content);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
   ImageView icon=new ImageView(ui.context);icon.setImageResource(getResources().getIdentifier("ic_computer","drawable",getPackageName()));icon.setColorFilter(textColor());icon.setScaleType(ImageView.ScaleType.FIT_CENTER);LinearLayout.LayoutParams ip=new LinearLayout.LayoutParams(dp(64),dp(58));ip.gravity=Gravity.CENTER;ip.bottomMargin=dp(24);content.addView(icon,ip);
   TextView headline=text(L("电脑上的工作，\n带在身边。"),30);headline.setTypeface(null,android.graphics.Typeface.BOLD);headline.setGravity(Gravity.CENTER);add(headline,content,10);
@@ -585,13 +621,13 @@ public final class MainActivity extends Activity implements SharedPreferences.On
   // Keep the WebView glyph size aligned with the terminal's 6px lower bound.
   s.setMinimumFontSize(6);s.setMinimumLogicalFontSize(6);
   web.setWebViewClient(new WebViewClient(){
-   public void onPageStarted(WebView view,String target,android.graphics.Bitmap favicon){if(view==web)dismissGatewayMenu();}
+   public void onPageStarted(WebView view,String target,android.graphics.Bitmap favicon){if(view==web){navigationFailed=false;dismissGatewayMenu();}}
    public boolean shouldOverrideUrlLoading(WebView view,WebResourceRequest request){String target=request.getUrl().toString();if(!request.isForMainFrame())return !htmlPreviewShell(target);if(htmlPreviewShell(target))return true;if(target.equals("codexbridge://home")&&request.hasGesture()&&GatewayURL.sameOrigin(view.getUrl(),pageOrigin)){home();return true;}if(ArtifactDownload.accepts(target,pageOrigin)&&request.hasGesture()){downloadArtifact(target);return true;}if(GatewayURL.sameOrigin(target,pageOrigin))return false;if(request.hasGesture()&&("https".equals(request.getUrl().getScheme())||"http".equals(request.getUrl().getScheme())))new AlertDialog.Builder(ui.context).setMessage(L("在浏览器打开外部链接？\n")+request.getUrl().getHost()).setPositiveButton(L("打开"),(d,w)->startActivity(new Intent(Intent.ACTION_VIEW,request.getUrl()))).setNegativeButton(L("取消"),null).show();return true;}
-   public void onPageCommitVisible(WebView view,String target){if(view==web&&GatewayURL.sameOrigin(target,pageOrigin)){cancelConnectionDeadline();hideEntryProgress();syncWebTheme();status.setVisibility(View.GONE);}}
-   public void onPageFinished(WebView view,String target){if(view==web&&GatewayURL.sameOrigin(target,pageOrigin)){cancelConnectionDeadline();hideEntryProgress();pageReady=true;CookieManager.getInstance().flush();view.evaluateJavascript("window.BridgeMobileCapabilities = Object.freeze({ diagnosticsExport: true });",null);view.evaluateJavascript(appearance,null);syncWebTheme();status.setVisibility(View.GONE);registerPushToken();rememberConnection();
+   public void onPageCommitVisible(WebView view,String target){if(view==web&&!navigationFailed&&GatewayURL.sameOrigin(target,pageOrigin)){cancelConnectionDeadline();hideConnectionError();hideEntryProgress();syncWebTheme();status.setVisibility(View.GONE);}}
+   public void onPageFinished(WebView view,String target){if(view==web&&!navigationFailed&&GatewayURL.sameOrigin(target,pageOrigin)){cancelConnectionDeadline();hideConnectionError();hideEntryProgress();pageReady=true;CookieManager.getInstance().flush();view.evaluateJavascript("window.BridgeMobileCapabilities = Object.freeze({ diagnosticsExport: true });",null);view.evaluateJavascript(appearance,null);syncWebTheme();status.setVisibility(View.GONE);registerPushToken();rememberConnection();
     if(pendingStorage!=null){String snapshot=pendingStorage;pendingStorage=null;view.evaluateJavascript("(()=>{const data=JSON.parse("+JSONObject.quote(snapshot)+");if(data.version===2){window.BridgeMobileHandoff?.restore(data);return;}if(data&&typeof data==='object'){for(const [k,v] of Object.entries(data))if(typeof v==='string')localStorage.setItem(k,v);location.reload();}})()",null);}}}
-   public void onReceivedError(WebView view,WebResourceRequest req,WebResourceError e){if(view==web&&req.isForMainFrame()){cancelConnectionDeadline();hideEntryProgress();status.setVisibility(View.VISIBLE);status.setText(L("连接失败，请在更多菜单中刷新"));recoverConnection(url);}}
-   public void onReceivedHttpError(WebView view,WebResourceRequest req,WebResourceResponse response){if(view==web&&req.isForMainFrame()&&GatewayURL.sameOrigin(req.getUrl().toString(),pageOrigin)&&ConnectionDiscovery.retryableStatus(response.getStatusCode()))recoverConnection(url);}
+   public void onReceivedError(WebView view,WebResourceRequest req,WebResourceError e){if(view==web&&req.isForMainFrame()){navigationFailed=true;cancelConnectionDeadline();showConnectionError(url);recoverConnection(url);}}
+   public void onReceivedHttpError(WebView view,WebResourceRequest req,WebResourceResponse response){if(view==web&&req.isForMainFrame()&&GatewayURL.sameOrigin(req.getUrl().toString(),pageOrigin)&&ConnectionDiscovery.retryableStatus(response.getStatusCode())){navigationFailed=true;cancelConnectionDeadline();showConnectionError(url);recoverConnection(url);}}
   });
   web.setWebChromeClient(new WebChromeClient(){
    @Override public boolean onCreateWindow(WebView parent,boolean dialog,boolean gesture,Message reply){return openPeer(parent,reply);}

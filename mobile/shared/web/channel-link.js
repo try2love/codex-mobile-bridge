@@ -15,8 +15,8 @@
   let current=null, preview=null, target=location.origin, seq=0, down=false, failures=0, cycle=0, verifying=0, lastRace=0, backoff=3000, timer=0;
   const reads=new Set(), requests=new Map(), peers=new Set();
   const native = action => window.prompt('codexbridge-channels:__BRIDGE_CLIPBOARD_TOKEN__',action);
-  let confirmAt=0;
-  let nextLanCheck=0, lastProof=-Infinity, lastTraffic=-Infinity;
+  let confirmAt=0, trafficVersion=0, proofTrafficVersion=0;
+  let nextLanCheck=0, lastProof=-Infinity, lastTraffic=-Infinity, lastReport=-Infinity;
   // The gateway publishes private LAN listeners as HTTP and public entries as HTTPS.
   function autoRoute(reason){
     let menu;try{menu=JSON.parse(native('read'));}catch{return;}
@@ -36,6 +36,16 @@
     down=lost;document.documentElement.classList.toggle('bridge-route-down',lost);
     window.dispatchEvent(new Event('bridge-channel-sample'));
   }
+  function traffic(path, started){
+    // Public auth/health replies do not prove that this page can use the gateway.
+    if(/^\/api\/(?:auth|health|login|pair|connection\/prove)(?:[/?]|$)/.test(path))return;
+    const now=performance.now(), recovered=down||failures>0;
+    lastTraffic=now;trafficVersion++;failures=0;confirmAt=0;backoff=3000;lastRace=0;
+    if(!verifying)clearTimeout(timer);
+    if(down)state(false);
+    if(recovered||now-lastReport>=30000){lastReport=now;native('traffic:'+Math.min(120000,Math.max(0,Math.round(now-started))));}
+    preferLan();
+  }
   function reap(peer) {
     if(!peer || peer===current || peer===preview || peer.pending)return;
     peer.port?.close();try{peer.popup?.close();}catch{}peers.delete(peer);
@@ -50,7 +60,7 @@
     const m=event.data||{},call=requests.get(m.id);if(!call || call.peer.port!==event.target)return;
     if(m.type==='error'){finish(m.id,new TypeError('Gateway connection failed'));return;}
     if(m.type==='head'){
-      if(call.peer===current && m.status>=200 && m.status<300)lastTraffic=performance.now();
+      if(call.peer===current && m.status>=200 && m.status<300)traffic(call.path,call.started);
       const stream=m.body?new ReadableStream({
         start(controller){call.stream=controller;},
         pull(){call.peer.port.postMessage({type:'pull',id:m.id});},
@@ -63,14 +73,14 @@
   }
   async function routed(input, options){
     const path=api(input);if(!path)return direct(input,options);
-    const req=new Request(input,options),method=req.method;
+    const req=new Request(input,options),method=req.method,started=performance.now();
     if(!['GET','HEAD','POST'].includes(method))throw new TypeError('Unsupported gateway method');
     if(!current){
-      if(method==='POST')return direct(input,options);
+      if(method==='POST'){const response=await direct(input,options);if(response.ok&&!response.redirected&&!current)traffic(path,started);return response;}
       const abort=new AbortController(), cancel=()=>abort.abort();reads.add(abort);
       req.signal.addEventListener('abort',cancel,{once:true});if(req.signal.aborted)cancel();
       try{const response=await direct(input,{...options,signal:abort.signal});
-        if(response.ok && !current && !abort.signal.aborted)lastTraffic=performance.now();
+        if(response.ok && !response.redirected && !current && !abort.signal.aborted)traffic(path,started);
         return response;}
       finally{reads.delete(abort);req.signal.removeEventListener('abort',cancel);}
     }
@@ -78,7 +88,7 @@
     if(req.signal.aborted || peer!==current)throw signalError();
     return new Promise((resolve,reject)=>{
       const abort=()=>{peer.port.postMessage({type:'abort',id});finish(id,signalError());};
-      requests.set(id,{resolve,reject,abort,peer,method,signal:req.signal});peer.pending++;
+      requests.set(id,{resolve,reject,abort,peer,method,path,started,signal:req.signal});peer.pending++;
       req.signal.addEventListener('abort',abort,{once:true});
       try{peer.port.postMessage({type:'fetch',id,path,method,headers:headers(req.headers),body},body?[body]:[]);}
       catch(e){finish(id,e);}
@@ -138,13 +148,14 @@
       if(document.hidden || verifying || preview)return;
       if(reason==='tick' && !failures && performance.now()-lastTraffic<30000 && performance.now()-lastProof<90000){preferLan();return;}
       if(performance.now()<confirmAt)return;
-      const id=++cycle;verifying=id;
-      clearTimeout(timer);timer=setTimeout(()=>this.result(id,false),6000);
+      const id=++cycle;verifying=id;proofTrafficVersion=trafficVersion;
+      clearTimeout(timer);timer=setTimeout(()=>this.result(id,false),12000);
       if(native('verify:'+id)!=='started'){clearTimeout(timer);verifying=0;}
     },
     result(id,ok){
       if(id!==verifying)return;
       clearTimeout(timer);verifying=0;
+      if(!ok && trafficVersion>proofTrafficVersion)return;
       if(ok){failures=0;backoff=3000;lastRace=0;lastProof=performance.now();if(down)state(false);preferLan();return;}
       if(++failures===1){confirmAt=performance.now()+1150;timer=setTimeout(()=>this.check(),1200);return;}
       const first=!down;if(first)state(true);

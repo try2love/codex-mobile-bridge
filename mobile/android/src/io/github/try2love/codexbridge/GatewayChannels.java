@@ -41,15 +41,36 @@ final class GatewayChannels {
    try{if(GatewayURL.origin(target).equals(target)&&target.equals(GatewayURL.httpOrigin(target))&&!urls.contains(target))urls.add(target);}catch(Exception unsupported){continue;}
   }return urls;
  }
- static JSONObject enroll(Context ctx,SharedPreferences prefs,String address,JSONObject descriptor,String name,String secret)throws Exception{
-  if(descriptor==null||!descriptor.optString("deviceId").matches("[a-f0-9]{32}")||!endpoints(descriptor).contains(address))return null;
-  String id=descriptor.getString("deviceId"),anchor=address;
-  DeviceBinding.Credential root=DeviceBinding.load(ctx,vault(id));
-  if(root!=null){
-   anchor=prefs.getString("channel-anchor:"+id,address);
-   if(!token(root.token,anchor,address).equals(secret)&&!proves(id,address,root.token))return null;
-  }else if(secret.startsWith("cmbroute1_"))return null;
-  return new JSONObject(descriptor.toString()).put("anchor",anchor);
+ static final class Enrollment {
+  final JSONObject descriptor;final DeviceBinding.Credential root,previous;
+  Enrollment(JSONObject descriptor,DeviceBinding.Credential root,DeviceBinding.Credential previous){this.descriptor=descriptor;this.root=root;this.previous=previous;}
+ }
+ static Enrollment enroll(Context ctx,SharedPreferences prefs,String address,JSONObject descriptor,String name,String secret)throws Exception{
+  if(descriptor==null||!descriptor.optString("deviceId").matches("[a-f0-9]{32}")||!DeviceBinding.name(name)||!endpoints(descriptor).contains(address))return null;
+  String id=descriptor.getString("deviceId"),anchor=prefs.getString("channel-anchor:"+id,address);
+  DeviceBinding.Credential previous=DeviceBinding.load(ctx,vault(id)),root=previous;
+  if(root==null||!root.name.equals(name)||!token(root.token,anchor,address).equals(secret)){
+   // A successful new login may revoke the old root. Prove the new binding, never resurrect the old one.
+   if(secret.startsWith("cmbroute1_"))return null;
+   if(previous!=null&&!address.equals(anchor)){
+    boolean known=false;
+    for(String key:prefs.getAll().keySet())if(key.startsWith("channels:")){
+     JSONObject prior=record(prefs,key.substring(9));
+     if(prior!=null&&id.equals(prior.optString("deviceId"))&&endpoints(prior).contains(address)){known=true;break;}
+    }
+    if(!known)return null;
+   }
+   try{if(!proves(id,address,secret))return null;}catch(Exception unavailable){return null;}
+   root=new DeviceBinding.Credential(name,secret);anchor=address;
+  }
+  return new Enrollment(new JSONObject(descriptor.toString()).put("anchor",anchor),root,previous);
+ }
+ static String identity(Context ctx,SharedPreferences prefs,String address){
+  JSONObject d=record(prefs,address);if(d!=null)return d.optString("deviceId");
+  // Older saved entries may lack a route catalog. A retained scoped cookie has the same gateway namespace.
+  DeviceBinding.Credential binding=DeviceBinding.load(ctx,address);
+  if(binding!=null&&binding.name.matches("codex_mobile_session_[a-f0-9]{24}"))try{return ConnectionDiscovery.hash(binding.name).substring(0,32);}catch(Exception ignored){}
+  return "";
  }
  interface Sample { void accept(String url, long millis); }
  // Platform I/O reports each completion as it arrives. The catalog supplies order and concurrency.

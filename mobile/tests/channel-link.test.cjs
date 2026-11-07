@@ -5,13 +5,13 @@ const vm = require('node:vm');
 const source = fs.readFileSync(require.resolve('../shared/web/channel-link.js'), 'utf8');
 
 const lan='http://192.168.1.10:8788',pub='https://test.example',other='https://temporary.example';
-function fixture(menu={current:pub,rows:[{url:pub}],mode:'auto',localNetwork:false}) {
+function fixture(menu={current:pub,rows:[{url:pub}],mode:'auto',localNetwork:false}, fetcher=async()=>new Response('{}')) {
   let now = 0;
   const calls = [], timers = new Map();
   const window = new EventTarget();
   const document = new EventTarget();
   document.documentElement = {classList:{toggle(){}}};
-  window.fetch = async () => new Response('{}');
+  window.fetch = fetcher;
   window.prompt = (_, action) => {if(action==='read')return JSON.stringify(menu);calls.push(action); return action.startsWith('verify:') ? 'started' : 'ok';};
   let serial = 0;
   vm.runInNewContext(source, {window, document, location:new URL(menu.current),
@@ -70,9 +70,31 @@ test('on confirmed loss only a LAN can fail over to another public address',()=>
 test('successful foreground traffic suppresses a redundant timer proof but never a network-change check',async()=>{
   const {link,window,calls,advance}=fixture();link.start();link.check();link.result(1,true);
   advance(29000);await window.fetch(pub+'/api/sessions');link.check('tick');
-  assert.deepEqual(calls,['verify:1']);link.check('network');
+  assert.deepEqual(calls.filter(v=>v.startsWith('verify:')),['verify:1']);link.check('network');
   assert.equal(calls.at(-1),'verify:2');link.result(2,true);
   advance(90000);await window.fetch(pub+'/api/sessions');link.check('tick');
   assert.equal(calls.at(-1),'verify:3');
 });
 
+
+test('successful protected GET or POST heals a false outage and enables LAN preference without reload', async()=>{
+  for(const method of ['GET','POST']) {
+    const menu={current:pub,rows:[{url:pub},{url:lan}],mode:'auto',localNetwork:false};
+    const {link,window,calls,advance}=fixture(menu);link.start();
+    link.check();link.result(1,false);advance(1200);link.result(2,false);
+    assert.equal(link.down,true);menu.localNetwork=true;
+    await window.fetch(pub+'/api/sessions', {method});
+    assert.equal(link.down,false);
+    assert.ok(calls.some(v=>v.startsWith('traffic:')));
+    assert.ok(calls.includes('prefer:'+JSON.stringify([lan])));
+  }
+});
+test('traffic invalidates older proof failure and public or rejected responses never heal an outage',async()=>{
+  const f=fixture();f.link.start();f.link.check();await f.window.fetch(pub+'/api/sessions');
+  f.link.result(1,false);f.advance(1200);assert.equal(f.calls.filter(v=>v.startsWith('verify:')).length,1);
+  for(const [path,status] of [['auth',200],['connection/prove',200],['login',200],['pair',200],['sessions',401],['sessions',503]]){
+    const {link,window,advance}=fixture(undefined,async()=>new Response('{}',{status}));link.start();
+    link.check();link.result(1,false);advance(1200);link.result(2,false);
+    await window.fetch(pub+'/api/'+path);assert.equal(link.down,true,path+' '+status);
+  }
+});

@@ -31,8 +31,9 @@ final class ConnectionDiscovery {
  }
  JSONObject request(String address,String discoveryKey,String cookie,String csrf,JSONObject body)throws Exception {
   if(cancelled)throw new InterruptedIOException();
+  long deadline=System.nanoTime()+10_000_000_000L;
   HttpURLConnection c=(HttpURLConnection)new URL(address).openConnection();active=c;
-  c.setInstanceFollowRedirects(false);c.setUseCaches(false);c.setConnectTimeout(1800);c.setReadTimeout(1800);c.setRequestProperty("Accept","application/json");
+  c.setInstanceFollowRedirects(false);c.setUseCaches(false);c.setConnectTimeout(4000);c.setReadTimeout(6000);c.setRequestProperty("Accept","application/json");
   if(discoveryKey!=null)c.setRequestProperty("X-Discovery-Key",discoveryKey);
   try{
    if(cookie!=null){
@@ -41,8 +42,12 @@ final class ConnectionDiscovery {
    }
    if(cancelled||c.getResponseCode()!=200||c.getContentLengthLong()>32768)throw new IOException();
    try(InputStream in=c.getInputStream();ByteArrayOutputStream out=new ByteArrayOutputStream()){
-    byte[] bytes=new byte[2048];int n;long deadline=System.nanoTime()+2_000_000_000L;
-    while((n=in.read(bytes))!=-1){if(cancelled||out.size()+n>32768||System.nanoTime()>deadline)throw new IOException();out.write(bytes,0,n);}
+    byte[] bytes=new byte[2048];
+    while(true){
+     long remaining=(deadline-System.nanoTime())/1000000;if(cancelled||remaining<=0)throw new InterruptedIOException();
+     c.setReadTimeout((int)Math.min(6000,Math.max(1,remaining)));int n=in.read(bytes);if(n==-1)break;
+     if(out.size()+n>32768||System.nanoTime()>deadline)throw new IOException();out.write(bytes,0,n);
+    }
     return new JSONObject(out.toString("UTF-8"));
    }
   }finally{active=null;c.disconnect();}
