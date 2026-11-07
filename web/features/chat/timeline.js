@@ -1,6 +1,7 @@
 'use strict';
 const timelineText=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(source);
 const fileChangeLabel=row=>timelineText('已编辑 {count} 个文件').replace('{count}',row.fileSummary?.count||0);
+const compactSummary=(value,limit=120)=>String(value||'').replace(/\s+/g,' ').trim().slice(0,limit);
 const recentTimelinePages=new Map();
 function timelineFilePath(path,cwd){
   if(typeof path!=='string'||!path||typeof cwd!=='string'||!cwd||/[\0\r\n]/.test(path))throw Error(timelineText('文件路径无法定位'));
@@ -34,6 +35,7 @@ class ChatTimeline {
     this.older=elements.older||document.getElementById('older');
     this.newer=elements.newer||document.getElementById('newer');
     this.abort=new AbortController();this.rows=new Map();this.nodes=new Map();this.details=new Map();
+    this.groupNodes=new Map();this.groupStates=new Map();
     this.mermaidScope=window.BridgeMermaidCards?.createScope();
     this.files=new Map();this.sequence=-1;this.epoch='';this.before=null;this.hasMore=false;
     this.busy=false;this.generation=0;this.windowRevision=0;this.following=true;this.lastTop=0;this.retryCount=0;
@@ -64,7 +66,83 @@ class ChatTimeline {
   dispose(){this.abort.abort();window.BridgeMermaidCards?.clearScope(this.mermaidScope);clearTimeout(this.startRetry);this.resize.disconnect();this.viewport.removeEventListener('scroll',this.onScroll);this.viewport.removeEventListener('wheel',this.onWheel);this.viewport.removeEventListener('touchstart',this.onTouchStart);this.viewport.removeEventListener('touchmove',this.onTouchMove);this.newer.hidden=true;}
   atBottom(){return this.viewport.scrollHeight-this.viewport.scrollTop-this.viewport.clientHeight<110;}
   nearTop(){const nodes=[...this.container.children].filter(n=>!n.hidden);return nodes.length>0&&nodes.slice(0,11).some(n=>n.getBoundingClientRect().bottom>=this.viewport.getBoundingClientRect().top);}
-  capture(accept=()=>true){if(!this.viewport.clientHeight)return this.anchor;const top=this.viewport.getBoundingClientRect().top;const nodes=[...this.container.children].filter(n=>!n.hidden&&accept(n));const node=nodes.find(n=>n.getBoundingClientRect().bottom>top)||nodes[nodes.length-1];return node?{key:node.dataset.key,offset:node.getBoundingClientRect().top-top}:null;}
+  capture(accept=()=>true){if(!this.viewport.clientHeight)return this.anchor;const top=this.viewport.getBoundingClientRect().top;const nodes=[...this.container.children].filter(n=>!n.hidden&&accept(n));const node=nodes.find(n=>n.getBoundingClientRect().bottom>top)||nodes[nodes.length-1];return node?{key:node.dataset.key||node.dataset.groupKey,group:node.dataset.groupKey||'',offset:node.getBoundingClientRect().top-top}:null;}
+  isActivityStep(row){return row.role==='activity'||row.role==='fileChanges';}
+  activityFileLabel(row){
+    if(row.fileSummary){
+      const files=row.fileSummary.files||[],first=files[0]?.path;
+      return first
+        ? timelineText('已编辑')+' '+first+(files.length>1?' '+timelineText('等 {count} 个文件').replace('{count}',files.length-1):'')
+        : fileChangeLabel(row);
+    }
+    const path=compactSummary((row.text||'').split(/\n\s*\n/,1)[0]?.split(/\r?\n/,1)[0],160);
+    return path?timelineText('已编辑')+' '+path:row.title||timelineText('文件变更');
+  }
+  activityStepLabel(row){
+    if(row.fileSummary)return this.activityFileLabel(row)+' +'+row.fileSummary.added+' −'+row.fileSummary.removed;
+    if(row.kind==='reasoning')return row.title||timelineText('思考摘要');
+    if(row.kind==='commandExecution'){
+      const command=compactSummary((row.text||'').split(/\n\s*\n/,1)[0]);
+      if(!command)return row.title||timelineText('执行命令');
+      const state=row.status==='inProgress'?timelineText('正在运行'):row.status==='failed'?timelineText('运行失败'):timelineText('已运行');
+      return state+' '+command;
+    }
+    if(row.kind==='fileChange'||row.kind==='FileChange')return this.activityFileLabel(row);
+    return (row.title||row.kind||timelineText('执行步骤'))+(row.status==='inProgress'?timelineText(' · 进行中'):'');
+  }
+  activityGroupLabel(row){
+    return row.kind==='reasoning'?compactSummary(row.text,180)||row.title||timelineText('思考摘要'):this.activityStepLabel(row);
+  }
+  activityGroupSummary(rows,visible,followedByText){
+    const latest=visible[visible.length-1]||rows[rows.length-1];
+    if(!latest||latest.kind!=='reasoning'||!followedByText)return latest;
+    return visible.slice(0,-1).reverse().find(row=>row.kind!=='reasoning')||latest;
+  }
+  releaseActivityGroups(){
+    if(!this.groupNodes)return;
+    for(const [key,group] of this.groupNodes){
+      if(!group.isConnected)continue;
+      this.groupStates.set(key,group.open);
+      for(const child of [...group.children]){
+        if(child.tagName!=='SUMMARY')group.parentNode.insertBefore(child,group);
+      }
+      group.remove();
+    }
+    this.groupNodes.clear();
+  }
+  refreshActivityGroups(){
+    if(!this.container?.children)return;
+    this.releaseActivityGroups();
+    let cluster=[];
+    const flush=()=>{
+      if(cluster.length>1){
+        const rows=cluster.map(node=>this.rows.get(node.dataset.key)?.row).filter(Boolean);
+        const visible=rows.filter(row=>this.rowVisible(row));
+        const latest=visible[visible.length-1]||rows[rows.length-1];
+        if(latest){
+          const followedByText=[...this.rows.values()].some(entry=>entry.row.order>rows[rows.length-1].order&&!this.isActivityStep(entry.row));
+          const firstKey=cluster[0].dataset.key;
+          const group=document.createElement('details');
+          group.className='activity-group timeline-row';
+          group.dataset.key=latest.key;group.dataset.groupKey=firstKey;
+          const summaryRow=this.activityGroupSummary(rows,visible,followedByText);
+          const summary=document.createElement('summary'),label=summaryRow?this.activityGroupLabel(summaryRow):timelineText('执行步骤');
+          summary.textContent=label;summary.title=label;
+          group.append(summary);cluster[0].parentNode.insertBefore(group,cluster[0]);
+          for(const node of cluster){node.classList.add('activity-group-step');group.append(node);}
+          group.hidden=visible.length===0;group.open=!!this.groupStates.get(firstKey);
+          group.ontoggle=()=>this.groupStates.set(firstKey,group.open);
+          this.groupNodes.set(firstKey,group);
+        }
+      }
+      cluster=[];
+    };
+    for(const node of [...this.container.children]){
+      const row=this.rows.get(node.dataset.key)?.row;
+      if(row&&this.isActivityStep(row))cluster.push(node);else flush();
+    }
+    flush();
+  }
   rowVisible(row){
     if(row.role==='user'||row.role==='error')return true;
     if(row.kind==='reasoning')return this.showReasoning;
@@ -76,7 +154,9 @@ class ChatTimeline {
     const imagesChanged=this.showToolImages!==showToolImages;
     this.showToolImages=showToolImages;
     this.showReasoning=showReasoning;this.showProcess=showProcess;
-    const anchor=this.capture(node=>this.rowVisible(this.rows.get(node.dataset.key).row)),bottom=this.following;
+    const anchor=this.capture(node=>node.matches('.activity-group')
+      ? [...node.querySelectorAll('.activity-group-step')].some(step=>this.rowVisible(this.rows.get(step.dataset.key)?.row))
+      : this.rowVisible(this.rows.get(node.dataset.key)?.row)),bottom=this.following;
     for(const [key,entry] of this.nodes){
       const row=this.rows.get(key).row;
       if(imagesChanged&&row.attachments?.some(item=>item.type==='toolImage')){
@@ -86,6 +166,7 @@ class ChatTimeline {
       }
       entry.node.hidden=!this.rowVisible(row);
     }
+    this.refreshActivityGroups();
     this.refreshActions();
     this.restore(anchor,bottom);
   }
@@ -93,7 +174,8 @@ class ChatTimeline {
   restore(anchor,bottom=false){
     if(this.abort.signal.aborted||!this.viewport.clientHeight)return;
     this.suppress=true;
-    const node=anchor&&this.nodes.get(anchor.key)?.node;
+    let node=anchor&&(anchor.group?this.groupNodes.get(anchor.group):this.nodes.get(anchor.key)?.node);
+    if(!node&&anchor?.key){const rowNode=this.nodes.get(anchor.key)?.node;node=rowNode?.closest('.activity-group')||rowNode;}
     if(bottom)this.jumpBottom();
     else if(node&&!node.hidden)this.viewport.scrollTop+=node.getBoundingClientRect().top-this.viewport.getBoundingClientRect().top-anchor.offset;
     this.lastTop=this.viewport.scrollTop;
@@ -165,8 +247,10 @@ class ChatTimeline {
       this.nodes.set(row.key,{node,stamp});
     }
     const ordered=[...this.rows.values()].map(x=>x.row).sort((a,b)=>a.order-b.order);
+    this.releaseActivityGroups();
     let position=this.container.firstChild;
     for(const row of ordered){const node=this.nodes.get(row.key).node;if(node===position)position=position.nextSibling;else this.container.insertBefore(node,position);}
+    this.refreshActivityGroups();
     if(reset||history){this.before=page.before;this.hasMore=page.hasMore;this.windowRevision++;}
     this.refreshActions();this.historyStatus();this.restore(anchor,bottom);
     if(!history&&!bottom&&(changed||page.meta.requests?.length)){this.newer.textContent=page.meta.requests?.length?timelineText('有待确认请求 ↓'):timelineText('有新内容 ↓');this.newer.hidden=false;}
@@ -187,12 +271,12 @@ class ChatTimeline {
     node.className=toolImages?'tool-images timeline-row':activity?'activity timeline-row':'message timeline-row '+row.role;
     const content=toolImages?document.createElement('details'):node;
     if(toolImages){content.className='activity';node.append(content);}
-    const heading=document.createElement(activity?'summary':'span');heading.className=activity?'':'who';
-    heading.textContent=activity?(row.title||row.kind)+(row.status==='inProgress'?timelineText(' · 进行中'):''):row.role==='user'?timelineText('你'):row.role==='error'?timelineText('执行错误'):['CODEX',row.model&&[row.model,row.effort].filter(Boolean).join(' ')].filter(Boolean).join(' · ');content.append(heading);
+    const heading=document.createElement(activity?'summary':'span'),headingText=activity?this.activityStepLabel(row):row.role==='user'?timelineText('你'):row.role==='error'?timelineText('执行错误'):['CODEX',row.model&&[row.model,row.effort].filter(Boolean).join(' ')].filter(Boolean).join(' · ');
+    heading.className=activity?'':'who';heading.textContent=headingText;if(activity)heading.title=headingText;content.append(heading);
     if(row.fileSummary){
       node.classList.add('edited-files-card');
       heading.replaceChildren();
-      const label=document.createElement('span');label.className='edited-files-label';label.textContent=fileChangeLabel(row);
+      const label=document.createElement('span');label.className='edited-files-label';label.textContent=this.activityFileLabel(row);heading.title=this.activityStepLabel(row);
       const stats=document.createElement('span');stats.className='edited-files-stats';
       const added=document.createElement('span');added.className='edited-files-added';added.textContent='+'+row.fileSummary.added;
       const removed=document.createElement('span');removed.className='edited-files-removed';removed.textContent='−'+row.fileSummary.removed;
@@ -290,13 +374,14 @@ class ChatTimeline {
     for(const [key,entry] of this.nodes){
       const row=this.rows.get(key)?.row;if(!row)continue;
       const node=entry.node,heading=(row.role==='activity'||row.role==='fileChanges')?(node.tagName==='DETAILS'?node.firstElementChild:node.querySelector('details.activity > summary')):node.firstElementChild;
-      if(row.fileSummary){const label=node.querySelector('.edited-files-label');if(label)label.textContent=fileChangeLabel(row);const basis=node.querySelector('.edited-files-basis');if(basis)basis.textContent=timelineText('累计修改');}
-      else if(heading)heading.textContent=(row.role==='activity'||row.role==='fileChanges')?(row.title||row.kind)+(row.status==='inProgress'?timelineText(' · 进行中'):''):row.role==='user'?timelineText('你'):row.role==='error'?timelineText('执行错误'):['CODEX',row.model&&[row.model,row.effort].filter(Boolean).join(' ')].filter(Boolean).join(' · ');
+      if(row.fileSummary){const label=node.querySelector('.edited-files-label');if(label)label.textContent=this.activityFileLabel(row);const basis=node.querySelector('.edited-files-basis');if(basis)basis.textContent=timelineText('累计修改');if(heading)heading.title=this.activityStepLabel(row);}
+      else if(heading){const text=(row.role==='activity'||row.role==='fileChanges')?this.activityStepLabel(row):row.role==='user'?timelineText('你'):row.role==='error'?timelineText('执行错误'):['CODEX',row.model&&[row.model,row.effort].filter(Boolean).join(' ')].filter(Boolean).join(' · ');heading.textContent=text;if(row.role==='activity'||row.role==='fileChanges')heading.title=text;}
       const more=node.querySelector('.detail-more');
       if(more&&!more.disabled)more.textContent=timelineText(this.details.has(key)?'继续加载正文':'展开完整内容');
       const attachment=node.querySelector('.timeline-attachments small.muted');
       if(attachment)attachment.textContent=timelineText('附件：')+row.attachments.map(a=>a.name||a.type).join('、');
     }
+    this.refreshActivityGroups();
     this.newer.textContent=timelineText(this.pendingRequests?'有待确认请求 ↓':'有新内容 ↓');
   }
   async updates(){
