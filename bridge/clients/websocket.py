@@ -11,13 +11,17 @@ class WebSocket:
     """Minimal client-side WebSocket over the proxy's byte streams."""
 
     def __init__(self, reader, writer, *, path="/", host="localhost",
-                 error=RuntimeError, unavailable=RuntimeError, unsupported=RuntimeError):
+                 error=RuntimeError, unavailable=RuntimeError, unsupported=RuntimeError,
+                 max_message_bytes=16 * 1024 * 1024, oversized=None):
         self.error, self.unavailable, self.unsupported = error, unavailable, unsupported
+        self.max_message_bytes = max_message_bytes
+        self.oversized = oversized or error
         if any(c in path + host for c in "\r\n") or not path.startswith("/"):
             raise ValueError("Invalid WebSocket endpoint")
         self.reader = reader
         self.writer = writer
         self.write_lock = threading.Lock()
+        self.send_lock = threading.Lock()
         key = base64.b64encode(os.urandom(16)).decode('ascii')
         request = (f'GET {path} HTTP/1.1\r\nHost: {host}\r\nUpgrade: websocket\r\n'
                    'Connection: Upgrade\r\nSec-WebSocket-Key: ' + key + '\r\n'
@@ -36,18 +40,39 @@ class WebSocket:
                   for name, value in (line.split(':', 1),)}
         if ' 101 ' not in lines[0] or fields.get('sec-websocket-accept') != expected:
             raise self.unavailable('Native control socket rejected WebSocket handshake')
+        # Native Unix transports advertise their effective single-frame cap.
+        # Older versions use Tungstenite's 16 MiB frame / 64 MiB message defaults.
+        self.max_frame_bytes = 16 * 1024 * 1024
+        advertised = fields.get('x-codex-websocket-max-unfragmented-message-bytes')
+        if advertised is not None:
+            try:
+                limit = int(advertised)
+                if limit <= 0:
+                    raise ValueError()
+                self.max_frame_bytes = min(self.max_frame_bytes, limit)
+            except ValueError as exc:
+                raise self.unsupported('Invalid Native WebSocket frame limit') from exc
 
     def send(self, value):
         data = json.dumps(value, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
-        if len(data) > 16 * 1024 * 1024:
-            raise self.error('App-server message is too large')
+        if len(data) > self.max_message_bytes:
+            raise self.oversized('App-server message is too large')
+        with self.send_lock:
+            for offset in range(0, len(data), self.max_frame_bytes):
+                fragment = data[offset:offset + self.max_frame_bytes]
+                opcode = 1 if offset == 0 else 0
+                final = offset + len(fragment) == len(data)
+                self._data_frame(fragment, opcode, final)
+
+    def _data_frame(self, data, opcode, final):
         mask = os.urandom(4)
+        first = opcode | (0x80 if final else 0)
         if len(data) < 126:
-            header = bytes((0x81, 0x80 | len(data)))
+            header = bytes((first, 0x80 | len(data)))
         elif len(data) <= 65535:
-            header = bytes((0x81, 0xfe)) + struct.pack('!H', len(data))
+            header = bytes((first, 0xfe)) + struct.pack('!H', len(data))
         else:
-            header = bytes((0x81, 0xff)) + struct.pack('!Q', len(data))
+            header = bytes((first, 0xff)) + struct.pack('!Q', len(data))
         payload = bytes(byte ^ mask[i % 4] for i, byte in enumerate(data))
         self._write(header + mask + payload)
 

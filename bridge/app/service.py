@@ -1,5 +1,5 @@
 import copy
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 import hashlib
 from concurrent.futures import Future, ThreadPoolExecutor
 import json
@@ -1865,6 +1865,41 @@ class Bridge:
         self.store.get(thread_id)  # Uploads do not activate a desktop chat.
         return self.uploads.put(thread_id, identifier, name, data)
 
+    def _desktop_metadata_operation(self, cwd, operation, failure_message):
+        from bridge.clients.codex.desktop_runtime import connect, initialization_lock
+        from bridge.clients.codex.app_server import AppServerError
+        from bridge.features.sessions.create import _runtime_operation
+        with ExitStack() as locks:
+            try:
+                if self.host == 'local' and sys.platform == 'darwin':
+                    # Every gateway using this home must finish its metadata
+                    # transaction before initialization may quit the original App.
+                    locks.enter_context(initialization_lock(self.codex_home))
+                client = connect(self.codex_home, self.catalog_reader.executable) if self.host == 'local' else None
+            except (AppServerError, OSError, ValueError) as exc:
+                # Only connection/identity checks have run; no metadata write was sent.
+                raise CreationUnavailable(str(exc)) from exc
+            if client is None:
+                return _runtime_operation(self.catalog_reader.executable, self.codex_home, cwd, operation,
+                                          failure_message=failure_message, **_runtime_scope(self.host))
+            try:
+                return operation(client.request)
+            except AppServerError as exc:
+                # A shared-runtime operation is never retried through a new writer.
+                raise CreationError(failure_message) from exc
+            finally:
+                client.close()  # Disconnect this Bridge only; the original App owns the runtime.
+
+    def _invalidate_attached_threads(self, parent_id):
+        if self.host != 'local' or not parent_id:
+            return
+        try:
+            self.ipc.invalidate_attached_threads(parent_id)
+        except (IPCError, OSError, ValueError):
+            # A native UI refresh failure must not turn a completed mutation into
+            # an unknown write or cause the durable operation to be submitted again.
+            logging.debug('Codex attached thread cache invalidation unavailable')
+
     @operation
     def side_chat(self, thread_id, owner, action, body):
         self.store.get(thread_id)
@@ -1917,13 +1952,16 @@ class Bridge:
                     child = fork_attached(self.catalog_reader.executable, self.codex_home,
                                           snapshot['cwd'], thread_id,
                                           (snapshot.get('title') or '未命名聊天')[:90] + ' · 侧边聊天',
-                                          settings, created, isolated_home=self.host.startswith('codex:'))
+                                          settings, created, isolated_home=self.host.startswith('codex:'),
+                                          runtime_operation=lambda call: self._desktop_metadata_operation(
+                                              snapshot['cwd'], call, '侧边聊天创建结果尚未确认，请查看父聊天；不会重复创建'))
                 except CreationUnavailable:
                     del self.message_actions[identifier]
                     self._save_actions()
                     raise
                 entry.update(id=child, status='created')
                 self._save_actions()
+                self._invalidate_attached_threads(thread_id)
                 return {'id': child, 'host': self.host, 'parentId': thread_id}
         # Existing temporary views may finish their current lifecycle, but no
         # endpoint creates another temporary runtime after the native migration.
@@ -3250,6 +3288,11 @@ class Bridge:
         if request_id is None:
             return self.delete_commands.preview(read, self.store.existing_ids)
 
+        try:
+            parent = (self.store.attached_parent(thread_id) or {}).get('id')
+        except KeyError:
+            parent = None  # A retry may only be reading an already confirmed receipt.
+
         def prepare(snapshot):
             identifiers = snapshot['scope']
             metadata = self.store.get(thread_id)
@@ -3262,12 +3305,19 @@ class Bridge:
             if metadata.get('origin') in ('cli', 'ide'):
                 return self.cli_sessions.delete_call(snapshot, read)
             self.assert_desktop_idle(identifiers=identifiers, allow_stopped_app=True)
-            from bridge.features.sessions.create import _runtime_operation
-            return lambda: _runtime_operation(self.catalog_reader.executable, self.codex_home, str(self.codex_home),
-                lambda request: delete_native(request, snapshot, read),
-                failure_message='删除结果待核对，请检查原聊天；不会重复提交', **_runtime_scope(self.host))
+            def call():
+                from bridge.features.sessions.deletion import DeleteNotSent
+                try:
+                    return self._desktop_metadata_operation(str(self.codex_home),
+                        lambda request: delete_native(request, snapshot, read),
+                        '删除结果待核对，请检查原聊天；不会重复提交')
+                except CreationUnavailable as exc:
+                    raise DeleteNotSent(str(exc)) from exc
+            return call
 
         result = self.delete_commands.perform(thread_id, request_id, expected, read, self.store.existing_ids, prepare, retry=retry)
+        if result.get('status') == 'confirmed':
+            self._invalidate_attached_threads(parent)
         return {**result, 'host': self.host}
 
     @operation

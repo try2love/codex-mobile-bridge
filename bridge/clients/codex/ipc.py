@@ -141,6 +141,14 @@ class DesktopIPC:
             message["targetClientIds"] = [owner]
         self._send(message)
 
+    def invalidate_attached_threads(self, parent_id):
+        """Refresh native metadata after a confirmed mutation, using our identity."""
+        uuid.UUID(parent_id)
+        self.connect()
+        self._send({'type': 'broadcast', 'sourceClientId': self.client_id,
+                    'method': 'query-cache-invalidate', 'version': 0,
+                    'params': {'queryKey': ['attached-side-chats', 'local', parent_id], 'reset': False}})
+
     @staticmethod
     def _exact(sock, length):
         chunks = bytearray()

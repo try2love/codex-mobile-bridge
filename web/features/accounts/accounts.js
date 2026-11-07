@@ -44,6 +44,10 @@ class AccountsPanel {
     this.sshHosts=this.node('section');this.sshHosts.hidden=true;this.root.append(this.sshHosts);
     this.tools=this.node('details');this.toolsTitle=this.node('summary');this.tools.append(this.toolsTitle);
     this.reminders=this.node('div');this.updates=this.node('section');this.tools.append(this.reminders,this.updates);this.management.append(this.tools);
+    this.desktopRuntime=this.node('section');this.desktopRuntime.hidden=true;
+    this.runtimeStatus=this.node('p',undefined,'account-muted');
+    this.initializeRuntime=this.button('初始化连接',()=>{if(window.confirm(this.text('确认所有 Codex 桌面任务已结束，并初始化原生连接？正在运行的 App 会正常退出并重新启动；账号和聊天记录保持不变。')))return this.perform({action:'initializeDesktopRuntime',requestId:this.requestId(),confirmed:true,tasksConfirmed:true});});
+    this.desktopRuntime.append(this.node('h3','Codex 原生会话连接'),this.runtimeStatus,this.initializeRuntime);this.tools.append(this.desktopRuntime);
     if(!this.desktop){this.root.append(this.node('p','官方账号登录请在电脑端完成。','account-muted'));return;}
     const scanDetails=this.node('details');scanDetails.append(this.node('summary','扫描本机配置'));
     this.scanSource=this.field('Codex 配置目录（.codex 文件夹）');this.scanSource.input.placeholder=this.text('留空使用当前 Codex 数据目录');
@@ -245,7 +249,7 @@ class AccountsPanel {
     controls.append(refresh);return controls;
   }
   accept(value){const old=this.value;if(!this.desktop&&old?.canSwitch===false&&value.canSwitch===undefined)value={...value,canSwitch:false};this.value=value;if(!value.resetDynamicEnabled)this.globalResetRefreshIntent=null;this.finishGlobalResetRefresh(value.globalReset);if(old&&(old.activeId!==value.activeId||old.current?.kind!==value.current?.kind||old.current?.name!==value.current?.name||old.switch?.phase!==value.switch?.phase))this.onChanged(value);this.onUpdate(value);this.render();}
-  clear(){clearTimeout(this.resetMidnightTimer);this.resetMidnightTimer=null;this.globalResetRefreshIntent=null;this.globalResetMessage='';this.globalResetKey=null;this.globalReset.hidden=true;this.resetDialog?.close();clearTimeout(this.timer);this.generation++;this.clearModels?.();this.value=null;this.scannedSource=null;this.scanSelection='';this.loading=false;this.busy=false;this.readFailed=false;this.resumePending=false;this.operationError=false;this.modelBoxes.clear();this.error.textContent='';this.rows.replaceChildren();this.sshHosts.replaceChildren();this.sshHosts.hidden=true;}
+  clear(){clearTimeout(this.resetMidnightTimer);this.resetMidnightTimer=null;this.globalResetRefreshIntent=null;this.globalResetMessage='';this.globalResetKey=null;this.globalReset.hidden=true;this.resetDialog?.close();clearTimeout(this.timer);this.generation++;this.clearModels?.();this.value=null;this.scannedSource=null;this.scanSelection='';this.loading=false;this.busy=false;this.readFailed=false;this.resumePending=false;this.operationError=false;this.modelBoxes.clear();this.error.textContent='';this.rows.replaceChildren();this.sshHosts.replaceChildren();this.sshHosts.hidden=true;this.desktopRuntime.hidden=true;}
   requestId(){
     if(typeof crypto.randomUUID==='function')return crypto.randomUUID();
     const bytes=crypto.getRandomValues(new Uint8Array(16));bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;
@@ -439,9 +443,17 @@ class AccountsPanel {
     if(this.managementMode){this.managementMode.value=value.management?.mode||'auto';this.managementMode.disabled=this.busy;}
     const phase=value.switch?.phase||'idle',labels={idle:'请选择已保存的接入',preparing:'正在准备账号',stopping:'正在退出 Codex 桌面应用',applying:'正在应用接入配置',starting:'正在启动 Codex 桌面应用',verifying:'正在核验账号与桌面连接',complete:'切换完成',restoring:'正在恢复原接入',restored:'已恢复原接入',failed:'切换未完成',interrupted:'需要在桌面端恢复原接入'};
     const switching=!['idle','complete','restored','failed'].includes(phase);
+    const runtime=value.desktopRuntime||{};this.desktopRuntime.hidden=runtime.supported!==true||value.scope==='profile';
+    this.runtimeStatus.textContent=this.text(runtime.error||(runtime.configured?'已保存原生连接设置；由网关启动 App 时生效。':'初始化后，手机与 Codex App 共用原生侧边聊天和删除功能。'));
+    this.initializeRuntime.textContent=this.text(runtime.configured?'重新初始化连接':'初始化连接');
+    this.initializeRuntime.disabled=this.busy||switching||external||(!this.desktop&&value.canSwitch===false);
     const resetAccount=this.accountRows().find(row=>row.id===this.resetAccountId);
     if(this.resetDialog?.open&&(switching||!resetAccount||this.resetAccountKey&&this.resetAccountKey!==resetAccount.accountKey))this.resetDialog.close();
     this.status.textContent=this.text(labels[phase]||phase)+(value.switch?.error?' · '+this.text(value.switch.error):'');
+    if(value.switch?.operation==='desktopRuntime'){
+      const runtimeLabels={preparing:'正在准备原生连接',applying:'正在保存原生连接设置',verifying:'正在核验原生连接',complete:'原生连接初始化完成',failed:'原生连接初始化未完成'};
+      this.status.textContent=this.text(runtimeLabels[phase]||labels[phase]||phase)+(value.switch.error?' · '+this.text(value.switch.error):'');
+    }
     if(value.switch?.cliSync?.status==='verified')this.status.textContent+=' · '+this.text('本机 CLI 已核验');
     else if(value.switch?.cliSync?.status==='failed')this.status.textContent+=' · '+this.text('桌面已切换；本机 CLI 核验失败：')+this.text(value.switch.cliSync.error||'请检查接入');
     else if(value.switch?.cliSync?.status==='shared-config-unverified')this.status.textContent+=' · '+this.text('共享配置已变更，本机 CLI 尚未核验');

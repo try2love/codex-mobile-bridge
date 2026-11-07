@@ -3,6 +3,15 @@
 import argparse
 import json
 import sys
+if sys.argv[1:2] == ['codex-desktop-runtime']:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--configuration', required=True)
+    parser.add_argument('arguments', nargs=argparse.REMAINDER)
+    options = parser.parse_args(sys.argv[2:])
+    from bridge.clients.codex.desktop_runtime_host import run as runtime_main
+    arguments = options.arguments[1:] if options.arguments[:1] == ['--'] else options.arguments
+    raise SystemExit(runtime_main(options.configuration, arguments))
+
 if len(sys.argv) == 3 and sys.argv[1] == '--terminal-child':
     if sys.platform == 'win32':
         from bridge.platforms.windows.terminal import child_main

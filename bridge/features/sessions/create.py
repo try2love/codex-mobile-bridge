@@ -390,7 +390,8 @@ explicitly requests that mutation in this side conversation. Shared files are
 live, not a snapshot. Keep explicitly requested changes local to the request."""
 
 
-def fork_attached(executable, codex_home, cwd, source_id, title, settings, created, *, isolated_home=False):
+def fork_attached(executable, codex_home, cwd, source_id, title, settings, created, *, isolated_home=False,
+                  runtime_operation=None):
     """Persist a native attached child; never start a turn or retain an owner.
 
     The capability check precedes the durable intent's first native mutation.
@@ -440,6 +441,8 @@ def fork_attached(executable, codex_home, cwd, source_id, title, settings, creat
                 'content': [{'type': 'input_text', 'text': SIDE_CHAT_BOUNDARY}]}]})
         request('thread/name/set', {'threadId': child, 'name': title})
         return child
+    if runtime_operation is not None:
+        return runtime_operation(fork)
     return _runtime_operation(executable, codex_home, cwd, fork, isolated_home=isolated_home,
                               failure_message='侧边聊天创建结果尚未确认，请查看父聊天；不会重复创建')
 

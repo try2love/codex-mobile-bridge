@@ -75,6 +75,22 @@ test('passwordless web disables switching and explains the desktop alternative',
  const ui=fixture();ui.setValue({...ui.value(),canSwitch:false});await ui.panel.refresh();
  assert.equal(ui.all().find(n=>n.textContent==='切换到此接入').disabled,true);assert.match(ui.text(),/免密访问不能切换/);
 });
+for(const desktop of [false,true])test(`${desktop?'desktop':'web'} explicitly initializes the shared native connection`,async()=>{
+ const ui=fixture(desktop);ui.setValue({...ui.value(),desktopRuntime:{supported:true,configured:false}});await ui.panel.refresh();
+ assert.equal(ui.panel.desktopRuntime.hidden,false);assert.equal(ui.panel.initializeRuntime.disabled,false);
+ ui.confirm(false);await ui.panel.initializeRuntime.onclick();assert.equal(ui.requests.length,0);
+ ui.confirm(true);await ui.panel.initializeRuntime.onclick();assert.deepEqual({...ui.requests[0]},{action:'initializeDesktopRuntime',requestId:'11111111-1111-4111-8111-111111111111',confirmed:true,tasksConfirmed:true});
+ ui.panel.accept({...ui.value(),desktopRuntime:{supported:true,configured:true},switch:{phase:'verifying',operation:'desktopRuntime'}});
+ assert.equal(ui.panel.initializeRuntime.disabled,true);assert.match(ui.panel.status.textContent,/核验原生连接/);
+ ui.panel.accept({...ui.value(),desktopRuntime:{supported:true,configured:true},switch:{phase:'failed',operation:'desktopRuntime',error:'test failure'}});
+ assert.equal(ui.panel.initializeRuntime.disabled,false);assert.equal(ui.panel.initializeRuntime.textContent,'重新初始化连接');assert.match(ui.panel.status.textContent,/原生连接初始化未完成/);
+ ui.panel.accept({...ui.value(),scope:'profile'});assert.equal(ui.panel.desktopRuntime.hidden,true);
+ ui.panel.clear();assert.equal(ui.panel.desktopRuntime.hidden,true);
+});
+test('native initialization remains unavailable for passwordless remote access',async()=>{
+ const ui=fixture();ui.panel.accept({...ui.value(),canSwitch:false,desktopRuntime:{supported:true,configured:false}});assert.equal(ui.panel.initializeRuntime.disabled,true);
+ ui.panel.accept({...ui.value(),desktopRuntime:{supported:false}});assert.equal(ui.panel.desktopRuntime.hidden,true);
+});
 
 test('external Magpie management disables configuration replacement on both surfaces',async()=>{
  for(const desktop of [false,true]){

@@ -125,6 +125,11 @@ class DesktopApp:
     def start(self):
         environment = {'CODEX_HOME': str(self.home)}
         if sys.platform == 'darwin':
+            from bridge.clients.codex.desktop_runtime import launch_environment, wait_stopped
+            shared = launch_environment(self.home, self.executable)
+            if shared:
+                wait_stopped(self.home)
+            environment.update(shared)
             _native().start(self.executable, self.home, environment)
             return
         if sys.platform == 'win32':

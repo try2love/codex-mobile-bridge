@@ -39,4 +39,4 @@ Bridge 的临时侧边聊天由独立运行时持有，无法作为原生侧边�
 
 ## 共享运行时隔离验证
 
-[Codex 共享运行时提案](../../proposed/architecture/2026-11-08-codex-shared-desktop-runtime.md)记录原 App 持有时创建、删除的隔离证据及尚未通过的侧边标签同步。该提案尚未取代本篇已实现的生产路径，不能据此声称完整双端同步已通过。
+[Codex 共享运行时提案](../../proposed/architecture/2026-11-08-codex-shared-desktop-runtime.md)记录原 App 持有时创建、删除的隔离证据及尚未通过的侧边标签同步。默认 macOS Desktop 的创建与删除现接入[共享运行时](../architecture/2026-11-08-codex-shared-runtime-data-deletion.md)，以原生数据删除为准；本篇其余配置隔离、账本及协议边界保留，未声称原 App 标签关闭同步已通过。

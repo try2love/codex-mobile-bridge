@@ -14,6 +14,7 @@ import queue
 import re
 import shutil
 import sqlite3
+import sys
 import tempfile
 import threading
 import time
@@ -181,6 +182,8 @@ class Accounts:
         self.state = read_json(self.root/'switch.json', {'phase': 'idle'})
         if self.state.get('phase') in ('preparing', 'stopping', 'applying', 'migrating', 'starting', 'verifying', 'restoring'):
             self.state.update(phase='interrupted', error='上次切换中断，请在桌面端恢复原接入')
+            if self.state.get('operation') == 'desktopRuntime':
+                self.state.update(phase='failed', error='上次连接初始化中断，请重新初始化连接')
         self.enrollment = None
         self.discovery = None
         self.candidates = {}
@@ -285,6 +288,7 @@ class Accounts:
                     'sharedWithLocalCli': True, 'scope': 'profile' if self.independent else 'desktop',
                     'scopeLabel': getattr(self.bridge, 'host_label', '此电脑'), 'codexHome': str(self.home),
                     'canManageDesktop': not self.independent, 'switch': dict(self.state),
+                    'desktopRuntime': self.desktop_runtime_status(),
                     'loginAccount': copy.deepcopy(self.info.current_login()),
                     'resetDynamicEnabled':self.reset_dynamic_enabled,
                     'globalReset':self.reset_forecast.status() if self.reset_dynamic_enabled else None,
@@ -324,6 +328,17 @@ class Accounts:
         with self.lock:
             result.update(desktopExecutable=None if self.independent else self.index.get('desktopExecutable') or DesktopApp.discover(self.runtime),
                           enrollment=self.enrollment, discovery=self.discovery, codexHome=str(self.home))
+        return result
+
+    def desktop_runtime_status(self):
+        supported = sys.platform == 'darwin' and getattr(self.bridge, 'host', 'local') == 'local'
+        result = {'supported': supported, 'configured': False}
+        if supported:
+            from bridge.clients.codex.desktop_runtime import settings
+            try:
+                result['configured'] = settings(self.home) is not None
+            except (OSError, ValueError, TypeError, KeyError):
+                result['error'] = '共享接入配置无法读取，请重新初始化连接'
         return result
 
     @staticmethod
@@ -802,8 +817,10 @@ class Accounts:
 
     def control(self, value):
         action = value.get('action', 'list')
-        if self.independent and action in ('retrySsh', 'checkDesktopUpdate', 'requestDesktopUpdate', 'scanDesktop', 'configure', 'recover'):
+        if self.independent and action in ('retrySsh', 'checkDesktopUpdate', 'requestDesktopUpdate', 'scanDesktop', 'configure', 'recover', 'initializeDesktopRuntime'):
             raise ValueError('独立配置不管理默认 Codex Desktop')
+        if action == 'initializeDesktopRuntime':
+            return self.initialize_desktop_runtime(value)
         if action == 'retrySsh':
             if set(value) != {'action', 'host'}:
                 raise ValueError('SSH 重试请求包含不支持的字段')
@@ -913,6 +930,14 @@ class Accounts:
             names = '、'.join(row['title'] for row in blocked[:3])
             raise ValueError('请先结束任务或处理待发送消息：'+names)
 
+    def desktop_runtime_lifecycle(self):
+        # Lock even before initialization has saved settings: another gateway
+        # may be between its idle audit and the first shared configuration write.
+        if sys.platform == 'darwin' and getattr(self.bridge, 'host', 'local') == 'local':
+            from bridge.clients.codex.desktop_runtime import initialization_lock
+            return initialization_lock(self.home)
+        return nullcontext()
+
     def switch(self, value):
         self.require_managed_writes()
         if value.get('confirmed') is not True or value.get('tasksConfirmed') is not True:
@@ -920,7 +945,7 @@ class Accounts:
         request_id = value.get('requestId')
         if not isinstance(request_id, str) or str(uuid.UUID(request_id)) != request_id:
             raise ValueError('切换请求标识无效')
-        with getattr(self.bridge, 'entry_gate', None) or nullcontext(), self.gate, self.bridge.account.lock, self.lock:
+        with getattr(self.bridge, 'entry_gate', None) or nullcontext(), self.gate, self.bridge.account.lock, self.desktop_runtime_lifecycle(), self.lock:
             if self.independent and self.bridge.closed.is_set():
                 raise ValueError('Codex 入口已关闭，请重新打开管理页面')
             row = dict(self.row(value.get('id')))
@@ -969,6 +994,99 @@ class Accounts:
             self.thread = threading.Thread(target=self._switch, args=(row, app), daemon=True)
             self.thread.start()
             return self.public()
+
+    def initialize_desktop_runtime(self, value):
+        if sys.platform != 'darwin' or getattr(self.bridge, 'host', 'local') != 'local':
+            raise ValueError('此入口不支持 Codex 原生连接初始化')
+        if set(value) != {'action', 'confirmed', 'tasksConfirmed', 'requestId'} or value.get('confirmed') is not True or value.get('tasksConfirmed') is not True:
+            raise ValueError('请确认所有桌面任务已结束，并同意重启 Codex 桌面应用')
+        request_id = value.get('requestId')
+        try:
+            valid_id = isinstance(request_id, str) and str(uuid.UUID(request_id)) == request_id
+        except ValueError:
+            valid_id = False
+        if not valid_id:
+            raise ValueError('初始化请求标识无效')
+        with self.gate, self.bridge.account.lock, self.lock:
+            self.require_managed_writes()
+            if self.state.get('operation') == 'desktopRuntime' and self.state.get('requestId') == request_id:
+                return self.public()
+            self.assert_editable()
+            self.idle()
+            executable = self.index.get('desktopExecutable') or DesktopApp.discover(self.runtime)
+            if not executable:
+                raise ValueError('请先在桌面端指定 Codex 桌面程序路径')
+            app = DesktopApp(executable, self.home)
+            app.validate(self.runtime)
+            from bridge.clients.codex.desktop_runtime import validate_runtime
+            validate_runtime(self.runtime)
+            self.state = {'phase': 'preparing', 'operation': 'desktopRuntime', 'requestId': request_id, 'error': None}
+            self.phase('preparing')
+            self.thread = threading.Thread(target=self._initialize_desktop_runtime, args=(app,), daemon=True)
+            self.thread.start()
+            return self.public()
+
+    def _initialize_desktop_runtime(self, app):
+        from bridge.clients.codex.desktop_runtime import configure, connect, initialization_lock, process_identity
+        from bridge.clients.lifecycle import inspect_client, stop_client
+        from bridge.platforms.macos.codex_daemon_env import read_process_environment
+        from bridge.platforms.macos.desktop import commands
+        descriptor = {'id': 'codex', 'installed': True, 'executable': str(app.executable), 'dataDirectory': str(self.home)}
+
+        def observed():
+            state = inspect_client(descriptor)
+            main = state.get('mainPids', [])
+            if state.get('unknown') or len(main) > 1 or state.get('running') and not main:
+                raise ValueError('无法确认唯一的 Codex 桌面进程，请在电脑端检查后重试')
+            identities = {pid: process_identity(pid) for pid in main}
+            if any(identity['image'] != str(app.executable) for identity in identities.values()):
+                raise ValueError('Codex 桌面进程身份已变化，请重新初始化连接')
+            launch_commands = commands(main) if main else {}
+            for pid, identity in identities.items():
+                record = {'processIdentity': {'uniqueId': identity['birth'][0], 'startSeconds': identity['started'][0],
+                                               'startMicroseconds': identity['started'][1]}}
+                environment, _ = read_process_environment(pid, record, app.executable,
+                    ('CODEX_HOME', 'CODEX_SQLITE_HOME', 'CODEX_ELECTRON_USER_DATA_PATH', 'HOME'))
+                home = Path(environment.get('CODEX_HOME') or Path(environment.get('HOME') or Path.home())/'.codex').resolve()
+                sqlite_home = Path(environment.get('CODEX_SQLITE_HOME') or home).resolve()
+                command = launch_commands.get(pid)
+                if (home != self.home.resolve() or sqlite_home != home or environment.get('CODEX_ELECTRON_USER_DATA_PATH')
+                        or not command or re.search(r'''(?:^|[\s"'])--user-data-dir(?:[=\s"']|$)''', command)):
+                    raise ValueError('运行中的 Codex 使用其他配置目录，不能初始化此接入')
+                if process_identity(pid) != identity:
+                    raise ValueError('Codex 桌面进程身份已变化，请重新初始化连接')
+            return state, identities
+
+        try:
+            with self.gate, self.bridge.account.lock, initialization_lock(self.home):
+                state, identities = observed()
+                self.idle()
+                self.bridge.assert_desktop_idle(allow_stopped_app=not state['running'])
+                current, current_identities = observed()
+                if identities != current_identities or set(state['pids']) != set(current['pids']):
+                    raise ValueError('Codex 桌面进程已变化，请重新初始化连接')
+                if state['running']:
+                    self.phase('stopping')
+                    stop_client(descriptor, state=current)
+                    self.wait_stopped()
+                self.invalidate()
+                if observed()[0]['running']:
+                    raise ValueError('Codex 桌面已被重新启动，请重新初始化连接')
+                self.phase('applying')
+                configure(self.home, app.executable, self.runtime)
+                self.phase('starting')
+                app.start()
+                self.phase('verifying')
+                self.wait_ready(app)
+                client = connect(self.home, self.runtime)
+                if client is None:
+                    raise ValueError('未能确认 Codex 原生共享连接，请重新初始化连接')
+                client.close()
+                self.phase('complete', error=None)
+        except Exception as exc:
+            # Keep a successfully saved configuration available for an explicit
+            # retry. Never force-stop or automatically start the App a second time.
+            self.phase('failed', error=str(exc))
 
     def snapshot_files(self):
         result = {}
@@ -1041,6 +1159,9 @@ class Accounts:
             try:
                 stream = connect_stream(self.bridge.ipc.path, timeout=.5)
             except OSError:
+                if sys.platform == 'darwin' and getattr(self.bridge, 'host', 'local') == 'local':
+                    from bridge.clients.codex.desktop_runtime import wait_stopped
+                    wait_stopped(self.home)
                 return
             stream.close()
             time.sleep(.25)
@@ -1096,8 +1217,13 @@ class Accounts:
                 private_bytes(self.directory(current_id)/'auth.json', base64.b64decode(snapshot['auth.json']))
 
     def _switch(self, row, app):
-        with self.bridge.account.lock:
-            self._apply_switch(row, app)
+        try:
+            with self.bridge.account.lock, self.desktop_runtime_lifecycle():
+                self._apply_switch(row, app)
+        except Exception as exc:
+            # A competing gateway must not turn lock contention into an App
+            # exit or account mutation. The caller can explicitly retry later.
+            self.phase('failed', error=str(exc))
 
     def _apply_switch(self, row, app):
         before = None
@@ -1111,6 +1237,7 @@ class Accounts:
             self.phase('stopping')
             self.invalidate()
             app.stop(provider='codex')
+            self.wait_stopped()
             stopped = True
             # The GUI may refresh tokens or persist settings while exiting.
             after_stop = self.snapshot_files()
@@ -1120,7 +1247,6 @@ class Accounts:
                 backup['files'] = before
                 private_json(self.root/'rollback.json', backup)
                 self.retain_current(before)
-            self.wait_stopped()
             if changed:
                 folder = self.prepare(row, before)
             from bridge.features.accounts.cli_sync import LocalCliSync
@@ -1166,6 +1292,7 @@ class Accounts:
                         raise ValueError('配置已被其他工具修改，禁止覆盖恢复')
                     self.phase('restoring')
                     app.stop(provider='codex')
+                    self.wait_stopped()
                     self.require_managed_writes()
                     if self.snapshot_files()['config.toml'] != expected:
                         raise ValueError('配置已被其他工具修改，禁止覆盖恢复')
@@ -1205,11 +1332,12 @@ class Accounts:
                 return self.desktop_status()
             self.phase('restoring')
             def run():
-                with self.bridge.account.lock:
-                    try:
+                try:
+                    with self.bridge.account.lock, self.desktop_runtime_lifecycle():
                         app = DesktopApp(backup['desktopExecutable'], self.home)
                         app.validate(self.runtime)
                         app.stop(provider='codex')
+                        self.wait_stopped()
                         self.require_managed_writes()
                         if 'writtenConfig' in backup and self.snapshot_files()['config.toml'] not in (backup['writtenConfig'], backup['files']['config.toml']):
                             raise ValueError('配置已被其他工具修改，禁止覆盖恢复')
@@ -1226,8 +1354,8 @@ class Accounts:
                             self.mark_active(backup['activeId'])
                             self.phase('restored', error=None)
                         (self.root/'rollback.json').unlink(missing_ok=True)
-                    except Exception:
-                        self.phase('interrupted', error='恢复未完成，请检查桌面程序路径和运行状态')
+                except Exception:
+                    self.phase('interrupted', error='恢复未完成，请检查桌面程序路径和运行状态')
             self.thread = threading.Thread(target=run, daemon=True)
             self.thread.start()
             return self.desktop_status()
