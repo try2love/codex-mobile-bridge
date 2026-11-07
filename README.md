@@ -5,19 +5,25 @@
 
 # Codex Mobile Bridge · 多客户端远程工作台
 
-> **v2.1.7 正式版**：[发布页](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.1.7) · [完整更新说明](RELEASE_NOTES.md#v217) · [手机安装说明](mobile/README.md)。完善手机通知、会话整理、项目引用与连接恢复。
-
-> **v2.2.0-preview.3 预览版**：[发布页](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.0-preview.3) · [双语更新说明](RELEASE_NOTES.md)。新增 ZCode 双通道接入、新建模型选择与实验性独立客户端配置。
+> **v2.2.0 正式版**：[发布页](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.0) · [双语更新说明](RELEASE_NOTES.md) · [手机安装说明](mobile/README.md)。ZCode 原生接入、手机多地址切换与后台资源优化。
 
 [简体中文](README.md) · [English](README_EN.md)
 
-**[双语介绍与使用演示 ↗](https://try2love.github.io/codex-mobile-bridge/?lang=zh)** · **[下载桌面与手机 App](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.1.7)**
+**[双语介绍与使用演示 ↗](https://try2love.github.io/codex-mobile-bridge/?lang=zh)** · **[下载桌面与手机 App](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.0)**
 
 [![桌面网关：客户端与接入（演示数据）](site/assets/v2-clients.png)](https://try2love.github.io/codex-mobile-bridge/?lang=zh)
 
-从手机 App 或浏览器继续电脑上的 **Codex、Claude Code / Cowork、DeepSeek Harness** 会话。三个客户端保留独立聊天列表、账号和工作区；在当前应用下创建会话、查看回复、发送附件、切换可用模型与推理强度、处理权限请求。
+从手机 App 或浏览器继续电脑上的 **Codex、Claude Code / Cowork、DeepSeek Harness、ZCode** 会话。四个客户端保留独立聊天列表、账号和工作区；在当前应用下创建会话、查看回复、发送附件、切换可用模型与推理强度、处理权限请求。
 
 任务继续在原电脑执行，Codex 的 SSH 任务继续在原服务器执行。网关复用原客户端的会话、认证和执行环境，不让手机重新运行一套 Agent。手机无需登录相同的模型账号，使用网关登录或可撤销的扫码配对即可接入。
+
+## v2.2.0 更新
+
+- ZCode 原生会话、本机与官方远控、自定义 API 和模型额度；新建聊天模型选择与共享缓存。
+- 手机多地址切换、可选 UU 远程、独立客户端配置，以及 VS Code Codex 接入。
+- 减少停用客户端与闲置界面的后台工作，改善重连、原生改名、思考展示和跨平台启动。
+
+桌面与手机 App 为 **2.2.0**，Android/iOS 构建号 **54**。独立 Claude/DSH 配置与 WSL 账号管理仍属实验性功能；具体能力以原客户端支持为准。详见 [双语发布说明](RELEASE_NOTES.md)。
 
 ## v2.1.7 更新
 

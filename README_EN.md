@@ -5,19 +5,25 @@
 
 # Codex Mobile Bridge · A remote workbench for desktop agents
 
-> **v2.1.7 (stable):** [Release page](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.1.7) · [Full release notes](RELEASE_NOTES.md#v217) · [Mobile installation](mobile/README.md). Mobile notifications, session organization, project references and connection recovery.
-
-> **v2.2.0-preview.3:** [Preview release](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.0-preview.3) · [Bilingual release notes](RELEASE_NOTES.md). ZCode connection modes, model selection before chat creation and experimental independent client profiles.
+> **v2.2.0 stable:** [Release](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.0) · [Bilingual release notes](RELEASE_NOTES.md) · [Mobile installation](mobile/README.md). Native ZCode access, mobile route switching and less background work.
 
 [简体中文](README.md) · [English](README_EN.md)
 
-**[Product guide and interactive demos ↗](https://try2love.github.io/codex-mobile-bridge/?lang=en)** · **[Download desktop and mobile apps](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.1.7)**
+**[Product guide and interactive demos ↗](https://try2love.github.io/codex-mobile-bridge/?lang=en)** · **[Download desktop and mobile apps](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.0)**
 
 [![Desktop gateway: clients and access, with demo data](site/assets/v2-clients.png)](https://try2love.github.io/codex-mobile-bridge/?lang=en)
 
-Continue **Codex, Claude Code / Cowork and DeepSeek Harness** sessions from a phone app or browser. Each client keeps its own chats, accounts and workspaces. Create chats within the selected client, read replies, send attachments, select available models/reasoning and respond to approval requests.
+Continue **Codex, Claude Code / Cowork, DeepSeek Harness and ZCode** sessions from a phone app or browser. Each client keeps its own chats, accounts and workspaces. Create chats within the selected client, read replies, send attachments, select available models/reasoning and respond to approval requests.
 
 Tasks run on the original computer, or the original SSH host for Codex remote sessions. Bridge reuses the desktop session, authentication and execution environment. Your phone does not need the same model-service account: use gateway login or revocable QR pairing.
+
+## v2.2.0 updates
+
+- Native ZCode chats, local and official remote access, custom API providers and model quotas; shared model selection and caches.
+- Mobile multi-address switching, optional UU Remote, independent client profiles and VS Code Codex access.
+- Less background work for disabled clients and idle UI, with fixes for reconnection, native renaming, reasoning display and platform startup.
+
+Desktop/mobile version: **2.2.0**, Android/iOS build **54**. Independent Claude/DSH profiles and WSL account management remain experimental; native capabilities still apply. See the [bilingual release notes](RELEASE_NOTES.md).
 
 ## v2.1.7 updates
 
