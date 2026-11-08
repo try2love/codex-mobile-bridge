@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from bridge.clients.codex.catalog import Catalog
-from bridge.features.accounts.models import model_catalog
+from bridge.features.accounts.models import model_catalog, valid_model_id
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -53,6 +53,18 @@ class ApiModelAuthTests(unittest.TestCase):
         self.assertNotIn('fixture-actor', json.dumps(public))
         self.assertNotIn('fixture-bearer', json.dumps(public))
         self.assertEqual(self.calls, ['config/read'])
+
+    def test_unicode_provider_model_ids_are_valid_but_whitespace_and_controls_stay_rejected(self):
+        model = 'xmy:日卡/deepseek-v4.1-flash'
+        self.assertTrue(valid_model_id(model))
+        self.assertTrue(valid_model_id('ccs-openai/gpt-6-astra'))
+        for invalid in ('', ' route/model', 'route/model ', 'route/\tmodel', 'route/\nmodel', 'route/\x00model',
+                        'route/\u202emodel', 'x' * 201):
+            with self.subTest(value=invalid):
+                self.assertFalse(valid_model_id(invalid))
+        result, _ = self.read({'models': [{'slug': model, 'display_name': 'DeepSeek Flash'}]})
+        self.assertNotIn('modelError', result)
+        self.assertEqual([row['model'] for row in result['models']], [model])
 
     def test_static_and_env_headers_and_query_parameters_are_preserved(self):
         self.definition.update(env_http_headers={'X-tenant': 'CMB_TEST_TENANT'}, query_params={'api-version': 'fixture version'})

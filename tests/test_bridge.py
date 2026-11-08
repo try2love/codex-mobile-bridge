@@ -776,6 +776,18 @@ class IntegrationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.bridge.settings(THREAD, 'model-b', 'ultra')
 
+    def test_unicode_model_id_from_cc_switch_can_be_applied(self):
+        model = 'xmy:日卡/deepseek-v4.1-flash'
+        self.bridge.catalog_reader.get_kind = lambda *a, **k: {
+            'models': [{'id': model, 'efforts': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']}],
+            'modelSource': 'api'}
+        result = self.bridge.settings(THREAD, model, 'xhigh')
+        self.assertTrue(result['confirmed'])
+        self.assertEqual(result['model'], model)
+        request = next(r for r in self.fixture.requests
+                       if r['method'] == 'thread-follower-update-thread-settings')
+        self.assertEqual(request['params']['threadSettings'], {'model': model, 'effort': 'xhigh'})
+
     def test_official_model_without_capabilities_cannot_save_guessed_effort(self):
         self.bridge.catalog_reader.get_kind = lambda *a, **k: {'models': [{'id':'official-missing','efforts':[]}], 'modelSource':'codex'}
         with self.assertRaisesRegex(ValueError, '推理能力'):

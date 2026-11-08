@@ -213,6 +213,10 @@ class AccountsTests(unittest.TestCase):
             self.assertEqual((self.manager.directory(row['id'])/'api.json').stat().st_mode&0o777,0o600)
         self.assertEqual(self.manager.snapshot_files(),self.original)
 
+    def test_api_accepts_unicode_provider_model_id(self):
+        model = 'xmy:日卡/deepseek-v4.1-flash'
+        self.assertEqual(self.api(model=model)['model'], model)
+
     def test_rejects_bad_addresses_keys_ids_and_active_edit(self):
         for url in ['http://remote.invalid','https://key@api.example/v1','https://api.example/?key=private','file:///tmp/a']:
             with self.assertRaises(ValueError):self.api(baseUrl=url)
