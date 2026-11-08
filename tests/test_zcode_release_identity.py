@@ -18,7 +18,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class ReleaseKey(unittest.TestCase):
     def test_embedded_identity_matches_the_existing_release_key(self):
-        self.assertEqual(identity.PUBLIC_KEY, (ROOT / 'desktop/features/updates/update-public-key.pem').read_bytes())
+        embedded = serialization.load_pem_public_key(identity.PUBLIC_KEY)
+        published = serialization.load_pem_public_key(
+            (ROOT / 'desktop/features/updates/update-public-key.pem').read_bytes())
+        self.assertEqual(
+            embedded.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw),
+            published.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw))
 
 
 class PublishedComponents(unittest.TestCase):

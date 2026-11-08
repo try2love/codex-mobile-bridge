@@ -66,6 +66,18 @@ class ServiceBoundary(unittest.TestCase):
             signature.require(channel, 321, relocated_holder=relocated)
         relocated.assert_not_called()
 
+    @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "Unix socket fixture")
+    def test_fixture_accepts_early_rejection_only_for_unauthorized_clients(self):
+        record = {"endpoint": "/unused", "nonce": "fixture"}
+        with patch.object(host, "read_json", return_value=record), patch.object(host, "private_json"), \
+                patch.object(socket, "socket"), patch.object(host, "exchange_write") as write:
+            for error in (BrokenPipeError, ConnectionResetError):
+                with self.subTest(error=error.__name__):
+                    write.side_effect = error("peer rejected before request")
+                    fixture_client("/unused", "unauthorized")
+                    with self.assertRaises(error):
+                        fixture_client("/unused", "status")
+
     def test_only_supported_native_request_shapes_reach_the_pipe(self):
         with tempfile.TemporaryDirectory(dir=ROOT / ".tmp") as tmp:
             holder = host.Holder(tmp, None, None)
@@ -148,12 +160,12 @@ def fixture_client(profile, action):
             req = {"command": "operation", "owner": record["owner"], "native": {"action": "application"}}
         else:
             req = {"command": "status" if action == "unauthorized" else action}
-        host.exchange_write(conn, {"nonce": record["nonce"], "request": req}, 1)
-        if action == "authorize-and-disconnect":
-            return
         try:
+            host.exchange_write(conn, {"nonce": record["nonce"], "request": req}, 1)
+            if action == "authorize-and-disconnect":
+                return
             reply = host.exchange_read(conn, time.monotonic() + 6)
-        except ConnectionResetError:
+        except (BrokenPipeError, ConnectionResetError):
             if action == "unauthorized":
                 return
             raise
