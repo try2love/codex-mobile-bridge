@@ -248,9 +248,9 @@ class DeepSeekMigrationTests(unittest.TestCase):
         lf = current.read_bytes().replace(b'\r\n', b'\n')
         self.assertIn(b'\n', lf)
         self.assertEqual(hashlib.sha256(lf).hexdigest(),
-                         '5479ae9f1e78bd7bf7ce61478a6427025b47964593dbc830b0845a1ef4f0da5a')
+                         '0c6a9586ecb2e52c6392f576dda7c1bddb1629ceb41e757bef27c905869db228')
         self.assertEqual(hashlib.sha256(lf.replace(b'\n', b'\r\n')).hexdigest(),
-                         '32fd056cd0840884610a223a41bb690c4f3e244c3af7bdb7fc9c65c84d19b3db')
+                         'bdc236e7f02cc59a9a23b917683849d1a14473e8145dad14af6e7ae2934c2c71')
         for content in (lf, lf.replace(b'\n', b'\r\n')):
             with self.subTest(line_ending='CRLF' if b'\r\n' in content else 'LF'):
                 source.write_bytes(content)
@@ -418,19 +418,18 @@ class DeepSeekMigrationTests(unittest.TestCase):
                                         'deepseekAdapterDirectory': str(self.root/'unrelated-directory')}))
         manager = DesktopSessions(data)
         try:
-            self.assertEqual(manager.adapters['deepseek'].directory, settings.parent/'deepseek')
-            self.assertFalse(manager.adapters['deepseek'].reused)
-            self.assertEqual(manager.config['setup']['deepseek']['setupStatus'], 'failed')
+            self.assertIsNone(manager.adapters.get('deepseek'))
             manager.config['enabled'] = {'deepseek': True}
-            manager.adapters['deepseek'].call = Mock(return_value={'connected': True, 'configured': True})
-            with self.assertRaisesRegex(ValueError, '请重新扫描'):
-                manager.call('deepseek', 'list')
-            with self.assertRaisesRegex(ValueError, '请重新扫描'):
-                manager.require_enabled('deepseek')
-            row = next(row for row in manager.clients()['clients'] if row['id'] == 'deepseek')
-            self.assertFalse(row['configured'])
-            self.assertFalse(row['connected'])
-            manager.adapters['deepseek'].call.assert_not_called()
+            with patch.object(DeepSeek, 'call') as native:
+                with self.assertRaisesRegex(ValueError, '请重新扫描'):
+                    manager.call('deepseek', 'list')
+                self.assertEqual(manager.config['setup']['deepseek']['setupStatus'], 'failed')
+                with self.assertRaisesRegex(ValueError, '请重新扫描'):
+                    manager.require_enabled('deepseek')
+                row = next(row for row in manager.clients()['clients'] if row['id'] == 'deepseek')
+                self.assertFalse(row['configured'])
+                self.assertFalse(row['connected'])
+                native.assert_not_called()
         finally:
             manager.close()
 
@@ -564,6 +563,7 @@ class DeepSeekMigrationTests(unittest.TestCase):
     def test_confirmed_restart_updates_source_and_waits_for_new_loaded_revision(self):
         self.legacy()
         manager = self.migration_manager()
+        manager.config['enabled'] = {'deepseek': True}
         live = {'connected': True, 'configured': True, 'updateRequired': True, 'bridgeRevision': 3}
         def call(adapter, action, *args):
             return dict(live) if action == 'status' else {'complete': True, 'bridgeRevision': 3, 'sessions': []}

@@ -102,7 +102,12 @@ def claude_data_home(executable, fallback, platform=None, *, env=None, package_f
         try:
             profiles = _running_profiles(executable, platform)
             if profiles:
-                return next(iter(profiles)) if len(profiles) == 1 else fallback
+                if len(profiles) != 1:
+                    return fallback
+                observed = next(iter(profiles))
+                if platform == 'win32':
+                    return windows_claude.running_profile_path(executable, observed, env, package_family)
+                return observed
         except (OSError, ValueError, subprocess.SubprocessError):
             pass
     if platform == 'win32':

@@ -31,6 +31,7 @@
   "bridge/platforms/windows/codex-quit-helper.cs",
   "bridge/clients/claude/connector.js",
   "bridge/clients/claude/remote_worker.py",
+  "bridge/clients/claude/creation.py",
   "bridge/clients/claude/history.py",
   "bridge/clients/claude/file_archive.py",
   "bridge/clients/deepseek/host.mjs",
@@ -244,5 +245,6 @@
   "web/vendor/pdfjs/standard_fonts/LiberationSans-Bold.ttf",
   "web/vendor/pdfjs/standard_fonts/LiberationSans-BoldItalic.ttf",
   "web/vendor/pdfjs/standard_fonts/LiberationSans-Italic.ttf",
-  "web/vendor/pdfjs/standard_fonts/LiberationSans-Regular.ttf"
+  "web/vendor/pdfjs/standard_fonts/LiberationSans-Regular.ttf",
+  "bridge/clients/zcode/renderer.mjs"
 ]

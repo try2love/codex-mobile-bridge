@@ -35,7 +35,7 @@ class ClientInventoryTests(unittest.TestCase):
 
     def ps(self, args, **kwargs):
         if args[-1] == 'pid=,comm=':
-            return subprocess.CompletedProcess(args, 0, '\n'.join(f'{pid} {exe}' for pid, exe, _ in self.records))
+            return subprocess.CompletedProcess(args, 0, '\n'.join(f'{pid} {Path(exe).as_posix()[len(Path(exe).drive):]}' for pid, exe, _ in self.records))
         pids = {int(pid) for pid in args[args.index('-p')+1].split(',')}
         return subprocess.CompletedProcess(args, 0, '\n'.join(f'{pid} {cmd}' for pid, _, cmd in self.records if pid in pids and cmd))
 

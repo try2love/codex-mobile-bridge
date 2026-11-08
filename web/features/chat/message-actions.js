@@ -119,9 +119,9 @@ class MessageActions {
   }
   relabel(){if(!this.target)return;for(const node of [this.title,this.description,this.submit,this.error])node.textContent=actionText(node.textContent);}
   draftKey(){return 'message-edit:'+this.target.url+':'+this.target.row.key;}
-  async open(action,row,timeline){
+  async open(action,row,timeline,handlers={}){
     if(this.pending)return;
-    const target=this.target={action,row:{...row},timeline,url:timeline.url('message-action')};
+    const target=this.target={action,row:{...row},timeline,handlers,url:timeline.url('message-action')};
     this.error.textContent='';this.input.value='';this.input.hidden=action==='fork';this.input.required=action!=='fork';
     this.title.textContent=actionText(action==='fork'?'从这里分支':action==='edit'?'编辑并重新发送':'编辑并新建分支');
     this.submit.textContent=this.title.textContent;
@@ -136,7 +136,8 @@ class MessageActions {
   }
   async send(){
     const target=this.target;if(!target||this.pending)return;
-    const {action,row,timeline,url}=target;
+    const {action,row,timeline,url,handlers={}}=target;
+    const request=handlers.request||this.request,refresh=handlers.refresh||this.refresh,openChat=handlers.openChat||this.openChat;
     if(timeline.abort.signal.aborted){this.error.textContent=actionText('聊天已切换，请重新选择消息');return;}
     const text=action==='fork'?null:this.input.value;
     const key='message-action-attempt:'+url+':'+row.key;
@@ -147,17 +148,17 @@ class MessageActions {
     this.pending=true;this.busy(true);this.error.textContent='';this.submit.textContent=actionText('正在提交…');
     this.dialog.querySelectorAll('button,textarea').forEach(n=>n.disabled=true);
     try{
-      const result=await this.request(url,attempt);
+      const result=await request(url,attempt);
       if(timeline.abort.signal.aborted)return;
       if(result.status==='unknown'){
         this.error.textContent=actionText('操作结果尚未确认，请先检查聊天记录。再次提交不会重复执行。');
         if(result.id!==result.source.id)this.error.textContent+=' '+actionText('分支已创建，可在聊天列表查看。');
-        this.refresh();return;
+        refresh();return;
       }
       sessionStorage.removeItem(key);sessionStorage.removeItem(this.draftKey());
       this.dialog.close();this.target=null;
       if(action!=='edit'){
-        this.refresh();
+        refresh();
         if(result.draft!==null&&result.draft!==undefined){
           // The fork exists but desktop activation failed before the edit. Keep
           // the replacement as an edit draft; never append it as a normal turn.
@@ -165,7 +166,7 @@ class MessageActions {
           sessionStorage.setItem('fork-edit:'+result.host+'|'+result.id,JSON.stringify(pending));
           this.notify('分支已创建，修改尚未发送。请连接后编辑最后一条消息。');
         }else this.notify(action==='fork'?'已创建分支':'已在分支中重新发送');
-        await this.openChat(result.id,result.host);
+        await openChat(result.id,result.host);
       }else this.notify('已重新发送');
     }catch(error){if(this.dialog.open)this.error.textContent=actionText(error.message);else this.notify(error.message);}
     finally{

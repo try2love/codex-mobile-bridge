@@ -17,3 +17,23 @@
 .gateway-network-settings .muted{font-size:12px;line-height:1.5;overflow-wrap:anywhere}
 
 .settings-action-row{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin:4px 0 16px}.settings-action-row.three-actions{grid-template-columns:repeat(3,minmax(0,1fr))}.settings-action-row.two-actions{grid-template-columns:repeat(2,minmax(0,1fr))}.settings-action-row button{min-width:0;min-height:40px;padding:8px 4px;border:1px solid var(--line);border-radius:8px;background:var(--surface);font-size:12px;line-height:1.25;overflow-wrap:anywhere}.settings-action-row button[hidden]{display:none}@media(max-width:600px){.settings-action-row,.settings-action-row.three-actions{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:360px){#appearance-dialog{padding-inline:16px}.settings-action-row{gap:4px}.settings-action-row button{padding-inline:2px}}
+
+/* Keep channel rows on the same controls and focus treatment as the app picker. */
+.channel-picker-section{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
+.channel-picker-section h3{display:flex;align-items:center;justify-content:space-between;font-size:14px;margin:0 0 9px}
+.channel-refresh{min-width:40px;min-height:36px;border:0;border-radius:8px;background:transparent;color:var(--accent);font-size:22px;line-height:1;cursor:pointer}
+.channel-refresh:disabled{opacity:.45}
+.channel-modes{display:flex;border-radius:9px;background:var(--surface);padding:3px;margin-bottom:10px;gap:3px}
+.channel-modes button{flex:1;appearance:none;border:0;border-radius:7px;padding:7px;color:var(--muted);background:transparent;font:inherit;font-size:13px}
+.channel-modes button[aria-pressed=true]{background:var(--raised);color:var(--text);font-weight:600}
+.client-picker-options .channel-option{display:grid;grid-template-columns:20px minmax(0,1fr) auto 15px;gap:9px}
+.channel-option small{white-space:nowrap;color:var(--muted);font-size:12px}
+.channel-option small[data-latency=low]{color:#207248}
+.channel-option small[data-latency=high]{color:#a14e0d}
+:root[data-theme=dark] .channel-option small[data-latency=low]{color:#79cf9a}
+:root[data-theme=dark] .channel-option small[data-latency=high]{color:#ffb675}
+.channel-option small[data-latency=very-high]{color:var(--error)}
+.channel-glyph{color:var(--muted);text-align:center}
+.bridge-route-down #status,.bridge-route-down .ds-connection{font-size:0}
+.bridge-route-down #status::after,.bridge-route-down .ds-connection::after{content:"重新连接";font-size:12px}
+html[lang^=en].bridge-route-down #status::after,html[lang^=en].bridge-route-down .ds-connection::after{content:"Reconnecting"}

@@ -31,6 +31,11 @@ def running_distributions():
     return _distributions()
 
 
+def displayed_distributions(rows):
+    # Local desktop profiles share the registry but never require wsl.exe.
+    return set(running_distributions()) if any(row.get('distribution') for row in rows) else set()
+
+
 def command(distribution, user=None, allow_start=False):
     # Listing is repeated immediately before every invocation. Discovery is not
     # permission to wake a distribution later during a background request.

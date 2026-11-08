@@ -62,9 +62,9 @@ class ChatTimeline {
     this.resize.observe(this.container);
   }
   dispose(){this.abort.abort();window.BridgeMermaidCards?.clearScope(this.mermaidScope);clearTimeout(this.startRetry);this.resize.disconnect();this.viewport.removeEventListener('scroll',this.onScroll);this.viewport.removeEventListener('wheel',this.onWheel);this.viewport.removeEventListener('touchstart',this.onTouchStart);this.viewport.removeEventListener('touchmove',this.onTouchMove);this.newer.hidden=true;}
-  atBottom(){return this.viewport.scrollHeight-this.viewport.scrollTop-this.viewport.clientHeight<110;}
+  atBottom(){return chatFollowsLatest(this.viewport);}
   nearTop(){const nodes=[...this.container.children].filter(n=>!n.hidden);return nodes.length>0&&nodes.slice(0,11).some(n=>n.getBoundingClientRect().bottom>=this.viewport.getBoundingClientRect().top);}
-  capture(accept=()=>true){if(!this.viewport.clientHeight)return this.anchor;const top=this.viewport.getBoundingClientRect().top;const nodes=[...this.container.children].filter(n=>!n.hidden&&accept(n));const node=nodes.find(n=>n.getBoundingClientRect().bottom>top)||nodes[nodes.length-1];return node?{key:node.dataset.key,offset:node.getBoundingClientRect().top-top}:null;}
+  capture(accept){return this.viewport.clientHeight?captureChatScrollAnchor(this.viewport,this.container,accept):this.anchor;}
   rowVisible(row){
     if(row.role==='user'||row.role==='error')return true;
     if(row.kind==='reasoning')return this.showReasoning;
@@ -80,9 +80,9 @@ class ChatTimeline {
     for(const [key,entry] of this.nodes){
       const row=this.rows.get(key).row;
       if(imagesChanged&&row.attachments?.some(item=>item.type==='toolImage')){
-        const open=(entry.node.tagName==='DETAILS'?entry.node:entry.node.querySelector('details.activity'))?.open;
-        const node=this.renderRow(row,open);node.dataset.key=key;
-        entry.node.replaceWith(node);entry.node=node;
+        const reading=captureChatActivityState(entry.node);
+        const node=this.renderRow(row,reading?.open);node.dataset.key=key;
+        entry.node.replaceWith(node);entry.node=node;restoreChatActivityState(node,reading);
       }
       entry.node.hidden=!this.rowVisible(row);
     }
@@ -92,10 +92,12 @@ class ChatTimeline {
   jumpBottom(){this.viewport.scrollTop=this.viewport.scrollHeight;this.following=true;this.newer.hidden=true;}
   restore(anchor,bottom=false){
     if(this.abort.signal.aborted||!this.viewport.clientHeight)return;
+    const reading=window.BridgeMobileHandoff?.readingAnchor?.(this);
+    if(reading && this.nodes.has(reading.key)){anchor=reading;bottom=false;this.following=false;}
     this.suppress=true;
     const node=anchor&&this.nodes.get(anchor.key)?.node;
     if(bottom)this.jumpBottom();
-    else if(node&&!node.hidden)this.viewport.scrollTop+=node.getBoundingClientRect().top-this.viewport.getBoundingClientRect().top-anchor.offset;
+    else restoreChatScrollAnchor(this.viewport,node,anchor);
     this.lastTop=this.viewport.scrollTop;
     this.anchor=this.capture();
     requestAnimationFrame(()=>this.suppress=false);
@@ -158,15 +160,12 @@ class ChatTimeline {
       this.rows.set(row.key,{row,sequence:page.sequence});
       const stamp=JSON.stringify(row),old=this.nodes.get(row.key);
       if(old?.stamp===stamp)continue;
-      const open=(old?.node.tagName==='DETAILS'?old.node:old?.node.querySelector('details.activity'))?.open;
-      const node=this.renderRow(row,open);node.dataset.key=row.key;
+      const node=this.renderRow(row);node.dataset.key=row.key;
       node.hidden=!this.rowVisible(row);changed=changed||!node.hidden;
-      if(old)old.node.replaceWith(node);
       this.nodes.set(row.key,{node,stamp});
     }
     const ordered=[...this.rows.values()].map(x=>x.row).sort((a,b)=>a.order-b.order);
-    let position=this.container.firstChild;
-    for(const row of ordered){const node=this.nodes.get(row.key).node;if(node===position)position=position.nextSibling;else this.container.insertBefore(node,position);}
+    syncChatMessageNodes(this.container,ordered.map(row=>this.nodes.get(row.key).node));
     if(reset||history){this.before=page.before;this.hasMore=page.hasMore;this.windowRevision++;}
     this.refreshActions();this.historyStatus();this.restore(anchor,bottom);
     if(!history&&!bottom&&(changed||page.meta.requests?.length)){this.newer.textContent=page.meta.requests?.length?timelineText('有待确认请求 ↓'):timelineText('有新内容 ↓');this.newer.hidden=false;}
@@ -220,11 +219,13 @@ class ChatTimeline {
     const cached=this.details.get(row.key);
     if(cached&&cached.version!==row.version)this.details.delete(row.key);
     const paint=()=>{
+      const reading=captureChatActivityState(node);
       const detail=this.details.get(row.key),text=detail?.text??row.text;
       body.replaceChildren();if(activity)body.textContent=text;else this.renderText(body,text,[...this.files.values()],()=>this.fullText(row));
       if(activity)body.hidden=!text;
       more.hidden=detail?detail.next===null:!row.truncated;
       more.textContent=detail?timelineText('继续加载正文'):timelineText('展开完整内容');
+      restoreChatActivityState(node,reading);
     };
     const load=async()=>{
       if(more.disabled||this.abort.signal.aborted)return;

@@ -14,17 +14,17 @@ function permissionOption(button,preset,label,help,selected){
   button.append(svg,copy,check);return button;
 }
 
-// Codex main and side chats use the same native token-usage presentation.
+// All clients and side chats share native context usage and last-prompt semantics.
 class ContextUsageControl {
-  constructor(){
-    this.button=document.createElement('button');this.button.type='button';this.button.className='tool-button context-usage';this.button.hidden=true;
+  constructor({onCompact}={}){
+    this.onCompact=onCompact;this.button=document.createElement('button');this.button.type='button';this.button.className='tool-button context-usage';this.button.hidden=true;
     this.ring=document.createElement('span');this.ring.className='context-usage-ring';this.ring.setAttribute('aria-hidden','true');this.button.append(this.ring);
     this.button.onclick=()=>this.open();
   }
   update(state){
     if(!state||state.id!==this.state?.id){this.dialog?.remove();this.dialog=null;}
-    this.state=state;this.button.hidden=!state;const usage=state?.contextUsage;
-    const known=Number.isFinite(usage?.usedTokens)&&usage.usedTokens>=0&&Number.isFinite(usage.contextWindow)&&usage.contextWindow>0;
+    this.state=state;if(this.compactButton)this.compactButton.disabled=!state?.connected||state?.capabilities?.compact!==true||!!state?.busy;this.button.hidden=!state;const usage=state?.contextUsage;
+    const known=usage?.measurement!=='lastPrompt'&&Number.isFinite(usage?.usedTokens)&&usage.usedTokens>=0&&Number.isFinite(usage.contextWindow)&&usage.contextWindow>0;
     const percent=known?Math.round(usage.usedTokens/usage.contextWindow*100):null;
     this.ring.style.setProperty('--context-percent',known?Math.min(percent,100)+'%':'0%');this.ring.classList.toggle('unknown',!known);
     this.button.title=BridgeI18n.t('上下文使用量')+' · '+(known?percent+'%':BridgeI18n.t('暂未提供'));this.button.setAttribute('aria-label',this.button.title);
@@ -34,9 +34,26 @@ class ContextUsageControl {
     const title=document.createElement('h2');title.textContent=BridgeI18n.t('上下文使用量');
     const close=document.createElement('button');close.type='button';close.className='icon-button';close.textContent='×';close.setAttribute('aria-label',BridgeI18n.t('关闭'));close.onclick=()=>dialog.close();const head=document.createElement('div');head.className='picker-head';head.append(title,close);dialog.append(head);
     const line=(label,value)=>{const p=document.createElement('p');p.textContent=BridgeI18n.t(label)+(value===undefined?'':' · '+value);dialog.append(p);};
-    const usage=this.state.contextUsage,number=value=>Number.isFinite(value)&&value>=0?value.toLocaleString(BridgeI18n.locale()):BridgeI18n.t('暂未提供');
-    if(!usage)line('当前客户端尚未提供此会话的上下文用量。');
-    else {line('已用 Token',number(usage.usedTokens));line('上下文容量',number(usage.contextWindow));if(usage.contextWindow>0)line('使用占比',(usage.usedTokens/usage.contextWindow*100).toFixed(1)+'%');if(usage.cached||!this.state.connected)line('当前为缓存数据，连接恢复后更新。');}
+    const usage=this.state.contextUsage,previous=this.state.lastPromptContextUsage,number=value=>Number.isFinite(value)&&value>=0?value.toLocaleString(BridgeI18n.locale()):BridgeI18n.t('暂未提供');
+    if(!usage)line(this.state.contextUsageStatus==='unsupported'?'当前客户端或会话模式未提供上下文用量接口。':this.state.contextUsageStatus==='unavailable'?'当前会话尚未提供上下文用量；有可用数据时会自动更新。':'当前客户端尚未提供此会话的上下文用量。');
+    else {
+      line(usage.measurement==='lastPrompt'?'最近一次模型输入':'已用 Token',number(usage.usedTokens));line('上下文容量',number(usage.contextWindow));
+      if(usage.measurement!=='lastPrompt'&&usage.contextWindow>0&&Number.isFinite(usage.usedTokens)&&usage.usedTokens>=0)line('使用占比',(usage.usedTokens/usage.contextWindow*100).toFixed(1)+'%');
+      if(usage.model)line('模型',usage.model);
+      if(Number.isFinite(usage.autoCompactThresholdTokens))line('自动压缩阈值',number(usage.autoCompactThresholdTokens));
+      if(Number.isFinite(usage.pressureTokens)&&usage.pressureTokens!==usage.usedTokens)line('已确认上下文 Token',number(usage.pressureTokens));
+      for(const [key,label] of [['inputTokens','最近输入 Token'],['cacheReadTokens','缓存读取 Token'],['cacheWriteTokens','缓存写入 Token']])if(Number.isFinite(usage.cache?.[key]))line(label,number(usage.cache[key]));
+      if(usage.compacted)line('最近一次压缩后统计。');
+      if(usage.measurement==='lastPrompt')line('统计最近一次请求的输入与缓存 Token；不包含尚未发送的内容。');
+      if(usage.estimated)line('包含客户端对尚未发送内容的估算。');
+      if(usage.cached||!this.state.connected)line('当前为缓存数据，连接恢复后更新。');
+    }
+    if(previous&&!usage){line('最近一次模型输入',number(previous.usedTokens));line('统计最近一次请求的输入与缓存 Token；不包含尚未发送的内容。');}
+    if(this.onCompact&&this.state.capabilities?.compact===true){
+      const stateId=this.state.id,button=this.compactButton=document.createElement('button');button.type='button';button.textContent=BridgeI18n.t('压缩上下文');button.disabled=!this.state.connected||!!this.state.busy;
+      button.onclick=async()=>{if(button.disabled||stateId!==this.state?.id)return;button.disabled=true;try{if(await this.onCompact())dialog.close();}finally{if(dialog.open&&stateId===this.state?.id)button.disabled=!this.state.connected||this.state.capabilities?.compact!==true||!!this.state.busy;}};
+      dialog.append(button);
+    }
     dialog.addEventListener('close',()=>dialog.remove(),{once:true});document.body.append(dialog);dialog.showModal();
   }
   dispose(){this.dialog?.remove();this.button.remove();}

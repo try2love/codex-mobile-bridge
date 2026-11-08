@@ -60,7 +60,10 @@ class Native:
                                     identity['pid'], 0, identity['birth'][1])
 
     def terminate(self, handle):
-        if self.lib.proc_signal_with_audittoken(ctypes.byref(handle), signal.SIGKILL) != 0:
+        self.send_signal(handle, signal.SIGKILL)
+
+    def send_signal(self, handle, value):
+        if self.lib.proc_signal_with_audittoken(ctypes.byref(handle), value) != 0:
             code = ctypes.get_errno() or errno.EPERM
             raise OSError(code, os.strerror(code))
 

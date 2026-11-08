@@ -106,3 +106,7 @@ Codex 的环境路由、目录登记和创建回执由 `codex-entries.browser.js
 在隔离生产页面夹具中加载 `wsl-dialog-width.browser.js`，调用并等待 `runWslDialogWidthChecks({kind:"accounts"})` 或 `{kind:"new-chat"}`。使用合成长发行版名称、账号名、地址与导入选项；不调用真实账号接口或发送聊天。分别在 320/393/430/1280 宽度及中英文下检查元素边界、`scrollWidth === clientWidth`、横向滚动位置为零，窄屏原生选择框字号至少 16px。完成后调用 `window.__wslLayoutCleanup()`。
 
 选择框内部的长选项在 WebKit 中可能扩大祖先滚动区域，即使元素边界正常；需要在 WebKit 实际执行以上滚动断言，不能只检查 Chromium 或元素宽度。macOS WKWebView 的通过结果不能代替 iPhone 真机输入与选择验收。
+
+## 共享客户端会话控件
+
+在隔离 `bootstrap-fixture.py` 的成功页面中注入 `desktop-parity.browser.js`，调用并等待 `runDesktopParityChecks({language:'zh'})`。检查三客户端底栏同排、原生上下文占比、共享引用入口，以及长文件名图片预览按钮不换行；所有数据和请求均为合成，不发送模型消息。覆盖 320/390 像素中英文、横屏和宽屏。`keepOpen:true` 保留图片预览供截图；会话菜单 ID 复制另由 `session-menu.browser.js` 验证。

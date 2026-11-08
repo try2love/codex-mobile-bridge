@@ -16,3 +16,14 @@ def connect_stream(path, timeout=5):
     if os.name == 'nt':
         return WindowsPipe.connect(str(path), timeout)
     return connect_unix_stream(path, timeout)
+
+
+def endpoint_identity(path):
+    """Unix routers can replace a pathname while old connections stay alive."""
+    if os.name == 'nt':
+        return None
+    try:
+        info = os.stat(path)
+        return info.st_dev, info.st_ino
+    except OSError:
+        return None

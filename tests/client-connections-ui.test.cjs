@@ -7,18 +7,20 @@ function fixture({accounts=false}={}){
   const articles={};if(accounts)for(const provider of ['deepseek','claude']){const article=node('article'),automatic=node('div');automatic.className='client-auto-setup';article.append(automatic);if(provider==='deepseek'){const details=node('details'),label=node('label');label.append(input);details.append(label);article.append(details);}articles[provider]=article;}
   const root={hidden:false,querySelector(selector){const provider=selector.includes('deepseek')?'deepseek':'claude';if(selector.includes('.client-auto-setup'))return articles[provider]?.querySelector('.client-auto-setup')||null;if(selector.startsWith('[data-client-config='))return articles[provider]||null;if(selector==='input')return accounts?articles.deepseek.querySelector('input'):input;if(selector==='[data-deepseek-home]')return input;if(selector==='[data-desktop-choose]')return choose;if(selector==='[data-claude-workspace]')return workspace;if(selector==='[data-claude-home]')return claudeHome;if(selector==='[data-claude-data]')return claudeData;return statuses[provider];},querySelectorAll(selector){if(selector==='[data-desktop-status]')return Object.values(statuses);if(selector.includes('data-desktop-action'))return [scan];return Object.values(articles).flatMap(article=>article.querySelectorAll(selector));}};
   const calls=[],errors=[],prompts=[],choices=[],initializations=[];let closeChoice=true,finishChoice,initializeChoice=true,finishInitialize,chosen='',confirmed=true,handler=async body=>body.action==='status'?{backends:{},deepseekHome:'/fixture'}:body.action==='accounts'?{accounts:[]}:{clients:[]};
-  const listeners={},timers=[],storage=new Map();
-  const context=vm.createContext({ClientLifecycle:{...require('../web/features/clients/client-lifecycle.js'),chooseDisable(client){choices.push(client.id);return closeChoice==='pending'?new Promise(resolve=>finishChoice=resolve):closeChoice;}},CustomEvent:class{constructor(type){this.type=type;}},document:{body:node('body'),documentElement:{},getElementById:id=>nodes[id],createElement:node,querySelector:()=>null,querySelectorAll:selector=>selector==='[data-i18n]'?Object.values(statuses):[],hidden:false,addEventListener(type,fn){listeners[type]=fn;},removeEventListener(type,fn){if(listeners[type]===fn)delete listeners[type];},dispatchEvent(event){listeners[event.type]?.(event);}},setInterval(fn){timers.push(fn);},setTimeout(){},clearTimeout(){},localStorage:{getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value)},window:{confirm:message=>{prompts.push(message);return confirmed;},GatewayLayout:{selectClient(){}}}});
+  const listeners={},timers=[],storage=new Map(),pages=new Map(),selected=[];
+  const layout={hasClient:id=>['codex','claude','deepseek'].includes(id)||id.startsWith('codex:')||pages.has(id),clientPage(id){if(pages.has(id))return pages.get(id);const page=node('section');pages.set(id,page);return page;},forgetClient(id){pages.delete(id);this.selectClient(null);},selectClient(id){selected.push(id);listeners['bridge-client-config']?.({detail:id});}};
+  const context=vm.createContext({ClientLifecycle:{...require('../web/features/clients/client-lifecycle.js'),chooseDisable(client){choices.push(client.id);return closeChoice==='pending'?new Promise(resolve=>finishChoice=resolve):closeChoice;}},CustomEvent:class{constructor(type){this.type=type;}},document:{body:node('body'),documentElement:{},getElementById:id=>nodes[id],createElement:node,querySelector:()=>null,querySelectorAll:selector=>selector==='[data-i18n]'?Object.values(statuses):[],hidden:false,addEventListener(type,fn){listeners[type]=fn;},removeEventListener(type,fn){if(listeners[type]===fn)delete listeners[type];},dispatchEvent(event){listeners[event.type]?.(event);}},setInterval(fn,ms){timers.push({fn,ms});return timers.length;},clearInterval(id){if(id)timers[id-1]=null;},setTimeout(){},clearTimeout(){},localStorage:{getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value)},window:{confirm:message=>{prompts.push(message);return confirmed;},GatewayLayout:layout}});
   context.ClientLifecycle.chooseInitialize=client=>{initializations.push(client.id);return initializeChoice==='pending'?new Promise(resolve=>finishInitialize=resolve):initializeChoice;};
-  for(const file of ['web/shared/i18n.js','web/features/accounts/wsl-accounts.js',...(accounts?['web/features/accounts/client-accounts.js']:[]),'desktop/features/clients/desktop-sessions.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
+  for(const file of ['web/shared/i18n.js','web/features/accounts/wsl-accounts.js',...(accounts?['web/features/accounts/api-editor.js','web/features/accounts/client-accounts.js']:[]),'desktop/features/clients/desktop-sessions.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
+  context.ClientLifecycle.mountConnectionModes=vm.runInContext('(function(){'+fs.readFileSync('web/features/clients/client-lifecycle.js','utf8')+';return ClientLifecycle.mountConnectionModes;})()',context);context.ClientLifecycle.confirmConnectionMode=async()=>confirmed;
   const Class=vm.runInContext('DesktopConnectionsPanel',context),panel=new Class({root,api:{choose:async()=>chosen,cliAccess:body=>{calls.push(body);return handler(body);},desktopSessions:body=>{calls.push(body);return handler(body);}},feedback:message=>errors.push(message)});
   const all=n=>[n,...n.children.flatMap(all)];
-  return {panel,nodes,calls,errors,scan,storage,prompts,choices,initializations,setInitializeChoice:value=>initializeChoice=value,decideInitialize:value=>finishInitialize(value),setChoice:value=>closeChoice=value,decide:value=>finishChoice(value),statuses,workspace,claudeHome,claudeData,input,choose,root,document:context.document,setChosen:value=>chosen=value,poll:async()=>{await timers[0]();},apply:()=>vm.runInContext('BridgeI18n.apply()',context),confirm:value=>confirmed=value,setHandler:fn=>handler=fn,all:()=>all(nodes['client-overview']),text:()=>all(nodes['client-overview']).map(n=>n.textContent).join('\n'),english:()=>vm.runInContext("BridgeI18n.setLanguage('en')",context)};
+  return {panel,nodes,timers,calls,errors,scan,pages,selected,storage,prompts,choices,initializations,setInitializeChoice:value=>initializeChoice=value,decideInitialize:value=>finishInitialize(value),setChoice:value=>closeChoice=value,decide:value=>finishChoice(value),statuses,workspace,claudeHome,claudeData,input,choose,root,document:context.document,setChosen:value=>chosen=value,poll:async()=>{panel.syncPolling();await timers.find(Boolean)?.fn();},apply:()=>vm.runInContext('BridgeI18n.apply()',context),confirm:value=>confirmed=value,setHandler:fn=>handler=fn,all:()=>all(nodes['client-overview']),text:()=>all(nodes['client-overview']).map(n=>n.textContent).join('\n'),english:()=>vm.runInContext("BridgeI18n.setLanguage('en')",context)};
 }
 
 test('first Claude setup guides both permissions without launching, trusting or copying the connector',async()=>{
   const ui=fixture(),workspace='/Users/fixture/本地文稿/想法/claude';
-  ui.panel.clients=[{id:'claude',installed:true,connected:false}];ui.panel.connectionValue={claudeWorkspace:workspace};
+  ui.panel.clients=[{id:'claude',installed:true,enabled:true,connected:false}];ui.panel.connectionValue={claudeWorkspace:workspace};
   let granted=false;
   ui.setHandler(async body=>body.action==='claude-prerequisites'?{supported:true,platform:'darwin',workspace,gatewayRunning:false,accessibility:{setupState:(granted||=body.requestPermission===true)?'ready':'needs-permission'}}:{copied:true});
   await ui.panel.showClaudeSetup(true);const dialog=ui.document.body.children[0],buttons=dialog.children.at(-1).children;
@@ -53,9 +55,9 @@ test('connected and unsupported Claude do not interrupt startup with a setup dia
 
 test('DSH directory refresh targets its field after real account forms are inserted',async()=>{
   assert.match(fs.readFileSync(path.join(__dirname,'../desktop/index.html'),'utf8'),/<input[^>]*data-deepseek-home/);
-  const ui=fixture({accounts:true}),name=ui.panel.accountPanels.deepseek.nameInput;
-  assert.equal(ui.root.querySelector('input'),name,'the account name precedes the advanced directory in the real layout');
-  name.value='Saved access';await ui.panel.refresh();assert.equal(ui.input.value,'/fixture');assert.equal(name.value,'Saved access');
+  const ui=fixture({accounts:true}),name=ui.panel.ensureAccountPanel('deepseek').nameInput;
+  const apiName=ui.panel.accountPanels.deepseek.editName.input;assert.equal(ui.root.querySelector('input'),apiName,'an account editor still precedes the advanced directory');apiName.value='API draft';
+  name.value='Saved access';await ui.panel.refresh();assert.equal(ui.input.value,'/fixture');assert.equal(name.value,'Saved access');assert.equal(apiName.value,'API draft');
   ui.input.value='/editing';ui.document.activeElement=ui.input;await ui.panel.refresh();assert.equal(ui.input.value,'/editing');
 });
 
@@ -74,7 +76,7 @@ test('desktop fast polling is limited to visible startup states and deduplicates
 });
 
 test('DSH directory picker and plugin actions never use the account name field',async()=>{
-  const ui=fixture({accounts:true}),name=ui.panel.accountPanels.deepseek.nameInput;name.value='Saved access';
+  const ui=fixture({accounts:true}),name=ui.panel.ensureAccountPanel('deepseek').nameInput;name.value='Saved access';
   const selected='F:\\Harness 数据\\profile';ui.setChosen(selected);await ui.choose.onclick();
   assert.equal(ui.input.value,selected);assert.equal(name.value,'Saved access');
   for(const action of ['install-deepseek','remove-deepseek']){ui.input.value=' '+selected+' ';await ui.panel.action(action);assert.equal(ui.calls.find(call=>call.action===action).home,selected);assert.equal(name.value,'Saved access');}
@@ -83,7 +85,7 @@ test('scan discovers clients without connecting apps and ignores duplicate scans
   const ui=fixture();let finish;
   ui.setHandler(body=>body.action==='scan'?new Promise(resolve=>finish=resolve):Promise.resolve(body.action==='status'?{backends:{}}:{clients:[]}));
   const pending=ui.panel.scan();await ui.panel.scan();assert.equal(ui.calls.length,1);assert.equal(ui.calls[0].action,'scan');assert.equal(ui.calls[0].setup,false);assert.ok(ui.nodes['refresh-clients'].disabled);
-  finish({clients:[]});await pending;assert.equal(ui.nodes['refresh-clients'].disabled,false);assert.deepEqual(ui.calls.map(c=>c.action),['scan','clients','status']);
+  finish({clients:[]});await pending;assert.equal(ui.nodes['refresh-clients'].disabled,false);assert.deepEqual(ui.calls.map(c=>c.action),['scan','status']);
 });
 test('Claude unknown-state quit is a separate explicitly confirmed desktop action',async()=>{
   const ui=fixture(),client={id:'claude',name:'Claude',installed:true,configured:true,connected:false,enabled:true,running:true,canConfirmQuit:true,reason:'连接已断开'};
@@ -158,6 +160,18 @@ test('Claude connection recovery waits for an explicit initialization click and 
   assert.equal(ui.calls.some(call=>call.action==='connect-claude'),false);
   await ui.all().find(node=>node.tag==='button'&&node.textContent==='初始化连接').onclick();assert.ok(ui.calls.some(call=>call.action==='connect-claude'));assert.deepEqual(ui.initializations,['claude']);
   ui.english();assert.match(ui.text(),/Connection initialization required/);assert.match(ui.text(),/Initialization uses the foreground window/);assert.doesNotMatch(ui.text(),/[\u4e00-\u9fff]/);
+});
+
+test('desktop ZCode access switch stays separate from private-pipe initialization',async()=>{
+ const ui=fixture(),client={id:'zcode',name:'ZCode',configured:true,installed:true,enabled:false,canInitializeDesktop:true,pipeSupported:true,initializationMode:'private-pipe'};
+ ui.panel.clients=[client];ui.panel.renderClients();ui.setHandler(async()=>({clients:[{...client,enabled:true}]}));
+ await ui.panel.toggleClient('zcode',true);
+ const writes=()=>ui.calls.filter(call=>call.action==='toggle-client');
+ assert.equal(writes().length,1);assert.equal(writes()[0].initializeDesktop,undefined);assert.deepEqual(ui.initializations,[]);
+ ui.setInitializeChoice(false);await ui.all().find(node=>node.tag==='button'&&node.textContent==='初始化连接').onclick();
+ assert.equal(writes().length,1);assert.deepEqual(ui.initializations,['zcode']);
+ ui.panel.operationFailures=new Map([['zcode',{action:'initialize',uncertain:false}]]);ui.setInitializeChoice(true);
+ await ui.panel.retryOperation('zcode');assert.equal(writes().at(-1).initializeDesktop,true);assert.equal(writes().at(-1).provider,'zcode');
 });
 
 test('desktop enabling and retrying Claude never submit initialization intent',async()=>{
@@ -392,7 +406,9 @@ test('desktop WSL Manage buttons mount the real account panel for the exact prov
   const ui=fixture(),entry=prefix+'a'.repeat(32),client={id:entry,kind,name:'Fixture WSL',configured:true,enabled:true,installed:true,canQuitDesktop:false};ui.panel.clients=[client];
   ui.setHandler(async value=>{assert.equal(value.action,'wslAccounts');assert.equal(value.provider,provider);assert.equal(value.entry,entry);return{provider,entry,identity:'fixture',available:true,target:{distribution:'Fixture',user:'tester',configDir:'/home/tester/.config'},accounts:[],blockers:['External CLI remains running'],capabilities:{save:true,import:true,capture:false,switch:false}};});
   ui.panel.renderClients();assert.ok(ui.text().includes('在网关中管理 WSL 账号与 API'));const button=ui.all().find(node=>node.tag==='button'&&node.textContent==='管理');const panel=await button.onclick();await new Promise(resolve=>setImmediate(resolve));
-  const dialog=ui.document.body.children.find(node=>node.id==='wsl-account-management-dialog');assert.ok(dialog?.open);assert.equal(dialog.dataset.provider,provider);assert.equal(dialog.dataset.entry,entry);assert.equal(dialog.children[0].className,'picker-head');assert.equal(dialog.children[0].children[0].textContent,'WSL 账号与接入');assert.equal(dialog.children[0].children[1].textContent,'关闭');assert.equal(dialog.children.length,2);const labels=dialog.querySelectorAll('button').map(node=>node.textContent);assert.ok(labels.includes('保存 API 接入'));assert.ok(labels.includes('从本机导入 API 接入'));assert.equal(labels.includes('确认切换'),false);assert.equal(panel.entry,entry);dialog.close();assert.equal(panel.entry,'');assert.equal(ui.document.body.children.includes(dialog),false);
+  const page=ui.pages.get(entry),account=ui.panel.managementPages.get(entry).panel;
+  assert.ok(page);assert.equal(ui.selected.at(-1),entry);assert.equal(ui.document.body.children.length,0);assert.equal(page.children[0].children[0].textContent,'Fixture WSL');const labels=page.querySelectorAll('button').map(node=>node.textContent);assert.ok(labels.includes('保存 API 接入'));assert.ok(labels.includes('从本机导入 API 接入'));assert.equal(labels.includes('确认切换'),false);assert.equal(account.entry,entry);
+  await button.onclick();assert.equal(ui.pages.size,1,'reuse the management page');
  }
 });
 test('desktop WSL resource is optional and remains in the package',()=>{
@@ -409,12 +425,190 @@ test('Codex overview shows unsaved native login quota and refreshes that exact l
  ui.panel.renderAccount({accounts:[{...login,id:'another'}],activeId:null,current:{name:'Unknown'}});assert.doesNotMatch(ui.text(),/75%|重置卡/);
 });
 
-test('absent unconfigured clients do not occupy the list, but offline configured bindings remain',()=>{
+test('absent unconfigured clients do not occupy the list, but offline configured bindings remain',async()=>{
  const ui=fixture();
  ui.panel.clients=[{id:'codex',name:'Codex',installed:true},{id:'claude',name:'Claude',installed:false,configured:false,enabled:false},{id:'deepseek',name:'DSH',bindingMode:'manual',connected:false}];
  ui.panel.renderClients();assert.match(ui.text(),/Codex/);assert.doesNotMatch(ui.text(),/Claude/);assert.match(ui.text(),/DSH/);
  ui.panel.clients=[{id:'claude',name:'Claude',configured:true,installed:false}];ui.panel.renderClients();assert.match(ui.text(),/Claude/);
  ui.panel.clients=[];ui.panel.renderClients();assert.match(ui.text(),/尚未发现客户端/);
- ui.panel.addClient();const dialog=ui.document.body.children[0],buttons=dialog.children[1].children;
- assert.equal(dialog.open,true);assert.deepEqual(buttons.map(button=>button.textContent),['Codex','Claude','DSH / 自定义 Harness','取消']);buttons[2].onclick();assert.equal(ui.document.body.children.length,0);
+ ui.setHandler(async()=>({capabilities:[{family:'codex',kind:'codex-local',supported:true},{family:'claude',kind:'desktop-profile',supported:true},{family:'deepseek',kind:'desktop-profile',supported:true},{family:'zcode',supported:false,reason:'仅使用默认接入'}]}));
+ await ui.panel.addClient();const dialog=ui.document.body.children[0],buttons=dialog.children[1].children;
+ assert.equal(dialog.open,true);assert.deepEqual(buttons.map(button=>button.textContent),['Codex','Claude','DSH','ZCode · 仅使用默认接入','取消']);assert.equal(buttons[3].disabled,true);buttons[3].onclick();assert.equal(dialog.open,true);await buttons[2].onclick();assert.notEqual(ui.document.body.children[0],dialog);assert.match(ui.document.body.children[0].querySelector('h2').textContent,/DSH/);assert.equal(ui.selected.length,0,'adding never opens the default account page');
+});
+
+test('ZCode uses its own logo and shared next-level management page',async()=>{
+  const ui=fixture(),client={id:'zcode',name:'ZCode',installed:true,configured:true,connected:true,enabled:true,
+    canQuitDesktop:false,description:'连接 ZCode 原生聊天',accountNotice:'在 ZCode 中管理模型与账号',configurationNotice:'仅接入原生测试聊天'};
+  ui.panel.clients=[client];ui.panel.renderClients();
+  assert.ok(ui.all().some(node=>node.tag==='img'&&node.src==='../web/client-icons/zcode.png'));
+  assert.match(ui.text(),/连接 ZCode 原生聊天/);assert.match(ui.text(),/在 ZCode 中管理模型与账号/);
+  assert.doesNotMatch(ui.text(),/在 Harness 中管理/);
+  await ui.all().find(node=>node.tag==='button'&&node.textContent==='管理').onclick();
+  assert.equal(ui.selected.at(-1),'zcode');assert.ok(ui.pages.get('zcode'));assert.equal(ui.document.body.children.length,0);assert.deepEqual(ui.calls.map(value=>value.action),['zcode-official-state']);
+});
+
+test('ZCode management removes the compatibility port even from legacy descriptors',async()=>{
+ for(const capability of [{},{compatibilitySupported:false},{compatibilitySupported:true,compatibilityLaunch:true}]){
+  const ui=fixture(),client={id:'zcode',name:'ZCode',installed:true,configured:true,...capability};
+  ui.panel.clients=[client];await ui.panel.manageClient(client);
+  assert.equal(ui.pages.get('zcode').querySelector('[data-zcode-compatibility]'),null);
+  assert.deepEqual(ui.calls.map(value=>value.action),['zcode-official-state']);
+ }
+});
+
+const connectionModes=[{id:'private-pipe',label:'本机连接',description:'由网关启动原 App。',configured:true,available:true},{id:'official-remote',label:'官方远控',description:'使用原 App 的同一官方账号。',configured:true,available:true}];
+test('ZCode management shares its mode picker and refreshes official state only on opening or explicit actions',async()=>{
+ const ui=fixture(),client={id:'zcode',name:'ZCode',installed:true,configured:true,connectionMode:'private-pipe',connectionModes};ui.panel.clients=[client];
+ const state={configured:true,connected:false,selected:false,accountName:'Fixture account',provider:'z.ai',link:'https://zcode.z.ai/pair?fixture=one'};
+ ui.setHandler(async request=>request.action==='clients'?{clients:[client]}:{...state});await ui.panel.manageClient(client);
+ const page=ui.pages.get('zcode'),section=page.querySelector('[data-zcode-official]'),text=()=>section.querySelectorAll('p').map(node=>node.textContent).join('\n'),modes=page.querySelector('[data-client-connection-modes]');
+ const guide=section.querySelector('[data-zcode-official-guide]');assert.equal(guide.open,false);assert.equal(guide.querySelectorAll('li').length,7);guide.open=true;
+ assert.equal(section.className,'accounts-panel');assert.equal(modes.querySelector('[data-connection-mode="private-pipe"]').attributes['aria-pressed'],'true');assert.match(text(),/同.*官方账号/);assert.match(text(),/官方中继/);assert.match(text(),/Fixture account/);
+ assert.equal(page.querySelector('[data-zcode-compatibility]'),null);assert.deepEqual(ui.calls.map(value=>value.action),['zcode-official-state']);
+ await ui.poll();assert.equal(ui.calls.filter(value=>value.action==='zcode-official-state').length,1);
+ await ui.panel.manageClient(client);assert.equal(ui.pages.size,1);assert.equal(ui.calls.filter(value=>value.action==='zcode-official-state').length,2);
+ const input=section.querySelector('input');input.value='https://zcode.z.ai/pair?fixture=edited';input.oninput();
+ client.connectionMode='official-remote';ui.panel.renderClients();assert.equal(modes.querySelector('[data-connection-mode="official-remote"]').attributes['aria-pressed'],'true');
+ await section.querySelectorAll('button').find(button=>button.textContent==='刷新状态').onclick();
+ assert.equal(guide.open,true,'A status refresh preserves the user-opened instructions');
+ assert.equal(input.value,'https://zcode.z.ai/pair?fixture=edited');assert.match(text(),/已修改，尚未保存/);assert.equal(section.querySelector('[data-official-action="connect"]').disabled,true);
+});
+
+test('official settings save independently and connect through the shared client mode action',async()=>{
+ const ui=fixture(),client={id:'zcode',name:'ZCode',installed:true,configured:true,connectionMode:'private-pipe',connectionModes};ui.panel.clients=[client];
+ const state={configured:false,connected:false,selected:false,link:''};
+ ui.setHandler(async request=>{if(request.action==='clients')return {clients:[client]};if(request.action==='zcode-official-save')state.link=request.link;if(request.action==='zcode-official-login')Object.assign(state,{configured:true,accountName:'Signed in'});if(request.action==='toggle-client'){Object.assign(state,{connected:true,selected:true});client.connectionMode=request.connectionMode;return {clients:[client]};}if(request.action==='zcode-official-disconnect')state.connected=false;if(request.action==='zcode-official-forget')Object.assign(state,{configured:false,connected:false,selected:false});return {...state};});
+ await ui.panel.manageClient(client);const section=ui.pages.get('zcode').querySelector('[data-zcode-official]'),input=section.querySelector('input'),button=action=>section.querySelector('[data-official-action="'+action+'"]');
+ const guide=section.querySelector('[data-zcode-official-guide]');assert.equal(guide.open,true);guide.open=false;
+ assert.equal(button('login').disabled,true);assert.equal(button('connect').disabled,true);assert.equal(button('local'),null);
+ input.value='https://zcode.z.ai/pair?fixture=selected';input.oninput();assert.equal(button('login').disabled,true);
+ await button('save').onclick();assert.equal(state.configured,false);assert.equal(button('login').disabled,false);assert.equal(button('save').disabled,true);
+ assert.equal(guide.open,false,'Saving does not reopen instructions the user collapsed');
+ await button('login').onclick();assert.equal(button('connect').disabled,false);await button('connect').onclick();assert.equal(button('disconnect').disabled,false);
+ assert.deepEqual(JSON.parse(JSON.stringify(ui.calls.filter(value=>['zcode-official-save','zcode-official-login','toggle-client'].includes(value.action)))),[{action:'zcode-official-save',link:input.value},{action:'zcode-official-login',link:input.value},{action:'toggle-client',provider:'zcode',enabled:true,connectionMode:'official-remote'}]);
+ await button('disconnect').onclick();assert.equal(state.selected,true);assert.equal(state.configured,true);
+ const count=ui.calls.length;ui.confirm(false);await button('forget').onclick();assert.equal(ui.calls.length,count);assert.match(ui.prompts.at(-1),/原 App.*账号和任务会保留/);
+ ui.confirm(true);await button('forget').onclick();assert.equal(state.configured,false);assert.equal(input.value,state.link);assert.ok(state.link);
+});
+
+test('official actions block overlap and reread state after a failed save without losing the draft',async()=>{
+ const ui=fixture(),client={id:'zcode',name:'ZCode',installed:true,configured:true,connectionMode:'private-pipe',connectionModes};ui.panel.clients=[client];let finish;
+ const state={configured:true,connected:false,selected:false,link:'https://zcode.z.ai/pair?fixture=one'};
+ ui.setHandler(request=>request.action==='clients'?Promise.resolve({clients:[client]}):request.action==='zcode-official-save'?new Promise((resolve,reject)=>finish=reject):Promise.resolve({...state}));
+ await ui.panel.manageClient(client);const page=ui.pages.get('zcode'),section=page.querySelector('[data-zcode-official]'),input=section.querySelector('input'),save=section.querySelector('[data-official-action="save"]'),connect=section.querySelector('[data-official-action="connect"]');
+ input.value='https://zcode.z.ai/pair?fixture=edited';input.oninput();const pending=save.onclick();await save.onclick();assert.equal(save.disabled,true);assert.equal(connect.disabled,true);assert.equal(ui.calls.filter(value=>value.action==='zcode-official-save').length,1);
+ finish(Error('settings temporarily unavailable'));await pending;assert.equal(input.value,'https://zcode.z.ai/pair?fixture=edited');assert.ok(ui.errors.includes('settings temporarily unavailable'));assert.equal(ui.panel.busy,false);assert.equal(connect.disabled,true);assert.equal(save.disabled,false);
+ ui.setHandler(async()=>{throw Error('state unavailable');});await ui.panel.zcodeOfficial.refresh();assert.equal(connect.disabled,true);assert.equal(save.disabled,true);assert.match(section.querySelectorAll('p').map(node=>node.textContent).join('\n'),/state unavailable/);
+});
+
+test('shared independent profile form scans, picks and manually saves the selected family without starting it',async()=>{
+ for(const [family,label,kind,prefix] of [['codex','Codex','codex-local','codex:'],['claude','Claude','desktop-profile','claude-profile:'],['deepseek','DSH','desktop-profile','deepseek-profile:']]){
+  const ui=fixture(),profile={id:prefix+'a'.repeat(32),family,kind,home:'/fixture/profile',label:'Independent',name:'Independent',configured:true};
+  ui.setHandler(async body=>body.action==='client-profiles'?body.operation==='save'?{instance:{...profile,home:body.home,label:body.label,name:body.label},instances:[profile]}:{capabilities:[{family,kind,supported:true}],candidates:[profile,{family:'other',kind,home:'/wrong',label:'Wrong'}]}:{clients:[profile]});
+  if(family==='codex')await ui.panel.codexProfile();else await ui.panel.clientProfile(family);
+  const dialog=ui.document.body.children[0],form=dialog.querySelector('form'),inputs=form.querySelectorAll('input'),button=text=>form.querySelectorAll('button').find(b=>b.textContent===text);
+  assert.equal(ui.calls.length,1);assert.equal(ui.calls[0].operation,'list');assert.equal(form.querySelector('.error').textContent,'');
+  assert.ok(button('保存配置'));if(family==='codex')assert.match(form.querySelectorAll('label')[1].textContent,/\.codex 文件夹/);
+  await button('扫描配置').onclick();assert.deepEqual(JSON.parse(JSON.stringify(ui.calls.at(-1))),{action:'client-profiles',operation:'scan',family,kind});assert.equal(button('/wrong'),undefined);
+  button(profile.home).onclick();assert.equal(inputs[1].value,profile.home);
+  ui.setChosen('/fixture/chosen');await button('选择文件夹').onclick();assert.equal(inputs[1].value,'/fixture/chosen');
+  inputs[1].value='/fixture/manual';inputs[0].value='Manual profile';await form.onsubmit({preventDefault(){}});
+  assert.deepEqual(JSON.parse(JSON.stringify(ui.calls.find(c=>c.operation==='save'))),{action:'client-profiles',operation:'save',family,kind,home:'/fixture/manual',label:'Manual profile'});
+  assert.ok(!ui.calls.some(c=>['initialize','resume','start','toggle-client'].includes(c.action)));
+  assert.equal(dialog.open,false);assert.ok(ui.errors.includes(label+' 客户端已保存'));assert.equal(ui.selected.at(-1),profile.id);
+ }
+});
+
+test('independent native management reuses account controls and scopes every account request to the entry',async()=>{
+ for(const family of ['claude','deepseek']){
+  const ui=fixture({accounts:true}),entry=family+'-profile:'+'b'.repeat(32),client={id:entry,family,kind:'desktop-profile',name:'Independent '+family,configured:true,capabilities:{accounts:true}};
+  ui.setHandler(async()=>({accounts:[],activeIds:[],capabilities:{},models:[]}));
+  await ui.panel.manageClient(client);const account=ui.panel.accountPanels[entry];assert.ok(account);assert.equal(account.provider,family);assert.equal(ui.selected.at(-1),entry);assert.ok(ui.pages.get(entry));
+  ui.calls.length=0;await account.read();await account.request({action:'models-draft',entry:'other',provider:'other',baseUrl:'https://fixture.invalid'});await account.readModels(true);
+  assert.deepEqual(JSON.parse(JSON.stringify(ui.calls)),[{action:'accounts',provider:family,entry,operation:'list'},{action:'accounts',provider:family,entry,operation:'models-draft',baseUrl:'https://fixture.invalid'},{action:'account',provider:family,entry,refresh:true}]);
+  await ui.panel.manageClient(client);assert.equal(ui.pages.size,1);assert.equal(ui.panel.accountPanels[entry],account);
+ }
+});
+
+test('independent client removal confirms scope and does not quit or erase native data',async()=>{
+ for(const family of ['codex','claude','deepseek']){
+  const ui=fixture(),id=family+':'+'b'.repeat(32),client={id,family,kind:family==='codex'?'codex-local':'desktop-profile',name:'Independent',enabled:true,configured:true};ui.panel.clients=[client];
+  ui.setHandler(async body=>body.action==='clients'?{clients:[]}:{removed:id});
+  await ui.panel.manageClient(client);const control=ui.panel.removalControls.get(id);assert.ok(control);const remove=control.querySelector('button');
+  await remove.onclick();assert.equal(ui.calls.length,0);assert.match(ui.errors.at(-1),/先停用/);
+  client.enabled=false;ui.confirm(false);await remove.onclick();assert.equal(ui.calls.length,0);assert.match(ui.prompts.at(-1),/原应用、账号、聊天和配置文件都会保留/);
+  ui.confirm(true);await remove.onclick();assert.deepEqual(JSON.parse(JSON.stringify(ui.calls[0])),{action:'client-profiles',operation:'remove',family,entry:id,confirmed:true});
+  assert.equal(ui.panel.removalControls.has(id),false);assert.equal(ui.selected.at(-1),null);assert.ok(!ui.calls.some(row=>['stop','quit','initialize'].includes(row.action)));
+ }
+ const ui=fixture();await ui.panel.manageClient({id:'codex',name:'Codex'});assert.equal(ui.panel.removalControls.size,0);
+});
+
+test('failed removal preserves the independent management page for retry',async()=>{
+ const ui=fixture(),id='deepseek:'+'d'.repeat(32),client={id,family:'deepseek',kind:'desktop-profile',name:'Independent',enabled:false};ui.panel.clients=[client];
+ ui.setHandler(async()=>{throw Error('Pending operation');});await ui.panel.manageClient(client);const control=ui.panel.removalControls.get(id);
+ await control.querySelector('button').onclick();assert.equal(ui.panel.removalControls.get(id),control);assert.equal(control.querySelector('button').disabled,false);assert.equal(ui.selected.at(-1),id);
+});
+
+test('profile errors retain the form and unsupported capabilities never open a default page',async()=>{
+ const ui=fixture();ui.setHandler(async()=>({capabilities:[{family:'claude',kind:'desktop-profile',supported:false,reason:'Unsupported on this host'}]}));
+ await ui.panel.clientProfile('claude');assert.equal(ui.document.body.children.length,0);assert.equal(ui.selected.length,0);assert.ok(ui.errors.includes('Unsupported on this host'));
+ ui.setHandler(async body=>{if(body.operation==='save')throw Error('Configuration directory is already used');return {capabilities:[{family:'claude',kind:'desktop-profile',supported:true}]};});
+ await ui.panel.clientProfile('claude');const dialog=ui.document.body.children[0],form=dialog.querySelector('form');form.querySelectorAll('input')[1].value='/duplicate';await form.onsubmit({preventDefault(){}});
+ assert.equal(dialog.open,true);assert.match(form.querySelector('.error').textContent,/already used/);assert.equal(ui.selected.length,0);
+});
+
+
+test('missing ZCode can be added through the shared client form without creating an independent profile',async()=>{
+ for(const english of [false,true]){
+  const ui=fixture();if(english)ui.english();const chosen=[];
+  const capability={family:'zcode',kind:'default-application',supported:true};
+  const client={id:'zcode',name:'ZCode',installed:true,configured:false,enabled:false};
+  ui.setHandler(async body=>body.action==='client-profiles'?body.operation==='save'?{entry:'zcode',instance:client}:{capabilities:[capability]}:body.action==='clients'?{clients:[client]}:{});
+  ui.panel.api.choose=async kind=>{chosen.push(kind);return 'F:\\Portable Apps\\ZCode\\ZCode.exe';};
+  await ui.panel.addClient();let dialog=ui.document.body.children[0];
+  assert.equal(dialog.querySelector('h2').textContent,english?'Add client':'添加客户端');
+  const zcode=dialog.querySelectorAll('button').find(button=>button.textContent==='ZCode');assert.equal(zcode.disabled,false);await zcode.onclick();
+  dialog=ui.document.body.children[0];const form=dialog.querySelector('form'),inputs=form.querySelectorAll('input');
+  assert.equal(inputs.length,1,'Default ZCode has an installation path, not a second home or account');
+  await form.querySelectorAll('button').find(button=>button.textContent===(english?'Choose application':'选择应用程序')).onclick();
+  assert.deepEqual(chosen,['file']);assert.match(inputs[0].value,/Portable Apps/);
+  inputs[0].value='/custom/ZCode.AppImage';await form.onsubmit({preventDefault(){}});
+  const saved=JSON.parse(JSON.stringify(ui.calls.find(call=>call.operation==='save')));
+  assert.deepEqual(saved,{action:'client-profiles',operation:'save',family:'zcode',kind:'default-application',application:'/custom/ZCode.AppImage'});
+  assert.equal(ui.selected.at(-1),'zcode');assert.equal(dialog.open,false);
+  assert.ok(!ui.calls.some(call=>['toggle-client','connect-claude','zcode-official-login'].includes(call.action)));
+ }
+});
+
+test('already present ZCode is not offered as a duplicate client',async()=>{
+ const ui=fixture();ui.setHandler(async()=>({capabilities:[{family:'zcode',kind:'default-application',supported:false,reason:'ZCode 客户端已存在，请使用已有管理入口'}]}));
+ await ui.panel.addClient();const button=ui.document.body.children[0].querySelectorAll('button').find(node=>node.textContent.startsWith('ZCode'));
+ assert.equal(button.textContent,'ZCode · 已添加');assert.equal(button.disabled,true);button.onclick();assert.equal(ui.calls.length,1);
+});
+
+test('official login can explicitly retry unavailable storage without status polling probing it',async()=>{
+ const ui=fixture(),client={id:'zcode',name:'ZCode',installed:true,configured:true,connectionModes};ui.panel.clients=[client];
+ const state={configured:false,available:true,secureStorageAvailable:false,link:'https://zcode.z.ai/pair?fixture=storage'};let attempts=0;
+ ui.setHandler(async request=>{
+  if(request.action==='clients')return {clients:[client]};
+  if(request.action==='zcode-official-login'){attempts++;if(attempts===1)throw Error('Keyring locked');state.secureStorageAvailable=true;state.configured=true;}
+  return {...state};
+ });
+ await ui.panel.manageClient(client);const login=ui.pages.get('zcode').querySelector('[data-official-action="login"]');
+ assert.equal(login.disabled,false);await login.onclick();assert.equal(attempts,1);assert.equal(login.disabled,false);
+ await ui.poll();assert.equal(attempts,1,'Background status never starts another login/storage operation');
+ await login.onclick();assert.equal(attempts,2);assert.equal(state.configured,true);
+});
+
+test('Codex alone creates no other account editors or account reads; invisible lists stop their timer',async()=>{
+  const ui=fixture({accounts:true});
+  ui.panel.clients=[{id:'codex',enabled:true},{id:'claude',enabled:true,nativeEnabled:false},{id:'deepseek',enabled:false}];
+  ui.panel.renderClients();
+  assert.deepEqual(Object.keys(ui.panel.accountPanels),[]);assert.equal(ui.calls.length,0);
+  assert.deepEqual(ui.timers.filter(Boolean).map(timer=>timer.ms),[15000]);
+  ui.nodes['clients-page'].hidden=true;ui.panel.syncPolling();
+  assert.equal(ui.timers.filter(Boolean).length,0);
+  ui.nodes['clients-page'].hidden=false;ui.panel.clients[2].enabled=true;ui.panel.renderClients();
+  assert.deepEqual(Object.keys(ui.panel.accountPanels),['deepseek']);assert.ok(ui.calls.some(call=>call.provider==='deepseek'));
+  assert.ok(!ui.calls.some(call=>call.provider==='claude'));
 });

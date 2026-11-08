@@ -30,11 +30,15 @@ class RegistryTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(dir=ROOT/'.tmp')
         self.addCleanup(self.temp.cleanup)
         self.entries = Entries(self.temp.name)
+        self.entries.wsl = wsl
         self.info = {'user': 'fixture', 'homes': [{'home': '/home/fixture/.codex', 'daemon': None}]}
 
     def test_only_explicit_scan_probes_running_distributions(self):
-        with patch.object(wsl, 'running_distributions', return_value=['Ubuntu']), patch.object(wsl, 'probe', return_value=self.info) as probe:
+        with patch.object(wsl, 'running_distributions', return_value=['Ubuntu']) as status, patch.object(wsl, 'probe', return_value=self.info) as probe:
             self.entries.public()
+            from bridge.clients.claude.wsl import WslClaudeEntries
+            self.assertEqual(WslClaudeEntries(self.temp.name).applications(), [])
+            status.assert_not_called()
             probe.assert_not_called()
             result = self.entries.scan()
             probe.assert_called_once_with('Ubuntu')
@@ -94,6 +98,7 @@ class RegistryTests(unittest.TestCase):
             self.assertFalse(self.entries.bridges)
             probe.assert_not_called()
             restarted = Entries(self.temp.name)
+            restarted.wsl = wsl
             self.assertEqual(restarted.applications()[0]['id'], row['id'])
 
 
@@ -645,6 +650,29 @@ class WslSessionTests(unittest.TestCase):
         with self.assertRaisesRegex(IPCError, '不会重复创建'): self.entry.create_chat(project, 'Unknown', uncertain)
         self.entry.server.request = Mock(side_effect=AssertionError('Must not replay native creation'))
         with self.assertRaisesRegex(IPCError, '不会重复创建'): self.entry.create_chat(project, 'Unknown', uncertain)
+
+    def test_wsl_creation_includes_and_verifies_model_before_exposing_the_empty_chat(self):
+        self.entry.store.list=lambda **kwargs:[{'cwd':'/home/fixture/project'}]
+        self.entry.read=lambda *args,**kwargs:{'cwd':'/home/fixture/project'}
+        selected={'model':'selected-model','effort':'low','modelCatalogIdentity':'account-scope'}
+        self.entry.creation_models=Mock(return_value={'models':[{'id':'selected-model','efforts':['low']}], 'cache':{'identity':'account-scope'}})
+        original=self.entry.server.request;created=str(uuid.uuid4())
+        def request(method,params):
+            if method=='thread/start':
+                self.entry.server.calls.append((method,copy.deepcopy(params)))
+                self.entry.server.thread.update(id=created,model='selected-model',reasoningEffort='low')
+                return {'thread':copy.deepcopy(self.entry.server.thread),'model':'selected-model','reasoningEffort':'low'}
+            if method=='thread/name/set':return {}
+            return original(method,params)
+        self.entry.server.request=request
+        project=self.entry.host+'|/home/fixture/project';attempt=str(uuid.uuid4())
+        self.assertEqual(self.entry.create_chat(project,'Chosen',attempt,model_options=selected)['id'],created)
+        self.assertEqual(self.entry.create_chat(project,'Chosen',attempt,model_options=selected)['id'],created)
+        calls=[params for method,params in self.entry.server.calls if method=='thread/start']
+        self.assertEqual(len(calls),1);self.assertEqual(calls[0]['model'],'selected-model');self.assertEqual(calls[0]['config'],{'model_reasoning_effort':'low'})
+        self.assertFalse(any(method=='turn/start' for method,_ in self.entry.server.calls))
+        with self.assertRaisesRegex(ValueError,'不同内容'):
+            self.entry.create_chat(project,'Chosen',attempt,model_options={**selected,'model':'other'})
 
     def test_passive_connection_does_not_start_codex_and_explicit_connect_can_start_it(self):
         self.entry.server = None

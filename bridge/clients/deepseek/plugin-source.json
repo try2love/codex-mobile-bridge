@@ -1,7 +1,7 @@
 {
   "repositoryName": "dsh-codex-mobile-bridge",
   "remotePublished": false,
-  "commit": "a9c8e28f59c2ad7c7f83560034a44156bb7e14a6",
+  "commit": "6961acecdfd338aaa016585d568783909bc2ebed",
   "files": {
     "host.mjs": "bridge/clients/deepseek/host.mjs",
     "index.mjs": "bridge/clients/deepseek/plugin/index.mjs",

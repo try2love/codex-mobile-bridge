@@ -82,13 +82,13 @@ class ModelIdentityViews(unittest.TestCase):
         finally:
             release.set()
 
-    def test_local_view_uses_verified_account_catalog_identity(self):
+    def test_local_view_uses_exact_project_catalog_not_global_account(self):
         reader = Catalog(self.home, 'fixture-runtime')
         bridge = self.bridge('local', reader)
-        identity = reader.model_identity(str(self.home), 'openai')
+        identity = reader.model_identity('/different-chat', 'openai')
         bridge.accounts = SimpleNamespace(
-            current_model_identity=lambda: identity,
-            current_models=lambda refresh: reader.get_kind('models', str(self.home), refresh=refresh, provider='openai'))
+            current_model_identity=Mock(side_effect=AssertionError('global account identity')),
+            current_models=Mock(side_effect=AssertionError('global account catalog')))
         bridge.store = SimpleNamespace(home=self.home)
         with patch('bridge.app.service.artifact_paths', return_value={}), \
              patch.object(reader, '_fetch', return_value={'models': [{'model': 'fixture'}]}):
@@ -96,7 +96,23 @@ class ModelIdentityViews(unittest.TestCase):
             catalog = bridge.catalog(self.sid, kind='models')
         self.assertEqual(view['modelCatalogIdentity'], identity)
         self.assertEqual(catalog['cache']['identity'], identity)
-        self.assertNotEqual(identity, reader.model_identity('/different-chat', 'openai'))
+        self.assertNotEqual(identity, reader.model_identity(str(self.home), 'openai'))
+
+    def test_unresolved_default_view_does_not_preempt_first_native_catalog_identity(self):
+        reader = Catalog(self.home, 'fixture-runtime', allow_background_refresh=False)
+        self.session.state.pop('modelProvider')
+        bridge = self.bridge('local', reader)
+        bridge.accounts = None
+        bridge.store = SimpleNamespace(home=self.home)
+        with patch('bridge.app.service.artifact_paths', return_value={}), \
+             patch.object(reader, '_fetch', return_value={
+                 'models': [{'model': 'fixture'}], '_defaultProvider': 'project-route'}) as fetch:
+            self.assertNotIn('modelCatalogIdentity', bridge.view(self.sid))
+            fetch.assert_not_called()
+            result = bridge.catalog(self.sid, kind='models')
+            self.assertEqual(result['cache']['identity'], reader.model_identity('/different-chat', 'project-route'))
+            self.assertEqual(bridge.view(self.sid)['modelCatalogIdentity'], result['cache']['identity'])
+            fetch.assert_called_once()
 
     def test_side_chat_state_uses_its_own_catalog_scope(self):
         reader = Catalog(self.home, 'fixture-runtime')

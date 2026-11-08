@@ -82,7 +82,8 @@ test('iOS replaces tunnel error pages with a native way back to the computer lis
  assert.match(failed,/showConnectionError\(status: nil\)/);
  const view=swift.slice(swift.indexOf('private func showConnectionError'),swift.indexOf('didFail navigation: WKNavigation!'));
  assert.match(view,/MobileStrings\.text\("返回电脑列表"\)[^\n]*self\?\.home\(\)/);
- assert.match(view,/self\.connect\(route, address: address\)/);
+ assert.match(view,/ticket == self\.generation, self\.saved\.contains\(address\)/);
+ assert.match(view,/self\.openComputer\(address,route\)/);
  assert.match(swift,/private func clear\(\) \{[^\n]*connectionError = nil/);
  const finished=swift.slice(swift.indexOf('didFinish navigation: WKNavigation!'),swift.indexOf('didFailProvisionalNavigation'));
  assert.match(finished,/webView === web, connectionError == nil/);

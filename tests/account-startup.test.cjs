@@ -15,7 +15,7 @@ async function fixture(read,kind='chatgpt',catalog=null,gatewayLanguage,accountS
   }
   const storage=()=>({getItem(){return null;},setItem(){},clear(){}});
   const response=(data,status=200)=>({ok:status===200,status,json:async()=>data});
-  const context=vm.createContext({ClientNavigation:class{constructor(){this.provider="codex";this.clients=[];}async refresh(){}async openChatLink(hash){assert.equal(hash,'','This fixture enters without a chat deep link');return false;}},DesktopSessionsView:class{bindListCache(){}previewCachedList(){return false;}clear(){}},Workbench:class{open(){}reset(){}setThumbnails(){}relabel(){}},AbortController,Event:class{constructor(type){this.type=type;}},navigator:{userAgent:'test'},Date,Option:function(text,value){return {...node('option'),textContent:text,value};},document:{addEventListener(){},dispatchEvent(){},documentElement:{classList:{contains(){return false;}}},getElementById:id=>nodes.get(id),querySelector:()=>({classList:{toggle(){}}}),querySelectorAll:()=>[],createElement:node},
+  const context=vm.createContext({CliConnectionsPanel:class{clear(){}},ClientNavigation:class{constructor(){this.provider="codex";this.clients=[];}async refresh(){}async openChatLink(hash){assert.equal(hash,'','This fixture enters without a chat deep link');return false;}},DesktopSessionsView:class{bindListCache(){}previewCachedList(){return false;}clear(){}},Workbench:class{open(){}reset(){}setThumbnails(){}relabel(){}},AbortController,Event:class{constructor(type){this.type=type;}},navigator:{userAgent:'test'},Date,Option:function(text,value){return {...node('option'),textContent:text,value};},document:{addEventListener(){},dispatchEvent(){},documentElement:{classList:{contains(){return false;}}},getElementById:id=>nodes.get(id),querySelector:()=>({classList:{toggle(){}}}),querySelectorAll:()=>[],createElement:node},
     window:{addEventListener:(name,fn)=>events[name]=fn},localStorage:storage(),sessionStorage:storage(),
     location:{hash:'',pathname:'/',search:''},history:{state:null,replaceState(state){this.state=state;},pushState(state){this.state=state;},back(){}},
     setTimeout(fn,delay){timers.set(++timerId,{fn,delay});return timerId;},clearTimeout(id){timers.delete(id);},setInterval(fn,delay){intervals.push({fn,delay});},
@@ -39,8 +39,8 @@ async function fixture(read,kind='chatgpt',catalog=null,gatewayLanguage,accountS
       if(url.includes('/respond')){responses.push(JSON.parse(options.body));return response({});}
       throw Error('Unexpected request '+url);
     }});
-  vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/features/clients/client-navigation.js'),'utf8').match(/^function isCodexClient.*$/m)[0],context);
-  for(const file of ['web/hosts/environment.js','web/hosts/browser-navigation.js','web/shared/i18n.js','web/features/chat/list-sync.js','web/features/accounts/account.js','web/features/accounts/accounts.js','web/features/chat/modes.js','web/features/chat/attachments.js','web/features/chat/activity.js','web/features/chat/fast-mode.js','web/features/chat/message-actions.js','web/features/chat/permissions.js','web/shell/app.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/features/clients/client-navigation.js'),'utf8').match(/^function isCodex(?:Entry|Client).*$/gm).join('\n'),context);
+  for(const file of ['web/features/clients/client-lifecycle.js','web/hosts/environment.js','web/hosts/browser-navigation.js','web/shared/i18n.js','web/features/chat/list-sync.js','web/shared/creation-model-picker.js','web/features/accounts/account.js','web/features/accounts/api-editor.js','web/features/accounts/accounts.js','web/features/chat/modes.js','web/features/chat/attachments.js','web/features/chat/activity.js','web/features/chat/fast-mode.js','web/features/chat/message-actions.js','web/features/chat/permissions.js','web/shell/app.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
   await new Promise(setImmediate);
   return {nodes,requests,timers,intervals,events,responses,run:code=>vm.runInContext(code,context),
     failNextSkill(){failNextSkill=true;},
@@ -50,10 +50,10 @@ async function fixture(read,kind='chatgpt',catalog=null,gatewayLanguage,accountS
 
 test('WSL account URLs follow the selected environment within a single Codex page',async()=>{
  const ui=await fixture(r=>r(official));
- ui.run("clientNavigation.wslSupported=true;clientNavigation.clients=[{id:'codex',entries:[{id:'desktop',enabled:true},{id:'wsl:original',kind:'wsl-cli',enabled:true},{id:'wsl:selected',kind:'wsl-cli',enabled:true}]}];currentId='fixture';currentHost='wsl:original';refreshEntryAccounts();renderAccountEntries();");
- assert.equal(ui.run("accountUrl('/api/accounts')"),'/api/accounts?entry=wsl%3Aoriginal');
- assert.equal(ui.run("accountUrl('/api/account?cached=1')"),'/api/account?cached=1&entry=wsl%3Aoriginal');
- ui.run("accountEntrySelect.value='wsl:selected';accountEntrySelect.onchange();");assert.equal(ui.run("accountUrl('/api/accounts')"),'/api/accounts?entry=wsl%3Aselected');
+ ui.run("clientNavigation.wslSupported=true;clientNavigation.clients=[{id:'codex',entries:[{id:'desktop',enabled:true},{id:'wsl:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',kind:'wsl-cli',enabled:true},{id:'wsl:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',kind:'wsl-cli',enabled:true}]}];currentId='fixture';currentHost='wsl:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';refreshEntryAccounts();renderAccountEntries();");
+ assert.equal(ui.run("accountUrl('/api/accounts')"),'/api/accounts?entry=wsl%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+ assert.equal(ui.run("accountUrl('/api/account?cached=1')"),'/api/account?cached=1&entry=wsl%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+ ui.run("accountEntrySelect.value='wsl:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';accountEntrySelect.onchange();");assert.equal(ui.run("accountUrl('/api/accounts')"),'/api/accounts?entry=wsl%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
  assert.equal(ui.run('codexCliDetails.hidden'),true);
  ui.run("accountEntrySelect.value='desktop';accountEntrySelect.onchange();");assert.equal(ui.run("accountUrl('/api/accounts')"),'/api/accounts');assert.equal(ui.run('codexCliDetails.hidden'),false);
  await new Promise(setImmediate);

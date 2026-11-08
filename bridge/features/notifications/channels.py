@@ -1,4 +1,6 @@
 """Opt-in phone notifications. Watching a chat never changes its execution owner."""
+from bridge.features.notifications.providers import PROVIDERS, desktop_provider, desktop_client
+
 import hashlib
 import base64
 import hmac
@@ -24,7 +26,7 @@ DEFAULTS = {'enabled': False, 'server': 'https://ntfy.sh', 'topic': '', 'token':
             'webhookEnabled': False, 'webhookUrl': '', 'webhookHeaders': {},
             'webhookProvider': 'auto', 'webhookSignEnabled': False, 'webhookSignSecret': '',
             'webhookBodyTemplate': '{\n  "event": "{{event}}",\n  "title": "{{title}}",\n  "body": "{{body}}",\n  "session_name": "{{session_name}}",\n  "url": "{{url}}"\n}',
-            'clickBase': '', 'includeTitle': False, 'addressEnabled': True, 'addressName': '', 'securityEnabled': True, 'mobileEnabled': False, 'mobileAppLinks': False}
+            'clickBase': '', 'includeTitle': True, 'addressEnabled': True, 'addressName': '', 'securityEnabled': True, 'mobileEnabled': True, 'mobileAppLinks': False}
 
 WEBHOOK_FIELDS = frozenset(('event', 'event_id', 'title', 'body', 'session_name', 'url', 'client', 'host', 'count'))
 WEBHOOK_TEMPLATES = {
@@ -645,7 +647,7 @@ class Notifications:
                 events = [{**event, 'ageMs': max(0, round((now - event['createdAt']) * 1000))}
                           for event in snapshot['events']]
                 if events:
-                    logging.info('notification stage=read events=%d cursor=%d wait_ms=%.1f', len(events), snapshot['cursor'], elapsed)
+                    logging.debug('notification stage=read events=%d cursor=%d wait_ms=%.1f', len(events), snapshot['cursor'], elapsed)
                 # Timing is response-local, outside the stable revision. Phone
                 # and gateway wall clocks are never subtracted from one another.
                 return {**snapshot, 'events': events, 'longPoll': 60, 'revision': token, 'timing': {'waitMs': elapsed}}
@@ -660,11 +662,11 @@ class Notifications:
         states = {row['id']: row for row in cached[1].get('clients', [])} if isinstance(cached, tuple) and len(cached) == 2 else {}
         clients = [{'id': provider, 'connected': states.get(provider, {}).get('connected'), 'enabled': self.desktop_sessions.enabled(provider)
                     if self.desktop_sessions is not None else provider == 'codex'}
-                   for provider in self.mobile.PROVIDERS]
+                   for provider in dict.fromkeys((*self.mobile.PROVIDERS, *[identifier for identifier in states if desktop_client('desktop:' + identifier)]))]
         active = {row['id'] for row in clients if row['enabled']}
         effective = {}
         def allowed(event):
-            if not enabled or self.mobile.provider(event) not in active:
+            if not enabled or self.mobile.client(event) not in active:
                 return False
             key = (event['host'], event['threadId'])
             if key not in effective:
@@ -728,7 +730,13 @@ class Notifications:
 
     @staticmethod
     def desktop_provider(host):
-        return {'desktop:claude': 'claude', 'desktop:deepseek': 'deepseek'}.get(host)
+        return desktop_provider(host)
+
+    def _client_enabled(self, host):
+        if self.desktop_sessions is None:
+            return not self.desktop_provider(host)
+        client = desktop_client(host) or (host if host.startswith(('wsl:', 'codex:')) else 'codex')
+        return self.desktop_sessions.enabled(client)
 
     def policy(self, thread_id, host, value=None):
         provider = self.desktop_provider(host)
@@ -745,8 +753,9 @@ class Notifications:
                 if provider:
                     if self.desktop_sessions is None:
                         raise ValueError('桌面会话接入不可用')
-                    self.desktop_sessions.require_enabled(provider)
-                    self.desktop_sessions.call(provider, 'detail', thread_id)
+                    manager = self.desktop_sessions.resolve_instance(provider, desktop_client(host)) if ':' in desktop_client(host) else self.desktop_sessions
+                    manager.require_enabled(provider)
+                    manager.call(provider, 'detail', thread_id)
                 elif self.bridge is not None:
                     self.bridge.for_host(host).store.get(thread_id)
                 self.dormant.discard((host, thread_id))
@@ -768,12 +777,13 @@ class Notifications:
         if policies['requests'] or policies['completion']:
             rows.update(self.candidates)
         for key in policies.get('chats', {}):
-            if key.startswith(('desktop:claude|', 'desktop:deepseek|')):
+            if self.desktop_provider(key.rsplit('|', 1)[0]):
                 continue
             host, identifier = key.rsplit('|', 1)
             rows.setdefault((host, identifier), {'id': identifier, 'host': host})
         effective = [self._effective(row, policies, legacy_rows) for row in rows.values()]
-        return [row for row in effective if row['notifyOnRequest'] or row['notifyOnCompletion']]
+        return [row for row in effective if self._client_enabled(row['host']) and
+                (row['notifyOnRequest'] or row['notifyOnCompletion'])]
 
     def watch(self, thread_id, host, enabled=None, notify_on_completion=None, *, existing_only=False):
         uuid.UUID(thread_id)
@@ -870,7 +880,7 @@ class Notifications:
             current = self._completion_baseline(turns)
             # DSH sequence numbers survive latest-page truncation. A missing UUID
             # anchor alone is not evidence that a historical turn is new.
-            ordered = row['host'] == 'desktop:deepseek' and all(type(t.get('sequence')) is int for t in turns)
+            ordered = self.desktop_provider(row['host']) and all(type(t.get('sequence')) is int for t in turns)
             if ordered:
                 current['sequence'] = max([t['sequence'] for t in turns] + [(previous or {}).get('sequence', -1)])
             current['title'] = row.get('title') or (previous or {}).get('title') or '聊天'
@@ -919,7 +929,7 @@ class Notifications:
                     self.attention[key] = {'anchor': None, 'turns': {}, 'pending': ''}
                     write_json(self.data_dir/'notification-attention.json', self.attention)
                 return []
-            ordered = row['host'] == 'desktop:deepseek' and all(type(t.get('sequence')) is int for t in turns)
+            ordered = self.desktop_provider(row['host']) and all(type(t.get('sequence')) is int for t in turns)
             anchor = next((i for i, t in enumerate(turns) if t['turnId'] == (previous or {}).get('anchor')), None)
             newer = turns if previous and previous.get('anchor') is None else turns[anchor + 1:] if anchor is not None else []
             if ordered and previous and type(previous.get('sequence')) is int:
@@ -1008,7 +1018,7 @@ class Notifications:
             if self._targets(config).get(channel) != target:
                 return False
             provider = self.desktop_provider(row['host'])
-            if provider and (self.desktop_sessions is None or not self.desktop_sessions.enabled(provider)):
+            if not self._client_enabled(row['host']):
                 return False
             current = self._effective(row)
             if not current['notifyOnCompletion' if completed is True else 'notifyOnRequest']:
@@ -1017,7 +1027,7 @@ class Notifications:
                 record = self.attention.get(self._completion_key(row['host'], row['id'], target), {})
                 if not record.get('pending') or self._delivery_key(row, record['pending'], completion='attention', target=target) not in pending:
                     return False
-            client = {'claude': 'Claude', 'deepseek': 'DSH'}.get(provider, 'Codex')
+            client = {'claude': 'Claude', 'deepseek': 'DSH', 'zcode': 'ZCode'}.get(provider, 'Codex')
             kind = 'attention' if completed == 'attention' else 'completion' if completed else 'request'
             heading = client + (' 需要你处理' if kind == 'attention' else ' 运行已完成' if completed else ' 需要你的确认')
             body = ('本轮运行遇到问题，请打开聊天查看并手动继续或调整模型。' if kind == 'attention' else
@@ -1042,7 +1052,7 @@ class Notifications:
         except Exception:
             pass  # Publish errors must not expose endpoint credentials or content.
         elapsed = (time.monotonic() - started) * 1000
-        logging.info('notification stage=%s provider=%s kind=%s channel=%s trace=%s count=%d queue_ms=%.1f work_ms=%.1f outcome=%s',
+        logging.log(logging.INFO if success else logging.WARNING, 'notification stage=%s provider=%s kind=%s channel=%s trace=%s count=%d queue_ms=%.1f work_ms=%.1f outcome=%s',
                      'inbox' if channel == 'mobile' else 'outbound', provider or 'codex',
                      kind, channel.split(':')[0], pending[0][-64:][:16],
                      len(pending), max(0, started - (detected if detected is not None else started)) * 1000,
@@ -1069,7 +1079,6 @@ class Notifications:
         # A manual single pass retains synchronous delivery. The live scanner and
         # sender use separate workers, sharing the exact same detection path.
         started = time.monotonic()
-        cursor = self.mobile.checkpoint()['cursor']
         with self.lock:
             self.delivery_queue = {key: job for key, job in self.delivery_queue.items()
                                    if key[-1] or self.desktop_provider(key[0])}
@@ -1090,7 +1099,7 @@ class Notifications:
             # Explicit watches also need to discover a new run after going idle.
             discovery_started = time.monotonic()
             candidates = self.bridge.notification_candidates()
-            logging.info('notification stage=discovery work_ms=%.1f count=%d',
+            logging.debug('notification stage=discovery work_ms=%.1f count=%d',
                          (time.monotonic() - discovery_started) * 1000, len(candidates))
             for row in candidates:
                 key = (row['host'], row['id'])
@@ -1118,7 +1127,7 @@ class Notifications:
                 host, identifier, target = json.loads(key)
                 row = {'host': host, 'id': identifier}
                 provider = self.desktop_provider(host)
-                if provider and (self.desktop_sessions is None or not self.desktop_sessions.enabled(provider)):
+                if not self._client_enabled(host):
                     continue
                 if target not in targets.values() or not self._effective(row, policies, legacy_rows)['notifyOnCompletion']:
                     del self.completions[key]
@@ -1166,7 +1175,7 @@ class Notifications:
                                 self.candidates.pop(key, None)
                                 self.attached.pop(key, None)
                             continue  # Saved history is not a live pending approval.
-                        requests = pending_requests(session.state)
+                        requests = session.pending_requests()
                         live_running = session.state.get('threadRuntimeStatus', {}).get('type') == 'active' or any(t.get('status') == 'inProgress' for t in ordered_turns(session.state))
                         self.mobile_push.update_activity(row, 'waiting' if requests else 'running' if live_running else 'ready')
                         title = session.state.get('title') or '聊天'
@@ -1183,7 +1192,7 @@ class Notifications:
                     with session.condition:
                         state = session.state or {}
                         runtime = state.get('threadRuntimeStatus', {}).get('type')
-                        active = bool(pending_requests(state)) or runtime == 'active' or any(t.get('status') == 'inProgress' for t in ordered_turns(state))
+                        active = bool(session.pending_requests()) or runtime == 'active' or any(t.get('status') == 'inProgress' for t in ordered_turns(state))
                         if not active and source.release_notification_session(session):
                             key = (row['host'], row['id'])
                             self.dormant.add(key)
@@ -1203,8 +1212,8 @@ class Notifications:
                         keys = [self._delivery_key(row, record['pending'], completion='attention', target=target)]
                         changed = self._dispatch(config, row, record.get('title') or '聊天', 'mobile', target, keys, 'attention') or changed
         elapsed = (time.monotonic() - started) * 1000
-        if elapsed >= 1000 or self.mobile.checkpoint()['cursor'] != cursor:
-            logging.info('notification stage=scan work_ms=%.1f inbox_cursor=%d', elapsed, self.mobile.checkpoint()['cursor'])
+        if elapsed >= 2000:
+            logging.warning('notification stage=scan work_ms=%.1f', elapsed)
         if deliver:
             self.deliver_pending()
 
@@ -1218,7 +1227,7 @@ class Notifications:
                                    if key[-1] or not self.desktop_provider(key[0])}
         listed = time.monotonic()
         rows = manager.notification_rows()
-        logging.info('notification stage=desktop-list work_ms=%.1f count=%d', (time.monotonic() - listed) * 1000, len(rows))
+        logging.debug('notification stage=desktop-list work_ms=%.1f count=%d', (time.monotonic() - listed) * 1000, len(rows))
         if not rows:
             return False
         # Rotate bounded history reads so one large client's history cannot block
@@ -1230,7 +1239,12 @@ class Notifications:
         for row in rows:
             if self.closed.is_set():
                 break
-            if not manager.enabled(row['provider']):
+            client = desktop_client(row['host'])
+            if not client or not manager.enabled(client):
+                continue
+            try:
+                selected = manager.resolve_instance(row['provider'], client) if ':' in client else manager
+            except (OSError, ValueError):
                 continue
             current = self._effective(row)
             if not (current['notifyOnRequest'] or current['notifyOnCompletion']):
@@ -1251,8 +1265,8 @@ class Notifications:
                 reads += 1
                 try:
                     read_started = time.monotonic()
-                    detail = manager.call(row['provider'], 'detail', row['id'])
-                    logging.info('notification stage=desktop-detail provider=%s work_ms=%.1f',
+                    detail = selected.call(row['provider'], 'detail', row['id'])
+                    logging.debug('notification stage=desktop-detail provider=%s work_ms=%.1f',
                                  row['provider'], (time.monotonic() - read_started) * 1000)
                     if detail.get('connected') is False or not isinstance(detail.get('turns'), list):
                         continue
@@ -1308,7 +1322,7 @@ class Notifications:
 
     def _push_allowed(self, event):
         provider = self.desktop_provider(event['host'])
-        if provider and (self.desktop_sessions is None or not self.desktop_sessions.enabled(provider)):
+        if provider and (self.desktop_sessions is None or not self.desktop_sessions.enabled(desktop_client(event['host']))):
             return False
         policy = self._effective({'id': event['threadId'], 'host': event['host']})
         if event['kind'] == 'state':

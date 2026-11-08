@@ -383,7 +383,7 @@ class RemoteAdapterContract(unittest.TestCase):
         row = self.cli._row('ssh:test', self.hosts.hosts()['ssh:test'], self.row)
         sid = row['id']; self.cli.index[sid] = row
         owned = SimpleNamespace(origin=row['origin'], native=row['nativeId'], error=None,
-            process=Mock(), condition=threading.Condition(), pending={}, active=True, model=None, permission=None)
+            process=Mock(), condition=threading.Condition(), pending={}, active=True, model=None, permission=None, catalog={})
         owned.process.poll.return_value = None
         owned.release_for_archive = Mock(side_effect=lambda: owned.process.poll.configure_mock(return_value=0))
         self.cli.owned[sid] = owned

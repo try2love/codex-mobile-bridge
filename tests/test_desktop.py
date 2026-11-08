@@ -1,4 +1,5 @@
 import copy
+import json
 import os
 import socket
 import tempfile
@@ -31,6 +32,30 @@ class AddressTests(unittest.TestCase):
 
 
 class DesktopTests(unittest.TestCase):
+    def test_watch_display_reads_only_metadata_used_by_current_rows(self):
+        with patch.object(self.desktop,'preferences',side_effect=AssertionError('no watches')), \
+                patch('bridge.app.desktop.AppHosts',side_effect=AssertionError('unused remote hosts')), \
+                patch('bridge.app.desktop.SessionStore',side_effect=AssertionError('unused local store')):
+            self.assertEqual(self.desktop.notification_watches({'action':'list'}), {'watches':[]})
+        home = self.directory/'display-home'
+        home.mkdir()
+        watches = self.directory/'notification-watches.json'
+        watches.write_text(json.dumps([{'host':'remote','id':'one'}]))
+        state = home/'.codex-global-state.json'
+        def rename(label):
+            state.write_text(json.dumps({'codex-managed-remote-connections':[
+                {'hostId':'remote','alias':'fixture','displayName':label}]}))
+        def read():
+            return self.desktop.notification_watches({'action':'list'},preferences={'codexHome':str(home)})['watches'][0]['hostLabel']
+        from bridge.clients.codex.remote import AppHosts
+        with patch.object(AppHosts,'state',autospec=True,side_effect=AppHosts.state) as parse, \
+                patch('bridge.app.desktop.SessionStore',side_effect=AssertionError('remote label only')):
+            rename('first')
+            self.assertEqual([read(),read()],['first','first'])
+            rename('second')
+            self.assertEqual(read(),'second')
+            self.assertEqual(parse.call_count,2)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=ROOT/'.tmp')
         self.directory = Path(self.temp.name)

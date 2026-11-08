@@ -18,6 +18,15 @@ from bridge.features.network.interfaces import (
 LOGGER = logging.getLogger(__name__)
 
 
+def notify_route_rechecks(callbacks):
+    """Wake every enabled route even when another route's callback fails."""
+    for callback in callbacks:
+        try:
+            callback()
+        except Exception:
+            LOGGER.exception('Network route check failed')
+
+
 def _write_status(path, value):
     path = Path(path)
     temp = path.with_suffix(path.suffix + '.tmp')
@@ -311,7 +320,7 @@ class RuntimeNetworkMonitor:
                 try:
                     self.network_changed()
                 except Exception:
-                    LOGGER.exception('Quick Tunnel route check failed')
+                    LOGGER.exception('Network route check failed')
             return list(self.active)
 
     def _wait_interval(self):

@@ -15,11 +15,16 @@ def launch_deepseek(descriptor, restart=False):
     """
     if descriptor.get('id') != 'deepseek' or not descriptor.get('installed'):
         raise ValueError('未找到 DeepSeek Harness 桌面应用')
+    if descriptor.get('nativeProfile'):
+        if restart:
+            raise ValueError('请先核验任务并正常退出此独立配置，再重新开启')
+        from bridge.clients.profile_process import launch_profile
+        return launch_profile(descriptor)
     executable, home = descriptor.get('executable'), descriptor.get('dataDirectory')
     if not executable or not home or not Path(executable).is_file() or (Path(home).exists() and not Path(home).is_dir()):
         raise ValueError('DeepSeek Harness 应用或数据目录不可用，请重新扫描')
     app = DesktopApp(executable, home)
-    running = bool(app.processes())
+    running = bool(inspect_client(descriptor)['running'])
     if running:
         state = inspect_client(descriptor)
         running = state['running']
@@ -31,7 +36,7 @@ def launch_deepseek(descriptor, restart=False):
         return {'running': True, 'launched': False, 'restarted': False,
                 'restartRequired': bool(descriptor.get('restartRequired'))}
     if running:
-        app.stop()
+        stop_client(descriptor, state=state)
     working = app.home
     if sys.platform == 'darwin':
         if not any(p.suffix == '.app' for p in app.executable.parents):
@@ -39,11 +44,12 @@ def launch_deepseek(descriptor, restart=False):
     else:
         # Harness initializes its own profile; launch from an existing ancestor.
         working = next((p for p in [app.home, *app.home.parents] if p.is_dir()), Path.home())
-    native_desktop(sys.platform).start(app.executable, working, {'DSH_HOME': str(app.home)})
+    options = {'new_instance': True} if descriptor.get('excludeProfiles') else {}
+    native_desktop(sys.platform).start(app.executable, working, {'DSH_HOME': str(app.home)}, **options)
     # GUI startup is asynchronous. Report observed process state, not a claim that
     # the adapter has connected or upstream authentication has succeeded.
     deadline = time.monotonic() + 2
-    while not app.processes():
+    while not inspect_client(descriptor)['running']:
         if time.monotonic() >= deadline:
             return {'running': False, 'launched': True, 'restarted': running, 'restartRequired': False}
         time.sleep(.1)
@@ -51,7 +57,7 @@ def launch_deepseek(descriptor, restart=False):
 
 
 def _app(descriptor):
-    if descriptor.get('id') not in ('codex', 'claude', 'deepseek') or not descriptor.get('installed'):
+    if descriptor.get('id') not in ('codex', 'claude', 'deepseek', 'zcode') or not descriptor.get('installed'):
         raise ValueError('未找到已配置的桌面应用，请重新扫描')
     executable, home = descriptor.get('executable'), descriptor.get('dataDirectory')
     if not executable or not home or not Path(executable).is_file():
@@ -93,6 +99,8 @@ def inspect_clients(descriptors):
 
 def _process_state(descriptor, app, pids, commands):
     import re
+    from bridge.clients.profile_process import scope_processes
+    pids, commands = scope_processes(descriptor, pids, commands)
     main, hosts = [], []
     unknown = any(not commands.get(pid) for pid in pids)
     for pid, command in commands.items():
@@ -116,10 +124,18 @@ def _process_state(descriptor, app, pids, commands):
                 hosts.append(pid)
             else:
                 unknown = True
-        elif '--expose-internals' in command or '--eval' in command or ' --run' in command:
+        elif (descriptor['id'] == 'zcode' and re.search(r'(?:^|\s)--(?:user-data-dir|profile)(?:[=\s]|$)', command)
+              or '--expose-internals' in command or '--eval' in command or ' --run' in command):
             unknown = True
         else:
             main.append(pid)
+    if sys.platform in ('linux', 'win32') and descriptor['id'] == 'zcode':
+        if sys.platform == 'win32':
+            from bridge.platforms.windows.zcode_pipe import main_processes
+        else:
+            from bridge.platforms.linux.zcode_pipe import main_processes
+        main, ambiguous = main_processes(app.executable, main, commands)
+        unknown = unknown or ambiguous
     if len(main) > 1 or len(hosts) > 1:
         unknown = True
     return {'running': bool(pids), 'pids': pids, 'mainPids': main,
@@ -133,12 +149,17 @@ def stop_client(descriptor, *, state):
     current = inspect_client(descriptor)
     if current['unknown'] or set(current['pids']) - set(state['pids']):
         raise ValueError('客户端进程已变化，无法确认任务状态，请重新检查后再关闭')
+    from bridge.clients.profile_process import require_owned
+    require_owned(descriptor, current)
     app = _app(descriptor)
-    app.stop(runtime_pids=current['runtimePids'], gui_pids=current['mainPids'], provider=descriptor.get('id'))
+    app.stop(runtime_pids=current['runtimePids'], gui_pids=current['mainPids'], provider=descriptor.get('id'),
+             selected_pids=current['pids'])
 
 
 def force_stop_client(descriptor, *, state):
     """Explicit interruption; task evidence is bypassed, identity checks are not."""
+    if descriptor.get('nativeProfile') or descriptor.get('excludeProfiles'):
+        raise ValueError('多配置客户端尚未验证独立强制退出，请使用正常退出')
     if sys.platform == 'win32':
         from bridge.platforms.windows.force_exit import force_stop_client as force
         return force(descriptor, state=state)
@@ -154,10 +175,20 @@ def force_stop_client(descriptor, *, state):
     # Do not reuse the first inventory's profile classification. The command
     # passed to the native binder must itself still name this exact profile.
     classified = _process_state(descriptor, app, current['pids'], commands)
-    if len(classified['mainPids']) > 1:
+    if len(classified['mainPids']) > 1 or descriptor['id'] == 'zcode' and classified['unknown']:
         raise ValueError(CHANGED)
     for pid, command in commands.items():
         prefix = str(app.executable)
+        if descriptor['id'] == 'zcode' and sys.platform == 'linux' and len(classified['mainPids']) == 1:
+            # The main and host title replace argv; the classification above verified
+            # the native worker's parent. The force binder pins every exact PID below.
+            from bridge.platforms.linux.zcode_pipe import worker_title
+            if pid in classified['mainPids'] and command == 'ZCode' or worker_title(command):
+                continue
+        if descriptor['id'] == 'zcode' and sys.platform == 'darwin' and command == app.executable.name:
+            # Launch Services may expose just "ZCode" as argv[0]. The native
+            # binder below independently verifies image, UID, birth and command.
+            continue
         if command != prefix and not command.startswith(prefix + ' '):
             raise ValueError(CHANGED)
         arguments = command[len(prefix):]
@@ -186,12 +217,14 @@ def stop_claude(descriptor, *, state):
             len(current.get('mainPids', [])) != 1 or current['mainPids'] != state.get('mainPids')):
         raise ValueError(changed)
     app = _app(descriptor)
+    from bridge.clients.profile_process import require_owned
+    require_owned(descriptor, current)
     # The connection monitor's cancellation file must not cancel native quit.
     result = native_action('quit', pid=current['mainPids'][0], executable=str(app.executable))
     if result.get('quitState') not in ('submitted', 'exited'):
         raise ValueError(result.get('reason') or '请在电脑端处理 Claude 的任务或保存提示后重试')
     deadline = time.monotonic() + 75
-    while remaining := app.processes():
+    while remaining := inspect_client(descriptor)['pids']:
         if set(remaining) - set(current['pids']):
             raise ValueError(changed)
         if time.monotonic() >= deadline:
@@ -216,6 +249,8 @@ def stop_deepseek(descriptor, adapter, *, state):
         return current
 
     current = verify()
+    from bridge.clients.profile_process import require_owned
+    require_owned(descriptor, current)
     status = adapter.call('status')
     if status.get('connected') is not True:
         raise ValueError('Harness 桌面未连接，无法确认退出状态')
@@ -253,7 +288,7 @@ def stop_deepseek(descriptor, adapter, *, state):
                 result.get('generation') != endpoint['generation']):
             raise ValueError('Harness 未确认退出请求，请在电脑端检查后重试')
     deadline = time.monotonic() + 25
-    while remaining := app.processes():
+    while remaining := inspect_client(descriptor)['pids']:
         if set(remaining) - set(current['pids']):
             raise ValueError(changed)
         if time.monotonic() >= deadline:
@@ -261,21 +296,62 @@ def stop_deepseek(descriptor, adapter, *, state):
         time.sleep(.25)
 
 
-def launch_client(descriptor):
+def launch_client(descriptor, *, allow_native_relaunch=False):
+    if descriptor.get('nativeProfile'):
+        from bridge.clients.profile_process import launch_profile
+        return launch_profile(descriptor, allow_native_relaunch=allow_native_relaunch)
     if descriptor.get('id') == 'deepseek':
         return launch_deepseek(descriptor)
     app = _app(descriptor)
-    if app.processes():
+    if inspect_client(descriptor)['running']:
         return {'running': True, 'launched': False}
     if descriptor['id'] == 'codex':
         app.start()
+    elif descriptor['id'] == 'zcode':
+        from bridge.clients.zcode.installation import launch
+        launch(app.executable, app.home, debug_port=descriptor.get('debugFallbackPort'))
     else:
         # Claude owns its native profile selection, including third-party login.
         from bridge.clients.claude.setup import running_app
-        running_app(str(app.executable), str(app.home))
+        if descriptor.get('excludeProfiles'):
+            profile_running_app(descriptor)
+        else:
+            running_app(str(app.executable), str(app.home))
     deadline = time.monotonic() + 3
-    while not app.processes():
+    while not inspect_client(descriptor)['running']:
         if time.monotonic() >= deadline:
             return {'running': False, 'launched': True}
         time.sleep(.1)
     return {'running': True, 'launched': True}
+
+
+def profile_running_app(descriptor, restart=False, cancelled=None, allow_launch=True, *, allow_native_relaunch=False):
+    """Reuse Claude initialization against one selected native main process."""
+    from bridge.clients.profile_process import require_owned, launch_profile
+    state = inspect_client(descriptor)
+    if cancelled is not None and cancelled.is_set():
+        raise ValueError('已取消 Claude 连接')
+    if restart:
+        raise ValueError('请先核验任务并正常退出该配置，再重新连接')
+    require_owned(descriptor, state, allow_native_relaunch=allow_native_relaunch, cancelled=cancelled)
+    if not state['running']:
+        if not allow_launch:
+            raise ValueError('请先开启此 Claude 配置，再重新连接')
+        if descriptor.get('nativeProfile'):
+            launch_profile(descriptor, cancelled=cancelled)
+        else:
+            app = _app(descriptor)
+            # An independent instance may already be open. Launch Services must
+            # start the default rather than activating that other instance.
+            native_desktop(sys.platform).start(app.executable, app.home, {}, new_instance=True)
+        deadline = time.monotonic()+20
+        while not (state := inspect_client(descriptor))['running']:
+            if cancelled is not None and cancelled.is_set():
+                raise ValueError('已取消 Claude 连接')
+            if time.monotonic() >= deadline:
+                raise ValueError('Claude 尚未启动，请稍后重试')
+            time.sleep(.2)
+    if state.get('unknown') or len(state.get('mainPids', [])) != 1:
+        raise ValueError('无法确认此 Claude 配置的唯一原生进程')
+    require_owned(descriptor, state)
+    return state['mainPids'][0]

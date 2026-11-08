@@ -94,7 +94,7 @@ class AccountsTests(unittest.TestCase):
         (self.home/'config.toml').write_text('# existing config\nmodel="original"\n')
         (self.home/'auth.json').write_text('{"tokens":{"account_id":"original"}}')
         (self.home/'history.jsonl').write_text('preserve history')
-        self.bridge = SimpleNamespace(codex_home=self.home, data_dir=self.root,
+        self.bridge = SimpleNamespace(codex_home=self.home, data_dir=self.root, native_host="local",
             catalog_reader=SimpleNamespace(executable=self.root/'runtime', cache={'old': 1}),
             remote_bridges={}, live={}, submissions={}, lock=threading.RLock(),
             account=Account(self.home,self.root,executable=self.root/'runtime'), ipc=Mock(), _disconnected=Mock())
@@ -212,6 +212,10 @@ class AccountsTests(unittest.TestCase):
         if os.name!='nt':
             self.assertEqual((self.manager.directory(row['id'])/'api.json').stat().st_mode&0o777,0o600)
         self.assertEqual(self.manager.snapshot_files(),self.original)
+
+    def test_api_accepts_unicode_provider_model_id(self):
+        model = 'xmy:日卡/deepseek-v4.1-flash'
+        self.assertEqual(self.api(model=model)['model'], model)
 
     def test_rejects_bad_addresses_keys_ids_and_active_edit(self):
         for url in ['http://remote.invalid','https://key@api.example/v1','https://api.example/?key=private','file:///tmp/a']:

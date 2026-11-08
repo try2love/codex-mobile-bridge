@@ -1,0 +1,235 @@
+"""Identity of an already-connected Unix peer, bound to its kernel audit token."""
+
+import ctypes as ct
+import hashlib
+import os
+import plistlib
+import subprocess
+import socket
+import struct
+import sys
+from contextlib import ExitStack
+from pathlib import Path
+
+from bridge.platforms.macos.force_exit import Native
+from bridge.platforms.macos import release_identity
+
+P = ct.c_void_p
+I = ct.c_uint32
+L = ct.c_long
+
+
+class SignedGatewayPeer:
+    """Require the exact executable, UID and signing requirement of this frozen gateway."""
+
+    def __init__(self):
+        if not getattr(sys, "frozen", False) or Path(sys.executable).name != "codex-mobile-gateway":
+            raise PermissionError("Private ZCode service requires a packaged gateway")
+        self.image = str(Path(sys.executable).resolve(strict=True))
+        self.native = Native()
+        self.sec = ct.CDLL("/System/Library/Frameworks/Security.framework/Security")
+        self.cf = ct.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+        for name, args in {
+            "SecCodeCopySelf": [I, ct.POINTER(P)],
+            "SecCodeCopyStaticCode": [P, I, ct.POINTER(P)],
+            "SecCodeCopyDesignatedRequirement": [P, I, ct.POINTER(P)],
+            "SecCodeCopyGuestWithAttributes": [P, P, I, ct.POINTER(P)],
+            "SecCodeCheckValidity": [P, I, P],
+            "SecCodeCopySigningInformation": [P, I, ct.POINTER(P)],
+            "SecRequirementCreateWithString": [P, I, ct.POINTER(P)],
+        }.items():
+            f = getattr(self.sec, name)
+            f.argtypes, f.restype = args, ct.c_int32
+        for name, args, result in (
+            ("CFRelease", [P], None),
+            ("CFDataCreate", [P, P, L], P),
+            ("CFDictionaryCreate", [P, ct.POINTER(P), ct.POINTER(P), L, P, P], P),
+            ("CFDictionaryGetValue", [P, P], P),
+            ("CFArrayGetCount", [P], L),
+            ("CFArrayGetValueAtIndex", [P, L], P),
+            ("CFDataGetLength", [P], L),
+            ("CFDataGetBytePtr", [P], P),
+            ("CFStringCreateWithCString", [P, ct.c_char_p, I], P),
+        ):
+            f = getattr(self.cf, name)
+            f.argtypes, f.restype = args, result
+        self.sec.SecCertificateCopyData.argtypes = [P]
+        self.sec.SecCertificateCopyData.restype = P
+        self.helper_requirement = None
+        self.published = None
+        self.leaf_hash = None
+        with ExitStack() as refs:
+            code = self._copy(refs, self.sec.SecCodeCopySelf, 0)
+            static = self._copy(refs, self.sec.SecCodeCopyStaticCode, code, 0)
+            info = self._copy(refs, self.sec.SecCodeCopySigningInformation, static, 2)
+            certs = self.cf.CFDictionaryGetValue(info, P.in_dll(self.sec, "kSecCodeInfoCertificates"))
+            if self.sec.SecCodeCheckValidity(code, 0, None):
+                raise PermissionError("Gateway must have a valid code signature")
+            self.cdhash = self._bytes(
+                self.cf.CFDictionaryGetValue(info, P.in_dll(self.sec, "kSecCodeInfoUnique"))
+            )
+            if certs and self.cf.CFArrayGetCount(certs) > 0:
+                cert = self.sec.SecCertificateCopyData(self.cf.CFArrayGetValueAtIndex(certs, 0))
+                if not cert:
+                    raise PermissionError("Missing gateway certificate")
+                refs.callback(self.cf.CFRelease, cert)
+                self.leaf_hash = hashlib.sha1(self._bytes(cert)).hexdigest()
+            else:
+                self.published = release_identity.read(self.image, self.cdhash)
+            req = P()
+            if self.sec.SecCodeCopyDesignatedRequirement(static, 0, ct.byref(req)) or not req:
+                raise PermissionError("Missing gateway signature requirement")
+            self.requirement = req
+
+    def _copy(self, stack, fn, *args):
+        ref = P()
+        if fn(*args, ct.byref(ref)) or not ref:
+            raise PermissionError("Could not verify signed process")
+        stack.callback(self.cf.CFRelease, ref)
+        return ref
+
+    def _bytes(self, data):
+        if not data:
+            raise PermissionError("Missing signing data")
+        return ct.string_at(self.cf.CFDataGetBytePtr(data), self.cf.CFDataGetLength(data))
+
+    def _starter_requirement(self, bundle, broker_hash):
+        identifier = "io.github.try2love.codexmobilebridge.zcode-pipe-starter"
+        if self.published is not None:
+            image = bundle.parents[2] / release_identity.BROKER
+            published = release_identity.read(image, broker_hash)
+            hashes = published['components']['starter']['cdhashes']
+            clause = f'identifier "{identifier}" and (' + ' or '.join(f'cdhash H"{h}"' for h in hashes) + ')'
+        else:
+            clause = f'identifier "{identifier}" and certificate leaf = H"{self.leaf_hash}"'
+        result = subprocess.run(
+            ["/usr/bin/codesign", "--verify", "--strict", "-R=" + clause, str(bundle)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=6,
+        )
+        if result.returncode:
+            raise PermissionError("Invalid private ZCode starter signature")
+        info = plistlib.loads((bundle / "Contents/Info.plist").read_bytes())
+        if info.get("CFBundleIdentifier") != identifier or broker_hash not in info.get(
+            "CMBGatewayBrokerCDHashes", []
+        ):
+            raise PermissionError("ZCode starter does not authorize this gateway build")
+        return clause
+
+    def verify_starter(self, bundle):
+        clause = self._starter_requirement(bundle, self.cdhash)
+        if self.helper_requirement is None:
+            text = self.cf.CFStringCreateWithCString(None, clause.encode(), 0x08000100)
+            if not text:
+                raise PermissionError("Invalid ZCode starter requirement")
+            try:
+                ref = P()
+                if self.sec.SecRequirementCreateWithString(text, 0, ct.byref(ref)) or not ref:
+                    raise PermissionError("Invalid ZCode starter requirement")
+                self.helper_requirement = ref
+            finally:
+                self.cf.CFRelease(text)
+
+    def close(self):
+        if self.helper_requirement:
+            self.cf.CFRelease(self.helper_requirement)
+            self.helper_requirement = None
+        if self.requirement:
+            self.cf.CFRelease(self.requirement)
+            self.requirement = None
+
+    def _verify_previous_build(self, moved_image, broker_hash):
+        # This exception is only for a live holder of a previous installation.
+        # Require the same installed product and its independently signed starter
+        # authorizing this exact broker hash, not just another gateway certificate.
+        current = Path(self.image)
+        previous = Path(moved_image)
+        layout = Path("Contents/Resources/gateway/codex-mobile-gateway")
+        if (tuple(current.parts[-4:]) != layout.parts or tuple(previous.parts[-4:]) != layout.parts):
+            raise PermissionError("Unexpected ZCode gateway layout")
+        current_app, previous_app = current.parents[3], previous.parents[3]
+        if (previous_app.suffix != ".app" or current_app.suffix != ".app"
+                or previous_app.parent != current_app.parent):
+            raise PermissionError("ZCode holder is outside this installation")
+        if getattr(self, "published", None) is not None:
+            release_identity.read(previous, broker_hash)
+            self._starter_requirement(previous_app / "Contents/Helpers/CMBZCodePipeStarter.app", broker_hash)
+            return
+        requirement = subprocess.run(
+            ["/usr/bin/codesign", "--display", "-r-", str(current_app)],
+            capture_output=True, text=True, timeout=5, check=True)
+        rules = [line.removeprefix("designated => ") for line in
+                 (requirement.stdout + "\n" + requirement.stderr).splitlines() if line.startswith("designated => ")]
+        if len(rules) != 1 or not rules[0]:
+            raise PermissionError("Missing gateway application requirement")
+        subprocess.run(["/usr/bin/codesign", "--verify", "--strict", "-R=" + rules[0], str(previous_app)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=12, check=True)
+        self._starter_requirement(previous_app / "Contents/Helpers/CMBZCodePipeStarter.app", broker_hash)
+
+    def require(self, connection, expected_pid, *, starter=None, relocated_holder=None):
+        if connection.family != socket.AF_UNIX or (expected_pid is None and starter is None):
+            raise PermissionError("Invalid private peer")
+        # LOCAL_PEERTOKEN, sys/un.h. audit_token_t includes EUID, PID and pidversion.
+        token = connection.getsockopt(0, 6, 32)
+        audit = struct.unpack("=8I", token)
+        if expected_pid is None:
+            expected_pid = audit[5]
+        if (
+            type(expected_pid) is not int
+            or expected_pid < 1
+            or audit[1] != os.getuid()
+            or audit[5] != expected_pid
+        ):
+            raise PermissionError("Wrong gateway user or process")
+        before = self.native.identity(expected_pid)
+        expected_image = str(starter / "Contents/MacOS/CMBZCodePipeStarter") if starter else self.image
+        if (
+            (before["image"] != expected_image and (starter is not None or relocated_holder is None))
+            or before["uid"] != os.getuid()
+            or before["zombie"]
+            or before["birth"][1] != audit[7]
+        ):
+            raise PermissionError("Wrong gateway executable or process generation")
+        with ExitStack() as refs:
+            raw = ct.create_string_buffer(token)
+            data = self.cf.CFDataCreate(None, raw, len(token))
+            if not data:
+                raise PermissionError("Missing audit token")
+            refs.callback(self.cf.CFRelease, data)
+            keys = (P * 1)(P.in_dll(self.sec, "kSecGuestAttributeAudit").value)
+            vals = (P * 1)(data)
+            attributes = self.cf.CFDictionaryCreate(None, keys, vals, 1, None, None)
+            if not attributes:
+                raise PermissionError("Missing code attributes")
+            refs.callback(self.cf.CFRelease, attributes)
+            guest = self._copy(refs, self.sec.SecCodeCopyGuestWithAttributes, None, attributes, 0)
+            requirement = self.helper_requirement if starter else self.requirement
+            if not requirement:
+                raise PermissionError("Gateway signature changed")
+            if self.sec.SecCodeCheckValidity(guest, 0, requirement):
+                # An ad-hoc DR binds one exact build. A different published build
+                # must prove its publisher and live hash, never just its filename.
+                if starter is not None or self.published is None or self.sec.SecCodeCheckValidity(guest, 0, None):
+                    raise PermissionError("Gateway signature changed")
+                static = self._copy(refs, self.sec.SecCodeCopyStaticCode, guest, 0)
+                info = self._copy(refs, self.sec.SecCodeCopySigningInformation, static, 2)
+                digest = self._bytes(self.cf.CFDictionaryGetValue(info, P.in_dll(self.sec, "kSecCodeInfoUnique")))
+                identity = (expected_pid, before["birth"], before["started"], before["image"], digest)
+                if getattr(self, "_published_peer", None) != identity:
+                    release_identity.read(before["image"], digest)
+                    self._published_peer = identity
+            if before["image"] != expected_image:
+                # Audit/DR checks above are performed on every connection. Reuse
+                # expensive bundle checks only for the same immutable process.
+                identity = (expected_pid, before["birth"], before["started"], before["image"])
+                if getattr(self, "_previous_holder", None) != identity:
+                    static = self._copy(refs, self.sec.SecCodeCopyStaticCode, guest, 0)
+                    info = self._copy(refs, self.sec.SecCodeCopySigningInformation, static, 2)
+                    digest = self._bytes(self.cf.CFDictionaryGetValue(info, P.in_dll(self.sec, "kSecCodeInfoUnique")))
+                    self._verify_previous_build(before["image"], digest)
+                    relocated_holder(before)
+                    self._previous_holder = identity
+        if self.native.identity(expected_pid) != before:
+            raise PermissionError("Gateway process changed")
+        return before

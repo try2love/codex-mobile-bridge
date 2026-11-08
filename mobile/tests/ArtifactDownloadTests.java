@@ -37,6 +37,11 @@ public class ArtifactDownloadTests {
    check(!ArtifactDownload.accepts(base+"/api/auth",base),"non-artifact route rejected");
    String report=base+"/api/sessions/diagnostics";
    String thread="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+   for(String imagePath:new String[]{"/api/sessions/"+thread+"/uploads/"+thread+"/preview","/api/sessions/"+thread+"/desktop-images/"+String.join("",Collections.nCopies(64,"a")),"/api/desktop-sessions/zcode/uploads/"+thread+"/preview","/api/desktop-sessions/claude/images/"+String.join("",Collections.nCopies(64,"a"))}){
+    check(ArtifactDownload.accepts(base+imagePath+"?download=1&sessionId=fixture",base),"image save accepted");
+    for(String suffix:new String[]{"","?download=0","?download=1&download=0","?download=1#fragment"})check(!ArtifactDownload.accepts(base+imagePath+suffix,base),"preview stays out of download navigation");
+    check(!ArtifactDownload.accepts("https://other.invalid"+imagePath+"?download=1",base),"image origin is retained");
+   }
    check(ArtifactDownload.accepts(report,base),"diagnostic route accepted");
    check(ArtifactDownload.accepts(report+"?thread="+thread,base),"targeted diagnostic accepted");
    for(String suffix:new String[]{"?thread=bad","?thread="+thread+"&extra=1","?other=1","/extra","#fragment"})

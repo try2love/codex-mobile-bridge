@@ -3,9 +3,27 @@
   <img src="site/assets/icon.png" alt="Codex Mobile Bridge" width="112" height="112">
 </p>
 
+<p align="center">
+  <a href="https://github.com/try2love/codex-mobile-bridge/stargazers"><img alt="GitHub Stars" src="https://img.shields.io/github/stars/try2love/codex-mobile-bridge?style=flat&amp;color=gold"></a>
+  <a href="https://github.com/try2love/codex-mobile-bridge/releases/latest"><img alt="Latest Release" src="https://img.shields.io/github/v/release/try2love/codex-mobile-bridge?style=flat"></a>
+  <a href="https://github.com/try2love/codex-mobile-bridge/issues"><img alt="GitHub Issues" src="https://img.shields.io/github/issues/try2love/codex-mobile-bridge?style=flat"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/try2love/codex-mobile-bridge/releases"><img alt="Android downloads" src="https://img.shields.io/endpoint?url=https%3A%2F%2Ftry2love.github.io%2Fcodex-mobile-bridge%2Fdownloads%2Fandroid.json&amp;style=flat"></a>
+  <a href="https://github.com/try2love/codex-mobile-bridge/releases"><img alt="iOS downloads" src="https://img.shields.io/endpoint?url=https%3A%2F%2Ftry2love.github.io%2Fcodex-mobile-bridge%2Fdownloads%2Fios.json&amp;style=flat"></a>
+  <a href="https://github.com/try2love/codex-mobile-bridge/releases"><img alt="Linux downloads" src="https://img.shields.io/endpoint?url=https%3A%2F%2Ftry2love.github.io%2Fcodex-mobile-bridge%2Fdownloads%2Flinux.json&amp;style=flat"></a>
+  <a href="https://github.com/try2love/codex-mobile-bridge/releases"><img alt="macOS downloads" src="https://img.shields.io/endpoint?url=https%3A%2F%2Ftry2love.github.io%2Fcodex-mobile-bridge%2Fdownloads%2Fmacos.json&amp;style=flat"></a>
+  <a href="https://github.com/try2love/codex-mobile-bridge/releases"><img alt="Windows downloads" src="https://img.shields.io/endpoint?url=https%3A%2F%2Ftry2love.github.io%2Fcodex-mobile-bridge%2Fdownloads%2Fwindows.json&amp;style=flat"></a>
+</p>
+
+<p align="center"><sub>Platform counts include installation assets from all published stable and preview releases (iOS includes its source archive and IPA), excluding update metadata and checksums. Repeat downloads and updater downloads count; these are not user or installation counts. Updated daily.</sub></p>
+
 # Codex Mobile Bridge · A remote workbench for desktop agents
 
 > **v2.1.7 (stable):** [Release page](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.1.7) · [Full release notes](RELEASE_NOTES.md#v217) · [Mobile installation](mobile/README.md). Mobile notifications, session organization, project references and connection recovery.
+
+> **v2.2.0-preview.3:** [Preview release](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.0-preview.3) · [Bilingual release notes](RELEASE_NOTES.md). ZCode connection modes, model selection before chat creation and experimental independent client profiles.
 
 [简体中文](README.md) · [English](README_EN.md)
 
@@ -623,6 +641,8 @@ Thanks to [@heiqiu47](https://github.com/heiqiu47) for proposing account and mod
 Thanks to [@jasongzy](https://github.com/jasongzy) for requesting general Webhook notifications in [Issue #60](https://github.com/try2love/codex-mobile-bridge/issues/60).
 
 Thanks to [@tiancai123123](https://github.com/tiancai123123) for diagnosing and reproducing repeated static-resource downloads on slow connections in [Issue #54](https://github.com/try2love/codex-mobile-bridge/issues/54), and contributing content-hash versioning, browser caching, conditional requests and tests in [PR #56](https://github.com/try2love/codex-mobile-bridge/pull/56). The integration preserves the original commit and reconciles it with the project's existing cache invalidation and resource-version handling.
+
+Thanks to [@tiancai123123](https://github.com/tiancai123123) for the third-party Codex reasoning-content and streaming fix in [PR #130](https://github.com/try2love/codex-mobile-bridge/pull/130), addressing [Issue #110](https://github.com/try2love/codex-mobile-bridge/issues/110), with Windows and Android validation. The original commit is preserved.
 
 Thanks to [@we-worker](https://github.com/we-worker) for Windows WSL Codex support, Magpie compatibility and project-directory capabilities in [PR #64](https://github.com/try2love/codex-mobile-bridge/pull/64). v2.1.5 retains all eight original commits; unified UI and project creation across connection types are separate follow-up changes.
 

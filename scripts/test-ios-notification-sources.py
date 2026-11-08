@@ -7,11 +7,14 @@ ROOT = Path(__file__).resolve().parents[1]
 WORK = ROOT / '.tmp/ios-notification-source-tests'
 WORK.mkdir(parents=True, exist_ok=True)
 source = (ROOT / 'mobile/ios/BridgePreview/App.swift').read_text()
-methods = source[source.index('    private func cancelSync()'):source.index('    private func notificationSources()')].replace('private func', 'func')
+methods = source[source.index('    private func cancelSync()'):source.index('    private func sourceSwitch(')].replace('private func', 'func')
+methods += source[source.index('    private func channelRecord('):source.index('    private var lastChannelProbe')]
+methods += source[source.index('    private func preferenceKey('):source.index('    private func addresses(')]
 swift = r'''
 import Foundation
 final class MemoryDefaults {
  var values: [String: Any] = [:]
+ func dictionary(forKey key: String) -> [String: Any]? { values[key] as? [String: Any] }
  func bool(forKey key: String) -> Bool { values[key] as? Bool ?? false }
  func integer(forKey key: String) -> Int { values[key] as? Int ?? 0 }
  func string(forKey key: String) -> String? { values[key] as? String }

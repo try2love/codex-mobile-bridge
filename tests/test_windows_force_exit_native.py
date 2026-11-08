@@ -95,6 +95,12 @@ def _wait_until(predicate, timeout=15):
                      'Opt-in Windows native test: set CMB_RUN_NATIVE_FORCE_EXIT_TEST=1')
 class WindowsForceExitNativeTests(unittest.TestCase):
     def test_only_selected_self_created_installation_exits(self):
+        self.check_selected_installation('codex', 'Fixture.exe')
+
+    def test_zcode_leaves_neighboring_installation_running(self):
+        self.check_selected_installation('zcode', 'ZCode.exe')
+
+    def check_selected_installation(self, provider, filename):
         from bridge.platforms.windows import force_exit as force
 
         framework = Path(os.environ.get('WINDIR', r'C:\Windows'))/'Microsoft.NET'
@@ -104,7 +110,7 @@ class WindowsForceExitNativeTests(unittest.TestCase):
             self.skipTest('.NET Framework C# compiler is unavailable')
         with tempfile.TemporaryDirectory(prefix='cmb-force-exit-native-') as temporary:
             folder = Path(temporary).resolve()
-            selected, neighbor = folder/'selected/Fixture.exe', folder/'neighbor/Fixture.exe'
+            selected, neighbor = folder/'selected'/filename, folder/'neighbor'/filename
             ready, neighbor_ready = folder/'ready', folder/'neighbor-ready'
             for directory in (selected.parent, neighbor.parent, ready, neighbor_ready):
                 directory.mkdir()
@@ -152,7 +158,7 @@ class WindowsForceExitNativeTests(unittest.TestCase):
                     self.assertEqual(response.status, 200)
                     self.assertEqual(response.read().decode(), str(observer.pid))
                 started = time.monotonic()
-                force.force_stop_client({'id': 'codex', 'installed': True, 'executable': str(selected)},
+                force.force_stop_client({'id': provider, 'installed': True, 'executable': str(selected)},
                     state={'pids': pids, 'mainPids': [main.pid], 'unknown': False})
                 duration = time.monotonic() - started
                 self.assertLess(duration, force.BUDGET)

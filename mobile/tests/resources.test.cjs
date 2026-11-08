@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const root = path.resolve(__dirname, '../..');
 const read = value => fs.readFileSync(path.join(root, value), 'utf8');
-const shared = ['mobile-ui.js', 'mobile-clipboard.js', 'mobile-system-bars.js'];
+const shared = ['channel-link.js', 'mobile-ui.js', 'mobile-clipboard.js', 'mobile-system-bars.js'];
 const android = [...shared, 'mobile-session.js'];
 
 test('both Android variants register the downloaded-file viewer provider', () => {
@@ -77,7 +77,7 @@ test('ordinary APK and push Gradle package the same scripts without overlapping 
     assert.equal(new Set(names).size, names.length);
   }
   const loader = read('mobile/android/src/io/github/try2love/codexbridge/MobileWebScripts.java');
-  assert.deepEqual([...loader.matchAll(/"(mobile-[^"]+\.js)"/g)].map(([, name]) => name), android);
+  assert.deepEqual([...loader.match(/for\(String asset:new String\[\]\{([^}]+)\}/)[1].matchAll(/"([^"]+\.js)"/g)].map(([, name]) => name), android);
   assert.match(loader, /throw new IllegalStateException\("Missing mobile layout",e\)/);
 });
 
@@ -95,7 +95,7 @@ test('iOS missing resources stop connection visibly before replacing the current
     assert.match(connect, new RegExp(`addUserScript\\(WKUserScript\\(source: ${script.replace('.', '\\.')}\\, injectionTime: \\.atDocumentEnd, forMainFrameOnly: true\\)\\)`));
   }
   assert.match(connect, /addUserScript\(WKUserScript\(source: "window\.BridgeMobileCapabilities = Object\.freeze\(\{ diagnosticsExport: true \}\);", injectionTime: \.atDocumentEnd, forMainFrameOnly: true\)\)/);
-  assert.match(connect, /scripts\.appearance\.replacingOccurrences\(of: "__BRIDGE_CLIPBOARD_TOKEN__", with: clipboardToken\)/);
+  assert.match(connect, /\(scripts\.route\+"\\n"\+scripts\.appearance\)\.replacingOccurrences\(of: "__BRIDGE_CLIPBOARD_TOKEN__", with: clipboardToken\)/);
   assert.match(connect, /scripts\.clipboard\.replacingOccurrences\(of: "__BRIDGE_CLIPBOARD_TOKEN__", with: clipboardToken\)/);
   assert.doesNotMatch(app, /private static let web(Appearance|Clipboard) =/);
 });

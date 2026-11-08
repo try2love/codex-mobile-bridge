@@ -18,7 +18,7 @@ App 执行的本地聊天，其 Goal 元数据通过受限的官方运行时连�
 
 ## 会话发现
 
-Windows 可在应用管理的 Codex 组内显式扫描并启用 WSL 接入，详见 [WSL 说明](docs/wsl-codex.md)。顶层仅有一个 Codex，列表按全部 / CLI / APP / WSL 分类；WSL 保留 `source=cli / runtime=wsl`，不将展示分类作为执行能力。原生 APP / CLI 与各 WSL 子项分别启停，顶层状态聚合；只有 WSL 可用时也可列出环境。应用 ID 沿用 `wsl:<摘要>` 作为内部路由和缓存身份，原 IPC owner、账号、cwd、连接世代及操作回执继续隔离。列表与历史读取不恢复线程。WSL 账号由原工具或 Magpie 管理，不回退到 Windows 账号；HTTP 沿用登录、Origin、CSRF 和文件边界。WSL 停用与写入共用门锁，旧请求在停用后不能继续写文件或创建聊天，关闭接入不退出原 CLI。
+Windows 可在应用管理的 Codex 组内显式扫描并启用 WSL 接入，详见 [WSL 说明](docs/wsl-codex.md)。默认 Codex 列表按全部 / CLI / APP / WSL 分类；独立 Codex 配置以独立接入 ID 展示，账号、项目和会话按配置隔离。共享管理页面和导航契约见[客户端外壳](.agents/notes/implemented/architecture/2026-11-02-shared-client-shell.md)。WSL 保留 `source=cli / runtime=wsl`，不将展示分类作为执行能力。原生 APP / CLI 与各 WSL 子项分别启停，顶层状态聚合；只有 WSL 可用时也可列出环境。应用 ID 沿用 `wsl:<摘要>` 作为内部路由和缓存身份，原 IPC owner、账号、cwd、连接世代及操作回执继续隔离。列表与历史读取不恢复线程。WSL 账号由原工具或 Magpie 管理，不回退到 Windows 账号；HTTP 沿用登录、Origin、CSRF 和文件边界。WSL 停用与写入共用门锁，旧请求在停用后不能继续写文件或创建聊天，关闭接入不退出原 CLI。
 
 本地通过只读 SQLite 连接读取 `$CODEX_HOME/state_*.sqlite`，筛选桌面聊天并排除子代理。尚无 IPC 快照时，可读取原始会话记录作为历史展示。WAL 模式且 `-wal` 缺失时，先复制到私有临时目录，并核对复制前后主文件的身份、大小和修改时间以及 WAL 仍不存在，再读取副本；并发变化时丢弃副本并等待重试。已有 WAL 时直接只读查询，保留最新提交。发现与历史读取不直接写入原数据库或会话文件；用户新建聊天时由官方运行时持久化新记录。
 

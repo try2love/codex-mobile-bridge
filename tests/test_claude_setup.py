@@ -5,6 +5,7 @@ import struct
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -148,14 +149,15 @@ class ClaudeDiscovery(unittest.TestCase):
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 console.error('unicode connector harness started');
 const cwd=process.argv[2],script=fs.readFileSync(process.argv[1],'utf8');
-const request=fs.readFileSync(cwd+'/request.json','utf8');let start;
+const request=fs.readFileSync(cwd+'/request.json','utf8');let checked;
 const api={readFileAtCwd:async path=>{assert.equal(path,cwd);return {contents:request};},
 writeSessionFile:async()=>{throw Error('must not write before trust');},getAll:async()=>[],
-start:async value=>{console.error('workspace trust checked');start=value;throw Error('WorkspaceTrustError: trust_required');}};
+checkTrust:async path=>{checked=path;return {trusted:false};},
+start:async()=>{throw Error('must not start a model turn');}};
 (async()=>{await assert.rejects(vm.runInNewContext(script,{window:{'claude.web':{LocalSessions:api}},
 TextEncoder,Uint8Array,crypto:require('node:crypto').webcrypto,console,setTimeout,clearTimeout}),error=>{
 assert.ok(error.message.includes(cwd));assert.ok(error.message.includes('尚未信任目录'));return true;});
-assert.equal(start.cwd,cwd);assert.equal(start.message,'');})();
+assert.equal(checked,cwd);})();
 '''
         # Include cold Node/WebCrypto startup in the process budget; the test
         # asserts the trust rejection, not a ten-second startup guarantee.
@@ -245,7 +247,7 @@ class ClaudeProfileEvidence(unittest.TestCase):
     @patch('bridge.clients.claude.setup.sys.platform', 'darwin')
     def test_only_selected_executable_open_storage_establishes_profile(self):
         other = self.root/'Other/Claude.app/Contents/MacOS/Claude'
-        processes = Mock(stdout=f' 42 {self.executable}\n 51 {other}\n')
+        processes = Mock(stdout=f' 42 {self.executable.as_posix()[len(self.executable.drive):]}\n 51 {other.as_posix()[len(other.drive):]}\n')
         files = Mock(stdout=f'p42\nn{self.posix_third}/Local Storage/leveldb/LOCK\n'
                             f'n{self.posix_third}/Session Storage/LOCK\n'
                             f'n{self.posix_default}/claude_desktop_config.json\n')
@@ -576,10 +578,13 @@ class ClaudeNativeConnection(unittest.TestCase):
                     return {'setupState': 'owner-conflict', 'reason': 'Claude 桥接连接被其他网关占用，请先停止旧网关；旧版连接还需重新加载 Claude'}
                 return {'setupState': 'needs-trust' if trust else 'failed', 'reason': 'trust required'}
             return {'setupState': 'ready'}
+        # Keep the four synthetic ticks private to the adapter, not the process event loops.
+        clock = Mock(wraps=time)
+        clock.monotonic.side_effect = [0, 0, 3 if conflict else 0 if heartbeat else 19, 3]
         with patch('bridge.clients.claude.adapter.native_action', side_effect=native), \
              patch('bridge.clients.claude.adapter.running_app', return_value=42), \
              patch('bridge.clients.claude.adapter.developer_mode_enabled', return_value=True), \
-             patch('bridge.clients.claude.adapter.time.monotonic', side_effect=[0, 0, 3 if conflict else 0 if heartbeat else 19, 3]), \
+             patch('bridge.clients.claude.adapter.time', clock), \
              patch.object(self.adapter, 'prepare', return_value={'consolePath': str(self.root/'script')}), \
              patch.object(self.adapter.setup_cancel, 'wait', return_value=False), \
              patch.object(self.adapter, '_setup_state', wraps=self.adapter._setup_state) as state:

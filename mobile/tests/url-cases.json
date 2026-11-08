@@ -56,6 +56,21 @@
       "percent% and*space",
       "desktop:deepseek",
       "#percent%25%20and%2Aspace~desktop%3Adeepseek"
+    ],
+    [
+      "sess_test",
+      "desktop:zcode",
+      "#sess_test~desktop%3Azcode"
+    ],
+    [
+      "same-session",
+      "desktop:claude:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "#same-session~desktop%3Aclaude%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ],
+    [
+      "same-session",
+      "desktop:deepseek:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "#same-session~desktop%3Adeepseek%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     ]
   ],
   "desktopRejected": [
@@ -78,6 +93,14 @@
     [
       "control",
       "desktop:claude"
+    ],
+    [
+      "same-session",
+      "desktop:zcode:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ],
+    [
+      "same-session",
+      "desktop:claude:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     ]
   ],
   "rejected": [

@@ -1,7 +1,9 @@
 """Transport evidence correlates hops without recording conversations or secrets."""
 import http.client
 import json
+import logging
 import socketserver
+import time
 import unittest
 from unittest.mock import patch
 
@@ -16,6 +18,20 @@ class TransportTests(unittest.TestCase):
     request = test_bridge.HttpTests.request
     login = test_bridge.HttpTests.login
 
+    def test_fast_cloudflare_asset_keeps_id_without_routine_info_records(self):
+        headers = {'CF-Ray': 'abcdef0123456789-SIN'}
+        conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=3)
+        self.addCleanup(conn.close)
+        # Python 3.9 has assertLogs but not assertNoLogs.
+        with self.assertLogs('bridge.api.httpd', level='INFO') as captured:
+            logging.getLogger('bridge.api.httpd').info('capture started')
+            conn.request('GET', '/style.css', headers=headers)
+            response = conn.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertRegex(response.getheader('X-Bridge-Request-Id'), r'^[a-f0-9]{16}$')
+            self.assertTrue(response.read())
+        self.assertEqual([record.getMessage() for record in captured.records], ['capture started'])
+
     def test_send_response_correlates_ray_without_private_request_data(self):
         headers = self.login()
         headers['CF-Ray'] = 'abcdef0123456789-SIN'
@@ -23,6 +39,10 @@ class TransportTests(unittest.TestCase):
         with self.assertLogs('bridge.api.httpd', level='INFO') as logs:
             status, response, _ = self.request('POST', '/api/sessions/' + test_bridge.THREAD + '/send',
                 {'id': 'ab7bd811-51aa-4a8c-b89f-4ad4d64c0ac0', 'text': 'PRIVATE_MESSAGE', 'mode': 'send'}, headers)
+            # Receiving the body can precede the server's final response log.
+            deadline = time.monotonic() + 2
+            while len(logs.records) < 2 and time.monotonic() < deadline:
+                time.sleep(.01)
         self.assertEqual(status, 200)
         identifier = response['X-Bridge-Request-Id']
         self.assertRegex(identifier, r'^[a-f0-9]{16}$')

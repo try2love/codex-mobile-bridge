@@ -1,6 +1,6 @@
 'use strict';
 const qrEntries=new Map();
-let qrPolling=false;
+let qrPolling=false,qrTick=null,qrPoll=null;
 function pairingLabel(tag,text,cls=''){
   const node=document.createElement(tag);node.textContent=text;if(cls)node.className=cls;return node;
 }
@@ -52,7 +52,7 @@ function refreshPairing(entry){
       if(generation!==entry.generation){await api.pairing({action:'revoke',id:grant.id});return;}
       entry.grant=grant;
     }catch(error){if(generation===entry.generation)entry.errorMessage=error.message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/,'');}
-    finally{if(generation===entry.generation){entry.busy=false;renderPairingEntry(entry);}}
+    finally{if(generation===entry.generation){entry.busy=false;renderPairingEntry(entry);syncPairingClocks();}}
   })();
   return entry.task;
 }
@@ -60,14 +60,43 @@ function clearPairing(entry){
   const grant=entry.grant;entry.generation++;entry.grant=null;entry.busy=false;
   entry.image.removeAttribute('src');entry.image.hidden=true;
   if(grant)api.pairing({action:'revoke',id:grant.id}).catch(()=>{});
+  syncPairingClocks();
 }
 function resetPairing(){for(const entry of qrEntries.values()){clearPairing(entry);entry.node.open=false;}qrEntries.clear();}
-setInterval(renderPairing,1000);
-setInterval(()=>{
-  const entries=[...qrEntries.values()].filter(e=>e.node.open&&e.grant?.state==='active'&&e.grant.expires>Date.now()/1000);
+function prunePairing(urls){
+  const available=new Set(urls);
+  for(const [url,entry] of qrEntries)if(!available.has(url)){qrEntries.delete(url);clearPairing(entry);entry.node.open=false;}
+}
+function openPairings(){
+  return document.hidden?[]:[...qrEntries.values()].filter(e=>e.node.open&&e.grant?.state==='active');
+}
+function syncPairingClocks(){
+  if(openPairings().some(e=>e.grant.expires>Date.now()/1000)){
+    if(qrTick===null)qrTick=setInterval(tickPairing,1000);
+    if(qrPoll===null)qrPoll=setInterval(pollPairing,3000);
+  }else{
+    if(qrTick!==null)clearInterval(qrTick);
+    if(qrPoll!==null)clearInterval(qrPoll);
+    qrTick=qrPoll=null;
+  }
+}
+function tickPairing(){
+  for(const entry of openPairings())renderPairingEntry(entry);
+  syncPairingClocks();
+}
+function pollPairing(){
+  const entries=openPairings().filter(e=>e.grant.expires>Date.now()/1000);
   if(qrPolling||!entries.length)return;
   const grants=entries.map(e=>e.grant);qrPolling=true;
   api.pairing({action:'status',ids:grants.map(g=>g.id)}).then(value=>{
     entries.forEach((entry,i)=>{if(entry.grant===grants[i])entry.grant.state=value.states[grants[i].id]||'expired';});
-  }).catch(()=>entries.forEach((entry,i)=>{if(entry.grant===grants[i])entry.grant.state='expired';})).finally(()=>{qrPolling=false;renderPairing();});
-},3000);
+  }).catch(()=>entries.forEach((entry,i)=>{if(entry.grant===grants[i])entry.grant.state='expired';})).finally(()=>{
+    qrPolling=false;
+    for(const entry of entries)if(entry.node.open&&!document.hidden)renderPairingEntry(entry);
+    syncPairingClocks();
+  });
+}
+document.addEventListener('visibilitychange',()=>{
+  if(!document.hidden){for(const entry of qrEntries.values())if(entry.node.open)renderPairingEntry(entry);}
+  syncPairingClocks();
+});

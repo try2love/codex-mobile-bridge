@@ -188,15 +188,20 @@ class CliAccess:
         if action == 'modelsDraft':
             if provider != 'codex' or set(value) - {'provider', 'action', 'id', 'baseUrl', 'apiKey'}:
                 raise ValueError('API 模型查询参数无效')
+            from bridge.features.accounts.api_drafts import model_draft
             accounts = self.bridge.accounts
             with accounts.lock:
                 accounts.assert_editable()
-                if value.get('id') and value.get('apiKey', '') == '':
-                    row = accounts.row(value['id'])
-                    if row['kind'] != 'api' or accounts.api_url(value.get('baseUrl', '')) != row.get('baseUrl'):
+            def saved(identifier):
+                with accounts.lock:
+                    row = accounts.row(identifier)
+                    if row['kind'] != 'api':
+                        raise ValueError('请选择已保存的 API 接入')
+                    if accounts.api_url(value.get('baseUrl', '')) != accounts.api_url(row['baseUrl']):
                         raise ValueError('修改 API 地址后，请重新填写 API Key')
-                url, key = accounts.api_credentials(value)
-            return {'models': model_ids(url, key)}
+                    url, key = accounts.api_credentials({'id': identifier, 'baseUrl': row['baseUrl'], 'apiKey': ''})
+                    return {'baseUrl': url, 'apiKey': key, 'apiFormat': 'openai-responses'}
+            return model_draft(value, saved=saved)
         if action in ('models', 'test'):
             return self._probe_api(provider, value)
         saved_id = None

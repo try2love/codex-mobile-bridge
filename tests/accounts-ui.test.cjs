@@ -9,7 +9,7 @@ function fixture(desktop=false){
   class Clock extends Date{static now(){return now;}}
   const context=vm.createContext({document:{createElement:node,body:node('body'),hidden:false,activeElement:null,addEventListener:(name,fn)=>listeners.set(name,[...(listeners.get(name)||[]),fn])},root,Date:Clock,crypto:{randomUUID:()=> '11111111-1111-4111-8111-111111111111'},
     setTimeout:(fn,ms)=>{timers.push({fn,ms});return timers.length;},clearTimeout:id=>{if(timers[id-1])timers[id-1].cancelled=true;},localStorage:{getItem(){return null;},setItem(){}},window:{confirm:message=>{prompts.push(message);return confirmed;},prompt:()=>null}});
-  for(const f of ['web/shared/i18n.js','web/features/accounts/account.js','web/features/accounts/accounts.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',f),'utf8'),context);
+  for(const f of ['web/shared/i18n.js','web/features/accounts/account.js','web/features/accounts/api-editor.js','web/features/accounts/accounts.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',f),'utf8'),context);
   const Class=vm.runInContext('AccountsPanel',context),panel=new Class({root,desktop,read:force=>{readCalls++;return read(force);},request:v=>{requests.push(v);return request(v);}});
   const all=(n=root)=>[n,...n.children.flatMap(all)];
   return {panel,root,requests,prompts,all,timers,readCalls:()=>readCalls,focus:node=>context.document.activeElement=node,blur:()=>context.document.activeElement=context.document.body,active:()=>context.document.activeElement,now:()=>now,advance:ms=>now+=ms,hidden:value=>{context.document.hidden=value;for(const fn of listeners.get('visibilitychange')||[])fn();},configHidden:value=>{configHidden=value;for(const fn of listeners.get('bridge-client-config')||[])fn();},ancestorHidden:value=>{ancestorHidden=value;},fireTimer:async ms=>{const timer=timers.find(row=>!row.cancelled&&row.ms===ms);assert.ok(timer,`expected ${ms}ms timer`);timer.cancelled=true;await timer.fn();},noRandomUUID:()=>{context.crypto={getRandomValues:bytes=>require("node:crypto").randomFillSync(bytes)};},text:()=>all().map(n=>n.textContent).join('\n'),setValue:v=>value=v,value:()=>value,setRequest:v=>request=v,setRead:v=>read=v,confirm:v=>confirmed=v,
@@ -75,6 +75,22 @@ test('passwordless web disables switching and explains the desktop alternative',
  const ui=fixture();ui.setValue({...ui.value(),canSwitch:false});await ui.panel.refresh();
  assert.equal(ui.all().find(n=>n.textContent==='切换到此接入').disabled,true);assert.match(ui.text(),/免密访问不能切换/);
 });
+for(const desktop of [false,true])test(`${desktop?'desktop':'web'} explicitly initializes the shared native connection`,async()=>{
+ const ui=fixture(desktop);ui.setValue({...ui.value(),desktopRuntime:{supported:true,configured:false}});await ui.panel.refresh();
+ assert.equal(ui.panel.desktopRuntime.hidden,false);assert.equal(ui.panel.initializeRuntime.disabled,false);
+ ui.confirm(false);await ui.panel.initializeRuntime.onclick();assert.equal(ui.requests.length,0);
+ ui.confirm(true);await ui.panel.initializeRuntime.onclick();assert.deepEqual({...ui.requests[0]},{action:'initializeDesktopRuntime',requestId:'11111111-1111-4111-8111-111111111111',confirmed:true,tasksConfirmed:true});
+ ui.panel.accept({...ui.value(),desktopRuntime:{supported:true,configured:true},switch:{phase:'verifying',operation:'desktopRuntime'}});
+ assert.equal(ui.panel.initializeRuntime.disabled,true);assert.match(ui.panel.status.textContent,/核验原生连接/);
+ ui.panel.accept({...ui.value(),desktopRuntime:{supported:true,configured:true},switch:{phase:'failed',operation:'desktopRuntime',error:'test failure'}});
+ assert.equal(ui.panel.initializeRuntime.disabled,false);assert.equal(ui.panel.initializeRuntime.textContent,'重新初始化连接');assert.match(ui.panel.status.textContent,/原生连接初始化未完成/);
+ ui.panel.accept({...ui.value(),scope:'profile'});assert.equal(ui.panel.desktopRuntime.hidden,true);
+ ui.panel.clear();assert.equal(ui.panel.desktopRuntime.hidden,true);
+});
+test('native initialization remains unavailable for passwordless remote access',async()=>{
+ const ui=fixture();ui.panel.accept({...ui.value(),canSwitch:false,desktopRuntime:{supported:true,configured:false}});assert.equal(ui.panel.initializeRuntime.disabled,true);
+ ui.panel.accept({...ui.value(),desktopRuntime:{supported:false}});assert.equal(ui.panel.desktopRuntime.hidden,true);
+});
 
 test('external Magpie management disables configuration replacement on both surfaces',async()=>{
  for(const desktop of [false,true]){
@@ -126,6 +142,21 @@ test('scanned APIs fetch models using opaque candidate IDs and import the select
  assert.equal(ui.requests[0].candidateId,'candidate');assert.equal(ui.requests[0].apiKey,undefined);assert.equal(ui.panel.modelOptions.hidden,false);assert.equal(ui.panel.model.input.value,'model-one');
  ui.panel.modelOptions.value='model-two';ui.panel.modelOptions.onchange();await ui.panel.form.onsubmit({preventDefault(){}});
  assert.equal(ui.requests[1].action,'import');assert.equal(ui.requests[1].model,'model-two');assert.equal(ui.requests[1].candidateId,'candidate');
+});
+test('scan then save reuses candidate import and never changes the active configuration directory',async()=>{
+ const ui=fixture(true);await ui.panel.refresh();ui.panel.scanSource.input.value='/fixture/.codex-custom';
+ assert.equal(ui.panel.saveScanButton.disabled,true);
+ ui.setRequest(async request=>({...ui.value(),discovery:{source:'/fixture/.codex-custom',candidates:[{id:'official',kind:'chatgpt',name:'Login',canImport:true,imported:request.action==='import'}]}}));
+ await ui.panel.scanButton.onclick();assert.equal(ui.panel.saveScanButton.disabled,false);await ui.panel.saveScanButton.onclick();
+ assert.deepEqual(JSON.parse(JSON.stringify(ui.requests)),[{action:'scan',source:'/fixture/.codex-custom'},{action:'import',candidateId:'official'}]);assert.equal(ui.panel.saveScanButton.disabled,true);
+ ui.panel.scanSource.input.value='/fixture/other';ui.panel.scanSource.input.oninput();assert.equal(ui.panel.saveScanButton.disabled,true);
+});
+test('multiple scan results require selection and API save keeps existing model validation',async()=>{
+ const ui=fixture(true);await ui.panel.refresh();ui.setRequest(async()=>({...ui.value(),discovery:{candidates:[{id:'one',kind:'chatgpt',name:'Login',canImport:true},{id:'two',kind:'api',name:'API',baseUrl:'https://fixture.test/v1',canImport:true}]}}));
+ await ui.panel.scanButton.onclick();assert.equal(ui.panel.saveScanButton.disabled,true);assert.equal(ui.panel.scanChoice.hidden,false);
+ ui.panel.scanChoice.value='two';ui.panel.scanChoice.onchange();assert.equal(ui.panel.saveScanButton.disabled,false);await ui.panel.saveScanButton.onclick();
+ assert.equal(ui.requests.length,1);assert.equal(ui.panel.importId,'two');assert.equal(ui.panel.addDetails.open,true);assert.equal(ui.panel.key.input.disabled,true);assert.equal(ui.panel.model.input.value,'');
+ ui.panel.clear();assert.equal(ui.panel.scanSelection,'');
 });
 test('a delayed model response does not refill a changed API form',async()=>{
  const ui=fixture(true);await ui.panel.refresh();ui.panel.kind.value='api';ui.panel.url.input.value='https://first.test/v1';ui.panel.key.input.value='fixture-key';

@@ -47,13 +47,14 @@ test('opening a new chat before the header Back popstate does not close it',asyn
 test('production history restore respects disabled client and WSL entry gates',async()=>{
   const source=fs.readFileSync('web/shell/app.js','utf8'),start=source.indexOf('  restore:async('),end=source.indexOf('  },onError:',start);
   const restoreSource='('+source.slice(start,end+3).trim().replace(/^restore:/,'')+')';
-  for(const [provider,host,entry] of [['codex','local','codex'],['codex','fixture-ssh','codex'],['codex','wsl:fixture','wsl:fixture'],['claude','local','claude'],['deepseek','local','deepseek']]){
+  for(const [provider,host,entry] of [['codex','local','codex'],['codex','fixture-ssh','codex'],['codex','wsl:'+'a'.repeat(32),'wsl:'+'a'.repeat(32)],['claude','local','claude'],['deepseek','local','deepseek']]){
     for(const enabled of [false,true]){
       let opened=0,chosen=0,repaired=false,notified=false;
       const context=vm.createContext({$:()=>({hidden:false}),document:{querySelectorAll:()=>[]},api:async()=>({authenticated:true}),listIdentity:'',listAuthIdentity:()=>'',history:{replaceState:()=>repaired=true},toast:()=>notified=true,
         browserNavigation:{entry:route=>({route}),read:()=>null,url:()=> '/',invalidate(){}},
         clientNavigation:{managementClients:()=>[{id:entry,enabled},...(entry.startsWith('wsl:')?[{id:'codex',enabled:true}]:[])],choose:async()=>chosen++},
         openChat:async()=>opened++,desktopSessions:{open:async()=>opened++}});
+      require('./fixtures/codex-entry-predicates.cjs')(context);
       await vm.runInContext(restoreSource,context)({provider,id:'fixture',host});
       assert.equal(opened,enabled?1:0,provider+'/'+host);assert.equal(chosen,enabled?1:0);assert.equal(repaired,!enabled);assert.equal(notified,!enabled);
     }

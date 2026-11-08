@@ -2,7 +2,7 @@
 (() => {
   const t = text => typeof BridgeI18n === 'undefined' ? text : BridgeI18n.t(text);
   const registered = new WeakMap(), registeredSources = new WeakSet(), pointers = new Map();
-  let dialog, title, content, status, close, zoomIn, zoomOut, fit, percentage, opener, image, observer, reuse;
+  let dialog, title, content, status, close, zoomIn, zoomOut, fit, percentage, opener, image, observer, reuse, save;
   let composer, reuseValue, reuseScope;
   let zoom = 1, x = 0, y = 0, width = 0, height = 0, frame = 0, gesture, lastTap;
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
@@ -99,12 +99,14 @@
       catch(error){if(dialog.open&&reuseValue===value)status.textContent=error.message||t('附件上传失败，请重试');}
       finally{if(dialog.open&&reuseValue===value)reuse.disabled=false;}
     });
+    save=document.createElement('a');save.id='image-preview-save';save.onclick=()=>dialog.close();
+    save.innerHTML='<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 16v4h16v-4"/></svg>';
     reuse.hidden=true;toolbar.append(close, title, reuse);
     content = document.createElement('div'); content.className = 'image-preview-content';
     const controls = document.createElement('div'); controls.className = 'image-preview-controls';
     zoomOut = button('zoom-out', '−', () => changeZoom(zoom / 1.25)); zoomIn = button('zoom-in', '+', () => changeZoom(zoom * 1.25)); fit = button('fit', '', reset);
     percentage = document.createElement('output'); percentage.id = 'image-preview-scale';
-    controls.append(zoomOut, percentage, zoomIn, fit);
+    controls.append(zoomOut, percentage, zoomIn, fit, save);
     status = document.createElement('p'); status.id = 'image-preview-status'; status.setAttribute('role', 'status');
     dialog.append(toolbar, content, controls, status); document.body.append(dialog);
     observer = new ResizeObserver(measure);
@@ -135,7 +137,7 @@
     // Only renderer-identified images from the current gateway; no arbitrary URLs.
     const pathname = window.BridgeRelayPath?.(url.pathname) ?? url.pathname;
     const codex = /^\/api\/sessions\/[0-9a-f-]{36}\/(?:uploads\/[0-9a-f-]{36}\/preview|desktop-images\/[a-f0-9]{64}|files\/[a-f0-9]{64})$/.test(pathname);
-    const desktop = /^\/api\/desktop-sessions\/(?:claude|deepseek)\/(?:uploads\/[0-9a-f-]{36}\/preview|images\/[0-9a-f]{64})$/.test(pathname) && !!url.searchParams.get('sessionId');
+    const desktop = /^\/api\/desktop-sessions\/(?:claude|deepseek|zcode)\/(?:uploads\/[0-9a-f-]{36}\/preview|images\/[0-9a-f]{64})$/.test(pathname) && !!url.searchParams.get('sessionId');
     return url.origin === location.origin && (codex || desktop) ? {url:url.href,name:target.dataset.imageName} : null;
   }
   function canReuse(value, scope) {
@@ -145,7 +147,11 @@
     const value = source(target); if (!value) return;
     event.preventDefault(); if (!dialog) create(); cleanup(); opener = target;
     reuseScope=composer?.scope();reuseValue=canReuse(value,reuseScope)?value:null;
-    reuse.textContent=t('添加到对话');reuse.hidden=!reuseValue;reuse.disabled=false;
+    reuse.textContent=t('引用');reuse.hidden=!reuseValue;reuse.disabled=false;
+    const download=new URL(value.downloadUrl||value.url,location.href);
+    if(!value.downloadUrl){download.searchParams.set('download','1');download.searchParams.set('variant','original');}
+    save.setAttribute('aria-label',t('保存到本地'));save.title=t('保存到本地');save.hidden=!BridgeDownload.eligible(download.href,location.href);
+    if(!save.hidden){save.href=download.href;save.download=value.name||t('图片附件');}else save.removeAttribute('href');
     close.textContent = '× ' + t('关闭'); close.setAttribute('aria-label', t('关闭图片预览'));
     zoomIn.setAttribute('aria-label', t('放大图片')); zoomOut.setAttribute('aria-label', t('缩小图片')); fit.textContent = t('适应屏幕');
     percentage.setAttribute('aria-label', t('图片缩放比例')); percentage.textContent = '100%'; zoomIn.disabled = zoomOut.disabled = fit.disabled = true;
@@ -160,12 +166,12 @@
     configureComposer(value) { composer=value; },
     isRegisteredSource(value) { return registeredSources.has(value); },
     composerScope(context) { return composer?.canReuse({context}) ? composer.scope() : null; },
-    registerWorkspaceImage(target, result, context, composerScope=null) {
+    registerWorkspaceImage(target, result, context, composerScope=null, downloadUrl=null) {
       if (target.localName !== 'img' || result.kind !== 'image' || !/^image\/(?:png|jpeg|gif|webp)$/.test(result.mime) || !/^[A-Za-z0-9+/]+={0,2}$/.test(result.data)) return false;
       const url = 'data:' + result.mime + ';base64,' + result.data; if (target.src !== url) return false;
       // This explicit renderer call is the trust boundary. A copied DOM attribute
       // cannot opt arbitrary data/blob/remote URLs into the delegated viewer.
-      const value={url,name:result.name,context,composerScope,mime:result.mime,size:result.size};registeredSources.add(value);
+      const value={url,name:result.name,context,composerScope,mime:result.mime,size:result.size,downloadUrl};registeredSources.add(value);
       registered.set(target, value); target.classList.add('image-preview-source'); target.tabIndex = 0; target.setAttribute('role', 'button');
       target.setAttribute('aria-label', t('查看图片') + ' ' + (result.name || target.alt)); return true;
     }

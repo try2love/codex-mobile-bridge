@@ -351,6 +351,12 @@ class WslAccountRoutingBoundaries(unittest.TestCase):
         return {'provider': 'codex', 'entry': self.row['id'], 'action': 'switch',
                 'expectedIdentity': 'fixture-identity', 'id': 'saved', **values}
 
+    def test_local_only_profiles_never_start_wsl_inventory(self):
+        self.registry.entries = [{'id': 'codex:fixture', 'kind': 'codex-local', 'home': '/fixture'}]
+        with patch('bridge.features.accounts.wsl_accounts.wsl.running_distributions') as inventory:
+            self.assertEqual(self.accounts.environments('codex')['environments'], [])
+            inventory.assert_not_called()
+
     def test_invalid_cross_provider_disabled_and_tampered_targets_never_dispatch(self):
         for entry in ('desktop', 'local', 'ssh:fixture', 'wsl:'+'f'*32, 'wsl-claude:'+'f'*32):
             with self.subTest(entry=entry), self.assertRaises(ValueError):

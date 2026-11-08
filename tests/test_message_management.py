@@ -24,7 +24,7 @@ class MessageManagementTests(unittest.TestCase):
 
     def native(self):
         b = Bridge.__new__(Bridge)
-        b.host = 'local'; b.accounts = None
+        b.host = 'local'; b.accounts = None; b.question_skips = None
         b.lock = threading.RLock(); b.submit_lock = threading.Lock(); b.goal_lock = threading.RLock()
         b.live = {self.thread: LiveSession(self.thread)}; b.goal_commands = {}
         b.ledger_path = Path(self.temp.name)/'submissions.json'

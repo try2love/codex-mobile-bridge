@@ -108,14 +108,14 @@ class WorkspaceTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.work.read('oversize', download=True)
 
     def test_file_browsing_uses_metadata_without_activating_desktop(self):
-        bridge = SimpleNamespace(host='local', store=SimpleNamespace(get=lambda _: {'cwd': str(self.root)}))
+        bridge = SimpleNamespace(host='local', local=True, store=SimpleNamespace(get=lambda _: {'cwd': str(self.root)}))
         result = Bridge.workspace(bridge, support.THREAD, 'list', {})
         self.assertEqual(result['project'], 'project')
 
     def test_remote_operations_execute_on_remote_root_and_preserve_errors(self):
         remote = Path(self.temp.name) / 'remote'; remote.mkdir(); (remote / 'remote.txt').write_text('remote')
         store = RemoteStore('fixture-host'); store.get = lambda _: {'cwd': str(remote)}
-        bridge = SimpleNamespace(host='remote:fixture', store=store)
+        bridge = SimpleNamespace(host='remote:fixture', local=False, store=store)
         def execute(alias, source, timeout):
             self.assertEqual(alias, 'fixture-host'); output = io.StringIO()
             with contextlib.redirect_stdout(output): exec(compile(source, '<remote-workspace>', 'exec'), {})

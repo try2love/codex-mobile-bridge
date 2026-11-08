@@ -190,6 +190,13 @@ def public_urls(preferences):
             if c['enabled'] and c['accessMode'] in ('server', 'nas', 'cloudflare', 'tailscale', 'external') and c['publicUrl']]
 
 
+def phone_urls(preferences, hosts, quick_url=''):
+    """Ordered entry list used by both the desktop overview and paired phones."""
+    fixed = [url.rstrip('/') for url in public_urls(preferences)]
+    local = [f'http://{host}:{preferences["port"]}' for host in hosts if host != 'localhost']
+    return list(dict.fromkeys(fixed + ([quick_url.rstrip('/')] if quick_url else []) + local))
+
+
 def public_url(preferences):
     return next(iter(public_urls(preferences)), '')
 
