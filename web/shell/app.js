@@ -1075,13 +1075,15 @@ function renderAsyncApproval(request, previous){
       const actions=el('div','actions'),skip=el('button','secondary',t('跳过'));skip.type='button';skip.dataset.action='skip-question';
       actions.append(skip);field.append(label,actions);
     }
+    field.querySelector('button[type="submit"]')?.remove();
     const select=field.querySelector('select');
     if(select){select.options[0].textContent=t('请选择…');select.options[select.options.length-1].textContent=t('自行填写');field.querySelector('textarea').placeholder=t('输入你的回复');}
     field.querySelector('[data-action="skip-question"]').textContent=t('跳过');
     field.querySelector('[data-action="skip-question"]').onclick=()=>submit({action:'skip',questionId:question.id});
     controls[question.id]=field.answer;form.append(field);
   }
-  const actions=el('div','actions'),send=el('button','primary',t('提交回复'));send.type='submit';actions.append(send);
+  const singleQuestion=request.params.questions.length===1;
+  const actions=singleQuestion?form.querySelector('[data-question] .actions'):el('div','actions'),send=el('button','primary',t('提交回复'));send.type='submit';actions.append(send);
   form.onsubmit=event=>{
     event.preventDefault();const answers={};
     for(const [key,get] of Object.entries(controls)){
@@ -1089,7 +1091,8 @@ function renderAsyncApproval(request, previous){
     }
     submit({answers});
   };
-  form.append(actions,error);card.append(form);setBusy(busy);
+  if(!singleQuestion)form.append(actions);
+  form.append(error);card.append(form);setBusy(busy);
   if(busy)card.append(el('p','muted',t('已发送，等待桌面确认…')));
   return card;
 }

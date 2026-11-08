@@ -62,6 +62,8 @@ Codex 创建交接的隔离用例覆盖非默认模型双向切换、首次发�
 
 生产 Web 资源在 Chromium 390/1280 两个视口均通过四 Agent 新建表单、默认选择、刷新、标签、无横向溢出和创建字段检查。实际检查窄屏 Codex/ZCode、宽屏 Claude PNG；完整证据和 8 张截图在 `.tmp/preview3-creation-browser/`，无真实 Agent 写入。CLI 回显脚本为 `tests/acceptance/claude_create_models_native.py`。定向结果摘要在 `.tmp/preview3-creation-evidence.json`。
 
+2026-11-08 的 Mac Test rc5 成品补齐真实原 App 接管检查：在独立空聊天中选择目录默认值之外的 `gpt-6-luna / high`，创建返回用时 4.062 秒。原 Desktop owner 回读与显式重连后均保持所选模型、强度和 `canSend=true`，创建记录为 `applied`。没有发送模型消息，未重启任何 Agent；这项证据覆盖原 App 设置交接，不代表实际推理响应或 Windows 已验证。
+
 ## 影响
 
 首条输入与用户选择保持同一次原生创建语义，避免隐式默认模型消费。Codex Desktop 显式创建增加一次 owner 设置与回读；原 App 未就绪时保留原聊天并提示继续同一请求，没有新增常驻监听或轮询。缓存验证增加配置摘要读取；只读取候选配置文件，不增加全量目录扫描或额外 CLI 会话。需要目录确认或账号发生变化时，用户可能需要刷新并重新选择。
