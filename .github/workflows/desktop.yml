@@ -41,6 +41,9 @@ jobs:
         with:
           node-version: '24'
           cache: npm
+      - name: Build self-contained Intel macOS cryptography
+        if: runner.os == 'macOS' && matrix.arch == 'x64'
+        run: OPENSSL_STATIC=1 python -m pip install --no-cache-dir --no-binary cryptography cryptography==50.0.2
       - run: python -m pip install -r requirements-desktop.txt
       - run: npm ci
       - run: python -B -m unittest discover -s tests -v
