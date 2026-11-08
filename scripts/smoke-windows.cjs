@@ -90,7 +90,8 @@ async function main(){
   }
   let stderr='',client,started=false,child,exited;
   function launch(extra=[]){
-    child=spawn(executable,['--remote-debugging-address=127.0.0.1','--remote-debugging-port='+debugPort,...extra],{env,stdio:['ignore','ignore','pipe']});
+    // Keep covered test windows active; explicit tray hiding is still tested below.
+    child=spawn(executable,['--disable-features=CalculateNativeWinOcclusion','--remote-debugging-address=127.0.0.1','--remote-debugging-port='+debugPort,...extra],{env,stdio:['ignore','ignore','pipe']});
     child.stderr.on('data',value=>stderr+=value);
     exited=new Promise(resolve=>{child.on('exit',resolve);child.on('error',resolve);});
   }
