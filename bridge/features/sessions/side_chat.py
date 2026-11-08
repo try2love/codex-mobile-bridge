@@ -3,7 +3,6 @@
 One runtime owns each temporary child; closing it destroys the in-memory fork.
 Views are shared by authenticated gateway clients, never persisted in Bridge.
 """
-import re
 import copy
 import hashlib
 import json
@@ -18,6 +17,7 @@ from pathlib import Path
 from bridge.features.sessions.model import attachment_prompt, normalize_state, normalize_request
 from bridge.features.sessions.tool_images import TOOL_IMAGE_CACHE, public_turns
 from bridge.features.workspace.uploads import Uploads
+from bridge.features.accounts.models import valid_model_id
 
 
 BOUNDARY = """You are in a temporary side conversation, separate from the main thread.
@@ -292,7 +292,7 @@ class SideChat:
                     'submissions': [{'id': k, 'status': v['status'], 'text': v['text'], 'mode': v.get('mode', 'send'), 'workMode': v.get('workMode', 'default'), 'attachments': v.get('attachments', []), 'error': v.get('error')} for k, v in self.submissions.items()]}
 
     def settings(self, model, effort, catalog):
-        if not isinstance(model, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./:@+-]{0,199}", model):
+        if not valid_model_id(model):
             raise ValueError("模型 ID 格式不正确")
         if effort not in ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"):
             raise ValueError("请选择有效的推理强度")

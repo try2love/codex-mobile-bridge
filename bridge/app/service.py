@@ -52,6 +52,7 @@ from bridge.features.accounts.account import Account
 from bridge.features.accounts.accounts import Accounts, operation
 from bridge.features.accounts.draft_identity import codex_account_identity, draft_identity
 from bridge.features.accounts.cli_access import CliAccess
+from bridge.features.accounts.models import valid_model_id
 from bridge.features.sessions.goal import GoalRPC, GoalError, GoalUnavailable, GoalUnsupported, goal_activation, goal_identity, normalize_goal_result, normalize_ui_locale, goal_command_fingerprint, goal_state_confirms_command, native_goal_absent, normalize_goal, plan_goal_command, read_native_goal
 from bridge.features.workspace.uploads import Uploads, image_type
 from bridge.clients.codex.remote import upload_file
@@ -2955,7 +2956,7 @@ class Bridge:
 
     @operation
     def settings(self, thread_id, model, effort, *, fast_mode=None):
-        if not isinstance(model, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./:@+-]{0,199}", model):
+        if not valid_model_id(model):
             raise ValueError("模型 ID 格式不正确")
         if effort not in ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"):
             raise ValueError("请选择有效的推理强度")

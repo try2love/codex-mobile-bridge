@@ -246,6 +246,18 @@ class SideSettingsTests(unittest.TestCase):
         chat.stop();chat.send('next', str(uuid.uuid4()))
         self.assertEqual(chat.runtime.calls[-1][1]['effort'], 'low')
 
+    def test_unicode_provider_model_can_be_selected(self):
+        parent = str(uuid.uuid4())
+        settings = {'model': 'original', 'modelProvider': 'custom', 'config': {'model_reasoning_effort': 'low'}}
+        chat = SideChat('runtime', '/home', parent, '/project', settings, RuntimeFixture)
+        self.addCleanup(chat.close)
+        model = 'xmy:日卡/deepseek-v4.1-flash'
+        chat.settings(model, 'high', {'models': [{'id': model, 'efforts': ['high']}]})
+        chat.send('test', str(uuid.uuid4()))
+        self.assertEqual(chat.runtime.calls[-1][1]['model'], model)
+        with self.assertRaisesRegex(ValueError, '模型 ID 格式不正确'):
+            chat.settings('route/\tmodel', 'low', {'models': []})
+
     def test_catalog_is_child_scoped_and_stale_id_cannot_mutate(self):
         from unittest.mock import Mock
         directory = tempfile.TemporaryDirectory(dir=support.ROOT / '.tmp')

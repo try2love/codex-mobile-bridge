@@ -23,7 +23,7 @@ from urllib.parse import urlsplit
 
 from bridge.features.accounts.account import AccountRPC, AccountError, Account
 from bridge.clients.desktop_app import DesktopApp
-from bridge.features.accounts.models import model_catalog, model_ids
+from bridge.features.accounts.models import model_catalog, model_ids, valid_model_id
 from bridge.clients.codex.catalog import Catalog, ModelStore, MODEL_REFRESH_SECONDS
 from bridge.features.accounts.info import AccountInfo
 from bridge.features.accounts.operation_gate import OperationGate
@@ -615,7 +615,7 @@ class Accounts:
             name = self.name(value)
             url, key, model = value.get('baseUrl', ''), value.get('apiKey', ''), value.get('model', '')
             url, key = self.api_credentials(value)
-            if not isinstance(model, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_./:@+-]{0,199}', model):
+            if not valid_model_id(model):
                 raise ValueError('请填写有效模型 ID')
             existing = self.row(value['id']) if value.get('id') else None
             if existing and (existing['kind'] != 'api' or existing['id'] == self.info.current().get('id')):
