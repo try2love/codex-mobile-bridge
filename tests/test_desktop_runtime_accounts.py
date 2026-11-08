@@ -1,4 +1,5 @@
 """Explicit shared Desktop initialization without starting a real App."""
+import os
 import unittest
 import uuid
 from contextlib import nullcontext
@@ -231,6 +232,7 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
         self.app.stop.assert_not_called()
         self.app.start.assert_not_called()
 
+    @unittest.skipIf(os.name == 'nt', 'macOS shared runtime uses POSIX file locks')
     def test_unconfigured_mac_switch_hands_lock_to_worker_without_self_conflict(self):
         self.mocks['initialize_lock'].side_effect = self.real_initialization_lock
         row = {'id': '1'*32, 'kind': 'api', 'name': 'Fixture'}

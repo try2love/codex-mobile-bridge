@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,7 +23,8 @@ class QuestionSkipTests(unittest.TestCase):
             self.assertFalse(first.contains('thread', 'async:turn:card', 'other-question'))
             restored = QuestionSkips(directory, 'local:/one/.codex', private_json)
             self.assertTrue(restored.contains('thread', 'async:turn:card', 'question'))
-            self.assertEqual(restored.path.stat().st_mode & 0o777, 0o600)
+            if os.name != 'nt':
+                self.assertEqual(restored.path.stat().st_mode & 0o777, 0o600)
 
     def test_failed_save_does_not_hide_question_or_leave_false_receipt(self):
         with tempfile.TemporaryDirectory(dir=ROOT / '.tmp') as directory:

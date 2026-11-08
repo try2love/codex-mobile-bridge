@@ -46,6 +46,7 @@ class ServiceBoundary(unittest.TestCase):
                     signature._verify_previous_build(str(bad), digest)
             codesign.assert_not_called()
 
+    @unittest.skipIf(os.name == "nt", "macOS peer identity uses Unix sockets and UID")
     def test_relocation_does_not_authorize_a_different_gateway_or_pid_generation(self):
         import struct
 
