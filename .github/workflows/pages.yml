@@ -3,7 +3,11 @@ name: Product website
 on:
   push:
     branches: [main]
-    paths: ['site/**', '.github/workflows/pages.yml']
+    paths: ['site/**', 'scripts/build-download-stats.py', '.github/workflows/pages.yml']
+  schedule:
+    - cron: '23 3 * * *'
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -17,6 +21,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       pages: write
       id-token: write
     environment:
@@ -24,6 +29,12 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: main
+      - name: Generate platform download statistics
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/build-download-stats.py --repository "$GITHUB_REPOSITORY" --output site/downloads
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4
         with:

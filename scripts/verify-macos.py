@@ -14,6 +14,9 @@ from pathlib import Path
 
 from zcode_starter_bundle import helper_path, verify as verify_zcode_starter
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from bridge.platforms.macos import release_identity
+
 
 def verify(app, arch):
     metadata = json.loads((app/'Contents/Resources/update-version.json').read_text(encoding='utf-8'))
@@ -30,6 +33,10 @@ def verify(app, arch):
     for helper in helpers:
         subprocess.run(['codesign', '--verify', '--strict', str(helper)], check=True)
         subprocess.run([str(helper), '--self-check'], check=True, timeout=10)
+    if info.get('CFBundleIdentifier') == release_identity.PRODUCT:
+        if not helper_path(app).is_dir():
+            raise RuntimeError('Production package is missing the local ZCode launcher')
+        release_identity.read(runtime.resolve())
     if helper_path(app).exists():
         verify_zcode_starter(app)
     for executable in (app/'Contents/MacOS'/info['CFBundleExecutable'], runtime, cloudflared, *helpers):

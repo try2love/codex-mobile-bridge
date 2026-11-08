@@ -8,7 +8,7 @@ function fixture(){
  const $=id=>{if(!nodes.has(id))nodes.set(id,node());return nodes.get(id);};$('list-mode').value='recent';
  const context=vm.createContext({CliConnectionsPanel:class{},$,el:node,window:{BridgeSessionLinks:{text:identity=>'codex://threads/'+identity.id}},document:{body:{append:box=>dialogs.push(box)}},SessionMenu:class{constructor(){}bind(button,context){button.menuContext=context;}},
    BridgeClipboard:{copyWithFeedback:async(get,item)=>{if(item.disabled)return;copies.push(get());}},BridgeI18n:{locale:()=> 'en-US'},t:s=>s,localStorage:{getItem(){return null;},setItem(){}},
-   listIdentity:'gateway',csrf:'token',clientNavigation:{provider:'codex',clients:[]},state:null,listRows:[],currentId:null,currentHost:'local',listHasMore:false,listRenderStamp:'',listComplete:true,listReadFinished:true,availableSources:[],
+   workbench:{},listIdentity:'gateway',csrf:'token',clientNavigation:{provider:'codex',clients:[]},state:null,listRows:[],currentId:null,currentHost:'local',listHasMore:false,listRenderStamp:'',listComplete:true,listReadFinished:true,availableSources:[],
    renderActivity(){},sessionAccess:v=>({canConfigure:true,canEditMessages:true,...v}),sourceLabel:()=> 'APP',dateText:()=>'',toast(){},pinRow:row=>row,sessionPins:{value:(_identity,pinned)=>!!pinned,set(identity,pinned){requests.push({url:`/${identity.host}/${identity.id}/pin`,body:{pinned}});}},desktopSessions:{refresh:async()=>{}},openChat:async()=>{},
    setTimeout:fn=>{timers.set(++timer,fn);return timer;},clearTimeout:id=>timers.delete(id),uuid:()=> 'request-id',
    api:async(url,body)=>{requests.push({url,body});return {status:'confirmed'};},sessionUrl:(id,action,host)=>`/${host}/${id}/${action}`,loadList:async()=>{}});

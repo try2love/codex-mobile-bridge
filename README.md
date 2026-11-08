@@ -3,6 +3,22 @@
   <img src="site/assets/icon.png" alt="Codex Mobile Bridge" width="112" height="112">
 </p>
 
+<p align="center">
+  <a href="https://github.com/try2love/codex-mobile-bridge/stargazers"><img alt="GitHub Stars" src="https://img.shields.io/github/stars/try2love/codex-mobile-bridge?style=flat&amp;color=gold"></a>
+  <a href="https://github.com/try2love/codex-mobile-bridge/releases/latest"><img alt="Latest Release" src="https://img.shields.io/github/v/release/try2love/codex-mobile-bridge?style=flat"></a>
+  <a href="https://github.com/try2love/codex-mobile-bridge/issues"><img alt="GitHub Issues" src="https://img.shields.io/github/issues/try2love/codex-mobile-bridge?style=flat"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/try2love/codex-mobile-bridge/releases"><img alt="Android downloads" src="https://img.shields.io/endpoint?url=https%3A%2F%2Ftry2love.github.io%2Fcodex-mobile-bridge%2Fdownloads%2Fandroid.json&amp;style=flat"></a>
+  <a href="https://github.com/try2love/codex-mobile-bridge/releases"><img alt="iOS downloads" src="https://img.shields.io/endpoint?url=https%3A%2F%2Ftry2love.github.io%2Fcodex-mobile-bridge%2Fdownloads%2Fios.json&amp;style=flat"></a>
+  <a href="https://github.com/try2love/codex-mobile-bridge/releases"><img alt="Linux downloads" src="https://img.shields.io/endpoint?url=https%3A%2F%2Ftry2love.github.io%2Fcodex-mobile-bridge%2Fdownloads%2Flinux.json&amp;style=flat"></a>
+  <a href="https://github.com/try2love/codex-mobile-bridge/releases"><img alt="macOS downloads" src="https://img.shields.io/endpoint?url=https%3A%2F%2Ftry2love.github.io%2Fcodex-mobile-bridge%2Fdownloads%2Fmacos.json&amp;style=flat"></a>
+  <a href="https://github.com/try2love/codex-mobile-bridge/releases"><img alt="Windows downloads" src="https://img.shields.io/endpoint?url=https%3A%2F%2Ftry2love.github.io%2Fcodex-mobile-bridge%2Fdownloads%2Fwindows.json&amp;style=flat"></a>
+</p>
+
+<p align="center"><sub>平台下载量统计所有公开正式版和预览版的安装资产（iOS 包括专用源码包与 IPA），排除更新元数据与校验文件。包含重复下载和自动更新下载，不代表用户数或安装数；每日更新。</sub></p>
+
 # Codex Mobile Bridge · 多客户端远程工作台
 
 > **v2.1.7 正式版**：[发布页](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.1.7) · [完整更新说明](RELEASE_NOTES.md#v217) · [手机安装说明](mobile/README.md)。完善手机通知、会话整理、项目引用与连接恢复。

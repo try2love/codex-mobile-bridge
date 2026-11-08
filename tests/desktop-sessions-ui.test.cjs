@@ -542,11 +542,10 @@ test('closing a split tool while narrow preserves the adjacent tool when widened
  await wb.close('file:preview');assert.equal(s.splitTab,'files');assert.equal(wb.splitMode,false);ui.view.conversation.clientWidth=1000;wb.paint();assert.equal(wb.splitMode,true);assert.equal(wb.panel.firstElementChild,s.files[0].body);
  wb.unsplit();await wb.close('files');assert.equal(s.active,'chat');assert.equal(s.splitTab,null);
 });
-test('a pending side-chat close updates only its original session and respects cancellation',async()=>{
- const ui=await opened(),wb=ui.view.workbench,s=wb.current;let finish;
- s.files=['files','sidechat'].map(id=>({id,name:id,body:wb.node('div')}));s.files[1].sideChat={end:()=>new Promise(resolve=>finish=resolve),dispose(){}};wb.split('sidechat');
- const cancelled=wb.close('sidechat');finish(false);await cancelled;assert.equal(s.splitTab,'sidechat');assert.equal(s.files.length,2);
- const closing=wb.close('sidechat');wb.open('other','local');const other=wb.current;finish(true);await closing;assert.equal(wb.current,other);assert.equal(s.splitTab,'files');assert.equal(s.active,'files');assert.equal(other.active,'chat');
+test('closing a side-chat tab preserves the native chat and updates only its original session',async()=>{
+ const ui=await opened(),wb=ui.view.workbench,s=wb.current;let disposed=0,ended=0;
+ s.files=['files','sidechat'].map(id=>({id,name:id,body:wb.node('div')}));s.files[1].sideChat={end(){ended++;},dispose(){disposed++;wb.open('other','local');}};wb.split('sidechat');
+ await wb.close('sidechat');assert.equal(ended,0);assert.equal(disposed,1);assert.equal(s.splitTab,'files');assert.equal(s.files.length,1);assert.equal(wb.current.id,'other');assert.equal(wb.current.active,'chat');
 });
 
 test('model picker preserves current effort only for compatible models',async()=>{

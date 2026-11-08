@@ -3,6 +3,22 @@
   <img src="site/assets/icon.png" alt="Codex Mobile Bridge" width="112" height="112">
 </p>
 
+<p align="center">
+  <a href="https://github.com/try2love/codex-mobile-bridge/stargazers"><img alt="GitHub Stars" src="https://img.shields.io/github/stars/try2love/codex-mobile-bridge?style=flat&amp;color=gold"></a>
+  <a href="https://github.com/try2love/codex-mobile-bridge/releases/latest"><img alt="Latest Release" src="https://img.shields.io/github/v/release/try2love/codex-mobile-bridge?style=flat"></a>
+  <a href="https://github.com/try2love/codex-mobile-bridge/issues"><img alt="GitHub Issues" src="https://img.shields.io/github/issues/try2love/codex-mobile-bridge?style=flat"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/try2love/codex-mobile-bridge/releases"><img alt="Android downloads" src="https://img.shields.io/endpoint?url=https%3A%2F%2Ftry2love.github.io%2Fcodex-mobile-bridge%2Fdownloads%2Fandroid.json&amp;style=flat"></a>
+  <a href="https://github.com/try2love/codex-mobile-bridge/releases"><img alt="iOS downloads" src="https://img.shields.io/endpoint?url=https%3A%2F%2Ftry2love.github.io%2Fcodex-mobile-bridge%2Fdownloads%2Fios.json&amp;style=flat"></a>
+  <a href="https://github.com/try2love/codex-mobile-bridge/releases"><img alt="Linux downloads" src="https://img.shields.io/endpoint?url=https%3A%2F%2Ftry2love.github.io%2Fcodex-mobile-bridge%2Fdownloads%2Flinux.json&amp;style=flat"></a>
+  <a href="https://github.com/try2love/codex-mobile-bridge/releases"><img alt="macOS downloads" src="https://img.shields.io/endpoint?url=https%3A%2F%2Ftry2love.github.io%2Fcodex-mobile-bridge%2Fdownloads%2Fmacos.json&amp;style=flat"></a>
+  <a href="https://github.com/try2love/codex-mobile-bridge/releases"><img alt="Windows downloads" src="https://img.shields.io/endpoint?url=https%3A%2F%2Ftry2love.github.io%2Fcodex-mobile-bridge%2Fdownloads%2Fwindows.json&amp;style=flat"></a>
+</p>
+
+<p align="center"><sub>Platform counts include installation assets from all published stable and preview releases (iOS includes its source archive and IPA), excluding update metadata and checksums. Repeat downloads and updater downloads count; these are not user or installation counts. Updated daily.</sub></p>
+
 # Codex Mobile Bridge · A remote workbench for desktop agents
 
 > **v2.1.7 (stable):** [Release page](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.1.7) · [Full release notes](RELEASE_NOTES.md#v217) · [Mobile installation](mobile/README.md). Mobile notifications, session organization, project references and connection recovery.

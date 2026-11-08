@@ -1190,7 +1190,7 @@ test('update reminder routes directly to the maintenance update tab without a sy
  const panels=Object.fromEntries(['advanced','updates','logs'].map(name=>[name,{dataset:{panel:name},hidden:false}]));
  const tabs=['general','updates','logs'].map(name=>({dataset:{maintenanceTab:name},classList:{toggle(_name,value){this.active=value;}}}));
  const scope=vm.createContext({window:{},maintenance:panels.advanced,maintenanceTabs:{querySelectorAll:()=>tabs},description:{dataset:{}},back:{},client:null,
-   descriptions:{advanced:'Application maintenance'},t:value=>value,selectClient(){},hasClient(){},clientPage(){},document:{querySelector:selector=>panels[selector.match(/data-panel="([^"]+)"/)[1]]}});
+   descriptions:{advanced:'Application maintenance'},t:value=>value,selectClient(){},hasClient(){},clientPage(){},forgetClient(){},document:{querySelector:selector=>panels[selector.match(/data-panel="([^"]+)"/)[1]]}});
  const layout=fs.readFileSync(path.join(__dirname,'../desktop/shell/layout.js'),'utf8');
  vm.runInContext(layout.split('\n').find(line=>line.trim().startsWith('function maintenanceTab('))+'\n'+layout.split('\n').find(line=>line.trim().startsWith('window.GatewayLayout=')),scope);
  ui.context.window.GatewayLayout=scope.window.GatewayLayout;

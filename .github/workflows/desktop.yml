@@ -1,6 +1,9 @@
 name: Desktop builds
 on:
   workflow_call:
+    secrets:
+      UPDATE_SIGNING_KEY:
+        required: true
     inputs:
       source_ref:
         type: string
@@ -43,6 +46,9 @@ jobs:
       - run: python -B -m unittest discover -s tests -v
       - run: npm run test:desktop
       - run: npm run test:updater
+      - name: Verify native macOS published-peer upgrade handoff
+        if: runner.os == 'macOS'
+        run: python -B tests/acceptance/zcode_published_peer.py
       - run: python scripts/build-desktop.py
       - name: Verify packaged Windows continuous terminal
         if: runner.os == 'Windows'
@@ -53,6 +59,7 @@ jobs:
         run: npm run build:mac -- --${{ matrix.arch }}
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          CMB_UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
       - name: Verify the distributed macOS DMG and ZIP
         if: runner.os == 'macOS'
         run: |
