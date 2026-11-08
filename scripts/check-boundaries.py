@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-PROVIDERS = {'codex', 'claude', 'deepseek'}
+PROVIDERS = {'codex', 'claude', 'deepseek', 'zcode', 'antigravity'}
 
 
 def dependencies(source, package):

@@ -3,7 +3,7 @@
 const ClientIdentity=(()=>{
   const entry=id=>typeof id==='string'&&/^(claude|deepseek):[0-9a-f]{32}$/.test(id);
   const family=id=>entry(id)?id.split(':')[0]:typeof id==='string'&&/^wsl-claude:[0-9a-f]{32}$/.test(id)?'claude':typeof id==='string'&&/^(codex|wsl):[0-9a-f]{32}$/.test(id)?'codex':id;
-  const desktop=id=>entry(id)||['claude','deepseek','zcode'].includes(id);
+  const desktop=id=>entry(id)||['claude','deepseek','zcode','antigravity'].includes(id);
   function path(id,action,sessionId=null,extra={}){
     if(!desktop(id))throw Error('未知客户端接入');
     const query=new URLSearchParams(extra);

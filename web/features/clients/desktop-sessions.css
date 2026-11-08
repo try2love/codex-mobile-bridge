@@ -7,3 +7,175 @@
 .ds-model-form .error:empty,.ds-model-form .muted:empty{display:none}
 
 .ds-send-feedback{margin:8px 0;font-size:12px}.ds-send-feedback p{max-height:4.5em;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;margin:5px 0 0}
+
+/* Notion-style Light Mode Model Picker & Quota Card */
+.ds-model-dialog {
+  border-radius: 18px !important;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.08), 0 2px 10px rgba(0, 0, 0, 0.03) !important;
+  background: #ffffff !important;
+  max-width: min(92vw, 440px) !important;
+}
+
+.ds-model-dialog .model-options {
+  max-height: none !important;
+  border-radius: 12px !important;
+  border: 1px solid var(--line, #e5e7eb) !important;
+  background: #fafafa !important;
+  padding: 6px !important;
+  gap: 4px !important;
+}
+
+.ds-model-dialog .model-choice {
+  border-radius: 9px !important;
+  padding: 8px 12px !important;
+  min-height: 42px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  transition: all 0.15s ease !important;
+}
+
+.ds-model-dialog .model-choice:hover {
+  background: #f1f3f5 !important;
+}
+
+.ds-model-dialog .model-choice:has(input:checked) {
+  background: #eff6ff !important;
+  color: #2563eb !important;
+  font-weight: 600 !important;
+}
+
+.ds-model-dialog .model-choice-name {
+  font-size: 13.5px !important;
+  letter-spacing: -0.01em;
+  color: inherit;
+}
+
+.ds-model-dialog .model-choice-badge {
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  padding: 2px 7px !important;
+  border-radius: 10px !important;
+  border: 1px solid transparent !important;
+  background: #f1f3f5 !important;
+  color: #64748b !important;
+  margin-left: auto !important;
+  margin-right: 8px !important;
+  letter-spacing: 0.02em !important;
+}
+
+.ds-model-dialog .model-choice:has(input:checked) .model-choice-badge {
+  background: #dbeafe !important;
+  color: #1d4ed8 !important;
+}
+
+.ds-model-dialog .model-choice-badge.badge-exhausted {
+  background: #fef2f2 !important;
+  color: #dc2626 !important;
+}
+
+.ds-model-dialog .model-choice-check {
+  font-size: 15px !important;
+  color: #2563eb !important;
+}
+
+.ds-model-dialog .effort-options {
+  border-radius: 10px !important;
+  background: #f3f4f6 !important;
+  padding: 3px !important;
+  gap: 3px !important;
+}
+
+.ds-model-dialog .effort-choice {
+  border-radius: 8px !important;
+  min-height: 38px !important;
+  font-size: 13px !important;
+  font-weight: 500 !important;
+}
+
+.ds-model-dialog .effort-choice:has(input:checked) {
+  background: #ffffff !important;
+  color: #1e293b !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06) !important;
+  font-weight: 600 !important;
+}
+
+/* Notion-style Quota Card */
+.ds-usage-card {
+  margin: 14px 0 10px !important;
+  padding: 12px 14px !important;
+  border: 1px solid #e2e8f0 !important;
+  border-radius: 12px !important;
+  background: #f8fafc !important;
+  font-size: 12px !important;
+  line-height: 1.5 !important;
+}
+
+.ds-usage-card-header {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  margin-bottom: 8px !important;
+  font-weight: 650 !important;
+  color: #334155 !important;
+  font-size: 12px !important;
+}
+
+.ds-usage-card-tag {
+  font-size: 10.5px !important;
+  font-weight: 500 !important;
+  padding: 1px 6px !important;
+  border-radius: 6px !important;
+  background: #e2e8f0 !important;
+  color: #475569 !important;
+}
+
+.ds-usage-row {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  padding: 5px 0 !important;
+  color: #475569 !important;
+  border-bottom: 1px dashed #e2e8f0 !important;
+  font-size: 12px !important;
+}
+
+.ds-usage-row:last-of-type {
+  border-bottom: none !important;
+}
+
+.ds-usage-name {
+  font-weight: 550 !important;
+  color: #1e293b !important;
+}
+
+.ds-usage-val {
+  font-weight: 500 !important;
+  color: #475569 !important;
+}
+
+.ds-usage-val.exhausted {
+  color: #dc2626 !important;
+}
+
+.ds-usage-val.warning {
+  color: #d97706 !important;
+}
+
+.ds-usage-val.good {
+  color: #16a34a !important;
+}
+
+.ds-usage-credits {
+  margin-top: 8px !important;
+  padding-top: 6px !important;
+  border-top: 1px solid #e2e8f0 !important;
+  font-size: 11px !important;
+  color: #64748b !important;
+}
+
+.ds-model-notice {
+  white-space: pre-line !important;
+  font-size: 12px !important;
+  line-height: 1.6 !important;
+}

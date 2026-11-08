@@ -8,7 +8,7 @@ MAX_FRAME = (MAX_BODY + 2) // 3 * 4 + 16384
 UUID = r'[0-9a-f-]{36}'
 DIAGNOSTIC_UUID = r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
 THREAD = re.compile(r'/api/sessions/' + UUID + r'(?:/(.*))?')
-DESKTOP = re.compile(r'/api/desktop-sessions/(?:deepseek|claude)/(.*)')
+DESKTOP = re.compile(r'/api/desktop-sessions/(?:deepseek|claude|zcode|antigravity)/(.*)')
 READ = {'', 'catalog', 'poll', 'timeline', 'detail', 'changes', 'notifications',
         'side-chat', 'terminal', 'subagents', 'workspace', 'workspace/preview',
         'workspace/download', 'workspace/info', 'workspace/git-status', 'workspace/git-diff',
@@ -18,7 +18,7 @@ WRITE = {'send', 'stop', 'history', 'respond', 'reconnect', 'queue', 'settings',
          'permissions', 'uploads', 'message-action', 'rename', 'pin', 'archive', 'notifications',
          'goal/cancel', 'goal/edit', 'goal/status', 'side-chat', 'terminal',
          'workspace/upload', 'workspace/git-action'}
-DESKTOP_READ = {'list', 'detail', 'catalog', 'projects', 'account', 'access', 'terminal', 'notifications'} | {action for action in READ if action.startswith('workspace')}
+DESKTOP_READ = {'list', 'detail', 'catalog', 'projects', 'account', 'access', 'tasks', 'terminal', 'notifications'} | {action for action in READ if action.startswith('workspace')}
 DESKTOP_WRITE = {'pin', 'send', 'stop', 'settings', 'respond', 'create', 'access', 'uploads', 'terminal', 'notifications', 'workspace/upload', 'workspace/git-action', 'archive'}
 
 

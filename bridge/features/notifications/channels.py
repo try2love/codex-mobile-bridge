@@ -1027,7 +1027,7 @@ class Notifications:
                 record = self.attention.get(self._completion_key(row['host'], row['id'], target), {})
                 if not record.get('pending') or self._delivery_key(row, record['pending'], completion='attention', target=target) not in pending:
                     return False
-            client = {'claude': 'Claude', 'deepseek': 'DSH', 'zcode': 'ZCode'}.get(provider, 'Codex')
+            client = {'claude': 'Claude', 'deepseek': 'DSH', 'zcode': 'ZCode', 'antigravity': 'Antigravity'}.get(provider, 'Codex')
             kind = 'attention' if completed == 'attention' else 'completion' if completed else 'request'
             heading = client + (' 需要你处理' if kind == 'attention' else ' 运行已完成' if completed else ' 需要你的确认')
             body = ('本轮运行遇到问题，请打开聊天查看并手动继续或调整模型。' if kind == 'attention' else

@@ -100,4 +100,17 @@ def discover_clients(preferences=None, *, platform=None, home=None, env=None, ap
         elif provider == 'claude':
             row['dataDirectoryExplicit'] = explicit_home is not None
         result[provider] = row
+    agy_home = _path(preferences.get('antigravityHome') or env.get('ANTIGRAVITY_HOME'), home) or home
+    agy_surfaces = [agy_home/'.gemini/antigravity', agy_home/'.gemini/antigravity-ide', agy_home/'.gemini/antigravity-cli']
+    agy_bin = agy_home/'.antigravity/antigravity/bin/agy'
+    if any((s/'conversation_summaries.db').is_file() or (s/'brain').is_dir() for s in agy_surfaces) or agy_bin.is_file():
+        exe = str(agy_bin) if agy_bin.is_file() else ''
+        result['antigravity'] = {
+            'id': 'antigravity',
+            'name': 'Antigravity',
+            'installed': True,
+            'application': exe,
+            'executable': exe,
+            'dataDirectory': str(agy_surfaces[0]),
+        }
     return result

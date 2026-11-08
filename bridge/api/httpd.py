@@ -614,7 +614,7 @@ class Handler(BaseHTTPRequestHandler):
                         raise PermissionError('请启用密码保护后再连接 ZCode')
                     return self.output(200, manager.toggle_client(value))
                 return self.output(200, manager.clients_status())
-            desktop_image = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode)/images/([0-9a-f]{64})', path)
+            desktop_image = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode|antigravity)/images/([0-9a-f]{64})', path)
             if desktop_image:
                 if write:
                     return self.output(405, {'error': '请求方式无效'})
@@ -625,7 +625,7 @@ class Handler(BaseHTTPRequestHandler):
                 manager, _, _ = self.desktop_context(provider, query)
                 artifact, variant = manager.image_preview(provider, query.get('sessionId', [None])[0], identifier)
                 return self.attachment_preview(artifact, variant, private=True, download=query.get('download') == ['1'])
-            desktop_upload = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode)/uploads(?:/([0-9a-f-]{36})/(thumb|preview))?', path)
+            desktop_upload = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode|antigravity)/uploads(?:/([0-9a-f-]{36})/(thumb|preview))?', path)
             if desktop_upload:
                 manager, uploads = self.server.desktop_sessions, self.server.desktop_uploads
                 if manager is None or uploads is None:
@@ -657,7 +657,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     result = uploads.store.put(scope, query.get('id', [''])[0], query.get('name', [''])[0], data)
                 return self.output(200, result)
-            desktop_accounts = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode)/accounts', path)
+            desktop_accounts = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode|antigravity)/accounts', path)
             if desktop_accounts:
                 manager, _, _ = self.desktop_context(desktop_accounts.group(1), query, require_enabled=False)
                 if manager is None:
@@ -671,7 +671,7 @@ class Handler(BaseHTTPRequestHandler):
                 if operation == 'switch' and self.server.auth.config.get('mode') == 'none':
                     raise PermissionError('请启用密码保护后再切换账号')
                 return self.output(200, manager.client_accounts(desktop_accounts.group(1), {**value, 'operation': operation}))
-            desktop_notifications = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode)/notifications', path)
+            desktop_notifications = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode|antigravity)/notifications', path)
             if desktop_notifications:
                 manager = self.server.desktop_sessions
                 if manager is None or self.server.notifications is None:
@@ -682,8 +682,8 @@ class Handler(BaseHTTPRequestHandler):
                 sid = query.get('sessionId', [''])[0]
                 return self.output(200, self.server.notifications.policy(
                     sid, notification_host, self.read_json() if write else None))
-            desktop_workspace = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode)/(workspace(?:/[a-z-]+)?|terminal)', path)
-            desktop_projects = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode)/projects/(browse|register|trust)', path)
+            desktop_workspace = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode|antigravity)/(workspace(?:/[a-z-]+)?|terminal)', path)
+            desktop_projects = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode|antigravity)/projects/(browse|register|trust)', path)
             if desktop_projects:
                 if not write:
                     return self.output(405, {'error': '请通过目录选择器浏览'})
@@ -715,7 +715,7 @@ class Handler(BaseHTTPRequestHandler):
                 manager = self.server.desktop_sessions
                 if manager is None:
                     return self.output(503, {'error': '桌面会话接入不可用'})
-                if len(parts) != 4 or parts[2] not in ('deepseek', 'claude', 'zcode') or parts[3] not in (WRITES if write else READS):
+                if len(parts) != 4 or parts[2] not in ('deepseek', 'claude', 'zcode', 'antigravity') or parts[3] not in (WRITES if write else READS):
                     return self.output(404, {'error': '接口不存在'})
                 manager, uploads, _ = self.desktop_context(parts[2], query)
                 manager.require_enabled(parts[2])
