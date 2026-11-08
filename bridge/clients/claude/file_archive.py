@@ -7,6 +7,8 @@ import sys
 import shutil
 import re
 import shlex
+import threading
+from collections import OrderedDict
 from functools import lru_cache
 import uuid
 import tempfile
@@ -17,6 +19,13 @@ VERIFIED_PICKER_VERSIONS = {
     ('darwin', '2.1.292'): '97a01e5bc74a199e67189435d0331ea3a24eac2e07db4b76d9148c5b0386138f',
     ('linux', '2.1.308'): '356733f185fa988e6bf3aa9a555269fdd167982a2e2a80d3c8a78037bb92ad58',
 }
+_verified_versions = OrderedDict()
+_version_lock = threading.Lock()
+
+
+def _binary_stamp(path):
+    stamp = path.stat()
+    return (stamp.st_dev, stamp.st_ino, stamp.st_size, stamp.st_mtime_ns, stamp.st_ctime_ns)
 
 
 def supported(binary, environment):
@@ -24,27 +33,38 @@ def supported(binary, environment):
         return False
     try:
         path = Path(binary).resolve(strict=True)
-        stamp = path.stat()
-        digest = _binary_hash(str(path), stamp.st_dev, stamp.st_ino, stamp.st_size, stamp.st_mtime_ns)
+        stamp = _binary_stamp(path)
+        digest = _binary_hash(str(path), *stamp)
         if not any(platform == sys.platform and expected == digest
                    for (platform, version), expected in VERIFIED_PICKER_VERSIONS.items()):
             return False
-        result = subprocess.run([binary, '--version'], env=environment, capture_output=True,
-                                text=True, timeout=5)
-        expected = VERIFIED_PICKER_VERSIONS.get((sys.platform, result.stdout.split()[0]))
-        return result.returncode == 0 and digest == expected
+        # Only a successful exact-binary proof is reusable. Auth, process/task
+        # ownership and archive guards are still checked afresh by the caller.
+        key = (sys.platform, str(path), *stamp, digest)
+        with _version_lock:
+            version = _verified_versions.get(key)
+            if version is not None:
+                return _binary_stamp(path) == stamp and VERIFIED_PICKER_VERSIONS.get((sys.platform, version)) == digest
+            result = subprocess.run([str(path), '--version'], env=environment, capture_output=True,
+                                    text=True, timeout=5)
+            version = result.stdout.split()[0]
+            if result.returncode or VERIFIED_PICKER_VERSIONS.get((sys.platform, version)) != digest or _binary_stamp(path) != stamp:
+                return False
+            _verified_versions[key] = version
+            if len(_verified_versions) > 8:
+                _verified_versions.popitem(last=False)
+            return True
     except (OSError, subprocess.SubprocessError, IndexError, ValueError):
         return False
 
 
 @lru_cache(maxsize=8)
-def _binary_hash(path, device, inode, size, modified):
+def _binary_hash(path, device, inode, size, modified, changed):
     digest = hashlib.sha256()
     with open(path, 'rb') as source:
         for block in iter(lambda: source.read(1024*1024), b''):
             digest.update(block)
-    stamp = Path(path).stat()
-    if (stamp.st_dev, stamp.st_ino, stamp.st_size, stamp.st_mtime_ns) != (device, inode, size, modified):
+    if _binary_stamp(Path(path)) != (device, inode, size, modified, changed):
         raise ValueError('Claude 原生程序在核验期间变化')
     return digest.hexdigest()
 

@@ -48,6 +48,9 @@ class DesktopUploadHTTP(unittest.TestCase):
         self.assertEqual(json.loads(result[2])['image'], 'image/png')
         preview = route+'/'+identifier+'/preview?sessionId=code%3Anative'
         self.assertEqual(self.binary('GET', preview, headers=headers)[2], PNG)
+        status,saved_headers,saved=self.binary('GET',preview+'&download=1',headers=headers)
+        self.assertEqual(status,200);self.assertEqual(saved,PNG)
+        self.assertTrue(saved_headers['Content-Disposition'].startswith('attachment;'))
         for alternate in (preview.replace('claude', 'deepseek'), preview.replace('native', 'other')):
             self.assertEqual(self.binary('GET', alternate, headers=headers)[0], 400)
         body = {'id': str(uuid.uuid4()), 'sessionId': 'code:native', 'text': 'Inspect', 'attachments': [identifier]}
@@ -70,6 +73,10 @@ class DesktopUploadHTTP(unittest.TestCase):
         headers = self.login()
         status, _, raw = self.binary('GET',route+'code%3Anative',headers=headers)
         self.assertEqual(status,200);self.assertEqual(raw,PNG)
+        status,saved_headers,saved=self.binary('GET',route+'code%3Anative&download=1',headers=headers)
+        self.assertEqual(status,200);self.assertEqual(saved,PNG)
+        self.assertTrue(saved_headers['Content-Disposition'].startswith('attachment;'))
+        self.assertEqual(self.binary('GET',route+'other&download=1',headers=headers)[0],400)
         self.assertEqual(self.binary('GET',route+'other',headers=headers)[0],400)
         self.assertEqual(self.request('POST',route+'code%3Anative',{},headers)[0],405)
 

@@ -646,6 +646,101 @@ class IntegrationTests(unittest.TestCase):
         self.bridge.respond(THREAD, pending['id'], {'answers': {question['id']: ['Yes']}})
         self.assertEqual(self.fixture.requests[-1]['method'], 'thread-follower-start-turn')
 
+    def test_skip_async_question_preserves_other_answers_without_native_write(self):
+        self.fixture.state['turns'] = [{'turnId': 'questions', 'status': 'completed', 'items': [
+            {'id': 'card', 'type': 'agentMessage', 'questions': [
+                {'title': 'First?', 'options': []}, {'title': 'Second?', 'options': []}]},
+            {'id': 'other', 'type': 'agentMessage', 'questions': [{'title': 'Other?', 'options': []}]}]}]
+        first, other = self.bridge.view(THREAD)['requests']
+        one, two = first['params']['questions']
+        before = len(self.fixture.requests)
+        reply = self.bridge.respond(THREAD, first['id'], {'action': 'skip', 'questionId': one['id']})
+        self.assertEqual(reply['status'], 'skipped')
+        self.assertEqual(len(self.fixture.requests), before)
+        self.assertEqual(self.bridge.view(THREAD)['requests'], [
+            {**first, 'params': {'questions': [two]}}, other])
+        self.assertEqual(self.bridge.respond(THREAD, first['id'],
+            {'action': 'skip', 'questionId': one['id']})['status'], 'skipped')
+        with self.assertRaises(ValueError):
+            self.bridge.respond(THREAD, first['id'], {'answers': {one['id']: ['stale'], two['id']: ['Yes']}})
+        self.bridge.respond(THREAD, first['id'], {'answers': {two['id']: ['Yes']}})
+        call = self.fixture.requests[-1]
+        self.assertEqual(call['method'], 'thread-follower-start-turn')
+        reply_text = call['params']['turnStart']['request']['input'][0]['text']
+        self.assertEqual(json.loads(reply_text.split('\n')[1]), [
+            {'questionItemId': two['id'], 'question': 'Second?', 'answer': 'Yes'}])
+
+    def test_skip_async_question_survives_new_gateway_and_rejects_approvals(self):
+        self.fixture.state['turns'] = [{'turnId': 'questions', 'status': 'completed', 'items': [
+            {'id': 'card', 'type': 'agentMessage', 'questions': [{'title': 'First?', 'options': []}]}]}]
+        self.fixture.state['requests'] = [{'id': 'approval', 'method': 'item/commandExecution/requestApproval',
+                                         'params': {'command': 'fixture'}}]
+        pending = self.bridge.view(THREAD)['requests'][-1]
+        question = pending['params']['questions'][0]['id']
+        with self.assertRaises(ValueError):
+            self.bridge.respond(THREAD, 'approval', {'action': 'skip', 'questionId': question})
+        with self.assertRaises(ValueError):
+            self.bridge.respond(THREAD, pending['id'], {'action': 'skip', 'questionId': 'wrong'})
+        self.bridge.respond(THREAD, pending['id'], {'action': 'skip', 'questionId': question})
+        self.bridge.close()
+        self.bridge = Bridge(self.root, self.root / 'data', codex_bin=self.root / 'fixture-codex-not-installed')
+        self.bridge.ipc.path = self.fixture.path
+        remaining = self.bridge.view(THREAD)['requests']
+        self.assertEqual([r['id'] for r in remaining], ['approval'])
+        self.assertEqual(len(self.bridge.session(THREAD).state['turns'][0]['items'][0]['questions']), 1)
+
+    def test_async_answer_and_cli_release_do_not_invert_locks(self):
+        self.fixture.state['turns'] = [{'turnId': 'questions', 'status': 'completed', 'items': [
+            {'id': 'card', 'type': 'agentMessage', 'questions': [{'title': 'First?', 'options': []}]}]}]
+        pending = self.bridge.view(THREAD)['requests'][0]
+        question = pending['params']['questions'][0]['id']
+        original_send = self.bridge.send
+        workers, results = [], []
+
+        def send_after_release(*args, **kwargs):
+            # Interleave before send takes the host gate. Release takes that gate
+            # and activation_lock before action_lock; respond must hold none.
+            released = threading.Event()
+            def release():
+                results.append(self.bridge._release_cli_connection(
+                    THREAD, lambda stop: {'status': 'waiting'}, False))
+                released.set()
+            worker = threading.Thread(target=release, daemon=True)
+            workers.append(worker)
+            worker.start()
+            self.assertTrue(released.wait(2), 'answer holds action_lock before entering send')
+            return original_send(*args, **kwargs)
+
+        try:
+            with patch.object(self.bridge, 'send', side_effect=send_after_release):
+                self.bridge.respond(THREAD, pending['id'], {'answers': {question: ['Yes']}})
+        finally:
+            for worker in workers:
+                worker.join(timeout=2)
+        self.assertEqual(results, [{'status': 'waiting'}])
+        self.assertEqual(self.fixture.requests[-1]['method'], 'thread-follower-start-turn')
+
+    def test_async_answer_rechecks_a_skip_during_owner_resolution(self):
+        self.fixture.state['turns'] = [{'turnId': 'questions', 'status': 'completed', 'items': [
+            {'id': 'card', 'type': 'agentMessage', 'questions': [{'title': 'First?', 'options': []}]}]}]
+        pending = self.bridge.view(THREAD)['requests'][0]
+        question = pending['params']['questions'][0]['id']
+        original_target = self.bridge._target
+        calls = []
+
+        def resolve_target(thread_id):
+            calls.append(thread_id)
+            if len(calls) == 2:
+                self.bridge.respond(THREAD, pending['id'], {'action': 'skip', 'questionId': question})
+            return original_target(thread_id)
+
+        with patch.object(self.bridge, '_target', side_effect=resolve_target):
+            with self.assertRaisesRegex(ValueError, '已处理或已过期'):
+                self.bridge.respond(THREAD, pending['id'], {'answers': {question: ['stale']}})
+        self.assertFalse(self.bridge.submissions)
+        self.assertFalse(any(r['method'] in ('thread-follower-start-turn', 'thread-follower-steer-turn')
+                             for r in self.fixture.requests))
+
     def test_reply_to_one_async_card_keeps_other_card_across_turns(self):
         self.fixture.state['turns'] = [{'turnId': 'questions', 'status': 'completed', 'items': [
             {'id': name, 'type': 'agentMessage', 'questions': [{'title': name, 'options': ['Yes', 'No']}]}
@@ -681,26 +776,49 @@ class IntegrationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.bridge.settings(THREAD, 'model-b', 'ultra')
 
+    def test_unicode_model_id_from_cc_switch_can_be_applied(self):
+        model = 'xmy:日卡/deepseek-v4.1-flash'
+        self.bridge.catalog_reader.get_kind = lambda *a, **k: {
+            'models': [{'id': model, 'efforts': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']}],
+            'modelSource': 'api'}
+        result = self.bridge.settings(THREAD, model, 'xhigh')
+        self.assertTrue(result['confirmed'])
+        self.assertEqual(result['model'], model)
+        request = next(r for r in self.fixture.requests
+                       if r['method'] == 'thread-follower-update-thread-settings')
+        self.assertEqual(request['params']['threadSettings'], {'model': model, 'effort': 'xhigh'})
+
     def test_official_model_without_capabilities_cannot_save_guessed_effort(self):
         self.bridge.catalog_reader.get_kind = lambda *a, **k: {'models': [{'id':'official-missing','efforts':[]}], 'modelSource':'codex'}
         with self.assertRaisesRegex(ValueError, '推理能力'):
             self.bridge.settings(THREAD, 'official-missing', 'minimal')
         self.assertFalse(any(r['method'] == 'thread-follower-update-thread-settings' for r in self.fixture.requests))
 
-    def test_managed_catalog_uses_selected_access_instead_of_old_chat_provider(self):
+    def test_desktop_catalog_keeps_project_scope_instead_of_global_account_models(self):
         from unittest.mock import Mock
         from types import SimpleNamespace
-        self.bridge.session(THREAD)
-        selected={'models':[{'id':'gemini-fixture','efforts':[]}],'modelSource':'api','modelAccessName':'Gemini access'}
-        self.bridge.accounts=SimpleNamespace(current_models=Mock(return_value=selected))
-        self.bridge.catalog_reader.get=Mock(side_effect=AssertionError('must not query old provider models'))
-        self.bridge.catalog_reader.get_kind=Mock(return_value={'skills':[],'errors':[]})
-        for kind in ('models',None):
-            result=self.bridge.catalog(THREAD,refresh=True,kind=kind)
-            self.assertEqual(result['models'],selected['models'])
-            self.assertEqual(result['modelAccessName'],'Gemini access')
-        self.assertEqual([c.args[0] for c in self.bridge.catalog_reader.get_kind.call_args_list],['skills'])
-        self.bridge.accounts=None
+        session = SimpleNamespace(origin='desktop', connected=True, runtime='desktop',
+                                  condition=threading.Condition(), state={'cwd': '/fixture/project', 'modelProvider': 'project-api'},
+                                  view=lambda: {'provider': 'project-api'})
+        self.bridge.session = Mock(return_value=session)
+        selected = {'models': [{'id': 'project-model', 'efforts': []}],
+                    'modelSource': 'api', 'modelAccessName': 'Project access'}
+        self.bridge.accounts = SimpleNamespace(current_models=Mock(
+            side_effect=AssertionError('global account models bypass project configuration')))
+        self.bridge.catalog_reader.get = Mock(return_value={**selected, 'skills': []})
+        self.bridge.catalog_reader.get_kind = Mock(return_value=selected)
+        try:
+            for kind in ('models', None):
+                result = self.bridge.catalog(THREAD, refresh=True, kind=kind)
+                self.assertEqual(result['models'], selected['models'])
+                self.assertEqual(result['modelAccessName'], 'Project access')
+            with session.condition:
+                cwd, provider = session.state['cwd'], session.state.get('modelProvider')
+            self.bridge.catalog_reader.get_kind.assert_called_once_with('models', cwd, refresh=True, provider=provider)
+            self.bridge.catalog_reader.get.assert_called_once_with(cwd, refresh=True, provider=provider)
+            self.bridge.accounts.current_models.assert_not_called()
+        finally:
+            self.bridge.accounts = None
 
     def test_cold_model_catalog_reads_saved_settings_without_desktop_attach(self):
         from unittest.mock import Mock, patch
@@ -1227,6 +1345,33 @@ class HttpTests(unittest.TestCase):
         self.server.bridge.entries.hosts = lambda: {}
         self.assertEqual(self.request('GET', path, headers=headers)[0], 400)
 
+    def test_independent_codex_hosts_are_only_read_from_their_own_list(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        profile, wsl = 'codex:' + 'a' * 32, 'wsl:' + 'b' * 32
+        registry = {profile: {'kind': 'codex-local', 'displayName': 'Work Codex'},
+                    wsl: {'kind': 'wsl-cli', 'label': 'Ubuntu'}}
+        self.server.bridge.entries = SimpleNamespace(hosts=lambda: registry)
+        self.server.bridge.hosts = SimpleNamespace(hosts=lambda: {'ssh-host': {'label': 'SSH'}})
+        target = Mock()
+        target.list.return_value = ([{'id': THREAD, 'host': profile}], ['cli', 'ide'])
+        target.host_errors = []
+        self.server.bridge.for_host = lambda host: target if host == profile else self.server.bridge
+        manager = self.server.desktop_sessions = Mock()
+        headers = self.login()
+        status, _, body = self.request('GET', '/api/sessions?scope=host&host=local', headers=headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(body['remoteHosts'], ['ssh-host', wsl])
+        target.list.assert_not_called()
+        status, _, body = self.request('GET', '/api/sessions?scope=host&host=' + profile, headers=headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(body['remoteHosts'], [])
+        self.assertEqual(body['sessions'][0]['host'], profile)
+        self.assertEqual(body['availableSources'], ['cli', 'ide'])
+        manager.require_enabled.assert_called_with(profile)
+        registry.pop(profile)
+        self.assertEqual(self.request('GET', '/api/sessions?scope=host&host=' + profile, headers=headers)[0], 400)
+
     def test_host_scoped_wsl_failure_reports_incomplete_without_other_hosts(self):
         from types import SimpleNamespace
         from unittest.mock import Mock
@@ -1265,6 +1410,7 @@ class HttpTests(unittest.TestCase):
         bridge.timeline_read = Mock(side_effect=AssertionError('Disabled native timeline read'))
         bridge.register_project = Mock(side_effect=AssertionError('Disabled native project write'))
         manager = self.server.desktop_sessions = DesktopSessions.__new__(DesktopSessions)
+        manager.instance = manager.instances = None
         manager.bridge = bridge
         manager.config = {'enabled': {'codex': False}}
         headers = self.login()
@@ -1368,7 +1514,9 @@ class HttpTests(unittest.TestCase):
         from bridge.clients.manager import DesktopSessions
         entry = 'wsl:' + 'a' * 32
         manager = DesktopSessions.__new__(DesktopSessions)
+        manager.instance = manager.instances = None
         manager.read_lock = threading.Lock()
+        manager.adapters = {'claude': Mock(), 'deepseek': Mock()}
         manager.config = {'enabled': {'codex': False, 'claude': True, 'deepseek': False}}
         manager.bridge = SimpleNamespace(entries=SimpleNamespace(hosts=lambda: {entry: {}}))
         manager.applications = Mock(side_effect=AssertionError('runtime scan during authentication'))

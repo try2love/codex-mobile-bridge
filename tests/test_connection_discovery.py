@@ -49,3 +49,53 @@ class DiscoveryTests(unittest.TestCase):
         save_config(self.tmp.name, {**self.cfg, 'enabled': False})
         self.assertIsNone(self.discovery.descriptor(self.secret)); self.assertIsNone(self.discovery.snapshot())
         with self.assertRaises(PermissionError): self.discovery.prove('0' * 64, '1' * 64, 'https://old.example.com')
+
+    def test_private_app_routes_are_scoped_to_one_origin_and_revoked_with_parent(self):
+        save_config(self.tmp.name, {**self.cfg, 'enabled': False})
+        lan, public = 'http://192.168.1.9:8788', 'https://test.example.org'
+        self.gateway.origins.update((lan, public, 'http://8.8.8.8'))
+        descriptor = self.discovery.mobile_routes(self.secret)
+        self.assertEqual(set(descriptor['endpoints']), {lan, public, 'https://old.example.com'})
+        device, nonce = descriptor['deviceId'], 'a' * 64
+        token = 'cmbroute1_' + mac(self.secret, 'gateway-route-v1\n' + lan)
+        key = self.auth.key(token)
+        ident = hashlib.sha256(key.encode()).hexdigest()
+        self.assertEqual(self.discovery.prove(ident, nonce, lan, device)['proof'], mac(key, '\n'.join((device,lan,nonce))))
+        with self.assertRaises(PermissionError): self.discovery.prove(ident, nonce, public, device)
+        with self.assertRaises(PermissionError): self.discovery.prove(ident, nonce, lan, 'f'*32)
+        child = self.discovery.resolve_cookie(token, lan)
+        self.assertEqual(self.auth.get(child)['csrf'], self.auth.get(self.secret)['csrf'])
+        self.assertFalse(self.discovery.resolve_cookie(token, public))
+        self.assertIsNone(self.auth.get(token))
+        # A child session cannot issue credentials for newly added origins.
+        extra = 'https://other.example.org'
+        self.gateway.origins.add(extra)
+        self.discovery.mobile_routes(child)
+        self.assertNotIn(extra,self.auth.get(child)['routeBindings'])
+        self.auth.logout(child)
+        self.assertIsNone(self.auth.get(self.secret))
+        self.assertFalse(self.discovery.resolve_cookie(token,lan))
+        with self.assertRaises(PermissionError): self.discovery.prove(ident,nonce,lan,device)
+
+    def test_restart_replaces_quick_url_and_scoped_phone_can_authorize_exact_new_origin(self):
+        lan, old, new = 'http://192.168.1.7:8788','https://old.example.com','https://new.example.com'
+        self.gateway.origins = {lan, old}
+        published = [old,lan]
+        self.discovery.published = lambda: published
+        d = self.discovery.mobile_routes(self.secret)
+        self.assertEqual(d['endpoints'], [old,lan])
+        def derived(url): return 'cmbroute1_' + mac(self.secret, 'gateway-route-v1\n'+url)
+        child=self.discovery.resolve_cookie(derived(lan),lan)
+        self.gateway.origins.add(new);published[:]=[new,lan]
+        updated=self.discovery.mobile_routes(child)
+        self.assertEqual(updated['unbound'],[new]);self.assertNotIn(old,updated['endpoints'])
+        digest=self.auth.key(derived(new))
+        msg='\n'.join(('route-grant-v1',d['deviceId'],new,digest))
+        claim={'deviceId':d['deviceId'],'anchor':old,'bindings':{new:{'digest':digest,'proof':mac(self.auth.key(derived(lan)),msg)}}}
+        with self.assertRaises(PermissionError):self.discovery.renew(child,claim)
+        claim['bindings'][new]['proof']=mac(self.auth.key(mac(self.secret,'gateway-route-renew-v1')),msg)
+        self.discovery.renew(child,claim)
+        actual=self.discovery.resolve_cookie(derived(new),new)
+        self.assertEqual(self.auth.get(actual)['csrf'],self.auth.get(self.secret)['csrf'])
+        self.assertFalse(self.discovery.resolve_cookie(derived(new),lan))
+        self.assertFalse(self.discovery.resolve_cookie(derived(old),old))

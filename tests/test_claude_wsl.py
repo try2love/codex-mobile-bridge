@@ -261,6 +261,16 @@ class WslClaudeContract(unittest.TestCase):
         self.assertEqual(adapter.call('create', body=body)['result']['id'], 'new')
         adapter.create_cli.assert_called_once_with(project, body)
 
+    def test_remote_facade_passes_initial_selection_only_to_the_selected_wsl_or_ssh(self):
+        facade=object.__new__(ClaudeCliRemotes);facade.ssh=Mock();facade.wsl=Mock()
+        selection={'model':'claude-sonnet-4-5-20250929'}
+        facade.create(self.identifier,'alias','origin','/project','FIRST',selection=selection)
+        facade.wsl.create.assert_called_once_with(self.identifier,'alias','origin','/project','FIRST',selection=selection)
+        facade.ssh.create.assert_not_called()
+        facade.project_environments(host_id=self.identifier)
+        facade.wsl.project_environments.assert_called_once_with(host_id=self.identifier)
+        facade.ssh.project_environments.assert_not_called()
+
     def test_wsl_directory_operations_use_selected_native_transport(self):
         with patch('bridge.clients.manager.sys.platform', 'win32'):
             manager = DesktopSessions(self.root/'manager')

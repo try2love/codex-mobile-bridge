@@ -6,13 +6,13 @@ const requireMain=require('node:module').createRequire(main);
 
 // Exercise the real controller with a virtual helper and clock. No app, files,
 // gateway, or actual update process is started by these failure-path tests.
-function controller({ready='valid',readyAt=0,pending=false,spawnError=false,exited=false,platform='win32',packaged=true}={}){
+function controller({ready='valid',readyAt=0,pending=false,spawnError=false,exited=false,platform='win32',packaged=true,environment={},execPath='/fixture/app/Bridge.exe',userData='/fixture/user',fixtureFiles=false}={}){
   let now=0;
   const calls={exit:[],quit:0,closed:0,managementClosed:0},timers=[],intervals=[];
-  const app={isPackaged:packaged,requestSingleInstanceLock:()=>true,whenReady:()=>({then(){}}),on(){},
-    getVersion:()=> '2.0.0-preview.3',getPath:()=>'/fixture/user',exit:code=>calls.exit.push(code),quit:()=>calls.quit++};
+  const app={isPackaged:packaged,setPath(){},requestSingleInstanceLock:()=>true,whenReady:()=>({then(){}}),on(){},
+    getVersion:()=> '2.0.0-preview.3',getPath:()=>userData,exit:code=>calls.exit.push(code),quit:()=>calls.quit++};
   const context=vm.createContext({__dirname:path.dirname(main),
-    process:{env:{},platform,argv:[],arch:'x64',pid:123,execPath:'/fixture/app/Bridge.exe'},
+    process:{env:environment,argv:[],platform,arch:'x64',pid:123,execPath,resourcesPath:path.join(userData,'resources')},
     Date:{now:()=>now},
     setTimeout(fn,ms){
       timers.push(ms);
@@ -24,7 +24,7 @@ function controller({ready='valid',readyAt=0,pending=false,spawnError=false,exit
       if(name==='electron')return {app};
       if(name==='./features/connections/qr.cjs')return {};
       if(name==='node:crypto')return {randomUUID:()=> 'verified-token'};
-      if(name==='node:fs')return {mkdirSync(){},writeFileSync(){},openSync:()=>0,closeSync(){},
+      if(name==='node:fs')return fixtureFiles?fs:{mkdirSync(){},writeFileSync(){},openSync:()=>0,closeSync(){},
         readFileSync(file){
           if(file===path.join(path.dirname(main),'features/updates/update-public-key.pem'))return fs.readFileSync(file);
           if(ready==='missing'||now<readyAt)throw Error('ENOENT');
@@ -90,4 +90,43 @@ test('slow helper is allowed to become ready after two seconds',async()=>{
 for(const option of ['spawnError','exited'])test(`helper ${option} keeps controller alive`,async()=>{
   const f=controller({[option]:true});await assert.rejects(f.run(),/helper spawn failed|无法启动应用更新进程/);
   assert.deepEqual(f.calls.exit,[]);assert.equal(f.calls.quit,0);
+});
+
+test('only the matching unfinished update binds the GUI data directory and acknowledges startup',async t=>{
+  const scratch=path.resolve(__dirname,'..','.tmp');fs.mkdirSync(scratch,{recursive:true});
+  const root=fs.mkdtempSync(path.join(scratch,'cmb-handoff-'));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const target=path.join(root,'Bridge Test.app'),execPath=path.join(target,'Contents','MacOS','Bridge');
+  const transaction=path.join(root,'.cmb-update-a'),data=path.join(root,'expected'),explicit=path.join(root,'other');
+  fs.mkdirSync(transaction);
+  const token='test-token',version='2.0.0-preview.3',plan={target,dataDir:data,version,token};
+  const write=(file,row)=>fs.writeFileSync(path.join(transaction,file),JSON.stringify(row));
+  const env={CMB_UPDATE_TRANSACTION:transaction,CMB_UPDATE_TOKEN:token,CMB_UPDATE_DATA_DIR:data};
+  function launch(changes={}){
+    const {context}=controller({platform:'darwin',environment:{CMB_DATA_DIR:explicit,...env,...changes},execPath,userData:root,fixtureFiles:true});
+    vm.runInContext('dataDir=loadDataDir();worker=async()=>({});',context);
+    return context;
+  }
+  const directory=c=>vm.runInContext('dataDir',c),ack=path.join(transaction,'ack.json');
+  write('ready.json',{token});
+  for(const invalid of [{target:path.join(root,'Bridge.app')},{token:'stale'},{version:'1.0.0'},{dataDir:explicit}]){
+    write('plan.json',{...plan,...invalid});
+    const c=launch();assert.equal(directory(c),explicit);assert.equal(c.updateManaged(),false);
+    await c.acknowledgeUpdate();assert.equal(fs.existsSync(ack),false);
+  }
+  write('plan.json',plan);
+  write('launched.json',{pid:99});
+  const foreign=launch();assert.equal(directory(foreign),explicit);assert.equal(foreign.updateManaged(),false);
+  fs.unlinkSync(path.join(transaction,'launched.json'));
+  const valid=launch();assert.equal(directory(valid),data);assert.equal(valid.updateManaged(),true);
+  write('launched.json',{pid:123});await valid.acknowledgeUpdate();
+  assert.deepEqual(JSON.parse(fs.readFileSync(ack,'utf8')),{token,version,dataDir:data});fs.unlinkSync(ack);
+  valid.worker=async()=>write('result.json',{state:'failed'});
+  await valid.acknowledgeUpdate();assert.equal(fs.existsSync(ack),false);assert.equal(valid.updateManaged(),false);
+  const finished=launch();assert.equal(directory(finished),explicit);assert.equal(finished.updateManaged(),false);
+  const saved=path.join(root,'saved-test');
+  fs.writeFileSync(path.join(root,'bridge-location.json'),JSON.stringify({dataDir:saved}));
+  assert.equal(directory(launch({CMB_DATA_DIR:undefined})),saved);
+  const rollback=launch({CMB_UPDATE_TRANSACTION:undefined,CMB_UPDATE_TOKEN:undefined});
+  assert.equal(directory(rollback),data);assert.equal(rollback.updateManaged(),false);await rollback.acknowledgeUpdate();assert.equal(fs.existsSync(ack),false);
 });

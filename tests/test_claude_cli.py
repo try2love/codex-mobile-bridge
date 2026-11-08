@@ -58,7 +58,7 @@ class ClaudeCliContract(unittest.TestCase):
     def test_confirmed_archive_releases_owned_executor_before_file_and_writer_checks(self):
         from bridge.clients.claude import file_archive
         owned = SimpleNamespace(origin=self.profile['origin'], native=self.native, error=None,
-            process=Mock(), condition=threading.Condition(), pending={}, active=True, model=None, permission=None)
+            process=Mock(), condition=threading.Condition(), pending={}, active=True, model=None, permission=None, catalog={})
         owned.process.poll.return_value = None
         owned.release_for_archive = Mock(side_effect=lambda: owned.process.poll.configure_mock(return_value=0))
         self.cli.owned[self.native] = owned
@@ -136,7 +136,7 @@ class ClaudeCliContract(unittest.TestCase):
                                 condition=threading.Condition(), pending={}, active=True,
                                 events=[{'type': 'assistant', 'message': {'id': 'live',
                                          'usage': {'input_tokens': 7, 'cache_read_input_tokens': 11}}}],
-                                model=None, permission=None)
+                                model=None, permission=None, catalog={})
         owner.process.poll.return_value = None
         self.cli.owned[self.native] = owner
         self.assertEqual(self.cli.call('detail', self.sid, {})['session']['contextUsage']['usedTokens'], 18)
@@ -219,6 +219,7 @@ class ClaudeCliContract(unittest.TestCase):
         adapter.discovery = {'installed': True}
         adapter.directory = self.root/'adapter'
         adapter.desktop_listing.return_value = {'sessions': [{'id': 'desktop-session'}]}
+        manager.config.setdefault('enabled', {})['claude'] = True
         manager.adapters['claude'] = adapter
         manager.adapters['deepseek'] = Mock()
         manager.adapters['deepseek'].call.return_value = {'connected': False}
@@ -574,7 +575,7 @@ class ClaudeCliContract(unittest.TestCase):
         process = Mock(); process.poll.return_value = None
         owner = Mock(origin=self.profile['origin'], process=process, active=False,
                      model=None, permission='plan', events=[])
-        owner.pending = {}; owner.condition = threading.Condition(); owner.error = None
+        owner.pending = {}; owner.condition = threading.Condition(); owner.error = None; owner.catalog = {}
         self.cli.owned[self.native] = owner
         self.assertTrue(self.cli.call('detail', self.sid, {})['capabilities']['attachments'])
         file = self.root/'private note.txt'; file.write_text('fixture bytes')
@@ -591,7 +592,7 @@ class ClaudeCliContract(unittest.TestCase):
         process = Mock()
         process.poll.return_value = None
         owner = Mock(origin=self.profile['origin'], process=process, active=True,
-                     model=None, permission='default', events=[])
+                     model=None, permission='default', events=[], catalog={})
         owner.pending = {'question-1': {'request': {'tool_name': 'AskUserQuestion',
                          'input': {'questions': [{'question': 'Fixture choice?', 'options': []}]}}}}
         owner.condition = threading.Condition()
@@ -606,7 +607,7 @@ class ClaudeCliContract(unittest.TestCase):
         process = Mock()
         process.poll.return_value = None
         owner = Mock(origin=self.profile['origin'], process=process, active=True,
-                     model=None, permission='default', events=[])
+                     model=None, permission='default', events=[], catalog={})
         owner.pending = {'request-1': {'request': {'tool_name': 'Bash', 'input': {}}}}
         owner.condition = threading.Condition()
         owner.error = None

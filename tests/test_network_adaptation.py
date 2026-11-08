@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import bridge.features.network.addresses as network
 from bridge.app.desktop import Desktop
-from bridge.features.network.runtime import DynamicListenerManager, RuntimeNetworkMonitor
+from bridge.features.network.runtime import DynamicListenerManager, RuntimeNetworkMonitor, notify_route_rechecks
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -37,6 +37,14 @@ class FakeServer:
 
 
 class ListenerTests(unittest.TestCase):
+    def test_route_recheck_failure_does_not_skip_other_routes(self):
+        failed = MagicMock(side_effect=RuntimeError('fixture'))
+        quick_tunnel = MagicMock()
+        with self.assertLogs('bridge.features.network.runtime', level='ERROR'):
+            notify_route_rechecks([failed, quick_tunnel])
+        failed.assert_called_once_with()
+        quick_tunnel.assert_called_once_with()
+
     def setUp(self):
         self.root = type('Root', (), {})()
         self.root.origins = {'http://9.0.0.1:8787', 'https://fixed.example'}

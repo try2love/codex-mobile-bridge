@@ -472,6 +472,16 @@ test('Enter shortcut cannot confirm during composition, closed session or unknow
 
 });
 
+test('cloud web and alternate channels retain the HTTP terminal transport',()=>{
+  for(const route of [{BridgeCloudWeb:true},{BridgeChannelLink:{alternate:true}}]){
+    const f=fixture();Object.assign(f.context.window,route);
+    f.context.URL=URL;f.context.location={href:'https://fixture.test/'};
+    f.panel.workbench.csrf=()=> 'fixture-csrf';
+    let sockets=0;f.context.WebSocket=class {constructor(){sockets++;}};
+    f.panel.startDuplex();assert.equal(sockets,0);assert.equal(f.panel.duplex,undefined);
+  }
+});
+
 test('duplex sends ordered resize and several inputs without waiting for each acknowledgement',()=>{
   const f=fixture(),sockets=[];
   class FakeSocket{

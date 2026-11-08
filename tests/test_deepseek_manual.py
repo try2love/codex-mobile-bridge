@@ -45,7 +45,7 @@ class ManualPluginTests(unittest.TestCase):
                 owner.calls.append(request['action'])
                 if self.headers.get('Authorization') != 'Bearer '+'a'*64:
                     self.send_response(403); self.end_headers(); return
-                data = json.dumps({'connected': True, 'configured': True, 'bridgeRevision': 9,
+                data = json.dumps({'connected': True, 'configured': True, 'bridgeRevision': (owner.running_plugin or {}).get('revision', 11),
                                    'plugin': owner.running_plugin, 'sessions': [], 'status': 'accepted', 'current': {'label': 'Fixture'}}).encode()
                 self.send_response(200); self.send_header('Content-Length', str(len(data)))
                 self.end_headers(); self.wfile.write(data)
@@ -97,7 +97,7 @@ class ManualPluginTests(unittest.TestCase):
             self.assertEqual(manifest['engines']['dsh'], '0.2.1-rc.2')
         with self.assertRaises(FileExistsError): export_package(str(self.root))
 
-    def modern(self, version='0.2.0', revision=9):
+    def modern(self, version='0.2.0', revision=11):
         plugin = {'name': 'dsh-codex-mobile-bridge', 'version': version, 'protocol': 1, 'revision': revision}
         manifest = json.loads((self.package/'package.json').read_text())
         manifest.update(version=version, dshBridge={'protocol': 1, 'revision': revision})
@@ -114,13 +114,13 @@ class ManualPluginTests(unittest.TestCase):
         self.assertFalse(adapter.call('status')['updateRequired'])
         self.modern('0.2.4')
         self.assertTrue(adapter.call('status')['connected'])
-        self.running_plugin['revision'] = 10
+        self.running_plugin['revision'] = 12
         before = self.calls.count('send')
         with self.assertRaisesRegex(Exception, '运行版本'): adapter.call('send')
         self.assertEqual(self.calls.count('send'), before)
 
     def test_unknown_protocol_and_release_family_rejected_before_traffic(self):
-        for version, revision in [('0.3.0', 9), ('0.2.0', 10)]:
+        for version, revision in [('0.3.0', 11), ('0.2.0', 10), ('0.2.0', 12)]:
             self.modern(version, revision)
             with self.assertRaisesRegex(ValueError, '不兼容'): ManualDeepSeek(self.directory/'binding.json')
         self.assertEqual(self.calls, [])
@@ -219,8 +219,9 @@ class ManualPluginTests(unittest.TestCase):
         self.binding['instanceId'] = str(uuid.uuid4()); self.save('binding.json', self.binding)
         restored = DesktopSessions(self.root/'gateway', gateway_running=True)
         self.addCleanup(restored.close)
-        self.assertIn('不会切换到其他实例', restored.deepseek_restore_error)
+        self.assertIsNone(restored.adapters.get('deepseek'))
         with self.assertRaisesRegex(Exception, '无法验证'): restored.call('deepseek', 'list')
+        self.assertIn('不会切换到其他实例', restored.deepseek_restore_error)
         with self.assertRaisesRegex(Exception, '无法验证'): restored.client_accounts('deepseek', {})
 
 

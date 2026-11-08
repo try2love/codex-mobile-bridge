@@ -8,7 +8,7 @@ const baseURL = 'http://127.0.0.1:18279';
 
 module.exports = defineConfig({
   testDir: __dirname,
-  testMatch: ['critical.spec.cjs', 'send-feedback.spec.cjs', 'cloud-i18n.spec.cjs'],
+  testMatch: ['critical.spec.cjs', 'send-feedback.spec.cjs', 'native-side-chat.spec.cjs', 'cloud-i18n.spec.cjs'],
   workers: 1, // The existing synthetic fixture intentionally resets state per navigation.
   fullyParallel: false,
   forbidOnly: !!process.env.CI,

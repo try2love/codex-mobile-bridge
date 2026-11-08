@@ -58,11 +58,12 @@ class WslAccounts:
 
     def environments(self, provider):
         registry = self._registry(provider)
-        running = set(wsl.running_distributions())
         with registry.lock:
-            rows = [{**self._target(row), 'id': row['id'], 'label': row['label'],
-                     'enabled': row.get('enabled', True), 'running': row['distribution'] in running}
-                    for row in registry.entries]
+            entries = [dict(row) for row in registry.entries if row.get('distribution')]
+        running = wsl.displayed_distributions(entries)
+        rows = [{**self._target(row), 'id': row['id'], 'label': row['label'],
+                 'enabled': row.get('enabled', True), 'running': row['distribution'] in running}
+                for row in entries]
         return {'provider': provider, 'environments': rows}
 
     def _call(self, provider, row, request):

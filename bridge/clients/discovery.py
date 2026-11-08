@@ -7,11 +7,11 @@ from bridge.clients.claude.setup import claude_data_home
 from bridge.platforms import discovery as native_discovery
 from bridge.platforms.windows.discovery_ext import windows_installations
 
-NAMES = {'codex': 'Codex', 'claude': 'Claude Desktop', 'deepseek': 'DeepSeek Harness'}
+NAMES = {'codex': 'Codex', 'claude': 'Claude Desktop', 'deepseek': 'DeepSeek Harness', 'zcode': 'ZCode'}
 BUNDLE_IDS = {'codex': 'com.openai.codex', 'claude': 'com.anthropic.claudefordesktop',
-              'deepseek': 'com.deepseek.dsh'}
+              'deepseek': 'com.deepseek.dsh', 'zcode': 'dev.zcode.app'}
 APP_NAMES = {'codex': ('Codex', 'ChatGPT'), 'claude': ('Claude', 'Claude Desktop'),
-             'deepseek': ('DSH Desktop', 'DeepSeek Harness', 'DeepSeekHarness', 'deepseek-harness')}
+             'deepseek': ('DSH Desktop', 'DeepSeek Harness', 'DeepSeekHarness', 'deepseek-harness'), 'zcode': ('ZCode',)}
 
 
 def _path(value, home):
@@ -28,6 +28,8 @@ def _candidate(path, provider, platform):
         return native_discovery(platform).candidate(path, BUNDLE_IDS[provider])
     if platform == 'linux':
         return native_discovery(platform).candidate(path, provider)
+    if provider == 'zcode' and (path.name.lower() != 'zcode.exe' or not (path.parent/'resources/app.asar').is_file()):
+        return None
     if path.is_file():
         return {'application': str(path), 'executable': str(path), 'version': ''}
     return None
@@ -57,9 +59,12 @@ def discover_clients(preferences=None, *, platform=None, home=None, env=None, ap
     native = native_discovery(platform)
     if platform == 'win32' and windows_inventory is None:
         windows_inventory = windows_installations() if native_windows else {}
+    homes['zcode'] = home/'.zcode/v2'
     homes['claude'] = native.claude_home(home, env)
     result = {}
     for provider, name in NAMES.items():
+        if provider == 'zcode' and platform not in ('darwin', 'win32', 'linux'):
+            continue
         override = preferences.get(provider+'Application') or preferences.get(provider+'Executable')
         if provider == 'codex':
             override = override or preferences.get('desktopExecutable')
@@ -78,6 +83,8 @@ def discover_clients(preferences=None, *, platform=None, home=None, env=None, ap
             candidates += list(native.candidates(provider, APP_NAMES[provider], home, env))
         found = next(({**row, **metadata.get(path, {})} for path in dict.fromkeys(candidates)
                       if (row := _candidate(path, provider, platform))), {})
+        if provider == 'zcode' and not found:
+            continue
         if provider == 'claude':
             explicit_home = _path(preferences.get('claudeHome'), home)
             homes['claude'] = explicit_home or (claude_data_home(found['executable'], homes['claude'], platform,

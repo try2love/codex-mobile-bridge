@@ -24,7 +24,7 @@ from bridge.features.notifications.addresses import AddressNotifications, ready_
 from bridge.features.notifications.channels import Notifications
 import bridge.features.network.addresses as network
 import bridge.features.network.interfaces as interfaces
-from bridge.features.network.runtime import DynamicListenerManager, RuntimeNetworkMonitor
+from bridge.features.network.runtime import DynamicListenerManager, RuntimeNetworkMonitor, notify_route_rechecks
 from bridge.features.network.adaptation import NetworkAdaptation, settings as adaptation_settings, migrate_legacy_interfaces
 
 ROOT = Path(__file__).resolve().parent
@@ -151,6 +151,7 @@ def main(connections=None, connection_secrets=None):
     tunnel = None
     tunnel_thread = None
     ssh_tunnels = []
+    route_rechecks = []
     monitor = RuntimeNetworkMonitor(args.config.parent, preferences, args.port, listener_manager,
                                     server.instance_id, pid=os.getpid(),
                                     enabled=adaptation_settings(args.config.parent)['enabled'],
@@ -186,7 +187,10 @@ def main(connections=None, connection_secrets=None):
         raise KeyboardInterrupt()
     signal.signal(signal.SIGTERM, stop_signal)
     from bridge.features.network.discovery import ConnectionDiscovery
-    discovery = ConnectionDiscovery(args.config.parent, server)
+    from bridge.features.network.access import phone_urls
+    discovery = ConnectionDiscovery(args.config.parent, server, lambda: phone_urls(
+        {**preferences, 'port': args.port}, monitor.addresses(),
+        tunnel.url if tunnel and tunnel.entry_stable() else ''))
     listener_manager.configure = lambda listener: setattr(listener, 'connection_discovery', discovery)
     try:
         monitor.scan(initial=True)
@@ -217,8 +221,20 @@ def main(connections=None, connection_secrets=None):
         for entry in entries:
             if entry['enabled'] and entry['accessMode'] == 'tailscale':
                 from bridge.features.network.tailscale import TailscaleTunnel
-                tailscale = TailscaleTunnel(entry, tailscale_port, args.config.parent)
+                def tailscale_target_is_current(value):
+                    parsed = urlsplit(value)
+                    try:
+                        port = parsed.port
+                    except ValueError:
+                        return False
+                    return (parsed.scheme == 'http' and parsed.hostname == '127.0.0.1'
+                            and parsed.path in ('', '/') and not parsed.query
+                            and not parsed.fragment and port is not None
+                            and gateway_ready(port, server.instance_id))
+                tailscale = TailscaleTunnel(entry, tailscale_port, args.config.parent,
+                                            target_validator=tailscale_target_is_current)
                 ssh_tunnels.append(tailscale)
+                route_rechecks.append(tailscale.network_changed)
                 tailscale.start()
             if entry['enabled'] and entry['accessMode'] == 'cloudflare':
                 from bridge.features.network.named_tunnel import NamedTunnel
@@ -247,7 +263,7 @@ def main(connections=None, connection_secrets=None):
             tunnel = QuickTunnel(args.cloudflared, args.port, args.config.parent, allow_origin)
             # Let the existing tunnel recover first. Its origin remains valid
             # until a replacement is actually ready, not merely on a route event.
-            monitor.network_changed = tunnel.network_changed
+            route_rechecks.append(tunnel.network_changed)
             monitor.network_cancelled = tunnel.cancel_network_check
             def connect_tunnel():
                 try:
@@ -258,6 +274,8 @@ def main(connections=None, connection_secrets=None):
                     print(str(exc), flush=True)
             tunnel_thread = threading.Thread(target=connect_tunnel, daemon=True)
             tunnel_thread.start()
+        if route_rechecks:
+            monitor.network_changed = lambda: notify_route_rechecks(route_rechecks)
         for listener in servers:
             listener.connection_discovery = discovery
         notifications.start()
@@ -268,7 +286,7 @@ def main(connections=None, connection_secrets=None):
         address_notifications.start()
         monitor.start()
         bridge.accounts.monitor.start()
-        control.start(server.shutdown, server.pairing.control, server.instance_id, server.auth, bridge.account.control, server.notifications.control, bridge.accounts.control, server.harness.control, server.desktop_sessions.control, bridge.cli_access_control, network_adaptation=adaptation.control, cloud=cloud.control)
+        control.start(server.shutdown, server.pairing.control, server.instance_id, server.auth, bridge.account.control, server.notifications.control, bridge.accounts_control, server.harness.control, server.desktop_sessions.control, bridge.cli_access_control, network_adaptation=adaptation.control, cloud=cloud.control)
         for listener in servers[1:]:
             thread = threading.Thread(target=listener.serve_forever, kwargs={'poll_interval': 0.5}, daemon=True)
             thread.start()

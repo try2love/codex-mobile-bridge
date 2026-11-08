@@ -10,12 +10,12 @@ const listCode=extract('function renderList(){','async function loadList(');
 const stateCode=extract('function renderState(view){',"$('send-mode').onchange");
 const reconnectCode=extract("$('reconnect').onclick=", "document.querySelectorAll('[data-close]')");
 const permissionCode=extract("$('permissions-button').onclick=",'const fileTransferSettings=');
-const newChatTypeCode=extract("let newChatRequest=0;", "$('new-chat-project').onchange=");
+const newChatTypeCode=extract("let newChatRequest=0,", "$('new-chat-project').onchange=");
 test('CLI creation picker offers existing and custom folders with an accurate action',async()=>{
-  const nodes=new Map(),$=id=>{if(!nodes.has(id))nodes.set(id,{value:'',textContent:'',disabled:false,open:true,children:[],get options(){return this.children;},replaceChildren(...parts){this.children=parts;this.value=parts[0]?.value||'';},append(option){this.children.push(option);if(!this.value)this.value=option.value;},onchange(){}});return nodes.get(id);};
+  const nodes=new Map(),$=id=>{if(!nodes.has(id))nodes.set(id,{value:'',textContent:'',disabled:false,open:true,children:[],addEventListener(){},get options(){return this.children;},replaceChildren(...parts){this.children=parts;this.value=parts[0]?.value||'';},append(option){this.children.push(option);if(!this.value)this.value=option.value;},onchange(){}});return nodes.get(id);};
   const ctx={$,listRows:[],currentId:null,currentHost:'local',newChatProjects:[],newChatEnvironments:[],newChatCanBrowse:false,newChatPreferredHost:'local',newChatEntry:'desktop',preferredWslEntry:'',codexEntries:()=>[],wslEntries:()=>[],newChatUrl:value=>value,independentProject:()=> 'local|independent',api:async()=>({projects:ctx.projects||[],environments:[{key:'cli|local',host:'local',type:'cli',name:'Local CLI'},{key:'desktop|local',host:'local',type:'desktop',name:'Local App'}]}),Option:class{constructor(text,value){this.text=text;this.value=value;}},t:key=>({'创建聊天':'Create chat','创建并打开':'Create and open'}[key]||key)};
   $('new-chat-project').onchange=()=>{$('new-chat-submit').disabled=!$('new-chat-project').value||$('new-chat-project').value==='__directory__';};
-  vm.createContext(ctx);vm.runInContext(newChatTypeCode,ctx);
+  vm.createContext(ctx);require('./fixtures/codex-entry-predicates.cjs')(ctx);vm.runInContext(newChatTypeCode,ctx);
   $('new-chat-type').value='cli';await $('new-chat-type').onchange();
   assert.equal($('new-chat-submit').disabled,true);
   assert.equal($('new-chat-submit').textContent,'Create chat');
@@ -31,7 +31,7 @@ test('CLI creation picker offers existing and custom folders with an accurate ac
 function node(){return {dataset:{},setAttribute(){},addEventListener(){},hidden:false,disabled:false,value:'',textContent:'',title:'',children:[],scrollTop:0,classList:{toggle(){}},append(...parts){this.children.push(...parts);},replaceChildren(...parts){this.children=parts;},querySelector(){return node();}};}
 function fixture(){
   const nodes=new Map();const $=id=>{if(!nodes.has(id))nodes.set(id,node());return nodes.get(id);};
-  const ctx={uuid:()=>"fixture-id",toast(){},window:{},SessionMenu:class{bind(){}},pinRow:row=>row,$ ,state:null,reconnectFailure:null,listRows:[],availableSources:[],listRenderStamp:'',listComplete:false,listReadFinished:false,listHasMore:false,currentId:'a',currentHost:'local',sending:false,catalogStarted:false,catalogLoads:0,startCatalog(){ctx.catalogLoads++;},selectedSkills:new Set(),invalidSkills:new Set(),renderSkillPills(){},BridgeI18n:{locale:()=> 'en-US'},t:key=>({'此电脑':'This computer','其他来源':'Other source','历史记录':'History','重新连接':'Reconnect','继续会话':'Continue chat'}[key]||key),localStorage:{getItem:()=>null,setItem(){}},dateText:()=> 'today',el:(tag,cls='',value='')=>Object.assign(node(),{tag,cls,textContent:value,dataset:{}}),renderActivity(){},contextUsageControl:{update(){}},fastModeControl:{sync(){}},visibleChat:()=>false,sessionActivity:{read(){}},attachments:{ready:()=>true},workModes:{render(view){ctx.modesView=view;}},workbench:{current:{}},chatTimeline:{refreshActions(){}},renderApprovals(rows){ctx.approvals=rows;},renderQueue(){},approvalStamp:'',chatKey:()=> 'local|a'};
+  const ctx={CliConnectionsPanel:class{},api:async()=>{},contextCompacting:new Set(),uuid:()=>"fixture-id",toast(){},window:{},SessionMenu:class{bind(){}},pinRow:row=>row,$ ,state:null,reconnectFailure:null,listRows:[],availableSources:[],listRenderStamp:'',listComplete:false,listReadFinished:false,listHasMore:false,currentId:'a',currentHost:'local',sending:false,catalogStarted:false,catalogLoads:0,startCatalog(){ctx.catalogLoads++;},selectedSkills:new Set(),invalidSkills:new Set(),renderSkillPills(){},BridgeI18n:{locale:()=> 'en-US'},t:key=>({'此电脑':'This computer','其他来源':'Other source','历史记录':'History','重新连接':'Reconnect','继续会话':'Continue chat'}[key]||key),localStorage:{getItem:()=>null,setItem(){}},dateText:()=> 'today',el:(tag,cls='',value='')=>Object.assign(node(),{tag,cls,textContent:value,dataset:{}}),renderActivity(){},contextUsageControl:{update(){}},fastModeControl:{sync(){}},visibleChat:()=>false,sessionActivity:{read(){}},attachments:{ready:()=>true},workModes:{render(view){ctx.modesView=view;}},workbench:{current:{},setAttachedParent(){}},chatTimeline:{refreshActions(){}},renderApprovals(rows){ctx.approvals=rows;},renderQueue(){},approvalStamp:'',chatKey:()=> 'local|a'};
   ctx.chatOpenGeneration=0;ctx.modelCatalogGeneration=0;ctx.setTimeout=fn=>fn();ctx.chatTimeline.abort={signal:{aborted:false}};
   ctx.document={createElement:()=>node(),querySelectorAll:()=>[]};ctx.BridgeI18n.language=()=> 'en-US';ctx.BridgeI18n.t=ctx.t;
   vm.createContext(ctx);vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/features/chat/activity.js'),'utf8'),ctx);
@@ -45,12 +45,12 @@ test('source selector uses full inventory and preserves its open options across 
   const ctx={$ ,clientNavigation:{wslSupported:true},availableSources:['desktop','cli'],listSource:'all',sourceFilterStamp:'',localStorage:{setItem(...args){saved.push(args);}},BridgeI18n:{locale:()=>locale},t:key=>key,el:(tag,cls,label)=>({tag,cls,textContent:label,value:''})};
   vm.createContext(ctx);vm.runInContext(sourceFilterCode,ctx);
   assert.equal(ctx.renderSourceFilter(),true);assert.equal($('source-filter-label').hidden,false);
-  assert.deepEqual($('source-filter').children.map(option=>option.value),['all','cli','desktop','wsl']);
+  assert.deepEqual($('source-filter').children.map(option=>option.value),['all','cli','ide','desktop','wsl']);
   const rebuilds=$('source-filter').rebuilds;ctx.renderSourceFilter();assert.equal($('source-filter').rebuilds,rebuilds);
   locale='en-US';ctx.renderSourceFilter();assert.equal($('source-filter').rebuilds,rebuilds+1);
   ctx.listSource='wsl';ctx.availableSources=['desktop'];assert.equal(ctx.renderSourceFilter(),true);
   assert.equal($('source-filter-label').hidden,false);assert.equal(ctx.listSource,'wsl');assert.equal(saved.length,0);
-  ctx.clientNavigation.wslSupported=false;ctx.renderSourceFilter();assert.deepEqual($('source-filter').children.map(option=>option.value),['all','cli','desktop']);assert.equal(ctx.listSource,'all');assert.equal(saved.at(-1)[1],'all');
+  ctx.clientNavigation.wslSupported=false;ctx.renderSourceFilter();assert.deepEqual($('source-filter').children.map(option=>option.value),['all','cli','ide','desktop']);assert.equal(ctx.listSource,'all');assert.equal(saved.at(-1)[1],'all');
 });
 test('every Codex row identifies its source even with a single-source inventory',()=>{
   const {ctx,$}=fixture();$('list-mode').value='recent';
@@ -59,7 +59,7 @@ test('every Codex row identifies its source even with a single-source inventory'
     ctx.listRows=[{id:'a',host:'local',title:'Saved thread',projectName:'Project',projectKey:'p',recency:1,...(source?{access:{source}}:{})}];ctx.renderList();
     const row=$('sessions').children[0];
     assert.equal(row.children[1].cls,'session-source');
-    assert.equal(row.children[1].textContent,({desktop:'APP',cli:'CLI',ide:'IDE',unknown:'Other source'})[source]||'APP');
+    assert.equal(row.children[1].textContent,({desktop:'APP',cli:'CLI',ide:'VS Code',unknown:'Other source'})[source]||'APP');
     assert.equal(row.children[2].tag,'small');assert.equal(row.children[2].children[1].tag,'time');
   }
   assert.equal(ctx.sessionAccess().canSend,true);assert.equal(ctx.sessionAccess(cli).canSend,false);
@@ -184,4 +184,20 @@ test('desktop router failure offers explicit rebuild and keeps failure plus draf
   vm.runInContext(reconnectCode,ctx);await $('reconnect').onclick();ctx.renderState(view);
   assert.equal(JSON.stringify(calls),JSON.stringify([{url:'local/a/reconnect',body:{activate:true,rebuild:true}}]));
   assert.equal($('reconnect').disabled,false);assert.match($('notice-text').textContent,/尚未恢复/);assert.equal($('message').value,'unsent draft');
+});
+
+test('a failed rebuild keeps retry and app management independently available',async()=>{
+  const {ctx,$}=fixture(),calls=[];
+  const view={host:'local',connected:false,status:'idle',requests:[],submissions:[],historyComplete:true,desktopRestartRecommended:true,rebuildRecommended:false,access:{source:'desktop',canReconnect:true}};
+  $('message').value='unsent draft';ctx.renderState(view);
+  ctx.clientNavigation={openManager(){calls.push('manager');}};
+  ctx.sessionUrl=(id,action,host)=>`${host}/${id}/${action}`;
+  ctx.api=async(url,body)=>{calls.push({url,body});return {connected:true};};
+  vm.runInContext(reconnectCode,ctx);
+  assert.equal($('reconnect').textContent,'重建连接');assert.equal($('reconnect-manager').hidden,false);
+  await $('reconnect').onclick();
+  assert.equal(JSON.stringify(calls),JSON.stringify([{url:'local/a/reconnect',body:{activate:true,rebuild:true}}]));
+  $('reconnect-manager').onclick();assert.equal(calls[1],'manager');assert.equal($('message').value,'unsent draft');
+  ctx.renderState({...view,connected:true,desktopRestartRecommended:false});
+  assert.equal($('notice').hidden,true);assert.equal($('reconnect-manager').hidden,true);
 });

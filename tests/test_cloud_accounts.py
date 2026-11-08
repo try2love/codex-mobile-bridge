@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from bridge.features.network.cloud_account import CloudError, Controller, scope, verified_entitlement
 from bridge.features.network.cloud_connector import Connector, validate_request
 from bridge.features.network.cloud_crypto import exact_origin, new_key, public_key
-from bridge.features.notifications.channels import Notifications, read_json, save_settings, settings, write_json
+from bridge.features.notifications.channels import read_json, save_settings, settings, write_json
 
 
 class Vault:
@@ -115,27 +115,17 @@ class CloudAccountsTests(unittest.TestCase):
         self.addCleanup(connector.notifications.close)
         return connector
 
-    def test_active_cloud_enables_mobile_inbox_once_and_preserves_other_channels(self):
-        prior = save_settings(self.directory, {
+    def test_cloud_refresh_preserves_saved_notification_preferences(self):
+        save_settings(self.directory, {
             'mobileEnabled': False, 'mobileAppLinks': False,
             'barkEnabled': True, 'barkKey': 'synthetic-bark-key',
             'includeTitle': False, 'addressEnabled': False,
         })
+        path = self.directory / 'notifications.json'
+        prior = path.read_bytes()
         self.controller.request = Mock(return_value=self.entitlement())
         self.controller.refresh_entitlement()
-        saved = settings(self.directory)
-        self.assertTrue(saved['mobileEnabled'])
-        self.assertTrue(saved['cloudMobileDefaultApplied'])
-        self.assertEqual({key: saved[key] for key in prior if key != 'mobileEnabled'},
-                         {key: value for key, value in prior.items() if key != 'mobileEnabled'})
-        manager = Notifications(None, self.directory)
-        self.assertTrue(manager.mobile_snapshot()['enabled'])
-        self.assertEqual(manager.mobile.read()['events'], [])
-
-        save_settings(self.directory, {'mobileEnabled': False})
-        self.controller.refresh_entitlement()
-        self.assertFalse(settings(self.directory)['mobileEnabled'])
-        # An outage/restart must not reinterpret a saved manual choice as a new default.
+        self.assertEqual(path.read_bytes(), prior)
         self.controller.request = Mock(side_effect=CloudError('network_or_certificate_error'))
         with self.assertRaises(CloudError):
             self.controller.refresh_entitlement()
@@ -143,37 +133,33 @@ class CloudAccountsTests(unittest.TestCase):
         restored._vault = self.controller._vault
         restored.request = Mock(return_value=self.entitlement())
         restored.refresh_entitlement()
-        self.assertFalse(settings(self.directory)['mobileEnabled'])
-        self.assertFalse(manager.mobile_snapshot()['enabled'])
+        self.assertEqual(path.read_bytes(), prior)
 
-    def test_cloud_readiness_is_required_before_mobile_default_is_applied(self):
-        self.assertFalse(settings(self.directory)['mobileEnabled'])
+    def test_cloud_refresh_does_not_persist_notification_defaults(self):
+        self.assertTrue(settings(self.directory)['mobileEnabled'])
+        self.assertTrue(settings(self.directory)['includeTitle'])
         self.controller.status()
         self.assertFalse((self.directory / 'notifications.json').exists())
-        self.controller.request = Mock(return_value=self.entitlement(active=False))
-        self.controller.refresh_entitlement()
-        self.assertFalse(settings(self.directory)['mobileEnabled'])
-        self.assertFalse((self.directory / 'notifications.json').exists())
+        for entitlement in [self.entitlement(), self.entitlement(active=False), self.entitlement(required=False)]:
+            with self.subTest(entitlement=entitlement):
+                self.controller.request = Mock(return_value=entitlement)
+                self.controller.refresh_entitlement()
+                self.assertFalse((self.directory / 'notifications.json').exists())
         self.controller.request = Mock(side_effect=CloudError('network_or_certificate_error'))
         with self.assertRaises(CloudError):
             self.controller.refresh_entitlement()
         self.assertFalse((self.directory / 'notifications.json').exists())
-        self.controller.request = Mock(return_value=self.entitlement(required=False))
-        self.controller.refresh_entitlement()
-        self.assertTrue(settings(self.directory)['mobileEnabled'])
-        self.assertFalse(settings(self.directory)['mobileAppLinks'])
 
-    def test_notification_writes_preserve_cloud_default_and_explicit_mobile_choice(self):
-        self.controller.request = Mock(return_value=self.entitlement())
-        self.controller.refresh_entitlement()
-        save_settings(self.directory, {'addressName': 'Synthetic gateway'})
-        self.assertTrue(settings(self.directory)['mobileEnabled'])
-        save_settings(self.directory, {'mobileEnabled': False})
-        self.controller.refresh_entitlement()
-        raw = read_json(self.directory / 'notifications.json', {})
-        self.assertFalse(raw['mobileEnabled'])
-        self.assertTrue(raw['cloudMobileDefaultApplied'])
-        self.assertEqual(raw['addressName'], 'Synthetic gateway')
+    def test_cloud_refresh_ignores_legacy_inbox_migration_marker(self):
+        path = self.directory / 'notifications.json'
+        for marker in (False, True):
+            with self.subTest(marker=marker):
+                prior = {'mobileEnabled': False, 'cloudMobileDefaultApplied': marker,
+                         'addressName': 'Synthetic gateway'}
+                write_json(path, prior)
+                self.controller.request = Mock(return_value=self.entitlement())
+                self.controller.refresh_entitlement()
+                self.assertEqual(read_json(path, {}), prior)
 
     def test_exact_origin_and_scope_isolation(self):
         for origin in ('https://relay.example.test:08443', 'https://relay.example.test:0',

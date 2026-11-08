@@ -1,6 +1,7 @@
 # Agent Note: 云服务首次启用默认开启手机接力收件箱
 
 Status: implemented
+Archived: 2026-11-08
 
 ## Problem
 

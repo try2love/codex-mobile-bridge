@@ -142,7 +142,7 @@ class SessionStore:
                        'codex_mobile_bridge_wsl', 'codex_mobile_bridge')
 
     def __init__(self, codex_home, source='all'):
-        if source not in ('all', 'desktop', 'cli'):
+        if source not in ('all', 'desktop', 'cli', 'ide'):
             raise ValueError('未知会话来源')
         self.source = source
         self.home = Path(codex_home).resolve()
@@ -188,11 +188,11 @@ class SessionStore:
     def _matches(self, row):
         origin = self._origin(row)
         if self.source == 'all':
-            return origin in ('desktop', 'cli')
+            return origin in ('desktop', 'cli', 'ide')
         if self.source == 'cli':
-            return (row.get('originator') in self.CLI_ORIGINATORS or
+            return (origin == 'cli' or row.get('originator') in self.CLI_ORIGINATORS or
                     (row.get('originator') is None and row.get('source') == 'cli'))
-        return origin == 'desktop'
+        return origin == self.source
 
     @contextmanager
     def _connect(self):
@@ -233,13 +233,13 @@ class SessionStore:
                 bool(database and Path(str(database) + '-shm').exists()), exc)
             raise StoreUnavailable("暂时无法读取 Codex 会话数据库，请稍后重试或重新打开电脑 Codex。") from exc
 
-    def list(self, query="", limit=100, offset=0, archived=False, source='all', pinned_ids=()):
-        if source not in ('all', 'desktop', 'cli'):
+    def list(self, query="", limit=100, offset=0, archived=False, source='all', pinned_ids=(), exclude_sources=()):
+        if source not in ('all', 'desktop', 'cli', 'ide'):
             raise ValueError('不支持的会话来源')
         labels, matches = self._cli_inputs(query)
         with self._connect() as conn:
             columns = {r[1] for r in conn.execute("PRAGMA table_info(threads)")}
-            fields = [name for name in ("id", "name", "title", "cwd", "updated_at", "updated_at_ms", "recency_at", "recency_at_ms", "model_provider", "model", "originator", "source", "archived", "is_pinned", "project_id") if name in columns]
+            fields = [name for name in ("id", "name", "title", "cwd", "updated_at", "updated_at_ms", "recency_at", "recency_at_ms", "model_provider", "model", "originator", "source", "thread_source", "archived", "is_pinned", "project_id", "attached_thread_parent_id") if name in columns]
             where = ["archived = ?"]
             params = [int(archived)]
             where.append(self._user_origin_filter(columns))
@@ -252,6 +252,21 @@ class SessionStore:
                 where.append("COALESCE(source, '') NOT LIKE '%\"subagent\"%'")
             if source != 'all':
                 where.append(self._source_filter(columns, source))
+            for excluded in exclude_sources:
+                if excluded not in ('desktop', 'cli', 'ide'):
+                    raise ValueError('不支持的会话来源')
+                where.append('NOT (' + self._source_filter(columns, excluded) + ')')
+            if 'attached_thread_parent_id' in columns:
+                # Only the native attachment relation hides a child. A normal
+                # fork remains a root; a missing/out-of-scope parent must not
+                # make its child disappear from the registered configuration.
+                parent_filter = self._owner_filter(columns)
+                for excluded in exclude_sources:
+                    parent_filter += ' AND NOT (' + self._source_filter(columns, excluded) + ')'
+                parent_filter = re.sub(r'\b(' + '|'.join(re.escape(name) for name in columns) + r')\b',
+                                       lambda match: 'parent.' + match.group(), parent_filter)
+                where.append("(attached_thread_parent_id IS NULL OR attached_thread_parent_id = '' OR NOT EXISTS "
+                             '(SELECT 1 FROM threads AS parent WHERE parent.id = threads.attached_thread_parent_id AND ' + parent_filter + '))')
             if query:
                 search_fields = [name for name in ("name", "title", "cwd") if name in columns]
                 # History can contain many matching IDs; a read-only function
@@ -279,6 +294,9 @@ class SessionStore:
                 if self.source == 'cli' and self._matches(item):
                     origin = 'cli'
                 item['origin'] = origin
+                if item.get('attached_thread_parent_id'):
+                    item['attachedParentId'] = item['attached_thread_parent_id']
+                    item['orphanedSideChat'] = True
                 if self.source == 'cli':
                     item['display_title'] = item.get('name') or labels.get(item['id']) or item.get('title')
                 result.append(item)
@@ -293,27 +311,36 @@ class SessionStore:
                 where.append("COALESCE(thread_source, '') != 'subagent'")
             if 'source' in columns:
                 where.append("COALESCE(source, '') NOT LIKE '%\"subagent\"%'")
-            fields = [name for name in ('originator', 'source') if name in columns]
+            fields = [name for name in ('originator', 'source', 'thread_source') if name in columns]
             if not fields:
                 return []
             rows = conn.execute('SELECT DISTINCT ' + ','.join(fields) + ' FROM threads WHERE ' + ' AND '.join(where)).fetchall()
             return sorted({self._origin(dict(row)) for row in rows})
 
+    @classmethod
+    def _native_cli_filter(cls, columns):
+        if not {'thread_source', 'originator'} <= columns:
+            return '0'
+        origins = ','.join(repr(origin) for origin in cls.DESKTOP_ORIGINATORS)
+        return "(COALESCE(thread_source, '') = 'cli' AND COALESCE(originator, '') IN (" + origins + '))'
+
     def _source_filter(self, columns, source):
+        if source == 'ide':
+            return "COALESCE(originator, '') = 'codex_vscode'" if 'originator' in columns else '0'
         if source == 'desktop':
             originators = "originator IN ('Codex Desktop', 'codex_work_desktop', 'codex_mobile_bridge')" if 'originator' in columns else '0'
             legacy = "(originator IS NULL AND source = 'vscode')" if 'originator' in columns and 'source' in columns else "source = 'vscode'" if 'source' in columns else '0'
-            return '(' + originators + ' OR ' + legacy + ')'
+            return '(' + originators + ' OR ' + legacy + ') AND NOT ' + self._native_cli_filter(columns)
         origins = self.CLI_ORIGINATORS if self.source == 'cli' else tuple(
             origin for origin in self.CLI_ORIGINATORS if origin != 'codex_mobile_bridge')
         originators = 'originator IN (' + ','.join(repr(origin) for origin in origins) + ')' if 'originator' in columns else '0'
         legacy = "(originator IS NULL AND source = 'cli')" if 'originator' in columns and 'source' in columns else "source = 'cli'" if 'source' in columns else '0'
-        return '(' + originators + ' OR ' + legacy + ')'
+        return '(' + originators + ' OR ' + legacy + ' OR ' + self._native_cli_filter(columns) + ')'
 
     @staticmethod
     def _user_origin_filter(columns):
         if 'originator' in columns:
-            recognized = "originator IN ('Codex Desktop', 'codex_work_desktop', 'codex_mobile_bridge', 'codex-tui', 'codex_cli_rs', 'codex-mobile-bridge-cli', 'codex_mobile_bridge_wsl')"
+            recognized = "originator IN ('Codex Desktop', 'codex_work_desktop', 'codex_mobile_bridge', 'codex-tui', 'codex_cli_rs', 'codex-mobile-bridge-cli', 'codex_mobile_bridge_wsl', 'codex_vscode')"
             if 'source' in columns:
                 return '(' + recognized + " OR (originator IS NULL AND source IN ('vscode', 'cli')))"
             return recognized
@@ -323,6 +350,10 @@ class SessionStore:
     def _origin(cls, row):
         if row.get('thread_source') == 'subagent' or '"subagent"' in (row.get('source') or ''):
             return 'subagent'
+        if row.get('originator') == 'codex_vscode':
+            return 'ide'
+        if row.get('thread_source') == 'cli' and row.get('originator') in cls.DESKTOP_ORIGINATORS:
+            return 'cli'
         if row.get('originator') in cls.DESKTOP_ORIGINATORS or (row.get('originator') is None and row.get('source') == 'vscode'):
             return 'desktop'
         if row.get('originator') in cls.CLI_ORIGINATORS or (row.get('originator') is None and row.get('source') == 'cli'):
@@ -348,10 +379,10 @@ class SessionStore:
                     ' AS changed_at FROM threads WHERE ' + ' AND '.join(filters), (since,))]
 
     def lifecycle_threads(self, root_id=None):
-        """Desktop roots and their complete agent subtree, using metadata only."""
+        """Desktop roots and complete attached/agent subtree, using metadata only."""
         with self._connect() as conn:
             columns = {r[1] for r in conn.execute('PRAGMA table_info(threads)')}
-            fields = [name for name in ('id', 'originator', 'source') if name in columns]
+            fields = [name for name in ('id', 'originator', 'source', 'thread_source', 'attached_thread_parent_id') if name in columns]
             rows = [dict(row) for row in conn.execute('SELECT ' + ','.join(fields) + ' FROM threads')]
         if root_id is not None:
             if not any(row['id'] == root_id for row in rows):
@@ -365,9 +396,9 @@ class SessionStore:
             roots = {row['id'] for row in rows if self._matches(row)}
         children = {}
         for row in rows:
-            parent = self._agent_source(row).get('parent_thread_id')
-            if isinstance(parent, str):
-                children.setdefault(parent, []).append(row['id'])
+            for parent in (self._agent_source(row).get('parent_thread_id'), row.get('attached_thread_parent_id')):
+                if isinstance(parent, str) and parent:
+                    children.setdefault(parent, []).append(row['id'])
         pending = list(roots)
         while pending:
             for child in children.get(pending.pop(), []):
@@ -375,6 +406,37 @@ class SessionStore:
                     roots.add(child)
                     pending.append(child)
         return [{'id': identifier} for identifier in sorted(roots)]
+
+    def attached_children(self, thread_id):
+        """All native children, including archives; no process or owner activation."""
+        self.get(thread_id)
+        with self._connect() as conn:
+            columns = {row[1] for row in conn.execute('PRAGMA table_info(threads)')}
+            if 'attached_thread_parent_id' not in columns:
+                return []
+            fields = [name for name in ('id', 'name', 'title', 'cwd', 'archived', 'updated_at', 'originator', 'source', 'thread_source') if name in columns]
+            rows = conn.execute('SELECT ' + ','.join(fields) + ' FROM threads WHERE attached_thread_parent_id = ? ORDER BY updated_at DESC,id DESC', (thread_id,)).fetchall()
+            return [dict(row, attachedParentId=thread_id) for row in rows if self._matches(dict(row)) and self._origin(dict(row)) in ('desktop', 'cli', 'ide')]
+
+    def attached_parent(self, thread_id):
+        row = self.get(thread_id)
+        parent = row.get('attached_thread_parent_id')
+        if not parent:
+            return None
+        try:
+            source = self.get(parent)
+        except KeyError:
+            return {'id': parent, 'available': False}
+        return {'id': parent, 'available': True, 'title': source.get('name') or source.get('title') or '未命名聊天'}
+
+    def existing_ids(self, identifiers):
+        """Metadata receipts for an already authorized lifecycle scope."""
+        identifiers = tuple(set(identifiers))
+        if not identifiers:
+            return set()
+        with self._connect() as conn:
+            return {row['id'] for row in conn.execute('SELECT id FROM threads WHERE id IN (' +
+                    ','.join('?' for _ in identifiers) + ')', identifiers)}
 
     def archive_flags(self, thread_id):
         """Complete archive metadata for one authorized root and its descendants."""
@@ -403,7 +465,7 @@ class SessionStore:
                 raise KeyError("找不到这个 Codex 会话")
             result = dict(row)
             origin = self._origin(result)
-            if origin not in ('desktop', 'cli'):
+            if origin not in ('desktop', 'cli', 'ide'):
                 raise KeyError("不是可访问的 Codex 会话")
             if not self._matches(result):
                 raise KeyError("不是可访问的 Codex 会话")
@@ -436,14 +498,14 @@ class SessionStore:
             columns = {r[1] for r in conn.execute('PRAGMA table_info(threads)')}
             fields = [name for name in ('id', 'originator', 'source', 'thread_source', 'archived', 'rollout_path') if name in columns]
             rows = [dict(row) for row in conn.execute('SELECT ' + ','.join(fields) + ' FROM threads')]
-        counts = {'desktop': 0, 'cli': 0, 'other': 0, 'subagent': 0, 'visible': 0, 'archived': 0}
+        counts = {'desktop': 0, 'cli': 0, 'ide': 0, 'other': 0, 'subagent': 0, 'visible': 0, 'archived': 0}
         target = None
         for row in rows:
             origin = self._origin(row)
             counts[origin] += 1
             if row.get('archived'):
                 counts['archived'] += 1
-            elif origin in ('desktop', 'cli'):
+            elif origin in ('desktop', 'cli', 'ide'):
                 counts['visible'] += 1
             if thread_id is not None and row['id'] == thread_id:
                 target = row

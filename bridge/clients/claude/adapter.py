@@ -16,7 +16,7 @@ from bridge.clients.errors import BridgeUnavailable
 from bridge.clients.file_mentions import file_mentions
 from bridge.features.sessions.create import ArchiveNotSent
 from bridge.clients.claude.mailbox import FileDesktop, MAX_REQUEST, CONNECTOR_REVISION, workspace_trust_rejection
-from bridge.clients.claude.cli_session import ClaudeCli, project_account_identity
+from bridge.clients.claude.cli_session import ClaudeCli, project_account_identity, _supports_compact
 from bridge.clients.claude.remote import RemoteClaudeCli
 from bridge.app.lifecycle import private_json
 from bridge.platforms.windows import session as windows_session
@@ -26,10 +26,16 @@ DESKTOP_WAIT_STATES = {'needs-screen-saver', 'needs-unlock', 'needs-desktop'}
 
 
 class Claude:
-    def __init__(self, directory, *, auto_connect=True, hosts=None, wsl_entries=None):
+    def __init__(self, directory, *, auto_connect=True, hosts=None, wsl_entries=None,
+                 desktop_only=False, descriptor=None):
         self.directory = Path(directory)
         self.hosts = hosts
-        self.cli = ClaudeCli(self.directory.parent/'uploads')
+        self.native_descriptor = descriptor
+        self.cli = ClaudeCli(self.directory.parent/'uploads',
+                             **({'profile_resolver': lambda: None} if desktop_only else {}))
+        if desktop_only:
+            hosts = self.hosts = None
+            wsl_entries = None
         if wsl_entries is not None:
             from bridge.clients.claude.wsl import ClaudeCliRemotes
             self.remote_cli = ClaudeCliRemotes(hosts, wsl_entries)
@@ -50,7 +56,7 @@ class Claude:
         discovery_path = self.directory/'discovery.json'
         if discovery_path.exists():
             try:
-                value = json.loads(discovery_path.read_text())
+                value = json.loads(discovery_path.read_text(encoding='utf-8-sig'))
                 if isinstance(value, dict):
                     self.discovery = value
             except (OSError, ValueError):
@@ -107,8 +113,10 @@ class Claude:
                 self._assert_reconnect_idle()
                 self.desktop.close()
             async def initialize():
-                self.desktop = FileDesktop(self.directory, token)
+                self.desktop = FileDesktop(self.directory, token, self.discovery.get('dataHome'))
             asyncio.run_coroutine_threadsafe(initialize(), self.loop).result(timeout=5)
+        else:
+            self.desktop.set_profile(self.discovery.get('dataHome'))
         config = {'transport': 'file', 'cwd': str(self.directory), 'token': token,
                   'generation': self.desktop.generation, 'reconnect': True,
                   'inspectionMarker': secrets.token_hex(8),
@@ -213,7 +221,10 @@ class Claude:
                 return
             if not data_home:
                 raise ValueError('未找到 Claude 数据目录，请重新扫描')
-            app = background_running_app(executable, data_home, cancelled=cancel,
+            runner = background_running_app
+            if self.native_descriptor is not None and self.native_descriptor().get('nativeProfile'):
+                raise ValueError('当前系统尚未验证此独立 Claude 配置的后台初始化')
+            app = runner(executable, data_home, cancelled=cancel,
                                          launch_gate=self.setup_lock, initialize_console=True,
                                          explicit_home=bool(self.discovery.get('dataHomeExplicit')))
             if not self._background_state(cancel, 'connecting', 'Claude 已启动，正在等待已有桌面连接恢复'):
@@ -425,7 +436,13 @@ class Claude:
                 data_home = self.discovery.get('dataHome')
                 if not data_home:
                     raise ValueError('未找到 Claude 数据目录，请重新扫描')
-                pid = running_app(executable, data_home, restart=restart, cancelled=cancel, allow_launch=not existing_only)
+                descriptor = self.native_descriptor() if self.native_descriptor is not None else None
+                if descriptor and (descriptor.get('nativeProfile') or descriptor.get('excludeProfiles')):
+                    from bridge.clients.lifecycle import profile_running_app
+                    pid = profile_running_app(descriptor, restart=restart, cancelled=cancel, allow_launch=not existing_only,
+                                              allow_native_relaunch=foreground and not restart and not existing_only)
+                else:
+                    pid = running_app(executable, data_home, restart=restart, cancelled=cancel, allow_launch=not existing_only)
                 restart = False
                 if cancel.is_set() or cancel is not self.setup_cancel: return
                 if not self.discovery.get('dataHomeExplicit'):
@@ -621,6 +638,7 @@ class Claude:
                 'rename': 'mobileRename' in methods,
                 'archive': kind == 'code' and 'mobileArchive' in methods,
                 'unarchive': kind == 'code' and 'mobileArchive' in methods,
+                'compact': all(method in methods for method in ('getSupportedCommands', 'getSession', 'sendMessage')),
                 'contextUsage': any(method in methods for method in ('getContextUsageSummary', 'getContextUsage'))}
 
     def cli_projects(self, include_remote=True):
@@ -643,36 +661,39 @@ class Claude:
             projects.extend(self.remote_cli.projects())
         return projects
 
-    def project_environments(self):
+    def project_environments(self, host_id=None):
         rows = []
-        if self.status()['connected'] and self.desktop:
+        if host_id in (None, 'local') and self.status()['connected'] and self.desktop:
             for kind in ('code', 'cowork'):
                 if 'start' in self.desktop.capabilities.get(kind, []):
                     rows.append({'surface': kind, 'host': 'local', 'hostLabel': '此电脑',
                         'name': 'Claude Desktop · '+kind,
                         'scope': self.discovery.get('dataHome') or str(self.directory),
                         'createRequiresMessage': True})
-        profile = self.cli.profile_resolver()
+        profile = self.cli.profile_resolver() if host_id in (None, 'local') else None
         if profile and self.cli._ready(profile):
             account_identity = project_account_identity(profile)
             rows.append({'surface': 'cli', 'host': 'local', 'hostLabel': '此电脑',
                 'name': 'Claude Code · 此电脑', 'scope': profile['origin']+'|'+account_identity,
                 'origin': profile['origin'], 'accountFingerprint': account_identity,
                 'createRequiresMessage': True})
-        rows.extend(self.remote_cli.project_environments())
+        if host_id != 'local':
+            rows.extend(self.remote_cli.project_environments(**({'host_id': host_id} if host_id is not None else {})))
         return rows
 
     def create_cli(self, project, body):
         message = body.get('firstMessage', body.get('text', ''))
         if not isinstance(message, str) or not message.strip() or len(message) > 100000:
             raise ValueError('请输入首条消息，Claude 将创建会话并发送此消息')
+        selection = {key: body[key] for key in ('model', 'effort', 'manualModel', 'manualEffort') if key in body}
+        options = {'selection': selection} if selection else {}
         if project['host'] == 'local':
             if project.get('directoryIdentity'):
                 return self.cli.create(project['cwd'], project['origin'], message, project['directoryIdentity'],
-                                       project.get('accountFingerprint'))
-            return self.cli.create(project['cwd'], project['origin'], message)
+                                       project.get('accountFingerprint'), **options)
+            return self.cli.create(project['cwd'], project['origin'], message, **options)
         return self.remote_cli.create(project['host'], project['alias'], project['origin'],
-                                      project['cwd'], message, project.get('directoryIdentity'))
+                                      project['cwd'], message, project.get('directoryIdentity'), **options)
 
     async def _start_desktop_project(self, project, options):
         try:
@@ -705,7 +726,8 @@ class Claude:
             message = body.get('firstMessage', '')
             if not isinstance(message, str) or not message.strip() or len(message) > 100000:
                 raise ValueError('请输入首条消息，Claude 将创建会话并发送此消息')
-            options = {'title': body.get('title') or '新会话', 'message': message}
+            options = {'title': body.get('title') or '新会话', 'message': message,
+                       **{key: body[key] for key in ('model', 'effort') if key in body}}
             if project['surface'] == 'code':
                 options.update(cwd=project['cwd'], useWorktree=False)
             else:
@@ -768,7 +790,8 @@ class Claude:
             message = body.get('firstMessage', body.get('text', ''))
             if not isinstance(message, str) or not message.strip() or len(message) > 100000:
                 raise ValueError('请输入首条消息，Claude 将创建会话并发送此消息')
-            options = {'title': body.get('title') or '新会话', 'message': message}
+            options = {'title': body.get('title') or '新会话', 'message': message,
+                       **{key: body[key] for key in ('model', 'effort') if key in body}}
             if project['surface'] == 'code':
                 options.update(cwd=project['cwd'], useWorktree=False)
             else:
@@ -850,6 +873,8 @@ class Claude:
             # when Desktop cannot provide its current context summary.
             row['lastPromptContextUsage'] = context_fields(raw)['contextUsage']
             capabilities = self.session_capabilities(kind)
+            capabilities['compact'] = (capabilities['compact'] and row['runtimeKnown'] and
+                                       row['status'] == 'idle' and not row['requests'] and not row['archived'])
             if row['contextUsage'] is not None:
                 capabilities = {**capabilities, 'contextUsage': True}
             history = detail.get('history', {}) if detail is not None else {}
@@ -911,6 +936,19 @@ class Claude:
                     raise ValueError('Cowork 未提供补充当前任务接口，请使用普通发送')
                 args += [None, body.get('id')]
             result = await self.desktop.call(kind, 'sendMessage', *args, timeout=90)
+        elif action == 'compact':
+            if not self.session_capabilities(kind)['compact'] or row['status'] != 'idle' or not row['runtimeKnown'] or row['requests']:
+                raise BridgeUnavailable('请等待原生会话空闲后再压缩上下文')
+            commands = await self.desktop.call(kind, 'getSupportedCommands', {'sessionId': native})
+            if not isinstance(commands, list) or not _supports_compact({'commands': commands}, desktop_projection=True):
+                raise BridgeUnavailable('当前 Claude 会话未提供原生上下文压缩命令')
+            fresh = model.session(kind, await self.desktop.call(kind, 'getSession', native))
+            if (fresh['id'] != sid or fresh['cwd'] != row['cwd'] or fresh['archived'] or
+                    fresh['status'] != 'idle' or not fresh['runtimeKnown'] or fresh['requests']):
+                raise BridgeUnavailable('原生会话已变化，尚未提交压缩')
+            args = [native, '/compact', None]
+            args += [None, None, None, None, body['id']] if kind == 'code' else [None, body['id']]
+            result = await self.desktop.call(kind, 'sendMessage', *args, timeout=30)
         elif action == 'stop':
             result = await self.desktop.call(kind, 'interrupt' if kind == 'code' else 'stop', native)
         elif action == 'settings':
@@ -979,6 +1017,26 @@ class Claude:
         return {'status': 'accepted'}
 
     def call(self, action, sid=None, body=None, *, timeout=100):
+        if action == 'work-mode':
+            mode = (body or {}).get('mode')
+            if mode not in ('default', 'plan'):
+                raise ValueError('工作模式无效')
+            current = self._call('detail', sid, timeout=timeout)
+            row = current['session']
+            if current.get('capabilities', {}).get('permissions') is not True:
+                raise ValueError('当前 Claude 接入未提供原生计划模式')
+            if (row.get('permissionMode') == 'plan') == (mode == 'plan'):
+                return {'status': 'accepted'}
+            if row.get('status') != 'idle' or row.get('requests'):
+                raise ValueError('请等待当前任务结束后再切换模式')
+            return self._call('access', sid, {**(body or {}), 'mode': 'plan' if mode == 'plan' else 'default'}, timeout=timeout)
+        result = self._call(action, sid, body, timeout=timeout)
+        if action == 'detail':
+            result.setdefault('capabilities', {}).update(plan=result.get('capabilities', {}).get('permissions') is True, goal=False)
+            result['session']['collaborationMode'] = 'plan' if result['session'].get('permissionMode') == 'plan' else 'default'
+        return result
+
+    def _call(self, action, sid=None, body=None, *, timeout=100):
         if action == 'create' and (body or {}).get('directoryProject', {}).get('surface') == 'cli':
             return self.create_cli(body['directoryProject'], body)
         if self.loop is None:

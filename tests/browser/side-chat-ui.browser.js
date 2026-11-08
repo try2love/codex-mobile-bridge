@@ -1,38 +1,48 @@
-// Run only against the synthetic workbench fixture, with its main chat open.
+// Synthetic UI only. Native children enter the normal session controller; they
+// do not create another composer, attachment scope, or approval implementation.
 async function runSideChatTests(){
- const wb=window.BridgeWorkbench,session=wb.current,checks=[];
- const check=(ok,label)=>{if(!ok)throw Error(label);checks.push(label);};
- const wait=async f=>{for(let i=0;i<200;i++){if(f())return;await new Promise(r=>setTimeout(r,25));}throw Error('Side chat fixture did not settle');};
- const main=document.querySelector('#messages').textContent,hash=location.hash;
- document.querySelector('#message').value='main draft';
- wb.sideChat();let panel=session.files.find(t=>t.id==='sidechat').sideChat;
- await wait(()=>panel.state!==undefined);
- if(!panel.state.id)await panel.create();
- check(panel.state.connected,'Remote creation succeeds without a desktop tab');
- const child=panel.state.id;
- check(session.active==='sidechat'&&!panel.tab.body.closest('.wb-float'),'Side chat is an independent subtab');
- panel.input.value='first line\nsecond line';panel.input.dispatchEvent(new Event('input'));
- const turns=panel.state.turns.length;
- panel.input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
- check(panel.state.turns.length===turns,'Enter does not submit a terminal-style command');
- await panel.send();await panel.load();
- check(panel.state.turns.some(t=>t.messages.some(m=>m.role==='user'&&m.text==='first line\nsecond line'))&&!!panel.messages.querySelector('br'),'Explicit send displays the multiline message');
- check(panel.messages.textContent.includes('侧边聊天回复'),'Reply is rendered');
- panel.dispose();session.files.splice(session.files.indexOf(panel.tab),1);wb.sideChat();
- panel=session.files.find(t=>t.id==='sidechat').sideChat;await wait(()=>panel.state?.id);
- check(panel.state.id===child&&panel.messages.textContent.includes('侧边聊天回复'),'Reopened view discovers same child and transcript');
- check(document.querySelector('#message').value==='main draft','Main draft is preserved');
- check(document.querySelector('#messages').textContent===main&&location.hash===hash,'Main history and route are preserved');
- const confirmOriginal=window.confirm;let confirmations=0;
+ const wb=window.BridgeWorkbench,checks=[],check=(ok,label)=>{if(!ok)throw Error(label);checks.push(label);};
+ const wait=async f=>{for(let i=0;i<100;i++){if(f())return;await new Promise(r=>setTimeout(r,10));}throw Error('Native side directory did not settle');};
+ const originals={request:wb.request,openChat:wb.openChat,menu:wb.openSessionMenu};
+ const calls=[],opened=[],menus=[],parent='aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',child='11111111-2222-3333-4444-555555555555';
+ let failCreation=true;
  try{
-  window.confirm=()=>{confirmations++;return false;};await wb.close('sidechat');
-  check(session.files.some(t=>t.id==='sidechat'),'Cancel close keeps chat');
-  window.confirm=()=>{confirmations++;return true;};await wb.close('sidechat');
-  check(!session.files.some(t=>t.id==='sidechat'),'Confirmed close removes subtab');
- }finally{window.confirm=confirmOriginal;}
- check(confirmations===2,'Close requires explicit confirmation');
- wb.sideChat();panel=session.files.find(t=>t.id==='sidechat').sideChat;await wait(()=>panel.state!==undefined);
- check(!panel.state.id&&!panel.messages.textContent.includes('侧边聊天回复'),'Closed chat does not resurrect');
- await panel.create();check(panel.state.id!==child,'Explicit new chat receives a different child ID');
- return checks;
+  wb.open(parent,'local');
+  wb.openChat=(id,host)=>opened.push({id,host});
+  wb.openSessionMenu=(chat)=>menus.push(chat);
+  wb.request=async(url,body)=>{
+   check(url.includes('/'+parent+'/side-chat?host=local&view=native'),'Directory requests retain exact parent and host');
+   calls.push({url,body});
+   if(body){if(failCreation){failCreation=false;throw Error('Response lost');}return{id:child,host:'local',parentId:parent};}
+   return{parentId:parent,chats:[{id:child,host:'local',title:'原生侧边聊天',attachedParentId:parent,archived:false},{id:'archived-child',host:'local',title:'已归档的侧边聊天',archived:true}]};
+  };
+  document.querySelector('#message').value='parent draft';
+  wb.sideChat();let panel=wb.current.files.find(t=>t.id==='sidechat').sideChat;
+  await wait(()=>panel.chats);
+  check(panel.list.querySelectorAll('.wb-side-chat-row').length===2,'Native active and archived children remain discoverable');
+  check(!panel.tab.body.querySelector('textarea,form'),'Directory does not maintain a duplicate chat stack');
+  panel.list.querySelector('button').click();
+  check(opened[0].id===child&&opened[0].host==='local','Selecting a child enters the standard full chat route with its native identity');
+  panel.list.querySelector('[aria-label="聊天菜单"]').click();
+  check(menus[0].id===child&&menus[0].attachedParentId===parent,'Child lifecycle uses the shared native session menu');
+  await panel.create();await panel.create();
+  const writes=calls.filter(call=>call.body);
+  check(writes.length===2&&writes[0].body.creationId===writes[1].body.creationId,'Unknown create response retries the same durable operation identity');
+  check(writes.every(call=>call.body.action==='create'),'No hidden send, stop, archive or delete mutation');
+  check(opened.at(-1).id===child,'Creation opens the returned native child');
+  const beforeClose=calls.length;
+  await wb.close('sidechat');
+  check(calls.length===beforeClose,'Closing the directory sends no lifecycle mutation');
+  check(document.querySelector('#message').value==='parent draft','Closing the view preserves parent draft');
+  wb.sideChat();panel=wb.current.files.find(t=>t.id==='sidechat').sideChat;await wait(()=>panel.chats);
+  check(panel.chats[0].id===child,'Reopening discovers the same persistent child');
+  await wb.close('sidechat');
+  wb.open(child,'local');wb.setAttachedParent({id:parent,host:'local',available:true});
+  wb.tabs.querySelector('.wb-parent-chat').click();
+  wb.tabs.querySelector('[data-tab="chat"] [aria-label="关闭"]').click();
+  check(opened.slice(-2).every(row=>row.id===parent),'Return and close child view both return to the native parent');
+  check(calls.filter(call=>call.body).length===2,'Leaving a child never stops or destroys its history');
+  wb.open(parent,'local');wb.sideChat();await wait(()=>wb.current.files.find(t=>t.id==='sidechat').sideChat.chats);
+  return{checks,passed:checks.length};
+ }finally{wb.request=originals.request;wb.openChat=originals.openChat;wb.openSessionMenu=originals.menu;}
 }

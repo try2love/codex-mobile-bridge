@@ -22,7 +22,7 @@ class WorkModes {
     if(this.busy())return;
     const key=this.key,storageKey='goal-action:'+key;
     const goal=this.view?.goal;
-    const expected=goal?Object.fromEntries(['objective','status','createdAt','createdAtMs','goalId'].filter(k=>goal[k]!=null).map(k=>[k,goal[k]])):{};
+    const expected=goal?Object.fromEntries(['objective','status','createdAt','createdAtMs','goalId','revision'].filter(k=>goal[k]!=null).map(k=>[k,goal[k]])):{};
     const fingerprint=JSON.stringify({kind,fields,expected});
     let pending;try{pending=JSON.parse(this.storage.getItem(storageKey));}catch{}
     if(!pending||pending.fingerprint!==fingerprint)pending={fingerprint,payload:{id:this.newId(),...fields,expected,uiLocale:BridgeI18n.locale()}};
@@ -39,12 +39,15 @@ class WorkModes {
   render(view=this.view,sendMode=this.sendMode,sending=this.sending) {
     this.view=view;this.sendMode=sendMode;this.sending=!!sending;
     const busy=this.busy();
-    const t=BridgeI18n.t,goalSupported=!!view&&(view.host==='local'
+    const caps=view?.capabilities,t=BridgeI18n.t,goalSupported=typeof caps?.goal==='boolean'?caps.goal:!!view&&(view.host==='local'
       ?view.goalRuntimeAvailable!==false&&view.access?.canUseGoal!==false
       :view.goalRuntimeAvailable===true&&view.access?.canUseGoal===true);
-    const goalUnavailableReason=view?.host!=='local'&&view?.access?.runtime==='desktop'?'目标模式暂不支持 SSH 主机':view?.access?.source==='cli'?'当前 Codex 会话暂不支持目标模式':view?.host!=='local'?'目标模式暂不支持 SSH 主机':'未找到桌面 App 的 Codex 运行时';
+    const goalUnavailableReason=caps?.goal===false?'当前客户端未提供原生目标模式':view?.host!=='local'&&view?.access?.runtime==='desktop'?'目标模式暂不支持 SSH 主机':view?.access?.source==='cli'?'当前 Codex 会话暂不支持目标模式':view?.host!=='local'?'目标模式暂不支持 SSH 主机':'未找到桌面 App 的 Codex 运行时';
     this.select.value=this.selection||(view?.collaborationMode==='plan'?'plan':'default');
-    if(!goalSupported&&this.select.value==='goal')this.select.value='default';
+    const pendingCapabilities=view?.readOnly===true||view?.connectionState==='detached'||view?.runtimeKnown===false;
+    if(!goalSupported&&!(pendingCapabilities&&view?.composerCapabilities?.goal===true)&&this.select.value==='goal')this.select.value='default';
+    const planOption=this.select.querySelector('[value=plan]');if(planOption)planOption.disabled=caps?.plan===false;
+    if(caps?.plan===false&&!(pendingCapabilities&&view?.composerCapabilities?.plan===true)&&this.select.value==='plan')this.select.value='default';
     this.select.disabled=!view||view.loadingHistory||view.activating||busy||sendMode==='steer';
     const goalOption=this.select.querySelector('[value=goal]');
     goalOption.disabled=!goalSupported||!!(view?.status==='active'||(view?.goal&&view.goal.status!=='complete')||['pending','unknown'].includes(view?.goalSubmission?.status));
@@ -53,6 +56,8 @@ class WorkModes {
     this.hint.hidden=!this.hint.textContent;
     this.select.title=this.hint.textContent;
     const goal=view?.goal,request=view?.goalSubmission;
+    const renderStamp=JSON.stringify([goal,request,caps,goalSupported,this.key,BridgeI18n.locale(),busy,this.statusBusy,this.cancelBusy,this.editing,this.actionError,this.storage.getItem('hidden-goal:'+this.key)]);
+    if(this.goalRenderStamp===renderStamp)return;this.goalRenderStamp=renderStamp;
     const goalIdentity=request?JSON.stringify(['request',request.id]):goal?JSON.stringify(['goal',goal.createdAt,goal.objective]):null;
     const dismissed=!!goalIdentity&&this.storage.getItem('hidden-goal:'+this.key)===goalIdentity;
     this.goalToggle.hidden=!(goal||request);
@@ -76,19 +81,19 @@ class WorkModes {
     if(goal&&goalSupported){
       const actions=node('div','','goal-actions');
       this.goalRoot.append(actions);
-      if(['active','blocked','usageLimited','budgetLimited'].includes(goal.status)){
+      if(caps?.goalPause!==false&&['active','blocked','usageLimited','budgetLimited'].includes(goal.status)){
         actions.append(button(this.statusBusy==='paused'?t('正在暂停目标…'):t('暂停目标'),'goal-status secondary',()=>this.setStatus('paused'),this.busy()));
       }
-      if(goal.status==='paused'){
+      if(goal.status==='paused'||caps?.goalResume===true){
         actions.append(button(this.statusBusy==='active'?t('正在恢复目标…'):t('恢复目标'),'goal-status primary',()=>this.setStatus('active'),this.busy()));
       }
-      if(goal.status==='paused')actions.append(button(t('修改目标'),'goal-edit secondary',()=>{this.editing=true;this.editText=goal.objective;this.render();this.goalRoot.querySelector('.goal-editor')?.focus();},this.busy()));
+      if(goal.status==='paused'&&caps?.goalEdit!==false)actions.append(button(t('修改目标'),'goal-edit secondary',()=>{this.editing=true;this.editText=goal.objective;this.render();this.goalRoot.querySelector('.goal-editor')?.focus();},this.busy()));
       actions.append(button(this.cancelBusy?t('正在关闭目标…'):t('关闭目标'),'goal-cancel secondary',()=>this.cancel(),this.busy()));
-      this.goalRoot.append(node('p',t('暂停或关闭目标不会停止当前回复；如需立即停止，请点击“停止”。'),'muted'));
+      this.goalRoot.append(node('p',t(caps?.goalPauseStops?'暂停目标会停止当前目标任务。':'暂停或关闭目标不会停止当前回复；如需立即停止，请点击“停止”。'),'muted'));
       if(goal.status==='active')this.goalRoot.append(node('p',t('修改目标前请先暂停。'),'muted'));
       if(this.editing&&goal.status==='paused'){
         const input=node('textarea','', 'goal-editor');input.value=this.editText;input.maxLength=4000;input.rows=3;input.disabled=this.busy();input.setAttribute('aria-label',t('目标内容'));input.oninput=()=>{this.editText=input.value;};
-        this.goalRoot.append(input,node('p',t('修改目标内容会重置用量统计，保存后保持暂停。'),'muted'));
+        this.goalRoot.append(input,node('p',t(typeof caps?.goal==='boolean'?'保存后保持暂停。':'修改目标内容会重置用量统计，保存后保持暂停。'),'muted'));
         this.goalRoot.append(button(t('保存目标'),'goal-save primary',()=>this.saveEdit(),this.busy()),button(t('放弃修改'),'secondary',()=>{this.editing=false;this.render();},this.busy()));
       }
     }

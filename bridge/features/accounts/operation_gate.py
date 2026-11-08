@@ -29,18 +29,27 @@ class OperationGate:
                     del self.active[host]
                 self.condition.notify_all()
 
-    def __enter__(self):
+    def acquire(self, timeout=None):
         owner = threading.get_ident()
         with self.condition:
-            self.condition.wait_for(lambda: self.exclusive in (None, owner) and
-                                    all(value[0] == owner for value in self.active.values()))
+            ready = self.condition.wait_for(lambda: self.exclusive in (None, owner) and
+                                           all(value[0] == owner for value in self.active.values()), timeout)
+            if not ready:
+                return False
             self.exclusive = owner
             self.depth += 1
-        return self
+            return True
 
-    def __exit__(self, *args):
+    def release(self):
         with self.condition:
             self.depth -= 1
             if not self.depth:
                 self.exclusive = None
             self.condition.notify_all()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *args):
+        self.release()

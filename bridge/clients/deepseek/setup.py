@@ -61,12 +61,44 @@ PREVIOUS_SESSION_METADATA_SOURCES = ('78b87c8f6f5b4633067d4c75fd50b8f006042bc1dc
                                      '87ab2a8dedbde1661c1f325b9371711704caaa140e3e4209ae71801d1c78bf6d')
 
 # Revision 9 predecessors remain usable; history-image reads require the newer host.
-COMPATIBLE_OFFICIAL_SOURCES = ('31ee82718e131d43c60202261d531195af9257e9a375ce0c6b9ff4edf5de8d5a',
+COMPATIBLE_OFFICIAL_SOURCES = ('1608bf0b7b4c1f6e2927a1103467b3c56dfaef4d80c6821309dca03fe2e2d9f5',
+                               'bb6a664b33c21d6195ec158a029fed76a121e989bc2ea46168e6e3c9130035c1',
+                               '19a45ae394f380e69c8b0a8b31e9014efb435276520f33bc871c410164942839',
+                               'eb507bba209d203b392249d022d69fe875a59514234df43552c70839ea1038ad',
+                               '31ee82718e131d43c60202261d531195af9257e9a375ce0c6b9ff4edf5de8d5a',
+                               '5479ae9f1e78bd7bf7ce61478a6427025b47964593dbc830b0845a1ef4f0da5a',
+                               '32fd056cd0840884610a223a41bb690c4f3e244c3af7bdb7fc9c65c84d19b3db',
                                'f3ce3350a32ece209415418e798e2a5d348276081bd15c671552456c18576bb5',
                                '14ca377eecc7b714e9c059b026181164c3cb21166d315a6d9ef9d16327bda815',
                                '9c8da5a761588f5f91d5696e938ff2bd927412a2e56367e08aeabeabc6a42ec2',
                                '80cc10b76e18621b90dbdd5675ce8dd3932eb381a3380f0a538a76b4bcc77ebf',
-                               '2ffbe404b5251cd5fb26da5ffa44a8f3ba4ed2c3c91f80c57ad9f299d62c0741')
+                               '2ffbe404b5251cd5fb26da5ffa44a8f3ba4ed2c3c91f80c57ad9f299d62c0741',
+                               # Last revision 9 shipped before creation model selection (d75c61e).
+                               '7c10ac8e3b2849ef6cb72dd7db7a32ef2755572cd1978a5f7eaaa0cf05680aad',
+                               '2714358b35f126daed913e0f73bd52bf585038d831f68e1b09642050f7f923ef',
+                               # Revision 10 Test predecessor, before optional service lookup was corrected.
+                               '992442ed888adaf535b6893ec2f8672d7a281569d0e4778e511c392d93571a8f',
+                               '5bd8ece728f7cc4aeb96d775dbc6d6d79631e48d8aae4d70cfeea36906e69e2f',
+                               # Revision 11 before credential provenance (c057e6b), LF and CRLF.
+                               '9dfb9fe8eaba3f5f162b9177f6a9d551f2899f6316f9ee94bf82fbc5c59089d6',
+                               'd9b394e55b8436209ead3a953da0d374cb08f2454848718db0eb6a59e7ee9a1f')
+
+def without_empty_array(text):
+    """Remove only an otherwise empty YAML document's array tokens.
+
+    The native initializer emits comments followed by []. Appending a block
+    sequence to that flow sequence is invalid YAML. Do not parse/evaluate user
+    expressions, and retain comments and newline placement verbatim.
+    """
+    tokens = ''.join(line.split('#', 1)[0].strip() for line in text.lstrip('\ufeff').splitlines())
+    if tokens != '[]':
+        return text
+    lines = []
+    for line in text.splitlines(keepends=True):
+        code, separator, comment = line.partition('#')
+        lines.append(code.replace('[', '').replace(']', '') + separator + comment)
+    return ''.join(lines)
+
 
 def insertion(text):
     """Read only our JSON flow insertion, including Harness's line wrapping.

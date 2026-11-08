@@ -12,6 +12,7 @@ import time
 import uuid
 from pathlib import Path
 
+from bridge.features.sessions.identity import same_cwd
 from bridge.clients.codex.app_server import (
     AppServerError, AppServerUnavailable, AppServerUnknownResult, AppServerUnsupported, CodexAppServer)
 from bridge.clients.codex.catalog import Catalog, CatalogError, ModelStore, normalize_native_skills
@@ -20,6 +21,8 @@ from bridge.platforms.codex_daemon_env import read_daemon_environment, DaemonEnv
 from bridge.features.sessions.goal import GoalError, GoalUnavailable, GoalUnsupported, normalize_goal_result
 from bridge.features.sessions import linux_permissions
 from bridge.features.sessions.store import SessionStore, StoreUnavailable
+
+MAX_REASONING_PARTS = 1024
 
 
 def _managed_cli(home):
@@ -90,8 +93,8 @@ def _local_cli(home, configured):
         if path.is_file() and os.access(path, os.X_OK):
             return str(path)
         raise AppServerUnavailable('Configured Codex CLI is unavailable')
-    candidates = (_managed_cli(home), shutil.which('codex'),
-                  Path.home()/'.local/bin/codex')
+    binary = 'codex.exe' if os.name == 'nt' else 'codex'
+    candidates = (_managed_cli(home), shutil.which('codex'), Path.home()/'.local/bin'/binary)
     for candidate in candidates:
         if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
             return str(candidate)
@@ -101,21 +104,11 @@ def _local_cli(home, configured):
     raise AppServerUnavailable('Codex CLI executable is unavailable')
 
 
-def _same_cwd(saved, runtime, local_windows):
-    if saved == runtime:
-        return True
-    if not local_windows or not isinstance(saved, str) or not isinstance(runtime, str):
-        return False
-    try:
-        return os.path.samefile(saved, runtime)
-    except (OSError, ValueError):
-        return False
-
-
 class CliSessions:
     def __init__(self, home, on_state, on_disconnect, cli='codex', alias=None,
-                 process_factory=None):
+                 process_factory=None, allow_installed_runtime=False):
         self.home = Path(home)
+        self.allow_installed_runtime = allow_installed_runtime
         self.alias = alias
         self.remote_home = None
         command = _ssh_proxy_command(alias) if alias else None
@@ -142,8 +135,41 @@ class CliSessions:
         self.configured_cli = cli
         self.store = RemoteStore(alias) if alias else SessionStore(self.home)
 
+    def cli_connections(self):
+        with self.lock:
+            return [{'key': self.metadata[sid]['connectionToken'], 'sessionId': sid, 'provider': 'codex',
+                     'title': self.states.get(sid, {}).get('title') or sid, 'host': self.alias or 'local',
+                     'location': self.alias or '本机 CLI',
+                     '_release': lambda stop, sid=sid, token=self.metadata[sid]['connectionToken']: self.release_connection(sid, token, stop)}
+                    for sid, process in self.joined.items() if process is self.client.process
+                    and sid in self.metadata and self.metadata[sid].get('connectionToken')]
+
+    def release_connection(self, identifier, token, stop=False):
+        from bridge.clients.codex.release import release_thread
+        with self.lock:
+            guard = self.attach_locks.setdefault(identifier, threading.Lock())
+        with guard:
+            process = self.client.process
+            def request(method, params):
+                with self.lock:
+                    if (process is None or self.client.process is not process or self.joined.get(identifier) is not process
+                            or self.metadata.get(identifier, {}).get('connectionToken') != token):
+                        raise AppServerUnavailable('原 CLI 连接已变化；未操作新的连接')
+                return self.client.request(method, params)
+            result = release_thread(request, identifier, stop)
+            if result['status'] in ('released', 'detached'):
+                self._invalidate(identifier, process)
+            return result
+
     def available(self):
-        return self.alias is not None or Path(self.client.socket_path).exists() or _managed_cli(self.home) is not None
+        if self.alias is not None or Path(self.client.socket_path).exists() or _managed_cli(self.home) is not None:
+            return True
+        if self.allow_installed_runtime:
+            try:
+                return bool(_local_cli(self.home, self.configured_cli))
+            except AppServerUnavailable:
+                pass
+        return False
 
     def daemon_status(self):
         """Return running, stopped or unknown without starting the local daemon."""
@@ -158,6 +184,8 @@ class CliSessions:
             executable = _local_cli(self.home, self.configured_cli)
             environment = os.environ.copy()
             environment['CODEX_HOME'] = str(self.home)
+            if self.allow_installed_runtime:
+                environment.pop('CODEX_SQLITE_HOME', None)
             options = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
             result = subprocess.run([executable, 'app-server', 'daemon', 'version'],
                                     env=environment, stdin=subprocess.DEVNULL,
@@ -168,16 +196,22 @@ class CliSessions:
                     return 'running'
         except (AppServerUnavailable, OSError, subprocess.TimeoutExpired, ValueError):
             pass
+        if not socket_path.exists():
+            from bridge.platforms.codex_daemon_env import daemon_process_absent
+            if daemon_process_absent(self.home):
+                return 'stopped'
         return 'unknown'
 
     def daemon_may_be_running(self):
         """Fail closed on unknown native status before a local account change."""
         return self.daemon_status() != 'stopped'
 
-    def create(self, cwd, title, on_start=None, on_created=None):
+    def create(self, cwd, title, on_start=None, on_created=None, model=None, effort=None):
         """An explicit new CLI chat; no turn is started."""
         if not isinstance(cwd, str) or not cwd or (self.alias is None and not Path(cwd).is_dir()):
             raise AppServerUnavailable('CLI 项目目录不存在')
+        from bridge.features.sessions.create import model_overrides
+        overrides = model_overrides(model, effort)
         info = self._connect_explicit()
         if self.alias is None and Path(info['codexHome']) != self.home:
             raise AppServerUnavailable('Codex CLI runtime belongs to another home')
@@ -188,17 +222,20 @@ class CliSessions:
             self.remote_home = remote_home
         if on_start is not None:
             on_start()
-        result = self.client.request('thread/start', {'cwd': cwd, 'ephemeral': False, 'threadSource': 'cli'})
+        params = {'cwd': cwd, 'ephemeral': False, 'threadSource': 'cli', **overrides}
+        result = self.client.request('thread/start', params)
         thread = result.get('thread') or {}
         thread_id = thread.get('id')
-        if not isinstance(thread_id, str) or thread.get('cwd') != cwd or not thread.get('modelProvider'):
+        if not isinstance(thread_id, str) or not same_cwd(cwd, thread.get('cwd'), self.alias is None and os.name == 'nt') or not thread.get('modelProvider'):
             raise AppServerUnsupported('CLI creation returned an unverified thread')
         uuid.UUID(thread_id)
         if on_created is not None:
             on_created(thread_id)
+        if model is not None and (result.get('model') != model or effort is not None and result.get('reasoningEffort') != effort):
+            raise AppServerUnsupported('新聊天已创建，但模型或思考强度未确认；请检查原会话，不要重复创建')
         with self.lock:
             self.joined[thread_id] = self.client.process
-            self.metadata[thread_id] = {'cwd': cwd, 'modelProvider': thread['modelProvider'],
+            self.metadata[thread_id] = {'connectionToken': str(uuid.uuid4()), 'cwd': cwd, 'modelProvider': thread['modelProvider'],
                                         'model': result.get('model'), 'reasoningEffort': result.get('reasoningEffort'),
                                         'serviceTier': result.get('serviceTier'),
                                         'collaborationMode': result.get('collaborationMode'),
@@ -238,6 +275,28 @@ class CliSessions:
             return self.client.request('thread/archive' if archived else 'thread/unarchive', {'threadId': thread_id})
         return call
 
+    def delete_call(self, snapshot, recheck):
+        info = self._connect_explicit()
+        if Path(info.get('codexHome', '')) != self.home or self.alias:
+            raise AppServerUnavailable('Codex CLI runtime belongs to another home')
+        from bridge.features.sessions.deletion import delete_native, DeleteNotSent
+        from bridge.features.sessions.create import DeleteRejected
+        process = self.client.process
+        def call():
+            def request(method, params):
+                if self.client.process is not process:
+                    raise AppServerUnavailable('原运行时连接已变化，删除结果待核对')
+                try:
+                    return self.client.request(method, params, replay_safe=method.endswith(('/read', '/list')))
+                except AppServerUnsupported as exc:
+                    if method == 'thread/delete':
+                        raise DeleteRejected('当前原生运行时不支持永久删除，请在原客户端操作') from exc
+                    raise
+            if self.client.process is not process:
+                raise DeleteNotSent('原运行时连接已变化，未发送删除')
+            return delete_native(request, snapshot, recheck)
+        return call
+
     def attach(self, thread_id, explicit=False):
         """Passive inspection never starts or resumes a runtime."""
         if not explicit:
@@ -264,14 +323,28 @@ class CliSessions:
                 self.daemon_start_generation += 1
                 return self.client.connect()
 
-    def _start_daemon(self):
+    def _start_daemon(self, proxy_updates=None, preserved=None):
         if self.alias is None:
             managed = _managed_cli(self.home)
+            if managed is None and self.allow_installed_runtime:
+                managed = _local_cli(self.home, self.configured_cli)
             if managed is None:
                 raise AppServerUnavailable('Installed Codex daemon package is required')
             environment = os.environ.copy()
             environment['CODEX_HOME'] = str(self.home)
+            if proxy_updates:
+                from bridge.clients.codex.daemon_network import PROXY_NAMES
+                for name in PROXY_NAMES:
+                    environment.pop(name, None)
+                environment.update(proxy_updates)
             command = [str(managed), 'app-server', 'daemon', 'start']
+            if self.allow_installed_runtime:
+                environment.pop('CODEX_SQLITE_HOME', None)
+            for name, value in (preserved or {}).items():
+                if value is None:
+                    environment.pop(name, None)
+                else:
+                    environment[name] = value
         else:
             command = _ssh_daemon_start_command(self.alias)
             environment = None
@@ -282,6 +355,9 @@ class CliSessions:
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise AppServerUnavailable('Could not start the existing Codex CLI daemon') from exc
         if result.returncode:
+            if ('daemon executable not found' in result.stderr or
+                    'this CLI has no complete local package' in result.stderr):
+                raise AppServerUnavailable('此 Codex CLI 缺少完整的后台运行组件。请安装或修复完整的 Codex CLI 后重试。')
             raise AppServerUnavailable('Installed Codex CLI daemon could not start')
         try:
             report = json.loads(result.stdout)
@@ -315,23 +391,24 @@ class CliSessions:
                 saved = self.store.get(thread_id)
             except (KeyError, StoreUnavailable, RemoteUnavailable) as exc:
                 raise AppServerUnavailable('Saved CLI thread metadata is unavailable') from exc
-            if (saved.get('origin') != 'cli' or not saved.get('cwd') or
-                    not _same_cwd(saved.get('cwd'), before.get('cwd'),
+            if (saved.get('origin') not in ('cli', 'ide') or not saved.get('cwd') or
+                    not same_cwd(saved.get('cwd'), before.get('cwd'),
                                   self.alias is None and os.name == 'nt') or
                     saved.get('model_provider') != before.get('modelProvider')):
                 raise AppServerUnsupported('Saved CLI thread identity does not match this runtime')
         # Resume is explicit and sends no model, cwd, provider or permission overrides.
         with self.lock:
             self.attaching.add(thread_id)
+        params = {'threadId': thread_id, 'excludeTurns': True}
         try:
-            resumed = self.client.request('thread/resume', {'threadId': thread_id, 'excludeTurns': True})
+            resumed = self.client.request('thread/resume', params)
         except Exception:
             with self.lock:
                 self.attaching.discard(thread_id)
                 self.requests.pop(thread_id, None)
             raise
         after = resumed.get('thread') or {}
-        if (after.get('id') != thread_id or after.get('cwd') != before.get('cwd') or
+        if (after.get('id') != thread_id or not same_cwd(before.get('cwd'), after.get('cwd'), self.alias is None and os.name == 'nt') or
                 resumed.get('modelProvider') != before.get('modelProvider')):
             with self.lock:
                 self.attaching.discard(thread_id)
@@ -354,7 +431,7 @@ class CliSessions:
         with self.lock:
             self.joined[thread_id] = self.client.process
             self.attaching.discard(thread_id)
-            self.metadata[thread_id] = {'model': resumed.get('model'),
+            self.metadata[thread_id] = {'connectionToken': str(uuid.uuid4()), 'model': resumed.get('model'),
                                         'modelProvider': resumed.get('modelProvider'),
                                         'cwd': resumed.get('cwd'),
                                         'reasoningEffort': resumed.get('reasoningEffort'),
@@ -398,7 +475,7 @@ class CliSessions:
                 metadata = self.metadata.get(thread_id)
                 if metadata is None:
                     raise AppServerUnavailable('CLI thread is no longer joined')
-                if (thread.get('cwd') != metadata['cwd'] or
+                if (not same_cwd(metadata['cwd'], thread.get('cwd'), self.alias is None and os.name == 'nt') or
                         thread.get('modelProvider') != metadata['modelProvider']):
                     invalid_reason = 'CLI thread provider or working directory changed'
             if invalid_reason is None:
@@ -449,6 +526,14 @@ class CliSessions:
 
     def call(self, thread_id, desktop_method, params, timeout=30):
         self._check_joined_identity(thread_id)
+        if desktop_method == 'thread-follower-compact-thread':
+            state = self.refresh(thread_id)
+            if (state.get('threadRuntimeStatus', {}).get('type') != 'idle' or state.get('requests') or
+                    any(turn.get('status') == 'inProgress' for turn in state.get('turns', []))):
+                raise AppServerUnavailable('请等待当前 Codex 任务结束后再压缩上下文')
+            result = self.client.request('thread/compact/start', {'threadId': thread_id}, timeout=timeout)
+            self._queue_refresh(thread_id)
+            return result
         if desktop_method == 'thread-follower-start-turn':
             start = params.get('turnStart') or {}
             request = start.get('request') or {}
@@ -648,6 +733,93 @@ class CliSessions:
         except AppServerError:
             return {'data': []}
 
+    def creation_context(self, cwd):
+        info = self._connect_explicit()
+        expected = self.remote_home if self.alias is not None else self.home
+        actual = Path(info['codexHome'])
+        if not actual.is_absolute() or expected is not None and actual != expected:
+            raise AppServerUnavailable('Codex CLI runtime belongs to another home')
+        if self.alias is not None:
+            self.remote_home = actual
+        config = self.client.request('config/read', {'cwd': cwd, 'includeLayers': False}, replay_safe=True).get('config') or {}
+        profile = (config.get('profiles') or {}).get(config.get('profile')) or {}
+        return {**config, **profile}
+
+    def model_catalog(self, cwd, provider, state=None):
+        state = state or {}
+        config = self.client.request('config/read', {'includeLayers': False, 'cwd': cwd},
+                                     replay_safe=True).get('config') or {}
+        profile = (config.get('profiles') or {}).get(config.get('profile')) or {}
+        effective = {**config, **profile}
+        custom = Catalog.custom_provider(effective, provider)
+        configured_catalog = (bool(effective.get('model_catalog_json')) and
+                              provider == (effective.get('model_provider') or 'openai'))
+        account = {}
+        if not custom and not configured_catalog:
+            account = self.client.request('account/read', {'refreshToken': False},
+                                          replay_safe=True).get('account') or {}
+            custom = account.get('type') == 'apiKey'
+        if custom and not configured_catalog:
+            if self.alias is not None:
+                try:
+                    metadata = self._optional_model_metadata('model/list', {
+                        'cursor': None, 'limit': 100, 'includeHidden': False})
+                    catalog = remote_model_catalog(self.alias, self.remote_home, cwd, provider,
+                                                   config, account, metadata.get('data') or [])
+                except CatalogError as exc:
+                    catalog = {'models': [], 'modelError': str(exc)}
+                return {'kind': 'models', 'models': catalog['models'], 'modelSource': 'api',
+                        'fastMode': {'allowed': False}, 'modelError': catalog.get('modelError'),
+                        'currentModel': state.get('latestModel'),
+                        'currentEffort': state.get('latestReasoningEffort')}
+            reader = Catalog(self.home, self.configured_cli, allow_background_refresh=False)
+            try:
+                environment, _ = self.model_environment(config, provider, account)
+            except DaemonEnvironmentUnavailable:
+                return {'kind': 'models', 'models': [], 'modelSource': 'api',
+                        'fastMode': {'allowed': False},
+                        'modelError': '无法核验当前 CLI 后台服务的启动环境，请重新连接后刷新模型列表',
+                        'currentModel': state.get('latestModel'),
+                        'currentEffort': state.get('latestReasoningEffort')}
+            catalog = reader.read_models(
+                lambda method, params: self.client.request(method, params, replay_safe=True),
+                cwd, provider, metadata_request=lambda method, params: self._optional_model_metadata(method, params),
+                environment=environment)
+            models = [{'id': m['model'], 'name': m.get('displayName') or m['model'],
+                       'description': m.get('description', ''),
+                       'efforts': [e['reasoningEffort'] for e in m.get('supportedReasoningEfforts', [])],
+                       'defaultEffort': m.get('defaultReasoningEffort'),
+                       'isDefault': False, 'fastTier': None, 'defaultServiceTier': None}
+                      for m in catalog['models']]
+            return {'kind': 'models', 'models': models, 'modelSource': 'api',
+                    'fastMode': {'allowed': False}, 'modelError': catalog.get('modelError'),
+                    'currentModel': state.get('latestModel'),
+                    'currentEffort': state.get('latestReasoningEffort')}
+        native_models, cursor = [], None
+        for _ in range(10):
+            raw = self.client.request('model/list', {'cursor': cursor, 'limit': 100,
+                                                      'includeHidden': False}, replay_safe=True)
+            native_models.extend(raw.get('data', []))
+            cursor = raw.get('nextCursor')
+            if not cursor:
+                break
+        models = [{'id': m['model'], 'name': m.get('displayName') or m['model'],
+                   'description': m.get('description', ''),
+                   'efforts': [e['reasoningEffort'] for e in m.get('supportedReasoningEfforts', [])],
+                   'defaultEffort': m.get('defaultReasoningEffort'),
+                   'isDefault': m.get('isDefault', False), 'fastTier': Catalog.fast_tier(m),
+                   'defaultServiceTier': m.get('defaultServiceTier')}
+                  for m in native_models if not m.get('hidden') and m.get('model')]
+        try:
+            fast_mode = Catalog.fast_mode(lambda method, params: self.client.request(
+                method, params, replay_safe=True), cwd)
+        except AppServerError:
+            fast_mode = {'allowed': False}
+        return {'kind': 'models', 'models': models, 'modelSource': 'codex',
+                'fastMode': fast_mode,
+                'modelError': None, 'currentModel': state.get('latestModel'),
+                'currentEffort': state.get('latestReasoningEffort')}
+
     def get_kind(self, thread_id, kind, refresh=False, query='', offset=0, limit=200, ids=None):
         self._check_joined_identity(thread_id)
         if kind == 'models':
@@ -655,78 +827,7 @@ class CliSessions:
                 state = self.states[thread_id]
                 cwd = self.metadata[thread_id]['cwd']
                 provider = self.metadata[thread_id]['modelProvider']
-            config = self.client.request('config/read', {'includeLayers': False, 'cwd': cwd},
-                                         replay_safe=True).get('config') or {}
-            profile = (config.get('profiles') or {}).get(config.get('profile')) or {}
-            effective = {**config, **profile}
-            custom = Catalog.custom_provider(effective, provider)
-            configured_catalog = (bool(effective.get('model_catalog_json')) and
-                                  provider == (effective.get('model_provider') or 'openai'))
-            account = {}
-            if not custom and not configured_catalog:
-                account = self.client.request('account/read', {'refreshToken': False},
-                                              replay_safe=True).get('account') or {}
-                custom = account.get('type') == 'apiKey'
-            if custom and not configured_catalog:
-                if self.alias is not None:
-                    try:
-                        metadata = self._optional_model_metadata('model/list', {
-                            'cursor': None, 'limit': 100, 'includeHidden': False})
-                        catalog = remote_model_catalog(self.alias, self.remote_home, cwd, provider,
-                                                       config, account, metadata.get('data') or [])
-                    except CatalogError as exc:
-                        catalog = {'models': [], 'modelError': str(exc)}
-                    return {'kind': 'models', 'models': catalog['models'], 'modelSource': 'api',
-                            'fastMode': {'allowed': False}, 'modelError': catalog.get('modelError'),
-                            'currentModel': state.get('latestModel'),
-                            'currentEffort': state.get('latestReasoningEffort')}
-                reader = Catalog(self.home, self.configured_cli, allow_background_refresh=False)
-                try:
-                    environment, _ = self.model_environment(config, provider, account)
-                except DaemonEnvironmentUnavailable:
-                    return {'kind': 'models', 'models': [], 'modelSource': 'api',
-                            'fastMode': {'allowed': False},
-                            'modelError': '无法核验当前 CLI 后台服务的启动环境，请重新连接后刷新模型列表',
-                            'currentModel': state.get('latestModel'),
-                            'currentEffort': state.get('latestReasoningEffort')}
-                catalog = reader.read_models(
-                    lambda method, params: self.client.request(method, params, replay_safe=True),
-                    cwd, provider, metadata_request=lambda method, params: self._optional_model_metadata(method, params),
-                    environment=environment)
-                models = [{'id': m['model'], 'name': m.get('displayName') or m['model'],
-                           'description': m.get('description', ''),
-                           'efforts': [e['reasoningEffort'] for e in m.get('supportedReasoningEfforts', [])],
-                           'defaultEffort': m.get('defaultReasoningEffort'),
-                           'isDefault': False, 'fastTier': None, 'defaultServiceTier': None}
-                          for m in catalog['models']]
-                return {'kind': 'models', 'models': models, 'modelSource': 'api',
-                        'fastMode': {'allowed': False}, 'modelError': catalog.get('modelError'),
-                        'currentModel': state.get('latestModel'),
-                        'currentEffort': state.get('latestReasoningEffort')}
-            native_models, cursor = [], None
-            for _ in range(10):
-                raw = self.client.request('model/list', {'cursor': cursor, 'limit': 100,
-                                                          'includeHidden': False}, replay_safe=True)
-                native_models.extend(raw.get('data', []))
-                cursor = raw.get('nextCursor')
-                if not cursor:
-                    break
-            models = [{'id': m['model'], 'name': m.get('displayName') or m['model'],
-                       'description': m.get('description', ''),
-                       'efforts': [e['reasoningEffort'] for e in m.get('supportedReasoningEfforts', [])],
-                       'defaultEffort': m.get('defaultReasoningEffort'),
-                       'isDefault': m.get('isDefault', False), 'fastTier': Catalog.fast_tier(m),
-                       'defaultServiceTier': m.get('defaultServiceTier')}
-                      for m in native_models if not m.get('hidden') and m.get('model')]
-            try:
-                fast_mode = Catalog.fast_mode(lambda method, params: self.client.request(
-                    method, params, replay_safe=True), cwd)
-            except AppServerError:
-                fast_mode = {'allowed': False}
-            return {'kind': 'models', 'models': models, 'modelSource': 'codex',
-                    'fastMode': fast_mode,
-                    'modelError': None, 'currentModel': state.get('latestModel'),
-                    'currentEffort': state.get('latestReasoningEffort')}
+            return self.model_catalog(cwd, provider, state)
         if kind != 'skills':
             raise ValueError('未知目录类型')
         rows, errors = self._native_skills(thread_id, force_reload=bool(refresh))
@@ -870,7 +971,7 @@ class CliSessions:
         if metadata is None:
             raise AppServerUnavailable('CLI thread is no longer joined')
         if (thread.get('id') != thread_id or thread.get('status', {}).get('type') == 'notLoaded' or
-                thread.get('cwd') != metadata['cwd'] or
+                not same_cwd(metadata['cwd'], thread.get('cwd'), self.alias is None and os.name == 'nt') or
                 thread.get('modelProvider') != metadata['modelProvider']):
             self._invalidate(thread_id)
             raise AppServerUnavailable('CLI thread identity changed before the operation')
@@ -964,6 +1065,10 @@ class CliSessions:
                     items = turn['items']
                     for index, existing in enumerate(items):
                         if existing.get('id') == item.get('id'):
+                            if method == 'item/started' and item.get('type') == existing.get('type') == 'reasoning':
+                                # A late start must not erase deltas already received.
+                                item = {**item, **{field: existing[field] for field in ('summary', 'content')
+                                                  if not item.get(field) and isinstance(existing.get(field), list)}}
                             items[index] = item
                             break
                     else:
@@ -983,6 +1088,31 @@ class CliSessions:
                     item = next((item for item in turn['items'] if item.get('id') == params.get('itemId')), None)
                     if item is not None and isinstance(params.get('delta'), str):
                         item['aggregatedOutput'] = item.get('aggregatedOutput', '') + params['delta']
+            elif method in ('item/reasoning/textDelta', 'item/reasoning/summaryTextDelta'):
+                # Third-party Responses backends stream raw chain of thought and
+                # never fill `summary`; keep both streams so the phone can show
+                # progress before `item/completed` replaces the item wholesale.
+                turn = next((item for item in state['turns'] if item['turnId'] == params.get('turnId')), None)
+                delta = params.get('delta')
+                if turn and isinstance(delta, str):
+                    summary = method.endswith('summaryTextDelta')
+                    field = 'summary' if summary else 'content'
+                    slot = params.get('summaryIndex' if summary else 'contentIndex', 0)
+                    if type(slot) is not int or not 0 <= slot < MAX_REASONING_PARTS or not isinstance(params.get('itemId'), str) or not params['itemId']:
+                        return  # Untrusted sparse indices must not allocate an unbounded list.
+                    item = next((item for item in turn['items'] if item.get('id') == params.get('itemId')), None)
+                    if item is None:
+                        item = {'id': params.get('itemId'), 'type': 'reasoning', 'summary': [], 'content': []}
+                        turn['items'].append(item)
+                    if item.get('type') != 'reasoning':
+                        return
+                    parts = item.get(field)
+                    if not isinstance(parts, list):
+                        parts = []
+                        item[field] = parts
+                    while len(parts) <= slot:
+                        parts.append('')
+                    parts[slot] = (parts[slot] if isinstance(parts[slot], str) else '') + delta
             else:
                 return
             snapshot = copy.deepcopy(state)

@@ -1,10 +1,32 @@
 """Gateway-owned display metadata; never mutates native execution identity."""
 import json
+import re
 import threading
+import time
 import uuid
 from pathlib import Path
 
 from bridge.features.sessions.organization import OrganizationNotSent, validate_change
+
+
+def confirm_native_title(read, identity, title):
+    """Allow an accepted native metadata write to become visible, never replay it."""
+    deadline, delay = time.monotonic()+2, 0.05
+    while True:
+        try:
+            after = read()
+        except (OSError, ValueError):
+            after = None
+        if after is not None:
+            if after['identity'] != identity:
+                raise ValueError('改名期间原会话身份已变化')
+            if after['title'] == title:
+                return after
+        remaining = deadline-time.monotonic()
+        if remaining <= 0:
+            raise ValueError('改名读回尚未确认')
+        time.sleep(min(delay, remaining))
+        delay = min(delay*2, 0.25)
 
 
 class DisplayMetadata:
@@ -40,7 +62,7 @@ class DisplayMetadata:
             data = self._read()
             saved = data.get(scope, {}).get('sessions', {}).get(row['id'], {})
             result = dict(row)
-            if saved.get('title'):
+            if saved.get('title') and (row.get('capabilities') or {}).get('rename') is not True:
                 result.update(title=saved['title'], nativeTitle=row.get('title'), renameScope='bridge')
             for kind in ('project', 'section'):
                 if kind + 'Id' in saved:
@@ -105,8 +127,9 @@ class RenameCommands:
             raise ValueError('聊天改名请求无效')
         uuid.UUID(body['id'])
         title = body['title']
-        if not isinstance(title, str) or not title.strip() or len(title.strip()) > 120:
-            raise ValueError('请输入 1–120 字的聊天名称')
+        if (not isinstance(title, str) or not title.strip() or len(title.strip()) > 120
+                or re.search(r'[\x00-\x1f\x7f]', title)):
+            raise ValueError('标题为 1–120 字，不能包含控制字符')
         title = title.strip()
         with self.lock:
             entries = json.loads(self.path.read_text(encoding='utf-8')) if self.path.exists() else {}
@@ -114,25 +137,29 @@ class RenameCommands:
             if old and (old['sid'] != sid or old['title'] != title):
                 raise ValueError('相同请求标识不能用于不同操作')
             before = read()
+            reconciled = False
             for entry in entries.values():
                 if entry['sid'] == sid and entry['status'] == 'unknown':
                     if before['identity'] != entry['identity'] or before['title'] != entry['title']:
                         raise ValueError('此前改名结果待核对；不会重复提交，请先在原客户端核对')
                     entry['status'] = 'confirmed'
+                    reconciled = True
             if old:
                 self.save(self.path, entries)
                 return {**before, 'status': old['status'], 'scope': 'native'}
             entry = {'sid': sid, 'title': title, 'identity': before['identity'], 'status': 'unknown'}
+            if reconciled and before['title'] == title:
+                entry['status'] = 'confirmed'
             entries[body['id']] = entry
             self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             self.save(self.path, entries)
+            if entry['status'] == 'confirmed':
+                return {**before, 'status': 'confirmed', 'scope': 'native'}
             try:
                 result = dispatch(title)
                 if isinstance(result, dict) and result.get('notSent') is True:
                     raise OrganizationNotSent(result.get('message') or '原会话状态已变化，请刷新后重试')
-                after = read()
-                if after['title'] != title or after['identity'] != before['identity']:
-                    raise ValueError('改名读回不匹配')
+                after = confirm_native_title(read, before['identity'], title)
             except OrganizationNotSent:
                 del entries[body['id']]
                 self.save(self.path, entries)

@@ -1,4 +1,4 @@
-"""Request Codex's native Quit menu once and observe the selected installation."""
+"""Request the selected desktop's native Quit menu once and verify its exit."""
 import ctypes
 import json
 import os
@@ -99,6 +99,11 @@ def _snapshot(executable, deadline):
                 raise ValueError(CHANGED)
             if not kinds:
                 main.append(pid)
+        if Path(executable).name.casefold() == 'zcode.exe' and main:
+            from .zcode_pipe import main_processes
+            main, ambiguous = main_processes(executable, main, commands)
+            if ambiguous:
+                raise ValueError(CHANGED)
         if len(main) > 1:
             raise ValueError(CHANGED)
         created = _creation_time(main[0]) if main else None
@@ -159,7 +164,50 @@ def _observe(executable, original, deadline, reason=PENDING, *, wait=True):
 
 
 def stop_codex(app, gui_pids=None):
-    """Never replay a timed-out/uncertain request and never terminate Codex."""
+    return _stop_menu(app, gui_pids, '--quit')
+
+
+def stop_private_zcode(executable, main_pids, owner, request_quit):
+    """After task preflight, request one native quit and verify actual OS exit."""
+    executable = Path(executable).resolve()
+    deadline = time.monotonic() + BUDGET
+    original = _snapshot(executable, deadline)
+    if not original['pids']:
+        return True
+    if (not isinstance(owner, dict) or original['main'] is None or main_pids != [original['main']]
+            or owner.get('pid') != original['main'] or owner.get('created') != original['created']
+            or owner.get('image') != os.path.normcase(str(executable))):
+        raise ValueError('ZCode 运行实例已变化，尚未请求退出')
+    try:
+        supported = request_quit()
+    except (OSError, EOFError, ValueError, subprocess.SubprocessError):
+        # Electron can close the debugging stream before returning its reply.
+        # Only a complete OS exit settles this; a second Quit could hit another App.
+        supported = None
+    if supported is False:
+        current = _snapshot(executable, deadline)
+        if not current['pids']:
+            return True
+        if current['main'] == original['main'] and current['created'] == original['created']:
+            return False  # The original App definitively did not implement Browser.close.
+    _observe(executable, original, deadline, '尚未确认 ZCode 正常退出，请检查原 App；不会重复请求退出')
+    return True
+
+
+def stop_zcode(app, gui_pids=None):
+    from .session import require_interactive
+    require_interactive()
+    if (app.executable.name.casefold() != 'zcode.exe'
+            or not (app.executable.parent/'resources/app.asar').is_file()):
+        raise ValueError('ZCode 安装身份无法确认')
+    try:
+        return _stop_menu(app, gui_pids, '--quit-zcode')
+    except ValueError as exc:
+        raise ValueError(str(exc).replace('Codex', 'ZCode')) from None
+
+
+def _stop_menu(app, gui_pids, mode):
+    """An uncertain request is never replayed or escalated to termination."""
     if sys.platform != 'win32':
         raise ValueError('此系统不支持 Windows Codex 原生退出组件')
     executable, deadline = Path(app.executable).resolve(), time.monotonic() + BUDGET
@@ -185,7 +233,7 @@ def stop_codex(app, gui_pids=None):
     try:
         remaining = _remaining(deadline)
         helper_timeout = remaining - min(3, remaining / 2)
-        result = subprocess.run([str(helper), str(pid), '--quit', str(executable), str(original['created'])],
+        result = subprocess.run([str(helper), str(pid), mode, str(executable), str(original['created'])],
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding='utf-8', errors='replace', timeout=helper_timeout,
             creationflags=subprocess.CREATE_NO_WINDOW, close_fds=True, check=False)

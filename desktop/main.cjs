@@ -10,7 +10,7 @@ const {createTray}=require('./shell/tray.cjs');
 const {normalize,translate}=require('./shared/i18n.js');
 const {publishLanguage}=require('./shared/gateway-language.cjs');
 const cloudflared=require('./features/connections/cloudflared.cjs');
-const {Updater,allowedMirrorUrl}=require('./features/updates/updater.cjs');
+const {Updater,allowedMirrorUrl,activeUpdateHandoff}=require('./features/updates/updater.cjs');
 const {createLoginStartup,restoreDevelopmentEnvironment}=require('./login-startup.cjs');
 restoreDevelopmentEnvironment(app);
 const loginStartup=createLoginStartup(app);
@@ -25,14 +25,36 @@ const developmentUI=!app.isPackaged&&process.argv.includes('--dev-ui');
 // An explicit data directory also keeps test caches inside the project.
 if(process.env.CMB_DATA_DIR)app.setPath('userData',path.join(path.resolve(process.env.CMB_DATA_DIR),'desktop-runtime'));
 let window,dataDir,tray,quitting=false,snapshotPending,lastSnapshot,updateQuitting=false;
-let installPending,installStatus={},updater,workerWrites=0,developmentReload;
+let installPending,installStatus={},updater,workerWrites=0,developmentReload,officialRemote;
 const snapshotWorker=createSnapshotWorker();
 const managementWorker=createManagementWorker();
 let connectionSecrets={},setupPending=false;
 const entry=pathToFileURL(path.join(__dirname,'index.html')).href;
-function releaseTray(){developmentReload?.close();snapshotWorker.close();managementWorker.close();quitting=true;tray?.dispose();tray=null;}
+function releaseTray(){developmentReload?.close();officialRemote?.dispose();snapshotWorker.close();managementWorker.close();quitting=true;tray?.dispose();tray=null;}
+function officialService(){
+  if(!officialRemote){
+    const {OfficialRemote}=require('./features/zcode-official/controller.cjs');
+    officialRemote=new OfficialRemote({electron:require('electron'),profile:dataDir,
+      localServiceWorker:workerFor({packaged:app.isPackaged,resources:process.resourcesPath,root,dataDir}),rendererPath:app.isPackaged?
+      path.join(process.resourcesPath,'gateway/_internal/bridge/clients/zcode/renderer.mjs'):path.join(root,'bridge/clients/zcode/renderer.mjs')});
+  }
+  return officialRemote;
+}
+function restoreOfficialService(){
+  // Saved pairings can be selected from the phone before the desktop panel is opened.
+  if(!fs.existsSync(path.join(dataDir,'zcode-official-auth.enc')))return;
+  const service=officialService();
+  service.start({standby:true}).catch(()=>{service.serviceAvailable=false;service.reason='官方远控连接服务不可用。';});
+}
+function updateTarget(){return process.platform==='darwin'?path.resolve(process.execPath,'../../..'):path.dirname(process.execPath);}
+let handoff=null;
+function currentHandoff(){return activeUpdateHandoff(process.env,updateTarget(),app.getVersion(),process.pid);}
 function loadDataDir(){
-  if(process.env.CMB_UPDATE_DATA_DIR)return path.resolve(process.env.CMB_UPDATE_DATA_DIR);
+  handoff=currentHandoff();
+  if(handoff)return handoff.dataDir;
+  // Rollback explicitly launches the previous GUI without a transaction/token.
+  if(!process.env.CMB_UPDATE_TRANSACTION&&!process.env.CMB_UPDATE_TOKEN&&process.env.CMB_UPDATE_DATA_DIR)
+    return path.resolve(process.env.CMB_UPDATE_DATA_DIR);
   if(process.env.CMB_DATA_DIR)return path.resolve(process.env.CMB_DATA_DIR);
   const saved=path.join(app.getPath('userData'),'bridge-location.json');
   if(fs.existsSync(saved))return JSON.parse(fs.readFileSync(saved,'utf8')).dataDir;
@@ -44,10 +66,12 @@ function authorize(event){
   if(!window||event.sender!==window.webContents||event.senderFrame!==window.webContents.mainFrame||event.senderFrame.url!==entry)throw Error('不允许的界面来源');
 }
 function updateResult(){try{return JSON.parse(fs.readFileSync(path.join(dataDir,'desktop-update-result.json'),'utf8'));}catch{return null;}}
-let updateHandoffPending=!!process.env.CMB_UPDATE_TRANSACTION;
 function updateManaged(){
-  if(updateHandoffPending&&fs.existsSync(path.join(process.env.CMB_UPDATE_TRANSACTION,'result.json')))updateHandoffPending=false;
-  return updateHandoffPending;
+  if(handoff){
+    const current=currentHandoff();
+    if(!current||current.transaction!==handoff.transaction||current.token!==handoff.token||current.dataDir!==handoff.dataDir)handoff=null;
+  }
+  return !!handoff;
 }
 function worker(action,payload){
   if(action==='snapshot'&&updateQuitting)return Promise.resolve({...lastSnapshot,update:updater.status()});
@@ -64,7 +88,7 @@ function worker(action,payload){
 }
 async function installUpdate(candidate){
   snapshotWorker.close();managementWorker.close();
-  const target=process.platform==='darwin'?path.resolve(process.execPath,'../../..'):path.dirname(process.execPath);
+  const target=updateTarget();
   const token=randomUUID();
   const prepared=await worker('update-prepare',{archive:candidate.archive,sha256:candidate.asset.sha256,version:candidate.version,
     platform:process.platform,arch:process.arch,target,parentPid:process.pid,token});
@@ -135,10 +159,31 @@ function register(){
   });
   for(const action of ['snapshot','save','start','stop','logs','test-notification','webhook-endpoint','network-adaptation','check-entry','tailscale-setup','devices','account', 'accounts', 'cli-access', 'harness', 'desktop-sessions','notification-watches', 'transfer-settings'])ipcMain.handle('bridge:'+action,async(event,payload)=>{
     authorize(event);
+    if(action==='desktop-sessions'&&payload?.action?.startsWith('zcode-official-')){
+      if(updater?.busy)throw Error('正在更新应用，请稍候。');
+      const service=officialService();
+      await service.start();
+      if(service!==officialRemote||service.disposed)throw Error('网关资料目录已变化，请重新打开管理页。');
+      if(payload.action==='zcode-official-state')return service.status();
+      if(payload.action==='zcode-official-save')return service.save(payload.link);
+      if(payload.action==='zcode-official-login')return service.login(payload.link);
+      if(payload.action==='zcode-official-connect'){
+        if(service.localLink(payload.link).url!==service.targetLink())throw Error('远控链接已变化，请先保存连接配置。');
+        await worker('desktop-sessions',{action:'toggle-client',provider:'zcode',enabled:true,connectionMode:'official-remote'});
+      }else if(payload.action==='zcode-official-disconnect'){
+        await service.disconnect();
+      }else if(payload.action==='zcode-official-forget'){
+        return service.forget();
+      }else if(payload.action==='zcode-official-local'){
+        await service.disconnect();
+        await worker('desktop-sessions',{action:'zcode-official',enabled:false});
+      }else throw Error('未知官方远控操作');
+      return service.status();
+    }
     if(action==='accounts'){
       if(updater?.busy&&payload?.action!=='list')throw Error('正在更新应用，请稍候。');
       if(payload?.action==='openLogin'){
-        const value=await worker('accounts',{action:'list'}),url=new URL(value.enrollment?.authUrl||'');
+        const value=await worker('accounts',{action:'list',...(payload.entry?{entry:payload.entry}:{})}),url=new URL(value.enrollment?.authUrl||'');
         if(value.enrollment?.phase!=='waiting'||url.protocol!=='https:'||!['auth.openai.com','chatgpt.com','auth0.openai.com'].includes(url.hostname))throw Error('登录已过期，请重新登录');
         await shell.openExternal(url.href);return value;
       }
@@ -152,6 +197,7 @@ function register(){
     try{
       const value=await worker(action,payload);
       if(action==='save'&&payload?.loginStartup!==undefined){loginStartup.set(payload.loginStartup);value.loginStartup=loginStartup.status();}
+      if(action==='snapshot')tray?.observe(value);
       return value;
     }catch(error){if(error.validation)return {validationError:{message:error.message,...error.validation}};throw error;}
   });
@@ -253,8 +299,11 @@ function register(){
       if(installPending)throw Error('正在安装 cloudflared，请完成后再切换数据目录。');
       if(setupPending)throw Error('请等待服务器操作完成。');
       installStatus={};connectionSecrets={};
+      const changed=selected!==dataDir;
+      if(changed){officialRemote?.dispose();officialRemote=null;}
       publishLanguage(selected,language);dataDir=selected;fs.mkdirSync(app.getPath('userData'),{recursive:true});
       fs.writeFileSync(path.join(app.getPath('userData'),'bridge-location.json'),JSON.stringify({dataDir}),{mode:0o600});
+      if(changed)restoreOfficialService();
     }
     return selected;
   });
@@ -295,19 +344,21 @@ function register(){
     clipboard.writeText(target);
   });
 }
+async function acknowledgeUpdate(){
+  if(!updateManaged())return;
+  try{
+    await worker('snapshot');
+    if(updateManaged()&&handoff.dataDir===dataDir)
+      fs.writeFileSync(path.join(handoff.transaction,'ack.json'),JSON.stringify({token:handoff.token,version:app.getVersion(),dataDir}),{mode:0o600,flag:'wx'});
+  }catch{} // Missing acknowledgement makes the independent helper restore the old app.
+}
 function createWindow(hidden=false){
   window=new BrowserWindow({show:!hidden,width:1100,height:850,minWidth:820,minHeight:640,title:t('Codex 手机网关'),icon:path.join(__dirname,'assets/icon.png'),backgroundColor:'#f6f7f9',webPreferences:{preload:path.join(__dirname,'preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true,additionalArguments:developmentUI?['--cmb-dev-ui']:[]}});
   // The native title is owned by the main process, including locale changes.
   window.on('page-title-updated',event=>event.preventDefault());
   window.webContents.setWindowOpenHandler(()=>({action:'deny'}));
   window.webContents.on('will-navigate',event=>event.preventDefault());
-  window.webContents.once('did-finish-load',async()=>{
-    if(!process.env.CMB_UPDATE_TRANSACTION)return;
-    try{
-      await worker('snapshot');
-      fs.writeFileSync(path.join(process.env.CMB_UPDATE_TRANSACTION,'ack.json'),JSON.stringify({token:process.env.CMB_UPDATE_TOKEN,version:app.getVersion(),dataDir}),{mode:0o600});
-    }catch{} // Missing acknowledgement makes the independent helper restore the old app.
-  });
+  window.webContents.once('did-finish-load',acknowledgeUpdate);
   window.loadFile(path.join(__dirname,'index.html'));
   window.on('close',event=>{if(tray&&!quitting){event.preventDefault();window.hide();}});
   window.on('closed',()=>{window=null;});
@@ -316,7 +367,7 @@ function createWindow(hidden=false){
 if(!app.requestSingleInstanceLock())app.quit();
 else{
   app.on('second-instance',(_event,argv)=>{if(!loginStartup.hidden(argv))showWindow();});
-  app.whenReady().then(()=>{
+  app.whenReady().then(async()=>{
     language=normalize(app.getLocale());
     try{language=normalize(JSON.parse(fs.readFileSync(path.join(app.getPath('userData'),'language.json'),'utf8')).language);}catch{}
     dataDir=loadDataDir();publishLanguage(dataDir,language);setupUpdater();
@@ -333,6 +384,7 @@ else{
         onError:error=>{showWindow();dialog.showErrorBox(t('网关操作未完成'),t(error.message));}});
     }
     createWindow(!!tray&&loginStartup.hidden(process.argv,true));
+    restoreOfficialService();
   });
   app.on('before-quit',releaseTray);
   app.on('activate',showWindow);

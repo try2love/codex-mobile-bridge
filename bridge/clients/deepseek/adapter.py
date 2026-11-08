@@ -9,16 +9,16 @@ import urllib.request
 from pathlib import Path
 from bridge.features.accounts.models import NoRedirect
 from bridge.app.lifecycle import private_json
-from bridge.clients.errors import BridgeUnavailable
+from bridge.clients.errors import BridgeUnavailable, ResumePreflightBlocked
 from bridge.clients.file_mentions import file_mentions, display_file_mentions
 from bridge.features.sessions.create import ArchiveNotSent
-from bridge.clients.deepseek.setup import MARKER, insertion, verified_directory, legacy_account_configured
+from bridge.clients.deepseek.setup import MARKER, insertion, verified_directory, legacy_account_configured, without_empty_array
 
 PLUGIN_ID = re.compile(r'''["']?id["']?\s*:\s*["']?codex-mobile-desktop(?:["'\s,}]|$)''')
-BRIDGE_REVISION = 9
-# Revisions 3–8 share the complete native-agent lifecycle schema; presentation
+BRIDGE_REVISION = 11
+# Revisions 3–10 share the complete native-agent lifecycle schema; presentation
 # and fork capability additions do not invalidate an older idle snapshot.
-LIFECYCLE_REVISIONS = (3, 4, 5, 6, 7, 8, BRIDGE_REVISION)
+LIFECYCLE_REVISIONS = (3, 4, 5, 6, 7, 8, 9, 10, BRIDGE_REVISION)
 UPDATE_REASON = 'Harness 接入需要更新，请结束任务后点击“重启并接入”'
 
 
@@ -147,7 +147,7 @@ class DeepSeek:
             if not backup.exists():
                 shutil.copyfile(patch, backup)
                 backup.chmod(0o600)
-            text += '\n'+MARKER+'\n'+line+'\n'
+            text = without_empty_array(text) + '\n'+MARKER+'\n'+line+'\n'
             _write_patch(patch, text)
         record = self.directory/'installation.json'
         if not record.exists() or not owned:
@@ -167,7 +167,14 @@ class DeepSeek:
         block = insertion(text)
         if not block or block[0] != json.loads(saved['line'][2:]) or len(PLUGIN_ID.findall(text)) != 1:
             raise ValueError('插件配置已被修改，请在 Harness 中检查后移除')
-        _write_patch(patch, text[:block[1]]+text[block[2]:])
+        remaining = text[:block[1]]+text[block[2]:]
+        backup = self.directory/'cordis.patch.before-mobile.yml'
+        if backup.is_file():
+            original = backup.read_text('utf-8')
+            normalized = without_empty_array(original)
+            if normalized != original and remaining.strip() == normalized.strip():
+                remaining = original
+        _write_patch(patch, remaining)
         # Invalidate the current generation immediately; reload removes the plugin.
         config = self.directory/'connection.json'
         private_json(config, {'token': secrets.token_urlsafe(32), 'endpoint': str(self.directory/'endpoint.json')})
@@ -175,6 +182,8 @@ class DeepSeek:
         return {'installed': False, 'restartRequired': True}
 
     def call(self, action, sid=None, body=None):
+        if action == 'create' and body and 'model' in body and self.call('status').get('createModels') is not True:
+            raise ResumePreflightBlocked('Harness 接入需要更新后才能预设新会话模型；尚未创建会话')
         if action == 'send' and body and body.get('resolvedReferences'):
             body = {**body, 'text': file_mentions(body.get('text', ''), body['resolvedReferences'])}
             body.pop('resolvedReferences')

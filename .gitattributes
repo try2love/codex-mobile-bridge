@@ -1,0 +1,2 @@
+# Keep archived note bytes stable for their SHA-256 seals on every platform.
+/.agents/notes/archived/** text eol=lf

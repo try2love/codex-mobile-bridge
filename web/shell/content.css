@@ -95,3 +95,5 @@
 .edited-files-card>summary:before{content:'›';font-size:18px;line-height:1;transition:transform .15s}.edited-files-card[open]>summary:before{transform:rotate(90deg)}
 .edited-files-basis{color:var(--muted,#748074);font-size:11px;white-space:nowrap}
 button.edited-files-path{padding:0;border:0;border-radius:0;background:none;color:var(--green,#267044);font:inherit;text-align:left;text-decoration:underline;text-underline-offset:3px;cursor:pointer}
+
+.project-picker-models{min-width:0;padding:14px 0;margin-bottom:12px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}.project-picker-model-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}.project-picker-model-head strong{font-size:13px}.project-picker-model-head button{flex:none;white-space:nowrap}.project-picker-models .muted,.project-picker-models .error{margin:8px 0 0}.project-picker-models .muted:empty,.project-picker-models .error:empty{display:none}

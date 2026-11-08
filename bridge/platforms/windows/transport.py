@@ -35,7 +35,7 @@ class WindowsPipe:
                     raise
                 time.sleep(min(.05, max(0, deadline - time.monotonic())))
 
-    def _io(self, value, write=False):
+    def _io(self, value, write=False, timeout=None):
         api = self.api
         with self.condition:
             if self.closed:
@@ -44,12 +44,16 @@ class WindowsPipe:
                 self.handle, value, overlapped=True)
             self.operations.add(operation)
         try:
+            timed_out = False
             if error == api.ERROR_IO_PENDING:
-                result = api.WaitForMultipleObjects([operation.event], False,
-                                                    5000 if write else api.INFINITE)
+                milliseconds = (5000 if write else api.INFINITE) if timeout is None else max(0, int(timeout * 1000))
+                result = api.WaitForMultipleObjects([operation.event], False, milliseconds)
                 if result == api.WAIT_TIMEOUT:
-                    raise TimeoutError('Desktop pipe write timed out')
+                    timed_out = True
+                    operation.cancel()
             count, error = operation.GetOverlappedResult(True)
+            if timed_out and error == api.ERROR_OPERATION_ABORTED:
+                raise TimeoutError('Desktop pipe operation timed out')
             if error:
                 import ctypes
                 raise ctypes.WinError(error)
@@ -63,8 +67,11 @@ class WindowsPipe:
                     self.operations.discard(operation)
                     self.condition.notify_all()
 
-    def recv(self, length):
-        return self._io(length)
+    def recv(self, length, *, timeout=None):
+        return self._io(length, timeout=timeout)
+
+    def send(self, data, *, timeout=None):
+        return self._io(data, write=True, timeout=timeout)
 
     def sendall(self, data):
         offset = 0

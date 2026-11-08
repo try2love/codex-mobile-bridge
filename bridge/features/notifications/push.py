@@ -1,4 +1,6 @@
 """Opt-in native push. Private provider configuration never comes from phone requests."""
+from bridge.features.notifications.providers import PROVIDERS, desktop_provider
+
 import hashlib
 import re
 import threading
@@ -146,7 +148,7 @@ class MobilePush:
 
 
 def payload(device, event):
-    provider = {'desktop:claude': 'claude', 'desktop:deepseek': 'deepseek'}.get(event['host'], 'codex')
+    provider = desktop_provider(event['host']) or 'codex'
     route = {'origin': device['origin'], 'thread': event['threadId'], 'host': event['host'],
              'provider': provider,
              'sequence': str(event['sequence']), 'streamId': event.get('streamId', '')}

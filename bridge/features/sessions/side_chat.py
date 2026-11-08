@@ -3,7 +3,6 @@
 One runtime owns each temporary child; closing it destroys the in-memory fork.
 Views are shared by authenticated gateway clients, never persisted in Bridge.
 """
-import re
 import copy
 import hashlib
 import json
@@ -13,11 +12,14 @@ import subprocess
 import tempfile
 import threading
 import uuid
+from functools import partial
 from pathlib import Path
 
+from bridge.features.sessions.create import runtime_environment
 from bridge.features.sessions.model import attachment_prompt, normalize_state, normalize_request
 from bridge.features.sessions.tool_images import TOOL_IMAGE_CACHE, public_turns
 from bridge.features.workspace.uploads import Uploads
+from bridge.features.accounts.models import valid_model_id
 
 
 BOUNDARY = """You are in a temporary side conversation, separate from the main thread.
@@ -36,7 +38,7 @@ class SideChatError(ValueError):
 
 
 class SideRuntime:
-    def __init__(self, executable, home, cwd, event):
+    def __init__(self, executable, home, cwd, event, *, isolated_home=False):
         self.event = event
         self.lock = threading.RLock()
         self.pending = {}
@@ -44,7 +46,7 @@ class SideRuntime:
         self.closed = False
         options = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
         self.process = subprocess.Popen([str(executable), 'app-server', '--listen', 'stdio://'],
-            cwd=cwd, env={**os.environ, 'CODEX_HOME': str(home)}, stdin=subprocess.PIPE,
+            cwd=cwd, env=runtime_environment(home, isolated_home=isolated_home), stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding='utf-8', **options)
         self.reader = threading.Thread(target=self._read, daemon=True)
 
@@ -292,7 +294,7 @@ class SideChat:
                     'submissions': [{'id': k, 'status': v['status'], 'text': v['text'], 'mode': v.get('mode', 'send'), 'workMode': v.get('workMode', 'default'), 'attachments': v.get('attachments', []), 'error': v.get('error')} for k, v in self.submissions.items()]}
 
     def settings(self, model, effort, catalog):
-        if not isinstance(model, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./:@+-]{0,199}", model):
+        if not valid_model_id(model):
             raise ValueError("模型 ID 格式不正确")
         if effort not in ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"):
             raise ValueError("请选择有效的推理强度")
@@ -525,7 +527,7 @@ class SideChat:
 
 
 class SideChats:
-    def __init__(self, executable, home, directory, host, factory=SideChat, *, executable_getter=None):
+    def __init__(self, executable, home, directory, host, factory=SideChat, *, executable_getter=None, isolated_home=False):
         self.executable, self.home, self.directory, self.host = executable, home, directory, host
         self.executable_getter = executable_getter
         if factory is SideChat:
@@ -533,6 +535,8 @@ class SideChats:
             if enabled(host):
                 from bridge.features.sessions.linux_side_chat import LinuxSideChat
                 factory = LinuxSideChat
+        if isolated_home:
+            factory = partial(factory, runtime_factory=partial(SideRuntime, isolated_home=True))
         self.factory = factory
         self.lock = threading.RLock()
         self.chats = {}

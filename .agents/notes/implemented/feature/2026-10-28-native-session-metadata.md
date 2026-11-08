@@ -2,6 +2,8 @@
 
 Status: implemented
 
+后续范围：[原生会话重命名](2026-11-04-native-session-renames.md) 增加已持有 CLI 的官方控制通路、DSH 已加载 Session store 与 ZCode 持久任务服务，并取消改名的别名回退；本文原生非激活、身份和项目边界继续适用。
+
 ## 问题
 
 共享菜单需要补齐 Claude、DSH 的改名和分类入口，但方法存在并不代表调用没有副作用。DSH 的 `sessionController.rename` 会解析或恢复冷会话；部分第三方 Harness 又改变了项目成员的目录限制。直接通用转发会破坏仅修改显示元数据、不启动会话和保留原工作目录的约束。

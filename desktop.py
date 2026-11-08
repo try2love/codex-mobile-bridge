@@ -3,12 +3,45 @@
 import argparse
 import json
 import sys
+if sys.argv[1:2] == ['codex-desktop-runtime']:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--configuration', required=True)
+    parser.add_argument('arguments', nargs=argparse.REMAINDER)
+    options = parser.parse_args(sys.argv[2:])
+    from bridge.clients.codex.desktop_runtime_host import run as runtime_main
+    arguments = options.arguments[1:] if options.arguments[:1] == ['--'] else options.arguments
+    raise SystemExit(runtime_main(options.configuration, arguments))
+
 if len(sys.argv) == 3 and sys.argv[1] == '--terminal-child':
     if sys.platform == 'win32':
         from bridge.platforms.windows.terminal import child_main
     else:
         from bridge.platforms.posix.terminal import child_main
     child_main(sys.argv[2])
+
+if sys.argv[1:2] == ['zcode-pipe-host']:
+    if sys.platform == 'darwin' and not getattr(sys, 'frozen', False):
+        raise SystemExit('The private ZCode host requires the installed macOS gateway')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--data-dir', required=True)
+    parser.add_argument('--application', required=True)
+    options = parser.parse_args(sys.argv[2:])
+    if sys.platform == 'darwin':
+        from bridge.clients.zcode.pipe_host import serve
+    else:
+        from bridge.clients.zcode.local_pipe_host import serve
+    serve(options.data_dir, options.application)
+    raise SystemExit(0)
+
+if sys.argv[1:2] == ['local-service-host']:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--data-dir', required=True)
+    parser.add_argument('--name', choices=['zcode-official'], required=True)
+    parser.add_argument('--parent-pid', type=int, required=True)
+    options = parser.parse_args(sys.argv[2:])
+    from bridge.clients.local_rpc_host import serve
+    serve(options.data_dir, options.name, options.parent_pid)
+    raise SystemExit(0)
 
 from bridge.app.desktop import Desktop
 

@@ -137,6 +137,10 @@ class DeliveryIsolation(unittest.TestCase):
                     stack.enter_context(patch.object(adapter.remote_cli, 'listing', return_value={'connected': False, 'sessions': [], 'complete': True}))
                     stack.enter_context(patch.object(adapter, 'call', side_effect=lambda action, sid=None, body=None: asyncio.run(adapter.dispatch(action, sid, body or {}))))
                 else:
+                    home = Path(directory)/'dsh-home'
+                    home.mkdir()
+                    adapter.home = home
+                    desktop.config['discovered'] = {'deepseek': {'installed': True, 'dataDirectory': str(home)}}
                     adapter.directory.mkdir(parents=True, exist_ok=True)
                     (adapter.directory/'connection.json').write_text('{"token":"fixture"}')
                     (adapter.directory/'endpoint.json').write_text('{"port":32123}')
@@ -152,6 +156,7 @@ class DeliveryIsolation(unittest.TestCase):
                                 raise AssertionError(action)
                             return io.BytesIO(json.dumps(value).encode())
                     stack.enter_context(patch('bridge.clients.deepseek.adapter.urllib.request.build_opener', return_value=Opener()))
+                stack.enter_context(patch.object(desktop, 'scan', side_effect=AssertionError('notification fixture must not scan installed clients')))
                 source = Mock()
                 source.notification_candidates.return_value = []
                 source.notification_updates.return_value = []

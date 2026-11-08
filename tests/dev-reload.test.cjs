@@ -136,7 +136,7 @@ test('CSS swaps wait for a successful load and keep existing styles on error',as
   f.change({revision:2,files:['desktop/ui.css'],stylesOnly:true});await Promise.resolve();link.next.onload();
   assert.equal(link.removed,true);assert.equal(f.requests.length,0);
 });
-test('renderer reload never repeats gateway autostart; first developer launch keeps the existing preference',async()=>{
+test('renderer startup keeps lazy client discovery and only autostarts on the first developer launch',async()=>{
   const source=fs.readFileSync(path.join(root,'desktop/shell/renderer.js'),'utf8');
   const boot=source.split('\n').find(line=>line.startsWith('api.language().then('));
   for(const reloaded of [true,false]){
@@ -144,6 +144,6 @@ test('renderer reload never repeats gateway autostart; first developer launch ke
     await vm.runInNewContext(boot,{api:{language:async()=> 'en'},applyLanguage(){},feedback(){},refresh:async()=>{},
       developmentReload:{reloaded,restore:async()=>{}},desktopConnections:{scan:async()=>scans++},
       snapshot:{preferences:{autoStart:true},runtime:{running:false,portOccupied:false}},$:()=>({click(){starts++;}})});
-    assert.equal(scans,1);assert.equal(starts,reloaded?0:1);
+    assert.equal(scans,0);assert.equal(starts,reloaded?0:1);
   }
 });

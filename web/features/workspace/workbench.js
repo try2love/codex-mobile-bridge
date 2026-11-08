@@ -184,12 +184,16 @@ class Workbench {
   get isFileVisible() { return !!this.current && !this.splitMode && this.current.active !== 'chat'; }
   endpoint(session, action) {
     const path = session.provider && session.provider !== 'codex'
-      ? '/api/desktop-sessions/'+session.provider+'/'+action+'?sessionId='+encodeURIComponent(session.id)
+      ? ClientIdentity.path(session.provider,action,session.id)
       : '/api/sessions/'+session.id+'/'+action+'?host='+encodeURIComponent(session.host);
     return window.BridgeRelayURL?.(path)||path;
   }
   url(session, operation = '', path = '') { return this.endpoint(session,'workspace'+(operation?'/'+operation:''))+'&path='+encodeURIComponent(path); }
   rememberScroll() { const timeline=this.chat.querySelector('.timeline');if (this.current && !this.chat.classList.contains('workbench-active') && timeline.clientHeight) this.current.scroll = timeline.scrollTop; }
+  setAttachedParent(parent) {
+    if (!this.current || JSON.stringify(this.current.attachedParent || null) === JSON.stringify(parent || null)) return;
+    this.current.attachedParent = parent || null; this.paint();
+  }
   select(id) {
     if (!this.current) return;
     if(id!=='terminal')this.current.files.find(tab=>tab.id==='terminal')?.terminal?.clearCompletion?.();
@@ -197,6 +201,7 @@ class Workbench {
     if (this.previewFullscreen && this.previewFullscreen.tab.id !== id) this.closePreviewFullscreen();
     this.rememberScroll(); this.current.active = id; if(this.current.splitTab&&id!=='chat')this.current.splitTab=id; this.paint();
     if(id==='terminal')this.current.files.find(tab=>tab.id==='terminal')?.terminal?.focusOnSelect?.();
+    if(id==='sidechat')this.current.files.find(tab=>tab.id==='sidechat')?.sideChat?.load();
     if (id === 'chat') { const session = this.current; requestAnimationFrame(() => { if (session === this.current && session.active === 'chat') this.chat.querySelector('.timeline').scrollTop = session.scroll; }); }
   }
   paint() {
@@ -206,7 +211,11 @@ class Workbench {
     for (const stage of this.panel.querySelectorAll('.wb-pdf-stage,.wb-source-body')) this.scrollPositions.set(stage, {top:stage.scrollTop, left:stage.scrollLeft});
     this.splitEligible=this.canSplit();
     this.tabs.replaceChildren();
-    for (const tab of [{id: 'chat', name: BridgeI18n.t('聊天')}, ...session.files]) {
+    if (session.attachedParent?.available) {
+      const parent = this.button('返回主聊天', () => this.openChat(session.attachedParent.id, session.host));
+      parent.className = 'wb-parent-chat'; this.tabs.append(parent);
+    }
+    for (const tab of [{id: 'chat', name: BridgeI18n.t(session.attachedParent ? '侧边聊天' : '聊天')}, ...session.files]) {
       const group = this.node('div', 'wb-tab');group.dataset.tab=tab.id; group.classList.toggle('selected', this.splitMode ? ['chat',session.splitTab].includes(tab.id) : session.active === tab.id);
       const select = this.button(tab.name, () => this.select(tab.id)); if(tab.id.startsWith('file:'))this.raw(select); select.setAttribute('role', 'tab'); select.setAttribute('aria-selected', String(this.splitMode?['chat',session.splitTab].includes(tab.id):session.active===tab.id));
       group.append(select);
@@ -214,6 +223,7 @@ class Workbench {
       group.ondragstart=event=>{if(!group.draggable){event.preventDefault();return;}this.dragTab=tab.id;event.dataTransfer.setData('text/plain',tab.id);event.dataTransfer.effectAllowed='move';this.layout.classList.add('wb-dragging');};
       group.ondragend=()=>this.endDrag();
       if (tab.id !== 'chat') group.append(this.button('×', () => this.close(tab.id), BridgeI18n.t('关闭')));
+      else if (session.attachedParent?.available) group.append(this.button('×', () => this.openChat(session.attachedParent.id, session.host), BridgeI18n.t('关闭')));
       this.tabs.append(group);
     }
     this.chat.classList.toggle('workbench-active', this.isFileVisible); this.panel.hidden = !this.isFileVisible&&!this.splitMode;
@@ -244,7 +254,6 @@ class Workbench {
     if (index < 0) return;
     if (id === 'files') this.cancelLocate();
     if (this.previewFullscreen?.tab === session.files[index]) this.closePreviewFullscreen();
-    if (session.files[index].sideChat && !await session.files[index].sideChat.end()) return;
     if (!session.files[index] || session.files[index].id !== id) return;
     session.files[index].controller?.abort(); session.files[index].pdf?.dispose(); session.files[index].html?.dispose(); session.files[index].markdown?.dispose(); session.files[index].fileFont?.dispose(); session.files[index].git?.dispose(); session.files[index].terminal?.dispose(); session.files[index].agents?.dispose(); session.files[index].sideChat?.dispose(); session.files.splice(index, 1);
     if(session.splitTab===id)session.splitTab=(session.files[index]||session.files[index-1])?.id||null;
@@ -344,11 +353,11 @@ class Workbench {
     const dialog = this.node('dialog', 'picker wb-new-tab'), head = this.node('div', 'picker-head');
     head.append(this.node('h2', '', BridgeI18n.t('新标签页')), this.button('×', () => dialog.close(), BridgeI18n.t('关闭')));
     const choices = this.node('div', 'wb-tab-choices');
-    for (const [name, description, action] of [[BridgeI18n.t('文件'), BridgeI18n.t('浏览项目文件、上传与下载'), () => this.files()], ['Git', BridgeI18n.t('历史、暂存、提交与分支管理'), () => this.git()], [BridgeI18n.t('终端'), BridgeI18n.t('运行项目命令、构建与查看输出'), () => this.terminal()], [BridgeI18n.t('侧边聊天'), BridgeI18n.t('继承当前上下文，临时讨论并跨设备接续'), () => this.sideChat()], [BridgeI18n.t('子智能体'), BridgeI18n.t('查看派生任务关系与执行记录'), () => this.agents()]]) {
+    for (const [name, description, action] of [[BridgeI18n.t('文件'), BridgeI18n.t('浏览项目文件、上传与下载'), () => this.files()], ['Git', BridgeI18n.t('历史、暂存、提交与分支管理'), () => this.git()], [BridgeI18n.t('终端'), BridgeI18n.t('运行项目命令、构建与查看输出'), () => this.terminal()], [BridgeI18n.t('侧边聊天'), BridgeI18n.t('新建或继续原生侧边聊天'), () => this.sideChat()], [BridgeI18n.t('子智能体'), BridgeI18n.t('查看派生任务关系与执行记录'), () => this.agents()]]) {
       const button = this.button('', () => { dialog.close(); action(); }, name);
       button.append(this.node('strong', '', name), this.node('span', '', description));
       const capability=name===BridgeI18n.t('终端')?'terminal':name===BridgeI18n.t('侧边聊天')?'sideChat':null;
-      const unavailable=this.current.provider&&['侧边聊天','子智能体'].map(BridgeI18n.t).includes(name)
+      const unavailable=this.current.provider&&(name===BridgeI18n.t('侧边聊天')||name===BridgeI18n.t('子智能体')&&this.current.capabilities?.tasks!==true)
         ||this.current.access?.canUseSideChat===false&&['侧边聊天','子智能体'].map(BridgeI18n.t).includes(name)
         ||capability&&this.current.capabilities?.[capability]===false;
       if(unavailable){button.disabled=true;button.lastChild.textContent=BridgeI18n.t('当前客户端尚未提供此能力');}
@@ -541,7 +550,7 @@ class Workbench {
       if (result.kind === 'pdf') {
         tab.pdf = BridgePdfPreview.create({url:downloadUrl, info:result});
         content.classList.add('wb-pdf-content'); content.append(tab.pdf.element);
-      } else if (result.kind === 'image') { const image = this.node('img'); image.src = 'data:' + result.mime + ';base64,' + result.data; image.alt = result.name; window.BridgeImageViewer?.registerWorkspaceImage(image, result, imageContext, imageComposerScope); content.append(image); }
+      } else if (result.kind === 'image') { const image = this.node('img'); image.src = 'data:' + result.mime + ';base64,' + result.data; image.alt = result.name; window.BridgeImageViewer?.registerWorkspaceImage(image, result, imageContext, imageComposerScope, downloadUrl); content.append(image); }
       else if (result.kind === 'text') {
         tab.fileFont=FileFont.control(this);actions.append(tab.fileFont.element);
         if (/\.md$/i.test(result.name)) { const markdown=this.markdownPreview(session,tab,content,result);modes=markdown.modes;copyAction=markdown.copy; }
@@ -610,6 +619,15 @@ class Workbench {
     dialog.showModal();
   }
   upload(url, file, progress) {
+    if(window.BridgeChannelLink?.alternate){
+      const controller=this.uploadController=new AbortController();
+      const timer=setTimeout(()=>controller.abort(),120000);
+      return fetch(url,{method:'POST',headers:{'X-CSRF-Token':this.csrf(),'Content-Type':'application/octet-stream'},body:file,signal:controller.signal})
+        .catch(()=>{throw Error(BridgeI18n.t('上传结果未确认，请刷新目录核对，或重试同一文件；不会覆盖已有文件。'));})
+        .then(async response=>{const result=await response.json();if(response.status===401)this.onUnauthorized();
+          if(!response.ok)throw Error(result.error||BridgeI18n.t('上传失败'));progress(100);return result;
+        }).finally(()=>clearTimeout(timer));
+    }
     return new Promise((resolve, reject) => {
       const xhr = this.uploadController = new XMLHttpRequest(); xhr.open('POST', url); xhr.timeout = 120000;
       xhr.setRequestHeader('X-CSRF-Token', this.csrf()); xhr.setRequestHeader('Content-Type', 'application/octet-stream');

@@ -852,6 +852,24 @@ class CliDiagnosticsHttpTests(CliBridgeFixture):
         self.assertTrue(result['connected'])
         self.cli.attach.assert_called_once_with(self.thread_id, explicit=True)
 
+    def test_cli_release_requires_login_and_csrf_and_does_not_activate(self):
+        route = '/api/cli-connections'
+        self.assertEqual(self.request('GET', route)[0], 401)
+        _, headers, login = self.request('POST', '/api/login',
+            {'username': 'admin', 'password': 'integration password'})
+        cookie = headers['Set-Cookie'].split(';')[0]
+        manager = Mock()
+        manager.view.return_value = {'connections': [], 'operations': []}
+        manager.submit.return_value = {'results': []}
+        self.server.cli_connections = manager
+        body = {'id': str(uuid.uuid4()), 'connections': ['a'], 'mode': 'wait'}
+        self.assertEqual(self.request('POST', route, body, headers={'Cookie': cookie})[0], 403)
+        manager.submit.assert_not_called()
+        self.assertEqual(self.request('POST', route, body,
+            headers={'Cookie': cookie, 'X-CSRF-Token': login['csrf']})[0], 200)
+        manager.submit.assert_called_once_with(body)
+        self.cli.attach.assert_not_called()
+
 
 class CliApprovalProtocolTests(unittest.TestCase):
     def setUp(self):

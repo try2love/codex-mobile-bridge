@@ -84,6 +84,14 @@ def password_record(password):
     return {"algorithm": "pbkdf2-sha256", "iterations": 600000, "salt": salt.hex(), "hash": digest.hex()}
 
 
+class RouteToken(str):
+    """Accepted only after matching this request's approved origin and live parent."""
+    def __new__(cls, value, parent):
+        token = super().__new__(cls, value)
+        token.parent = parent
+        return token
+
+
 class LoginRejected(PermissionError):
     def __init__(self, message, status):
         super().__init__(message)
@@ -145,7 +153,7 @@ class Auth:
 
     @staticmethod
     def key(token):
-        return hashlib.sha256(token.encode()).hexdigest()
+        return token.parent if isinstance(token, RouteToken) else hashlib.sha256(token.encode()).hexdigest()
 
     def persist(self):
         if self.path is None:
@@ -335,6 +343,6 @@ class Auth:
                 raise ValueError('未知设备管理操作')
             return {'policy': {k: list(v) if isinstance(v, list) else v for k, v in self.policy.items()},
                     'autoBlocks': sorted(self.auto_blocks.values(), key=lambda row: row['blockedAt'], reverse=True),
-                    'sessions': sorted([{'id': k, **{field: val for field, val in v.items() if field != 'csrf'}}
+                    'sessions': sorted([{'id': k, **{field: val for field, val in v.items() if field not in ('csrf', 'routeBindings', 'routeRenewal', 'routeLegacyRenewal')}}
                                         for k, v in self.sessions.items() if self.valid(v)],
                                        key=lambda row: row['lastSeen'], reverse=True)}

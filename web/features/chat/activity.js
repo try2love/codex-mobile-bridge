@@ -1,4 +1,59 @@
 'use strict';
+function chatFollowsLatest(viewport){
+  return viewport.scrollHeight-viewport.scrollTop-viewport.clientHeight<110;
+}
+function captureChatScrollAnchor(viewport,container,accept=()=>true){
+  const top=viewport.getBoundingClientRect().top;
+  let anchor=null;
+  for(const node of container.children){
+    if(node.hidden||node.dataset.key===undefined||!accept(node))continue;
+    const rect=node.getBoundingClientRect();
+    anchor={key:node.dataset.key,offset:rect.top-top};
+    if(rect.bottom>top)break;
+  }
+  return anchor;
+}
+function restoreChatScrollAnchor(viewport,node,anchor){
+  if(!node||node.hidden||!anchor)return false;
+  viewport.scrollTop+=node.getBoundingClientRect().top-viewport.getBoundingClientRect().top-anchor.offset;
+  return true;
+}
+function captureChatActivityState(node){
+  const details=node?.tagName==='DETAILS'?node:node?.querySelector('details.activity');
+  if(!details)return null;
+  const body=details.querySelector('.activity-body');
+  return {open:details.open,top:body?.scrollTop||0,left:body?.scrollLeft||0};
+}
+function restoreChatActivityState(node,state){
+  if(!state)return;
+  const details=node.tagName==='DETAILS'?node:node.querySelector('details.activity');
+  if(!details)return;
+  details.open=state.open;
+  const body=details.querySelector('.activity-body');
+  if(body){body.scrollTop=state.top;body.scrollLeft=state.left;}
+}
+// Stable row keys are local to this conversation container. Do not detach
+// unchanged rows: even reattaching the same node resets nested scroll areas.
+function syncChatMessageNodes(container,nodes){
+  const previous=new Map([...container.children].filter(node=>node.dataset.key!==undefined).map(node=>[node.dataset.key,node]));
+  const reading=new Map(),wanted=new Set(nodes);
+  for(const node of nodes){
+    const old=previous.get(node.dataset.key);
+    if(old&&old!==node)reading.set(node,captureChatActivityState(old));
+  }
+  for(const node of [...container.children])if(!wanted.has(node))node.remove();
+  let position=container.firstChild;
+  for(const node of nodes){
+    if(node===position)position=position.nextSibling;
+    else{
+      if(!reading.has(node))reading.set(node,captureChatActivityState(node));
+      container.insertBefore(node,position);
+    }
+  }
+  // Restore only changed/moved rows, after their new layout exists. Browsers
+  // clamp offsets naturally when an updated activity becomes shorter.
+  for(const [node,state] of reading)restoreChatActivityState(node,state);
+}
 // All chat surfaces render native task evidence through this shared indicator.
 function renderChatProgress(node,{agentName='',active=false,waiting=false,blocked=false,connected=true,fresh=true}={}){
   const state=!connected||!fresh?'unknown':waiting?'waiting':active?'working':blocked?'blocked':'idle';

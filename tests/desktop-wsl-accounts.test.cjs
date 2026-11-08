@@ -8,7 +8,7 @@ class Node {
 }
 function all(node){return[node,...node.children.flatMap(child=>child instanceof Node?all(child):[])];}
 const renderer=fs.readFileSync('desktop/shell/renderer.js','utf8');
-const wiring=renderer.slice(renderer.indexOf('const wslAccountScopes=[];'),renderer.indexOf("document.addEventListener('bridge-client-config',event=>{for(const scope of wslAccountScopes)"));
+const wiring=renderer.slice(renderer.indexOf('const wslAccountScopes=[];'),renderer.lastIndexOf("document.addEventListener('bridge-client-config',"));
 async function fixture(){
   const local=new Node('article'),cli=new Node('div'),calls=[];let accounts=[];
   const state=()=>({provider:'codex',entry:'wsl-test',identity:'fixture',available:true,target:{distribution:'Fixture',user:'test'},blockers:['自定义 provider 路由','runningCLI'],capabilities:{save:true,import:false,switch:false,models:false},accounts:accounts.map(row=>({...row}))});

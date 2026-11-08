@@ -71,7 +71,7 @@ source = (ROOT / 'mobile/ios/BridgePreview/App.swift').read_text()
 def section(start, end):
     return source[source.index(start):source.index(end, source.index(start))]
 fetch = section('    private func fetch(', '    private func sheet(')
-sync = section('    @objc private func active()', '    private func notificationSources()').replace('self.computerNotifications[address]?.arrangedSubviews.forEach { $0.removeFromSuperview() }', 'self.computerNotifications[address]?.isHidden = true')
+sync = section('    @objc private func active()', '    private func sourceSwitch(').replace('self.computerNotifications[address]?.arrangedSubviews.forEach { $0.removeFromSuperview() }', 'self.computerNotifications[address]?.isHidden = true')
 redirect = section('final class NoRedirect:', '// Foreground-only')
 # OS/platform substitutes only. The production fetch, sync, foreground/background
 # lifecycle and shared URLSession setup remain intact.
@@ -92,6 +92,7 @@ final class MemoryDefaults {
     private var values: [String: Any] = [:]
     func set(_ value: Any?, forKey key: String) { values[key] = value }
     func object(forKey key: String) -> Any? { values[key] }
+    func dictionary(forKey key: String) -> [String: Any]? { values[key] as? [String: Any] }
     func string(forKey key: String) -> String? { values[key] as? String }
     func integer(forKey key: String) -> Int { values[key] as? Int ?? 0 }
     func bool(forKey key: String) -> Bool { values[key] as? Bool ?? false }
@@ -114,6 +115,12 @@ var routeDiscovery: ConnectionDiscovery?
 var routeAttempted = false
 
 final class BridgeController: NSObject {
+    var channelMonitor: ConnectionDiscovery?
+    var channelCatalogTimer: Timer?
+    var lastChannelProbe: (key: String, time: TimeInterval)?
+    var channelSignature = "", channelTicket = 0
+    func watchChannels() {}
+    func cancelChannelJobs() {}
     var origin = ""
     var computerNotifications: [String: UILabel] = [:]
     var computerSnapshots: [String: [String: Any]] = [:]
@@ -128,6 +135,8 @@ final class BridgeController: NSObject {
 '''
 if 'private var pollGeneration' in source:
     fields += '    var pollGeneration = 0\n    var pollTasks: [String: URLSessionDataTask] = [:]\n'
+fields += section('    private func channelRecord(', '    private var lastChannelProbe')
+fields += section('    private func preferenceKey(', '    private func addresses(')
 fields += section('    private let redirect = NoRedirect()', '    override func viewDidLoad()')
 fields += section('    private func cookieName(', '    private let page = UIStackView()').replace('private func', 'func')
 methods = '''

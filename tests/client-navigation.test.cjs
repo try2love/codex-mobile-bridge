@@ -1,9 +1,11 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
-function fixture(){
+function fixture(relayBase=''){
   let mobile=false,choice=true,finishChoice;const choices=[],preferences=new Map();const context=vm.createContext({ClientLifecycle:{...require('../web/features/clients/client-lifecycle.js'),chooseDisable(client){choices.push(client.id);return choice==='pending'?new Promise(resolve=>finishChoice=resolve):choice;}},document:{documentElement:{classList:{contains:()=>mobile}},getElementById:()=>({hidden:false})},setTimeout,clearTimeout,AbortController,localStorage:{setItem:(key,value)=>preferences.set(key,value),getItem:key=>preferences.get(key)},Event:class{},window:{}});
   context.BridgeI18n={t:value=>value};
+  context.BridgeRelayBase=relayBase;
   vm.runInContext(fs.readFileSync('web/hosts/environment.js','utf8'),context);
+  context.ClientIdentity=require('../web/features/clients/client-lifecycle.js').ClientIdentity;
   vm.runInContext(fs.readFileSync('web/features/clients/client-navigation.js','utf8'),context);
   let initializeChoice=false,finishInitialize;const initializations=[];context.ClientLifecycle.chooseInitialize=client=>{initializations.push(client.id);return initializeChoice==='pending'?new Promise(resolve=>finishInitialize=resolve):initializeChoice;};
   const C=vm.runInContext('ClientNavigation',context),nav=Object.create(C.prototype),painted=[];
@@ -14,6 +16,11 @@ function networkPanel(nav){
   const panel={section:{},box:{setAttribute(){}},status:{},refresh:{}};
   nav.manager={networkAdaptation:panel};return panel;
 }
+test('independent notification links retain their full client identity and reject a second ZCode entry',()=>{
+ const {nav}=fixture(),entry='claude:'+ 'a'.repeat(32),host='desktop:'+entry;
+ assert.deepEqual(JSON.parse(JSON.stringify(nav.chatTarget('#same~'+encodeURIComponent(host)))),{provider:entry,id:'same',host});
+ for(const value of ['desktop:zcode:'+ 'b'.repeat(32),'desktop:claude:bad','desktop:claude:'+ 'a'.repeat(31)])assert.equal(nav.chatTarget('#same~'+encodeURIComponent(value)),null);
+});
 test('network recovery status reads do not enable the option, and relay does not query it',async()=>{
   const ui=fixture(),panel=networkPanel(ui.nav),calls=[];
   ui.nav.request=async(path,body)=>{calls.push({path,body});return {enabled:false};};
@@ -382,7 +389,8 @@ function touchFixture(){
  const ui=fixture(),nav=ui.nav,list={};ui.document.querySelector=()=>null;
  // Provide browser-only globals for the production gesture handlers.
  const context=vm.createContext({document:ui.document,localStorage:{getItem:()=>null},window:{getSelection:()=>null},innerWidth:390,Date,BridgeI18n:{t:s=>s}});
- vm.runInContext(fs.readFileSync('web/features/clients/client-navigation.js','utf8'),context);
+ context.ClientIdentity=require('../web/features/clients/client-lifecycle.js').ClientIdentity;
+  vm.runInContext(fs.readFileSync('web/features/clients/client-navigation.js','utf8'),context);
  nav.listTouch=vm.runInContext('ClientNavigation.prototype.listTouch',context);
  const calls=[];nav.dragListSwipe=()=>{};nav.finishListSwipe=(_gesture,_dx,next)=>{if(next)nav.choose(next);};nav.choose=async id=>{calls.push(id);nav.provider=id;};
  const target={closest:()=>null};
@@ -425,7 +433,8 @@ test('swipe settles before choosing and canceled animations cannot switch later'
 });
 test('a second flick adopts the first settling choice and reaches the following client',async()=>{
  const context=vm.createContext({window:{matchMedia:()=>({matches:false}),getSelection:()=>null},document:{querySelector:()=>null},localStorage:{getItem:()=>null},innerWidth:390,Date,BridgeI18n:{t:s=>s}});
- vm.runInContext(fs.readFileSync('web/features/clients/client-navigation.js','utf8'),context);
+ context.ClientIdentity=require('../web/features/clients/client-lifecycle.js').ClientIdentity;
+  vm.runInContext(fs.readFileSync('web/features/clients/client-navigation.js','utf8'),context);
  const C=vm.runInContext('ClientNavigation',context),nav=Object.create(C.prototype),calls=[],waits=[],list={getBoundingClientRect:()=>({width:390})};
  const node=()=>({style:{transform:'translate3d(-100px,0,0)'},animate(){let resolve,reject;const finished=new Promise((yes,no)=>{resolve=yes;reject=no;});const animation={finished,cancel(){reject(Object.assign(Error('canceled'),{name:'AbortError'}));}};waits.push({resolve});return animation;}});
  Object.assign(nav,{provider:'codex',clients:['codex','claude','deepseek'].map(id=>({id,enabled:true})),sidebar:list,view:{list},dragListSwipe(gesture,dx){if(this.swipePreview)return;const enabled=this.clients,index=enabled.findIndex(c=>c.id===gesture.provider),next=enabled[index+(dx<0?1:-1)];this.swipePreview={provider:gesture.provider,next:next?.id,direction:1,width:390,current:node(),incoming:node(),root:{remove(){}}};},choose(id){this.cancelListSwipe();this.provider=id;calls.push(id);return Promise.resolve();},notify:message=>{throw Error(message);}});
@@ -437,7 +446,8 @@ test('a second flick adopts the first settling choice and reaches the following 
 });
 
 test('reduced-motion swipes commit without animation and recheck enabled state',async()=>{
- const context=vm.createContext({window:{matchMedia:()=>({matches:true})}});vm.runInContext(fs.readFileSync('web/features/clients/client-navigation.js','utf8'),context);
+ const context=vm.createContext({window:{matchMedia:()=>({matches:true})}});context.ClientIdentity=require('../web/features/clients/client-lifecycle.js').ClientIdentity;
+  vm.runInContext(fs.readFileSync('web/features/clients/client-navigation.js','utf8'),context);
  const C=vm.runInContext('ClientNavigation',context);
  for(const enabled of [true,false]){
   const nav=Object.create(C.prototype),calls=[];Object.assign(nav,{provider:'claude',clients:[{id:'deepseek',enabled}],swipePreview:{next:'deepseek',direction:1,width:390,root:{remove(){}}},dragListSwipe(){},choose:async id=>calls.push(id),notify:message=>{throw Error(message);}});
@@ -469,6 +479,15 @@ test('Claude WSL entries stay under Claude and can be enabled independently of n
 test('Claude WSL management uses the packaged Claude icon',()=>{
  const {nav,document}=fixture();document.createElement=tag=>({tag,setAttribute(){},append(child){this.child=child;}});const icon=nav.icon('wsl-claude:'+'a'.repeat(32));assert.equal(icon.child.src,'/client-icons/claude.png');
 });
+test('cloud icons keep the computer prefix and upstream client family mapping',()=>{
+ for(const base of ['', '/d/computer-a', '/relay/computer-b']){
+  const {nav,document}=fixture(base);
+  document.createElement=tag=>({tag,setAttribute(){},append(child){this.child=child;}});
+  for(const [id,family] of [['zcode','zcode'],['claude:'+'a'.repeat(32),'claude'],['deepseek:'+'b'.repeat(32),'deepseek'],['wsl:'+'c'.repeat(32),'codex']]){
+   assert.equal(nav.icon(id).child.src,base+'/client-icons/'+family+'.png');
+  }
+ }
+});
 test('authenticated startup opens only the configured native or WSL entry before status arrives',async()=>{
  const {nav}=fixture(),opened=[],notices=[];
  const host='wsl:'+'a'.repeat(32),id='11111111-1111-4111-8111-111111111111';
@@ -481,4 +500,37 @@ test('authenticated startup opens only the configured native or WSL entry before
  nav.clientsKnown=true;
  await nav.openChatLink('#'+id+'~'+encodeURIComponent(host),(...args)=>opened.push(args));
  assert.equal(opened.length,1);assert.equal(notices.length,2);
+});
+
+
+test('independent Codex entry routes through the shared Codex page and retains its host',async()=>{
+  const {nav}=fixture(),calls=[];nav.onApplicationChange=(previous,provider,options)=>calls.push({previous,provider,...options});
+  const host='codex:'+'a'.repeat(32);await nav.choose(host);
+  assert.equal(nav.provider,'codex');assert.equal(nav.view.provider,'codex');assert.equal(calls[0].host,host);
+  await nav.choose(host);assert.equal(calls.length,1,'selecting the current entry preserves list and scroll state');
+});
+
+test('returning from an independent Codex entry selects the default list instead of retaining the profile',async()=>{
+ const {nav}=fixture(),calls=[];nav.onApplicationChange=(...args)=>calls.push(args);
+ await nav.choose('codex:'+'b'.repeat(32));await nav.choose('codex');
+ assert.equal(calls.at(-1)[2].host,'local');assert.equal(nav.codexEntry,null);
+});
+
+test('independent Codex profiles keep separate bottom identities and survive status refresh',async()=>{
+ const {nav}=fixture(),id='codex:'+'a'.repeat(32),other='codex:'+'b'.repeat(32),events=[];
+ nav.clients=[{id:'codex',enabled:true},{id,kind:'codex-local',enabled:true},{id:other,kind:'codex-local',enabled:true}];
+ nav.onApplicationChange=(previous,provider,options)=>events.push({previous,provider,...options});
+ await nav.choose(id);assert.equal(nav.provider,'codex');assert.equal(nav.activeClient(),id);assert.equal(events.at(-1).host,id);
+ events.length=0;nav.applyClients({clients:nav.clients});assert.equal(events.length,0);assert.equal(nav.activeClient(),id);
+ await nav.choose(other);assert.equal(nav.activeClient(),other);assert.equal(events.at(-1).host,other);
+ await nav.choose('codex');assert.equal(nav.activeClient(),'codex');assert.equal(events.at(-1).host,'local');
+});
+
+
+test('account management owns the shared connection chooser and releases its status subscription',async()=>{
+ const {nav}=fixture(),values=[],selected=[];nav.clients=[{id:'zcode',enabled:true,connected:true,connectionMode:'official-remote',connectionModes:[{id:'private-pipe',label:'本机连接',configured:true},{id:'official-remote',label:'官方远控',configured:true}]}];
+ nav.selectConnectionMode=async(id,mode)=>selected.push([id,mode]);const release=nav.bindAccountManagement({setManagementAction:value=>values.push(value)},'zcode');
+ assert.equal(values.at(-1).client.connectionMode,'official-remote');await values.at(-1).select('private-pipe');assert.deepEqual(selected,[['zcode','private-pipe']]);
+ nav.pending.add('zcode');for(const render of nav.accountManagementRenderers)render();assert.equal(values.at(-1).disabled,true);
+ nav.pending.clear();nav.clients[0].connectionMode='private-pipe';for(const render of nav.accountManagementRenderers)render();assert.equal(values.at(-1).client.connectionMode,'private-pipe');release();assert.equal(nav.accountManagementRenderers.size,0);
 });

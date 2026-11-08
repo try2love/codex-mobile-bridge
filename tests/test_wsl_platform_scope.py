@@ -13,7 +13,9 @@ class WslPlatformScopeTests(unittest.TestCase):
     def test_non_windows_initialization_never_imports_wsl_modules(self):
         original_import = builtins.__import__
         def checked_import(name, *args, **kwargs):
-            if name.startswith(('bridge.features.endpoints', 'bridge.features.accounts.wsl',
+            imported = args[2] if len(args) > 2 and args[2] else ()
+            imports_windows_wsl = name == 'bridge.platforms.windows' and 'wsl' in imported
+            if imports_windows_wsl or name.startswith(('bridge.features.endpoints.wsl', 'bridge.features.accounts.wsl',
                                 'bridge.clients.claude.wsl', 'bridge.platforms.windows.wsl')):
                 raise AssertionError('Unexpected WSL module: ' + name)
             return original_import(name, *args, **kwargs)
@@ -25,7 +27,9 @@ class WslPlatformScopeTests(unittest.TestCase):
                     bridge = Bridge(root/'codex', root/'gateway')
                     manager = DesktopSessions(root/'clients', bridge=bridge)
                     try:
-                        self.assertIsNone(bridge.entries)
+                        self.assertIsNotNone(bridge.entries)
+                        self.assertIsNone(bridge.entries.wsl)
+                        self.assertFalse(bridge.entries.public()['wslSupported'])
                         self.assertIsNone(bridge.wsl_accounts)
                         self.assertIsNone(manager.claude_wsl)
                         self.assertIsInstance(manager.adapters['claude'].remote_cli, RemoteClaudeCli)

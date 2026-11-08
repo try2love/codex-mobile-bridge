@@ -45,6 +45,7 @@ from bridge.api.html_preview import SHELL_PATH, SHELL_FILE, SHELL_CSP
 from bridge.api.mermaid_render import SHELL_PATH as MERMAID_SHELL_PATH, shell_csp as mermaid_shell_csp, shell_bytes as mermaid_shell_bytes, is_public_renderer_script
 
 LOG = logging.getLogger(__name__)
+from bridge.features.endpoints.registry import codex_list_hosts
 from bridge.api.assets import STATIC, FONT_ROUTE, PDF_CMAP_ROUTE, PDF_FONT_ROUTE, VERSION_KEY, served_asset_bytes
 
 
@@ -59,7 +60,10 @@ def _prepared_static(data, content_type, use_gzip):
     etag = '"sha256-' + hashlib.sha256(data).hexdigest() + '"'
     return digest, data, compressed, etag
 
-THREAD_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})(?:/(events|send|stop|history|respond|reconnect|queue|catalog|settings|permissions|poll|timeline|changes|detail|notifications|uploads|message-action|message-management|rename|pin|archive|organization))?$")
+from bridge.features.sessions.cli_release import CliConnections
+from bridge.app.lifecycle import private_json
+
+THREAD_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})(?:/(events|send|stop|history|respond|reconnect|cli-network|queue|catalog|settings|permissions|poll|timeline|changes|detail|notifications|uploads|message-action|message-management|rename|pin|archive|delete|organization|compact))?$")
 UPLOAD_PREVIEW_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})/uploads/([0-9a-f-]{36})/preview$")
 UPLOAD_THUMB_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})/uploads/([0-9a-f-]{36})/thumb$")
 DESKTOP_IMAGE_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})/desktop-images/([0-9a-f]{64})$")
@@ -94,6 +98,7 @@ class GatewayServer(ThreadingHTTPServer):
             self.harness = Harness(data_dir) if data_dir else None
             self.desktop_sessions = DesktopSessions(data_dir, bridge, gateway_running=True) if data_dir else None
             self.desktop_uploads = DesktopUploads(data_dir) if data_dir else None
+            self.cli_connections = CliConnections(data_dir, lambda: [self.bridge, self.desktop_sessions], private_json) if data_dir else None
             self.instance_id = secrets.token_hex(16)
             self.auth = Auth(config["auth"], data_dir)
             self.origins = set(config["origins"])
@@ -107,7 +112,7 @@ class GatewayServer(ThreadingHTTPServer):
         else:
             # Listeners serve one gateway: shared sessions, pairing, limits and
             # mutable tunnel origins, with a single notification manager.
-            for name in ('bridge', 'harness', 'desktop_sessions', 'desktop_uploads', 'notifications', 'network_adaptation', 'instance_id', 'auth', 'origins', 'pairing', 'hosts', 'secure_hosts', 'web_dir', 'slots', 'terminal_sockets', 'ui_language_path'):
+            for name in ('bridge', 'cli_connections', 'harness', 'desktop_sessions', 'desktop_uploads', 'notifications', 'network_adaptation', 'instance_id', 'auth', 'origins', 'pairing', 'hosts', 'secure_hosts', 'web_dir', 'slots', 'terminal_sockets', 'ui_language_path'):
                 setattr(self, name, getattr(shared, name))
         try:
             super().__init__(address, Handler)
@@ -127,6 +132,8 @@ class GatewayServer(ThreadingHTTPServer):
             return 'zh'
 
     def server_close(self):
+        if self.mobile_updates_owner and self.cli_connections:
+            self.cli_connections.close()
         if self.mobile_updates_owner:
             self.mobile_updates.close()
         super().server_close()
@@ -178,6 +185,21 @@ class GatewayServer(ThreadingHTTPServer):
 
 
 class Handler(BaseHTTPRequestHandler):
+    def desktop_context(self, provider, query, *, require_enabled=True):
+        """Resolve explicit entries once; unknown entries never use defaults."""
+        manager = self.server.desktop_sessions
+        if manager is None:
+            raise ValueError('桌面会话接入不可用')
+        # Preserve empty values here: ?entry= is an invalid explicit selection,
+        # not permission to operate on the default account.
+        values = parse_qs(urlsplit(self.path).query, keep_blank_values=True).get('entry')
+        if values is None:
+            return manager, self.server.desktop_uploads, 'desktop:' + provider
+        if len(values) != 1 or not re.fullmatch(r'(claude|deepseek):[0-9a-f]{32}', values[0]):
+            raise ValueError('独立接入标识无效')
+        selected = manager.resolve_instance(provider, values[0], require_enabled=require_enabled)
+        return selected, selected.uploads, 'desktop:' + values[0]
+
     protocol_version = "HTTP/1.1"
     server_version = "CodexMobile/0.1"
     sys_version = ""
@@ -291,7 +313,12 @@ class Handler(BaseHTTPRequestHandler):
             cookie.load(self.headers.get("Cookie", ""))
             name = self.server.auth.cookie_name
             if name in cookie:
-                return cookie[name].value
+                value = cookie[name].value
+                discovery = getattr(self.server, 'connection_discovery', None)
+                if discovery and value.startswith('cmbroute1_'):
+                    host = self.headers.get('Host', '')
+                    return discovery.resolve_cookie(value, ('https://' if host in self.server.secure_hosts else 'http://') + host)
+                return value
             # Legacy cookies are accepted only while their token belongs to
             # this gateway. A successful response migrates to the new name.
             legacy = cookie[Auth.COOKIE].value if Auth.COOKIE in cookie else ""
@@ -312,7 +339,7 @@ class Handler(BaseHTTPRequestHandler):
             raise PermissionError("不允许跨站请求")
         # External links may open the public HTML shell. Fetches, embedded pages
         # and API requests must still pass the cross-site restriction.
-        homepage_navigation = (not write and self.command == 'GET' and urlsplit(self.path).path in ('/', '/harness', '/harness/')
+        homepage_navigation = (not write and self.command == 'GET' and urlsplit(self.path).path in ('/', '/harness', '/harness/', '/mobile-channel')
                                and self.headers.get('Sec-Fetch-Mode') == 'navigate'
                                and self.headers.get('Sec-Fetch-Dest') == 'document')
         renderer_script = is_public_renderer_script(urlsplit(self.path).path, self.command,
@@ -387,15 +414,17 @@ class Handler(BaseHTTPRequestHandler):
         self._transport_status, self._transport_written = 0, False
         started = time.monotonic()
         if traced:
-            LOG.info('HTTP transport id=%s ray=%s route=%s stage=received',
+            LOG.log(logging.INFO if operation else logging.DEBUG, 'HTTP transport id=%s ray=%s route=%s stage=received',
                      self._transport_trace['id'], ray, operation or 'static')
         try:
             return self._handle_method(write)
         finally:
             if traced:
-                LOG.info('HTTP transport id=%s ray=%s stage=response status=%d written=%s elapsed_ms=%.1f',
-                         self._transport_trace['id'], ray, self._transport_status,
-                         self._transport_written, (time.monotonic() - started) * 1000)
+                elapsed = (time.monotonic() - started) * 1000
+                level = logging.WARNING if not self._transport_written or self._transport_status >= 400 or elapsed >= 2000 else (
+                    logging.INFO if operation else logging.DEBUG)
+                LOG.log(level, 'HTTP transport id=%s ray=%s route=%s stage=response status=%d written=%s elapsed_ms=%.1f',
+                        self._transport_trace['id'], ray, operation or 'static', self._transport_status, self._transport_written, elapsed)
 
     def _handle_method(self, write):
         try:
@@ -412,6 +441,9 @@ class Handler(BaseHTTPRequestHandler):
             self.check_request(write)
             path = urlsplit(self.path).path
             query = parse_qs(urlsplit(self.path).query)
+            if not write and path == '/mobile-channel':
+                # The App supplies the transport code only to its verified secondary view.
+                return self.output(200, b'<!doctype html><meta charset=utf-8><title>Bridge</title>', 'text/html; charset=utf-8')
             if not write and path in STATIC:
                 _, content_type = STATIC[path]
                 return self.static_output(path, content_type)
@@ -440,6 +472,7 @@ class Handler(BaseHTTPRequestHandler):
                                          **({'enabledClients': self.server.desktop_sessions.navigation_clients() if self.server.desktop_sessions else ['codex']} if session else {}),
                                          **({'listCacheIdentity': hashlib.sha256((self.server.instance_id + '\0' + session['csrf']).encode()).hexdigest()} if session else {}),
                                          **({"computer": {"name": socket.gethostname(), "platform": platform.system()}} if session else {}),
+                                         **({'mobileRoutes': discovery.mobile_routes(self.token())} if session and discovery and self.server.auth.mobile_client(self.headers.get('User-Agent', '')) else {}),
                                          **({'connection': discovery.descriptor(self.token())} if session and discovery else {}),
                                          "notifications": self.server.notifications is not None,
                                          "passwordless": self.server.auth.config.get("mode") == "none",
@@ -451,7 +484,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise PermissionError('Connection discovery unavailable')
                 host = self.headers.get('Host', '')
                 target = ('https://' if host in self.server.secure_hosts else 'http://') + host
-                return self.output(200, discovery.prove(query.get('id', [''])[0], query.get('challenge', [''])[0], target))
+                return self.output(200, discovery.prove(query.get('id', [''])[0], query.get('challenge', [''])[0], target, query.get('device', [None])[0]))
             if not self.server.auth.permitted(self.client()['ip']) and path != '/api/login':
                 raise PermissionError('此 IP 已被访问规则禁止')
             if write and path == "/api/login":
@@ -475,6 +508,11 @@ class Handler(BaseHTTPRequestHandler):
             if not auth:
                 return
             terminal_socket = re.fullmatch(r'/api/sessions/([0-9a-f-]{36})/terminal', path)
+            if path == '/api/connection/routes':
+                discovery = getattr(self.server, 'connection_discovery', None)
+                if not discovery or not self.server.auth.mobile_client(self.headers.get('User-Agent', '')):
+                    raise PermissionError('需要手机网关绑定')
+                return self.output(200, discovery.renew(self.token(), self.read_json()) if write else discovery.mobile_routes(self.token()))
             desktop_socket = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude)/terminal', path)
             if not write and self.headers.get('Upgrade', '').lower() == 'websocket' and (terminal_socket or desktop_socket):
                 if self.server.auth.config.get('mode') == 'none':
@@ -486,9 +524,10 @@ class Handler(BaseHTTPRequestHandler):
                     if self.server.desktop_sessions is None:
                         return self.output(503, {'error': '桌面会话接入不可用'})
                     sid = query.get('sessionId', [''])[0]
-                    bridge = self.server.desktop_sessions.workspace_bridge(desktop_socket[1], sid)
+                    manager, _, _ = self.desktop_context(desktop_socket[1], query)
+                    bridge = manager.workspace_bridge(desktop_socket[1], sid)
                     thread = bridge.identifier
-                    enabled = lambda: self.server.desktop_sessions.require_enabled(desktop_socket[1]) is None
+                    enabled = lambda: manager.require_enabled(desktop_socket[1]) is None
                 else:
                     bridge = self.server.bridge.for_host(query.get('host', ['local'])[0])
                     if self.server.desktop_sessions:
@@ -545,10 +584,13 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError('重新连接请求无效')
                 if self.server.auth.config.get('mode') == 'none':
                     raise PermissionError('请启用密码保护后再重新连接客户端')
-                manager = self.server.desktop_sessions
+                manager, _, _ = self.desktop_context('claude', query)
                 if manager is None:
                     return self.output(503, {'error': '应用管理不可用'})
-                return self.output(200, manager.reconnect_claude())
+                result = manager.reconnect_claude()
+                if manager is not self.server.desktop_sessions:
+                    result = self.server.desktop_sessions.clients(refresh=True)
+                return self.output(200, result)
             if path == '/api/file-transfer':
                 return self.output(200, transfer_settings(self.server.transfer_directory, self.read_json() if write else None))
             if path == '/api/network-adaptation':
@@ -573,11 +615,14 @@ class Handler(BaseHTTPRequestHandler):
                     value = self.read_json()
                     if value == {'action': 'scan-wsl'}:
                         return self.output(200, manager.scan_wsl())
-                    if not isinstance(value, dict) or not {'provider', 'enabled'} <= set(value) or set(value) - {'provider', 'enabled', 'quitDesktop', 'initializeDesktop', 'forceDesktop', 'forceConfirmed', 'acknowledgeUnavailable'}:
+                    if not isinstance(value, dict) or not {'provider', 'enabled'} <= set(value) or set(value) - {'provider', 'enabled', 'quitDesktop', 'initializeDesktop', 'connectionMode', 'forceDesktop', 'forceConfirmed', 'acknowledgeUnavailable'}:
                         raise ValueError('应用开关无效')
+                    if (value.get('provider') == 'zcode' and value.get('enabled') is True
+                            and self.server.auth.config.get('mode') == 'none'):
+                        raise PermissionError('请启用密码保护后再连接 ZCode')
                     return self.output(200, manager.toggle_client(value))
                 return self.output(200, manager.clients_status())
-            desktop_image = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude)/images/([0-9a-f]{64})', path)
+            desktop_image = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode)/images/([0-9a-f]{64})', path)
             if desktop_image:
                 if write:
                     return self.output(405, {'error': '请求方式无效'})
@@ -585,14 +630,16 @@ class Handler(BaseHTTPRequestHandler):
                 if manager is None:
                     return self.output(503, {'error': '桌面会话接入不可用'})
                 provider, identifier = desktop_image.groups()
+                manager, _, _ = self.desktop_context(provider, query)
                 artifact, variant = manager.image_preview(provider, query.get('sessionId', [None])[0], identifier)
-                return self.attachment_preview(artifact, variant, private=True)
-            desktop_upload = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude)/uploads(?:/([0-9a-f-]{36})/(thumb|preview))?', path)
+                return self.attachment_preview(artifact, variant, private=True, download=query.get('download') == ['1'])
+            desktop_upload = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode)/uploads(?:/([0-9a-f-]{36})/(thumb|preview))?', path)
             if desktop_upload:
                 manager, uploads = self.server.desktop_sessions, self.server.desktop_uploads
                 if manager is None or uploads is None:
                     return self.output(503, {'error': '桌面会话接入不可用'})
                 provider, identifier, operation = desktop_upload.groups()
+                manager, uploads, _ = self.desktop_context(provider, query)
                 manager.require_enabled(provider)
                 sid = query.get('sessionId', [None])[0]
                 scope = uploads.scope(provider, sid)
@@ -601,8 +648,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not detail.get('session'):
                     raise ValueError('会话标识无效')
                 if not write and operation == 'preview':
-                    artifact, variant = uploads.store.preview(scope, identifier, query.get('variant', ['thumb'])[0])
-                    return self.attachment_preview(artifact, variant)
+                    download = query.get('download') == ['1']
+                    artifact, variant = uploads.store.preview(scope, identifier, 'original' if download else query.get('variant', ['thumb'])[0])
+                    return self.attachment_preview(artifact, variant, download=download)
                 if not write or operation == 'preview':
                     return self.output(405, {'error': '请求方式无效'})
                 maximum = 1024 * 1024 if operation == 'thumb' else MAX_FILE
@@ -617,9 +665,9 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     result = uploads.store.put(scope, query.get('id', [''])[0], query.get('name', [''])[0], data)
                 return self.output(200, result)
-            desktop_accounts = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude)/accounts', path)
+            desktop_accounts = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode)/accounts', path)
             if desktop_accounts:
-                manager = self.server.desktop_sessions
+                manager, _, _ = self.desktop_context(desktop_accounts.group(1), query, require_enabled=False)
                 if manager is None:
                     return self.output(503, {'error': '桌面会话接入不可用'})
                 value = self.read_json() if write else {'action': 'list'}
@@ -631,18 +679,19 @@ class Handler(BaseHTTPRequestHandler):
                 if operation == 'switch' and self.server.auth.config.get('mode') == 'none':
                     raise PermissionError('请启用密码保护后再切换账号')
                 return self.output(200, manager.client_accounts(desktop_accounts.group(1), {**value, 'operation': operation}))
-            desktop_notifications = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude)/notifications', path)
+            desktop_notifications = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode)/notifications', path)
             if desktop_notifications:
                 manager = self.server.desktop_sessions
                 if manager is None or self.server.notifications is None:
                     return self.output(503, {'error': '桌面会话接入不可用'})
                 provider = desktop_notifications.group(1)
+                manager, _, notification_host = self.desktop_context(provider, query)
                 manager.require_enabled(provider)
                 sid = query.get('sessionId', [''])[0]
                 return self.output(200, self.server.notifications.policy(
-                    sid, 'desktop:' + provider, self.read_json() if write else None))
-            desktop_workspace = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude)/(workspace(?:/[a-z-]+)?|terminal)', path)
-            desktop_projects = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude)/projects/(browse|register|trust)', path)
+                    sid, notification_host, self.read_json() if write else None))
+            desktop_workspace = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode)/(workspace(?:/[a-z-]+)?|terminal)', path)
+            desktop_projects = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode)/projects/(browse|register|trust)', path)
             if desktop_projects:
                 if not write:
                     return self.output(405, {'error': '请通过目录选择器浏览'})
@@ -650,6 +699,7 @@ class Handler(BaseHTTPRequestHandler):
                 if manager is None:
                     return self.output(503, {'error': '桌面会话接入不可用'})
                 provider, action = desktop_projects.groups()
+                manager, _, _ = self.desktop_context(provider, query)
                 manager.require_enabled(provider)
                 body = self.read_json()
                 fields = ({'environment', 'path', 'hidden', 'name', 'identity'} if action == 'browse'
@@ -663,19 +713,28 @@ class Handler(BaseHTTPRequestHandler):
                     return self.output(200, manager.project_trust(provider, **body))
                 return self.output(200, {'project': manager.register_project(provider,
                     body['environment'], body['path'], body['createDirectory'])})
+            if path == '/api/cli-connections':
+                connections = self.server.cli_connections
+                if connections is None:
+                    raise ValueError('CLI 连接管理不可用')
+                return self.output(200, connections.submit(self.read_json()) if write else connections.view())
             if path.startswith('/api/desktop-sessions/') and not desktop_workspace:
                 parts = path.strip('/').split('/')
                 manager = self.server.desktop_sessions
                 if manager is None:
                     return self.output(503, {'error': '桌面会话接入不可用'})
-                if len(parts) != 4 or parts[2] not in ('deepseek', 'claude') or parts[3] not in (WRITES if write else READS):
+                if len(parts) != 4 or parts[2] not in ('deepseek', 'claude', 'zcode') or parts[3] not in (WRITES if write else READS):
                     return self.output(404, {'error': '接口不存在'})
+                manager, uploads, _ = self.desktop_context(parts[2], query)
                 manager.require_enabled(parts[2])
                 body = self.read_json() if write else ({'section': query.get('section', ['all'])[0],
                                                          'refresh': query.get('refresh') == ['true']}
                                                         if parts[3] == 'catalog' else
                                                         {'refresh': query.get('refresh') == ['true']} if parts[3] == 'account' else {})
                 sid = body.pop('sessionId', None) if write else query.get('sessionId', [None])[0]
+                if not write and parts[3] == 'create-models':
+                    body = {key: query[key][0] for key in ('environment', 'projectKey', 'path') if key in query}
+                    body['refresh'] = query.get('refresh') == ['true']
                 if not write and parts[3] == 'detail':
                     body['historyLimit'] = max(1, min(100, int(query.get('historyLimit', ['40'])[0])))
                     if query.get('historyBefore'):
@@ -686,13 +745,13 @@ class Handler(BaseHTTPRequestHandler):
                 if write and any(key in body for key in ('resolvedImages', 'resolvedFiles', 'resolvedReferences')):
                     raise ValueError('附件格式无效')
                 if write and parts[3] == 'send' and 'attachments' in body:
-                    if self.server.desktop_uploads is None:
+                    if uploads is None:
                         return self.output(503, {'error': '桌面会话接入不可用'})
                     detail = manager.call(parts[2], 'detail', sid)
                     session = detail.get('session') or {}
                     local_cli = parts[2] == 'claude' and session.get('backend') == 'cli'
-                    images, files = self.server.desktop_uploads.resolve(
-                        parts[2], sid, body.pop('attachments'), local_claude_cli=local_cli)
+                    images, files = uploads.resolve(
+                        parts[2], sid, body.pop('attachments'), local_claude_cli=local_cli, native_files=detail.get('capabilities', {}).get('uploadFiles') is True)
                     body['resolvedImages'] = images
                     if files:
                         body['resolvedFiles'] = files
@@ -796,62 +855,79 @@ class Handler(BaseHTTPRequestHandler):
                         raise PermissionError('免密访问不能修改 CLI 接入')
                     return self.output(200, manager.change(self.read_json()))
                 return self.output(200, manager.public())
-            if write and path.startswith('/api/account') and query.get('entry', ['desktop'])[0] != 'desktop':
-                raise ValueError('WSL 接入由原环境管理，不能对它执行桌面账号操作')
+            account_bridge = self.server.bridge
+            if path == '/api/account' or path.startswith('/api/accounts') or path == '/api/account/reset':
+                entry = query.get('entry', ['desktop'])[0]
+                if entry.startswith('wsl:'):
+                    if not write and path == '/api/accounts':
+                        return self.output(200, self.server.bridge.for_host(entry).access_summary())
+                    if not write and path == '/api/account':
+                        return self.output(200, {'visible': False, 'reason': 'WSL 接入由原环境管理'})
+                    raise ValueError('WSL 接入由原环境管理，不能对它执行桌面账号操作')
+                account_bridge = self.server.bridge if entry == 'desktop' else self.server.bridge.account_target(entry)
             if write and path == '/api/accounts/ssh-retry':
+                if account_bridge is not self.server.bridge:
+                    raise ValueError('独立配置不管理默认 SSH 连接')
                 body = self.read_json()
                 if not isinstance(body, dict) or set(body) != {'host'}:
                     raise ValueError('SSH 重试请求包含不支持的字段')
                 self.server.bridge.retry_ssh(body['host'])
-                return self.output(202, self.server.bridge.accounts.public())
+                return self.output(202, account_bridge.accounts.public())
             if not write and path == '/api/accounts':
                 entry = query.get('entry', ['desktop'])[0]
-                if entry != 'desktop':
-                    if not entry.startswith('wsl:'):
-                        raise ValueError('未知 Codex 入口')
-                    return self.output(200, self.server.bridge.for_host(entry).access_summary())
-                if query.get('resetForecast') in (['1'], ['refresh']) and self.server.bridge.accounts.reset_dynamic_enabled:
-                    self.server.bridge.accounts.reset_forecast.request(refresh=query['resetForecast'] == ['refresh'])
-                result = self.server.bridge.accounts.public()
+                if query.get('resetForecast') in (['1'], ['refresh']) and account_bridge.accounts.reset_dynamic_enabled:
+                    account_bridge.accounts.reset_forecast.request(refresh=query['resetForecast'] == ['refresh'])
+                result = account_bridge.accounts.public()
                 result['canSwitch'] = result.get('canSwitch', True) and self.server.auth.config.get('mode') != 'none'
-                result['canManageDesktop'] = self.server.auth.config.get('mode') != 'none'
+                result['canManageDesktop'] = account_bridge is self.server.bridge and self.server.auth.config.get('mode') != 'none'
                 return self.output(200, result)
             if write and path == '/api/accounts/reset-dynamic':
                 body = self.read_json()
                 if set(body) != {'enabled'}:
                     raise ValueError('重置动态设置无效')
-                self.server.bridge.accounts.set_reset_dynamic(body['enabled'])
-                return self.output(200, self.server.bridge.accounts.public())
+                account_bridge.accounts.set_reset_dynamic(body['enabled'])
+                return self.output(200, account_bridge.accounts.public())
             if write and path == '/api/accounts/reminders':
                 body = self.read_json()
                 if set(body) != {'preferences'}:
                     raise ValueError('提醒设置无效')
-                self.server.bridge.accounts.monitor.configure(body['preferences'])
-                return self.output(200, self.server.bridge.accounts.public())
+                account_bridge.accounts.monitor.configure(body['preferences'])
+                return self.output(200, account_bridge.accounts.public())
             if write and path == '/api/accounts/desktop-update':
+                if account_bridge is not self.server.bridge:
+                    raise ValueError('独立配置不管理默认 Codex Desktop')
                 if self.server.auth.config.get('mode') == 'none':
                     raise PermissionError('免密访问不能操作桌面更新，请在桌面端操作')
                 body = self.read_json()
                 if body == {'action':'checkDesktopUpdate'}:
-                    self.server.bridge.accounts.updates.check()
+                    account_bridge.accounts.updates.check()
                 elif body.get('action') == 'requestDesktopUpdate':
-                    self.server.bridge.accounts.updates.request({k:v for k,v in body.items() if k != 'action'})
+                    account_bridge.accounts.updates.request({k:v for k,v in body.items() if k != 'action'})
                 else:
                     raise ValueError('桌面更新请求无效')
-                return self.output(202, self.server.bridge.accounts.public())
+                return self.output(202, account_bridge.accounts.public())
+            if write and path == '/api/accounts/desktop-runtime':
+                if account_bridge is not self.server.bridge:
+                    raise ValueError('独立配置不管理默认 Codex Desktop')
+                if self.server.auth.config.get('mode') == 'none':
+                    raise PermissionError('免密访问不能初始化桌面连接，请在桌面端操作')
+                body = self.read_json()
+                if not isinstance(body, dict) or set(body) != {'requestId', 'confirmed', 'tasksConfirmed'}:
+                    raise ValueError('初始化请求包含不支持的字段')
+                return self.output(202, account_bridge.accounts.control({'action': 'initializeDesktopRuntime', **body}))
             if write and path == '/api/accounts/account':
                 body = self.read_json()
-                return self.output(200, self.server.bridge.accounts.account(body))
+                return self.output(200, account_bridge.accounts.account(body))
             if write and path == '/api/accounts/details':
                 body = self.read_json()
                 if set(body) - {'id', 'section', 'refresh'} or not {'id', 'section'} <= set(body):
                     raise ValueError('账号详情请求包含不支持的字段')
-                return self.output(202, self.server.bridge.accounts.info.request(body))
+                return self.output(202, account_bridge.accounts.info.request(body))
             if write and path == '/api/accounts/ignore-submission':
                 body = self.read_json()
                 if set(body) != {'threadId', 'submissionId', 'host'}:
                     raise ValueError('忽略请求包含不支持的字段')
-                return self.output(200, self.server.bridge.accounts.ignore_submission(body))
+                return self.output(200, account_bridge.accounts.ignore_submission(body))
             if write and path == '/api/accounts/switch':
                 if self.server.auth.config.get('mode') == 'none':
                     raise PermissionError('免密访问不能切换账号，请在桌面端操作')
@@ -860,13 +936,11 @@ class Handler(BaseHTTPRequestHandler):
                         or not {'id', 'requestId', 'confirmed', 'tasksConfirmed'} <= set(body)
                         or 'syncLocalCli' in body and not isinstance(body['syncLocalCli'], bool)):
                     raise ValueError('账号切换请求包含不支持的字段')
-                return self.output(202, self.server.bridge.accounts.switch(body))
+                return self.output(202, account_bridge.accounts.switch(body))
             if not write and path == '/api/account':
-                if query.get('entry', ['desktop'])[0] != 'desktop':
-                    return self.output(200, {'visible': False, 'reason': 'WSL 接入由原环境管理'})
-                return self.output(200, self.server.bridge.account.read(refresh=query.get('cached', [''])[0] != '1'))
+                return self.output(200, account_bridge.account.read(refresh=query.get('cached', [''])[0] != '1'))
             if write and path == '/api/account/reset':
-                return self.output(200, self.server.bridge.account.consume(self.read_json()))
+                return self.output(200, account_bridge.account.consume(self.read_json()))
             if not write and path == '/api/sessions/diagnostics':
                 if set(query) - {'thread'}:
                     raise ValueError('诊断请求包含不支持的字段')
@@ -885,9 +959,9 @@ class Handler(BaseHTTPRequestHandler):
                         wsl_inventory_only = bool(entries is not None and entries.hosts())
                     if not wsl_inventory_only:
                         self.server.desktop_sessions.require_enabled(
-                            entry if entry.startswith('wsl:') else 'codex')
+                            entry if entry.startswith(('wsl:', 'codex:')) else 'codex')
                 source = query.get('source', ['all'])[0]
-                if source not in ('all', 'desktop', 'cli', 'wsl'):
+                if source not in ('all', 'desktop', 'cli', 'ide', 'wsl'):
                     raise ValueError('不支持的会话来源')
                 feed = self.server.notifications.mobile.checkpoint() if self.server.notifications else None
                 entry = query.get('entry', [None])[0]
@@ -897,8 +971,11 @@ class Handler(BaseHTTPRequestHandler):
                     host = query.get('host', ['local'])[0]
                     host_infos = dict(self.server.bridge.hosts.hosts()) if native_enabled else {}
                     entries = getattr(self.server.bridge, 'entries', None)
-                    if entries is not None and entry != 'desktop':
-                        host_infos.update(entries.hosts())
+                    registered = entries.hosts() if entries is not None and entry != 'desktop' else {}
+                    if host.startswith('codex:'):
+                        host_infos = {host: registered[host]} if host in registered else {}
+                    else:
+                        host_infos = codex_list_hosts(host_infos, registered)
                     if host != 'local' and host not in host_infos:
                         raise ValueError('未知 Codex 主机')
                     offset = max(0, int(query.get('offset', [0])[0]))
@@ -921,7 +998,7 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         target = self.server.bridge.for_host(host)
                         options.update(local_only=True,
-                                       host_label=host_info.get('displayName') or host_info.get('alias'))
+                                       host_label=host_info.get('displayName') or host_info.get('alias') or host_info.get('label'))
                         rows, available = target.list(**options)
                         errors = target.host_errors
                     return self.output(200, {'sessions': rows, 'availableSources': available,
@@ -955,14 +1032,19 @@ class Handler(BaseHTTPRequestHandler):
                 if set(body) != {'action', 'id', 'enabled'} or body['action'] != 'configure':
                     raise ValueError('Codex 入口请求无效')
                 return self.output(200, entries.configure(body['id'], body['enabled']))
-            if path in ('/api/projects', '/api/projects/browse', '/api/projects/trust'):
+            if path in ('/api/projects', '/api/projects/browse', '/api/projects/trust', '/api/projects/models'):
                 entry = query.get('entry', ['desktop'])[0]
                 if self.server.desktop_sessions:
-                    self.server.desktop_sessions.require_enabled(entry if entry.startswith('wsl:') else 'codex')
+                    self.server.desktop_sessions.require_enabled(entry if entry.startswith(('wsl:', 'codex:')) else 'codex')
                 if entry != 'desktop':
                     target = self.server.bridge.entries.get(entry)
                 else:
                     target = self.server.bridge
+                if path.endswith('/models'):
+                    if write: return self.output(405, {'error': '模型目录只支持读取'})
+                    options = {key: query[key][0] for key in ('kind', 'host', 'path') if key in query}
+                    return self.output(200, target.creation_models(query.get('project', [None])[0],
+                        refresh=query.get('refresh') == ['true'], **options))
                 if path.endswith('/trust'):
                     if not write: return self.output(405, {'error': '请通过项目确认操作信任'})
                     body = self.read_json()
@@ -988,7 +1070,8 @@ class Handler(BaseHTTPRequestHandler):
                 if project_host is not None and entry != 'desktop':
                     raise ValueError('项目环境请求无效')
                 return self.output(200, {'projects': target.projects(host=project_host) if project_host is not None else target.projects(),
-                    'environments': target.project_environments() if hasattr(target, 'project_environments') else []})
+                    'environments': target.project_environments() if hasattr(target, 'project_environments') else [],
+                    'createModels': hasattr(target, 'creation_models')})
             if write and path == '/api/activity':
                 groups = self.read_json().get('hosts')
                 if not isinstance(groups, dict) or len(groups) > 20:
@@ -996,20 +1079,23 @@ class Handler(BaseHTTPRequestHandler):
                 rows = []
                 for host, identifiers in groups.items():
                     if self.server.desktop_sessions:
-                        self.server.desktop_sessions.require_enabled(host if host.startswith('wsl:') else 'codex')
+                        self.server.desktop_sessions.require_enabled(host if host.startswith(('wsl:', 'codex:')) else 'codex')
                     rows.extend(self.server.bridge.for_host(host).activity(identifiers))
                 return self.output(200, {'sessions': rows})
             if write and path == '/api/sessions':
                 body = self.read_json()
+                from bridge.features.sessions.creation_models import requested
+                selected = requested(body)
+                model_options = {'model_options': selected} if selected else {}
                 entry = query.get('entry', ['desktop'])[0]
                 if self.server.desktop_sessions:
-                    self.server.desktop_sessions.require_enabled(entry if entry.startswith('wsl:') else 'codex')
+                    self.server.desktop_sessions.require_enabled(entry if entry.startswith(('wsl:', 'codex:')) else 'codex')
                 if entry != 'desktop':
                     return self.output(200, self.server.bridge.entries.get(entry).create_chat(
-                        body.get('project'), body.get('title'), body.get('id')))
+                        body.get('project'), body.get('title'), body.get('id'), **model_options))
                 fields = (body.get('project'), body.get('title'), body.get('id'))
-                result = (self.server.bridge.create_chat(*fields, kind=body['kind']) if 'kind' in body
-                          else self.server.bridge.create_chat(*fields))
+                result = (self.server.bridge.create_chat(*fields, kind=body['kind'], **model_options) if 'kind' in body
+                          else self.server.bridge.create_chat(*fields, **model_options))
                 return self.output(200, result)
             if path == '/api/notifications/defaults':
                 if self.server.notifications is None:
@@ -1100,13 +1186,14 @@ class Handler(BaseHTTPRequestHandler):
                     return self.output(503, {'error': '桌面会话接入不可用'})
                 provider, operation = desktop_workspace.groups()
                 sid = query.get('sessionId', [''])[0]
-                bridge = self.server.desktop_sessions.workspace_bridge(provider, sid)
+                manager, _, _ = self.desktop_context(provider, query)
+                bridge = manager.workspace_bridge(provider, sid)
                 path = '/api/sessions/' + bridge.identifier + '/' + operation
             else:
                 bridge = self.server.bridge.for_host(query.get("host", ["local"])[0])
                 if path.startswith('/api/sessions') and self.server.desktop_sessions:
                     host = query.get('host', ['local'])[0]
-                    self.server.desktop_sessions.require_enabled(host if host.startswith('wsl:') else 'codex')
+                    self.server.desktop_sessions.require_enabled(host if host.startswith(('wsl:', 'codex:')) else 'codex')
             side = query.get('side', [None])[0]
             if side is not None and self.server.auth.config.get('mode') == 'none':
                 raise PermissionError('侧边聊天需要启用网关密码保护')
@@ -1116,14 +1203,14 @@ class Handler(BaseHTTPRequestHandler):
                     raise PermissionError('侧边聊天需要启用网关密码保护')
                 owner = self.server.auth.key(self.token())
                 body = self.read_json() if write else {}
-                action = body.get('action') if write else 'read'
+                action = body.get('action') if write else 'list' if query.get('view') == ['native'] else 'read'
                 fields = {'create': {'action', 'creationId'}, 'send': {'action', 'id', 'text', 'submissionId', 'attachments', 'skills', 'mode', 'workMode'},
                           'catalog': {'action', 'id'}, 'skills': {'action', 'id', 'query', 'offset', 'refresh', 'selected'},
                           'linux-permission-options': {'action', 'id'},
                           'permissions': {'action', 'id', 'preset', 'confirmed'}, 'cancel-queued': {'action', 'id', 'submissionId'}, 'settings': {'action', 'id', 'model', 'effort'},
                           'close': {'action', 'id'}, 'stop': {'action', 'id'},
-                          'respond': {'action', 'id', 'requestId', 'response'}, 'read': set()}
-                if action not in fields or set(body) - fields[action] or (write and action == 'read'):
+                          'respond': {'action', 'id', 'requestId', 'response'}, 'read': set(), 'list': set()}
+                if action not in fields or set(body) - fields[action] or (write and action in ('read', 'list')):
                     raise ValueError('无效侧边聊天操作')
                 return self.output(200, bridge.side_chat(side_match[1], owner, action, body))
             agent_match = re.fullmatch(r"/api/sessions/([0-9a-f-]{36})/subagents", path)
@@ -1194,10 +1281,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.download(bridge, *file_match.groups(), info=query.get('info') == ['1'])
             preview_match = UPLOAD_PREVIEW_ROUTE.fullmatch(path)
             if not write and preview_match:
-                return self.upload_preview(bridge, *preview_match.groups(), variant=query.get('variant', ['thumb'])[0], side=side)
+                return self.upload_preview(bridge, *preview_match.groups(), variant=query.get('variant', ['thumb'])[0], side=side, download=query.get('download') == ['1'])
             desktop_image_match = DESKTOP_IMAGE_ROUTE.fullmatch(path)
             if not write and desktop_image_match:
-                return self.desktop_image_preview(bridge, *desktop_image_match.groups())
+                return self.desktop_image_preview(bridge, *desktop_image_match.groups(), download=query.get('download') == ['1'])
             thumb_match = UPLOAD_THUMB_ROUTE.fullmatch(path)
             if write and thumb_match:
                 sizes = self.headers.get_all('Content-Length', [])
@@ -1229,6 +1316,21 @@ class Handler(BaseHTTPRequestHandler):
             if not match:
                 return self.output(404, {"error": "页面不存在"})
             thread_id, action = match.groups()
+            if action == 'cli-network':
+                if not hasattr(bridge, 'cli_network'):
+                    raise ValueError('只支持本机 Codex CLI')
+                return self.output(200, bridge.cli_network(thread_id, self.read_json() if write else None))
+            if action == 'delete':
+                if not hasattr(bridge, 'deletion'):
+                    raise ValueError('此接入暂不支持永久删除，请在原客户端操作')
+                if not write:
+                    return self.output(200, bridge.deletion(thread_id))
+                body = self.read_json()
+                if (set(body) - {'retry'} != {'id', 'scope', 'confirmed'} or body['confirmed'] is not True
+                        or not isinstance(body['id'], str)):
+                    raise ValueError('请确认永久删除及受影响的聊天范围')
+                return self.output(200, bridge.deletion(thread_id, body['id'], body['scope'],
+                    **({'retry': body['retry']} if 'retry' in body else {})))
             if action == 'organization':
                 if not hasattr(bridge, 'organization'):
                     raise ValueError('此客户端暂未提供原生项目与分区')
@@ -1313,6 +1415,10 @@ class Handler(BaseHTTPRequestHandler):
                 if 'fastMode' in body and not isinstance(body['fastMode'], bool):
                     raise ValueError('Fast 模式开关无效')
                 result = bridge.settings(thread_id, body.get("model"), body.get("effort"), **({'fast_mode': body['fastMode']} if 'fastMode' in body else {}))
+            elif action == "compact":
+                if set(body) != {'id'} or not isinstance(body.get('id'), str):
+                    raise ValueError('上下文压缩请求无效')
+                result = bridge.compact(thread_id, body['id'])
             elif action == "stop":
                 result = bridge.interrupt(thread_id)
             elif action == "history":
@@ -1326,7 +1432,11 @@ class Handler(BaseHTTPRequestHandler):
                 if 'rebuild' in body and (body.get('rebuild') is not True or body.get('activate') is not True or set(body) != {'activate', 'rebuild'}):
                     raise ValueError('重建连接请求无效')
                 if body.get('activate') is True:
-                    session = bridge.rebuild_connection(thread_id) if body.get('rebuild') else bridge.activate(thread_id)
+                    if hasattr(bridge, 'reconnect_session'):
+                        session = bridge.reconnect_session(thread_id, rebuild=bool(body.get('rebuild')))
+                    else:
+                        # WSL entries own their CLI runtime, not a Desktop IPC follower.
+                        session = bridge.rebuild_connection(thread_id) if body.get('rebuild') else bridge.activate(thread_id)
                     result = {'ok': True, 'connected': session.connected}
                 elif body.get('progressive'):
                     bridge.session(thread_id, background=True, force=True)
@@ -1362,7 +1472,7 @@ class Handler(BaseHTTPRequestHandler):
         except (IPCError, GoalError, CatalogError, RemoteUnavailable, CreationError, StoreUnavailable, AccountError) as exc:
             self.close_connection = True
             self.output(409, {"error": str(exc), "code": "desktop_unavailable"})
-        except (BrokenPipeError, ConnectionResetError, socket.timeout):
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError, socket.timeout):
             self.close_connection = True
         except Exception:
             LOG.exception("Gateway operation failed")
@@ -1418,14 +1528,16 @@ class Handler(BaseHTTPRequestHandler):
             # Never append a JSON error to an already-started binary response.
             self.close_connection = True
 
-    def upload_preview(self, bridge, thread_id, upload_id, variant='thumb', side=None):
+    def upload_preview(self, bridge, thread_id, upload_id, variant='thumb', side=None, download=False):
+        if download:
+            variant = 'original'
         artifact, served_variant = bridge.side_attachment(thread_id, side, 'preview', upload_id, variant) if side is not None else bridge.upload_preview(thread_id, upload_id, variant)
-        return self.attachment_preview(artifact, served_variant, private=side is not None)
+        return self.attachment_preview(artifact, served_variant, private=side is not None, download=download)
 
-    def attachment_preview(self, artifact, served_variant, private=False):
+    def attachment_preview(self, artifact, served_variant, private=False, download=False):
         data = artifact['previewBytes'] if 'previewBytes' in artifact else Path(artifact["previewPath"]).read_bytes()
         etag = '"' + artifact["previewSha256"] + '"'
-        cache_control = 'private, no-store' if private or served_variant == 'fallback-original' else 'private, max-age=31536000, immutable'
+        cache_control = 'private, no-store' if private or download or served_variant == 'fallback-original' else 'private, max-age=31536000, immutable'
         if self.headers.get("If-None-Match") == etag:
             self.send_response(304)
             self.headers_common(cache_control)
@@ -1439,12 +1551,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.send_header("ETag", etag)
         self.send_header("X-Preview-Variant", served_variant)
-        self.send_header("Content-Disposition", "inline; filename*=UTF-8''" + quote(artifact["name"], safe=""))
+        self.send_header("Content-Disposition", ("attachment" if download else "inline") + "; filename*=UTF-8''" + quote(artifact["name"], safe=""))
         self.end_headers()
         self.wfile.write(data)
 
-    def desktop_image_preview(self, bridge, thread_id, image_id):
+    def desktop_image_preview(self, bridge, thread_id, image_id, download=False):
         artifact, served_variant = bridge.desktop_image_preview(thread_id, image_id)
+        if download:
+            return self.attachment_preview(artifact, served_variant, download=True)
         data = artifact['previewBytes'] if 'previewBytes' in artifact else Path(artifact["previewPath"]).read_bytes()
         etag = '"' + artifact["previewSha256"] + '"'
         if self.headers.get("If-None-Match") == etag:
@@ -1528,7 +1642,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write(b": heartbeat\n\n")
                 self.wfile.flush()
                 bridge.closed.wait(0.2)
-        except (BrokenPipeError, ConnectionResetError, socket.timeout):
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError, socket.timeout):
             pass
         finally:
             with session.condition:

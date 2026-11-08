@@ -1,6 +1,6 @@
 'use strict';
 // Release metadata is authenticated independently of macOS/Windows code signing.
-const fs=require('node:fs/promises'),path=require('node:path');
+const sync=require('node:fs'),fs=require('node:fs/promises'),path=require('node:path');
 const {createHash,verify}=require('node:crypto');
 const REPO='try2love/codex-mobile-bridge';
 const RELEASES=`https://api.github.com/repos/${REPO}/releases?per_page=100`;
@@ -9,6 +9,25 @@ const RELEASES=`https://api.github.com/repos/${REPO}/releases?per_page=100`;
 const MIRROR='https://gh-proxy.com/';
 const MIRROR_RETRIES=new Set([403,429,500,502,503,504]);
 const MAX_PACKAGE=1024*1024*1024;
+// The helper hands these values to its new GUI. Launch Services may also pass
+// the same environment to a different installation well after the swap.
+function activeUpdateHandoff(env,target,version,pid){
+  const transaction=env.CMB_UPDATE_TRANSACTION,dataDir=env.CMB_UPDATE_DATA_DIR,token=env.CMB_UPDATE_TOKEN;
+  if(!transaction||!token||!dataDir||!path.isAbsolute(transaction)||!path.isAbsolute(dataDir))return null;
+  const read=name=>JSON.parse(sync.readFileSync(path.join(transaction,name),'utf8'));
+  const same=(left,right)=>typeof left==='string'&&path.isAbsolute(left)&&path.relative(left,right)==='';
+  try{
+    if(!same(path.dirname(transaction),path.dirname(target))||!path.basename(transaction).startsWith('.cmb-update-')||
+       !sync.lstatSync(transaction).isDirectory()||sync.existsSync(path.join(transaction,'result.json')))return null;
+    const plan=read('plan.json');
+    if(!same(plan.target,target)||!same(plan.dataDir,dataDir)||plan.token!==token||plan.version!==version||
+       read('ready.json').token!==token)return null;
+    // The helper records the PID immediately after spawning this GUI. A fast
+    // child may reach startup first; recheck before writing its acknowledgement.
+    if(sync.existsSync(path.join(transaction,'launched.json'))&&read('launched.json').pid!==pid)return null;
+    return {transaction,token,dataDir:path.resolve(dataDir)};
+  }catch{return null;}
+}
 function version(value){
   const match=/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(alpha|beta|preview|rc)\.(0|[1-9]\d*))?$/.exec(value);
   if(!match)throw Error('更新版本格式无效。');
@@ -152,4 +171,4 @@ class Updater{
     finally{if(staging)await fs.rm(staging,{recursive:true,force:true});}
   }
 }
-module.exports={Updater,version,compare,manifest,assetName,allowedUrl,allowedMirrorUrl,mirrorUrl,releaseUrl,RELEASES,MIRROR,transfer};
+module.exports={Updater,activeUpdateHandoff,version,compare,manifest,assetName,allowedUrl,allowedMirrorUrl,mirrorUrl,releaseUrl,RELEASES,MIRROR,transfer};

@@ -57,7 +57,8 @@ class NotificationTests(unittest.TestCase):
                 return session
         self.source = Source()
         self.manager = Notifications(self.source, self.directory, lambda: ['http://10.0.0.1:8787', 'https://example.com'])
-        save_settings(self.directory, {'enabled': True, 'topic': 'test', 'token': 'secret-token'})
+        save_settings(self.directory, {'enabled': True, 'topic': 'test', 'token': 'secret-token',
+                                       'includeTitle': False, 'mobileEnabled': False})
         self.manager.watch(self.thread, 'remote', True)
 
     def test_global_defaults_monitor_unwatched_chats_without_loading_history(self):
@@ -618,11 +619,12 @@ class NotificationTests(unittest.TestCase):
                 response.read.return_value = raw
                 with self.assertRaisesRegex(RuntimeError, '响应格式不正确'):
                     publish_webhook(config, 'title', 'body')
-        with patch('bridge.features.notifications.channels.time.time', side_effect=[1700000000, 1700000001]), \
+        with patch('bridge.features.notifications.channels.time') as webhook_clock, \
                 patch('bridge.features.notifications.channels.build_opener') as opener:
             response = opener.return_value.open.return_value.__enter__.return_value
             response.status = 200
             response.read.return_value = b'{"code":0}'
+            webhook_clock.time.side_effect = [1700000000, 1700000001]
             publish_webhook(config, 'title', 'body')
             publish_webhook(config, 'title', 'body')
             requests = [json.loads(call.args[0].data) for call in opener.return_value.open.call_args_list]
@@ -706,6 +708,22 @@ class NotificationTests(unittest.TestCase):
             {'type': 'agentMessage', 'id': 'q', 'questions': [{'title': 'Choose', 'options': None}]}]}]}
         with patch('bridge.features.notifications.channels.publish') as send:
             self.manager.scan();self.assertEqual(send.call_count, 1)
+
+    def test_skipped_async_questions_do_not_emit_pending_notifications(self):
+        from bridge.app.lifecycle import private_json
+        from bridge.features.sessions.question_skips import QuestionSkips
+        self.session.state = {'turns': [{'turnId': 't', 'status': 'inProgress', 'items': [
+            {'type': 'agentMessage', 'id': 'q', 'questions': [{'title': 'Choose', 'options': None}]}]}]}
+        self.session.question_skips = QuestionSkips(self.directory, 'remote-fixture', private_json)
+        pending = self.session.pending_requests()[0]
+        self.session.question_skips.skip(self.thread, pending['id'], pending['params']['questions'][0]['id'])
+        with patch('bridge.features.notifications.channels.publish') as send:
+            self.manager.scan()
+            self.assertFalse(send.called)
+            self.session.state['requests'] = [{'id': 'approval', 'method': 'item/commandExecution/requestApproval',
+                                               'params': {'command': 'fixture'}}]
+            self.manager.scan()
+            self.assertEqual(send.call_count, 1)
 
     def turns(self, *rows):
         self.session.state = {'title': 'Private project', 'turns': [

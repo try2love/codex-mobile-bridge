@@ -93,6 +93,22 @@ class GatewayStatusTests(unittest.TestCase):
         with patch('bridge.app.desktop.request_pairing', side_effect=replaced):
             self.assertFalse(self.desktop.status()['running'])
 
+    def test_close_retries_transient_windows_sharing_denial(self):
+        control = self.control()
+        path = control.path
+        original = Path.unlink
+        attempts = 0
+        def unlink(candidate, *args, **kwargs):
+            nonlocal attempts
+            if candidate == path and attempts < 2:
+                attempts += 1
+                raise PermissionError('sharing denial')
+            return original(candidate, *args, **kwargs)
+        with patch.object(Path, 'unlink', new=unlink):
+            control.close()
+        self.assertEqual(attempts, 2)
+        self.assertFalse(path.exists())
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -42,7 +42,7 @@
   "/timeline.js": "features/chat/timeline.js",
   "/account.css": "features/accounts/account.css",
   "/account.js": "features/accounts/account.js",
-  "/accounts.js": "features/accounts/accounts.js",
+  "/accounts.js": ["features/accounts/api-editor.js", "features/accounts/accounts.js"],
   "/client-accounts.js": "features/accounts/client-accounts.js",
   "/cli-access.js": "features/accounts/cli-access.js",
   "/wsl-accounts.js": "features/accounts/wsl-accounts.js",
@@ -66,7 +66,7 @@
     "layouts/compact/desktop-sessions.css",
     "features/clients/desktop-session-controls.css"
   ],
-  "/project-picker.js": "shared/project-picker.js",
+  "/project-picker.js": ["shared/creation-model-picker.js", "shared/project-picker.js"],
   "/desktop-sessions.js": "features/clients/desktop-sessions.js",
   "/agents-panel.js": "features/workspace/agents-panel.js",
   "/command-terminal-panel.js": "features/workspace/command-terminal-panel.js",

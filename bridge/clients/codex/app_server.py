@@ -5,13 +5,11 @@ daemon, resumes a thread, or changes its model, provider, cwd, or approvals.
 """
 
 import json
-import base64
-import hashlib
 import os
-import struct
 import subprocess
 import threading
 from concurrent.futures import Future, TimeoutError
+from bridge.clients.websocket import WebSocket
 from pathlib import Path
 
 
@@ -31,97 +29,10 @@ class AppServerUnsupported(AppServerError):
     pass
 
 
-class _WebSocket:
-    """Minimal client-side WebSocket over the proxy's byte streams."""
-
+class _WebSocket(WebSocket):
     def __init__(self, reader, writer):
-        self.reader = reader
-        self.writer = writer
-        self.write_lock = threading.Lock()
-        key = base64.b64encode(os.urandom(16)).decode('ascii')
-        request = ('GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\n'
-                   'Connection: Upgrade\r\nSec-WebSocket-Key: ' + key + '\r\n'
-                   'Sec-WebSocket-Version: 13\r\n\r\n').encode('ascii')
-        self._write(request)
-        header = bytearray()
-        while not header.endswith(b'\r\n\r\n'):
-            byte = self.reader.read(1)
-            if not byte or len(header) > 8192:
-                raise AppServerUnavailable('Codex control socket WebSocket handshake failed')
-            header.extend(byte)
-        lines = header.decode('ascii').split('\r\n')
-        expected = base64.b64encode(hashlib.sha1(
-            (key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode('ascii')).digest()).decode('ascii')
-        fields = {name.lower(): value.strip() for line in lines[1:] if ':' in line
-                  for name, value in (line.split(':', 1),)}
-        if ' 101 ' not in lines[0] or fields.get('sec-websocket-accept') != expected:
-            raise AppServerUnavailable('Codex control socket rejected WebSocket handshake')
-
-    def send(self, value):
-        data = json.dumps(value, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
-        if len(data) > 16 * 1024 * 1024:
-            raise AppServerError('App-server message is too large')
-        mask = os.urandom(4)
-        if len(data) < 126:
-            header = bytes((0x81, 0x80 | len(data)))
-        elif len(data) <= 65535:
-            header = bytes((0x81, 0xfe)) + struct.pack('!H', len(data))
-        else:
-            header = bytes((0x81, 0xff)) + struct.pack('!Q', len(data))
-        payload = bytes(byte ^ mask[i % 4] for i, byte in enumerate(data))
-        self._write(header + mask + payload)
-
-    def receive(self):
-        fragments = []
-        total = 0
-        while True:
-            head = self._exact(2)
-            opcode = head[0] & 15
-            length = head[1] & 127
-            if length == 126:
-                length = struct.unpack('!H', self._exact(2))[0]
-            elif length == 127:
-                length = struct.unpack('!Q', self._exact(8))[0]
-            if length > 64 * 1024 * 1024 or head[1] & 128:
-                raise AppServerUnsupported('Invalid Codex WebSocket frame')
-            payload = self._exact(length)
-            if opcode == 8:
-                raise EOFError()
-            if opcode == 9:
-                self._control(10, payload)
-                continue
-            if opcode not in (0, 1):
-                continue
-            fragments.append(payload)
-            total += len(payload)
-            if total > 64 * 1024 * 1024:
-                raise AppServerUnsupported('Codex WebSocket message is too large')
-            if head[0] & 128:
-                return json.loads(b''.join(fragments))
-
-    def _exact(self, length):
-        chunks = bytearray()
-        while len(chunks) < length:
-            data = self.reader.read(length - len(chunks))
-            if not data:
-                raise EOFError()
-            chunks.extend(data)
-        return chunks
-
-    def _write(self, data):
-        with self.write_lock:
-            view = memoryview(data)
-            while view:
-                count = self.writer.write(view)
-                if not count:
-                    raise OSError('Codex proxy pipe closed')
-                view = view[count:]
-            self.writer.flush()
-
-    def _control(self, opcode, payload):
-        mask = os.urandom(4)
-        self._write(bytes((0x80 | opcode, 0x80 | len(payload))) + mask +
-                    bytes(byte ^ mask[i % 4] for i, byte in enumerate(payload)))
+        super().__init__(reader, writer, error=AppServerError,
+                         unavailable=AppServerUnavailable, unsupported=AppServerUnsupported)
 
 
 class CodexAppServer:
@@ -224,6 +135,9 @@ class CodexAppServer:
                 raise AppServerUnknownResult('Codex runtime response timed out; request may have completed') from exc
             if 'error' in response:
                 error = response['error']
+                if method == 'thread/delete' and isinstance(error, dict):
+                    from bridge.features.sessions.create import native_delete_error
+                    raise native_delete_error(error, (params or {}).get('threadId'))
                 code = error.get('code') if isinstance(error, dict) else None
                 detail = error.get('message', 'App-server request failed') if isinstance(error, dict) else str(error)
                 if method in ('thread/archive', 'thread/unarchive'):

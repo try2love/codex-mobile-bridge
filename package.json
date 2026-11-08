@@ -1,7 +1,7 @@
 {
   "name": "codex-mobile-bridge-desktop",
   "desktopName": "codex-mobile-bridge.desktop",
-  "version": "2.1.7",
+  "version": "2.2.0",
   "description": "Codex App 手机网关桌面启动器",
   "author": "try2love",
   "license": "MIT",
@@ -36,6 +36,7 @@
     "productName": "Codex Mobile Bridge",
     "beforePack": "./scripts/verify-build.cjs",
     "afterPack": "./scripts/verify-packaged-qr.cjs",
+    "afterSign": "./scripts/sign-zcode-launcher.cjs",
     "directories": {
       "output": "dist/desktop"
     },
@@ -44,6 +45,7 @@
       "web/shared/i18n.js",
       "web/shared/dialog-dismiss.js",
       "web/features/accounts/account.js",
+      "web/features/accounts/api-editor.js",
       "web/features/accounts/accounts.js",
       "web/features/accounts/client-accounts.js",
       "web/features/accounts/cli-access.js",

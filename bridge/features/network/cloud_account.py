@@ -16,7 +16,7 @@ from bridge.features.auth.auth import session_file_lock
 from bridge.features.auth.tls import client_context
 from bridge.features.network.cloud_crypto import exact_origin, new_key, public_key
 from bridge.features.network.cloud_access import BindingAccess, WebAccess
-from bridge.features.notifications.channels import enable_mobile_for_cloud, read_json, write_json
+from bridge.features.notifications.channels import read_json, write_json
 from bridge.features.notifications.cloud import CloudNotifications
 
 
@@ -216,8 +216,6 @@ class Controller:
         write_json(self.directory / 'cloud-entitlement.json', {
             'scope': scope(config['origin'], config['account_id']), 'gateway_id': config['gateway_id'],
             'entitlement': value, 'code': code, 'checked_at': time.time()})
-        if config.get('enabled') and value is not None and value.get('active'):
-            enable_mobile_for_cloud(self.directory)
 
     def _refresh_entitlement_locked(self):
         config = self.config()

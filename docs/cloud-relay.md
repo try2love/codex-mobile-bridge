@@ -74,14 +74,13 @@ not exposed as new unauthenticated gateway HTTP administration endpoints.
    runtime separately if it is stopped. Account management does not start a
    coding client, gateway or session. The first encrypted identity check needs
    both devices online; previously verified devices remain listed while offline.
-   The first verified active cloud entitlement also enables **Mobile app handoff →
-   Enable mobile app notification inbox** and saves that default locally. Existing
-   cloud installations receive this default once on their next successful service
-   check. A later manual disable is preserved through refresh, reconnect and restart.
-   This does not enable native notification permissions, per-chat reminders or
-   **Open notification links in the mobile app**. The
-   [inbox default decision](../.agents/notes/implemented/feature/2026-11-05-cloud-mobile-inbox-default.md)
-   records the initialization and opt-out boundary.
+   The gateway's notification inbox and chat titles use the upstream defaults:
+   enabled when no choice has been saved, with saved choices taking precedence.
+   Cloud login and service checks do not inspect or change notification settings.
+   Native notification permissions, per-chat reminders and **Open notification
+   links in the mobile app** remain separate settings. The
+   [upstream integration decision](../.agents/notes/implemented/process/2026-11-08-upstream-v2.2.0-integration.md)
+   records removal of the former cloud-specific inbox initialization.
 4. Sign in on the phone. Device enrollment creates stable pending relationships
    with every non-revoked same-account desktop, regardless of login order. There
    is no **Request pairing** button, target selection, QR, camera request or expiry.

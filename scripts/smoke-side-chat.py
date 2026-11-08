@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Exercise actual bundled Codex with isolated history and a loopback model fixture.
+"""Exercise the legacy temporary runtime with isolated history and a loopback model fixture.
 
 No real account, API key, external model call, or desktop thread is used.
+New side chats use native attached persistence; this script only checks old views.
 Run from repo root with PYTHONPATH=. python scripts/smoke-side-chat.py.
 """
 import json

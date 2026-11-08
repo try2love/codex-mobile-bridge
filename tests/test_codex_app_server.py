@@ -28,6 +28,7 @@ class FixtureProcess:
         self.handshake = threading.Event()
         self.ended = False
         self.drop = set()
+        self.errors = {}
         self.worker = threading.Thread(target=self.serve, daemon=True)
         self.worker.start()
 
@@ -71,6 +72,9 @@ class FixtureProcess:
                 continue
             method = message['method']
             if method in self.drop:
+                continue
+            if method in self.errors:
+                self.send({'id': message['id'], 'error': self.errors[method]})
                 continue
             if method == 'initialize':
                 result = {'codexHome': '/fixture/.codex', 'platformFamily': 'unix',
@@ -153,6 +157,19 @@ class AppServerTests(unittest.TestCase):
         with self.assertRaises(AppServerUnknownResult):
             self.client.request('turn/start', {'threadId': 'thread-a'}, timeout=.02)
         self.assertEqual(len([m for m in process.seen if m.get('method') == 'turn/start']), 1)
+
+    def test_delete_maps_only_known_native_rejection_without_replay(self):
+        from bridge.features.sessions.create import CreationError, DeleteRejected
+        self.client.connect()
+        process = self.processes[0]
+        process.errors['thread/delete'] = {'code': -32600, 'message': 'thread thread-a already has an active writer'}
+        with self.assertRaisesRegex(DeleteRejected, '尚未删除'):
+            self.client.request('thread/delete', {'threadId': 'thread-a'})
+        process.errors['thread/delete'] = {'code': -32600, 'message': 'cleanup failed'}
+        with self.assertRaises(CreationError) as caught:
+            self.client.request('thread/delete', {'threadId': 'thread-a'})
+        self.assertNotIsInstance(caught.exception, DeleteRejected)
+        self.assertEqual(len([m for m in process.seen if m.get('method') == 'thread/delete']), 2)
 
     def test_missing_socket_never_launches_proxy(self):
         self.socket.unlink()

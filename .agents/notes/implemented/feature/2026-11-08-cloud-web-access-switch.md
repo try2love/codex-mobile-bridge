@@ -18,6 +18,8 @@ Status: implemented
 
 按网页、Web、cloud-access 和本机授权检索活跃记录：本篇部分取代[云账号 Web](../../implemented/feature/2026-11-07-cloud-web-proxy.md)的自动开启规则，保留网站透传与免逐浏览器批准；[同账号目录](../../implemented/feature/2026-11-03-account-device-auto-discovery.md)、[手机批准](../../implemented/feature/2026-11-03-desktop-approved-cloud-pairing.md)和[持久中继](../../implemented/architecture/2026-11-05-persistent-relay-v2.md)约束不变。proposed/rejected 中无重复方案，不新增归档。
 
+[上游 v2.2.0 集成](../process/2026-11-08-upstream-v2.2.0-integration.md)持有桌面入口、网关回调和云网页资源的合并交集；本篇的默认拒绝、独立许可与撤销边界继续适用。
+
 ## Alternatives considered
 
 - 逐浏览器批准能细分设备，但用户明确选择总开关。

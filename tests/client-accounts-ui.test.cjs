@@ -6,19 +6,74 @@ function fixture({desktop=false,provider='deepseek',toolbar=false}={}){
   const document={hidden:false,body:node('body'),activeElement:null,documentElement:{},createElement:node,querySelectorAll:()=>[],addEventListener:(type,fn)=>(listeners[type]??=[]).push(fn),removeEventListener:(type,fn)=>listeners[type]=listeners[type].filter(row=>row!==fn),dispatchEvent(event){for(const fn of listeners[event.type]||[])fn(event);}};
   class Clock extends Date{static now(){return time;}}
   const context=vm.createContext({document,Date:Clock,CustomEvent:class{constructor(type){this.type=type;}},localStorage:{getItem(){return null;},setItem(){}},window:{confirm(message){prompts.push(message);return confirmed;}},setTimeout(fn,ms){timers.set(++tid,{fn,due:time+ms});return tid;},clearTimeout:id=>timers.delete(id)});
-  for(const path of ['web/shared/i18n.js','web/features/accounts/client-accounts.js'])vm.runInContext(fs.readFileSync(path,'utf8'),context);
+  for(const path of ['web/shared/i18n.js','web/features/clients/client-lifecycle.js','web/features/accounts/api-editor.js','web/features/accounts/client-accounts.js'])vm.runInContext(fs.readFileSync(path,'utf8'),context);
   const Panel=vm.runInContext('DesktopClientAccountsPanel',context),panel=new Panel({root,provider,desktop,toolbar:outerToolbar,read:()=>{calls.push({action:'list'});return readHandler();},request:body=>{calls.push(body);return handler(body);},readModels:(refresh=false)=>handler({action:'models',refresh}),visible:()=>visible,onUpdate:result=>updates.push(result)});
   const all=node=>[node,...node.children.flatMap(all)];
   return {panel,root,outerToolbar,calls,prompts,updates,timers,focus:node=>document.activeElement=node,blur:()=>document.activeElement=document.body,active:()=>document.activeElement,setValue:next=>value=next,setHandler:next=>handler=next,setRead:next=>readHandler=next,setVisible:next=>visible=next,confirm:next=>confirmed=next,advance:async ms=>{time+=ms;for(const [id,timer]of [...timers])if(timer.due<=time){timers.delete(id);await timer.fn();}},tick:ms=>time+=ms,now:()=>time,all:()=>all(root),text:()=>all(root).map(row=>row.textContent).join('\n'),english:()=>vm.runInContext("BridgeI18n.setLanguage('en')",context)};
 }
 const row=(id,kind='account',usage)=>({id,name:id,kind,usage});
 const snapshot=(accounts,activeIds=['current'])=>({accounts,activeId:activeIds[0],activeIds,current:{name:'Current desktop access'},canSwitch:true});
+test('native API editors share Codex fold placement and fetch models before saving',async()=>{
+  for(const provider of ['claude','deepseek','zcode']){
+    const ui=fixture({provider,desktop:true}),formats=provider==='zcode'?[{value:'openai-responses',label:'OpenAI Responses'}]:undefined;
+    const value={...snapshot([]),capabilities:{addApi:true,quota:false,apiFormats:formats}};ui.panel.accept(value);
+    assert.equal(ui.panel.apiDetails.open,undefined);assert.equal(ui.panel.apiDetails.parentNode,ui.panel.management);assert.equal(ui.panel.scanDetails.parentNode,ui.panel.management);assert.equal(ui.panel.importName.parentNode,ui.panel.scanDetails);
+    ui.panel.addApiButton.onclick();ui.panel.editName.input.value='Fixture';ui.panel.editUrl.input.value='https://fixture.invalid/v1';ui.panel.editKey.input.value='fixture-key';
+    const calls=[];ui.setHandler(async request=>{calls.push({...request});return request.action==='models-draft'?{models:['first','second']}:value;});
+    await ui.panel.apiEditor.fetchModels.onclick();
+    assert.equal(calls.length,1);assert.equal(calls[0].action,'models-draft');assert.equal(ui.panel.apiEditor.modelSelect.hidden,false);
+    if(provider==='deepseek'){
+      assert.equal(calls[0].baseUrl,undefined);assert.equal(calls[0].apiFormat,undefined);assert.equal(ui.panel.editUrl.wrap.hidden,true);assert.equal(ui.panel.editModels.wrap.hidden,true);
+    }else{
+      assert.equal(ui.panel.editModels.wrap.htmlFor,ui.panel.editModels.input.id);assert.equal(ui.panel.apiEditor.modelCaption.htmlFor,ui.panel.editModels.input.id);
+      assert.equal(ui.panel.editModels.input.value,'first');ui.panel.apiEditor.modelSelect.value='second';ui.panel.apiEditor.modelSelect.onchange();assert.equal(ui.panel.editModels.input.value,'first\nsecond');
+    }
+    await ui.panel.saveEditor();assert.equal(calls[1].action,'save-api');assert.equal(ui.panel.editKey.input.value,'');assert.equal(ui.panel.apiDetails.open,false);
+    if(provider==='deepseek')assert.equal(calls[1].models,undefined);else assert.equal(calls[1].models.join(','),'first,second');
+  }
+});
+test('draft model responses cannot refill canceled or replaced native API editors',async()=>{
+  const ui=fixture({provider:'zcode',desktop:true});ui.panel.accept({...snapshot([]),capabilities:{apiFormats:[{value:'openai-responses',label:'OpenAI Responses'}],quota:false}});ui.panel.openEditor({kind:'api',api:{}});
+  ui.panel.editUrl.input.value='https://first.invalid';ui.panel.editKey.input.value='fixture-key';
+  const pending=[];ui.setHandler(()=>new Promise(resolve=>pending.push(resolve)));
+  const first=ui.panel.apiEditor.fetchModels.onclick();ui.panel.editUrl.input.value='https://second.invalid';ui.panel.editUrl.input.oninput();const second=ui.panel.apiEditor.fetchModels.onclick();
+  pending[0]({models:['stale']});await first;assert.equal(ui.panel.editModels.input.value,'');assert.equal(ui.panel.apiEditor.fetchModels.disabled,true);
+  pending[1]({models:['fresh']});await second;assert.equal(ui.panel.editModels.input.value,'fresh');
+  ui.panel.editKey.input.value='changed-key';ui.panel.editKey.input.oninput();const third=ui.panel.apiEditor.fetchModels.onclick();ui.panel.closeEditor();pending[2]({models:['closed']});await third;
+  assert.equal(ui.panel.editKey.input.value,'');assert.equal(ui.panel.editor.hidden,true);assert.equal(ui.panel.apiEditor.modelSelect.hidden,true);assert.equal(ui.panel.editModels.input.value,'');
+});
+test('account management action uses one reusable slot without moving the saved account cards',()=>{
+  const ui=fixture({provider:'zcode'});ui.panel.accept(snapshot([row('current')]));const cards=ui.panel.rows,button=ui.panel.managementButton;let clicked=0;
+  ui.panel.setManagementAction({label:'连接方式',description:'当前：官方远控',onClick:()=>clicked++});assert.equal(ui.panel.rows,cards);assert.equal(ui.panel.managementSlot.hidden,false);button.onclick();assert.equal(clicked,1);
+  ui.panel.setManagementAction({label:'连接方式',disabled:true});assert.equal(ui.panel.managementButton,button);assert.equal(button.disabled,true);ui.panel.setManagementAction(null);assert.equal(ui.panel.managementSlot.hidden,true);
+});
+test('ZCode API editor reuses shared form and sends native protocol plus URL and models without applying',async()=>{
+  const ui=fixture({provider:'zcode',desktop:true});
+  const value={...snapshot([]),capabilities:{addApi:true,quota:false,apiFormats:[{value:'anthropic-messages',label:'Anthropic Messages'},{value:'openai-chat-completions',label:'OpenAI Chat Completions'},{value:'openai-responses',label:'OpenAI Responses'}],switchRequiresStopped:true}};
+  ui.panel.accept(value);assert.equal(ui.panel.addApiButton.textContent,'添加 API 接入');ui.panel.addApiButton.onclick();
+  assert.equal(ui.panel.editUrl.wrap.hidden,false);assert.equal(ui.panel.editModels.wrap.hidden,false);assert.equal(ui.panel.apiFormatWrap.hidden,false);assert.equal(ui.panel.authWrap.hidden,true);
+  assert.equal(ui.panel.editApiFormat.children.length,3);assert.equal(ui.panel.editApiFormat.value,'anthropic-messages');
+  ui.panel.editName.input.value='Local API';ui.panel.editUrl.input.value='http://127.0.0.1:9999/v1';ui.panel.editApiFormat.value='openai-responses';ui.panel.editKey.input.value='fixture-key';ui.panel.editModels.input.value='first\nsecond';
+  ui.setHandler(async()=>value);await ui.panel.saveEditor();
+  assert.equal(ui.calls.length,1);assert.equal(ui.calls[0].action,'save-api');assert.equal(ui.calls[0].apiFormat,'openai-responses');assert.equal(ui.calls[0].baseUrl,'http://127.0.0.1:9999/v1');assert.equal(ui.calls[0].models.join(','),'first,second');assert.equal('authScheme' in ui.calls[0],false);
+  assert.equal(ui.panel.editKey.input.value,'');assert.equal(ui.prompts.length,0);
+  ui.panel.openEditor({id:'saved',kind:'api',name:'API',api:{baseUrl:'https://api.example.invalid',apiFormat:'openai-chat-completions',models:['x'],hasKey:true}});
+  assert.equal(ui.panel.editApiFormat.value,'openai-chat-completions');assert.equal(ui.panel.editKey.input.required,false);assert.equal(ui.panel.editKey.input.value,'');
+});
+test('ZCode API applied state is distinct from official login and selecting a model',async()=>{
+  const ui=fixture({provider:'zcode',desktop:true});
+  const value={...snapshot([{...row('official','official'),saved:true},{...row('draft','api'),saved:true},{...row('applied','api'),saved:true}],['official','applied']),capabilities:{apiFormats:[{value:'openai-responses',label:'OpenAI Responses'}],switchRequiresStopped:true,quota:false}};
+  ui.panel.accept(value);assert.match(ui.text(),/已配置/);assert.match(ui.text(),/待应用/);assert.match(ui.text(),/应用配置/);
+  const applied=ui.panel.rows.children.find(card=>card.accountRowId==='applied');assert.equal(applied.children[0].children[0].children[0].children[1].textContent,'已配置');
+  ui.setHandler(async()=>value);await ui.panel.choose(row('draft','api'));
+  assert.equal(ui.calls.length,1);assert.equal(ui.calls[0].action,'switch');assert.match(ui.prompts[0],/正常退出原 App/);assert.match(ui.prompts[0],/选择对应模型/);assert.doesNotMatch(ui.prompts[0],/切换会重启/);
+});
 test('manual DSH account state hides editing and restores official controls after unbinding',()=>{
  const ui=fixture({desktop:true});ui.panel.openEditor({api:{}});
  ui.panel.accept({...snapshot([]),readOnly:true,canImport:false,canSwitch:false});
- assert.equal(ui.panel.editor.hidden,true);assert.equal(ui.panel.addApiButton.hidden,true);assert.equal(ui.panel.importName.hidden,true);
+ assert.equal(ui.panel.editor.hidden,true);assert.equal(ui.panel.apiDetails.hidden,true);assert.equal(ui.panel.scanDetails.hidden,true);
  assert.match(ui.panel.hint.textContent,/第三方客户端/);assert.equal(ui.panel.modelsButton.hidden,false);
- ui.panel.accept(snapshot([]));assert.equal(ui.panel.addApiButton.hidden,false);assert.equal(ui.panel.importName.hidden,false);
+ ui.panel.accept(snapshot([]));assert.equal(ui.panel.apiDetails.hidden,false);assert.equal(ui.panel.scanDetails.hidden,false);
 });
 test('multiple native active connections are first and cannot be switched again',()=>{
   const ui=fixture();ui.panel.accept(snapshot([row('other'),row('api','api'),row('current')],['current','api']));
@@ -34,6 +89,12 @@ test('first visible visit queries automatically; manual quota query resets the f
 test('hidden panels do not query quota and resume when overdue',async()=>{
   const ui=fixture();ui.setValue(snapshot([row('current')]));await ui.panel.resume();ui.setVisible(false);await ui.advance(300000);assert.equal(ui.calls.length,2);assert.equal(ui.timers.size,0);
   ui.setVisible(true);await ui.panel.resume();assert.equal(ui.calls.length,4);
+});
+for(const provider of ['zcode','deepseek'])test(`${provider} skips unsupported quota reads on open and refresh`,async()=>{
+  const ui=fixture({provider});ui.setValue({...snapshot([{...row('current'),saved:false},row('saved')]),capabilities:{quota:false}});
+  await ui.panel.resume();await ui.panel.refresh(true);await ui.advance(300000);
+  assert.deepEqual(ui.calls.map(call=>call.action),['list','list','list']);
+  assert.equal(ui.panel.error,'');
 });
 test('Claude list, timer, and return visits only read saved quota snapshots',async()=>{
   const ui=fixture({provider:'claude'});ui.setValue(snapshot([row('current'),row('saved')]));
@@ -125,6 +186,13 @@ test('Claude API switch sends local CLI choice only after checkbox selection',as
  assert.ok(box);box.checked=true;box.onchange();ui.confirm(true);await ui.panel.choose(row('other','api'));
  assert.equal(ui.calls[0].syncLocalCli,true);
 });
+test('independent Claude account cards never offer or retain default CLI synchronization',async()=>{
+ const ui=fixture({provider:'claude'}),other=row('other','api');
+ ui.panel.syncLocalCliIds.add(other.id);
+ ui.panel.accept({...snapshot([row('current'),other]),canSyncLocalCli:false});
+ assert.equal(ui.all().some(node=>node.tag==='input'&&node.type==='checkbox'),false);
+ ui.confirm(true);await ui.panel.choose(other);assert.equal(ui.calls[0].syncLocalCli,undefined);
+});
 test('switch remains pending until the backend finishes and rejects duplicate clicks',async()=>{
   const ui=fixture();ui.panel.accept(snapshot([row('current'),row('other')]));let finish;ui.setHandler(()=>new Promise(resolve=>finish=resolve));const pending=ui.panel.choose(row('other'));assert.equal(ui.panel.busy,true);await ui.panel.choose(row('other'));assert.equal(ui.calls.length,1);
   finish(snapshot([row('current'),row('other')],['other']));await pending;assert.equal(ui.panel.busy,false);assert.equal(ui.panel.value.activeId,'other');
@@ -201,4 +269,14 @@ for(const provider of ['claude','deepseek'])test(`${provider} model scroller sur
  ui.setHandler(async()=>({cache:{identity,updatedAt:2000},models:[{id:'model-c'},{id:'model-d'}]}));
  await ui.all().find(n=>n.tag==='button'&&n.textContent==='刷新模型').onclick();assert.equal(box.scrollTop,83);assert.match(ui.text(),/model-d/);
  let finish;ui.setHandler(()=>new Promise(resolve=>finish=resolve));ui.focus(ui.panel.modelsRefreshButton);const pending=ui.panel.modelsRefreshButton.onclick();ui.blur();finish({cache:{identity,updatedAt:3000},models:[{id:'model-e'}]});await pending;assert.equal(ui.active(),ui.panel.modelsRefreshButton);assert.equal(box.scrollTop,83);
+});
+
+test('current ZCode daily model quota shows exact native token quantities and checks only the active row',async()=>{
+ const ui=fixture({provider:'zcode'}),usage={status:'ok',source:'nativeSnapshot',checkedAt:1000,
+  limits:[{name:'GLM-5.3',windows:[{unit:'tokens',remaining:0,total:10,remainingPercent:0}]},
+   {name:'GLM-5.3-Flash',windows:[{unit:'tokens',remaining:9,total:20,remainingPercent:45}]}]};
+ ui.setValue(snapshot([{...row('current','official',usage),canReadQuota:true},{...row('other','official'),canReadQuota:false}]));
+ await ui.panel.resume();assert.deepEqual(ui.calls.map(c=>c.action),['list','details']);assert.equal(ui.calls[1].id,'current');
+ assert.match(ui.text(),/今日剩余额度/);assert.match(ui.text(),/GLM-5.3/);assert.match(ui.text(),/GLM-5.3-Flash/);
+ assert.match(ui.text(),/0 \/ 10 tokens/);assert.match(ui.text(),/9 \/ 20 tokens/);assert.match(ui.text(),/原 App 查询时间/);
 });

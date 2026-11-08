@@ -8,12 +8,11 @@ async function runSideAgentsTests(){
  wb.sideChat();
  check(session.active==='sidechat','Side chat opens as a separate subtab');
  check(!document.querySelector('.wb-side-chat,.wb-side-picker'),'Side chat does not show a floating saved-chat picker');
- await wait(()=>session.files.find(t=>t.id==='sidechat').sideChat.state!==undefined);
+ await wait(()=>session.files.find(t=>t.id==='sidechat').sideChat.chats!==undefined);
  const side=session.files.find(t=>t.id==='sidechat').sideChat;
- check(!!side.input,'Side chat has its own composer');
- if(side.state.id){side.dispose();session.files.splice(session.files.indexOf(side.tab),1);wb.select('chat');}
- else await wb.close('sidechat');
- check(!session.files.some(t=>t.id==='sidechat'),'Close removes the temporary subtab');
+ check(!side.tab.body.querySelector('textarea'),'Native side directory reuses the full chat composer through navigation');
+ await wb.close('sidechat');
+ check(!session.files.some(t=>t.id==='sidechat'),'Close removes only the directory view');
  check(document.querySelector('#message').value==='main draft','Side subtab preserves main draft');
  check(document.querySelector('#messages').textContent===main&&location.hash===hash,'Side subtab preserves main history and route');
  wb.agents();await wait(()=>document.querySelectorAll('.wb-agent-card').length===2);

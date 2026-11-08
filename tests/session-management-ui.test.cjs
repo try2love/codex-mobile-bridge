@@ -6,12 +6,13 @@ function fixture(){
  const nodes=new Map(),timers=new Map(),requests=[],dialogs=[],copies=[];let timer=0;
  const node=(tag='',cls='',textContent='')=>({tag,cls,textContent,dataset:{},classList:{add(){}},children:[],events:{},scrollTop:0,isConnected:true,append(...items){this.children.push(...items);},replaceChildren(...items){this.children=items;},addEventListener(name,run){this.events[name]=run;},setAttribute(){},focus(){this.focused=true;},showModal(){this.open=true;},close(){this.open=false;this.events.close?.();},remove(){this.isConnected=false;}});
  const $=id=>{if(!nodes.has(id))nodes.set(id,node());return nodes.get(id);};$('list-mode').value='recent';
- const context=vm.createContext({$,el:node,window:{BridgeSessionLinks:{text:identity=>'codex://threads/'+identity.id}},document:{body:{append:box=>dialogs.push(box)}},SessionMenu:class{constructor(){}bind(button,context){button.menuContext=context;}},
+ const context=vm.createContext({CliConnectionsPanel:class{},$,el:node,window:{BridgeSessionLinks:{text:identity=>'codex://threads/'+identity.id}},document:{body:{append:box=>dialogs.push(box)}},SessionMenu:class{constructor(){}bind(button,context){button.menuContext=context;}},
    BridgeClipboard:{copyWithFeedback:async(get,item)=>{if(item.disabled)return;copies.push(get());}},BridgeI18n:{locale:()=> 'en-US'},t:s=>s,localStorage:{getItem(){return null;},setItem(){}},
-   listIdentity:'gateway',csrf:'token',clientNavigation:{provider:'codex'},state:null,listRows:[],currentId:null,currentHost:'local',listHasMore:false,listRenderStamp:'',listComplete:true,listReadFinished:true,availableSources:[],
+   workbench:{},listIdentity:'gateway',csrf:'token',clientNavigation:{provider:'codex',clients:[]},state:null,listRows:[],currentId:null,currentHost:'local',listHasMore:false,listRenderStamp:'',listComplete:true,listReadFinished:true,availableSources:[],
    renderActivity(){},sessionAccess:v=>({canConfigure:true,canEditMessages:true,...v}),sourceLabel:()=> 'APP',dateText:()=>'',toast(){},pinRow:row=>row,sessionPins:{value:(_identity,pinned)=>!!pinned,set(identity,pinned){requests.push({url:`/${identity.host}/${identity.id}/pin`,body:{pinned}});}},desktopSessions:{refresh:async()=>{}},openChat:async()=>{},
    setTimeout:fn=>{timers.set(++timer,fn);return timer;},clearTimeout:id=>timers.delete(id),uuid:()=> 'request-id',
    api:async(url,body)=>{requests.push({url,body});return {status:'confirmed'};},sessionUrl:(id,action,host)=>`/${host}/${id}/${action}`,loadList:async()=>{}});
+ context.ClientIdentity=require('../web/features/clients/client-lifecycle.js').ClientIdentity;context.URLSearchParams=URLSearchParams;
  vm.runInContext(code,context);
  const row=(id,recency,pinned=false)=>({id,host:'local',title:id,projectKey:'p',projectName:'Project',hostLabel:'Local',recency,bridgePinned:pinned,access:{}});
  return {context,$,node,row,requests,dialogs,copies,fireTimers(){const work=[...timers.values()];timers.clear();work.forEach(fn=>fn());}};
@@ -96,7 +97,7 @@ for(const [provider,runtime] of [['codex','desktop'],['codex','cli'],['claude','
   assert.equal(typeof menu.pin,'function');assert.equal(typeof menu.fork,'function');assert.equal(typeof menu.archive,'function');
   await menu.notifications();assert.equal(notified,1);
   await menu.pin(true);assert.equal(ui.requests.at(-1).body.pinned,true);
-  assert.equal(menu.linkLabel,provider==='deepseek'?'复制 Session ID':'复制深度链接');
+  assert.equal(menu.link,provider==='codex'?'codex://threads/'+chat.id:null);
  });
 }
 

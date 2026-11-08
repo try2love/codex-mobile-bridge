@@ -36,28 +36,11 @@ class CliAccessPanel {
       this.root.classList.add('codex-api-editor');
       this.name.input.placeholder=this.t('例如：我的 API');
       this.key.input.placeholder=this.t('请输入 API Key');
-      const connection=this.node('div',null,'codex-api-connection'),models=this.node('div',null,'codex-api-models');
-      this.model.label.firstElementChild.remove();
       this.model.input.placeholder=this.t('获取后自动填入，或手动输入');
-      this.model.input.id='codex-api-model-'+(++CliAccessPanel.editorId);
-      this.model.label.htmlFor=this.model.input.id;
-      this.modelSelect=this.node('select');this.modelSelect.id=this.model.input.id+'-select';this.modelSelect.hidden=true;
-      this.modelSelect.setAttribute('aria-label',this.t('默认模型'));
-      this.modelSelect.onchange=()=>{this.model.input.value=this.modelSelect.value;this.draftAutoModel=null;};
-      this.model.input.oninput=()=>{this.draftAutoModel=null;};
-      this.fetchModels=this.button('获取上游模型',()=>this.discoverModels());
-      this.fetchModels.className='codex-api-fetch';
-      this.modelFeedback=this.node('p',null,'account-muted codex-api-model-feedback');this.modelFeedback.setAttribute('role','status');
-      this.manualModel=this.button('手动填写',()=>{const selected=this.modelSelect.hidden;if(selected)this.model.input.value=this.modelSelect.value;this.draftAutoModel=null;this.modelSelection(selected);});this.manualModel.className='codex-api-fetch';this.manualModel.hidden=true;
-      const modelHead=this.node('div',null,'codex-api-model-head'),modelFooter=this.node('div',null,'codex-api-model-footer');
-      this.modelCaption=this.node('label','默认模型');this.modelCaption.htmlFor=this.model.input.id;
-      modelHead.append(this.modelCaption,this.fetchModels);modelFooter.append(this.modelFeedback,this.manualModel);
-      models.append(modelHead,this.model.label,this.modelSelect,modelFooter);
-      connection.append(this.name.label,this.baseUrl.label,this.key.label);
+      ApiAccessEditor.mount(this,{connectionFields:[this.name.label,this.baseUrl.label,this.key.label],actions});
       this.cancel.hidden=false;this.cancel.textContent=this.t('取消');this.cancel.onclick=()=>{this.resetForm();if(this.root.parentNode?.tagName==='DETAILS')this.root.parentNode.open=false;};
       this.baseUrl.input.placeholder='https://api.example.com/v1';
       this.baseUrl.input.oninput=this.key.input.oninput=()=>this.clearDraftModels();
-      this.form.append(connection,models,actions);
     }else this.form.append(this.name.label,this.model.label,modelHint,this.baseUrl.label,this.key.label,this.schemeRow,actions);
     this.native=this.button('保存当前原生接入',()=>this.perform({provider:this.provider,action:'importCurrent',name:this.t('本机原生接入')}));
     this.root.append(...(this.formOnly?[this.status,this.error,this.form]:[heading,refresh,this.status,this.error,this.rows,this.form,this.native]));
@@ -68,37 +51,9 @@ class CliAccessPanel {
     this.root.querySelectorAll('button,input,select').forEach(control=>{control.disabled=busy;});
     if(this.fetchModels){this.fetchModels.disabled=busy||!!this.draftLoading;this.save.disabled=busy||!!this.draftLoading;}
   }
-  modelSelection(selected){
-    this.modelSelect.hidden=!selected;this.model.input.hidden=selected;
-    this.model.label.htmlFor=selected?this.modelSelect.id:this.model.input.id;
-    this.modelCaption.htmlFor=this.model.label.htmlFor;
-    this.manualModel.textContent=this.t(selected?'手动填写':'从列表选择');
-  }
-  clearDraftModels(){
-    this.draftRevision=(this.draftRevision||0)+1;this.draftLoading=false;
-    if(!this.modelSelect)return;
-    if(this.draftAutoModel&&this.model.input.value===this.draftAutoModel)this.model.input.value='';this.draftAutoModel=null;this.save.disabled=this.busy;
-    this.modelSelect.replaceChildren();this.modelSelection(false);this.manualModel.hidden=true;
-    this.modelFeedback.textContent='';this.fetchModels.textContent=this.t('获取上游模型');this.fetchModels.disabled=this.busy;
-  }
-  async discoverModels(){
-    if(this.busy||this.draftLoading)return;
-    const revision=this.draftRevision,context=()=>JSON.stringify([this.editId,this.baseUrl.input.value,this.key.input.value]),started=context();
-    const request={provider:'codex',action:'modelsDraft',baseUrl:this.baseUrl.input.value,apiKey:this.key.input.value,...(this.editId?{id:this.editId}:{})};
-    this.draftLoading=true;this.save.disabled=true;this.fetchModels.disabled=true;this.fetchModels.textContent=this.t('正在获取…');this.modelFeedback.textContent='';
-    try{
-      const result=await this.request(request);
-      if(revision!==this.draftRevision||started!==context())return;
-      const models=Array.isArray(result.models)?result.models.filter(id=>typeof id==='string'&&id.trim()):[];
-      if(!models.length)throw Error('上游未返回兼容的模型列表，请手动填写模型 ID');
-      this.modelSelect.replaceChildren(...models.map(id=>{const option=this.node('option');option.value=id;option.textContent=id;return option;}));
-      if(!this.model.input.value.trim()){this.model.input.value=models[0];this.draftAutoModel=models[0];}
-      const selected=models.includes(this.model.input.value);if(selected)this.modelSelect.value=this.model.input.value;
-      this.modelSelection(selected);this.manualModel.hidden=false;
-      this.modelFeedback.textContent=this.t('已获取模型，可修改默认选择。');
-    }catch(error){if(revision===this.draftRevision&&started===context())this.modelFeedback.textContent=this.t(error.message);}
-    finally{request.apiKey='';if(revision===this.draftRevision){this.draftLoading=false;this.save.disabled=this.busy;this.fetchModels.disabled=this.busy;this.fetchModels.textContent=this.t('获取上游模型');}}
-  }
+  modelSelection(selected){return ApiAccessEditor.selection(this,selected);}
+  clearDraftModels(){return ApiAccessEditor.clear(this);}
+  discoverModels(){return ApiAccessEditor.discover(this);}
   clear(){
     this.generation++;
     this.clearDraftModels();

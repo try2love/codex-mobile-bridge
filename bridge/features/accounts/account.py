@@ -42,7 +42,8 @@ class AccountRPC:
             # Use the account's home, not a chat's project/configuration layer.
             self.process = subprocess.Popen(
                 [str(self.executable), 'app-server', '--listen', 'stdio://'], cwd=self.home,
-                env={**os.environ, 'CODEX_HOME': str(self.home)}, stdin=subprocess.PIPE,
+                env={**{key: value for key, value in os.environ.items() if key != 'CODEX_SQLITE_HOME'},
+                     'CODEX_HOME': str(self.home)}, stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding='utf-8', **options)
             def read():
                 try:

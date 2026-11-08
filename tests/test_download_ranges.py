@@ -47,7 +47,7 @@ class DownloadSnapshotTests(unittest.TestCase):
 
     def test_ssh_stream_executes_secure_workspace_source_and_transfers_only_range(self):
         store = RemoteStore('fixture-host'); store.get = lambda _: {'cwd': str(self.root)}
-        bridge = SimpleNamespace(host='remote:fixture', store=store)
+        bridge = SimpleNamespace(host='remote:fixture', local=False, store=store)
         original_run = subprocess.run
         def run(command, **kwargs):
             self.assertIn('StrictHostKeyChecking=yes', command)

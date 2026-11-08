@@ -54,6 +54,7 @@ def events(account, previous, now, preferences):
 class AccountMonitor:
     def __init__(self, manager):
         self.manager = manager
+        self.notification_data_dir = manager.bridge.data_dir
         self.path = manager.root/'reminders.json'
         self.ledger_path = manager.root/'reminder-delivery.json'
         self.preferences = {**DEFAULTS, **read_json(self.path, {})}
@@ -115,7 +116,7 @@ class AccountMonitor:
 
     def deliver(self, identity, event):
         kind, key, title, body = event
-        config = settings(self.manager.bridge.data_dir)
+        config = settings(self.notification_data_dir)
         now = time.time()
         delivered = True
         before = copy.deepcopy(self.ledger)
@@ -126,7 +127,7 @@ class AccountMonitor:
             if now < self.ledger.get(ledger_key, {}).get('next', 0):
                 delivered = False
                 continue
-            current = settings(self.manager.bridge.data_dir)
+            current = settings(self.notification_data_dir)
             if (self.closed.is_set() or not self.preferences[kind] or channels(current).get(channel) != destination or
                     kind in GLOBAL_REMINDERS and (not self.manager.reset_dynamic_enabled or float(key) <= self.global_watch.get(kind, 0))):
                 continue
@@ -178,8 +179,10 @@ class AccountMonitor:
     def scan(self):
         if self.closed.is_set() or not any(self.preferences.values()):
             return
+        if not getattr(self.manager.bridge, 'observation_enabled', lambda: True)():
+            return
         # No quota polling when all delivery channels are disabled.
-        if not channels(settings(self.manager.bridge.data_dir)):
+        if not channels(settings(self.notification_data_dir)):
             return
         if any(self.preferences[k] for k in GLOBAL_REMINDERS):
             self.scan_global_reset()

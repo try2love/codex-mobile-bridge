@@ -1,6 +1,7 @@
 """Read-only model discovery for an OpenAI-compatible API."""
 import json
 import re
+import unicodedata
 from http.client import HTTPException
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -13,6 +14,13 @@ class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         # Never forward the selected provider's credentials to another endpoint.
         return None
+
+
+def valid_model_id(value):
+    """Accept provider model IDs without allowing whitespace or control characters."""
+    return (isinstance(value, str) and 1 <= len(value) <= 200
+            and all(not character.isspace() and not unicodedata.category(character).startswith('C')
+                    for character in value))
 
 
 def model_catalog(base_url, key, *, headers=None, query_params=None):
@@ -47,8 +55,7 @@ def model_catalog(base_url, key, *, headers=None, query_params=None):
         for row in rows:
             if (not isinstance(row, dict) or row.get('hidden') or row.get('visibility') == 'hide'
                     or row.get('lifecycle') == 'retired'
-                    or not isinstance(row.get(field), str)
-                    or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_./:@+-]{0,199}', row[field])):
+                    or not valid_model_id(row.get(field))):
                 continue
             identifier = row[field]
             levels = row.get('supportedReasoningEfforts', row.get('supported_reasoning_levels', []))

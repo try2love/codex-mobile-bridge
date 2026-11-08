@@ -57,7 +57,7 @@ class WslOwnedAccountLifecycleTests(unittest.TestCase):
         self.process.poll.side_effect = lambda: 0 if self.exited else None
         self.process.wait.side_effect = self.finish
         self.owned = SimpleNamespace(process=self.process, condition=threading.Condition(),
-                                     active=False, pending={}, error=None, events=[], model=None, permission='default',
+                                     active=False, pending={}, error=None, events=[], catalog={}, model=None, permission='default',
                                      native=self.metadata['nativeId'], origin=self.metadata['origin'],
                                      cwd=self.metadata['cwd'], preflight={'status': 'ready', 'cwd': self.metadata['cwd']},
                                      close=Mock())

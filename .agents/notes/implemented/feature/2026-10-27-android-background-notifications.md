@@ -18,6 +18,8 @@ Android 原生设置采用 PR 的独立全屏窗口，主题仅作用于设置�
 
 原设置页局部主题的范围由[安卓 App 统一主题](../bug-fix/2026-10-28-android-app-theme.md)部分取代；本篇保留原采用范围及通知、权限、导航决定。
 
+Android 系统通知的会话级覆盖与查看后清理由[按事件独立保留](../bug-fix/2026-11-08-independent-mobile-notification-events.md)部分取代；不同事件保留各自卡片，后台服务与权限决定继续适用。
+
 ### 既有记录核对
 
 - [网关 Cookie 隔离](../../implemented/bug-fix/2026-10-13-gateway-cookie-namespace.md)互补：继续按连接地址选择 Cookie，检查点绑定令牌，不改变旧认证决定。
@@ -56,7 +58,7 @@ Java 接收器真实回环 HTTP/JSON 检查通过，覆盖流重置、游标、�
 
 后续由[手机按连接地址选择通知来源](2026-10-28-mobile-notification-sources.md)补充本机逐地址开关；本篇原有权限、接收及平台边界继续适用。
 
-[云服务默认开启手机收件箱](2026-11-05-cloud-mobile-inbox-default.md)只改变桌面网关云服务的收件箱初始配置，不代用户开启本篇的手机后台服务或系统通知权限。
+[上游 v2.2.0 集成](../process/2026-11-08-upstream-v2.2.0-integration.md)删除云服务单独的收件箱初始化，使用通知模块的统一默认值；默认开启收件箱不代用户开启本篇的手机后台服务或系统通知权限。
 
 
 后续 [DSH 双路线接入](2026-10-29-dsh-mobile-and-plugin-compatibility.md) 增加独立 Mobile 浏览容器与插件协议校验；本篇 Bridge 路径的既有约束保持。

@@ -8,7 +8,6 @@ import json
 import os
 import platform
 import re
-import struct
 import subprocess
 import sys
 import threading
@@ -19,6 +18,7 @@ from pathlib import Path
 from urllib.request import Request, build_opener
 
 from bridge.clients.desktop_app import DesktopApp
+from bridge.platforms.electron import package_manifest
 from bridge.features.notifications.channels import NoRedirect, read_json, write_json
 from bridge.features.auth.tls import client_context
 from urllib.request import HTTPSHandler
@@ -101,20 +101,8 @@ def version(value):
 
 
 def package_metadata(archive):
-    # Read one public package file, without unpacking application code or credentials.
-    with Path(archive).open('rb') as stream:
-        header = stream.read(16)
-        if len(header) != 16:
-            raise ValueError('桌面程序元数据不完整')
-        _, header_size, _, json_size = struct.unpack('<4I', header)
-        if not 0 < json_size <= 16*1024*1024 or header_size < json_size:
-            raise ValueError('桌面程序元数据不完整')
-        index = json.loads(stream.read(json_size))['files']['package.json']
-        if index.get('unpacked') or not 0 < index['size'] < 1024*1024:
-            raise ValueError('桌面程序元数据不完整')
-        stream.seek(8+header_size+int(index['offset']))
-        raw = json.loads(stream.read(index['size']))
-        return {k:raw.get(k) for k in ('version', 'codexBuildFlavor', 'codexBuildNumber', 'codexSparkleFeedUrl')}
+    raw = package_manifest(archive)
+    return {k:raw.get(k) for k in ('version', 'codexBuildFlavor', 'codexBuildNumber', 'codexSparkleFeedUrl')}
 
 
 def installed(executable):
