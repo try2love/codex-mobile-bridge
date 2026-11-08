@@ -23,7 +23,7 @@ from bridge.features.notifications.addresses import AddressNotifications, ready_
 from bridge.features.notifications.channels import Notifications
 import bridge.features.network.addresses as network
 import bridge.features.network.interfaces as interfaces
-from bridge.features.network.runtime import DynamicListenerManager, RuntimeNetworkMonitor
+from bridge.features.network.runtime import DynamicListenerManager, RuntimeNetworkMonitor, notify_route_rechecks
 from bridge.features.network.adaptation import NetworkAdaptation, settings as adaptation_settings, migrate_legacy_interfaces
 
 ROOT = Path(__file__).resolve().parent
@@ -272,7 +272,7 @@ def main(connections=None, connection_secrets=None):
             tunnel_thread = threading.Thread(target=connect_tunnel, daemon=True)
             tunnel_thread.start()
         if route_rechecks:
-            monitor.network_changed = lambda: [callback() for callback in route_rechecks]
+            monitor.network_changed = lambda: notify_route_rechecks(route_rechecks)
         for listener in servers:
             listener.connection_discovery = discovery
         notifications.start()

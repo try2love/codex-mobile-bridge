@@ -173,7 +173,8 @@ def require_identity(entry):
 
 
 class TailscaleTunnel:
-    ROUTE_CHECK_INTERVAL = 10.0
+    ROUTE_CHECK_INTERVAL = 60.0
+    ROUTE_RECHECK_INTERVAL = 3.0
     ROUTE_FAILURE_LIMIT = 3
 
     def __init__(self, entry, port, data_dir, target_validator=None):
@@ -181,12 +182,16 @@ class TailscaleTunnel:
         self.target_validator = target_validator
         self.stopped = threading.Event()
         self.wake = threading.Event()
+        self.retry_wake = threading.Event()
         self.ready = threading.Event()
+        self.connected = threading.Event()
         self.lock = threading.Lock()
         self.process = self.thread = self.reader = None
         self.last_status = None
 
     def status(self, state, message, auth_url=''):
+        if state == 'connected':
+            self.connected.set()
         record = {'pid': os.getpid(), 'state': state, 'message': message,
                   'url': self.entry['publicUrl'], 'authUrl': authorization_url(auth_url)}
         if record != self.last_status:
@@ -198,6 +203,7 @@ class TailscaleTunnel:
         self.thread.start()
 
     def network_changed(self):
+        self.retry_wake.set()
         self.wake.set()
         return True
 
@@ -206,61 +212,57 @@ class TailscaleTunnel:
         config = command_json(binary, ['serve', 'status', '--json'])
         return route_state(config, self.entry, self.port, self.target_validator)
 
-    def _wait_for_route_check(self):
-        self.wake.wait(self.ROUTE_CHECK_INTERVAL)
+    def _wait_for_route_check(self, interval):
+        self.wake.wait(interval)
         self.wake.clear()
 
     def _monitor_adopted(self, binary):
-        failures = 0
-        while not self.stopped.is_set():
-            self._wait_for_route_check()
-            if self.stopped.is_set():
-                return 'stopped'
-            try:
-                state = self._route_state(binary)
-            except ValueError:
-                failures += 1
-                self.status('retrying', '暂时无法读取 Tailscale 状态，正在重新检查…')
-                if failures >= self.ROUTE_FAILURE_LIMIT:
-                    return 'retry'
-                continue
-            failures = 0
-            if state == 'same':
-                self.status('connected', 'Tailscale 固定入口已接管并保持连接。')
-            elif state == 'none':
-                self.status('retrying', 'Tailscale 固定入口已丢失，正在重新建立…')
-                return 'retry'
-            else:
-                self.status('blocked', '此 Tailscale 端口已被其他服务使用，请选择其他端口；不会覆盖已有配置。')
-                return 'blocked'
-        return 'stopped'
+        return self._monitor(binary)
 
     def _monitor_process(self, process, binary):
-        failures = 0
-        while not self.stopped.is_set() and process.poll() is None:
-            if not self.ready.wait(1):
+        return self._monitor(binary, process)
+
+    def _monitor(self, binary, process=None):
+        failures = conflicts = 0
+        interval = self.ROUTE_CHECK_INTERVAL
+        while not self.stopped.is_set() and (process is None or process.poll() is None):
+            if process is not None and not self.ready.is_set():
+                # Await the CLI's readiness/authorization result without polling
+                # or restarting a foreground process still awaiting user consent.
+                self._wait_for_route_check(None)
                 continue
-            self._wait_for_route_check()
-            if self.stopped.is_set() or process.poll() is not None:
+            self._wait_for_route_check(interval)
+            # This fresh check handles network events received during the wait.
+            # A later event can still interrupt the retry backoff.
+            self.retry_wake.clear()
+            if self.stopped.is_set() or (process is not None and process.poll() is not None):
                 break
             try:
                 state = self._route_state(binary)
             except ValueError:
+                conflicts = 0
                 failures += 1
+                interval = self.ROUTE_RECHECK_INTERVAL
                 self.status('retrying', 'Tailscale 入口暂时不可用，正在重新检查…')
                 if failures >= self.ROUTE_FAILURE_LIMIT:
                     return 'retry'
                 continue
             failures = 0
             if state == 'same':
+                conflicts = 0
+                interval = self.ROUTE_CHECK_INTERVAL
                 self.status('connected', 'Tailscale 固定入口已启动并保持连接。')
             elif state == 'none':
                 self.status('retrying', 'Tailscale 固定入口已丢失，正在重新建立…')
                 return 'retry'
             else:
-                self.status('blocked', '此 Tailscale 端口已被其他服务使用，请选择其他端口；不会覆盖已有配置。')
-                return 'blocked'
-        return 'retry'
+                conflicts += 1
+                interval = self.ROUTE_RECHECK_INTERVAL
+                if conflicts >= self.ROUTE_FAILURE_LIMIT:
+                    self.status('blocked', '此 Tailscale 端口已被其他服务使用，请选择其他端口；不会覆盖已有配置。')
+                    return 'blocked'
+                self.status('retrying', 'Tailscale 入口状态有变化，正在重新核对…')
+        return 'stopped' if self.stopped.is_set() else 'retry'
 
     def _read(self, process):
         try:
@@ -272,10 +274,15 @@ class TailscaleTunnel:
                 if auth_url:
                     self.status('authorization', '请完成 Tailscale HTTPS 或 Funnel 授权，完成后会继续连接。', auth_url)
                 elif 'Available on the internet' in line or 'Available within your tailnet' in line:
-                    self.ready.set()
                     self.status('connected', 'Tailscale 入口已启动，请检测固定入口并用手机验证。')
+                    self.ready.set()
+                    self.wake.set()
         finally:
             self.ready.clear()
+            # EOF can precede the process becoming waitable. Wake the monitor
+            # after exit so an authorization-stage failure cannot be missed.
+            process.wait()
+            self.wake.set()
 
     def _run(self):
         delay = 3
@@ -285,6 +292,8 @@ class TailscaleTunnel:
             reader = None
             result = 'retry'
             self.ready.clear()
+            self.connected.clear()
+            self.retry_wake.clear()
             try:
                 require_identity(self.entry)
                 binary = executable()
@@ -333,7 +342,10 @@ class TailscaleTunnel:
                 break
             if self.last_status and self.last_status['state'] in ('connected', 'connecting', 'authorization'):
                 self.status('retrying', 'Tailscale 入口未保持连接，请检查客户端、网络及 Funnel 授权。')
-            if self.stopped.wait(delay):
+            if self.connected.is_set():
+                delay = 3
+            self.retry_wake.wait(delay)
+            if self.stopped.is_set():
                 break
             delay = min(60, delay * 2)
 
@@ -349,6 +361,7 @@ class TailscaleTunnel:
 
     def close(self):
         self.stopped.set()
+        self.retry_wake.set()
         self.wake.set()
         with self.lock:
             if self.process:
