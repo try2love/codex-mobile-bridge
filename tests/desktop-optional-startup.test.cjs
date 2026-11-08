@@ -17,7 +17,7 @@ for(const paired of [false,true])test('optional official service starts after th
       if(name==='./shared/gateway-language.cjs')return {publishLanguage(){}};
       if(name==='./login-startup.cjs')return {restoreDevelopmentEnvironment(){},createLoginStartup:()=>({hidden:()=>false})};
       if(name==='./shared/controller.cjs')return {createSnapshotWorker:()=>({}),createManagementWorker:()=>({}),workerFor:()=>({})};
-      if(name==='node:fs')return {...fs,existsSync:file=>paired&&file==='/fixture/zcode-official-auth.enc',readFileSync(){throw Error('No fixture preferences');}};
+      if(name==='node:fs')return {...fs,existsSync:file=>paired&&file===path.join('/fixture','zcode-official-auth.enc'),readFileSync(){throw Error('No fixture preferences');}};
       return requireMain(name);
     }});
   vm.runInContext(fs.readFileSync(main,'utf8'),context);

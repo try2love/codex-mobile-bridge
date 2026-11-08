@@ -33,7 +33,7 @@ test('saved link and encrypted login survive controller restart and a local-mode
  fs.writeFileSync(path.join(c.profile,'desktop-sessions/settings.json'),JSON.stringify(config));assert.equal(restored.status().selected,true);
 });
 test('standby pairing waits for explicit access before reading the keychain and shares one private listener',async t=>{
- const c=fixture(t);t.after(()=>c.dispose());c.save(link);
+ const c=platformFixture(t,process.platform);t.after(()=>c.dispose());c.save(link);
  fs.writeFileSync(c.authFile,await c.electron.safeStorage.encryptStringAsync(JSON.stringify({jwt:'fixture',provider:'zai',link})));
  let decrypts=0;const decode=c.electron.safeStorage.decryptStringAsync;
  c.electron.safeStorage.decryptStringAsync=async bytes=>{decrypts++;return decode(bytes);};

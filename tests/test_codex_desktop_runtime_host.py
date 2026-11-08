@@ -22,6 +22,7 @@ from bridge.clients.websocket import WebSocket
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@unittest.skipIf(os.name == 'nt', 'POSIX private runtime directory and sockets')
 class AdapterLifecycleTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(dir=ROOT / '.tmp')

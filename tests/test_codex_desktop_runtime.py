@@ -20,6 +20,7 @@ from bridge.app.service import Bridge
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@unittest.skipIf(os.name == 'nt', 'POSIX private runtime directory and sockets')
 class DesktopRuntimeTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(dir=ROOT / '.tmp')
@@ -261,6 +262,7 @@ class MetadataRoutingTests(unittest.TestCase):
             shared.assert_not_called()
             self.assertTrue(fallback.call_args.kwargs['isolated_home'])
 
+    @unittest.skipIf(os.name == 'nt', 'POSIX shared-runtime lock')
     def test_another_gateway_cannot_initialize_during_a_metadata_write(self):
         client = Mock()
         def operation(request):
