@@ -219,6 +219,7 @@ class ClaudeCliContract(unittest.TestCase):
         adapter.discovery = {'installed': True}
         adapter.directory = self.root/'adapter'
         adapter.desktop_listing.return_value = {'sessions': [{'id': 'desktop-session'}]}
+        manager.config.setdefault('enabled', {})['claude'] = True
         manager.adapters['claude'] = adapter
         manager.adapters['deepseek'] = Mock()
         manager.adapters['deepseek'].call.return_value = {'connected': False}

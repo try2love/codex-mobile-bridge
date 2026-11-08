@@ -42,9 +42,9 @@ class SshIsolationTests(unittest.TestCase):
         local, remote = Bridge.__new__(Bridge), Bridge.__new__(Bridge)
         local.host, remote.host = 'local', 'remote:fixture'
         local.accounts = remote.accounts = accounts
-        local.released_cli = Mock()
+        local.released_cli = Mock(); local.ipc = Mock(); local.ipc.endpoint_changed.return_value = False
         local.session = lambda *args, **kwargs: SimpleNamespace(
-            activation_lock=threading.Lock(), connected=True)
+            activation_lock=threading.Lock(), connected=True, runtime='desktop')
 
         def offline(*args, **kwargs):
             entered.set()

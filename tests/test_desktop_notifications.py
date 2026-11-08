@@ -29,7 +29,7 @@ class DesktopNotificationTests(unittest.TestCase):
         self.bridge.for_host.side_effect = AssertionError('desktop notification activated Codex')
         self.manager = Notifications(self.bridge, self.root, lambda: ['https://example.com'], desktop_sessions=self.desktop)
         self.addCleanup(self.manager.close)
-        save_settings(self.root, {'mobileEnabled': True})
+        save_settings(self.root, {'mobileEnabled': True, 'includeTitle': False})
         self.manager.defaults({'requests': True, 'completion': True})
 
     def scan(self):

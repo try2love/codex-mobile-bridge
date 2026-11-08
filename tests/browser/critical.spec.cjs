@@ -571,7 +571,9 @@ test('shared client shell preserves navigation scroll and switches exact instanc
  await page.evaluate(()=>clientNavigation.applyClients({clients:clientNavigation.clients.map(row=>({...row}))}));
  await expect.poll(()=>page.locator('.client-switch').evaluate(node=>Math.round(node.scrollLeft))).toBe(140);
  expect(await page.evaluate(()=>window.__firstSwitch===document.querySelector('.client-switch button'))).toBe(true);
- await expect(page.locator('.client-switch-arrow.previous')).toBeVisible();await expect(page.locator('.client-switch-arrow.next')).toBeVisible();
+ await expect(page.locator('.client-switch-arrow.previous')).toBeVisible();
+ const moreToRight=await page.locator('.client-switch').evaluate(node=>node.scrollLeft+node.clientWidth<node.scrollWidth-1);
+ await expect(page.locator('.client-switch-arrow.next')).toBeVisible({visible:moreToRight});
  // Moving the same shell between provider lists must retain the user's position.
  await page.locator('.client-picker').click();await page.locator('.client-picker-options [data-client-id="claude"]').click();
  await expect.poll(()=>page.evaluate(()=>clientNavigation.activeClient())).toBe('claude');
