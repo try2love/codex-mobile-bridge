@@ -16,6 +16,7 @@ test.beforeEach(async({page,context,baseURL,request})=>{
     window.setInterval=callback=>{window.cloudTick=callback;return 1;};
     window.cloudCalls=[];window.cloudAllCalls=[];window.recordDirectoryCalls=false;window.cloudErrors={};window.cloudPendingAction='';
     window.cloudStatus={configured:true,enabled:true,origin:'https://relay.example.test',account_id:'account-original',login:'original-user',gateway_id:'gateway-original',entitlement:{required:true,active:true,expires_at:'2030-05-02T03:04:05Z',server_time:new Date(now).toISOString()},entitlement_error:'',runtime:{state:'connected'},bindings:[{binding_id:'pinned-original',mobile_public_key:'control-original',preview_public_key:'preview-original',device_name:'Verified phone',allowed:true,remote_status:'active',remote_revision:1,generation:0,safety_code:'12345678 ABCDEF90 12345678 ABCDEF90 12345678 ABCDEF90 12345678 ABCDEF90'}]};
+    window.cloudStatus.web_access={allowed:false,revision:0,error:''};
     window.cloudOriginalAccount=JSON.parse(JSON.stringify(window.cloudStatus));
     window.cloudResponses={
       capabilities:{mode:'hosted',email_verification_methods:['code'],registration_flow:'email_code_password'},entitlement:{...window.cloudStatus.entitlement},
@@ -27,6 +28,10 @@ test.beforeEach(async({page,context,baseURL,request})=>{
       window.cloudAllCalls.push({...payload});if(!['devices'].includes(payload.action)||window.recordDirectoryCalls)window.cloudCalls.push({...payload});
       if(window.cloudPendingAction===payload.action)await new Promise(resolve=>window.finishCloud=resolve);
       if(window.cloudErrors[payload.action])throw Error(window.cloudErrors[payload.action]);
+      if(payload.action==='web-access'){
+        window.cloudStatus.web_access={allowed:payload.allowed,revision:payload.expected_revision+1,error:''};
+        return JSON.parse(JSON.stringify(window.cloudStatus));
+      }
       if(payload.action==='logout'){
         window.cloudStatus={configured:false,enabled:false,entitlement:null,runtime:{state:'stopped'},bindings:[]};
         return {...window.cloudStatus,logged_out:true,remote_logout_confirmed:true,logout_error:'',credential_clear_error:'',...window.cloudResponses.logout};
@@ -63,7 +68,7 @@ test.beforeEach(async({page,context,baseURL,request})=>{
     await page.addScriptTag({url});
   }
   await page.evaluate(()=>{window.cloudInitialServer=document.querySelector('[data-cloud-server]').value;BridgeI18n.setLanguage('zh');window.CloudPanel.update(window.cloudStatus);});
-  await expect.poll(()=>page.evaluate(()=>window.cloudCalls.map(call=>call.action))).toEqual(['entitlement','status']);
+  expect(await page.evaluate(()=>window.cloudCalls.map(call=>call.action))).toEqual([]);
   await page.evaluate(()=>window.cloudCalls=[]);
 });
 
@@ -211,16 +216,16 @@ test('a signed-out snapshot arriving before the logout response does not hide co
 });
 
 test('a delayed entitlement response after logout cannot restore account details or start more cloud work',async({page})=>{
-  await page.evaluate(async()=>{window.cloudPendingAction='entitlement';window.cloudNow+=60000;await window.cloudTick();});
+  await page.evaluate(()=>{window.cloudPendingAction='entitlement';document.querySelector('[data-cloud-action="entitlement"]').click();});
   await expect.poll(()=>page.evaluate(()=>typeof window.finishCloud)).toBe('function');
   await language(page,'en');
-  await page.locator('[data-cloud-action="logout"]').click();
+  await page.evaluate(()=>{window.cloudStatus={configured:false,enabled:false};window.CloudPanel.update(window.cloudStatus);});
   await expect(page.locator('[data-cloud-open-login]')).toBeVisible();
   await page.evaluate(()=>window.finishCloud());
   await expect(page.locator('[data-cloud-entitlement]')).toHaveText('');
-  await expect(page.locator('[data-cloud-result]')).toHaveText('Signed out of the cloud account.');
+  await expect(page.locator('[data-cloud-result]')).toHaveText('');
   await page.evaluate(async()=>{window.cloudNow+=60000;await window.cloudTick();});
-  expect(await page.evaluate(()=>window.cloudCalls.map(call=>call.action))).toEqual(['entitlement','logout']);
+  expect(await page.evaluate(()=>window.cloudCalls.map(call=>call.action))).toEqual(['entitlement']);
 });
 
 test('official cloud selection changes only the draft and clears a different server password',async({page})=>{
@@ -416,7 +421,7 @@ test('confirmed redemption with a status refresh failure warns against redeeming
   await language(page,'en');
   await expect(page.locator('[data-cloud-result]')).toHaveText('Service days redeemed, but service status could not be refreshed. Refresh status; do not redeem again.');
   await page.evaluate(()=>{window.cloudNow+=5000;return window.cloudTick();});
-  await expect.poll(()=>page.evaluate(()=>window.cloudCalls.map(call=>call.action))).toEqual(['redeem','status','entitlement','status']);
+  expect(await page.evaluate(()=>window.cloudCalls.map(call=>call.action))).toEqual(['redeem','status']);
   expect(await page.evaluate(()=>window.cloudCalls.filter(call=>call.action==='redeem').length)).toBe(1);
 });
 
@@ -925,6 +930,27 @@ test('unknown registration results discard the one-time proof and require checki
   await expect(page.locator('[data-cloud-email-code]')).toHaveValue('');
   expect(await page.evaluate(()=>window.cloudCalls.map(call=>call.action))).toEqual(['signup-verify','register']);
   expect(await page.evaluate(()=>window.cloudStatus.configured)).toBe(false);
+});
+
+test('web access switches independently and has translated stable feedback',async({page},testInfo)=>{
+  await page.evaluate(()=>window.CloudPanel.update(window.cloudStatus));
+  const control=page.getByRole('switch',{name:'允许网页访问本电脑'});
+  await expect(control).not.toBeChecked();
+  await control.check();
+  await expect(control).toBeChecked();
+  await expect(page.locator('[data-cloud-web-state]')).toHaveText('已允许当前云账号通过网页访问。');
+  expect(await page.evaluate(()=>window.cloudStatus.bindings[0].allowed)).toBe(true);
+  await control.uncheck();
+  await expect(page.locator('[data-cloud-result]')).toHaveText('网页访问已关闭，已打开的网页会话已断开。');
+  expect(await page.evaluate(()=>window.cloudAllCalls.filter(c=>c.action==='web-access'))).toEqual([
+    {action:'web-access',origin:'https://relay.example.test',account_id:'account-original',gateway_id:'gateway-original',allowed:true,expected_revision:0},
+    {action:'web-access',origin:'https://relay.example.test',account_id:'account-original',gateway_id:'gateway-original',allowed:false,expected_revision:1}
+  ]);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await page.screenshot({path:path.join(root,'.tmp/web-access-20261108',testInfo.project.name+'.png'),fullPage:true});
+  await language(page,'en');
+  await expect(page.getByRole('switch',{name:'Allow web access to this computer'})).not.toBeChecked();
+  await expect(page.locator('[data-cloud-web-state]')).toHaveText('Web access disabled. Enable it here to connect from a browser.');
 });
 
 test('a boolean verification receipt without a registration proof cannot unlock password entry',async({page})=>{

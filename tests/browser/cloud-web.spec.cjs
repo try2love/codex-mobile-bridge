@@ -1,0 +1,37 @@
+'use strict';
+const {test,expect}=require('@playwright/test');
+
+test('account login, live desktop assets, previews, computer storage and logout',async({page,context,baseURL},testInfo)=>{
+ await context.route('**/*',route=>new URL(route.request().url()).origin===baseURL?route.continue():route.abort());
+ const errors=[],bad=[];page.on('pageerror',error=>errors.push(error.message));page.on('response',r=>{if(r.status()>=400&&!r.url().endsWith('/favicon.ico'))bad.push([r.status(),r.url()]);});
+ await page.goto('/');await expect(page.locator('#login')).toBeVisible();
+ await page.locator('#account').fill('web-fixture');await page.locator('#password').fill('test-only-password-123');await page.getByRole('button',{name:'登录',exact:true}).click();
+ await expect(page.locator('#gateways a[href]')).toHaveCount(2);
+ const links=await page.locator('#gateways a').evaluateAll(nodes=>nodes.map(n=>n.getAttribute('href')));
+ await page.goto(links[0]);await expect(page.locator('#app')).toBeVisible({timeout:40000});await expect(page.locator('#bootstrap-status')).toBeHidden();
+ expect(await page.evaluate(()=>window.BridgeCloudWeb)).toBe(true);
+ const scope=await page.evaluate(()=>{localStorage.setItem('fixture-draft','first computer');return {base:BridgeRelayBase,keys:Array.from({length:localStorage.length},(_,i)=>localStorage.key(i))};});
+ expect(scope.base+'/').toBe(links[0]);expect(scope.keys).toContain('fixture-draft');
+ await page.evaluate(async()=>{await BridgeFeatures.load('chat');await BridgeFeatures.load('math');await BridgeFeatures.load('files');await BridgeFeatures.load('terminal');});
+ const diagram=await page.evaluate(async()=>{const rendered=await BridgeMermaidRenderer.render('graph TD; A-->B');return {width:rendered.width,url:rendered.url.slice(0,19)};});
+ expect(diagram.width).toBeGreaterThan(0);
+ await page.evaluate(()=>{const preview=BridgeHtmlPreview.create({text:'<h1>Cloud preview</h1>'});document.body.append(preview.element);});
+ await expect(page.frameLocator('iframe[title="HTML 预览"]').locator('h1')).toHaveText('Cloud preview');
+ expect(await page.evaluate(async()=>{const lib=await import(BridgeRelayBase+'/vendor/pdfjs/pdf.min.mjs');return !!lib.getDocument;})).toBe(true);
+	 const same=await context.newPage();await same.goto(links[0]);await expect(same.locator('#app')).toBeVisible({timeout:40000});
+	 await same.evaluate(()=>{window.fixtureEvents=[];window.addEventListener('storage',event=>fixtureEvents.push(event.key));});
+	 await page.evaluate(()=>localStorage.setItem('fixture-sync','same computer'));
+	 await expect.poll(()=>same.evaluate(()=>fixtureEvents.includes('fixture-sync'))).toBe(true);
+ await page.goto(links[1]);await expect(page.locator('#app')).toBeVisible({timeout:40000});
+ expect(await page.evaluate(()=>localStorage.getItem('fixture-draft'))).toBe(null);
+ await page.evaluate(()=>localStorage.setItem('fixture-draft','second computer'));
+	 await page.evaluate(()=>localStorage.setItem('fixture-cross','different computer'));
+ await page.goto(links[0]);await expect(page.locator('#app')).toBeVisible({timeout:40000});
+ expect(await page.evaluate(()=>localStorage.getItem('fixture-draft'))).toBe('first computer');
+	 await page.evaluate(()=>localStorage.setItem('fixture-barrier','same computer'));
+	 await expect.poll(()=>same.evaluate(()=>fixtureEvents.includes('fixture-barrier'))).toBe(true);
+	 expect(await same.evaluate(()=>fixtureEvents.includes('fixture-cross'))).toBe(false);await same.close();
+ await testInfo.attach('cloud-web',{body:await page.screenshot(),contentType:'image/png'});
+ await page.evaluate(async()=>{await api('/api/logout',{});showLogin();});await expect(page).toHaveURL(baseURL+'/');await expect(page.locator('#login')).toBeVisible();
+ expect(errors).toEqual([]);expect(bad).toEqual([]);
+});

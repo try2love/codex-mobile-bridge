@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # may change. Explicit host/layout/bootstrap entrypoints are added; physical
 # directories and manifest entries must not become public URLs.
 PUBLIC_URLS = set('''
-/ /bootstrap.js /host.js /layout.js /permissions.js /downloads.js /downloads.css
+/ /bootstrap.js /host.js /cloud-web.js /layout.js /permissions.js /downloads.js /downloads.css
 /client-icons/codex.png /client-icons/claude.png /client-icons/deepseek.png
 /client-navigation.js /client-navigation.css /client-lifecycle.js /client-lifecycle.css /desktop-sessions.js
 /client-accounts.js /cli-access.js /wsl-accounts.js /desktop-sessions.css /vendor/xterm/xterm.js

@@ -239,6 +239,13 @@ class Desktop:
         value = Controller(self.data_dir).status()
         if not runtime['running'] or value['runtime'].get('pid') != runtime.get('pid'):
             value['runtime'] = {'state': 'stopped'}
+        elif value['configured']:
+            try:
+                current = request_pairing(self.data_dir, {'action': 'cloud', 'value': {'action': 'status'}}, timeout=2)
+                if all(current.get(key) == value.get(key) for key in ('origin', 'account_id', 'gateway_id')):
+                    value['web_access'] = current.get('web_access', {'allowed': False, 'revision': 0, 'error': 'web_access_unavailable'})
+            except (OSError, ValueError, TimeoutError):
+                value['web_access'] = {'allowed': False, 'revision': 0, 'error': 'web_access_unavailable'}
         return value
 
     def network_adaptation(self, value):

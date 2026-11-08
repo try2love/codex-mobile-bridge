@@ -13,6 +13,7 @@
     "shell/app.js"
   ],
   "/bootstrap.js": "shared/bootstrap.js",
+  "/cloud-web.js": "hosts/cloud-web.js",
   "/style.css": [
     "shell/style.css",
     "layouts/wide/shell.css",

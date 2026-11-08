@@ -15,7 +15,7 @@ from bridge.features.accounts.secrets import backend, service
 from bridge.features.auth.auth import session_file_lock
 from bridge.features.auth.tls import client_context
 from bridge.features.network.cloud_crypto import exact_origin, new_key, public_key
-from bridge.features.network.cloud_access import BindingAccess
+from bridge.features.network.cloud_access import BindingAccess, WebAccess
 from bridge.features.notifications.channels import enable_mobile_for_cloud, read_json, write_json
 from bridge.features.notifications.cloud import CloudNotifications
 
@@ -80,6 +80,36 @@ class Controller:
         self.path = self.directory / 'cloud-account.json'
         self.lock_path = self.directory / 'cloud-account.lock'
         self.access = BindingAccess(directory)
+        self.web_access = WebAccess(directory)
+
+    def web_access_state(self, config=None):
+        config = self.config() if config is None else config
+        if not config:
+            return {'allowed': False, 'revision': 0, 'error': ''}
+        return self.web_access.state(scope(config['origin'], config['account_id']), config['gateway_id'])
+
+    def set_web_access(self, value, block=None):
+        if (set(value) != {'action', 'origin', 'account_id', 'gateway_id', 'allowed', 'expected_revision'}
+                or type(value['allowed']) is not bool or type(value['expected_revision']) is not int
+                or not 0 <= value['expected_revision'] < 2**53 - 1):
+            raise ValueError('invalid cloud operation')
+        with session_file_lock(self.lock_path):
+            config = self.config()
+            if not config or any(value[key] != config[key] for key in ('origin', 'account_id', 'gateway_id')):
+                raise CloudError('credential_scope_mismatch')
+            current = self.web_access_state(config)
+            if current['error']:
+                raise CloudError(current['error'])
+            if current['revision'] != value['expected_revision']:
+                raise CloudError('web_access_conflict')
+            if block is not None:
+                block()
+            try:
+                self.web_access.save(scope(config['origin'], config['account_id']), config['gateway_id'],
+                                     value['allowed'], current['revision'] + 1)
+            except (OSError, ValueError):
+                raise CloudError('web_access_storage_error') from None
+            return self.status()
 
     def config(self):
         value = read_json(self.path, {})
@@ -324,6 +354,7 @@ class Controller:
             runtime = {'state': 'stopped'}
         return {'configured': bool(config), **config,
                 'enabled': bool(config),
+                'web_access': self.web_access_state(config),
                 'entitlement': entitlement, 'entitlement_error': error,
                 'runtime': {k: runtime[k] for k in ('state', 'code', 'pid') if k in runtime},
                 'bindings': [{'binding_id': k, **{name: pin[name] for name in ('gateway_id', 'mobile_public_key', 'preview_public_key', 'device_name', 'safety_code') if name in pin},
@@ -460,6 +491,8 @@ class Controller:
             return self.device_directory()
         if action == 'access':
             return self.set_binding_access(value)
+        if action == 'web-access':
+            return self.set_web_access(value)
         if action == 'login':
             return self.login(value)
         if action in ('capabilities', 'register', 'signup-code', 'signup-verify', 'forgot'):

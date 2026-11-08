@@ -1,5 +1,6 @@
 [
   "LICENSE",
+  "web/hosts/cloud-web.js",
   "bridge/features/sessions/store.py",
   "bridge/features/sessions/message_management.py",
   "bridge/clients/codex/catalog.py",

@@ -3,7 +3,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 const root=path.resolve(__dirname,'..');
 const copy=value=>JSON.parse(JSON.stringify(value));
 const grant={required:true,active:true,expires_at:'2030-06-01T00:00:00Z',server_time:'2030-05-01T00:00:00Z'};
-const account={configured:true,enabled:true,origin:'https://relay.example.test',account_id:'account-original',gateway_id:'gateway-original',login:'original-user',entitlement:grant,entitlement_error:'',runtime:{state:'connected'},bindings:[]};
+const account={configured:true,enabled:true,origin:'https://relay.example.test',account_id:'account-original',gateway_id:'gateway-original',login:'original-user',entitlement:grant,entitlement_error:'',runtime:{state:'connected'},bindings:[],web_access:{allowed:false,revision:0,error:''}};
 
 function fixture(){
   const events=new Map(),timers=[],calls=[],responses={entitlement:copy(grant)};
@@ -48,6 +48,7 @@ function fixture(){
   const panel=new Node('section');panel.setAttribute('data-panel','network');document.body.append(panel);
   function respond(payload){
     if(payload.action==='status')return copy(status);
+    if(payload.action==='web-access'){status.web_access={allowed:payload.allowed,revision:payload.expected_revision+1,error:''};return copy(status);}
     if(payload.action==='entitlement'){status={...status,entitlement:copy(responses.entitlement),entitlement_error:'',enabled:responses.entitlement.active};return copy(responses.entitlement);}
     if(payload.action==='login'){status=copy(responses.login||account);return copy(status);}
     if(payload.action==='logout'){status={configured:false,enabled:false,entitlement:null,runtime:{state:'stopped'},bindings:[]};return {...copy(status),logged_out:true,remote_logout_confirmed:true,logout_error:'',credential_clear_error:'',...copy(responses.logout||{})};}
@@ -80,6 +81,39 @@ function fixture(){
 }
 
 async function signedIn(ui,value=account){ui.update(value);await ui.flush();ui.calls.length=0;}
+
+test('web access starts off and writes only explicit account-scoped permission',async()=>{
+  const ui=fixture();await signedIn(ui);ui.language('en');
+  const input=ui.node('web-allow');assert.equal(input.checked,false);assert.equal(input.disabled,false);
+  input.checked=true;await input.onchange();
+  assert.deepEqual(ui.calls,[{action:'web-access',origin:account.origin,account_id:account.account_id,gateway_id:account.gateway_id,allowed:true,expected_revision:0}]);
+  assert.equal(input.checked,true);assert.match(ui.node('web-state').textContent,/allowed/);
+  input.checked=false;await input.onchange();
+  assert.equal(input.checked,false);assert.equal(ui.calls[1].expected_revision,1);assert.match(ui.node('result').textContent,/disconnected/);
+  ui.language('zh');assert.match(ui.node('web-state').textContent,/[\u4e00-\u9fff]/);
+});
+
+test('web permission failures refresh without replay and stale account completions are ignored',async()=>{
+  const ui=fixture();await signedIn(ui);ui.language('en');
+  ui.setRequest(payload=>{if(payload.action==='web-access')throw Error('request timed out');return ui.respond(payload);});
+  ui.node('web-allow').checked=true;await ui.node('web-allow').onchange();
+  assert.equal(ui.node('web-allow').checked,false);
+  assert.deepEqual(ui.calls.map(c=>c.action),['web-access','status']);
+  let complete;ui.setRequest(payload=>payload.action==='web-access'?new Promise(resolve=>complete=resolve):ui.respond(payload));
+  ui.node('web-allow').checked=true;const pending=ui.node('web-allow').onchange();
+  ui.update({...account,account_id:'other-account'});
+  complete({...account,web_access:{allowed:true,revision:1,error:''}});await pending;
+  assert.equal(ui.node('web-allow').checked,false);
+  assert.doesNotMatch(ui.node('result').textContent,/Web access allowed/);
+});
+
+test('a failed persisted disable has an explicit recovery without granting access',async()=>{
+  const ui=fixture();await signedIn(ui,{...account,web_access:{allowed:false,revision:3,error:'web_access_storage_error'}});
+  assert.equal(ui.node('web-allow').disabled,true);assert.equal(ui.node('web-disable').hidden,false);
+  await ui.node('web-disable').onclick();
+  assert.equal(ui.calls[0].action,'web-access');assert.equal(ui.calls[0].allowed,false);
+  assert.equal(ui.calls[0].expected_revision,3);assert.equal(ui.node('web-disable').hidden,true);
+});
 
 test('logged-in cloud accounts hide the sign-in entry and have no manual relay switch',async()=>{
   const ui=fixture();assert.equal(ui.node('open-login').hidden,false);

@@ -47,6 +47,58 @@ class CloudAccountsTests(unittest.TestCase):
                        'preview_private': base64.b64encode(new_key()).decode()}
         self.controller.save_secret(self.config, self.secret)
 
+    def web_change(self, allowed, revision=0):
+        return {'action': 'web-access', 'allowed': allowed, 'expected_revision': revision,
+                **{key: self.config[key] for key in ('origin', 'account_id', 'gateway_id')}}
+
+    def test_web_access_defaults_off_persists_and_never_uses_cloud_network(self):
+        self.controller.request = Mock(side_effect=AssertionError('unexpected cloud request'))
+        before = self.controller.path.read_bytes()
+        self.assertEqual(self.controller.status()['web_access'], {'allowed': False, 'revision': 0, 'error': ''})
+        result = self.controller.control(self.web_change(True))
+        self.assertEqual(result['web_access'], {'allowed': True, 'revision': 1, 'error': ''})
+        self.assertTrue(Controller(self.directory).web_access_state()['allowed'])
+        for key, other in [('origin', 'https://another.example.test'), ('account_id', str(uuid.uuid4())), ('gateway_id', str(uuid.uuid4()))]:
+            self.assertFalse(self.controller.web_access_state({**self.config, key: other})['allowed'])
+        self.assertEqual(self.controller.path.read_bytes(), before, 'phone relay configuration must not change')
+        self.controller.control(self.web_change(False, 1))
+        self.assertFalse(Controller(self.directory).web_access_state()['allowed'])
+        self.controller.request.assert_not_called()
+
+    def test_web_access_rejects_stale_identity_revision_and_non_boolean(self):
+        self.controller.control(self.web_change(True))
+        for change in [{'allowed': 'false'}, {'allowed': 0}, {'expected_revision': True},
+                       {'expected_revision': 0}, {'expected_revision': 2**53-1},
+                       {'account_id': str(uuid.uuid4())}, {'gateway_id': str(uuid.uuid4())},
+                       {'origin': 'https://elsewhere.example.test'}, {'unexpected': True}]:
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.controller.control({**self.web_change(False, 1), **change})
+        self.assertTrue(self.controller.web_access_state()['allowed'])
+        for content in ['[]', 'invalid json', json.dumps({scope(self.config['origin'], self.config['account_id'])+':'+self.config['gateway_id']: {'allowed': 'true', 'revision': 1}})]:
+            self.controller.web_access.path.write_text(content)
+            self.assertFalse(self.controller.web_access_state()['allowed'])
+            with self.assertRaisesRegex(CloudError, 'web_access_storage_error'):
+                self.controller.control(self.web_change(True))
+
+    def test_failed_web_disable_fences_runtime_without_touching_phone_channels(self):
+        self.controller.control(self.web_change(True))
+        connector = self.connector()
+        connector.channels = {'phone': object()}
+        generation = connector.policy_generation
+        with patch.object(self.controller.web_access, 'save', side_effect=OSError('disk unavailable')):
+            with self.assertRaisesRegex(CloudError, 'web_access_storage_error'):
+                connector.control(self.web_change(False, 1))
+        self.assertIn(connector.account_identity(self.config), connector.blocked_web_scopes)
+        status = connector.control({'action': 'status'})
+        self.assertFalse(status['web_access']['allowed'])
+        self.assertEqual(status['web_access']['error'], 'web_access_storage_error')
+        self.assertEqual(set(connector.channels), {'phone'})
+        self.assertEqual(connector.policy_generation, generation)
+        self.assertTrue(self.controller.web_access_state()['allowed'], 'failure must not claim persisted denial')
+        connector.control(self.web_change(False, 1))
+        self.assertNotIn(connector.account_identity(self.config), connector.blocked_web_scopes)
+        self.assertFalse(self.controller.web_access_state()['allowed'])
+
     def entitlement(self, seconds=600, *, required=True, active=True):
         now = datetime.now(timezone.utc)
         return {'required': required, 'active': active, 'server_time': now.isoformat(),

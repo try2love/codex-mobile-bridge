@@ -115,6 +115,7 @@ class Connector:
         self.channels = {}
         self.large_streams = 0
         self.blocked_bindings = set()
+        self.blocked_web_scopes = set()
         self.access_generations = {}
         self.thread = self.http_thread = None
         self.loop = self.ws = None
@@ -215,6 +216,31 @@ class Connector:
         if not isinstance(value, dict):
             raise ValueError('invalid cloud operation')
         action = value.get('action', 'status')
+        if action == 'web-access':
+            with self.lock:
+                closing = None
+                identity = self.account_identity(value)
+                def block():
+                    nonlocal closing
+                    self.blocked_web_scopes.add(identity)
+                    if hasattr(self, 'web'):
+                        if self.loop and not self.loop.is_closed():
+                            closing = asyncio.run_coroutine_threadsafe(self.web.disconnect(), self.loop)
+                try:
+                    result = self.accounts.set_web_access(value, block=block)
+                finally:
+                    if closing is not None:
+                        closing.result(timeout=5)
+                self.blocked_web_scopes.discard(identity)
+                if hasattr(self, 'web'):
+                    if self.loop and not self.loop.is_closed():
+                        self.loop.call_soon_threadsafe(self.web.wake.set)
+                return result
+        if action == 'status' and self.account_identity(self.accounts.config()) in self.blocked_web_scopes:
+            result = self.accounts.status()
+            result['web_access']['allowed'] = False
+            result['web_access']['error'] = 'web_access_storage_error'
+            return result
         if action == 'devices':
             result = self.accounts.device_directory()
             identity = self.account_identity(self.accounts.config())
@@ -434,6 +460,8 @@ class Connector:
         await self.p2p.block(binding)
 
     async def stop_authority(self):
+        if getattr(self, 'web', None):
+            await self.web.disconnect()
         await asyncio.gather(*(self.block_binding(binding) for binding in
             {channel.binding for channel in list(self.channels.values())}), return_exceptions=True)
         await self.p2p.close()
@@ -538,6 +566,9 @@ class Connector:
                                              cookie_jar=aiohttp.DummyCookieJar(), trust_env=True, trace_configs=[trace]) as remote:
                 pump = asyncio.create_task(self.notification_pump())
                 policy = asyncio.create_task(self.watch_policy())
+                from bridge.features.network.cloud_web import CloudWeb
+                self.web = CloudWeb(self)
+                web = asyncio.create_task(self.web.run(remote))
                 failures = 0
                 try:
                     while not self.closed.is_set():
@@ -578,7 +609,8 @@ class Connector:
                     await self.stop_authority()
                     pump.cancel()
                     policy.cancel()
-                    await asyncio.gather(pump, policy, return_exceptions=True)
+                    web.cancel()
+                    await asyncio.gather(pump, policy, web, return_exceptions=True)
 
     async def notification_pump(self):
         while not self.closed.is_set():

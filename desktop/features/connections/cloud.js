@@ -10,6 +10,11 @@
     <div data-cloud-account hidden><p data-cloud-identity></p>
     <div class="actions"><button type="button" data-cloud-action="entitlement" data-i18n="Refresh Entitlement">Refresh Entitlement</button><button type="button" data-cloud-action="logout" data-i18n="Log Out">Log Out</button></div>
     <p data-cloud-entitlement></p><div data-cloud-redeem hidden><label><span data-i18n="Service-days redemption code">Service-days redemption code</span><input data-cloud-code autocomplete="off" maxlength="128"></label><button type="button" data-cloud-action="redeem" data-i18n="Redeem">Redeem</button></div>
+    <div class="cloud-device"><h3 data-i18n="Web Cloud Access">Web Cloud Access</h3>
+    <p class="hint" id="cloud-web-help" data-i18n="Allow this cloud account to access this computer from a browser. Turning this off disconnects open web sessions; phone permissions are separate.">Allow this cloud account to access this computer from a browser. Turning this off disconnects open web sessions; phone permissions are separate.</p>
+    <label class="cloud-device-allow"><input type="checkbox" role="switch" data-cloud-web-allow aria-describedby="cloud-web-help"><span data-i18n="Allow web access to this computer">Allow web access to this computer</span></label>
+    <p data-cloud-web-state class="hint" role="status"></p>
+    <button type="button" data-cloud-web-disable hidden data-i18n="Retry saving web access as disabled">Retry saving web access as disabled</button></div>
     <h3 data-i18n="Cloud Devices">Cloud Devices</h3><p class="hint" data-i18n="Phones signed in to this account appear automatically. Allow each phone to connect on this desktop.">Phones signed in to this account appear automatically. Allow each phone to connect on this desktop.</p>
     <p data-cloud-directory-error class="hint" role="status"></p><div data-cloud-devices></div></div>
     <p data-cloud-result role="status"></p>`;
@@ -56,6 +61,9 @@
     device_access_unconfirmed:'Connection is blocked locally. The cloud permission change could not be confirmed; refresh before trying again.',
     device_access_superseded:'This permission change was superseded. Connection remains blocked locally.',
     device_access_storage_error:'Connection is blocked for this gateway run, but its disabled state could not be saved. Fix storage permissions before restarting.',
+    web_access_storage_error:'Web access is blocked for this gateway run, but its permission could not be saved. Fix storage permissions before restarting.',
+    web_access_conflict:'Web access changed. Refresh its status before trying again.',
+    web_access_unavailable:'Web access status is unavailable. Restart the updated gateway and refresh.',
     connection_failed:'Cloud connection failed. Check the server and network.',
     protocol_upgrade_required:'Update the server, desktop and phone together to use automatic device discovery.',
     capacity:'Too many attempts. Wait before trying again.',
@@ -177,6 +185,11 @@
     $('signin-hint').hidden=!!value.configured;
     $('identity').textContent=value.configured?(value.origin===officialOrigin?t('Official Cloud'):value.origin)+' / '+value.login+' / '+format('Gateway ID: {id}',{id:value.gateway_id}):'';
     $('redeem').hidden=!(value.configured&&entitlement?.required===true);
+    const web=value.web_access;
+    $('web-allow').checked=web?.allowed===true&&!web.error;
+    $('web-allow').disabled=busy||!value.configured||!web||!!web.error;
+    $('web-disable').hidden=web?.error!=='web_access_storage_error';
+    $('web-state').textContent=!web?t('Restart the updated gateway to manage web access.'):web.error?codeText(web.error):t(web.allowed?'Web access allowed for this cloud account.':'Web access disabled. Enable it here to connect from a browser.');
     $('entitlement').textContent=!entitlement?(value.configured&&value.entitlement_error?t('Cloud service status could not be verified. Refresh the service status.'):''):!entitlement.active?t('Cloud entitlement is inactive. Direct connections are unchanged.'):entitlement.expires_at?format('Active until {date}',{date:new Date(entitlement.expires_at).toLocaleString(BridgeI18n.locale())}):t('Active (selfhost)');
     renderResult();
     renderAuth();
@@ -283,6 +296,10 @@
       if(action==='redeem'){payload.code=$('code').value.trim();$('code').value='';}
       const result=await api.cloud(payload);
       if(expectedAccount&&action!=='login'&&expectedAccount!==accountScope()&&(action!=='logout'||state.configured))return;
+      if(action==='web-access'){
+        if(accountScope(result)!==expectedAccount||result.web_access?.allowed!==extra.allowed||result.web_access?.revision!==extra.expected_revision+1)throw Error('Web access status could not be confirmed. Refresh before trying again.');
+        update(result);setResult(extra.allowed?'Web access allowed for this cloud account.':'Web access disabled. Open web sessions have been disconnected.');return;
+      }
       if(action==='logout'){
         if(result?.configured!==false)throw Error('The cloud sign-out result could not be confirmed. Refresh status before trying again.');
         completeLogout(result);return;
@@ -333,6 +350,11 @@
         update(current);
       }catch{}
       if(action==='access')try{update(await api.cloud({action:'status'}));}catch{}
+      if(action==='web-access'){
+        if(expectedAccount!==accountScope())return;
+        try{const current=await api.cloud({action:'status'});if(expectedAccount===accountScope()&&expectedAccount===accountScope(current))update(current);}catch{}
+        if(expectedAccount!==accountScope())return;
+      }
       setResult(action==='access'?/device_access_storage_error/.test(error.message)?errors.device_access_storage_error:errors.device_access_unconfirmed:redeemed?serviceMessages.redeemRefreshFailed:signedIn?serviceMessages.loginRefreshFailed:action==='register'&&/network_or_certificate_error/.test(error.message)?'The registration result could not be confirmed. Try signing in or resetting your password before registering again.':error.message,true);
     }
     finally{busy=false;render();if(signedIn&&dialog.open)dialog.close();else if(dialog.open&&['register','signup-code','signup-verify'].includes(action))$(authView==='password'?'password':authView==='register'?'email-code':'login').focus();}
@@ -344,6 +366,15 @@
     draftOrigin=origin;render();
   }
   $('server').onchange=changeServer;$('origin').addEventListener('input',changeServer);
+  $('web-allow').onchange=async()=>{
+    const allowed=$('web-allow').checked;
+    $('web-allow').checked=state.web_access?.allowed===true;
+    if(busy||!state.configured||!state.web_access)return;
+    await call('web-access',{origin:state.origin,account_id:state.account_id,gateway_id:state.gateway_id,
+      allowed,expected_revision:state.web_access.revision});
+  };
+  $('web-disable').onclick=()=>call('web-access',{origin:state.origin,account_id:state.account_id,gateway_id:state.gateway_id,
+    allowed:false,expected_revision:state.web_access.revision});
   $('open-login').onclick=()=>{if(busy||dialog.open||state.configured)return;clearRegistration();originEdited=true;authView='login';render();dialog.showModal();$('server').focus();};
   $('close-login').onclick=()=>{if(!busy)dialog.close();};
   $('restart-registration').onclick=()=>showView('register');

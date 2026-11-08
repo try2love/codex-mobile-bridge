@@ -17,6 +17,8 @@
 
 任务继续在原电脑执行，Codex 的 SSH 任务继续在原服务器执行。网关复用原客户端的会话、认证和执行环境，不让手机重新运行一套 Agent。手机无需登录相同的模型账号，使用网关登录或可撤销的扫码配对即可接入。
 
+开发版新增 [云账号 Web 入口](docs/cloud-web.md)：服务端开启 HTTPS 18787 后，登录桌面的云账号即可访问自己在线电脑的现有网站，无需逐浏览器批准。网页由桌面实时提供，更新桌面即可更新云访问页面；Web 内容由云端代理处理。
+
 ## v2.1.7 更新
 
 - Android 可选后台任务通知，按连接选择通知来源；Android/iOS 统一主题，改善 iOS 前台提醒（[#47](https://github.com/try2love/codex-mobile-bridge/issues/47)、PR [#85](https://github.com/try2love/codex-mobile-bridge/pull/85)/[#95](https://github.com/try2love/codex-mobile-bridge/pull/95)）。

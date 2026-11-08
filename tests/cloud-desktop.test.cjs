@@ -71,8 +71,14 @@ test('entitlement refresh participates in the application update write guard',()
   const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
   const source=fs.readFileSync(path.join(__dirname,'../desktop/main.cjs'),'utf8');
   const expression=source.match(/const writes=([^\n]+);/)[1];
-  for(const action of ['entitlement','login','logout','redeem','access'])assert.equal(vm.runInNewContext(expression,{action:'cloud',payload:{action}}),true,action);
+  for(const action of ['entitlement','login','logout','redeem','access','web-access'])assert.equal(vm.runInNewContext(expression,{action:'cloud',payload:{action}}),true,action);
   for(const action of ['status','capabilities','devices'])assert.equal(vm.runInNewContext(expression,{action:'cloud',payload:{action}}),false,action);
+});
+
+test('web permission requires the exact account, gateway and explicit versioned boolean',()=>{
+  const value={action:'web-access',origin:'https://relay.example.test',account_id:'11111111-1111-4111-8111-111111111111',gateway_id:'22222222-2222-4222-8222-222222222222',allowed:false,expected_revision:1};
+  assert.deepEqual(validateCloud(value),value);
+  for(const change of [{allowed:'false'},{allowed:undefined},{expected_revision:undefined},{expected_revision:Number.MAX_SAFE_INTEGER},{account_id:'unknown'},{gateway_id:undefined},{origin:value.origin+'/'},{token:'secret'}])assert.throws(()=>validateCloud({...value,...change}));
 });
 
 test('direct pairing still returns a local image, never the one-time secret URL',async()=>{

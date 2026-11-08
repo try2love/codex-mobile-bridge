@@ -4,6 +4,33 @@ from pathlib import Path
 from bridge.features.notifications.channels import read_json, write_json
 
 
+class WebAccess:
+    """A desktop-local grant; never inferred from cloud login or phone trust."""
+    def __init__(self, directory):
+        self.path = Path(directory) / 'cloud-web-access.json'
+
+    def state(self, key, gateway):
+        try:
+            values = read_json(self.path, {})
+            if not isinstance(values, dict):
+                raise ValueError('invalid Web access state')
+            record = values.get(key + ':' + gateway, {'allowed': False, 'revision': 0})
+            if (not isinstance(record, dict) or set(record) != {'allowed', 'revision'}
+                    or type(record['allowed']) is not bool or type(record['revision']) is not int
+                    or not 0 <= record['revision'] <= 2**53 - 1):
+                raise ValueError('invalid Web access state')
+            return {**record, 'error': ''}
+        except (OSError, ValueError):
+            return {'allowed': False, 'revision': 0, 'error': 'web_access_storage_error'}
+
+    def save(self, key, gateway, allowed, revision):
+        values = read_json(self.path, {})
+        if not isinstance(values, dict):
+            raise ValueError('invalid Web access state')
+        values[key + ':' + gateway] = {'allowed': allowed, 'revision': revision}
+        write_json(self.path, values)
+
+
 class BindingAccess:
     def __init__(self, directory):
         self.path = Path(directory) / 'cloud-access.json'

@@ -69,6 +69,14 @@ GOAL_STATUS_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})/goal/status$")
 
 
 class GatewayServer(ThreadingHTTPServer):
+    def cloud_web_resource(self, path):
+        from bridge.api.cloud_web import is_resource
+        return is_resource(path)
+
+    def cloud_web_response(self, path, body, headers, request):
+        from bridge.api.cloud_web import adapt_response
+        return adapt_response(self, path, body, headers, request)
+
     daemon_threads = True
     allow_reuse_address = True
     # HTTP/2 proxies fan a cold page out into many simultaneous HTTP/1.1 connects.
