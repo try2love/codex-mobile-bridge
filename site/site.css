@@ -28,3 +28,5 @@
 
 /* Current client marks use the same restrained card treatment as the workbench. */
 .product-client-icon{width:36px;height:36px;object-fit:contain;margin-bottom:16px}
+
+@media(min-width:701px){#clients .v2-feature-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
