@@ -21,19 +21,30 @@
 
 # Codex Mobile Bridge · 多客户端远程工作台
 
-> **v2.1.7 正式版**：[发布页](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.1.7) · [完整更新说明](RELEASE_NOTES.md#v217) · [手机安装说明](mobile/README.md)。完善手机通知、会话整理、项目引用与连接恢复。
-
-> **v2.2.0-preview.3 预览版**：[发布页](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.0-preview.3) · [双语更新说明](RELEASE_NOTES.md)。新增 ZCode 双通道接入、新建模型选择与实验性独立客户端配置。
+> **v2.2.0 正式版**：[发布页](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.0) · [完整更新说明](RELEASE_NOTES.md) · [手机安装说明](mobile/README.md)。新增 ZCode、多信道连接与原生侧边聊天，优化空闲资源占用。
 
 [简体中文](README.md) · [English](README_EN.md)
 
-**[双语介绍与使用演示 ↗](https://try2love.github.io/codex-mobile-bridge/?lang=zh)** · **[下载桌面与手机 App](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.1.7)**
+**[双语介绍与使用演示 ↗](https://try2love.github.io/codex-mobile-bridge/?lang=zh)** · **[下载桌面与手机 App](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.0)**
 
 [![桌面网关：客户端与接入（演示数据）](site/assets/v2-clients.png)](https://try2love.github.io/codex-mobile-bridge/?lang=zh)
 
-从手机 App 或浏览器继续电脑上的 **Codex、Claude Code / Cowork、DeepSeek Harness** 会话。三个客户端保留独立聊天列表、账号和工作区；在当前应用下创建会话、查看回复、发送附件、切换可用模型与推理强度、处理权限请求。
+从手机 App 或浏览器继续电脑上的 **Codex、Claude Code / Cowork、DeepSeek Harness、ZCode** 会话。四个客户端保留独立聊天列表、账号和工作区；在当前应用下创建会话、查看回复、发送附件、切换可用模型与推理强度、处理权限请求。
 
 任务继续在原电脑执行，Codex 的 SSH 任务继续在原服务器执行。网关复用原客户端的会话、认证和执行环境，不让手机重新运行一套 Agent。手机无需登录相同的模型账号，使用网关登录或可撤销的扫码配对即可接入。
+
+## v2.2.0 更新
+
+- **ZCode 加入工作台**：继续原生聊天、发送附件、回答问题与审批，选择模型和 Skill，管理 API 与客户端提供的额度。macOS、Windows、Linux 正式包提供本地连接，也支持已配置的官方远控接入。
+- **一台电脑，多种信道**：局域网、固定 HTTPS、临时 HTTPS 合并到一张电脑卡片；查看延迟、手动选择或自动切换，保留聊天、草稿和阅读位置。
+- **原生会话管理**：Codex 侧边聊天归入主会话子标签，关闭标签保留原生聊天；受支持的本机会话可在确认范围、核验任务后永久删除。
+- **模型与独立客户端**：新建聊天前选择模型和思考强度；登记独立 Codex 配置、VS Code 环境，实验性支持独立 Claude/DSH 配置；网关持有的 CLI 连接可等待任务结束后释放。
+- **手机交互**：支持的 Codex 问题可逐题跳过，保留其他答案；Android 不同事件的通知分别保留，可按电脑配置 UU 远程入口。
+- **恢复与能耗**：改善 Tailscale 入口恢复、客户端初始化、第三方思考内容显示和 Unicode 模型 ID 支持；减少空闲轮询，保留长内容阅读位置。
+
+建议网关与手机 App 配套更新，保留原应用标识、签名与数据目录；iOS 仍需自行签名。原生操作以客户端版本和接入能力为准，独立配置与 WSL 账号管理仍为实验性。详见[完整更新说明与使用范围](RELEASE_NOTES.md)。
+
+感谢 [@tiancai123123](https://github.com/tiancai123123)（[#130](https://github.com/try2love/codex-mobile-bridge/pull/130)）、[@laozuzhen](https://github.com/laozuzhen)（[#135](https://github.com/try2love/codex-mobile-bridge/pull/135)）和 [@qybgh](https://github.com/qybgh)（[#139](https://github.com/try2love/codex-mobile-bridge/pull/139)）的贡献。
 
 ## v2.1.7 更新
 
@@ -134,7 +145,7 @@ Codex 与 Claude CLI 接入分别在各自账号管理中配置；本机 CLI 同
 ## v2 工作台
 
 - **多应用接入**：自动扫描已安装客户端，配置就绪后启用；桌面、Web 和手机可管理启停及重连。Claude Code / Cowork 分组可折叠，应用切换支持图标与可关闭的左右滑动。
-- **聊天之外的工具**：文件、Git、连续终端、Codex 临时侧边聊天与子智能体历史以标签呈现；宽屏、平板和折叠屏支持可调整的分屏，窄屏保留单栏。
+- **聊天之外的工具**：文件、Git、连续终端、Codex 原生侧边聊天与子智能体历史以标签呈现；宽屏、平板和折叠屏支持可调整的分屏，窄屏保留单栏。
 - **文件与图片**：聊天链接可定位所在文件夹或下载；可实时调整普通下载阈值，文件列表支持显式下载大文件/目录。下载浮窗提供进度、速度、暂停和继续；图片支持双指、滚轮、拖动和双击缩放。
 - **账号与上下文**：按客户端查看当前接入、可用模型及上游提供的额度；Codex 和 Claude 上下文用量显示在权限旁。Codex 保留 Fast、Skills、计划/目标、官方额度和重置卡能力。
 - **多台电脑与通知**：Android/iOS 扫码保存电脑，按最近访问排序，手动刷新在线状态。应用图标显示网关维护的未读数，点击直达对应聊天列表；Android 可在手机设置中开启「后台通知」，iOS 后台提醒可使用 Bark、ntfy 或 PushPlus 等通道。
@@ -145,8 +156,9 @@ Codex 与 Claude CLI 接入分别在各自账号管理中配置；本机 CLI 同
 | Codex | 本机及已配置 SSH 会话；原生会话操作和工作台 | 依赖安装版本提供的 IPC 与能力 |
 | Claude Desktop | macOS / Windows 的 Code、Cowork | 普通 Chat 不支持；首次连接或重新初始化可能需解锁、辅助功能、开发者模式及目录信任；Linux 自动接入暂不支持 |
 | DeepSeek Harness | 桌面会话、本地接入插件、模型与账号能力 | 插件更新可能需结束任务后重启；能力以对应 Harness 版本为准 |
+| ZCode | 原生聊天、项目、附件、审批、模型、API 与额度 | macOS / Windows / Linux 本地连接或已配置的官方远控；依赖兼容的 ZCode 版本 |
 
-> 社区项目，与 OpenAI、Anthropic 或 DeepSeek 无隶属关系。依赖客户端内部接口，上游更新可能需要适配。电脑休眠或离线时无法远程操作；不能承诺 Claude 冷启动免解锁。平台与历史实测范围见 [验证记录](VERIFICATION.md) 和 [桌面接入说明](docs/deepseek-harness.md)。
+> 社区项目，与 OpenAI、Anthropic、DeepSeek 或 ZCode 官方无隶属关系。依赖客户端内部接口，上游更新可能需要适配。电脑休眠或离线时无法远程操作；不能承诺 Claude 冷启动免解锁。平台与历史实测范围见 [验证记录](VERIFICATION.md) 和 [桌面接入说明](docs/deepseek-harness.md)。
 
 支持 macOS、Windows，以及实验性 Ubuntu x64/ARM64。Linux 安装、VMware 网络及能力边界见 [Linux 文档](docs/linux.md)。开发与定向修改请先阅读 [代码架构导航](docs/architecture/README.md) 和 [验证指南](tests/README.md)。
 
@@ -161,18 +173,18 @@ Codex 与 Claude CLI 接入分别在各自账号管理中配置；本机 CLI 同
 
 ## 下载与快速开始（推荐）
 
-日常使用直接下载桌面 App，**无需 Agent 帮忙部署，也无需安装 Python、Node.js 或打开终端**。下列链接对应 **v2.1.3 正式版**。
+日常使用直接下载桌面 App，**无需 Agent 帮忙部署，也无需安装 Python、Node.js 或打开终端**。下列链接对应 **v2.2.0 正式版**。
 
 | 系统 | 下载 | 打开方式 |
 | --- | --- | --- |
-| Windows x64（推荐安装包） | [下载 Setup.exe](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.1.7/Codex-Mobile-Bridge-2.1.7-Windows-x64-Setup.exe) | 运行安装包，从快捷方式打开 |
-| Windows x64（免安装） | [下载完整 ZIP](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.1.7/Codex-Mobile-Bridge-2.1.7-Windows-x64.zip) | 完整解压后运行 `Codex Mobile Bridge.exe`，不要单独移动 exe |
-| macOS Apple Silicon（M 系列） | [下载 arm64 DMG](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.1.7/Codex-Mobile-Bridge-2.1.7-macOS-arm64.dmg) | 打开 DMG，将 App 拖入“应用程序” |
-| macOS Intel（英特尔） | [下载 x64 DMG](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.1.7/Codex-Mobile-Bridge-2.1.7-macOS-x64.dmg) | 打开 DMG，将 App 拖入“应用程序” |
-| Ubuntu x64（实验性） | [下载 .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.1.7/Codex-Mobile-Bridge-2.1.7-Linux-amd64.deb) | Ubuntu 22.04；安装后以普通用户启动 |
-| Ubuntu ARM64（实验性） | [下载 .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.1.7/Codex-Mobile-Bridge-2.1.7-Linux-arm64.deb) | Ubuntu 22.04 ARM64；不含 32 位 ARM |
+| Windows x64（推荐安装包） | [下载 Setup.exe](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.2.0/Codex-Mobile-Bridge-2.2.0-Windows-x64-Setup.exe) | 运行安装包，从快捷方式打开 |
+| Windows x64（免安装） | [下载完整 ZIP](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.2.0/Codex-Mobile-Bridge-2.2.0-Windows-x64.zip) | 完整解压后运行 `Codex Mobile Bridge.exe`，不要单独移动 exe |
+| macOS Apple Silicon（M 系列） | [下载 arm64 DMG](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.2.0/Codex-Mobile-Bridge-2.2.0-macOS-arm64.dmg) | 打开 DMG，将 App 拖入“应用程序” |
+| macOS Intel（英特尔） | [下载 x64 DMG](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.2.0/Codex-Mobile-Bridge-2.2.0-macOS-x64.dmg) | 打开 DMG，将 App 拖入“应用程序” |
+| Ubuntu x64（实验性） | [下载 .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.2.0/Codex-Mobile-Bridge-2.2.0-Linux-amd64.deb) | Ubuntu 22.04；安装后以普通用户启动 |
+| Ubuntu ARM64（实验性） | [下载 .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.2.0/Codex-Mobile-Bridge-2.2.0-Linux-arm64.deb) | Ubuntu 22.04 ARM64；不含 32 位 ARM |
 
-[查看所有版本与更新说明](https://github.com/try2love/codex-mobile-bridge/releases) · [下载 SHA256 校验文件](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.1.7/SHA256SUMS.txt)。两种 Mac 同时提供 ZIP，供应用内更新或手动替换使用。Windows ARM 暂无专用安装包。Mac 版采用本地完整性签名但未公证，首次打开可能需要手动允许；Windows 版未做证书签名。详见下方 macOS 首次打开说明。
+[查看所有版本与更新说明](https://github.com/try2love/codex-mobile-bridge/releases) · [下载 SHA256 校验文件](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.2.0/SHA256SUMS.txt)。两种 Mac 同时提供 ZIP，供应用内更新或手动替换使用。Windows ARM 暂无专用安装包。Mac 版采用本地完整性签名但未公证，首次打开可能需要手动允许；Windows 版未做证书签名。详见下方 macOS 首次打开说明。
 
 1. 安装并登录要使用的桌面客户端，打开 **Codex Mobile Bridge**。在 **客户端与接入** 检查扫描结果，完成需要的授权，并启用配置就绪的客户端。
 2. 在 **网络访问** 保留局域网访问或添加 HTTPS 入口，保存后从概览或客户端页点击 **启动网关**。已有配置时沿用原端口。
@@ -181,7 +193,7 @@ Codex 与 Claude CLI 接入分别在各自账号管理中配置；本机 CLI 同
 
 需要外网访问时，可选 [Tailscale 固定 HTTPS](docs/tailscale.md)、内置 Cloudflare 临时 HTTPS、[固定 Cloudflare Tunnel](docs/fixed-domain.md)、[自有服务器 + SSH](docs/server-ssh.md) 或 NAS 反代。详细要求见[连接方式说明](#connections)。固定地址不保证国内直连速度，首次配置请用实际蜂窝网络测试。
 
-Android APK、iOS 未签名 IPA 与 Xcode 源码包见同一 [v2.1.7 Release](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.1.7)。Android 覆盖安装以保留数据；iOS 需自行签名，暂无 App Store/TestFlight 分发。源码运行与自定义部署见后面的[部署 Agent 执行说明](#agent-deployment)。
+Android APK、iOS 未签名 IPA 与 Xcode 源码包见同一 [v2.2.0 Release](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.0)。Android 覆盖安装以保留数据；iOS 需自行签名，暂无 App Store/TestFlight 分发。源码运行与自定义部署见后面的[部署 Agent 执行说明](#agent-deployment)。
 
 <a id="macos-first-launch"></a>
 

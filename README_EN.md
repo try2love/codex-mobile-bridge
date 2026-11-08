@@ -21,19 +21,30 @@
 
 # Codex Mobile Bridge · A remote workbench for desktop agents
 
-> **v2.1.7 (stable):** [Release page](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.1.7) · [Full release notes](RELEASE_NOTES.md#v217) · [Mobile installation](mobile/README.md). Mobile notifications, session organization, project references and connection recovery.
-
-> **v2.2.0-preview.3:** [Preview release](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.0-preview.3) · [Bilingual release notes](RELEASE_NOTES.md). ZCode connection modes, model selection before chat creation and experimental independent client profiles.
+> **v2.2.0 (stable):** [Release page](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.0) · [Full release notes](RELEASE_NOTES.md) · [Mobile installation](mobile/README.md). ZCode, multiple routes per computer, native side chats and lower idle resource usage.
 
 [简体中文](README.md) · [English](README_EN.md)
 
-**[Product guide and interactive demos ↗](https://try2love.github.io/codex-mobile-bridge/?lang=en)** · **[Download desktop and mobile apps](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.1.7)**
+**[Product guide and interactive demos ↗](https://try2love.github.io/codex-mobile-bridge/?lang=en)** · **[Download desktop and mobile apps](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.0)**
 
 [![Desktop gateway: clients and access, with demo data](site/assets/v2-clients.png)](https://try2love.github.io/codex-mobile-bridge/?lang=en)
 
-Continue **Codex, Claude Code / Cowork and DeepSeek Harness** sessions from a phone app or browser. Each client keeps its own chats, accounts and workspaces. Create chats within the selected client, read replies, send attachments, select available models/reasoning and respond to approval requests.
+Continue **Codex, Claude Code / Cowork, DeepSeek Harness and ZCode** sessions from a phone app or browser. Each client keeps its own chats, accounts and workspaces. Create chats within the selected client, read replies, send attachments, select available models/reasoning and respond to approval requests.
 
 Tasks run on the original computer, or the original SSH host for Codex remote sessions. Bridge reuses the desktop session, authentication and execution environment. Your phone does not need the same model-service account: use gateway login or revocable QR pairing.
+
+## v2.2.0 updates
+
+- **ZCode joins the workbench:** continue native chats, send attachments, answer questions and approvals, select models and Skills, and manage API connections and reported quota. Local connections are included on macOS, Windows and Linux; configured official remote access is also supported.
+- **Multiple routes, one computer:** group LAN, fixed HTTPS and temporary HTTPS addresses in one computer card. Inspect latency, select a route or switch automatically while keeping chats, drafts and reading position.
+- **Native chat management:** open Codex side chats under their parent; closing a tab keeps the native chat. Supported local Codex sessions offer permanent deletion with explicit scope confirmation and task checks.
+- **Models and independent clients:** choose a model and reasoning level before creating a chat. Register independent Codex configurations and VS Code environments; independent Claude/DSH profiles remain experimental. Release gateway-owned CLI connections after tasks finish.
+- **Mobile experience:** skip individual supported Codex questions without losing other answers; retain separate Android notifications for separate events and configure per-computer UU remote shortcuts.
+- **Recovery and efficiency:** improve Tailscale route recovery, client initialization, reasoning-only responses and Unicode model IDs; reduce idle polling and preserve reading position.
+
+Update the gateway and mobile app together, keeping the same application identity, signing identity and data directory. iOS still requires your own signing. Native controls depend on the client version and connection; independent profiles and WSL account management remain experimental. See [full release notes and limitations](RELEASE_NOTES.md).
+
+Thanks to [@tiancai123123](https://github.com/tiancai123123) ([#130](https://github.com/try2love/codex-mobile-bridge/pull/130)), [@laozuzhen](https://github.com/laozuzhen) ([#135](https://github.com/try2love/codex-mobile-bridge/pull/135)) and [@qybgh](https://github.com/qybgh) ([#139](https://github.com/try2love/codex-mobile-bridge/pull/139)).
 
 ## v2.1.7 updates
 
@@ -136,7 +147,7 @@ Desktop packages cover macOS, Windows and experimental Linux x64/ARM64. Codex an
 ## The v2 workbench
 
 - **Multiple clients:** discover installed apps and enable configured ones; manage lifecycle and reconnection from desktop, Web or mobile. Claude Code/Cowork have collapsible groups. Switch by icon or optional swipe gesture.
-- **Project tools:** file, Git, persistent terminal, Codex temporary side-chat and subagent-history tabs. Resizable split panes on wide screens, tablets and unfolded phones; single-pane layout on narrow screens.
+- **Project tools:** file, Git, persistent terminal, Codex native side-chat and subagent-history tabs. Resizable split panes on wide screens, tablets and unfolded phones; single-pane layout on narrow screens.
 - **Files and images:** locate linked files in their folder or download them. Adjust the ordinary-download threshold live, and explicitly download large files/folders from the file list. Floating progress, speed, pause/resume, plus pinch/wheel/drag/double-click image zoom.
 - **Accounts and context:** inspect the current client's access, available models and upstream quota. Context usage sits beside permissions. Codex retains Fast, Skills, Plan/Goal, official quota and reset credits.
 - **Computers and alerts:** Android/iOS save multiple paired computers, sort by recent access and refresh availability. App icons show gateway-maintained unread counts and open the matching list. Android users can enable **Background notifications** in mobile Settings; iOS background alerts can use channels such as Bark, ntfy or PushPlus.
@@ -147,8 +158,9 @@ Desktop packages cover macOS, Windows and experimental Linux x64/ARM64. Codex an
 | Codex | Local and configured SSH sessions; native actions and workbench | Requires compatible IPC/capabilities in the installed client |
 | Claude Desktop | Code and Cowork on macOS/Windows | Regular Chat is excluded; initialization may need an unlocked desktop, accessibility, developer mode and directory trust; no Linux automatic connection |
 | DeepSeek Harness | Desktop sessions, local integration plugin, account/model capabilities | Plugin updates may require an idle restart; features depend on the Harness version |
+| ZCode | Native chats, projects, attachments, approvals, models, API setup and quota | Local connections on macOS/Windows/Linux or configured official remote access; requires a compatible ZCode version |
 
-> Community project, unaffiliated with OpenAI, Anthropic or DeepSeek. Internal client interfaces may need adaptation after updates. Sleeping/offline computers are unreachable; Claude cold initialization without unlocking is not guaranteed. See [verification history](VERIFICATION.md) and [client integration details](docs/deepseek-harness.md).
+> Community project, unaffiliated with OpenAI, Anthropic, DeepSeek or ZCode. Internal client interfaces may need adaptation after updates. Sleeping/offline computers are unreachable; Claude cold initialization without unlocking is not guaranteed. See [verification history](VERIFICATION.md) and [client integration details](docs/deepseek-harness.md).
 
 Supports macOS, Windows and experimental Ubuntu x64/ARM64. See the [Linux guide](docs/linux.md) for installation, VMware networking and limits. Contributors should start with the [architecture guide](docs/architecture/README.md) and [test guide](tests/README.md).
 
@@ -163,18 +175,18 @@ Supports macOS, Windows and experimental Ubuntu x64/ARM64. See the [Linux guide]
 
 ## Download and quick start (recommended)
 
-Download the desktop App for everyday use. **No deployment Agent, Python, Node.js or terminal is required.** The links below target **v2.1.3 (stable)**.
+Download the desktop App for everyday use. **No deployment Agent, Python, Node.js or terminal is required.** The links below target **v2.2.0 (stable)**.
 
 | Platform | Download | Open |
 | --- | --- | --- |
-| Windows x64 (recommended installer) | [Download Setup.exe](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.1.7/Codex-Mobile-Bridge-2.1.7-Windows-x64-Setup.exe) | Run the installer and launch from the shortcut |
-| Windows x64 (no installation) | [Download full ZIP](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.1.7/Codex-Mobile-Bridge-2.1.7-Windows-x64.zip) | Extract the entire ZIP and run `Codex Mobile Bridge.exe`; do not move just the exe |
-| macOS Apple Silicon (M series) | [Download arm64 DMG](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.1.7/Codex-Mobile-Bridge-2.1.7-macOS-arm64.dmg) | Open the DMG and drag the App to Applications |
-| macOS Intel | [Download x64 DMG](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.1.7/Codex-Mobile-Bridge-2.1.7-macOS-x64.dmg) | Open the DMG and drag the App to Applications |
-| Ubuntu x64 (experimental) | [Download .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.1.7/Codex-Mobile-Bridge-2.1.7-Linux-amd64.deb) | Ubuntu 22.04; launch as a regular user |
-| Ubuntu ARM64 (experimental) | [Download .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.1.7/Codex-Mobile-Bridge-2.1.7-Linux-arm64.deb) | Ubuntu 22.04 ARM64; no 32-bit ARM build |
+| Windows x64 (recommended installer) | [Download Setup.exe](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.2.0/Codex-Mobile-Bridge-2.2.0-Windows-x64-Setup.exe) | Run the installer and launch from the shortcut |
+| Windows x64 (no installation) | [Download full ZIP](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.2.0/Codex-Mobile-Bridge-2.2.0-Windows-x64.zip) | Extract the entire ZIP and run `Codex Mobile Bridge.exe`; do not move just the exe |
+| macOS Apple Silicon (M series) | [Download arm64 DMG](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.2.0/Codex-Mobile-Bridge-2.2.0-macOS-arm64.dmg) | Open the DMG and drag the App to Applications |
+| macOS Intel | [Download x64 DMG](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.2.0/Codex-Mobile-Bridge-2.2.0-macOS-x64.dmg) | Open the DMG and drag the App to Applications |
+| Ubuntu x64 (experimental) | [Download .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.2.0/Codex-Mobile-Bridge-2.2.0-Linux-amd64.deb) | Ubuntu 22.04; launch as a regular user |
+| Ubuntu ARM64 (experimental) | [Download .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.2.0/Codex-Mobile-Bridge-2.2.0-Linux-arm64.deb) | Ubuntu 22.04 ARM64; no 32-bit ARM build |
 
-[All releases and release notes](https://github.com/try2love/codex-mobile-bridge/releases) · [Download SHA256 checksums](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.1.7/SHA256SUMS.txt). Both Mac architectures also include ZIPs for in-app updates or manual replacement. Windows ARM packages are not available. The Mac build is ad-hoc signed but not notarized and may require manual approval; Windows builds have no certificate signature. See the macOS first-launch instructions below.
+[All releases and release notes](https://github.com/try2love/codex-mobile-bridge/releases) · [Download SHA256 checksums](https://github.com/try2love/codex-mobile-bridge/releases/download/v2.2.0/SHA256SUMS.txt). Both Mac architectures also include ZIPs for in-app updates or manual replacement. Windows ARM packages are not available. The Mac build is ad-hoc signed but not notarized and may require manual approval; Windows builds have no certificate signature. See the macOS first-launch instructions below.
 
 1. Install and sign in to the desktop clients you need. Open **Codex Mobile Bridge**, inspect **Clients and access**, complete required permissions and enable configured clients.
 2. Keep LAN access or add an HTTPS entry under **Network access**, save, and select **Start gateway** from Overview or Clients. Preserve your configured port.
@@ -183,7 +195,7 @@ Download the desktop App for everyday use. **No deployment Agent, Python, Node.j
 
 For remote access, choose [Tailscale HTTPS](docs/tailscale.md), bundled temporary Cloudflare HTTPS, a [fixed Cloudflare tunnel](docs/fixed-domain.md), an [existing HTTPS tunnel](docs/external-tunnel.md), [your own SSH server](docs/server-ssh.md) or an advanced NAS proxy. See [Parallel connections](#parallel-connections). Fixed addresses do not guarantee mainland China performance; test the actual cellular network.
 
-Android APK, unsigned iOS IPA and Xcode source downloads are in the same [v2.1.7 Release](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.1.7). Install Android over the existing app; iOS requires your own signing, with no App Store/TestFlight distribution. Source/custom setups are covered by the [Deployment Agent instructions](#deployment-agent-instructions).
+Android APK, unsigned iOS IPA and Xcode source downloads are in the same [v2.2.0 Release](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.0). Install Android over the existing app; iOS requires your own signing, with no App Store/TestFlight distribution. Source/custom setups are covered by the [Deployment Agent instructions](#deployment-agent-instructions).
 
 ### In-app updates
 
