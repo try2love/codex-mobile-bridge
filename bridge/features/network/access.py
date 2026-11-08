@@ -92,8 +92,6 @@ def validate(preferences):
     if p['accessMode'] == 'server':
         if p['sshAuth'] == 'config' and not p['sshTarget']:
             raise FieldError('请填写服务器的 SSH 目标', 'sshTarget')
-        if urlsplit(p['publicUrl']).port not in (None, 443):
-            raise FieldError('服务器 HTTPS 入口使用 443 端口；已有其他入口请选择已有穿透 / 反向代理', 'publicUrl')
     if p['accessMode'] == 'nas':
         if not p['lan'] or not p['proxyUpstream']:
             raise FieldError('NAS 方式需要开启局域网访问并填写 NAS 可达的电脑 HTTP 地址', 'proxyUpstream')
@@ -216,6 +214,7 @@ def deployment(preferences):
         raise ValueError('请先选择并保存自有服务器或 NAS 配置')
     ssh_example = shlex.join(['ssh', p['sshTarget']] if p['sshAuth'] == 'config' else ['ssh', '-p', str(p['sshPort']), p['sshUser']+'@'+p['sshHost']])
     url = p['publicUrl']
+    https_port = urlsplit(url).port or 443
     try:
         ipaddress.ip_address(urlsplit(url).hostname)
         ip_entry = True
@@ -263,7 +262,7 @@ volumes:
 
 1. 可使用 `{ssh_example}` 检查服务器连接，也可在 App 内使用“检查 SSH 登录”。首次连接需核对主机指纹；密码、私钥或 SSH Agent 在 App 配置，凭据不包含在此部署包内。
 2. 服务器须允许远程端口转发（AllowTcpForwarding remote 或 yes），GatewayPorts 使用 no 或 clientspecified。回环端口 {p['sshRemotePort']} 须空闲。不要使用 GatewayPorts yes，以免强制向公网绑定。
-3. 将域名 DNS 的 A/AAAA 记录指向这台服务器。将本包解压到一个新目录；服务器须已安装 Docker Compose，且公网 TCP 80、443 可达并空闲。已有网站占用这两个端口时，不要停止旧网站；使用已有反代，将上游设为 {upstream} 并保留公网 Host 即可，无需启动本包的 Caddy。
+3. 将域名 DNS 的 A/AAAA 记录指向这台服务器。将本包解压到一个新目录；服务器须已安装 Docker Compose，且公网 HTTPS TCP {https_port} 可达并空闲；证书验证需要的 TCP 80、443 也须可达。已有网站占用这些端口时，使用已有反代，将上游设为 {upstream} 并保留公网 Host 即可。
 4. 在电脑 App 保存配置并启动网关。电脑主动建立 SSH 回程连接，不要求服务器能直接访问电脑的局域网 IP。
 5. 在服务器解压目录执行：
 
@@ -337,7 +336,7 @@ docker compose logs --tail=50
 
 1. Check `{ssh_example}` from your computer, or use Check SSH sign-in in the App. Verify the host fingerprint. Configure password, key or agent authentication in the App; credentials are not included in this package.
 2. The server must allow remote forwarding (`AllowTcpForwarding remote` or `yes`). Keep `GatewayPorts no` or `clientspecified`, never `yes`. Port {p['sshRemotePort']} must be free and restricted to loopback.
-3. Point the domain's A/AAAA records to this server. Have the user or administrator manually install Docker Compose if needed and ensure public TCP 80/443 are reachable and free. Extract this bundle into a new directory. The Caddy service uses host networking on Linux Docker Engine, on the same host as SSH; do not run this bundle on Mac/Windows Docker Desktop.
+3. Point the domain's A/AAAA records to this server. Have the user or administrator manually install Docker Compose if needed and ensure HTTPS TCP {https_port} is reachable and free, with TCP 80/443 available for certificate validation. Extract this bundle into a new directory. The Caddy service uses host networking on Linux Docker Engine, on the same host as SSH; do not run this bundle on Mac/Windows Docker Desktop.
 4. Start the computer gateway. It connects out to the server over SSH, including behind NAT or on a campus network.
 5. On the server run `docker compose config`, then `docker compose up -d`. Caddy obtains and renews certificates, persisted in the named Docker volumes. If an existing proxy already owns 80/443, keep it and use {upstream} as its upstream, preserving the public Host header; do not start another Caddy instance.
 '''
@@ -393,7 +392,7 @@ This is a reference for user review and manual setup, not an automatic deploymen
 
 1. 优先复用服务器现有 HTTPS 反向代理，将上述 IP 入口转发到 {upstream}，保留 Host，关闭缓存和响应缓冲。
 2. 如使用本包的可选 Caddy 示例，由管理员将证书完整链和私钥放在服务器上的 tls/fullchain.pem 与 tls/privkey.pem（不随本包提供），限制私钥权限并负责证书续期。不要将私钥传回网关或提交到代码仓库。
-3. 服务器公网 TCP 443 需可达。SSH 需允许远程转发，保持 GatewayPorts no，{p['sshRemotePort']} 仅监听 127.0.0.1，不向公网开放。Docker 示例仅适用于同一 SSH 服务器上的 Linux Docker Engine；已有服务占用端口时不要另启容器。
+3. 服务器公网 TCP {https_port} 需可达。SSH 需允许远程转发，保持 GatewayPorts no，{p['sshRemotePort']} 仅监听 127.0.0.1，不向公网开放。Docker 示例仅适用于同一 SSH 服务器上的 Linux Docker Engine；已有服务占用端口时使用现有反代。
 4. 保存电脑配置、检查 SSH 登录并核对指纹，再启动网关。若使用 Docker 示例，在服务器执行 docker compose config 验证后，再由管理员执行 docker compose up -d。
 5. 点击“检测固定入口”，再用手机蜂窝网络测试。证书错误时修正证书，502 时检查 SSH 隧道；SSH 登录成功不代表 HTTPS 入口已经可用。
 
@@ -408,7 +407,7 @@ No domain DNS record is needed. Provision a valid certificate trusted by the pho
 
 1. Prefer an existing HTTPS reverse proxy. Forward this IP entry to {upstream}, preserve Host and disable caching and response buffering.
 2. For the optional Caddy example, place the full certificate chain and private key on the server at tls/fullchain.pem and tls/privkey.pem. They are not included. Restrict key permissions and arrange renewal. Never send the private key to the gateway or commit it.
-3. Make public TCP 443 reachable. Allow SSH remote forwarding with GatewayPorts no and restrict port {p['sshRemotePort']} to 127.0.0.1. The Docker example requires Linux Docker Engine on the SSH server; do not start another proxy over existing listeners.
+3. Make public TCP {https_port} reachable. Allow SSH remote forwarding with GatewayPorts no and restrict port {p['sshRemotePort']} to 127.0.0.1. The Docker example requires Linux Docker Engine on the SSH server; do not start another proxy over existing listeners.
 4. Save the computer configuration, check SSH sign-in and the host fingerprint, then start the gateway. For the Docker example, validate with docker compose config before the administrator runs docker compose up -d.
 5. Check the fixed entry, then test on phone cellular data. Fix certificate errors at the server; for 502 check the SSH tunnel. Successful SSH authentication alone does not prove HTTPS access.
 

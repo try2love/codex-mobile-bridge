@@ -83,6 +83,12 @@ class ServerIPTests(unittest.TestCase):
         self.assertNotIn('./tls:', files['compose.yaml'])
         self.assertIn('Caddy 自动申请', files['部署说明.md'])
 
+    def test_custom_https_port_inspection_uses_configured_port(self):
+        with patch.object(server_connection, 'connect'), \
+                patch.object(server_connection.socket, 'getaddrinfo', return_value=[]) as dns:
+            server_connection.inspect(entry(publicUrl='https://93.184.216.34:8443'), ROOT/'.tmp')
+            dns.assert_called_once_with('93.184.216.34', 8443, type=server_connection.socket.SOCK_STREAM)
+
     def test_ip_probe_rejects_tls_error_without_http_fallback(self):
         with patch.object(access.http.client, 'HTTPSConnection') as https, \
                 patch.object(access.http.client, 'HTTPConnection') as http:

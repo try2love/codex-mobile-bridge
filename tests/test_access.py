@@ -83,13 +83,24 @@ class AccessTests(unittest.TestCase):
         before = self.desktop.config()
         for changes in [dict(publicUrl='https://a.example/path'), dict(publicUrl='https://x;evil'),
                         dict(publicUrl='https://user:password@a.example'), dict(publicUrl='http://a.example'),
-                        dict(publicUrl='https://example.com:8443'), dict(sshTarget='-oProxyCommand=evil'),
+                        dict(publicUrl='https://example.com:65536'), dict(sshTarget='-oProxyCommand=evil'),
                         dict(sshTarget='a; echo bad'), dict(sshRemotePort=True), dict(sshRemotePort=22)]:
             value = self.server()
             value['preferences']['connections'][0].update(changes)
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 self.desktop.save(value)
             self.assertEqual(self.desktop.config(), before)
+
+    def test_server_custom_https_port_survives_save_and_export(self):
+        value = self.server()
+        url = 'https://93.184.216.34:8443'
+        value['preferences']['connections'][0]['publicUrl'] = url
+        self.desktop.save(value)
+        self.assertEqual(self.desktop.config()['origins'], [url])
+        files = self.desktop.deployment({'id': 'server'})['files']
+        self.assertIn(url + ' {', files['Caddyfile'])
+        for name in ('部署说明.md', 'DEPLOYMENT_EN.md'):
+            self.assertIn('TCP 8443', files[name])
 
     def test_default_https_port_matches_browser_origin_serialization(self):
         value = self.server()
