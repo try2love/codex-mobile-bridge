@@ -133,8 +133,9 @@ def inspect(entry, data_dir, secrets=None):
     client = connect(entry, data_dir, secrets)
     try:
         try:
+            parsed = urlsplit(entry['publicUrl'])
             addresses = sorted({item[4][0] for item in socket.getaddrinfo(
-                urlsplit(entry['publicUrl']).hostname, 443, type=socket.SOCK_STREAM)})
+                parsed.hostname, parsed.port or 443, type=socket.SOCK_STREAM)})
         except OSError:
             addresses = []
         return {'message': 'SSH 登录通过；尚未验证转发权限和 HTTPS 入口。请完成手动配置，再启动连接并检测固定入口。',
@@ -241,14 +242,14 @@ def diagnostic_prompt(entry, language=None):
         return '''Please inspect this server for a Codex Mobile Bridge SSH reverse-tunnel entry using read-only checks.
 Reference configuration (not shell commands):
 ''' + reference + '''
-Check the current user and OS; existing Caddy/Nginx/other HTTPS proxies and their service status; listeners on ports 80, 443 and the configured loopback port; domain resolution; and the configured user's remote forwarding permissions and loopback binding rules, where readable. Distinguish observed facts, missing services, conflicts and checks you could not perform. A local check does not prove public reachability or phone access.
+Check the current user and OS; existing Caddy/Nginx/other HTTPS proxies and their service status; listeners on ports 80, 443, the configured HTTPS port and the loopback port; domain resolution; and the configured user's remote forwarding permissions and loopback binding rules, where readable. Distinguish observed facts, missing services, conflicts and checks you could not perform. A local check does not prove public reachability or phone access.
 Do not run sudo, request administrator credentials, install software, edit files, change permissions, firewall or DNS rules, reload services, start containers, or create an SSH tunnel. Do not read or output passwords, tokens, private keys or unrelated configuration. If access is insufficient, report that check as unverified without escalating privileges.
 Return: a findings table; whether an existing HTTPS proxy can be reused; missing prerequisites or conflicts; and a minimal numbered list of actions for the user to perform manually. Explain administrative actions, but do not execute them. Preserve all existing sites and services. The computer will run the gateway and initiate SSH; this server only hosts the HTTPS proxy and loopback listener.
 '''
     return '''请在这台服务器上，为 Codex Mobile Bridge 的 SSH 反向隧道入口做只读现状检查。
 参考配置（不是待执行的 Shell 命令）：
 ''' + reference + '''
-请检查：当前用户和系统；是否已有 Caddy、Nginx 或其他 HTTPS 反向代理及其运行状态；80、443 和上述回环端口的占用；域名解析；在可读范围内核对目标普通用户的远程端口转发权限及回环绑定规则。区分已观察到的事实、缺少的服务、配置冲突和无法检查的项目。本机检查不能证明公网或手机访问正常。
+请检查：当前用户和系统；是否已有 Caddy、Nginx 或其他 HTTPS 反向代理及其运行状态；80、443、上述 HTTPS 地址指定端口和回环端口的占用；域名解析；在可读范围内核对目标普通用户的远程端口转发权限及回环绑定规则。区分已观察到的事实、缺少的服务、配置冲突和无法检查的项目。本机检查不能证明公网或手机访问正常。
 只读检查，不运行 sudo，不索取管理员凭据，不安装软件、修改文件/权限/防火墙/DNS，不重载服务、不启动容器或隧道。不读取或输出密码、Token、SSH 私钥及无关配置。权限不足时标注“未验证”，不要提权。
 请输出：现状表格；能否复用已有 HTTPS 服务；缺少的条件或冲突；用户需要手动完成的最小步骤清单。涉及管理员权限的步骤只解释，不执行。保留已有网站与服务。电脑负责运行网关并主动建立 SSH，此服务器仅提供 HTTPS 代理和回环入口。
 '''
