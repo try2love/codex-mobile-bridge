@@ -42,7 +42,7 @@ def _write_frame(conn, payload):
 
 def _verify_peer_uid(conn):
     """On Linux AF_UNIX sockets, verify the connecting process belongs to the same UID."""
-    if not hasattr(socket, 'SO_PEERCRED') or not hasattr(os, 'geteuid'):
+    if conn.family != getattr(socket, 'AF_UNIX', None) or not hasattr(socket, 'SO_PEERCRED') or not hasattr(os, 'geteuid'):
         return True
     try:
         creds = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize('3i'))
@@ -117,7 +117,7 @@ class HookIPCServer:
             raise
 
     def _start_server(self):
-        use_unix = hasattr(socket, 'AF_UNIX') and os.name != 'nt' and len(str(self.sock_path)) < 100
+        use_unix = hasattr(socket, 'AF_UNIX') and os.name != 'nt' and len(os.fsencode(self.sock_path)) < 100
         if use_unix:
             try:
                 if self.sock_path.exists() or self.sock_path.is_symlink():

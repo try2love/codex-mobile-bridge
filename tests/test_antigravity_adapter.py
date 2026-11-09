@@ -1,5 +1,6 @@
 import base64
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -507,3 +508,22 @@ class AntigravitySafetyTests(unittest.TestCase):
             result = manager.call('antigravity', 'settings', ide, {'id': str(uuid.uuid4()),
                 'model': 'ide', 'modelCatalogIdentity': ide_models['cache']['identity']})
             self.assertEqual(result['status'], 'accepted')
+
+    def test_long_multibyte_hook_path_uses_token_authenticated_tcp(self):
+        from bridge.clients.antigravity.hook_client import _send_and_recv
+        from bridge.clients.antigravity.hook_ipc import _verify_peer_uid
+        import socket
+        state = self.directory/('中文'*6)
+        self.assertLess(len(str(state/'hook.sock')), 100)
+        self.assertGreaterEqual(len(os.fsencode(state/'hook.sock')), 100)
+        server = HookIPCServer(state, session_resolver=lambda payload: 'scoped')
+        self.addCleanup(server.close)
+        endpoint = json.loads(server.endpoint_file.read_text())
+        self.assertEqual(endpoint['transport'], 'tcp')
+        self.assertEqual(endpoint['host'], '127.0.0.1')
+        result = _send_and_recv(endpoint, {'token': endpoint['token'], 'event': 'session_start', 'payload': {}}, 1)
+        self.assertEqual(result, {})
+        self.assertTrue(server.has_recent_heartbeat('scoped'))
+        tcp = mock.Mock(family=socket.AF_INET)
+        self.assertTrue(_verify_peer_uid(tcp))
+        tcp.getsockopt.assert_not_called()
