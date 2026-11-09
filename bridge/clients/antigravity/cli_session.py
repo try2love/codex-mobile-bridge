@@ -80,6 +80,7 @@ class AntigravityCli:
         self._lock = threading.Lock()
         self._runs = {}
         self._catalog_cache = None
+        self._ls_cache = None
 
     def binary(self):
         return discover_agy_binary(self.home)
@@ -89,39 +90,78 @@ class AntigravityCli:
         return bool(addr and token) or bool(self.binary())
 
     def _is_desktop_process_alive(self):
-        try:
-            out = subprocess.check_output(['pgrep', '-a', 'language_server'], text=True)
-            if out.strip():
+        cached = getattr(self, '_ls_cache', None)
+        if cached:
+            c_pid = cached[0]
+            try:
+                os.kill(c_pid, 0)
                 return True
-        except Exception:
-            pass
-        try:
-            out = subprocess.check_output(['pgrep', '-a', 'antigravity'], text=True)
-            if out.strip():
-                return True
-        except Exception:
-            pass
+            except OSError:
+                pass
+
+        if os.path.isdir('/proc'):
+            for entry in os.listdir('/proc'):
+                if not entry.isdigit():
+                    continue
+                try:
+                    with open(f'/proc/{entry}/cmdline', 'rb') as f:
+                        data = f.read()
+                    if b'language_server' in data or b'antigravity' in data:
+                        return True
+                except (OSError, IOError):
+                    continue
+
+        for pattern in ('language_server', 'antigravity'):
+            try:
+                out = subprocess.check_output(['pgrep', '-f', pattern], text=True)
+                if out.strip():
+                    return True
+            except Exception:
+                pass
         return False
 
     def _get_ls_info(self):
+        # 1. Environment variables override
         addr = os.environ.get('ANTIGRAVITY_LS_ADDRESS')
         token = os.environ.get('ANTIGRAVITY_CSRF_TOKEN')
         if addr and token:
             return addr, token
 
-        log_dir = self.home if self.home else Path.home()
-        log_path = log_dir / '.config' / 'Antigravity' / 'logs' / 'language_server.log'
-        port = None
-        if log_path.is_file():
+        # 2. Check cached PID and port/token
+        cached = getattr(self, '_ls_cache', None)
+        if cached:
+            c_pid, c_port, c_token = cached
             try:
-                with log_path.open('r', encoding='utf-8', errors='replace') as f:
-                    for line in f:
-                        m = re.search(r'Language server listening on random port at (\d+) for HTTP', line)
-                        if m:
-                            port = int(m.group(1))
-            except Exception:
-                pass
+                os.kill(c_pid, 0)
+                return f'localhost:{c_port}', c_token
+            except OSError:
+                self._ls_cache = None
 
+        # 3. Direct Linux /proc scan for zero-latency, zero-fork detection
+        pid, token = None, None
+        if os.path.isdir('/proc'):
+            for entry in os.listdir('/proc'):
+                if not entry.isdigit():
+                    continue
+                try:
+                    with open(f'/proc/{entry}/cmdline', 'rb') as f:
+                        data = f.read()
+                    if b'language_server' in data and b'--csrf_token' in data:
+                        pid = int(entry)
+                        args = data.split(b'\0')
+                        for i, a in enumerate(args):
+                            if a == b'--csrf_token' and i + 1 < len(args):
+                                token = args[i+1].decode('utf-8', errors='replace')
+                                break
+                            elif a.startswith(b'--csrf_token='):
+                                token = a.split(b'=', 1)[1].decode('utf-8', errors='replace')
+                                break
+                        if pid and token:
+                            break
+                except (OSError, IOError):
+                    continue
+
+        # 4. Fallback for token using pgrep
         if not token:
             try:
                 out = subprocess.check_output(['pgrep', '-a', 'language_server'], text=True)
@@ -129,11 +169,41 @@ class AntigravityCli:
                     m = re.search(r'--csrf_token\s+([a-f0-9\-]+)', line)
                     if m:
                         token = m.group(1)
+                        m_pid = re.match(r'^(\d+)', line.strip())
+                        if m_pid:
+                            pid = int(m_pid.group(1))
                         break
             except Exception:
                 pass
 
+        # 5. Discover HTTP listening port from language_server.log
+        port = None
+        candidate_log_dirs = []
+        if self.home:
+            candidate_log_dirs.append(self.home)
+        candidate_log_dirs.append(Path.home())
+
+        for d in candidate_log_dirs:
+            log_path = d / '.config' / 'Antigravity' / 'logs' / 'language_server.log'
+            if log_path.is_file():
+                try:
+                    with log_path.open('r', encoding='utf-8', errors='replace') as f:
+                        for _ in range(100):
+                            line = f.readline()
+                            if not line:
+                                break
+                            m = re.search(r'Language server listening on random port at (\d+) for HTTP\b', line)
+                            if m:
+                                port = int(m.group(1))
+                                break
+                    if port:
+                        break
+                except Exception:
+                    pass
+
         if port and token:
+            if pid:
+                self._ls_cache = (pid, port, token)
             return f'localhost:{port}', token
         return None, None
 
