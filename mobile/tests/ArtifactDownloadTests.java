@@ -37,7 +37,7 @@ public class ArtifactDownloadTests {
    check(!ArtifactDownload.accepts(base+"/api/auth",base),"non-artifact route rejected");
    String report=base+"/api/sessions/diagnostics";
    String thread="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
-   for(String imagePath:new String[]{"/api/sessions/"+thread+"/uploads/"+thread+"/preview","/api/sessions/"+thread+"/desktop-images/"+String.join("",Collections.nCopies(64,"a")),"/api/desktop-sessions/zcode/uploads/"+thread+"/preview","/api/desktop-sessions/claude/images/"+String.join("",Collections.nCopies(64,"a"))}){
+   for(String imagePath:new String[]{"/api/sessions/"+thread+"/uploads/"+thread+"/preview","/api/sessions/"+thread+"/desktop-images/"+String.join("",Collections.nCopies(64,"a")),"/api/desktop-sessions/zcode/uploads/"+thread+"/preview","/api/desktop-sessions/antigravity/uploads/"+thread+"/preview","/api/desktop-sessions/antigravity/images/"+String.join("",Collections.nCopies(64,"a")),"/api/desktop-sessions/claude/images/"+String.join("",Collections.nCopies(64,"a"))}){
     check(ArtifactDownload.accepts(base+imagePath+"?download=1&sessionId=fixture",base),"image save accepted");
     for(String suffix:new String[]{"","?download=0","?download=1&download=0","?download=1#fragment"})check(!ArtifactDownload.accepts(base+imagePath+suffix,base),"preview stays out of download navigation");
     check(!ArtifactDownload.accepts("https://other.invalid"+imagePath+"?download=1",base),"image origin is retained");

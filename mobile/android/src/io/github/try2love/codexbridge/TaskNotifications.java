@@ -47,10 +47,10 @@ final class TaskNotifications {
   metadata.putLong("bridgeSequence", event.optLong("sequence"));
   metadata.putString("bridgeEvent", eventKey);
   String provider = event.optString("provider");
-  if (!Arrays.asList("codex", "claude", "deepseek", "zcode").contains(provider)) {
-   provider = host.matches("desktop:(claude|deepseek)(:[0-9a-f]{32})?") ? host.split(":")[1] : host.equals("desktop:zcode") ? "zcode" : "codex";
+  if (!Arrays.asList("codex", "claude", "deepseek", "zcode", "antigravity").contains(provider)) {
+   provider = host.matches("desktop:(claude|deepseek)(:[0-9a-f]{32})?") ? host.split(":")[1] : host.equals("desktop:zcode") ? "zcode" : host.equals("desktop:antigravity") ? "antigravity" : "codex";
   }
-  String source = provider.equals("claude") ? "Claude" : provider.equals("deepseek") ? "DeepSeek Harness" : provider.equals("zcode") ? "ZCode" : "Codex";
+  String source = provider.equals("claude") ? "Claude" : provider.equals("deepseek") ? "DeepSeek Harness" : provider.equals("zcode") ? "ZCode" : provider.equals("antigravity") ? "Antigravity" : "Codex";
   Notification.Builder notification = new Notification.Builder(context, channel)
       .setSmallIcon(context.getResources().getIdentifier("ic_notification", "drawable", context.getPackageName()))
       .addExtras(metadata).setContentTitle(event.getString("title")).setContentText(event.getString("body"))

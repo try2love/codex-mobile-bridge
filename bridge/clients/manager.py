@@ -34,7 +34,7 @@ from bridge.clients.codex.remote import ssh_read, payload
 from bridge.resources import source_text
 
 READS = {'list', 'detail', 'catalog', 'projects', 'create-models', 'account', 'access', 'organization', 'tasks'}
-WRITES = {'send', 'stop', 'settings', 'respond', 'create', 'access', 'resume', 'fork', 'pin', 'archive', 'rename', 'organization', 'goal', 'compact', 'stop-task', 'edit-message'}
+WRITES = {'send', 'stop', 'settings', 'respond', 'create', 'access', 'resume', 'fork', 'pin', 'archive', 'rename', 'organization', 'goal', 'compact', 'stop-task', 'edit-message', 'queue-action'}
 
 
 CLAUDE_HISTORY_NOTICE = '客户端尚未提供当前可选模型，历史模型仅供查看'
@@ -210,7 +210,8 @@ class DesktopSessions:
             raise ValueError('独立配置不能使用默认或第三方客户端绑定')
         self._zcode_config = None
         self._configure_zcode()
-        self.locks = {name: threading.RLock() for name in ('codex', 'zcode', *self.adapters)}
+        self._configure_antigravity()
+        self.locks = {name: threading.RLock() for name in ('codex', 'zcode', 'antigravity', *self.adapters)}
         self.read_lock = threading.Lock()
         self.reads = {}
         self.pending_resumes = {provider: {} for provider in self.locks}
@@ -396,6 +397,28 @@ class DesktopSessions:
         if 'zcode' not in self.session_pins:
             self.session_pins['zcode'] = SessionPins(directory, 'zcode')
 
+    def _configure_antigravity(self):
+        if self.instance is not None:
+            return
+        row = self.config.get('discovered', {}).get('antigravity', {})
+        explicit_home = self.config.get('antigravityHome')
+        if not explicit_home and not row.get('installed'):
+            existing = self.adapters.pop('antigravity', None)
+            if existing is not None and hasattr(existing, 'close'):
+                existing.close()
+            self.adapters.discard('antigravity')
+            return
+        directory = self.directory/'antigravity'
+        home = explicit_home
+        if not home and row.get('dataDirectory'):
+            data_dir = Path(row['dataDirectory'])
+            home = str(data_dir.parent.parent if data_dir.parent.name == '.gemini' else data_dir)
+        if 'antigravity' not in self.adapters:
+            from bridge.clients.antigravity.adapter import Antigravity
+            self.adapters.defer('antigravity', lambda: Antigravity(directory, home=home))
+        if 'antigravity' not in self.session_pins:
+            self.session_pins['antigravity'] = SessionPins(directory, 'antigravity')
+
     def _receipts(self, adapter):
         # A recovered connector shares its original mutation receipts with the
         # still-running gateway. Never replay an uncertain request after recovery.
@@ -496,6 +519,11 @@ class DesktopSessions:
 
     def _model_identity(self, provider, sid, creation=None):
         adapter = self.adapters[provider]
+        if provider == 'antigravity':
+            row = adapter.store.resolve_session(sid)
+            if row is None:
+                raise ValueError('找不到此 Antigravity 会话')
+            return self._surface_model_identity(self._account_model_identity(provider), row['surfaceDirKey'])
         if provider in ('deepseek', 'zcode'):
             return self._account_model_identity(provider)
         if provider == 'claude' and creation is None and sid in adapter.index:
@@ -541,6 +569,14 @@ class DesktopSessions:
         return ModelStore.key('desktop-surface-models-v1', directory_identity, surface)
 
     def _desktop_model_directory(self, provider, surface=None, *, refresh=False):
+        if provider == 'antigravity' and surface is not None:
+            identity = self._account_model_identity(provider)
+            value = self._read(provider, 'account', None, {'surface': surface, 'refresh': refresh})
+            if self._account_model_identity(provider) != identity:
+                raise BridgeUnavailable('客户端账号或配置已变化，请重试')
+            return {**value, 'cache': {'identity': self._surface_model_identity(identity, surface),
+                                      'directoryIdentity': identity, 'surface': surface,
+                                      'updatedAt': time.time(), 'state': 'fresh'}}
         value = self._account_models(provider, refresh=refresh)
         if provider != 'claude' or surface is None:
             return value
@@ -597,7 +633,7 @@ class DesktopSessions:
 
     def _draft_account_identity(self, provider, sid, detail):
         """Use verified account ownership only; unknown routes stay transient."""
-        if provider == 'zcode':
+        if provider in ('zcode', 'antigravity'):
             return detail.get('draftAccountIdentity', '')
         adapter = self.adapters[provider]
         if provider == 'claude':
@@ -670,7 +706,7 @@ class DesktopSessions:
         if not self.enabled(provider):
             return False
         adapter = self.adapters[provider]
-        if provider == 'zcode':
+        if provider in ('zcode', 'antigravity'):
             return adapter.status().get('connected') is True
         if provider == 'deepseek':
             return (adapter.directory/'endpoint.json').is_file()
@@ -720,7 +756,13 @@ class DesktopSessions:
 
     def _catalog_models(self, provider, sid, body):
         native_claude = provider == 'claude' and sid in self.adapters[provider].index
-        if provider in ('deepseek', 'zcode') or native_claude:
+        if provider == 'antigravity':
+            identity = self._model_identity(provider, sid)
+            value = self._read(provider, 'catalog', sid, body)
+            if self._model_identity(provider, sid) != identity:
+                raise BridgeUnavailable('客户端账号或配置已变化，请重试')
+            return {**value, 'cache': {'identity': identity, 'updatedAt': time.time(), 'state': 'fresh'}}
+        if provider in ('deepseek', 'zcode', 'antigravity') or native_claude:
             identity = self._model_identity(provider, sid)
             surface = self.adapters[provider].index[sid]['backend'] if native_claude else None
             value = self._desktop_model_directory(provider, surface, refresh=body.get('refresh') is True)
@@ -834,7 +876,7 @@ class DesktopSessions:
 
     def _account_model_identity(self, provider):
         adapter = self.adapters[provider]
-        if provider == 'zcode':
+        if provider in ('zcode', 'antigravity'):
             return ModelStore.key('desktop-model-directory-v2', provider, str(adapter.home),
                                   adapter.account_scope())
         if provider == 'deepseek' and self.config.get('deepseekManualBinding'):
@@ -879,7 +921,7 @@ class DesktopSessions:
         if not self.native_enabled(provider):
             return False
         adapter = self.adapters[provider]
-        if provider == 'zcode':
+        if provider in ('zcode', 'antigravity'):
             return adapter.status().get('connected') is True
         if provider == 'claude':
             try:
@@ -1137,7 +1179,7 @@ class DesktopSessions:
         result = []
         for row in rows:
             scope = row['scope']
-            if row['surface'] != 'cli':
+            if row['surface'] != 'cli' or provider == 'antigravity':
                 try:
                     scope += '|' + self._account_model_identity(provider)
                 except (OSError, ValueError, KeyError, TypeError, BridgeUnavailable):
@@ -1192,7 +1234,7 @@ class DesktopSessions:
         else:
             raise ValueError('请先选择新会话的项目目录')
         refresh = body.get('refresh') is True
-        if environment['surface'] == 'cli':
+        if provider == 'claude' and environment['surface'] == 'cli':
             adapter = self.adapters[provider]
             target = {**environment, **project}
             target.setdefault('origin', environment.get('origin'))
@@ -1219,7 +1261,8 @@ class DesktopSessions:
                     'capabilities': {'models': True, 'effort': True, 'manualModels': True, 'manualEffort': True},
                     'notice': '此环境尚无可复用模型目录，可手动填写；不会为读取目录启动 CLI 会话。'}
         value = self._desktop_model_directory(provider, environment['surface'], refresh=refresh)
-        capabilities = {'models': True, 'effort': True, 'manualModels': provider == 'deepseek',
+        capabilities = {'models': value.get('capabilities', {}).get('models') is True if provider == 'antigravity' else True,
+                        'effort': provider != 'antigravity', 'manualModels': provider == 'deepseek',
                         'manualEffort': provider == 'deepseek'}
         return {**value, 'capabilities': capabilities}
 
@@ -1416,6 +1459,9 @@ class DesktopSessions:
         if action == 'stop-task' and (set(body) != {'id', 'taskId'} or
                 not isinstance(body.get('taskId'), str) or not 1 <= len(body['taskId']) <= 512):
             raise ValueError('后台任务标识无效')
+        if action == 'queue-action' and (not isinstance(body.get('queueId'), str) or not body['queueId'].strip() or
+                body.get('operation') not in ('steer', 'queue', 'cancel', 'edit')):
+            raise ValueError('排队操作请求无效')
         if action == 'send' and (not isinstance(body.get('text'), str) or
                                  not body['text'].strip() and not (body.get('resolvedImages') or body.get('resolvedFiles') or body.get('references')) or len(body['text']) > 100000):
             raise ValueError('请输入 1–100000 字的消息')
@@ -1776,6 +1822,7 @@ class DesktopSessions:
             self.config['discovered'] = discovered
             with self.read_lock:
                 self._configure_zcode()
+                self._configure_antigravity()
             outcomes = self.config.setdefault('setup', {})
             for provider in ('claude', 'deepseek'):
                 if provider == 'deepseek' and self.config.get('deepseekManualBinding'):
@@ -1804,11 +1851,11 @@ class DesktopSessions:
         if not self.gateway_running or self.closed.is_set():
             return
         self.scan(scan_wsl=False, inventory_only=True)
-        for provider in ('codex', 'claude', 'deepseek', 'zcode'):
+        for provider in ('codex', 'claude', 'deepseek', 'zcode', 'antigravity'):
             with self.client_lock:
                 if self.instance is not None and provider != self.instance.family:
                     continue
-                if provider == 'zcode' and provider not in self.adapters:
+                if provider in ('zcode', 'antigravity') and provider not in self.adapters:
                     continue
                 if self.closed.is_set():
                     return
@@ -2482,13 +2529,35 @@ class DesktopSessions:
                     phase = startup['connectionState']
                     rows[-1].update(connectionState=phase, setupStatus='connecting' if phase == 'connecting' else 'failed',
                                     canInitializeDesktop=phase != 'connecting')
+            if 'antigravity' in self.adapters:
+                enabled = self.enabled('antigravity')
+                adapter = self.adapters['antigravity']
+                status = adapter.status() if (enabled or probe == 'antigravity') else (
+                    self.config.get('discovered', {}).get('antigravity') or adapter.status()
+                )
+                installed = bool(status.get('installed', True))
+                connected = bool(enabled and status.get('connected') is True)
+                rows.append({
+                    'id': 'antigravity',
+                    'name': 'Antigravity',
+                    'installed': installed,
+                    'description': '管理 Antigravity 2.0 / IDE 桌面端與 CLI 會話同步、即時審批與追問。',
+                    'enabled': enabled,
+                    'configured': installed,
+                    'connected': connected,
+                    'setupStatus': 'ready' if connected else ('history-only' if status.get('historyAvailable') else 'discovered' if installed else 'not-installed'),
+                    'historyAvailable': bool(status.get('historyAvailable') or installed),
+                    'reason': status.get('reason') or ('Antigravity 已接入' if connected else '已發現 Antigravity，啟用後即可同步會話與審批'),
+                    'canQuitDesktop': False,
+                    'capabilities': {'create': connected, 'accounts': False, 'notifications': True},
+                })
             if self.instance is not None:
                 rows = [row for row in rows if row['id'] == self.instance.family]
             from bridge.clients.lifecycle import inspect_clients
             descriptors = []
             for row in rows:
                 if row['installed']:
-                    if row['id'] == 'deepseek' and self.config.get('deepseekManualBinding'):
+                    if row['id'] == 'antigravity' or (row['id'] == 'deepseek' and self.config.get('deepseekManualBinding')):
                         continue
                     try:
                         descriptors.append(zcode if row['id'] == 'zcode' else self._descriptor(row['id']))
@@ -2500,6 +2569,12 @@ class DesktopSessions:
                 native_states = {}
             for row in rows:
                 native = {}
+                if row['id'] == 'antigravity':
+                    row.update(running=row['connected'], mainRunning=False, backgroundRunning=False,
+                               backgroundCount=0, canForceQuit=False, canQuitDesktop=False,
+                               selectable=bool(row['installed']),
+                               connectionState='connected' if row['connected'] else 'idle')
+                    continue
                 if row['id'] == 'deepseek' and self.config.get('deepseekManualBinding'):
                     row.update(bindingMode='manual', installed=True, running=False, mainRunning=False,
                                backgroundRunning=False, backgroundCount=0, canForceQuit=False,
@@ -2766,8 +2841,8 @@ class DesktopSessions:
                 entries.configure(provider, enabled)
                 self.client_cache = None
                 return self.clients(refresh=True)
-        if provider not in ('codex', 'claude', 'deepseek', 'zcode') or type(enabled) is not bool or (
-                provider == 'zcode' and provider not in self.adapters):
+        if provider not in ('codex', 'claude', 'deepseek', 'zcode', 'antigravity') or type(enabled) is not bool or (
+                provider in ('zcode', 'antigravity') and provider not in self.adapters):
             raise ValueError('应用开关无效')
         if 'quitDesktop' in value and (type(value['quitDesktop']) is not bool or enabled):
             raise ValueError('应用开关无效')
@@ -2793,7 +2868,20 @@ class DesktopSessions:
                 not self.bridge.desktop_restart_recommended())):
             raise ValueError('桌面恢复退出确认无效，请重新检查连接状态')
         # Older clients use disabling as native quit. New clients choose explicitly.
-        quit_desktop = value.get('quitDesktop', provider != 'zcode')
+        quit_desktop = value.get('quitDesktop', provider not in ('zcode', 'antigravity'))
+        if provider == 'antigravity':
+            with self.client_lock, self._changing(provider):
+                if not enabled and quit_desktop:
+                    raise ValueError('請在原電腦端退出 Antigravity；此處僅停用手機訪問')
+                adapter = self.adapters['antigravity']
+                if enabled:
+                    adapter.ensure_plugin()
+                else:
+                    adapter.disable_plugin()
+                self.config.setdefault('enabled', {})[provider] = enabled
+                private_json(self.config_path, self.config)
+                self.client_cache = None
+                return self.clients(refresh=True)
         if provider == 'deepseek' and self.config.get('deepseekManualBinding'):
             with self.client_lock, self._changing(provider):
                 if not enabled and quit_desktop:
@@ -3346,6 +3434,9 @@ class DesktopSessions:
             claude = self.adapters.get('claude')
             if claude is not None:
                 claude.close()
+            antigravity = self.adapters.get('antigravity')
+            if antigravity is not None:
+                antigravity.close()
             if self.zcode_pipe is not None:
                 self.zcode_pipe.close()
             with self.db_lock:

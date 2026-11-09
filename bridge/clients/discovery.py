@@ -100,4 +100,28 @@ def discover_clients(preferences=None, *, platform=None, home=None, env=None, ap
         elif provider == 'claude':
             row['dataDirectoryExplicit'] = explicit_home is not None
         result[provider] = row
+    agy_home = _path(preferences.get('antigravityHome') or env.get('ANTIGRAVITY_HOME'), home) or home
+    agy_surfaces = [agy_home/'.gemini/antigravity', agy_home/'.gemini/antigravity-ide', agy_home/'.gemini/antigravity-cli']
+    agy_bin = agy_home/'.antigravity/antigravity/bin/agy'
+    agy_installation = {}
+    if platform == 'darwin':
+        for path in native.candidates(('Antigravity', 'Antigravity IDE'), roots):
+            agy_installation = (native.candidate(path, 'com.google.antigravity') or
+                                native.candidate(path, 'com.google.antigravity-ide') or {})
+            if agy_installation:
+                break
+    elif platform == 'win32':
+        for path in native.candidates('antigravity', ('Antigravity', 'Antigravity IDE'), home, env):
+            if path.is_file() and (path.parent/'resources/app').is_dir():
+                agy_installation = {'application': str(path), 'executable': str(path), 'version': ''}
+                break
+    history = any((s/'conversation_summaries.db').is_file() or (s/'brain').is_dir() for s in agy_surfaces)
+    if history or agy_bin.is_file() or agy_installation:
+        exe = str(agy_bin) if agy_bin.is_file() else ''
+        result['antigravity'] = {
+            'id': 'antigravity', 'name': 'Antigravity', 'installed': True,
+            'application': exe, 'executable': exe, **agy_installation,
+            'dataDirectory': str(agy_surfaces[0]),
+            'historyAvailable': history,
+        }
     return result

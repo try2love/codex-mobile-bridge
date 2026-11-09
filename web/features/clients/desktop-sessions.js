@@ -77,7 +77,7 @@ class DesktopSessionsView {
   bindListCache(identity,host){
     if(this.listCacheIdentity!==identity||this.listCacheHost!==host)this.providerViews.clear();
     this.listCacheIdentity=identity;this.listCacheHost=host;
-    if(identity&&host)for(const storage of [localStorage,sessionStorage])for(let i=storage.length-1;i>=0;i--){const key=storage.key(i);if(key?.startsWith('desktop-list-v1:')&&!key.startsWith('desktop-list-v1:'+identity+':')&&['claude','deepseek','zcode'].some(provider=>key.endsWith(':'+encodeURIComponent(host)+':'+provider)))storage.removeItem(key);}
+    if(identity&&host)for(const storage of [localStorage,sessionStorage])for(let i=storage.length-1;i>=0;i--){const key=storage.key(i);if(key?.startsWith('desktop-list-v1:')&&!key.startsWith('desktop-list-v1:'+identity+':')&&['claude','deepseek','zcode','antigravity'].some(provider=>key.endsWith(':'+encodeURIComponent(host)+':'+provider)))storage.removeItem(key);}
     this.restoreListSnapshots(['claude','deepseek','zcode',...(this.clientStates||[]).map(row=>row.id)]);
   }
   restoreListSnapshots(providers){

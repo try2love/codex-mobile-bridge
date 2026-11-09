@@ -6,6 +6,7 @@
   "/icon-favicon.png": "icon-favicon.png",
   "/icon-touch.png": "icon-touch.png",
   "/icon-192.png": "icon-192.png",
+  "/client-icons/antigravity.png": "client-icons/antigravity.png",
   "/manifest.webmanifest": "manifest.webmanifest",
   "/app.js": [
     "shared/dialog-dismiss.js",

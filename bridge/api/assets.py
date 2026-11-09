@@ -18,6 +18,7 @@ STATIC = {"/file-actions.js": ("file-actions.js", "text/javascript; charset=utf-
           "/client-icons/claude.png": ("client-icons/claude.png", "image/png"),
           "/client-icons/deepseek.png": ("client-icons/deepseek.png", "image/png"),
           "/client-icons/zcode.png": ("client-icons/zcode.png", "image/png"),
+          "/client-icons/antigravity.png": ("client-icons/antigravity.png", "image/png"),
           "/client-lifecycle.css": ("client-lifecycle.css", "text/css; charset=utf-8"),
           "/client-lifecycle.js": ("client-lifecycle.js", "text/javascript; charset=utf-8"),
           "/client-navigation.js": ("client-navigation.js", "text/javascript; charset=utf-8"),

@@ -1,7 +1,7 @@
 """Shared notification routing for native desktop providers."""
 import re
 
-PROVIDERS = ('codex', 'claude', 'deepseek', 'zcode')
+PROVIDERS = ('codex', 'claude', 'deepseek', 'zcode', 'antigravity')
 
 
 def desktop_client(host):

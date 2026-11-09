@@ -45,6 +45,7 @@ F20000000000000000000000 = {isa = PBXBuildFile; fileRef = F100000000000000000000
 F20000000000000000000001 = {isa = PBXBuildFile; fileRef = F10000000000000000000001; };
 F20000000000000000000002 = {isa = PBXBuildFile; fileRef = F10000000000000000000002; };
 F20000000000000000000003 = {isa = PBXBuildFile; fileRef = F10000000000000000000003; };
+F20000000000000000000004 = {isa = PBXBuildFile; fileRef = F10000000000000000000004; };
 F4000000000000000000000A = {isa = PBXBuildFile; fileRef = F40000000000000000000001; };
 F4000000000000000000000B = {isa = PBXBuildFile; fileRef = F40000000000000000000002; };
 F4000000000000000000000C = {isa = PBXBuildFile; fileRef = F40000000000000000000001; };
@@ -54,6 +55,7 @@ F4000000000000000000000F = {isa = PBXBuildFile; fileRef = F100000000000000000000
 F40000000000000000000010 = {isa = PBXBuildFile; fileRef = F10000000000000000000001; };
 F40000000000000000000011 = {isa = PBXBuildFile; fileRef = F10000000000000000000002; };
 F40000000000000000000012 = {isa = PBXBuildFile; fileRef = F10000000000000000000003; };
+F40000000000000000000013 = {isa = PBXBuildFile; fileRef = F10000000000000000000004; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -85,6 +87,7 @@ F10000000000000000000000 = {isa = PBXFileReference; lastKnownFileType = image.pn
 F10000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = image.png; path = ../../web/client-icons/claude.png; sourceTree = SOURCE_ROOT; };
 F10000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = image.png; path = ../../web/client-icons/deepseek.png; sourceTree = SOURCE_ROOT; };
 F10000000000000000000003 = {isa = PBXFileReference; lastKnownFileType = image.png; path = ../../web/client-icons/zcode.png; sourceTree = SOURCE_ROOT; };
+F10000000000000000000004 = {isa = PBXFileReference; lastKnownFileType = image.png; path = ../../web/client-icons/antigravity.png; sourceTree = SOURCE_ROOT; };
 F40000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationSource.swift; sourceTree = "<group>"; };
 F40000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 F40000000000000000000003 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
@@ -212,7 +215,7 @@ B00000000000000000000019, F40000000000000000000017,
 			buildActionMask = 2147483647;
 			files = (
 				A00000000000000000000054 /* AppIcon83x83@2x.png in Resources */, F4000000000000000000000B,
-F20000000000000000000002, F20000000000000000000003,
+F20000000000000000000002, F20000000000000000000003, F20000000000000000000004,
 F20000000000000000000001,
 F20000000000000000000000,
 E00000000000000000000004 /* mobile-ui.js in Resources */,
@@ -226,7 +229,7 @@ E00000000000000000000009 /* mobile-system-bars.js in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-F40000000000000000000016 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (F4000000000000000000000F,F40000000000000000000010,F40000000000000000000011, F40000000000000000000012,); runOnlyForDeploymentPostprocessing = 0; };
+F40000000000000000000016 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (F4000000000000000000000F,F40000000000000000000010,F40000000000000000000011, F40000000000000000000012, F40000000000000000000013,); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */

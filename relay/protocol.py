@@ -8,7 +8,7 @@ MAX_FRAME = (MAX_BODY + 2) // 3 * 4 + 16384
 UUID = r'[0-9a-f-]{36}'
 DIAGNOSTIC_UUID = r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
 THREAD = re.compile(r'/api/sessions/' + UUID + r'(?:/(.*))?')
-DESKTOP = re.compile(r'/api/desktop-sessions/(?:deepseek|claude)/(.*)')
+DESKTOP = re.compile(r'/api/desktop-sessions/(?:deepseek|claude|antigravity)/(.*)')
 READ = {'', 'catalog', 'poll', 'timeline', 'detail', 'changes', 'notifications',
         'side-chat', 'terminal', 'subagents', 'workspace', 'workspace/preview',
         'workspace/download', 'workspace/info', 'workspace/git-status', 'workspace/git-diff',
@@ -64,6 +64,11 @@ def validate(method, path, size=0):
         return
     desktop = DESKTOP.fullmatch(p.path)
     if desktop:
+        if p.path.startswith('/api/desktop-sessions/antigravity/'):
+            allowed = ({'create-models', 'tasks'} if method == 'GET' else
+                       {'resume', 'queue-action', 'projects/browse', 'projects/register', 'projects/trust'})
+            if desktop[1] in allowed or method == 'GET' and re.fullmatch(r'images/[a-f0-9]{64}', desktop[1]):
+                return
         if desktop[1] in (DESKTOP_READ if method == 'GET' else DESKTOP_WRITE):
             return
         if re.fullmatch('uploads/' + UUID + ('/preview' if method == 'GET' else '/thumb'), desktop[1]):

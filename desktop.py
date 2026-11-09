@@ -43,6 +43,10 @@ if sys.argv[1:2] == ['local-service-host']:
     serve(options.data_dir, options.name, options.parent_pid)
     raise SystemExit(0)
 
+if sys.argv[1:2] == ['antigravity-hook']:
+    from bridge.clients.antigravity.hook_client import main as hook_main
+    raise SystemExit(hook_main(sys.argv[2:]))
+
 from bridge.app.desktop import Desktop
 
 
