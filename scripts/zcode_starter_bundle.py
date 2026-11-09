@@ -81,8 +81,9 @@ def verify(app):
 def identity(app):
     """Unsigned component description; the release hook authorizes it separately."""
     verify(app)
-    if plistlib.loads((app/'Contents/Info.plist').read_bytes())['CFBundleIdentifier'] != PRODUCT_ID:
-        raise ValueError('Publisher identity is only for the production application')
+    product = plistlib.loads((app/'Contents/Info.plist').read_bytes())['CFBundleIdentifier']
+    if product not in (PRODUCT_ID, TEST_ID):
+        raise ValueError('Unexpected gateway application identifier')
     broker = app/'Contents/Resources/gateway/codex-mobile-gateway'
     starter = helper_path(app)/'Contents/MacOS'/NAME
     components = {}
@@ -92,7 +93,7 @@ def identity(app):
         components[name] = {'sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
                             'cdhashes': [digest.hex() for digest in hashes]}
     version = json.loads((app/'Contents/Resources/update-version.json').read_text())['version']
-    return {'schema': 1, 'purpose': 'cmb-zcode-local-components', 'product': PRODUCT_ID,
+    return {'schema': 1, 'purpose': 'cmb-zcode-local-components', 'product': product,
             'version': version, 'components': components}
 
 

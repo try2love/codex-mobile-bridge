@@ -18,6 +18,28 @@ function fixture({accounts=false}={}){
   return {panel,nodes,timers,calls,errors,scan,pages,selected,storage,prompts,choices,initializations,setInitializeChoice:value=>initializeChoice=value,decideInitialize:value=>finishInitialize(value),setChoice:value=>closeChoice=value,decide:value=>finishChoice(value),statuses,workspace,claudeHome,claudeData,input,choose,root,document:context.document,setChosen:value=>chosen=value,poll:async()=>{panel.syncPolling();await timers.find(Boolean)?.fn();},apply:()=>vm.runInContext('BridgeI18n.apply()',context),confirm:value=>confirmed=value,setHandler:fn=>handler=fn,all:()=>all(nodes['client-overview']),text:()=>all(nodes['client-overview']).map(n=>n.textContent).join('\n'),english:()=>vm.runInContext("BridgeI18n.setLanguage('en')",context)};
 }
 
+test('Antigravity management edits only the selected source session without claiming accounts support',async()=>{
+  const ui=fixture(),client={id:'antigravity',name:'Antigravity',enabled:true,installed:true,capabilities:{accounts:false,management:true}};ui.panel.clients=[client];
+  const sources=['app','cli','ide'].map(id=>({id,name:id.toUpperCase(),historyAvailable:true,connected:id==='cli',sessions:[{id:id+'-session',title:id,model:'',permissionMode:'desktop'}]}));
+  ui.setHandler(async body=>body.operation==='catalog'?{models:[{id:'cli-model',name:'CLI Model'}],cache:{identity:'cli-account'},capabilities:{models:true}}:{enabled:true,surfaces:sources,plugin:{active:true},permissionOptions:[{value:'desktop',label:'电脑端处理'},{value:'mobile-ask',label:'手机端审批'}]});
+  await ui.panel.manageClient(client);await new Promise(setImmediate);const root=ui.pages.get('antigravity').querySelector('[data-antigravity-management]');assert.ok(root);
+  const [source,session,model,permission]=root.querySelectorAll('select'),buttons=root.querySelectorAll('button');
+  assert.equal(source.value,'app');assert.equal(session.value,'app-session');assert.equal(model.disabled,true);assert.equal(permission.disabled,false);
+  source.value='cli';source.onchange();assert.equal(session.value,'cli-session');await buttons.find(b=>b.textContent==='刷新模型').onclick();
+  assert.equal(ui.calls.at(-1).surface,'cli');assert.equal(ui.calls.at(-1).sessionId,'cli-session');model.value='cli-model';model.onchange();
+  assert.equal(buttons.find(b=>b.textContent==='应用模型').disabled,false);
+  source.value='ide';source.onchange();assert.equal(model.value,'');assert.equal(buttons.find(b=>b.textContent==='应用模型').disabled,true);
+  assert.equal(ui.calls.some(body=>body.action==='accounts'),false);
+});
+
+test('Antigravity management failures block stale configuration until an explicit reload',async()=>{
+  const ui=fixture(),client={id:'antigravity',name:'Antigravity',capabilities:{management:true}};ui.panel.clients=[client];
+  ui.setHandler(async()=>{throw Error('配置读取失败');});await ui.panel.manageClient(client);await new Promise(setImmediate);
+  const root=ui.pages.get('antigravity').querySelector('[data-antigravity-management]');assert.equal(root.querySelector('[role="alert"]').textContent,'配置读取失败');
+  assert.equal(root.querySelectorAll('button').find(b=>b.textContent==='应用模型').disabled,true);
+  assert.equal(root.querySelectorAll('button').find(b=>b.textContent==='应用审批方式').disabled,true);
+});
+
 test('first Claude setup guides both permissions without launching, trusting or copying the connector',async()=>{
   const ui=fixture(),workspace='/Users/fixture/本地文稿/想法/claude';
   ui.panel.clients=[{id:'claude',installed:true,enabled:true,connected:false}];ui.panel.connectionValue={claudeWorkspace:workspace};

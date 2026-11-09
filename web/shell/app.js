@@ -769,6 +769,7 @@ $('open-message-management').onclick=openMessageManagement;
 desktopSessions.onManageMessages=openMessageManagement;
 
 codexQuotes=typeof ComposerQuotes==='function'?new ComposerQuotes({messages:$('messages'),input:$('message'),container:$('message').parentElement,scope:()=>desktopSessions.provider==='codex'&&currentId&&codexDraftScope?.gateway===draftGateway&&codexDraftScope?.session===currentId&&codexDraftScope?.host===currentHost?codexDraftScope:null,onChange:()=>{codexDraftTouched=true;saveDraft();},onError:text=>{$('send-error').textContent=text;},onPrompt:text=>{const input=$('message'),start=input.selectionStart,end=input.selectionEnd;input.value+=(input.value?'\n\n':'')+text;input.setSelectionRange(start,end);input.oninput();window.BridgePresentation?.resizeMessage();},translate:t}):null;
+workbench.quoteMessage=(text,source,target)=>{if(target.provider==='codex'&&target.id===currentId&&target.host===currentHost&&desktopSessions.provider==='codex')codexQuotes?.add(text,source);};
 
 function imageComposerTarget(){
   if($('app').hidden||!$('app').classList.contains('chat-open'))return null;

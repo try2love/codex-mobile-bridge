@@ -232,8 +232,8 @@ class MetadataRoutingTests(unittest.TestCase):
         self.bridge = SimpleNamespace(host='local', codex_home=Path(temporary.name),
                                       catalog_reader=SimpleNamespace(executable='/fixture-cli'))
 
-    def call(self, operation):
-        return Bridge._desktop_metadata_operation(self.bridge, '/project', operation, 'unknown write')
+    def call(self, operation, **options):
+        return Bridge._desktop_metadata_operation(self.bridge, '/project', operation, 'unknown write', **options)
 
     def test_shared_writer_is_closed_only_as_a_connection_never_replaced(self):
         client = Mock(); client.request.return_value = {'id': 'child'}
@@ -261,6 +261,30 @@ class MetadataRoutingTests(unittest.TestCase):
             self.assertEqual(self.call(Mock()), 'native')
             shared.assert_not_called()
             self.assertTrue(fallback.call_args.kwargs['isolated_home'])
+
+    def test_uninitialized_mac_desktop_refuses_before_starting_another_writer(self):
+        with patch.object(runtime.sys, 'platform', 'darwin'), \
+             patch.object(runtime, 'connect', return_value=None), \
+             patch('bridge.features.sessions.create._runtime_operation') as spawn:
+            operation = Mock()
+            with self.assertRaisesRegex(CreationUnavailable, '初始化连接'):
+                self.call(operation, require_shared=True)
+            operation.assert_not_called()
+            spawn.assert_not_called()
+
+    def test_unconfigured_other_platform_retains_existing_metadata_runtime(self):
+        with patch.object(runtime.sys, 'platform', 'linux'), \
+             patch.object(runtime, 'connect', return_value=None), \
+             patch('bridge.features.sessions.create._runtime_operation', return_value='native') as spawn:
+            self.assertEqual(self.call(Mock(), require_shared=True), 'native')
+            spawn.assert_called_once()
+
+    def test_unconfigured_mac_history_metadata_keeps_existing_runtime_path(self):
+        with patch.object(runtime.sys, 'platform', 'darwin'), \
+             patch.object(runtime, 'connect', return_value=None), \
+             patch('bridge.features.sessions.create._runtime_operation', return_value='native') as spawn:
+            self.assertEqual(self.call(Mock()), 'native')
+            spawn.assert_called_once()
 
     @unittest.skipIf(os.name == 'nt', 'POSIX shared-runtime lock')
     def test_another_gateway_cannot_initialize_during_a_metadata_write(self):

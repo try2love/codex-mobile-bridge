@@ -18,7 +18,7 @@ from bridge.clients.antigravity.setup import disable_plugin, ensure_plugin, insp
 from bridge.clients.antigravity.store import AntigravityStore, parse_timestamp, local_file_path
 from bridge.clients.antigravity.cli_session import AntigravityCli
 from bridge.clients.errors import BridgeUnavailable
-from bridge.clients.antigravity.model import gateway_id
+from bridge.clients.antigravity.model import gateway_id, normalize_steps
 from bridge.platforms import antigravity as native
 from bridge.clients.discovery import discover_clients
 from bridge.clients.manager import DesktopSessions
@@ -96,6 +96,16 @@ class AntigravityStoreTest(unittest.TestCase):
         self.assertGreater(ts, 1700000000.0)
         ts_offset = parse_timestamp('2026-11-08T09:23:45.123456789+08:00')
         self.assertAlmostEqual(ts, ts_offset, places=3)
+
+    def test_message_times_use_native_epoch_milliseconds_without_inventing_missing_times(self):
+        messages, _, _ = normalize_steps([
+            {'type': 'USER_INPUT', 'content': 'question', 'created_at': '2026-11-08T01:23:45.123456789Z'},
+            {'type': 'PLANNER_RESPONSE', 'content': 'reply', 'created_at': '2026-11-08T09:23:46.123456789+08:00'},
+            {'type': 'PLANNER_RESPONSE', 'content': 'old reply'},
+        ])
+        self.assertAlmostEqual(messages[0]['timestamp'], parse_timestamp('2026-11-08T01:23:45.123456Z') * 1000, places=2)
+        self.assertEqual(messages[1]['timestamp'] - messages[0]['timestamp'], 1000)
+        self.assertIsNone(messages[2]['timestamp'])
 
     def test_store_reads_summaries_subagents_and_hydrated_transcript(self):
         with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as tmp:
@@ -308,6 +318,72 @@ class AntigravitySafetyTests(unittest.TestCase):
         _create_surface_db(self.home/'.gemini/antigravity-ide', [self.row])
         self.assertIsNone(adapter.store.resolve_session(CID))
         self.assertEqual(adapter.store.resolve_session(gateway_id('ide', CID))['surfaceDirKey'], 'ide')
+
+    def test_cli_display_source_never_redirects_app_history_to_the_independent_cli_owner(self):
+        cli_row = (*self.row[:7], 'CORTEX_TRAJECTORY_SOURCE_CLI', *self.row[8:])
+        _create_surface_db(self.root, [cli_row])
+        _create_surface_db(self.home/'.gemini/antigravity-cli', [cli_row])
+        adapter = Antigravity(self.directory, home=self.home)
+        app, cli = gateway_id('app', CID), gateway_id('cli', CID)
+        self.assertNotEqual(app, cli)
+        with mock.patch.object(adapter.cli, 'available', return_value=True), \
+                mock.patch.object(adapter.cli, 'send_user_message') as send, \
+                mock.patch.object(adapter, '_account', return_value={'models': []}) as account:
+            rows = {row['id']: row for row in adapter.call('list')['sessions']}
+            self.assertEqual(rows[app]['backend'], 'cli')
+            self.assertEqual(rows[app]['surfaceDirKey'], 'app')
+            for sid, owner in ((app, 'app'), (cli, 'cli')):
+                adapter.call('send', sid, {'text': owner})
+                self.assertEqual(send.call_args.kwargs['surface'], owner)
+                adapter.call('catalog', sid)
+                self.assertEqual(account.call_args.args[0], owner)
+
+    def test_offline_composer_reserves_shared_controls_without_granting_capabilities(self):
+        adapter = self.adapter()
+        with mock.patch.object(adapter.cli, 'available', return_value=False):
+            row = adapter.call('list')['sessions'][0]
+            self.assertTrue(row['composerCapabilities']['skills'])
+            self.assertTrue(row['composerCapabilities']['plan'])
+            self.assertFalse(row['capabilities']['skills'])
+            self.assertFalse(row['capabilities']['plan'])
+            self.assertFalse(row['capabilities']['send'])
+            self.assertEqual(row['permissionLabel'], '电脑端处理')
+            self.assertTrue(row['readOnly'])
+
+    def test_management_keeps_source_model_and_permission_writes_scoped(self):
+        _create_surface_db(self.root, [self.row])
+        _create_surface_db(self.home/'.gemini/antigravity-cli', [self.row])
+        settings = self.directory/'desktop-sessions/settings.json'
+        settings.parent.mkdir(parents=True)
+        settings.write_text(json.dumps({'antigravityHome': str(self.home), 'enabled': {'antigravity': True}}))
+        manager = DesktopSessions(self.directory)
+        self.addCleanup(manager.close)
+        adapter = manager.adapters['antigravity']
+        with mock.patch.object(adapter.cli, 'available', side_effect=lambda surface: surface == 'cli'), \
+                mock.patch.object(adapter, 'account_scope', return_value='native-account'), \
+                mock.patch.object(adapter.cli, 'catalog_models', side_effect=lambda **kw: {
+                    'models': [{'id': kw['surface'], 'name': kw['surface']}], 'userStatus': {}, 'notice': ''}):
+            state = manager.control({'action': 'antigravity-management', 'operation': 'list'})
+            sources = {row['id']: row for row in state['surfaces']}
+            self.assertFalse(sources['app']['connected'])
+            self.assertTrue(sources['app']['historyAvailable'])
+            self.assertTrue(sources['cli']['connected'])
+            self.assertFalse(sources['ide']['historyAvailable'])
+            sid = gateway_id('cli', CID)
+            request = {'action': 'antigravity-management', 'operation': 'catalog', 'surface': 'cli', 'sessionId': sid}
+            catalog = manager.control(request)
+            self.assertEqual(catalog['models'][0]['id'], 'cli')
+            with mock.patch.object(manager, 'call', wraps=manager.call) as call:
+                with self.assertRaisesRegex(ValueError, '来源不匹配'):
+                    manager.control({**request, 'surface': 'app'})
+                call.assert_not_called()
+            result = manager.control({**request, 'operation': 'settings', 'id': str(uuid.uuid4()),
+                'model': 'cli', 'modelCatalogIdentity': catalog['cache']['identity']})
+            self.assertEqual(result['status'], 'accepted')
+            self.assertEqual(adapter._settings, {sid: {'model': 'cli'}})
+            result = manager.control({**request, 'operation': 'access', 'id': str(uuid.uuid4()), 'mode': 'mobile-ask'})
+            self.assertNotEqual(result['status'], 'accepted')
+            self.assertIn('启用 Antigravity', result['message'])
 
     def test_unknown_idle_and_unreadable_native_database_never_send(self):
         adapter = self.adapter()

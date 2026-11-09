@@ -97,7 +97,7 @@ class SignedGatewayPeer:
         identifier = "io.github.try2love.codexmobilebridge.zcode-pipe-starter"
         if self.published is not None:
             image = bundle.parents[2] / release_identity.BROKER
-            published = release_identity.read(image, broker_hash)
+            published = release_identity.read(image, broker_hash, expected_product=self.published['product'])
             hashes = published['components']['starter']['cdhashes']
             clause = f'identifier "{identifier}" and (' + ' or '.join(f'cdhash H"{h}"' for h in hashes) + ')'
         else:
@@ -153,7 +153,7 @@ class SignedGatewayPeer:
                 or previous_app.parent != current_app.parent):
             raise PermissionError("ZCode holder is outside this installation")
         if getattr(self, "published", None) is not None:
-            release_identity.read(previous, broker_hash)
+            release_identity.read(previous, broker_hash, expected_product=self.published['product'])
             self._starter_requirement(previous_app / "Contents/Helpers/CMBZCodePipeStarter.app", broker_hash)
             return
         requirement = subprocess.run(
@@ -217,7 +217,7 @@ class SignedGatewayPeer:
                 digest = self._bytes(self.cf.CFDictionaryGetValue(info, P.in_dll(self.sec, "kSecCodeInfoUnique")))
                 identity = (expected_pid, before["birth"], before["started"], before["image"], digest)
                 if getattr(self, "_published_peer", None) != identity:
-                    release_identity.read(before["image"], digest)
+                    release_identity.read(before["image"], digest, expected_product=self.published['product'])
                     self._published_peer = identity
             if before["image"] != expected_image:
                 # Audit/DR checks above are performed on every connection. Reuse

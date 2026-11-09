@@ -2541,15 +2541,16 @@ class DesktopSessions:
                     'id': 'antigravity',
                     'name': 'Antigravity',
                     'installed': installed,
-                    'description': '管理 Antigravity 2.0 / IDE 桌面端與 CLI 會話同步、即時審批與追問。',
+                    'description': '管理 Antigravity App、CLI 和 IDE 的聊天、模型与审批。',
                     'enabled': enabled,
                     'configured': installed,
                     'connected': connected,
                     'setupStatus': 'ready' if connected else ('history-only' if status.get('historyAvailable') else 'discovered' if installed else 'not-installed'),
                     'historyAvailable': bool(status.get('historyAvailable') or installed),
-                    'reason': status.get('reason') or ('Antigravity 已接入' if connected else '已發現 Antigravity，啟用後即可同步會話與審批'),
+                    'reason': status.get('reason') or ('Antigravity 已接入' if connected else '已发现 Antigravity，启用后可查看本机历史'),
+                    'accountNotice': '账号与登录由原客户端管理',
                     'canQuitDesktop': False,
-                    'capabilities': {'create': connected, 'accounts': False, 'notifications': True},
+                    'capabilities': {'create': connected, 'accounts': False, 'management': True, 'notifications': True},
                 })
             if self.instance is not None:
                 rows = [row for row in rows if row['id'] == self.instance.family]
@@ -3242,6 +3243,24 @@ class DesktopSessions:
         Workspace(root)  # Reject unavailable and non-local workspaces (e.g. Cowork VM).
         return DesktopWorkspace(self, provider, sid, root)
 
+    def antigravity_management(self, value):
+        adapter = self.adapters.get('antigravity')
+        if adapter is None:
+            raise ValueError('尚未发现 Antigravity')
+        operation = value.get('operation', 'list')
+        if operation == 'list' and set(value) <= {'action', 'operation'}:
+            return {**adapter.management(), 'enabled': self.enabled('antigravity')}
+        surface, sid = value.get('surface'), value.get('sessionId')
+        row = adapter.store.resolve_session(sid)
+        if row is None or surface != row['surfaceDirKey']:
+            raise ValueError('聊天与来源不匹配，请重新选择')
+        if operation == 'catalog' and set(value) <= {'action', 'operation', 'surface', 'sessionId', 'refresh'}:
+            return self.call('antigravity', 'catalog', sid, {'section': 'models', 'refresh': value.get('refresh') is True})
+        fields = {'settings': {'model', 'modelCatalogIdentity'}, 'access': {'mode'}}.get(operation)
+        if fields is None or set(value) != {'action', 'operation', 'surface', 'sessionId', 'id', *fields}:
+            raise ValueError('Antigravity 配置请求无效')
+        return self.call('antigravity', operation, sid, {key: value[key] for key in ('id', *fields)})
+
     def control(self, value):
         action = value.get('action', 'status')
         if action == 'client-profiles':
@@ -3299,6 +3318,8 @@ class DesktopSessions:
             return self.recover_deepseek(value)
         if action == 'accounts':
             return self.client_accounts(value.get('provider'), value)
+        if action == 'antigravity-management':
+            return self.antigravity_management(value)
         if action == 'account':
             provider = value.get('provider')
             if provider not in self.adapters:

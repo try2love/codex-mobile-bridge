@@ -234,8 +234,11 @@ class SideChat:
                 for key in ('status', 'error'):
                     if key in source:
                         turn[key] = source[key]
+                if source.get('startedAt') is not None:
+                    turn['turnStartedAtMs'] = source['startedAt'] * 1000
                 if source.get('items'):
-                    turn['items'] = copy.deepcopy(source['items'])
+                    previous_times = {item.get('id'): item['timestamp'] for item in turn['items'] if item.get('timestamp') is not None}
+                    turn['items'] = [copy.deepcopy({**item, 'timestamp': previous_times[item.get('id')]} if item.get('timestamp') is None and item.get('id') in previous_times else item) for item in source['items']]
                 self.state['threadRuntimeStatus']['type'] = 'active' if method == 'turn/started' else 'idle'
                 if method == 'turn/completed':
                     self.queue_event.set()
@@ -247,6 +250,8 @@ class SideChat:
                 if index is None:
                     turn['items'].append(item)
                 else:
+                    if item.get('timestamp') is None and turn['items'][index].get('timestamp') is not None:
+                        item['timestamp'] = turn['items'][index]['timestamp']
                     turn['items'][index] = item
             elif method in ('item/agentMessage/delta', 'item/commandExecution/outputDelta'):
                 turn = self._turn(params['turnId'])

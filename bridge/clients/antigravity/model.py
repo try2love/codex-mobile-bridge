@@ -18,6 +18,14 @@ SURFACE_LABELS = {
     'cli': 'Antigravity CLI',
 }
 
+# These reserve shared composer positions, never authorize native operations.
+COMPOSER_PRESENTATION = dict.fromkeys(('models', 'skills', 'permissions', 'attachments', 'plan', 'goal'), True)
+PERMISSION_OPTIONS = [
+    {'value': 'desktop', 'label': '电脑端处理'},
+    {'value': 'mobile-ask', 'label': '手机端审批'},
+    {'value': 'auto-allow', 'label': '自动允许'},
+]
+
 
 def gateway_id(surface, conversation_id):
     """Return a deterministic 36-char UUID for a surface + native conversation ID."""
@@ -201,6 +209,8 @@ def normalize_steps(steps, *, session_active=False):
         step_type = str(step.get('type') or '')
         step_status = str(step.get('status') or 'DONE')
         step_ts = _parse_iso_seconds(step.get('created_at'))
+        if step_ts is not None:
+            step_ts *= 1000
         is_last = idx == len(steps) - 1
 
         if step_type == 'USER_INPUT':
@@ -281,7 +291,7 @@ def normalize_steps(steps, *, session_active=False):
                 msg = {
                     'id': f'step-{step_index}-error',
                     'role': 'error',
-                    'text': '模型步驟執行異常',
+                    'text': '模型步骤执行异常',
                 }
                 messages.append(msg)
                 turn['messages'].append(msg)
@@ -291,7 +301,7 @@ def normalize_steps(steps, *, session_active=False):
             if isinstance(content, str) and content.strip():
                 preview = content.strip()
                 if len(preview) > 4000:
-                    preview = preview[:4000] + '\n…（已截斷）'
+                    preview = preview[:4000] + '\n…（已截断）'
                 if pending_tool_msgs:
                     target_msg = pending_tool_msgs.pop(0)
                     target_msg['text'] = f"{target_msg['text']}\n\n--- Output ---\n{preview}".strip()
@@ -299,7 +309,7 @@ def normalize_steps(steps, *, session_active=False):
                     msg = {
                         'id': f'step-{step_index}-output',
                         'role': 'activity', 'timestamp': step_ts,
-                        'title': 'Tool output',
+                        'title': '工具输出',
                         'text': preview,
                     }
                     messages.append(msg)

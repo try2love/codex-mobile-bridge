@@ -9,8 +9,8 @@ from bridge.clients.file_mentions import file_mentions
 from bridge.platforms.antigravity import profile_lease
 from .cli_session import AntigravityCli
 from .hook_ipc import HookIPCServer
-from .model import gateway_id
-from .setup import disable_plugin, ensure_plugin, plugin_directory
+from .model import COMPOSER_PRESENTATION, PERMISSION_OPTIONS, SURFACE_LABELS, gateway_id
+from .setup import disable_plugin, ensure_plugin, inspect_plugin, plugin_directory
 from .store import AntigravityStore
 
 
@@ -98,13 +98,29 @@ class Antigravity:
         hooked = bool(self.hooks and self.hooks.has_recent_heartbeat(key))
         live = self.cli.available(row['surfaceDirKey'])
         active = row.get('status') == 'active' or hooked or bool(requests)
+        permission = self.hooks.permission_mode(key) if self.hooks else 'desktop'
         return {**row, 'status': 'active' if active else 'idle', 'requests': requests,
                 'model': self._settings.get(key, {}).get('model') or '', 'effort': '',
-                'permissionMode': self.hooks.permission_mode(key) if self.hooks else 'desktop',
+                'permissionMode': permission,
+                'permissionLabel': next(option['label'] for option in PERMISSION_OPTIONS if option['value'] == permission),
+                'composerCapabilities': dict(COMPOSER_PRESENTATION),
+                'connectionState': 'ready' if live else 'detached', 'readOnly': not live,
                 'capabilities': {'send': live, 'stop': live and active, 'models': live, 'effort': False,
                                  'permissions': bool(self.hooks), 'attachments': live, 'uploadFiles': live,
                                  'queue': hooked, 'steer': hooked, 'skills': False, 'rename': False,
-                                 'archive': False, 'unarchive': False}}
+                                 'plan': False, 'goal': False, 'archive': False, 'unarchive': False}}
+
+    def management(self):
+        """Inspect each native source and existing per-session settings without starting it."""
+        found = {row['key']: row for row in self.store.surfaces()}
+        sessions = [self._session(row) for row in self.store.list_sessions()]
+        return {'surfaces': [
+            {'id': surface, 'name': name, 'historyAvailable': surface in found,
+             'connected': self.cli.available(surface) if surface in found else False,
+             'sessions': [row for row in sessions if row['surfaceDirKey'] == surface]}
+            for surface, name in SURFACE_LABELS.items()],
+            'plugin': {**inspect_plugin(self.directory, self.home), 'active': bool(self.hooks)},
+            'permissionOptions': PERMISSION_OPTIONS}
 
     @staticmethod
     def _prompt(body):
@@ -160,6 +176,8 @@ class Antigravity:
                                                    before=body.get('historyBefore'), session_active=session['status'] == 'active')
             queued = self.hooks.get_queued_items(key) if self.hooks else []
             return {'connected': True, 'session': session, **{k: page[k] for k in ('messages', 'turns', 'history')},
+                    'readOnly': session['readOnly'],
+                    'notice': '原生服务未连接，可继续阅读历史和编辑草稿；发送及模型设置暂不可用。' if session['readOnly'] else '',
                     'requests': session['requests'], 'queued': queued, 'capabilities': session['capabilities'],
                     'submissions': queued, 'draftAccountIdentity': self.account_scope()}
         if action == 'catalog':
@@ -176,9 +194,7 @@ class Antigravity:
             if 'mode' in body and not self.hooks:
                 raise ValueError('请在电脑网关启用 Antigravity 接入')
             mode = self.hooks.set_permission_mode(key, body['mode']) if 'mode' in body else session['permissionMode']
-            return {'status': 'accepted', 'mode': mode, 'options': [
-                {'value': 'desktop', 'label': '电脑端处理'}, {'value': 'mobile-ask', 'label': '手机端审批'},
-                {'value': 'auto-allow', 'label': '自动允许'}]}
+            return {'status': 'accepted', 'mode': mode, 'options': PERMISSION_OPTIONS}
         if action == 'respond':
             if not self.hooks:
                 raise ValueError('审批连接不可用')

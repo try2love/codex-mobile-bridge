@@ -100,6 +100,19 @@ class PublishedComponents(unittest.TestCase):
         with self.assertRaises(PermissionError):
             identity.read(self.broker)
 
+    def test_test_product_requires_its_own_signed_proof_and_same_product_peers(self):
+        test_product = identity.PRODUCT + '.test'
+        (self.app / 'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier': test_product}))
+        # A production proof must not authorize even identical Test components.
+        with self.assertRaises(PermissionError):
+            identity.read(self.broker)
+        self.payload['product'] = test_product
+        self.sign()
+        self.assertEqual(identity.read(self.broker, bytes.fromhex('ab' * 20)), self.payload)
+        with self.assertRaises(PermissionError):
+            identity.read(self.broker, expected_product=identity.PRODUCT)
+        self.assertEqual(identity.read(self.broker, expected_product=test_product), self.payload)
+
 
 if __name__ == '__main__':
     unittest.main()

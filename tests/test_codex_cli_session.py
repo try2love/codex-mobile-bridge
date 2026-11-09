@@ -87,6 +87,21 @@ class CliSessionTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_native_message_times_survive_live_turn_and_item_replacement(self):
+        self.sessions.attach('thread-a', explicit=True)
+        stamp = 1794211440000
+        def emit(method, **params):
+            self.sessions._event({'method': method, 'params': {'threadId': 'thread-a', **params}})
+        user = {'id': 'user', 'type': 'userMessage', 'content': [{'type': 'text', 'text': 'hi'}]}
+        reply = {'id': 'reply', 'type': 'agentMessage', 'text': 'answer'}
+        emit('turn/started', turn={'id': 'turn-1', 'status': 'inProgress', 'startedAt': stamp / 1000})
+        emit('item/started', turnId='turn-1', item=user)
+        emit('item/started', turnId='turn-1', item={**reply, 'timestamp': stamp + 1000})
+        emit('item/completed', turnId='turn-1', item=reply)
+        emit('turn/completed', turn={'id': 'turn-1', 'status': 'completed', 'items': [reply]})
+        rows = normalize_state(self.states[-1][1])['turns'][0]['messages']
+        self.assertEqual([row.get('timestamp') for row in rows], [stamp, stamp + 1000])
+
     def test_passive_attach_does_not_connect_or_resume(self):
         self.sessions._start_daemon = Mock()
         Path(self.fake.socket_path).unlink()

@@ -51,6 +51,13 @@ function fixture({storage=new Map(),sessionStore=new Map()}={}){
  return {view,root,document,calls,notices,storage,sessionStore,setHandler:fn=>handler=fn,setUploadHandler:fn=>uploadHandler=fn,run:s=>vm.runInContext(s,context),text:n=>n.textContent};
 }
 async function opened(){const ui=fixture();await ui.view.choose('claude');await ui.view.open('a');return ui;}
+test('Antigravity lists filter APP CLI and IDE without crossing saved source selection',async()=>{
+ const ui=fixture(),view=ui.view;ui.setHandler(async()=>({sessions:['app','cli','ide'].map(backend=>({id:backend,title:backend,cwd:'/same-project',backend}))}));
+ await view.choose('antigravity');assert.equal(view.surface.hidden,false);assert.deepEqual(view.surface.children.map(n=>n.value),['all','app','cli','ide']);
+ assert.deepEqual(view.rowsRoot.querySelectorAll('.ds-session-type').map(n=>n.textContent),['APP','CLI','IDE']);
+ view.surface.value='ide';view.surface.onchange();assert.deepEqual(view.rowsRoot.querySelectorAll('.session').map(n=>n.dataset.id),['ide']);
+ await view.choose('deepseek');await view.choose('antigravity');assert.equal(view.surface.value,'ide');assert.deepEqual(view.rowsRoot.querySelectorAll('.session').map(n=>n.dataset.id),['ide']);
+});
 test('independent desktops keep the same native session in separate drafts attachments and workspace routes',async()=>{
  const ui=fixture(),view=ui.view,a='claude:'+ 'a'.repeat(32),b='claude:'+ 'b'.repeat(32);
  view.clientStates=[a,b].map(id=>({id,family:'claude',enabled:true,connected:true}));
@@ -1581,4 +1588,13 @@ test('account directory refresh updates known Code and Cowork projections withou
  assert.equal(shared.forScope(cache,'code').cache.updatedAt,5);
 
  shared.forget(cache,namespace);assert.equal(shared.forScope(cache,'code'),null);assert.equal(shared.forScope(cache,'cowork'),null);
+});
+
+test('Antigravity creation keeps native directory source separate from CLI display labels',async()=>{
+ const ui=fixture(),view=ui.view;view.provider='antigravity';view.state={backend:'cli',surfaceDirKey:'app'};view.generation=1;view.open=async()=>{};
+ const environments=['app','cli','ide'].map(surface=>({key:surface,surface,host:'local',name:surface,createRequiresMessage:true,createTitle:false}));
+ ui.setHandler(async(url,body)=>url.endsWith('/projects')?{createModels:true,projects:environments.map(row=>({key:row.surface+'-project',environment:row.key,surface:row.surface,host:'local',cwd:'/same',name:row.surface})),environments,browseDirectories:false}:url.includes('/create-models?')?{models:[{id:new URL(url,'http://fixture').searchParams.get('environment')+'-model'}],cache:{identity:'source-account'},capabilities:{models:true,effort:false}}:url.endsWith('/create')?{status:'accepted',result:{id:'created'}}:{sessions:[]});
+ await view.create();await new Promise(setImmediate);const dialog=ui.document.querySelector('dialog'),environment=dialog.querySelector('[aria-label="运行环境"]');assert.equal(environment.value,'app');
+ environment.value='ide';environment.onchange();await new Promise(setImmediate);const model=dialog.querySelector('[aria-label="模型"]');model.value='ide-model';model.onchange();dialog.querySelector('textarea').value='FIRST';await dialog.querySelector('form').onsubmit({preventDefault(){}});
+ const write=ui.calls.find(row=>row.url.endsWith('/create')).body;assert.equal(write.environment,'ide');assert.equal(write.projectKey,'ide-project');assert.equal(write.model,'ide-model');assert.equal(write.effort,undefined);assert.equal(write.firstMessage,'FIRST');assert.equal(write.title,undefined);
 });

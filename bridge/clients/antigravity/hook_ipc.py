@@ -229,7 +229,7 @@ class HookIPCServer:
         tool_args = tool_call.get('args') if isinstance(tool_call.get('args'), dict) else {}
         request_id = f'agy-perm-{uuid.uuid4().hex[:12]}'
         kind = 'fileChange' if 'file' in tool_name or 'write' in tool_name or 'edit' in tool_name else 'commandExecution'
-        title = f'Antigravity 請求執行 {tool_name}'
+        title = f'Antigravity 请求执行 {tool_name}'
         text = format_tool_call({'name': tool_name, 'args': tool_args})
         prompt = {
             'id': request_id,
@@ -495,7 +495,7 @@ class HookIPCServer:
 
     def set_permission_mode(self, conversation_id, mode):
         if mode not in ('desktop', 'mobile-ask', 'auto-allow'):
-            raise ValueError('不支援的審批模式')
+            raise ValueError('不支持的审批模式')
         with self._lock:
             self._permissions[conversation_id] = mode
             self._save_json(self.permissions_file, self._permissions)

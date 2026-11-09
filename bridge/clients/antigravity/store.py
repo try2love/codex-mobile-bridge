@@ -87,7 +87,7 @@ def _cap_large_fields(step):
     for key in ('content', 'thinking'):
         val = copied.get(key)
         if isinstance(val, str) and len(val) > _MAX_FULL_FIELD_CHARS:
-            copied[key] = val[:_MAX_FULL_FIELD_CHARS] + '\n…（內容過長，已在手機端截斷預覽）'
+            copied[key] = val[:_MAX_FULL_FIELD_CHARS] + '\n…（内容过长，已在手机端截断预览）'
     return copied
 
 
@@ -152,7 +152,7 @@ class AntigravityStore:
         title = str(row.get('title') or '').strip()
         if not title:
             preview = extract_user_text(str(row.get('preview') or '')).splitlines()
-            title = (preview[0][:80] if preview and preview[0].strip() else '') or f'對話 {cid[:8]}'
+            title = (preview[0][:80] if preview and preview[0].strip() else '') or f'聊天 {cid[:8]}'
         updated_at = parse_timestamp(row.get('last_modified_time'))
         active = bool(row.get('not_fully_idle')) or str(row.get('status') or '').endswith('_RUNNING')
         backend = self._backend_for(dir_key, str(row.get('source') or ''))
@@ -226,7 +226,7 @@ class AntigravityStore:
                         'provider': 'antigravity',
                         'host': 'local',
                         'backend': surface['key'],
-                        'title': f'對話 {cid[:8]}',
+                        'title': f'聊天 {cid[:8]}',
                         'cwd': '',
                         'projectId': f'{surface["key"]}:unassigned',
                         'projectName': surface['name'],
@@ -309,7 +309,7 @@ class AntigravityStore:
             try:
                 before_index = int(str(before).strip())
             except ValueError as exc:
-                raise ValueError('歷史游標格式無效') from exc
+                raise ValueError('历史游标格式无效') from exc
 
         steps = []
         with compact_path.open('r', encoding='utf-8', errors='replace') as stream:
@@ -396,14 +396,14 @@ class AntigravityStore:
     def read_image(self, surface_root, conversation_id, source):
         """Re-verify image membership in transcript.jsonl and return base64 bytes + MIME."""
         if not isinstance(source, dict):
-            raise ValueError('圖片引用格式無效')
+            raise ValueError('图片引用格式无效')
         target_step = source.get('stepIndex')
         target_media = source.get('mediaIndex')
         if type(target_step) is not int or type(target_media) is not int or target_step < 0 or target_media < 0:
-            raise ValueError('圖片索引無效')
+            raise ValueError('图片索引无效')
         compact_path = Path(surface_root) / 'brain' / conversation_id / '.system_generated' / 'logs' / 'transcript.jsonl'
         if not compact_path.is_file():
-            raise ValueError('找不到原始會話記錄')
+            raise ValueError('找不到原始会话记录')
 
         uri = None
         with compact_path.open('r', encoding='utf-8', errors='replace') as stream:
@@ -422,7 +422,7 @@ class AntigravityStore:
                 break
 
         if not uri:
-            raise ValueError('圖片不在該會話歷史記錄中')
+            raise ValueError('图片不在该会话历史记录中')
         raw_path = local_file_path(uri) if uri.startswith('file://') else uri
         image_path = Path(raw_path).resolve()
         session_dir = (Path(surface_root)/'brain'/conversation_id).resolve()
@@ -431,14 +431,14 @@ class AntigravityStore:
         if not any(root == image_path or root in image_path.parents for root in allowed):
             raise ValueError('原始图片不在当前会话或项目目录中')
         if not image_path.is_file():
-            raise ValueError('原始圖片檔案已移除或不可讀')
+            raise ValueError('原始图片文件已移除或不可读')
         size = image_path.stat().st_size
         if not 0 < size <= MAX_FILE:
-            raise ValueError('圖片大小超出預覽限制')
+            raise ValueError('图片大小超出预览限制')
         raw = image_path.read_bytes()
         mime = image_type(raw)
         if not mime:
-            raise ValueError('不支援的圖片格式')
+            raise ValueError('不支持的图片格式')
         return {
             'data': base64.b64encode(raw).decode('ascii'),
             'mediaType': mime,

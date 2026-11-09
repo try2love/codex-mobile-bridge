@@ -241,9 +241,10 @@ class ChatTimeline {
     };
     more.onclick=load;content.append(body,more);paint();
     if(row.role==='user'||row.role==='assistant'){
-      const actions=document.createElement('div');actions.className='message-actions';renderChatMessageTime(actions,row.timestamp);
+      const actions=document.createElement('div');actions.className='message-actions';
       const copy=document.createElement('button');copy.type='button';copy.className='plain message-copy';copy.textContent=timelineText('复制');copy.onclick=()=>window.BridgeClipboard?.copy(()=>this.fullText(row),copy);actions.append(copy);node.append(actions);
       const quote=document.createElement('button');quote.type='button';quote.className='plain message-quote';quote.textContent=timelineText('引用');quote.onclick=()=>node.dispatchEvent(new CustomEvent('bridge-compose-quote',{bubbles:true,detail:{getText:()=>this.fullText(row),source:row.key}}));actions.append(quote);
+      renderChatMessageTime(actions,row.timestamp);
     }
     renderChatAttachments(node,row.attachments,{showToolImages:this.showToolImages,fileUrl:item=>{
       const file=[...this.files.values()].find(file=>file.reference===item.path||file.references?.includes(item.path));
@@ -276,7 +277,7 @@ class ChatTimeline {
     for(const [key,{node}] of this.nodes){
       const row=this.rows.get(key)?.row,bar=node.querySelector('.message-actions');if(!bar||!row)continue;
       if(!this.onAction)continue;
-      const add=(action,label,disabled)=>{const cls=action==='fork'?'message-fork':'message-edit';let b=bar.querySelector('.'+cls);if(!b){b=document.createElement('button');b.type='button';b.className='plain '+cls;bar.append(b);}b.textContent=timelineText(label);b.disabled=disabled;b.onclick=()=>this.onAction(action,row,this);};
+      const add=(action,label,disabled)=>{const cls=action==='fork'?'message-fork':'message-edit';let b=bar.querySelector('.'+cls);if(!b){b=document.createElement('button');b.type='button';b.className='plain '+cls;bar.insertBefore(b,bar.querySelector('.message-time'));}b.textContent=timelineText(label);b.disabled=disabled;b.onclick=()=>this.onAction(action,row,this);};
       for(const action of bar.querySelectorAll('.message-edit,.message-fork'))action.hidden=!this.canEdit();
       if(row.editable&&this.canEdit()){const latest=this.meta?.latestUserTurnId===row.turnId;add(latest?'edit':'edit-fork',latest?'编辑并重新发送':'编辑并新建分支',row.turnStatus==='inProgress'||latest&&this.meta?.status==='active');}
       if(row.forkable&&this.canEdit())add('fork','从这里分支',false);

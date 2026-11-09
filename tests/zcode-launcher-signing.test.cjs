@@ -14,8 +14,18 @@ test('production component proof is bound to the existing publisher and exact pa
   assert.throws(()=>hook.authorize(record,other.privateKey,pem),/matching release signing key/);
   assert.throws(()=>hook.authorize(record,null,pem),/matching release signing key/);
 });
-test('non-Mac and independent Test packaging remain unchanged',async()=>{
+test('non-Mac and unrelated packaging remain unchanged',async()=>{
   await hook({electronPlatformName:'win32'});
   await hook({electronPlatformName:'linux'});
-  await hook({electronPlatformName:'darwin',packager:{appInfo:{id:'io.github.try2love.codexmobilebridge.test'}}});
+  await hook({electronPlatformName:'darwin',packager:{appInfo:{id:'unrelated.product'}}});
+});
+test('Test packaging fails before modifying the bundle without the trusted signing key',async()=>{
+  const previous=process.env.CMB_UPDATE_SIGNING_KEY;
+  delete process.env.CMB_UPDATE_SIGNING_KEY;
+  try{
+    await assert.rejects(hook({electronPlatformName:'darwin',packager:{appInfo:{id:'io.github.try2love.codexmobilebridge.test'}}}),/matching release signing key/);
+  }finally{
+    if(previous===undefined)delete process.env.CMB_UPDATE_SIGNING_KEY;
+    else process.env.CMB_UPDATE_SIGNING_KEY=previous;
+  }
 });

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from bridge.features.sessions.side_chat import SideChat, SideChats, SideChatError, BOUNDARY
 import test_bridge as support
@@ -53,6 +53,18 @@ class SideChatTests(unittest.TestCase):
             {'model': 'fixture', 'modelProvider': 'custom', 'approvalPolicy': 'on-request'}, RuntimeFixture)
         self.addCleanup(self.chat.close)
         self.runtime = self.chat.runtime
+
+    def test_native_turn_and_item_clocks_survive_live_replacements(self):
+        stamp = 1794211440000
+        user = {'id': 'user', 'type': 'userMessage', 'content': [{'type': 'text', 'text': 'hi'}]}
+        reply = {'id': 'reply', 'type': 'agentMessage', 'text': 'answer'}
+        self.runtime.emit('turn/started', turn={'id': 'clock-turn', 'status': 'inProgress', 'startedAt': stamp / 1000})
+        self.runtime.emit('item/started', turnId='clock-turn', item=user)
+        self.runtime.emit('item/started', turnId='clock-turn', item={**reply, 'timestamp': stamp + 1000})
+        self.runtime.emit('item/completed', turnId='clock-turn', item=reply)
+        self.runtime.emit('turn/completed', turn={'id': 'clock-turn', 'status': 'completed', 'items': [user, reply]})
+        rows = self.chat.view()['turns'][0]['messages']
+        self.assertEqual([row.get('timestamp') for row in rows], [stamp, stamp + 1000])
 
     def test_fork_boundary_goal_and_no_parent_execution(self):
         calls = self.runtime.calls
@@ -216,6 +228,36 @@ class SideChatServiceTests(unittest.TestCase):
                 self.bridge.side_chat(support.THREAD, 'phone', 'create', body)
             self.assertEqual(fork.call_count, 1)
         self.assertFalse(self.bridge.side_chats.chats)
+
+    def test_uninitialized_creation_is_not_sent_and_same_id_works_after_initialization(self):
+        from bridge.clients.codex import desktop_runtime
+        from bridge.features.sessions.create import CreationUnavailable
+        bridge = self.bridge
+        self.fixture.state['cwd'] = str(self.root)
+        bridge.catalog_reader.executable = 'fixture-runtime'
+        body = {'creationId': str(uuid.uuid4())}
+        child = str(uuid.uuid4())
+        client = Mock()
+        client.request.return_value = {'thread': {'id': child}}
+        before = copy.deepcopy(self.fixture.state)
+        def fork(*args, **kwargs):
+            result = kwargs['runtime_operation'](lambda request: request('thread/fork', {'threadId': args[3]}))
+            args[6](result['thread']['id'])
+            return result['thread']['id']
+        with patch.object(desktop_runtime.sys, 'platform', 'darwin'), \
+             patch.object(desktop_runtime, 'connect', side_effect=[None, client]), \
+             patch('bridge.features.sessions.create._runtime_operation') as spawn, \
+             patch('bridge.app.service.fork_attached', side_effect=fork):
+            with self.assertRaisesRegex(CreationUnavailable, '账号管理.*初始化连接'):
+                bridge.side_chat(support.THREAD, 'phone', 'create', body)
+            self.assertNotIn(body['creationId'], bridge.message_actions)
+            client.request.assert_not_called()
+            result = bridge.side_chat(support.THREAD, 'phone', 'create', body)
+            self.assertEqual(result['id'], child)
+            client.request.assert_called_once_with('thread/fork', {'threadId': support.THREAD})
+            client.close.assert_called_once()
+            spawn.assert_not_called()
+        self.assertEqual(self.fixture.state, before)
 
     def test_native_directory_does_not_discover_or_activate_an_owner(self):
         rows = [{'id': str(uuid.uuid4()), 'title': 'Native side', 'archived': 1}]

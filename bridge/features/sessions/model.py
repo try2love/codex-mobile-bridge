@@ -153,6 +153,10 @@ def normalize_item(item, *, image_cache=None):
     row = {"id": item.get("id"), "kind": kind, "status": item.get("status")}
     if item.get("timestamp") is not None:
         row["timestamp"] = item["timestamp"]
+        if item.get('_timestampSource'):
+            row['_timestampSource'] = item['_timestampSource']
+    if item.get('_syntheticId'):
+        row['_syntheticId'] = True
     if kind in ("userMessage", "steeringUserMessage"):
         if kind == "steeringUserMessage":
             item = {**item, "content": item.get("input", [])}
@@ -259,6 +263,34 @@ def context_usage(state):
             'cached': state.get('tokenUsageFromHistory') is True}
 
 
+def merge_saved_message_times(view, saved):
+    """Enrich presentation only, using unique native identities on both sides."""
+    if not view.get('id') or view['id'] != saved.get('id'):
+        return
+    groups = []
+    for source in (view, saved):
+        rows = {}
+        for turn in source['turns']:
+            if not turn.get('actionable', True):
+                continue
+            for message in turn['messages']:
+                if (message['role'] not in ('user', 'assistant') or message.get('_syntheticId')
+                        or not isinstance(message.get('id'), str) or not message['id']):
+                    continue
+                key = (turn['id'], message['id'], message['kind'], message['role'])
+                rows.setdefault(key, []).append(message)
+        groups.append(rows)
+    current, history = groups
+    for key, rows in current.items():
+        prior = history.get(key, [])
+        if len(rows) != 1 or len(prior) != 1 or prior[0].get('timestamp') is None:
+            continue
+        fallback = rows[0].get('_timestampSource') == 'native-turn-start' and prior[0].get('_timestampSource') != 'native-turn-start'
+        if rows[0].get('timestamp') is None or fallback:
+            rows[0]['timestamp'] = prior[0]['timestamp']
+            rows[0]['_timestampSource'] = prior[0].get('_timestampSource', 'saved-native-message')
+
+
 def normalize_state(state, connected=True, *, image_cache=None, item_limit=None):
     turns = ordered_turns(state)
     # Select bodies before normalization (tool results can contain megabytes).
@@ -268,6 +300,7 @@ def normalize_state(state, connected=True, *, image_cache=None, item_limit=None)
     window_more = skip > 0
     result = []
     for ordinal, turn in enumerate(turns):
+        started_at = turn.get('turnStartedAtMs') or turn.get('startedAt')
         items = items_array(turn.get("items", []))
         if skip >= len(items) and skip:
             skip -= len(items)
@@ -321,26 +354,31 @@ def normalize_state(state, connected=True, *, image_cache=None, item_limit=None)
                 continue
             else:
                 message = normalize_item(item, image_cache=image_cache)
+            first_user = (item.get('id') == turn['_firstUserItemId']
+                          if '_firstUserItemId' in turn else id(item) == first_user_id)
+            if message['role'] == 'user' and message.get('timestamp') is None and first_user and started_at is not None:
+                message['timestamp'] = started_at
+                message['_timestampSource'] = 'native-turn-start'
             if item_limit is not None:
                 message['_historyCarry'] = id(item) in carry_ids
                 key = (message.get('id'), message['kind'])
                 message['_timelineOrdinal'] = prefix_ordinals.get(key, 0) + occurrences.get(key, 0)
                 occurrences[key] = occurrences.get(key, 0) + 1
-                message['_firstUser'] = (item.get('id') == turn['_firstUserItemId']
-                                         if '_firstUserItemId' in turn else id(item) == first_user_id)
+                message['_firstUser'] = first_user
             messages.append(message)
         if not omitted and not any(x.get("role") == "user" for x in messages):
             opening_input = turn.get("params", {}).get("input", [])
             opening = text_content(opening_input)
             if opening:
                 messages.insert(0, normalize_item({"id": "opening-" + str(turn.get("turnId", ordinal)),
-                                                      "type": "userMessage", "content": opening_input}))
+                                                      "type": "userMessage", "content": opening_input, "timestamp": started_at,
+                                                      "_syntheticId": True, "_timestampSource": "native-turn-start"}))
         params = turn.get('params') or {}
         settings = (params.get('collaborationMode') or {}).get('settings') or {}
         model = params.get('model') or settings.get('model') or turn.get('model')
         effort = params.get('effort') or params.get('reasoningEffort') or settings.get('reasoning_effort') or turn.get('reasoningEffort')
         result.append({"model": model, "effort": effort, "id": turn.get("turnId") or str(ordinal), "status": turn.get("status"),
-                       "startedAt": turn.get("turnStartedAtMs") or turn.get("startedAt"), "messages": messages,
+                       "startedAt": started_at, "messages": messages,
                        "actionable": bool(turn.get("turnId")) and turn.get("turnId") != "history",
                        "error": turn.get("error"), "diff": turn.get("diff"),
                        # A partial turn cannot establish complete totals. Defer its footer

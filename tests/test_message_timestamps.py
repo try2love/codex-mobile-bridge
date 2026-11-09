@@ -10,6 +10,22 @@ ISO = '2026-11-09T09:24:00Z'
 
 
 class NativeMessageTimes(unittest.TestCase):
+    def test_normalized_subagent_messages_inherit_only_first_user_native_turn_time(self):
+        state = {'turns': [{'turnId': 'turn', 'turnStartedAtMs': STAMP, 'items': [
+            {'id': 'user', 'type': 'userMessage', 'content': [{'type': 'input_text', 'text': 'hi'}]},
+            {'id': 'steer', 'type': 'steeringUserMessage', 'input': [{'type': 'text', 'text': 'more'}]},
+            {'id': 'reply', 'type': 'agentMessage', 'text': 'answer'}]}]}
+        rows = normalize_state(state)['turns'][0]['messages']
+        self.assertEqual(rows[0].get('timestamp'), STAMP)
+        self.assertFalse(any('timestamp' in row for row in rows[1:]))
+        # A bounded page starting at a steering message must not inherit the
+        # omitted original input's clock.
+        bounded = normalize_state(state, item_limit=2)['turns'][0]['messages']
+        self.assertFalse(any('timestamp' in row for row in bounded))
+        state['turns'][0].update(_firstUserItemId='omitted', items=state['turns'][0]['items'][1:])
+        paged = normalize_state(state, item_limit=2)['turns'][0]['messages']
+        self.assertFalse(any('timestamp' in row for row in paged))
+
     def test_claude_native_event_time_once_across_split_blocks(self):
         rows = transcript([{'type': 'assistant', 'uuid': 'reply', 'timestamp': ISO,
             'message': {'role': 'assistant', 'content': [
@@ -51,7 +67,12 @@ class NativeMessageTimes(unittest.TestCase):
         timeline.update({**normalize_state(state), 'sequence': 2})
         delta = timeline.changes(1, page['epoch'], page['before'])
         self.assertEqual(delta['rows'][0]['timestamp'], ISO)
+        state['turns'][0]['items'][1]['timestamp'] = ISO.replace('09:24', '09:25')
+        timeline.update({**normalize_state(state), 'sequence': 3})
+        changed_time = timeline.changes(2, page['epoch'], page['before'])
+        self.assertEqual(changed_time['rows'][0]['timestamp'], '2026-11-09T09:25:00Z')
+        self.assertEqual(changed_time['rows'][0]['version'], delta['rows'][0]['version'])
         del state['turns'][0]['turnStartedAtMs']
         del state['turns'][0]['items'][1]['timestamp']
-        timeline.update({**normalize_state(state), 'sequence': 3})
+        timeline.update({**normalize_state(state), 'sequence': 4})
         self.assertFalse(any('timestamp' in row for row in timeline.page()['rows']))

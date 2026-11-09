@@ -1042,10 +1042,14 @@ class CliSessions:
                 elif turn.get('model'):
                     row['params'] = {'model': turn['model'], 'effort': turn.get('reasoningEffort')}
                 row.update(status=turn.get('status'), error=turn.get('error'))
+                if turn.get('startedAt') is not None:
+                    row['turnStartedAtMs'] = turn['startedAt'] * 1000
                 row.pop('willRetry', None)
                 state['threadRuntimeStatus'] = {'type': 'active' if method == 'turn/started' else 'idle'}
                 if turn.get('items'):
                     items = turn['items']
+                    previous_times = {item.get('id'): item['timestamp'] for item in row['items'] if item.get('timestamp') is not None}
+                    items = [{**item, 'timestamp': previous_times[item.get('id')]} if item.get('timestamp') is None and item.get('id') in previous_times else item for item in items]
                     if method == 'turn/completed':
                         incoming_ids = {item.get('id') for item in items}
                         # Completed event items can omit user messages still present in thread/read.
@@ -1065,6 +1069,8 @@ class CliSessions:
                     items = turn['items']
                     for index, existing in enumerate(items):
                         if existing.get('id') == item.get('id'):
+                            if item.get('timestamp') is None and existing.get('timestamp') is not None:
+                                item = {**item, 'timestamp': existing['timestamp']}
                             if method == 'item/started' and item.get('type') == existing.get('type') == 'reasoning':
                                 # A late start must not erase deltas already received.
                                 item = {**item, **{field: existing[field] for field in ('summary', 'content')

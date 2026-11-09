@@ -281,6 +281,8 @@ class DesktopConnectionsPanel {
             read:selected=>this.api.cliAccess({action:'wslAccounts',provider,entry:selected,operation:'list'}),
             request:({action,provider:_provider,entry:_entry,...fields})=>this.api.cliAccess({action:'wslAccounts',provider,entry,operation:action,...fields})});
           this.managementPages.set(entry,{panel,open:()=>panel.select(entry)});
+        }else if(client.id==='antigravity'&&client.capabilities?.management===true){
+          this.mountAntigravityManagement(content,client);
         }else if(client.capabilities?.accounts===true){
           const provider=client.family||client.id,entry=client.kind==='desktop-profile'?client.id:null,scope=entry?{entry}:{},panel=new DesktopClientAccountsPanel({root:content,provider,desktop:true,
             read:()=>this.api.desktopSessions({action:'accounts',provider,...scope,operation:'list'}),
@@ -321,6 +323,40 @@ class DesktopConnectionsPanel {
     const methods=ClientLifecycle.mountConnectionModes(section);
     const render=value=>methods.update(value,{disabled:this.busy||this.scanning||!!this.choosingClient||this.hasUncertain(),select:mode=>this.selectConnectionMode(client.id,mode)});
     this.connectionModePanels??=new Map();this.connectionModePanels.set(client.id,{render});render(client);
+  }
+  mountAntigravityManagement(root,client){
+    const node=(tag,text,cls='')=>{const n=document.createElement(tag);n.className=cls;if(text!==undefined)n.textContent=BridgeI18n.t(text);return n;};
+    root.className='accounts-panel';root.dataset.antigravityManagement='';
+    const heading=node('div',undefined,'accounts-toolbar'),refresh=node('button','重新加载');refresh.type='button';heading.append(node('h3','聊天与模型'),refresh);
+    const status=node('p',undefined,'account-muted'),error=node('p',undefined,'error'),plugin=node('p',undefined,'account-muted');status.setAttribute('role','status');error.setAttribute('role','alert');
+    const form=node('div',undefined,'cli-access-form'),field=(title,control)=>{const label=node('label');label.append(node('span',title),control);form.append(label);control.setAttribute('aria-label',BridgeI18n.t(title));};
+    const source=node('select'),session=node('select'),model=node('select'),permission=node('select');field('会话来源',source);field('聊天',session);field('发送模型',model);field('审批方式',permission);
+    const modelActions=node('div',undefined,'actions'),models=node('button','刷新模型'),saveModel=node('button','应用模型'),savePermission=node('button','应用审批方式');for(const b of [models,saveModel,savePermission])b.type='button';modelActions.append(models,saveModel,savePermission);
+    const help=node('p','配置仅应用于所选来源的这条聊天。模型来自原客户端；审批需要原会话加载网关 Hook。账号与登录在原客户端管理。','account-muted');root.append(heading,status,error,plugin,form,modelActions,help);
+    let value=null,catalog=null,busy=false,stale=true;
+    const currentSource=()=>value?.surfaces?.find(row=>row.id===source.value),currentSession=()=>currentSource()?.sessions?.find(row=>row.id===session.value);
+    const option=(label,id)=>{const n=node('option',label);n.value=id;return n;};
+    const render=()=>{
+      const origin=currentSource(),row=currentSession(),enabled=value?.enabled===true;
+      status.textContent=BridgeI18n.t(busy?'正在读取配置…':origin?(origin.historyAvailable?'本机历史可用':'未发现本机历史')+' · '+(origin.connected?'原生服务已连接':'原生服务未连接'):'');
+      plugin.textContent=BridgeI18n.t(value?.plugin?.active?'网关 Hook 已启用；原会话加载后可使用审批与排队。':value?.plugin?.enabled?'网关 Hook 已安装；启用接入后生效。':'启用 Antigravity 接入后可安装并启用网关 Hook。');
+      for(const control of [source,session,model,permission,models,saveModel,savePermission,refresh])control.disabled=busy;
+      session.disabled=busy||!origin?.sessions?.length;model.disabled=busy||stale||!enabled||!origin?.connected||!catalog?.models?.length;
+      models.disabled=busy||stale||!enabled||!origin?.connected||!row;
+      saveModel.disabled=model.disabled||catalog?.capabilities?.models!==true||!catalog?.cache?.identity||!model.value||model.value===row?.model;
+      permission.disabled=busy||stale||!enabled||!row||value?.plugin?.active!==true;
+      savePermission.disabled=permission.disabled||permission.value===row?.permissionMode;
+      if(!busy&&!error.textContent&&catalog?.notice)status.textContent+=' · '+BridgeI18n.t(catalog.notice);
+    };
+    const selectSession=()=>{catalog=null;const row=currentSession();model.replaceChildren(option(row?.model||'请先刷新模型',row?.model||''));model.value=row?.model||'';permission.replaceChildren(...(value?.permissionOptions||[]).map(o=>option(o.label,o.value)));permission.value=row?.permissionMode||'desktop';render();};
+    const selectSource=()=>{const rows=currentSource()?.sessions||[],previous=session.value;session.replaceChildren(...rows.map(row=>option(row.title||'新会话',row.id)));session.value=rows.some(row=>row.id===previous)?previous:rows[0]?.id||'';selectSession();};
+    const read=async()=>{value=await this.api.desktopSessions({action:'antigravity-management',operation:'list'});stale=false;const previous=source.value;source.replaceChildren(...(value.surfaces||[]).map(row=>option(row.name,row.id)));source.value=value.surfaces?.some(row=>row.id===previous)?previous:value.surfaces?.find(row=>row.historyAvailable)?.id||value.surfaces?.[0]?.id||'';selectSource();};
+    const run=async task=>{if(busy)return;busy=true;error.textContent='';render();try{await task();}catch(e){stale=true;catalog=null;error.textContent=BridgeI18n.t(e.message);}finally{busy=false;render();}};
+    refresh.onclick=()=>run(read);source.onchange=selectSource;session.onchange=selectSession;model.onchange=permission.onchange=render;
+    models.onclick=()=>{if(models.disabled)return;return run(async()=>{const origin=source.value,sid=session.value;catalog=await this.api.desktopSessions({action:'antigravity-management',operation:'catalog',surface:origin,sessionId:sid,refresh:true});model.replaceChildren(option('选择模型',''),...(catalog.models||[]).map(row=>option(row.name||row.id,row.id)));model.value=(catalog.models||[]).some(row=>row.id===currentSession()?.model)?currentSession().model:'';});};
+    const save=operation=>{const button=operation==='settings'?saveModel:savePermission;if(button.disabled)return;return run(async()=>{const result=await this.api.desktopSessions({action:'antigravity-management',operation,surface:source.value,sessionId:session.value,id:crypto.randomUUID(),...(operation==='settings'?{model:model.value,modelCatalogIdentity:catalog.cache.identity}:{mode:permission.value})});if(result.status!=='accepted')throw Error(result.message||'配置结果待核对，请重新加载');await read();this.feedback(BridgeI18n.t('配置已保存'));});};
+    saveModel.onclick=()=>save('settings');savePermission.onclick=()=>save('access');
+    this.managementPages.set(client.id,{open:()=>run(read)});render();
   }
   mountZcodeOfficial(article,before){
     const node=(tag,text,cls='')=>{const value=document.createElement(tag);value.className=cls;if(text!==undefined)value.textContent=BridgeI18n.t(text);return value;};

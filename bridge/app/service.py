@@ -30,7 +30,7 @@ from bridge.clients.codex.cli_session import CliSessions
 from bridge.features.sessions.identity import same_cwd
 from bridge.clients.desktop_app import DesktopApp
 from bridge.clients.codex.transport import ipc_endpoint
-from bridge.features.sessions.model import apply_patches, attachment_prompt, computer_use_approval, items_array, normalize_state, normalize_request, ordered_turns, pending_requests, async_requests, request_id, user_display_text
+from bridge.features.sessions.model import apply_patches, attachment_prompt, computer_use_approval, items_array, normalize_state, normalize_request, ordered_turns, pending_requests, async_requests, request_id, user_display_text, merge_saved_message_times
 from bridge.features.sessions.store import SessionStore, StoreUnavailable, persisted_submission_ids
 from bridge.features.workspace.files import artifact_paths, referenced_model_images
 from bridge.features.workspace.workspace import operate as workspace_operation
@@ -202,6 +202,8 @@ class LiveSession:
                 if saved_usage:
                     result['contextUsage'] = {**saved_usage, 'cached': True}
             if self.saved_view:
+                if self.connected and result.get('id') == self.id:
+                    merge_saved_message_times(result, self.saved_view)
                 saved_labels = {turn['id']: turn for turn in self.saved_view['turns'] if turn.get('status') != 'inProgress'}
                 for turn in result['turns']:
                     saved = saved_labels.get(turn['id'])
@@ -1938,7 +1940,7 @@ class Bridge:
         self.store.get(thread_id)  # Uploads do not activate a desktop chat.
         return self.uploads.put(thread_id, identifier, name, data)
 
-    def _desktop_metadata_operation(self, cwd, operation, failure_message):
+    def _desktop_metadata_operation(self, cwd, operation, failure_message, *, require_shared=False):
         from bridge.clients.codex.desktop_runtime import connect, initialization_lock
         from bridge.clients.codex.app_server import AppServerError
         from bridge.features.sessions.create import _runtime_operation
@@ -1953,6 +1955,8 @@ class Bridge:
                 # Only connection/identity checks have run; no metadata write was sent.
                 raise CreationUnavailable(str(exc)) from exc
             if client is None:
+                if require_shared and self.host == 'local' and sys.platform == 'darwin':
+                    raise CreationUnavailable('请先打开账号管理 → Codex 原生会话连接 → 初始化连接，在所有桌面任务结束后确认正常重启 Codex App；尚未创建侧边聊天')
                 return _runtime_operation(self.catalog_reader.executable, self.codex_home, cwd, operation,
                                           failure_message=failure_message, **_runtime_scope(self.host))
             try:
@@ -2027,7 +2031,8 @@ class Bridge:
                                           (snapshot.get('title') or '未命名聊天')[:90] + ' · 侧边聊天',
                                           settings, created, isolated_home=self.host.startswith('codex:'),
                                           runtime_operation=lambda call: self._desktop_metadata_operation(
-                                              snapshot['cwd'], call, '侧边聊天创建结果尚未确认，请查看父聊天；不会重复创建'))
+                                              snapshot['cwd'], call, '侧边聊天创建结果尚未确认，请查看父聊天；不会重复创建',
+                                              require_shared=True))
                 except CreationUnavailable:
                     del self.message_actions[identifier]
                     self._save_actions()
