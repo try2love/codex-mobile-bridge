@@ -393,8 +393,63 @@ class HookIPCServer:
                 'role': 'user',
                 'title': title,
                 'text': text,
+                'mode': item_mode,
             })
         return out
+
+    def get_queued_items(self, conversation_id):
+        with self._lock:
+            items = list(self._queues.get(conversation_id) or [])
+        out = []
+        for idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get('text') or '').strip()
+            if not text:
+                continue
+            item_mode = str(item.get('mode') or 'queue')
+            out.append({
+                'id': str(item.get('id') or f'q-{idx}'),
+                'text': text,
+                'mode': item_mode,
+                'createdAt': item.get('createdAt') or time.time(),
+            })
+        return out
+
+    def update_queue_mode(self, conversation_id, queue_id, mode):
+        normalized_mode = 'steer' if str(mode or '').strip() == 'steer' else 'queue'
+        with self._lock:
+            items = list(self._queues.get(conversation_id) or [])
+            target = None
+            for item in items:
+                if str(item.get('id')) == str(queue_id):
+                    item['mode'] = normalized_mode
+                    target = item
+                    break
+            if target:
+                self._queues[conversation_id] = items
+                self._save_json(self.queues_file, self._queues)
+                return target
+        return None
+
+    def remove_queued_item(self, conversation_id, queue_id):
+        with self._lock:
+            items = list(self._queues.get(conversation_id) or [])
+            remaining = []
+            removed = None
+            for item in items:
+                if str(item.get('id')) == str(queue_id):
+                    removed = item
+                else:
+                    remaining.append(item)
+            if removed:
+                if remaining:
+                    self._queues[conversation_id] = remaining
+                else:
+                    self._queues.pop(conversation_id, None)
+                self._save_json(self.queues_file, self._queues)
+                return removed
+        return None
 
     def request_stop(self, conversation_id):
         with self._lock:

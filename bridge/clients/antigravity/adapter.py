@@ -280,9 +280,10 @@ class Antigravity:
                 surface_key = 'app'
             model = body.get('model')
             effort = body.get('effort')
-            cid = self.cli.start_turn(surface_key, None, prompt, cwd=cwd, model=model, effort=effort)
+            cid = self.cli.start_cascade()
             if not cid:
-                raise BridgeUnavailable('agy CLI 未返回新會話 ID')
+                raise BridgeUnavailable('Antigravity Language Server 未返回新會話 ID')
+            self.cli.send_user_message(cid, prompt)
             if model or effort:
                 with self._lock:
                     self._settings[cid] = {
@@ -314,12 +315,9 @@ class Antigravity:
             )
             messages = list(page['messages'])
             turns = list(page['turns'])
-            if before is None:
-                queued = self.hooks.queued_messages_for(cid)
-                if queued:
-                    messages.extend(queued)
-                    if turns:
-                        turns[-1]['messages'].extend(queued)
+            queued_items = self.hooks.get_queued_items(cid)
+            session['queued'] = queued_items
+            session['submissions'] = queued_items
             if page.get('contextUsage'):
                 session['contextUsage'] = page['contextUsage']
             session['subagentTasks'] = self.store.list_tasks(surface_root, cid)
@@ -329,6 +327,7 @@ class Antigravity:
                 'messages': messages,
                 'turns': turns,
                 'requests': session['requests'],
+                'queued': queued_items,
                 'history': page['history'],
                 'draftAccountIdentity': self.account_scope(),
                 'capabilities': session['capabilities'],
@@ -385,6 +384,25 @@ class Antigravity:
             self.hooks.resolve_approval(cid, body.get('requestId'), body.get('decision'))
             return {'status': 'accepted'}
 
+        if action == 'queue-action':
+            queue_id = str(body.get('queueId') or body.get('id') or '').strip()
+            op = str(body.get('operation') or '').strip()
+            if not queue_id:
+                raise ValueError('缺少佇列項目 ID')
+            if op in ('steer', 'queue'):
+                item = self.hooks.update_queue_mode(cid, queue_id, op)
+                if not item:
+                    raise ValueError('找不到指定的排隊訊息')
+                return {'status': 'accepted', 'item': item}
+            elif op == 'cancel':
+                item = self.hooks.remove_queued_item(cid, queue_id)
+                return {'status': 'accepted', 'removed': bool(item)}
+            elif op == 'edit':
+                item = self.hooks.remove_queued_item(cid, queue_id)
+                text = (item or {}).get('text', '')
+                return {'status': 'accepted', 'text': text}
+            raise ValueError(f'不支援的佇列操作: {op}')
+
         if action == 'stop':
             self.cli.stop(cid)
             self.hooks.request_stop(cid)
@@ -403,7 +421,7 @@ class Antigravity:
             native_busy = self.store.is_native_busy(surface_root, cid)
             hook_alive = self.hooks.has_recent_heartbeat(cid) or self.hooks.has_pending_approvals(cid)
             cli_busy = self.cli.is_running(cid)
-            if native_busy or hook_alive or cli_busy:
+            if (native_busy or hook_alive or cli_busy) and mode in ('queue', 'steer'):
                 queue_mode = 'steer' if mode == 'steer' else 'queue'
                 entry = self.hooks.enqueue_follow_up(cid, prompt, mode=queue_mode)
                 return {
@@ -411,16 +429,8 @@ class Antigravity:
                     'delivery': f'hook-{queue_mode}',
                     'queueId': entry['id'],
                 }
-            prefs = self._session_settings(cid)
-            self.cli.start_turn(
-                surface_key,
-                cid,
-                prompt,
-                cwd=row.get('cwd') or '',
-                model=prefs['model'],
-                effort=prefs['effort'],
-            )
-            return {'status': 'accepted', 'delivery': 'cli-resume'}
+            self.cli.send_user_message(cid, prompt)
+            return {'status': 'accepted', 'delivery': 'ls-native'}
 
         raise ValueError(f'Antigravity 不支援的操作: {action}')
 

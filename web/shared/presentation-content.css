@@ -30,9 +30,9 @@
 .composer-toggle[aria-expanded=false] svg{transform:rotate(180deg)}
 .composer.is-collapsed .composer-tools{margin-bottom:0}
 .composer textarea{display:block;background:var(--surface);border:1px solid var(--line);border-radius:16px;resize:none;min-height:48px;height:48px;max-height:160px;line-height:1.6;font-size:16px;padding:10px 14px}
-.compose-bottom{display:grid;grid-template-columns:30px minmax(0,1fr) minmax(0,1fr) auto;align-items:center;padding-top:6px;gap:8px}
-.compose-bottom select{width:100%;font-size:11px;max-width:100%;min-width:0;padding:8px 0;color:var(--muted);text-overflow:ellipsis}
-.compose-actions{flex:none;gap:6px}
+.compose-bottom{display:flex;align-items:center;justify-content:space-between;padding-top:6px;gap:8px}
+.compose-bottom select{font-size:11px;max-width:140px;min-width:0;padding:8px 6px;color:var(--muted);text-overflow:ellipsis}
+.compose-actions{display:flex;align-items:center;gap:6px;margin-left:auto}
 .goal-toggle{display:flex;align-items:center;justify-content:center;gap:5px;flex:none;min-height:36px;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:transparent;color:var(--green);font-size:11px;white-space:nowrap}
 .goal-toggle svg{width:16px;height:16px;flex:none}
 @media(max-width:540px){.goal-toggle{width:40px;padding:8px}.goal-toggle span{display:none}.compose-actions:has(.goal-toggle:not([hidden])){gap:4px}}

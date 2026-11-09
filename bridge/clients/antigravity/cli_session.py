@@ -72,19 +72,8 @@ MODEL_ALIAS_MAP = {
 }
 
 
-class _ActiveRun:
-    def __init__(self, process, surface_key, conversation_id=None, cwd=''):
-        self.process = process
-        self.surface_key = surface_key
-        self.conversation_id = conversation_id
-        self.cwd = cwd
-        self.init_event = threading.Event()
-        self.error = None
-        self.started_at = time.time()
-
-
 class AntigravityCli:
-    """Manage background `agy acp --app-data-dir` invocations for cold resume and session creation."""
+    """Manage live Antigravity Language Server native RPC communication for zero-latency sync."""
 
     def __init__(self, home=None):
         self.home = Path(home).expanduser().resolve() if home else None
@@ -96,7 +85,8 @@ class AntigravityCli:
         return discover_agy_binary(self.home)
 
     def available(self):
-        return bool(self.binary())
+        addr, token = self._get_ls_info()
+        return bool(addr and token) or bool(self.binary())
 
     def _get_ls_info(self):
         addr = os.environ.get('ANTIGRAVITY_LS_ADDRESS')
@@ -179,6 +169,7 @@ class AntigravityCli:
             ]
             q_info = next((quotas[k] for k in sample_keys if k in quotas), None)
             quota_tag = ''
+            quota_status = 'good'
             reset_note = ''
             if q_info:
                 frac = q_info.get('remainingFraction')
@@ -256,219 +247,75 @@ class AntigravityCli:
     def models(self, *, refresh=False):
         return self.catalog_models(refresh=refresh)['models']
 
-    def is_running(self, conversation_id):
-        if not conversation_id:
-            return False
-        with self._lock:
-            run = self._runs.get(conversation_id)
-            if run is None:
-                return False
-            if run.process.poll() is None:
-                return True
-            self._runs.pop(conversation_id, None)
-            return False
+    def call_ls_rpc(self, method, payload=None, timeout=6.0):
+        """Invoke a gRPC-Web JSON-RPC endpoint on the active Antigravity Language Server."""
+        addr, token = self._get_ls_info()
+        if not addr or not token:
+            raise BridgeUnavailable('未檢測到正在運行的 Antigravity Desktop / Language Server 進程')
+        req = urllib.request.Request(
+            f'http://{addr}/exa.language_server_pb.LanguageServerService/{method}',
+            data=json.dumps(payload or {}).encode('utf-8'),
+            headers={
+                'Content-Type': 'application/json',
+                'x-codeium-csrf-token': token,
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read()
+                return json.loads(raw.decode('utf-8', errors='replace')) if raw else {}
+        except urllib.error.HTTPError as exc:
+            err_body = exc.read().decode('utf-8', errors='replace')
+            raise BridgeUnavailable(f'Antigravity Language Server 請求失敗 ({method}): {err_body}') from exc
+        except Exception as exc:
+            raise BridgeUnavailable(f'無法連接 Antigravity Language Server：{exc}') from exc
 
-    def start_turn(self, surface_key, conversation_id, prompt, *, cwd=None, model=None, effort=None, wait_init=8.0):
-        """Launch `agy acp --app-data-dir <surface>` to resume a cold conversation or create a new one."""
-        binary = self.binary()
-        if not binary:
-            raise BridgeUnavailable('未找到本機 agy CLI 執行檔，請確認已安裝 Antigravity CLI')
-
+    def send_user_message(self, conversation_id, prompt):
+        """Send message directly into the native Antigravity session (NO ACP, 100% in-sync)."""
         text = str(prompt or '').strip()
         if not text:
             raise ValueError('訊息內容不能為空')
+        if not conversation_id:
+            raise ValueError('缺少會話 ID')
+        body = {
+            'cascade_id': str(conversation_id),
+            'items': [{'text': text}],
+        }
+        return self.call_ls_rpc('SendUserCascadeMessage', body)
 
-        if conversation_id and self.is_running(conversation_id):
-            raise BridgeUnavailable('此會話已有 CLI 任務正在執行，請稍候或先停止')
+    def start_cascade(self, source='CORTEX_TRAJECTORY_SOURCE_CLI'):
+        """Create a new native conversation in the Antigravity Language Server."""
+        body = {'source': source}
+        res = self.call_ls_rpc('StartCascade', body)
+        cid = res.get('cascadeId') or res.get('cascade_id')
+        if not cid:
+            raise BridgeUnavailable('Antigravity Language Server 未返回新會話 ID')
+        return cid
 
-        app_data = APP_DATA_DIR_NAMES.get(surface_key, 'antigravity')
-        cmd = [binary, 'acp', '--app-data-dir', app_data]
-
-        work_dir = str(Path(cwd).resolve()) if cwd and Path(cwd).is_dir() else str(self.home or Path.home())
-        env = os.environ.copy()
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                cwd=work_dir,
-                env=env,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding='utf-8',
-                errors='replace',
-                bufsize=1,
-            )
-        except OSError as exc:
-            raise BridgeUnavailable(f'無法啟動 agy CLI：{exc}') from exc
-
-        run = _ActiveRun(proc, surface_key, conversation_id=conversation_id, cwd=work_dir)
-        if conversation_id:
-            with self._lock:
-                self._runs[conversation_id] = run
-
-        threading.Thread(
-            target=self._drive_acp_turn,
-            args=(run, text, model, effort),
-            name=f'agy-acp-{conversation_id or "new"}',
-            daemon=True,
-        ).start()
-
-        run.init_event.wait(timeout=wait_init)
-        if run.error:
-            raise BridgeUnavailable(run.error)
-        return run.conversation_id or conversation_id
-
-    def _drive_acp_turn(self, run, prompt_text, model, effort):
-        req_seq = 0
-
-        def send_rpc(method, params):
-            nonlocal req_seq
-            req_seq += 1
-            rid = req_seq
-            payload = json.dumps({'jsonrpc': '2.0', 'id': rid, 'method': method, 'params': params})
-            if run.process.stdin is None:
-                raise RuntimeError('agy ACP stdin closed')
-            run.process.stdin.write(payload + '\n')
-            run.process.stdin.flush()
-            while True:
-                line = run.process.stdout.readline() if run.process.stdout is not None else ''
-                if not line:
-                    stderr_text = ''
-                    if run.process.stderr is not None:
-                        try:
-                            stderr_text = run.process.stderr.read().strip()
-                        except OSError:
-                            stderr_text = ''
-                    raise RuntimeError(stderr_text or f'agy ACP 異常終止 ({method})')
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    msg = json.loads(line)
-                except ValueError:
-                    continue
-                if not isinstance(msg, dict):
-                    continue
-                if msg.get('id') == rid:
-                    if 'error' in msg and msg['error']:
-                        err = msg['error']
-                        err_msg = err.get('message') if isinstance(err, dict) else str(err)
-                        raise RuntimeError(err_msg or f'agy ACP 錯誤 ({method})')
-                    return msg.get('result') or {}
-                # Handle reverse permission requests if any arrive during prompt
-                if msg.get('method') == 'session/request_permission' and 'id' in msg:
-                    resp = {
-                        'jsonrpc': '2.0',
-                        'id': msg['id'],
-                        'result': {'outcome': {'outcome': 'selected', 'optionId': 'allow'}},
-                    }
-                    try:
-                        run.process.stdin.write(json.dumps(resp) + '\n')
-                        run.process.stdin.flush()
-                    except OSError:
-                        pass
-
-        try:
-            send_rpc('initialize', {'protocolVersion': 1, 'clientCapabilities': {}})
-            if run.conversation_id:
-                send_rpc(
-                    'session/resume',
-                    {'sessionId': run.conversation_id, 'cwd': run.cwd, 'mcpServers': []},
-                )
-            else:
-                res = send_rpc('session/new', {'cwd': run.cwd, 'mcpServers': []})
-                sid = res.get('sessionId')
-                if isinstance(sid, str) and sid.strip():
-                    run.conversation_id = sid.strip()
-                    with self._lock:
-                        self._runs[run.conversation_id] = run
-
-            if model and str(model).strip() and str(model).strip() != 'auto':
-                m_str = str(model).strip()
-                e_str = str(effort or '').strip().lower()
-                effective_id = MODEL_ALIAS_MAP.get((m_str, e_str)) or m_str
-                try:
-                    send_rpc(
-                        'session/set_model',
-                        {'sessionId': run.conversation_id, 'modelId': effective_id},
-                    )
-                except Exception:
-                    pass
-
-            if effort and str(effort).strip() and str(effort).strip() not in ('auto', 'none'):
-                try:
-                    send_rpc(
-                        'session/set_config_option',
-                        {
-                            'sessionId': run.conversation_id,
-                            'configId': 'thought_level',
-                            'value': str(effort).strip(),
-                        },
-                    )
-                except Exception:
-                    pass
-
-            # Session is now initialized/resumed; release start_turn caller
-            run.init_event.set()
-
-            send_rpc(
-                'session/prompt',
-                {
-                    'sessionId': run.conversation_id,
-                    'prompt': [{'type': 'text', 'text': prompt_text}],
-                },
-            )
-        except Exception as exc:
-            run.error = str(exc)
-            run.init_event.set()
-        finally:
-            run.init_event.set()
-            try:
-                if run.process.poll() is None:
-                    run.process.terminate()
-                    try:
-                        run.process.wait(timeout=2)
-                    except subprocess.TimeoutExpired:
-                        run.process.kill()
-            except OSError:
-                pass
-            if run.conversation_id:
-                with self._lock:
-                    current = self._runs.get(run.conversation_id)
-                    if current is run:
-                        self._runs.pop(run.conversation_id, None)
-
-    def stop(self, conversation_id):
-        with self._lock:
-            run = self._runs.pop(conversation_id, None)
-        if run is None or run.process.poll() is not None:
+    def cancel_cascade(self, conversation_id):
+        """Cancel an ongoing invocation in the native Language Server."""
+        if not conversation_id:
             return False
         try:
-            if run.process.stdin is not None:
-                try:
-                    cancel_msg = json.dumps({
-                        'jsonrpc': '2.0',
-                        'id': 9999,
-                        'method': 'session/cancel',
-                        'params': {'sessionId': conversation_id},
-                    })
-                    run.process.stdin.write(cancel_msg + '\n')
-                    run.process.stdin.flush()
-                except OSError:
-                    pass
-            run.process.terminate()
-            try:
-                run.process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                run.process.kill()
-                run.process.wait(timeout=2)
-        except OSError:
-            pass
-        return True
+            self.call_ls_rpc('CancelCascadeInvocation', {'cascade_id': str(conversation_id)})
+            return True
+        except Exception:
+            return False
+
+    def is_running(self, conversation_id):
+        return False
+
+    def start_turn(self, surface_key, conversation_id, prompt, *, cwd=None, model=None, effort=None, wait_init=8.0):
+        """Native turn starter: invokes Language Server directly without spawning `agy acp`."""
+        text = str(prompt or '').strip()
+        if not text:
+            raise ValueError('訊息內容不能為空')
+        cid = conversation_id or self.start_cascade()
+        self.send_user_message(cid, text)
+        return cid
+
+    def stop(self, conversation_id):
+        return self.cancel_cascade(conversation_id)
 
     def close(self):
-        with self._lock:
-            cids = list(self._runs.keys())
-        for cid in cids:
-            self.stop(cid)
+        pass

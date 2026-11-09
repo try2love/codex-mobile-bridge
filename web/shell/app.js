@@ -1008,6 +1008,7 @@ function renderState(view){
   renderChatProgress($('working'),{agentName:'Codex',active:view.status==='active',waiting:!!view.requests.length,connected:!!view.connected});if(!view.connected&&view.status!=='active')$('working').hidden=true;$('stop').hidden=view.status!=='active'||!view.connected||!access.canInterrupt;
   $('send').disabled=view.loadingHistory||view.activating||sending||!attachments.ready()||!access.canSend;
   $('message').disabled=limited&&!access.canSend;
+  $('message').placeholder = view.status === 'active' ? t('输入消息以排队，或补充当前任务…') : t('继续这条聊天…');
   $('attach-button').disabled=limited&&!access.canSend;
   $('model-button').disabled=limited&&!access.canChangeModel;
   $('skills-button').disabled=limited&&!access.canSelectSkills;
@@ -1161,7 +1162,35 @@ async function ignoreSubmission(value){
 }
 function renderQueue(rows){
   $('queued').replaceChildren();
+  const queueBar = $('queue-bar');
   const pending=codexDraftScope&&composerDrafts?.pendingRecords(codexDraftScope,{temporary:sessionStorage,temporaryKey:'pending:'+chatKey()})||[];
+  if(queueBar){
+    if(!rows.length&&!pending.length){
+      queueBar.hidden=true;
+      queueBar.replaceChildren();
+    }else{
+      queueBar.hidden=false;
+      queueBar.replaceChildren();
+      for(const row of rows){
+        const card=el('div','queue-pill-item');
+        const left=el('div','queue-pill-left');
+        const badge=el('span','queue-badge badge-queue','⏳ '+t('完成后发送'));
+        const text=el('span','queue-text',row.text||'');
+        text.title=row.text||'';
+        left.append(badge,text);
+        const actions=el('div','queue-pill-actions');
+        if(row.status==='queued'){
+          const cancelBtn=el('button','plain queue-btn queue-btn-cancel',t('× 取消'));
+          cancelBtn.type='button';
+          const target=currentId,host=currentHost;
+          cancelBtn.onclick=async()=>{try{await api(sessionUrl(target,'queue',host),{id:row.id});toast('已取消');}catch(e){toast(e.message);}};
+          actions.append(cancelBtn);
+        }
+        card.append(left,actions);
+        queueBar.append(card);
+      }
+    }
+  }
   if(rows.length||pending.length){const manage=el('button','plain',t('消息管理'));manage.type='button';manage.onclick=openMessageManagement;$('queued').append(manage);}
   const target=currentId,host=currentHost;
   for(const row of rows){

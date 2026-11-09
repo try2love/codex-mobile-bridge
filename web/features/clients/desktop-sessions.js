@@ -37,13 +37,13 @@ class DesktopSessionsView {
     this.reminderButton=this.button('提醒',()=>this.notifications());this.reminderButton.className='tool-button';
     this.skillsButton=this.button('Skill',()=>this.skills());this.skillsButton.className='tool-button';this.skillsButton.hidden=true;this.permissionsButton=this.button('权限',()=>this.permissions());this.permissionsButton.className='tool-button ds-permissions';this.permissionsButton.hidden=true;
     this.composerToggle=this.iconButton('收起输入区','m6 9 6 6 6-6',()=>this.collapseComposer(!this.composerBody.hidden));this.composerToggle.className='composer-toggle';this.composerToggle.setAttribute('aria-expanded','true');this.contextUsage=new ContextUsageControl({onCompact:async()=>{const result=await this.mutate('compact',{});if(result)this.notify(BridgeI18n.t(result.message||'已提交上下文压缩'));return !!result;}});this.contextButton=this.contextUsage.button;this.contextButton.classList.add('ds-context');this.contextRing=this.contextUsage.ring;this.tools.append(this.modelButton,this.reminderButton,this.skillsButton,this.permissionsButton,this.contextButton,this.composerToggle);
-    this.composerBody=this.node('div','ds-composer-body');this.skillPills=this.node('div','skill-pills');this.attachmentList=this.node('div','attachment-list');this.attachmentList.hidden=true;this.attachmentInput=this.node('input');this.attachmentInput.type='file';this.attachmentInput.multiple=true;this.attachmentInput.accept='image/png,image/jpeg,image/gif,image/webp';this.attachmentInput.hidden=true;this.attachButton=this.iconButton('添加文件或图片','m8 12 6-6a3.5 3.5 0 0 1 5 5l-8 8a5 5 0 0 1-7-7l8-8m-6 10 7-7',()=>{});this.attachButton.className='attach-button';this.error=this.node('div','error');this.error.setAttribute('role','alert');this.manageMessages=this.button('消息管理',()=>this.onManageMessages?.());this.manageMessages.className='plain';this.manageMessages.hidden=true;this.input=this.node('textarea');this.input.rows=1;this.input.maxLength=100000;this.input.placeholder=BridgeI18n.t('继续这条聊天…');this.label(this.input,'消息内容');this.input.oninput=()=>{this.draftTouched=true;this.saveDraft();this.resizeInput();this.updateComposer();};this.input.addEventListener('keyup',()=>this.saveDraft());this.input.addEventListener('click',()=>this.saveDraft());
-    this.mode=this.node('select');this.label(this.mode,'发送方式');for(const [id,title] of [['send','发送新消息'],['queue','完成后发送'],['steer','补充当前任务']])this.mode.add(new Option(BridgeI18n.t(title),id));this.mode.onchange=()=>{this.saveDraft();this.updateComposer();};
+    this.composerBody=this.node('div','ds-composer-body');this.skillPills=this.node('div','skill-pills');this.attachmentList=this.node('div','attachment-list');this.attachmentList.hidden=true;this.queueBar=this.node('div','ds-queue-bar queue-bar');this.queueBar.hidden=true;this.attachmentInput=this.node('input');this.attachmentInput.type='file';this.attachmentInput.multiple=true;this.attachmentInput.accept='image/png,image/jpeg,image/gif,image/webp';this.attachmentInput.hidden=true;this.attachButton=this.iconButton('添加文件或图片','m8 12 6-6a3.5 3.5 0 0 1 5 5l-8 8a5 5 0 0 1-7-7l8-8m-6 10 7-7',()=>{});this.attachButton.className='attach-button';this.error=this.node('div','error');this.error.setAttribute('role','alert');this.manageMessages=this.button('消息管理',()=>this.onManageMessages?.());this.manageMessages.className='plain';this.manageMessages.hidden=true;this.input=this.node('textarea');this.input.rows=1;this.input.maxLength=100000;this.input.placeholder=BridgeI18n.t('继续这条聊天…');this.label(this.input,'消息内容');this.input.oninput=()=>{this.draftTouched=true;this.saveDraft();this.resizeInput();this.updateComposer();};this.input.addEventListener('keyup',()=>this.saveDraft());this.input.addEventListener('click',()=>this.saveDraft());this.input.onkeydown=e=>{if(e.key==='Enter'&&!e.isComposing&&((window.innerWidth>720&&!e.shiftKey)||e.ctrlKey||e.metaKey)){e.preventDefault();this.form.requestSubmit();}};
+    this.mode=this.node('select','ds-send-mode-legacy');this.mode.hidden=true;this.label(this.mode,'发送方式');for(const [id,title] of [['send','发送新消息'],['queue','完成后发送'],['steer','补充当前任务']])this.mode.add(new Option(BridgeI18n.t(title),id));this.mode.onchange=()=>{this.saveDraft();this.updateComposer();};this.busySendMode='steer';
     this.workMode=this.node('select','work-mode-select');this.label(this.workMode,'工作模式');for(const [id,title] of [['default','普通模式'],['plan','计划模式'],['goal','目标模式']])this.workMode.add(new Option(BridgeI18n.t(title),id));
     this.modeHint=this.node('p','muted work-mode-hint');this.goalRoot=this.node('section','goal-card');this.goalToggle=this.button('目标状态',()=>{});this.goalToggle.hidden=true;this.tools.append(this.goalToggle);
     this.workModes=new WorkModes({select:this.workMode,hint:this.modeHint,goalRoot:this.goalRoot,goalToggle:this.goalToggle,newId:()=>this.requestId(),onCancel:payload=>this.goalAction('clear',payload),onStatus:payload=>this.goalAction(payload.status==='paused'?'pause':'resume',payload),onEdit:payload=>this.goalAction('edit',payload)});
-    this.send=this.button('发送 ↑',()=>{});this.send.className='primary';this.send.type='submit';this.stop=this.button('■ 停止',()=>this.mutate('stop',this.state?.stopTarget||{}));this.stop.className='stop';this.stop.hidden=true;
-    const actions=this.node('div','ds-actions compose-bottom'),sendActions=this.node('div','compose-actions');sendActions.append(this.stop,this.send);actions.append(this.attachButton,this.attachmentInput,this.mode,this.workMode,sendActions);this.composerBody.append(this.skillPills,this.attachmentList,this.error,this.manageMessages,this.input,this.modeHint,actions);this.sendFeedback=this.node('div','queue-card ds-send-feedback');this.sendFeedback.hidden=true;this.form.append(this.tools,this.sendFeedback,this.composerBody);this.form.onsubmit=e=>{e.preventDefault();return this.submit();};
+    this.sendSplit=this.node('div','send-split-pill');this.send=this.button('发送 ↑',()=>{});this.send.className='primary';this.send.type='submit';this.sendSplitToggle=this.iconButton('选择发送方式','m6 9 6 6 6-6',()=>this.toggleSendPopover());this.sendSplitToggle.className='send-split-toggle';this.sendSplitToggle.hidden=true;this.sendSplit.append(this.send,this.sendSplitToggle);this.sendPopover=this.node('div','send-popover');this.sendPopover.hidden=true;this.stop=this.button('■ 停止',()=>this.mutate('stop',this.state?.stopTarget||{}));this.stop.className='stop';this.stop.hidden=true;
+    const actions=this.node('div','ds-actions compose-bottom'),sendActions=this.node('div','compose-actions');sendActions.append(this.stop,this.sendSplit,this.sendPopover);actions.append(this.attachButton,this.attachmentInput,this.mode,this.workMode,sendActions);this.composerBody.append(this.skillPills,this.attachmentList,this.queueBar,this.error,this.manageMessages,this.input,this.modeHint,actions);this.sendFeedback=this.node('div','queue-card ds-send-feedback');this.sendFeedback.hidden=true;this.form.append(this.tools,this.sendFeedback,this.composerBody);this.form.onsubmit=e=>{e.preventDefault();return this.submit();};
     this.quotes=typeof ComposerQuotes==='function'?new ComposerQuotes({messages:this.messages,input:this.input,container:this.composerBody,canQuote:()=>!!this.state,scope:()=>this.sid&&this.provider!=='codex'&&this.draftScope?.gateway===this.draftGateway&&this.draftScope?.provider===this.provider&&this.draftScope?.session===this.sid?this.draftScope:null,onChange:()=>{this.draftTouched=true;this.saveDraft();},onError:text=>{this.error.textContent=text;},onPrompt:text=>{const start=this.input.selectionStart,end=this.input.selectionEnd;this.input.value+=(this.input.value?'\n\n':'')+text;this.input.setSelectionRange(start,end);this.input.oninput();this.collapseComposer(false);},translate:text=>BridgeI18n.t(text)}):null;
     this.attachments=new ChatAttachments({root:this.attachmentList,button:this.attachButton,input:this.attachmentInput,canUpload:()=>this.state?.capabilities?.attachments===true,chooseReference:()=>window.BridgeFileActions.pickReference(this.workbench),paste:this.input,drop:this.form,onChange:()=>this.updateComposer(),upload:(key,id,file)=>this.uploadAttachment(key,id,file),preview:(key,id)=>this.attachmentUrl(key,id,'preview'),thumbnail:async(key,id,file)=>{const image=await this.attachments.thumbnailBlob(file);return this.uploadBinary(this.attachmentUrl(key,id,'thumb')+'&width='+image.width+'&height='+image.height,image.data,image.mime);}});
     const addAttachments=this.attachments.add.bind(this.attachments);this.attachments.add=files=>{if(!this.attachments.key||this.attachments.locked)return;if(this.overRequestLimit([...this.attachments.rows,...files])){this.attachments.error=this.requestLimitMessage();this.attachments.render();return;}if(this.state?.capabilities?.uploadFiles!==true&&(ClientIdentity.family(this.provider)!=='claude'||this.state?.backend!=='cli')){if(files.some(file=>!file.type?.startsWith('image/'))){this.attachments.error='此应用的消息附件仅支持图片；其他文件请使用文件传输。';this.attachments.render();return;}}addAttachments(files);};
@@ -60,6 +60,7 @@ class DesktopSessionsView {
     window.addEventListener('focus',resume);
     for(const event of ['offline','online','bridge-channel-changed','pageshow'])window.addEventListener(event,wakeResume);
     window.addEventListener('pagehide',()=>this.saveDraft());
+    document.addEventListener('click',e=>{if(this.sendPopover&&!this.sendPopover.hidden){if(!this.sendPopover.contains(e.target)&&!this.sendSplitToggle.contains(e.target)){this.sendPopover.hidden=true;this.sendSplitToggle.setAttribute('aria-expanded','false');}}});
     this.workbench.stopTask=(session,taskId)=>session.provider===this.provider&&session.id===this.sid?this.mutate('stop-task',{taskId}):null;
     this.appearanceObserver=new MutationObserver(()=>{this.renderMessages(this.lastMessages||[]);this.workbench.setThumbnails(document.documentElement.dataset.showFileThumbnails==='true');});this.appearanceObserver.observe(document.documentElement,{attributes:true,attributeFilter:['data-show-reasoning','data-show-process','data-show-file-thumbnails']});
     const listRegion=this.node('div','session-list-region');this.listHint=this.button('',()=>{});this.listHint.className='list-sync';this.listHint.hidden=true;this.listHint.setAttribute('aria-live','polite');listRegion.append(this.rowsRoot,this.listHint);this.list.append(listRegion);
@@ -455,7 +456,6 @@ class DesktopSessionsView {
   updateComposer(){
     if(this.state){renderChatProgress(this.progress,{agentName:this.clientStates?.find(row=>row.id===this.provider)?.name||this.provider,active:this.state.status==='active',waiting:!!this.state.requests?.length,blocked:['blocked','failed','error'].includes(this.state.turnStatus||this.state.status),connected:this.canMutate(),fresh:this.freshDetail});}else this.progress.hidden=true;
     const sending=this.sendingHere();this.sendFeedback.hidden=!sending;this.sendFeedback.replaceChildren();if(sending){const status=this.translated('strong','正在发送…');status.setAttribute('role','status');this.sendFeedback.append(status,this.node('p','',this.sendingPreview.text));}
-    this.send.textContent=BridgeI18n.t(sending?'正在发送…':'发送 ↑');this.send.dataset.i18n=sending?'正在发送…':'发送 ↑';
     const state=this.state,caps=state?.capabilities||{},presentation=state?.composerCapabilities||{},visible={...caps,...presentation},active=state?.status==='active',ready=this.canMutate();this.form.classList.toggle('has-composer-presentation',!!state?.composerCapabilities);this.modelName.textContent=(state?.modelDisplayName??state?.model)||BridgeI18n.t('模型');delete this.modelName.dataset.i18n;this.modelEffort.textContent=state?.effort?'· '+state.effort:'';this.modelEffort.hidden=!state?.effort;this.modelButton.title=[(state?.modelDisplayName??state?.model)||BridgeI18n.t('模型'),state?.effort].filter(Boolean).join(' · ');this.modelButton.disabled=!ready||!!this.busy||caps.models===false||presentation.models===true&&caps.models!==true;
     if(this.reminderButton){this.reminderButton.hidden=!state||caps.notifications===false;this.reminderButton.disabled=!!this.busy;const text=this.notificationPolicy?.watching?'提醒已开':this.notificationPolicy?'提醒未开':'提醒';this.reminderButton.textContent=BridgeI18n.t(text);this.reminderButton.dataset.i18n=text;}
     const permission=state?.permissionLabel||({'default':'默认权限','acceptEdits':'允许文件编辑','plan':'计划模式','bypassPermissions':'完全访问'}[state?.permissionMode])||state?.permissionMode||'权限';this.permissionsButton.textContent=BridgeI18n.t(permission);this.permissionsButton.dataset.i18n=permission;this.renderContext();
@@ -464,8 +464,122 @@ class DesktopSessionsView {
     this.attachButton.title=BridgeI18n.t('添加文件或图片')+(state?.maxRequestBytes?' · '+BridgeI18n.t('消息和图片编码后合计最多 10 MiB'):'');this.skillsButton.hidden=visible.skills!==true;this.skillsButton.disabled=!ready||!!this.busy||caps.skills!==true;this.renderSkillPills();
     this.send.disabled=!ready||!!this.busy||caps.send===false||(!this.attachments.ready()||this.overRequestLimit(this.attachments.rows))||[...this.selectedSkills().values()].some(s=>s.invalid);this.stop.disabled=!ready||!active||!!this.busy;this.stop.hidden=!active||caps.stop===false;this.permissionsButton.hidden=visible.permissions!==true;this.permissionsButton.disabled=!ready||!!this.busy||caps.permissions!==true;this.mode.disabled=!ready||!!this.busy;
     this.workMode.hidden=visible.plan!==true&&visible.goal!==true;this.workModes.render(state,this.mode.value,!!this.busy||!ready);this.workMode.disabled=this.workMode.disabled||this.mode.value!=='send'||presentation.plan===true&&caps.plan!==true&&caps.goal!==true;
-    this.mode.options[1].disabled=caps.queue===false;if(this.mode.options[1].disabled&&this.mode.value==='queue')this.mode.value='send';const steer=this.mode.options[2];steer.disabled=!active||caps.steer===false;if(steer.disabled&&this.mode.value==='steer')this.mode.value='send';
+    this.mode.options[1].disabled=caps.queue===false;const steer=this.mode.options[2];steer.disabled=!active||caps.steer===false;
+    if(sending){
+      this.send.textContent=BridgeI18n.t('正在发送…');this.send.dataset.i18n='正在发送…';
+      this.sendSplitToggle.hidden=true;this.sendSplit.classList.remove('is-split');
+    }else if(active){
+      if(!this.busySendMode||this.busySendMode==='send'){this.busySendMode=caps.steer!==false?'steer':'queue';}
+      this.mode.value=this.busySendMode;const isSteer=this.busySendMode==='steer';
+      this.send.innerHTML=`<span class="pill-icon">${isSteer?'⚡':'⏳'}</span> <span class="pill-text">${BridgeI18n.t(isSteer?'补充任务':'排队发送')}</span>`;
+      delete this.send.dataset.i18n;this.sendSplitToggle.hidden=false;this.sendSplit.classList.add('is-split');
+      this.input.placeholder=BridgeI18n.t('输入消息以排队，或补充当前任务…');
+    }else{
+      this.mode.value='send';this.send.textContent=BridgeI18n.t('发送 ↑');this.send.dataset.i18n='发送 ↑';
+      this.sendSplitToggle.hidden=true;this.sendSplit.classList.remove('is-split');this.sendPopover.hidden=true;
+      this.input.placeholder=BridgeI18n.t('继续这条聊天…');
+    }
+    this.renderQueueBar();
     this.send.disabled=this.send.disabled||caps.sendModes?.[this.mode.value]===false;
+  }
+  toggleSendPopover(open){
+    if(this.sendPopover.hidden||open===true){
+      this.renderSendPopover();
+      this.sendPopover.hidden=false;
+      this.sendSplitToggle.setAttribute('aria-expanded','true');
+    }else{
+      this.sendPopover.hidden=true;
+      this.sendSplitToggle.setAttribute('aria-expanded','false');
+    }
+  }
+  renderSendPopover(){
+    this.sendPopover.replaceChildren();
+    const head=this.node('div','send-popover-header',BridgeI18n.t('运行中发送方式'));
+    this.sendPopover.append(head);
+    const options=[
+      {id:'steer',title:'⚡ '+BridgeI18n.t('补充当前任务 (Steer)'),desc:BridgeI18n.t('立即注入正在执行的步骤')},
+      {id:'queue',title:'⏳ '+BridgeI18n.t('完成后发送 (Queue)'),desc:BridgeI18n.t('排队等待当前回合结束后执行')},
+    ];
+    for(const opt of options){
+      const item=this.node('button','plain send-popover-item'+(this.busySendMode===opt.id?' is-selected':''));
+      item.type='button';
+      const main=this.node('div','send-popover-item-main');
+      main.append(this.node('span','send-popover-title',opt.title),this.node('span','send-popover-desc',opt.desc));
+      item.append(main);
+      if(this.busySendMode===opt.id)item.append(this.node('span','send-popover-check','✓'));
+      item.onclick=e=>{
+        e.stopPropagation();
+        this.busySendMode=opt.id;
+        this.mode.value=opt.id;
+        this.saveDraft();
+        this.updateComposer();
+        this.sendPopover.hidden=true;
+        this.sendSplitToggle.setAttribute('aria-expanded','false');
+      };
+      this.sendPopover.append(item);
+    }
+  }
+  renderQueueBar(){
+    const queued=this.state?.queued||this.state?.submissions||[];
+    if(!queued.length){
+      this.queueBar.hidden=true;
+      this.queueBar.replaceChildren();
+      return;
+    }
+    this.queueBar.hidden=false;
+    this.queueBar.replaceChildren();
+    for(const item of queued){
+      const card=this.node('div','queue-pill-item');
+      card.dataset.queueId=item.id;
+      const left=this.node('div','queue-pill-left');
+      const isSteer=item.mode==='steer';
+      const badge=this.node('span','queue-badge '+(isSteer?'badge-steer':'badge-queue'),isSteer?'⚡ '+BridgeI18n.t('等待注入'):'⏳ '+BridgeI18n.t('完成后发送'));
+      const text=this.node('span','queue-text',item.text||'');
+      text.title=item.text||'';
+      left.append(badge,text);
+      const actions=this.node('div','queue-pill-actions');
+      if(!isSteer){
+        const steerBtn=this.button(BridgeI18n.t('⚡ 立即补充'),()=>this.queueAction(item.id,'steer'));
+        steerBtn.className='plain queue-btn queue-btn-steer';
+        actions.append(steerBtn);
+      }
+      const editBtn=this.button(BridgeI18n.t('✎ 编辑'),()=>this.queueAction(item.id,'edit',item.text));
+      editBtn.className='plain queue-btn queue-btn-edit';
+      const cancelBtn=this.button(BridgeI18n.t('× 取消'),()=>this.queueAction(item.id,'cancel'));
+      cancelBtn.className='plain queue-btn queue-btn-cancel';
+      actions.append(editBtn,cancelBtn);
+      card.append(left,actions);
+      this.queueBar.append(card);
+    }
+  }
+  async queueAction(queueId,operation,fallbackText=''){
+    if(this.busy)return;
+    if(operation==='edit'){
+      try{
+        const result=await this.mutate('queue-action',{queueId,operation:'edit'});
+        const restoredText=(result&&result.text)||fallbackText;
+        if(restoredText){
+          this.input.value=restoredText;
+          this.resizeInput();
+          this.input.focus();
+          this.saveDraft();
+          if(this.state&&this.state.queued){
+            this.state.queued=this.state.queued.filter(item=>item.id!==queueId);
+            this.renderQueueBar();
+          }
+        }
+      }catch(err){this.notify(err.message);}
+      return;
+    }
+    const result=await this.mutate('queue-action',{queueId,operation});
+    if(result&&this.state&&this.state.queued){
+      if(operation==='cancel')this.state.queued=this.state.queued.filter(item=>item.id!==queueId);
+      else if(operation==='steer'||operation==='queue'){
+        const target=this.state.queued.find(item=>item.id===queueId);
+        if(target)target.mode=operation;
+      }
+      this.renderQueueBar();
+    }
   }
   renderContext(){
     this.contextUsage.update(this.state?{...this.state,id:JSON.stringify([this.draftGateway,this.provider,this.sid]),connected:this.freshDetail,busy:!!this.busy}:null);
@@ -579,14 +693,17 @@ class DesktopSessionsView {
     if(this.overRequestLimit(ids.length?this.attachments.rows:[])){this.error.textContent=BridgeI18n.t(this.requestLimitMessage());return;}
     if([...selected.values()].some(s=>s.invalid)){this.error.textContent=BridgeI18n.t('已选 Skill 已失效，请刷新列表后重新选择');return;}
     const sid=this.sid,provider=this.provider,key=JSON.stringify([provider,sid]),scope=this.draftScope;
-    const body={text,mode:this.mode.value,...!this.workMode.hidden&&!this.workMode.disabled&&this.mode.value==='send'?{workMode:this.workModes.value('send')}:{}} ,skills=this.state.capabilities.skills===true?[...selected.keys()].sort():[];
+    const active=this.state?.status==='active';
+    const effectiveMode=active?(this.busySendMode||'steer'):'send';
+    this.mode.value=effectiveMode;
+    const body={text,mode:effectiveMode,...!this.workMode.hidden&&!this.workMode.disabled&&effectiveMode==='send'?{workMode:this.workModes.value('send')}:{}} ,skills=this.state.capabilities.skills===true?[...selected.keys()].sort():[];
     if(body.workMode==='goal'&&(ids.length||references.length||skills.length)){this.error.textContent=BridgeI18n.t('请先发送附件和 Skill，再单独设定目标');return;}
     if(ids.length)body.attachments=ids;if(references.length)body.references=references;if(skills.length)body.plugins=skills;
     const transientKey=this.pendingKey('send',body,sid,provider),scopedKey=this.pendingKey('send',body,sid,provider,scope?.account||''),fallbackId=this.pending.get(scopedKey)||this.pending.get(transientKey);
     const revision=this.saveDraft()?.revision,provisional=this.provisionalDrafts.get(provider+':'+sid),pending=scope&&this.composerDrafts?this.composerDrafts.begin(scope,body,fallbackId||this.requestId()):null;
     if(pending?.blocked){this.error.textContent=BridgeI18n.t('上次发送结果尚未确认，请检查聊天记录或先处理未确认记录。');this.manageMessages.hidden=false;return;}
     const preview={provider,sid,gateway:this.draftGateway,account:scope?.account||'',text:text||BridgeI18n.t('附件：')+submittedAttachmentIds.length};this.sendingPreview=preview;this.updateComposer();
-    let result;try{result=await this.mutate('send',body,sid,pending?.id||fallbackId,scope?.account||'');if(result&&this.sendingPreview===preview&&this.sendingHere(preview))this.notify(BridgeI18n.t(result.status==='queued'?'已加入待发送队列':'已发送到会话'));}
+    let result;try{result=await this.mutate('send',body,sid,pending?.id||fallbackId,scope?.account||'');if(result&&this.sendingPreview===preview&&this.sendingHere(preview))this.notify(BridgeI18n.t(effectiveMode==='steer'?'已注入补充任务':result.status==='queued'?'已加入待发送队列':'已发送到会话'));}
     finally{if(this.sendingPreview===preview)this.sendingPreview=null;this.updateComposer();}
     if(scope&&(pending||this.pending.has(scopedKey)||result))this.pending.delete(transientKey);
     if(result){
