@@ -236,6 +236,52 @@ class AntigravityStoreTest(unittest.TestCase):
             self.assertEqual(base64.b64decode(img_res['data']), img_bytes)
             self.assertEqual(img_res['mediaType'], 'image/png')
 
+    def test_transcript_branch_reconciliation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / 'home'
+            app_root = home / '.gemini' / 'antigravity'
+            cid = '22222222-3333-4444-5555-666666666666'
+            steps = [
+                {'step_index': 0, 'type': 'USER_INPUT', 'status': 'DONE', 'created_at': '2026-11-08T01:00:00Z', 'content': 'Test 0'},
+                {'step_index': 1, 'type': 'PLANNER_RESPONSE', 'status': 'DONE', 'created_at': '2026-11-08T01:00:01Z', 'content': 'Reply 0'},
+                {'step_index': 2, 'type': 'USER_INPUT', 'status': 'DONE', 'created_at': '2026-11-08T01:00:02Z', 'content': 'Old 2'},
+                {'step_index': 3, 'type': 'PLANNER_RESPONSE', 'status': 'DONE', 'created_at': '2026-11-08T01:00:03Z', 'content': 'Old 3'},
+                # Rewind/branch at step 2
+                {'step_index': 2, 'type': 'USER_INPUT', 'status': 'DONE', 'created_at': '2026-11-08T01:00:10Z', 'content': 'New 2'},
+                {'step_index': 3, 'type': 'PLANNER_RESPONSE', 'status': 'DONE', 'created_at': '2026-11-08T01:00:11Z', 'content': 'New 3'},
+            ]
+            _write_transcript(app_root, cid, steps)
+            store = AntigravityStore(Path(tmp) / 'scratch', home=home)
+            page = store.read_transcript_page(app_root, cid, limit=40)
+            messages = [m['text'] for m in page['messages'] if m.get('text')]
+            self.assertEqual(messages, ['Test 0', 'Reply 0', 'New 2', 'New 3'])
+
+    def test_model_effort_resolution_and_decoration(self):
+        from bridge.clients.antigravity.cli_session import AntigravityCli
+        from bridge.clients.antigravity.adapter import Antigravity
+        with tempfile.TemporaryDirectory() as tmp:
+            cli = AntigravityCli()
+            m_low = cli.resolve_model_enum('gemini-3.8-flash', 'low')
+            self.assertEqual(m_low, 'MODEL_PLACEHOLDER_M320')
+            m_high = cli.resolve_model_enum('gemini-3.8-flash', 'high')
+            self.assertEqual(m_high, 'MODEL_PLACEHOLDER_M318')
+            m_argon = cli.resolve_model_enum('gemini-4-argon', 'medium')
+            self.assertEqual(m_argon, 'MODEL_PLACEHOLDER_M418')
+
+            adapter = Antigravity(Path(tmp))
+            decorated = adapter._decorate_session({
+                'id': 'sess-1',
+                'nativeId': 'cid-1',
+                'title': 'Test Session',
+                'status': 'idle',
+            })
+            # Effort must be lowercase for WebUI options matching
+            self.assertEqual(decorated['effort'], 'high')
+            self.assertEqual(decorated['reasoningEffort'], 'high')
+            self.assertEqual(decorated['effortLabel'], 'High')
+
+
+
 
 class HookIPCAndPluginTest(unittest.TestCase):
     def test_plugin_setup_and_disable_is_isolated(self):

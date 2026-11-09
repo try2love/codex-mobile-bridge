@@ -88,6 +88,21 @@ class AntigravityCli:
         addr, token = self._get_ls_info()
         return bool(addr and token) or bool(self.binary())
 
+    def _is_desktop_process_alive(self):
+        try:
+            out = subprocess.check_output(['pgrep', '-a', 'language_server'], text=True)
+            if out.strip():
+                return True
+        except Exception:
+            pass
+        try:
+            out = subprocess.check_output(['pgrep', '-a', 'antigravity'], text=True)
+            if out.strip():
+                return True
+        except Exception:
+            pass
+        return False
+
     def _get_ls_info(self):
         addr = os.environ.get('ANTIGRAVITY_LS_ADDRESS')
         token = os.environ.get('ANTIGRAVITY_CSRF_TOKEN')
@@ -100,11 +115,10 @@ class AntigravityCli:
         if log_path.is_file():
             try:
                 with log_path.open('r', encoding='utf-8', errors='replace') as f:
-                    for line in reversed(f.readlines()[-100:]):
+                    for line in f:
                         m = re.search(r'Language server listening on random port at (\d+) for HTTP', line)
                         if m:
                             port = int(m.group(1))
-                            break
             except Exception:
                 pass
 
@@ -251,6 +265,8 @@ class AntigravityCli:
         """Invoke a gRPC-Web JSON-RPC endpoint on the active Antigravity Language Server."""
         addr, token = self._get_ls_info()
         if not addr or not token:
+            if self._is_desktop_process_alive():
+                raise BridgeUnavailable('檢測到 Antigravity 桌面端進程正在運行，但內部通訊介面暫未響應；為維護 Single Writer 原則並避免對話樹分叉，已阻止獨立 CLI 寫入。請在桌面端重啟或確認連線。')
             raise BridgeUnavailable('未檢測到正在運行的 Antigravity Desktop / Language Server 進程')
         req = urllib.request.Request(
             f'http://{addr}/exa.language_server_pb.LanguageServerService/{method}',
@@ -270,7 +286,51 @@ class AntigravityCli:
         except Exception as exc:
             raise BridgeUnavailable(f'無法連接 Antigravity Language Server：{exc}') from exc
 
-    def send_user_message(self, conversation_id, prompt):
+    def resolve_model_enum(self, model, effort=None):
+        if not model:
+            return None
+        m_str = str(model).strip()
+        e_str = str(effort or '').strip().lower()
+        if not e_str:
+            for suffix in ('-high', '-medium', '-low'):
+                if m_str.endswith(suffix):
+                    e_str = suffix[1:]
+                    m_str = m_str[:-len(suffix)]
+                    break
+        if not e_str:
+            e_str = 'high' if 'flash' in m_str else 'medium'
+
+        target_model_id = MODEL_ALIAS_MAP.get((m_str, e_str), f'{m_str}-{e_str}')
+
+        try:
+            ls_status = self.language_server_status()
+            configs = ls_status.get('userStatus', {}).get('cascadeModelConfigData', {}).get('clientModelConfigs', [])
+            for c in configs:
+                if c.get('modelId') == target_model_id:
+                    m_alias = c.get('modelOrAlias')
+                    if isinstance(m_alias, dict) and m_alias.get('model'):
+                        return m_alias['model']
+        except Exception:
+            pass
+
+        fallback_map = {
+            'gemini-4-argon-high': 'MODEL_PLACEHOLDER_M417',
+            'gemini-4-argon-medium': 'MODEL_PLACEHOLDER_M418',
+            'gemini-4-argon-low': 'MODEL_PLACEHOLDER_M419',
+            'gemini-3.8-flash-high': 'MODEL_PLACEHOLDER_M318',
+            'gemini-3.8-flash-medium': 'MODEL_PLACEHOLDER_M319',
+            'gemini-3.8-flash-low': 'MODEL_PLACEHOLDER_M320',
+            'claude-opus-5-5-low': 'MODEL_PLACEHOLDER_M400',
+            'claude-opus-5-5-medium': 'MODEL_PLACEHOLDER_M401',
+            'claude-opus-5-5-high': 'MODEL_PLACEHOLDER_M402',
+            'claude-sonnet-5-5-low': 'MODEL_PLACEHOLDER_M403',
+            'claude-sonnet-5-5-medium': 'MODEL_PLACEHOLDER_M404',
+            'claude-sonnet-5-5-high': 'MODEL_PLACEHOLDER_M405',
+            'gpt-oss-120b-medium': 'MODEL_OPENAI_GPT_OSS_120B_MEDIUM',
+        }
+        return fallback_map.get(target_model_id)
+
+    def send_user_message(self, conversation_id, prompt, model=None, effort=None):
         """Send message directly into the native Antigravity session (NO ACP, 100% in-sync)."""
         text = str(prompt or '').strip()
         if not text:
@@ -281,11 +341,23 @@ class AntigravityCli:
             'cascade_id': str(conversation_id),
             'items': [{'text': text}],
         }
+        model_enum = self.resolve_model_enum(model, effort)
+        if model_enum:
+            body['cascade_config'] = {
+                'planner_config': {
+                    'requested_model': {
+                        'model': model_enum,
+                    }
+                }
+            }
         return self.call_ls_rpc('SendUserCascadeMessage', body)
 
-    def start_cascade(self, source='CORTEX_TRAJECTORY_SOURCE_CLI'):
+    def start_cascade(self, source='CORTEX_TRAJECTORY_SOURCE_CLI', model=None, effort=None):
         """Create a new native conversation in the Antigravity Language Server."""
         body = {'source': source}
+        model_enum = self.resolve_model_enum(model, effort)
+        if model_enum:
+            body['requested_model'] = model_enum
         res = self.call_ls_rpc('StartCascade', body)
         cid = res.get('cascadeId') or res.get('cascade_id')
         if not cid:
@@ -310,8 +382,8 @@ class AntigravityCli:
         text = str(prompt or '').strip()
         if not text:
             raise ValueError('訊息內容不能為空')
-        cid = conversation_id or self.start_cascade()
-        self.send_user_message(cid, text)
+        cid = conversation_id or self.start_cascade(model=model, effort=effort)
+        self.send_user_message(cid, text, model=model, effort=effort)
         return cid
 
     def stop(self, conversation_id):

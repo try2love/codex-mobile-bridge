@@ -321,6 +321,12 @@ class AntigravityStore:
                     obj['step_index'] = step_idx
                 if before_index is not None and step_idx >= before_index:
                     continue
+
+                # Branch reconciliation: if new step index is <= last step index,
+                # the transcript rewound or branched. Prune the earlier abandoned steps.
+                while steps and steps[-1].get('step_index', 0) >= step_idx:
+                    steps.pop()
+
                 steps.append(obj)
 
         # Ensure we include at least min(6, available) complete USER_INPUT turns

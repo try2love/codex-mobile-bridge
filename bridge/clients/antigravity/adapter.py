@@ -1,8 +1,10 @@
 """Antigravity 2.0 / IDE / CLI hybrid adapter for Codex Mobile Bridge."""
+import hashlib
 import json
 import os
 from pathlib import Path
 import threading
+import time
 
 from bridge.clients.errors import BridgeUnavailable
 from bridge.clients.file_mentions import file_mentions
@@ -32,6 +34,9 @@ class Antigravity:
         self.settings_file = self.directory / 'session-settings.json'
         self._lock = threading.Lock()
         self._settings = self._load_settings()
+        self._in_flight_sends = set()
+        self._in_flight_lock = threading.Lock()
+        self._recent_submissions = {}
 
     def _load_settings(self):
         try:
@@ -128,7 +133,9 @@ class Antigravity:
             'archive': False,
             'unarchive': False,
         }
-        raw_model = str(prefs.get('model') or 'gemini-3.8-flash').strip()
+        raw_model = str(prefs.get('model') or '').strip()
+        if not raw_model or raw_model == 'auto':
+            raw_model = 'gemini-3.8-flash'
         raw_effort = str(prefs.get('effort') or '').strip().lower()
 
         # Normalize models with embedded effort suffixes like gemini-3.8-flash-high
@@ -141,7 +148,7 @@ class Antigravity:
                     effort_val = suffix[1:]
                 break
 
-        if not effort_val:
+        if not effort_val or effort_val == 'auto':
             effort_val = 'high' if 'flash' in model_id else 'medium'
 
         display_names = {
@@ -153,7 +160,8 @@ class Antigravity:
             'gpt-oss-120b': 'GPT-OSS 120B',
         }
         display_name = display_names.get(model_id, model_id)
-        effort_label = effort_val.capitalize() if effort_val not in ('auto', 'none') else ''
+        effort_normalized = effort_val.lower()
+        effort_label = effort_normalized.capitalize() if effort_normalized not in ('auto', 'none') else ''
 
         return {
             **row,
@@ -161,8 +169,9 @@ class Antigravity:
             'requests': requests,
             'model': model_id,
             'modelDisplayName': display_name,
-            'effort': effort_label,
-            'reasoningEffort': effort_val,
+            'effort': effort_normalized,
+            'effortLabel': effort_label,
+            'reasoningEffort': effort_normalized,
             'permissionMode': self.hooks.permission_mode(cid),
             'connectionState': 'ready',
             'capabilities': capabilities,
@@ -374,7 +383,7 @@ class Antigravity:
             if 'model' in body and isinstance(body['model'], str) and body['model'].strip():
                 prefs['model'] = body['model'].strip()
             if 'effort' in body and isinstance(body['effort'], str) and body['effort'].strip():
-                prefs['effort'] = body['effort'].strip()
+                prefs['effort'] = body['effort'].strip().lower()
             with self._lock:
                 self._settings[cid] = prefs
                 self._save_settings()
@@ -418,19 +427,54 @@ class Antigravity:
             mode = str(body.get('mode') or 'send').strip()
             if mode not in ('send', 'queue', 'steer'):
                 raise ValueError('不支援的發送模式')
-            native_busy = self.store.is_native_busy(surface_root, cid)
-            hook_alive = self.hooks.has_recent_heartbeat(cid) or self.hooks.has_pending_approvals(cid)
-            cli_busy = self.cli.is_running(cid)
-            if (native_busy or hook_alive or cli_busy) and mode in ('queue', 'steer'):
-                queue_mode = 'steer' if mode == 'steer' else 'queue'
-                entry = self.hooks.enqueue_follow_up(cid, prompt, mode=queue_mode)
-                return {
-                    'status': 'accepted',
-                    'delivery': f'hook-{queue_mode}',
-                    'queueId': entry['id'],
-                }
-            self.cli.send_user_message(cid, prompt)
-            return {'status': 'accepted', 'delivery': 'ls-native'}
+
+            sub_id = str(body.get('id') or body.get('submissionId') or '').strip()
+            text_hash = hashlib.sha256(f"{cid}:{prompt}:{mode}".encode('utf-8')).hexdigest()[:16]
+            dedup_key = f"{cid}:{sub_id or text_hash}"
+
+            now = time.time()
+            with self._in_flight_lock:
+                expired = [k for k, v in self._recent_submissions.items() if now - v[0] > 120.0]
+                for k in expired:
+                    self._recent_submissions.pop(k, None)
+
+                if dedup_key in self._recent_submissions:
+                    ts, cached_result = self._recent_submissions[dedup_key]
+                    if now - ts < 45.0:
+                        return cached_result
+
+                if cid in self._in_flight_sends:
+                    raise BridgeUnavailable('此會話已有正在處理中的發送請求，請勿重複提交')
+                self._in_flight_sends.add(cid)
+
+            try:
+                native_busy = self.store.is_native_busy(surface_root, cid)
+                hook_alive = self.hooks.has_recent_heartbeat(cid) or self.hooks.has_pending_approvals(cid)
+                cli_busy = self.cli.is_running(cid)
+                if (native_busy or hook_alive or cli_busy) and mode in ('queue', 'steer'):
+                    queue_mode = 'steer' if mode == 'steer' else 'queue'
+                    entry = self.hooks.enqueue_follow_up(cid, prompt, mode=queue_mode)
+                    res = {
+                        'status': 'accepted',
+                        'delivery': f'hook-{queue_mode}',
+                        'queueId': entry['id'],
+                    }
+                else:
+                    prefs = self._session_settings(cid)
+                    self.cli.send_user_message(
+                        cid,
+                        prompt,
+                        model=prefs.get('model'),
+                        effort=prefs.get('effort'),
+                    )
+                    res = {'status': 'accepted', 'delivery': 'ls-native'}
+
+                with self._in_flight_lock:
+                    self._recent_submissions[dedup_key] = (now, res)
+                return res
+            finally:
+                with self._in_flight_lock:
+                    self._in_flight_sends.discard(cid)
 
         raise ValueError(f'Antigravity 不支援的操作: {action}')
 
