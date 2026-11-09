@@ -102,6 +102,8 @@ class LiveSession:
         self.activating = False
         self.last_activation = None
         self.retry_at = 0
+        self.connection_epoch = 0
+        self.desktop_recovery_until = 0
         self.history_retry_at = 0
         self.history_refreshing = False
         self.history_receipt_key = None
@@ -1781,7 +1783,9 @@ class Bridge:
                     try:
                         for session in pending:
                             if self.closed.is_set(): break
-                            session.retry_at = time.monotonic() + 15
+                            with session.condition:
+                                now = time.monotonic()
+                                session.retry_at = now + (.5 if now < session.desktop_recovery_until else 15)
                             self._attach(session, timeout=0)
                     finally:
                         with self.lock: self.activity_following = False
@@ -1909,7 +1913,8 @@ class Bridge:
                     session.notification_probe_until = time.monotonic() + 10
                     return session
                 session.notification_connecting = True
-                session.retry_at = time.monotonic() + 15
+                now = time.monotonic()
+                session.retry_at = now + (.5 if now < session.desktop_recovery_until else 15)
                 session.notification_probe_until = time.monotonic() + 10
                 def follow():
                     started = time.monotonic()
@@ -2151,6 +2156,7 @@ class Bridge:
             needs_history = session.history_state is None or session.activity_only or (session.origin in ('cli', 'ide') and not session.connected)
             session.connecting = True
             session.owner_probe_inflight = True
+            epoch = session.connection_epoch
             session.changed()
         def refresh():
             # Give a fast saved read priority, without making a slow/missing
@@ -2187,7 +2193,12 @@ class Bridge:
                 owner_worker.join()
                 with session.condition:
                     session.connecting = False
-                    session.retry_at = time.monotonic() + 15
+                    # A retired probe must not reinstate its cooldown after an
+                    # observed disconnect has invalidated this connection.
+                    if session.connection_epoch == epoch:
+                        now = time.monotonic()
+                        session.retry_at = (0 if session.connected else now +
+                                            (.5 if now < session.desktop_recovery_until else 15))
                     session.changed()
         threading.Thread(target=refresh, daemon=True).start()
 
@@ -2554,6 +2565,13 @@ class Bridge:
                 logging.getLogger(__name__).info(
                     "Codex connection transition thread=%s cause=%s", session.id, reason)
             session.connected = False
+            session.connection_epoch += 1
+            if reason in ('desktop_ipc_disconnected', 'desktop_client_disconnected'):
+                # The old route's successful read is no longer a reason to
+                # delay recovery. Allow two ordinary maintenance passes while
+                # the native router and original owners register again.
+                session.retry_at = 0
+                session.desktop_recovery_until = time.monotonic() + 6
             session.rebuild_recommended = session.origin == 'desktop' and self.host == 'local'
             session.revision = None
             if session.origin in ('cli', 'ide') and session.runtime == 'desktop':
@@ -2609,7 +2627,9 @@ class Bridge:
                 if (session.viewers > 0 or queued or session.watched) and not session.connected:
                     if session.activity_only and session.viewers == 0 and not queued:
                         if time.monotonic() >= session.retry_at:
-                            session.retry_at = time.monotonic() + 15
+                            with session.condition:
+                                now = time.monotonic()
+                                session.retry_at = now + (.5 if now < session.desktop_recovery_until else 15)
                             self._attach(session, timeout=0)
                     else:
                         self._refresh_async(session)
@@ -2623,7 +2643,9 @@ class Bridge:
                             self.ipc.follow(session.id, session.owner, False, host=self.native_host)
                         except IPCError:
                             pass
-            delay = 3 if self.ipc.client_id else min(30, delay * 2)
+            recovering = any(not session.connected and time.monotonic() < session.desktop_recovery_until
+                             for session in sessions)
+            delay = 3 if self.ipc.client_id or recovering else min(30, delay * 2)
 
     def _target(self, thread_id):
         if self.released_cli.contains(thread_id):
