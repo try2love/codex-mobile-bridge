@@ -37,6 +37,14 @@ class Antigravity:
         self._in_flight_sends = set()
         self._in_flight_lock = threading.Lock()
         self._recent_submissions = {}
+        self._last_dispatched_at = {}
+        self._closing = False
+        self._flusher_thread = threading.Thread(
+            target=self._queue_flusher_loop,
+            name='antigravity-queue-flusher',
+            daemon=True,
+        )
+        self._flusher_thread.start()
 
     def _load_settings(self):
         try:
@@ -317,6 +325,10 @@ class Antigravity:
         session = self._decorate_session(row)
 
         if action == 'detail':
+            try:
+                self._flush_idle_queue(surface_root, cid)
+            except Exception:
+                pass
             limit = int(body.get('historyLimit') or 40)
             before = body.get('historyBefore')
             is_active = session['status'] == 'active'
@@ -456,7 +468,8 @@ class Antigravity:
                 native_busy = self.store.is_native_busy(surface_root, cid)
                 hook_alive = self.hooks.has_recent_heartbeat(cid) or self.hooks.has_pending_approvals(cid)
                 cli_busy = self.cli.is_running(cid)
-                if (native_busy or hook_alive or cli_busy) and mode in ('queue', 'steer'):
+                has_queued = bool(self.hooks.get_queued_items(cid))
+                if (native_busy or hook_alive or cli_busy or has_queued) and mode in ('queue', 'steer'):
                     queue_mode = 'steer' if mode == 'steer' else 'queue'
                     entry = self.hooks.enqueue_follow_up(cid, prompt, mode=queue_mode)
                     res = {
@@ -466,6 +479,7 @@ class Antigravity:
                     }
                 else:
                     prefs = self._session_settings(cid)
+                    self._last_dispatched_at[cid] = time.time()
                     self.cli.send_user_message(
                         cid,
                         prompt,
@@ -483,6 +497,85 @@ class Antigravity:
 
         raise ValueError(f'Antigravity 不支援的操作: {action}')
 
+    def _flush_idle_queue(self, surface_root, cid):
+        """If session is idle and there are queued messages, dispatch the next one directly."""
+        if not cid:
+            return None
+        queued = self.hooks.get_queued_items(cid)
+        if not queued:
+            return None
+
+        now = time.time()
+        last_disp = self._last_dispatched_at.get(cid, 0)
+        if now - last_disp < 2.0:
+            return None
+
+        if self.store.is_native_busy(surface_root, cid):
+            return None
+        if self.hooks.has_pending_approvals(cid):
+            return None
+        if self.cli.is_running(cid):
+            return None
+
+        with self._in_flight_lock:
+            if cid in self._in_flight_sends:
+                return None
+            self._in_flight_sends.add(cid)
+
+        item = None
+        try:
+            if self.store.is_native_busy(surface_root, cid):
+                return None
+
+            item = self.hooks.pop_next_queued_item(cid)
+            if not item:
+                return None
+
+            text = str(item.get('text') or '').strip()
+            if not text:
+                return None
+
+            self._last_dispatched_at[cid] = time.time()
+            prefs = self._session_settings(cid)
+            self.cli.send_user_message(
+                cid,
+                text,
+                model=prefs.get('model'),
+                effort=prefs.get('effort'),
+            )
+            return item
+        except Exception:
+            if item:
+                self.hooks.reinsert_queued_item(cid, item)
+            raise
+        finally:
+            with self._in_flight_lock:
+                self._in_flight_sends.discard(cid)
+
+    def flush_all_idle_queues(self):
+        """Background scan of all active queues to dispatch to idle sessions."""
+        with self.hooks._lock:
+            queued_cids = list(self.hooks._queues.keys())
+        if not queued_cids:
+            return
+
+        for cid in queued_cids:
+            try:
+                row = self.store.resolve_session(cid)
+                surface_root = row['surfaceRoot'] if row else self.store.surface_root('app')
+                self._flush_idle_queue(surface_root, cid)
+            except Exception:
+                pass
+
+    def _queue_flusher_loop(self):
+        while not self._closing:
+            try:
+                self.flush_all_idle_queues()
+            except Exception:
+                pass
+            time.sleep(1.5)
+
     def close(self):
+        self._closing = True
         self.cli.close()
         self.hooks.close()

@@ -416,6 +416,30 @@ class HookIPCServer:
             })
         return out
 
+    def pop_next_queued_item(self, conversation_id):
+        with self._lock:
+            items = list(self._queues.get(conversation_id) or [])
+            if not items:
+                return None
+            first = items.pop(0)
+            if items:
+                self._queues[conversation_id] = items
+            else:
+                self._queues.pop(conversation_id, None)
+            self._save_json(self.queues_file, self._queues)
+            return first
+
+    def reinsert_queued_item(self, conversation_id, item):
+        if not item or not isinstance(item, dict):
+            return
+        with self._lock:
+            items = list(self._queues.get(conversation_id) or [])
+            item_id = str(item.get('id') or '')
+            if not any(str(x.get('id') or '') == item_id for x in items if isinstance(x, dict)):
+                items.insert(0, item)
+                self._queues[conversation_id] = items
+                self._save_json(self.queues_file, self._queues)
+
     def update_queue_mode(self, conversation_id, queue_id, mode):
         normalized_mode = 'steer' if str(mode or '').strip() == 'steer' else 'queue'
         with self._lock:

@@ -374,6 +374,75 @@ class HookIPCAndPluginTest(unittest.TestCase):
             res_cancel = adapter.call('queue-action', sid, {'queueId': qid2, 'operation': 'cancel'})
             self.assertEqual(res_cancel['status'], 'accepted')
             self.assertTrue(res_cancel['removed'])
+            adapter.close()
+
+    def test_idle_queue_auto_flush(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / 'home'
+            app_root = home / '.gemini' / 'antigravity'
+            cid = '44444444-5555-6666-7777-888888888888'
+            _create_surface_db(
+                app_root,
+                [
+                    (
+                        cid,
+                        'Queue Test',
+                        '',
+                        2,
+                        '2026-11-08T02:00:00Z',
+                        json.dumps(['file:///home/lks/aios/codex-mobile-bridge']),
+                        'CASCADE_RUN_STATUS_IDLE',
+                        'CORTEX_TRAJECTORY_SOURCE_CONVERSATION',
+                        '',
+                        '',
+                        0,
+                        0,
+                        0,
+                        '',
+                    )
+                ],
+            )
+            _write_transcript(
+                app_root,
+                cid,
+                [
+                    {'step_index': 0, 'type': 'USER_INPUT', 'status': 'DONE', 'created_at': '2026-11-08T01:00:00Z', 'content': 'Test 0'},
+                    {'step_index': 1, 'type': 'PLANNER_RESPONSE', 'status': 'DONE', 'created_at': '2026-11-08T01:00:01Z', 'content': 'Reply 0'},
+                ],
+            )
+            from bridge.clients.antigravity.adapter import Antigravity
+            from bridge.clients.antigravity.model import gateway_id
+            adapter = Antigravity(Path(tmp), home=home)
+            try:
+                sid = gateway_id('app', cid)
+                sent_messages = []
+                adapter.cli.send_user_message = lambda conversation_id, text, model=None, effort=None: sent_messages.append((conversation_id, text))
+
+                # Enqueue test D and test F
+                adapter.hooks.enqueue_follow_up(cid, 'test D', mode='steer')
+                adapter.hooks.enqueue_follow_up(cid, 'test F', mode='queue')
+
+                self.assertEqual(len(adapter.hooks.get_queued_items(cid)), 2)
+
+                # Call detail (which triggers auto-flush)
+                detail = adapter.call('detail', sid)
+                self.assertEqual(len(sent_messages), 1)
+                self.assertEqual(sent_messages[0], (cid, 'test D'))
+                self.assertEqual(len(detail['queued']), 1)
+                self.assertEqual(detail['queued'][0]['text'], 'test F')
+
+                # Flush again while within debounce window -> should not flush test F yet
+                adapter._flush_idle_queue(str(app_root), cid)
+                self.assertEqual(len(sent_messages), 1)
+
+                # Reset last_dispatched_at timestamp to simulate turn completion
+                adapter._last_dispatched_at.clear()
+                adapter._flush_idle_queue(str(app_root), cid)
+                self.assertEqual(len(sent_messages), 2)
+                self.assertEqual(sent_messages[1], (cid, 'test F'))
+                self.assertEqual(len(adapter.hooks.get_queued_items(cid)), 0)
+            finally:
+                adapter.close()
 
     def test_hook_client_fail_open_and_live_roundtrip(self):
         with tempfile.TemporaryDirectory() as tmp:
