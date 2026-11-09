@@ -341,7 +341,7 @@ public final class MainActivity extends Activity implements SharedPreferences.On
  private FrameLayout screen;private DownloadCard downloadCard;private ArtifactDownload.Task downloadTask,choosingDownload;private UpdateInstallSession updateSession;private boolean savingDownload,openingDownload,restoringUpdate,autoInstallUpdate;
  private String choosingUpdateFile;private Bundle pendingSaveResult;
  private GatewayUpdate preparingUpdate;
- private ServiceConnection monitor;private ValueCallback<Uri[]> files;private WebView fileView;private int fileGeneration;private int generation;private int navigationRequest;private boolean authLossAttempted;
+ private ServiceConnection monitor;private ValueCallback<Uri[]> files;private WebView fileView;private int fileGeneration;private Uri cameraUpload;private int generation;private int navigationRequest;private boolean authLossAttempted;
  private UURemote uu;
  private SettingsPage settingsPage;private SettingsUi ui;private ImageButton chatMenu;
  private int pageColor(){return ui.dark?ui.page:0xfff5f5f3;}
@@ -546,7 +546,7 @@ public final class MainActivity extends Activity implements SharedPreferences.On
    connectionDeadline=null;showConnectionError(url);recoverConnection(url);
   };homeHandler.postDelayed(connectionDeadline,30000);
  }
- void clear(){hideConnectionError();navigationFailed=false;routeTraffic.clear();if(uu!=null)uu.scope="";hideEntryProgress();pageReady=false;pendingPeer=null;for(WebView peer:new ArrayList<>(peerViews))closePeer(peer);cancelChannelJobs();dismissGatewayMenu();cancelConnectionDeadline();if(connectionTask!=null){connectionTask.cancel(true);connectionTask=null;}if(preparingUpdate!=null){preparingUpdate.cancel();preparingUpdate=null;}pendingStorage=null;if(routeDiscovery!=null){routeDiscovery.cancel();routeDiscovery=null;}if(files!=null){files.onReceiveValue(null);files=null;fileView=null;}stopComputerChecks();homeStates.clear();addressLists.clear();computerTitles.clear();arrivingVia=null;deferredRoute=null;homeNotifications.clear();resetExitGesture();generation++;if(web!=null){web.stopLoading();web.destroy();web=null;}systemBars.update(pageColor(),pageColor());while(root.getChildCount()>2)root.removeViewAt(2);}
+ void clear(){hideConnectionError();navigationFailed=false;routeTraffic.clear();if(uu!=null)uu.scope="";hideEntryProgress();pageReady=false;pendingPeer=null;for(WebView peer:new ArrayList<>(peerViews))closePeer(peer);cancelChannelJobs();dismissGatewayMenu();cancelConnectionDeadline();if(connectionTask!=null){connectionTask.cancel(true);connectionTask=null;}if(preparingUpdate!=null){preparingUpdate.cancel();preparingUpdate=null;}pendingStorage=null;if(routeDiscovery!=null){routeDiscovery.cancel();routeDiscovery=null;}cancelFileChooser();stopComputerChecks();homeStates.clear();addressLists.clear();computerTitles.clear();arrivingVia=null;deferredRoute=null;homeNotifications.clear();resetExitGesture();generation++;if(web!=null){web.stopLoading();web.destroy();web=null;}systemBars.update(pageColor(),pageColor());while(root.getChildCount()>2)root.removeViewAt(2);}
  void home(){clear();header(false);status.setVisibility(View.GONE);ScrollView scroll=new ScrollView(ui.context);scroll.setFillViewport(true);LinearLayout content=column();content.setPadding(dp(20),dp(16),dp(20),dp(24));scroll.addView(content);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
   ImageView icon=new ImageView(ui.context);icon.setImageResource(getResources().getIdentifier("ic_computer","drawable",getPackageName()));icon.setColorFilter(textColor());icon.setScaleType(ImageView.ScaleType.FIT_CENTER);LinearLayout.LayoutParams ip=new LinearLayout.LayoutParams(dp(64),dp(58));ip.gravity=Gravity.CENTER;ip.bottomMargin=dp(24);content.addView(icon,ip);
   TextView headline=text(L("电脑上的工作，\n带在身边。"),30);headline.setTypeface(null,android.graphics.Typeface.BOLD);headline.setGravity(Gravity.CENTER);add(headline,content,10);
@@ -687,11 +687,23 @@ public final class MainActivity extends Activity implements SharedPreferences.On
     return true;
    }
    public boolean onShowFileChooser(WebView view,ValueCallback<Uri[]> callback,FileChooserParams params){
-    if(files!=null)files.onReceiveValue(null);files=callback;fileView=view;fileGeneration=generation;
-    Intent picker=new Intent(Intent.ACTION_OPEN_DOCUMENT);picker.addCategory(Intent.CATEGORY_OPENABLE);picker.setType("*/*");picker.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);picker.putExtra(Intent.EXTRA_ALLOW_MULTIPLE,params.getMode()==FileChooserParams.MODE_OPEN_MULTIPLE);
+    if(view!=web||!view.hasWindowFocus()||!GatewayURL.sameOrigin(view.getUrl(),pageOrigin)||files!=null){callback.onReceiveValue(null);return true;}
+    files=callback;fileView=view;fileGeneration=generation;
     ArrayList<String> types=new ArrayList<>();for(String type:params.getAcceptTypes())if(type!=null&&type.contains("/"))types.add(type);
-    if(types.size()==1)picker.setType(types.get(0));else if(!types.isEmpty())picker.putExtra(Intent.EXTRA_MIME_TYPES,types.toArray(new String[0]));
-    try{startActivityForResult(picker,31);}catch(Exception e){files.onReceiveValue(null);files=null;fileView=null;message(L("没有可用的文件选择器"));}return true;
+    boolean photos=types.size()==1&&"image/*".equals(types.get(0));
+    if(photos&&params.isCaptureEnabled()){capturePhoto();return true;}
+    Intent picker;
+    if(photos&&Build.VERSION.SDK_INT>=33){
+     boolean multiple=params.getMode()==FileChooserParams.MODE_OPEN_MULTIPLE;
+     picker=new Intent(android.provider.MediaStore.ACTION_PICK_IMAGES);picker.setType("image/*");
+     if(multiple)picker.putExtra(android.provider.MediaStore.EXTRA_PICK_IMAGES_MAX,Math.min(10,android.provider.MediaStore.getPickImagesMaxLimit()));
+    }else{
+     picker=new Intent(photos?Intent.ACTION_GET_CONTENT:Intent.ACTION_OPEN_DOCUMENT);picker.addCategory(Intent.CATEGORY_OPENABLE);picker.setType("*/*");
+     picker.putExtra(Intent.EXTRA_ALLOW_MULTIPLE,params.getMode()==FileChooserParams.MODE_OPEN_MULTIPLE);
+     if(types.size()==1)picker.setType(types.get(0));else if(!types.isEmpty())picker.putExtra(Intent.EXTRA_MIME_TYPES,types.toArray(new String[0]));
+    }
+    picker.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+    try{startActivityForResult(picker,31);}catch(Exception e){cancelFileChooser();message(L("没有可用的文件选择器"));}return true;
    }});
 
   web.setDownloadListener((target,agent,disposition,mime,length)->downloadArtifact(target));
@@ -950,19 +962,38 @@ public final class MainActivity extends Activity implements SharedPreferences.On
  void confirmRemove(String target){new AlertDialog.Builder(ui.context).setTitle(L("移除这台电脑？")).setMessage(target+"\n\n"+L("清除本机保存的连接和登录状态，电脑上的聊天不受影响。")).setNegativeButton(L("取消"),null).setPositiveButton(L("移除"),(d,w)->{if(downloadTask!=null&&downloadTask.origin.equals(target))cancelDownload();final int ticket=generation;worker.execute(()->{try{JSONObject auth=EventClient.request(target,"/api/auth",null,null);if(auth.optBoolean("authenticated"))EventClient.request(target,"/api/logout",new JSONObject(),auth.getString("csrf"));}catch(Exception ignored){/* Offline removal is local; server session expiry still applies. */}DeviceBinding.clear(this,target);runOnUiThread(()->{clearChannels(target);Set<String> values=saved();values.remove(target);EventClient.forget(target);android.content.SharedPreferences.Editor edit=prefs.edit().putStringSet("origins",values).remove("notificationCheckpoint:"+target).remove("cursor:"+target).remove("stream:"+target).remove("connection:"+target).remove("name:"+target).remove("last-opened:"+target).remove("cookieName:"+target).remove("notificationsMuted:"+target).remove("notificationSourceRevision:"+target);if(target.equals(prefs.getString("active","")))edit.remove("active");edit.apply();MonitorService.bindingsChanged();if(target.equals(origin))origin="";if(ticket==generation)home();});});}).show();}
  void monitor(){if(monitor==null){monitor=new ServiceConnection(){public void onServiceConnected(ComponentName n,IBinder b){}public void onServiceDisconnected(ComponentName n){}};getApplicationContext().bindService(new Intent(this,MonitorService.class),monitor,BIND_AUTO_CREATE);}}
  void scan(){if(checkSelfPermission(Manifest.permission.CAMERA)!=PackageManager.PERMISSION_GRANTED){requestPermissions(new String[]{Manifest.permission.CAMERA},21);return;}startActivityForResult(new Intent(this,ScanActivity.class),20);}
- @Override public void onRequestPermissionsResult(int code,String[] names,int[] results){super.onRequestPermissionsResult(code,names,results);boolean allowed=results.length>0&&results[0]==PackageManager.PERMISSION_GRANTED;if(code==25){prefs.edit().putBoolean("alerts",allowed).apply();if(allowed)monitor();return;}if(!allowed){message(L(code==21?"未获得权限，可继续粘贴地址使用。":"请在系统设置中允许通知。"));return;}if(code==26)toggleBackgroundNotifications();if(code==24)enableNativePush();if(code==21)scan();if(code==23)testNotification();if(code==22){prefs.edit().putBoolean("alerts",true).apply();monitor();}}
+ @Override public void onRequestPermissionsResult(int code,String[] names,int[] results){super.onRequestPermissionsResult(code,names,results);boolean allowed=results.length>0&&results[0]==PackageManager.PERMISSION_GRANTED;if(code==27){if(allowed)capturePhoto();else{cancelFileChooser();message(L("请在系统设置中允许相机。"));}return;}if(code==25){prefs.edit().putBoolean("alerts",allowed).apply();if(allowed)monitor();return;}if(!allowed){message(L(code==21?"未获得权限，可继续粘贴地址使用。":"请在系统设置中允许通知。"));return;}if(code==26)toggleBackgroundNotifications();if(code==24)enableNativePush();if(code==21)scan();if(code==23)testNotification();if(code==22){prefs.edit().putBoolean("alerts",true).apply();monitor();}}
+ void cancelFileChooser(){
+  ValueCallback<Uri[]> callback=files;files=null;fileView=null;
+  if(cameraUpload!=null){revokeUriPermission(cameraUpload,Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_WRITE_URI_PERMISSION);CameraProvider.discard(this,cameraUpload);cameraUpload=null;}
+  if(callback!=null)callback.onReceiveValue(null);
+ }
+ void capturePhoto(){
+  if(files==null)return;
+  if(fileView!=web||fileGeneration!=generation||!GatewayURL.sameOrigin(fileView.getUrl(),pageOrigin)){cancelFileChooser();return;}
+  if(checkSelfPermission(Manifest.permission.CAMERA)!=PackageManager.PERMISSION_GRANTED){requestPermissions(new String[]{Manifest.permission.CAMERA},27);return;}
+  try{
+   cameraUpload=CameraProvider.prepare(this);
+   Intent camera=new Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE);
+   camera.putExtra(android.provider.MediaStore.EXTRA_OUTPUT,cameraUpload);camera.setClipData(ClipData.newRawUri("photo",cameraUpload));
+   camera.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+   startActivityForResult(camera,31);
+  }catch(Exception e){cancelFileChooser();message(L("无法打开相机，请重试。"));}
+ }
  void selectedFiles(int result,Intent data){
-  ValueCallback<Uri[]> callback=files;WebView target=fileView;int ticket=fileGeneration;files=null;fileView=null;
+  ValueCallback<Uri[]> callback=files;WebView target=fileView;int ticket=fileGeneration;Uri captured=cameraUpload;files=null;fileView=null;cameraUpload=null;
+  if(captured!=null)revokeUriPermission(captured,Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
   if(callback==null)return;
-  if(result!=RESULT_OK||target!=web||ticket!=generation){callback.onReceiveValue(null);return;}
+  if(result!=RESULT_OK||target!=web||ticket!=generation||!GatewayURL.sameOrigin(target.getUrl(),pageOrigin)){CameraProvider.discard(this,captured);callback.onReceiveValue(null);return;}
   LinkedHashSet<Uri> selected=new LinkedHashSet<>();
-  if(data!=null){ClipData clips=data.getClipData();if(clips!=null)for(int i=0;i<clips.getItemCount();i++){Uri uri=clips.getItemAt(i).getUri();if(uri!=null)selected.add(uri);}if(data.getData()!=null)selected.add(data.getData());}
+  if(captured!=null)selected.add(captured);
+  else if(data!=null){ClipData clips=data.getClipData();if(clips!=null)for(int i=0;i<clips.getItemCount();i++){Uri uri=clips.getItemAt(i).getUri();if(uri!=null)selected.add(uri);}if(data.getData()!=null)selected.add(data.getData());}
   if(selected.isEmpty()){callback.onReceiveValue(null);message(L("未收到所选文件，请重新选择。"));return;}
   worker.execute(()->{
    boolean readable=true;
-   try{for(Uri uri:selected){if(!"content".equals(uri.getScheme()))throw new java.io.IOException();android.content.pm.ProviderInfo provider=getPackageManager().resolveContentProvider(uri.getAuthority(),0);if(provider==null||provider.applicationInfo.uid==android.os.Process.myUid())throw new java.io.IOException();try(android.content.res.AssetFileDescriptor descriptor=getContentResolver().openAssetFileDescriptor(uri,"r")){if(descriptor==null)throw new java.io.IOException();}}}catch(Exception e){readable=false;}
+   try{for(Uri uri:selected){if(!"content".equals(uri.getScheme()))throw new java.io.IOException();android.content.pm.ProviderInfo provider=getPackageManager().resolveContentProvider(uri.getAuthority(),0);if(provider==null||(provider.applicationInfo.uid==android.os.Process.myUid()&&!uri.equals(captured)))throw new java.io.IOException();try(android.content.res.AssetFileDescriptor descriptor=getContentResolver().openAssetFileDescriptor(uri,"r")){if(descriptor==null||uri.equals(captured)&&descriptor.getLength()==0)throw new java.io.IOException();}}}catch(Exception e){readable=false;}
    final boolean accepted=readable;
-   runOnUiThread(()->{if(target!=web||ticket!=generation){callback.onReceiveValue(null);return;}callback.onReceiveValue(accepted?selected.toArray(new Uri[0]):null);if(!accepted)message(L("无法读取所选文件，请从系统文件选择器重新选择。"));});
+   runOnUiThread(()->{if(target!=web||ticket!=generation||!GatewayURL.sameOrigin(target.getUrl(),pageOrigin)){CameraProvider.discard(this,captured);callback.onReceiveValue(null);return;}if(!accepted)CameraProvider.discard(this,captured);callback.onReceiveValue(accepted?selected.toArray(new Uri[0]):null);if(!accepted)message(L("无法读取所选文件，请从系统文件选择器重新选择。"));});
   });
  }
  @Override protected void onActivityResult(int code,int result,Intent data){super.onActivityResult(code,result,data);if(code==32){saveDownload(result,data);return;}if(code==20&&result==RESULT_OK&&data!=null)choose(data.getStringExtra("code"));if(code==31)selectedFiles(result,data);}

@@ -29,9 +29,9 @@ test('temporarily missing turn history does not resurrect a read completion',()=
 function fixture(){
  let count=0,thumbCalls=[],upload=async(key,id,file)=>({id,name:file.name,size:file.size,image:null});
  const calls=[],saved=storage(),events=new Map();
- const node=tag=>({tag,children:[],dataset:{},append(...values){this.children.push(...values);},replaceChildren(){this.children=[];},setAttribute(){},addEventListener(type,handler){(events.get(type)||events.set(type,new Set()).get(type)).add(handler);}});
+ const node=tag=>({tag,children:[],dataset:{},append(...values){this.children.push(...values);},replaceChildren(){this.children=[];},setAttribute(key,value){this[key]=value;},after(...parts){this.next=parts;},click(){this.clicked=true;},addEventListener(type,handler){(events.get(type)||events.set(type,new Set()).get(type)).add(handler);}});
  const root=node('div'),button=node('button'),input=node('input'),paste=node('textarea'),drop=node('form');
- const ctx=vm.createContext({document:{createElement:node},sessionStorage:saved,root,button,input,paste,drop,uuid:()=>String(++count),BridgeI18n:{t:v=>v},preview:(key,id)=>key+'/preview/'+id,thumbnail:async(key,id,f)=>{thumbCalls.push([key,id,f.name]);return {id,thumb:'image/webp',thumbWidth:6,thumbHeight:6};},upload:(...args)=>{calls.push(args);return upload(...args);}});
+ const ctx=vm.createContext({window:{},document:{createElement:node},sessionStorage:saved,root,button,input,paste,drop,uuid:()=>String(++count),BridgeI18n:{t:v=>v},preview:(key,id)=>key+'/preview/'+id,thumbnail:async(key,id,f)=>{thumbCalls.push([key,id,f.name]);return {id,thumb:'image/webp',thumbWidth:6,thumbHeight:6};},upload:(...args)=>{calls.push(args);return upload(...args);}});
  vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/features/chat/attachments.js'),'utf8'),ctx);
  const panel=vm.runInContext('new ChatAttachments({root,button,input,upload,paste,drop,preview,thumbnail})',ctx);panel.open('local|one');
  return {panel,calls,saved,root,button,input,events,thumbCalls,setUpload:f=>upload=f};
@@ -105,4 +105,20 @@ test('large host references do not consume upload bytes; upload capability does 
  ui.panel.add([file('blocked.png')]);assert.equal(ui.calls.length,0);
  ui.panel.canUpload=()=>true;ui.panel.add([file('photo.png')]);await tick();
  assert.equal(ui.calls.length,1);assert.equal(ui.panel.references().length,1);assert.equal(ui.panel.ids().length,1);
+});
+
+
+test('camera and photo controls stay distinct and a late native choice cannot attach to another chat',async()=>{
+ const ui=fixture();ui.panel.pick('camera');const camera=ui.input.next[0];
+ assert.equal(camera.accept,'image/*');assert.equal(camera.capture,'environment');assert.equal(camera.multiple,false);
+ ui.panel.pick('photos');const photos=ui.input.next[0];
+ assert.notEqual(camera,photos);assert.equal(photos.accept,'image/*');assert.equal(photos.multiple,true);assert.equal(photos.capture,undefined);
+ ui.panel.open('remote|other');camera.files=[file('late.jpg')];camera.onchange();assert.equal(ui.calls.length,0);
+ ui.panel.open('local|one');ui.panel.pick('photos');photos.files=[];photos.onchange();assert.equal(ui.panel.rows.length,0);
+ ui.panel.pick('photos');photos.files=[file('chosen.jpg')];photos.onchange();await tick();assert.equal(ui.calls.length,1);assert.equal(ui.calls[0][0],'local|one');
+});
+
+test('native file returns respect the original scope and a send lock',()=>{
+ const ui=fixture();ui.panel.pick('files');ui.panel.open('local|other');ui.input.files=[file('late.txt')];ui.input.onchange();assert.equal(ui.calls.length,0);
+ ui.panel.pick('photos');const photos=ui.input.next[0];ui.panel.setLocked(true);photos.files=[file('locked.jpg')];photos.onchange();assert.equal(ui.calls.length,0);
 });

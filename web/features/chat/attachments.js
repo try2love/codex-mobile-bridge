@@ -27,9 +27,18 @@ function renderChatAttachments(node,items,{url,fileUrl,showToolImages=true}={}){
   attachments.append(label);node.append(attachments);
 }
 class ChatAttachments {
-  constructor({root,button,input,upload,onChange,preview,paste,drop,thumbnail,chooseReference,canUpload=()=>true}){
-    Object.assign(this,{root,button,input,upload,onChange,preview,thumbnail,canUpload});this.key=null;this.rows=[];this.drafts=new Map();this.locked=false;
-    button.onclick=()=>{if(!this.key||this.locked)return;const key=this.key,valid=action=>(...args)=>{if(this.key===key&&!this.locked)action(...args);};if(chooseReference&&window.BridgeFileActions)window.BridgeFileActions.attach(button,this.canUpload()?valid(source=>{if(source&&window.BridgeUploadSource&&!window.BridgeUploadSource(source,input.accept))return;input.click();}):null,valid(chooseReference));else input.click();};input.onchange=()=>{this.add([...input.files]);input.value='';};
+  constructor({root,button,input,upload,onChange,preview,paste,drop,thumbnail,chooseReference,canUpload=()=>true,canReference=()=>true}){
+    Object.assign(this,{root,button,input,upload,onChange,preview,thumbnail,canUpload,canReference});this.key=null;this.rows=[];this.drafts=new Map();this.locked=false;
+    button.onclick=()=>{
+      if(!this.key||this.locked)return;
+      const key=this.key,valid=action=>(...args)=>{if(this.key===key&&!this.locked)action(...args);};
+      if(chooseReference&&window.BridgeFileActions)window.BridgeFileActions.attach(button,
+        this.canUpload()?valid(source=>this.pick(source)):null,
+        this.canReference()?valid(chooseReference):null,
+        (this.actions?.()||[]).map(action=>({...action,run:valid(action.run)})));
+      else this.pick('files');
+    };
+    input.onchange=()=>{if(this.pickerKey===undefined||this.pickerKey===this.key)this.add([...input.files]);input.value='';delete this.pickerKey;};
     paste?.addEventListener('paste',event=>{
       const files=[...event.clipboardData?.files||[]];
       if(files.length){event.preventDefault();this.add(files);}
@@ -40,6 +49,21 @@ class ChatAttachments {
       const files=[...event.dataTransfer?.files||[]];
       if(files.length)this.add(files);
     });
+  }
+  pick(source){
+    const key=this.key;if(!key||this.locked||!this.canUpload())return;
+    let picker=this.input;
+    if(source==='photos'||source==='camera'){
+      this.pickers??={};picker=this.pickers[source];
+      if(!picker){
+        picker=document.createElement('input');picker.type='file';picker.accept='image/*';picker.hidden=true;picker.multiple=source==='photos';
+        if(source==='camera')picker.setAttribute('capture','environment');
+        this.input.after(picker);this.pickers[source]=picker;
+      }
+      picker.onchange=()=>{if(this.key===key&&!this.locked)this.add([...picker.files]);picker.value='';};
+    }else this.pickerKey=key;
+    if(window.BridgeUploadSource&&!window.BridgeUploadSource(source,picker.accept))return;
+    picker.click();
   }
   open(key){this.key=key;this.error='';if(!this.drafts.has(key)){let saved=[];try{saved=JSON.parse(sessionStorage.getItem('attachments:'+key)||'[]');}catch{}this.drafts.set(key,saved.map(row=>({...row,status:'ready'})));}this.rows=this.drafts.get(key);this.render();}
   save(key,rows){try{sessionStorage.setItem('attachments:'+key,JSON.stringify(rows.filter(r=>r.status==='ready').map(({id,name,size,image,thumb,thumbWidth,thumbHeight,reference,kind})=>({id,name,size,image,thumb,thumbWidth,thumbHeight,reference,kind}))));}catch{}}

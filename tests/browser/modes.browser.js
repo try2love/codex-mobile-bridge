@@ -65,7 +65,7 @@ async function runModeTests(){
     check($('send-mode').value==='auto'&&$('send-mode').options[0].textContent==='默认'&&$('send-mode').options[1].textContent==='引导','Mode selectors use compact centered labels');
     renderState({...meta,status:'active'});$('message').value='Queue fixture';
     await $('composer').onsubmit({preventDefault(){}});
-    check(writes.at(-1).body.mode==='queue'&&writes.at(-1).body.workMode==='default','Default mode queues when a task is active');
+    check(writes.at(-1).body.mode==='queue'&&!('workMode' in writes.at(-1).body),'Queued messages do not carry an immediate-send work mode');
     check(writes.at(-1).body.uiLocale==='en-US','Queued messages retain the active UI locale');
     renderState({...meta,status:'idle'});$('message').value='Send fixture';
     await $('composer').onsubmit({preventDefault(){}});

@@ -19,7 +19,7 @@ async function fixture({sessionStore=new Map(),localStore=new Map(),skipStartup=
   let nextPost,nextGet;
   const response=(data,status=200)=>({ok:status===200,status,json:async()=>data});
   let listResponse=()=>response({sessions:[],unavailableHosts:[]}),knownRows=[];
-  const context=vm.createContext({CliConnectionsPanel:class{},SessionMenu:class{bind(){}close(){}},ClientNavigation:class{constructor(){this.provider="codex";this.clients=[];}async refresh(){}acknowledgeList(provider,value){acknowledgements.push({provider,value});}},DesktopSessionsView:class{bindListCache(){}previewCachedList(){return false;}clear(){}},Workbench:class{constructor(){this.current={};}open(){}reset(){}setThumbnails(){}relabel(){}},navigator:{userAgent:'test'},document:{addEventListener(){},documentElement:{classList:{contains(){return false;}}},getElementById:id=>nodes.get(id),querySelector:selector=>selector==='.archive-filter'?archiveFilter:{disabled:false},querySelectorAll:selector=>selector==='[data-notification-channel]'?channelButtons:[],createElement:node},
+  const context=vm.createContext({CompactComposer:class{render(){}},CliConnectionsPanel:class{},SessionMenu:class{bind(){}close(){}},ClientNavigation:class{constructor(){this.provider="codex";this.clients=[];}async refresh(){}acknowledgeList(provider,value){acknowledgements.push({provider,value});}},DesktopSessionsView:class{bindListCache(){}previewCachedList(){return false;}clear(){}},Workbench:class{constructor(){this.current={};}open(){}reset(){}setThumbnails(){}relabel(){}},navigator:{userAgent:'test'},document:{addEventListener(){},documentElement:{classList:{contains(){return false;}}},getElementById:id=>nodes.get(id),querySelector:selector=>selector==='.archive-filter'?archiveFilter:{disabled:false},querySelectorAll:selector=>selector==='[data-notification-channel]'?channelButtons:[],createElement:node},
     renderMarkdown(){},window:{addEventListener(){}},localStorage,sessionStorage:scopedStorage,
     location:{hash:'',pathname:'/',search:''},history:{state:null,replaceState(state){this.state=state;},pushState(state){this.state=state;},back(){}},confirm:()=>true,setTimeout(){},clearTimeout(){},setInterval(){},
     ChatTimeline:class{constructor(){this.abort=new AbortController();}async start(){}dispose(){this.abort.abort();}relabel(){}refreshActions(){}},
@@ -80,7 +80,9 @@ async function fixture({sessionStore=new Map(),localStore=new Map(),skipStartup=
 test('homepage retains the v1.3 archive checkbox and complete mode labels',async()=>{
   const ui=await fixture();
   assert.match(ui.html, /id="archived" type="checkbox"/);
-  for(const text of ['最近交互','按项目','发送新消息','完成后发送','补充当前任务','普通模式','计划模式','目标模式'])assert.ok(ui.html.includes(text));
+  assert.match(ui.html, /type="hidden" id="send-mode"/);
+  assert.doesNotMatch(ui.html, /id="composer-toggle"/);
+  for(const text of ['最近交互','按项目','普通模式','计划模式','目标模式'])assert.ok(ui.html.includes(text));
 });
 
 test('request and completion choices are independent and persist',async()=>{

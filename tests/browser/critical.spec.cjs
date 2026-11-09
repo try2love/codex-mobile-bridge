@@ -669,7 +669,7 @@ test('native saved and connected composer keeps production control geometry and 
     view.setClientStates([{id:'zcode',enabled:true,connected:true,historyAvailable:true}]);await view.choose('zcode');await view.open(session.id);clearTimeout(view.timer);
     view.input.value='保留这份尚未发送的草稿';view.attachments.rows.push({id:'fixture-upload',name:'notes.txt',size:20,status:'ready'});view.attachments.render();view.messages.scrollTop=120;view.rememberReading();
     await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
-    const items=[view.modelButton,view.reminderButton,view.skillsButton,view.permissionsButton,view.contextButton,view.composerToggle,view.attachButton,view.mode,view.workMode,view.send];
+    const items=[view.permissionsButton,view.modelButton,view.contextButton,view.attachButton,view.send];
     const measure=()=>items.map(node=>{const b=node.getBoundingClientRect();return {left:b.left,top:b.top,width:b.width,height:b.height,hidden:node.hidden};});
     globalThis.__composerLayout={root,view,live,measure,first:view.messageList.firstElementChild,scroll:view.messages.scrollTop};
     return {rects:measure(),disabled:[view.modelButton,view.skillsButton,view.permissionsButton,view.workMode,view.send].every(n=>n.disabled),text:view.modelName.textContent,modelLabelWidth:view.modelName.clientWidth,scroll:view.messages.scrollTop};

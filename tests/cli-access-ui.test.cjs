@@ -7,7 +7,7 @@ const accessCode=extract('function sessionAccess(access){','function renderList(
 const sourceFilterCode=extract('function renderSourceFilter(){','function sessionAccess(access){');
 const capabilitiesCode=extract('function applyEntryCapabilities(view){','function renderState(view){');
 const listCode=extract('function renderList(){','async function loadList(');
-const stateCode=extract('function renderState(view){',"$('send-mode').onchange");
+const stateCode=extract('function renderState(view){','function jsonPretty(value)');
 const reconnectCode=extract("$('reconnect').onclick=", "document.querySelectorAll('[data-close]')");
 const permissionCode=extract("$('permissions-button').onclick=",'const fileTransferSettings=');
 const newChatTypeCode=extract("let newChatRequest=0,", "$('new-chat-project').onchange=");
@@ -31,7 +31,7 @@ test('CLI creation picker offers existing and custom folders with an accurate ac
 function node(){return {dataset:{},setAttribute(){},addEventListener(){},hidden:false,disabled:false,value:'',textContent:'',title:'',children:[],scrollTop:0,classList:{toggle(){}},append(...parts){this.children.push(...parts);},replaceChildren(...parts){this.children=parts;},querySelector(){return node();}};}
 function fixture(){
   const nodes=new Map();const $=id=>{if(!nodes.has(id))nodes.set(id,node());return nodes.get(id);};
-  const ctx={CliConnectionsPanel:class{},api:async()=>{},contextCompacting:new Set(),uuid:()=>"fixture-id",toast(){},window:{},SessionMenu:class{bind(){}},pinRow:row=>row,$ ,state:null,reconnectFailure:null,listRows:[],availableSources:[],listRenderStamp:'',listComplete:false,listReadFinished:false,listHasMore:false,currentId:'a',currentHost:'local',sending:false,catalogStarted:false,catalogLoads:0,startCatalog(){ctx.catalogLoads++;},selectedSkills:new Set(),invalidSkills:new Set(),renderSkillPills(){},BridgeI18n:{locale:()=> 'en-US'},t:key=>({'此电脑':'This computer','其他来源':'Other source','历史记录':'History','重新连接':'Reconnect','继续会话':'Continue chat'}[key]||key),localStorage:{getItem:()=>null,setItem(){}},dateText:()=> 'today',el:(tag,cls='',value='')=>Object.assign(node(),{tag,cls,textContent:value,dataset:{}}),renderActivity(){},contextUsageControl:{update(){}},fastModeControl:{sync(){}},visibleChat:()=>false,sessionActivity:{read(){}},attachments:{ready:()=>true},workModes:{render(view){ctx.modesView=view;}},workbench:{current:{},setAttachedParent(){}},chatTimeline:{refreshActions(){}},renderApprovals(rows){ctx.approvals=rows;},renderQueue(){},approvalStamp:'',chatKey:()=> 'local|a'};
+  const ctx={compactComposer:{render(){}},CliConnectionsPanel:class{},api:async()=>{},contextCompacting:new Set(),uuid:()=>"fixture-id",toast(){},window:{},SessionMenu:class{bind(){}},pinRow:row=>row,$ ,state:null,reconnectFailure:null,listRows:[],availableSources:[],listRenderStamp:'',listComplete:false,listReadFinished:false,listHasMore:false,currentId:'a',currentHost:'local',sending:false,catalogStarted:false,catalogLoads:0,startCatalog(){ctx.catalogLoads++;},selectedSkills:new Set(),invalidSkills:new Set(),renderSkillPills(){},BridgeI18n:{locale:()=> 'en-US'},t:key=>({'此电脑':'This computer','其他来源':'Other source','历史记录':'History','重新连接':'Reconnect','继续会话':'Continue chat'}[key]||key),localStorage:{getItem:()=>null,setItem(){}},dateText:()=> 'today',el:(tag,cls='',value='')=>Object.assign(node(),{tag,cls,textContent:value,dataset:{}}),renderActivity(){},contextUsageControl:{update(){}},fastModeControl:{sync(){}},visibleChat:()=>false,sessionActivity:{read(){}},attachments:{ready:()=>true},workModes:{render(view){ctx.modesView=view;}},workbench:{current:{},setAttachedParent(){}},chatTimeline:{refreshActions(){}},renderApprovals(rows){ctx.approvals=rows;},renderQueue(){},approvalStamp:'',chatKey:()=> 'local|a'};
   ctx.chatOpenGeneration=0;ctx.modelCatalogGeneration=0;ctx.setTimeout=fn=>fn();ctx.chatTimeline.abort={signal:{aborted:false}};
   ctx.document={createElement:()=>node(),querySelectorAll:()=>[]};ctx.BridgeI18n.language=()=> 'en-US';ctx.BridgeI18n.t=ctx.t;
   vm.createContext(ctx);vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/features/chat/activity.js'),'utf8'),ctx);
@@ -171,9 +171,9 @@ test('WSL source badges remain distinct from CLI and APP without changing access
 test('switching from a restricted WSL chat restores APP controls and queue availability',()=>{
   const {ctx,$}=fixture(),queue=node(),steer=node();$('send-mode').querySelector=selector=>selector==='[value=queue]'?queue:steer;ctx.workModes.selection='default';
   ctx.renderState({host:'wsl:fixture',endpointId:'wsl:fixture',access:{...cli,runtime:'wsl'},capabilities:{permissions:false,skills:false,notifications:false,queue:false,plan:false},connected:false,status:'idle',requests:[],submissions:[],historyComplete:true});
-  assert.equal($('skills-button').hidden,true);assert.equal($('permissions-button').hidden,true);assert.equal($('notify-button').hidden,true);assert.equal($('work-mode').hidden,true);assert.equal(queue.disabled,true);
+  assert.equal($('skills-button').hidden,true);assert.equal($('permissions-button').hidden,true);assert.equal($('notify-button').hidden,true);assert.equal($('work-mode').hidden,true);assert.equal($('send-mode').value,'send');
   ctx.renderState({host:'local',access:{source:'desktop'},connected:true,status:'idle',requests:[],submissions:[],historyComplete:true});
-  assert.equal($('skills-button').hidden,false);assert.equal($('permissions-button').hidden,false);assert.equal($('notify-button').hidden,false);assert.equal($('work-mode').hidden,false);assert.equal(queue.disabled,false);
+  assert.equal($('skills-button').hidden,false);assert.equal($('permissions-button').hidden,false);assert.equal($('notify-button').hidden,false);assert.equal($('work-mode').hidden,false);assert.equal($('send-mode').value,'send');
 });
 
 test('desktop router failure offers explicit rebuild and keeps failure plus draft visible',async()=>{
