@@ -87,7 +87,7 @@ for(const [provider,runtime] of [['codex','desktop'],['codex','cli'],['claude','
   const ui=fixture(),chat={...ui.row('provider-session',1),runtime,capabilities:{fork:true,archive:true,unarchive:true}};
   let notified=0;
   if(provider==='codex'){
-   ui.context.currentId=chat.id;ui.$('notify-button').onclick=()=>{notified++;};
+   ui.context.currentId=chat.id;ui.context.openChatNotifications=()=>{notified++;};
   }else{
    ui.context.desktopSessions={provider,sid:chat.id,state:null,notifications:()=>{notified++;}};
   }

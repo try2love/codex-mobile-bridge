@@ -1498,8 +1498,8 @@ test('saved composer presentation keeps native controls stable without granting 
  view.provider='zcode';view.setClientStates([{id:'zcode',enabled:true,connected:true,historyAvailable:true}]);
  const session={id:sid,title:'Native',cwd:'/project',model:'account:zai-start-plan/GLM-5.3-Flash$low',modelDisplayName:'GLM-5.3-Flash',effort:'low',composerCapabilities:presentation};
  view.rows=[session];view.prepareChat(sid);
- const controls=[view.modelButton,view.reminderButton,view.skillsButton,view.permissionsButton,view.attachButton,view.workMode];
- assert.deepEqual(controls.map(button=>button.hidden),[false,false,false,false,false,false]);assert.equal(view.modelName.textContent,'GLM-5.3-Flash');
+ const controls=[view.modelButton,view.skillsButton,view.permissionsButton,view.attachButton,view.workMode];
+ assert.deepEqual(controls.map(button=>button.hidden),[false,false,false,false,false]);assert.equal(view.modelName.textContent,'GLM-5.3-Flash');
  const saved={session:{...session,status:'unknown',connectionState:'detached',readOnly:true},readOnly:true,capabilities:{send:false,resume:true,stop:false,plan:false,goal:false},messages:[{id:'saved',role:'assistant',text:'Saved reply'}]};
  view.workModes.selection='plan';view.applyDetail(saved);
  assert.equal(view.workMode.value,'plan');assert.equal(view.workMode.disabled,true);assert.equal(view.send.disabled,true);
@@ -1507,9 +1507,9 @@ test('saved composer presentation keeps native controls stable without granting 
  const calls=ui.calls.length;await view.models();await view.skills();await view.permissions();assert.equal(ui.calls.length,calls);
  view.input.value='Keep draft';view.attachments.rows.push({id:'saved-upload',status:'ready',name:'file.png'});view.messages.scrollTop=42;view.reading={following:false,top:42};const before=view.messageList.children[0];
  const live={session:{...session,status:'idle',connectionState:'ready',permissionMode:'build',permissionLabel:'变更前确认'},capabilities:{send:true,models:true,skills:true,permissions:true,attachments:true,plan:true,goal:true},messages:saved.messages};
- view.applyDetail(live);assert.deepEqual(controls.map(button=>button.hidden),[false,false,false,false,false,false]);assert.equal(view.workMode.value,'plan');assert.equal(view.workMode.disabled,false);assert.equal(view.skillsButton.disabled,false);assert.equal(view.modelButton.disabled,false);
+ view.applyDetail(live);assert.deepEqual(controls.map(button=>button.hidden),[false,false,false,false,false]);assert.equal(view.workMode.value,'plan');assert.equal(view.workMode.disabled,false);assert.equal(view.skillsButton.disabled,false);assert.equal(view.modelButton.disabled,false);
  assert.equal(view.input.value,'Keep draft');assert.equal(view.attachments.rows[0].id,'saved-upload');assert.equal(view.messages.scrollTop,42);assert.equal(view.messageList.children[0],before);
- view.applyDetail(saved);assert.deepEqual(controls.map(button=>button.hidden),[false,false,false,false,false,false]);assert.equal(view.send.disabled,true);assert.equal(view.workMode.value,'plan');assert.equal(view.input.value,'Keep draft');assert.equal(view.attachments.rows[0].id,'saved-upload');
+ view.applyDetail(saved);assert.deepEqual(controls.map(button=>button.hidden),[false,false,false,false,false]);assert.equal(view.send.disabled,true);assert.equal(view.workMode.value,'plan');assert.equal(view.input.value,'Keep draft');assert.equal(view.attachments.rows[0].id,'saved-upload');
 });
 
 

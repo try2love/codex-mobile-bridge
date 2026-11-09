@@ -702,7 +702,7 @@ class Notifications:
 
     def policies(self):
         return read_json(self.data_dir/'notification-policies.json',
-                         {'requests': True, 'completion': False, 'chats': {}})
+                         {'requests': True, 'completion': True, 'chats': {}})
 
     def defaults(self, value=None):
         with self.lock:

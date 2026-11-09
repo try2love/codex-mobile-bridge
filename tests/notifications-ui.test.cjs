@@ -74,7 +74,7 @@ async function fixture({sessionStore=new Map(),localStore=new Map(),skipStartup=
       await run(`openChat(${JSON.stringify(id)},${JSON.stringify(host)})`);await new Promise(setImmediate);
     },
     save:()=>nodes.get('notify-form').onsubmit({preventDefault(){}}),
-    settings:()=>nodes.get('notify-button').onclick()};
+    settings:()=>vm.runInContext('openChatNotifications()',context)};
 }
 
 test('homepage retains the v1.3 archive checkbox and complete mode labels',async()=>{
@@ -117,7 +117,6 @@ test('failed saves keep the dialog and draft choice for retry',async()=>{
   assert.equal(ui.nodes.get('notify-error').textContent,'Cannot save');
   assert.equal(ui.nodes.get('notify-save').disabled,false);
   assert.equal(ui.nodes.get('notify-completion').value,'on');
-  assert.equal(ui.nodes.get('notify-button').textContent,'提醒');
   await ui.save();assert.equal(ui.nodes.get('notify-dialog').open,false);
 });
 
@@ -130,7 +129,6 @@ test('late save responses cannot change or close another chat notification dialo
   finish(ui.response({available:true,watching:true,notifyOnCompletion:true}));await saving;
   assert.equal(ui.nodes.get('notify-dialog').open,true);
   assert.equal(ui.nodes.get('notify-enabled').value,'inherit');
-  assert.equal(ui.nodes.get('notify-button').textContent,'提醒');
 });
 
 test('notification controls have English translations and language changes preserve choices',async()=>{
