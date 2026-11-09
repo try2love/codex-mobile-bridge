@@ -174,6 +174,27 @@ test('desktop ZCode access switch stays separate from private-pipe initializatio
  await ui.panel.retryOperation('zcode');assert.equal(writes().at(-1).initializeDesktop,true);assert.equal(writes().at(-1).provider,'zcode');
 });
 
+test('failed ZCode enable keeps initialization reachable and retry requests consent',async()=>{
+ for(const uncertain of [false,true]){
+  const ui=fixture(),client={id:'zcode',name:'ZCode',configured:true,installed:true,enabled:true,canInitializeDesktop:true,pipeSupported:true,connectionMode:'private-pipe',setupStatus:'needs-initialization'};
+  ui.panel.clients=[client];ui.panel.operationFailures=new Map([['zcode',{action:'enable',uncertain,message:'Initialize local connection first',connectionMode:'private-pipe'}]]);
+  ui.setHandler(async()=>({clients:[client]}));ui.panel.renderClients();
+  const initialize=ui.all().find(node=>node.tag==='button'&&node.textContent==='初始化连接');
+  assert.equal(!!initialize,!uncertain);
+  if(uncertain){await ui.panel.retryOperation('zcode');assert.equal(ui.initializations.length,0);assert.equal(ui.calls.length,0);continue;}
+  ui.setInitializeChoice(false);await ui.panel.retryOperation('zcode');assert.deepEqual(ui.initializations,['zcode']);assert.equal(ui.calls.length,0);
+  ui.setInitializeChoice({connectionMode:'private-pipe'});await initialize.onclick();
+  const writes=ui.calls.filter(call=>call.action==='toggle-client');assert.equal(writes.length,1);assert.equal(writes[0].initializeDesktop,true);assert.equal(writes[0].connectionMode,'private-pipe');
+ }
+});
+
+test('retrying an official ZCode connection preserves its transport without local initialization',async()=>{
+ const ui=fixture(),client={id:'zcode',name:'ZCode',configured:true,installed:true,enabled:true,canInitializeDesktop:true,pipeSupported:true,connectionMode:'private-pipe'};
+ ui.panel.clients=[client];ui.panel.operationFailures=new Map([['zcode',{action:'enable',uncertain:false,connectionMode:'official-remote'}]]);
+ ui.setHandler(async()=>({clients:[client]}));await ui.panel.retryOperation('zcode');
+ const writes=ui.calls.filter(call=>call.action==='toggle-client');assert.equal(writes.length,1);assert.equal(writes[0].connectionMode,'official-remote');assert.equal(writes[0].initializeDesktop,undefined);assert.equal(ui.initializations.length,0);
+});
+
 test('desktop enabling and retrying Claude never submit initialization intent',async()=>{
   const ui=fixture(),client={id:'claude',name:'Claude',enabled:false,installed:true,configured:true,initializationMode:'foreground',setupStatus:'needs-initialization',connected:false};ui.panel.clients=[client];
   ui.setHandler(async()=>({clients:[{...client,enabled:true}]}));await ui.panel.toggleClient('claude',true);
