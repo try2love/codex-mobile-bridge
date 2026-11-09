@@ -120,6 +120,16 @@ test('checking never installs and installation only receives verified bytes',asy
   const f=await fixture(t);assert.equal((await f.updater.check()).state,'available');assert.equal(f.installed(),0);
   assert.equal((await f.updater.install()).state,'restarting');assert.equal(f.installed(),1);assert.deepEqual(await fs.readdir(f.directory),[]);
 });
+test('a live local holder blocks installation before package download and permits retry after exit',async t=>{
+  const f=await fixture(t);await f.updater.check();
+  f.updater.preflight=async()=>{throw Error('请先结束任务并正常退出 ZCode，再更新网关。');};
+  const requests=f.requests.length;
+  assert.equal((await f.updater.install()).state,'error');
+  assert.equal(f.requests.length,requests);assert.equal(f.installed(),0);
+  assert.deepEqual(await fs.readdir(f.directory),[]);
+  f.updater.preflight=async()=>{};
+  assert.equal((await f.updater.install()).state,'restarting');assert.equal(f.installed(),1);
+});
 test('skipping an exact signed release survives restart while manual checks and newer releases remain available',async t=>{
   const f=await fixture(t),skipFile=path.join(f.directory,'skipped-update.json');f.updater.skipFile=skipFile;
   assert.equal((await f.updater.check()).state,'available');assert.equal((await f.updater.skip()).state,'skipped');

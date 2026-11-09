@@ -97,6 +97,27 @@ class ArchiveTests(unittest.TestCase):
         self.assertTrue((dest / 'Executable').stat().st_mode & stat.S_IXUSR)
 
 
+class PreparePreflightTests(unittest.TestCase):
+    def test_active_holder_blocks_before_archive_read_or_transaction_creation(self):
+        root = Path(__file__).resolve().parents[1]/'.tmp'
+        root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=root) as directory:
+            base = Path(directory).resolve()
+            target, data = base/'app', base/'data'
+            target.mkdir(); data.mkdir()
+            with patch.object(updater.sys, 'platform', 'win32'):
+                app, worker, _ = updater.locations(target)
+                worker.parent.mkdir(parents=True)
+                app.touch(); worker.touch()
+                with patch.object(updater, 'preflight', side_effect=ValueError('正常退出 ZCode')) as check, \
+                        patch.object(updater.hashlib, 'sha256') as digest:
+                    with self.assertRaisesRegex(ValueError, '正常退出 ZCode'):
+                        updater.prepare(data, {'target': str(target), 'archive': 'unused'})
+                    check.assert_called_once_with(target)
+                    digest.assert_not_called()
+            self.assertEqual(list(base.glob('.cmb-update-*')), [])
+
+
 class TransactionTests(unittest.TestCase):
     def setUp(self):
         root = Path(__file__).resolve().parents[1] / '.tmp'
@@ -132,6 +153,22 @@ class TransactionTests(unittest.TestCase):
     def check_configs(self):
         for name in self.configs:
             self.assertEqual((self.data / name).read_text(), 'preserve exactly: ' + name)
+
+    def test_holder_appearing_before_apply_preserves_original_app_and_gateway(self):
+        with patch.object(updater, 'preflight', side_effect=ValueError('正常退出 ZCode')):
+            result = self.run_update()
+        self.assertEqual(result['state'], 'failed')
+        self.assertIn('正常退出 ZCode', result['message'])
+        self.assertNotIn('stop', self.calls)
+        self.assertEqual((self.target/'version').read_text(), 'old')
+
+    def test_holder_appearing_after_gateway_stop_is_rechecked_before_swap(self):
+        with patch.object(updater, 'preflight', side_effect=[{'ready': True}, ValueError('正常退出 ZCode')]):
+            result = self.run_update()
+        self.assertEqual(result['state'], 'failed')
+        self.assertIn('stop', self.calls)
+        self.assertEqual((self.target/'version').read_text(), 'old')
+        self.assertFalse(self.backup.exists())
 
     def start(self, target, data_dir, desktop):
         self.calls.append('start-' + (target / 'version').read_text())

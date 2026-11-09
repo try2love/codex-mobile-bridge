@@ -54,7 +54,7 @@ def main():
     sys.stdout.reconfigure(encoding='utf-8')
     sys.stdin.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser()
-    parser.add_argument('action', choices=['management-stream', 'tailscale-setup', 'read-credentials', 'server-setup', 'connection-credentials', 'snapshot-stream', 'snapshot', 'save', 'start', 'stop', 'logs', 'test-notification', 'webhook-endpoint', 'deployment', 'export-deployment', 'check-entry', 'devices', 'pairing', 'account', 'accounts', 'cli-access', 'harness', 'desktop-sessions', 'notification-watches', 'transfer-settings', 'network-adaptation', 'serve', 'update-prepare', 'update-apply'])
+    parser.add_argument('action', choices=['management-stream', 'tailscale-setup', 'read-credentials', 'server-setup', 'connection-credentials', 'snapshot-stream', 'snapshot', 'save', 'start', 'stop', 'logs', 'test-notification', 'webhook-endpoint', 'deployment', 'export-deployment', 'check-entry', 'devices', 'pairing', 'account', 'accounts', 'cli-access', 'harness', 'desktop-sessions', 'notification-watches', 'transfer-settings', 'network-adaptation', 'serve', 'update-preflight', 'update-prepare', 'update-apply'])
     parser.add_argument('--data-dir', required=True)
     parser.add_argument('--plan')
     parser.add_argument('--connection-secrets-stdin', action='store_true')
@@ -96,7 +96,10 @@ def main():
         run.main(connections=desktop.preferences()['connections'], connection_secrets=json.loads(sys.stdin.read(1000000) or '{}') if args.connection_secrets_stdin else {})
         return
     try:
-        if args.action == 'update-prepare':
+        if args.action == 'update-preflight':
+            from bridge.features.updates.gateway import preflight
+            result = preflight(json.loads(sys.stdin.read(100000) or '{}')['target'])
+        elif args.action == 'update-prepare':
             from bridge.features.updates.gateway import prepare
             result = prepare(args.data_dir, json.loads(sys.stdin.read(100000) or '{}'))
         elif args.action == 'update-apply':
