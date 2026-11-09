@@ -272,6 +272,17 @@ class RecentHistoryTests(unittest.TestCase):
     def tearDown(self):
         self.get.stop(); self.temp.cleanup()
 
+    def test_native_rollout_clock_is_kept_in_full_and_tail_history(self):
+        import json
+        for record in self.records:
+            record['timestamp'] = '2026-11-09T09:24:00Z'
+        self.path.write_text(''.join(json.dumps(r)+'\n' for r in self.records), encoding='utf-8')
+        for limit in (None, 1):
+            view = self.store.history('fixture', limit) if limit else self.store.history('fixture')
+            self.assertEqual(view['turns'][-1]['startedAt'], '2026-11-09T09:24:00Z')
+            self.assertEqual([row['timestamp'] for row in view['turns'][-1]['items']],
+                             ['2026-11-09T09:24:00Z'] * 2)
+
     def test_tail_matches_full_turns_across_unicode_and_chunk_boundaries(self):
         full = self.store.history('fixture')
         for limit in (1, 20, 70, 150):

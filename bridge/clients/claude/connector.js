@@ -263,6 +263,7 @@
             .map(key=>[key,source.usage[key]])):null;
         return {type:row.type||source.role,uuid:row.uuid,isSynthetic:row.isSynthetic === true,isMeta:row.isMeta === true,
           isSidechain:row.isSidechain === true,
+          ...(typeof row.timestamp==='string'||typeof row.timestamp==='number'?{timestamp:row.timestamp}:{}),
           ...(typeof row.parent_tool_use_id==='string'?{parent_tool_use_id:row.parent_tool_use_id}:{}),
           message:{id:source.id,role:source.role || row.type,content,
             ...(typeof source.model==='string'?{model:source.model}:{}),

@@ -1,4 +1,21 @@
 'use strict';
+// Native clocks are epoch milliseconds or ISO instants with an explicit zone.
+// Missing historical evidence stays missing; never substitute receipt/wall time.
+function chatMessageDate(value){
+  if(typeof value==='number'&&Number.isFinite(value)&&value>0)return new Date(value);
+  if(typeof value==='string'&&/^\d{4}-\d\d-\d\dT.*(?:Z|[+-]\d\d:\d\d)$/.test(value))return new Date(value);
+  return null;
+}
+function renderChatMessageTime(container,value,now=new Date()){
+  const date=chatMessageDate(value);if(!date||!Number.isFinite(date.getTime()))return;
+  const locale=typeof BridgeI18n==='undefined'?'zh-CN':BridgeI18n.locale();
+  const clock=[date.getHours(),date.getMinutes()].map(n=>String(n).padStart(2,'0')).join(':');
+  const sameYear=date.getFullYear()===now.getFullYear(),sameDay=sameYear&&date.getMonth()===now.getMonth()&&date.getDate()===now.getDate();
+  const prefix=sameDay?'':(/^zh/.test(locale)?`${sameYear?'':date.getFullYear()+'年'}${date.getMonth()+1}月${date.getDate()}日`:new Intl.DateTimeFormat(locale,{...(sameYear?{}:{year:'numeric'}),month:'numeric',day:'numeric'}).format(date))+' ';
+  const time=document.createElement('time');time.className='message-time';time.dateTime=date.toISOString();time.textContent=prefix+clock;
+  time.title=new Intl.DateTimeFormat(locale,{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23',timeZoneName:'short'}).format(date);
+  time.setAttribute('aria-label',time.title);container.append(time);
+}
 function chatFollowsLatest(viewport){
   return viewport.scrollHeight-viewport.scrollTop-viewport.clientHeight<110;
 }

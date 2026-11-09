@@ -98,6 +98,7 @@ def transcript(value):
         blocks = [{'type': 'text', 'text': content}] if isinstance(content, str) else content
         if not isinstance(blocks, list):
             continue
+        first_part = len(result)
         texts = []
         text_part = 0
         event_id=event.get('uuid') or message.get('id') or str(index)
@@ -168,6 +169,12 @@ def transcript(value):
                 summary=block.get('text') or block.get('summary')
                 if summary:result.append({'id':str(event_id)+':thinking:'+str(part),'role':'reasoning','kind':'reasoning','title':'思考摘要','text':str(summary)})
         flush()
+        # One native event can contain multiple text/image/tool blocks.
+        for row in result[first_part:]:
+            if row['role'] in ('user', 'assistant'):
+                if event.get('timestamp') is not None:
+                    row['timestamp'] = event['timestamp']
+                break
     for message in result:
         display_file_mentions(message)
     return result

@@ -293,9 +293,9 @@ class ZCodeSavedHistoryTests(unittest.TestCase):
         first = saved_detail(self.home, 'sess_ok', {'historyLimit': 1})
         self.assertFalse(first['session']['runtimeKnown'])
         self.assertFalse(first['capabilities']['send'])
-        self.assertEqual(first['messages'], [{'id': '2', 'role': 'assistant', 'text': 'assistant2'}])
+        self.assertEqual(first['messages'], [{'id': '2', 'role': 'assistant', 'text': 'assistant2', 'timestamp': 2}])
         older = saved_detail(self.home, 'sess_ok', {'historyBefore': first['history']['before']})
-        self.assertEqual(older['messages'], [{'id': '0', 'role': 'user', 'text': 'user0'}])
+        self.assertEqual(older['messages'], [{'id': '0', 'role': 'user', 'text': 'user0', 'timestamp': 0}])
         self.assertFalse(older['history']['hasMore'])
         for sid in ('sess_mismatch', 'sess_deleted', 'sess_remote'):
             with self.subTest(sid=sid), self.assertRaises(ValueError):

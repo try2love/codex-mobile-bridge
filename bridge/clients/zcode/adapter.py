@@ -53,6 +53,8 @@ def project_snapshot(snapshot, workspace, reply_models=None):
         message = {'id': 'zcode:%s:%s' % (snapshot['sessionId'], row['rowId']),
                    'role': {'userInput': 'user', 'assistantText': 'assistant', 'reasoning': 'reasoning',
                             'toolCall': 'activity'}[row['kind']], 'text': row.get('text', '')}
+        if row['kind'] in ('userInput', 'assistantText') and row.get('createdAt') is not None:
+            message['timestamp'] = row['createdAt']
         if row['kind'] == 'assistantText':
             if isinstance(row.get('model'), str) and row['model']:
                 message['model'] = row['model']

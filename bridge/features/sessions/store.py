@@ -720,7 +720,8 @@ class SessionStore:
                 continue
             payload = record.get("payload", {})
             if record.get("type") == "event_msg" and payload.get("type") == "task_started":
-                current = {"turnId": payload.get("turn_id"), "status": "inProgress", "items": []}
+                current = {"turnId": payload.get("turn_id"), "status": "inProgress", "items": [],
+                           "startedAt": record.get("timestamp")}
                 turns.append(current)
                 items = current["items"]
             elif record.get("type") == "event_msg" and payload.get("type") == "token_count":
@@ -760,11 +761,11 @@ class SessionStore:
                 if payload.get("type") == "message" and payload.get("role") in ("user", "assistant"):
                     role = payload["role"]
                     if role == "user":
-                        items.append({"id": str(len(items)), "type": "userMessage", "content": payload.get("content", [])})
+                        items.append({"id": str(len(items)), "type": "userMessage", "content": payload.get("content", []), "timestamp": record.get("timestamp")})
                     else:
-                        items.append({"id": str(len(items)), "type": "agentMessage", "text": "\n".join(x.get("text", "") for x in payload.get("content", []) if isinstance(x, dict)), "phase": payload.get("phase")})
+                        items.append({"id": str(len(items)), "type": "agentMessage", "text": "\n".join(x.get("text", "") for x in payload.get("content", []) if isinstance(x, dict)), "phase": payload.get("phase"), "timestamp": record.get("timestamp")})
                 elif payload.get("type") in ("agent_message", "agentMessage"):
-                    items.append({"id": payload.get("id", str(len(items))), "type": "agentMessage", "text": payload.get("text", "")})
+                    items.append({"id": payload.get("id", str(len(items))), "type": "agentMessage", "text": payload.get("text", ""), "timestamp": record.get("timestamp")})
                 elif payload.get("type") in ("function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output"):
                     items.append({"id": payload.get("call_id", str(len(items))), "type": "storedToolEvent", **payload})
         # Rollout parsing already visited these records. Retain the native patch

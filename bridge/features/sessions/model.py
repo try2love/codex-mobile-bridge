@@ -151,6 +151,8 @@ def user_display_text(text):
 def normalize_item(item, *, image_cache=None):
     kind = item.get("type", "unknown")
     row = {"id": item.get("id"), "kind": kind, "status": item.get("status")}
+    if item.get("timestamp") is not None:
+        row["timestamp"] = item["timestamp"]
     if kind in ("userMessage", "steeringUserMessage"):
         if kind == "steeringUserMessage":
             item = {**item, "content": item.get("input", [])}
@@ -338,7 +340,7 @@ def normalize_state(state, connected=True, *, image_cache=None, item_limit=None)
         model = params.get('model') or settings.get('model') or turn.get('model')
         effort = params.get('effort') or params.get('reasoningEffort') or settings.get('reasoning_effort') or turn.get('reasoningEffort')
         result.append({"model": model, "effort": effort, "id": turn.get("turnId") or str(ordinal), "status": turn.get("status"),
-                       "startedAt": turn.get("turnStartedAtMs"), "messages": messages,
+                       "startedAt": turn.get("turnStartedAtMs") or turn.get("startedAt"), "messages": messages,
                        "actionable": bool(turn.get("turnId")) and turn.get("turnId") != "history",
                        "error": turn.get("error"), "diff": turn.get("diff"),
                        # A partial turn cannot establish complete totals. Defer its footer

@@ -295,6 +295,8 @@ def messages(records):
         if kind in ('user/message', 'assistant/message'):
             message = data.get('message', data)
             metadata = {}
+            if event.get('time') is not None:
+                metadata['timestamp'] = event['time']
             source_kind = (message.get('source') or {}).get('kind')
             if kind == 'user/message' and isinstance(source_kind, str) and source_kind and source_kind != 'user':
                 metadata.update(role='activity', kind='context', title='上下文')
@@ -310,6 +312,7 @@ def messages(records):
             content = message.get('content', [])
             if isinstance(content, str):
                 content = [{'type': 'text', 'text': content}]
+            first_part = len(result)
             for i, block in enumerate(content):
                 if block.get('type') == 'image':
                     result.append({'id': str(event.get('seq'))+':'+str(i), 'role': kind.split('/')[0], 'text':'',
@@ -321,6 +324,12 @@ def messages(records):
                     result.append({'id': str(event.get('seq'))+':'+str(i), 'role': 'reasoning' if block.get('type') in ('thinking', 'reasoning') else kind.split('/')[0], 'text': text, **metadata})
                     if kind == 'assistant/message' and result[-1]['role'] == 'assistant':
                         final_assistant = result[-1]
+            visible = False
+            for row in result[first_part:]:
+                if row['role'] not in ('user', 'assistant') or visible:
+                    row.pop('timestamp', None)
+                else:
+                    visible = True
         elif kind in ('tool/call', 'tool/result', 'todo/write'):
             result.append({'id': str(event.get('seq')), 'role': 'activity', 'title': data.get('name') or data.get('toolName') or kind, 'text': json.dumps(data, ensure_ascii=False, indent=2)})
     for message in result:

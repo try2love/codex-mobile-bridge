@@ -241,7 +241,7 @@ class ChatTimeline {
     };
     more.onclick=load;content.append(body,more);paint();
     if(row.role==='user'||row.role==='assistant'){
-      const actions=document.createElement('div');actions.className='message-actions';
+      const actions=document.createElement('div');actions.className='message-actions';renderChatMessageTime(actions,row.timestamp);
       const copy=document.createElement('button');copy.type='button';copy.className='plain message-copy';copy.textContent=timelineText('复制');copy.onclick=()=>window.BridgeClipboard?.copy(()=>this.fullText(row),copy);actions.append(copy);node.append(actions);
       const quote=document.createElement('button');quote.type='button';quote.className='plain message-quote';quote.textContent=timelineText('引用');quote.onclick=()=>node.dispatchEvent(new CustomEvent('bridge-compose-quote',{bubbles:true,detail:{getText:()=>this.fullText(row),source:row.key}}));actions.append(quote);
     }

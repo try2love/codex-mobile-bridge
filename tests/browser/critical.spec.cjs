@@ -785,3 +785,11 @@ test('cached new-chat choices survive catalog verification', async ({page}) => {
   await expect(model).toHaveValue('');expect(await page.evaluate(()=>window.__creationCacheRace.picker.valid())).toBe(false);
   await page.evaluate(()=>{window.__creationCacheRace.picker.dispose();window.__creationCacheRace.root.remove();delete window.__creationCacheRace;});
 });
+
+test('native interaction clocks and notification entry fit all chat surfaces', async ({page}, testInfo) => {
+  await ready(page);
+  await page.evaluate(()=>BridgeFeatures.load('chat'));
+  await page.evaluate(readFileSync(path.join(__dirname,'chat-time.browser.js'),'utf8'));
+  expect(await page.evaluate(()=>runChatTimeChecks())).toEqual({providers:4});
+  await testInfo.attach('chat-time-checks',{body:JSON.stringify({providers:4}),contentType:'application/json'});
+});
