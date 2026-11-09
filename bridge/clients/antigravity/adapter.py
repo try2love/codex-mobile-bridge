@@ -179,10 +179,11 @@ class Antigravity:
 
     @staticmethod
     def _compose_prompt(body):
-        text = str((body or {}).get('text') or '').strip()
+        raw = body or {}
+        text = str(raw.get('text') or raw.get('firstMessage') or raw.get('prompt') or '').strip()
         files = []
         for key in ('resolvedReferences', 'resolvedImages', 'resolvedFiles'):
-            items = (body or {}).get(key)
+            items = raw.get(key)
             if isinstance(items, list):
                 for item in items:
                     if isinstance(item, dict) and isinstance(item.get('path'), str):
@@ -287,21 +288,25 @@ class Antigravity:
                     cwd = matched.get('cwd', '')
             if surface_key not in ('app', 'ide', 'cli'):
                 surface_key = 'app'
-            model = body.get('model')
-            effort = body.get('effort')
-            cid = self.cli.start_cascade()
+            model = body.get('model') or 'gemini-3.8-flash'
+            effort = body.get('effort') or 'high'
+            cid = self.cli.start_cascade(source='CORTEX_TRAJECTORY_SOURCE_CASCADE_CLIENT', model=model, effort=effort)
             if not cid:
                 raise BridgeUnavailable('Antigravity Language Server 未返回新會話 ID')
-            self.cli.send_user_message(cid, prompt)
-            if model or effort:
-                with self._lock:
-                    self._settings[cid] = {
-                        'model': str(model or 'auto'),
-                        'effort': str(effort or 'auto'),
-                    }
-                    self._save_settings()
+            self.cli.send_user_message(cid, prompt, model=model, effort=effort)
+            with self._lock:
+                self._settings[cid] = {
+                    'model': str(model),
+                    'effort': str(effort),
+                }
+                self._save_settings()
             new_sid = gateway_id(surface_key, cid)
-            return {'status': 'accepted', 'id': new_sid, 'sessionId': new_sid}
+            return {
+                'status': 'accepted',
+                'id': new_sid,
+                'sessionId': new_sid,
+                'result': {'id': new_sid, 'sessionId': new_sid},
+            }
 
         row = self.store.resolve_session(sid)
         if row is None:

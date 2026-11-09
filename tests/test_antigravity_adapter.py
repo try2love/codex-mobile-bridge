@@ -280,6 +280,41 @@ class AntigravityStoreTest(unittest.TestCase):
             self.assertEqual(decorated['reasoningEffort'], 'high')
             self.assertEqual(decorated['effortLabel'], 'High')
 
+    def test_create_session_flow_and_prompt_composition(self):
+        from bridge.clients.antigravity.adapter import Antigravity
+        with tempfile.TemporaryDirectory() as tmp:
+            adapter = Antigravity(Path(tmp))
+            # Test prompt composition across text, firstMessage, prompt
+            self.assertEqual(adapter._compose_prompt({'text': 'hello'}), 'hello')
+            self.assertEqual(adapter._compose_prompt({'firstMessage': 'hello first'}), 'hello first')
+            self.assertEqual(adapter._compose_prompt({'prompt': 'hello prompt'}), 'hello prompt')
+
+            # Mock CLI methods to verify parameter forwarding in create
+            recorded = {}
+            def mock_start(source=None, model=None, effort=None):
+                recorded['start'] = {'source': source, 'model': model, 'effort': effort}
+                return 'cid-test-create-123'
+            def mock_send(cid, prompt, model=None, effort=None):
+                recorded['send'] = {'cid': cid, 'prompt': prompt, 'model': model, 'effort': effort}
+                return {}
+
+            adapter.cli.start_cascade = mock_start
+            adapter.cli.send_user_message = mock_send
+
+            res = adapter.call('create', None, {
+                'firstMessage': 'TESTA',
+                'model': 'gemini-3.8-flash',
+                'effort': 'high',
+            })
+            self.assertEqual(res['status'], 'accepted')
+            self.assertIn('result', res)
+            self.assertEqual(res['result']['id'], res['id'])
+            self.assertEqual(recorded['start']['source'], 'CORTEX_TRAJECTORY_SOURCE_CASCADE_CLIENT')
+            self.assertEqual(recorded['start']['model'], 'gemini-3.8-flash')
+            self.assertEqual(recorded['send']['prompt'], 'TESTA')
+            self.assertEqual(recorded['send']['model'], 'gemini-3.8-flash')
+            self.assertEqual(recorded['send']['effort'], 'high')
+
 
 
 

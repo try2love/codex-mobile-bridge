@@ -356,18 +356,18 @@ class AntigravityCli:
         except Exception as exc:
             raise BridgeUnavailable(f'無法連接 Antigravity Language Server：{exc}') from exc
 
-    def resolve_model_enum(self, model, effort=None):
-        if not model:
-            return None
-        m_str = str(model).strip()
+    def resolve_model_enum(self, model=None, effort=None):
+        m_str = str(model or '').strip()
+        if not m_str or m_str == 'auto':
+            m_str = 'gemini-3.8-flash'
         e_str = str(effort or '').strip().lower()
-        if not e_str:
+        if not e_str or e_str == 'auto':
             for suffix in ('-high', '-medium', '-low'):
                 if m_str.endswith(suffix):
                     e_str = suffix[1:]
                     m_str = m_str[:-len(suffix)]
                     break
-        if not e_str:
+        if not e_str or e_str == 'auto':
             e_str = 'high' if 'flash' in m_str else 'medium'
 
         target_model_id = MODEL_ALIAS_MAP.get((m_str, e_str), f'{m_str}-{e_str}')
@@ -398,7 +398,7 @@ class AntigravityCli:
             'claude-sonnet-5-5-high': 'MODEL_PLACEHOLDER_M405',
             'gpt-oss-120b-medium': 'MODEL_OPENAI_GPT_OSS_120B_MEDIUM',
         }
-        return fallback_map.get(target_model_id)
+        return fallback_map.get(target_model_id, 'MODEL_PLACEHOLDER_M318')
 
     def send_user_message(self, conversation_id, prompt, model=None, effort=None):
         """Send message directly into the native Antigravity session (NO ACP, 100% in-sync)."""
@@ -422,7 +422,7 @@ class AntigravityCli:
             }
         return self.call_ls_rpc('SendUserCascadeMessage', body)
 
-    def start_cascade(self, source='CORTEX_TRAJECTORY_SOURCE_CLI', model=None, effort=None):
+    def start_cascade(self, source='CORTEX_TRAJECTORY_SOURCE_CASCADE_CLIENT', model=None, effort=None):
         """Create a new native conversation in the Antigravity Language Server."""
         body = {'source': source}
         model_enum = self.resolve_model_enum(model, effort)

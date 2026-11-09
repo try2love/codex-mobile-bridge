@@ -206,14 +206,15 @@ class AntigravityStore:
         """Find a top-level or known conversation by gateway UUID or raw native UUID."""
         if not isinstance(sid, str) or not sid:
             return None
+        clean_sid = sid.split(':', 1)[1] if ':' in sid else sid
         for item in self.list_sessions():
-            if item['id'] == sid or item['nativeId'] == sid:
+            if item['id'] == sid or item['nativeId'] == sid or item['id'] == clean_sid or item['nativeId'] == clean_sid:
                 return item
-        # Also check brain/<cid> directory if CLI just created a session before summary flush
+        # Also check brain/<cid> directory if session was just created before summary flush
         for surface in self.surfaces():
             for candidate_dir in (surface['root'] / 'brain').glob('*') if (surface['root'] / 'brain').is_dir() else ():
                 cid = candidate_dir.name
-                if cid == sid or gateway_id(surface['key'], cid) == sid:
+                if cid == sid or cid == clean_sid or gateway_id(surface['key'], cid) == sid or gateway_id(surface['key'], cid) == clean_sid:
                     transcript = candidate_dir / '.system_generated/logs/transcript.jsonl'
                     mtime = transcript.stat().st_mtime if transcript.is_file() else 0.0
                     return {
