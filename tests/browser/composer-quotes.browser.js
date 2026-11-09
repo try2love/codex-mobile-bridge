@@ -24,8 +24,8 @@ window.runComposerQuoteLayoutChecks=async function(Quotes=ComposerQuotes){
    await settle();
    const text=messages.querySelector('.message-body').firstChild,range=document.createRange(),selection=getSelection();range.setStart(text,0);range.setEnd(text,13);selection.removeAllRanges();selection.addRange(range);quotes.capture();
    check(!quotes.action.hidden&&quotes.root.hidden,provider+' selection action does not create an empty preview row');
-   const actionBox=quotes.action.getBoundingClientRect(),contextBox=tools.querySelector('.context-usage').getBoundingClientRect(),toggleBox=tools.querySelector('.composer-toggle').getBoundingClientRect();
-   check(Math.abs(toggleBox.top-contextBox.top)<3,provider+' collapse button stays on original toolbar row');
+   const actionBox=quotes.action.getBoundingClientRect(),contextBox=tools.querySelector('.context-usage').getBoundingClientRect();
+   check(!tools.querySelector('.composer-toggle'),provider+' composer has no collapse control');
    if(tools.clientWidth>720)check(quotes.action.previousElementSibling===tools.querySelector('.context-usage')&&Math.abs(actionBox.top-contextBox.top)<2&&actionBox.left>=contextBox.right,provider+' wide action stays beside context usage');
    else check(actionBox.top>=tools.getBoundingClientRect().bottom&&actionBox.width<tools.clientWidth&&actionBox.height<40,provider+' narrow action occupies one compact row without moving toolbar controls');
    check(actionBox.right<=innerWidth,provider+' action fits viewport');

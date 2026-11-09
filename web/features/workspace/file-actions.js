@@ -5,13 +5,14 @@ window.BridgeFileActions = (() => {
   const node=(tag,text,cls='')=>{const n=document.createElement(tag);n.className=cls;if(text!==undefined)n.textContent=text;return n;};
   function dialog(title){const box=node('dialog',undefined,'picker'),head=node('div',undefined,'picker-head'),close=node('button','×','icon-button');close.type='button';close.setAttribute('aria-label',t('关闭'));close.onclick=()=>box.close();head.append(node('h2',title),close);box.append(head);box.addEventListener('close',()=>box.remove());document.body.append(box);return box;}
   function download(box,url,name){const link=node('a',t('下载到本地'),'wb-download');link.href=url;link.download=name;link.dataset.directDownload='true';link.onclick=()=>setTimeout(()=>box.close(),0);box.append(link);return link;}
-  function attach(anchor,upload,reference){
-    const box=node('dialog',undefined,'attachment-menu');box.setAttribute('aria-label',t('添加附件'));
+  function attach(anchor,upload,reference,actions=[]){
+    const box=node('dialog',undefined,'attachment-menu');box.setAttribute('aria-label',t('添加内容'));
     document.body.append(box);box.addEventListener('close',()=>box.remove());
-    const uploads=!upload?[]:window.BridgeUploadSource?[['照片图库',()=>upload('photos')],['选择手机文件',()=>upload('files')]]:[['从本机上传',upload]];
-    for(const [label,action] of [...uploads,['引用宿主机项目文件',reference]]){
+    const uploads=!upload?[]:[['拍照',()=>upload('camera')],['选择照片',()=>upload('photos')],['选择文件',()=>upload('files')]];
+    for(const [label,action] of [...uploads,...(reference?[['引用宿主机项目文件',reference]]:[])]){
       const button=node('button',t(label),'plain');button.type='button';button.onclick=()=>{box.close();action();};box.append(button);
     }
+    if(actions.length){box.append(document.createElement('hr'));for(const action of actions){const button=node('button',t(action.label),'plain');button.type='button';button.disabled=action.disabled;const shortcut=node('small',action.shortcut,'composer-menu-shortcut');button.append(shortcut);button.onclick=()=>{box.close();action.run();};box.append(button);}}
     box.addEventListener('click',event=>{if(event.target===box)box.close();});
     box.showModal();box.focus();
     const rect=anchor.getBoundingClientRect(),bounds=box.getBoundingClientRect(),viewport=window.visualViewport;

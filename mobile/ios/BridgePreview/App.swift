@@ -159,7 +159,7 @@ final class GatewayReachability: NSObject, URLSessionDataDelegate {
     }
 }
 
-final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelegate, UIDocumentPickerDelegate, UIDocumentInteractionControllerDelegate, PHPickerViewControllerDelegate, UIAdaptivePresentationControllerDelegate {
+final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelegate, UIDocumentPickerDelegate, UIDocumentInteractionControllerDelegate, PHPickerViewControllerDelegate, UIImagePickerControllerDelegate, UINavigationControllerDelegate, UIAdaptivePresentationControllerDelegate {
     private var web: WKWebView?
     private var nativeMainNavigation: (web: WKWebView, generation: Int, url: String)?
     private var origin = ""
@@ -1087,7 +1087,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         configuration.userContentController.addUserScript(WKUserScript(source: appearanceScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         #if compiler(>=6.1)
         if #available(iOS 18.4, *) {
-            let uploadScript = "window.BridgeUploadSource = (source, accept) => navigator.userActivation?.isActive && window.prompt('codexbridge-upload-source:" + clipboardToken + "', source + (source !== 'files' && accept && !accept.includes('video') ? '-images' : '')) === 'selected';"
+            let uploadScript = "window.BridgeUploadSource = (source, accept) => navigator.userActivation?.isActive && window.prompt('codexbridge-upload-source:" + clipboardToken + "', source + (source === 'photos' && accept && !accept.includes('video') ? '-images' : '')) === 'selected';"
             configuration.userContentController.addUserScript(WKUserScript(source: uploadScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         }
         #endif
@@ -1198,7 +1198,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             guard webView === web, connectionError == nil, UIApplication.shared.applicationState == .active,
                   frame.isMainFrame, let source = frame.request.url, GatewayURL.same(source, documentAddress),
                   let current = webView.url, GatewayURL.same(current, documentAddress), presentedViewController == nil,
-                  let value = defaultText, ["photos", "files", "photos-images"].contains(value) else { completionHandler(nil); return }
+                  let value = defaultText, ["photos", "files", "photos-images", "camera"].contains(value) else { completionHandler(nil); return }
             uploadSource = (value, Date()); completionHandler("selected"); return
         }
         if prompt == "codexbridge-uu:" + clipboardToken {
@@ -1335,8 +1335,9 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         let uploadKind = uploadSource.flatMap { Date().timeIntervalSince($0.at) < 2 ? $0.name : nil }
         finishUpload(nil)
         uploadCompletion = completionHandler; uploadGeneration = generation
+        if uploadKind == "camera" { capturePhoto(); return }
         if uploadKind == "photos" || uploadKind == "photos-images" {
-            var config = PHPickerConfiguration(); config.preferredAssetRepresentationMode = .compatible; if uploadKind == "photos-images" { config.filter = .images }; config.selectionLimit = parameters.allowsMultipleSelection ? 10 : 1
+            var config = PHPickerConfiguration(); config.preferredAssetRepresentationMode = .compatible; config.filter = .images; config.selectionLimit = parameters.allowsMultipleSelection ? 10 : 1
             let picker = PHPickerViewController(configuration: config); picker.delegate = self
             mediaPicker = picker; present(picker, animated: true); picker.presentationController?.delegate = self; return
         }
@@ -1346,6 +1347,44 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         present(picker, animated: true); picker.presentationController?.delegate = self
     }
     #endif
+    private func capturePhoto() {
+        let ticket = uploadTicket
+        guard UIImagePickerController.isSourceTypeAvailable(.camera) else { finishUpload(nil); info(MobileStrings.text("无法打开相机，请重试。")); return }
+        let show: (Bool) -> Void = { [weak self] allowed in
+            guard let self, ticket == self.uploadTicket, self.uploadGeneration == self.generation,
+                  let current = self.web?.url, GatewayURL.same(current, self.documentAddress) else { return }
+            guard allowed else { self.finishUpload(nil); self.info(MobileStrings.text("请在系统设置中允许相机。")); return }
+            let picker = UIImagePickerController(); picker.sourceType = .camera; picker.mediaTypes = [UTType.image.identifier]; picker.delegate = self
+            self.mediaPicker = picker; self.present(picker, animated: true); picker.presentationController?.delegate = self
+        }
+        if AVCaptureDevice.authorizationStatus(for: .video) == .notDetermined {
+            AVCaptureDevice.requestAccess(for: .video) { allowed in DispatchQueue.main.async { show(allowed) } }
+        } else { show(AVCaptureDevice.authorizationStatus(for: .video) == .authorized) }
+    }
+    func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+        guard picker === mediaPicker else { return }
+        finishUpload(nil); picker.dismiss(animated: true)
+    }
+    func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo details: [UIImagePickerController.InfoKey: Any]) {
+        guard picker === mediaPicker else { picker.dismiss(animated: true); return }
+        guard uploadGeneration == generation, let current = web?.url, GatewayURL.same(current, documentAddress),
+              let image = details[.originalImage] as? UIImage,
+              let folder = try? mediaUploadFolder() else { finishUpload(nil); picker.dismiss(animated: true); return }
+        let ticket = uploadTicket, destination = folder.appendingPathComponent(UUID().uuidString).appendingPathExtension("jpg")
+        picker.dismiss(animated: true)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let saved: Bool = autoreleasepool {
+                guard let data = image.jpegData(compressionQuality: 0.9) else { return false }
+                do { try data.write(to: destination, options: .atomic); return true } catch { return false }
+            }
+            DispatchQueue.main.async {
+                guard ticket == self.uploadTicket, self.uploadGeneration == self.generation,
+                      let current = self.web?.url, GatewayURL.same(current, self.documentAddress) else { try? FileManager.default.removeItem(at: destination); return }
+                if saved { self.finishUpload([destination]) }
+                else { self.finishUpload(nil); self.info(MobileStrings.text("无法读取所选文件，请从系统文件选择器重新选择。")) }
+            }
+        }
+    }
     private func finishUpload(_ urls: [URL]?) {
         let completion = uploadCompletion; uploadCompletion = nil; uploadPicker = nil; mediaPicker = nil; uploadSource = nil; uploadTicket = UUID()
         completion?(urls)
@@ -2058,6 +2097,8 @@ enum MobileStrings {
         "在浏览器打开外部链接？\n": "Open external link in browser?\n",
         "打开": "Open",
         "连接失败，请在更多菜单中刷新": "Connection failed. Reload from the More menu.",
+        "无法打开相机，请重试。": "Unable to open the camera. Try again.",
+        "请在系统设置中允许相机。": "Allow camera access in system settings.",
         "没有可用的文件选择器": "No file picker available",
         "已有下载进行中，请稍候": "A download is in progress. Please wait.",
         "此下载不是当前电脑的附件，请在浏览器中打开": "This download is not an attachment from the current computer. Open it in your browser.",

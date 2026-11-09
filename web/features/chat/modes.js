@@ -48,13 +48,14 @@ class WorkModes {
     if(!goalSupported&&!(pendingCapabilities&&view?.composerCapabilities?.goal===true)&&this.select.value==='goal')this.select.value='default';
     const planOption=this.select.querySelector('[value=plan]');if(planOption)planOption.disabled=caps?.plan===false;
     if(caps?.plan===false&&!(pendingCapabilities&&view?.composerCapabilities?.plan===true)&&this.select.value==='plan')this.select.value='default';
-    this.select.disabled=!view||view.loadingHistory||view.activating||busy||sendMode==='steer';
+    this.select.disabled=!view||view.loadingHistory||view.activating||busy||['queue','steer'].includes(sendMode);
     const goalOption=this.select.querySelector('[value=goal]');
     goalOption.disabled=!goalSupported||!!(view?.status==='active'||(view?.goal&&view.goal.status!=='complete')||['pending','unknown'].includes(view?.goalSubmission?.status));
     goalOption.title=t(goalSupported?'':goalUnavailableReason);
     this.hint.textContent=t(sendMode==='steer'?'补充内容沿用当前任务模式':this.select.value==='plan'?'先讨论并制定计划，确认后执行。':this.select.value==='goal'?(goalSupported?'设定目标后持续执行，直到完成、暂停或取消。':goalUnavailableReason):'');
     this.hint.hidden=!this.hint.textContent;
     this.select.title=this.hint.textContent;
+    this.onRender?.();
     const goal=view?.goal,request=view?.goalSubmission;
     const renderStamp=JSON.stringify([goal,request,caps,goalSupported,this.key,BridgeI18n.locale(),busy,this.statusBusy,this.cancelBusy,this.editing,this.actionError,this.storage.getItem('hidden-goal:'+this.key)]);
     if(this.goalRenderStamp===renderStamp)return;this.goalRenderStamp=renderStamp;

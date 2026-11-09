@@ -13,6 +13,7 @@
    <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
    <intent-filter><action android:name="android.intent.action.VIEW"/><category android:name="android.intent.category.DEFAULT"/><category android:name="android.intent.category.BROWSABLE"/><data android:scheme="codexbridge" android:host="open"/></intent-filter>
   </activity>
+  <provider android:name="io.github.try2love.codexbridge.CameraProvider" android:authorities="io.github.try2love.codexbridge.preview.camera" android:exported="false" android:grantUriPermissions="true"/>
   <provider android:name="io.github.try2love.codexbridge.DownloadProvider" android:authorities="io.github.try2love.codexbridge.preview.downloads" android:exported="false" android:grantUriPermissions="true"/>
   <activity android:name="io.github.try2love.codexbridge.DshMobileActivity" android:exported="false" android:process=":dshmobile" android:enableOnBackInvokedCallback="true" android:windowSoftInputMode="adjustResize"/>
   <activity android:name="io.github.try2love.codexbridge.ScanActivity" android:exported="false"/>

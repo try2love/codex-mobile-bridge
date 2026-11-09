@@ -1,0 +1,18 @@
+.compact-composer .composer-tools{display:flex;flex-wrap:nowrap;align-items:center;gap:8px;margin-bottom:8px}
+.compact-composer #notify-button,.compact-composer #skills-button,.compact-composer #send-mode,.compact-composer #work-mode,.compact-composer .work-mode-select{display:none!important}
+.compact-composer .composer-tools .tool-button{min-width:0;flex:none;min-height:36px;font-size:12px}
+.compact-composer #model-button,.compact-composer .ds-model{flex:1;min-width:0;max-width:none;justify-content:flex-start}
+.compact-composer #model-name,.compact-composer .ds-model-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.compact-composer #model-effort,.compact-composer .ds-model-effort{flex:none;white-space:nowrap}
+.compact-composer .compose-bottom{display:flex;align-items:center;gap:8px}
+.compact-composer .compose-actions{margin-left:auto}
+.compact-composer .attach-button{font-size:30px;line-height:1;width:44px;height:44px;padding:0;flex:none}
+.compact-composer #composer-body,.compact-composer .ds-composer-body{position:relative}
+.composer-mode-badge{border:1px solid var(--line);border-radius:16px;background:var(--soft);color:var(--text);padding:5px 10px;margin-bottom:6px}
+.composer-suggestions{position:absolute;bottom:100%;left:0;right:0;z-index:20;padding:6px;border:1px solid var(--line);border-radius:16px;background:var(--raised);box-shadow:0 8px 32px #0002;max-height:45dvh;overflow:auto}
+.composer-suggestions button{display:block;width:100%;text-align:left;border:0;background:transparent;color:var(--text);padding:12px;border-radius:10px}
+.composer-suggestions button.selected{background:var(--soft)}
+.attachment-menu .composer-menu-shortcut{margin-left:auto;color:var(--muted)}
+.attachment-menu{width:min(300px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow:auto}
+.attachment-menu button.plain{display:flex;align-items:center;gap:16px;min-height:44px;padding:12px 16px;border-top:0}
+.attachment-menu hr{border:0;border-top:1px solid var(--line);margin:5px 0}

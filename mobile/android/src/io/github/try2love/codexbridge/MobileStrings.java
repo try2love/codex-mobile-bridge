@@ -232,6 +232,8 @@ values.put("请填写完整的 HTTPS 网关地址，或局域网 HTTP 地址，�
   values.put("暂时无法连接电脑","Could not connect to this computer");
   values.put("网关暂时无法访问。请检查电脑和网络后重试，或返回电脑列表。","The gateway is unavailable. Check the computer and network, then retry or return to the computer list.");
   values.put("重试","Retry");
+  values.put("无法打开相机，请重试。","Unable to open the camera. Try again.");
+  values.put("请在系统设置中允许相机。","Allow camera access in system settings.");
   values.put("没有可用的文件选择器","No file picker available");
   values.put("已有下载进行中，请稍候","A download is in progress. Please wait.");
   values.put("此下载不是当前电脑的附件，请在浏览器中打开","This download is not an attachment from the current computer. Open it in your browser.");

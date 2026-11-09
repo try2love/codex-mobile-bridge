@@ -53,7 +53,7 @@
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
-	<string>扫描电脑网关登录二维码。</string>
+	<string>扫描电脑网关登录二维码，或拍照添加到聊天。</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>连接同一网络中的电脑网关，继续你的聊天。</string>
 	<key>NSAppTransportSecurity</key>

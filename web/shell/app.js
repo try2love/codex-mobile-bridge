@@ -141,6 +141,7 @@ const attachments=new ChatAttachments({root:$('attachment-list'),button:$('attac
   const response=await fetch(sessionUrl(thread,'uploads/'+encodeURIComponent(id)+'/thumb',host)+'&width='+image.width+'&height='+image.height,{method:'POST',credentials:'same-origin',headers:{'Content-Type':image.mime,'X-CSRF-Token':csrf},body:image.data});
   const result=await response.json();if(!response.ok){if(response.status===401)authLost();throw Error(result.error||t('缩略图生成失败'));}return result;
 },upload:uploadAttachmentWithRetry});
+const compactComposer=new CompactComposer({form:$('composer'),input:$('message'),attachments,skills:$('skills-button'),modes:workModes});
 workbench.attachReference=info=>attachments.addReference(info);
 function visibleChat(){return currentId&&!workbench.isFileVisible&&!document.hidden&&$('app').classList.contains('chat-open')?chatKey():null;}
 function reportVisibleChat(){
@@ -576,7 +577,7 @@ const contextUsageControl=new ContextUsageControl({onCompact:async()=>{
   try{const result=await api(sessionUrl(id,'compact',host),{id:requestId});if(result.status!=='accepted')throw Error(result.message||t('结果待核对，请检查桌面原会话'));contextCompactions.delete(key);toast(t('已提交上下文压缩'));return true;}
   catch(error){toast(error.message);return false;}
   finally{contextCompacting.delete(key);if(currentId===id&&currentHost===host)contextUsageControl.update(state);}
-}});$('permissions-button').after(contextUsageControl.button);
+}});$('model-button').after(contextUsageControl.button);
 let newChatProjects=[],newChatEnvironments=[],newChatCanBrowse=false,newChatEntry='desktop',newChatPreferredHost='local',creatingChat=false,approvalBusy=0;
 const newChatUrl=path=>path+(isCodexEntry(newChatEntry)?'?entry='+encodeURIComponent(newChatEntry):'');
 const independentProject=()=>newChatEntry.startsWith('wsl:')||newChatEntry.startsWith('codex:')?newChatEntry+'|independent':'local|independent';
@@ -821,7 +822,7 @@ window.BridgeImageViewer?.configureComposer({
     current.panel.add([file]);
     if(current.panel.rows.length===count){if(current.panel.error)throw Error(t(current.panel.error));return false;}
     current.workspace.select('chat');
-    if(current.provider==='codex')window.BridgePresentation?.openChat();else desktopSessions.collapseComposer(false);
+    if(current.provider==='codex')window.BridgePresentation?.openChat();else desktopSessions.resizeInput();
     return true;
   }
 });
@@ -869,7 +870,7 @@ function bindCodexDraft(view){
     restoringComposer=true;
     $('message').value=draft.text;codexQuotes?.restore(draft.quotes);
     $('message').setSelectionRange(draft.selectionStart,draft.selectionEnd);
-    $('send-mode').value=draft.sendMode;
+    $('send-mode').value=state?.status==='active'&&state?.capabilities?.queue!==false&&state?.capabilities?.sendModes?.queue!==false?'queue':'send';
     workModes.selection=draft.workMode;workModes.render(state,$('send-mode').value,sending);
     selectedSkills=new Set(draft.skills);renderSkillPills();
     restoringComposer=false;
@@ -973,11 +974,9 @@ $('back').onclick=()=>{saveDraft();workbench.cancelLocate();desktopSessions.onLi
 function applyEntryCapabilities(view){
   const caps=view?.access?.runtime==='wsl'||view?.endpointId?.startsWith('wsl:')?view.capabilities||{}:{};
   for(const [id,capability] of [['permissions-button','permissions'],['skills-button','skills'],['notify-button','notifications']])$(id).hidden=caps[capability]===false;
-  const queue=$('send-mode').querySelector('[value=queue]');if(queue)queue.disabled=caps.queue===false;
-  if(caps.queue===false&&$('send-mode').value==='queue')$('send-mode').value='send';
   if(caps.skills===false){selectedSkills.clear();invalidSkills.clear();renderSkillPills();}
   if(caps.plan===false){workModes.selection='default';$('work-mode').value='default';}
-  $('work-mode').hidden=caps.plan===false;
+  $('work-mode').hidden=caps.plan===false&&caps.goal!==true;
 }
 function renderState(view){
   applyEntryCapabilities(view);
@@ -1012,19 +1011,18 @@ function renderState(view){
   $('model-button').disabled=limited&&!access.canChangeModel;
   $('skills-button').disabled=limited&&!access.canSelectSkills;
   if(access.canChangeModel||access.canSelectSkills)scheduleCatalog();
-  $('send-mode').disabled=limited&&!access.canSend;
-  $('send-mode').querySelector('[value=steer]').disabled=view.status!=='active'||!access.canSend;
-  if((view.status!=='active'||!access.canSend)&&$('send-mode').value==='steer')$('send-mode').value='send';
+  $('send-mode').value=view.status==='active'&&view.capabilities?.queue!==false&&view.capabilities?.sendModes?.queue!==false?'queue':'send';
+  $('send').disabled=$('send').disabled||view.capabilities?.sendModes?.[$('send-mode').value]===false;
   const modesView=limited&&!access.canUseGoal?{...view,goalRuntimeAvailable:false}:view;
   workModes.render(modesView,$('send-mode').value,sending);
-  $('work-mode').disabled=limited&&!access.canUseModes;
+  $('work-mode').disabled=$('work-mode').disabled||$('send-mode').value!=='send'||limited&&!access.canUseModes;
   if(limited&&!access.canUseModes)$('work-mode').value='default';
+  compactComposer.render();
   workbench.current.access=access;
   workbench.setAttachedParent(view.attachedParent);
   chatTimeline?.refreshActions();
   renderApprovals(access.canApprove?view.requests:[]);renderQueue(view.submissions||[]);
 }
-$('send-mode').onchange=()=>{codexDraftTouched=true;workModes.render(state,$('send-mode').value,sending);saveDraft();};
 function jsonPretty(value){return typeof value==='string'?value:JSON.stringify(value,null,2);}
 function renderApprovals(requests){const stamp=JSON.stringify([BridgeI18n.language(),requests]);if(stamp===approvalStamp)return;approvalStamp=stamp;const container=$('approvals'),previous=new Map([...container.children].map(card=>[card.dataset.request,card])),kept=new Set();let position=0;for(const request of requests){const old=previous.get(String(request.id)),requestStamp=JSON.stringify([BridgeI18n.language(),request]),mount=card=>{card.approvalRequest=request;card.requestStamp=requestStamp;kept.add(card);const before=container.children[position++];if(before!==card)container.insertBefore(card,before||null);};if(old?.requestStamp===requestStamp){mount(old);continue;}if(request.method==='bridge/requestUserInputAsync'&&request.supported){mount(renderAsyncApproval(request,old));continue;}if(request.supported&&request.params?.computerUse){mount(renderComputerApproval(request));continue;}if(request.method==='item/plan/requestImplementation'&&request.supported){mount(renderPlanApproval(request));continue;}const card=el('section','approval');card.dataset.request=String(request.id);const params=request.params||{}, method=request.method;const heading=method.includes('requestUserInput')?t('Codex 需要你的回复'):method.includes('fileChange')?t('允许修改文件？'):method.includes('commandExecution')?t('允许运行此命令？'):method.includes('permissions')?t('允许本轮权限？'):t('待确认请求');card.append(el('h3','',heading));const controls={};if(!request.supported){card.append(el('p','',params.message||t('请在桌面 App 处理此请求')));mount(card);continue;}if(params.reason)card.append(el('p','',params.reason));if(params.command)card.append(el('pre','',jsonPretty(params.command)));if(params.cwd)card.append(el('p','muted',params.cwd));for(const key of ['changes','grantRoot','permissions','networkApprovalContext'])if(params[key])card.append(el('pre','',jsonPretty(params[key])));const form=el('form');if(method.includes('requestUserInput')){for(const question of params.questions||[]){const label=el('label','',question.question||question.header||question.id);if(question.options?.length){const select=el('select');select.append(new Option(t('请选择…'),''));for(const option of question.options)select.append(new Option(option.label+(option.description?' — '+option.description:''),option.label));select.append(new Option(t('自行填写'),'__custom__'));label.append(select);const custom=el('textarea');custom.rows=2;custom.hidden=true;custom.placeholder=t('输入你的回复');select.onchange=()=>custom.hidden=select.value!=='__custom__';label.append(custom);controls[question.id]=()=>select.value==='__custom__'?custom.value:select.value;}else{const input=el('textarea');input.rows=2;input.required=true;label.append(input);controls[question.id]=()=>input.value;}form.append(label);}}else if(method==='mcpServer/elicitation/request'){if(params.message)form.append(el('p','',params.message));const schema=params.requestedSchema||{};for(const [key,field] of Object.entries(schema.properties||{})){const label=el('label','',field.title||key);let input;if(field.enum){input=el('select');input.append(new Option(t('请选择…'),''));for(const [i,value] of field.enum.entries())input.append(new Option(field.enumNames?.[i]||String(value),String(value)));}else{input=el('input');input.type=field.type==='boolean'?'checkbox':['number','integer'].includes(field.type)?'number':'text';if(input.type==='number')input.step=field.type==='integer'?'1':'any';}input.required=(schema.required||[]).includes(key)&&input.type!=='checkbox';if(field.description)label.append(el('p','muted',field.description));label.append(input);form.append(label);controls[key]=()=>input.type==='checkbox'?input.checked:input.value===''?undefined:['number','integer'].includes(field.type)?Number(input.value):input.value;}}const actions=el('div','actions'),error=el('p','error');async function submit(response){const id=currentId,host=currentHost;approvalBusy++;setLanguageBusy();const buttons=card.querySelectorAll('button');buttons.forEach(b=>b.disabled=true);error.textContent='';try{await api(sessionUrl(id,'respond',host),{requestId:request.id,response});submittedRequestIds.add(request.id);bumpRecency(id,host);toast('已发送回应');card.append(el('p','muted',t('已发送，等待桌面确认…')));}catch(e){error.textContent=t(e.message);buttons.forEach(b=>b.disabled=false);}finally{approvalBusy--;setLanguageBusy();}}const isInput=method.includes('requestUserInput'),isMcp=method==='mcpServer/elicitation/request';const yes=el('button','primary',isInput?t('提交回复'):t('本次允许'));yes.type='submit';const available=params.availableDecisions;const canAccept=!available||available.includes('accept');if(isInput||isMcp||canAccept)actions.append(yes);if(!isInput){const no=el('button','secondary',t('拒绝'));no.type='button';no.onclick=()=>submit(isMcp?{action:'decline'}:{decision:'decline'});if(!available||available.includes('decline'))actions.append(no);if(method.includes('commandExecution')||method.includes('fileChange')||isMcp){const cancel=el('button','secondary',t('取消'));cancel.type='button';cancel.onclick=()=>submit(isMcp?{action:'cancel'}:{decision:'cancel'});if(!available||available.includes('cancel'))actions.append(cancel);}}form.onsubmit=event=>{event.preventDefault();if(isInput){const answers={};for(const [key,get] of Object.entries(controls)){const value=get();if(!value.trim()){error.textContent=t('请回答所有问题');return;}answers[key]=[value];}submit({answers});}else if(isMcp){const content={};for(const [key,get] of Object.entries(controls)){const value=get();if(value!==undefined)content[key]=value;}submit({action:'accept',content});}else submit({decision:'accept'});};form.append(actions,error);card.append(form);if(submittedRequestIds.has(request.id)){card.querySelectorAll('button').forEach(button=>button.disabled=true);card.append(el('p','muted',t('已发送，等待桌面确认…')));}mount(card);}for(const card of [...container.children])if(!kept.has(card))card.remove();}
 function renderAsyncApproval(request, previous){
@@ -1192,11 +1190,12 @@ $('composer').onsubmit=async event=>{
   if(text.length>100000){$('send-error').textContent=t('消息含引用超过 100000 字符，请缩短后发送');return;}
   if(!attachments.ready()){toast('请等待附件上传完成');return;}
   const attachmentIds=attachments.ids(),references=attachments.references(),submittedAttachmentIds=attachments.rows.map(row=>row.id);if(!text.trim()&&!submittedAttachmentIds.length)return;
-  const mode=$('send-mode').value,workMode=workModes.value(mode);
+  const mode=state?.status==='active'&&state?.capabilities?.queue!==false&&state?.capabilities?.sendModes?.queue!==false?'queue':'send',workMode=workModes.value(mode);
+  if(state?.capabilities?.sendModes?.[mode]===false)return;
   if(workMode==='goal'&&submittedAttachmentIds.length){$('send-error').textContent=t('目标模式暂不支持附件');return;}
   if(invalidSkills.size){$('send-error').textContent=t('已选 Skill 已失效，请刷新列表后重新选择');return;}
   const skills=[...selectedSkills].sort(),scope=codexDraftScope;
-  const body={text,mode,skills,workMode,attachments:attachmentIds,uiLocale:BridgeI18n.locale()};if(references.length)body.references=references;
+  const body={text,mode,skills,...mode==='send'?{workMode}:{},attachments:attachmentIds,uiLocale:BridgeI18n.locale()};if(references.length)body.references=references;
   const revision=saveDraft()?.revision,submittedProvisional=codexProvisionalDrafts.get(chatKey());
   const submittedKey=chatKey(),legacyKey='pending:'+submittedKey;let legacy=composerDrafts.temporaryPending.get(legacyKey);try{legacy=JSON.parse(sessionStorage.getItem(legacyKey))||legacy;}catch{}
   const matchingLegacy=legacy?.id&&legacy.gateway===draftGateway&&legacy.target===submittedKey&&(!legacy.account||legacy.account===scope?.account);
@@ -1511,7 +1510,7 @@ $('phone-language').onchange=()=>{
   if(state){approvalStamp='';renderState(state);[...$('approvals').querySelectorAll('input,textarea,select')].forEach((node,i)=>{if(replies[i]){node.value=replies[i].value;node.checked=replies[i].checked;if(node.tagName==='SELECT')node.dispatchEvent(new Event('change'));}});}
   $('notify-button').textContent=t(notificationState.watching?'提醒已开':'提醒');
   if(chatTimeline)chatTimeline.relabel();messageActions.relabel();
-  window.BridgePresentation?.relabel();workbench.relabel();attachments.render();renderActivity();
+  compactComposer.render();workbench.relabel();attachments.render();renderActivity();
   renderSkillPills();if(catalogData)renderSkills();
 };
 BridgeI18n.apply();

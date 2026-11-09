@@ -37,7 +37,7 @@ for(const durable of [true,false]){
     await ui.submit();assert.equal(ui.pending(),null);
     assert.equal(ui.nodes.message.value,'same text');
     assert.equal(ui.drafts.load(ui.scope).text,'same text');
-    ui.nodes['send-mode'].value='queue';await ui.submit();
+    ui.context.state.status='active';await ui.submit();
     assert.equal(ui.calls.length,2);assert.equal(ui.calls[1].mode,'queue');
     assert.notEqual(ui.calls[0].id,ui.calls[1].id);
     assert.deepEqual(Array.from(ui.calls[1].attachments),['attachment']);
@@ -51,7 +51,7 @@ for(const durable of [true,false]){
     test(`${durable?'durable':'legacy'} pending ID survives ${JSON.stringify(error)}`,async()=>{
       const ui=fixture({durable,request:()=>{throw Object.assign(Error('fixture failure'),error);}});
       await ui.submit();assert.equal(ui.pending().id,ui.calls[0].id);
-      ui.nodes['send-mode'].value='queue';await ui.submit();assert.equal(ui.calls.length,1);
+      ui.context.state.status='active';await ui.submit();assert.equal(ui.calls.length,1);
     });
   }
 
@@ -80,7 +80,7 @@ for(const first of ['old','new'])test(`two tabs retain same ID when ${first} rej
   if(first==='old'){rejectOld(Object.assign(Error('busy'),{status:400,code:'send_not_submitted'}));await oldTask;resolveNew({status:'unknown'});await newTask;}
   else {resolveNew({status:'unknown'});await newTask;rejectOld(Object.assign(Error('busy'),{status:400,code:'send_not_submitted'}));await oldTask;}
   assert.equal(old.pending().id,newer.calls[0].id);
-  newer.nodes['send-mode'].value='queue';await newer.submit();assert.equal(newer.calls.length,1);
+  newer.context.state.status='active';await newer.submit();assert.equal(newer.calls.length,1);
 });
 
 test('newer rejection cannot release older in-flight attempt',async()=>{
@@ -132,7 +132,7 @@ test('without IndexedDB a fresh request uses private fallback and can queue afte
   const ui=fixture({request:()=>{throw Object.assign(Error('busy'),{status:400,code:'send_not_submitted'});}});ui.drafts.coordinator=undefined;
   await ui.submit();assert.equal(ui.calls.length,1);assert.equal(ui.drafts.pendingSend(ui.scope),null);
   assert.equal(ui.temporary.getItem('pending:local|fixture'),null);
-  ui.nodes['send-mode'].value='queue';await ui.submit();assert.equal(ui.calls.length,2);
+  ui.context.state.status='active';await ui.submit();assert.equal(ui.calls.length,2);
 });
 
 test('without IndexedDB an existing durable unknown is blocked, preserving its ID',async()=>{
@@ -213,7 +213,7 @@ test('successful private send clears the composer when both storages are unavail
 test('a private unknown survives a later explicit rejection of its same-ID retry',async()=>{
   let count=0;const ui=fixture({durable:false,request:()=>{if(++count===1)return {status:'unknown'};throw Object.assign(Error('busy'),{status:400,code:'send_not_submitted'});}});
   await ui.submit();const id=ui.pending().id;await ui.submit();assert.equal(ui.pending().id,id);
-  ui.nodes['send-mode'].value='queue';await ui.submit();assert.equal(ui.calls.length,2);
+  ui.context.state.status='active';await ui.submit();assert.equal(ui.calls.length,2);
 });
 
 test('a legacy second unknown is not hidden by a coordinated tombstone',async()=>{
@@ -250,9 +250,9 @@ test('real handler blocks queue after an old page writes its second unknown',asy
   const second={text:'same text',mode:'send',skills:['skill'],workMode:'default',attachments:['attachment'],uiLocale:'zh-CN'};
   old.begin(ui.scope,second,'second-unknown');
   // The old page's request delivered an unknown response, so it keeps v1 intact.
-  ui.nodes['send-mode'].value='queue';await ui.submit();
+  ui.context.state.status='active';await ui.submit();
   assert.equal(ui.calls.length,0);assert.equal(old.pending(ui.scope).id,'second-unknown');
-  ui.nodes['send-mode'].value='send';await ui.submit();
+  ui.context.state.status='idle';await ui.submit();
   assert.equal(ui.calls.length,1);assert.equal(ui.calls[0].id,'second-unknown');
   assert.equal(ui.drafts.pendingSend(ui.scope).id,'second-unknown');
 });

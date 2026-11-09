@@ -17,7 +17,7 @@ window.runHostFileReferenceChecks=async()=>{
  const panel=new ChatAttachments({root,button,input,upload:()=>{throw Error('Unexpected upload');},onChange:()=>{},chooseReference:()=>BridgeFileActions.pickReference(workspace)});panel.open('local|fixture');workspace.attachReference=info=>panel.addReference(info);
  const find=text=>[...document.querySelectorAll('dialog[open] button')].find(n=>n.textContent===text);
  try{
-  button.click();check(!!find('从本机上传'),'paperclip preserves local upload option');check(document.querySelector('.attachment-menu[open]').getBoundingClientRect().height<180,'paperclip uses a compact menu');find('引用宿主机项目文件').click();await tick();
+  button.click();check(['拍照','选择照片','选择文件'].every(label=>find(label)),'plus separates camera, photos and files');check(document.querySelector('.attachment-menu[open]').getBoundingClientRect().height<240,'plus uses a compact menu');find('引用宿主机项目文件').click();await tick();
   let dialog=document.querySelector('dialog.host-file-picker[open]');check(!!dialog.querySelector('[data-path="folder"]'),'paperclip opens host directory directly');
   await new Promise(requestAnimationFrame);const list=dialog.querySelector('.wb-file-list'),head=dialog.querySelector('.wb-search'),top=head.getBoundingClientRect().top;check(list.scrollHeight>list.clientHeight,'long directory is constrained to its own viewport');list.scrollTop=200;await new Promise(requestAnimationFrame);check(list.scrollTop>0&&head.getBoundingClientRect().top===top&&dialog.scrollTop===0,'only file rows scroll while search stays fixed');list.scrollTop=0;
   dialog.querySelector('[data-path="folder"]').click();await tick();find('引用此文件夹').click();await tick();
