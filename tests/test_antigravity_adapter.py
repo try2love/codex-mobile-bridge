@@ -304,6 +304,42 @@ class HookIPCAndPluginTest(unittest.TestCase):
             self.assertFalse(disabled['enabled'])
             self.assertFalse(inspect_plugin(state_dir, home=home)['enabled'])
 
+    def test_queue_action_operations(self):
+        from bridge.clients.manager import WRITES
+        self.assertIn('queue-action', WRITES)
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / 'home'
+            app_root = home / '.gemini' / 'antigravity'
+            cid = '33333333-4444-5555-6666-777777777777'
+            steps = [
+                {'step_index': 0, 'type': 'USER_INPUT', 'status': 'DONE', 'created_at': '2026-11-08T01:00:00Z', 'content': 'Test 0'},
+                {'step_index': 1, 'type': 'PLANNER_RESPONSE', 'status': 'DONE', 'created_at': '2026-11-08T01:00:01Z', 'content': 'Reply 0'},
+            ]
+            _write_transcript(app_root, cid, steps)
+            from bridge.clients.antigravity.adapter import Antigravity
+            adapter = Antigravity(Path(tmp), home=home)
+            from bridge.clients.antigravity.model import gateway_id
+            sid = gateway_id('app', cid)
+            entry = adapter.hooks.enqueue_follow_up(cid, 'Hello queued world', mode='queue')
+            qid = entry['id']
+
+            # Test steer
+            res_steer = adapter.call('queue-action', sid, {'queueId': qid, 'operation': 'steer'})
+            self.assertEqual(res_steer['status'], 'accepted')
+            self.assertEqual(res_steer['item']['mode'], 'steer')
+
+            # Test edit
+            res_edit = adapter.call('queue-action', sid, {'queueId': qid, 'operation': 'edit'})
+            self.assertEqual(res_edit['status'], 'accepted')
+            self.assertEqual(res_edit['text'], 'Hello queued world')
+
+            # Re-enqueue and test cancel
+            entry2 = adapter.hooks.enqueue_follow_up(cid, 'To be cancelled', mode='queue')
+            qid2 = entry2['id']
+            res_cancel = adapter.call('queue-action', sid, {'queueId': qid2, 'operation': 'cancel'})
+            self.assertEqual(res_cancel['status'], 'accepted')
+            self.assertTrue(res_cancel['removed'])
+
     def test_hook_client_fail_open_and_live_roundtrip(self):
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp) / 'ag-state'

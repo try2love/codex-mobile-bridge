@@ -394,7 +394,7 @@ class Antigravity:
             return {'status': 'accepted'}
 
         if action == 'queue-action':
-            queue_id = str(body.get('queueId') or body.get('id') or '').strip()
+            queue_id = str(body.get('queueId') or '').strip()
             op = str(body.get('operation') or '').strip()
             if not queue_id:
                 raise ValueError('缺少佇列項目 ID')

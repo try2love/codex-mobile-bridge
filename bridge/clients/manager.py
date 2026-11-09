@@ -34,7 +34,7 @@ from bridge.clients.codex.remote import ssh_read, payload
 from bridge.resources import source_text
 
 READS = {'list', 'detail', 'catalog', 'projects', 'create-models', 'account', 'access', 'organization', 'tasks'}
-WRITES = {'send', 'stop', 'settings', 'respond', 'create', 'access', 'resume', 'fork', 'pin', 'archive', 'rename', 'organization', 'goal', 'compact', 'stop-task', 'edit-message'}
+WRITES = {'send', 'stop', 'settings', 'respond', 'create', 'access', 'resume', 'fork', 'pin', 'archive', 'rename', 'organization', 'goal', 'compact', 'stop-task', 'edit-message', 'queue-action'}
 
 
 CLAUDE_HISTORY_NOTICE = '客户端尚未提供当前可选模型，历史模型仅供查看'
@@ -1439,6 +1439,9 @@ class DesktopSessions:
         if action == 'stop-task' and (set(body) != {'id', 'taskId'} or
                 not isinstance(body.get('taskId'), str) or not 1 <= len(body['taskId']) <= 512):
             raise ValueError('后台任务标识无效')
+        if action == 'queue-action' and (not isinstance(body.get('queueId'), str) or not body['queueId'].strip() or
+                body.get('operation') not in ('steer', 'queue', 'cancel', 'edit')):
+            raise ValueError('排队操作请求无效')
         if action == 'send' and (not isinstance(body.get('text'), str) or
                                  not body['text'].strip() and not (body.get('resolvedImages') or body.get('resolvedFiles') or body.get('references')) or len(body['text']) > 100000):
             raise ValueError('请输入 1–100000 字的消息')
