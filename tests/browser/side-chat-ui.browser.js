@@ -37,10 +37,11 @@ async function runSideChatTests(){
   wb.sideChat();panel=wb.current.files.find(t=>t.id==='sidechat').sideChat;await wait(()=>panel.chats);
   check(panel.chats[0].id===child,'Reopening discovers the same persistent child');
   await wb.close('sidechat');
-  wb.open(child,'local');wb.setAttachedParent({id:parent,host:'local',available:true});
-  wb.tabs.querySelector('.wb-parent-chat').click();
-  wb.tabs.querySelector('[data-tab="chat"] [aria-label="关闭"]').click();
-  check(opened.slice(-2).every(row=>row.id===parent),'Return and close child view both return to the native parent');
+  wb.open(child,'local',{rootId:parent,title:'原生侧边聊天'});
+  check(wb.current.id===parent&&wb.current.chatId===child,'Native child retains the parent workspace');
+  wb.tabs.querySelector('[data-tab="chat"] button').click();
+  await wb.close('child:'+child);
+  check(opened.slice(-2).every(row=>row.id===parent),'Main tab and closing the child return to the native parent');
   check(calls.filter(call=>call.body).length===2,'Leaving a child never stops or destroys its history');
   wb.open(parent,'local');wb.sideChat();await wait(()=>wb.current.files.find(t=>t.id==='sidechat').sideChat.chats);
   return{checks,passed:checks.length};
