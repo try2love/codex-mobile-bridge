@@ -13,6 +13,18 @@ from relay.protocol import MAX_BODY, content_type, download_headers, validate
 PROTOCOL = 'bridge-web-proxy-v1'
 CHUNK = 32768
 WINDOW = 4
+# Account-Web serves the current desktop's new-chat UI. Keep its additional
+# routes here so the separately authorized phone/shared relay does not expand.
+CREATION_READ = {'/api/projects/models'} | {
+    f'/api/desktop-sessions/{provider}/{action}'
+    for provider in ('claude', 'deepseek', 'zcode')
+    for action in ('projects', 'create-models')
+}
+CREATION_WRITE = {'/api/projects', '/api/projects/browse', '/api/projects/trust'} | {
+    f'/api/desktop-sessions/{provider}/{action}'
+    for provider in ('claude', 'deepseek', 'zcode')
+    for action in ('create', 'projects/browse', 'projects/register', 'projects/trust')
+}
 
 
 class CloudWeb:
@@ -80,7 +92,8 @@ class CloudWeb:
         if type(request['expires']) is not int or not time.time() < request['expires'] <= time.time() + 13 * 3600:
             raise ValueError('invalid Web session expiry')
         path, method, length = request['path'], request['method'], request['length']
-        if not isinstance(path, str) or len(path) > 8192 or any(char in path for char in ('\\', '#', '\r', '\n')):
+        if (not isinstance(path, str) or len(path) > 8192 or any(ord(char) < 32 for char in path)
+                or any(char in path for char in ('\\', '#'))):
             raise ValueError('invalid Web path')
         parts = urlsplit(path)
         if parts.scheme or parts.netloc or not path.startswith('/') or '%' in parts.path or any(p in ('.', '..') for p in parts.path.split('/')):
@@ -93,6 +106,8 @@ class CloudWeb:
                 raise ValueError('invalid Web asset request')
         elif parts.path == '/api/auth' and method == 'GET' and not parts.query:
             pass
+        elif parts.path in (CREATION_READ if method == 'GET' else CREATION_WRITE):
+            pass  # The private HTTP handler keeps project, host and model checks.
         elif method == 'GET' and parts.path.endswith('/events') and parts.path != '/api/mobile/events':
             validate(method, parts.path.removesuffix('/events') + '/poll' + ('?' + parts.query if parts.query else ''), length)
         else:

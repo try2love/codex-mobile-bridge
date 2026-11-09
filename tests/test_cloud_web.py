@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
+from urllib.parse import urlencode
 
 import aiohttp
 
@@ -56,8 +57,12 @@ class CloudWebTests(unittest.IsolatedAsyncioTestCase):
             base='/d/' + self.config['gateway_id'], origin=self.web.origin, session_id=self.session,
             csrf='a'*43, expires=int(time.time())+3600, method='GET', path=path, length=0, headers={}, **extra)
 
-    async def proxy(self, path):
+    async def proxy(self, path, body=None):
         request, queue, records, data = self.request(path), asyncio.Queue(), [], bytearray()
+        if body is not None:
+            payload = json.dumps(body).encode()
+            request.update(method='POST', length=len(payload), content_type='application/json')
+            await queue.put(payload)
         async def send(value, part=None):
             if part is not None:
                 data.extend(part)
@@ -70,7 +75,115 @@ class CloudWebTests(unittest.IsolatedAsyncioTestCase):
         await queue.put({'kind': 'request_end'})
         await asyncio.wait_for(self.web.forward(request, queue), 10)
         self.assertEqual(records[-1]['kind'], 'response_end', records)
-        return records[0], bytes(data)
+        return next(row for row in records if row['kind'] == 'response_start'), bytes(data)
+
+    async def test_creation_models_keep_selected_project_host_and_entry_through_live_http(self):
+        catalog = {'models': [{'id': 'chosen', 'efforts': ['high']}], 'cache': {'identity': 'project-account'}}
+        target = self.server.bridge
+        target.creation_models.return_value = catalog
+        project = 'ssh:example|/home/user/Project with spaces'
+        query = urlencode({'kind': 'desktop', 'project': project, 'refresh': 'true'})
+        start, raw = await self.proxy('/api/projects/models?' + query)
+        self.assertEqual(start['status'], 200, raw)
+        self.assertEqual(json.loads(raw), catalog)
+        target.creation_models.assert_called_once_with(project, refresh=True, kind='desktop')
+        target.create_chat.assert_not_called()
+
+        entry = 'codex:separate'
+        separate = target.entries.get.return_value
+        separate.creation_models.return_value = {**catalog, 'cache': {'identity': 'separate-account'}}
+        query = urlencode({'entry': entry, 'kind': 'cli', 'host': entry, 'path': 'D:/Other Project'})
+        start, raw = await self.proxy('/api/projects/models?' + query)
+        self.assertEqual(start['status'], 200, raw)
+        self.assertEqual(json.loads(raw)['cache']['identity'], 'separate-account')
+        target.entries.get.assert_called_once_with(entry)
+        separate.creation_models.assert_called_once_with(None, refresh=False, kind='cli', host=entry, path='D:/Other Project')
+        separate.create_chat.assert_not_called()
+
+    async def test_codex_directory_and_creation_reach_existing_validation_with_original_request_id(self):
+        target = self.server.bridge
+        target.project_directories.return_value = {'path': '/project', 'directories': []}
+        browse = {'host': 'ssh:example', 'path': '/project', 'hidden': False, 'name': None, 'identity': None}
+        start, _ = await self.proxy('/api/projects/browse', browse)
+        self.assertEqual(start['status'], 200)
+        target.project_directories.assert_called_once_with(**browse)
+        target.register_project.return_value = {'key': 'ssh:example|/project'}
+        start, _ = await self.proxy('/api/projects', {'host': 'ssh:example', 'path': '/project', 'createDirectory': False})
+        self.assertEqual(start['status'], 200)
+        target.register_project.assert_called_once_with('/project', False, 'ssh:example')
+        target.project_trust.return_value = {'trusted': True}
+        start, _ = await self.proxy('/api/projects/trust', {'key': 'ssh:example|/project', 'confirmed': True})
+        self.assertEqual(start['status'], 200)
+        target.project_trust.assert_called_once_with(key='ssh:example|/project', confirmed=True)
+        target.create_chat.return_value = {'id': 'created', 'host': 'ssh:example'}
+        identifier = str(uuid.uuid4())
+        selection = {'model': 'chosen', 'effort': 'high', 'modelCatalogIdentity': 'project-account'}
+        start, raw = await self.proxy('/api/sessions', {'id': identifier, 'project': 'ssh:example|/project', 'title': 'Test', **selection})
+        self.assertEqual(start['status'], 200, raw)
+        target.create_chat.assert_called_once_with('ssh:example|/project', 'Test', identifier, model_options=selection)
+
+        start, _ = await self.proxy('/api/projects/browse', {**browse, 'arbitrary': 'forbidden'})
+        self.assertEqual(start['status'], 400)
+        self.assertEqual(target.project_directories.call_count, 1)
+
+    async def test_desktop_creation_routes_keep_provider_and_environment_through_live_http(self):
+        manager = self.server.desktop_sessions = Mock()
+        manager.for_entry.return_value = manager
+        for provider in ('claude', 'deepseek', 'zcode'):
+            with self.subTest(provider=provider):
+                manager.reset_mock()
+                manager.call.return_value = {'models': [{'id': 'chosen'}], 'cache': {'identity': provider}}
+                root = '/api/desktop-sessions/' + provider
+                start, _ = await self.proxy(root + '/projects')
+                self.assertEqual(start['status'], 200)
+                query = urlencode({'environment': 'desktop|ssh:example|scope', 'projectKey': 'project', 'refresh': 'true'})
+                start, raw = await self.proxy(root + '/create-models?' + query)
+                self.assertEqual(start['status'], 200, raw)
+                manager.call.assert_called_with(provider, 'create-models', None,
+                    {'environment': 'desktop|ssh:example|scope', 'projectKey': 'project', 'refresh': True})
+                manager.project_directories.return_value = {'path': '/project', 'directories': []}
+                browse = {'environment': 'desktop|ssh:example|scope', 'path': '/project', 'hidden': False, 'name': None, 'identity': None}
+                start, _ = await self.proxy(root + '/projects/browse', browse)
+                self.assertEqual(start['status'], 200)
+                manager.project_directories.assert_called_once_with(provider, **browse)
+                manager.register_project.return_value = {'key': 'project'}
+                start, _ = await self.proxy(root + '/projects/register', {'environment': browse['environment'], 'path': '/project', 'createDirectory': False})
+                self.assertEqual(start['status'], 200)
+                manager.register_project.assert_called_once_with(provider, browse['environment'], '/project', False)
+                manager.project_trust.return_value = {'trusted': True}
+                start, _ = await self.proxy(root + '/projects/trust', {'projectKey': 'project', 'confirmed': True})
+                self.assertEqual(start['status'], 200)
+                manager.project_trust.assert_called_once_with(provider, projectKey='project', confirmed=True)
+                body = {'id': str(uuid.uuid4()), 'projectKey': 'project', 'environment': browse['environment'], 'model': 'chosen', 'modelCatalogIdentity': provider}
+                start, _ = await self.proxy(root + '/create', body)
+                self.assertEqual(start['status'], 200)
+                manager.call.assert_called_with(provider, 'create', None, body)
+
+    async def test_creation_allowlist_is_exact_and_does_not_expand_phone_or_admin_access(self):
+        from relay.protocol import validate
+        allowed = [('GET', '/api/projects/models'), ('POST', '/api/projects'),
+                   ('POST', '/api/projects/browse'), ('POST', '/api/projects/trust')]
+        for provider in ('claude', 'deepseek', 'zcode'):
+            root = '/api/desktop-sessions/' + provider
+            allowed += [('GET', root + '/create-models')]
+            allowed += [('POST', root + '/projects/' + action) for action in ('browse', 'register', 'trust')]
+        for method, path in allowed:
+            with self.subTest(method=method, path=path):
+                self.web.validate_request({**self.request(path), 'method': method})
+                with self.assertRaises(PermissionError):
+                    validate(method, path)
+        denied = [('POST', '/api/projects/models'), ('GET', '/api/projects/browse'),
+                  ('GET', '/api/projects/trust'), ('GET', '/api/projects/models/extra'),
+                  ('GET', '/api/projects/\tmodels'), ('GET', '/api//projects/models')]
+        for provider in ('claude', 'deepseek', 'zcode', 'arbitrary'):
+            root = '/api/desktop-sessions/' + provider
+            denied += [('POST', root + '/create-models'), ('GET', root + '/projects/register'),
+                       ('GET', root + '/projects/browse'), ('POST', root + '/projects/remove'),
+                       ('POST', root + '/install'), ('POST', root + '/scan')]
+        denied += [('GET', '/api/desktop-sessions/arbitrary/create-models'), ('POST', '/api/desktop-sessions/arbitrary/create')]
+        for method, path in denied:
+            with self.subTest(method=method, path=path), self.assertRaises((ValueError, PermissionError)):
+                self.web.validate_request({**self.request(path), 'method': method})
 
     async def test_live_assets_and_private_auth_cross_the_actual_http_listener(self):
         start, html = await self.proxy('/')
