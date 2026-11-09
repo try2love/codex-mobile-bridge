@@ -29,7 +29,7 @@
 
 [![桌面网关：客户端与接入（演示数据）](site/assets/v2-clients.png)](https://try2love.github.io/codex-mobile-bridge/?lang=zh)
 
-从手机 App 或浏览器继续电脑上的 **Codex、Claude Code / Cowork、DeepSeek Harness、ZCode** 会话。四个客户端保留独立聊天列表、账号和工作区；在当前应用下创建会话、查看回复、发送附件、切换可用模型与推理强度、处理权限请求。
+从手机 App 或浏览器继续电脑上的 **Codex、Claude Code / Cowork、DeepSeek Harness、ZCode、Antigravity** 会话。多个客户端保留独立聊天列表、账号和工作区；在当前应用下创建会话、查看回复、发送附件、切换可用模型与推理强度、处理权限请求。
 
 任务继续在原电脑执行，Codex 的 SSH 任务继续在原服务器执行。网关复用原客户端的会话、认证和执行环境，不让手机重新运行一套 Agent。手机无需登录相同的模型账号，使用网关登录或可撤销的扫码配对即可接入。
 
@@ -157,6 +157,7 @@ Codex 与 Claude CLI 接入分别在各自账号管理中配置；本机 CLI 同
 | Claude Desktop | macOS / Windows 的 Code、Cowork | 普通 Chat 不支持；首次连接或重新初始化可能需解锁、辅助功能、开发者模式及目录信任；Linux 自动接入暂不支持 |
 | DeepSeek Harness | 桌面会话、本地接入插件、模型与账号能力 | 插件更新可能需结束任务后重启；能力以对应 Harness 版本为准 |
 | ZCode | 原生聊天、项目、附件、审批、模型、API 与额度 | macOS / Windows / Linux 本地连接或已配置的官方远控；依赖兼容的 ZCode 版本 |
+| Antigravity | 桌面端 (App / IDE / CLI) 原生会话直连、多表面项目、模型与推理强度同步、队列排队与工具审批 | 基于本地 Language Server RPC 直连，消除状态分叉；详见 [Antigravity 接入说明](docs/antigravity.md) |
 
 > 社区项目，与 OpenAI、Anthropic、DeepSeek 或 ZCode 官方无隶属关系。依赖客户端内部接口，上游更新可能需要适配。电脑休眠或离线时无法远程操作；不能承诺 Claude 冷启动免解锁。平台与历史实测范围见 [验证记录](VERIFICATION.md) 和 [桌面接入说明](docs/deepseek-harness.md)。
 

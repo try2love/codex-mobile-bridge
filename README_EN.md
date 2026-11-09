@@ -29,7 +29,7 @@
 
 [![Desktop gateway: clients and access, with demo data](site/assets/v2-clients.png)](https://try2love.github.io/codex-mobile-bridge/?lang=en)
 
-Continue **Codex, Claude Code / Cowork, DeepSeek Harness and ZCode** sessions from a phone app or browser. Each client keeps its own chats, accounts and workspaces. Create chats within the selected client, read replies, send attachments, select available models/reasoning and respond to approval requests.
+Continue **Codex, Claude Code / Cowork, DeepSeek Harness, ZCode and Antigravity** sessions from a phone app or browser. Multiple clients keep their own chats, accounts and workspaces. Create chats within the selected client, read replies, send attachments, select available models/reasoning and respond to approval requests.
 
 Tasks run on the original computer, or the original SSH host for Codex remote sessions. Bridge reuses the desktop session, authentication and execution environment. Your phone does not need the same model-service account: use gateway login or revocable QR pairing.
 
@@ -159,6 +159,7 @@ Desktop packages cover macOS, Windows and experimental Linux x64/ARM64. Codex an
 | Claude Desktop | Code and Cowork on macOS/Windows | Regular Chat is excluded; initialization may need an unlocked desktop, accessibility, developer mode and directory trust; no Linux automatic connection |
 | DeepSeek Harness | Desktop sessions, local integration plugin, account/model capabilities | Plugin updates may require an idle restart; features depend on the Harness version |
 | ZCode | Native chats, projects, attachments, approvals, models, API setup and quota | Local connections on macOS/Windows/Linux or configured official remote access; requires a compatible ZCode version |
+| Antigravity | Native desktop session (App / IDE / CLI), projects, model/effort sync, queueing and tool approvals | Direct Language Server RPC connection with zero split-brain; see [Antigravity integration guide](docs/antigravity.md) |
 
 > Community project, unaffiliated with OpenAI, Anthropic, DeepSeek or ZCode. Internal client interfaces may need adaptation after updates. Sleeping/offline computers are unreachable; Claude cold initialization without unlocking is not guaranteed. See [verification history](VERIFICATION.md) and [client integration details](docs/deepseek-harness.md).
 
