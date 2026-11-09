@@ -64,11 +64,20 @@ def process_exists(pid):
     if os.name != 'nt':
         try:
             os.kill(pid, 0)
-            return True
         except ProcessLookupError:
             return False
         except PermissionError:
             return True
+        # kill(pid, 0) also succeeds for an exited process awaiting reaping.
+        # Such a zombie holds no application files and must not block handoff.
+        try:
+            state = subprocess.run(['ps', '-o', 'stat=', '-p', str(pid)],
+                                   capture_output=True, text=True, timeout=2)
+            if state.returncode == 0 and state.stdout.strip().startswith('Z'):
+                return False
+        except (OSError, subprocess.TimeoutExpired):
+            pass  # Failure to inspect state is not proof that the process exited.
+        return True
     import ctypes
     from ctypes import wintypes
     kernel = ctypes.WinDLL('kernel32', use_last_error=True)
@@ -291,9 +300,7 @@ def wait_parent(pid, timeout=45):
     else:
         end = time.monotonic() + timeout
         while time.monotonic() < end:
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
+            if not process_exists(pid):
                 return
             time.sleep(.2)
         raise TimeoutError('应用尚未退出，更新已取消。')

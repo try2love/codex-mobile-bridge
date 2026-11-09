@@ -1,11 +1,46 @@
 import json
+import os
 from pathlib import Path
 import stat
+import subprocess
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 import zipfile
 import bridge.features.updates.gateway as updater
+
+
+@unittest.skipIf(os.name == 'nt', 'POSIX process state')
+class ParentWaitTests(unittest.TestCase):
+    def test_wait_accepts_exited_process_before_its_owner_reaps_it(self):
+        child = subprocess.Popen([updater.sys.executable, '-c', 'pass'])
+        self.addCleanup(child.wait)
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                state = subprocess.run(['ps', '-o', 'stat=', '-p', str(child.pid)],
+                                       capture_output=True, text=True, timeout=2)
+            except PermissionError:
+                self.skipTest('sandbox blocks process inspection; run outside sandbox')
+            if state.stdout.strip().startswith('Z'):
+                break
+            if time.monotonic() >= deadline:
+                self.fail('fixture did not reach unreaped exit state')
+            time.sleep(.02)
+        # Do not poll/wait the child before checking: that would reap the zombie.
+        os.kill(child.pid, 0)
+        updater.wait_parent(child.pid, timeout=.5)
+        self.assertFalse(updater.process_exists(child.pid))
+
+    def test_live_parent_still_times_out(self):
+        with self.assertRaisesRegex(TimeoutError, '应用尚未退出'):
+            updater.wait_parent(os.getpid(), timeout=.01)
+
+    def test_unavailable_state_probe_does_not_treat_live_process_as_exited(self):
+        for error in (PermissionError('blocked'), subprocess.TimeoutExpired('ps', 2)):
+            with self.subTest(error=type(error).__name__), patch.object(updater.subprocess, 'run', side_effect=error):
+                self.assertTrue(updater.process_exists(os.getpid()))
 
 
 class ArchiveTests(unittest.TestCase):
