@@ -97,6 +97,12 @@ Antigravity 的日誌採用 Append-only 的 `transcript.jsonl`。當發生重新
 - **實讀與推測透明標記**：模型即時思考折疊展現（`Thought for Xs`）、工具調用過程清晰標註，確保上下文閱讀體驗流暢。
 - **底部安全留白**：底部常駐輸入框與排隊欄均具備防遮擋 Padding 與即時滾動鎖定，保障單手操作時的流暢體驗。
 
+<p align="center">
+  <img src="../site/assets/antigravity-list.png" width="45%" alt="會話列表與多表面探測" />
+  &nbsp;&nbsp;
+  <img src="../site/assets/antigravity-detail.png" width="45%" alt="對話詳情、思考折疊與排隊控制" />
+</p>
+
 ---
 
 ## 四、安全與脫敏規範
