@@ -57,9 +57,14 @@ class Desktop:
         if self.local_bridge is None:
             from bridge.app.service import Bridge
             from bridge.clients.manager import DesktopSessions
-            from bridge.clients.discovery import discover_clients
+            from bridge.clients.discovery import discover_clients, inventory_current
             p = self.preferences()
-            discovered = discover_clients(p)
+            saved = read_json(self.data_dir/'desktop-sessions/settings.json', {})
+            inputs = {**p, **{key: value for key, value in saved.items()
+                               if key.endswith(('Home', 'Application', 'Applications'))}}
+            if saved.get('discoveryPreferences', {}).get('desktopExecutable'):
+                inputs['desktopExecutable'] = saved['discoveryPreferences']['desktopExecutable']
+            discovered = saved['discovered'] if inventory_current(saved, inputs) else discover_clients(inputs)
             runtime = p.get('codexBin')
             # Keep ordinary Windows installations automatic across App updates.
             # Preserve discovery's fallback for nonstandard desktop bundles.

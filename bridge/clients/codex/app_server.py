@@ -145,7 +145,9 @@ class CodexAppServer:
                     raise ArchiveRejected(error)
                 if code == -32601:
                     raise AppServerUnsupported(detail)
-                raise AppServerError(detail)
+                failure = AppServerError(detail)
+                failure.rpc_error = error
+                raise failure
             return response['result']
         finally:
             with self.lock:

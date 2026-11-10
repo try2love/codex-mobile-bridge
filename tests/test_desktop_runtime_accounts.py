@@ -1,8 +1,10 @@
 """Explicit shared Desktop initialization without starting a real App."""
 import os
+import threading
 import unittest
 import uuid
 from contextlib import nullcontext
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -77,7 +79,7 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
         self.mocks['validate_runtime'].assert_called_once_with(self.manager.runtime)
         self.assertEqual(self.manager.state['phase'], 'complete')
         self.assertEqual(self.manager.state['operation'], 'desktopRuntime')
-        self.bridge.assert_desktop_idle.assert_called_once_with(allow_stopped_app=False)
+        self.bridge.assert_desktop_idle.assert_called_once_with(allow_stopped_app=False, desktop_only=True)
         self.assertEqual(self.mocks['identity'].call_count, 4)
         self.mocks['configure'].assert_called_once_with(self.home, self.app.executable, self.manager.runtime)
         self.mocks['connect'].assert_called_once_with(self.home, self.manager.runtime)
@@ -114,6 +116,77 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
         self.mocks['stop'].assert_not_called()
         self.mocks['configure'].assert_not_called()
 
+    def native_cli(self, bridge=None):
+        bridge = bridge or self.bridge
+        identifier = 'native-cli-fixture'
+        process = Mock(poll=Mock(return_value=None))
+        cli = bridge.cli_sessions
+        cli.home = self.home
+        cli.alias = None
+        cli.client.process = process
+        cli.client.server_info = {'codexHome': str(self.home)}
+        cli.joined[identifier] = process
+        cli.metadata = {identifier: {'connectionToken': 'native-generation'}}
+        session = SimpleNamespace(runtime='cli', owner='cli:' + identifier, connected=True,
+                                  desktop_owner_probe='absent',
+                                  view=lambda: {'connected': True, 'status': 'active', 'title': 'Native CLI'})
+        bridge.live[identifier] = session
+        return session
+
+    def test_initialization_preserves_independent_native_cli_but_account_switch_stays_blocked(self):
+        self.native_cli()
+        self.bridge.cli_sessions.daemon_may_be_running.return_value = True
+        self.run_initialization()
+        self.assertEqual(self.manager.state['phase'], 'complete')
+        self.assertEqual(len(self.manager.blockers()), 1)
+        with self.assertRaisesRegex(ValueError, 'Native CLI'):
+            self.manager.idle()
+        self.bridge.cli_sessions.joined.clear()
+        self.assertIsNone(self.manager._native_cli_connection(self.bridge, 'native-cli-fixture', self.bridge.live['native-cli-fixture']))
+
+    def test_initialization_never_exempts_cli_labels_with_unknown_or_desktop_ownership(self):
+        session = self.native_cli()
+        cli = self.bridge.cli_sessions
+        original_process = cli.client.process
+        for changes in ({'owner': None}, {'owner': 'desktop-owner'}, {'runtime': 'desktop'},
+                        {'process': Mock(poll=Mock(return_value=None))},
+                        {'home': str(self.root/'other-home')}):
+            with self.subTest(changes=list(changes)):
+                session.runtime, session.owner, session.desktop_owner_probe = 'cli', 'cli:native-cli-fixture', 'absent'
+                cli.client.process = original_process
+                cli.client.server_info = {'codexHome': str(self.home)}
+                if 'process' in changes:
+                    cli.client.process = changes['process']
+                elif 'home' in changes:
+                    cli.client.server_info = {'codexHome': changes['home']}
+                else:
+                    for key, value in changes.items():
+                        setattr(session, key, value)
+                self.assertIsNone(self.manager._native_cli_connection(self.bridge, 'native-cli-fixture', session))
+        for probe in (None, 'unknown', 'absent', 'found'):
+            session.desktop_owner_probe = probe
+            with self.assertRaises(ValueError):
+                self.manager.idle()
+        self.mocks['stop'].assert_not_called()
+
+    def test_unknown_submission_is_retained_even_with_independent_native_cli(self):
+        self.native_cli()
+        self.bridge.submissions['native-cli-fixture:uncertain'] = {'status': 'unknown'}
+        self.assertEqual([row['reason'] for row in self.manager.blockers()], ['running', 'unknown'])
+
+    def test_remote_native_cli_is_independent_but_remote_desktop_owner_is_not(self):
+        cli = SimpleNamespace(lock=threading.RLock(), client=SimpleNamespace(), joined={})
+        remote = SimpleNamespace(host='remote:fixture', codex_home=self.home, lock=threading.RLock(),
+                                 live={}, submissions={}, cli_sessions=cli)
+        session = self.native_cli(remote)
+        cli.alias, cli.remote_home = 'fixture', Path('/remote/profile')
+        cli.client.server_info = {'codexHome': '/remote/profile'}
+        self.bridge.remote_bridges['remote:fixture'] = remote
+        self.assertIsNotNone(self.manager._native_cli_connection(remote, 'native-cli-fixture', session))
+        self.assertEqual(len(self.manager.blockers()), 1)
+        session.runtime, session.owner = 'desktop', 'remote-app-owner'
+        self.assertIsNone(self.manager._native_cli_connection(remote, 'native-cli-fixture', session))
+
     def test_interrupted_initialization_allows_explicit_retry_without_account_rollback(self):
         self.manager.phase('starting', operation='desktopRuntime', requestId=self.value['requestId'])
         restarted = accounts_module.Accounts(self.bridge)
@@ -144,7 +217,7 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
         self.mocks['inspect'].return_value = self.stopped
         self.run_initialization()
         self.assertEqual(self.manager.state['phase'], 'complete')
-        self.bridge.assert_desktop_idle.assert_called_once_with(allow_stopped_app=True)
+        self.bridge.assert_desktop_idle.assert_called_once_with(allow_stopped_app=True, desktop_only=True)
         self.mocks['stop'].assert_not_called()
         self.app.start.assert_called_once()
 

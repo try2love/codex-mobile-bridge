@@ -897,6 +897,27 @@ class Accounts:
             self.save()
             return self.desktop_status()
 
+    @staticmethod
+    def _native_cli_connection(bridge, identifier, session):
+        """Identify a native route for this audit; this is not Desktop absence."""
+        if (getattr(session, 'runtime', None) != 'cli' or
+                getattr(session, 'owner', None) != 'cli:' + identifier):
+            return None
+        cli = getattr(bridge, 'cli_sessions', None)
+        if cli is None:
+            return None
+        with cli.lock:
+            process = getattr(cli.client, 'process', None)
+            info = getattr(cli.client, 'server_info', None)
+            expected = cli.remote_home if cli.alias else cli.home
+            token = cli.metadata.get(identifier, {}).get('connectionToken')
+            if (process is None or cli.joined.get(identifier) is not process or not info or
+                    not token or not expected or Path(info.get('codexHome', '')) != Path(expected)):
+                return None
+            if not cli.alias and Path(expected).resolve() != Path(bridge.codex_home).resolve():
+                return None
+            return (process, token, str(expected)) if process.poll() is None else None
+
     def blockers(self):
         result = []
         for bridge in [self.bridge, *self.bridge.remote_bridges.values()]:
@@ -924,8 +945,10 @@ class Accounts:
             bridge.ignore_submission(value.get('threadId', ''), value.get('submissionId', ''))
             return self.public()
 
-    def idle(self):
+    def idle(self, *, pending_only=False):
         blocked = self.blockers()
+        if pending_only:
+            blocked = [row for row in blocked if row['reason'] in ('queued', 'unknown')]
         if blocked:
             names = '、'.join(row['title'] for row in blocked[:3])
             raise ValueError('请先结束任务或处理待发送消息：'+names)
@@ -1012,7 +1035,7 @@ class Accounts:
             if self.state.get('operation') == 'desktopRuntime' and self.state.get('requestId') == request_id:
                 return self.public()
             self.assert_editable()
-            self.idle()
+            self.idle(pending_only=True)
             executable = self.index.get('desktopExecutable') or DesktopApp.discover(self.runtime)
             if not executable:
                 raise ValueError('请先在桌面端指定 Codex 桌面程序路径')
@@ -1060,8 +1083,7 @@ class Accounts:
         try:
             with self.gate, self.bridge.account.lock, initialization_lock(self.home):
                 state, identities = observed()
-                self.idle()
-                self.bridge.assert_desktop_idle(allow_stopped_app=not state['running'])
+                self.bridge.assert_desktop_idle(allow_stopped_app=not state['running'], desktop_only=True)
                 current, current_identities = observed()
                 if identities != current_identities or set(state['pids']) != set(current['pids']):
                     raise ValueError('Codex 桌面进程已变化，请重新初始化连接')

@@ -70,10 +70,10 @@ class Antigravity:
 
     def status(self):
         surfaces = self.store.surfaces()
-        live = any(self.cli.available(row['key']) for row in surfaces)
-        return {'installed': bool(surfaces), 'configured': bool(surfaces), 'connected': live,
+        live = any(self.cli.available(surface) for surface in SURFACE_LABELS)
+        return {'installed': bool(surfaces) or live, 'configured': bool(surfaces) or live, 'connected': live,
                 'historyAvailable': bool(surfaces),
-                'reason': '原生服务已连接' if live else '可读取本机历史；实时操作需要电脑上相应的 Antigravity 原生服务',
+                'reason': '原生服务已连接' if live else ('可读取本机历史；实时操作需要电脑上相应的 Antigravity 原生服务' if surfaces else '原生服务尚未连接；请在电脑打开原客户端'),
                 'pluginEnabled': bool(self.hooks)}
 
     def account_scope(self):
@@ -92,11 +92,12 @@ class Antigravity:
         return [{'surface': row['key'], 'host': 'local', 'hostLabel': '此电脑', 'name': row['name'],
                  'scope': str(row['root']), 'createRequiresMessage': True, 'createTitle': False} for row in self.store.surfaces()]
 
-    def _session(self, row):
+    def _session(self, row, *, live=None):
         key = row['id']
         requests = self.hooks.pending_approvals_for(key) if self.hooks else []
         hooked = bool(self.hooks and self.hooks.has_recent_heartbeat(key))
-        live = self.cli.available(row['surfaceDirKey'])
+        if live is None:
+            live = self.cli.available(row['surfaceDirKey'])
         active = row.get('status') == 'active' or hooked or bool(requests)
         permission = self.hooks.permission_mode(key) if self.hooks else 'desktop'
         return {**row, 'status': 'active' if active else 'idle', 'requests': requests,
@@ -113,10 +114,11 @@ class Antigravity:
     def management(self):
         """Inspect each native source and existing per-session settings without starting it."""
         found = {row['key']: row for row in self.store.surfaces()}
-        sessions = [self._session(row) for row in self.store.list_sessions()]
+        live = {surface: self.cli.available(surface) for surface in SURFACE_LABELS}
+        sessions = [self._session(row, live=live[row['surfaceDirKey']]) for row in self.store.list_sessions()]
         return {'surfaces': [
             {'id': surface, 'name': name, 'historyAvailable': surface in found,
-             'connected': self.cli.available(surface) if surface in found else False,
+             'connected': live[surface],
              'sessions': [row for row in sessions if row['surfaceDirKey'] == surface]}
             for surface, name in SURFACE_LABELS.items()],
             'plugin': {**inspect_plugin(self.directory, self.home), 'active': bool(self.hooks)},
@@ -142,8 +144,10 @@ class Antigravity:
         if action == 'status':
             return self.status()
         if action in ('list', 'lifecycle'):
+            rows = self.store.list_sessions()
+            live = {surface: self.cli.available(surface) for surface in {row['surfaceDirKey'] for row in rows}}
             return {'connected': True, 'complete': True,
-                    'sessions': [self._session(row) for row in self.store.list_sessions()]}
+                    'sessions': [self._session(row, live=live[row['surfaceDirKey']]) for row in rows]}
         if action == 'projects':
             return {'projects': self.store.discover_projects(), 'createRequiresMessage': True, 'createModels': True}
         if action == 'account':

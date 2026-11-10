@@ -349,6 +349,34 @@ class DesktopSessions:
             instance = next(row for row in self.clients(refresh=True)['clients'] if row['id'] == 'zcode')
             return {'entry': 'zcode', 'instance': instance}
 
+    def antigravity_application_capability(self):
+        supported = sys.platform in ('darwin', 'win32', 'linux') and not self.enabled('antigravity')
+        return {'family': 'antigravity', 'kind': 'default-application', 'supported': supported,
+                **({'reason': '请先停用 Antigravity 手机接入，再选择客户端程序'} if not supported else {})}
+
+    def register_antigravity_application(self, application):
+        from bridge.platforms.antigravity import installation
+        if (not isinstance(application, str) or not application.strip() or
+                any(ord(character) < 32 or ord(character) == 127 for character in application)):
+            raise ValueError('请选择 Antigravity App、IDE 或 agy 程序的完整路径')
+        path = Path(application)
+        if not path.is_absolute() or str(path).startswith(('\\\\', '//')):
+            raise ValueError('请选择本机 Antigravity 程序的完整路径')
+        with self.client_lock:
+            capability = self.antigravity_application_capability()
+            if not capability['supported']:
+                raise ValueError(capability['reason'])
+            found = installation(path)
+            if not found:
+                raise ValueError('所选路径不是可核验的 Antigravity App、IDE 或官方 agy 程序')
+            self.config.setdefault('antigravityApplications', {})[found['surface']] = found['application']
+            # One default provider, with its native App/IDE/CLI installations;
+            # selecting a program does not create or relocate a user profile.
+            self.config.setdefault('enabled', {})['antigravity'] = False
+            self.scan(scan_wsl=False, inventory_only=True)
+            instance = next(row for row in self.clients()['clients'] if row['id'] == 'antigravity')
+            return {'entry': 'antigravity', 'instance': instance}
+
     def _configure_zcode(self):
         if self.instance is not None:
             return
@@ -1764,6 +1792,9 @@ class DesktopSessions:
                        **{key: value for key, value in self.config.items() if key.endswith('Home')}}
         if self.config.get('zcodeApplication'):
             preferences['zcodeApplication'] = self.config['zcodeApplication']
+        for key in ('antigravityApplication', 'antigravityApplications'):
+            if self.config.get(key):
+                preferences[key] = self.config[key]
         if self.bridge:
             preferences['desktopExecutable'] = self.bridge.accounts.index.get('desktopExecutable')
         return preferences
@@ -1810,16 +1841,20 @@ class DesktopSessions:
             return scan_profile(self)
         # Discovery only: neither a GUI refresh nor a manual rescan launches apps.
         # Keep the old setup argument for callers from older desktop packages.
-        from bridge.clients.discovery import discover_clients
+        from bridge.clients.discovery import discover_clients, inventory_current, inventory_preferences, DISCOVERY_REVISION
         with self.client_lock:
             preferences = self._discovery_preferences()
             custom_claude = bool(self.instances and self.instances.metadata('claude'))
             if custom_claude and not preferences.get('claudeHome'):
                 preferences['claudeHome'] = self.instances.default_claude_home()
+            if inventory_only and inventory_current(self.config, preferences):
+                return self.clients(refresh=True)
             discovered = discover_clients(preferences)
             if custom_claude and not self.config.get('claudeHome'):
                 discovered['claude']['dataDirectoryExplicit'] = False
             self.config['discovered'] = discovered
+            self.config['discoveryRevision'] = DISCOVERY_REVISION
+            self.config['discoveryPreferences'] = inventory_preferences(preferences)
             with self.read_lock:
                 self._configure_zcode()
                 self._configure_antigravity()
@@ -2531,11 +2566,11 @@ class DesktopSessions:
                                     canInitializeDesktop=phase != 'connecting')
             if 'antigravity' in self.adapters:
                 enabled = self.enabled('antigravity')
-                adapter = self.adapters['antigravity']
+                adapter = self.adapters['antigravity'] if enabled or probe == 'antigravity' else self.adapters.get('antigravity')
                 status = adapter.status() if (enabled or probe == 'antigravity') else (
-                    self.config.get('discovered', {}).get('antigravity') or adapter.status()
+                    discovered.get('antigravity') or (adapter.status() if adapter else {})
                 )
-                installed = bool(status.get('installed', True))
+                installed = bool(status.get('installed') or discovered.get('antigravity', {}).get('installed'))
                 connected = bool(enabled and status.get('connected') is True)
                 rows.append({
                     'id': 'antigravity',
@@ -2546,7 +2581,7 @@ class DesktopSessions:
                     'configured': installed,
                     'connected': connected,
                     'setupStatus': 'ready' if connected else ('history-only' if status.get('historyAvailable') else 'discovered' if installed else 'not-installed'),
-                    'historyAvailable': bool(status.get('historyAvailable') or installed),
+                    'historyAvailable': bool(status.get('historyAvailable') or discovered.get('antigravity', {}).get('historyAvailable')),
                     'reason': status.get('reason') or ('Antigravity 已接入' if connected else '已发现 Antigravity，启用后可查看本机历史'),
                     'accountNotice': '账号与登录由原客户端管理',
                     'canQuitDesktop': False,
@@ -2660,7 +2695,8 @@ class DesktopSessions:
                     claude.update(enabled=True, selectable=True, configured=True)
                 rows.extend(self.instance_rows())
             result = {'clients': rows, 'computer': socket.gethostname(), 'gatewayRunning': self.gateway_running,
-                      'wslSupported': entries is not None and sys.platform == 'win32'}
+                      'wslSupported': entries is not None and sys.platform == 'win32',
+                      'inventoryAvailable': self.config.get('discoveryRevision') == 1 and bool(discovered)}
             if self.instances is not None and self.instances.error:
                 result['instanceError'] = self.instances.error
             if sys.platform == 'win32':

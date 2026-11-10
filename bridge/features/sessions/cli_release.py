@@ -33,6 +33,7 @@ class CliConnections:
         self.path = Path(directory) / 'cli-release-operations.json'
         self.lock = threading.RLock()
         self.closed = threading.Event()
+        self.callbacks = {}
         self.jobs = json.loads(self.path.read_text()) if self.path.exists() else {}
         for job in self.jobs.values():
             for row in job['results']:
@@ -52,7 +53,7 @@ class CliConnections:
                     'operations': json.loads(json.dumps(list(self.jobs.values())))}
 
     def submit(self, body):
-        if set(body) != {'id', 'connections', 'mode'} or body['mode'] not in ('wait', 'stop'):
+        if set(body) != {'id', 'connections', 'mode'} or body['mode'] not in ('wait', 'stop', 'check', 'unload'):
             raise ValueError('CLI 释放请求无效')
         uuid.UUID(body['id'])
         selected = body['connections']
@@ -65,15 +66,29 @@ class CliConnections:
                 if previous['connections'] != selected or previous['mode'] != body['mode']:
                     raise ValueError('释放请求 ID 已用于其他操作')
                 return json.loads(json.dumps(previous))
-            busy = {row['key'] for job in self.jobs.values() for row in job['results']
-                    if row['status'] in ('waiting', 'releasing', 'unknown')}
-            if busy.intersection(selected):
-                raise ValueError('所选连接已有释放请求，请查看该请求的结果')
+            busy = [row for job in self.jobs.values() for row in job['results']
+                    if row['key'] in selected and row['status'] in ('waiting', 'releasing', 'unknown')]
+            if body['mode'] == 'check' and any(row['status'] != 'unknown' for row in busy):
+                raise ValueError('释放操作仍在进行，请等待此次检查完成')
+            if body['mode'] not in ('check',) and any(body['mode'] != 'stop' or row['status'] != 'waiting' for row in busy):
+                raise ValueError('所选连接已有释放请求，请先核对该请求的结果')
             available = {row['key']: row for row in self._connections()}
+            if body['mode'] in ('check', 'unload'):
+                available = {**self.callbacks, **available}
             if any(key not in available for key in selected):
                 raise ValueError('连接已变化，请刷新后重新选择')
+            if body['mode'] == 'check' and any('_check' not in available[key] for key in selected):
+                raise ValueError('此连接无法自动核验，请在原客户端核对；未重放操作')
+            if body['mode'] == 'unload' and any('_unload' not in available[key] or not any(
+                    row['key'] == key and row['status'] == 'detached' for old in self.jobs.values() for row in old['results'])
+                    for key in selected):
+                raise ValueError('请先核对已退订的原连接，再明确释放原生占用')
+            for row in busy:
+                if body['mode'] == 'stop':
+                    row.update(status='superseded', notice='已改为停止任务并释放；请查看新的释放请求')
             job = {**body, 'results': [{k: v for k, v in available[key].items() if not k.startswith('_')}
                                      | {'status': 'waiting'} for key in selected]}
+            self.callbacks.update({key: available[key] for key in selected})
             self.jobs[body['id']] = job
             # Bound completed receipts; pending/unknown operations remain attributable.
             if len(self.jobs) > 128:
@@ -91,13 +106,29 @@ class CliConnections:
         pending = list(job['results'])
         while pending and not self.closed.is_set():
             for row in list(pending):
+                with self.lock:
+                    if row['status'] != 'waiting':
+                        pending.remove(row)
+                        continue
+                    row['status'] = 'releasing'
+                    self.save(self.path, self.jobs)
                 try:
                     # Adapter rechecks the SAME ownership generation before any mutation.
-                    result = available[row['key']]['_release'](job['mode'] == 'stop')
+                    callback = available[row['key']]
+                    result = (callback['_check']() if job['mode'] == 'check' else callback['_unload']()
+                              if job['mode'] == 'unload' else callback['_release'](job['mode'] == 'stop'))
                 except Exception as error:
-                    result = {'status': 'unknown', 'error': str(error)}
+                    result = getattr(error, 'release_result', {'status': 'unknown', 'error': str(error)})
                 with self.lock:
+                    if result.get('status') in ('released', 'detached'):
+                        row.pop('error', None)
                     row.update(result)
+                    if result.get('status') in ('released', 'detached'):
+                        for old in self.jobs.values():
+                            for prior in old['results']:
+                                if prior['key'] == row['key'] and prior['status'] in ('unknown', 'detached'):
+                                    prior.pop('error', None)
+                                    prior.update(result)
                     self.save(self.path, self.jobs)
                 if row['status'] != 'waiting':
                     pending.remove(row)

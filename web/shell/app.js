@@ -46,7 +46,14 @@ function hostUrl(path,host=currentHost){const value=/^\/api\/sessions\/[0-9a-f-]
 let listLoading=0;
 let modelCatalogGeneration=0;const modelCatalogs=new Map();let catalogData={models:null,skills:null};let catalogResults={models:null,skills:null};let catalogTasks={models:null,skills:null};let selectedSkills=new Set(),invalidSkills=new Set(),skillIndex=new Map(),skillTotal=0,skillPages=[],skillQuery={q:'',offset:0,limit:200},skillSearchTimer,skillRequest=0;
 function el(tag,cls,text){const node=document.createElement(tag);if(cls)node.className=cls;if(text!==undefined)node.textContent=text;return node;}
-function toast(text){text=t(text);$('toast').textContent=text;$('toast').hidden=false;clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('toast').hidden=true,4200);}
+function toast(text){
+  const original=$('toast'),dialog=[...document.querySelectorAll('dialog[open]')].filter(node=>!node.inert).at(-1);
+  clearTimeout(toast.timer);if(toast.active&&toast.active!==original)toast.active.remove();original.hidden=true;
+  const node=dialog?document.createElement('div'):original;
+  if(dialog){node.className=original.className;node.setAttribute('role','status');dialog.append(node);}
+  node.textContent=t(text);node.hidden=false;toast.active=node;
+  toast.timer=setTimeout(()=>{if(node===original)node.hidden=true;else node.remove();},4200);
+}
 function renderHostErrors(hosts){
   const root=$('host-errors'),gateway=(window.BridgeRelayBase||location.origin||'')+'|';
   const active=new Set(hosts.map(host=>gateway+(host.host||host.label)));
@@ -387,10 +394,10 @@ function sessionMenuContext(chat,provider='codex'){
   if(provider==='codex' && ['cli','ide'].includes(access.source) && (identity.host==='local'||identity.host.startsWith('codex:')))context.cliNetwork=async()=>{
     const url=sessionUrl(chat.id,'cli-network',identity.host), value=await api(url);
     if(!isCurrent())return;
-    if(!value.canRecover){toast(t(value.message));return;}
-    if(!window.confirm(t(value.message)+' '+t('正常重启此配置的 CLI 并恢复连接？')))return;
+    if(!value.canRecover)return {message:value.message};
+    if(!window.confirm(t(value.message)+' '+t('这会正常退出并重启此配置的共享 CLI 服务。请先结束全部任务，并确保恢复期间其他客户端不再发起任务。是否继续？')))return;
     const result=await api(url,{confirmed:true,generation:value.generation},undefined,isCurrent);
-    toast(t(result.connected?'CLI 连接已恢复':'请重新连接原会话'));
+    return {message:result.connected?'CLI 连接已恢复':'请重新连接原会话'};
   };
   const renameIds=new Map();
   if(provider!=='codex'||access.canConfigure)context.rename=async title=>{

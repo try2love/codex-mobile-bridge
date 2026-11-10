@@ -60,7 +60,12 @@ class DesktopConnectionsPanel {
   applyClientSnapshot(value){
     ClientLifecycle.reconcile(this.operationFailures,this.managementClients(value.clients));
     this.clients=value.clients;this.instanceError=value.instanceError||'';
+    this.inventoryAvailable=value.inventoryAvailable??this.inventoryAvailable;
     this.gatewayRunning=value.gatewayRunning??this.gatewayRunning;this.windowsSession=value.windowsSession??this.windowsSession;
+  }
+  async loadClients(){
+    await this.refreshClients();
+    if(this.inventoryAvailable===false)await this.scan();
   }
   async refreshClients(refresh=false){
     const root=document.getElementById('client-overview');if(!root||this.scanning||this.choosingClient||(this.busy&&!refresh))return;
@@ -187,7 +192,7 @@ class DesktopConnectionsPanel {
     const dialog=document.createElement('dialog');dialog.className='client-disable-dialog';dialog.setAttribute('aria-labelledby','client-add-title');
     const heading=document.createElement('h2');heading.id='client-add-title';heading.textContent=BridgeI18n.t('添加客户端');dialog.append(heading);
     const actions=document.createElement('div');actions.className='actions';
-    for(const [family,label] of [['codex','Codex'],['claude','Claude'],['deepseek','DSH'],['zcode','ZCode']]){
+    for(const [family,label] of [['codex','Codex'],['claude','Claude'],['deepseek','DSH'],['zcode','ZCode'],['antigravity','Antigravity']]){
       const capability=value.capabilities?.find(row=>row.family===family),button=document.createElement('button');button.type='button';button.textContent=label;
       button.disabled=capability?.supported!==true;button.title=BridgeI18n.t(capability?.reason||'');
       if(family==='zcode'&&button.disabled)button.textContent+=' · '+BridgeI18n.t(capability?.kind==='default-application'?'已添加':'仅使用默认接入');
@@ -198,7 +203,7 @@ class DesktopConnectionsPanel {
   }
   codexProfile(){return this.clientProfile('codex');}
   async clientProfile(family,capability){
-    const label=({codex:'Codex',claude:'Claude',deepseek:'DSH',zcode:'ZCode'})[family];if(!label)return;
+    const label=({codex:'Codex',claude:'Claude',deepseek:'DSH',zcode:'ZCode',antigravity:'Antigravity'})[family];if(!label)return;
     try{if(!capability)capability=(await this.api.desktopSessions({action:'client-profiles',operation:'list'})).capabilities?.find(row=>row.family===family);}
     catch(error){this.feedback(error.message,true);return;}
     if(capability?.supported!==true){this.feedback(BridgeI18n.t(capability?.reason||'暂不可用'),true);return;}
@@ -207,7 +212,7 @@ class DesktopConnectionsPanel {
     const form=document.createElement('form'),nameLabel=document.createElement('label'),homeLabel=document.createElement('label');
     form.className='client-config-form';nameLabel.textContent=t('客户端名称');homeLabel.textContent=application?t('应用程序路径'):family==='codex'?t('Codex 配置目录（.codex 文件夹）'):t('Codex 配置目录').replace('Codex',label);
     const name=document.createElement('input'),home=document.createElement('input');name.required=true;name.maxLength=80;name.value=t('Codex 独立配置').replace('Codex',label);home.required=true;home.placeholder=t(application?'选择应用程序，或输入完整路径':'输入完整路径，或选择文件夹');nameLabel.append(name);homeLabel.append(home);
-    const help=document.createElement('p');help.className='hint';help.textContent=application?t('选择已安装的 ZCode 应用，保存后在管理页选择连接方式并启用。'):t('选择此电脑上的独立 Codex 配置目录，保留其中的账号和会话。默认 Codex 接入保持不变。').replaceAll('Codex',label);
+    const help=document.createElement('p');help.className='hint';help.textContent=application?(family==='antigravity'?t('选择已安装的 Antigravity App、IDE 或官方 agy 程序，保留原客户端的账号和会话。'):t('选择已安装的 ZCode 应用，保存后在管理页选择连接方式并启用。')):t('选择此电脑上的独立 Codex 配置目录，保留其中的账号和会话。默认 Codex 接入保持不变。').replaceAll('Codex',label);
     const actions=document.createElement('div');actions.className='actions';
     const choose=document.createElement('button'),scan=document.createElement('button'),save=document.createElement('button'),cancel=document.createElement('button');
     choose.type=scan.type=cancel.type='button';save.type='submit';choose.textContent=t(application?'选择应用程序':'选择文件夹');scan.textContent=t('扫描配置');scan.hidden=application;save.textContent=t('保存配置');cancel.textContent=t('关闭');

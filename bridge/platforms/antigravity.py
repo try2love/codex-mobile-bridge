@@ -1,10 +1,69 @@
 """Read-only native identity and loopback checks for Antigravity language servers."""
+import hashlib
+import json
 import os
 from pathlib import Path
 import plistlib
 import re
 import shlex
 import sys
+from functools import lru_cache
+
+
+BUNDLE_IDS = {'com.google.antigravity': 'app', 'com.google.antigravity-ide': 'ide'}
+CLI_RELEASES = ('https://antigravity-cli-auto-updater-974169037036.us-central1.run.app',
+                'https://storage.googleapis.com/antigravity-public/antigravity-cli')
+
+
+@lru_cache(maxsize=8)
+def _cli_metadata(path, identity, metadata_identity):
+    path = Path(path)
+    row = json.loads((path.parent/'agy.version.json').read_text(encoding='utf-8'))
+    if (row.get('schemaVersion') != 1 or row.get('releaseBaseUrl') not in CLI_RELEASES or
+            row.get('size') != identity[2] or row.get('ino') not in (0, identity[1]) or
+            abs(row.get('mtimeMs', 0) - identity[3] / 1_000_000) > 2000 or
+            not isinstance(row.get('sha512'), str) or not re.fullmatch('[a-fA-F0-9]{128}', row['sha512'])):
+        return None
+    digest = hashlib.sha512()
+    with path.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(chunk)
+    if (digest.hexdigest() != row['sha512'].lower() or _file_identity(path) != identity or
+            _file_identity(path.parent/'agy.version.json') != metadata_identity):
+        return None
+    return {'application': str(path), 'executable': str(path), 'version': str(row.get('version') or ''),
+            'surface': 'cli'}
+
+
+def _file_identity(path):
+    value = path.stat()
+    return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns
+
+
+def installation(application, *, platform=None):
+    """Inspect official bundles or the CLI installer's matching binary metadata."""
+    platform, path = platform or sys.platform, Path(application).expanduser().resolve()
+    try:
+        if path.name.casefold() in ('agy', 'agy.exe') and path.is_file():
+            return _cli_metadata(str(path), _file_identity(path), _file_identity(path.parent/'agy.version.json'))
+        if platform == 'darwin':
+            from bridge.platforms.macos.discovery import candidate
+            for identifier, surface in BUNDLE_IDS.items():
+                row = candidate(path, identifier)
+                if row:
+                    return {**row, 'surface': surface}
+        elif path.is_file():
+            # Desktop distributions expose their product identity next to the
+            # executable. A same-named binary alone is not an installation.
+            product = json.loads((path.parent/'resources/app/product.json').read_text(encoding='utf-8'))
+            name = product.get('applicationName')
+            if name in ('antigravity', 'antigravity-ide') and path.stem.casefold() in ('antigravity', 'antigravity ide', 'antigravity-ide'):
+                return {'application': str(path), 'executable': str(path),
+                        'version': str(product.get('ideVersion') or ''),
+                        'surface': 'ide' if name.endswith('-ide') else 'app'}
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+    return None
 
 
 def profile_lease(path):
@@ -31,6 +90,8 @@ def profile_lease(path):
 
 def _trusted_image(image):
     image = Path(image).resolve()
+    if image.name.casefold() in ('agy', 'agy.exe'):
+        return installation(image) is not None
     if not image.name.startswith('language_server'):
         return False
     if sys.platform == 'darwin':
@@ -41,7 +102,7 @@ def _trusted_image(image):
             info = plistlib.loads((bundle/'Contents/Info.plist').read_bytes())
         except (OSError, ValueError):
             return False
-        return info.get('CFBundleIdentifier') in ('com.google.antigravity', 'com.google.antigravity-ide')
+        return info.get('CFBundleIdentifier') in BUNDLE_IDS
     # Packaged native servers only; never accept a process name or PATH alias.
     parts = {part.casefold() for part in image.parts}
     return ('antigravity' in parts or 'antigravity-ide' in parts) and ('resources' in parts or 'extensions' in parts)
@@ -130,7 +191,10 @@ def endpoint(surface, home):
     for pid, args in _candidates():
         if _flag(args, '--app_data_dir') != data_name:
             continue
-        before = _identity(pid)
+        try:
+            before = _identity(pid)
+        except (OSError, ValueError):
+            continue
         if not _trusted_image(before['image']):
             continue
         token = _flag(args, '--csrf_token')
@@ -138,7 +202,13 @@ def endpoint(surface, home):
             continue
         # Read only the matching product's log. A log port alone is never
         # sufficient: the listener must belong to this exact process generation.
-        if sys.platform == 'darwin':
+        if Path(before['image']).name.casefold() in ('agy', 'agy.exe'):
+            # The official IDE launches agy --hub with app_data_dir=antigravity.
+            # Its hub port serves the UI; use its separately logged native LS
+            # HTTP listener and the existing LanguageServerService protocol.
+            root = Path(home)/'.gemini'/data_name
+            logs = [root/'cli.log', *sorted((root/'log').glob('cli-*.log'), reverse=True)[:3]]
+        elif sys.platform == 'darwin':
             logs = [Path(home)/'Library/Logs'/('Antigravity' if surface == 'app' else 'Antigravity IDE')/'language_server.log']
         elif sys.platform == 'win32':
             logs = [Path(os.environ.get('APPDATA', ''))/('Antigravity' if surface == 'app' else 'Antigravity IDE')/'logs/language_server.log']
@@ -150,7 +220,7 @@ def endpoint(surface, home):
                 with log.open('rb') as stream:
                     stream.seek(max(0, log.stat().st_size - 256 * 1024))
                     text = stream.read(256 * 1024).decode('utf-8', errors='replace')
-                ports.update(int(p) for p in re.findall(r'listening on \w+ port at (\d+) for HTTP\b', text))
+                ports.update(int(p) for p in re.findall(r'Language server listening on \w+ port at (\d+) for (?:local )?HTTP\b', text))
         for port in ports:
             try:
                 if 1024 <= port <= 65535 and _listener(pid, port, before['image']) and _identity(pid) == before:

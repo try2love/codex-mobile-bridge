@@ -476,7 +476,7 @@ test('absent unconfigured clients do not occupy the list, but offline configured
  ui.panel.clients=[];ui.panel.renderClients();assert.match(ui.text(),/尚未发现客户端/);
  ui.setHandler(async()=>({capabilities:[{family:'codex',kind:'codex-local',supported:true},{family:'claude',kind:'desktop-profile',supported:true},{family:'deepseek',kind:'desktop-profile',supported:true},{family:'zcode',supported:false,reason:'仅使用默认接入'}]}));
  await ui.panel.addClient();const dialog=ui.document.body.children[0],buttons=dialog.children[1].children;
- assert.equal(dialog.open,true);assert.deepEqual(buttons.map(button=>button.textContent),['Codex','Claude','DSH','ZCode · 仅使用默认接入','取消']);assert.equal(buttons[3].disabled,true);buttons[3].onclick();assert.equal(dialog.open,true);await buttons[2].onclick();assert.notEqual(ui.document.body.children[0],dialog);assert.match(ui.document.body.children[0].querySelector('h2').textContent,/DSH/);assert.equal(ui.selected.length,0,'adding never opens the default account page');
+ assert.equal(dialog.open,true);assert.deepEqual(buttons.map(button=>button.textContent),['Codex','Claude','DSH','ZCode · 仅使用默认接入','Antigravity','取消']);assert.equal(buttons[3].disabled,true);assert.equal(buttons[4].disabled,true);buttons[3].onclick();assert.equal(dialog.open,true);await buttons[2].onclick();assert.notEqual(ui.document.body.children[0],dialog);assert.match(ui.document.body.children[0].querySelector('h2').textContent,/DSH/);assert.equal(ui.selected.length,0,'adding never opens the default account page');
 });
 
 test('ZCode uses its own logo and shared next-level management page',async()=>{
@@ -600,6 +600,35 @@ test('profile errors retain the form and unsupported capabilities never open a d
  assert.equal(dialog.open,true);assert.match(form.querySelector('.error').textContent,/already used/);assert.equal(ui.selected.length,0);
 });
 
+
+test('saved installation inventory loads first and only missing inventory or manual rescan discovers clients',async()=>{
+ const ui=fixture();let inventory=true;
+ ui.setHandler(async body=>body.action==='status'?{backends:{}}:{clients:[],inventoryAvailable:inventory});
+ await ui.panel.loadClients();await ui.panel.loadClients();
+ assert.equal(ui.calls.filter(body=>body.action==='scan').length,0);
+ inventory=false;await ui.panel.loadClients();
+ assert.equal(ui.calls.filter(body=>body.action==='scan').length,1);
+ assert.equal(ui.calls.find(body=>body.action==='scan').inventoryOnly,true);
+ inventory=true;await ui.panel.loadClients();await ui.panel.scan(true);
+ assert.equal(ui.calls.filter(body=>body.action==='scan').at(-1).inventoryOnly,false);
+});
+
+test('Antigravity App IDE and CLI paths use the shared default-application form',async()=>{
+ for(const english of [false,true]){
+  const ui=fixture();if(english)ui.english();const capability={family:'antigravity',kind:'default-application',supported:true};
+  const client={id:'antigravity',name:'Antigravity',installed:true,enabled:false};let selected;
+  ui.panel.manageClient=async value=>{selected=value.id;};
+  ui.setHandler(async body=>body.action==='client-profiles'?body.operation==='save'?{entry:'antigravity',instance:client}:{capabilities:[capability]}:{clients:[client]});
+  await ui.panel.addClient();await ui.document.body.children[0].querySelectorAll('button').find(button=>button.textContent==='Antigravity').onclick();
+  const dialog=ui.document.body.children[0],form=dialog.querySelector('form');
+  assert.equal(form.querySelectorAll('input').length,1);
+  assert.match(form.querySelector('.hint').textContent,/Antigravity App.*IDE.*agy/);
+  if(english)assert.doesNotMatch(form.querySelector('.hint').textContent,/[\u4e00-\u9fff]/);
+  form.querySelector('input').value='/user/.gemini/bin/agy';await form.onsubmit({preventDefault(){}});
+  assert.deepEqual(JSON.parse(JSON.stringify(ui.calls.find(body=>body.operation==='save'))),{action:'client-profiles',operation:'save',family:'antigravity',kind:'default-application',application:'/user/.gemini/bin/agy'});
+  assert.equal(selected,'antigravity');
+ }
+});
 
 test('missing ZCode can be added through the shared client form without creating an independent profile',async()=>{
  for(const english of [false,true]){

@@ -3,7 +3,9 @@ import json
 import sqlite3
 import tempfile
 import threading
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -12,6 +14,7 @@ from bridge.clients.codex.ipc import IPCError
 from bridge.clients.errors import TaskStateUnavailable
 from bridge.app.service import Bridge
 from bridge.features.sessions.store import SessionStore, StoreUnavailable
+from bridge.features.accounts.accounts import Accounts
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -31,14 +34,20 @@ class DesktopIdle(unittest.TestCase):
         self.calls = []; self.owners = {}; self.states = {}; self.instances = []
         self.after_follow = lambda sid, follower: None
         self.transform_event = lambda message: message
+        self.before_request = lambda sid, options: None
+        self.before_connect = lambda options: None
+        self.after_close = lambda: None
         parent = self
         class Follower:
             def __init__(self, path, on_event=None, on_disconnect=None):
                 self.on_event = on_event; self.on_disconnect = on_disconnect; self.closed = False
                 parent.instances.append(self)
-            def connect(self): parent.calls.append(('connect',))
+            def connect(self, **kwargs):
+                parent.calls.append(('connect',))
+                parent.before_connect(kwargs)
             def request(self, method, params, host='local', **kwargs):
                 parent.calls.append((method, host, params['conversationId']))
+                parent.before_request(params['conversationId'], kwargs)
                 value = parent.owners.get((host, params['conversationId']), 'owner')
                 if isinstance(value, Exception): raise value
                 return {'handledByClientId': value}
@@ -50,7 +59,9 @@ class DesktopIdle(unittest.TestCase):
                                'params': {'hostId': host, 'conversationId': sid,
                                           'change': {'type': 'snapshot', 'revision': 1, 'conversationState': copy.deepcopy(state)}}}))
                 parent.after_follow(sid, self)
-            def close(self): self.closed = True
+            def close(self):
+                self.closed = True
+                parent.after_close()
         self.factory = patch('bridge.app.service.DesktopIPC', Follower)
         self.factory.start(); self.addCleanup(self.factory.stop)
 
@@ -61,6 +72,153 @@ class DesktopIdle(unittest.TestCase):
         self.assertEqual(self.bridge.live, {})
         self.bridge.activate.assert_not_called(); self.bridge.store.history.assert_not_called()
         self.assertTrue(all(instance.closed for instance in self.instances))
+
+    def test_601_history_candidates_do_not_serialize_a_silent_owner_before_tail_busy(self):
+        identifiers = [f'history-{index:04}' for index in range(600)] + ['tail-busy']
+        self.bridge.store.lifecycle_threads.return_value = [{'id': sid} for sid in identifiers]
+        self.owners = {('local', sid): IPCError('no-client-found') for sid in identifiers[:-1]}
+        self.states[('local', 'tail-busy')] = {'id': 'tail-busy', 'threadRuntimeStatus': {'type': 'active'}}
+        tail_seen = threading.Event()
+        first_finished = threading.Event()
+        overlapping = []
+        def before(sid, options):
+            if sid == identifiers[0]:
+                overlapping.append(tail_seen.wait(1))
+                first_finished.set()
+            elif sid == 'tail-busy':
+                tail_seen.set()
+        self.before_request = before
+        with self.assertRaisesRegex(ValueError, '任务运行'):
+            self.bridge.assert_desktop_idle()
+        self.assertTrue(first_finished.wait(1))
+        self.assertEqual(overlapping, [True], 'A silent historical owner must not hold up the other candidates')
+        self.assertEqual({call[2] for call in self.calls if call[0] == 'thread-owner-discovery'}, set(identifiers))
+        self.bridge.activate.assert_not_called()
+        self.bridge.store.history.assert_not_called()
+
+    def test_silent_request_cannot_overrun_the_absolute_audit_deadline(self):
+        release, finished = threading.Event(), threading.Event()
+        def before(sid, options):
+            try:
+                release.wait(1)
+            finally:
+                finished.set()
+        self.before_request = before
+        started = time.monotonic()
+        try:
+            with self.assertRaisesRegex(ValueError, '超时'):
+                self.bridge.assert_desktop_idle(timeout=.04)
+            self.assertLess(time.monotonic()-started, .4)
+        finally:
+            release.set()
+            self.assertTrue(finished.wait(1))
+        self.assertTrue(all(instance.closed for instance in self.instances))
+
+    def test_discovery_has_only_eight_requests_in_flight(self):
+        identifiers = [f'history-{index:04}' for index in range(24)]
+        self.bridge.store.lifecycle_threads.return_value = [{'id': sid} for sid in identifiers]
+        self.owners = {('local', sid): IPCError('no-client-found') for sid in identifiers}
+        lock, first_batch = threading.Lock(), threading.Event()
+        in_flight, maximum = 0, 0
+        def before(sid, options):
+            nonlocal in_flight, maximum
+            with lock:
+                in_flight += 1
+                maximum = max(maximum, in_flight)
+                if in_flight == 8:
+                    first_batch.set()
+            first_batch.wait(1)
+            with lock:
+                in_flight -= 1
+        self.before_request = before
+        self.bridge.assert_desktop_idle()
+        self.assertTrue(first_batch.is_set())
+        self.assertEqual(maximum, 8)
+
+    def test_initialization_scope_is_used_for_each_submission_recheck(self):
+        self.bridge.accounts.blockers.side_effect = [[], [], [{'reason': 'unknown'}]]
+        with self.assertRaisesRegex(ValueError, '操作'):
+            self.bridge.assert_desktop_idle(desktop_only=True)
+        self.assertEqual(self.bridge.accounts.blockers.call_count, 3)
+
+    def native_cli(self):
+        identifier = 'native-fixture'
+        manager = Accounts.__new__(Accounts)
+        manager.bridge = self.bridge
+        self.bridge.accounts = manager
+        process = Mock(poll=Mock(return_value=None))
+        self.bridge.submissions = {}
+        self.bridge.cli_sessions = SimpleNamespace(home=self.bridge.codex_home, alias=None,
+            lock=threading.RLock(), joined={identifier: process},
+            metadata={identifier: {'connectionToken': 'native-generation'}},
+            client=SimpleNamespace(process=process, server_info={'codexHome': str(self.bridge.codex_home)}))
+        session = SimpleNamespace(origin='cli', runtime='cli', connected=True, owner='cli:' + identifier,
+            desktop_owner_probe=None, view=lambda: {'connected': True, 'status': 'active', 'title': 'Native fixture'})
+        self.bridge.live[identifier] = session
+        return identifier, session
+
+    def test_native_cli_history_overlap_requires_fresh_absence_and_does_not_treat_cli_marker_as_desktop_owner(self):
+        identifier, session = self.native_cli()
+        self.bridge.store.lifecycle_threads.return_value = [{'id': identifier}]
+        self.owners[('local', identifier)] = IPCError('no-client-found')
+        for probe in (None, 'unknown', 'absent', 'found'):
+            session.desktop_owner_probe = probe
+            self.calls.clear()
+            self.bridge.assert_desktop_idle(desktop_only=True)
+            self.assertEqual([call for call in self.calls if call[0] == 'thread-owner-discovery'],
+                             [('thread-owner-discovery', 'local', identifier)] * 2)
+        self.assertFalse(any(call[0] == 'follow' for call in self.calls))
+
+    def test_native_cli_missing_from_history_is_still_audited_and_unknown_owner_never_exempts_it(self):
+        identifier, session = self.native_cli()
+        self.bridge.store.lifecycle_threads.return_value = []
+        for probe in (None, 'unknown', 'absent'):
+            session.desktop_owner_probe = probe
+            self.owners[('local', identifier)] = IPCError('读取超时')
+            with self.assertRaises(TaskStateUnavailable):
+                self.bridge.assert_desktop_idle(desktop_only=True)
+        self.owners[('local', identifier)] = 'app-owner'
+        self.states[('local', identifier)] = {'id': identifier, 'threadRuntimeStatus': {'type': 'active'}}
+        with self.assertRaisesRegex(ValueError, '任务运行'):
+            self.bridge.assert_desktop_idle(desktop_only=True)
+
+    def test_native_cli_absence_and_proxy_identity_are_rechecked_before_finishing(self):
+        identifier, session = self.native_cli()
+        self.bridge.store.lifecycle_threads.return_value = [{'id': identifier}]
+        self.owners[('local', identifier)] = IPCError('no-client-found')
+        requests = []
+        def before(sid, options):
+            requests.append(sid)
+            if len(requests) == 2:
+                self.owners[('local', identifier)] = IPCError('读取超时')
+        self.before_request = before
+        with self.assertRaises(TaskStateUnavailable):
+            self.bridge.assert_desktop_idle(desktop_only=True)
+        self.assertEqual(requests, [identifier, identifier])
+        self.owners[('local', identifier)] = IPCError('no-client-found')
+        self.before_request = lambda sid, options: self.bridge.cli_sessions.metadata[identifier].update(connectionToken='changed')
+        with self.assertRaises(ValueError):
+            self.bridge.assert_desktop_idle(desktop_only=True)
+
+    def test_blocked_initialize_send_is_closed_at_deadline_without_touching_existing_ipc(self):
+        release, finished = threading.Event(), threading.Event()
+        original = self.bridge.ipc
+        original.close = Mock()
+        def connect(options):
+            try:
+                release.wait(1)
+            finally:
+                finished.set()
+        self.before_connect = connect
+        self.after_close = release.set
+        started = time.monotonic()
+        with self.assertRaises(TaskStateUnavailable):
+            self.bridge.assert_desktop_idle(timeout=.04)
+        self.assertLess(time.monotonic()-started, .4)
+        self.assertTrue(finished.wait(1))
+        self.assertEqual(self.calls, [('connect',)])
+        self.assertIs(self.bridge.ipc, original)
+        original.close.assert_not_called()
 
     def test_exact_no_client_found_is_absence_not_stale_history_activity(self):
         self.owners[('local', 'desktop-only')] = IPCError('no-client-found')
@@ -95,7 +253,7 @@ class DesktopIdle(unittest.TestCase):
                 self.owners[('local', 'a-unavailable')] = owner
                 self.states[('local', 'a-unavailable')] = state
                 with patch('bridge.app.service.time', SimpleNamespace(monotonic=lambda: clock[0])), \
-                     patch('bridge.app.service.ThreadPoolExecutor', return_value=executor), \
+                     patch('bridge.app.service.ThreadPoolExecutor', side_effect=[executor, ThreadPoolExecutor(max_workers=2)]), \
                      patch('bridge.app.service.threading', SimpleNamespace(Condition=SnapshotCondition)), \
                      self.assertRaisesRegex(ValueError, '任务运行') as failure:
                     self.bridge.assert_desktop_idle(timeout=.2)
@@ -116,7 +274,7 @@ class DesktopIdle(unittest.TestCase):
         executor = Mock(submit=Mock(side_effect=[local_read, remote_read]))
         # Advance the operation's clock at the remote timeout rather than
         # depending on a loaded CI runner scheduling threads within 200 ms.
-        with patch('bridge.app.service.ThreadPoolExecutor', return_value=executor), \
+        with patch('bridge.app.service.ThreadPoolExecutor', side_effect=[executor, ThreadPoolExecutor(max_workers=1)]), \
              patch('bridge.app.service.time', SimpleNamespace(monotonic=lambda: clock[0])):
             with self.assertRaisesRegex(ValueError, '任务运行') as failure:
                 self.bridge.assert_desktop_idle(timeout=20)

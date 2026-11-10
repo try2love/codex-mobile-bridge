@@ -98,5 +98,25 @@ class DaemonAbsenceTests(unittest.TestCase):
                 self.assertFalse(daemon_process_absent(home))
 
 
+class DaemonRecoveryBoundaryTests(unittest.TestCase):
+    def test_configuration_age_uses_verified_process_birth(self):
+        from bridge.platforms.codex_daemon_env import configuration_after_start
+        with tempfile.TemporaryDirectory(dir=ROOT / '.tmp') as directory:
+            home = Path(directory)
+            (home / 'auth.json').write_text('{"fixture":true}')
+            now = int(time.time())
+            with patch('bridge.platforms.codex_daemon_env.sys.platform', 'darwin'):
+                self.assertTrue(configuration_after_start(home, (1, (1,), (now - 10, 0), 'fixture')))
+                self.assertFalse(configuration_after_start(home, (1, (1,), (now + 10, 0), 'fixture')))
+
+    def test_graceful_only_is_explicitly_unsupported_on_windows(self):
+        from bridge.platforms.codex_daemon_env import stop_daemon_gracefully
+        generation = (1, 'fixture')
+        with patch('bridge.platforms.codex_daemon_env.sys.platform', 'win32'), \
+                patch('bridge.platforms.codex_daemon_env.read_daemon_environment', return_value=({}, generation)):
+            with self.assertRaisesRegex(DaemonEnvironmentUnavailable, 'unsupported'):
+                stop_daemon_gracefully(ROOT / '.tmp', sys.executable, generation, graceful_only=True)
+
+
 if __name__ == '__main__':
     unittest.main()

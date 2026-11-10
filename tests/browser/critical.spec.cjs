@@ -829,6 +829,30 @@ test('Antigravity shared chat preserves source identity and composer geometry wh
  await page.evaluate(()=>{__agyChat.view.clear();__agyChat.root.remove();delete globalThis.__agyChat;});
 });
 
+test('Antigravity shared installation form loads saved inventory and registers App IDE or CLI paths',async({page},info)=>{
+ await page.setViewportSize({width:Math.max(820,page.viewportSize().width),height:900});
+ const root=path.resolve(__dirname,'../..');
+ const bootstrap=`window.testCalls=[];window.bridgeDesktop={};
+ const client={id:'antigravity',name:'Antigravity',enabled:false,configured:true,installed:true,connected:false,capabilities:{management:true}};
+ window.testPanel=new DesktopConnectionsPanel({root:document.getElementById('desktop-connections'),feedback(){},api:{desktopSessions:async body=>{testCalls.push(body);if(body.action==='client-profiles')return body.operation==='save'?{entry:'antigravity',instance:client}:{capabilities:[{family:'antigravity',kind:'default-application',supported:true}]};if(body.action==='antigravity-management')return {surfaces:[],plugin:{active:false},permissionOptions:[]};if(body.action==='status')return {backends:{}};return {clients:[client],inventoryAvailable:true};}}});
+ document.querySelectorAll('[data-panel]').forEach(node=>node.hidden=!['accounts','account','desktop-sessions','harness'].includes(node.dataset.panel));GatewayLayout.tab('accounts');testPanel.loadClients().then(()=>window.inventoryReady=true);`;
+ await page.route('**/desktop/**',async route=>{const filename=new URL(route.request().url()).pathname;if(filename==='/desktop/shell/renderer.js')return route.fulfill({contentType:'text/javascript',body:bootstrap});const file=path.resolve(root,'.'+filename);if(!file.startsWith(root+path.sep))return route.abort();try{return route.fulfill({body:readFileSync(file),contentType:filename.endsWith('.html')?'text/html':filename.endsWith('.js')?'text/javascript':filename.endsWith('.css')?'text/css':'image/png'});}catch{return route.abort();}});
+ await page.route('**/web/**',route=>{const filename=new URL(route.request().url()).pathname;try{return route.fulfill({body:readFileSync(path.resolve(root,'.'+filename)),contentType:filename.endsWith('.js')?'text/javascript':filename.endsWith('.css')?'text/css':'image/png'});}catch{return route.abort();}});
+ await page.goto('/desktop/index.html');await page.waitForFunction(()=>window.inventoryReady);
+ expect(await page.evaluate(()=>testCalls.filter(body=>body.action==='scan').length)).toBe(0);
+ for(const [language,application] of [['zh','/Applications/Antigravity.app'],['en','/user/.gemini/bin/agy']]){
+  await page.evaluate(language=>{GatewayLayout.selectClient(null);BridgeI18n.setLanguage(language);},language);
+  await page.locator('#add-client').click();await page.locator('dialog[open]').getByRole('button',{name:'Antigravity',exact:true}).click();
+  const dialog=page.locator('dialog[open]');await expect(dialog.locator('input')).toHaveCount(1);
+  await expect(dialog.locator('.hint')).toContainText('agy');
+  await dialog.locator('input').fill(application);await page.screenshot({path:path.join(root,'.tmp/agy-add-'+info.project.name+'-'+language+'.png')});await dialog.getByRole('button',{name:language==='en'?'Save settings':'保存配置',exact:true}).click();
+  await expect(dialog).toHaveCount(0);await expect(page.locator('[data-antigravity-management]')).toBeVisible();
+  const saved=await page.evaluate(()=>testCalls.filter(body=>body.operation==='save').at(-1));
+  expect(saved).toEqual({action:'client-profiles',operation:'save',family:'antigravity',kind:'default-application',application});
+ }
+ expect(await page.evaluate(()=>testCalls.some(body=>body.action==='scan'||['send','start','toggle-client'].includes(body.action)))).toBe(false);
+});
+
 test('Antigravity desktop management configures existing models and approvals per source',async({page},info)=>{
  await page.setViewportSize({width:Math.max(820,page.viewportSize().width),height:900});
  const root=path.resolve(__dirname,'../..');

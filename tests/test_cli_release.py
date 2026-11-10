@@ -7,11 +7,12 @@ import unittest
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from bridge.app.lifecycle import private_json
 from bridge.clients.claude.cli_session import _Owned, owned_connections
 from bridge.clients.codex.release import release_thread
+from bridge.clients.codex.app_server import AppServerUnavailable
 from bridge.clients.errors import BridgeUnavailable
 from bridge.features.sessions.cli_release import CliConnections, ReleasedSessions
 from tests import test_wsl_entries as wsl_fixtures
@@ -53,6 +54,79 @@ class CliReleaseTests(unittest.TestCase):
         request = Mock(side_effect=[{'thread': {'id': 's', 'status': {'type': 'active'}}}, {'data': []}, {'goal': None}])
         self.assertEqual(release_thread(request, 's'), {'status': 'waiting'})
         self.assertEqual([c.args[0] for c in request.call_args_list], ['thread/read', 'thread/backgroundTerminals/list', 'thread/goal/get'])
+
+    def test_read_failure_before_release_is_retryable_without_a_write(self):
+        request = Mock(side_effect=AppServerUnavailable('read timeout'))
+        with self.assertRaises(AppServerUnavailable) as caught:
+            release_thread(request, 'original')
+        self.assertEqual(caught.exception.release_result['status'], 'failed')
+        self.assertTrue(caught.exception.release_result['notSent'])
+        self.assertEqual([call.args[0] for call in request.call_args_list], ['thread/read'])
+
+    def test_confirmed_unsubscribe_survives_failed_unload_read(self):
+        request = Mock(side_effect=[{'thread': {'id': 's', 'status': {'type': 'idle'}}},
+                                   {'data': []}, {'goal': None}, {'status': 'unsubscribed'},
+                                   AppServerUnavailable('read timeout')])
+        result = release_thread(request, 's')
+        self.assertEqual(result['status'], 'detached')
+        self.assertTrue(result['unsubscribed'])
+        self.assertEqual(sum(call.args[0] == 'thread/unsubscribe' for call in request.call_args_list), 1)
+
+    def test_wait_upgrade_atomically_retires_old_worker_before_stop(self):
+        release = Mock(return_value={'status': 'released'})
+        row = {'key': 'a', 'sessionId': 's', '_release': release}
+        manager = CliConnections(self.temp.name, lambda: [SimpleNamespace(cli_connections=lambda: [row])], private_json)
+        self.addCleanup(manager.close)
+        with patch('bridge.features.sessions.cli_release.threading.Thread'):
+            old = manager.submit({'id': str(uuid.uuid4()), 'connections': ['a'], 'mode': 'wait'})
+            manager.jobs[old['id']]['results'][0]['status'] = 'releasing'
+            with self.assertRaises(ValueError):
+                manager.submit({'id': str(uuid.uuid4()), 'connections': ['a'], 'mode': 'stop'})
+            manager.jobs[old['id']]['results'][0]['status'] = 'waiting'
+            new = manager.submit({'id': str(uuid.uuid4()), 'connections': ['a'], 'mode': 'stop'})
+        self.assertEqual(manager.jobs[old['id']]['results'][0]['status'], 'superseded')
+        manager._run(manager.jobs[old['id']], {'a': row})
+        release.assert_not_called()
+        manager._run(manager.jobs[new['id']], {'a': row})
+        release.assert_called_once_with(True)
+
+    def test_unknown_can_be_read_only_verified_without_replaying_release(self):
+        release, check = Mock(side_effect=TimeoutError('lost receipt')), Mock(return_value={'status': 'released'})
+        row = {'key': 'a', 'sessionId': 's', '_release': release, '_check': check}
+        rows = [row]
+        manager = CliConnections(self.temp.name, lambda: [SimpleNamespace(cli_connections=lambda: rows)], private_json)
+        self.addCleanup(manager.close)
+        with patch('bridge.features.sessions.cli_release.threading.Thread'):
+            old = manager.submit({'id': str(uuid.uuid4()), 'connections': ['a'], 'mode': 'wait'})
+        manager._run(manager.jobs[old['id']], {'a': row})
+        self.assertEqual(manager.jobs[old['id']]['results'][0]['status'], 'unknown')
+        rows.clear()  # Confirmed detached connections need not remain in listings.
+        with patch('bridge.features.sessions.cli_release.threading.Thread'):
+            verified = manager.submit({'id': str(uuid.uuid4()), 'connections': ['a'], 'mode': 'check'})
+        manager._run(manager.jobs[verified['id']], {'a': row})
+        self.assertEqual(manager.jobs[old['id']]['results'][0]['status'], 'released')
+        check.assert_called_once_with()
+        release.assert_called_once_with(False)
+
+    def test_native_unload_is_a_separate_action_only_after_confirmed_detach(self):
+        release, check = Mock(return_value={'status': 'detached'}), Mock(return_value={'status': 'detached'})
+        unload = Mock(return_value={'status': 'released'})
+        row = {'key': 'a', 'sessionId': 's', 'canUnload': True, '_release': release, '_check': check, '_unload': unload}
+        manager = CliConnections(self.temp.name, lambda: [SimpleNamespace(cli_connections=lambda: [row])], private_json)
+        self.addCleanup(manager.close)
+        with self.assertRaises(ValueError):
+            manager.submit({'id': str(uuid.uuid4()), 'connections': ['a'], 'mode': 'unload'})
+        with patch('bridge.features.sessions.cli_release.threading.Thread'):
+            first = manager.submit({'id': str(uuid.uuid4()), 'connections': ['a'], 'mode': 'wait'})
+        manager._run(manager.jobs[first['id']], {'a': row})
+        unload.assert_not_called()
+        with patch('bridge.features.sessions.cli_release.threading.Thread'):
+            second = manager.submit({'id': str(uuid.uuid4()), 'connections': ['a'], 'mode': 'unload'})
+        manager._run(manager.jobs[second['id']], {'a': row})
+        unload.assert_called_once_with()
+        release.assert_called_once_with(False)
+        check.assert_not_called()
+        self.assertEqual(manager.jobs[first['id']]['results'][0]['status'], 'released')
 
     def test_wrong_native_identity_is_not_released(self):
         request = Mock(return_value={'thread': {'id': 'other', 'status': {'type': 'idle'}}})

@@ -62,14 +62,41 @@ def read_daemon_environment(home, executable, names):
         raise DaemonEnvironmentUnavailable('Codex daemon environment could not be verified') from exc
 
 
-def stop_daemon_gracefully(home, executable, expected, timeout=10):
-    """SIGTERM one verified generation. Never escalate to a forced exit."""
+def configuration_after_start(home, generation):
+    """Detect config/auth changed after this verified process was born."""
+    try:
+        if sys.platform == 'darwin':
+            seconds, micros = generation[2]
+            started = seconds * 1_000_000_000 + micros * 1000
+        elif sys.platform == 'linux':
+            boot = next(int(line.split()[1]) for line in Path('/proc/stat').read_text().splitlines()
+                        if line.startswith('btime '))
+            # btime has one-second precision; conservatively include that second.
+            started = (boot - 1) * 1_000_000_000 + generation[1] * 1_000_000_000 // os.sysconf('SC_CLK_TCK')
+        else:
+            raise ValueError('Unsupported process clock')
+        for name in ('config.toml', 'auth.json'):
+            path = Path(home) / name
+            if path.exists():
+                info = path.stat()
+                if max(info.st_mtime_ns, info.st_ctime_ns) > started:
+                    return True
+        return False
+    except (OSError, ValueError, TypeError, IndexError, StopIteration) as error:
+        raise DaemonEnvironmentUnavailable('Codex daemon configuration age could not be verified') from error
+
+
+def stop_daemon_gracefully(home, executable, expected, timeout=10, *, graceful_only=False):
+    """Signal one verified generation once. Never escalate to a forced exit."""
     import signal
     import time
     _, current = read_daemon_environment(home, executable, ())
     if current != expected:
         raise DaemonEnvironmentUnavailable('Codex daemon process changed')
     pid = expected[0]
+    if graceful_only and sys.platform not in ('darwin', 'linux'):
+        raise DaemonEnvironmentUnavailable('Graceful-only daemon shutdown is unsupported on this platform')
+    requested_signal = signal.SIGHUP if graceful_only else signal.SIGTERM
     if sys.platform == 'darwin':
         from bridge.platforms.macos.force_exit import Native
         native = Native()
@@ -78,7 +105,7 @@ def stop_daemon_gracefully(home, executable, expected, timeout=10):
             raise DaemonEnvironmentUnavailable('Codex daemon process changed')
         handle = native.open(identity)
         try:
-            native.send_signal(handle, signal.SIGTERM)
+            native.send_signal(handle, requested_signal)
         finally:
             native.close(handle)
         def alive():
@@ -93,7 +120,7 @@ def stop_daemon_gracefully(home, executable, expected, timeout=10):
         try:
             if read_daemon_environment(home, executable, ())[1] != expected:
                 raise DaemonEnvironmentUnavailable('Codex daemon process changed')
-            signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+            signal.pidfd_send_signal(descriptor, requested_signal)
             if not select.select([descriptor], [], [], timeout)[0]:
                 raise DaemonEnvironmentUnavailable('Codex daemon did not exit normally; no force was used')
         finally:

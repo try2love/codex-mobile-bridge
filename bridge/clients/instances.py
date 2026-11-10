@@ -82,6 +82,8 @@ class ClientInstances:
                            **({'reason': reason} if reason else {})})
         if target in (None, 'zcode'):
             result.append(self.manager.zcode_application_capability())
+        if target in (None, 'antigravity'):
+            result.append(self.manager.antigravity_application_capability())
         return result
 
     def metadata(self, family=None):
@@ -215,10 +217,11 @@ class ClientInstances:
                         lock.release()
                 self.manager.client_cache = None
             return {'removed': entry, 'instances': self.registry.list(), 'capabilities': self.capabilities()}
-        if operation == 'save' and family == 'zcode' and value.get('kind') == 'default-application':
+        if operation == 'save' and family in ('zcode', 'antigravity') and value.get('kind') == 'default-application':
             if set(value)-{'action', 'operation'} != {'family', 'kind', 'application'}:
                 raise ValueError('客户端保存请求无效')
-            return self.manager.register_zcode_application(value['application'])
+            register = self.manager.register_zcode_application if family == 'zcode' else self.manager.register_antigravity_application
+            return register(value['application'])
         if operation != 'save' or set(value)-{'action', 'operation'} != {'family', 'kind', 'label', 'home'}:
             raise ValueError('独立配置保存请求无效')
         capability = next((row for row in self.capabilities() if row['family'] == family), None)

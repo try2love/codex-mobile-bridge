@@ -8,9 +8,11 @@ class CliConnectionsPanel {
   close(){clearTimeout(this.timer);this.dialog?.close();this.dialog?.remove();this.dialog=null;}
   node(tag,text,cls){const node=document.createElement(tag);node.textContent=text===undefined?'':this.t(text);if(cls)node.className=cls;return node;}
   open(target=null){
-    this.close();this.target=target;this.scope=this.identity();this.selected=new Set();this.pendingId=null;
+    this.close();this.target=target;this.scope=this.identity();this.selected=new Set();this.error=null;
     const dialog=this.dialog=this.node('dialog',undefined,'picker');dialog.setAttribute('aria-label',this.t('CLI 连接管理'));
     dialog.addEventListener('close',()=>{clearTimeout(this.timer);dialog.remove();if(this.dialog===dialog)this.dialog=null;});
+    const head=this.node('div',undefined,'picker-head');head.append(this.node('h2',this.target?'释放 CLI 连接':'CLI 连接管理'));this.closeButton(head);
+    dialog.append(head,this.node('p','正在读取 CLI 连接…','appearance-note'));
     document.body.append(dialog);dialog.showModal();this.refresh();
   }
   valid(dialog){return dialog===this.dialog&&dialog.open&&this.scope===this.identity();}
@@ -21,16 +23,18 @@ class CliConnectionsPanel {
       this.render(data);
       if(data.operations.some(job=>job.results.some(row=>['waiting','releasing'].includes(row.status))))
         this.timer=setTimeout(()=>{if(this.valid(dialog)&&!document.hidden)this.refresh();},5000);
-    }catch(error){if(this.valid(dialog)){dialog.replaceChildren(this.node('p',error.message,'error'));this.button(dialog,'关闭',()=>this.close());}}
+    }catch(error){if(this.valid(dialog)){dialog.replaceChildren(this.node('p',error.message,'error'));this.closeButton(dialog);this.button(dialog,'刷新',()=>this.refresh());}}
   }
   button(parent,label,run){const button=this.node('button',label,'plain');button.type='button';button.onclick=run;parent.append(button);return button;}
+  closeButton(parent){const button=this.button(parent,'关闭',()=>this.close());button.dataset.cliClose='true';return button;}
   render(data){
     const dialog=this.dialog;dialog.replaceChildren();
-    const head=this.node('div',undefined,'picker-head');head.append(this.node('h2',this.target?'释放 CLI 连接':'CLI 连接管理'));this.button(head,'关闭',()=>this.close());dialog.append(head);
+    const head=this.node('div',undefined,'picker-head');head.append(this.node('h2',this.target?'释放 CLI 连接':'CLI 连接管理'));this.closeButton(head);dialog.append(head);
     dialog.append(this.node('p','释放当前网关持有的连接，保留聊天历史。运行中的任务默认完成后释放。','appearance-note'));
+    if(this.error){const error=this.node('p',this.error,'error');error.setAttribute('role','alert');dialog.append(error);}
     const match=row=>!this.target||(row.provider===this.target.provider&&row.sessionId===this.target.sessionId&&
       (row.provider!=='codex'||row.host===this.target.host));
-    const rows=data.connections.filter(match),busy=new Set(data.operations.flatMap(job=>job.results.filter(row=>['waiting','releasing','unknown'].includes(row.status)).map(row=>row.key)));
+    const rows=data.connections.filter(match),busy=new Set(data.operations.flatMap(job=>job.results.filter(row=>['releasing','unknown'].includes(row.status)).map(row=>row.key)));
     this.rows=rows;this.selected=new Set([...this.selected].filter(key=>rows.some(row=>row.key===key)&&!busy.has(key)));
     if(!rows.length)dialog.append(this.node('p','没有由网关持有的 CLI 连接'));
     for(const row of rows){
@@ -45,23 +49,33 @@ class CliConnectionsPanel {
       this.button(dialog,'停止并释放…',()=>{
         if(!rows.some(row=>this.selected.has(row.key)&&!busy.has(row.key)))return this.notify(this.t('请选择需要释放的 CLI 连接'));
         const title=this.node('h3','停止任务并释放连接？'),text=this.node('p','将停止所选会话正在运行的任务并释放连接，聊天历史会保留。');
-        dialog.replaceChildren(title,text);this.button(dialog,'取消',()=>this.render(data));this.button(dialog,'确认停止并释放',()=>this.submit('stop'));
+        dialog.replaceChildren(head,title,text);this.button(dialog,'取消',()=>this.render(data));this.button(dialog,'确认停止并释放',()=>this.submit('stop'));
       });
     }
-    const statuses={waiting:'等待任务完成',releasing:'正在释放',released:'连接已释放',detached:'网关连接已释放，原生占用待核对',unknown:'结果待核对'};
+    const statuses={waiting:'等待任务完成',releasing:'正在释放',released:'连接已释放',detached:'网关连接已释放，原生占用待核对',unknown:'结果待核对',failed:'尚未释放，可重试',superseded:'已改为停止并释放'};
     for(const job of data.operations.slice(-10).reverse())for(const row of job.results.filter(match)){
       const line=this.node('p',undefined,'appearance-note');line.textContent=row.title+'：'+this.t(statuses[row.status]||row.status)+((row.error||row.notice)?' · '+this.t(row.error||row.notice):'');dialog.append(line);
+      if(row.provider==='codex'&&['unknown','detached'].includes(row.status))this.button(line,'核对结果',()=>this.submit('check',[row.key]));
+      if(row.canUnload&&row.status==='detached')this.button(line,'释放原生占用…',()=>this.confirmUnload(row));
     }
     this.button(dialog,'刷新',()=>this.refresh());
   }
-  async submit(mode){
-    const dialog=this.dialog,keys=this.rows.filter(row=>this.selected.has(row.key)).map(row=>row.key);
+  confirmUnload(row){
+    const dialog=this.dialog;if(!this.valid(dialog)||this.pendingDialog===dialog)return;
+    const head=dialog.firstElementChild;
+    dialog.replaceChildren(head,this.node('h3','释放原生占用？'),this.node('p','将退出此配置的共享 CLI 服务。请先结束全部任务，并确保操作完成前其他客户端不再发起任务。聊天历史会保留。'));
+    this.button(dialog,'取消',()=>this.refresh());this.button(dialog,'确认释放原生占用',()=>this.submit('unload',[row.key]));
+  }
+  async submit(mode,selectedKeys=null){
+    const dialog=this.dialog,keys=selectedKeys||this.rows.filter(row=>this.selected.has(row.key)).map(row=>row.key);
     if(!keys.length)return this.notify(this.t('请选择需要释放的 CLI 连接'));
-    if(!this.valid(dialog))return;
-    clearTimeout(this.timer);for(const b of dialog.querySelectorAll('button'))b.disabled=true;
+    if(!this.valid(dialog)||this.pendingDialog===dialog)return;
+    this.pendingDialog=dialog;this.error=null;
+    clearTimeout(this.timer);for(const b of dialog.querySelectorAll('button,input'))if(!b.dataset.cliClose)b.disabled=true;
     const body={id:crypto.randomUUID(),connections:keys,mode};
     try{await this.request('/api/cli-connections',body);if(this.valid(dialog)){this.selected.clear();this.notify(this.t('已提交释放请求'));await this.refresh();}}
-    catch(error){if(this.valid(dialog)){this.notify(this.t(error.message));await this.refresh();}}
+    catch(error){if(this.valid(dialog)){this.error=error.message;await this.refresh();}}
+    finally{if(this.pendingDialog===dialog)this.pendingDialog=null;}
   }
 }
 
@@ -156,11 +170,12 @@ class SessionMenu {
   }
   separator(){this.box.append(this.node('div','sm-divider'));}
   valid(){if(this.context.isCurrent&&!this.context.isCurrent())throw Error(this.t('连接或账号已变化，请重新打开会话菜单'));}
-  async execute(run,button,{close=true}={}){
+  async execute(run,button,{close=true,pendingMessage=null}={}){
     if(this.busy)return;const box=this.box;this.busy=true;if(button)button.disabled=true;
-    try{this.valid();await run(button);if(this.box===box){if(close)this.close();else this.render();}}
+    let pending;if(pendingMessage){pending=this.node('p','sm-explanation',this.t(pendingMessage));pending.setAttribute('role','status');box.append(pending);this.position();}
+    try{this.valid();const result=await run(button);if(this.box===box){if(close)this.close();else{this.render();if(result?.message){const message=this.node('p','sm-explanation',this.t(result.message));message.setAttribute('role','status');box.append(message);this.position();}}}}
     catch(error){if(box.isConnected){const message=box.querySelector('.sm-error')||this.node('p','sm-error');message.setAttribute('role','alert');message.textContent=this.t(error.message);box.append(message);this.position();}else this.notify(this.t(error.message));}
-    finally{if(this.box===box){this.busy=false;if(button?.isConnected)button.disabled=false;}}
+    finally{pending?.remove();if(this.box===box){this.busy=false;if(button?.isConnected)button.disabled=false;}}
   }
   render(view='main'){
     const c=this.context,box=this.box;this.clearDrag?.();this.view=view;box.replaceChildren();box.append(this.node('div','sm-handle'));
@@ -205,7 +220,7 @@ class SessionMenu {
       if(c.fork)this.row('创建聊天分支','fork',button=>this.execute(()=>{this.close();return c.fork();},button));
       this.separator();if(c.manage)this.row('发送管理','list',()=>{this.close();c.manage();});
       if(c.notifications)this.row('聊天通知设置','info',button=>this.execute(()=>{this.close();return c.notifications();},button));
-      if(c.cliNetwork)this.row('检查 CLI 网络','link',c.cliNetwork);
+      if(c.cliNetwork)this.row('检查 CLI 网络','link',button=>this.execute(c.cliNetwork,button,{close:false,pendingMessage:'正在检查 CLI 网络…'}));
       if(c.releaseCli)this.row('释放 CLI 连接','link',()=>{this.close();c.releaseCli();});
       this.row('会话详情','info',()=>this.render('details'),{end:true});
       if(c.archive){this.separator();this.row(c.archived?'恢复会话':'停止任务并归档…','archive',button=>c.archived?this.execute(c.archive,button):this.render('archive'),{danger:!c.archived});}

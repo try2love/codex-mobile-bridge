@@ -194,7 +194,7 @@ function tab(name){const requested=name;name=moduleName(name);activeTab=name;
   document.querySelectorAll('[data-panel]').forEach(node=>node.hidden=moduleName(node.dataset.panel)!==name);
   desktopConnections?.syncPolling();
   if(name==='accounts'){
-    if(!desktopConnections?.clients)desktopConnections?.scan();
+    if(!desktopConnections?.clients)desktopConnections?.loadClients();
     else {desktopConnections.refresh();desktopConnections.refreshClients();}
     if(!$('harness-panel').classList.contains('client-config-hidden'))harnessPanel?.refresh();
     if(typeof wslAccountScopes!=='undefined')for(const scope of wslAccountScopes)scope.loadVisible();

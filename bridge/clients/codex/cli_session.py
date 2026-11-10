@@ -108,6 +108,9 @@ class CliSessions:
     def __init__(self, home, on_state, on_disconnect, cli='codex', alias=None,
                  process_factory=None, allow_installed_runtime=False):
         self.home = Path(home)
+        self.configuration_stamp = None  # Unknown until bound to the verified daemon generation.
+        self.recovery_environment = None
+        self.drained_connections = set()
         self.allow_installed_runtime = allow_installed_runtime
         self.alias = alias
         self.remote_home = None
@@ -121,6 +124,7 @@ class CliSessions:
         self.joined = {}
         self.attaching = set()
         self.metadata = {}
+        self.release_receipts = {}
         self.states = {}
         self.requests = {}
         self.consumed_requests = {}
@@ -140,12 +144,15 @@ class CliSessions:
             return [{'key': self.metadata[sid]['connectionToken'], 'sessionId': sid, 'provider': 'codex',
                      'title': self.states.get(sid, {}).get('title') or sid, 'host': self.alias or 'local',
                      'location': self.alias or '本机 CLI',
-                     '_release': lambda stop, sid=sid, token=self.metadata[sid]['connectionToken']: self.release_connection(sid, token, stop)}
+                     '_release': lambda stop, sid=sid, token=self.metadata[sid]['connectionToken']: self.release_connection(sid, token, stop),
+                     '_check': lambda sid=sid, token=self.metadata[sid]['connectionToken'], process=process: self.check_release_connection(sid, token, process)}
                     for sid, process in self.joined.items() if process is self.client.process
                     and sid in self.metadata and self.metadata[sid].get('connectionToken')]
 
     def release_connection(self, identifier, token, stop=False):
-        from bridge.clients.codex.release import release_thread
+        from bridge.clients.codex.release import release_thread, unsubscribe_thread
+        if token in self.drained_connections:
+            return {'status': 'released', 'notice': '原生空闲服务已正常退出，原连接已释放'}
         with self.lock:
             guard = self.attach_locks.setdefault(identifier, threading.Lock())
         with guard:
@@ -155,11 +162,35 @@ class CliSessions:
                     if (process is None or self.client.process is not process or self.joined.get(identifier) is not process
                             or self.metadata.get(identifier, {}).get('connectionToken') != token):
                         raise AppServerUnavailable('原 CLI 连接已变化；未操作新的连接')
-                return self.client.request(method, params)
-            result = release_thread(request, identifier, stop)
+                return self.client.request(method, params, replay_safe=method in (
+                    'thread/read', 'thread/backgroundTerminals/list', 'thread/goal/get', 'thread/turns/list'))
+            cleanup_only = self.metadata.get(identifier, {}).get('cleanupOnly')
+            result = unsubscribe_thread(request, identifier) if cleanup_only else release_thread(request, identifier, stop)
+            if cleanup_only:
+                result['notice'] = '已撤销待核对接入的订阅；未停止其他执行器的任务。' + result.get('notice', '')
             if result['status'] in ('released', 'detached'):
+                self.release_receipts[token] = process
                 self._invalidate(identifier, process)
             return result
+
+    def check_release_connection(self, identifier, token, process):
+        from bridge.clients.codex.release import check_release
+        if token in self.drained_connections:
+            return {'status': 'released', 'notice': '原生空闲服务已正常退出，原连接已释放'}
+        def guard():
+            with self.lock:
+                current = self.metadata.get(identifier, {}).get('connectionToken')
+                if process is None or self.client.process is not process or current not in (None, token):
+                    raise AppServerUnavailable('原 CLI 连接已变化，无法核对此前释放结果；未操作新的连接')
+        def request(method, params):
+            guard()
+            result = self.client.request(method, params, replay_safe=True)
+            guard()
+            return result
+        result = check_release(request, identifier, token in self.release_receipts)
+        if result['status'] == 'released':
+            self._invalidate(identifier, process)
+        return result
 
     def available(self):
         if self.alias is not None or Path(self.client.socket_path).exists() or _managed_cli(self.home) is not None:
@@ -380,6 +411,7 @@ class CliSessions:
             self.remote_home = remote_home
         with self.lock:
             if thread_id in self.joined:
+                self._require_joined(thread_id)
                 return copy.deepcopy(self.states[thread_id])
         loaded = self.client.is_loaded(thread_id)
         before = self.client.request('thread/read', {'threadId': thread_id, 'includeTurns': False},
@@ -400,19 +432,25 @@ class CliSessions:
         with self.lock:
             self.attaching.add(thread_id)
         params = {'threadId': thread_id, 'excludeTurns': True}
+        process = self.client.process
         try:
             resumed = self.client.request('thread/resume', params)
-        except Exception:
+        except Exception as error:
             with self.lock:
                 self.attaching.discard(thread_id)
                 self.requests.pop(thread_id, None)
+                if isinstance(error, AppServerUnknownResult) and process is self.client.process:
+                    self.joined[thread_id] = self.client.process
+                    self.metadata[thread_id] = {'connectionToken': str(uuid.uuid4()), 'cleanupOnly': True,
+                                               'cwd': before.get('cwd'), 'modelProvider': before.get('modelProvider')}
+            reason = (getattr(error, 'rpc_error', {}).get('data') or {}).get('type')
+            if reason in ('modelProviderMismatch', 'modelProviderNotConfigured', 'modelProviderPolicyConflict'):
+                raise AppServerUnsupported('原会话的提供商与当前可用接入不一致或受到策略限制；请恢复原提供商配置，或在电脑端使用当前接入新建聊天。未迁移原会话。') from error
             raise
         after = resumed.get('thread') or {}
         if (after.get('id') != thread_id or not same_cwd(before.get('cwd'), after.get('cwd'), self.alias is None and os.name == 'nt') or
                 resumed.get('modelProvider') != before.get('modelProvider')):
-            with self.lock:
-                self.attaching.discard(thread_id)
-                self.requests.pop(thread_id, None)
+            self._cleanup_failed_join(thread_id, before, process)
             raise AppServerUnsupported('CLI thread identity changed during join')
         try:
             goal = normalize_goal_result(self.client.request(
@@ -420,9 +458,7 @@ class CliSessions:
         except AppServerUnsupported:
             goal = None
         except (AppServerUnavailable, AppServerUnknownResult):
-            with self.lock:
-                self.attaching.discard(thread_id)
-                self.requests.pop(thread_id, None)
+            self._cleanup_failed_join(thread_id, before, process)
             raise
         except AppServerError:
             # Goal is optional; a deterministic policy error must not prevent
@@ -444,11 +480,26 @@ class CliSessions:
         try:
             return self.refresh(thread_id)
         except Exception:
-            with self.lock:
-                joined = thread_id in self.joined
-            if joined:
-                self._invalidate(thread_id)
+            self._cleanup_failed_join(thread_id, before, process)
             raise
+
+    def _cleanup_failed_join(self, thread_id, before, process):
+        # Resume succeeded. Keep its subscription visible until the same
+        # connection confirms unsubscribe; never interrupt an existing turn.
+        with self.lock:
+            self.attaching.discard(thread_id)
+            self.requests.pop(thread_id, None)
+            if process is None or process is not self.client.process:
+                return
+            self.joined[thread_id] = process
+            self.metadata[thread_id] = {'connectionToken': str(uuid.uuid4()), 'cleanupOnly': True,
+                                       'cwd': before.get('cwd'), 'modelProvider': before.get('modelProvider')}
+        try:
+            result = self.client.request('thread/unsubscribe', {'threadId': thread_id})
+            if result.get('status') in ('unsubscribed', 'notSubscribed', 'notLoaded'):
+                self._invalidate(thread_id, process)
+        except AppServerError:
+            pass
 
     def refresh(self, thread_id):
         with self.lock:
@@ -961,6 +1012,8 @@ class CliSessions:
         with self.lock:
             if self.joined.get(thread_id) is not self.client.process or self.client.process is None:
                 raise AppServerUnavailable('CLI thread is not joined on this connection')
+            if self.metadata.get(thread_id, {}).get('cleanupOnly'):
+                raise AppServerUnavailable('此前 CLI 接入结果待核对，请先释放该连接；未重复恢复或发送任务')
 
     def _check_identity(self, thread_id):
         result = self.client.request('thread/read', {'threadId': thread_id,

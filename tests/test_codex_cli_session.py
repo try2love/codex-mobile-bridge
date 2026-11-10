@@ -56,11 +56,15 @@ class FakeClient:
                  'description': 'Write text', 'enabled': True, 'scope': 'user'}], 'errors': []}]}
         if method == 'thread/goal/get':
             return {'goal': None}
+        if method == 'thread/backgroundTerminals/list':
+            return {'data': []}
         if method == 'thread/goal/set':
             return {'goal': {'objective': params.get('objective', 'Existing goal'),
                              'status': params.get('status', 'active')}}
         if method == 'thread/goal/clear':
             return {'cleared': True}
+        if method == 'thread/unsubscribe':
+            return {'status': 'unsubscribed'}
         return {}
 
     def respond(self, request_id, result):
@@ -241,6 +245,38 @@ class CliSessionTests(unittest.TestCase):
             with self.assertRaises(AppServerUnsupported):
                 self.sessions.attach('thread-a', explicit=True)
         self.assertNotIn('thread-a', self.sessions.joined)
+        self.assertEqual([params for method, params in self.fake.sent if method == 'thread/unsubscribe'],
+                         [{'threadId': 'thread-a'}])
+
+    def test_failed_join_cleanup_stays_visible_and_cannot_send_or_resume_again(self):
+        original = self.fake.request
+        def request(method, params, **kwargs):
+            result = original(method, params, **kwargs)
+            if method == 'thread/resume':
+                result['modelProvider'] = 'different-provider'
+            if method == 'thread/unsubscribe':
+                raise AppServerUnknownResult('lost unsubscribe receipt')
+            return result
+        self.fake.request = request
+        with self.assertRaises(AppServerUnsupported):
+            self.sessions.attach('thread-a', explicit=True)
+        self.assertEqual(len(self.sessions.cli_connections()), 1)
+        with self.assertRaises(AppServerUnavailable):
+            self.sessions.attach('thread-a', explicit=True)
+        with self.assertRaises(AppServerUnavailable):
+            self.sessions.call('thread-a', 'thread-follower-start-turn', {'turnStart': {'request': {'input': []}}})
+        self.assertEqual(sum(method == 'thread/resume' for method, _ in self.fake.sent), 1)
+        self.assertFalse(any(method == 'turn/start' for method, _ in self.fake.sent))
+
+    def test_confirmed_release_can_verify_unload_without_reacquiring(self):
+        self.sessions.attach('thread-a', explicit=True)
+        connection = self.sessions.cli_connections()[0]
+        self.assertEqual(connection['_release'](False)['status'], 'detached')
+        self.fake.thread['status'] = {'type': 'notLoaded'}
+        before = len(self.fake.sent)
+        self.assertEqual(connection['_check']()['status'], 'released')
+        self.assertEqual([method for method, _ in self.fake.sent[before:]], ['thread/read'])
+        self.assertFalse(self.sessions.cli_connections())
 
     def test_loaded_thread_preserves_identity(self):
         state = self.sessions.attach('thread-a', explicit=True)
