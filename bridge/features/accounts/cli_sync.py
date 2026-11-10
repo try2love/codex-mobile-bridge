@@ -1,5 +1,6 @@
 """Guarded local CLI account selection; never touches SSH profiles."""
 
+import base64
 import hashlib
 import json
 import subprocess
@@ -12,6 +13,17 @@ from bridge.features.sessions.cli_maintenance import CliTasksPending
 
 
 CLAUDE_ENV_KEYS = ('ANTHROPIC_BASE_URL', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_MODEL')
+
+
+def _matches_chatgpt_owner(status, owner):
+    try:
+        encoded = status['authToken'].split('.')[1]
+        claims = json.loads(base64.urlsafe_b64decode(encoded + '=' * (-len(encoded) % 4)))
+        return bool(owner and len(owner) == 3 and owner[0] and owner[1] and status.get('authMethod') == 'chatgpt'
+                    and (claims.get('https://api.openai.com/auth') or {}).get('chatgpt_account_id') == owner[0]
+                    and claims.get('sub') == owner[1])
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+        return False
 
 
 class LocalCliSync:
@@ -32,6 +44,7 @@ class LocalCliSync:
 
     def recovery_target(self, config):
         """Resolve only an explicitly selected, unchanged managed file credential."""
+        from bridge.clients.codex.daemon_network import AUTH_ENV_NAMES
         accounts = self._accounts()
         if accounts.management()['external'] or not accounts.index.get('activeId'):
             return None
@@ -65,7 +78,7 @@ class LocalCliSync:
         identity = hashlib.sha256(json.dumps([row['id'], accounts.index['activeStamp'], config],
                                             sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         return {'accountId': row['id'], 'provider': provider, 'aliases': aliases,
-                'environment': {'OPENAI_API_KEY': None, 'OPENAI_BASE_URL': None},
+                'environment': dict.fromkeys(AUTH_ENV_NAMES),
                 'identity': identity, 'kind': row['kind']}
 
     def verify_runtime_auth(self, probe, target):
@@ -77,19 +90,43 @@ class LocalCliSync:
             key = json.loads((self._accounts().directory(row['id'])/'api.json').read_text(encoding='utf-8'))['key']
             valid = status.get('authMethod') == 'apikey' and bool(key) and token == key
         else:
-            import base64
-            try:
-                encoded = token.split('.')[1]
-                claims = json.loads(base64.urlsafe_b64decode(encoded + '=' * (-len(encoded) % 4)))
-                owner = row.get('tokenOwner') or []
-                valid = (status.get('authMethod') == 'chatgpt' and len(owner) == 3
-                         and (claims.get('https://api.openai.com/auth') or {}).get('chatgpt_account_id') == owner[0]
-                         and claims.get('sub') == owner[1])
-            except (ValueError, KeyError, IndexError, TypeError, AttributeError):
-                valid = False
+            valid = _matches_chatgpt_owner(status, row.get('tokenOwner'))
         if not valid:
             raise ValueError('原生服务尚未使用所选账号，请明确确认同步或维护后再继续')
         return True
+
+    def file_auth_identity(self, kind):
+        try:
+            auth = json.loads((self._accounts().home/'auth.json').read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(auth, dict):
+            return None
+        if kind == 'api':
+            expected = auth.get('OPENAI_API_KEY')
+            return expected if auth.get('auth_mode') in (None, 'apikey') and isinstance(expected, str) and expected else None
+        if kind == 'chatgpt' and auth.get('auth_mode') in (None, 'chatgpt') and isinstance(auth.get('tokens'), dict):
+            owner = token_owner(auth)
+            return owner if owner and owner[0] and owner[1] else None
+
+    def current_file_auth_matches(self, probe, target):
+        """Compare the selected home file with native auth without a login write."""
+        from bridge.clients.codex.app_server import AppServerError
+        kind = target.get('kind')
+        if kind not in ('api', 'chatgpt'):
+            return None
+        expected = self.file_auth_identity(kind)
+        if expected is None:
+            return False
+        try:
+            current = probe.request('getAuthStatus', {'includeToken': True, 'refreshToken': False}, replay_safe=True)
+        except (AppServerError, OSError) as error:
+            raise ValueError('无法核验此配置的原生认证缓存') from error
+        if not isinstance(current, dict):
+            return False
+        if kind == 'api':
+            return current.get('authMethod') == 'apikey' and current.get('authToken') == expected
+        return _matches_chatgpt_owner(current, expected)
 
     def _api_runtime(self):
         from bridge.clients.codex.cli_session import _managed_cli
@@ -177,6 +214,7 @@ class LocalCliSync:
         # Do not absorb later, unverified file changes into this baseline.
         cli.configuration_stamp = {'config.toml': config_hash,
                                    'auth.json': hashlib.sha256(verified_auth).hexdigest()}
+        cli.configuration_generation = hashlib.sha256(json.dumps(generation).encode()).hexdigest()
         accounts.phase('complete', error=None, cliSync={'status': 'verified'})
         return True
 

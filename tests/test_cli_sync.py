@@ -505,7 +505,8 @@ class ManagedApiSwitchTests(unittest.TestCase):
         self.assertEqual(target['accountId'], self.first['id'])
         self.assertEqual(target['provider'], 'bridge_api')
         self.assertEqual(target['aliases'], ['bridge_api', 'openai'])
-        self.assertEqual(target['environment'], {'OPENAI_API_KEY': None, 'OPENAI_BASE_URL': None})
+        self.assertEqual(target['environment'], {'OPENAI_API_KEY': None, 'OPENAI_BASE_URL': None,
+                                                'CODEX_API_KEY': None, 'CODEX_ACCESS_TOKEN': None})
         self.assertNotIn('fixture-A', json.dumps(target))
         self.config['model_providers']['openai'] = {'base_url': 'https://other.invalid/v1'}
         self.assertEqual(self.sync.recovery_target(self.config)['aliases'], ['bridge_api'])

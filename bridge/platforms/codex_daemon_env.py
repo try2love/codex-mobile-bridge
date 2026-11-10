@@ -62,7 +62,7 @@ def read_daemon_environment(home, executable, names):
         raise DaemonEnvironmentUnavailable('Codex daemon environment could not be verified') from exc
 
 
-def configuration_after_start(home, generation):
+def configuration_after_start(home, generation, *, files=('config.toml', 'auth.json')):
     """Detect config/auth changed after this verified process was born."""
     try:
         if sys.platform == 'darwin':
@@ -75,7 +75,7 @@ def configuration_after_start(home, generation):
             started = (boot - 1) * 1_000_000_000 + generation[1] * 1_000_000_000 // os.sysconf('SC_CLK_TCK')
         else:
             raise ValueError('Unsupported process clock')
-        for name in ('config.toml', 'auth.json'):
+        for name in files:
             path = Path(home) / name
             if path.exists():
                 info = path.stat()

@@ -32,6 +32,8 @@ APP 来源使用原 App owner，CLI 来源直接使用所选主机及 CODEX_HOME
 
 在支持的本机 Codex CLI 版本中，用户确认的恢复可在现有维护事务中等待同一 home 的所有任务结束。查看状态不会启动等待，取消在首次原生写入或退出派发前有效。恢复绑定原主机、home、配置及已核验的进程代次；完成后仅继续发起恢复的会话，未知操作不重放。默认仅正常排空，不调用原生 restart 或强制终止。参见[等待恢复决定](.agents/notes/implemented/feature/2026-11-11-cli-recovery-waits-for-idle.md)。
 
+macOS/Linux 本机 CLI 显式继续时核验同一 home 的原生认证和接入；缓存已经更新就直接使用，仍需重建时沿用上述待闲事务。既有任务控制保留，未发送消息不重放。独立配置只使用自己的认证，SSH/WSL 不从本机取账号。0.167 的不同 provider ID 保持原生只读原因；同 ID 的账号或端点变化可接续。参见[原生账号跟随决定](.agents/notes/implemented/feature/2026-11-11-cli-follows-native-account.md)。
+
 模型、权限、Skill 与工作模式使用独立能力字段，不借用会同时开放重命名等操作的 `canConfigure`。APP 与已连接原 VS Code owner 的聊天使用各自既有通路；CLI 的目录、设置、Skill、计划请求和本机/SSH Goal 使用同一原生 daemon。读取目录不激活会话，显式设置只更新所选模型/推理强度或经策略检查的权限字段，不替换 provider、认证或 cwd。原生 CLI 权限以 resume 的实际配置与 thread/settings/updated 事件为准，不把请求值投影为已生效；权限策略读取来自执行端，不依赖网关电脑的桌面开关。
 
 项目与 SSH 主机映射来自 App 的 `.codex-global-state.json`。远端只读取 App 已保存且有关联项目/会话的 SSH 别名；只读辅助脚本使用 `ssh` 和远端 Python，不向远端安装文件。

@@ -112,6 +112,7 @@ class LiveSession:
         self.history_receipt_key = None
         self.history_receipt_attempts = 0
         self.error = None
+        self.cli_recovery = None
         self.rebuild_recommended = False
         self.desktop_restart_recommended = False
         self.viewers = 0
@@ -239,6 +240,10 @@ class LiveSession:
             result["loadingHistory"] = self.state is None and self.history_state is None
             if self.access is not None:
                 result["access"] = dict(self.access)
+            if self.cli_recovery is not None:
+                result['cliRecovery'] = dict(self.cli_recovery)
+                if self.cli_recovery.get('reason') == 'modelProviderMismatch' and 'access' in result:
+                    result['access'].update(readOnly=True, canSend=False)
             self.tool_images = {
                 attachment['desktopId']: dict(attachment)
                 for turn in result['turns'] for message in turn['messages']
@@ -1610,11 +1615,11 @@ class Bridge:
         elif metadata.get('origin') == 'cli':
             raise ValueError('此功能请在原 CLI 中操作。')
 
-    def cli_network(self, thread_id, body=None, *, automatic=False, _waiting=None):
+    def cli_network(self, thread_id, body=None, *, automatic=False, _waiting=None, _follow_account=False):
         from bridge.clients.codex.cli_session import _managed_cli
         from bridge.clients.codex.daemon_network import (inspect_proxy, configuration_stamp,
             graceful_restart_supported, system_proxy_user_layer, enable_system_proxy_following,
-            native_recovery_target)
+            native_recovery_target, daemon_version, CliProviderMismatch, file_auth_provider, AUTH_ENV_NAMES)
         from bridge.features.accounts.cli_sync import LocalCliSync
         from bridge.clients.codex.desktop_runtime import exclusive_lock
         from bridge.clients.codex.release import ReleaseNotSent
@@ -1622,13 +1627,17 @@ class Bridge:
         from contextlib import closing
         from bridge.clients.codex.app_server import CodexAppServer
         import sys
-        if self.host != 'local' and not self.host.startswith('codex:') or self.store.get(thread_id).get('origin') not in ('cli', 'ide'):
+        origin = self.store.get(thread_id).get('origin')
+        if (self.host != 'local' and not self.host.startswith('codex:') or origin not in ('cli', 'ide')
+                or _follow_account and origin != 'cli'):
             raise ValueError('只支持本机 Codex CLI')
         if sys.platform not in ('darwin', 'linux'):
             if body is not None:
                 raise ValueError('此平台请在电脑上正常重启 CLI 服务')
             return {'canRecover': False, 'message': '此平台请在电脑上正常重启 CLI 服务'}
         cli = self.cli_sessions
+        if _follow_account and (cli.alias is not None or cli.home.resolve() != self.accounts.home.resolve()):
+            raise IPCError('当前 CLI 账号不属于此配置；操作未发送。')
         if isinstance(body, dict) and set(body) == {'action', 'operationId'} and body['action'] in ('status', 'cancel'):
             with self.cli_maintenance.lock:
                 record = self._cli_recovery_record()
@@ -1751,55 +1760,118 @@ class Bridge:
                                   and bool(cli.recovery_environment))
                     return {'canRecover': can_resume, 'generation': resume_stamp, 'message':
                             '原 CLI 已退出。请确认恢复期间其他客户端不再发起任务，再恢复此共享服务。' if can_resume else pending_message}
-            generation, updates, stamp = inspect_proxy(cli.home, executable)
+            if _follow_account:
+                generation = read_daemon_environment(cli.home, executable, ())[1]
+                updates, stamp = {}, 'account'
+            else:
+                generation, updates, stamp = inspect_proxy(cli.home, executable)
             configuration = configuration_stamp(cli.home)
             generation_key = hashlib.sha256(json.dumps(generation).encode()).hexdigest()
             if _waiting is not None and (recovery['generation'] != generation_key or recovery['configuration'] != configuration):
                 raise ValueError('等待期间原生服务或配置已变化，未退出服务')
             follow_system_proxy = bool(updates) and sys.platform == 'darwin'
-            configuration_changed = (configuration != cli.configuration_stamp
-                if cli.configuration_stamp is not None else configuration_after_start(cli.home, generation))
+            baseline = cli.configuration_stamp
+            if _follow_account and cli.configuration_generation not in (None, generation_key):
+                baseline = None
+            configuration_changed = (configuration != baseline
+                if baseline is not None else configuration_after_start(cli.home, generation))
             plan, target, original, target_thread = None, None, None, None
-            if not automatic:
-                with closing(CodexAppServer(cli.client.socket_path, cli=executable,
-                                            client_name='codex-mobile-bridge-target-check')) as probe:
-                    if Path(probe.connect()['codexHome']).resolve() != cli.home.resolve():
-                        raise ValueError('原生服务不属于此配置，未恢复服务')
-                    before = probe.request('thread/read', {'threadId': thread_id, 'includeTurns': False}, replay_safe=True)['thread']
-                    snapshot = probe.request('config/read', {'includeLayers': True, 'cwd': before.get('cwd')}, replay_safe=True)
-                    config = snapshot['config']
-                if before.get('id') != thread_id or not before.get('cwd') or not before.get('modelProvider'):
-                    raise ValueError('无法核验原会话身份，未恢复服务')
-                historical_provider = before['modelProvider']
-                target_thread = cli.persisted_identity(before)
+            if not automatic or _follow_account:
+                try:
+                    with closing(CodexAppServer(cli.client.socket_path, cli=executable,
+                                                client_name='codex-mobile-bridge-target-check')) as probe:
+                        runtime_info = probe.connect()
+                        if Path(runtime_info['codexHome']).resolve() != cli.home.resolve():
+                            raise ValueError('原生服务不属于此配置，未恢复服务')
+                        before = probe.request('thread/read', {'threadId': thread_id, 'includeTurns': False}, replay_safe=True)['thread']
+                        snapshot = probe.request('config/read', {'includeLayers': True, 'cwd': before.get('cwd')}, replay_safe=True)
+                        config = snapshot['config']
+                    if (not isinstance(config, dict) or before.get('id') != thread_id
+                            or not before.get('cwd') or not before.get('modelProvider')):
+                        raise ValueError('无法核验原会话身份，未恢复服务')
+                    historical_provider = before['modelProvider']
+                    target_thread = cli.persisted_identity(before)
+                except (AppServerError, ValueError, OSError, KeyError, TypeError) as error:
+                    if _follow_account and configuration_changed:
+                        raise IPCError('CLI 接入已变化，但无法核验当前原生配置和会话；操作未发送。') from error
+                    raise
+                if _waiting is not None and target_thread != recovery['targetThread']:
+                    raise ValueError('恢复目标的会话身份已变化，未恢复服务')
                 before = {**before, **target_thread}
-                names = {'OPENAI_BASE_URL', 'OPENAI_API_KEY', 'CODEX_SQLITE_HOME', 'NO_PROXY', 'no_proxy'}
+                names = {*AUTH_ENV_NAMES, 'CODEX_SQLITE_HOME', 'NO_PROXY', 'no_proxy'}
                 if not updates:
                     from bridge.clients.codex.daemon_network import PROXY_NAMES
                     names.update(PROXY_NAMES)
                 for provider in {*((config.get('model_providers') or {}).keys()), before['modelProvider'], config.get('model_provider') or 'openai'}:
                     names.update(cli._required_model_environment(config, provider))
-                original, identity = read_daemon_environment(cli.home, executable, names)
-                if identity != generation:
-                    raise ValueError('原生服务已变化，请重新检查')
-                target = LocalCliSync(self).recovery_target(config)
-                if target is None:
-                    target = native_recovery_target(cli.home, config, before['modelProvider'], original, snapshot.get('layers') or [])
+                try:
+                    original, identity = read_daemon_environment(cli.home, executable, names)
+                    if identity != generation:
+                        raise ValueError('原生服务已变化，请重新检查')
+                except (ValueError, OSError) as error:
+                    if _follow_account and configuration_changed:
+                        raise IPCError('CLI 接入已变化，但无法核验同代原生服务；操作未发送。') from error
+                    raise
+                sync = LocalCliSync(self)
+                try:
+                    target = sync.recovery_target(config)
+                    if target is None:
+                        target = native_recovery_target(cli.home, config, before['modelProvider'], original, snapshot.get('layers') or [])
+                except (ValueError, OSError) as error:
+                    if _follow_account and configuration_changed:
+                        raise IPCError('当前 CLI 接入变化尚未核验；本次操作未发送。' + str(error)) from error
+                    raise
                 provider = before['modelProvider'] if before['modelProvider'] in target['aliases'] else target['provider']
+                if daemon_version(runtime_info) == '0.167.0' and target['provider'] != before['modelProvider']:
+                    error = CliProviderMismatch(before['modelProvider'], target['provider'])
+                    if _follow_account or body is not None:
+                        raise error
+                    return {'canRecover': False, **error.details, 'message': str(error)}
+                if _follow_account and configuration_changed and provider == before['modelProvider']:
+                    try:
+                        route_changed = (configuration['config.toml'] != baseline['config.toml']
+                            if baseline is not None else configuration_after_start(cli.home, generation, files=('config.toml',)))
+                        if not route_changed and not target.get('unknownAuthSource'):
+                            with closing(CodexAppServer(cli.client.socket_path, cli=executable,
+                                                        client_name='codex-mobile-bridge-auth-check')) as probe:
+                                if Path(probe.connect()['codexHome']).resolve() != cli.home.resolve():
+                                    raise ValueError('原生服务不属于此配置')
+                                matched = sync.current_file_auth_matches(probe, target)
+                            if (matched is True or matched is None and not file_auth_provider(config, provider)):
+                                if (configuration_stamp(cli.home) != configuration
+                                        or read_daemon_environment(cli.home, executable, ())[1] != generation):
+                                    raise ValueError('核验账号期间原生配置已变化，未接续会话')
+                                cli.configuration_stamp = configuration
+                                cli.configuration_generation = generation_key
+                                return {'canRecover': False, 'followed': True}
+                    except (ValueError, OSError, AppServerError, KeyError, TypeError) as error:
+                        # File age is sufficient evidence of drift on a fresh gateway.
+                        # A failed native probe must not fall back to sending with the old cache.
+                        raise IPCError('无法核验此配置的原生认证缓存；操作未发送。') from error
                 if configuration_changed or provider != before['modelProvider']:
                     if target.get('unknownAuthSource'):
-                        raise ValueError('当前原生认证存储不是已核验的 file 来源，无法确认新账号；未修改 auth/config，请在原工具核验认证来源。')
+                        error = '当前原生认证存储不是已核验的 file 来源，无法确认新账号；请在原工具核验认证来源。'
+                        raise (IPCError if _follow_account else ValueError)(error)
+                    if (_follow_account and not target.get('accountId') and file_auth_provider(config, provider)
+                            and (target.get('kind') is None or any(original.get(name) for name in ('CODEX_API_KEY', 'CODEX_ACCESS_TOKEN')))):
+                        raise IPCError('此 CLI 的文件认证或原生注入来源尚未核验，请先在原客户端同步；本次操作未发送。')
+                    if (_follow_account and target.get('kind') in ('api', 'chatgpt')
+                            and sync.file_auth_identity(target['kind']) is None):
+                        raise IPCError('此配置的原生认证文件尚未核验；本次操作未发送。')
                     plan = {key: target.get(key) for key in ('accountId', 'identity', 'external', 'kind')}
                     plan.update(provider=provider, before=target_thread)
                     plan['historicalProvider'] = historical_provider
                     follow_system_proxy = False  # Adopting native auth/config never rewrites those files.
             preview_salt = (recovery['previewSalt'] if _waiting is not None else recovery['operationId']
                             if maintenance and recovery['phase'] in ('cancelled', 'failed') else None)
-            stamp = hashlib.sha256(json.dumps([stamp, configuration, follow_system_proxy, target_thread, plan,
+            stamp = hashlib.sha256(json.dumps([stamp, generation_key, configuration, follow_system_proxy, target_thread, plan,
                 target.get('identity') if target else None, preview_salt], sort_keys=True).encode()).hexdigest()
             if not updates and not configuration_changed and plan is None:
                 if automatic:
                     cli.configuration_stamp = configuration
+                    cli.configuration_generation = generation_key
+                if _follow_account and _waiting is not None:
+                    return {'followed': True}
                 if body is not None:
                     raise ValueError('网络状态已变化，请重新检查')
                 return {'canRecover': False, 'message': '未检测到可恢复的失效本机代理'}
@@ -1814,7 +1886,13 @@ class Bridge:
             if follow_system_proxy:
                 message += ('恢复时会在此 CODEX_HOME 的 CLI 用户配置中保存 features.respect_system_proxy=true，'
                             '使使用此配置的其他客户端今后加载的会话也跟随系统代理；不修改系统代理。')
-            if automatic:
+            if _follow_account and body is None:
+                if not graceful_restart_supported(runtime_info):
+                    raise IPCError('当前 CLI 版本的正常重建能力尚未核验；请在原客户端同步账号。')
+                confirmation = {'confirmed': True, 'generation': stamp}
+                return self._queue_cli_maintenance(target_thread, confirmation, generation_key, configuration,
+                    preview_salt, '正在等待此配置的任务安全结束，以同步当前原生 CLI 接入。', follow_account=True)
+            if automatic and not _follow_account:
                 return {'canRecover': False, 'requiresConfirmation': True,
                         'message': message + '请从会话菜单检查 CLI 网络并确认恢复；不会自动退出共享服务。'}
             if body is not None and body != {'confirmed': True, 'generation': stamp}:
@@ -1926,7 +2004,7 @@ class Bridge:
             session = self.activate(thread_id)
         return {'connected': session.connected}
 
-    def _queue_cli_maintenance(self, target_thread, body, generation, configuration, preview_salt, message):
+    def _queue_cli_maintenance(self, target_thread, body, generation, configuration, preview_salt, message, *, follow_account=False):
         if self.closed.is_set() or not self.observation_enabled():
             raise ValueError('CLI 接入已停用或网关正在关闭')
         record = {'purpose': 'recovery', 'phase': 'waiting', 'operationId': str(uuid.uuid4()),
@@ -1934,7 +2012,7 @@ class Bridge:
                   'host': self.host, 'home': str(self.cli_sessions.home.resolve()),
                   'confirmation': body, 'generation': generation, 'configuration': configuration,
                   'previewSalt': preview_salt, 'message': message,
-                  'wasReleased': self.released_cli.contains(target_thread['id'])}
+                  'wasReleased': self.released_cli.contains(target_thread['id']), 'followAccount': follow_account}
         with self.cli_maintenance.lock:
             private_json(self.data_dir/'cli-daemon-recovery.json', record)
             self._start_cli_maintenance(record)
@@ -1972,12 +2050,20 @@ class Bridge:
                     current['maintenanceResult'] = result
                 private_json(self.data_dir/'cli-daemon-recovery.json', current)
         self.cli_maintenance.start(identifier,
-            lambda: self._attempt_cli_maintenance(thread, record['confirmation'], identifier), finish)
+            lambda: self._attempt_cli_maintenance(thread, record['confirmation'], identifier, record.get('followAccount', False)), finish)
 
-    def _attempt_cli_maintenance(self, thread, confirmation, identifier):
+    def _attempt_cli_maintenance(self, thread, confirmation, identifier, follow_account):
         with self.entry_gate if self.entry_gate is not None else nullcontext(), self.accounts.gate:
             self.accounts.check_ready()
-            return self.cli_network(thread, confirmation, _waiting=identifier)
+            result = self.cli_network(thread, confirmation, _waiting=identifier, _follow_account=follow_account)
+            if not follow_account or not result.get('followed'):
+                return result
+            with self.cli_maintenance.lock:
+                self._verify_cli_waiting_dispatch(identifier)
+                record = self._cli_recovery_record()
+                record['phase'] = 'complete'
+                private_json(self.data_dir/'cli-daemon-recovery.json', record)
+            return {'connected': self.activate(thread, _expected_cli=record['targetThread']).connected}
 
     def _completed_cli_release(self, thread_id, record):
         """Recognize a completed release, never an unfinished network recovery."""
@@ -2021,38 +2107,56 @@ class Bridge:
         return False
 
     def _continue_released_cli(self, cli, executable, record, thread_id):
-        from bridge.clients.codex.daemon_network import configuration_stamp, native_recovery_target
+        from bridge.clients.codex.daemon_network import configuration_stamp, native_recovery_target, file_auth_provider, AUTH_ENV_NAMES, PROXY_NAMES
         from bridge.features.accounts.cli_sync import LocalCliSync
         from bridge.features.endpoints.registry import load_toml
-        if configuration_stamp(cli.home) != record['configuration']:
-            raise ValueError('释放后 CLI 配置或认证已变化，请先在原客户端核验接入并正常启动；未沿用旧环境')
+        configuration = configuration_stamp(cli.home)
+        changed = configuration != record['configuration']
         saved = cli.store.get(record['releasedThread']['id'])
         if {'id': saved['id'], 'cwd': saved['cwd'], 'modelProvider': saved['model_provider']} != record['releasedThread']:
             raise ValueError('释放后的原会话身份已变化，请重新核验；未启动 CLI')
         saved = cli.store.get(thread_id)
-        if cli.daemon_status() == 'stopped':
+        status = cli.daemon_status()
+        if status == 'stopped' or changed:
             config = load_toml((cli.home/'config.toml').read_text(encoding='utf-8'))
             previous = cli.recovery_environment
             known = previous and previous['generation'] == record['generation']
             values = dict(previous['preserved']) if known else {}
             native = native_recovery_target(cli.home, config, saved['model_provider'], values)
-            selected = LocalCliSync(self).recovery_target(config)
-            if not known and selected is None:
+            sync = LocalCliSync(self)
+            selected = sync.recovery_target(config)
+            target = selected or native
+            if changed:
+                effective = {**config, **((config.get('profiles') or {}).get(config.get('profile')) or {})}
+                if target['provider'] != saved['model_provider']:
+                    raise ValueError('释放后的当前提供商与原会话不同，未启动服务')
+                if (target.get('unknownAuthSource') or target.get('kind') not in ('api', 'chatgpt')
+                        or not file_auth_provider(effective, target['provider'])
+                        or sync.file_auth_identity(target['kind']) is None):
+                    raise ValueError('释放后的当前 CLI 配置或认证尚未核验；未沿用旧环境，未启动服务')
+                record = {**record, 'releasedConfiguration': record['configuration'], 'configuration': configuration,
+                          'releasedAuth': {'provider': target['provider'], 'kind': target['kind'], 'cwd': saved['cwd']}}
+                if not known:
+                    values = dict.fromkeys((*AUTH_ENV_NAMES, *PROXY_NAMES, 'NO_PROXY', 'no_proxy'))
+                values.update(native['environment'])
+            elif not known and selected is None:
                 raise ValueError('此前 CLI 进程环境已不可核验，请在原客户端核验接入并正常启动；不会借用网关环境')
-            if saved['model_provider'] not in (selected or native)['aliases']:
+            if saved['model_provider'] not in target['aliases']:
                 raise ValueError('当前所选 CLI 接入与原会话提供商不同，请检查 CLI 网络并明确确认；未迁移会话')
             if selected:
                 values.update(native['environment'])
                 values.update(selected['environment'])
             if not known:
                 values['CODEX_SQLITE_HOME'] = None
-            cli.recovery_environment = {'generation': record['generation'], 'updates': {}, 'preserved': values}
+            if status == 'stopped':
+                cli.recovery_environment = {'generation': record['generation'], 'updates': {}, 'preserved': values}
         self._resume_cli_recovery(cli, executable, record)
 
-    def _recover_cli_environment(self, thread_id, *, defer_start=False):
+    def _recover_cli_environment(self, thread_id, *, defer_start=False, follow_account=False):
         """Keep environment diagnostics advisory; an unfinished drain stays blocked."""
         from bridge.clients.codex.cli_session import CliSessions, _managed_cli, _local_cli
         from bridge.clients.codex.desktop_runtime import exclusive_lock
+        from bridge.clients.codex.daemon_network import configuration_stamp
         from bridge.platforms.codex_daemon_env import DaemonEnvironmentUnavailable
         cli = self.cli_sessions
         record = self._cli_recovery_record()
@@ -2078,7 +2182,8 @@ class Bridge:
                 raise IPCError('已释放的 CLI 尚未重新连接：' + str(error)) from error
         if record.get('phase') == 'released':
             raise IPCError('已释放的 CLI 回执尚未匹配当前会话，请先检查原释放结果；未启动服务')
-        pending = (record.get('phase') in ('waiting', 'draining', 'stopped', 'starting') or
+        pending_phases = ('waiting', 'draining', 'stopped', 'starting')
+        pending = (record.get('phase') in pending_phases or
                    record.get('phase') == 'resuming' and record['providerTarget']['before']['id'] == thread_id)
         if (not isinstance(cli, CliSessions) or cli.alias is not None or
                 not (self.host == 'local' or self.host.startswith('codex:'))):
@@ -2089,22 +2194,38 @@ class Bridge:
             return
         if not Path(cli.client.socket_path).exists() and not pending:
             return
-        if not pending:
+        follow_account = (follow_account and sys.platform in ('darwin', 'linux')
+                          and self.store.get(thread_id).get('origin') == 'cli')
+        known_drift = (follow_account and cli.configuration_stamp is not None
+                       and configuration_stamp(cli.home) != cli.configuration_stamp)
+        if not pending and not follow_account:
             self._verify_cli_file_auth(thread_id)
         try:
-            result = self.cli_network(thread_id, automatic=True)
+            result = (self.cli_network(thread_id, automatic=True, _follow_account=True) if follow_account
+                      else self.cli_network(thread_id, automatic=True))
             pending = pending or bool(result.get('maintenancePending'))
             if pending and result.get('requiresConfirmation'):
+                if result.get('operationId'):
+                    error = IPCError(result['message'] + '；本次操作未发送。')
+                    error.details = {'reason': 'cliMaintenancePending', 'operationId': result['operationId'],
+                                     'threadId': result['threadId']}
+                    raise error
                 raise ValueError(result['message'])
+            if follow_account and not pending:
+                self._verify_cli_file_auth(thread_id)
         except DaemonEnvironmentUnavailable as error:
             # Native identity could not be established. Keep the original
             # runtime; native admission still protects every following request.
-            if pending or self._cli_recovery_record().get('phase') in ('waiting', 'draining', 'stopped', 'starting'):
+            if pending or self._cli_recovery_record().get('phase') in pending_phases:
                 raise IPCError('CLI 服务恢复结果尚未核对，请先检查 CLI 网络；操作未发送。') from error
+            if known_drift:
+                raise IPCError('CLI 接入已变化，但无法核验原生服务；操作未发送。') from error
             return
         except (ValueError, OSError, AppServerError) as error:
-            if pending or self._cli_recovery_record().get('phase') in ('waiting', 'draining', 'stopped', 'starting'):
+            if pending or self._cli_recovery_record().get('phase') in pending_phases:
                 raise IPCError('CLI 连接恢复暂受阻：' + str(error) + '；原任务和未确认操作保持不变。') from error
+            if known_drift:
+                raise IPCError('CLI 接入已变化，尚未核验；操作未发送。') from error
             # A changed credential file or an unreachable inherited proxy does
             # not prove this thread needs it (NO_PROXY, local providers, pooled
             # connections and native token refresh can still work).
@@ -2208,23 +2329,22 @@ class Bridge:
 
     def _verify_cli_target(self, probe, config, plan, cli, executable):
         from bridge.features.accounts.cli_sync import LocalCliSync
-        from bridge.clients.codex.daemon_network import native_recovery_target, verify_file_auth, file_auth_provider
+        from bridge.clients.codex.daemon_network import native_recovery_target, AUTH_ENV_NAMES
         from bridge.platforms.codex_daemon_env import read_daemon_environment
         snapshot = probe.request('config/read', {'includeLayers': True, 'cwd': plan['before']['cwd']}, replay_safe=True)
         config = snapshot['config']
         sync = LocalCliSync(self)
         target = sync.recovery_target(config)
         if target is None:
-            names = cli._required_model_environment(config, plan['provider'])
+            names = set(AUTH_ENV_NAMES) | cli._required_model_environment(config, plan['provider'])
             environment, _ = read_daemon_environment(cli.home, executable, names)
             target = native_recovery_target(cli.home, config, plan['before']['modelProvider'], environment, snapshot.get('layers') or [])
         if target['identity'] != plan['identity'] or plan['provider'] not in target['aliases']:
             raise ValueError('目标接入已变化，未迁移会话；请重新检查并确认')
         if target.get('accountId'):
             sync.verify_runtime_auth(probe, target)
-        else:
-            verify_file_auth(probe, cli.home, config, plan['provider'],
-                             known_factory=file_auth_provider(config, plan['provider']))
+        elif sync.current_file_auth_matches(probe, target) is False:
+            raise ValueError('新服务尚未使用已核验的原生认证，未接续会话')
 
     def _drain_cli_daemon(self, cli, executable, generation, configuration, updates, preserved, connections=(), *,
                           follow_system_proxy=False, provider_plan=None, release_operation=None,
@@ -2286,21 +2406,32 @@ class Bridge:
         from contextlib import closing
         from bridge.clients.codex.app_server import CodexAppServer
         from bridge.clients.codex.cli_session import _managed_cli
-        from bridge.clients.codex.daemon_network import configuration_stamp
+        from bridge.clients.codex.daemon_network import configuration_stamp, file_auth_provider
         from bridge.platforms.codex_daemon_env import read_daemon_environment
         def verify_proxy_setting():
-            if record.get('followSystemProxy') or record.get('providerTarget'):
+            released_auth = record.get('releasedAuth')
+            if record.get('followSystemProxy') or record.get('providerTarget') or released_auth:
                 with closing(CodexAppServer(cli.client.socket_path, cli=executable,
                                             client_name='codex-mobile-bridge-network-verify')) as probe:
                     info = probe.connect()
                     if Path(info['codexHome']).resolve() != cli.home.resolve():
                         raise ValueError('CLI 服务不属于此配置，恢复结果待核对')
-                    config = probe.request('config/read', {'includeLayers': False}, replay_safe=True)['config']
+                    params = {'includeLayers': False}
+                    if released_auth:
+                        params['cwd'] = released_auth['cwd']
+                    config = probe.request('config/read', params, replay_safe=True)['config']
                     if record.get('followSystemProxy') and (config.get('features') or {}).get('respect_system_proxy') is not True:
                         raise ValueError('新 CLI 服务尚未启用系统代理跟随，请核对配置；不会再次退出服务')
                     plan = record.get('providerTarget')
                     if plan:
                         self._verify_cli_target(probe, config, plan, cli, executable)
+                    if released_auth:
+                        from bridge.features.accounts.cli_sync import LocalCliSync
+                        provider = released_auth['provider']
+                        if ((config.get('model_provider') or 'openai') != provider or not file_auth_provider(config, provider)
+                                or LocalCliSync(self).current_file_auth_matches(probe, released_auth) is not True
+                                or configuration_stamp(cli.home) != record['configuration']):
+                            raise ValueError('释放后的原生服务未确认当前认证；未接续会话')
         status = cli.daemon_status()
         if status == 'running':
             generation = read_daemon_environment(cli.home, executable, ())[1]
@@ -2308,6 +2439,9 @@ class Bridge:
                 raise ValueError('原 CLI 仍在排空任务，请等待完成；不会重复发送退出信号')
             verify_proxy_setting()
             record['resumedGeneration'] = hashlib.sha256(json.dumps(generation).encode()).hexdigest()
+            if record.get('releasedAuth') or record.get('providerTarget'):
+                cli.configuration_stamp = record['configuration']
+                cli.configuration_generation = record['resumedGeneration']
             record['phase'] = 'complete'
             private_json(self.data_dir / 'cli-daemon-recovery.json', record)
             return False
@@ -2330,6 +2464,7 @@ class Bridge:
         record['resumedGeneration'] = hashlib.sha256(json.dumps(
             read_daemon_environment(cli.home, executable, ())[1]).encode()).hexdigest()
         cli.configuration_stamp = record['configuration']
+        cli.configuration_generation = record['resumedGeneration']
         record['phase'] = 'complete'
         private_json(self.data_dir / 'cli-daemon-recovery.json', record)
         return True
@@ -2354,6 +2489,8 @@ class Bridge:
             session.connected = True
             session.discovering = False
             session.error = None
+            if newly_connected:
+                session.cli_recovery = None
             session.access = self._access(session.origin, session)
             session.changed()
         if newly_connected:
@@ -2451,7 +2588,7 @@ class Bridge:
     def _unload_cli_connection(self, sid, key, check, operation_id=None):
         """Explicit maintenance confirmation; never called by reading or reconnecting."""
         from bridge.clients.codex.cli_session import _managed_cli
-        from bridge.clients.codex.daemon_network import PROXY_NAMES, configuration_stamp
+        from bridge.clients.codex.daemon_network import AUTH_ENV_NAMES, PROXY_NAMES, configuration_stamp
         from bridge.clients.codex.desktop_runtime import exclusive_lock
         from bridge.clients.codex.release import ReleaseNotSent
         from bridge.platforms.codex_daemon_env import read_daemon_environment
@@ -2475,7 +2612,7 @@ class Bridge:
                 config = cli.client.request('config/read', {'includeLayers': False}, replay_safe=True)['config']
                 before = cli.client.request('thread/read', {'threadId': sid, 'includeTurns': False}, replay_safe=True)['thread']
                 identity = cli.persisted_identity(before)
-                names = set(PROXY_NAMES) | {'OPENAI_BASE_URL', 'OPENAI_API_KEY', 'CODEX_SQLITE_HOME', 'NO_PROXY', 'no_proxy'}
+                names = {*AUTH_ENV_NAMES, *PROXY_NAMES, 'CODEX_SQLITE_HOME', 'NO_PROXY', 'no_proxy'}
                 for provider in (config.get('model_providers') or {}):
                     names.update(cli._required_model_environment(config, provider))
                 original, generation = read_daemon_environment(cli.home, executable, names)
@@ -3304,9 +3441,31 @@ class Bridge:
                 session.changed()
                 raise IPCError(session.error) from exc
 
+    @staticmethod
+    def _record_cli_follow_error(session, error):
+        with session.condition:
+            session.error = str(error)
+            session.cli_recovery = getattr(error, 'details', None)
+            session.changed()
+
+    def _verify_cli_submission_account(self, session):
+        # Recheck at dispatch admission, regardless of a turn ending after
+        # connection lookup. Existing task answers take their own guarded path.
+        try:
+            self._recover_cli_environment(session.id, follow_account=True)
+        except IPCError as error:
+            self._record_cli_follow_error(session, error)
+            raise
+        with session.condition:
+            if session.cli_recovery is not None:
+                session.cli_recovery = session.error = None
+                session.changed()
+
     @operation
-    def activate(self, thread_id, *, allow_ide_resume=True, _transport_rebuilt=False, _cli_recovery=None, _expected_cli=None):
+    def activate(self, thread_id, *, allow_ide_resume=True, _transport_rebuilt=False, _cli_recovery=None, _expected_cli=None,
+                 _defer_cli_account=False):
         """Explicit phone operation only; reads and notification watches never navigate."""
+        from bridge.clients.codex.daemon_network import CliProviderMismatch
         if _cli_recovery is None:
             record = self._cli_recovery_record()
             plan = record.get('providerTarget')
@@ -3318,22 +3477,25 @@ class Bridge:
             raise ValueError('此独立入口只接入原 VS Code / CLI 会话')
         with session.activation_lock:
             self.released_cli.set(thread_id, False)
-            environment_checked = session.runtime == 'cli'
+            follow_account = _cli_recovery is None and _expected_cli is None
+            environment_checked = not follow_account or session.runtime == 'cli'
             with session.condition:
-                current = session.state or {}
-                idle_cli = ((current.get('threadRuntimeStatus') or {}).get('type') == 'idle'
-                            and not current.get('requests') and (current.get('goal') or {}).get('status') != 'active'
-                            and not any(turn.get('status') == 'inProgress' for turn in ordered_turns(current)))
+                state = session.state or {}
+                idle_cli = ((state.get('threadRuntimeStatus') or {}).get('type') == 'idle'
+                            and not session.pending_requests() and (state.get('goal') or {}).get('status') != 'active'
+                            and not any(turn.get('status') == 'inProgress' for turn in ordered_turns(state)))
             # A running task must retain its stop/approval/Goal controls even
             # while connection configuration is waiting for a safe recovery.
-            if environment_checked and (not session.connected or idle_cli):
+            if follow_account and environment_checked and (not session.connected or idle_cli and not _defer_cli_account):
                 try:
-                    environment_checked = self._recover_cli_environment(thread_id, defer_start=True) is not False
+                    environment_checked = self._recover_cli_environment(thread_id, defer_start=True, follow_account=follow_account) is not False
                 except IPCError as error:
-                    with session.condition:
-                        session.error = str(error)
-                        session.changed()
+                    self._record_cli_follow_error(session, error)
                     raise
+                with session.condition:
+                    if session.cli_recovery is not None:
+                        session.cli_recovery = session.error = None
+                        session.changed()
             endpoint_changed = not _transport_rebuilt and session.runtime == 'desktop' and self.ipc.endpoint_changed()
             replace_transport = endpoint_changed or (not _transport_rebuilt and session.runtime == 'desktop' and
                 not session.connected and session.rebuild_recommended)
@@ -3394,7 +3556,7 @@ class Bridge:
                         try:
                             try:
                                 if not environment_checked:
-                                    self._recover_cli_environment(session.id)
+                                    self._recover_cli_environment(session.id, follow_account=follow_account)
                                 if _cli_recovery:
                                     plan, before_resume = _cli_recovery
                                     state = self.cli_sessions.attach(session.id, explicit=True,
@@ -3408,7 +3570,7 @@ class Bridge:
                                     state = (self.cli_sessions.attach(session.id, explicit=True, expected_identity=expected)
                                              if expected else self.cli_sessions.attach(session.id, explicit=True))
                             except AppServerError as exc:
-                                raise IPCError(str(exc)) from exc
+                                raise (CliProviderMismatch.from_native(exc) or IPCError(str(exc))) from exc
                             self._cli_state(session.id, state)
                             if not session.connected:
                                 raise IPCError('CLI 会话尚未恢复；操作未发送，请重试继续会话。')
@@ -3440,6 +3602,7 @@ class Bridge:
                     else:
                         session.error = ('桌面执行连接尚未恢复，建议点击“重建连接”。操作未发送。'
                                          if session.rebuild_recommended else str(exc))
+                    session.cli_recovery = getattr(exc, 'details', None)
                     error = session.error
                 raise IPCError(error) from exc
             finally:
@@ -3624,10 +3787,11 @@ class Bridge:
                              for session in sessions)
             delay = 3 if self.ipc.client_id or recovering else min(30, delay * 2)
 
-    def _target(self, thread_id):
+    def _target(self, thread_id, *, defer_cli_account=False):
         if self.released_cli.contains(thread_id):
             raise IPCError('CLI 连接已释放，请点击继续会话重新连接')
-        session = self.activate(thread_id, allow_ide_resume=False)
+        options = {'_defer_cli_account': True} if defer_cli_account else {}
+        session = self.activate(thread_id, allow_ide_resume=False, **options)
         with session.condition:
             if not session.connected or not session.owner:
                 raise IPCError(session.error or "请先在桌面 App 打开此聊天")
@@ -4805,6 +4969,9 @@ class Bridge:
             raise ValueError("补充当前任务时不能切换工作模式")
         if work_mode == "goal" and (mode != "send" or not text.strip() or len(text) > 4000):
             raise ValueError("目标需在当前任务结束后直接发送，且不超过 4000 字")
+        with self.lock:
+            current = self.live.get(thread_id)
+        target_options = {'defer_cli_account': True} if current and current.runtime == 'cli' and current.connected else {}
         if work_mode == "goal":
             if identifiers or references:
                 raise ValueError("目标模式暂不支持附件")
@@ -4814,7 +4981,7 @@ class Bridge:
                 session = self.session(thread_id, attach=False, background=True)
                 if not (session.origin in ('cli', 'ide') and session.connected and session.runtime == 'cli'):
                     raise ValueError('目标模式暂不支持 SSH 主机')
-            session = self._target(thread_id)
+            session = self._target(thread_id, **target_options)
             if not self.local and not (session.origin in ('cli', 'ide') and session.connected and session.runtime == 'cli'):
                 raise ValueError('目标模式暂不支持 SSH 主机')
             if session.origin not in ('cli', 'ide') and self.goal is None:
@@ -4823,7 +4990,7 @@ class Bridge:
                 raise ValueError('当前 Codex 会话暂不支持目标模式')
             with session.action_lock, self.goal_lock:
                 if session.runtime == 'cli':
-                    self._verify_cli_file_auth(thread_id)
+                    self._verify_cli_submission_account(session)
                 response = self._goal_command(session, thread_id, submission_id, "create", objective=text,
                                               ui_locale=ui_locale or activation.get("uiLocale") if activation else ui_locale)
                 result = {"status": "unknown" if response.get("status") == "unknown" else "accepted",
@@ -4832,7 +4999,7 @@ class Bridge:
                 result["activation"] = self._send_goal_activation(
                     session, response, "create", ui_locale or activation.get("uiLocale") if activation else ui_locale)
                 return result
-        session = self._target(thread_id)
+        session = self._target(thread_id, **target_options)
         access = self._access(session.origin, session)
         if work_mode is not None and not access['canUseModes']:
             raise ValueError('此会话暂不能切换工作模式')
@@ -4850,8 +5017,6 @@ class Bridge:
                             prior.get("goalActivation") != activation):
                         raise ValueError("同一消息标识不能用于不同内容")
                     return {"status": prior["status"], "duplicate": True, "id": submission_id}
-            if session.runtime == 'cli':
-                self._verify_cli_file_auth(thread_id)
             with session.condition:
                 if _async_response is not None:
                     request_id, response = _async_response
@@ -4875,6 +5040,8 @@ class Bridge:
                     if plan_response["action"] == "implement":
                         if text != "Implement the following plan:\n\n" + pending.get("params", {}).get("planContent", ""):
                             raise ValueError("计划已更新，请刷新后重试")
+            if session.runtime == 'cli' and _async_response is None:
+                self._verify_cli_submission_account(session)
             with self.submit_lock:
                 entry = {"text": text, "mode": mode, "skills": selected, "status": "queued" if mode == "queue" else "unknown", "at": time.time()}
                 if identifiers:

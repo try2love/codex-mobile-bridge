@@ -12,6 +12,7 @@ from bridge.clients.codex.ipc import IPCError
 from bridge.platforms.codex_daemon_env import read_daemon_environment
 
 PROXY_NAMES = ('http_proxy', 'https_proxy', 'all_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY')
+AUTH_ENV_NAMES = ('OPENAI_BASE_URL', 'OPENAI_API_KEY', 'CODEX_API_KEY', 'CODEX_ACCESS_TOKEN')
 
 
 def file_auth_provider(config, provider):
@@ -35,9 +36,29 @@ def configuration_stamp(home):
     return result
 
 
-def graceful_restart_supported(info):
+def daemon_version(info):
     version = re.match(r'^(?:Codex Desktop|codex_cli_rs|codex|codex-tui|codex-mobile-bridge(?:-(?:cli|target-check|network-check|network-setting|auth-check|final-idle-check|network-verify))?)/(\d+\.\d+\.\d+)(?:\s|$)', info.get('userAgent', ''))
-    return bool(version and version.group(1) in ('0.164.0', '0.167.0'))
+    return version.group(1) if version else None
+
+
+def graceful_restart_supported(info):
+    return daemon_version(info) in ('0.164.0', '0.167.0')
+
+
+class CliProviderMismatch(IPCError):
+    def __init__(self, provider, current):
+        super().__init__('原会话与当前 CLI 配置的提供商不同。请在原客户端选回原提供商再继续；历史与草稿保留。')
+        self.details = {'reason': 'modelProviderMismatch', 'modelProvider': provider, 'currentModelProvider': current}
+
+    @classmethod
+    def from_native(cls, error):
+        rpc = getattr(error, 'rpc_error', None)
+        if not isinstance(rpc, dict):
+            return None
+        data = rpc.get('data') or {}
+        if (rpc.get('code') == -32600 and isinstance(data, dict) and data.get('type') == 'modelProviderMismatch'
+                and all(isinstance(data.get(key), str) and data[key] for key in ('modelProvider', 'currentModelProvider'))):
+            return cls(data['modelProvider'], data['currentModelProvider'])
 
 
 def native_recovery_target(home, config, source_provider, environment, layers=()):
@@ -66,11 +87,11 @@ def native_recovery_target(home, config, source_provider, environment, layers=()
     missing = sorted(name for name in required if not environment.get(name))
     old_names = CliSessions._required_model_environment(effective, source_provider)
     if source_provider not in aliases:
-        missing += sorted(required & (old_names | {'OPENAI_API_KEY', 'OPENAI_BASE_URL'}))
+        missing += sorted(required & (old_names | set(AUTH_ENV_NAMES)))
     if missing:
         raise ValueError('目标接入缺少可核验的变量来源：' + '、'.join(sorted(set(missing))) +
                          '；不会借用旧接入或网关终端的值，未启动服务。')
-    clear = {'OPENAI_API_KEY', 'OPENAI_BASE_URL'}
+    clear = set(AUTH_ENV_NAMES)
     for identifier in {*definitions, source_provider, provider}:
         clear.update(CliSessions._required_model_environment(effective, identifier))
     values = {name: None for name in clear}
@@ -78,6 +99,8 @@ def native_recovery_target(home, config, source_provider, environment, layers=()
     try:
         auth = json.loads((Path(home) / 'auth.json').read_text(encoding='utf-8'))
     except (OSError, ValueError):
+        auth = {}
+    if not isinstance(auth, dict):
         auth = {}
     injected = definition.get('env_key') or definition.get('experimental_bearer_token') or any(
         str(name).lower() == 'authorization' for name in
@@ -89,8 +112,8 @@ def native_recovery_target(home, config, source_provider, environment, layers=()
     if file_auth and kind is None:
         if not known_store:
             pass  # The caller can retain an existing route, but cannot adopt its unknown account source.
-        elif source_provider in aliases and environment.get('OPENAI_API_KEY'):
-            values['OPENAI_API_KEY'] = environment['OPENAI_API_KEY']
+        elif source_provider in aliases and any(environment.get(name) for name in AUTH_ENV_NAMES[1:]):
+            values.update({name: environment.get(name) for name in AUTH_ENV_NAMES[1:]})
         else:
             raise ValueError('目标接入缺少此 home 的明确认证来源；不会沿用旧账号的 API Key。')
     if provider == source_provider == 'openai' and not effective.get('openai_base_url') and not definition.get('base_url'):

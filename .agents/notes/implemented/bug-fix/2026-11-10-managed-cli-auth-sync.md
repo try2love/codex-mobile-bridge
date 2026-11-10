@@ -2,6 +2,8 @@
 
 Status: implemented
 
+[同 home 原生账号跟随](../feature/2026-11-11-cli-follows-native-account.md)补充原生外部文件变化的行为：显式接续优先核验已生效认证，必要时安全等待重建。这里的明确受管 login 写入、未知回执和原理保留。
+
 ## 问题
 
 运行中的 Codex 0.164 AuthManager 缓存凭据。仅替换同一 home 的 auth.json，或让独立短命进程验证该文件，不会让现有 CLI 会话采用所选 API 账号。把磁盘匹配或 account/read 的 apiKey 类型当成成功，会在界面中显示新账号却继续使用旧凭据。

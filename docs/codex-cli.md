@@ -6,9 +6,11 @@
 
 1. 在手机或 Web 中打开带 `CLI` 标记的聊天，先阅读已保存历史。
 2. 点击“继续会话”，直接连接所选主机及配置的原 CLI daemon。原终端可以已经关闭；仅安装完整 CLI、尚未在该 home 启动 daemon 时，也可使用已有 CLI 启动该 `CODEX_HOME` 的原生托管 daemon，再恢复同一条会话。即使 App 已打开同一聊天，也不改用 App 通路；原生写入占用未解除时会显示连接失败原因。
-3. 连接成功后可发送、排队、补充任务、停止，以及处理支持的审批和问题卡片；也可选择模型与推理强度、添加 Skill、切换普通/计划模式。兼容的本机和 SSH 原生 CLI 运行时支持 Goal 的创建、暂停、修改、恢复与关闭。任务继续使用原会话的提供商、认证与工作目录。
+3. 连接成功后可发送、排队、补充任务、停止，以及处理支持的审批和问题卡片；也可选择模型与推理强度、添加 Skill、切换普通/计划模式。兼容的本机和 SSH 原生 CLI 运行时支持 Goal 的创建、暂停、修改、恢复与关闭。任务保留原工作目录，并使用所选配置的原生接入。
 
-只有点击“继续会话”才会启动托管 daemon 或恢复会话；打开聊天、读取历史和列表刷新都不会触发。网关不会安装 CLI、接受新的 SSH 主机密钥、强行夺取其他进程的写入权，或覆盖原会话身份。CLI 缺少完整运行组件、版本不兼容或身份核验失败时，历史仍可阅读，并显示连接失败原因。
+显式继续或确认恢复才会启动托管 daemon 或恢复会话；打开聊天、读取历史和列表刷新都不会触发。网关不会安装 CLI、接受新的 SSH 主机密钥、强行夺取其他进程的写入权，或覆盖原会话身份。CLI 缺少完整运行组件、版本不兼容或身份核验失败时，历史仍可阅读，并显示连接失败原因。
+
+在 macOS/Linux，本机 CLI 会在显式继续或开始新工作时核验同一配置的原生账号。当前认证已生效可直接使用；需要重建服务时先等待该配置的任务结束，本次消息不自动发送。独立配置只跟随自己的账号，SSH 和 WSL 不采用本机默认账号。若 Codex 0.167 的当前 provider ID 与原会话不同，可继续读历史；请在原工具选回原提供商后继续。
 
 SSH 使用已有主机配置和密钥校验，不自动接受新主机密钥或安装远端程序。
 
@@ -51,6 +53,8 @@ IDE 来源保留其独立规则：先核验原 VS Code owner，确认缺席后�
 Source labels remain visible above dates; when the readable inventory contains both App and CLI origins, type filters are shown. Opening a CLI chat reads saved history. Select **Continue chat** to connect directly to that host and configuration’s native CLI daemon, or start that home’s managed daemon using an already installed complete CLI package and resume the same chat, even if the terminal has closed. App-origin chats use App; CLI-origin chats do not probe or reuse an App owner. A native writer conflict remains a CLI connection failure, and Bridge does not fall back to App. It does not install CLI, bypass SSH host-key checks, change the chat's identity, or seize another runtime's writer lock. Supported actions include send, queue, steer, interrupt, approvals and input requests, plus model/effort selection, Skills and default/plan modes. Compatible joined native CLI runtimes, including SSH hosts, support creating, pausing, editing, resuming and clearing Goals through the same daemon. IDE-origin chats retain their existing VS Code owner checks and explicit continuation rules.
 
 Native CLI controls use the same daemon for catalogs, settings, Skills, modes and Goals. Custom API providers can list upstream models using the verified daemon's launch credentials. SSH queries run on the original host without borrowing the gateway computer's credentials. Missing effort metadata is supplemented only for exact native model IDs. Manual model IDs remain available when the upstream does not expose a catalog. Catalogs are cached separately by host, CLI configuration, provider and authentication identity, with a last-success timestamp. Manual refresh, identity changes and the 12-hour refresh cycle query the upstream again; a failed refresh retains the previous list only for the same identity. Bridge does not configure a proxy for the remote host. Transient disconnects retain draft text and selected Skills. Permission controls follow the native runtime and its policy on local and SSH CLI chats. Changes apply to subsequent turns and require effective runtime confirmation. Editing/forking, rename and side chats remain unavailable for CLI-origin chats.
+
+On macOS and Linux, local CLI continuation checks the native account for that configuration. If the native cache is current, the chat can continue directly. If the service needs rebuilding, Bridge waits for that configuration's tasks to finish and leaves the new message unsent. Independent configurations, SSH and WSL keep their own accounts. In Codex 0.167, a different configured provider ID keeps the original chat readable; select its original provider in Codex to continue it.
 
 Codex and Claude CLI access have separate account sections and configurations. Desktop switches offer opt-in local CLI synchronization and separate verification results. Codex shared-configuration effects are stated explicitly; SSH settings remain on their hosts. Claude Code CLI chats can be created from existing local or SSH projects with their selected configuration and directory; this does not claim control of an arbitrary live Claude terminal. Claude Code supports closed-session resume, creation, replies, model/permission controls, Skills, uploads, approvals and interrupt. Unknown context capacity remains neutral rather than inferring a percentage from billed tokens.
 

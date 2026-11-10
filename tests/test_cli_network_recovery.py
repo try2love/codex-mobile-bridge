@@ -112,6 +112,278 @@ class CliNetworkRecoveryTests(CliBridgeFixture):
         self.stop.assert_not_called()
         self.cli._start_daemon.assert_not_called()
 
+    def test_native_file_account_follow_waits_without_sending_the_user_draft(self):
+        self.busy = True
+        self.auth_cache = 'old-fixture-key'
+        (self.home/'auth.json').write_text('{"auth_mode":"apikey","OPENAI_API_KEY":"new-fixture-key"}')
+        def restart(*_):
+            self.auth_cache = 'new-fixture-key'
+        self.cli._start_daemon.side_effect = restart
+        draft_id = str(uuid.uuid4())
+        with patch('bridge.features.sessions.cli_maintenance.WAIT_INTERVAL', .01), \
+                patch('bridge.clients.codex.daemon_network.inspect_proxy', side_effect=AssertionError('account follow does not inspect proxy')):
+            with self.assertRaisesRegex(IPCError, '本次操作未发送'):
+                self.bridge.send(self.thread_id, 'draft fixture', draft_id)
+            record = self.bridge._cli_recovery_record()
+            self.assertEqual(record['phase'], 'waiting')
+            self.assertTrue(record['followAccount'])
+            self.assertNotIn(self.thread_id + ':' + draft_id, self.bridge.submissions)
+            self.stop.assert_not_called()
+            self.busy = False
+            self.bridge.cli_maintenance.worker.join(2)
+        status = self.bridge.cli_network(self.thread_id, {'action': 'status', 'operationId': record['operationId']})
+        self.assertEqual(status['state'], 'complete')
+        self.assertTrue(status['connected'])
+        self.assertNotIn(self.thread_id + ':' + draft_id, self.bridge.submissions)
+        self.stop.assert_called_once()
+        self.assertTrue(self.stop.call_args.kwargs['graceful_only'])
+        self.assertEqual(self.cli._start_daemon.call_args.args[0], {})
+        self.assertIsNone(self.cli._start_daemon.call_args.args[1]['CODEX_API_KEY'])
+        self.assertFalse(any(method in ('account/login/start', 'config/value/write', 'turn/start') for method, _ in self.native_calls))
+
+    def test_newer_native_account_supersedes_waiting_target_without_stop(self):
+        self.busy = True
+        self.auth_cache = 'fixture-A'
+        auth = self.home/'auth.json'
+        auth.write_text('{"auth_mode":"apikey","OPENAI_API_KEY":"fixture-B"}')
+        def restart(*_):
+            self.auth_cache = 'fixture-C'
+        self.cli._start_daemon.side_effect = restart
+        with patch('bridge.features.sessions.cli_maintenance.WAIT_INTERVAL', .01):
+            with self.assertRaisesRegex(IPCError, '本次操作未发送'):
+                self.bridge.activate(self.thread_id)
+            first = self.bridge._cli_recovery_record()['operationId']
+            auth.write_text('{"auth_mode":"apikey","OPENAI_API_KEY":"fixture-C"}')
+            self.bridge.cli_maintenance.worker.join(2)
+            self.assertEqual(self.bridge.cli_network(self.thread_id,
+                {'action': 'status', 'operationId': first})['state'], 'failed')
+            self.stop.assert_not_called()
+            with self.assertRaisesRegex(IPCError, '本次操作未发送'):
+                self.bridge.activate(self.thread_id)
+            second = self.bridge._cli_recovery_record()['operationId']
+            self.assertNotEqual(first, second)
+            self.busy = False
+            self.bridge.cli_maintenance.worker.join(2)
+        self.assertEqual(self.bridge.cli_network(self.thread_id,
+            {'action': 'status', 'operationId': second})['state'], 'complete')
+        self.stop.assert_called_once()
+        self.assertEqual(json.loads(auth.read_text())['OPENAI_API_KEY'], 'fixture-C')
+
+    def test_v167_provider_id_mismatch_is_read_only_before_rebuild(self):
+        self.probe.connect = lambda: {'codexHome': str(self.home), 'userAgent': 'codex_cli_rs/0.167.0'}
+        self.current_config.update(model_provider='new-provider', model_providers={'new-provider': {'requires_openai_auth': False}})
+        with self.assertRaisesRegex(IPCError, '提供商不同'):
+            self.bridge.activate(self.thread_id)
+        view = self.bridge.live[self.thread_id].view()
+        self.assertEqual(view['cliRecovery'], {'reason': 'modelProviderMismatch', 'modelProvider': 'openai', 'currentModelProvider': 'new-provider'})
+        self.assertFalse(view['access']['canSend'])
+        self.assertEqual(self.bridge.cli_network(self.thread_id)['reason'], 'modelProviderMismatch')
+        self.assertIsNone(self.bridge.cli_maintenance.worker)
+        self.stop.assert_not_called()
+        self.cli._start_daemon.assert_not_called()
+        self.cli.attach.assert_not_called()
+
+    def test_actual_native_provider_mismatch_retains_structured_reason(self):
+        from bridge.clients.codex.app_server import AppServerError
+        error = AppServerError('fixture native admission refused')
+        error.rpc_error = {'code': -32600, 'data': {'type': 'modelProviderMismatch',
+            'modelProvider': 'openai', 'currentModelProvider': 'custom-provider'}}
+        self.cli.attach.side_effect = error
+        with patch('bridge.clients.codex.cli_session._managed_cli', return_value=None):
+            with self.assertRaisesRegex(IPCError, '提供商不同'):
+                self.bridge.activate(self.thread_id)
+        self.assertEqual(self.bridge.live[self.thread_id].view()['cliRecovery'], {
+            'reason': 'modelProviderMismatch', 'modelProvider': 'openai', 'currentModelProvider': 'custom-provider'})
+        self.stop.assert_not_called()
+
+    def test_auth_cache_probe_error_does_not_expose_credential_detail(self):
+        from bridge.clients.codex.app_server import AppServerError
+        (self.home/'auth.json').write_text('{"auth_mode":"apikey","OPENAI_API_KEY":"fixture-new"}')
+        original = self.probe.request
+        def request(method, params, **kwargs):
+            if method == 'getAuthStatus':
+                raise AppServerError('synthetic-secret-in-native-error')
+            return original(method, params, **kwargs)
+        with patch.object(self.probe, 'request', side_effect=request):
+            with self.assertRaisesRegex(IPCError, '无法核验此配置的原生认证缓存') as caught:
+                self.bridge.activate(self.thread_id)
+        self.assertNotIn('synthetic-secret-in-native-error', str(caught.exception))
+        self.assertNotIn('synthetic-secret-in-native-error', str(self.bridge.live[self.thread_id].view()))
+        self.assertEqual(self.bridge._cli_recovery_record(), {})
+        self.stop.assert_not_called()
+
+    def test_fresh_gateway_blocks_unverified_file_auth_after_daemon_birth(self):
+        from bridge.clients.codex.app_server import AppServerError
+        self.cli.configuration_stamp = None
+        (self.home/'auth.json').write_text('{"auth_mode":"apikey","OPENAI_API_KEY":"fixture-new"}')
+        original = self.probe.request
+        def request(method, params, **kwargs):
+            if method == 'getAuthStatus':
+                raise AppServerError('fixture-sensitive-native-detail')
+            return original(method, params, **kwargs)
+        with patch.object(self.probe, 'request', side_effect=request), \
+                patch('bridge.platforms.codex_daemon_env.configuration_after_start',
+                      side_effect=lambda _home, _generation, *, files=('config.toml', 'auth.json'): 'auth.json' in files):
+            with self.assertRaisesRegex(IPCError, '无法核验此配置的原生认证缓存') as caught:
+                self.bridge.activate(self.thread_id)
+        self.assertNotIn('fixture-sensitive-native-detail', str(caught.exception))
+        self.assertNotIn('fixture-sensitive-native-detail', str(self.bridge.live[self.thread_id].view()))
+        self.cli.attach.assert_not_called()
+        self.stop.assert_not_called()
+        self.assertEqual(self.bridge._cli_recovery_record(), {})
+
+    def test_active_cli_new_queue_and_steer_do_not_use_stale_account(self):
+        session = self.bridge.session(self.thread_id, attach=False, background=True)
+        session.connected, session.runtime, session.owner = True, 'cli', 'cli:' + self.thread_id
+        session.state = {**self.native_state, 'threadRuntimeStatus': {'type': 'active'},
+                         'turns': [{'turnId': 'original-turn', 'status': 'inProgress', 'items': []}]}
+        self.busy = True
+        self.auth_cache = 'fixture-old'
+        (self.home/'auth.json').write_text('{"auth_mode":"apikey","OPENAI_API_KEY":"fixture-new"}')
+        self.cli.call = Mock(return_value={'interrupted': True})
+        for mode in ('queue', 'steer'):
+            with self.subTest(mode=mode):
+                identifier = str(uuid.uuid4())
+                try:
+                    with self.assertRaisesRegex(IPCError, '本次操作未发送'):
+                        self.bridge.send(self.thread_id, 'fixture draft', identifier, mode=mode)
+                    self.assertNotIn(self.thread_id + ':' + identifier, self.bridge.submissions)
+                    self.cli.call.assert_not_called()
+                    self.assertEqual(self.bridge._cli_recovery_record()['phase'], 'waiting')
+                finally:
+                    record = self.bridge._cli_recovery_record()
+                    if record.get('phase') == 'waiting':
+                        self.bridge.cli_network(self.thread_id, {'action': 'cancel', 'operationId': record['operationId']})
+                        self.bridge.cli_maintenance.worker.join(2)
+        self.assertTrue(self.bridge.interrupt(self.thread_id)['interrupted'])
+        self.stop.assert_not_called()
+
+    def test_existing_async_answer_still_reaches_its_original_cli_turn(self):
+        session = self.bridge.session(self.thread_id, attach=False, background=True)
+        session.connected, session.runtime, session.owner = True, 'cli', 'cli:' + self.thread_id
+        session.state = {**self.native_state, 'threadRuntimeStatus': {'type': 'active'}, 'turns': [{
+            'turnId': 'original-turn', 'status': 'inProgress', 'items': [{'id': 'fixture-card',
+                'type': 'agentMessage', 'questions': [{'title': 'Fixture question', 'options': ['yes', 'no']}]}]}]}
+        pending = session.pending_requests()[0]
+        answer = {'answers': {pending['params']['questions'][0]['id']: ['yes']}}
+        self.busy = True
+        self.auth_cache = 'fixture-old'
+        (self.home/'auth.json').write_text('{"auth_mode":"apikey","OPENAI_API_KEY":"fixture-new"}')
+        self.cli.call = Mock(return_value={'turnId': 'original-turn'})
+        try:
+            self.assertEqual(self.bridge.respond(self.thread_id, pending['id'], answer)['status'], 'accepted')
+            self.assertEqual(self.cli.call.call_args.args[1], 'thread-follower-steer-turn')
+            self.assertIsNone(self.bridge.cli_maintenance.worker)
+            new_id = str(uuid.uuid4())
+            with self.assertRaisesRegex(IPCError, '本次操作未发送'):
+                self.bridge.send(self.thread_id, 'new fixture draft', new_id, mode='steer')
+            self.cli.call.assert_called_once()
+            self.assertNotIn(self.thread_id + ':' + new_id, self.bridge.submissions)
+        finally:
+            record = self.bridge._cli_recovery_record()
+            if record.get('phase') == 'waiting':
+                self.bridge.cli_network(self.thread_id, {'action': 'cancel', 'operationId': record['operationId']})
+                self.bridge.cli_maintenance.worker.join(2)
+        self.stop.assert_not_called()
+
+    def test_queue_admission_rechecks_account_after_active_snapshot_turns_idle(self):
+        session = self.bridge.session(self.thread_id, attach=False, background=True)
+        session.connected, session.runtime, session.owner = True, 'cli', 'cli:' + self.thread_id
+        session.state = {**self.native_state, 'threadRuntimeStatus': {'type': 'active'},
+                         'turns': [{'turnId': 'original-turn', 'status': 'inProgress', 'items': []}]}
+        self.busy = True  # Another native thread still owns a task in this home.
+        self.auth_cache = 'fixture-old'
+        (self.home/'auth.json').write_text('{"auth_mode":"apikey","OPENAI_API_KEY":"fixture-new"}')
+        def settled(*_args):
+            session.state = self.native_state
+            return []
+        identifier = str(uuid.uuid4())
+        try:
+            with patch.object(self.bridge, '_resolve_skills', side_effect=settled):
+                with self.assertRaisesRegex(IPCError, '本次操作未发送'):
+                    self.bridge.send(self.thread_id, 'new fixture draft', identifier, mode='queue')
+            self.assertNotIn(self.thread_id + ':' + identifier, self.bridge.submissions)
+        finally:
+            record = self.bridge._cli_recovery_record()
+            if record.get('phase') == 'waiting':
+                self.bridge.cli_network(self.thread_id, {'action': 'cancel', 'operationId': record['operationId']})
+                self.bridge.cli_maintenance.worker.join(2)
+        self.stop.assert_not_called()
+
+    def test_v164_provider_change_uses_supported_native_cold_override(self):
+        self.current_config.update(model_provider='new-provider', model_providers={'new-provider': {'requires_openai_auth': False}})
+        attach = self.cli.attach.side_effect
+        def verify_override(identifier, **options):
+            self.assertEqual(options['target_provider'], 'new-provider')
+            self.assertEqual(options['expected_identity']['modelProvider'], 'openai')
+            self.native_state['modelProvider'] = 'new-provider'
+            return attach(identifier, **options)
+        self.cli.attach.side_effect = verify_override
+        with self.assertRaisesRegex(IPCError, '本次操作未发送'):
+            self.bridge.activate(self.thread_id)
+        record = self.bridge._cli_recovery_record()
+        self.bridge.cli_maintenance.worker.join(2)
+        status = self.bridge.cli_network(self.thread_id, {'action': 'status', 'operationId': record['operationId']})
+        self.assertEqual(status['state'], 'complete')
+        self.assertTrue(status['connected'])
+        self.stop.assert_called_once()
+        self.cli.attach.assert_called_once()
+
+    def test_account_follow_only_uses_same_native_home_environment(self):
+        config = self.home/'config.toml'
+        config.write_text('model_provider="openai"\n[model_providers.openai]\n'
+                          'env_key="NATIVE_FIXTURE_KEY"\nrequires_openai_auth=false\n')
+        self.current_config['model_providers'] = {'openai': {'env_key': 'NATIVE_FIXTURE_KEY', 'requires_openai_auth': False}}
+        with patch.dict(os.environ, {'NATIVE_FIXTURE_KEY': 'different-gateway-key'}):
+            with self.assertRaisesRegex(IPCError, 'NATIVE_FIXTURE_KEY'):
+                self.bridge.activate(self.thread_id)
+            self.assertIsNone(self.bridge.cli_maintenance.worker)
+            self.stop.assert_not_called()
+            with patch('bridge.platforms.codex_daemon_env.read_daemon_environment',
+                       side_effect=lambda *_: ({'NATIVE_FIXTURE_KEY': 'verified-native-key'}, self.generation)):
+                with self.assertRaisesRegex(IPCError, '本次操作未发送'):
+                    self.bridge.activate(self.thread_id)
+                record = self.bridge._cli_recovery_record()
+                self.bridge.cli_maintenance.worker.join(2)
+        self.assertEqual(self.bridge.cli_network(self.thread_id,
+            {'action': 'status', 'operationId': record['operationId']})['state'], 'complete')
+        self.assertEqual(self.cli._start_daemon.call_args.args[1]['NATIVE_FIXTURE_KEY'], 'verified-native-key')
+
+    def test_ssh_and_wsl_scopes_do_not_start_local_account_follow(self):
+        for host in ('remote-ssh-discovered:fixture', 'wsl:fixture'):
+            with self.subTest(host=host), patch.object(self.bridge, 'host', host), \
+                    patch.object(self.bridge, 'cli_network', side_effect=AssertionError('other host must not follow local account')):
+                self.bridge._recover_cli_environment(self.thread_id, follow_account=True)
+        self.assertIsNone(self.bridge.cli_maintenance.worker)
+        self.stop.assert_not_called()
+
+    def test_independent_cli_uses_its_own_account_changes(self):
+        from bridge.app.service import Bridge
+        entry = Bridge(self.home, self.home/'entry-data', host='codex:isolated-fixture', cli_sessions=self.cli)
+        self.addCleanup(entry.close)
+        default = self.home/'default-other-home'
+        default.mkdir()
+        (default/'auth.json').write_text('{"auth_mode":"apikey","OPENAI_API_KEY":"fixture-default"}')
+        auth = self.home/'auth.json'
+        auth.write_text('{"auth_mode":"apikey","OPENAI_API_KEY":"fixture-entry-old"}')
+        self.cli.configuration_stamp = configuration_stamp(self.home)
+        self.auth_cache = 'fixture-entry-old'
+        with patch.dict(os.environ, {'CODEX_HOME': str(default), 'CODEX_API_KEY': 'fixture-default'}):
+            self.assertTrue(entry.activate(self.thread_id).connected)
+            self.assertIsNone(entry.cli_maintenance.worker)
+            auth.write_text('{"auth_mode":"apikey","OPENAI_API_KEY":"fixture-entry-new"}')
+            self.cli._start_daemon.side_effect = lambda *_: setattr(self, 'auth_cache', 'fixture-entry-new')
+            with self.assertRaisesRegex(IPCError, '本次操作未发送'):
+                entry.activate(self.thread_id)
+            record = entry._cli_recovery_record()
+            entry.cli_maintenance.worker.join(2)
+        self.assertEqual(entry.cli_network(self.thread_id,
+            {'action': 'status', 'operationId': record['operationId']})['state'], 'complete')
+        self.assertEqual(record['home'], str(self.home.resolve()))
+        self.assertEqual(record['host'], entry.host)
+        self.assertIsNone(self.cli._start_daemon.call_args.args[1]['CODEX_API_KEY'])
+        self.assertEqual(json.loads((default/'auth.json').read_text())['OPENAI_API_KEY'], 'fixture-default')
+
     def test_advisory_probe_failure_does_not_block_native_attach(self):
         session = self.bridge.session(self.thread_id, attach=False, background=True)
         session.runtime, session.desktop_owner_probe = 'cli', 'absent'
@@ -878,7 +1150,7 @@ class CliNetworkRecoveryTests(CliBridgeFixture):
         self.cli.store = self.bridge.store
         with self.released_fixture(legacy=True):
             (self.home/'config.toml').write_text('model_provider="changed-provider"\n')
-            with self.assertRaisesRegex(IPCError, '配置或认证已变化'):
+            with self.assertRaisesRegex(IPCError, '配置未定义目标提供商'):
                 self.bridge._recover_cli_environment(other)
         self.cli._start_daemon.assert_not_called()
         self.cli.attach.assert_not_called()
@@ -979,6 +1251,30 @@ class CliNetworkRecoveryTests(CliBridgeFixture):
                 self.bridge.activate(self.thread_id)
         self.cli._start_daemon.assert_not_called()
         self.stop.assert_not_called()
+
+    def test_verified_same_provider_file_account_can_continue_after_release(self):
+        config = self.home/'config.toml'
+        config.write_text('cli_auth_credentials_store="file"\n' + config.read_text())
+        auth = self.home/'auth.json'
+        auth.write_text('{"auth_mode":"apikey","OPENAI_API_KEY":"fixture-old"}')
+        self.released_fixture()
+        before = self.bridge._cli_recovery_record()
+        auth.write_text('{"auth_mode":"apikey","OPENAI_API_KEY":"fixture-new"}')
+        with patch('bridge.features.accounts.cli_sync.LocalCliSync.recovery_target', return_value=None), \
+                patch.dict(os.environ, {'CODEX_API_KEY': 'unrelated-default-key', 'CODEX_ACCESS_TOKEN': 'unrelated-token'}):
+            self.assertTrue(self.bridge.activate(self.thread_id).connected)
+        self.stop.assert_not_called()
+        self.cli._start_daemon.assert_called_once()
+        preserved = self.cli._start_daemon.call_args.args[1]
+        self.assertIsNone(preserved['CODEX_API_KEY'])
+        self.assertIsNone(preserved['CODEX_ACCESS_TOKEN'])
+        self.assertIsNone(preserved['OPENAI_API_KEY'])
+        record = self.bridge._cli_recovery_record()
+        self.assertEqual(record['releasedConfiguration'], before['configuration'])
+        self.assertEqual(record['releasedThread'], before['releasedThread'])
+        self.assertEqual(record['operationId'], before['operationId'])
+        self.assertEqual(record['phase'], 'complete')
+        self.assertEqual(json.loads(auth.read_text())['OPENAI_API_KEY'], 'fixture-new')
 
     def test_completed_release_joins_external_replacement_without_start_or_stop(self):
         with self.released_fixture():
@@ -1099,8 +1395,10 @@ class CliNetworkRecoveryTests(CliBridgeFixture):
         session.connected, session.runtime, session.owner = True, 'cli', 'cli:' + self.thread_id
         session.state = {**self.native_state, 'threadRuntimeStatus': {'type': 'active'},
                          'turns': [{'turnId': 'original-turn', 'status': 'inProgress', 'items': []}]}
+        (self.home/'auth.json').write_text('{"auth_mode":"apikey","OPENAI_API_KEY":"fixture-new"}')
         self.cli.call = Mock(return_value={'interrupted': True})
         self.assertTrue(self.bridge.interrupt(self.thread_id)['interrupted'])
+        self.assertIsNone(self.bridge.cli_maintenance.worker)
         self.stop.assert_not_called()
 
     def test_graceful_capability_never_guesses_from_os_or_future_version(self):

@@ -109,6 +109,7 @@ class CliSessions:
                  process_factory=None, allow_installed_runtime=False, clear_sqlite_home=False):
         self.home = Path(home)
         self.configuration_stamp = None  # Unknown until bound to the verified daemon generation.
+        self.configuration_generation = None
         self.recovery_environment = None
         self.drained_connections = set()
         self.allow_installed_runtime = allow_installed_runtime
