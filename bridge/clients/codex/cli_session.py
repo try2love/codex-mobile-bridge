@@ -151,6 +151,7 @@ class CliSessions:
 
     def release_connection(self, identifier, token, stop=False):
         from bridge.clients.codex.release import release_thread, unsubscribe_thread
+        from bridge.clients.codex.daemon_network import graceful_restart_supported
         if token in self.drained_connections:
             return {'status': 'released', 'notice': '原生空闲服务已正常退出，原连接已释放'}
         with self.lock:
@@ -165,7 +166,8 @@ class CliSessions:
                 return self.client.request(method, params, replay_safe=method in (
                     'thread/read', 'thread/backgroundTerminals/list', 'thread/goal/get', 'thread/turns/list'))
             cleanup_only = self.metadata.get(identifier, {}).get('cleanupOnly')
-            result = unsubscribe_thread(request, identifier) if cleanup_only else release_thread(request, identifier, stop)
+            result = unsubscribe_thread(request, identifier) if cleanup_only else release_thread(
+                request, identifier, stop, allow_terminal_error=graceful_restart_supported(self.client.server_info or {}))
             if cleanup_only:
                 result['notice'] = '已撤销待核对接入的订阅；未停止其他执行器的任务。' + result.get('notice', '')
             if result['status'] in ('released', 'detached'):

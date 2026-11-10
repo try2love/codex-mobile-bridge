@@ -217,6 +217,8 @@ class LocalCliSync:
     def check_idle_daemon(client, home):
         from bridge.features.sessions.create import check_archive_runtime
         from bridge.clients.codex.app_server import AppServerUnsupported
+        from bridge.clients.codex.release import GOAL_STATUSES
+        from bridge.clients.codex.daemon_network import graceful_restart_supported
         info = client.connect()
         if Path(info['codexHome']).resolve() != home.resolve():
             raise ValueError('原生服务不属于此配置，未切换账号')
@@ -227,7 +229,7 @@ class LocalCliSync:
             blockers = []
             for identifier in threads:
                 try:
-                    check_archive_runtime(request, [identifier])
+                    check_archive_runtime(request, [identifier], allow_terminal_error=graceful_restart_supported(info))
                     tasks = request('thread/backgroundTerminals/list', {'threadId': identifier, 'limit': 1})
                     if not isinstance(tasks.get('data'), list) or tasks['data'] or tasks.get('nextCursor'):
                         raise ValueError('有后台任务或状态未知')
@@ -235,6 +237,8 @@ class LocalCliSync:
                         goal = request('thread/goal/get', {'threadId': identifier})['goal']
                     except AppServerUnsupported:
                         goal = None
+                    if goal is not None and (not isinstance(goal, dict) or goal.get('status') not in GOAL_STATUSES):
+                        raise ValueError('目标状态未知')
                     if goal and goal.get('status') == 'active':
                         raise ValueError('有运行中的目标')
                 except ValueError as error:

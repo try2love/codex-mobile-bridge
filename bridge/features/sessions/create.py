@@ -502,14 +502,18 @@ class ArchiveNotSent(CreationError):
     """Archive validation failed before a native mutation was dispatched."""
 
 
-def check_archive_runtime(request, identifiers):
+def check_archive_runtime(request, identifiers, *, allow_terminal_error=False):
     """Read only: never resume a thread to establish archive safety."""
     for identifier in identifiers:
         thread = request('thread/read', {'threadId': identifier, 'includeTurns': False})['thread']
         status = (thread.get('status') or {}).get('type')
-        if (thread.get('id') != identifier or status not in ('idle', 'notLoaded') or
+        terminal_error = allow_terminal_error and status == 'systemError'
+        if (thread.get('id') != identifier or (status not in ('idle', 'notLoaded') and not terminal_error) or
                 thread.get('requests') or any(turn.get('status') == 'inProgress' for turn in thread.get('turns', []))):
             raise ValueError('聊天或子智能体正在运行、等待确认或状态未知，请先在原客户端处理')
+        if terminal_error:
+            from bridge.clients.codex.release import check_terminal_system_error
+            check_terminal_system_error(request, thread)
 
 
 def stop_archive_runtime(request, identifiers, timeout=20):

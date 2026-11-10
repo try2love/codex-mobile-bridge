@@ -23,6 +23,7 @@ MANAGED_NAME = 'codex.exe' if os.name == 'nt' else 'codex'
 class FakeClient:
     def __init__(self, home):
         self.socket_path = str(home / 'app-server-control/app-server-control.sock')
+        self.server_info = {'codexHome': str(home), 'userAgent': 'codex-mobile-bridge-cli/0.164.0 (fixture)'}
         self.process = object()
         self.sent = []
         self.replies = []
@@ -32,7 +33,7 @@ class FakeClient:
                        'status': {'type': 'idle'}, 'turns': [], 'name': 'CLI task'}
 
     def connect(self):
-        return {'codexHome': str(Path(self.socket_path).parents[1])}
+        return self.server_info
 
     def is_loaded(self, thread_id):
         return self.loaded
@@ -166,6 +167,24 @@ class CliSessionTests(unittest.TestCase):
         self.fake.thread['modelProvider'] = 'third-provider'
         with self.assertRaises(AppServerUnavailable):
             self.sessions._check_identity('thread-a')
+        self.assertNotIn('thread-a', self.sessions.joined)
+
+    def test_terminal_error_release_uses_verified_current_connection_version(self):
+        self.sessions.attach('thread-a', explicit=True)
+        token = self.sessions.metadata['thread-a']['connectionToken']
+        self.fake.thread['status'] = {'type': 'systemError'}
+        self.fake.server_info['userAgent'] = 'codex-mobile-bridge-cli/0.165.0 (fixture)'
+        with self.assertRaisesRegex(ValueError, '版本'):
+            self.sessions.release_connection('thread-a', token)
+        self.assertFalse(any(method == 'thread/unsubscribe' for method, _ in self.fake.sent))
+        request = self.fake.request
+        def completed(method, params, **kwargs):
+            if method == 'thread/turns/list':
+                return {'data': [{'id': 'failed', 'status': 'failed', 'completedAt': 1794332820}]}
+            return request(method, params, **kwargs)
+        self.fake.request = completed
+        self.fake.server_info['userAgent'] = 'codex-mobile-bridge-cli/0.164.0 (fixture)'
+        self.assertEqual(self.sessions.release_connection('thread-a', token)['status'], 'detached')
         self.assertNotIn('thread-a', self.sessions.joined)
 
     def test_provider_override_never_rebuilds_a_loaded_thread(self):
