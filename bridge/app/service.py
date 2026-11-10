@@ -1603,7 +1603,8 @@ class Bridge:
     def cli_network(self, thread_id, body=None, *, automatic=False):
         from bridge.clients.codex.cli_session import _managed_cli
         from bridge.clients.codex.daemon_network import (inspect_proxy, configuration_stamp,
-            graceful_restart_supported, system_proxy_user_layer, enable_system_proxy_following)
+            graceful_restart_supported, system_proxy_user_layer, enable_system_proxy_following,
+            native_recovery_target)
         from bridge.features.accounts.cli_sync import LocalCliSync
         from bridge.platforms.codex_daemon_env import read_daemon_environment, configuration_after_start
         from contextlib import closing
@@ -1621,6 +1622,39 @@ class Bridge:
             raise ValueError('无法核对当前 CLI 服务')
         with self.accounts.gate, cli.start_lock:
             recovery = self._cli_recovery_record()
+            if recovery.get('phase') == 'resuming':
+                target = recovery['providerTarget']
+                message = '已确认的接入恢复结果待核对；不会重复 resume 或退出共享服务。'
+                if target['before']['id'] == thread_id and not automatic:
+                    identity = read_daemon_environment(cli.home, executable, ())[1]
+                    if (hashlib.sha256(json.dumps(identity).encode()).hexdigest() != recovery.get('resumedGeneration')
+                            or configuration_stamp(cli.home) != recovery['configuration']):
+                        return {'canRecover': False, 'message': '原生服务或目标配置已变化，原接入恢复结果仍待核对；不会重复 resume。'}
+                    with closing(CodexAppServer(cli.client.socket_path, cli=executable,
+                                                client_name='codex-mobile-bridge-target-check')) as probe:
+                        if Path(probe.connect()['codexHome']).resolve() != cli.home.resolve():
+                            raise ValueError('原生服务不属于此配置')
+                        thread = probe.request('thread/read', {'threadId': thread_id, 'includeTurns': False}, replay_safe=True)['thread']
+                        config = probe.request('config/read', {'includeLayers': False}, replay_safe=True)['config']
+                        self._verify_cli_target(probe, config, target, cli, executable)
+                    if (read_daemon_environment(cli.home, executable, ())[1] != identity
+                            or configuration_stamp(cli.home) != recovery['configuration']):
+                        raise ValueError('原生服务已变化，原恢复结果仍待核对；不会重复 resume。')
+                    from bridge.features.sessions.identity import same_cwd
+                    if thread.get('modelProvider') not in {
+                            target['provider'], target['before']['modelProvider'], target.get('historicalProvider')}:
+                        raise ValueError('原会话历史提供商身份已变化，恢复结果仍待核对')
+                    persisted = cli.persisted_identity(thread)
+                    applied = (target['provider'] != target['before']['modelProvider'] or
+                               recovery.get('resumeWasCold') and thread.get('status', {}).get('type') in ('idle', 'active'))
+                    if (applied and thread.get('id') == thread_id and persisted['modelProvider'] == target['provider']
+                            and same_cwd(thread.get('cwd'), target['before']['cwd'], os.name == 'nt')):
+                        recovery.update(phase='complete', providerPhase='checkedUnknown', resumeReceipt='unknown')
+                        private_json(self.data_dir / 'cli-daemon-recovery.json', recovery)
+                        message = '当前线程状态和目标配置已核验，原 resume 回执仍未知；不会重放。若连接订阅待核对，请先从 CLI 面板核验或释放。'
+                return {'canRecover': False, 'requiresConfirmation': True,
+                        'maintenancePending': automatic and target['before']['id'] == thread_id,
+                        'message': message}
             if recovery.get('phase') == 'configuringUnknown':
                 message = '系统代理跟随设置的写入结果待核对；不会重放设置或退出 CLI 服务。'
                 if not automatic:
@@ -1665,8 +1699,42 @@ class Bridge:
             follow_system_proxy = bool(updates) and sys.platform == 'darwin'
             configuration_changed = (configuration != cli.configuration_stamp
                 if cli.configuration_stamp is not None else configuration_after_start(cli.home, generation))
-            stamp = hashlib.sha256(json.dumps([stamp, configuration, follow_system_proxy], sort_keys=True).encode()).hexdigest()
-            if not updates and not configuration_changed:
+            plan, target, original = None, None, None
+            if not automatic:
+                with closing(CodexAppServer(cli.client.socket_path, cli=executable,
+                                            client_name='codex-mobile-bridge-target-check')) as probe:
+                    if Path(probe.connect()['codexHome']).resolve() != cli.home.resolve():
+                        raise ValueError('原生服务不属于此配置，未恢复服务')
+                    before = probe.request('thread/read', {'threadId': thread_id, 'includeTurns': False}, replay_safe=True)['thread']
+                    snapshot = probe.request('config/read', {'includeLayers': True, 'cwd': before.get('cwd')}, replay_safe=True)
+                    config = snapshot['config']
+                if before.get('id') != thread_id or not before.get('cwd') or not before.get('modelProvider'):
+                    raise ValueError('无法核验原会话身份，未恢复服务')
+                historical_provider = before['modelProvider']
+                before = {**before, **cli.persisted_identity(before)}
+                names = {'OPENAI_BASE_URL', 'OPENAI_API_KEY', 'CODEX_SQLITE_HOME', 'NO_PROXY', 'no_proxy'}
+                if not updates:
+                    from bridge.clients.codex.daemon_network import PROXY_NAMES
+                    names.update(PROXY_NAMES)
+                for provider in {*((config.get('model_providers') or {}).keys()), before['modelProvider'], config.get('model_provider') or 'openai'}:
+                    names.update(cli._required_model_environment(config, provider))
+                original, identity = read_daemon_environment(cli.home, executable, names)
+                if identity != generation:
+                    raise ValueError('原生服务已变化，请重新检查')
+                target = LocalCliSync(self).recovery_target(config)
+                if target is None:
+                    target = native_recovery_target(cli.home, config, before['modelProvider'], original, snapshot.get('layers') or [])
+                provider = before['modelProvider'] if before['modelProvider'] in target['aliases'] else target['provider']
+                if configuration_changed or provider != before['modelProvider']:
+                    if target.get('unknownAuthSource'):
+                        raise ValueError('当前原生认证存储不是已核验的 file 来源，无法确认新账号；未修改 auth/config，请在原工具核验认证来源。')
+                    plan = {key: target.get(key) for key in ('accountId', 'identity', 'external', 'kind')}
+                    plan.update(provider=provider, before={key: before[key] for key in ('id', 'cwd', 'modelProvider')})
+                    plan['historicalProvider'] = historical_provider
+                    follow_system_proxy = False  # Adopting native auth/config never rewrites those files.
+            stamp = hashlib.sha256(json.dumps([stamp, configuration, follow_system_proxy, plan,
+                target.get('identity') if target else None], sort_keys=True).encode()).hexdigest()
+            if not updates and not configuration_changed and plan is None:
                 if automatic:
                     cli.configuration_stamp = configuration
                 if body is not None:
@@ -1674,6 +1742,12 @@ class Bridge:
                 return {'canRecover': False, 'message': '未检测到可恢复的失效本机代理'}
             message = ('原 CLI 使用的本机代理已失效，当前系统代理可用。' if updates else
                        'CLI 认证或配置已变化，需要核对共享服务后恢复。')
+            if plan:
+                message += ('按此 home 当前原生配置继续本会话；不修改其 auth/config。' if plan.get('external') else
+                            '使用此 home 当前已选择并核验的 CLI 接入继续本会话。')
+                if plan['provider'] != plan['before']['modelProvider']:
+                    message += ('本次只将此会话从 ' + plan['before']['modelProvider'] + ' 改为 ' + plan['provider'] +
+                                '，保留会话 ID、历史和工作目录；之后的历史会由目标接入处理。')
             if follow_system_proxy:
                 message += ('恢复时会在此 CODEX_HOME 的 CLI 用户配置中保存 features.respect_system_proxy=true，'
                             '使使用此配置的其他客户端今后加载的会话也跟随系统代理；不修改系统代理。')
@@ -1711,17 +1785,14 @@ class Bridge:
                 return {'canRecover': True, 'generation': stamp, 'message': message}
             # Preserve credentials and provider routing from this exact process, even
             # when the gateway was launched with a different shell environment.
-            names = {'OPENAI_BASE_URL', 'OPENAI_API_KEY', 'CODEX_SQLITE_HOME', 'NO_PROXY', 'no_proxy'}
-            if not updates:
-                from bridge.clients.codex.daemon_network import PROXY_NAMES
-                names.update(PROXY_NAMES)
-            for provider in (config.get('model_providers') or {}):
-                names.update(cli._required_model_environment(config, provider))
             original, identity = read_daemon_environment(cli.home, executable, names)
             if identity != generation:
                 raise ValueError('原生服务已变化，请重新检查')
             if configuration_stamp(cli.home) != configuration:
                 raise ValueError('CLI 认证或配置正在更新，请稍后继续；未重启服务')
+            preserved = {name: original.get(name) for name in names}
+            if target:
+                preserved.update(target['environment'])
             setting_saved = False
             setting_dispatched = False
             def before_setting_write():
@@ -1743,8 +1814,7 @@ class Bridge:
                         raise ValueError('CLI 认证正在更新，请稍后重新检查；未重启服务')
                     configuration = after
                 self._drain_cli_daemon(cli, executable, generation, configuration, updates,
-                                       {name: original.get(name) for name in names},
-                                       follow_system_proxy=follow_system_proxy)
+                                       preserved, follow_system_proxy=follow_system_proxy, provider_plan=plan)
                 self._resume_cli_recovery(cli, executable, self._cli_recovery_record())
             except Exception as error:
                 if getattr(error, 'system_proxy_unknown', False):
@@ -1756,7 +1826,7 @@ class Bridge:
                 if setting_dispatched:
                     private_json(self.data_dir / 'cli-daemon-recovery.json', recovery)
                 raise
-        session = self.activate(thread_id)
+        session = self._activate_cli_recovery(thread_id, plan) if plan else self.activate(thread_id)
         return {'connected': session.connected}
 
     def _recover_cli_environment(self, thread_id):
@@ -1764,11 +1834,15 @@ class Bridge:
         from bridge.clients.codex.cli_session import CliSessions, _managed_cli
         from bridge.platforms.codex_daemon_env import DaemonEnvironmentUnavailable
         cli = self.cli_sessions
-        pending = self._cli_recovery_record().get('phase') in ('draining', 'stopped', 'starting')
+        record = self._cli_recovery_record()
+        pending = (record.get('phase') in ('draining', 'stopped', 'starting') or
+                   record.get('phase') == 'resuming' and record['providerTarget']['before']['id'] == thread_id)
         if (not isinstance(cli, CliSessions) or cli.alias is not None or
                 not (self.host == 'local' or self.host.startswith('codex:')) or
                 (not Path(cli.client.socket_path).exists() and not pending) or _managed_cli(cli.home) is None):
             return
+        if not pending:
+            self._verify_cli_file_auth(thread_id)
         try:
             result = self.cli_network(thread_id, automatic=True)
             pending = pending or bool(result.get('maintenancePending'))
@@ -1787,12 +1861,125 @@ class Bridge:
             # not prove this thread needs it (NO_PROXY, local providers, pooled
             # connections and native token refresh can still work).
 
+    def _verify_cli_file_auth(self, thread_id):
+        from contextlib import closing
+        from bridge.clients.codex.app_server import CodexAppServer
+        from bridge.clients.codex.cli_session import CliSessions, _managed_cli
+        from bridge.clients.codex.daemon_network import verify_file_auth
+        from bridge.platforms.codex_daemon_env import read_daemon_environment
+        cli = self.cli_sessions
+        if not isinstance(cli, CliSessions) or cli.alias is not None:
+            return
+        with cli.lock:
+            binding = ((cli.metadata.get(thread_id) or {}).get('fileAuthGeneration')
+                       if cli.client.process is not None and cli.joined.get(thread_id) is cli.client.process else None)
+        if not binding:
+            return
+        executable = _managed_cli(cli.home)
+        if executable is None or not Path(cli.client.socket_path).exists():
+            return
+        try:
+            generation = read_daemon_environment(cli.home, executable, ())[1]
+            if hashlib.sha256(json.dumps(generation).encode()).hexdigest() != binding:
+                return
+            with closing(CodexAppServer(cli.client.socket_path, cli=executable,
+                                        client_name='codex-mobile-bridge-auth-check')) as probe:
+                if Path(probe.connect()['codexHome']).resolve() != cli.home.resolve():
+                    return
+                thread = probe.request('thread/read', {'threadId': thread_id, 'includeTurns': False}, replay_safe=True)['thread']
+                if thread.get('id') != thread_id or not thread.get('modelProvider'):
+                    return
+                config = probe.request('config/read', {'includeLayers': False}, replay_safe=True)['config']
+                mismatch = None
+                try:
+                    verify_file_auth(probe, cli.home, config, thread['modelProvider'], known_factory=True)
+                except IPCError as error:
+                    mismatch = error
+            if mismatch and read_daemon_environment(cli.home, executable, ())[1] == generation:
+                raise mismatch
+        except (AppServerError, OSError, ValueError):
+            # Inspection failure cannot prove the cached credential is wrong.
+            return
+
     def _cli_recovery_record(self):
         path = self.data_dir / 'cli-daemon-recovery.json'
         return json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
 
+    def _activate_cli_recovery(self, thread_id, plan):
+        from bridge.clients.codex.cli_session import _managed_cli
+        from bridge.clients.codex.daemon_network import configuration_stamp
+        from bridge.platforms.codex_daemon_env import read_daemon_environment
+        cli = self.cli_sessions
+        record = self._cli_recovery_record()
+        if (record.get('phase') != 'complete' or record.get('providerPhase') != 'authorized'
+                or record.get('providerTarget') != plan or plan['before']['id'] != thread_id
+                or configuration_stamp(cli.home) != record['configuration']):
+            raise IPCError('已确认的目标接入或会话已变化，请重新检查；未迁移会话。')
+        generation = read_daemon_environment(cli.home, _managed_cli(cli.home), ())[1]
+        if hashlib.sha256(json.dumps(generation).encode()).hexdigest() != record.get('resumedGeneration'):
+            raise IPCError('原生服务已变化，请重新检查并确认；未迁移会话。')
+        dispatched = False
+        def before_resume():
+            nonlocal dispatched
+            current = read_daemon_environment(cli.home, _managed_cli(cli.home), ())[1]
+            if (hashlib.sha256(json.dumps(current).encode()).hexdigest() != record.get('resumedGeneration')
+                    or configuration_stamp(cli.home) != record['configuration']):
+                raise IPCError('原生服务或已确认目标已变化；未迁移会话。')
+            record['phase'] = 'resuming'
+            record['resumeWasCold'] = True  # CliSessions checked notLoaded before invoking this callback.
+            private_json(self.data_dir / 'cli-daemon-recovery.json', record)
+            dispatched = True
+        try:
+            session = self.live.get(thread_id)
+            with cli.lock:
+                joined = cli.joined.get(thread_id) is not None and cli.joined.get(thread_id) is cli.client.process
+            if session and session.runtime == 'cli' and not joined:
+                with session.condition:
+                    session.connected = False
+                    session.changed()
+            session = self.activate(thread_id, _cli_recovery=(plan, before_resume))
+            if not dispatched or session.runtime != 'cli':
+                raise IPCError('已确认的原生接续尚未执行，请重新核对连接；未确认目标接入生效。')
+        except Exception as error:
+            native = error
+            while getattr(native, '__cause__', None) is not None:
+                native = native.__cause__
+            if dispatched and getattr(native, 'rpc_error', None) is not None:
+                record.update(phase='complete', providerPhase='failed')
+                private_json(self.data_dir / 'cli-daemon-recovery.json', record)
+            raise
+        record.update(phase='complete', providerPhase='complete')
+        private_json(self.data_dir / 'cli-daemon-recovery.json', record)
+        if plan.get('kind') == 'api':
+            with cli.lock:
+                metadata = cli.metadata.get(thread_id)
+                if (metadata and metadata.get('modelProvider') == plan['provider'] and not metadata.get('cleanupOnly')
+                        and cli.client.process is not None and cli.joined.get(thread_id) is cli.client.process):
+                    metadata['fileAuthGeneration'] = record['resumedGeneration']
+        return session
+
+    def _verify_cli_target(self, probe, config, plan, cli, executable):
+        from bridge.features.accounts.cli_sync import LocalCliSync
+        from bridge.clients.codex.daemon_network import native_recovery_target, verify_file_auth, file_auth_provider
+        from bridge.platforms.codex_daemon_env import read_daemon_environment
+        snapshot = probe.request('config/read', {'includeLayers': True, 'cwd': plan['before']['cwd']}, replay_safe=True)
+        config = snapshot['config']
+        sync = LocalCliSync(self)
+        target = sync.recovery_target(config)
+        if target is None:
+            names = cli._required_model_environment(config, plan['provider'])
+            environment, _ = read_daemon_environment(cli.home, executable, names)
+            target = native_recovery_target(cli.home, config, plan['before']['modelProvider'], environment, snapshot.get('layers') or [])
+        if target['identity'] != plan['identity'] or plan['provider'] not in target['aliases']:
+            raise ValueError('目标接入已变化，未迁移会话；请重新检查并确认')
+        if target.get('accountId'):
+            sync.verify_runtime_auth(probe, target)
+        else:
+            verify_file_auth(probe, cli.home, config, plan['provider'],
+                             known_factory=file_auth_provider(config, plan['provider']))
+
     def _drain_cli_daemon(self, cli, executable, generation, configuration, updates, preserved, connections=(), *,
-                          follow_system_proxy=False):
+                          follow_system_proxy=False, provider_plan=None):
         from contextlib import closing
         from bridge.clients.codex.app_server import CodexAppServer
         from bridge.clients.codex.daemon_network import graceful_restart_supported
@@ -1801,7 +1988,7 @@ class Bridge:
         from bridge.platforms.codex_daemon_env import stop_daemon_gracefully
         key = hashlib.sha256(json.dumps(generation).encode()).hexdigest()
         previous = self._cli_recovery_record()
-        if previous.get('generation') == key and previous.get('phase') in ('configuringUnknown', 'draining', 'starting'):
+        if previous.get('phase') == 'resuming' or previous.get('generation') == key and previous.get('phase') in ('configuringUnknown', 'draining', 'starting'):
             raise ValueError('原 CLI 正在排空或退出结果待核对，不会重复发送退出信号')
         with closing(CodexAppServer(cli.client.socket_path, cli=executable,
                                     client_name='codex-mobile-bridge-final-idle-check')) as probe:
@@ -1817,6 +2004,9 @@ class Bridge:
                           {token for token, process in cli.release_receipts.items() if process is cli.client.process})}
             if follow_system_proxy:
                 record['followSystemProxy'] = True
+            if provider_plan:
+                record['providerTarget'] = provider_plan
+                record['providerPhase'] = 'authorized'
             cli.recovery_environment = {'generation': key, 'updates': updates, 'preserved': preserved}
             private_json(self.data_dir / 'cli-daemon-recovery.json', record)
             stop_daemon_gracefully(cli.home, executable, generation, graceful_only=True)
@@ -1833,21 +2023,25 @@ class Bridge:
         from bridge.clients.codex.daemon_network import configuration_stamp
         from bridge.platforms.codex_daemon_env import read_daemon_environment
         def verify_proxy_setting():
-            if record.get('followSystemProxy'):
+            if record.get('followSystemProxy') or record.get('providerTarget'):
                 with closing(CodexAppServer(cli.client.socket_path, cli=executable,
                                             client_name='codex-mobile-bridge-network-verify')) as probe:
                     info = probe.connect()
                     if Path(info['codexHome']).resolve() != cli.home.resolve():
                         raise ValueError('CLI 服务不属于此配置，恢复结果待核对')
                     config = probe.request('config/read', {'includeLayers': False}, replay_safe=True)['config']
-                    if (config.get('features') or {}).get('respect_system_proxy') is not True:
+                    if record.get('followSystemProxy') and (config.get('features') or {}).get('respect_system_proxy') is not True:
                         raise ValueError('新 CLI 服务尚未启用系统代理跟随，请核对配置；不会再次退出服务')
+                    plan = record.get('providerTarget')
+                    if plan:
+                        self._verify_cli_target(probe, config, plan, cli, executable)
         status = cli.daemon_status()
         if status == 'running':
             generation = read_daemon_environment(cli.home, executable, ())[1]
             if hashlib.sha256(json.dumps(generation).encode()).hexdigest() == record['generation']:
                 raise ValueError('原 CLI 仍在排空任务，请等待完成；不会重复发送退出信号')
             verify_proxy_setting()
+            record['resumedGeneration'] = hashlib.sha256(json.dumps(generation).encode()).hexdigest()
             record['phase'] = 'complete'
             private_json(self.data_dir / 'cli-daemon-recovery.json', record)
             return False
@@ -1866,6 +2060,8 @@ class Bridge:
         cli._start_daemon(environment['updates'], environment['preserved'])
         cli.daemon_start_generation += 1
         verify_proxy_setting()
+        record['resumedGeneration'] = hashlib.sha256(json.dumps(
+            read_daemon_environment(cli.home, executable, ())[1]).encode()).hexdigest()
         cli.configuration_stamp = record['configuration']
         record['phase'] = 'complete'
         private_json(self.data_dir / 'cli-daemon-recovery.json', record)
@@ -1884,6 +2080,8 @@ class Bridge:
                 return
             newly_connected = not session.connected or session.runtime != 'cli'
             session.state = state
+            if state.get('modelProvider'):
+                session.saved_provider = state['modelProvider']
             session.runtime = 'cli'
             session.owner = 'cli:' + thread_id
             session.connected = True
@@ -2728,8 +2926,14 @@ class Bridge:
                 raise IPCError(session.error) from exc
 
     @operation
-    def activate(self, thread_id, *, allow_ide_resume=True, _transport_rebuilt=False):
+    def activate(self, thread_id, *, allow_ide_resume=True, _transport_rebuilt=False, _cli_recovery=None):
         """Explicit phone operation only; reads and notification watches never navigate."""
+        if _cli_recovery is None:
+            record = self._cli_recovery_record()
+            plan = record.get('providerTarget')
+            if (plan and plan['before']['id'] == thread_id and record.get('phase') == 'complete'
+                    and record.get('providerPhase') == 'authorized'):
+                return self._activate_cli_recovery(thread_id, plan)
         session = self.session(thread_id, background=True)
         if self.host.startswith('codex:') and self.store.get(thread_id).get('origin') == 'desktop':
             raise ValueError('此独立入口只接入原 VS Code / CLI 会话')
@@ -2809,7 +3013,13 @@ class Bridge:
                             try:
                                 if not environment_checked:
                                     self._recover_cli_environment(session.id)
-                                state = self.cli_sessions.attach(session.id, explicit=True)
+                                if _cli_recovery:
+                                    plan, before_resume = _cli_recovery
+                                    state = self.cli_sessions.attach(session.id, explicit=True,
+                                        target_provider=plan['provider'] if plan['provider'] != plan['before']['modelProvider'] else None,
+                                        expected_identity=plan['before'], before_resume=before_resume)
+                                else:
+                                    state = self.cli_sessions.attach(session.id, explicit=True)
                             except AppServerError as exc:
                                 raise IPCError(str(exc)) from exc
                             self._cli_state(session.id, state)
@@ -4225,6 +4435,8 @@ class Bridge:
             if session.origin in ('cli', 'ide') and not self._session_goal_available(session):
                 raise ValueError('当前 Codex 会话暂不支持目标模式')
             with session.action_lock, self.goal_lock:
+                if session.runtime == 'cli':
+                    self._verify_cli_file_auth(thread_id)
                 response = self._goal_command(session, thread_id, submission_id, "create", objective=text,
                                               ui_locale=ui_locale or activation.get("uiLocale") if activation else ui_locale)
                 result = {"status": "unknown" if response.get("status") == "unknown" else "accepted",
@@ -4251,6 +4463,8 @@ class Bridge:
                             prior.get("goalActivation") != activation):
                         raise ValueError("同一消息标识不能用于不同内容")
                     return {"status": prior["status"], "duplicate": True, "id": submission_id}
+            if session.runtime == 'cli':
+                self._verify_cli_file_auth(thread_id)
             with session.condition:
                 if _async_response is not None:
                     request_id, response = _async_response

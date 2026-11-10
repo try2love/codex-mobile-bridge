@@ -435,6 +435,35 @@ class CliAccessTests(unittest.TestCase):
             self.assertTrue(resume_done.wait(2))
         self.assertFalse(failures)
 
+    def test_codex_confirmed_request_reuses_accounts_transaction_and_identifier(self):
+        import uuid
+        row = {'id': 'saved', 'kind': 'api'}
+        self.accounts.row = Mock(return_value=row)
+        self.accounts.switch = Mock()
+        sync = Mock()
+        sync._codex_runtime.return_value = (False, None)
+        request_id = str(uuid.uuid4())
+        with self.sync_patch(sync):
+            self.manager.change({'provider': 'codex', 'action': 'switch', 'id': 'saved',
+                'confirmed': True, 'tasksConfirmed': True, 'requestId': request_id})
+        self.accounts.switch.assert_called_once_with({'id': 'saved', 'requestId': request_id,
+            'confirmed': True, 'tasksConfirmed': True})
+        sync.apply.assert_not_called()
+        sync.preflight.assert_not_called()
+
+    def test_codex_receipt_does_not_manufacture_task_or_desktop_confirmation(self):
+        row = {'id': 'saved', 'kind': 'api'}
+        self.accounts.row = Mock(return_value=row)
+        self.accounts.switch = Mock()
+        sync = Mock()
+        sync._codex_runtime.return_value = (True, Mock())
+        with self.sync_patch(sync):
+            for extra in ({}, {'tasksConfirmed': True}):
+                with self.assertRaisesRegex(ValueError, '确认'):
+                    self.manager.change({'provider': 'codex', 'action': 'switch', 'id': 'saved',
+                        'confirmed': True, 'requestId': 'request', **extra})
+        self.accounts.switch.assert_not_called()
+
     def test_codex_stopped_desktop_uses_same_saved_row_and_verifies(self):
         row = {'id': 'saved', 'kind': 'api', 'name': 'Codex API'}
         self.accounts.row = Mock(return_value=row)

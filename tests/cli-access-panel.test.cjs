@@ -1,12 +1,12 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
 const source=fs.readFileSync(path.join(__dirname,'../web/features/accounts/api-editor.js'),'utf8')+'\n'+fs.readFileSync(path.join(__dirname,'../web/features/accounts/cli-access.js'),'utf8');
-const context={BridgeI18n:{t:key=>({'正在读取…':'Loading…','正在保存…':'Saving…','请填写有效 API Key':'Enter a valid API key.'}[key]||key)}};
+const context={crypto:require('node:crypto').webcrypto,BridgeI18n:{t:key=>({'正在读取…':'Loading…','正在保存…':'Saving…','请填写有效 API Key':'Enter a valid API key.'}[key]||key)}};
 vm.createContext(context);vm.runInContext(source+'\nglobalThis.CliAccessPanel=CliAccessPanel;',context);
 function deferred(){let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};}
 function panel(){
   const controls=[{disabled:false},{disabled:false}],instance=Object.create(context.CliAccessPanel.prototype);
-  instance.root={querySelectorAll:()=>controls};instance.value=null;instance.busy=false;instance.generation=0;instance.apiResults=new Map();
+  instance.root={querySelectorAll:()=>controls};instance.value=null;instance.busy=false;instance.generation=0;instance.apiResults=new Map();instance.switchRequests=new Map();
   instance.provider='claude';instance.key={input:{value:'private-key'}};
   instance.cancel={hidden:false};instance.status={textContent:''};instance.error={textContent:''};
   instance.form={reset(){instance.key.input.value='';}};
@@ -93,4 +93,32 @@ test('URL or key changes invalidate draft models without allowing an old respons
 test('empty or failed model lookup keeps manual entry available and never saves',async()=>{
  const ui=draftPanel();ui.request=async()=>({models:[]});await ui.discoverModels();assert.match(ui.modelFeedback.textContent,/手动填写/);assert.equal(ui.modelSelect.hidden,true);assert.equal(ui.save.disabled,false);
  ui.request=async()=>{throw Error('Offline');};await ui.discoverModels();assert.equal(ui.modelFeedback.textContent,'Offline');assert.equal(ui.save.disabled,false);
+});
+
+
+test('Codex shared auth confirmation retains a request identifier through unknown retries',()=>{
+ const {instance}=panel();instance.provider='codex';const calls=[],nodes=[];
+ instance.node=(tag,key)=>({tag,textContent:key||'',children:[],append(...children){this.children.push(...children);},remove(){}});
+ instance.rows={prepend(node){nodes.push(node);}};
+ instance.field=()=>({input:{checked:false},label:{}});
+ const fields=[];instance.field=()=>{const field={input:{checked:false},label:{}};fields.push(field);return field;};
+ instance.perform=value=>calls.push(value);
+ instance.switchTo('codex','saved',{sharedWithDesktop:true});
+ let dialog=nodes.at(-1),submit=dialog.children.at(-2);
+ assert.match(dialog.children[0].textContent,/同步共享认证/);
+ submit.onclick();assert.equal(calls.length,0);
+ fields.slice(-2).forEach(field=>field.input.checked=true);submit.onclick();
+ const first=calls[0];assert.equal(first.tasksConfirmed,true);assert.equal(first.desktopRestartConfirmed,true);
+ assert.match(first.requestId,/^[0-9a-f-]{36}$/);
+ instance.switchTo('codex','saved',{sharedWithDesktop:true});
+ dialog=nodes.at(-1);fields.slice(-2).forEach(field=>field.input.checked=true);dialog.children.at(-2).onclick();
+ assert.equal(calls[1].requestId,first.requestId);
+});
+
+test('Codex unknown read keeps its receipt while a verified completion releases it',async()=>{
+ const {instance}=panel();instance.provider='codex';instance.switchRequests.set('saved','stable-request');
+ instance.read=async()=>({codex:{switch:{phase:'authUnknown',targetId:'saved'},accounts:[]}});
+ await instance.refresh();assert.equal(instance.switchRequests.get('saved'),'stable-request');
+ instance.read=async()=>({codex:{switch:{phase:'complete',targetId:'saved'},accounts:[]}});
+ await instance.refresh();assert.equal(instance.switchRequests.has('saved'),false);
 });

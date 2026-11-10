@@ -14,6 +14,16 @@ from bridge.platforms.codex_daemon_env import read_daemon_environment
 PROXY_NAMES = ('http_proxy', 'https_proxy', 'all_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY')
 
 
+def file_auth_provider(config, provider):
+    definition = (config.get('model_providers') or {}).get(provider) or {}
+    return (config.get('cli_auth_credentials_store') == 'file'
+            and definition.get('requires_openai_auth', provider == 'openai') is True
+            and not definition.get('env_key') and not definition.get('experimental_bearer_token')
+            and not any(str(name).lower() == 'authorization' for name in
+                        (*((definition.get('http_headers') or {}).keys()),
+                         *((definition.get('env_http_headers') or {}).keys()))))
+
+
 def configuration_stamp(home):
     """Private change tokens only; rotating credentials are never exported."""
     result = {}
@@ -26,8 +36,101 @@ def configuration_stamp(home):
 
 
 def graceful_restart_supported(info):
-    version = re.match(r'^(?:Codex Desktop|codex_cli_rs|codex|codex-tui)/(\d+\.\d+\.\d+)(?:\s|$)', info.get('userAgent', ''))
+    version = re.match(r'^(?:Codex Desktop|codex_cli_rs|codex|codex-tui|codex-mobile-bridge(?:-(?:cli|target-check|network-check|network-setting|auth-check|final-idle-check|network-verify))?)/(\d+\.\d+\.\d+)(?:\s|$)', info.get('userAgent', ''))
     return bool(version and version.group(1) == '0.164.0')
+
+
+def native_recovery_target(home, config, source_provider, environment, layers=()):
+    """Adopt this home's current native configuration without changing its files."""
+    from bridge.clients.codex.cli_session import CliSessions
+    profile = (config.get('profiles') or {}).get(config.get('profile')) or {}
+    effective = {**config, **profile}
+    provider = effective.get('model_provider') or 'openai'
+    definitions = effective.get('model_providers') or {}
+    if provider != 'openai' and not definitions.get(provider):
+        raise ValueError('当前原生配置未定义目标提供商，未恢复服务。')
+    def route(identifier):
+        row = definitions.get(identifier) or {}
+        return {**{key: row.get(key) for key in ('env_key', 'experimental_bearer_token',
+                'http_headers', 'env_http_headers', 'query_params')},
+                'base_url': row.get('base_url') or (effective.get('openai_base_url') if identifier == 'openai' else None),
+                'requires_openai_auth': row.get('requires_openai_auth', identifier == 'openai'),
+                'wire_api': row.get('wire_api', 'responses')}
+    aliases = [provider]
+    if provider in ('openai', 'bridge_api'):
+        aliases += [name for name in ('openai', 'bridge_api') if name != provider
+                    and (name == 'openai' or name in definitions) and route(name) == route(provider)]
+    definition = definitions.get(provider) or {}
+    required = {name for name in (definition.get('env_key'),
+                *(definition.get('env_http_headers') or {}).values()) if isinstance(name, str) and name}
+    missing = sorted(name for name in required if not environment.get(name))
+    old_names = CliSessions._required_model_environment(effective, source_provider)
+    if source_provider not in aliases:
+        missing += sorted(required & (old_names | {'OPENAI_API_KEY', 'OPENAI_BASE_URL'}))
+    if missing:
+        raise ValueError('目标接入缺少可核验的变量来源：' + '、'.join(sorted(set(missing))) +
+                         '；不会借用旧接入或网关终端的值，未启动服务。')
+    clear = {'OPENAI_API_KEY', 'OPENAI_BASE_URL'}
+    for identifier in {*definitions, source_provider, provider}:
+        clear.update(CliSessions._required_model_environment(effective, identifier))
+    values = {name: None for name in clear}
+    values.update({name: environment[name] for name in required})
+    try:
+        auth = json.loads((Path(home) / 'auth.json').read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        auth = {}
+    injected = definition.get('env_key') or definition.get('experimental_bearer_token') or any(
+        str(name).lower() == 'authorization' for name in
+        (*((definition.get('http_headers') or {}).keys()), *((definition.get('env_http_headers') or {}).keys())))
+    file_auth = not injected and definition.get('requires_openai_auth', provider == 'openai')
+    known_store = effective.get('cli_auth_credentials_store') == 'file'
+    kind = ('api' if auth.get('auth_mode') in (None, 'apikey') and auth.get('OPENAI_API_KEY') else
+            'chatgpt' if auth.get('tokens') else None) if file_auth and known_store else None
+    if file_auth and kind is None:
+        if not known_store:
+            pass  # The caller can retain an existing route, but cannot adopt its unknown account source.
+        elif source_provider in aliases and environment.get('OPENAI_API_KEY'):
+            values['OPENAI_API_KEY'] = environment['OPENAI_API_KEY']
+        else:
+            raise ValueError('目标接入缺少此 home 的明确认证来源；不会沿用旧账号的 API Key。')
+    if provider == source_provider == 'openai' and not effective.get('openai_base_url') and not definition.get('base_url'):
+        values['OPENAI_BASE_URL'] = environment.get('OPENAI_BASE_URL')
+    # File identities bind the confirmation without publishing a key verifier.
+    files = []
+    for name in ('config.toml', 'auth.json'):
+        try:
+            stat = (Path(home) / name).stat()
+            files.append((name, stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
+        except FileNotFoundError:
+            files.append((name, None))
+    versions = [(layer.get('name'), layer.get('version')) for layer in layers]
+    identity = hashlib.sha256(json.dumps([str(Path(home).resolve()), provider, files, versions], sort_keys=True).encode()).hexdigest()
+    return {'accountId': None, 'provider': provider, 'aliases': aliases, 'environment': values,
+            'identity': identity, 'external': True, 'kind': kind,
+            'unknownAuthSource': bool(file_auth and not known_store)}
+
+
+def verify_file_auth(probe, home, config, provider, *, known_factory=False):
+    """Only a proven file-auth/cache mismatch blocks a new operation."""
+    if not known_factory:
+        return
+    path = Path(home) / 'auth.json'
+    try:
+        before = path.stat()
+        auth = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return
+    key = auth.get('OPENAI_API_KEY')
+    if auth.get('auth_mode') not in (None, 'apikey') or not isinstance(key, str) or not key:
+        return  # Native same-account ChatGPT refresh remains its own responsibility.
+    status = probe.request('getAuthStatus', {'includeToken': True, 'refreshToken': False}, replay_safe=True)
+    after = path.stat()
+    if (before.st_ino, before.st_mtime_ns, before.st_ctime_ns, before.st_size) != (
+            after.st_ino, after.st_mtime_ns, after.st_ctime_ns, after.st_size):
+        return
+    cached = status.get('authToken')
+    if status.get('authMethod') == 'apikey' and isinstance(cached, str) and cached and cached != key:
+        raise IPCError('原生 CLI 仍缓存旧 API 认证，当前 auth.json 尚未同步；请检查 CLI 网络并明确确认恢复。阅读和停止任务仍可用。')
 
 
 def system_proxy_user_layer(snapshot, home):

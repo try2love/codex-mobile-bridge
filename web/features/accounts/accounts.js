@@ -256,7 +256,11 @@ class AccountsPanel {
     const h=[...bytes].map(x=>x.toString(16).padStart(2,'0')).join('');return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);
   }
   async choose(row){
-    if(!window.confirm(this.text(this.value?.scope==='profile'?'确认此配置中的所有任务已结束，并切换其 Codex 账号？此配置的空闲运行服务会正常退出。':'确认所有任务（包括未在网页显示的任务）已结束，并切换此电脑的 Codex 接入？桌面运行时会重启。')+'\n'+row.name))return;
+    const receipt=this.value?.switch;
+    if(receipt?.operation==='cliAuth'&&receipt.phase==='authUnknown'&&receipt.targetId===row.id){
+      await this.perform({action:'switch',id:row.id,requestId:receipt.requestId,confirmed:true,tasksConfirmed:true});this.refresh();return;
+    }
+    if(!window.confirm(this.text(this.value?.scope==='profile'?'确认此配置中的所有任务（包括其他客户端的任务）已结束，并同步共享的 Codex 账号？切换完成前请勿从其他客户端发起任务；仅在需要时正常退出空闲服务。':'确认所有任务（包括未在网页显示的任务）已结束，并切换此电脑共享的 Codex 接入？切换完成前请勿从其他客户端发起任务；仅在需要时正常退出并重启桌面运行时。')+'\n'+row.name))return;
     try{await this.perform({action:'switch',id:row.id,requestId:this.requestId(),confirmed:true,tasksConfirmed:true,
       syncLocalCli:true});this.refresh();}
     catch(error){this.operationError=true;this.error.textContent=this.text('无法创建切换请求，请刷新页面后重试');}
@@ -441,7 +445,7 @@ class AccountsPanel {
     this.tools.hidden=value.scope==='wsl';
     this.managementNotice.textContent=[value.scopeLabel,value.scope==='profile'?value.codexHome:'',this.text(value.management?.reason||'')].filter(Boolean).join(' · ');this.managementNotice.hidden=!external&&value.scope!=='profile';
     if(this.managementMode){this.managementMode.value=value.management?.mode||'auto';this.managementMode.disabled=this.busy;}
-    const phase=value.switch?.phase||'idle',labels={idle:'请选择已保存的接入',preparing:'正在准备账号',stopping:'正在退出 Codex 桌面应用',applying:'正在应用接入配置',starting:'正在启动 Codex 桌面应用',verifying:'正在核验账号与桌面连接',complete:'切换完成',restoring:'正在恢复原接入',restored:'已恢复原接入',failed:'切换未完成',interrupted:'需要在桌面端恢复原接入'};
+    const phase=value.switch?.phase||'idle',labels={idle:'请选择已保存的接入',preparing:'正在准备账号',stopping:'正在退出 Codex 桌面应用',applying:'正在应用接入配置',starting:'正在启动 Codex 桌面应用',verifying:'正在核验账号与桌面连接',authUnknown:'账号同步结果待核验',complete:'切换完成',restoring:'正在恢复原接入',restored:'已恢复原接入',failed:'切换未完成',interrupted:'需要在桌面端恢复原接入'};
     const switching=!['idle','complete','restored','failed'].includes(phase);
     const runtime=value.desktopRuntime||{};this.desktopRuntime.hidden=runtime.supported!==true||value.scope==='profile';
     this.runtimeStatus.textContent=this.text(runtime.error||(runtime.configured?'已保存原生连接设置；由网关启动 App 时生效。':'初始化后，手机与 Codex App 共用原生侧边聊天和删除功能。'));
@@ -481,7 +485,7 @@ class AccountsPanel {
       if(row.kind==='chatgpt')this.accountSubscription(name,row);
       identity.append(name);this.accountUsage(identity,row);card.append(identity);
       if(row.kind==='chatgpt')this.accountReset(card,row,switching);
-      if(!row.transient){const choose=this.button(active?'当前接入':'切换到此接入',()=>this.choose(row));choose.disabled=this.busy||switching||active||external||(!this.desktop&&value.canSwitch===false);actions.append(choose);}
+      if(!row.transient){const verifyAuth=value.switch?.operation==='cliAuth'&&phase==='authUnknown'&&value.switch.targetId===row.id;const choose=this.button(verifyAuth?'核验账号同步':active?'当前接入':'切换到此接入',()=>this.choose(row));choose.disabled=this.busy||switching&&!verifyAuth||active||external||(!this.desktop&&value.canSwitch===false);actions.append(choose);}
 
       if(this.cliAccess&&row.kind==='api'&&!row.transient){
         if(!active){const edit=this.button('修改',()=>{this.apiDetails.open=true;this.cliAccess.edit('codex',row);});edit.disabled=this.busy||switching||this.cliAccess.busy;actions.append(edit);}

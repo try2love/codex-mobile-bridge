@@ -15,7 +15,13 @@ class CliNetworkRecoveryTests(CliBridgeFixture):
         super().setUp()
         (self.home / 'config.toml').write_text('model_provider="openai"\n[features]\nrespect_system_proxy=false\n')
         self.system_proxy_enabled = False
+        self.auth_cache = None
+        self.current_config = {'model_provider': 'openai', 'cli_auth_credentials_store': 'file'}
+        self.thread_provider, self.thread_loaded = 'openai', True
+        self.cli_store_provider = None
         self.cli = CliSessions(self.home, self.bridge._cli_state, self.bridge._cli_disconnected)
+        self.cli.store.get = Mock(side_effect=lambda identifier: {'id': identifier, 'origin': 'cli',
+            'cwd': self.native_state['cwd'], 'model_provider': self.cli_store_provider or self.thread_provider})
         self.cli.configuration_stamp = configuration_stamp(self.home)
         self.bridge.cli_sessions = self.cli
         self.cli.client.socket_path = str(self.home / 'fixture.sock')
@@ -23,7 +29,14 @@ class CliNetworkRecoveryTests(CliBridgeFixture):
         self.cli._start_daemon = Mock(side_effect=lambda *_: setattr(self, 'proxy_updates', {}))
         self.cli.daemon_status = Mock(return_value='stopped')
         self.cli.close = Mock(side_effect=self.cli.close)
-        self.cli.attach = Mock(return_value=self.native_state)
+        def attach(identifier, **kwargs):
+            if kwargs.get('before_resume'):
+                kwargs['before_resume']()
+            self.cli.metadata[identifier] = {'cwd': self.native_state['cwd'],
+                                             'modelProvider': self.native_state['modelProvider']}
+            self.thread_provider, self.thread_loaded = self.native_state['modelProvider'], True
+            return self.native_state
+        self.cli.attach = Mock(side_effect=attach)
         self.native_calls = []
         self.busy = False
         self.generation = ('fixture-pid', 'generation')
@@ -31,14 +44,16 @@ class CliNetworkRecoveryTests(CliBridgeFixture):
         def request(method, params, **kwargs):
             self.native_calls.append((method, params))
             if method == 'thread/read':
-                return {'thread': {'id': params['threadId'], 'status': {'type': 'active' if self.busy else 'idle'}}}
+                return {'thread': {'id': params['threadId'], 'cwd': self.native_state['cwd'],
+                                   'modelProvider': self.thread_provider, 'status':
+                                   {'type': 'notLoaded' if not self.thread_loaded else 'active' if self.busy else 'idle'}}}
             if method == 'thread/backgroundTerminals/list': return {'data': []}
             if method == 'thread/goal/get': return {'goal': None}
             if method == 'config/read':
                 layer = {'name': {'type': 'user', 'file': str(self.home / 'config.toml'), 'profile': None},
                          'version': 'sha256:' + hashlib.sha256((self.home / 'config.toml').read_bytes()).hexdigest(),
                          'config': {'features': {'respect_system_proxy': self.system_proxy_enabled}}}
-                return {'config': {'model_provider': 'openai', 'features': layer['config']['features']},
+                return {'config': {**self.current_config, 'features': layer['config']['features']},
                         'layers': [layer], 'origins': {'features.respect_system_proxy':
                             {'name': layer['name'], 'version': layer['version']}}}
             if method == 'config/value/write':
@@ -46,6 +61,11 @@ class CliNetworkRecoveryTests(CliBridgeFixture):
                 (self.home / 'config.toml').write_text('model_provider="openai"\n[features]\nrespect_system_proxy=true\n')
                 return {'status': 'ok', 'filePath': str(self.home / 'config.toml'),
                         'version': 'sha256:' + hashlib.sha256((self.home / 'config.toml').read_bytes()).hexdigest()}
+            if method == 'getAuthStatus':
+                import json
+                file = self.home / 'auth.json'
+                key = json.loads(file.read_text()).get('OPENAI_API_KEY') if file.exists() else None
+                return {'authMethod': 'apikey', 'authToken': self.auth_cache or key}
             raise AssertionError(method)
         self.probe = SimpleNamespace(connect=lambda: {'codexHome': str(self.home), 'userAgent': 'codex_cli_rs/0.164.0'},
                                      loaded_threads=lambda: ['unrelated-thread'], request=request, close=Mock())
@@ -109,7 +129,7 @@ class CliNetworkRecoveryTests(CliBridgeFixture):
     def test_maintenance_started_during_probe_still_blocks_native_attach(self):
         session = self.bridge.session(self.thread_id, attach=False, background=True)
         session.runtime = 'cli'
-        with patch.object(self.bridge, '_cli_recovery_record', side_effect=[{}, {'phase': 'draining'}]):
+        with patch.object(self.bridge, '_cli_recovery_record', side_effect=[{}, {}, {'phase': 'draining'}]):
             with self.assertRaises(IPCError):
                 self.bridge.activate(self.thread_id)
         self.cli.attach.assert_not_called()
@@ -274,6 +294,160 @@ class CliNetworkRecoveryTests(CliBridgeFixture):
         self.cli._start_daemon.assert_called_once()
         self.cli.attach.assert_not_called()
 
+    def new_native_target(self):
+        self.proxy_updates = {}
+        self.current_config['model_provider'] = 'target-provider'
+        self.current_config['model_providers'] = {
+            'openai': {'env_key': 'OLD_KEY', 'env_http_headers': {'Old-Header': 'OLD_HEADER'}},
+            'target-provider': {'base_url': 'http://127.0.0.1:18279/v1', 'env_key': 'NEW_KEY',
+                                'env_http_headers': {'New-Header': 'NEW_HEADER'}, 'requires_openai_auth': False}}
+        (self.home / 'config.toml').write_text('model_provider="target-provider"\n')
+        self.native_state['modelProvider'] = 'target-provider'
+        values = {'OPENAI_API_KEY': 'old-generic', 'OPENAI_BASE_URL': 'https://old.invalid/v1',
+                  'OLD_KEY': 'old-key', 'OLD_HEADER': 'old-header', 'NEW_KEY': 'new-key', 'NEW_HEADER': 'new-header'}
+        return patch('bridge.platforms.codex_daemon_env.read_daemon_environment',
+                     side_effect=lambda _h, _e, names: ({k: values[k] for k in names if k in values}, self.generation))
+
+    def test_external_provider_recovery_uses_only_current_target_sources(self):
+        with self.new_native_target():
+            preview = self.bridge.cli_network(self.thread_id)
+            self.assertIn('当前原生配置', preview['message'])
+            self.assertIn('不修改', preview['message'])
+            self.assertIn('target-provider', preview['message'])
+            self.assertTrue(self.bridge.cli_network(self.thread_id,
+                {'confirmed': True, 'generation': preview['generation']})['connected'])
+        environment = self.cli._start_daemon.call_args.args[1]
+        self.assertEqual(environment['NEW_KEY'], 'new-key')
+        self.assertEqual(environment['NEW_HEADER'], 'new-header')
+        for name in ('OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OLD_KEY', 'OLD_HEADER'):
+            self.assertIsNone(environment[name])
+        kwargs = self.cli.attach.call_args.kwargs
+        self.assertEqual(kwargs['target_provider'], 'target-provider')
+        self.assertEqual(kwargs['expected_identity']['modelProvider'], 'openai')
+        self.assertEqual(self.bridge._cli_recovery_record()['providerPhase'], 'complete')
+        self.assertFalse(any(method == 'config/value/write' for method, _ in self.native_calls))
+
+    def test_missing_target_variable_does_not_use_old_generic_key(self):
+        with self.new_native_target(), patch('bridge.platforms.codex_daemon_env.read_daemon_environment',
+                return_value=({'OPENAI_API_KEY': 'old-key'}, self.generation)):
+            with self.assertRaisesRegex(ValueError, 'NEW_KEY'):
+                self.bridge.cli_network(self.thread_id)
+        self.stop.assert_not_called()
+        self.cli._start_daemon.assert_not_called()
+        self.cli.attach.assert_not_called()
+
+    def test_unknown_provider_resume_is_durable_and_check_never_replays(self):
+        from bridge.clients.codex.app_server import AppServerUnknownResult
+        def unknown(_identifier, **kwargs):
+            kwargs['before_resume']()
+            self.assertEqual(self.bridge._cli_recovery_record()['phase'], 'resuming')
+            self.thread_provider = 'target-provider'
+            raise AppServerUnknownResult('resume acknowledgment lost')
+        self.cli.attach.side_effect = unknown
+        with self.new_native_target():
+            with self.assertRaises(IPCError):
+                self.confirm()
+            self.assertEqual(self.bridge._cli_recovery_record()['phase'], 'resuming')
+            checked = self.bridge.cli_network(self.thread_id)
+        self.assertIn('回执仍未知', checked['message'])
+        self.assertEqual(self.bridge._cli_recovery_record()['providerPhase'], 'checkedUnknown')
+        self.cli.attach.assert_called_once()
+        self.stop.assert_called_once()
+        self.assertFalse(self.cli.metadata.get(self.thread_id, {}).get('fileAuthGeneration'))
+
+    def test_same_provider_write_ahead_receipt_does_not_prove_resume(self):
+        import json
+        (self.home / 'auth.json').write_text(json.dumps({'auth_mode': 'apikey', 'OPENAI_API_KEY': 'new-key'}))
+        def interrupted(_identifier, **kwargs):
+            kwargs['before_resume']()
+            self.thread_loaded = False
+            raise SystemExit('process interrupted before native resume')
+        self.cli.attach.side_effect = interrupted
+        with self.assertRaises(SystemExit):
+            self.confirm()
+        self.assertEqual(self.bridge._cli_recovery_record()['phase'], 'resuming')
+        self.assertFalse(self.bridge.cli_network(self.thread_id)['canRecover'])
+        self.assertEqual(self.bridge._cli_recovery_record()['phase'], 'resuming')
+        self.cli.attach.assert_called_once()
+        self.assertFalse(self.cli.metadata.get(self.thread_id, {}).get('fileAuthGeneration'))
+
+    def test_connected_early_return_cannot_complete_recovery_or_mark_factory(self):
+        import json
+        (self.home / 'auth.json').write_text(json.dumps({'auth_mode': 'apikey', 'OPENAI_API_KEY': 'new-key'}))
+        with patch.object(self.bridge, 'activate', return_value=SimpleNamespace(connected=True, runtime='cli')):
+            with self.assertRaisesRegex(IPCError, '尚未执行'):
+                self.confirm()
+        self.assertEqual(self.bridge._cli_recovery_record()['providerPhase'], 'authorized')
+        self.cli.attach.assert_not_called()
+        self.assertFalse(self.cli.metadata.get(self.thread_id, {}).get('fileAuthGeneration'))
+
+    def test_changed_provider_persisted_while_not_loaded_can_only_resolve_receipt(self):
+        from bridge.clients.codex.app_server import AppServerUnknownResult
+        def unknown(_identifier, **kwargs):
+            kwargs['before_resume']()
+            self.thread_provider, self.thread_loaded = 'target-provider', False
+            raise AppServerUnknownResult('acknowledgment lost')
+        self.cli.attach.side_effect = unknown
+        with self.new_native_target():
+            with self.assertRaises(IPCError): self.confirm()
+            result = self.bridge.cli_network(self.thread_id)
+        self.assertIn('回执仍未知', result['message'])
+        self.assertEqual(self.bridge._cli_recovery_record()['providerPhase'], 'checkedUnknown')
+        self.cli.attach.assert_called_once()
+        self.assertFalse(self.cli.metadata.get(self.thread_id, {}).get('fileAuthGeneration'))
+
+    def test_resume_reconciliation_refuses_changed_generation(self):
+        from bridge.clients.codex.app_server import AppServerUnknownResult
+        def unknown(_identifier, **kwargs):
+            kwargs['before_resume']()
+            self.thread_provider = 'target-provider'
+            raise AppServerUnknownResult('acknowledgment lost')
+        self.cli.attach.side_effect = unknown
+        with self.new_native_target():
+            with self.assertRaises(IPCError): self.confirm()
+            with patch('bridge.platforms.codex_daemon_env.read_daemon_environment', return_value=({}, ('replacement',))):
+                self.assertFalse(self.bridge.cli_network(self.thread_id)['canRecover'])
+        self.assertEqual(self.bridge._cli_recovery_record()['phase'], 'resuming')
+        self.cli.attach.assert_called_once()
+
+    def test_external_keyring_source_is_not_inferred_from_auth_file(self):
+        import json
+        (self.home / 'auth.json').write_text(json.dumps({'auth_mode': 'apikey', 'OPENAI_API_KEY': 'new-key'}))
+        self.current_config['cli_auth_credentials_store'] = 'auto'
+        with self.assertRaisesRegex(ValueError, '不是已核验的 file 来源'):
+            self.bridge.cli_network(self.thread_id)
+        self.stop.assert_not_called()
+        self.cli._start_daemon.assert_not_called()
+
+    def test_known_file_factory_blocks_new_send_but_preserves_stop(self):
+        import json
+        (self.home / 'auth.json').write_text(json.dumps({'auth_mode': 'apikey', 'OPENAI_API_KEY': 'new-key'}))
+        self.auth_cache = 'old-key'
+        generation = hashlib.sha256(json.dumps(self.generation).encode()).hexdigest()
+        self.cli.metadata[self.thread_id] = {'cwd': self.native_state['cwd'], 'modelProvider': 'openai',
+                                             'fileAuthGeneration': generation}
+        process = SimpleNamespace(poll=lambda: 0, stdin=None, stdout=None)
+        self.cli.client.process = process
+        self.cli.joined[self.thread_id] = process
+        session = self.bridge.session(self.thread_id, attach=False, background=True)
+        session.runtime, session.connected = 'cli', True
+        session.owner = 'cli:' + self.thread_id
+        session.state = {**self.native_state, 'threadRuntimeStatus': {'type': 'active'},
+                         'turns': [{'turnId': 'original-turn', 'status': 'inProgress', 'items': []}]}
+        self.cli.call = Mock(return_value={'interrupted': True})
+        self.assertTrue(self.bridge.interrupt(self.thread_id)['interrupted'])
+        with self.assertRaisesRegex(IPCError, '仍缓存旧 API'):
+            self.bridge.send(self.thread_id, 'new message', '8d7fa750-7ff4-4c4b-9c98-62e2ebbb5bfa')
+        self.assertFalse(any(call.args[1] == 'turn/start' for call in self.cli.call.call_args_list))
+        self.stop.assert_not_called()
+
+    def test_unknown_loaded_factory_does_not_get_file_auth_proof_from_current_config(self):
+        import json
+        (self.home / 'auth.json').write_text(json.dumps({'auth_mode': 'apikey', 'OPENAI_API_KEY': 'new-key'}))
+        self.auth_cache = 'old-key'
+        self.bridge._verify_cli_file_auth(self.thread_id)
+        self.assertFalse(any(method == 'getAuthStatus' for method, _ in self.native_calls))
+
     def test_explicit_native_unload_requires_confirmed_detach_and_idle_shared_service(self):
         session = self.bridge.session(self.thread_id, attach=False, background=True)
         session.runtime = 'cli'
@@ -307,3 +481,7 @@ class CliNetworkRecoveryTests(CliBridgeFixture):
         self.assertTrue(graceful_restart_supported({'userAgent': 'Codex Desktop/0.164.0 (Mac OS 15.6.1)'}))
         self.assertFalse(graceful_restart_supported({'userAgent': 'Unknown (Mac OS 0.164.0)'}))
         self.assertFalse(graceful_restart_supported({'userAgent': 'Codex Desktop/0.165.0'}))
+        self.assertTrue(graceful_restart_supported({'userAgent':
+            'codex-mobile-bridge-network-verify/0.164.0 (Mac OS 15.6.1; arm64) dumb (codex-tui; 1)'}))
+        self.assertFalse(graceful_restart_supported({'userAgent': 'codex-mobile-bridge-network-verify/0.165.0'}))
+        self.assertFalse(graceful_restart_supported({'userAgent': 'codex-mobile-bridge-unverified/0.164.0'}))

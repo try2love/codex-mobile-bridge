@@ -63,6 +63,42 @@ class LocalCliSyncTests(unittest.TestCase):
                 self.sync.preflight('codex')
         self.bridge.cli_sessions.daemon_may_be_running.assert_called_once_with()
 
+    def test_api_runtime_accepts_only_verified_current_native_client_versions(self):
+        client = Mock()
+        self.bridge.cli_sessions.client = client
+        with patch('bridge.clients.codex.cli_session._managed_cli', return_value=self.root/'codex-bin'), \
+             patch('bridge.platforms.codex_daemon_env.read_daemon_environment', return_value=({}, [42, 123])):
+            for agent, supported in (('codex-tui/0.164.0', True),
+                    ('codex-mobile-bridge-network-verify/0.164.0 (Mac OS)', True),
+                    ('codex-mobile-bridge-network-verify/0.165.0', False),
+                    ('codex-mobile-bridge-unknown/0.164.0', False)):
+                with self.subTest(agent=agent):
+                    client.connect.return_value = {'codexHome': str(self.home), 'userAgent': agent}
+                    if supported:
+                        self.assertEqual(self.sync._api_runtime(), (client, [42, 123]))
+                    else:
+                        with self.assertRaisesRegex(ValueError, '协议无法核验'):
+                            self.sync._api_runtime()
+
+    def test_native_idle_check_rejects_active_background_and_unknown_states(self):
+        for status, tasks in (('active', []), ('idle', [{'id': 'background'}]), ('unknown', [])):
+            with self.subTest(status=status, tasks=bool(tasks)):
+                def request(method, params, **kwargs):
+                    if method == 'thread/read':
+                        return {'thread': {'id': 'native-thread', 'status': {'type': status}}}
+                    if method == 'thread/backgroundTerminals/list':
+                        return {'data': tasks}
+                    if method == 'thread/goal/get':
+                        return {'goal': None}
+                    raise AssertionError(method)
+                client = Mock()
+                client.connect.return_value = {'codexHome': str(self.home)}
+                client.loaded_threads.return_value = ['native-thread']
+                client.request.side_effect = request
+                with self.assertRaises(ValueError):
+                    LocalCliSync.check_idle_daemon(client, self.home)
+                self.assertNotIn('account/login/start', [call.args[0] for call in client.request.call_args_list])
+
     def test_codex_api_verification_checks_both_effective_routes(self):
         row = self.accounts.add_api({'name': 'Fixture', 'baseUrl': 'https://api.example/v1',
                                      'apiKey': 'fixture-key', 'model': 'fixture-model'})['accounts'][-1]
@@ -260,6 +296,236 @@ class LocalCliSyncTests(unittest.TestCase):
         store.public.return_value = {'activeId': 'other', 'current': {'kind': 'official'}}
         with self.assertRaisesRegex(ValueError, '官方登录不能复制'):
             self.sync.import_desktop_claude('desktop-api', store)
+
+
+class ManagedApiSwitchTests(unittest.TestCase):
+    def setUp(self):
+        LocalCliSyncTests.setUp(self)
+        self.bridge.account = SimpleNamespace(lock=threading.RLock())
+        self.bridge.cli_sessions.daemon_status = Mock(return_value='running')
+        self.first = self.accounts.add_api({'name': 'A', 'baseUrl': 'https://fixture.invalid/v1',
+            'apiKey': 'fixture-A', 'model': 'fixture-model'})['accounts'][-1]
+        self.target = self.accounts.add_api({'name': 'B', 'baseUrl': 'https://fixture.invalid/v1',
+            'apiKey': 'fixture-B', 'model': 'fixture-model'})['accounts'][-1]
+        private_json(self.home/'auth.json', {'OPENAI_API_KEY': 'fixture-A'})
+        self.accounts.mark_active(self.first['id'])
+        self.config = {'model_provider': 'bridge_api', 'model': 'fixture-model',
+            'cli_auth_credentials_store': 'file', 'openai_base_url': self.target['baseUrl'],
+            'model_providers': {'bridge_api': {'base_url': self.target['baseUrl'],
+                'requires_openai_auth': True, 'wire_api': 'responses'}}}
+        self.native_key = 'fixture-A'
+        self.writes = []
+        self.failure = None
+        self.generation = [421, 1234, [12345, 1]]
+        self.client = Mock()
+        def request(method, params, **kwargs):
+            if method == 'config/read':
+                return {'config': self.config}
+            if method == 'getAuthStatus':
+                return {'authMethod': 'apikey', 'authToken': self.native_key if params['includeToken'] else None}
+            if method == 'account/login/start':
+                receipt = json.loads((self.accounts.root/'switch.json').read_text())
+                self.assertEqual(receipt['phase'], 'authUnknown')
+                self.assertEqual(json.loads((self.accounts.root/'requests.json').read_text())[receipt['requestId']], self.target['id'])
+                self.writes.append(params['apiKey'])
+                self.native_key = params['apiKey']
+                private_json(self.home/'auth.json', {'OPENAI_API_KEY': params['apiKey']})
+                if self.failure:
+                    raise self.failure
+                return {'type': 'apiKey'}
+            raise AssertionError(method)
+        self.client.request.side_effect = request
+        for name, values in (('_codex_runtime', {'return_value': (False, None)}),
+                             ('_api_runtime', {'side_effect': lambda: (self.client, self.generation)}),
+                             ('check_idle_daemon', {'return_value': None})):
+            patcher = patch.object(LocalCliSync, name, **values)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def value(self, **changes):
+        import uuid
+        return {'id': self.target['id'], 'confirmed': True, 'tasksConfirmed': True,
+                'requestId': str(uuid.uuid4()), **changes}
+
+    def test_same_provider_api_switch_receipt_precedes_write_and_marks_verified(self):
+        value = self.value()
+        self.accounts.switch(value)
+        self.assertEqual(self.writes, ['fixture-B'])
+        self.assertEqual(self.accounts.state['phase'], 'complete')
+        self.assertEqual(self.accounts.index['activeId'], self.target['id'])
+        self.assertEqual(self.bridge.cli_sessions.configuration_stamp, {
+            'config.toml': hashlib.sha256((self.home/'config.toml').read_bytes()).hexdigest(),
+            'auth.json': hashlib.sha256((self.home/'auth.json').read_bytes()).hexdigest()})
+        self.accounts.switch(value)
+        self.assertEqual(self.writes, ['fixture-B'])
+        self.assertNotIn('fixture-B', (self.accounts.root/'switch.json').read_text())
+        self.assertNotIn('fixture-B', json.dumps(self.accounts.public()))
+
+    def test_unknown_effect_reconciles_only_from_same_native_cached_key(self):
+        from bridge.clients.codex.app_server import AppServerUnknownResult
+        self.failure = AppServerUnknownResult('lost response')
+        value = self.value()
+        with self.assertRaisesRegex(ValueError, '尚未核验'):
+            self.accounts.switch(value)
+        self.assertEqual(self.accounts.state['phase'], 'authUnknown')
+        self.assertIsNone(self.accounts.public()['activeId'])
+        self.assertEqual(self.accounts.index['activeId'], self.first['id'])
+        self.accounts.switch(value)
+        self.assertEqual(self.writes, ['fixture-B'])
+        self.assertEqual(self.accounts.state['phase'], 'complete')
+        self.assertEqual(self.accounts.index['activeId'], self.target['id'])
+
+    def test_hot_baseline_does_not_absorb_a_later_unverified_config_change(self):
+        verified_config = hashlib.sha256((self.home/'config.toml').read_bytes()).hexdigest()
+        mark = self.accounts.mark_active
+        def changed_after_verification(identifier):
+            (self.home/'config.toml').write_text('model="external-change"\n')
+            mark(identifier)
+        self.accounts.mark_active = changed_after_verification
+        self.accounts.switch(self.value())
+        self.assertEqual(self.bridge.cli_sessions.configuration_stamp['config.toml'], verified_config)
+        self.assertNotEqual(self.bridge.cli_sessions.configuration_stamp['config.toml'],
+                            hashlib.sha256((self.home/'config.toml').read_bytes()).hexdigest())
+
+    def test_disk_key_or_account_type_does_not_clear_unknown_or_replay(self):
+        from bridge.clients.codex.app_server import AppServerUnknownResult
+        self.failure = AppServerUnknownResult('lost response')
+        value = self.value()
+        with self.assertRaises(ValueError):
+            self.accounts.switch(value)
+        self.native_key = 'fixture-A'
+        with self.assertRaisesRegex(ValueError, '尚未使用'):
+            self.accounts.switch(value)
+        self.assertEqual(self.writes, ['fixture-B'])
+        self.assertEqual(self.accounts.state['phase'], 'authUnknown')
+        with self.assertRaisesRegex(ValueError, '同一次'):
+            self.accounts.switch(self.value())
+        self.assertEqual(self.writes, ['fixture-B'])
+
+    def test_unknown_rejects_changed_generation_and_survives_manager_restart(self):
+        from bridge.clients.codex.app_server import AppServerUnknownResult
+        self.failure = AppServerUnknownResult('lost response')
+        value = self.value()
+        with self.assertRaises(ValueError):
+            self.accounts.switch(value)
+        restarted = Accounts(self.bridge)
+        self.assertEqual(restarted.state['phase'], 'authUnknown')
+        self.generation = [422, 1235, [12346, 1]]
+        with self.assertRaisesRegex(ValueError, '已变化'):
+            self.accounts.switch(value)
+        self.assertEqual(self.writes, ['fixture-B'])
+
+    def test_interruption_before_dispatch_cannot_replay(self):
+        def interrupt(*args, **kwargs):
+            raise SystemExit('dispatch interruption')
+        self.client.request.side_effect = lambda method, params, **kwargs: (
+            interrupt() if method == 'account/login/start' else
+            {'config': self.config} if method == 'config/read' else
+            {'authMethod': 'apikey', 'authToken': 'fixture-A' if params['includeToken'] else None})
+        value = self.value()
+        with self.assertRaises(SystemExit):
+            self.accounts.switch(value)
+        self.assertEqual(self.accounts.state['phase'], 'authUnknown')
+        with self.assertRaisesRegex(ValueError, '尚未使用'):
+            self.accounts.switch(value)
+        methods = [call.args[0] for call in self.client.request.call_args_list]
+        self.assertEqual(methods.count('account/login/start'), 1)
+
+    def test_account_notification_before_login_response_does_not_hold_cli_reader_lock(self):
+        request = self.client.request.side_effect
+        delivered = threading.Event()
+        def response(method, params, **kwargs):
+            if method == 'account/login/start':
+                def notification():
+                    with self.bridge.cli_sessions.lock:
+                        delivered.set()
+                reader = threading.Thread(target=notification, daemon=True)
+                reader.start()
+                if not delivered.wait(1):
+                    raise AssertionError('reader blocked before login response')
+                reader.join(1)
+            return request(method, params, **kwargs)
+        self.client.request.side_effect = response
+        self.accounts.switch(self.value())
+        self.assertTrue(delivered.is_set())
+        self.assertEqual(self.accounts.state['phase'], 'complete')
+
+    def test_unknown_saved_credential_version_change_cannot_clear_or_replay(self):
+        from bridge.clients.codex.app_server import AppServerUnknownResult
+        self.failure = AppServerUnknownResult('lost response')
+        value = self.value()
+        with self.assertRaises(ValueError):
+            self.accounts.switch(value)
+        private_json(self.accounts.directory(self.target['id'])/'api.json', {'key': 'replacement'})
+        self.native_key = 'replacement'
+        with self.assertRaisesRegex(ValueError, '已变化'):
+            self.accounts.switch(value)
+        self.assertEqual(self.writes, ['fixture-B'])
+        self.assertNotIn('keyHash', json.dumps(self.accounts.public()))
+
+    def test_hot_switch_requires_task_confirmation_and_blocks_unknown_work(self):
+        with self.assertRaisesRegex(ValueError, '确认'):
+            self.accounts.switch(self.value(tasksConfirmed=False))
+        self.accounts.blockers = Mock(return_value=[{'title': 'Unknown', 'reason': 'unknown'}])
+        with self.assertRaisesRegex(ValueError, '待发送'):
+            self.accounts.switch(self.value())
+        self.assertEqual(self.writes, [])
+
+    def test_idle_joined_thread_keeps_its_connection_during_hot_sync(self):
+        joined = {'idle-thread': {'status': 'idle'}}
+        self.bridge.cli_sessions.joined = joined
+        self.bridge.cli_sessions.requests = {'idle-thread': {}}
+        self.accounts.switch(self.value())
+        self.assertIs(self.bridge.cli_sessions.joined, joined)
+        self.assertEqual(self.writes, ['fixture-B'])
+        self.assertEqual(self.accounts.state['phase'], 'complete')
+
+    def test_unsettled_cli_request_still_blocks_hot_sync(self):
+        self.bridge.cli_sessions.requests = {'idle-thread': {'approval': {'id': 'approval'}}}
+        with self.assertRaisesRegex(ValueError, '待处理请求'):
+            self.accounts.switch(self.value())
+        self.assertEqual(self.writes, [])
+
+    def test_native_active_or_background_work_blocks_even_an_idle_joined_view(self):
+        self.bridge.cli_sessions.joined = {'idle-thread': {'status': 'idle'}}
+        for reason in ('运行中的任务', '有后台任务或状态未知', '状态未知'):
+            with self.subTest(reason=reason), patch.object(LocalCliSync, 'check_idle_daemon', side_effect=ValueError(reason)):
+                with self.assertRaisesRegex(ValueError, reason):
+                    self.accounts.switch(self.value())
+        self.assertEqual(self.writes, [])
+        self.assertFalse((self.accounts.root/'requests.json').exists())
+
+    def test_injection_change_cannot_use_hot_login(self):
+        self.config['model_providers']['bridge_api']['env_key'] = 'NEW_ENV_KEY'
+        self.assertFalse(self.sync.switch_live_api(self.target, self.value()['requestId']))
+        self.assertEqual(self.writes, [])
+
+    def test_recovery_target_verifies_file_source_and_only_known_aliases(self):
+        target = self.sync.recovery_target(self.config)
+        self.assertEqual(target['accountId'], self.first['id'])
+        self.assertEqual(target['provider'], 'bridge_api')
+        self.assertEqual(target['aliases'], ['bridge_api', 'openai'])
+        self.assertEqual(target['environment'], {'OPENAI_API_KEY': None, 'OPENAI_BASE_URL': None})
+        self.assertNotIn('fixture-A', json.dumps(target))
+        self.config['model_providers']['openai'] = {'base_url': 'https://other.invalid/v1'}
+        self.assertEqual(self.sync.recovery_target(self.config)['aliases'], ['bridge_api'])
+        self.config['model_providers']['bridge_api']['env_http_headers'] = {'Authorization': 'NEW_TOKEN'}
+        with self.assertRaisesRegex(ValueError, '注入来源'):
+            self.sync.recovery_target(self.config)
+
+    def test_recovery_target_rejects_unselected_or_changed_managed_files(self):
+        self.accounts.index['activeId'] = None
+        self.assertIsNone(self.sync.recovery_target(self.config))
+        self.accounts.index['activeId'] = self.first['id']
+        private_json(self.home/'auth.json', {'OPENAI_API_KEY': 'disk-only'})
+        self.assertIsNone(self.sync.recovery_target(self.config))
+
+    def test_runtime_auth_compares_cached_key_not_disk_or_type(self):
+        target = self.sync.recovery_target(self.config)
+        self.assertTrue(self.sync.verify_runtime_auth(self.client, target))
+        self.native_key = 'other-cached-key'
+        with self.assertRaisesRegex(ValueError, '尚未使用'):
+            self.sync.verify_runtime_auth(self.client, target)
 
 
 if __name__ == '__main__':

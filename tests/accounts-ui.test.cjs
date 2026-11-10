@@ -517,3 +517,26 @@ test('account actions and model control share one footer on both hosts',async()=
   assert.equal(choose.parent,models.parent);assert.equal(models.parent.className,'accounts-card-footer');
  }
 });
+
+
+test('unknown API auth exposes only a same-request read-only verification on web and desktop',async()=>{
+ for(const desktop of [false,true]){
+  const ui=fixture(desktop),requestId='22222222-2222-4222-8222-222222222222';
+  ui.setValue({...ui.value(),accounts:[...ui.value().accounts,{id:'other',kind:'api',name:'Other'}],
+    switch:{phase:'authUnknown',operation:'cliAuth',targetId:'a',requestId,error:'账号同步结果待核验'}});
+  await ui.panel.refresh();
+  const verify=ui.all().find(n=>n.tag==='button'&&n.textContent==='核验账号同步');
+  assert.ok(verify);assert.equal(verify.disabled,false);
+  assert.equal(ui.all().find(n=>n.tag==='button'&&n.textContent==='切换到此接入').disabled,true);
+  ui.confirm(false);await verify.onclick();
+  assert.equal(ui.prompts.length,0);
+  assert.deepEqual(JSON.parse(JSON.stringify(ui.requests[0])),{action:'switch',id:'a',requestId,confirmed:true,tasksConfirmed:true});
+ }
+});
+
+
+test('shared account confirmation keeps other clients quiet until synchronization completes',async()=>{
+ const ui=fixture();await ui.panel.refresh();await ui.panel.choose(ui.value().accounts[0]);
+ assert.match(ui.prompts[0],/切换完成前请勿从其他客户端发起任务/);
+ assert.match(ui.prompts[0],/仅在需要时/);
+});

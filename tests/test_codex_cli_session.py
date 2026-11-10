@@ -113,6 +113,82 @@ class CliSessionTests(unittest.TestCase):
         self.assertEqual(self.fake.sent, [])
         self.sessions._start_daemon.assert_not_called()
 
+    def test_confirmed_cold_provider_migration_preserves_id_and_cwd(self):
+        self.fake.loaded = False
+        self.fake.thread['status'] = {'type': 'notLoaded'}
+        expected = {key: self.fake.thread[key] for key in ('id', 'cwd', 'modelProvider')}
+        self.sessions.store.get = Mock(return_value={'origin': 'cli', 'cwd': expected['cwd'],
+                                                    'model_provider': expected['modelProvider']})
+        request = self.fake.request
+        ordered = []
+        def migrate(method, params, **kwargs):
+            if method == 'thread/resume':
+                ordered.append('resume')
+                self.assertEqual(ordered, ['recorded', 'resume'])
+                self.assertEqual(params, {'threadId': 'thread-a', 'excludeTurns': True, 'modelProvider': 'new-provider'})
+                stored_thread = self.fake.thread.copy()
+                self.fake.thread.update(status={'type': 'idle'})
+                result = request(method, params, **kwargs)
+                result['modelProvider'] = 'new-provider'
+                result['thread'] = stored_thread  # 0.164 returns stored history plus authoritative top-level runtime config.
+                return result
+            return request(method, params, **kwargs)
+        self.fake.request = migrate
+        state = self.sessions.attach('thread-a', explicit=True, target_provider='new-provider',
+            expected_identity=expected, before_resume=lambda: ordered.append('recorded'))
+        self.assertEqual(state['id'], 'thread-a')
+        self.assertEqual(self.sessions.metadata['thread-a']['modelProvider'], 'new-provider')
+        self.assertEqual(self.sessions.metadata['thread-a']['cwd'], expected['cwd'])
+        self.assertEqual(state['modelProvider'], 'new-provider')
+        self.sessions._check_identity('thread-a')
+        self.assertFalse(any(method in ('thread/unsubscribe', 'turn/start', 'turn/interrupt') for method, _ in self.fake.sent))
+
+    def test_native_persisted_provider_and_runtime_allow_reattach_after_release(self):
+        self.sessions.store.get = Mock(return_value={'origin': 'cli', 'cwd': self.fake.thread['cwd'],
+                                                    'model_provider': 'new-provider'})
+        request = self.fake.request
+        def retained(method, params, **kwargs):
+            result = request(method, params, **kwargs)
+            if method == 'thread/resume':
+                result['modelProvider'] = 'new-provider'
+            return result
+        self.fake.request = retained
+        state = self.sessions.attach('thread-a', explicit=True)
+        token = self.sessions.metadata['thread-a']['connectionToken']
+        self.assertEqual(state['modelProvider'], 'new-provider')
+        self.assertEqual(self.sessions.metadata['thread-a']['historicalProvider'], 'original-provider')
+        self.sessions.release_connection('thread-a', token)
+        self.assertNotIn('thread-a', self.sessions.metadata)
+        self.assertEqual(self.sessions.attach('thread-a', explicit=True)['modelProvider'], 'new-provider')
+        self.assertNotEqual(self.sessions.metadata['thread-a']['connectionToken'], token)
+        self.assertTrue(all('modelProvider' not in params for method, params in self.fake.sent if method == 'thread/resume'))
+        self.sessions._check_identity('thread-a')
+        self.fake.thread['modelProvider'] = 'third-provider'
+        with self.assertRaises(AppServerUnavailable):
+            self.sessions._check_identity('thread-a')
+        self.assertNotIn('thread-a', self.sessions.joined)
+
+    def test_provider_override_never_rebuilds_a_loaded_thread(self):
+        expected = {key: self.fake.thread[key] for key in ('id', 'cwd', 'modelProvider')}
+        self.sessions.store.get = Mock(return_value={'origin': 'cli', 'cwd': expected['cwd'],
+                                                    'model_provider': expected['modelProvider']})
+        before_resume = Mock()
+        with self.assertRaisesRegex(AppServerUnsupported, '仍被原生加载'):
+            self.sessions.attach('thread-a', explicit=True, target_provider='new-provider',
+                                 expected_identity=expected, before_resume=before_resume)
+        before_resume.assert_not_called()
+        self.assertFalse(any(method in ('thread/resume', 'thread/unsubscribe') for method, _ in self.fake.sent))
+
+    def test_provider_migration_rejects_changed_source_identity_before_resume(self):
+        self.fake.loaded = False
+        self.fake.thread['status'] = {'type': 'notLoaded'}
+        expected = {'id': 'thread-a', 'cwd': '/another/project', 'modelProvider': 'original-provider'}
+        self.sessions.store.get = Mock(return_value={'origin': 'cli', 'cwd': self.fake.thread['cwd'],
+                                                    'model_provider': self.fake.thread['modelProvider']})
+        with self.assertRaisesRegex(AppServerUnsupported, '原会话身份'):
+            self.sessions.attach('thread-a', explicit=True, target_provider='new-provider', expected_identity=expected)
+        self.assertFalse(any(method == 'thread/resume' for method, _ in self.fake.sent))
+
     def test_unavailable_proxy_starts_daemon_only_for_explicit_attach(self):
         info = {'codexHome': str(self.home)}
         started = False

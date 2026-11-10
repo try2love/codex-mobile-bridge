@@ -328,7 +328,7 @@ class CliSessions:
             return delete_native(request, snapshot, recheck)
         return call
 
-    def attach(self, thread_id, explicit=False):
+    def attach(self, thread_id, explicit=False, *, target_provider=None, expected_identity=None, before_resume=None):
         """Passive inspection never starts or resumes a runtime."""
         if not explicit:
             return None
@@ -337,7 +337,24 @@ class CliSessions:
         with self.lock:
             attach_lock = self.attach_locks.setdefault(thread_id, threading.Lock())
         with attach_lock:
-            return self._attach_explicit(thread_id)
+            return self._attach_explicit(thread_id, target_provider=target_provider,
+                                         expected_identity=expected_identity, before_resume=before_resume)
+
+    def persisted_identity(self, thread):
+        """Read the retained native provider; thread summaries can describe old history."""
+        try:
+            saved = self.store.get(thread['id'])
+        except (KeyError, StoreUnavailable, RemoteUnavailable) as error:
+            raise AppServerUnavailable('Saved CLI thread metadata is unavailable') from error
+        if (saved.get('origin') not in ('cli', 'ide') or not saved.get('model_provider')
+                or not saved.get('cwd') or not same_cwd(saved['cwd'], thread.get('cwd'), self.alias is None and os.name == 'nt')):
+            raise AppServerUnsupported('Saved CLI thread identity does not match this runtime')
+        return {'id': thread['id'], 'cwd': thread['cwd'], 'modelProvider': saved['model_provider']}
+
+    @staticmethod
+    def _provider_matches(thread, metadata):
+        return thread.get('modelProvider') == metadata['modelProvider'] or (
+            metadata.get('historicalProvider') is not None and thread.get('modelProvider') == metadata['historicalProvider'])
 
     def _connect_explicit(self):
         if self.alias is None and isinstance(self.client, CodexAppServer):
@@ -399,7 +416,7 @@ class CliSessions:
         if self.alias is None and Path(report.get('socketPath', '')) != Path(self.client.socket_path):
             raise AppServerUnavailable('Codex daemon started in another home')
 
-    def _attach_explicit(self, thread_id):
+    def _attach_explicit(self, thread_id, *, target_provider=None, expected_identity=None, before_resume=None):
         info = self._connect_explicit()
         if self.alias is None and Path(info['codexHome']) != self.home:
             raise AppServerUnavailable('Codex CLI runtime belongs to another home')
@@ -412,28 +429,39 @@ class CliSessions:
         with self.lock:
             if thread_id in self.joined:
                 self._require_joined(thread_id)
+                if target_provider is not None and self.metadata[thread_id]['modelProvider'] != target_provider:
+                    raise AppServerUnsupported('目标会话仍被原生加载，请先明确确认 CLI 服务维护；未迁移提供商。')
                 return copy.deepcopy(self.states[thread_id])
         loaded = self.client.is_loaded(thread_id)
         before = self.client.request('thread/read', {'threadId': thread_id, 'includeTurns': False},
                                      replay_safe=True)['thread']
         if before.get('id') != thread_id:
             raise AppServerUnavailable('CLI thread is unavailable in this runtime')
-        if not loaded or before.get('status', {}).get('type') == 'notLoaded':
-            try:
-                saved = self.store.get(thread_id)
-            except (KeyError, StoreUnavailable, RemoteUnavailable) as exc:
-                raise AppServerUnavailable('Saved CLI thread metadata is unavailable') from exc
-            if (saved.get('origin') not in ('cli', 'ide') or not saved.get('cwd') or
-                    not same_cwd(saved.get('cwd'), before.get('cwd'),
-                                  self.alias is None and os.name == 'nt') or
-                    saved.get('model_provider') != before.get('modelProvider')):
-                raise AppServerUnsupported('Saved CLI thread identity does not match this runtime')
-        # Resume is explicit and sends no model, cwd, provider or permission overrides.
+        retained = None
+        if not loaded or before.get('status', {}).get('type') == 'notLoaded' or expected_identity is not None:
+            retained = self.persisted_identity(before)['modelProvider']
+        if expected_identity is not None or target_provider is not None:
+            if (self.alias is not None or not isinstance(expected_identity, dict) or expected_identity.get('id') != thread_id
+                    or expected_identity.get('modelProvider') != retained
+                    or not same_cwd(expected_identity.get('cwd'), before.get('cwd'), os.name == 'nt')):
+                raise AppServerUnsupported('原会话身份或已确认的目标接入已变化；未迁移提供商。')
+        if target_provider is not None:
+            if not isinstance(target_provider, str) or not target_provider:
+                raise AppServerUnsupported('已确认的目标提供商不可用；未迁移提供商。')
+        if target_provider is not None or before_resume is not None:
+            if loaded or before.get('status', {}).get('type') != 'notLoaded':
+                raise AppServerUnsupported('目标会话仍被原生加载，请先明确确认 CLI 服务维护；未迁移提供商。')
+        # Ordinary resume retains all native settings. A separately confirmed
+        # cold migration changes only the provider, after checking the source.
         with self.lock:
             self.attaching.add(thread_id)
         params = {'threadId': thread_id, 'excludeTurns': True}
+        if target_provider is not None:
+            params['modelProvider'] = target_provider
         process = self.client.process
         try:
+            if before_resume:
+                before_resume()
             resumed = self.client.request('thread/resume', params)
         except Exception as error:
             with self.lock:
@@ -442,14 +470,21 @@ class CliSessions:
                 if isinstance(error, AppServerUnknownResult) and process is self.client.process:
                     self.joined[thread_id] = self.client.process
                     self.metadata[thread_id] = {'connectionToken': str(uuid.uuid4()), 'cleanupOnly': True,
-                                               'cwd': before.get('cwd'), 'modelProvider': before.get('modelProvider')}
+                                               'cwd': before.get('cwd'),
+                                               'modelProvider': target_provider or before.get('modelProvider')}
             reason = (getattr(error, 'rpc_error', {}).get('data') or {}).get('type')
             if reason in ('modelProviderMismatch', 'modelProviderNotConfigured', 'modelProviderPolicyConflict'):
                 raise AppServerUnsupported('原会话的提供商与当前可用接入不一致或受到策略限制；请恢复原提供商配置，或在电脑端使用当前接入新建聊天。未迁移原会话。') from error
             raise
         after = resumed.get('thread') or {}
+        expected_provider = target_provider or retained or before.get('modelProvider')
+        if (target_provider is None and self.alias is None and resumed.get('modelProvider') != expected_provider):
+            try:
+                expected_provider = self.persisted_identity(before)['modelProvider']
+            except AppServerError:
+                pass
         if (after.get('id') != thread_id or not same_cwd(before.get('cwd'), after.get('cwd'), self.alias is None and os.name == 'nt') or
-                resumed.get('modelProvider') != before.get('modelProvider')):
+                resumed.get('modelProvider') != expected_provider):
             self._cleanup_failed_join(thread_id, before, process)
             raise AppServerUnsupported('CLI thread identity changed during join')
         try:
@@ -477,6 +512,8 @@ class CliSessions:
                                                         ('approvalPolicy', 'approvalsReviewer', 'sandbox', 'activePermissionProfile')
                                                         if key in resumed},
                                         'goal': goal}
+            if before.get('modelProvider') != resumed.get('modelProvider'):
+                self.metadata[thread_id]['historicalProvider'] = before.get('modelProvider')
         try:
             return self.refresh(thread_id)
         except Exception:
@@ -527,7 +564,7 @@ class CliSessions:
                 if metadata is None:
                     raise AppServerUnavailable('CLI thread is no longer joined')
                 if (not same_cwd(metadata['cwd'], thread.get('cwd'), self.alias is None and os.name == 'nt') or
-                        thread.get('modelProvider') != metadata['modelProvider']):
+                        not self._provider_matches(thread, metadata)):
                     invalid_reason = 'CLI thread provider or working directory changed'
             if invalid_reason is None:
                 pending = list(self.requests.get(thread_id, {}).values())
@@ -990,7 +1027,8 @@ class CliSessions:
             turns.append(row)
         state = {'id': thread['id'], 'title': thread.get('name') or thread.get('preview') or '未命名聊天',
                 'cwd': thread.get('cwd') or metadata['cwd'],
-                'modelProvider': thread.get('modelProvider') or metadata['modelProvider'],
+                'modelProvider': metadata['modelProvider'] if metadata.get('historicalProvider') is not None else
+                                 thread.get('modelProvider') or metadata['modelProvider'],
                 'latestModel': thread.get('model') or metadata['model'],
                 'latestReasoningEffort': (thread['reasoningEffort'] if 'reasoningEffort' in thread
                                           else metadata.get('reasoningEffort')),
@@ -1025,7 +1063,7 @@ class CliSessions:
             raise AppServerUnavailable('CLI thread is no longer joined')
         if (thread.get('id') != thread_id or thread.get('status', {}).get('type') == 'notLoaded' or
                 not same_cwd(metadata['cwd'], thread.get('cwd'), self.alias is None and os.name == 'nt') or
-                thread.get('modelProvider') != metadata['modelProvider']):
+                not self._provider_matches(thread, metadata)):
             self._invalidate(thread_id)
             raise AppServerUnavailable('CLI thread identity changed before the operation')
 

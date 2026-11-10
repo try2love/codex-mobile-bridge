@@ -410,6 +410,20 @@ class CliAccess:
             raise ValueError('未找到 Claude Code CLI')
         from bridge.features.accounts.cli_sync import LocalCliSync
         sync = LocalCliSync(self.bridge)
+        if provider == 'codex' and value.get('requestId') is not None:
+            if value.get('tasksConfirmed') is not True:
+                raise ValueError('请确认所有共享此接入的本机 CLI 任务已结束')
+            running, _ = sync._codex_runtime()
+            if running and value.get('desktopRestartConfirmed') is not True:
+                raise ValueError('请确认桌面任务已结束并同意重启 Codex Desktop')
+            accounts = self.bridge.accounts
+            accounts.switch({'id': row['id'], 'requestId': value['requestId'],
+                             'confirmed': True, 'tasksConfirmed': True})
+            if running:
+                self.codex_switch = {'phase': 'pending', 'targetId': row['id']}
+                threading.Thread(target=self._verify_codex_desktop_switch,
+                                 args=(row['id'], accounts.thread), daemon=True).start()
+            return self.public()
         preflight = sync.preflight(provider)
         if provider == 'codex' and preflight['desktopRunning']:
             if value.get('desktopRestartConfirmed') is not True or value.get('tasksConfirmed') is not True:

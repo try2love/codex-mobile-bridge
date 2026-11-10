@@ -279,6 +279,9 @@ class Accounts:
                 current = {'status': 'ready', 'kind': 'external', 'id': None, 'name': 'Magpie / 外部管理'}
             else:
                 current = self.info.current()
+            if self.state.get('operation') == 'cliAuth' and self.state.get('phase') == 'authUnknown':
+                current = {'status': 'error', 'kind': 'api', 'id': None,
+                           'name': '原生账号同步结果待核验'}
             verified = bool(current.get('id'))
             return {'accounts': [{**{k: row[k] for k in ('id', 'name', 'kind', 'email', 'planType', 'baseUrl', 'model') if k in row},
                                   'details': copy.deepcopy(self.info.public_details(row['id']))}
@@ -974,14 +977,21 @@ class Accounts:
             row = dict(self.row(value.get('id')))
             sync_cli = True
             ledger = read_json(self.root/'requests.json', {})
+            from bridge.features.accounts.cli_sync import LocalCliSync
+            sync = LocalCliSync(self.bridge)
+            if self.state.get('operation') == 'cliAuth' and self.state.get('phase') == 'authUnknown':
+                if self.state.get('requestId') != request_id or self.state.get('targetId') != row['id']:
+                    raise ValueError('上次账号同步结果待核验，请检查同一次切换，勿重复提交')
+                sync.switch_live_api(row, request_id, reconcile=True)
+                return self.public()
             if request_id in ledger:
                 if ledger[request_id] != row['id']:
                     raise ValueError('同一请求不能切换到不同账号')
                 return self.public()
             # One local account home always verifies CLI effectiveness.
-            from bridge.features.accounts.cli_sync import LocalCliSync
-            sync = LocalCliSync(self.bridge)
             self.assert_editable()
+            if sync.switch_live_api(row, request_id):
+                return self.public()
             if self.info.current().get('id') != row['id']:
                 sync.prepare_profile_switch()
             preflight = sync.preflight('codex')
