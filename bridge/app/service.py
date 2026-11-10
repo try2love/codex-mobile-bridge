@@ -318,7 +318,8 @@ class Bridge:
         self._open_desktop = open_in_desktop
         self.live = {}
         self.origins = {}
-        self.cli_sessions = cli_sessions or CliSessions(self.codex_home, self._cli_state, self._cli_disconnected, alias=alias, allow_installed_runtime=host.startswith('codex:'))
+        self.cli_sessions = cli_sessions or CliSessions(self.codex_home, self._cli_state, self._cli_disconnected,
+            alias=alias, allow_installed_runtime=self.local, clear_sqlite_home=host.startswith('codex:'))
         self.lock = threading.RLock()
         self.reconnect_pending = {}
         self.ipc = DesktopIPC(ipc_path or ipc_endpoint(codex_home), self._event, self._disconnected)
@@ -1578,7 +1579,7 @@ class Bridge:
         connected = bool(session and session.connected)
         desktop_controls = desktop or bool(connected and origin == 'ide' and session.runtime == 'desktop' and self.local)
         writable = desktop or connected
-        reconnect = desktop or origin == 'ide' or origin == 'cli' and (bool(session and session.desktop_owner_probe == 'found') or self.cli_sessions.available())
+        reconnect = desktop or origin == 'ide' or origin == 'cli' and self.cli_sessions.available()
         cli_controls = connected and origin in ('cli', 'ide')
         goal = (self._goal_runtime_available()
                 if not session or session.runtime != 'cli' else session.native_goal_supported is True)
@@ -1916,7 +1917,7 @@ class Bridge:
                     record = self._cli_recovery_record()
                     if self._completed_cli_release(thread_id, record):
                         if defer_start:
-                            return False  # Discover a possible App owner before starting a CLI.
+                            return False
                         executable = _managed_cli(cli.home)
                         if executable is None:
                             raise ValueError('无法核对已释放的 CLI 运行组件')
@@ -2169,7 +2170,7 @@ class Bridge:
         if session is None or session.origin not in ('cli', 'ide') or self.closed.is_set():
             return
         with session.condition:
-            if (session.desktop_owner_probe == 'found' or
+            if (session.origin == 'ide' and session.desktop_owner_probe == 'found' or
                     not session.native_attaching and not (session.runtime == 'cli' and session.connected)):
                 return
             newly_connected = not session.connected or session.runtime != 'cli'
@@ -2898,6 +2899,13 @@ class Bridge:
                     session.error = '此独立入口只接入原 VS Code / CLI 会话；桌面会话请使用默认入口。'
                     session.changed()
                 return
+            if session.origin == 'cli':
+                # Source is the execution route. Passive reads never probe App
+                # owners or resume a native thread; explicit activation does.
+                with session.condition:
+                    session.desktop_owner_probe = 'absent'
+                    session.access = self._access(session.origin, session)
+                return
             if session.origin in ('cli', 'ide'):
                 with session.condition:
                     # A concurrent read may have completed this same discovery
@@ -3115,7 +3123,7 @@ class Bridge:
                     return session
                 if session.origin == 'ide' and not allow_ide_resume:
                     raise IPCError(session.error or 'VS Code 原会话尚未连接。若编辑器已关闭，请主动继续此会话以启用后台接续。')
-                if session.origin in ('cli', 'ide') and session.desktop_owner_probe != 'absent':
+                if session.origin == 'ide' and session.desktop_owner_probe != 'absent':
                     raise IPCError(session.error or '正在等待原 Codex App 会话快照；未启动 CLI 后台服务。')
                 if self.closed.is_set():
                     raise IPCError('网关正在停止；操作未发送，请稍后重试。')
@@ -3124,7 +3132,7 @@ class Bridge:
                         with session.condition:
                             if session.connected:
                                 return session
-                            if session.desktop_owner_probe != 'absent':
+                            if session.origin == 'ide' and session.desktop_owner_probe != 'absent':
                                 raise IPCError(session.error or '正在等待原 Codex App 会话快照；未启动 CLI 后台服务。')
                             session.native_attaching = True
                         try:

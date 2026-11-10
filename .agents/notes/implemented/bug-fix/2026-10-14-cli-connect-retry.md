@@ -2,6 +2,8 @@
 
 Status: implemented
 
+CLI 不再发起 App owner 查询，见[来源执行路由](2026-11-11-codex-source-execution-routing.md)；下述 owner 等待与代次规则继续用于 IDE，原生 daemon 启动去重保留。
+
 ## 问题
 
 对源自 CLI 的聊天执行显式继续操作时，会先发起后台执行归属查询，再同步重复同一次查询。如果后台查询已进入缓慢的 `IPC.owner` 调用，第二次调用会在原生继续操作或 Desktop 执行归属错误之前再增加一次等待。另外，原生代理连接失败后，启动守护进程前也会重复同一次连接尝试。

@@ -72,6 +72,29 @@ class CliBridgeFixture(unittest.TestCase):
 
 
 class CliBridgeTests(CliBridgeFixture):
+    def use_ide_origin(self):
+        with closing(sqlite3.connect(self.home / 'state_5.sqlite')) as db, db:
+            db.execute("UPDATE threads SET originator='codex_vscode', source='vscode'")
+
+    def test_cli_origin_ignores_existing_app_owner_and_resumes_cli_directly(self):
+        self.bridge.ipc.connect = Mock()
+        self.bridge.ipc.owner = Mock(return_value='desktop-owner')
+        session = self.bridge.activate(self.thread_id)
+        self.assertEqual((session.origin, session.runtime), ('cli', 'cli'))
+        self.cli.attach.assert_called_once_with(self.thread_id, explicit=True)
+        self.bridge.ipc.connect.assert_not_called()
+        self.bridge.ipc.owner.assert_not_called()
+        self.bridge.ipc.follow.assert_not_called()
+
+    def test_cli_native_failure_never_activates_or_reuses_app(self):
+        self.cli.attach.side_effect = AppServerUnavailable('writer unavailable')
+        with patch('bridge.app.service.open_in_desktop') as navigate:
+            with self.assertRaisesRegex(IPCError, 'writer unavailable'):
+                self.bridge.activate(self.thread_id)
+        self.bridge.ipc.connect.assert_not_called()
+        self.bridge.ipc.owner.assert_not_called()
+        navigate.assert_not_called()
+
     def test_cli_project_list_uses_target_path_names_without_connecting(self):
         local_cwd = r'\\?\C:\Work\LocalProject'
         remote_cwd = r'C:\Work\RemoteProject'
@@ -93,6 +116,7 @@ class CliBridgeTests(CliBridgeFixture):
         self.bridge.ipc.connect.assert_not_called()
 
     def test_explicit_continue_reuses_inflight_absent_owner_probe(self):
+        self.use_ide_origin()
         started, release, finished, waiting = (threading.Event() for _ in range(4))
         self.bridge.ipc.connect = Mock()
         def owner(*_args, **_kwargs):
@@ -142,6 +166,7 @@ class CliBridgeTests(CliBridgeFixture):
         self.assertEqual(self.cli.attach.call_count, 2)
 
     def test_explicit_continue_reuses_inflight_found_owner_without_snapshot(self):
+        self.use_ide_origin()
         started = threading.Event()
         self.bridge.ipc.connect = Mock()
         def owner(*_args, **_kwargs):
@@ -160,6 +185,7 @@ class CliBridgeTests(CliBridgeFixture):
         self.cli.attach.assert_not_called()
 
     def test_inflight_owner_wait_covers_one_complete_cold_probe(self):
+        self.use_ide_origin()
         started, release = threading.Event(), threading.Event()
         self.bridge.ipc.connect = Mock()
         def owner(*_args, **_kwargs):
@@ -186,6 +212,7 @@ class CliBridgeTests(CliBridgeFixture):
         self.cli.attach.assert_called_once_with(self.thread_id, explicit=True)
 
     def test_overlapping_attach_and_background_continue_reuse_one_owner_probe(self):
+        self.use_ide_origin()
         started, release, queued, waiting = (threading.Event() for _ in range(4))
         session = self.bridge.session(self.thread_id, attach=False)
         lock = session.attach_lock
@@ -242,6 +269,7 @@ class CliBridgeTests(CliBridgeFixture):
         self.cli.attach.assert_called_once_with(self.thread_id, explicit=True)
 
     def test_close_wakes_explicit_continue_without_waiting_for_owner(self):
+        self.use_ide_origin()
         started, release, waiting = (threading.Event() for _ in range(3))
         self.bridge.ipc.connect = Mock()
         def owner(*_args, **_kwargs):
@@ -277,6 +305,7 @@ class CliBridgeTests(CliBridgeFixture):
         self.cli.attach.assert_not_called()
 
     def test_old_epoch_owner_result_cannot_be_reused_or_overwrite_new_epoch(self):
+        self.use_ide_origin()
         started, release, queued, waiting = (threading.Event() for _ in range(4))
         session = self.bridge.session(self.thread_id, attach=False)
         lock = session.attach_lock
@@ -336,6 +365,7 @@ class CliBridgeTests(CliBridgeFixture):
         self.cli.attach.assert_not_called()
 
     def test_owner_wait_expiry_keeps_one_probe_pending_without_native_resume(self):
+        self.use_ide_origin()
         started, release = threading.Event(), threading.Event()
         self.bridge.ipc.connect = Mock()
         def owner(*_args, **_kwargs):
@@ -358,6 +388,7 @@ class CliBridgeTests(CliBridgeFixture):
             release.set()
 
     def test_unknown_owner_result_does_not_enable_native_resume(self):
+        self.use_ide_origin()
         self.bridge.ipc.connect = Mock()
         self.bridge.ipc.owner = Mock(side_effect=IPCError('owner discovery unavailable'))
         with self.assertRaisesRegex(IPCError, 'owner discovery unavailable'):
@@ -366,6 +397,7 @@ class CliBridgeTests(CliBridgeFixture):
         self.cli.attach.assert_not_called()
 
     def test_ready_ipc_absent_owner_continues_without_added_delay(self):
+        self.use_ide_origin()
         self.bridge.ipc.connect = Mock()
         self.bridge.ipc.owner = Mock(side_effect=IPCError('no-client-found'))
         started = time.monotonic()
@@ -392,7 +424,7 @@ class CliBridgeTests(CliBridgeFixture):
         self.assertIn(self.private_text, str(self.bridge.view(self.thread_id, attach=False)))
         self.cli.attach.assert_not_called()
         self.cli.call.assert_not_called()
-        self.bridge.ipc.connect.assert_called()
+        self.bridge.ipc.connect.assert_not_called()
         self.bridge.ipc.owner.assert_not_called()
         self.bridge.ipc.follow.assert_not_called()
         navigation.assert_not_called()
@@ -475,19 +507,20 @@ class CliBridgeTests(CliBridgeFixture):
                                     'change': {'type': 'snapshot', 'revision': 1, 'conversationState': snapshot}}})
         self.bridge.ipc.follow = Mock(side_effect=follow)
 
-    def test_existing_desktop_owner_of_cli_origin_is_followed_without_native_resume(self):
+    def test_existing_desktop_owner_of_ide_origin_is_followed_without_native_resume(self):
+        self.use_ide_origin()
         self.cli.available.return_value = False
         self.desktop_owner()
         session = self.bridge.activate(self.thread_id)
         self.assertEqual(session.runtime, 'desktop')
         self.assertEqual(session.owner, 'desktop-owner')
-        self.assertEqual(session.origin, 'cli')
-        self.assertEqual(session.access['source'], 'cli')
+        self.assertEqual(session.origin, 'ide')
+        self.assertEqual(session.access['source'], 'ide')
         self.assertTrue(session.access['canReconnect'])
         self.assertTrue(session.access['canChangeModel'])
         self.assertTrue(session.access['canSelectSkills'])
         self.assertTrue(session.access['canUseModes'])
-        self.assertFalse(session.access['canConfigure'])
+        self.assertTrue(session.access['canConfigure'])
         self.assertTrue(session.access['canChangePermissions'])
         self.cli.attach.assert_not_called()
         self.bridge.ipc.request = Mock(return_value={'result': {'ok': True}})
@@ -504,6 +537,7 @@ class CliBridgeTests(CliBridgeFixture):
         self.assertFalse(session.connected)
 
     def test_desktop_owner_disconnect_after_goal_has_history_only_window_then_rejoins(self):
+        self.use_ide_origin()
         completed = {**self.native_state, 'threadGoal': {
             'objective': 'Fixture goal', 'status': 'complete'}}
         self.desktop_owner(completed)
@@ -534,12 +568,13 @@ class CliBridgeTests(CliBridgeFixture):
         self.assertNotIn('Fixture goal', transitions)
 
     def test_desktop_owner_identity_must_match_saved_cli_cwd_and_provider(self):
+        self.use_ide_origin()
         for field, value in [('cwd', '/other/project'), ('modelProvider', 'other'), ('hostId', 'other')]:
             with self.subTest(field=field):
                 self.desktop_owner({**self.native_state, field: value})
                 session = self.bridge.session(self.thread_id, attach=True)
                 self.assertFalse(session.connected)
-                self.assertEqual(session.origin, 'cli')
+                self.assertEqual(session.origin, 'ide')
                 self.cli.attach.assert_not_called()
                 self.bridge.live.pop(self.thread_id)
 
@@ -555,6 +590,7 @@ class CliBridgeTests(CliBridgeFixture):
         self.assertEqual(session.owner, 'cli:' + self.thread_id)
 
     def test_late_native_state_cannot_replace_a_discovered_desktop_owner(self):
+        self.use_ide_origin()
         self.bridge.ipc.connect = Mock()
         self.bridge.ipc.owner = Mock(return_value='desktop-owner')
         self.bridge.ipc.follow = Mock()
@@ -600,6 +636,8 @@ class CliBridgeTests(CliBridgeFixture):
         self.bridge.ipc.owner.assert_not_called()
 
     def test_stale_native_state_after_disconnect_cannot_reclaim_writer(self):
+        self.use_ide_origin()
+        self.bridge.ipc.connect = Mock()
         session=self.bridge.activate(self.thread_id)
         self.bridge._cli_disconnected()
         self.assertFalse(session.connected)
@@ -619,6 +657,7 @@ class CliBridgeTests(CliBridgeFixture):
         self.cli.attach.assert_called_once_with(self.thread_id, explicit=True)
 
     def test_found_owner_without_snapshot_never_falls_back_to_native(self):
+        self.use_ide_origin()
         self.bridge.ipc.connect=Mock()
         self.bridge.ipc.owner=Mock(return_value='desktop-owner')
         self.bridge.ipc.follow=Mock()
@@ -628,12 +667,12 @@ class CliBridgeTests(CliBridgeFixture):
                 self.bridge.activate(self.thread_id)
         self.cli.attach.assert_not_called()
 
-    def test_adopted_desktop_owner_preserves_saved_history_when_snapshot_has_no_turns(self):
+    def test_cli_history_ignores_available_app_owner_and_keeps_saved_history(self):
         self.desktop_owner()
         session = self.bridge.session(self.thread_id, attach=True)
         history = self.bridge.full_history(self.thread_id)
         self.assertEqual(history, {'loaded': True})
-        self.assertEqual(session.runtime, 'desktop')
+        self.assertFalse(session.connected)
         self.assertIn(self.private_text, str(self.bridge.view(self.thread_id, attach=False)))
         self.assertIn(self.private_text, str(self.bridge.timeline_read(self.thread_id, mode='page', limit=20)))
         self.cli.attach.assert_not_called()

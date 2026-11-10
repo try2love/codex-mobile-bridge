@@ -562,15 +562,17 @@ class CliNetworkRecoveryTests(CliBridgeFixture):
         self.cli._start_daemon.assert_not_called()
         self.stop.assert_not_called()
 
-    def test_completed_release_still_prefers_new_app_owner_without_native_start(self):
+    def test_completed_release_of_cli_origin_ignores_new_app_owner(self):
         from tests.test_cli_bridge_integration import CliBridgeTests
         with self.released_fixture():
             session = self.bridge.session(self.thread_id, attach=False)
             session.runtime = 'cli'
             CliBridgeTests.desktop_owner(self)
-            self.assertEqual(self.bridge.activate(self.thread_id).runtime, 'desktop')
-        self.cli._start_daemon.assert_not_called()
-        self.cli.attach.assert_not_called()
+            self.assertEqual(self.bridge.activate(self.thread_id).runtime, 'cli')
+        self.cli._start_daemon.assert_called_once()
+        self.cli.attach.assert_called_once()
+        self.bridge.ipc.connect.assert_not_called()
+        self.bridge.ipc.owner.assert_not_called()
         self.stop.assert_not_called()
 
     def test_released_missing_env_key_never_borrows_gateway_environment(self):

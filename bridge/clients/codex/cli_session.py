@@ -106,12 +106,13 @@ def _local_cli(home, configured):
 
 class CliSessions:
     def __init__(self, home, on_state, on_disconnect, cli='codex', alias=None,
-                 process_factory=None, allow_installed_runtime=False):
+                 process_factory=None, allow_installed_runtime=False, clear_sqlite_home=False):
         self.home = Path(home)
         self.configuration_stamp = None  # Unknown until bound to the verified daemon generation.
         self.recovery_environment = None
         self.drained_connections = set()
         self.allow_installed_runtime = allow_installed_runtime
+        self.clear_sqlite_home = clear_sqlite_home
         self.alias = alias
         self.remote_home = None
         command = _ssh_proxy_command(alias) if alias else None
@@ -230,7 +231,7 @@ class CliSessions:
             executable = _local_cli(self.home, self.configured_cli)
             environment = os.environ.copy()
             environment['CODEX_HOME'] = str(self.home)
-            if self.allow_installed_runtime:
+            if self.clear_sqlite_home:
                 environment.pop('CODEX_SQLITE_HOME', None)
             options = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
             result = subprocess.run([executable, 'app-server', 'daemon', 'version'],
@@ -392,7 +393,7 @@ class CliSessions:
                     environment.pop(name, None)
                 environment.update(proxy_updates)
             command = [str(managed), 'app-server', 'daemon', 'start']
-            if self.allow_installed_runtime:
+            if self.clear_sqlite_home:
                 environment.pop('CODEX_SQLITE_HOME', None)
             for name, value in (preserved or {}).items():
                 if value is None:
