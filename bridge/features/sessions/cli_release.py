@@ -115,7 +115,7 @@ class CliConnections:
                 try:
                     # Adapter rechecks the SAME ownership generation before any mutation.
                     callback = available[row['key']]
-                    result = (callback['_check']() if job['mode'] == 'check' else callback['_unload']()
+                    result = (callback['_check']() if job['mode'] == 'check' else callback['_unload'](job['id'])
                               if job['mode'] == 'unload' else callback['_release'](job['mode'] == 'stop'))
                 except Exception as error:
                     result = getattr(error, 'release_result', {'status': 'unknown', 'error': str(error)})

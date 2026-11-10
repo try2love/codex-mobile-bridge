@@ -12,6 +12,12 @@ Status: implemented
 
 退订确认与原生卸载分别记录。最后读取失败保留 detached/unsubscribed，停止自动接入；check 仅核验原线程、原连接世代，不重复停止、退订或 resume。成功 resume 后校验或初始化失败时，清理同一连接对原线程的订阅；未确认清理的连接保持可管理、禁止发送及再次恢复，不关闭其他线程共用的代理。
 
+明确“释放原生占用”与中断的网络恢复使用不同持久状态。`CliConnections` 将原释放请求 ID 传给 `_unload`；发送退出信号前，恢复账本先保存 `purpose=release`、`operationId`、所选连接 key 与原线程 id/cwd/provider。确认原 daemon 退出后为 `phase=released`，而网络恢复的 `stopped` 仍表示等待接续。新终态保留原 generation、配置摘要和连接回执，不删除账本。用户再次显式继续时先发现可能已经接管的 App owner；只有进入原生接续前，才复用原普通 daemon Start 与线程身份检查，不再次退出服务，不施加 provider/config 覆盖。其他客户端已启动同 home 新服务时只加入并核验，不额外 Start 或 Stop；状态未知仍阻挡。Start 派发前沿用持久 `starting` 回执，回执丢失不自动重放。
+
+网关仍持有同代已验证进程环境时可复用；网关重启丢失该环境后，只允许现有 `LocalCliSync.recovery_target` 证明当前选择仍匹配的受管 file 接入，复用现有 TOML 读取及原目标来源核验，不新建通用配置加载器。必要 env_key/header 来源缺失精确拒绝，不借网关 shell 或旧账号；传给真实启动子进程的环境清除非目标 provider key/header、旧通用 OPENAI_API_KEY/OPENAI_BASE_URL 及无依据的 CODEX_SQLITE_HOME，保留目标 CODEX_HOME。配置/认证或原线程身份已变化时拒绝并提示在原工具核验后正常启动，不能借一次旧释放授权迁移新接入。
+
+旧 `.8` 没有 purpose 的兼容仅识别已知窄格式：账本恰为 generation/phase/configuration/connections 四字段、stopped、单 connection；对应操作必须有同 UUID、mode=unload、相同单 connections 和单结果，同 thread/host/codex/key、status=released，且旧版本专用 notice 明确“已正常退出此配置的共享 CLI 服务，原生占用已释放”。自然 notLoaded 的 released 回执、仅有 key 交集、带 providerTarget/followSystemProxy 的恢复账本都不能证明该次退出由明确释放完成，继续保留待核验。认证、补终态与冷启动准备均在原 accounts.gate/start_lock 内重新读取最新账本，不能用排队前的 released 覆盖另一项新 draining/starting。通过兼容时只补可追溯目的和终态，原账本及操作回执保留；不将文案推断推广到新格式。
+
 原生 0.164 上游失败后可能长期保留 `systemError`，不能仅因该枚举拒绝正常退订。正常释放与账号空闲检查共用额外终态证据，要求最新轮次已结束且有完成时间，再核对当前状态，并保留后台终端、Goal 与请求保护；只读 check 仍只报告 loaded / detached，不把错误状态当作已经卸载。真实 `.7` 失败现场、原生源码依据、范围限制及回归见[受管 CLI 账号同步](2026-11-10-managed-cli-auth-sync.md)。
 
 普通释放不退出共享 daemon。detached 回执在后端提供 canUnload 时显示独立的“释放原生占用”确认，使用 unload 操作；它退出整个配置的共享 CLI 服务，要求所有任务结束且其他客户端在操作期间不发起任务。后端仍核验全部已加载线程、审批、Goal、后台终端和未知/排队操作，只对同一代进程发送一次 SIGHUP。仅精确识别且已验证的 Codex 0.164.0 本机 macOS/Linux 运行时提供此能力。Windows、SSH 和 WSL 不借用宿主信号实现。
@@ -46,11 +52,17 @@ CLI 面板初次读取与提交期间始终可关闭，关闭仅关闭视图，�
 
 ## 备选方案
 
+把所有 stopped 当正常释放可以直接消除冷接续阻挡，但会绕过未完成恢复、原环境丢失及未知启动保护，因此不采用。手工删除账本也会丢失不确定写入事实。新记录在派发前绑定明确目的及操作 ID；旧记录只接受上述可证的专用成功格式，无法证明则保守拒绝，而不是猜测用户意图。
+
 单线程加载时设置 thread_unload_delay_secs=0 能在退订后迅速解除 writer，隔离执行器接管也成功；但真实测试发现：活跃 turn 和待审批可保留，已经完成 turn 的后台终端会在最后订阅断开后被提前卸载。该方案撤回，不改变线程或全局默认卸载时间。
 
 自动整 daemon 排空可在外部客户端静默时完成真实交接，但已有 turn 在 drain 期间创建后台终端的竞态不能由 Bridge 两遍预检排除，因此自动退出/重启方案撤回。保留单独确认的维护出口及真实 detached 提示。归档再恢复会改动聊天状态，不采用。
 
 ## 影响
+
+2026-11-11 的真实 `.8` 纯 CLI 场景暴露该区别：A 的 systemError 经 B 热同步及 provider 迁移后，B 上游 502/504 的原生重试由用户正常停止，轮次 interrupted、会话 idle；普通释放 detached 后，用户明确释放原生占用，UI 确认共享服务正常退出。但同一深链再次继续被“此前 CLI 服务正在排空或等待接续”挡住，native 为 notLoaded，provider 仍 bridge_api。根因是 `_unload_cli_connection` 复用 `_drain_cli_daemon` 后也写 stopped，普通 CLI 冷路径把成功释放当未完成维护；App 已接管的路径没有经过这条冷分支，先前 App 接管验收未覆盖它。
+
+定向回归先复现旧 stopped+成功 unload 的网关重启后阻挡，再验证新 released 和窄旧格式可显式冷续接，保留账本、id/cwd/provider；App owner 优先，外部新 daemon 不退出，真实 draining/starting/unknown、配置变化、必要 env 缺失仍拒绝。环境测试执行真实启动函数及一个立即退出的自有 Python 子进程，直接核对其实际环境中没有非目标 key/header/SQLite 路径，不启动 native daemon或模型。旧自然卸载/无关网络维护回执的反例保持阻挡。真实 `.9` 将沿原停止现场验证，此源码夹具不替代打包验收，也没有新增 API 请求额度。
 
 释放、核验与共享服务维护有独立语义；未知写入继续保持可追溯，普通阅读和连接重建不发模型请求。旧 loaded factory 仍需一次明确确认、全部任务空闲且其他客户端静默的迁移；不宣称可在既有任务运行时无损热修复旧服务。macOS 完成迁移后，之后系统代理端口变化由同一原生服务动态跟随，最坏延迟受原生缓存和退避影响；完整自动首次迁移和无条件即时 App 接管仍未实现。
 

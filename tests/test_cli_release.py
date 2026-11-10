@@ -123,7 +123,7 @@ class CliReleaseTests(unittest.TestCase):
         with patch('bridge.features.sessions.cli_release.threading.Thread'):
             second = manager.submit({'id': str(uuid.uuid4()), 'connections': ['a'], 'mode': 'unload'})
         manager._run(manager.jobs[second['id']], {'a': row})
-        unload.assert_called_once_with()
+        unload.assert_called_once_with(second['id'])
         release.assert_called_once_with(False)
         check.assert_not_called()
         self.assertEqual(manager.jobs[first['id']]['results'][0]['status'], 'released')

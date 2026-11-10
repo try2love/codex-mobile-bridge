@@ -1831,12 +1831,101 @@ class Bridge:
         session = self._activate_cli_recovery(thread_id, plan) if plan else self.activate(thread_id)
         return {'connected': session.connected}
 
-    def _recover_cli_environment(self, thread_id):
+    def _completed_cli_release(self, thread_id, record):
+        """Recognize a completed release, never an unfinished network recovery."""
+        if record.get('purpose') == 'release':
+            try:
+                uuid.UUID(record['operationId'])
+                identity = record['releasedThread']
+                return (record.get('phase') == 'released' and bool(identity.get('id'))
+                        and bool(identity.get('cwd')) and bool(identity.get('modelProvider'))
+                        and record['releaseKey'] in record['connections'])
+            except (ValueError, KeyError, TypeError):
+                return False
+        # Exact legacy .8 single-connection format. A natural thread unload has
+        # a different receipt and cannot prove this shared daemon was stopped.
+        if (set(record) != {'generation', 'phase', 'configuration', 'connections'} or
+                record['phase'] != 'stopped' or len(record['connections']) != 1):
+            return False
+        directory = self.data_dir
+        if self.host.startswith('codex:') and directory.parent.name == 'codex-entries':
+            directory = directory.parent.parent
+        try:
+            jobs = json.loads((directory/'cli-release-operations.json').read_text())
+            for identifier, job in jobs.items():
+                uuid.UUID(identifier)
+                if (job.get('id') != identifier or job.get('mode') != 'unload' or
+                        job.get('connections') != record['connections'] or len(job.get('results', [])) != 1):
+                    continue
+                row = job['results'][0]
+                if (row.get('key') == record['connections'][0] and row.get('sessionId') == thread_id
+                        and row.get('host') == self.host and row.get('provider') == 'codex'
+                        and row.get('status') == 'released'
+                        and row.get('notice') == '已正常退出此配置的共享 CLI 服务，原生占用已释放'):
+                    saved = self.cli_sessions.store.get(thread_id)
+                    record.update(purpose='release', phase='released', operationId=identifier,
+                        releaseKey=row['key'], releasedThread={'id': thread_id, 'cwd': saved['cwd'],
+                                                             'modelProvider': saved['model_provider']})
+                    private_json(self.data_dir/'cli-daemon-recovery.json', record)
+                    return True
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        return False
+
+    def _continue_released_cli(self, cli, executable, record, thread_id):
+        from bridge.clients.codex.daemon_network import configuration_stamp, native_recovery_target
+        from bridge.features.accounts.cli_sync import LocalCliSync
+        from bridge.features.endpoints.registry import load_toml
+        if configuration_stamp(cli.home) != record['configuration']:
+            raise ValueError('释放后 CLI 配置或认证已变化，请先在原客户端核验接入并正常启动；未沿用旧环境')
+        saved = cli.store.get(record['releasedThread']['id'])
+        if {'id': saved['id'], 'cwd': saved['cwd'], 'modelProvider': saved['model_provider']} != record['releasedThread']:
+            raise ValueError('释放后的原会话身份已变化，请重新核验；未启动 CLI')
+        saved = cli.store.get(thread_id)
+        if cli.daemon_status() == 'stopped':
+            config = load_toml((cli.home/'config.toml').read_text(encoding='utf-8'))
+            previous = cli.recovery_environment
+            known = previous and previous['generation'] == record['generation']
+            values = dict(previous['preserved']) if known else {}
+            native = native_recovery_target(cli.home, config, saved['model_provider'], values)
+            selected = LocalCliSync(self).recovery_target(config)
+            if not known and selected is None:
+                raise ValueError('此前 CLI 进程环境已不可核验，请在原客户端核验接入并正常启动；不会借用网关环境')
+            if saved['model_provider'] not in (selected or native)['aliases']:
+                raise ValueError('当前所选 CLI 接入与原会话提供商不同，请检查 CLI 网络并明确确认；未迁移会话')
+            if selected:
+                values.update(native['environment'])
+                values.update(selected['environment'])
+            if not known:
+                values['CODEX_SQLITE_HOME'] = None
+            cli.recovery_environment = {'generation': record['generation'], 'updates': {}, 'preserved': values}
+        self._resume_cli_recovery(cli, executable, record)
+
+    def _recover_cli_environment(self, thread_id, *, defer_start=False):
         """Keep environment diagnostics advisory; an unfinished drain stays blocked."""
         from bridge.clients.codex.cli_session import CliSessions, _managed_cli
         from bridge.platforms.codex_daemon_env import DaemonEnvironmentUnavailable
         cli = self.cli_sessions
         record = self._cli_recovery_record()
+        release_candidate = (isinstance(cli, CliSessions) and cli.alias is None and
+                (self.host == 'local' or self.host.startswith('codex:')) and
+                record.get('phase') in ('released', 'stopped'))
+        if release_candidate:
+            try:
+                with self.accounts.gate, cli.start_lock:
+                    record = self._cli_recovery_record()
+                    if self._completed_cli_release(thread_id, record):
+                        if defer_start:
+                            return False  # Discover a possible App owner before starting a CLI.
+                        executable = _managed_cli(cli.home)
+                        if executable is None:
+                            raise ValueError('无法核对已释放的 CLI 运行组件')
+                        self._continue_released_cli(cli, executable, record, thread_id)
+                        return
+            except (ValueError, OSError, KeyError, AppServerError) as error:
+                raise IPCError('已释放的 CLI 尚未重新连接：' + str(error)) from error
+        if record.get('phase') == 'released':
+            raise IPCError('已释放的 CLI 回执尚未匹配当前会话，请先检查原释放结果；未启动服务')
         pending = (record.get('phase') in ('draining', 'stopped', 'starting') or
                    record.get('phase') == 'resuming' and record['providerTarget']['before']['id'] == thread_id)
         if (not isinstance(cli, CliSessions) or cli.alias is not None or
@@ -1981,7 +2070,7 @@ class Bridge:
                              known_factory=file_auth_provider(config, plan['provider']))
 
     def _drain_cli_daemon(self, cli, executable, generation, configuration, updates, preserved, connections=(), *,
-                          follow_system_proxy=False, provider_plan=None):
+                          follow_system_proxy=False, provider_plan=None, release_operation=None):
         from contextlib import closing
         from bridge.clients.codex.app_server import CodexAppServer
         from bridge.clients.codex.daemon_network import graceful_restart_supported
@@ -2009,6 +2098,9 @@ class Bridge:
             if provider_plan:
                 record['providerTarget'] = provider_plan
                 record['providerPhase'] = 'authorized'
+            if release_operation:
+                operation_id, identity, release_key = release_operation
+                record.update(purpose='release', operationId=operation_id, releasedThread=identity, releaseKey=release_key)
             cli.recovery_environment = {'generation': key, 'updates': updates, 'preserved': preserved}
             private_json(self.data_dir / 'cli-daemon-recovery.json', record)
             stop_daemon_gracefully(cli.home, executable, generation, graceful_only=True)
@@ -2016,7 +2108,7 @@ class Bridge:
         if cli.daemon_status() != 'stopped':
             raise ValueError('原 CLI 退出仍待核对，不会重复发送退出信号')
         cli.drained_connections.update(record['connections'])
-        record['phase'] = 'stopped'
+        record['phase'] = 'released' if record.get('purpose') == 'release' else 'stopped'
         private_json(self.data_dir / 'cli-daemon-recovery.json', record)
 
     def _resume_cli_recovery(self, cli, executable, record, *, check_only=False):
@@ -2129,7 +2221,7 @@ class Bridge:
                 if (self.cli_sessions.alias is None and sys.platform in ('darwin', 'linux') and
                         graceful_restart_supported(getattr(self.cli_sessions.client, 'server_info', None) or {})):
                     callbacks['canUnload'] = True
-                    callbacks['_unload'] = lambda callback=row['_check'], sid=sid, key=row['key']: self._unload_cli_connection(sid, key, callback)
+                    callbacks['_unload'] = lambda operation_id, callback=row['_check'], sid=sid, key=row['key']: self._unload_cli_connection(sid, key, callback, operation_id)
             rows.append({**row, 'host': self.host, '_release': release, **callbacks})
         if self.host == 'local':
             with self.lock:
@@ -2173,7 +2265,7 @@ class Bridge:
             return result
 
     @operation
-    def _unload_cli_connection(self, sid, key, check):
+    def _unload_cli_connection(self, sid, key, check, operation_id=None):
         """Explicit maintenance confirmation; never called by reading or reconnecting."""
         from bridge.clients.codex.cli_session import _managed_cli
         from bridge.clients.codex.daemon_network import PROXY_NAMES, configuration_stamp
@@ -2196,6 +2288,8 @@ class Bridge:
                 if executable is None:
                     raise ValueError('无法核对当前 CLI 服务')
                 config = cli.client.request('config/read', {'includeLayers': False}, replay_safe=True)['config']
+                before = cli.client.request('thread/read', {'threadId': sid, 'includeTurns': False}, replay_safe=True)['thread']
+                identity = cli.persisted_identity(before)
                 names = set(PROXY_NAMES) | {'OPENAI_BASE_URL', 'OPENAI_API_KEY', 'CODEX_SQLITE_HOME', 'NO_PROXY', 'no_proxy'}
                 for provider in (config.get('model_providers') or {}):
                     names.update(cli._required_model_environment(config, provider))
@@ -2203,7 +2297,8 @@ class Bridge:
             except Exception as error:
                 raise ReleaseNotSent(error) from error
             self._drain_cli_daemon(cli, executable, generation, configuration_stamp(cli.home), {},
-                                   {name: original.get(name) for name in names}, connections=(key,))
+                                   {name: original.get(name) for name in names}, connections=(key,),
+                                   release_operation=(operation_id or str(uuid.uuid4()), identity, key))
             result = {'status': 'released', 'notice': '已正常退出此配置的共享 CLI 服务，原生占用已释放'}
             self._record_cli_release(session, result)
             return result
@@ -2216,7 +2311,7 @@ class Bridge:
             if (record.get('phase') in ('draining', 'stopped') and isinstance(self.cli_sessions, CliSessions)
                     and self.cli_sessions.daemon_status() == 'stopped'):
                 self.cli_sessions.drained_connections.update(record['connections'])
-                record['phase'] = 'stopped'
+                record['phase'] = 'released' if record.get('purpose') == 'release' else 'stopped'
                 private_json(self.data_dir / 'cli-daemon-recovery.json', record)
             result = callback()
             self._record_cli_release(session, result)
@@ -2969,7 +3064,7 @@ class Bridge:
             # while connection configuration is waiting for a safe recovery.
             if environment_checked and (not session.connected or idle_cli):
                 try:
-                    self._recover_cli_environment(thread_id)
+                    environment_checked = self._recover_cli_environment(thread_id, defer_start=True) is not False
                 except IPCError as error:
                     with session.condition:
                         session.error = str(error)
@@ -3042,7 +3137,12 @@ class Bridge:
                                         target_provider=plan['provider'] if plan['provider'] != plan['before']['modelProvider'] else None,
                                         expected_identity=plan['before'], before_resume=before_resume)
                                 else:
-                                    state = self.cli_sessions.attach(session.id, explicit=True)
+                                    released = self._cli_recovery_record()
+                                    expected = (released.get('releasedThread') if released.get('purpose') == 'release'
+                                                and released.get('phase') == 'complete'
+                                                and (released.get('releasedThread') or {}).get('id') == session.id else None)
+                                    state = (self.cli_sessions.attach(session.id, explicit=True, expected_identity=expected)
+                                             if expected else self.cli_sessions.attach(session.id, explicit=True))
                             except AppServerError as exc:
                                 raise IPCError(str(exc)) from exc
                             self._cli_state(session.id, state)

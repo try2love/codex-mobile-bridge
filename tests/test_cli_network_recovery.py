@@ -1,6 +1,10 @@
 """CLI change detection and explicitly confirmed recovery; no real model/process."""
 from contextlib import ExitStack
 import hashlib
+import json
+import os
+import sys
+import uuid
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -453,11 +457,206 @@ class CliNetworkRecoveryTests(CliBridgeFixture):
         session.runtime = 'cli'
         self.cli.client.process = SimpleNamespace(poll=lambda: 0, stdin=None, stdout=None)
         self.cli.client.request = self.probe.request
-        result = self.bridge._unload_cli_connection(self.thread_id, 'original-token', lambda: {'status': 'detached'})
+        operation_id = str(uuid.uuid4())
+        def before_exit(*_args, **_kwargs):
+            record = self.bridge._cli_recovery_record()
+            self.assertEqual((record['phase'], record['purpose'], record['operationId']),
+                             ('draining', 'release', operation_id))
+        self.stop.side_effect = before_exit
+        result = self.bridge._unload_cli_connection(self.thread_id, 'original-token', lambda: {'status': 'detached'}, operation_id)
         self.assertEqual(result['status'], 'released')
         self.assertIn('original-token', self.cli.drained_connections)
+        self.assertEqual(self.bridge._cli_recovery_record()['phase'], 'released')
+        self.assertEqual(self.bridge._cli_recovery_record()['purpose'], 'release')
+        self.assertEqual(self.bridge._cli_recovery_record()['releasedThread']['id'], self.thread_id)
+        uuid.UUID(self.bridge._cli_recovery_record()['operationId'])
         self.stop.assert_called_once()
         self.cli._start_daemon.assert_not_called()
+
+    def released_fixture(self, *, legacy=False, notice='已正常退出此配置的共享 CLI 服务，原生占用已释放'):
+        from bridge.app.lifecycle import private_json
+        self.proxy_updates = {}
+        identity = {key: self.native_state[key] for key in ('id', 'cwd', 'modelProvider')}
+        record = {'phase': 'stopped' if legacy else 'released', 'generation': 'retired-generation',
+                  'configuration': configuration_stamp(self.home), 'connections': ['released-token']}
+        if not legacy:
+            record.update(purpose='release', releasedThread=identity, releaseKey='released-token', operationId=str(uuid.uuid4()))
+        private_json(self.bridge.data_dir/'cli-daemon-recovery.json', record)
+        operation_id = str(uuid.uuid4())
+        private_json(self.bridge.data_dir/'cli-release-operations.json', {
+            operation_id: {'id': operation_id, 'mode': 'unload', 'connections': ['released-token'], 'results': [{'key': 'released-token',
+                'sessionId': self.thread_id, 'provider': 'codex', 'host': 'local',
+                'status': 'released', 'notice': notice}]}})
+        self.bridge.released_cli.set(self.thread_id, True)
+        self.cli.recovery_environment = None
+        self.cli.configuration_stamp = None
+        target = {'provider': 'openai', 'aliases': ['openai'], 'kind': 'api', 'accountId': 'selected-b',
+                  'environment': {'OPENAI_API_KEY': None, 'OPENAI_BASE_URL': None}}
+        return patch('bridge.features.accounts.cli_sync.LocalCliSync.recovery_target', return_value=target)
+
+    def test_completed_release_allows_explicit_cold_continue_without_another_stop(self):
+        with self.released_fixture():
+            self.assertTrue(self.bridge.activate(self.thread_id).connected)
+        self.stop.assert_not_called()
+        self.cli._start_daemon.assert_called_once()
+        self.assertIsNone(self.cli._start_daemon.call_args.args[1]['OPENAI_API_KEY'])
+        self.assertEqual(self.bridge._cli_recovery_record()['phase'], 'complete')
+        self.assertEqual(self.bridge._cli_recovery_record()['purpose'], 'release')
+
+    def test_native_drain_release_continue_retains_verified_unmanaged_environment(self):
+        self.current_config = {'model_provider': 'openai', 'model_providers': {'openai': {
+            'env_key': 'NATIVE_KEY', 'requires_openai_auth': False, 'base_url': 'https://synthetic.invalid/v1'}}}
+        (self.home/'config.toml').write_text('model_provider="openai"\n[model_providers.openai]\n'
+            'env_key="NATIVE_KEY"\nrequires_openai_auth=false\nbase_url="https://synthetic.invalid/v1"\n')
+        session = self.bridge.session(self.thread_id, attach=False)
+        session.runtime = 'cli'
+        self.cli.client.process = SimpleNamespace(poll=lambda: 0, stdin=None, stdout=None)
+        self.cli.client.request = self.probe.request
+        with patch('bridge.platforms.codex_daemon_env.read_daemon_environment',
+                side_effect=lambda _home, _exe, names: ({name: 'verified-native-value' for name in names}, self.generation)), \
+                patch('bridge.features.accounts.cli_sync.LocalCliSync.recovery_target', return_value=None):
+            self.bridge._unload_cli_connection(self.thread_id, 'original-token', lambda: {'status': 'detached'})
+            record = self.bridge._cli_recovery_record()
+            self.assertEqual(self.cli.recovery_environment['generation'], record['generation'])
+            self.assertNotEqual(record['generation'], 'original-token')
+            self.assertTrue(self.bridge.activate(self.thread_id).connected)
+        self.assertEqual(self.cli._start_daemon.call_args.args[1]['NATIVE_KEY'], 'verified-native-value')
+        self.stop.assert_called_once()
+
+    def test_legacy_stopped_release_survives_gateway_restart_without_clearing_ledger(self):
+        from bridge.app.service import Bridge
+        with self.released_fixture(legacy=True):
+            self.bridge.close()
+            self.bridge = Bridge(self.home, self.home/'bridge-data', codex_bin=self.home/'no-codex', cli_sessions=self.cli)
+            self.bridge.ipc.connect = Mock(side_effect=IPCError('desktop absent'))
+            self.bridge.ipc.owner = Mock(side_effect=IPCError('no-client-found'))
+            self.assertTrue(self.bridge.activate(self.thread_id).connected)
+        record = self.bridge._cli_recovery_record()
+        self.assertEqual(record['generation'], 'retired-generation')
+        self.assertEqual(record['connections'], ['released-token'])
+        self.assertEqual(record['purpose'], 'release')
+        self.assertEqual(record['phase'], 'complete')
+        self.stop.assert_not_called()
+        self.cli._start_daemon.assert_called_once()
+
+    def test_legacy_natural_unload_receipt_does_not_unlock_unfinished_recovery(self):
+        with self.released_fixture(legacy=True, notice='原生会话已卸载，可在电脑端继续'):
+            with self.assertRaisesRegex(IPCError, '排空|接续'):
+                self.bridge.activate(self.thread_id)
+        self.assertEqual(self.bridge._cli_recovery_record()['phase'], 'stopped')
+        self.cli._start_daemon.assert_not_called()
+        self.stop.assert_not_called()
+
+    def test_released_config_change_or_lost_injection_source_never_starts(self):
+        with self.released_fixture():
+            (self.home/'auth.json').write_text('{"OPENAI_API_KEY":"changed"}')
+            with self.assertRaisesRegex(IPCError, '配置|认证'):
+                self.bridge.activate(self.thread_id)
+        self.cli._start_daemon.assert_not_called()
+        self.stop.assert_not_called()
+
+    def test_completed_release_joins_external_replacement_without_start_or_stop(self):
+        with self.released_fixture():
+            self.cli.daemon_status.return_value = 'running'
+            self.assertTrue(self.bridge.activate(self.thread_id).connected)
+        self.cli._start_daemon.assert_not_called()
+        self.stop.assert_not_called()
+
+    def test_completed_release_still_prefers_new_app_owner_without_native_start(self):
+        from tests.test_cli_bridge_integration import CliBridgeTests
+        with self.released_fixture():
+            session = self.bridge.session(self.thread_id, attach=False)
+            session.runtime = 'cli'
+            CliBridgeTests.desktop_owner(self)
+            self.assertEqual(self.bridge.activate(self.thread_id).runtime, 'desktop')
+        self.cli._start_daemon.assert_not_called()
+        self.cli.attach.assert_not_called()
+        self.stop.assert_not_called()
+
+    def test_released_missing_env_key_never_borrows_gateway_environment(self):
+        (self.home/'config.toml').write_text('model_provider="openai"\n[model_providers.openai]\nenv_key="NEW_KEY"\n')
+        with self.released_fixture(), patch.dict('os.environ', {'NEW_KEY': 'unrelated-gateway-key'}):
+            with self.assertRaisesRegex(IPCError, 'NEW_KEY'):
+                self.bridge.activate(self.thread_id)
+        self.cli._start_daemon.assert_not_called()
+        self.stop.assert_not_called()
+
+    def test_released_unknown_daemon_status_does_not_start_or_repeat_exit(self):
+        with self.released_fixture():
+            self.cli.daemon_status.return_value = 'unknown'
+            with self.assertRaisesRegex(IPCError, '待核对'):
+                self.bridge.activate(self.thread_id)
+        self.cli._start_daemon.assert_not_called()
+        self.stop.assert_not_called()
+
+    def test_released_start_unknown_is_durable_and_never_repeated(self):
+        from bridge.clients.codex.app_server import AppServerUnavailable
+        with self.released_fixture():
+            self.cli._start_daemon.side_effect = AppServerUnavailable('start acknowledgement lost')
+            with self.assertRaisesRegex(IPCError, 'lost'):
+                self.bridge.activate(self.thread_id)
+            self.assertEqual(self.bridge._cli_recovery_record()['phase'], 'starting')
+            with self.assertRaises(IPCError):
+                self.bridge.activate(self.thread_id)
+        self.cli._start_daemon.assert_called_once()
+        self.stop.assert_not_called()
+
+    def test_release_continue_rechecks_ledger_after_maintenance_lock_admission(self):
+        from bridge.app.lifecycle import private_json
+        with self.released_fixture():
+            lock = self.cli.start_lock
+            bridge = self.bridge
+            injected = []
+            class RacingLock:
+                def __enter__(self):
+                    lock.acquire()
+                    if not injected:
+                        record = bridge._cli_recovery_record()
+                        record.update(phase='draining', generation='new-maintenance')
+                        private_json(bridge.data_dir/'cli-daemon-recovery.json', record)
+                        injected.append(True)
+                def __exit__(self, *_args):
+                    lock.release()
+            self.cli.start_lock = RacingLock()
+            with self.assertRaises(IPCError):
+                self.bridge.activate(self.thread_id)
+        self.assertEqual(self.bridge._cli_recovery_record()['generation'], 'new-maintenance')
+        self.cli._start_daemon.assert_not_called()
+        self.stop.assert_not_called()
+
+    def test_legacy_network_recovery_with_unrelated_unload_receipt_stays_blocked(self):
+        from bridge.app.lifecycle import private_json
+        with self.released_fixture(legacy=True):
+            record = self.bridge._cli_recovery_record()
+            record['followSystemProxy'] = True
+            private_json(self.bridge.data_dir/'cli-daemon-recovery.json', record)
+            with self.assertRaises(IPCError):
+                self.bridge.activate(self.thread_id)
+        self.assertEqual(self.bridge._cli_recovery_record()['phase'], 'stopped')
+        self.cli._start_daemon.assert_not_called()
+        self.stop.assert_not_called()
+
+    def test_released_cold_start_clears_unrelated_gateway_database_and_headers(self):
+        if os.name == 'nt':
+            self.skipTest('uses an owned POSIX executable fixture')
+        (self.home/'config.toml').write_text('model_provider="openai"\n[model_providers.old]\n'
+                                           'env_key="OLD_KEY"\n[model_providers.old.env_http_headers]\nOld-Header="OLD_HEADER"\n')
+        self.cli._start_daemon = Mock(side_effect=lambda *args: CliSessions._start_daemon(self.cli, *args))
+        executable = self.home/'codex'
+        executable.write_text('#!' + sys.executable + '\nimport json,os\n'
+            'keys=("OPENAI_API_KEY","OPENAI_BASE_URL","OLD_KEY","OLD_HEADER","CODEX_SQLITE_HOME")\n'
+            'with open(os.environ["CMB_RELEASE_TEST_RESULT"],"w") as stream:\n'
+            ' json.dump({"keys":[key for key in keys if key in os.environ],"home":os.environ["CODEX_HOME"]},stream)\n'
+            'print(json.dumps({"status":"started","socketPath":os.environ["CODEX_HOME"]+"/fixture.sock"}))\n')
+        executable.chmod(0o700)
+        observed = self.home/'child-environment.json'
+        with self.released_fixture(), patch.dict('os.environ', {'OPENAI_API_KEY': 'unrelated-key',
+                'OPENAI_BASE_URL': 'https://unrelated.invalid', 'OLD_KEY': 'old-key',
+                'OLD_HEADER': 'old-header', 'CODEX_SQLITE_HOME': '/unrelated/database',
+                'CMB_RELEASE_TEST_RESULT': str(observed)}):
+            self.assertTrue(self.bridge.activate(self.thread_id).connected)
+        self.assertEqual(json.loads(observed.read_text()), {'keys': [], 'home': str(self.home)})
+        self.stop.assert_not_called()
 
     def test_explicit_native_unload_refuses_another_active_task(self):
         self.busy = True
