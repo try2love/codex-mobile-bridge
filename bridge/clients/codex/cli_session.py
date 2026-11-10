@@ -10,7 +10,7 @@ import subprocess
 import threading
 import time
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from bridge.features.sessions.identity import same_cwd
 from bridge.clients.codex.app_server import (
@@ -139,6 +139,19 @@ class CliSessions:
         self.configured_cli = cli
         self.store = RemoteStore(alias) if alias else SessionStore(self.home)
 
+    def _runtime_home(self, info):
+        """SSH paths belong to the POSIX target, including on a Windows gateway."""
+        value = info.get('codexHome')
+        if not isinstance(value, str) or not value or '\0' in value:
+            raise AppServerUnavailable('Codex CLI runtime home is unavailable')
+        actual = PurePosixPath(value) if self.alias is not None else Path(value)
+        expected = self.remote_home if self.alias is not None else self.home
+        if not actual.is_absolute() or expected is not None and actual != expected:
+            raise AppServerUnavailable('Codex CLI runtime belongs to another home')
+        if self.alias is not None:
+            self.remote_home = actual
+        return actual
+
     def cli_connections(self):
         with self.lock:
             return [{'key': self.metadata[sid]['connectionToken'], 'sessionId': sid, 'provider': 'codex',
@@ -246,13 +259,7 @@ class CliSessions:
         from bridge.features.sessions.create import model_overrides
         overrides = model_overrides(model, effort)
         info = self._connect_explicit()
-        if self.alias is None and Path(info['codexHome']) != self.home:
-            raise AppServerUnavailable('Codex CLI runtime belongs to another home')
-        if self.alias is not None:
-            remote_home = Path(info['codexHome'])
-            if not remote_home.is_absolute() or (self.remote_home is not None and remote_home != self.remote_home):
-                raise AppServerUnavailable('Remote Codex CLI runtime identity changed')
-            self.remote_home = remote_home
+        self._runtime_home(info)
         if on_start is not None:
             on_start()
         params = {'cwd': cwd, 'ephemeral': False, 'threadSource': 'cli', **overrides}
@@ -281,10 +288,7 @@ class CliSessions:
     def archive_call(self, thread_id, archived, identifiers, disconnect=False, check_scope=None):
         # Explicit archive may start the installed original daemon, never a thread.
         info = self._connect_explicit()
-        home = Path(info.get('codexHome', ''))
-        expected = self.remote_home if self.alias else self.home
-        if not home.is_absolute() or (expected is not None and home != expected):
-            raise AppServerUnavailable('Codex CLI runtime belongs to another home')
+        self._runtime_home(info)
         from bridge.features.sessions.create import check_archive_runtime, stop_archive_runtime
         if not disconnect:
             check_archive_runtime(lambda method, params: self.client.request(method, params, replay_safe=True), identifiers)
@@ -420,14 +424,7 @@ class CliSessions:
 
     def _attach_explicit(self, thread_id, *, target_provider=None, expected_identity=None, before_resume=None):
         info = self._connect_explicit()
-        if self.alias is None and Path(info['codexHome']) != self.home:
-            raise AppServerUnavailable('Codex CLI runtime belongs to another home')
-        if self.alias is not None:
-            remote_home = Path(info['codexHome'])
-            if not remote_home.is_absolute() or (self.remote_home is not None and
-                    remote_home != self.remote_home):
-                raise AppServerUnavailable('Remote Codex CLI runtime identity changed')
-            self.remote_home = remote_home
+        self._runtime_home(info)
         with self.lock:
             if thread_id in self.joined:
                 self._require_joined(thread_id)
@@ -825,12 +822,7 @@ class CliSessions:
 
     def creation_context(self, cwd):
         info = self._connect_explicit()
-        expected = self.remote_home if self.alias is not None else self.home
-        actual = Path(info['codexHome'])
-        if not actual.is_absolute() or expected is not None and actual != expected:
-            raise AppServerUnavailable('Codex CLI runtime belongs to another home')
-        if self.alias is not None:
-            self.remote_home = actual
+        self._runtime_home(info)
         config = self.client.request('config/read', {'cwd': cwd, 'includeLayers': False}, replay_safe=True).get('config') or {}
         profile = (config.get('profiles') or {}).get(config.get('profile')) or {}
         return {**config, **profile}

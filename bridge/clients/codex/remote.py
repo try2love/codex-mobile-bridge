@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from pathlib import Path
+from pathlib import Path, PurePath
 
 from bridge.clients.codex.catalog import CatalogError
 from bridge.features.network.retry import (
@@ -390,8 +390,8 @@ class RemoteCliModels:
         return source
 
     def _call(self, operation, home, cwd, provider, config, account=None, native_models=None):
-        home = str(home) if isinstance(home, Path) else home
-        cwd = str(cwd) if isinstance(cwd, Path) else cwd
+        home = str(home) if isinstance(home, PurePath) else home
+        cwd = str(cwd) if isinstance(cwd, PurePath) else cwd
         value = {'operation': operation, 'home': home, 'cwd': cwd, 'provider': provider,
                  'config': config, 'account': account or {}, 'nativeModels': native_models or []}
         source = self._source() + '\nprint(json.dumps(remote_model_worker(' + payload(value) + '), ensure_ascii=False))\n'
