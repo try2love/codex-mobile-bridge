@@ -363,7 +363,8 @@ else{
     setupUpdater();register();
     if(process.platform==='win32')app.setAppUserModelId('io.github.try2love.codexmobilebridge');
     if(['win32','darwin'].includes(process.platform)){
-      const icon=process.platform==='darwin'?nativeImage.createFromPath(path.join(__dirname,'assets/icon.png')).resize({width:18,height:18}):path.join(__dirname,'assets/icon.ico');
+      const icon=process.platform==='darwin'?nativeImage.createFromPath(path.join(__dirname,'assets/trayTemplate.png')):path.join(__dirname,'assets/icon.ico');
+      if(process.platform==='darwin')icon.setTemplateImage(true);
       tray=createTray({Tray,Menu,icon,show:showWindow,worker,t,
         open:url=>shell.openExternal(url),copy:url=>clipboard.writeText(url),quit:()=>app.quit(),
         onError:error=>{showWindow();dialog.showErrorBox(t('网关操作未完成'),t(error.message));}});
