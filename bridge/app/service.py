@@ -1602,7 +1602,8 @@ class Bridge:
 
     def cli_network(self, thread_id, body=None, *, automatic=False):
         from bridge.clients.codex.cli_session import _managed_cli
-        from bridge.clients.codex.daemon_network import inspect_proxy, configuration_stamp, graceful_restart_supported
+        from bridge.clients.codex.daemon_network import (inspect_proxy, configuration_stamp,
+            graceful_restart_supported, system_proxy_user_layer, enable_system_proxy_following)
         from bridge.features.accounts.cli_sync import LocalCliSync
         from bridge.platforms.codex_daemon_env import read_daemon_environment, configuration_after_start
         from contextlib import closing
@@ -1620,10 +1621,25 @@ class Bridge:
             raise ValueError('无法核对当前 CLI 服务')
         with self.accounts.gate, cli.start_lock:
             recovery = self._cli_recovery_record()
+            if recovery.get('phase') == 'configuringUnknown':
+                message = '系统代理跟随设置的写入结果待核对；不会重放设置或退出 CLI 服务。'
+                if not automatic:
+                    with closing(CodexAppServer(cli.client.socket_path, cli=executable,
+                                                client_name='codex-mobile-bridge-network-check')) as probe:
+                        probe.connect()
+                        snapshot = probe.request('config/read', {'includeLayers': True}, replay_safe=True)
+                        layer = system_proxy_user_layer(snapshot, cli.home)
+                        if (layer['config'].get('features') or {}).get('respect_system_proxy') is True:
+                            recovery['phase'] = 'complete'
+                            private_json(self.data_dir / 'cli-daemon-recovery.json', recovery)
+                            message = '系统代理跟随设置已确认保存，CLI 服务尚未恢复；请重新检查网络并确认恢复。'
+                return {'canRecover': False,
+                        'requiresConfirmation': True, 'message': message}
             if recovery.get('phase') in ('draining', 'stopped', 'starting'):
                 pending_message = '此前 CLI 服务正在排空或等待接续，请检查 CLI 网络；不会重复请求退出'
                 if automatic:
-                    return {'canRecover': False, 'requiresConfirmation': True, 'message': pending_message}
+                    return {'canRecover': False, 'requiresConfirmation': True,
+                            'maintenancePending': True, 'message': pending_message}
                 resume_stamp = hashlib.sha256(json.dumps(recovery, sort_keys=True).encode()).hexdigest()
                 if body is not None:
                     if body != {'confirmed': True, 'generation': resume_stamp}:
@@ -1631,15 +1647,25 @@ class Bridge:
                     if self._resume_cli_recovery(cli, executable, recovery):
                         return {'recovered': True, 'connected': False}
                 else:
-                    can_resume = (cli.daemon_status() == 'stopped' and recovery['phase'] != 'starting'
+                    status = cli.daemon_status()
+                    if status == 'running':
+                        try:
+                            self._resume_cli_recovery(cli, executable, recovery, check_only=True)
+                        except (ValueError, OSError, AppServerError) as error:
+                            return {'canRecover': False, 'message': str(error)}
+                        if recovery['phase'] == 'complete':
+                            return {'canRecover': False, 'recovered': True,
+                                    'message': 'CLI 服务恢复已核验，请继续原会话；检查未启动会话或重放操作。'}
+                    can_resume = (status == 'stopped' and recovery['phase'] != 'starting'
                                   and bool(cli.recovery_environment))
                     return {'canRecover': can_resume, 'generation': resume_stamp, 'message':
                             '原 CLI 已退出。请确认恢复期间其他客户端不再发起任务，再恢复此共享服务。' if can_resume else pending_message}
             generation, updates, stamp = inspect_proxy(cli.home, executable)
             configuration = configuration_stamp(cli.home)
+            follow_system_proxy = bool(updates) and sys.platform == 'darwin'
             configuration_changed = (configuration != cli.configuration_stamp
                 if cli.configuration_stamp is not None else configuration_after_start(cli.home, generation))
-            stamp = hashlib.sha256(json.dumps([stamp, configuration], sort_keys=True).encode()).hexdigest()
+            stamp = hashlib.sha256(json.dumps([stamp, configuration, follow_system_proxy], sort_keys=True).encode()).hexdigest()
             if not updates and not configuration_changed:
                 if automatic:
                     cli.configuration_stamp = configuration
@@ -1648,6 +1674,9 @@ class Bridge:
                 return {'canRecover': False, 'message': '未检测到可恢复的失效本机代理'}
             message = ('原 CLI 使用的本机代理已失效，当前系统代理可用。' if updates else
                        'CLI 认证或配置已变化，需要核对共享服务后恢复。')
+            if follow_system_proxy:
+                message += ('恢复时会在此 CODEX_HOME 的 CLI 用户配置中保存 features.respect_system_proxy=true，'
+                            '使使用此配置的其他客户端今后加载的会话也跟随系统代理；不修改系统代理。')
             if automatic:
                 return {'canRecover': False, 'requiresConfirmation': True,
                         'message': message + '请从会话菜单检查 CLI 网络并确认恢复；不会自动退出共享服务。'}
@@ -1665,8 +1694,11 @@ class Bridge:
                     if not graceful_restart_supported(info):
                         raise ValueError('当前 CLI 版本尚未核验安全排空能力，请在电脑端正常重启后继续')
                     LocalCliSync.check_idle_daemon(probe, cli.home)
-                    if body is not None:
-                        config = probe.request('config/read', {'includeLayers': False}, replay_safe=True)['config']
+                    if body is not None or follow_system_proxy:
+                        snapshot = probe.request('config/read', {'includeLayers': follow_system_proxy}, replay_safe=True)
+                        config = snapshot['config']
+                        if follow_system_proxy:
+                            layer = system_proxy_user_layer(snapshot, cli.home)
                 if (cli.attaching or any(cli.requests.values()) or
                         any(row.get('cleanupOnly') for row in cli.metadata.values()) or
                         any(row.get('status') in ('queued', 'unknown') for row in self.submissions.values())):
@@ -1690,14 +1722,45 @@ class Bridge:
                 raise ValueError('原生服务已变化，请重新检查')
             if configuration_stamp(cli.home) != configuration:
                 raise ValueError('CLI 认证或配置正在更新，请稍后继续；未重启服务')
-            self._drain_cli_daemon(cli, executable, generation, configuration, updates,
-                                   {name: original.get(name) for name in names})
-            self._resume_cli_recovery(cli, executable, self._cli_recovery_record())
+            setting_saved = False
+            setting_dispatched = False
+            def before_setting_write():
+                nonlocal setting_dispatched
+                private_json(self.data_dir / 'cli-daemon-recovery.json', {
+                    'phase': 'configuringUnknown', 'generation': hashlib.sha256(json.dumps(generation).encode()).hexdigest()})
+                setting_dispatched = True
+            try:
+                if follow_system_proxy:
+                    with closing(CodexAppServer(cli.client.socket_path, cli=executable,
+                                                client_name='codex-mobile-bridge-network-setting')) as probe:
+                        probe.connect()
+                        setting_saved = enable_system_proxy_following(probe, cli.home,
+                            expected_version=layer['version'], before_write=before_setting_write)
+                    if setting_dispatched:
+                        private_json(self.data_dir / 'cli-daemon-recovery.json', recovery)
+                    after = configuration_stamp(cli.home)
+                    if after['auth.json'] != configuration['auth.json']:
+                        raise ValueError('CLI 认证正在更新，请稍后重新检查；未重启服务')
+                    configuration = after
+                self._drain_cli_daemon(cli, executable, generation, configuration, updates,
+                                       {name: original.get(name) for name in names},
+                                       follow_system_proxy=follow_system_proxy)
+                self._resume_cli_recovery(cli, executable, self._cli_recovery_record())
+            except Exception as error:
+                if getattr(error, 'system_proxy_unknown', False):
+                    private_json(self.data_dir / 'cli-daemon-recovery.json', {
+                        'phase': 'configuringUnknown', 'generation': hashlib.sha256(json.dumps(generation).encode()).hexdigest()})
+                    raise ValueError('系统代理跟随设置的写入结果待核对；未请求退出服务，不会自动重放设置。') from error
+                if setting_saved or getattr(error, 'system_proxy_saved', False):
+                    raise ValueError('系统代理跟随设置已保存，CLI 服务尚未恢复：' + str(error)) from error
+                if setting_dispatched:
+                    private_json(self.data_dir / 'cli-daemon-recovery.json', recovery)
+                raise
         session = self.activate(thread_id)
         return {'connected': session.connected}
 
     def _recover_cli_environment(self, thread_id):
-        """Detect changes only; shared-service maintenance needs separate confirmation."""
+        """Keep environment diagnostics advisory; an unfinished drain stays blocked."""
         from bridge.clients.codex.cli_session import CliSessions, _managed_cli
         from bridge.platforms.codex_daemon_env import DaemonEnvironmentUnavailable
         cli = self.cli_sessions
@@ -1708,20 +1771,28 @@ class Bridge:
             return
         try:
             result = self.cli_network(thread_id, automatic=True)
-            if result.get('requiresConfirmation'):
+            pending = pending or bool(result.get('maintenancePending'))
+            if pending and result.get('requiresConfirmation'):
                 raise ValueError(result['message'])
-        except DaemonEnvironmentUnavailable:
+        except DaemonEnvironmentUnavailable as error:
             # Native identity could not be established. Keep the original
             # runtime; native admission still protects every following request.
+            if pending or self._cli_recovery_record().get('phase') in ('draining', 'stopped', 'starting'):
+                raise IPCError('CLI 服务恢复结果尚未核对，请先检查 CLI 网络；操作未发送。') from error
             return
         except (ValueError, OSError, AppServerError) as error:
-            raise IPCError('CLI 连接恢复暂受阻：' + str(error) + '；原任务和未确认操作保持不变。') from error
+            if pending or self._cli_recovery_record().get('phase') in ('draining', 'stopped', 'starting'):
+                raise IPCError('CLI 连接恢复暂受阻：' + str(error) + '；原任务和未确认操作保持不变。') from error
+            # A changed credential file or an unreachable inherited proxy does
+            # not prove this thread needs it (NO_PROXY, local providers, pooled
+            # connections and native token refresh can still work).
 
     def _cli_recovery_record(self):
         path = self.data_dir / 'cli-daemon-recovery.json'
         return json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
 
-    def _drain_cli_daemon(self, cli, executable, generation, configuration, updates, preserved, connections=()):
+    def _drain_cli_daemon(self, cli, executable, generation, configuration, updates, preserved, connections=(), *,
+                          follow_system_proxy=False):
         from contextlib import closing
         from bridge.clients.codex.app_server import CodexAppServer
         from bridge.clients.codex.daemon_network import graceful_restart_supported
@@ -1730,7 +1801,7 @@ class Bridge:
         from bridge.platforms.codex_daemon_env import stop_daemon_gracefully
         key = hashlib.sha256(json.dumps(generation).encode()).hexdigest()
         previous = self._cli_recovery_record()
-        if previous.get('generation') == key and previous.get('phase') in ('draining', 'starting'):
+        if previous.get('generation') == key and previous.get('phase') in ('configuringUnknown', 'draining', 'starting'):
             raise ValueError('原 CLI 正在排空或退出结果待核对，不会重复发送退出信号')
         with closing(CodexAppServer(cli.client.socket_path, cli=executable,
                                     client_name='codex-mobile-bridge-final-idle-check')) as probe:
@@ -1744,6 +1815,8 @@ class Bridge:
                       'connections': sorted(set(connections) |
                           {row['connectionToken'] for row in cli.metadata.values() if row.get('connectionToken')} |
                           {token for token, process in cli.release_receipts.items() if process is cli.client.process})}
+            if follow_system_proxy:
+                record['followSystemProxy'] = True
             cli.recovery_environment = {'generation': key, 'updates': updates, 'preserved': preserved}
             private_json(self.data_dir / 'cli-daemon-recovery.json', record)
             stop_daemon_gracefully(cli.home, executable, generation, graceful_only=True)
@@ -1754,16 +1827,31 @@ class Bridge:
         record['phase'] = 'stopped'
         private_json(self.data_dir / 'cli-daemon-recovery.json', record)
 
-    def _resume_cli_recovery(self, cli, executable, record):
+    def _resume_cli_recovery(self, cli, executable, record, *, check_only=False):
+        from contextlib import closing
+        from bridge.clients.codex.app_server import CodexAppServer
         from bridge.clients.codex.daemon_network import configuration_stamp
         from bridge.platforms.codex_daemon_env import read_daemon_environment
+        def verify_proxy_setting():
+            if record.get('followSystemProxy'):
+                with closing(CodexAppServer(cli.client.socket_path, cli=executable,
+                                            client_name='codex-mobile-bridge-network-verify')) as probe:
+                    info = probe.connect()
+                    if Path(info['codexHome']).resolve() != cli.home.resolve():
+                        raise ValueError('CLI 服务不属于此配置，恢复结果待核对')
+                    config = probe.request('config/read', {'includeLayers': False}, replay_safe=True)['config']
+                    if (config.get('features') or {}).get('respect_system_proxy') is not True:
+                        raise ValueError('新 CLI 服务尚未启用系统代理跟随，请核对配置；不会再次退出服务')
         status = cli.daemon_status()
         if status == 'running':
             generation = read_daemon_environment(cli.home, executable, ())[1]
             if hashlib.sha256(json.dumps(generation).encode()).hexdigest() == record['generation']:
                 raise ValueError('原 CLI 仍在排空任务，请等待完成；不会重复发送退出信号')
+            verify_proxy_setting()
             record['phase'] = 'complete'
             private_json(self.data_dir / 'cli-daemon-recovery.json', record)
+            return False
+        if check_only:
             return False
         if status != 'stopped' or record['phase'] == 'starting':
             raise ValueError('CLI 服务启停结果待核对，请在电脑端检查；不会重放操作')
@@ -1777,6 +1865,7 @@ class Bridge:
         private_json(self.data_dir / 'cli-daemon-recovery.json', record)
         cli._start_daemon(environment['updates'], environment['preserved'])
         cli.daemon_start_generation += 1
+        verify_proxy_setting()
         cli.configuration_stamp = record['configuration']
         record['phase'] = 'complete'
         private_json(self.data_dir / 'cli-daemon-recovery.json', record)
