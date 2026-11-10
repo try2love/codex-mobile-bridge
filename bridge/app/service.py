@@ -99,6 +99,8 @@ class LiveSession:
         self.connected = False
         self.connecting = False
         self.owner_probe_inflight = False
+        self.owner_probe_sequence = 0
+        self.owner_probe_epoch = None
         self.activating = False
         self.last_activation = None
         self.retry_at = 0
@@ -2779,6 +2781,9 @@ class Bridge:
         return False
 
     def _attach(self, session, timeout=1.5):
+        with session.condition:
+            probe_sequence = session.owner_probe_sequence
+            epoch = session.connection_epoch
         with session.attach_lock:
             if self.released_cli.contains(session.id):
                 return
@@ -2799,6 +2804,13 @@ class Bridge:
                     session.changed()
                 return
             if session.origin in ('cli', 'ide'):
+                with session.condition:
+                    # A concurrent read may have completed this same discovery
+                    # while we waited for attach_lock. Reuse only that overlap.
+                    if (session.connection_epoch == epoch == session.owner_probe_epoch and
+                            session.owner_probe_sequence != probe_sequence):
+                        return
+                    probe_epoch = session.connection_epoch
                 ipc_connected = False
                 try:
                     if sys.platform == 'win32' and self.owner_guard:
@@ -2812,6 +2824,8 @@ class Bridge:
                     if not isinstance(owner, str) or not owner:
                         raise IPCError('现有 Codex App 连接与此会话不匹配，未连接')
                     with session.condition:
+                        if session.connection_epoch != probe_epoch:
+                            return
                         session.owner = owner
                         session.revision = None
                         session.desktop_owner_probe = 'found'
@@ -2822,6 +2836,8 @@ class Bridge:
                         session.condition.wait_for(lambda: session.connected or self.closed.is_set(), timeout=timeout)
                 except IPCError as exc:
                     with session.condition:
+                        if session.connection_epoch != probe_epoch:
+                            return
                         session.discovering = False
                         absent = self._owner_absent(exc, ipc_connected)
                         if absent or session.origin == 'cli' and (not ipc_connected or
@@ -2835,6 +2851,10 @@ class Bridge:
                                              if session.origin == 'ide' and str(exc) == '桌面读取超时；尚未取得实时会话状态。' else str(exc))
                         session.access = self._access(session.origin, session)
                         session.changed()
+                with session.condition:
+                    if session.connection_epoch == probe_epoch:
+                        session.owner_probe_epoch = probe_epoch
+                        session.owner_probe_sequence += 1
                 return
             try:
                 # Owners answer a follow with a fresh snapshot. This also works
@@ -2987,8 +3007,11 @@ class Bridge:
                     probe_inflight = session.owner_probe_inflight
                 if probe_inflight:
                     with session.condition:
+                        # One cold probe can use socket 5s + initialize 6s +
+                        # owner 7s + snapshot 1.5s. Bound this wait if queued too.
                         ready = session.condition.wait_for(
-                            lambda: not session.owner_probe_inflight or session.connected or self.closed.is_set(), timeout=8)
+                            lambda: not session.owner_probe_inflight or session.connected or self.closed.is_set(),
+                            timeout=20 if session.origin in ('cli', 'ide') else 8)
                     if not ready:
                         raise IPCError('桌面连接检查未完成，请稍后重试。')
                 else:
@@ -4815,6 +4838,8 @@ class Bridge:
         with self.lock:
             sessions = list(self.live.values())
         for session in sessions:
+            with session.condition:
+                session.condition.notify_all()
             try:
                 if (session.connected or session.discovering) and session.runtime != "cli":
                     self.ipc.follow(session.id, session.owner, False, host=self.native_host)

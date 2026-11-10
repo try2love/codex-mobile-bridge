@@ -159,6 +159,221 @@ class CliBridgeTests(CliBridgeFixture):
         self.bridge.ipc.owner.assert_called_once()
         self.cli.attach.assert_not_called()
 
+    def test_inflight_owner_wait_covers_one_complete_cold_probe(self):
+        started, release = threading.Event(), threading.Event()
+        self.bridge.ipc.connect = Mock()
+        def owner(*_args, **_kwargs):
+            started.set()
+            if not release.wait(5):
+                raise AssertionError('owner probe was not released')
+            raise IPCError('no-client-found')
+        self.bridge.ipc.owner = Mock(side_effect=owner)
+        session = self.bridge.session(self.thread_id, background=True)
+        wait_for = session.condition.wait_for
+        def await_probe(predicate, timeout=None):
+            # socket 5 + initialize 6 + owner 7 + snapshot 1.5 seconds.
+            self.assertGreaterEqual(timeout, 19.5)
+            self.assertLessEqual(timeout, 20)
+            release.set()
+            return wait_for(predicate, timeout=timeout)
+        try:
+            self.assertTrue(started.wait(2))
+            with patch.object(session.condition, 'wait_for', side_effect=await_probe):
+                self.assertTrue(self.bridge.activate(self.thread_id).connected)
+        finally:
+            release.set()
+        self.bridge.ipc.owner.assert_called_once()
+        self.cli.attach.assert_called_once_with(self.thread_id, explicit=True)
+
+    def test_overlapping_attach_and_background_continue_reuse_one_owner_probe(self):
+        started, release, queued, waiting = (threading.Event() for _ in range(4))
+        session = self.bridge.session(self.thread_id, attach=False)
+        lock = session.attach_lock
+        class ObservedLock:
+            def __enter__(self):
+                if lock.locked():
+                    queued.set()
+                lock.acquire()
+            def __exit__(self, *_args):
+                lock.release()
+        session.attach_lock = ObservedLock()
+        self.bridge.ipc.connect = Mock()
+        def owner(*_args, **_kwargs):
+            started.set()
+            if not release.wait(5):
+                raise AssertionError('owner probe was not released')
+            raise IPCError('no-client-found')
+        self.bridge.ipc.owner = Mock(side_effect=owner)
+        wait_for = session.condition.wait_for
+        def await_probe(*args, **kwargs):
+            waiting.set()
+            return wait_for(*args, **kwargs)
+        outcome = {}
+        def activate():
+            try:
+                outcome['session'] = self.bridge.activate(self.thread_id)
+            except BaseException as exc:
+                outcome['error'] = exc
+        reader = threading.Thread(target=self.bridge._attach, args=(session,))
+        activation = threading.Thread(target=activate)
+        try:
+            reader.start()
+            self.assertTrue(started.wait(2))
+            self.bridge._refresh_async(session)
+            self.assertTrue(queued.wait(2), 'background probe did not queue behind the existing read')
+            for _ in range(3):
+                self.bridge._refresh_async(session)
+            with patch.object(session.condition, 'wait_for', side_effect=await_probe):
+                activation.start()
+                self.assertTrue(waiting.wait(2))
+                self.cli.attach.assert_not_called()
+                release.set()
+                activation.join(2)
+        finally:
+            release.set()
+            reader.join(2)
+            if activation.ident is not None:
+                activation.join(2)
+        self.assertFalse(activation.is_alive())
+        if 'error' in outcome:
+            raise outcome['error']
+        self.assertIs(outcome['session'], session)
+        self.bridge.ipc.owner.assert_called_once()
+        self.cli.attach.assert_called_once_with(self.thread_id, explicit=True)
+
+    def test_close_wakes_explicit_continue_without_waiting_for_owner(self):
+        started, release, waiting = (threading.Event() for _ in range(3))
+        self.bridge.ipc.connect = Mock()
+        def owner(*_args, **_kwargs):
+            started.set()
+            release.wait(5)
+            raise IPCError('no-client-found')
+        self.bridge.ipc.owner = Mock(side_effect=owner)
+        session = self.bridge.session(self.thread_id, background=True)
+        wait_for = session.condition.wait_for
+        def await_probe(*args, **kwargs):
+            waiting.set()
+            return wait_for(*args, **kwargs)
+        outcome = {}
+        def activate():
+            try:
+                self.bridge.activate(self.thread_id)
+            except IPCError as exc:
+                outcome['error'] = str(exc)
+        worker = threading.Thread(target=activate)
+        try:
+            self.assertTrue(started.wait(2))
+            with patch.object(session.condition, 'wait_for', side_effect=await_probe):
+                worker.start()
+                self.assertTrue(waiting.wait(2))
+                self.bridge.close()
+                worker.join(.5)
+                self.assertFalse(worker.is_alive(), 'closed gateway still waited for owner discovery')
+        finally:
+            release.set()
+            if worker.ident is not None:
+                worker.join(2)
+        self.assertIn('error', outcome)
+        self.cli.attach.assert_not_called()
+
+    def test_old_epoch_owner_result_cannot_be_reused_or_overwrite_new_epoch(self):
+        started, release, queued, waiting = (threading.Event() for _ in range(4))
+        session = self.bridge.session(self.thread_id, attach=False)
+        lock = session.attach_lock
+        class ObservedLock:
+            def __enter__(self):
+                if lock.locked():
+                    queued.set()
+                lock.acquire()
+            def __exit__(self, *_args):
+                lock.release()
+        session.attach_lock = ObservedLock()
+        self.bridge.ipc.connect = Mock()
+        attempts = []
+        def owner(*_args, **_kwargs):
+            attempts.append(session.connection_epoch)
+            if len(attempts) == 1:
+                started.set()
+                if not release.wait(5):
+                    raise AssertionError('old owner probe was not released')
+                raise IPCError('no-client-found')
+            self.assertIsNone(session.desktop_owner_probe, 'old absence overwrote the new epoch')
+            raise IPCError('new owner unknown')
+        self.bridge.ipc.owner = Mock(side_effect=owner)
+        wait_for = session.condition.wait_for
+        def await_probe(*args, **kwargs):
+            waiting.set()
+            return wait_for(*args, **kwargs)
+        outcome = {}
+        def activate():
+            try:
+                outcome['session'] = self.bridge.activate(self.thread_id)
+            except IPCError as exc:
+                outcome['error'] = str(exc)
+        reader = threading.Thread(target=self.bridge._attach, args=(session,))
+        activation = threading.Thread(target=activate)
+        try:
+            reader.start()
+            self.assertTrue(started.wait(2))
+            self.bridge._invalidate(session, 'router disconnected', runtime='desktop',
+                                    reason='desktop_ipc_disconnected')
+            self.bridge._refresh_async(session, force=True)
+            self.assertTrue(queued.wait(2))
+            with patch.object(session.condition, 'wait_for', side_effect=await_probe):
+                activation.start()
+                self.assertTrue(waiting.wait(2))
+                release.set()
+                activation.join(2)
+        finally:
+            release.set()
+            reader.join(2)
+            if activation.ident is not None:
+                activation.join(2)
+        self.assertFalse(activation.is_alive())
+        self.assertEqual(attempts, [0, 1])
+        self.assertEqual(outcome, {'error': 'new owner unknown'})
+        self.assertEqual(session.desktop_owner_probe, 'unknown')
+        self.cli.attach.assert_not_called()
+
+    def test_owner_wait_expiry_keeps_one_probe_pending_without_native_resume(self):
+        started, release = threading.Event(), threading.Event()
+        self.bridge.ipc.connect = Mock()
+        def owner(*_args, **_kwargs):
+            started.set()
+            release.wait(5)
+            raise IPCError('no-client-found')
+        self.bridge.ipc.owner = Mock(side_effect=owner)
+        session = self.bridge.session(self.thread_id, background=True)
+        try:
+            self.assertTrue(started.wait(2))
+            with patch.object(session.condition, 'wait_for', return_value=False):
+                for _ in range(2):
+                    with self.assertRaisesRegex(IPCError, '桌面连接检查未完成'):
+                        self.bridge.activate(self.thread_id)
+            self.assertTrue(session.owner_probe_inflight)
+            self.assertIsNone(session.desktop_owner_probe)
+            self.bridge.ipc.owner.assert_called_once()
+            self.cli.attach.assert_not_called()
+        finally:
+            release.set()
+
+    def test_unknown_owner_result_does_not_enable_native_resume(self):
+        self.bridge.ipc.connect = Mock()
+        self.bridge.ipc.owner = Mock(side_effect=IPCError('owner discovery unavailable'))
+        with self.assertRaisesRegex(IPCError, 'owner discovery unavailable'):
+            self.bridge.activate(self.thread_id)
+        self.assertEqual(self.bridge.live[self.thread_id].desktop_owner_probe, 'unknown')
+        self.cli.attach.assert_not_called()
+
+    def test_ready_ipc_absent_owner_continues_without_added_delay(self):
+        self.bridge.ipc.connect = Mock()
+        self.bridge.ipc.owner = Mock(side_effect=IPCError('no-client-found'))
+        started = time.monotonic()
+        self.assertTrue(self.bridge.activate(self.thread_id).connected)
+        self.assertLess(time.monotonic() - started, 1)
+        self.bridge.ipc.owner.assert_called_once()
+        self.cli.attach.assert_called_once_with(self.thread_id, explicit=True)
+
     def test_missing_native_runtime_explains_how_to_enable_continuation(self):
         self.cli.available.return_value = False
         view = self.bridge.view(self.thread_id, attach=False)
