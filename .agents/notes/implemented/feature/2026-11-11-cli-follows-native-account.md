@@ -24,6 +24,8 @@ Codex 0.164.0 支持经身份校验的原生冷 `thread/resume` provider overrid
 
 124 项恢复、账号同步和释放定向回归通过。覆盖已生效认证不重建、A→B 待闲且原草稿未发送、B 等待时 C 使旧事务失效、真实 RPC 错误结构转只读、认证错误不外泄、运行任务的停止控制、同 home 注入及独立/SSH/WSL 隔离、成功释放后同 provider 的新认证冷接续。评审修正先复现网关无基线时认证探测失败被放行，以及运行中新 queue/steer 绕过检查；修后拒绝且无原生派发、无新账本。已有异步答复仍可由原任务接收，新消息在活跃转空闲交错中仍不能绕过核验。另有 6 项本机/远端发送与 Goal 的受影响回归通过。
 
+扩大回归时另发现，旧的文件认证夹具在运行状态提交普通发送，只能验证运行中发送模式的拒绝。修正后模拟网关已记录当前文件摘要而同代原生缓存仍旧，使用运行状态允许的补充模式。新补充经过认证校验后被拦截，不写发送账本；旧任务停止仍调用原连接，CLI 服务未退出。
+
 已安装 0.167.0 的隔离零回合检查证明：合成 API Key 换文件后普通读取和 refreshToken 都仍返回旧缓存，显式 API login 会改写文件并更新缓存；provider ID A→B 后原生拒绝 override 并给出 `-32600/modelProviderMismatch`，原历史可读。同 ID 换端点可冷接续。网关隔离验证则在 0.167 用同 ID 采用新认证与端点，在本机已有 0.164 用原生 override 采用新 provider，均同 ID/cwd、一次原生 resume、未写 auth/config、无模型回合和付费请求，所有自有进程正常退出。证据为 `.tmp/feedback-20261111-10/cli-auth-provider-native-result.json`、`cli-account-follow-native-result.json`、`cli-provider-override-164-result.json`。
 
 ## 影响

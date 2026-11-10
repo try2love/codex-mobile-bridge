@@ -923,9 +923,10 @@ class CliNetworkRecoveryTests(CliBridgeFixture):
         self.stop.assert_not_called()
         self.cli._start_daemon.assert_not_called()
 
-    def test_known_file_factory_blocks_new_send_but_preserves_stop(self):
+    def test_known_file_factory_blocks_new_steer_but_preserves_stop(self):
         import json
         (self.home / 'auth.json').write_text(json.dumps({'auth_mode': 'apikey', 'OPENAI_API_KEY': 'new-key'}))
+        self.cli.configuration_stamp = configuration_stamp(self.home)
         self.auth_cache = 'old-key'
         generation = hashlib.sha256(json.dumps(self.generation).encode()).hexdigest()
         self.cli.metadata[self.thread_id] = {'cwd': self.native_state['cwd'], 'modelProvider': 'openai',
@@ -941,8 +942,10 @@ class CliNetworkRecoveryTests(CliBridgeFixture):
         self.cli.call = Mock(return_value={'interrupted': True})
         self.assertTrue(self.bridge.interrupt(self.thread_id)['interrupted'])
         with self.assertRaisesRegex(IPCError, '仍缓存旧 API'):
-            self.bridge.send(self.thread_id, 'new message', '8d7fa750-7ff4-4c4b-9c98-62e2ebbb5bfa')
-        self.assertFalse(any(call.args[1] == 'turn/start' for call in self.cli.call.call_args_list))
+            self.bridge.send(self.thread_id, 'new message', '8d7fa750-7ff4-4c4b-9c98-62e2ebbb5bfa', mode='steer')
+        self.cli.call.assert_called_once()
+        self.assertEqual(self.cli.call.call_args.args[1], 'thread-follower-interrupt-turn')
+        self.assertNotIn(self.thread_id + ':8d7fa750-7ff4-4c4b-9c98-62e2ebbb5bfa', self.bridge.submissions)
         self.stop.assert_not_called()
 
     def test_unknown_loaded_factory_does_not_get_file_auth_proof_from_current_config(self):
