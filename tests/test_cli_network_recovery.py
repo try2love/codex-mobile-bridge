@@ -1,16 +1,18 @@
 """CLI change detection and explicitly confirmed recovery; no real model/process."""
-from contextlib import ExitStack
+from contextlib import ExitStack, closing
 import hashlib
 import json
 import os
+import sqlite3
 import sys
 import uuid
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from bridge.clients.codex.cli_session import CliSessions
+from bridge.clients.codex.cli_session import CliSessions, _managed_cli
 from bridge.clients.codex.daemon_network import configuration_stamp, graceful_restart_supported
 from bridge.clients.codex.ipc import IPCError
+from bridge.features.sessions.store import SessionStore
 from tests.test_cli_bridge_integration import CliBridgeFixture
 
 
@@ -538,6 +540,203 @@ class CliNetworkRecoveryTests(CliBridgeFixture):
         self.assertEqual(record['phase'], 'complete')
         self.stop.assert_not_called()
         self.cli._start_daemon.assert_called_once()
+
+    def _add_cli_metadata(self, home=None):
+        home = home or self.home
+        home.mkdir(exist_ok=True)
+        identifier = str(uuid.uuid4())
+        with closing(sqlite3.connect(home/'state_5.sqlite')) as db, db:
+            db.execute('CREATE TABLE IF NOT EXISTS threads(id TEXT, title TEXT, cwd TEXT, updated_at INT, archived INT, '
+                       'originator TEXT, source TEXT, rollout_path TEXT, model_provider TEXT)')
+            db.execute('INSERT INTO threads VALUES(?,?,?,?,?,?,?,?,?)',
+                (identifier, 'Other CLI fixture', self.native_state['cwd'], 2, 0, 'codex_cli_rs', 'cli',
+                 str(home/'sessions/rollout.jsonl'), self.native_state['modelProvider']))
+        return identifier
+
+    def test_legacy_successful_home_release_allows_another_thread_after_gateway_restart(self):
+        from bridge.app.service import Bridge
+        other = self._add_cli_metadata()
+        original = self.thread_id
+        with self.released_fixture(legacy=True):
+            operations_path = self.bridge.data_dir/'cli-release-operations.json'
+            operations = operations_path.read_bytes()
+            before = self.bridge._cli_recovery_record()
+            self.cli.store = self.bridge.store  # Real SQLite in this home, including both original IDs.
+            self.native_state = {**self.native_state, 'id': other}
+            self.bridge.close()
+            self.bridge = Bridge(self.home, self.home/'bridge-data', cli_sessions=self.cli,
+                                 codex_bin=self.home/'no-codex')
+            session = self.bridge.activate(other)
+            self.assertTrue(session.connected)
+            self.assertEqual((session.id, session.runtime), (other, 'cli'))
+            self.assertEqual(operations_path.read_bytes(), operations)
+        record = self.bridge._cli_recovery_record()
+        self.assertEqual(record['releasedThread']['id'], original)
+        self.assertEqual(record['generation'], before['generation'])
+        self.assertEqual(record['connections'], before['connections'])
+        self.assertEqual(record['phase'], 'complete')
+        self.cli._start_daemon.assert_called_once()
+        self.cli.attach.assert_called_once_with(other, explicit=True)
+        self.stop.assert_not_called()
+
+    def test_legacy_cross_thread_release_requires_exact_success_receipt(self):
+        from bridge.app.lifecycle import private_json
+        other = self._add_cli_metadata()
+        self.cli.store = self.bridge.store
+        mutations = (
+            ('result', {'status': 'unknown'}), ('result', {'status': 'failed'}),
+            ('result', {'status': 'detached'}), ('result', {'host': 'codex:other-home'}),
+            ('result', {'provider': 'claude'}), ('result', {'key': 'different-generation-token'}),
+            ('result', {'notice': '原生会话已卸载，可在电脑端继续'}),
+            ('operation', {'mode': 'wait'}), ('operation', {'connections': ['different-generation-token']}),
+        )
+        for scope, change in mutations:
+            with self.subTest(change=change), self.released_fixture(legacy=True):
+                path = self.bridge.data_dir/'cli-release-operations.json'
+                jobs = json.loads(path.read_text())
+                job = next(iter(jobs.values()))
+                (job['results'][0] if scope == 'result' else job).update(change)
+                private_json(path, jobs)
+                before = self.bridge._cli_recovery_record()
+                with self.assertRaises(IPCError):
+                    self.bridge._recover_cli_environment(other)
+                self.assertEqual(self.bridge._cli_recovery_record(), before)
+        self.cli._start_daemon.assert_not_called()
+        self.cli.attach.assert_not_called()
+        self.stop.assert_not_called()
+
+    def test_legacy_cross_thread_receipt_must_exist_in_this_home(self):
+        other = self._add_cli_metadata()
+        other_home = self.home/'another-home'
+        self._add_cli_metadata(other_home)
+        self.cli.store = SessionStore(other_home)
+        with self.released_fixture(legacy=True):
+            before = self.bridge._cli_recovery_record()
+            with self.assertRaises(IPCError):
+                self.bridge._recover_cli_environment(other)
+            self.assertEqual(self.bridge._cli_recovery_record(), before)
+        self.cli._start_daemon.assert_not_called()
+        self.cli.attach.assert_not_called()
+        self.stop.assert_not_called()
+
+    def test_legacy_cross_thread_release_cannot_reuse_a_still_running_receipted_generation(self):
+        from bridge.app.lifecycle import private_json
+        other = self._add_cli_metadata()
+        self.cli.store = self.bridge.store
+        with self.released_fixture(legacy=True):
+            record = self.bridge._cli_recovery_record()
+            record['generation'] = hashlib.sha256(json.dumps(self.generation).encode()).hexdigest()
+            private_json(self.bridge.data_dir/'cli-daemon-recovery.json', record)
+            self.cli.daemon_status.return_value = 'running'
+            with self.assertRaisesRegex(IPCError, '仍在排空'):
+                self.bridge._recover_cli_environment(other)
+        self.cli._start_daemon.assert_not_called()
+        self.cli.attach.assert_not_called()
+        self.stop.assert_not_called()
+
+    def test_legacy_cross_thread_release_does_not_reuse_another_generation_environment(self):
+        other = self._add_cli_metadata()
+        self.cli.store = self.bridge.store
+        with self.released_fixture(legacy=True), \
+                patch('bridge.features.accounts.cli_sync.LocalCliSync.recovery_target', return_value=None):
+            self.cli.recovery_environment = {'generation': 'different-generation', 'updates': {},
+                                             'preserved': {'OLD_ROUTE_KEY': 'fixture-only'}}
+            with self.assertRaisesRegex(IPCError, '环境已不可核验'):
+                self.bridge._recover_cli_environment(other)
+        self.cli._start_daemon.assert_not_called()
+        self.cli.attach.assert_not_called()
+        self.stop.assert_not_called()
+
+    def test_legacy_cross_thread_release_still_rejects_changed_home_configuration(self):
+        other = self._add_cli_metadata()
+        self.cli.store = self.bridge.store
+        with self.released_fixture(legacy=True):
+            (self.home/'config.toml').write_text('model_provider="changed-provider"\n')
+            with self.assertRaisesRegex(IPCError, '配置或认证已变化'):
+                self.bridge._recover_cli_environment(other)
+        self.cli._start_daemon.assert_not_called()
+        self.cli.attach.assert_not_called()
+        self.stop.assert_not_called()
+
+    def _path_only_cli(self):
+        from pathlib import Path
+        self.cli.allow_installed_runtime = True
+        Path(self.cli.client.socket_path).unlink(missing_ok=True)
+        installed = self.home/'installed-codex'
+        installed.write_text('#!/bin/sh\nexit 0\n')
+        installed.chmod(0o700)
+        patches = ExitStack()
+        patches.enter_context(patch('bridge.clients.codex.cli_session._managed_cli', side_effect=_managed_cli))
+        patches.enter_context(patch('bridge.clients.codex.cli_session.shutil.which', return_value=str(installed)))
+        return patches
+
+    def test_path_cli_cannot_bypass_an_unknown_legacy_release_receipt(self):
+        from bridge.app.lifecycle import private_json
+        other = self._add_cli_metadata()
+        self.cli.store = self.bridge.store
+        for status in ('unknown', 'failed', None):
+            with self.subTest(receiptStatus=status), self.released_fixture(legacy=True), self._path_only_cli():
+                path = self.bridge.data_dir/'cli-release-operations.json'
+                if status is None:
+                    path.unlink()
+                else:
+                    jobs = json.loads(path.read_text())
+                    next(iter(jobs.values()))['results'][0]['status'] = status
+                    private_json(path, jobs)
+                before = self.bridge._cli_recovery_record()
+                operations = path.read_bytes() if path.exists() else None
+                self.native_state = {**self.native_state, 'id': other}
+                self.assertTrue(self.cli.available())
+                with self.assertRaises(IPCError):
+                    self.bridge.activate(other)
+                self.assertEqual(self.bridge._cli_recovery_record(), before)
+                self.assertEqual(path.read_bytes() if path.exists() else None, operations)
+        self.cli._start_daemon.assert_not_called()
+        self.cli.attach.assert_not_called()
+        self.stop.assert_not_called()
+
+    def test_path_cli_cannot_bypass_pending_or_unknown_maintenance(self):
+        from bridge.app.lifecycle import private_json
+        with self._path_only_cli():
+            for phase, target in (('draining', self.thread_id), ('starting', self.thread_id),
+                    ('resuming', self.thread_id), ('resuming', str(uuid.uuid4())),
+                    ('configuringUnknown', self.thread_id)):
+                with self.subTest(phase=phase, target=target):
+                    record = {'phase': phase, 'generation': 'unresolved-generation',
+                              'providerTarget': {'before': {'id': target}}}
+                    private_json(self.bridge.data_dir/'cli-daemon-recovery.json', record)
+                    with self.assertRaises(IPCError):
+                        self.bridge._recover_cli_environment(self.thread_id)
+                    self.assertEqual(self.bridge._cli_recovery_record(), record)
+        self.cli._start_daemon.assert_not_called()
+        self.cli.attach.assert_not_called()
+        self.stop.assert_not_called()
+
+    def _assert_completed_path_release(self, legacy):
+        managed = self.home/'packages/app-server-daemon/current/bin/codex'
+        def start(*_args):
+            managed.parent.mkdir(parents=True)
+            managed.write_text('#!/bin/sh\nexit 0\n')
+            managed.chmod(0o700)
+        self.cli._start_daemon = Mock(side_effect=start)
+        with self.released_fixture(legacy=legacy), self._path_only_cli(), \
+                patch('bridge.platforms.codex_daemon_env.read_daemon_environment',
+                      return_value=({}, self.generation)) as environment:
+            self.assertTrue(self.cli.available())
+            self.assertIsNone(_managed_cli(self.home))
+            self.assertTrue(self.bridge.activate(self.thread_id).connected)
+        self.cli._start_daemon.assert_called_once()
+        self.cli.attach.assert_called_once_with(self.thread_id, explicit=True, expected_identity={
+            'id': self.thread_id, 'cwd': self.native_state['cwd'], 'modelProvider': 'openai'})
+        environment.assert_called_once_with(self.cli.home, managed, ())
+        self.assertEqual(self.bridge._cli_recovery_record()['phase'], 'complete')
+        self.stop.assert_not_called()
+
+    def test_completed_legacy_release_can_start_from_path_and_verify_prepared_daemon(self):
+        self._assert_completed_path_release(legacy=True)
+
+    def test_completed_new_release_can_start_from_path_and_verify_prepared_daemon(self):
+        self._assert_completed_path_release(legacy=False)
 
     def test_legacy_natural_unload_receipt_does_not_unlock_unfinished_recovery(self):
         with self.released_fixture(legacy=True, notice='原生会话已卸载，可在电脑端继续'):

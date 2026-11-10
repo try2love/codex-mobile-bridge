@@ -1859,13 +1859,13 @@ class Bridge:
                         job.get('connections') != record['connections'] or len(job.get('results', [])) != 1):
                     continue
                 row = job['results'][0]
-                if (row.get('key') == record['connections'][0] and row.get('sessionId') == thread_id
+                if (row.get('key') == record['connections'][0] and row.get('sessionId')
                         and row.get('host') == self.host and row.get('provider') == 'codex'
                         and row.get('status') == 'released'
                         and row.get('notice') == '已正常退出此配置的共享 CLI 服务，原生占用已释放'):
-                    saved = self.cli_sessions.store.get(thread_id)
+                    saved = self.cli_sessions.store.get(row['sessionId'])
                     record.update(purpose='release', phase='released', operationId=identifier,
-                        releaseKey=row['key'], releasedThread={'id': thread_id, 'cwd': saved['cwd'],
+                        releaseKey=row['key'], releasedThread={'id': row['sessionId'], 'cwd': saved['cwd'],
                                                              'modelProvider': saved['model_provider']})
                     private_json(self.data_dir/'cli-daemon-recovery.json', record)
                     return True
@@ -1904,7 +1904,7 @@ class Bridge:
 
     def _recover_cli_environment(self, thread_id, *, defer_start=False):
         """Keep environment diagnostics advisory; an unfinished drain stays blocked."""
-        from bridge.clients.codex.cli_session import CliSessions, _managed_cli
+        from bridge.clients.codex.cli_session import CliSessions, _managed_cli, _local_cli
         from bridge.platforms.codex_daemon_env import DaemonEnvironmentUnavailable
         cli = self.cli_sessions
         record = self._cli_recovery_record()
@@ -1919,6 +1919,8 @@ class Bridge:
                         if defer_start:
                             return False
                         executable = _managed_cli(cli.home)
+                        if executable is None and cli.allow_installed_runtime:
+                            executable = _local_cli(cli.home, cli.configured_cli)
                         if executable is None:
                             raise ValueError('无法核对已释放的 CLI 运行组件')
                         self._continue_released_cli(cli, executable, record, thread_id)
@@ -1930,8 +1932,13 @@ class Bridge:
         pending = (record.get('phase') in ('draining', 'stopped', 'starting') or
                    record.get('phase') == 'resuming' and record['providerTarget']['before']['id'] == thread_id)
         if (not isinstance(cli, CliSessions) or cli.alias is not None or
-                not (self.host == 'local' or self.host.startswith('codex:')) or
-                (not Path(cli.client.socket_path).exists() and not pending) or _managed_cli(cli.home) is None):
+                not (self.host == 'local' or self.host.startswith('codex:'))):
+            return
+        if _managed_cli(cli.home) is None:
+            if pending or record.get('phase') in ('resuming', 'configuringUnknown'):
+                raise IPCError('CLI 服务恢复结果尚未核对且运行组件不可用；操作未发送，不会跳过待核验回执。')
+            return
+        if not Path(cli.client.socket_path).exists() and not pending:
             return
         if not pending:
             self._verify_cli_file_auth(thread_id)
@@ -2115,6 +2122,7 @@ class Bridge:
     def _resume_cli_recovery(self, cli, executable, record, *, check_only=False):
         from contextlib import closing
         from bridge.clients.codex.app_server import CodexAppServer
+        from bridge.clients.codex.cli_session import _managed_cli
         from bridge.clients.codex.daemon_network import configuration_stamp
         from bridge.platforms.codex_daemon_env import read_daemon_environment
         def verify_proxy_setting():
@@ -2154,6 +2162,7 @@ class Bridge:
         private_json(self.data_dir / 'cli-daemon-recovery.json', record)
         cli._start_daemon(environment['updates'], environment['preserved'])
         cli.daemon_start_generation += 1
+        executable = _managed_cli(cli.home) or executable
         verify_proxy_setting()
         record['resumedGeneration'] = hashlib.sha256(json.dumps(
             read_daemon_environment(cli.home, executable, ())[1]).encode()).hexdigest()
