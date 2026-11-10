@@ -35,5 +35,6 @@ PATH 中有完整 CLI 也不能绕过未决账本：home 管理组件缺失时�
 ## 相关记录审计
 
 - [CLI 释放与安全恢复](2026-11-10-cli-release-and-safe-recovery.md)：部分修订其旧格式必须匹配当前线程的限制，保留原成功语义、身份、配置和未知结果保护。
+- [已确认恢复等待共享任务](../feature/2026-11-11-cli-recovery-waits-for-idle.md)：等待是恢复事务的新阶段，保留旧释放成功与恢复未决的区别。
 - [来源执行路由](2026-11-11-codex-source-execution-routing.md)：沿用 CLI 直接使用原生 daemon，本决定只校正释放回执关联。
 - 其他通知、账号和 macOS TCC 提案与本次账本匹配无关，保持不动。

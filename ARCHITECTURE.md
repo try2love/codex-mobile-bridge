@@ -28,7 +28,9 @@ HTTP 阅读请求先返回，保存历史和实时连接在后台加载，通过
 
 网页点击或打开 APP 来源会话时，并行读取渐进历史并通过带 CSRF 的重连接口自动连接原生 owner。首屏不等待激活完成，切换会话取消旧页面请求，首次历史读取失败会自动重试。后台阅读、轮询和通知监听本身只订阅状态。打开会话、发送、处理授权或点击“重新连接”时，优先等待后台订阅；仍无 owner 才通过已有 `codex://threads/…` 链接让原 App 加载聊天，最多等待约 20 秒。该兜底可能切换桌面当前聊天，不调用第二个 app-server，不改 provider。连接失败时操作尚未发送，草稿保留。原 App 因 provider 缺失等配置问题无法恢复的聊天，网关也不会擅自迁移。
 
-APP 来源使用原 App owner，CLI 来源直接使用所选主机及 CODEX_HOME 的原生 CLI daemon；CLI 不探测或复用 App owner，只有显式继续才连接或冷恢复。CLI 原生接入失败时保持失败，不切换到 App。IDE 保留先核验原 VS Code owner、确认缺席后才允许显式原生接续的边界。原生 writer 锁仍由官方运行时维护，网关不清锁、不终止持有者，也不保证 App 与 CLI 可同时写同一聊天。详情见 [CLI 接入说明](docs/codex-cli.md)及[来源路由决定](.agents/notes/implemented/bug-fix/2026-11-11-codex-source-execution-routing.md)。
+APP 来源使用原 App owner，CLI 来源直接使用所选主机及 CODEX_HOME 的原生 CLI daemon；CLI 不探测或复用 App owner，只在显式继续或确认恢复后连接或冷恢复。CLI 原生接入失败时保持失败，不切换到 App。IDE 保留先核验原 VS Code owner、确认缺席后才允许显式原生接续的边界。原生 writer 锁仍由官方运行时维护，网关不清锁、不终止持有者，也不保证 App 与 CLI 可同时写同一聊天。详情见 [CLI 接入说明](docs/codex-cli.md)及[来源路由决定](.agents/notes/implemented/bug-fix/2026-11-11-codex-source-execution-routing.md)。
+
+在支持的本机 Codex CLI 版本中，用户确认的恢复可在现有维护事务中等待同一 home 的所有任务结束。查看状态不会启动等待，取消在首次原生写入或退出派发前有效。恢复绑定原主机、home、配置及已核验的进程代次；完成后仅继续发起恢复的会话，未知操作不重放。默认仅正常排空，不调用原生 restart 或强制终止。参见[等待恢复决定](.agents/notes/implemented/feature/2026-11-11-cli-recovery-waits-for-idle.md)。
 
 模型、权限、Skill 与工作模式使用独立能力字段，不借用会同时开放重命名等操作的 `canConfigure`。APP 与已连接原 VS Code owner 的聊天使用各自既有通路；CLI 的目录、设置、Skill、计划请求和本机/SSH Goal 使用同一原生 daemon。读取目录不激活会话，显式设置只更新所选模型/推理强度或经策略检查的权限字段，不替换 provider、认证或 cwd。原生 CLI 权限以 resume 的实际配置与 thread/settings/updated 事件为准，不把请求值投影为已生效；权限策略读取来自执行端，不依赖网关电脑的桌面开关。
 

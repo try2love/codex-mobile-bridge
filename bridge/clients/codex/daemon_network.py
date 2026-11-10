@@ -37,7 +37,7 @@ def configuration_stamp(home):
 
 def graceful_restart_supported(info):
     version = re.match(r'^(?:Codex Desktop|codex_cli_rs|codex|codex-tui|codex-mobile-bridge(?:-(?:cli|target-check|network-check|network-setting|auth-check|final-idle-check|network-verify))?)/(\d+\.\d+\.\d+)(?:\s|$)', info.get('userAgent', ''))
-    return bool(version and version.group(1) == '0.164.0')
+    return bool(version and version.group(1) in ('0.164.0', '0.167.0'))
 
 
 def native_recovery_target(home, config, source_provider, environment, layers=()):

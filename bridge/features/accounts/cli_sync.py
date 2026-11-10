@@ -8,6 +8,7 @@ from pathlib import Path
 
 from bridge.clients.desktop_app import DesktopApp
 from bridge.features.accounts.accounts import ManagedRPC, private_bytes, private_json, token_owner
+from bridge.features.sessions.cli_maintenance import CliTasksPending
 
 
 CLAUDE_ENV_KEYS = ('ANTHROPIC_BASE_URL', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_MODEL')
@@ -216,7 +217,7 @@ class LocalCliSync:
     @staticmethod
     def check_idle_daemon(client, home):
         from bridge.features.sessions.create import check_archive_runtime
-        from bridge.clients.codex.app_server import AppServerUnsupported
+        from bridge.clients.codex.app_server import AppServerError, AppServerUnsupported
         from bridge.clients.codex.release import GOAL_STATUSES
         from bridge.clients.codex.daemon_network import graceful_restart_supported
         info = client.connect()
@@ -224,7 +225,12 @@ class LocalCliSync:
             raise ValueError('原生服务不属于此配置，未切换账号')
         def request(method, params):
             return client.request(method, params, replay_safe=True)
-        identifiers = client.loaded_threads()
+        def loaded_threads():
+            try:
+                return client.loaded_threads()
+            except (AppServerError, OSError) as error:
+                raise CliTasksPending('无法核验此配置的原生任务') from error
+        identifiers = loaded_threads()
         def check(threads):
             blockers = []
             for identifier in threads:
@@ -241,13 +247,13 @@ class LocalCliSync:
                         raise ValueError('目标状态未知')
                     if goal and goal.get('status') == 'active':
                         raise ValueError('有运行中的目标')
-                except ValueError as error:
+                except (AppServerError, OSError, ValueError, KeyError, TypeError) as error:
                     blockers.append(f"{identifier}：{error}")
             if blockers:
-                raise ValueError('；'.join(blockers))
+                raise CliTasksPending('；'.join(blockers))
         check(identifiers)
-        if client.loaded_threads() != identifiers:
-            raise ValueError('此配置的会话已变化，请重新检查')
+        if loaded_threads() != identifiers:
+            raise CliTasksPending('此配置的会话已变化，请重新检查')
         check(identifiers)
 
 

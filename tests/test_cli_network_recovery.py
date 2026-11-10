@@ -5,6 +5,7 @@ import json
 import os
 import sqlite3
 import sys
+import threading
 import uuid
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -148,13 +149,32 @@ class CliNetworkRecoveryTests(CliBridgeFixture):
                 self.bridge._recover_cli_environment(self.thread_id)
         self.cli.attach.assert_not_called()
 
-    def test_other_active_thread_blocks_even_explicit_recovery(self):
+    def test_other_active_thread_waits_before_confirmed_recovery(self):
         self.busy = True
         preview = self.bridge.cli_network(self.thread_id)
-        self.assertFalse(preview['canRecover'])
+        self.assertTrue(preview['canRecover'])
+        self.assertTrue(preview['willWait'])
         self.assertIn('unrelated-thread', preview['message'])
         self.stop.assert_not_called()
         self.cli.close.assert_not_called()
+        body = {'confirmed': True, 'generation': preview['generation']}
+        with patch('bridge.features.sessions.cli_maintenance.WAIT_INTERVAL', .01):
+            pending = self.bridge.cli_network(self.thread_id, body)
+            self.assertEqual(pending['state'], 'waiting')
+            self.assertEqual(self.bridge.cli_network(self.thread_id, body)['operationId'], pending['operationId'])
+            self.stop.assert_not_called()
+            self.cli._start_daemon.assert_not_called()
+            self.cli.attach.assert_not_called()
+            self.busy = False
+            self.bridge.cli_maintenance.worker.join(2)
+            self.assertFalse(self.bridge.cli_maintenance.worker.is_alive())
+        result = self.bridge.cli_network(self.thread_id, {'action': 'status', 'operationId': pending['operationId']})
+        self.assertEqual(result['state'], 'complete')
+        self.assertTrue(result['connected'])
+        self.stop.assert_called_once_with(self.home, self.home / 'codex', self.generation, graceful_only=True)
+        self.cli._start_daemon.assert_called_once()
+        self.cli.attach.assert_called_once_with(self.thread_id, explicit=True,
+            expected_identity={'id': self.thread_id, 'cwd': self.native_state['cwd'], 'modelProvider': 'openai'})
 
     def test_refreshed_credentials_are_detected_and_confirmed_recovery_preserves_proxy(self):
         self.proxy_updates = {}
@@ -174,9 +194,215 @@ class CliNetworkRecoveryTests(CliBridgeFixture):
 
     def test_unknown_submission_blocks_restart_without_replay(self):
         self.bridge.submissions['unrelated:submission'] = {'status': 'unknown'}
-        self.assertFalse(self.bridge.cli_network(self.thread_id)['canRecover'])
+        preview = self.bridge.cli_network(self.thread_id)
+        self.assertTrue(preview['willWait'])
+        body = {'confirmed': True, 'generation': preview['generation']}
+        pending = self.bridge.cli_network(self.thread_id, body)
+        self.assertEqual(pending['state'], 'waiting')
+        cancelled = self.bridge.cli_network(self.thread_id, {'action': 'cancel', 'operationId': pending['operationId']})
+        self.assertEqual(cancelled['state'], 'cancelled')
+        self.bridge.cli_maintenance.worker.join(2)
+        self.assertFalse(self.bridge.cli_maintenance.worker.is_alive())
+        self.assertEqual(self.bridge.cli_network(self.thread_id, body)['operationId'], pending['operationId'])
+        self.assertNotEqual(self.bridge.cli_network(self.thread_id)['generation'], preview['generation'])
         self.stop.assert_not_called()
+        self.cli._start_daemon.assert_not_called()
+        self.cli.attach.assert_not_called()
         self.assertEqual(self.bridge.submissions['unrelated:submission']['status'], 'unknown')
+
+    def test_waiting_recovery_aborts_if_process_generation_changes(self):
+        self.busy = True
+        with patch('bridge.features.sessions.cli_maintenance.WAIT_INTERVAL', .01):
+            pending = self.confirm()
+            self.generation = ('replacement-pid', 'replacement-generation')
+            self.busy = False
+            self.bridge.cli_maintenance.worker.join(2)
+        result = self.bridge.cli_network(self.thread_id, {'action': 'status', 'operationId': pending['operationId']})
+        self.assertEqual(result['state'], 'failed')
+        self.assertIn('服务或配置已变化', result['message'])
+        self.stop.assert_not_called()
+        self.cli._start_daemon.assert_not_called()
+        self.cli.attach.assert_not_called()
+
+    def test_waiting_proxy_only_recovery_rejects_paired_thread_identity_changes(self):
+        original = self.native_state.copy()
+        updates = self.proxy_updates.copy()
+        # Both providers are aliases of the same route: either identity alone
+        # leaves the provider migration plan empty in this fixture.
+        self.current_config['model_providers'] = {'bridge_api': {'requires_openai_auth': True}}
+        for field in ('cwd', 'modelProvider'):
+            with self.subTest(field=field), patch('sys.platform', 'linux'), \
+                    patch('bridge.features.sessions.cli_maintenance.WAIT_INTERVAL', .01):
+                self.native_state.update(original)
+                self.thread_provider = self.cli_store_provider = original['modelProvider']
+                self.proxy_updates = updates.copy()
+                self.busy = True
+                pending = self.confirm()
+                if field == 'cwd':
+                    self.native_state['cwd'] = '/private/user/moved-fixture'
+                else:
+                    self.native_state['modelProvider'] = 'bridge_api'
+                    self.thread_provider = self.cli_store_provider = 'bridge_api'
+                self.busy = False
+                self.bridge.cli_maintenance.worker.join(2)
+                result = self.bridge.cli_network(self.thread_id,
+                    {'action': 'status', 'operationId': pending['operationId']})
+                self.assertEqual(result['state'], 'failed')
+                self.assertIn('恢复目标', result['message'])
+                self.stop.assert_not_called()
+                self.cli._start_daemon.assert_not_called()
+                self.cli.attach.assert_not_called()
+
+    def test_waiting_recovery_rechecks_target_identity_after_final_idle_audit(self):
+        from bridge.features.accounts.cli_sync import LocalCliSync
+        check = LocalCliSync.check_idle_daemon
+        self.busy = True
+        audits = 0
+        def moved_after_idle(probe, home):
+            nonlocal audits
+            check(probe, home)
+            if threading.current_thread().name == 'cli-maintenance-wait':
+                audits += 1
+                if audits == 2:
+                    self.native_state['cwd'] = '/private/user/moved-after-audit'
+        with patch('sys.platform', 'linux'), patch.object(LocalCliSync, 'check_idle_daemon', side_effect=moved_after_idle), \
+                patch('bridge.features.sessions.cli_maintenance.WAIT_INTERVAL', .01):
+            pending = self.confirm()
+            self.busy = False
+            self.bridge.cli_maintenance.worker.join(2)
+        result = self.bridge.cli_network(self.thread_id, {'action': 'status', 'operationId': pending['operationId']})
+        self.assertEqual(result['state'], 'failed')
+        self.assertIn('恢复目标的会话身份已变化', result['message'])
+        self.stop.assert_not_called()
+        self.cli._start_daemon.assert_not_called()
+        self.cli.attach.assert_not_called()
+
+    def test_status_and_cancel_do_not_wait_for_an_inflight_idle_check(self):
+        from bridge.features.accounts.cli_sync import LocalCliSync
+        check = LocalCliSync.check_idle_daemon
+        for platform in ('linux', 'darwin'):
+            with self.subTest(platform=platform), patch('sys.platform', platform):
+                self.busy = True
+                entered, release = threading.Event(), threading.Event()
+                def blocked(probe, home):
+                    if threading.current_thread().name == 'cli-maintenance-wait':
+                        entered.set()
+                        self.assertTrue(release.wait(2))
+                    return check(probe, home)
+                with patch.object(LocalCliSync, 'check_idle_daemon', side_effect=blocked):
+                    pending = self.confirm()
+                    try:
+                        self.assertTrue(entered.wait(1))
+                        request = {'action': 'status', 'operationId': pending['operationId']}
+                        self.assertEqual(self.bridge.cli_network(self.thread_id, request)['state'], 'waiting')
+                        self.assertFalse(release.is_set())
+                        self.assertEqual(self.bridge.cli_network(self.thread_id,
+                            {**request, 'action': 'cancel'})['state'], 'cancelled')
+                        self.busy = False
+                    finally:
+                        release.set()
+                    self.bridge.cli_maintenance.worker.join(2)
+                    self.assertFalse(self.bridge.cli_maintenance.worker.is_alive())
+                self.assertEqual(self.bridge._cli_recovery_record()['phase'], 'cancelled')
+        self.stop.assert_not_called()
+        self.cli._start_daemon.assert_not_called()
+        self.cli.attach.assert_not_called()
+        self.assertFalse(any(method == 'config/value/write' for method, _ in self.native_calls))
+
+    def test_unknown_native_task_state_waits_until_readable(self):
+        from bridge.clients.codex.app_server import AppServerUnavailable
+        request = self.probe.request
+        unknown = True
+        def read(method, params, **kwargs):
+            if unknown and method == 'thread/backgroundTerminals/list':
+                raise AppServerUnavailable('fixture task list unavailable')
+            return request(method, params, **kwargs)
+        with patch.object(self.probe, 'request', side_effect=read), \
+                patch('bridge.features.sessions.cli_maintenance.WAIT_INTERVAL', .01):
+            pending = self.confirm()
+            self.assertEqual(pending['state'], 'waiting')
+            self.stop.assert_not_called()
+            unknown = False
+            self.bridge.cli_maintenance.worker.join(2)
+        result = self.bridge.cli_network(self.thread_id, {'action': 'status', 'operationId': pending['operationId']})
+        self.assertEqual(result['state'], 'complete')
+        self.stop.assert_called_once()
+
+    def test_last_idle_check_can_queue_instead_of_dispatching_exit(self):
+        from bridge.features.accounts.cli_sync import LocalCliSync
+        check = LocalCliSync.check_idle_daemon
+        calls = 0
+        def newly_busy(probe, home):
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                self.busy = True
+            return check(probe, home)
+        with patch('sys.platform', 'linux'), patch.object(LocalCliSync, 'check_idle_daemon', side_effect=newly_busy), \
+                patch('bridge.features.sessions.cli_maintenance.WAIT_INTERVAL', .01):
+            pending = self.confirm()
+            self.assertEqual(pending['state'], 'waiting')
+            self.stop.assert_not_called()
+            self.busy = False
+            self.bridge.cli_maintenance.worker.join(2)
+        result = self.bridge.cli_network(self.thread_id, {'action': 'status', 'operationId': pending['operationId']})
+        self.assertEqual(result['state'], 'complete')
+        self.stop.assert_called_once()
+
+    def test_restart_pauses_waiting_without_status_triggering_native_work(self):
+        from bridge.app.service import Bridge
+        self.busy = True
+        pending = self.confirm()
+        old = self.bridge
+        old.close()
+        old.cli_maintenance.worker.join(2)
+        self.assertFalse(old.cli_maintenance.worker.is_alive())
+        self.bridge = Bridge(self.home, old.data_dir, cli_sessions=self.cli)
+        self.native_calls.clear()
+        paused = self.bridge.cli_network(self.thread_id)
+        self.assertEqual(paused['operationId'], pending['operationId'])
+        self.assertEqual(paused['state'], 'waiting')
+        self.assertTrue(paused['canRecover'])
+        self.assertIsNone(self.bridge.cli_maintenance.worker)
+        self.assertEqual(self.native_calls, [])
+        self.busy = False
+        self.assertEqual(self.bridge.cli_network(self.thread_id,
+            {'confirmed': True, 'generation': paused['generation']})['operationId'], pending['operationId'])
+        self.bridge.cli_maintenance.worker.join(2)
+        result = self.bridge.cli_network(self.thread_id, {'action': 'status', 'operationId': pending['operationId']})
+        self.assertEqual(result['state'], 'complete')
+        self.stop.assert_called_once()
+        self.cli._start_daemon.assert_called_once()
+
+    def test_waiting_recovery_keeps_unknown_write_receipt_without_replay(self):
+        self.busy = True
+        error = OSError('fixture lost setting receipt')
+        error.system_proxy_unknown = True
+        with patch('sys.platform', 'darwin'), \
+                patch('bridge.features.sessions.cli_maintenance.WAIT_INTERVAL', .01), \
+                patch('bridge.clients.codex.daemon_network.enable_system_proxy_following', side_effect=error) as write:
+            preview = self.bridge.cli_network(self.thread_id)
+            body = {'confirmed': True, 'generation': preview['generation']}
+            pending = self.bridge.cli_network(self.thread_id, body)
+            self.busy = False
+            self.bridge.cli_maintenance.worker.join(2)
+            result = self.bridge.cli_network(self.thread_id, body)
+            write.assert_called_once()
+        self.assertEqual(result['operationId'], pending['operationId'])
+        self.assertEqual(result['state'], 'unknown')
+        self.assertEqual(self.bridge._cli_recovery_record()['phase'], 'configuringUnknown')
+        self.stop.assert_not_called()
+        self.cli._start_daemon.assert_not_called()
+
+    def test_confirmed_recovery_does_not_compete_with_same_home_maintenance(self):
+        from bridge.clients.codex.desktop_runtime import exclusive_lock
+        preview = self.bridge.cli_network(self.thread_id)
+        with exclusive_lock(self.home, 'cli-maintenance'):
+            with self.assertRaisesRegex(ValueError, '仍在使用或退出中'):
+                self.bridge.cli_network(self.thread_id, {'confirmed': True, 'generation': preview['generation']})
+        self.assertEqual(self.bridge._cli_recovery_record(), {})
+        self.stop.assert_not_called()
+        self.cli._start_daemon.assert_not_called()
 
     def test_process_generation_change_aborts_before_stop(self):
         preview = self.bridge.cli_network(self.thread_id)
@@ -879,6 +1105,7 @@ class CliNetworkRecoveryTests(CliBridgeFixture):
 
     def test_graceful_capability_never_guesses_from_os_or_future_version(self):
         self.assertTrue(graceful_restart_supported({'userAgent': 'Codex Desktop/0.164.0 (Mac OS 15.6.1)'}))
+        self.assertTrue(graceful_restart_supported({'userAgent': 'codex-mobile-bridge-network-check/0.167.0 (Mac OS 26.1)'}))
         self.assertFalse(graceful_restart_supported({'userAgent': 'Unknown (Mac OS 0.164.0)'}))
         self.assertFalse(graceful_restart_supported({'userAgent': 'Codex Desktop/0.165.0'}))
         self.assertTrue(graceful_restart_supported({'userAgent':
