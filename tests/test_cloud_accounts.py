@@ -637,15 +637,17 @@ class CloudAccountsTests(unittest.TestCase):
             asyncio.run(send())
         connector.ws.send_bytes.assert_not_awaited()
 
-    def test_forwarding_allowlist_and_header_boundary(self):
+    def test_forwarding_checks_framing_without_api_permissions(self):
         value = {'kind': 'request', 'id': str(uuid.uuid4()), 'method': 'GET',
                  'path': '/api/sessions/' + str(uuid.uuid4()) + '/events',
                  'content_type': 'application/json', 'headers': {}, 'length': 0}
         validate_request(value)
         validate_request({**value, 'path':'/api/mobile/events?after=0'})
-        for change in ({'path': '//evil.example/api/sessions'}, {'path': '/api/admin'},
+        for change in ({'path': '/api/admin'}, {'method': 'DELETE'}, {'path': '/api/sessions/x/events'}):
+            validate_request({**value, **change})
+        for change in ({'path': '//evil.example/api/sessions'}, {'path': '/api/../private'},
                        {'headers': {'Cookie': 'stolen'}}, {'length': True},
-                       {'method': 'DELETE'}, {'path': '/api/sessions/x/events'}):
+                       {'method': 'GET\r\nInjected: value'}, {'path': '/api/sessions#fragment'}):
             with self.subTest(change=change), self.assertRaises((ValueError, PermissionError)):
                 validate_request({**value, **change})
 

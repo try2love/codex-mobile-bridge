@@ -57,12 +57,14 @@ class CloudWebTests(unittest.IsolatedAsyncioTestCase):
             base='/d/' + self.config['gateway_id'], origin=self.web.origin, session_id=self.session,
             csrf='a'*43, expires=int(time.time())+3600, method='GET', path=path, length=0, headers={}, **extra)
 
-    async def proxy(self, path, body=None):
+    async def proxy(self, path, body=None, method=None):
         request, queue, records, data = self.request(path), asyncio.Queue(), [], bytearray()
         if body is not None:
             payload = json.dumps(body).encode()
             request.update(method='POST', length=len(payload), content_type='application/json')
             await queue.put(payload)
+        if method is not None:
+            request['method'] = method
         async def send(value, part=None):
             if part is not None:
                 data.extend(part)
@@ -159,7 +161,7 @@ class CloudWebTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(start['status'], 200)
                 manager.call.assert_called_with(provider, 'create', None, body)
 
-    async def test_creation_allowlist_is_exact_and_does_not_expand_phone_or_admin_access(self):
+    async def test_web_and_phone_share_framing_without_business_route_lists(self):
         from relay.protocol import validate
         allowed = [('GET', '/api/projects/models'), ('POST', '/api/projects'),
                    ('POST', '/api/projects/browse'), ('POST', '/api/projects/trust')]
@@ -170,20 +172,35 @@ class CloudWebTests(unittest.IsolatedAsyncioTestCase):
         for method, path in allowed:
             with self.subTest(method=method, path=path):
                 self.web.validate_request({**self.request(path), 'method': method})
-                with self.assertRaises(PermissionError):
-                    validate(method, path)
-        denied = [('POST', '/api/projects/models'), ('GET', '/api/projects/browse'),
+                validate(method, path)
+        forwarded = [('POST', '/api/projects/models'), ('GET', '/api/projects/browse'),
                   ('GET', '/api/projects/trust'), ('GET', '/api/projects/models/extra'),
-                  ('GET', '/api/projects/\tmodels'), ('GET', '/api//projects/models')]
+                  ('PUT', '/api/a-future-resource'), ('PATCH', '/api/accounts')]
         for provider in ('claude', 'deepseek', 'zcode', 'arbitrary'):
             root = '/api/desktop-sessions/' + provider
-            denied += [('POST', root + '/create-models'), ('GET', root + '/projects/register'),
+            forwarded += [('POST', root + '/create-models'), ('GET', root + '/projects/register'),
                        ('GET', root + '/projects/browse'), ('POST', root + '/projects/remove'),
                        ('POST', root + '/install'), ('POST', root + '/scan')]
-        denied += [('GET', '/api/desktop-sessions/arbitrary/create-models'), ('POST', '/api/desktop-sessions/arbitrary/create')]
-        for method, path in denied:
-            with self.subTest(method=method, path=path), self.assertRaises((ValueError, PermissionError)):
+        forwarded += [('GET', '/api/desktop-sessions/arbitrary/create-models'), ('POST', '/api/desktop-sessions/arbitrary/create')]
+        for method, path in forwarded:
+            with self.subTest(method=method, path=path):
                 self.web.validate_request({**self.request(path), 'method': method})
+
+    async def test_future_api_and_write_bodies_reach_real_http_handler(self):
+        from forwarding_fixture import FutureHandler
+        self.server.RequestHandlerClass = FutureHandler
+        for method in ('POST', 'PUT', 'PATCH', 'DELETE'):
+            with self.subTest(method=method):
+                start, raw = await self.proxy('/api/future-fixture', {'value': 'forwarded-once'}, method)
+                self.assertEqual(start['status'], 200, raw)
+                self.assertEqual(json.loads(raw), {'method': method, 'body': {'value': 'forwarded-once'}})
+        start, raw = await self.proxy('/api/future-fixture', method='HEAD')
+        self.assertEqual((start['status'], start['headers']['Content-Length'], raw), (200, '32', b''))
+        for method, body in [('GET', None), ('POST', {})]:
+            start, raw = await self.proxy('/api/not-implemented', body, method)
+            self.assertEqual((start['status'], json.loads(raw)), (404, {'error': '页面不存在'}))
+        start, raw = await self.proxy('/api/auth')
+        self.assertEqual(start['status'], 200, raw)
 
     async def test_live_assets_and_private_auth_cross_the_actual_http_listener(self):
         start, html = await self.proxy('/')
@@ -278,13 +295,15 @@ class CloudWebTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 connector.notifications.close()
 
-    async def test_boundaries_accept_browser_headers_and_reject_account_or_private_paths(self):
+    async def test_boundaries_keep_account_authority_and_header_framing(self):
         good = self.request('/app.js?v=abcd&bridge_retry=1')
         good['headers'] = {'If-None-Match': '"previous"'}
         self.web.validate_request(good)
-        for changes in ({'path': 'https://elsewhere.test/'}, {'path': '/api/cloud'},
-                        {'path': '/api/login', 'method': 'POST'}, {'path': '/api/connection/prove'},
-                        {'path': '/%2e%2e/app.js'}, {'path': '/app.js?other=1'},
+        for path in ('/api/cloud', '/api/login', '/api/connection/prove', '/app.js?other=1'):
+            self.web.validate_request({**good, 'path': path})
+        for changes in ({'path': 'https://elsewhere.test/'}, {'path': '/api/projects/\tmodels'},
+                        {'path': '/api//projects/models'}, {'path': '/api/../private'},
+                        {'path': '/%2e%2e/app.js'}, {'method': 'GET\r\nInjected: value'},
                         {'account_id': str(uuid.uuid4())}, {'origin': 'https://elsewhere.test'},
                         {'length': 1}, {'headers': {'Authorization': 'Bearer forbidden'}},
                         {'headers': {'If-None-Match': 'bad\r\nheader'}}, {'expires': int(time.time())-1}):

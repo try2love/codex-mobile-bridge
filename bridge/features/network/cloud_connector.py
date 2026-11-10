@@ -11,7 +11,7 @@ import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from relay.protocol import MAX_BODY, content_type, download_headers, validate
+from relay.protocol import MAX_BODY, content_type, download_headers, validate, request_headers
 from bridge.features.auth.tls import client_context
 from bridge.features.auth.auth import session_file_lock
 from bridge.features.network.cloud_account import Controller, CloudError, scope
@@ -33,16 +33,9 @@ def validate_request(value):
     if (not isinstance(value['path'], str) or not isinstance(value['method'], str)
             or type(value['length']) is not int or not 0 <= value['length'] <= MAX_BODY):
         raise ValueError('invalid request fields')
-    if value['path'] == '/api/auth' and value['method'] == 'GET' and value['length'] == 0:
-        pass
-    elif value['method'] == 'GET' and urlsplit(value['path']).path.endswith('/events') and urlsplit(value['path']).path != '/api/mobile/events':
-        # SSE is the same authenticated session resource; not an arbitrary socket/RPC endpoint.
-        path, separator, query = value['path'].partition('?')
-        validate('GET', path.removesuffix('/events') + '/poll' + separator + query, value['length'])
-    else:
-        validate(value['method'], value['path'], value['length'])
+    validate(value['method'], value['path'], value['length'])
     content_type(value['content_type'])
-    download_headers(value['headers'])
+    request_headers(value['method'], value['headers'])
 
 
 class Channel:
@@ -365,7 +358,7 @@ class Connector:
                    'X-CSRF-Token': session['csrf'], 'Accept-Encoding': 'identity',
                    'Content-Type': value['content_type'], **value['headers']}
         async with self.local.request(value['method'], self.local_origin + value['path'], headers=headers,
-                                      data=bytes(body) if value['method'] == 'POST' else None, allow_redirects=False) as response:
+                                      data=bytes(body) if body else None, allow_redirects=False) as response:
             if 300 <= response.status < 400:
                 raise PermissionError('local redirects forbidden')
             decorated = None

@@ -301,12 +301,8 @@ class Relay:
         phone = self.phone_auth(request)
         length = request.content_length or 0
         path = self.api_path(request)
-        try:
-            validate(request.method, path, length)
-        except PermissionError as exc:
-            # A valid login does not expire when a capability is unavailable.
-            raise web.HTTPForbidden(reason=str(exc)) from None
-        if request.headers.get('Transfer-Encoding') or (request.method == 'POST' and request.content_length is None):
+        validate(request.method, path, length)
+        if request.headers.get('Transfer-Encoding') or (request.method not in ('GET', 'HEAD') and request.content_length is None):
             raise ValueError('A bounded Content-Length is required')
         ws = self.devices.get(phone['device'])
         if ws is None:
@@ -359,7 +355,7 @@ class Relay:
                 return result
             return self.renew(request, web.Response(status=status, body=response, headers=headers), phone)
         except (asyncio.TimeoutError, ConnectionError, OSError):
-            unknown = request.method == 'POST'
+            unknown = request.method not in ('GET', 'HEAD')
             return web.json_response({'error': '连接中断，操作结果待确认，请先查看状态，勿重复提交。' if unknown else '电脑连接中断，请稍后刷新。',
                                       'code': 'outcome_unknown' if unknown else 'device_offline'}, status=504 if unknown else 503)
         finally:

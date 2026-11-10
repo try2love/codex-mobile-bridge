@@ -1,25 +1,10 @@
-"""Shared relay boundary. No caller-selected HTTP destinations or raw IPC."""
+"""HTTP forwarding framing. Business authorization belongs to the gateway."""
 import base64
 import re
 from urllib.parse import urlsplit
 
 MAX_BODY = 20 * 1024 * 1024
 MAX_FRAME = (MAX_BODY + 2) // 3 * 4 + 16384
-UUID = r'[0-9a-f-]{36}'
-DIAGNOSTIC_UUID = r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
-THREAD = re.compile(r'/api/sessions/' + UUID + r'(?:/(.*))?')
-DESKTOP = re.compile(r'/api/desktop-sessions/(?:deepseek|claude)/(.*)')
-READ = {'', 'catalog', 'poll', 'timeline', 'detail', 'changes', 'notifications',
-        'side-chat', 'terminal', 'subagents', 'workspace', 'workspace/preview',
-        'workspace/download', 'workspace/info', 'workspace/git-status', 'workspace/git-diff',
-        'workspace/git-history', 'workspace/git-commit', 'workspace/git-history-diff',
-        'workspace/git-branches'}
-WRITE = {'send', 'stop', 'history', 'respond', 'reconnect', 'queue', 'settings',
-         'permissions', 'uploads', 'message-action', 'rename', 'pin', 'archive', 'notifications',
-         'goal/cancel', 'goal/edit', 'goal/status', 'side-chat', 'terminal',
-         'workspace/upload', 'workspace/git-action'}
-DESKTOP_READ = {'list', 'detail', 'catalog', 'projects', 'account', 'access', 'terminal', 'notifications'} | {action for action in READ if action.startswith('workspace')}
-DESKTOP_WRITE = {'pin', 'send', 'stop', 'settings', 'respond', 'create', 'access', 'uploads', 'terminal', 'notifications', 'workspace/upload', 'workspace/git-action', 'archive'}
 
 
 def origin(value, test_http=False):
@@ -35,49 +20,20 @@ def origin(value, test_http=False):
 
 
 def validate(method, path, size=0):
-    if not isinstance(path, str) or len(path) > 8192 or any(ord(c) < 32 for c in path):
+    """Validate one bounded origin-relative request, without choosing its API."""
+    if not isinstance(path, str) or len(path) > 8192 or any(ord(c) < 32 or ord(c) == 127 for c in path):
         raise ValueError('Invalid request path')
     p = urlsplit(path)
-    if p.scheme or p.netloc or p.fragment or '%' in p.path or '\\' in path or '//' in p.path:
-        raise ValueError('Relative API path required')
-    if method not in ('GET', 'POST') or type(size) is not int or not 0 <= size <= MAX_BODY:
-        raise ValueError('Unsupported request or body too large')
-    if method == 'GET' and size:
-        raise ValueError('GET body is not allowed')
-    if p.path == '/api/sessions/diagnostics':
-        if method == 'GET' and (not p.query or re.fullmatch('thread=' + DIAGNOSTIC_UUID, p.query)):
-            return
-        raise PermissionError('This operation is not available through the shared relay')
-    if ((method == 'GET' and (p.path == '/api/mobile/update' or re.fullmatch(r'/api/mobile/update/(?:status|packages)/[a-f0-9]{64}', p.path)))
-            or (method == 'POST' and p.path == '/api/mobile/update/prepare')):
-        return
-    if p.path == '/api/sessions' or (p.path in ('/api/projects', '/api/mobile/events') and method == 'GET') or (p.path in ('/api/activity', '/api/mobile/events/read') and method == 'POST'):
-        return
-    # /api/clients permits explicit disable, native quit, and confirmed Windows
-    # forceDesktop; the gateway still enforces auth, CSRF and target verification.
-    # Discovery, installation, account configuration and DSH recovery stay local.
-    if p.path in ('/api/clients', '/api/file-transfer'):
-        return
-    if p.path == '/api/clients/claude/reconnect' and method == 'POST':
-        return
-    if p.path == '/api/cli-access' and not p.query:
-        return
-    desktop = DESKTOP.fullmatch(p.path)
-    if desktop:
-        if desktop[1] in (DESKTOP_READ if method == 'GET' else DESKTOP_WRITE):
-            return
-        if re.fullmatch('uploads/' + UUID + ('/preview' if method == 'GET' else '/thumb'), desktop[1]):
-            return
-    match = THREAD.fullmatch(p.path)
-    if match:
-        action = match[1] or ''
-        if action in (READ if method == 'GET' else WRITE):
-            return
-        if method == 'GET' and re.fullmatch(r'(files|desktop-images)/[a-f0-9]{64}', action):
-            return
-        if re.fullmatch('uploads/' + UUID + ('/preview' if method == 'GET' else '/thumb'), action):
-            return
-    raise PermissionError('This operation is not available through the shared relay')
+    if (p.scheme or p.netloc or '#' in path or '%' in p.path or '\\' in path
+            or not path.startswith('/') or '//' in p.path
+            or any(part in ('.', '..') for part in p.path.split('/'))):
+        raise ValueError('Origin-relative HTTP path required')
+    if not isinstance(method, str) or not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]{1,32}", method):
+        raise ValueError('Invalid HTTP method')
+    if type(size) is not int or not 0 <= size <= MAX_BODY:
+        raise ValueError('Invalid body size')
+    if method in ('GET', 'HEAD') and size:
+        raise ValueError('Read request body is not allowed')
 
 
 def decode(value):
@@ -110,3 +66,21 @@ def download_headers(value, response=False):
         if key == 'ETag' and not re.fullmatch(r'(?:W/)?"[^"\\]*"', item):
             raise ValueError('Invalid entity tag')
     return dict(value)
+
+
+def request_headers(method, value):
+    """Bound range requests without accepting caller credentials or HTTP framing."""
+    headers = download_headers(value)
+    if not headers:
+        return headers
+    if method != 'GET' or 'Range' not in headers:
+        raise ValueError('Range negotiation requires a GET range')
+    match = re.fullmatch(r'bytes=(\d{1,18})-(\d{1,18})', headers['Range'])
+    if not match:
+        raise ValueError('Only one bounded byte range is supported')
+    start, end = map(int, match.groups())
+    if end < start or end - start + 1 > MAX_BODY:
+        raise ValueError('Download range exceeds channel limit')
+    if 'If-Range' in headers and not re.fullmatch(r'"[^"\\]*"', headers['If-Range']):
+        raise ValueError('A strong entity tag is required for resuming')
+    return headers

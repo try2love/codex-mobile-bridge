@@ -2,6 +2,8 @@
 
 Status: implemented
 
+接口名单的历史修复不再要求新增 API 同步传输清单，现行规则见[统一 HTTP 业务权限](2026-11-10-http-forwarding-without-route-policy.md)；本篇持有的 Noise、流控和未知写入契约继续有效。
+
 ## Problem
 
 每请求通道及资格轮询使短时失败反复中断桌面共享连接。用户确认三端同步切换 v2，取消客户端资格自动查询并保留已有配对。

@@ -71,7 +71,7 @@ class CloudSessionLifetimeTests(unittest.IsolatedAsyncioTestCase):
         self.connector.accounts.access.save(self.key, self.config['gateway_id'], self.binding,
                                             {**self.access, 'allowed': allowed})
 
-    async def forward(self, method='GET', path='/api/auth', body=b''):
+    async def forward_raw(self, method='GET', path='/api/auth', body=b''):
         records, chunks = [], []
         channel = SimpleNamespace(binding=self.binding, mobile=self.mobile,
             send=AsyncMock(side_effect=records.append),
@@ -80,9 +80,30 @@ class CloudSessionLifetimeTests(unittest.IsolatedAsyncioTestCase):
             send_body=AsyncMock(side_effect=chunks.append))
         await self.connector.forward_http(channel, {'method': method, 'path': path,
             'content_type': 'application/json', 'headers': {}}, body)
-        self.assertEqual(records[0]['status'], 200)
         self.assertEqual(records[-1], {'kind': 'response_end'})
-        return json.loads(b''.join(chunks))
+        return records[0], b''.join(chunks)
+
+    async def forward(self, method='GET', path='/api/auth', body=b''):
+        start, raw = await self.forward_raw(method, path, body)
+        self.assertEqual(start['status'], 200)
+        return json.loads(raw)
+
+    async def test_noise_and_p2p_http_forwarding_accept_future_api_methods_and_bodies(self):
+        from forwarding_fixture import FutureHandler
+        from bridge.features.network.cloud_connector import validate_request
+        self.server.RequestHandlerClass = FutureHandler
+        payload = b'{"value":"forwarded-once"}'
+        for method in ('POST', 'PUT', 'PATCH', 'DELETE'):
+            with self.subTest(method=method):
+                validate_request({'kind': 'request', 'id': str(uuid.uuid4()), 'method': method,
+                    'path': '/api/future-fixture', 'length': len(payload),
+                    'content_type': 'application/json', 'headers': {}})
+                result = await self.forward(method, '/api/future-fixture', payload)
+                self.assertEqual(result, {'method': method, 'body': json.loads(payload)})
+        start, raw = await self.forward_raw('HEAD', '/api/future-fixture')
+        self.assertEqual((start['status'], start['headers']['Content-Length'], raw), (200, '32', b''))
+        start, raw = await self.forward_raw('GET', '/api/not-implemented')
+        self.assertEqual((start['status'], json.loads(raw)), (404, {'error': '页面不存在'}))
 
     async def test_connected_binding_survives_twelve_hours_and_direct_sessions_still_expire(self):
         self.assertTrue((await self.forward())['authenticated'])
@@ -141,9 +162,10 @@ class CloudSessionLifetimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.server.auth.get(cloud))
         self.assertIsNotNone(self.gateway.auth.get(direct))
 
-    async def test_unknown_post_outcome_is_never_replayed(self):
+    async def test_unknown_write_outcome_is_never_replayed(self):
         await self.forward()
-        with patch.object(self.local, 'request', side_effect=OSError('synthetic lost response')) as request:
-            with self.assertRaisesRegex(OSError, 'synthetic lost response'):
-                await self.forward('POST', '/api/logout', b'{}')
-            request.assert_called_once()
+        for method in ('POST', 'PUT', 'PATCH', 'DELETE'):
+            with patch.object(self.local, 'request', side_effect=OSError('synthetic lost response')) as request:
+                with self.assertRaisesRegex(OSError, 'synthetic lost response'):
+                    await self.forward(method, '/api/future-fixture', b'{}')
+                request.assert_called_once()

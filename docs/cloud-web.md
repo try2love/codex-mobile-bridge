@@ -18,7 +18,7 @@ HTML 与 Mermaid 沙箱仍保持隔离。Mermaid 壳通过随机 CSP nonce 内�
 
 ## 验证与部署
 
-Python `test_cloud_web.py` 覆盖实际私有 HTTP、白名单、实时资源版本和会话清理。`tests/browser/cloud-web.spec.cjs` 使用真实 Go/Python 代理及生产网页，在 Chromium/WebKit 的宽、窄视口验证登录、资源、图表、HTML 预览、PDF 模块、跨电脑和多标签存储、退出。
+Python `test_cloud_web.py` 覆盖实际私有 HTTP、通用方法与正文透传、业务鉴权、实时资源版本和会话清理。接口是否存在和是否允许执行统一由网关 HTTP 处理器判断，各通道不维护接口白名单或黑名单。`tests/browser/cloud-web.spec.cjs` 使用真实 Go/Python 代理及生产网页，在 Chromium/WebKit 的宽、窄视口验证登录、资源、图表、HTML 预览、PDF 模块、跨电脑和多标签存储、退出。
 
 先启动服务端仓库的 `internal/webproxy/testdata/fixture.go`（需隔离 PostgreSQL），再运行 `python -B tests/browser/cloud-web-fixture.py <fixture.json>` 和 `playwright test -c tests/browser/cloud-web.config.cjs`。这些测试使用合成账号和客户端列表，不代表生产或真实编码客户端已验收。
 

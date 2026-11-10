@@ -6,25 +6,13 @@ import struct
 import time
 import uuid
 from contextlib import suppress
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import urlsplit
 
 from relay.protocol import MAX_BODY, content_type, download_headers, validate
 
 PROTOCOL = 'bridge-web-proxy-v1'
 CHUNK = 32768
 WINDOW = 4
-# Account-Web serves the current desktop's new-chat UI. Keep its additional
-# routes here so the separately authorized phone/shared relay does not expand.
-CREATION_READ = {'/api/projects/models'} | {
-    f'/api/desktop-sessions/{provider}/{action}'
-    for provider in ('claude', 'deepseek', 'zcode')
-    for action in ('projects', 'create-models')
-}
-CREATION_WRITE = {'/api/projects', '/api/projects/browse', '/api/projects/trust'} | {
-    f'/api/desktop-sessions/{provider}/{action}'
-    for provider in ('claude', 'deepseek', 'zcode')
-    for action in ('create', 'projects/browse', 'projects/register', 'projects/trust')
-}
 
 
 class CloudWeb:
@@ -92,26 +80,7 @@ class CloudWeb:
         if type(request['expires']) is not int or not time.time() < request['expires'] <= time.time() + 13 * 3600:
             raise ValueError('invalid Web session expiry')
         path, method, length = request['path'], request['method'], request['length']
-        if (not isinstance(path, str) or len(path) > 8192 or any(ord(char) < 32 for char in path)
-                or any(char in path for char in ('\\', '#'))):
-            raise ValueError('invalid Web path')
-        parts = urlsplit(path)
-        if parts.scheme or parts.netloc or not path.startswith('/') or '%' in parts.path or any(p in ('.', '..') for p in parts.path.split('/')):
-            raise ValueError('invalid Web path')
-        if type(length) is not int or not 0 <= length <= MAX_BODY or method not in ('GET', 'POST') or method == 'GET' and length:
-            raise ValueError('invalid Web request')
-        if self.owner.server.cloud_web_resource(parts.path):
-            query = parse_qs(parts.query, keep_blank_values=True, strict_parsing=True)
-            if method != 'GET' or set(query) - {'v', 'bridge_retry'} or any(len(v) != 1 for v in query.values()):
-                raise ValueError('invalid Web asset request')
-        elif parts.path == '/api/auth' and method == 'GET' and not parts.query:
-            pass
-        elif parts.path in (CREATION_READ if method == 'GET' else CREATION_WRITE):
-            pass  # The private HTTP handler keeps project, host and model checks.
-        elif method == 'GET' and parts.path.endswith('/events') and parts.path != '/api/mobile/events':
-            validate(method, parts.path.removesuffix('/events') + '/poll' + ('?' + parts.query if parts.query else ''), length)
-        else:
-            validate(method, path, length)
+        validate(method, path, length)
         if request.get('content_type'):
             content_type(request['content_type'])
         headers = dict(request.get('headers') or {})
@@ -182,7 +151,7 @@ class CloudWeb:
             for name in ('If-None-Match', 'If-Range', 'Range'):
                 headers.pop(name, None)
         async with self.owner.local.request(request['method'], self.owner.local_origin + request['path'],
-                headers=headers, data=bytes(body) if request['method'] == 'POST' else None,
+                headers=headers, data=bytes(body) if body else None,
                 allow_redirects=False) as response:
             if 300 <= response.status < 400 and response.status != 304:
                 raise PermissionError('Web redirects forbidden')
@@ -190,7 +159,7 @@ class CloudWeb:
                      'Content-Range', 'Accept-Ranges', 'Content-Security-Policy', 'X-Frame-Options')
             result_headers = {k: response.headers[k] for k in names if k in response.headers}
             decorated = None
-            if adapted and response.status == 200:
+            if adapted and response.status == 200 and request['method'] != 'HEAD':
                 raw = bytearray()
                 async for part in response.content.iter_chunked(CHUNK):
                     raw.extend(part)

@@ -2,6 +2,8 @@
 
 Status: implemented
 
+逐接口清单及 2026-11-09 的创建路由例外已被[统一 HTTP 业务权限](../architecture/2026-11-10-http-forwarding-without-route-policy.md)取代；本篇保留原取舍和故障证据，账号信任、资源适配及撤销约束继续有效。
+
 ## Problem
 
 现有云连接仅供手机 App 使用。用户要求在 bridge.waken.cloudns.be:18787 登录同一云账号后直接连接电脑，无需桌面逐浏览器批准，并明确要求网页随桌面版本更新，不在云端复制维护。

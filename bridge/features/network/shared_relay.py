@@ -172,7 +172,7 @@ class Connector:
                        'Origin': self.local_origin, 'X-CSRF-Token': session['csrf'],
                        'Content-Type': mime, 'Accept-Encoding': 'identity', **range_headers}
             async with client.request(message['method'], self.local_origin + message['path'], headers=headers,
-                                      data=body if message['method'] == 'POST' else None, allow_redirects=False) as response:
+                                      data=body if body else None, allow_redirects=False) as response:
                 if (stream and message.get('stream') is True and message['method'] == 'GET'
                         and response.status in (200, 206) and response.content_length is not None
                         and not response.headers.get('Content-Type', '').startswith('application/json')):

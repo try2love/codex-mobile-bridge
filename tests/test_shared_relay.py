@@ -71,59 +71,22 @@ class RegistryTests(unittest.TestCase):
         self.r.revoke(a['deviceId'])
         with self.assertRaises(PermissionError): self.r.device(a['deviceToken'])
 
-    def test_desktop_account_access_and_attachments_keep_relay_boundaries(self):
-        for provider in ('claude', 'deepseek'):
-            root = '/api/desktop-sessions/'+provider+'/'
-            for method, action in [('GET', 'account'), ('GET', 'access'), ('POST', 'access'), ('POST', 'uploads'), ('GET', 'uploads/'+THREAD+'/preview'), ('POST', 'uploads/'+THREAD+'/thumb')]:
-                validate(method, root+action+'?sessionId=native')
-            for method, action in [('POST', 'account'), ('GET', 'uploads'), ('POST', 'uploads/'+THREAD+'/preview'), ('GET', 'uploads/'+THREAD+'/thumb'), ('GET', 'uploads/../../file')]:
-                with self.assertRaises(PermissionError):
-                    validate(method, root+action)
+    def test_business_routes_and_methods_are_decided_by_http_handlers(self):
+        for path in ('/api/accounts', '/api/login', '/api/new-feature',
+                     '/api/sessions/diagnostics?other=1', '/api/update-apply',
+                     '/api/desktop-sessions/zcode/list', '/api/desktop-sessions/future/operation'):
+            for method in ('GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'):
+                with self.subTest(method=method, path=path):
+                    validate(method, path)
 
-    def test_protocol_v2_routes_and_management_boundary(self):
-        validate('GET', '/api/sessions/diagnostics')
-        validate('GET', '/api/sessions/diagnostics?thread=' + THREAD)
-        for method, path in [('POST', '/api/sessions/diagnostics'),
-                             ('GET', '/api/sessions/diagnostics?thread=bad'),
-                             ('GET', '/api/sessions/diagnostics?thread=' + THREAD + '&extra=1'),
-                             ('GET', '/api/sessions/diagnostics?other=1'),
-                             ('GET', '/api/sessions/diagnostics/extra')]:
-            with self.subTest(method=method, path=path), self.assertRaises(PermissionError):
-                validate(method, path)
-        for method, path in [('GET', '/api/mobile/update?current=2.0.2'), ('POST', '/api/mobile/update/prepare'),
-                             ('GET', '/api/mobile/update/status/' + 'a' * 64), ('GET', '/api/mobile/update/packages/' + 'a' * 64)]:
-            validate(method, path)
-        for method, path in [('GET', '/api/mobile/update/prepare'), ('POST', '/api/mobile/update'),
-                             ('POST', '/api/mobile/update/packages/' + 'a' * 64), ('GET', '/api/mobile/update/packages/../private'),
-                             ('POST', '/api/update-apply')]:
-            with self.assertRaises(PermissionError): validate(method, path)
-        for method, action in [('GET','workspace/download?path=a.txt'), ('POST','workspace/upload?path=a.txt'), ('POST','terminal'), ('POST','side-chat'), ('GET','catalog?kind=skills'), ('POST','permissions')]:
-            validate(method, '/api/sessions/'+THREAD+'/'+action)
-        for path in ['/api/accounts', '/api/account/reset', '/api/login', '/api/pair', 'https://example.com/api/sessions', '/api/sessions/'+THREAD+'/events', '/api/%73essions', '/api/../admin']:
-            with self.assertRaises((ValueError, PermissionError)): validate('POST', path)
+    def test_transport_checks_still_reject_destination_and_framing_changes(self):
+        for path in ('https://example.com/api/sessions', '//evil.test/api/sessions',
+                     '/api/%73essions', '/api/../admin', '/api/sessions#fragment',
+                     '/api/sessions\r\nInjected: value'):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                validate('POST', path)
         with self.assertRaises(ValueError): validate('POST', '/api/sessions', MAX_BODY+1)
         with self.assertRaises(ValueError): origin('http://example.com')
-
-    def test_desktop_allowlist_keeps_configuration_and_streams_local(self):
-        for method in ('GET', 'POST'):
-            validate(method, '/api/clients')
-        for provider in ('claude', 'deepseek'):
-            for method, action in [('GET', 'list'), ('GET', 'detail'), ('GET', 'catalog'),
-                                   ('GET', 'projects'), ('POST', 'create'), ('POST', 'send'),
-                                   ('POST', 'respond'), ('POST', 'settings'), ('POST', 'stop'),
-                                   ('GET', 'workspace/download'), ('POST', 'workspace/upload'),
-                                   ('GET', 'workspace/git-status'), ('POST', 'workspace/git-action'),
-                                   ('GET', 'terminal'), ('POST', 'terminal')]:
-                validate(method, '/api/desktop-sessions/'+provider+'/'+action+'?sessionId=native-session')
-            for action in ('install', 'remove', 'status', 'scan', 'eval', 'restart', 'events', 'terminal/events'):
-                for method in ('GET', 'POST'):
-                    with self.assertRaises(PermissionError):
-                        validate(method, '/api/desktop-sessions/'+provider+'/'+action)
-            with self.assertRaises(PermissionError):
-                validate('GET', '/api/desktop-sessions/'+provider+'/send')
-        for path in ('/api/clients/scan', '/api/desktop-sessions/codex/list', '/api/desktop-sessions/arbitrary/list'):
-            with self.assertRaises(PermissionError):
-                validate('POST', path)
 
 
 try:
@@ -247,13 +210,14 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
         r = await self.client.post('/api/sessions', json={'id':'submission','project':'fixture'}, headers=pa)
         self.assertEqual(r.status, 200); self.assertEqual(self.created, [('Alice','submission')])
 
-    async def test_auth_origin_csrf_host_and_management_denials(self):
+    async def test_auth_origin_csrf_and_host_are_checked_before_forwarding(self):
         a = await self.device('Alice'); p = await self.phone(a)
         self.assertEqual((await self.client.get('/api/sessions')).status, 401)
         self.assertEqual((await self.client.get('/api/sessions', headers={**p, 'Origin':'https://evil.test'})).status, 401)
         self.assertEqual((await self.client.post('/api/sessions', json={}, headers={**p,'X-CSRF-Token':'bad'})).status, 401)
         self.assertEqual((await self.client.get('/api/sessions', headers={**p,'Host':'evil.test'})).status, 401)
-        self.assertEqual((await self.client.get('/api/accounts', headers=p)).status, 403)
+        self.assertEqual((await self.client.get('/api/accounts', headers=p)).status, 503)
+        self.assertEqual((await self.client.put('/api/new-feature', json={}, headers={**p,'X-CSRF-Token':'bad'})).status, 401)
         self.assertEqual((await self.client.get('/api/auth', headers=p)).status, 200)
 
     async def test_compressed_control_request_cannot_bypass_four_kib_limit(self):
@@ -372,9 +336,39 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(uploads, [data, data])
         self.assertEqual((await self.client.post('/api/clients', json={'provider': 'deepseek', 'enabled': False}, headers=p)).status, 200)
         self.assertEqual((await self.client.get('/api/desktop-sessions/deepseek/list', headers=p)).status, 400)
-        for path in ('/api/clients/scan', '/api/desktop-sessions/deepseek/install', '/api/desktop-sessions/claude/eval'):
-            self.assertEqual((await self.client.post(path, json={}, headers=p)).status, 403)
-        self.assertEqual((await self.client.get('/api/desktop-sessions/deepseek/events', headers=p)).status, 403)
+        token, session = next(iter(connector.sessions.values()))
+        direct_headers = {'Cookie': connector.server.auth.COOKIE + '=' + token,
+                          'Origin': connector.local_origin, 'X-CSRF-Token': session['csrf']}
+        for method, path in [('POST', '/api/clients/scan'), ('POST', '/api/desktop-sessions/deepseek/install'),
+                             ('POST', '/api/desktop-sessions/claude/eval'), ('GET', '/api/desktop-sessions/deepseek/events')]:
+            body = {'json': {}} if method == 'POST' else {}
+            remote = await self.client.request(method, path, headers=p, **body)
+            async with aiohttp.ClientSession() as direct:
+                local = await direct.request(method, connector.local_origin + path, headers=direct_headers, **body)
+                self.assertEqual(remote.status, local.status)
+                self.assertEqual(await remote.read(), await local.read())
+
+    async def test_future_handler_receives_all_write_bodies_and_rejects_bad_csrf(self):
+        from forwarding_fixture import FutureHandler
+        self.state.timeout = 5
+        device = await self.device('Synthetic')
+        connector = await self.real_connector(device)
+        connector.server.RequestHandlerClass = FutureHandler
+        phone = await self.phone(device)
+        for method in ('POST', 'PUT', 'PATCH', 'DELETE'):
+            response = await self.client.request(method, '/api/future-fixture',
+                json={'value': 'forwarded-once'}, headers=phone)
+            self.assertEqual(response.status, 200)
+            self.assertEqual(await response.json(), {'method': method, 'body': {'value': 'forwarded-once'}})
+            rejected = await self.client.request(method, '/api/future-fixture',
+                json={}, headers={**phone, 'X-CSRF-Token': 'wrong'})
+            self.assertEqual(rejected.status, 401)
+        for method, options in [('GET', {}), ('POST', {'json': {}})]:
+            response = await self.client.request(method, '/api/not-implemented', headers=phone, **options)
+            self.assertEqual(response.status, 404)
+            self.assertEqual(await response.json(), {'error': '页面不存在'})
+        response = await self.client.get('/api/future-fixture', headers=phone)
+        self.assertEqual(response.status, 200)
 
     async def test_wrong_device_cannot_supply_a_response(self):
         a,b = await self.device('Alice'),await self.device('Bob')
@@ -496,7 +490,7 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(diagnostic.status, 200)
                 self.assertEqual((await diagnostic.json())['device'], device['deviceName'])
                 self.assertIn('attachment', diagnostic.headers['Content-Disposition'])
-                self.assertEqual((await browser.get(url + '/api/sessions/diagnostics?extra=1')).status, 403)
+                self.assertEqual((await browser.get(url + '/api/sessions/diagnostics?extra=1')).status, 400)
             legacy = await self.phone(b)
             a_cookie = jar.filter_cookies(self.server.make_url('/d/' + a['deviceId'] + '/'))[COOKIE].value
             response = await self.client.get('/d/' + a['deviceId'] + '/api/auth', headers={'Cookie': COOKIE + '=' + a_cookie + '; ' + legacy['Cookie']})
