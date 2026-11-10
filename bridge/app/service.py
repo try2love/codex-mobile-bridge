@@ -179,6 +179,8 @@ class LiveSession:
         self.changed()
 
     def pending_requests(self):
+        if self.runtime == 'cli-observer':
+            return (self.state or {}).get('notificationRequests', [])
         requests = pending_requests(self.state or {})
         return self.question_skips.project(self.id, requests) if self.question_skips else requests
 
@@ -296,6 +298,9 @@ class Bridge:
         self.notification_cursor = 0
         self.notification_client_id = None
         self.notification_dirty = set()
+        self.cli_notifications = {}
+        from bridge.features.notifications.cli import CliWaits
+        self.cli_notification_waits = CliWaits(data_dir, private_json)
         self.notification_boundary = set()
         self.notification_event = threading.Event()
         self.notification_slots = threading.BoundedSemaphore(4)
@@ -2195,6 +2200,8 @@ class Bridge:
             session.changed()
         if newly_connected:
             logging.getLogger(__name__).info("Codex connection transition thread=%s cause=native_attached", thread_id)
+        with self.lock:
+            self.notification_dirty.add(thread_id)
         self.notification_event.set()
 
     def _cli_disconnected(self, thread_id=None):
@@ -2208,6 +2215,14 @@ class Bridge:
                 with session.condition:
                     session.native_goal_supported = None
                 self._invalidate(session, 'CLI 连接已断开，请重新连接；未自动重发任何操作。', runtime='cli')
+        with self.lock:
+            observers = list(self.cli_notifications.values())
+            self.notification_cursor = 0
+            self.notification_boundary.clear()
+        for observer in observers:
+            if thread_id is None or observer.id == thread_id:
+                self.release_notification_session(observer)
+        self.notification_event.set()
 
     def cli_connections(self):
         rows = []
@@ -2330,6 +2345,10 @@ class Bridge:
     def _record_cli_release(self, session, result):
         if result['status'] in ('released', 'detached'):
             self.released_cli.set(session.id, True)
+            with self.lock:
+                observer = self.cli_notifications.get(session.id)
+            if observer is not None:
+                self.release_notification_session(observer)
             with session.condition:
                 session.connected = False
                 session.error = result.get('notice', 'CLI 连接已释放，请点击继续会话重新连接')
@@ -2481,9 +2500,7 @@ class Bridge:
                 continue
             source.notification_event = self.notification_event
             try:
-                # A new IPC connection needs one fresh discovery, even if the
-                # desktop resumed a task without changing its saved metadata.
-                source.ipc.connect()
+                # Metadata discovery also works when no App IPC is available.
                 if not source.observation_enabled():
                     source.suspend_observation()
                     continue
@@ -2523,7 +2540,7 @@ class Bridge:
             for session in sessions:
                 with session.condition:
                     state = session.state or {}
-                    if session.connected and (session.watched or state.get('threadRuntimeStatus', {}).get('type') == 'active' or
+                    if session.connected and (session.origin == 'cli' or session.watched or state.get('threadRuntimeStatus', {}).get('type') == 'active' or
                             any(t.get('status') == 'inProgress' for t in ordered_turns(state)) or pending_requests(state)):
                         rows.append({'id': session.id, 'host': source.host})
         if self.host == 'local' and self.entries is not None:
@@ -2535,6 +2552,15 @@ class Bridge:
         return rows
 
     def release_notification_session(self, session):
+        if session.runtime == 'cli-observer':
+            with session.condition:
+                session.watched = False
+                session.connection_epoch += 1
+                session.connected = False
+                session.state = None
+                session.retry_at = 0
+                session.changed()
+            return True
         # A follow may be waiting for a snapshot. Never invert its lock order
         # against the notification worker holding session.condition.
         if not session.attach_lock.acquire(blocking=False):
@@ -2562,6 +2588,11 @@ class Bridge:
         # Follow only; never parse saved history or activate an unloaded owner.
         if not self.observation_enabled():
             raise IPCError('此应用已停用手机接入')
+        with self.lock:
+            current = self.live.get(thread_id)
+            origin = current.origin if current and current.origin_verified else self.origins.get(thread_id)
+        if origin == 'cli':
+            return self._cli_notification_session(thread_id)
         with self.lock:
             session = self.live.get(thread_id)
             if session is None:
@@ -2595,6 +2626,62 @@ class Bridge:
                         logging.debug('notification stage=probe source=%s work_ms=%.1f',
                                      'local' if self.host == 'local' else 'remote', (time.monotonic() - started) * 1000)
                 threading.Thread(target=follow, daemon=True).start()
+        return session
+
+    def _cli_notification_session(self, thread_id):
+        # Keep observer state out of live execution sessions: a read-only native
+        # status must never grant write capabilities or satisfy activate().
+        with self.lock:
+            session = self.cli_notifications.setdefault(thread_id, LiveSession(thread_id))
+        with session.condition:
+            session.runtime, session.origin = 'cli-observer', 'cli'
+            session.access = {'source': 'cli', 'runtime': None, 'readOnly': True,
+                              'canSend': False, 'canInterrupt': False, 'canApprove': False,
+                              'canReconnect': False}
+            if self.closed.is_set() or not self.observation_enabled() or self.released_cli.contains(thread_id):
+                session.connected = False
+                session.state = None
+                return session
+            if not session.watched:
+                session.notification_probe_until = time.monotonic() + 10
+            session.watched = True
+            if session.notification_connecting or time.monotonic() < session.retry_at:
+                return session
+            if not self.notification_slots.acquire(blocking=False):
+                session.notification_probe_until = time.monotonic() + 10
+                return session
+            session.notification_connecting = True
+            session.notification_probe_until = time.monotonic() + 10
+            epoch = session.connection_epoch
+            session.retry_at = time.monotonic() + 5
+            session.state, session.connected = None, False
+        def observe():
+            try:
+                state = self.cli_sessions.observe(thread_id)
+                with session.condition:
+                    if (session.connection_epoch == epoch and session.watched and not self.closed.is_set()
+                            and self.observation_enabled() and not self.released_cli.contains(thread_id)):
+                        session.state = self.cli_notification_waits.project(thread_id, state) if state is not None else None
+                        session.connected = state is not None
+                        if state is None:
+                            session.retry_at = time.monotonic() + 15
+                        session.changed()
+                    elif session.connection_epoch == epoch:
+                        session.state, session.connected = None, False
+                        session.changed()
+            except (AppServerError, RemoteUnavailable, OSError, ValueError, KeyError):
+                with session.condition:
+                    if session.connection_epoch == epoch:
+                        session.state, session.connected = None, False
+                        session.retry_at = time.monotonic() + 15
+                        session.changed()
+            finally:
+                with session.condition:
+                    session.notification_connecting = False
+                    session.condition.notify_all()
+                self.notification_slots.release()
+                self.notification_event.set()
+        threading.Thread(target=observe, daemon=True, name='cli-notification-read').start()
         return session
 
     @operation(entry_only=True)

@@ -26,6 +26,8 @@ Codex CLI 接入在 Codex 账号管理中保存；Claude CLI 接入在 Claude �
 
 停留在尚未连接的 Codex CLI 聊天页时，后台会继续读取终端追加的保存历史，不必为了查看新回复先点击“继续会话”。本机与 SSH 的刷新节奏不同，不承诺即时或固定延迟。模型标签按原生回合或保存记录显示；缺少证据时不猜测。后台只读刷新短暂超时不会直接丢弃仍有效的执行连接，真正断开或身份核验失败仍会使连接失效。
 
+CLI 聊天复用现有通知设置和手机收件箱。通知只读取已运行 CLI 服务中已经加载的聊天，不启动 daemon、不恢复线程，也不需要 Codex App 在线。完成、运行失败和待确认提醒沿用全局及单会话选择；首次历史不补发。取消关注或释放连接会停止观察，通知本身不授予发送或审批权限。
+
 ## 平台与运行要求
 
 macOS、Windows 与 Linux 支持本机 CLI 接入；SSH 使用服务器上已安装并配置的 CLI。仅安装 Codex MSIX 不等于具备原生 CLI 托管目录。Linux Claude Code CLI 与 Claude Desktop 自动连接是不同能力，后者仍仅适用于 macOS / Windows。
@@ -57,3 +59,5 @@ Open **SSH diagnostics** in Settings to read local and remote status and counts,
 Local CLI access is available on macOS, Windows and Linux; SSH hosts use their own installed and configured CLI. Windows history and cold resume recognize equivalent extended paths without relaxing file boundaries. Confirmed exited legacy Claude writers can be resumed; active or unverifiable writers remain protected. Linux Claude Code CLI support does not add Claude Desktop automatic connection.
 
 For new Codex chats, choose App or CLI and select a known local/SSH CLI project folder. CLI creation sends no initial message. Passive reading continues to follow saved history appended by a terminal without claiming its writer; local and SSH refresh cadence differs. Per-turn model labels require native or saved evidence, and transient read timeouts do not discard a still-valid execution connection.
+
+CLI notifications use the existing policies and companion inbox. They only read already loaded chats in an already running native service, require no App connection, and never start or resume a thread. Cancelling notifications or releasing the connection stops observation; notification state grants no send or approval authority.

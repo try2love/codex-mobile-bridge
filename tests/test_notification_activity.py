@@ -188,30 +188,29 @@ class DiscoveryTests(unittest.TestCase):
         self.assertFalse(session.connected)
         self.assertFalse(session.watched)
 
-    def test_slow_cli_owner_discovery_does_not_hold_the_notification_scanner(self):
+    def test_slow_cli_observation_does_not_hold_the_notification_scanner(self):
         entered, release, returned = threading.Event(), threading.Event(), threading.Event()
-        def origin(session):
-            session.origin = 'cli'
-            session.origin_verified = True
-        def owner(*args, **kwargs):
+        self.bridge.origins[support.THREAD] = 'cli'
+        def observe(*args, **kwargs):
             entered.set()
             release.wait(3)
-            raise support.IPCError('no-client-found')
+            return None
         def read():
             self.bridge.notification_session(support.THREAD)
             returned.set()
-        with patch.object(self.bridge, '_load_session_origin', side_effect=origin), patch.object(self.bridge.ipc, 'owner', side_effect=owner):
+        with patch.object(self.bridge.cli_sessions, 'observe', side_effect=observe), patch.object(self.bridge.ipc, 'owner') as owner:
             worker = threading.Thread(target=read)
             worker.start()
             try:
                 self.assertTrue(entered.wait(1))
-                self.assertTrue(returned.wait(.2), 'a passive owner RPC blocked the notification scan')
+                self.assertTrue(returned.wait(.2), 'a passive CLI read blocked the notification scan')
+                owner.assert_not_called()
             finally:
                 release.set()
                 worker.join(2)
-                with self.bridge.live[support.THREAD].condition:
-                    self.bridge.live[support.THREAD].condition.wait_for(
-                        lambda: not getattr(self.bridge.live[support.THREAD], 'notification_connecting', False), timeout=2)
+                session = self.bridge.cli_notifications[support.THREAD]
+                with session.condition:
+                    session.condition.wait_for(lambda: not session.notification_connecting, timeout=2)
 
     def test_notification_owner_probes_are_bounded_and_not_duplicated(self):
         release = threading.Event()

@@ -347,6 +347,34 @@ class CliSessions:
             return self._attach_explicit(thread_id, target_provider=target_provider,
                                          expected_identity=expected_identity, before_resume=before_resume)
 
+    def observe(self, thread_id):
+        """Read an already loaded native thread without subscribing or resuming it."""
+        if self.alias is None and isinstance(self.client, CodexAppServer):
+            self.client.command[0] = _local_cli(self.home, self.configured_cli)
+        info = self.client.connect()
+        self._runtime_home(info)
+        process = self.client.process
+        if not self.client.is_loaded(thread_id):
+            return None
+        thread = self.client.request('thread/read', {'threadId': thread_id, 'includeTurns': True}, replay_safe=True)['thread']
+        if process is not self.client.process or thread.get('id') != thread_id:
+            raise AppServerUnavailable('CLI observation generation changed')
+        if (thread.get('status') or {}).get('type') == 'notLoaded':
+            return None
+        identity = self.persisted_identity(thread)
+        with self.lock:
+            metadata = dict(self.metadata.get(thread_id) or identity, model=thread.get('model'))
+            if process is not self.client.process:
+                raise AppServerUnavailable('CLI observation generation changed during metadata read')
+        state = self._state(thread, [], metadata)
+        # The read API exposes waiting flags, not another client's request IDs.
+        # The notification layer tracks observed waiting episodes separately.
+        flags = (thread.get('status') or {}).get('activeFlags') or []
+        turn = (thread.get('turns') or [{}])[-1]
+        state['notificationWait'] = {'turnId': turn.get('id'),
+            'flags': [flag for flag in flags if flag in ('waitingOnApproval', 'waitingOnUserInput')]}
+        return state
+
     def persisted_identity(self, thread):
         """Read the retained native provider; thread summaries can describe old history."""
         try:
