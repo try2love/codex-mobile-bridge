@@ -99,7 +99,7 @@ class Entries:
                                  'enabled': True, 'running': True}, *values.values()]}
 
     def scan(self):
-        # Explicit action only. No startup/periodic automatic distribution probing.
+        # First full inventory or explicit scan only; never periodic probing.
         if not self.wsl:
             raise ValueError('当前电脑不支持 WSL 应用')
         candidates, errors = {}, []

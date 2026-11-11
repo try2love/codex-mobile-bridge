@@ -103,7 +103,7 @@ class DesktopConnectionsPanel {
   async scan(manual=false){
     if(this.scanning||this.busy||this.choosingClient)return;this.scanning=true;this.clientsRevision++;this.statusRevision++;this.scanMessage='正在扫描本机客户端…';this.scanError=false;this.renderScan();
     let gotSnapshot=false;
-    try{const value=await this.api.desktopSessions({action:'scan',setup:false,inventoryOnly:!manual});if(value.clients){this.applyClientSnapshot(value);gotSnapshot=true;}this.scanMessage='扫描完成；各客户端的接入状态如下。';}
+    try{const value=await this.api.desktopSessions({action:'scan',setup:false,inventoryOnly:!manual});if(value.clients){this.applyClientSnapshot(value);gotSnapshot=true;}this.scanError=!!value.errors?.length;this.scanMessage=this.scanError?value.errors.map(row=>row.distribution+'：'+BridgeI18n.t(row.error)).join('\n'):'扫描完成；各客户端的接入状态如下。';}
     catch(error){this.scanMessage=error.message;this.scanError=true;if(manual)this.feedback(error.message,true);}
     finally{this.scanning=false;this.renderScan();if(gotSnapshot)this.renderClients();else await this.refreshClients(true);await this.refresh();}
     await this.showClaudeSetup(true);

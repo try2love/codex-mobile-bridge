@@ -613,6 +613,14 @@ test('saved installation inventory loads first and only missing inventory or man
  assert.equal(ui.calls.filter(body=>body.action==='scan').at(-1).inventoryOnly,false);
 });
 
+test('partial WSL inventory keeps discovered clients and its error until an explicit successful rescan',async()=>{
+ const ui=fixture(),client={id:'wsl:'+'a'.repeat(32),kind:'wsl-cli',name:'WSL Codex',installed:true,configured:true,enabled:false};let errors=[{distribution:'Ubuntu',error:'Claude Code inventory unavailable'}];
+ ui.setHandler(async body=>body.action==='status'?{backends:{}}:{clients:[client],inventoryAvailable:true,errors});
+ await ui.panel.scan();assert.equal(ui.panel.scanError,true);assert.match(ui.nodes['client-scan-status'].textContent,/Ubuntu.*Claude Code inventory unavailable/);assert.equal(ui.panel.clients[0].id,client.id);assert.equal(ui.panel.clients[0].enabled,false);
+ await ui.panel.refreshClients();assert.equal(ui.panel.scanError,true);assert.match(ui.nodes['client-scan-status'].textContent,/inventory unavailable/);
+ errors=[];await ui.panel.scan(true);assert.equal(ui.panel.scanError,false);assert.doesNotMatch(ui.nodes['client-scan-status'].textContent,/inventory unavailable/);assert.equal(ui.panel.clients[0].id,client.id);
+});
+
 test('Antigravity App IDE and CLI paths use the shared default-application form',async()=>{
  for(const english of [false,true]){
   const ui=fixture();if(english)ui.english();const capability={family:'antigravity',kind:'default-application',supported:true};

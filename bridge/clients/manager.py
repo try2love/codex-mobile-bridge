@@ -195,6 +195,8 @@ class DesktopSessions:
         self.config_path = self.directory/'settings.json'
         self.config = json.loads(self.config_path.read_text(encoding='utf-8-sig')) if self.config_path.exists() else {}
         self.claude_wsl = None
+        self.wsl_inventory_scanned = False
+        self.wsl_inventory_errors = []
         if sys.platform == 'win32' and instance is None:
             from bridge.clients.claude.wsl import WslClaudeEntries
             self.claude_wsl = WslClaudeEntries(self.directory)
@@ -1863,8 +1865,10 @@ class DesktopSessions:
             custom_claude = bool(self.instances and self.instances.metadata('claude'))
             if custom_claude and not preferences.get('claudeHome'):
                 preferences['claudeHome'] = self.instances.default_claude_home()
+            if sys.platform == 'win32' and (scan_wsl and not inventory_only or inventory_only and not self.wsl_inventory_scanned):
+                self._scan_wsl_inventory()
             if inventory_only and inventory_current(self.config, preferences):
-                return self.clients(refresh=True)
+                return {**self.clients(refresh=True), 'errors': self.wsl_inventory_errors}
             discovered = discover_clients(preferences)
             if custom_claude and not self.config.get('claudeHome'):
                 discovered['claude']['dataDirectoryExplicit'] = False
@@ -1889,13 +1893,8 @@ class DesktopSessions:
                 self._prepare_discovered(provider, row)
             private_json(self.config_path, self.config)
             self.client_cache = None
-            entries = getattr(self.bridge, 'entries', None)
-            if scan_wsl and sys.platform == 'win32':
-                if entries is not None:
-                    entries.scan()
-                self.claude_wsl.scan()
             probe_dsh = not inventory_only and discovered['deepseek']['installed'] and not self.config.get('deepseekManualBinding')
-            return self.clients(refresh=True, probe='deepseek' if probe_dsh else None)
+            return {**self.clients(refresh=True, probe='deepseek' if probe_dsh else None), 'errors': self.wsl_inventory_errors}
 
     def start_enabled(self):
         """Start selected clients only after the gateway service has started."""
@@ -2712,7 +2711,8 @@ class DesktopSessions:
                 rows.extend(self.instance_rows())
             result = {'clients': rows, 'computer': socket.gethostname(), 'gatewayRunning': self.gateway_running,
                       'wslSupported': entries is not None and sys.platform == 'win32',
-                      'inventoryAvailable': self.config.get('discoveryRevision') == 1 and bool(discovered)}
+                      'inventoryAvailable': self.config.get('discoveryRevision') == 1 and bool(discovered) and
+                          (sys.platform != 'win32' or self.instance is not None or self.wsl_inventory_scanned)}
             if self.instances is not None and self.instances.error:
                 result['instanceError'] = self.instances.error
             if sys.platform == 'win32':
@@ -3461,15 +3461,27 @@ class DesktopSessions:
                 return self.adapters['deepseek'].uninstall()
         raise ValueError('不支持的接入操作')
 
+    def _scan_wsl_inventory(self):
+        # One attempt per manager's first full inventory, including a failed
+        # attempt. Only an explicit scan retries; registries keep saved entries.
+        self.wsl_inventory_scanned = True
+        self.wsl_inventory_errors = []
+        for name, registry in (('Codex', getattr(self.bridge, 'entries', None)), ('Claude Code', self.claude_wsl)):
+            if registry is None:
+                continue
+            try:
+                self.wsl_inventory_errors.extend(registry.scan().get('errors', []))
+            except (OSError, ValueError, TimeoutError, KeyError, subprocess.SubprocessError) as error:
+                self.wsl_inventory_errors.append({'distribution': 'WSL '+name, 'error': str(error)})
+        self.client_cache = None
+
     def scan_wsl(self):
         entries = getattr(self.bridge, 'entries', None)
         if entries is None or self.claude_wsl is None:
             raise ValueError('当前电脑不支持 WSL 应用')
         with self.client_lock:
-            result = entries.scan()
-            claude = self.claude_wsl.scan()
-            self.client_cache = None
-            return {**self.clients(refresh=True), 'errors': result.get('errors', []) + claude.get('errors', [])}
+            self._scan_wsl_inventory()
+            return {**self.clients(refresh=True), 'errors': self.wsl_inventory_errors}
 
     def assert_detachable(self):
         """An unregistered owner must not discard work still held by Bridge."""
