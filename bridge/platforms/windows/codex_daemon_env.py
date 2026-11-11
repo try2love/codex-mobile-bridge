@@ -44,6 +44,24 @@ def _kernel():
     return kernel
 
 
+def current_user_sid():
+    from .local_service import _user_sid
+    with _user_sid() as (api, sid):
+        api.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)]
+        api.ConvertSidToStringSidW.restype = wintypes.BOOL
+        text = wintypes.LPWSTR()
+        kernel = _kernel()
+        kernel.LocalFree.argtypes = [ctypes.c_void_p]
+        kernel.LocalFree.restype = ctypes.c_void_p
+        try:
+            if not api.ConvertSidToStringSidW(sid, ctypes.byref(text)):
+                raise OSError('CLI current user identity unavailable')
+            return text.value
+        finally:
+            if text:
+                kernel.LocalFree(text)
+
+
 def _read(kernel, handle, address, size):
     if not address or size <= 0 or size > MAX_ENV:
         raise OSError('Codex daemon memory address invalid')

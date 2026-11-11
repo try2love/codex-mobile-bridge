@@ -15,7 +15,7 @@ from bridge.clients.codex.ipc import IPCError
 from tests.test_cli_bridge_integration import CliBridgeFixture
 
 
-class CliForceTests(CliBridgeFixture):
+class CliForceFixture(CliBridgeFixture):
     def setUp(self):
         super().setUp()
         self.cwd = str(self.home/'workspace')
@@ -61,6 +61,7 @@ class CliForceTests(CliBridgeFixture):
         private_json(self.bridge.data_dir/'cli-daemon-recovery.json', record)
         return record
 
+class CliForceTests(CliForceFixture):
     def test_preview_is_read_only_and_force_upgrades_waiting_and_cancels_only_cli_queue(self):
         old = self.waiting()
         queued, unknown = self.thread_id + ':queued', self.thread_id + ':unknown'

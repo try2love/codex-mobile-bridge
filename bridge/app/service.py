@@ -47,6 +47,7 @@ from bridge.features.sessions.deletion import DeleteCommands, deletion_scope, de
 from bridge.features.sessions.compaction import CompactCommands
 from bridge.features.sessions.cli_release import ReleasedSessions
 from bridge.features.sessions.cli_force import CliForce, maintenance_daemon_status
+from bridge.features.sessions.cli_scope import CliScope
 from bridge.features.sessions.cli_maintenance import CliMaintenance, CliTasksPending, maintenance_receipt
 from bridge.features.sessions.organization_commands import OrganizationCommands
 from bridge.features.sessions.organization import OrganizationNotSent
@@ -291,6 +292,7 @@ class Bridge:
         self.released_cli = ReleasedSessions(data_dir, private_json)
         self.cli_maintenance = CliMaintenance()
         self.cli_force = CliForce(self, private_json)
+        self.cli_scope = CliScope(self, private_json)
         self.organization_commands = OrganizationCommands(data_dir, private_json)
         self.hosts = AppHosts(codex_home)
         self.directory_projects = Projects(data_dir)
@@ -2420,7 +2422,7 @@ class Bridge:
         from bridge.platforms.codex_daemon_env import stop_daemon_gracefully
         key = hashlib.sha256(json.dumps(generation).encode()).hexdigest()
         previous = self._cli_recovery_record()
-        if previous.get('phase') == 'waiting' and release_operation:
+        if previous.get('phase') == 'waiting' and release_operation and previous.get('operationId') != waiting_operation:
             raise ReleaseNotSent('此配置已有等待中的 CLI 恢复，请先取消恢复等待')
         own_setting = (waiting_operation is not None and setting_verified
                        and previous.get('operationId') == waiting_operation and previous.get('phase') == 'configuringUnknown')
@@ -2450,6 +2452,9 @@ class Bridge:
                             raise ReleaseNotSent(error) from error
                         observe = True
             receipt = maintenance_receipt(previous) if waiting_operation is not None else {}
+            if previous.get('scopeRequestId') == waiting_operation and waiting_operation is not None:
+                receipt.update({name: previous[name] for name in (
+                    'scopeRequestId', 'scopeKey', 'scopeBinding', 'scopeBefore', 'scopeProcessGeneration', 'scopeImpact')})
             record = {**receipt, 'generation': key, 'phase': 'draining', 'configuration': configuration,
                       'connections': sorted(set(connections) |
                           {row['connectionToken'] for row in cli.metadata.values() if row.get('connectionToken')} |
@@ -2473,10 +2478,14 @@ class Bridge:
                     raise ReleaseNotSent('配置正在变化或接入已关闭，未退出服务')
                 with self.cli_maintenance.lock:
                     self._verify_cli_waiting_dispatch(waiting_operation, setting_verified=own_setting)
+                    if record.get('scopeRequestId'):
+                        self.cli_scope.check_cancelled(record['scopeRequestId'])
                     cli.recovery_environment = {'generation': key, 'updates': updates, 'preserved': preserved}
                     if auto_proxy:
                         cli.recovery_environment['autoProxySpec'] = auto_proxy
                     private_json(self.data_dir / 'cli-daemon-recovery.json', record)
+                    if record.get('scopeRequestId'):
+                        self.cli_scope.dispatched.add(record['scopeRequestId'])
             if windows is None:
                 checkpoint()
                 stop_daemon_gracefully(cli.home, executable, generation, graceful_only=True)
@@ -2692,16 +2701,24 @@ class Bridge:
                 return {}
         except (KeyError, OSError, StoreUnavailable):
             return {}
-        return {'canForce': True,
+        return {**self.cli_scope.descriptor(), 'canForce': True,
                 '_force_preview': lambda: self.cli_force.preview(sid, connection=key),
                 '_force': lambda operation_id, generation: self._force_cli_connection(sid, key, operation_id, generation),
+                '_scope_preview': lambda: self.cli_scope.preview(sid, key),
+                '_scope_release': lambda operation_id, generation: self._release_cli_scope(sid, key, operation_id, generation),
+                '_scope_force': lambda operation_id, generation: self._release_cli_scope(sid, key, operation_id, generation, force=True),
+                '_scope_cancel': self.cli_scope.cancel,
                 '_check': lambda: self._check_cli_connection(sid, None, key=key)}
+
+    @operation
+    def _release_cli_scope(self, sid, key, operation_id, generation, *, force=False):
+        return (self.cli_scope.force if force else self.cli_scope.release)(sid, key, operation_id, generation)
 
     @operation
     def _force_cli_connection(self, sid, key, operation_id, generation):
         result = self.cli_force.execute(sid, operation_id, generation, connection=key)
         if result['status'] == 'released':
-            self._record_cli_release(self.session(sid, attach=False, background=True), result)
+            self.cli_scope.record_released(result)
         return result
 
     def _release_ide_follower(self, sid, owner, generation, stop):
@@ -2784,8 +2801,14 @@ class Bridge:
             if key is not None and self.cli_force.available():
                 forced = self.cli_force.check_connection(sid, key)
                 if forced is not None:
-                    self._record_cli_release(session, forced)
+                    if forced['status'] == 'released':
+                        self.cli_scope.record_released(forced)
                     return forced
+                scoped = self.cli_scope.check(key)
+                if scoped is not None:
+                    if scoped['status'] == 'released':
+                        self.cli_scope.record_released(scoped)
+                    return scoped
             record = self._cli_recovery_record()
             if (record.get('phase') in ('draining', 'stopped') and isinstance(self.cli_sessions, CliSessions)
                     and self.cli_sessions.daemon_status() == 'stopped'):

@@ -11,6 +11,13 @@ class DaemonEnvironmentUnavailable(OSError):
     pass
 
 
+def daemon_scope_user():
+    if os.name == 'nt':
+        from bridge.platforms.windows.codex_daemon_env import current_user_sid
+        return 'sid:' + current_user_sid()
+    return 'uid:' + str(os.geteuid())
+
+
 def read_daemon_environment(home, executable, names, *, require_home=False):
     """Return (selected values, process generation); never export a full environment."""
     home = Path(home).resolve()

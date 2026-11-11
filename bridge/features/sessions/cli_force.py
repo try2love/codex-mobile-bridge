@@ -17,7 +17,7 @@ from bridge.clients.codex.release import ReleaseNotSent
 from bridge.features.sessions.store import StoreUnavailable
 from bridge.platforms.codex_daemon_env import (
     DaemonEnvironmentUnavailable, daemon_generation_absent, daemon_process_absent, force_daemon_exit,
-    force_daemon_supported, read_daemon_environment)
+    daemon_scope_user, force_daemon_supported, read_daemon_environment)
 
 
 def _digest(value):
@@ -68,6 +68,12 @@ class CliForce:
             return True
         except ReleaseNotSent:
             return False
+
+    def scope_descriptor(self):
+        cli = self._scope()
+        home = str(cli.home.resolve())
+        return {'scopeKey': _digest(['codex', self.bridge.host, home, daemon_scope_user()]),
+                'scopeLabel': self.bridge.host_label + ' · ' + home, 'sharedHome': True}
 
     def _receipts(self):
         return json.loads(self.path.read_text(encoding='utf-8')) if self.path.exists() else {}
@@ -174,11 +180,10 @@ class CliForce:
         impact = self._impact(cli, thread_id)
         operation = previous.get('operationId') if previous.get('phase') in (
             'waiting', 'draining', 'starting', 'resuming', 'configuringUnknown') else None
-        scope = _digest(['codex-cli', bridge.host, home])
-        binding = _digest(['cli-force-v1', scope, generation, configuration, old_socket, identity,
+        scope = self.scope_descriptor()
+        binding = _digest(['cli-force-v1', scope['scopeKey'], generation, configuration, old_socket, identity,
                            connection, impact, previous])
-        preview = {'canForce': True, 'generation': binding, 'scopeKey': scope,
-                   'scopeLabel': bridge.host_label + ' · ' + home, 'impact': impact,
+        preview = {**scope, 'canForce': True, 'generation': binding, 'impact': impact,
                    'operationId': operation, 'taskState': 'unknown',
                    'message': '将强制退出此配置的共享 CLI 服务，可能中断其中未列出的任务；已保存的聊天会保留。'}
         return preview, executable, generation, configuration, identity, old_socket
