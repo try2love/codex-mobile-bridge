@@ -945,6 +945,19 @@ class NativeHelperProcess(unittest.TestCase):
             self.assertEqual(spawn.call_args.args[0], [__file__, '42', '--quit', 'C:/Claude.exe'])
 
     @patch('bridge.clients.claude.setup.sys.platform', 'win32')
+    def test_native_quit_unavailable_is_unsubmitted_without_retry_or_force(self):
+        expected = {'quitState': 'failed', 'pid': 42,
+                    'reason': 'Claude 当前没有可验证的后台退出入口，尚未提交退出；请在电脑端正常退出，或另行确认强制退出'}
+        process = Mock(returncode=1)
+        process.communicate.return_value = (json.dumps(expected), '')
+        with patch('bridge.clients.claude.setup.helper_path', return_value=Path(__file__)), \
+             patch('bridge.clients.claude.setup.subprocess.Popen', return_value=process) as spawn:
+            self.assertEqual(native_action('quit', pid=42, executable='C:/Claude.exe'), expected)
+        spawn.assert_called_once()
+        process.terminate.assert_not_called()
+        process.kill.assert_not_called()
+
+    @patch('bridge.clients.claude.setup.sys.platform', 'win32')
     def test_native_quit_rejects_unverified_helper_results(self):
         process = Mock(returncode=0)
         with patch('bridge.clients.claude.setup.helper_path', return_value=Path(__file__)), \
