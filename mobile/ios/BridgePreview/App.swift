@@ -674,6 +674,8 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         updateGatewayMenu()
         gatewayMenu.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(gatewayMenu)
         NSLayoutConstraint.activate([gatewayMenu.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -8), gatewayMenu.widthAnchor.constraint(equalToConstant: 48), gatewayMenu.heightAnchor.constraint(equalToConstant: 48)])
+        let menuFallbackTop = gatewayMenu.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 4)
+        menuFallbackTop.priority = .defaultLow; menuFallbackTop.isActive = true
         downloadPanel.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(downloadPanel)
         downloadPanel.onToggle = { [weak self] in
             guard let self else { return }
