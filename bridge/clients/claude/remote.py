@@ -519,16 +519,21 @@ class RemoteClaudeCli:
                 public.update(context_fields((row.get('contextEvents') or []) + live_events))
                 messages = model.transcript(history)
                 ready = False
+                notice = '无法确认原会话权限模式，请在远端终端继续' if not live and not row['permissionKnown'] else ''
                 if not live and not row.get('archived') and row['permissionKnown']:
                     try:
-                        ready = self._remote(row['alias'], {'operation': 'auth', 'origin': row['origin']}, timeout=12)['ready']
-                    except BridgeUnavailable:
-                        pass
+                        preflight = self._remote(row['alias'], {'operation': 'resume-preflight',
+                            'origin': row['origin'], 'native': row['nativeId'], 'cwd': row['cwd'],
+                            'model': row['model'], 'permissionMode': row['permissionMode']}, timeout=12)
+                        ready = preflight['ready'] is True
+                        notice = preflight.get('notice', '')
+                    except BridgeUnavailable as exc:
+                        notice = str(exc)
                 return {'connected': True, 'session': public,
                         'messages': list({item['id']: item for item in messages}.values()),
                         'turns': model.turns(history),
                         'history': page['history'],
-                        'notice': '无法确认原会话权限模式，请在远端终端继续' if not live and not row['permissionKnown'] else '',
+                        'notice': notice,
                         'capabilities': {**row.get('capabilities', {}), 'resume': not live and not row.get('archived') and ready, 'send': live and public['connectionState'] == 'ready',
                                          'models': live, 'permissions': live, 'stop': live,
                                          'compact': live and not owned.active and not owned.pending and _supports_compact(owned.catalog),

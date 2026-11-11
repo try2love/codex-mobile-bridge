@@ -546,6 +546,22 @@ def continuation_identity(directory):
     return hashlib.sha256(json.dumps(files, ensure_ascii=False, indent=2, sort_keys=True).encode()).hexdigest()
 
 
+def resume_directory(cwd):
+    try:
+        directory = Path(cwd).resolve(strict=True)
+    except FileNotFoundError:
+        raise ValueError('原项目目录不存在：'+cwd+'，请在远端恢复该目录后重试') from None
+    except PermissionError:
+        raise ValueError('原项目目录无访问权限：'+cwd) from None
+    except OSError:
+        raise ValueError('原项目目录不可用：'+cwd) from None
+    if not directory.is_dir():
+        raise ValueError('原项目路径不是目录：'+cwd)
+    if not os.access(directory, os.R_OK | os.X_OK):
+        raise ValueError('原项目目录无访问权限：'+cwd)
+    return directory
+
+
 def command(request):
     found = profile()
     operation = request.get('operation')
@@ -566,6 +582,18 @@ def command(request):
                 'authReady': auth_ready(found) if found else False}
     if not found or found['origin'] != request.get('origin'):
         raise ValueError('原 Claude Code 配置已变化或不可用')
+    if operation == 'resume-preflight':
+        row = session(found, request['native'])
+        if any(row[key] != request.get(key) for key in ('cwd', 'model', 'permissionMode')):
+            raise ValueError('原 Claude Code 会话设置已变化，请刷新后重试')
+        if not row['permissionKnown']:
+            return {'ready': False, 'notice': '无法确认原会话权限模式，请在远端终端继续'}
+        try:
+            resume_directory(row['cwd'])
+        except ValueError as exc:
+            return {'ready': False, 'notice': str(exc)}
+        ready = not row.get('archived') and auth_ready(found)
+        return {'ready': ready, 'notice': '' if ready else '原 Claude Code 账号不可用，请在远端终端核对登录状态'}
     if operation in ('archive-state', 'archive'):
         native = str(uuid.UUID(request['native']))
         row = session(found, native)
@@ -619,9 +647,7 @@ def resume(request):
         raise ValueError('原 Claude Code 会话设置已变化')
     if not row['permissionKnown'] or not auth_ready(found):
         raise ValueError('原 Claude Code 账号或权限模式不可用')
-    cwd = Path(row['cwd']).resolve(strict=True)
-    if not cwd.is_dir():
-        raise ValueError('原项目目录不可用')
+    cwd = resume_directory(row['cwd'])
     assert_session_closed(found, row['nativeId'])
     directory = upload_root(found, request['scope'])
     if profile() != found:
