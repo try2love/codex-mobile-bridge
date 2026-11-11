@@ -12,6 +12,8 @@ Status: implemented
 
 原内联地址和 `Use Official Cloud` 按钮只修改草稿，后来由[登录模态框](2026-11-01-cloud-login-dialog.md)取代；预设与精确 origin、证书和不重定向规则继续适用，服务端和手机配置不因预设改变。
 
+[桌面赞助入口](2026-11-11-official-cloud-sponsor.md)沿用官方预设与精确 origin 区分购买入口的显示范围，购买后的服务天数仍通过原兑换流程确认。
+
 ## Alternatives considered
 
 无；原记录未保存关于默认值的其他备选方案。

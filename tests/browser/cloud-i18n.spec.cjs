@@ -5,6 +5,8 @@ const path=require('node:path');
 const root=path.resolve(__dirname,'../..');
 const chinese=/[\u4e00-\u9fff]/;
 const now=Date.parse('2030-05-01T00:00:00Z');
+const {pairingImage}=require('../../desktop/features/connections/qr.cjs');
+const sponsorImage=()=>pairingImage({url:'https://fixture.example.test/purchase'});
 
 test.beforeEach(async({page,context,baseURL,request})=>{
   await context.route('**/*',route=>new URL(route.request().url()).origin===baseURL?route.continue():route.abort());
@@ -423,6 +425,108 @@ test('confirmed redemption with a status refresh failure warns against redeeming
   await page.evaluate(()=>{window.cloudNow+=5000;return window.cloudTick();});
   expect(await page.evaluate(()=>window.cloudCalls.map(call=>call.action))).toEqual(['redeem','status']);
   expect(await page.evaluate(()=>window.cloudCalls.filter(call=>call.action==='redeem').length)).toBe(1);
+});
+
+test('sponsorship follows official cloud selection before login and account origin after login',async({page})=>{
+  const sponsor=page.locator('[data-cloud-sponsor]');
+  await expect(sponsor).toBeHidden();
+  await page.evaluate(()=>{window.cloudStatus={configured:false,enabled:false};window.CloudPanel.update(window.cloudStatus);});
+  await expect(sponsor).toBeVisible();
+  await openLogin(page);
+  await page.locator('[data-cloud-server]').selectOption('custom');
+  await expect(sponsor).toBeHidden();
+  await page.locator('[data-cloud-origin]').fill('https://bridge.waken.cloudns.be:8787');
+  await expect(sponsor).toBeHidden();
+  await language(page,'en');
+  await page.evaluate(()=>window.CloudPanel.update(window.cloudStatus));
+  await expect(sponsor).toBeHidden();
+  await page.locator('[data-cloud-server]').selectOption('official');
+  await expect(sponsor).toBeVisible();
+  await page.locator('[data-cloud-server]').selectOption('custom');
+  await closeLogin(page);
+  for(const entitlement of [null,{required:true,active:false,expires_at:null},{required:true,active:true,expires_at:'2031-01-01T00:00:00Z'},{required:true,active:false,expires_at:'2029-01-01T00:00:00Z'}]){
+    await page.evaluate(entitlement=>{
+      window.cloudStatus={...window.cloudOriginalAccount,origin:'https://bridge.waken.cloudns.be:8787',entitlement};
+      window.CloudPanel.update(window.cloudStatus);
+    },entitlement);
+    await expect(sponsor).toBeVisible();
+  }
+  await page.evaluate(()=>window.CloudPanel.update(window.cloudOriginalAccount));
+  await expect(sponsor).toBeHidden();
+  expect(await page.evaluate(()=>window.cloudAllCalls)).toEqual([]);
+});
+
+test('sponsor purchase opens a QR dialog, preserves drafts and fits both UI languages',async({page},testInfo)=>{
+  const qr=await sponsorImage();
+  await page.evaluate(qr=>{
+    window.cloudOpened=[];
+    window.bridgeDesktop.open=async target=>window.cloudOpened.push(target);
+    window.cloudResponses.sponsorship=qr;
+    window.cloudStatus={...window.cloudOriginalAccount,origin:'https://bridge.waken.cloudns.be:8787'};
+    window.CloudPanel.update(window.cloudStatus);
+  },qr);
+  const sponsor=page.locator('[data-cloud-sponsor]'),button=page.locator('[data-cloud-open-sponsor]');
+  const modal=page.locator('#cloud-sponsor-dialog'),image=page.locator('[data-cloud-sponsor-qr-image]');
+  await page.locator('[data-cloud-code]').fill('UNSENT-TEST-CODE');
+  await expect(sponsor.getByRole('heading')).toHaveText('赞助支持');
+  await expect(button).toHaveText('购买官方云服务 30 天激活码（闲鱼）');
+  await button.click();
+  await expect(modal).toBeVisible();await expect(image).toBeVisible();await expect(image).toHaveAttribute('src',qr.image);
+  await expect(page.locator('[data-cloud-show-sponsor-qr]')).toHaveCount(0);
+  expect(await modal.evaluate(node=>node.closest('form'))).toBeNull();
+  for(const locale of ['zh','en']){
+    await language(page,locale);
+    const box=await modal.boundingBox(),viewport=page.viewportSize();
+    expect(box.x).toBeGreaterThanOrEqual(0);expect(box.x+box.width).toBeLessThanOrEqual(viewport.width);
+    expect(box.y).toBeGreaterThanOrEqual(0);expect(box.y+box.height).toBeLessThanOrEqual(viewport.height);
+    expect(await modal.evaluate(node=>node.scrollWidth<=node.clientWidth)).toBe(true);
+    const screenshot=testInfo.outputPath('cloud-sponsor-'+locale+'.png');
+    await page.screenshot({path:screenshot});
+    await testInfo.attach('cloud-sponsor-'+locale,{path:screenshot,contentType:'image/png'});
+  }
+  await expect(button).toHaveText('Buy a 30-day Official Cloud activation code (Xianyu)');
+  await page.keyboard.press('Escape');await expect(modal).toBeHidden();await expect(button).toBeFocused();
+  await button.click();await expect(modal).toBeVisible();await page.mouse.click(4,4);await expect(modal).toBeHidden();
+  await button.click();await page.locator('[data-cloud-close-sponsor]').click();await expect(modal).toBeHidden();
+  await page.evaluate(()=>window.CloudPanel.update(window.cloudStatus));
+  await expect(page.locator('[data-cloud-code]')).toHaveValue('UNSENT-TEST-CODE');
+  await expect(page.locator('[data-cloud-identity]')).toContainText('original-user');
+  expect(await page.evaluate(()=>({opened:window.cloudOpened,cloud:window.cloudAllCalls,submissions:window.settingsSubmissions}))).toEqual({opened:[],cloud:Array.from({length:3},()=>({action:'sponsorship',origin:'https://bridge.waken.cloudns.be:8787'})),submissions:0});
+});
+
+test('sponsor QR errors retry only on reopening and a custom account dismisses the dialog',async({page})=>{
+  const qr=await sponsorImage();
+  await page.evaluate(qr=>{
+    window.cloudErrors.sponsorship='synthetic QR failure';window.cloudResponses.sponsorship=qr;
+    window.cloudStatus={...window.cloudOriginalAccount,origin:'https://bridge.waken.cloudns.be:8787'};window.CloudPanel.update(window.cloudStatus);
+  },qr);
+  const button=page.locator('[data-cloud-open-sponsor]'),image=page.locator('[data-cloud-sponsor-qr-image]'),modal=page.locator('#cloud-sponsor-dialog');
+  await button.click();await expect(modal).toBeVisible();await expect(image).toBeHidden();
+  await expect(page.locator('[data-cloud-sponsor-qr-status]')).toHaveText('无法加载二维码，请关闭后重试。');
+  await language(page,'en');await expect(page.locator('[data-cloud-sponsor-qr-status]')).toHaveText('Could not load the QR code. Close it and try again.');
+  expect(await page.evaluate(()=>window.cloudAllCalls.length)).toBe(1);
+  await page.evaluate(()=>delete window.cloudErrors.sponsorship);
+  await page.locator('[data-cloud-close-sponsor]').click();await button.click();await expect(image).toBeVisible();
+  expect(await page.evaluate(()=>window.cloudAllCalls.length)).toBe(2);
+  await page.evaluate(()=>window.CloudPanel.update(window.cloudOriginalAccount));await expect(modal).toBeHidden();
+  expect(await page.evaluate(()=>({cloud:window.cloudAllCalls,settings:window.settingsSubmissions}))).toEqual({cloud:Array.from({length:2},()=>({action:'sponsorship',origin:'https://bridge.waken.cloudns.be:8787'})),settings:0});
+});
+
+test('enabled web cloud access displays the advertised origin without the redemption separator',async({page},testInfo)=>{
+  await page.evaluate(()=>window.cloudResponses.capabilities.web_client={enabled:true,origin:'https://web.example.test:18787'});
+  await page.locator('[data-cloud-web-allow]').check();
+  const address=page.locator('[data-cloud-web-address]');
+  await expect(address).toBeVisible();await expect(address).toHaveValue('https://web.example.test:18787');
+  await expect(address).toHaveAttribute('readonly','');
+  await address.click();expect(await address.evaluate(n=>n.selectionEnd-n.selectionStart)).toBe('https://web.example.test:18787'.length);
+  await language(page,'en');await page.evaluate(()=>window.CloudPanel.update(window.cloudStatus));
+  expect(await page.evaluate(()=>window.cloudAllCalls.filter(c=>c.action==='capabilities'))).toEqual([{action:'capabilities',origin:'https://relay.example.test'}]);
+  expect(await page.locator('.cloud-web-access').evaluate(n=>getComputedStyle(n).borderTopWidth)).toBe('0px');
+  const gap=await page.evaluate(()=>document.querySelector('.cloud-web-access').getBoundingClientRect().top-document.querySelector('[data-cloud-redeem]').getBoundingClientRect().bottom);
+  expect(gap).toBeGreaterThanOrEqual(24);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth)).toBe(false);
+  await page.screenshot({path:testInfo.outputPath('web-cloud-address.png')});
+  await page.locator('[data-cloud-web-allow]').uncheck();await expect(address).toBeHidden();await expect(address).toHaveValue('');
 });
 
 test('new accounts use the official server and the login dialog fits wide and narrow screens',async({page},testInfo)=>{

@@ -1068,6 +1068,12 @@ test('native window title and local target copy respect their fixed origins',asy
   await assert.rejects(handlers['bridge:copy'](event,'http://192.168.1.2:8787'),/地址不可用/);
   await handlers['bridge:open'](event,'setup-external');
   assert.match(opened[0],/#external$/);
+  assert.equal(handlers['bridge:sponsor-qr'],undefined);
+  await assert.rejects(handlers['bridge:open']({...event,senderFrame:{}},'official-cloud-sponsor'),/不允许的界面来源/);
+  assert.equal(opened.length,1);
+  await assert.rejects(handlers['bridge:open'](event,'official-cloud-sponsor'),/地址不可用/);
+  await assert.rejects(handlers['bridge:open'](event,'https://m.tb.cn/h.jjD7PcA?tk=gr8Q6d3Taty'),/地址不可用/);
+  assert.equal(opened.length,1);
 });
 
 

@@ -73,7 +73,7 @@ function fixture(){
   }
   let request=respond;
   class Clock extends Date{static now(){return now;}}
-  const context=vm.createContext({document,Date:Clock,TextEncoder,CustomEvent:class{constructor(type){this.type=type;}},localStorage:{getItem(){return null;},setItem(){}},setInterval:fn=>{timers.push(fn);return timers.length;},window:{confirm:()=>false,bridgeDesktop:{cloud:async payload=>{calls.push(copy(payload));return request(payload);}}}});
+  const context=vm.createContext({document,Date:Clock,URL,TextEncoder,CustomEvent:class{constructor(type){this.type=type;}},localStorage:{getItem(){return null;},setItem(){}},setInterval:fn=>{timers.push(fn);return timers.length;},window:{confirm:()=>false,bridgeDesktop:{cloud:async payload=>{calls.push(copy(payload));return request(payload);}}}});
   for(const file of ['web/shared/i18n.js','desktop/features/connections/cloud.js'])vm.runInContext(fs.readFileSync(path.join(root,file),'utf8'),context,{filename:file});
   const node=key=>document.querySelector('[data-cloud-'+key+']');
   const flush=()=>new Promise(resolve=>setImmediate(resolve));
@@ -86,10 +86,10 @@ test('web access starts off and writes only explicit account-scoped permission',
   const ui=fixture();await signedIn(ui);ui.language('en');
   const input=ui.node('web-allow');assert.equal(input.checked,false);assert.equal(input.disabled,false);
   input.checked=true;await input.onchange();
-  assert.deepEqual(ui.calls,[{action:'web-access',origin:account.origin,account_id:account.account_id,gateway_id:account.gateway_id,allowed:true,expected_revision:0}]);
+  assert.deepEqual(ui.calls,[{action:'web-access',origin:account.origin,account_id:account.account_id,gateway_id:account.gateway_id,allowed:true,expected_revision:0},{action:'capabilities',origin:account.origin}]);
   assert.equal(input.checked,true);assert.match(ui.node('web-state').textContent,/allowed/);
   input.checked=false;await input.onchange();
-  assert.equal(input.checked,false);assert.equal(ui.calls[1].expected_revision,1);assert.match(ui.node('result').textContent,/disconnected/);
+  assert.equal(input.checked,false);assert.equal(ui.calls[2].expected_revision,1);assert.match(ui.node('result').textContent,/disconnected/);
   ui.language('zh');assert.match(ui.node('web-state').textContent,/[\u4e00-\u9fff]/);
 });
 
@@ -113,6 +113,53 @@ test('a failed persisted disable has an explicit recovery without granting acces
   await ui.node('web-disable').onclick();
   assert.equal(ui.calls[0].action,'web-access');assert.equal(ui.calls[0].allowed,false);
   assert.equal(ui.calls[0].expected_revision,3);assert.equal(ui.node('web-disable').hidden,true);
+});
+
+test('web address uses the selected server capability once per enabled account and repaint preserves it',async()=>{
+  const ui=fixture();ui.responses.capabilities={web_client:{enabled:true,origin:'https://web.example.test:9443'}};
+  const enabled={...account,web_access:{allowed:true,revision:1,error:''}};
+  ui.update(enabled);await ui.flush();
+  assert.deepEqual(ui.calls,[{action:'capabilities',origin:account.origin}]);
+  assert.equal(ui.node('web-address').value,'https://web.example.test:9443');assert.equal(ui.node('web-address-panel').hidden,false);
+  ui.node('code').value='KEEP-THIS-CODE';ui.language('en');ui.language('zh');ui.update(enabled);await ui.flush();
+  assert.equal(ui.calls.length,1);assert.equal(ui.node('code').value,'KEEP-THIS-CODE');
+  ui.update(account);assert.equal(ui.node('web-address-panel').hidden,true);assert.equal(ui.node('web-address').value,'');
+});
+
+test('web address rejects invalid server origins and only retries after an explicit refresh',async()=>{
+  for(const origin of ['http://web.example.test','javascript:alert(1)','https://user:pass@web.example.test','https://web.example.test/path','https://web.example.test?token=secret','https://web.example.test/#fragment','https://WEB.example.test','https://web.example.test\n']){
+    const ui=fixture();ui.responses.capabilities={web_client:{enabled:true,origin}};
+    const enabled={...account,web_access:{allowed:true,revision:1,error:''}};
+    ui.update(enabled);await ui.flush();
+    assert.equal(ui.node('web-address').value,'',origin);assert.equal(ui.node('web-address-field').hidden,true);
+    assert.equal(ui.node('web-address-refresh').hidden,false);
+    ui.language('en');ui.update(enabled);await ui.flush();assert.equal(ui.calls.length,1);
+    ui.responses.capabilities={web_client:{enabled:true,origin:'https://bridge.waken.cloudns.be:18787'}};
+    await ui.node('web-address-refresh').onclick();assert.equal(ui.node('web-address').value,'https://bridge.waken.cloudns.be:18787');
+  }
+});
+
+test('late web address reads cannot cross accounts or restore a disabled entry',async()=>{
+  const ui=fixture(),pending=[];
+  ui.setRequest(payload=>payload.action==='capabilities'?new Promise(resolve=>pending.push(resolve)):ui.respond(payload));
+  const enabled={...account,web_access:{allowed:true,revision:1,error:''}};
+  ui.update(enabled);
+  ui.update({...enabled,origin:'https://other.example.test',account_id:'other-account'});
+  pending[1]({web_client:{enabled:true,origin:'https://other-web.example.test'}});await ui.flush();
+  pending[0]({web_client:{enabled:true,origin:'https://old-web.example.test'}});await ui.flush();
+  assert.equal(ui.node('web-address').value,'https://other-web.example.test');
+  ui.update(enabled);ui.update(account);
+  pending[2]({web_client:{enabled:true,origin:'https://late-web.example.test'}});await ui.flush();
+  assert.equal(ui.node('web-address').value,'');assert.equal(ui.node('web-address-panel').hidden,true);
+});
+
+test('unavailable or failed web capability leaves an explicit retry without affecting permission',async()=>{
+  for(const fails of [false,true]){
+    const ui=fixture();ui.language('en');ui.setRequest(payload=>{if(fails&&payload.action==='capabilities')throw Error('offline');return ui.respond(payload);});
+    ui.update({...account,web_access:{allowed:true,revision:1,error:''}});await ui.flush();
+    assert.equal(ui.node('web-allow').checked,true);assert.equal(ui.node('web-address').value,'');assert.equal(ui.node('web-address-refresh').hidden,false);
+    assert.match(ui.node('web-address-status').textContent,fails?/Could not load/:/has not provided/);
+  }
 });
 
 test('logged-in cloud accounts hide the sign-in entry and have no manual relay switch',async()=>{

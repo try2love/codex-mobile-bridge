@@ -2,18 +2,23 @@
 
 (() => {
   const officialOrigin='https://bridge.waken.cloudns.be:8787';
-  const api=window.bridgeDesktop,t=BridgeI18n.t,root=document.createElement('article'),dialog=document.createElement('dialog');
+  const api=window.bridgeDesktop,t=BridgeI18n.t,root=document.createElement('article'),dialog=document.createElement('dialog'),sponsorDialog=document.createElement('dialog');
   root.id='cloud-account';
   root.innerHTML=`<div class="section-head"><h2 data-i18n="Cloud Relay">Cloud Relay</h2><button type="button" class="primary" data-cloud-open-login data-i18n="Sign In to Cloud">Sign In to Cloud</button></div>
     <p class="hint" data-cloud-signin-hint data-i18n="Sign in to use the cloud relay. Your direct connections are unchanged.">Sign in to use the cloud relay. Your direct connections are unchanged.</p>
     <p data-cloud-state role="status"></p>
+    <section class="cloud-sponsor" data-cloud-sponsor hidden aria-labelledby="cloud-sponsor-title"><h3 id="cloud-sponsor-title" data-i18n="Sponsor support">Sponsor support</h3>
+    <p class="hint" id="cloud-sponsor-help" data-i18n="After purchasing, sign in to your Official Cloud account and redeem the code on this page.">After purchasing, sign in to your Official Cloud account and redeem the code on this page.</p>
+    <button type="button" data-cloud-open-sponsor aria-haspopup="dialog" aria-controls="cloud-sponsor-dialog" aria-describedby="cloud-sponsor-help" data-i18n="Buy a 30-day Official Cloud activation code (Xianyu)">Buy a 30-day Official Cloud activation code (Xianyu)</button></section>
     <div data-cloud-account hidden><p data-cloud-identity></p>
     <div class="actions"><button type="button" data-cloud-action="entitlement" data-i18n="Refresh Entitlement">Refresh Entitlement</button><button type="button" data-cloud-action="logout" data-i18n="Log Out">Log Out</button></div>
     <p data-cloud-entitlement></p><div data-cloud-redeem hidden><label><span data-i18n="Service-days redemption code">Service-days redemption code</span><input data-cloud-code autocomplete="off" maxlength="128"></label><button type="button" data-cloud-action="redeem" data-i18n="Redeem">Redeem</button></div>
-    <div class="cloud-device"><h3 data-i18n="Web Cloud Access">Web Cloud Access</h3>
+    <div class="cloud-device cloud-web-access"><h3 data-i18n="Web Cloud Access">Web Cloud Access</h3>
     <p class="hint" id="cloud-web-help" data-i18n="Allow this cloud account to access this computer from a browser. Turning this off disconnects open web sessions; phone permissions are separate.">Allow this cloud account to access this computer from a browser. Turning this off disconnects open web sessions; phone permissions are separate.</p>
     <label class="cloud-device-allow"><input type="checkbox" role="switch" data-cloud-web-allow aria-describedby="cloud-web-help"><span data-i18n="Allow web access to this computer">Allow web access to this computer</span></label>
     <p data-cloud-web-state class="hint" role="status"></p>
+    <div class="cloud-web-address" data-cloud-web-address-panel hidden><label data-cloud-web-address-field hidden><span data-i18n="Web cloud address">Web cloud address</span><input data-cloud-web-address type="url" readonly spellcheck="false"></label>
+    <p class="hint" data-cloud-web-address-status role="status"></p><button type="button" data-cloud-web-address-refresh hidden data-i18n="Refresh address">Refresh address</button></div>
     <button type="button" data-cloud-web-disable hidden data-i18n="Retry saving web access as disabled">Retry saving web access as disabled</button></div>
     <h3 data-i18n="Cloud Devices">Cloud Devices</h3><p class="hint" data-i18n="Phones signed in to this account appear automatically. Allow each phone to connect on this desktop.">Phones signed in to this account appear automatically. Allow each phone to connect on this desktop.</p>
     <p data-cloud-directory-error class="hint" role="status"></p><div data-cloud-devices></div></div>
@@ -40,7 +45,13 @@
   document.querySelector('[data-panel="network"]').prepend(root);
   // Keep the login form outside the desktop settings form.
   document.body.append(dialog);
-  const $=key=>root.querySelector('[data-cloud-'+key+']')||dialog.querySelector('[data-cloud-'+key+']');
+  sponsorDialog.id='cloud-sponsor-dialog';sponsorDialog.className='cloud-login-dialog cloud-sponsor-dialog';
+  sponsorDialog.setAttribute('aria-labelledby','cloud-sponsor-dialog-title');sponsorDialog.setAttribute('aria-describedby','cloud-sponsor-dialog-help');
+  sponsorDialog.innerHTML=`<div class="cloud-login-head"><h2 id="cloud-sponsor-dialog-title" data-i18n="Scan with phone">Scan with phone</h2><button type="button" data-cloud-close-sponsor data-close="cloud-sponsor-dialog" data-i18n="Close">Close</button></div>
+    <p class="hint" id="cloud-sponsor-dialog-help" data-i18n="Scan with your phone to open the Xianyu purchase page.">Scan with your phone to open the Xianyu purchase page.</p>
+    <p data-cloud-sponsor-qr-status role="status" aria-live="polite"></p><img data-cloud-sponsor-qr-image width="320" height="320" alt="Xianyu purchase QR code" hidden>`;
+  document.body.append(sponsorDialog);
+  const $=key=>root.querySelector('[data-cloud-'+key+']')||dialog.querySelector('[data-cloud-'+key+']')||sponsorDialog.querySelector('[data-cloud-'+key+']');
   const all=selector=>[...root.querySelectorAll(selector),...dialog.querySelectorAll(selector)];
   const runtimeMessages={stopped:'Relay stopped',disabled:'Relay disabled',connecting:'Relay connecting',connected:'Relay connected',unavailable:'Relay unavailable',automatic:'Relay enabled automatically. Start the gateway to connect.'};
   const errors={
@@ -128,11 +139,16 @@
     logoutCredentialsUncleared:'Signed out locally, but saved cloud credentials could not be cleared. Check the system credential vault.',
     entitlement:'Cloud service status refreshed.',
     redeem:'Service days redeemed. Service status refreshed.',
-    redeemRefreshFailed:'Service days redeemed, but service status could not be refreshed. Refresh status; do not redeem again.'
+    redeemRefreshFailed:'Service days redeemed, but service status could not be refreshed. Refresh status; do not redeem again.',
+    sponsorQrFailed:'Could not load the QR code. Close it and try again.',
+    sponsorQrLoading:'Loading QR code...'
   };
+  const webAddressMessages={loading:'Loading web cloud address...',ready:'Open this address in a browser and sign in with the same cloud account.',unavailable:'This server has not provided a web cloud address.',failed:'Could not load the web cloud address. Try refreshing it.'};
   const codeRetries=new Map();
   let state={},busy=false,authView='login',registrationProof=null,originEdited=false,draftOrigin=officialOrigin,devices=[],directoryPolling=false,entitlement=null,resultMessage='',resultIsError=false,directoryError='';
   let directoryRevision=0;
+  let sponsorQrBusy=false,sponsorQrImage='',sponsorQrError=false;
+  let webAddress={scope:'',origin:'',status:'loading'},webAddressRequest=0;
   function accountScope(value=state){return value.configured?value.origin+'\0'+value.account_id+'\0'+value.gateway_id:'';}
   function selectedOrigin(){return $('server').value==='official'?officialOrigin:$('origin').value.trim();}
   function authAction(){return authView==='register'?'signup-verify':authView==='password'?'register':authView;}
@@ -168,10 +184,11 @@
       if(!$('login').value)$('login').value=value.login||'';
     }
     render();
+    refreshWebAddress();
   }
   // Language changes only repaint cached state; they never replay cloud operations.
   function render(){
-    BridgeI18n.apply(root);BridgeI18n.apply(dialog);
+    BridgeI18n.apply(root);BridgeI18n.apply(dialog);BridgeI18n.apply(sponsorDialog);
     const runtimeState=state.runtime?.state||'stopped';
     const runtimeText=state.enabled&&runtimeState==='stopped'?runtimeMessages.automatic:state.enabled&&runtimeState==='disabled'?runtimeMessages.connecting:Object.hasOwn(runtimeMessages,runtimeState)?runtimeMessages[runtimeState]:runtimeState;
     $('state').textContent=t(runtimeText)+(state.runtime?.code?' / '+codeText(state.runtime.code):'');
@@ -180,6 +197,9 @@
     const custom=$('server').value==='custom';
     $('custom-origin').hidden=!custom;$('origin').disabled=busy||!custom;
     const value=state;
+    $('sponsor').hidden=value.configured?value.origin!==officialOrigin:custom;
+    if($('sponsor').hidden&&sponsorDialog.open)sponsorDialog.close();
+    renderSponsorQR();
     $('account').hidden=!value.configured;
     $('open-login').hidden=!!value.configured;
     $('signin-hint').hidden=!!value.configured;
@@ -190,6 +210,7 @@
     $('web-allow').disabled=busy||!value.configured||!web||!!web.error;
     $('web-disable').hidden=web?.error!=='web_access_storage_error';
     $('web-state').textContent=!web?t('Restart the updated gateway to manage web access.'):web.error?codeText(web.error):t(web.allowed?'Web access allowed for this cloud account.':'Web access disabled. Enable it here to connect from a browser.');
+    renderWebAddress();
     $('entitlement').textContent=!entitlement?(value.configured&&value.entitlement_error?t('Cloud service status could not be verified. Refresh the service status.'):''):!entitlement.active?t('Cloud entitlement is inactive. Direct connections are unchanged.'):entitlement.expires_at?format('Active until {date}',{date:new Date(entitlement.expires_at).toLocaleString(BridgeI18n.locale())}):t('Active (selfhost)');
     renderResult();
     renderAuth();
@@ -365,7 +386,58 @@
     if(origin!==draftOrigin){clearRegistration();if(authView==='password')authView='register';setResult('');}
     draftOrigin=origin;render();
   }
+  function renderSponsorQR(){
+    $('sponsor-qr-status').textContent=sponsorQrBusy?t(serviceMessages.sponsorQrLoading):sponsorQrError?t(serviceMessages.sponsorQrFailed):'';
+    $('sponsor-qr-image').hidden=!sponsorQrImage;
+    $('sponsor-qr-image').alt=t('Xianyu purchase QR code');
+    if(sponsorQrImage)$('sponsor-qr-image').src=sponsorQrImage;
+  }
+  function webAddressScope(){return state.configured&&state.web_access?.allowed===true&&!state.web_access.error?accountScope():'';}
+  function renderWebAddress(){
+    const expected=webAddressScope(),current=webAddress.scope===expected?webAddress:{origin:'',status:'loading'};
+    $('web-address-panel').hidden=!expected;
+    $('web-address-field').hidden=!expected||!current.origin;
+    $('web-address').value=expected?current.origin:'';
+    $('web-address-status').textContent=expected?t(webAddressMessages[current.status]):'';
+    $('web-address-refresh').hidden=!expected||!['failed','unavailable'].includes(current.status);
+    $('web-address-refresh').disabled=busy||current.status==='loading';
+  }
+  async function refreshWebAddress(force=false){
+    const expected=webAddressScope();
+    if(!expected){webAddressRequest++;webAddress={scope:'',origin:'',status:'loading'};renderWebAddress();return;}
+    if(!force&&webAddress.scope===expected)return;
+    const revision=++webAddressRequest,origin=state.origin;
+    webAddress={scope:expected,origin:'',status:'loading'};renderWebAddress();
+    try{
+      const capabilities=await api.cloud({action:'capabilities',origin});
+      if(revision!==webAddressRequest||expected!==webAddressScope())return;
+      const entry=capabilities?.web_client;
+      if(entry?.enabled===true){
+        const value=entry.origin;
+        if(typeof value!=='string'||value.length>2048||!/^[\x21-\x7e]+$/.test(value))throw Error('Invalid web origin');
+        const url=new URL(value);
+        if(url.protocol!=='https:'||url.origin!==value||url.href!==value+'/'||url.username||url.password)throw Error('Invalid web origin');
+        webAddress={scope:expected,origin:value,status:'ready'};
+      }else webAddress={scope:expected,origin:'',status:'unavailable'};
+    }catch{if(revision===webAddressRequest&&expected===webAddressScope())webAddress={scope:expected,origin:'',status:'failed'};}
+    finally{if(revision===webAddressRequest)renderWebAddress();}
+  }
   $('server').onchange=changeServer;$('origin').addEventListener('input',changeServer);
+  $('open-sponsor').onclick=async()=>{
+    if(busy||$('sponsor').hidden||sponsorDialog.open)return;
+    if(!sponsorQrBusy){sponsorQrError=false;sponsorQrImage='';}
+    renderSponsorQR();sponsorDialog.showModal();$('close-sponsor').focus();
+    if(sponsorQrBusy)return;
+    sponsorQrBusy=true;renderSponsorQR();
+    try{const result=await api.cloud({action:'sponsorship',origin:officialOrigin});if(typeof result?.image!=='string'||result.image.length>65536||!/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(result.image))throw Error('Invalid QR image');sponsorQrImage=result.image;}
+    catch{sponsorQrError=true;}
+    finally{sponsorQrBusy=false;renderSponsorQR();}
+  };
+  $('close-sponsor').onclick=()=>sponsorDialog.close();
+  $('sponsor-qr-image').onerror=()=>{sponsorQrImage='';sponsorQrError=true;renderSponsorQR();};
+  sponsorDialog.addEventListener('close',()=>{if(!$('sponsor').hidden&&!$('open-sponsor').disabled)$('open-sponsor').focus();});
+  $('web-address-refresh').onclick=()=>refreshWebAddress(true);
+  $('web-address').onclick=()=> $('web-address').select();
   $('web-allow').onchange=async()=>{
     const allowed=$('web-allow').checked;
     $('web-allow').checked=state.web_access?.allowed===true;

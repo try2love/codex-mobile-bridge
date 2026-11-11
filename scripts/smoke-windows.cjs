@@ -149,6 +149,13 @@ async function main(){
       await client.evaluate(`tab('${panel}')`);
       assert.equal(await client.evaluate('document.documentElement.scrollWidth>innerWidth'),false,panel);
       screenshots.push(await screenshot('english-'+panel));
+      if(panel==='network'){
+        // Purchase content is supplied by the server; ordinary packaging smoke stays offline.
+        assert.equal(await client.evaluate("document.querySelector('[data-cloud-open-sponsor]').getAttribute('aria-controls')"),'cloud-sponsor-dialog');
+        assert.equal(await client.evaluate("document.querySelector('#cloud-sponsor-dialog').open"),false);
+        assert.equal(await client.evaluate("document.querySelector('[data-cloud-show-sponsor-qr]')===null"),true);
+        assert.equal(await client.evaluate("getComputedStyle(document.querySelector('.cloud-web-access')).borderTopWidth"),'0px');
+      }
     }
     await client.evaluate("document.getElementById('language').value='zh';document.getElementById('language').dispatchEvent(new Event('change'))");
     await until(()=>client.evaluate("document.documentElement.lang==='zh-CN'&&!document.getElementById('language').disabled"),'Chinese switch');

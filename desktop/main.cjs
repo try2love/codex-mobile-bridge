@@ -77,7 +77,7 @@ function worker(action,payload){
   if(action==='snapshot'&&updateQuitting)return Promise.resolve({...lastSnapshot,update:updater.status()});
   if(setupPending&&['save','start','stop'].includes(action))return Promise.reject(Error('请等待服务器操作完成。'));
   if(action==='start')payload={...payload,connectionSecrets};
-  const writes=(action==='cloud'&&!['status','capabilities','devices'].includes(payload?.action))||(action==='cli-access'&&payload?.action!=='list')||(action==='network-adaptation'&&payload?.action!=='status')||(['harness','desktop-sessions'].includes(action)&&!['status','clients','detect'].includes(payload?.action))||['server-setup','connection-credentials','save','start','stop','devices','notification-watches','webhook-endpoint', 'transfer-settings'].includes(action);
+  const writes=(action==='cloud'&&!['status','capabilities','sponsorship','devices'].includes(payload?.action))||(action==='cli-access'&&payload?.action!=='list')||(action==='network-adaptation'&&payload?.action!=='status')||(['harness','desktop-sessions'].includes(action)&&!['status','clients','detect'].includes(payload?.action))||['server-setup','connection-credentials','save','start','stop','devices','notification-watches','webhook-endpoint', 'transfer-settings'].includes(action);
   if(writes&&updater?.busy)return Promise.reject(Error('正在更新应用，请稍候。'));
   if(writes)workerWrites++;
   if(action==='snapshot'&&snapshotPending)return snapshotPending;

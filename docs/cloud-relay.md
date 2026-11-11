@@ -23,6 +23,14 @@ The Electron network panel contains **Cloud Relay**. Its operations use the
 existing local management worker and a field-validated IPC allowlist; they are
 not exposed as new unauthenticated gateway HTTP administration endpoints.
 
+When **Allow web access to this computer** is enabled, the desktop reads the
+selected server's `capabilities.web_client.origin` and shows **Web cloud
+address** below the switch. Click the read-only address to select it for copying,
+then sign in in a browser using the same cloud account. Only an exact HTTPS
+origin is displayed. Turning the switch off hides the address; failures or an
+unavailable server entry offer **Refresh address**. The address is an entry
+point, not a claim that the gateway is connected or the account is entitled.
+
 1. Click **Sign In to Cloud** to open the login dialog. **Official Cloud** is
    the first server option and the default for a new account, using
    `https://bridge.waken.cloudns.be:8787`. Select **Custom Server** to enter a
@@ -47,8 +55,20 @@ not exposed as new unauthenticated gateway HTTP administration endpoints.
 2. Log in to that selected origin/account. Hosted registration, verification,
    password-reset requests and service-days redemption have explicit desktop
    controls. Service qualification is queried on login, confirmed redemption and
-   explicit refresh; no client timer polls it. Redemption does not appear as a mobile purchase or
-   external-purchase link. The dialog closes after the login result and current
+   explicit refresh; no client timer polls it. The desktop's **Sponsor support**
+   section offers **Buy a 30-day Official Cloud activation code (Xianyu)** when
+   Official Cloud is selected before login or the signed-in account uses the
+   official server, including inactive or expired service. Clicking the purchase
+   button opens a QR dialog and reads the image from the official server's
+   `GET /v1/sponsorship` endpoint. The desktop does not store a purchase URL or
+   generate a purchase QR code. Each reopening fetches the current image;
+   language changes only repaint the dialog. After purchase, sign in and redeem
+   the code on this page. The image request sends no account credentials.
+   Custom-server accounts do not show this section.
+   Purchase entry and display rules are recorded in the
+   [purchase dialog decision](../.agents/notes/implemented/feature/2026-11-11-sponsor-dialog-and-web-address.md).
+   The mobile app does not add a purchase or external-purchase link.
+   The dialog closes after the login result and current
    account are confirmed; errors stay visible without replaying the operation.
    Closing or dismissing the dialog clears passwords and the verification code.
    Registration first displays the email and six-digit code together, with **Get

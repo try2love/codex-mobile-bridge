@@ -72,7 +72,7 @@ test('entitlement refresh participates in the application update write guard',()
   const source=fs.readFileSync(path.join(__dirname,'../desktop/main.cjs'),'utf8');
   const expression=source.match(/const writes=([^\n]+);/)[1];
   for(const action of ['entitlement','login','logout','redeem','access','web-access'])assert.equal(vm.runInNewContext(expression,{action:'cloud',payload:{action}}),true,action);
-  for(const action of ['status','capabilities','devices'])assert.equal(vm.runInNewContext(expression,{action:'cloud',payload:{action}}),false,action);
+  for(const action of ['status','capabilities','sponsorship','devices'])assert.equal(vm.runInNewContext(expression,{action:'cloud',payload:{action}}),false,action);
 });
 
 test('web permission requires the exact account, gateway and explicit versioned boolean',()=>{

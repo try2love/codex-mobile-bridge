@@ -20,7 +20,7 @@ test('cloud static controls, runtime codes and validation messages share the UI 
     ...Array.from(source.matchAll(/\bt\('([^']+)'\)/g),match=>match[1]),
     ...Array.from(source.matchAll(/\bformat\('([^']+)'/g),match=>match[1]),
     ...messages('runtimeMessages'),...messages('errors'),...messages('validationMessages'),...messages('fieldLabels'),
-    ...messages('authTitles'),...messages('authHelp'),...messages('authSubmits'),...messages('completionMessages'),...messages('serviceMessages'),
+    ...messages('authTitles'),...messages('authHelp'),...messages('authSubmits'),...messages('completionMessages'),...messages('serviceMessages'),...messages('webAddressMessages'),
     'Working...',
     'Done. If a write times out, refresh status; do not blindly replay it.',
     'The cloud sign-in result could not be confirmed. Refresh status before trying again.',

@@ -1,7 +1,7 @@
 'use strict';
 
 const fields={
-  status:[],capabilities:['origin'],entitlement:[],logout:[],
+  status:[],capabilities:['origin'],sponsorship:['origin'],entitlement:[],logout:[],
   'web-access':['origin','account_id','gateway_id','allowed','expected_revision'],
   'signup-code':['origin','login'],'signup-verify':['origin','login','verification_code'],
   devices:[],access:['binding_id','allowed','expected_revision','safety_code'],login:['origin','login','password','name'],

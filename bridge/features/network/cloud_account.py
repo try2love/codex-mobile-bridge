@@ -493,8 +493,23 @@ class Controller:
             return self.set_web_access(value)
         if action == 'login':
             return self.login(value)
-        if action in ('capabilities', 'register', 'signup-code', 'signup-verify', 'forgot'):
+        if action in ('capabilities', 'sponsorship', 'register', 'signup-code', 'signup-verify', 'forgot'):
             origin = exact_origin(value['origin'])
+            if action == 'sponsorship':
+                result = self.request(origin, '/v1/sponsorship')
+                image = result.get('image') if isinstance(result, dict) else None
+                prefix = 'data:image/png;base64,'
+                if not isinstance(image, str) or not image.startswith(prefix) or len(image) > 65536:
+                    raise CloudError('invalid_sponsorship_response')
+                try:
+                    raw = base64.b64decode(image[len(prefix):], validate=True)
+                    if (len(raw) < 33 or raw[:8] != b'\x89PNG\r\n\x1a\n' or raw[12:16] != b'IHDR'
+                            or not 64 <= int.from_bytes(raw[16:20], 'big') <= 1024
+                            or not 64 <= int.from_bytes(raw[20:24], 'big') <= 1024):
+                        raise ValueError('invalid PNG')
+                except (ValueError, TypeError):
+                    raise CloudError('invalid_sponsorship_response') from None
+                return {'image': image}
             if action == 'capabilities':
                 return self.request(origin, '/v1/capabilities')
             payload = {'login': value.get('login', '')}
