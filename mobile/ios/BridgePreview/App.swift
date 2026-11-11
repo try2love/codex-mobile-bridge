@@ -1149,7 +1149,6 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
     }
     private func connect(_ url: URL, address: String) {
         if saved.contains(address),!channelEnabled(address){openComputer(address,url);return}
-        let entering=web==nil ? entryProgress:nil
         routeAttempted = false; requestedRoute = url
         let scripts: WebScripts
         do { scripts = try WebScripts() }
@@ -1178,11 +1177,6 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         let systemBarsScript = scripts.systemBars.replacingOccurrences(of: "__BRIDGE_CLIPBOARD_TOKEN__", with: clipboardToken)
         configuration.userContentController.addUserScript(WKUserScript(source: systemBarsScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         let web = WKWebView(frame: .zero, configuration: configuration); self.web = web; web.scrollView.contentInsetAdjustmentBehavior = .never; web.navigationDelegate = self; web.uiDelegate = self; web.allowsBackForwardNavigationGestures = true; web.customUserAgent = nil; page.addArrangedSubview(web); gatewayMenuTop = gatewayMenu.topAnchor.constraint(equalTo: web.topAnchor, constant: 4); gatewayMenuTop?.isActive = true; loadWithRecovery(web, url: url, address: address, ticket: generation)
-        if let entering {
-            entryProgress=entering;subtitle.isHidden=true;entering.backgroundColor = .systemGroupedBackground
-            view.addSubview(entering);entering.translatesAutoresizingMaskIntoConstraints=false
-            NSLayoutConstraint.activate([entering.leadingAnchor.constraint(equalTo:page.leadingAnchor),entering.trailingAnchor.constraint(equalTo:page.trailingAnchor),entering.topAnchor.constraint(equalTo:page.topAnchor),entering.bottomAnchor.constraint(equalTo:page.bottomAnchor)])
-        }
         let ticket = generation
         let deadline = DispatchWorkItem { [weak self, weak web] in
             guard let self, let web, ticket == self.generation, self.web === web, self.connectionError == nil else { return }
