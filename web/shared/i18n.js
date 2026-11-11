@@ -1249,6 +1249,8 @@ const en={
 "文件夹含链接或特殊文件，无法下载":"The folder contains links or special files and cannot be downloaded.",
 "文件类型已变化":"The file type has changed.",
 "上下文":"Context",
+"聊天指令":"Chat commands",
+"此指令当前不可用，请使用菜单中的可用选项。":"This command is currently unavailable. Choose an available option from the menu.",
 "上下文使用量":"Context usage",
 "最近一次模型输入":"Latest model input",
 "请先在 Claude Desktop 的 Code 页面打开此目录并确认“信任工作区”，再返回重试。首条消息已保留。":"Open this folder in Claude Desktop Code and approve workspace trust, then return and retry. Your first message has been preserved.",

@@ -64,6 +64,9 @@ class DesktopSessionsView {
     const listRegion=this.node('div','session-list-region');this.listHint=this.button('',()=>{});this.listHint.className='list-sync';this.listHint.hidden=true;this.listHint.setAttribute('aria-live','polite');listRegion.append(this.rowsRoot,this.listHint);this.list.append(listRegion);
     this.listSync=new ListSync({root:this.rowsRoot,status:this.listHint,refresh:()=>this.refreshList(),visible:()=>!this.root.hidden&&!this.container.hidden&&this.list.getBoundingClientRect().width>0,ready:()=>document.activeElement!==this.search,automatic:false});
     this.rowsRoot.addEventListener('scroll',()=>this.saveListSnapshot(this.provider),{passive:true});
+    this.commands=typeof ComposerCommands==='function'?new ComposerCommands({input:this.input,
+      scope:()=>this.isChatOpen&&this.sid?JSON.stringify([this.provider,this.sid,this.generation,this.draftGateway,this.draftScope?.account]):null,
+      actions:()=>[...ComposerCommands.controls({model:this.modelButton,skills:this.skillsButton,permissions:this.permissionsButton,context:this.contextUsage,workMode:this.workMode}),...(this.commandActions?.()||[])],onError:text=>this.notify(text)}):null;
     this.updateComposer();
   }
   node(tag,cls='',text){const n=document.createElement(tag);n.className=cls;if(text!==undefined)n.textContent=text;return n;}
@@ -464,6 +467,7 @@ class DesktopSessionsView {
     for(const [control,values] of [[this.modelButton,[caps.models]],[this.skillsButton,[caps.skills]],[this.permissionsButton,[caps.permissions]],[this.attachButton,[caps.attachments,caps.projectReferences]],[this.workMode,[caps.plan,caps.goal]]]){const capabilityState=values.some(value=>value===true)?'supported':values.every(value=>value===false)?'unsupported':'unknown';control.dataset.capabilityState=capabilityState;if(capabilityState!=='supported')control.title=BridgeI18n.t(capabilityState==='unsupported'?'当前接入不支持此功能':'正在确认可用功能…');else if(control===this.skillsButton||control===this.permissionsButton)control.title='';}
     this.mode.options[1].disabled=caps.queue!==true;if(this.mode.options[1].disabled&&this.mode.value==='queue')this.mode.value='send';const steer=this.mode.options[2];steer.disabled=!active||caps.steer!==true;if(steer.disabled&&this.mode.value==='steer')this.mode.value='send';
     this.send.disabled=this.send.disabled||caps.sendModes?.[this.mode.value]===false;
+    this.commands?.refresh();
   }
   renderContext(){
     this.contextUsage.update({...this.state,id:JSON.stringify([this.draftGateway,this.provider,this.sid]),connected:this.freshDetail,busy:!!this.busy});this.contextButton.disabled=!this.state;

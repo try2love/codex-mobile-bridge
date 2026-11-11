@@ -23,6 +23,7 @@
     "shared/code-syntax.css",
     "shared/output-directives.css",
     "features/chat/composer-quotes.css",
+    "features/chat/composer-commands.css",
     "features/chat/message-management.css",
     "features/chat/session-menu.css"
   ],
@@ -30,6 +31,7 @@
   "/attachments.js": [
     "features/chat/composer-drafts.js",
     "features/chat/composer-quotes.js",
+    "features/chat/composer-commands.js",
     "features/chat/attachments.js",
     "features/chat/message-management.js",
     "features/chat/message-management-binding.js"

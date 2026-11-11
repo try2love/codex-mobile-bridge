@@ -276,7 +276,7 @@ class SessionMenu {
     box.addEventListener('pointerup',end);box.addEventListener('pointercancel',end);box.addEventListener('lostpointercapture',end);
     box.addEventListener('click',event=>{if(box.classList.contains('sm-returning')){event.preventDefault();event.stopPropagation();}},true);
   }
-  show(context,anchor){
+  show(context,anchor,view='main'){
     this.close({immediate:true});this.context=context;this.anchor=anchor;this.busy=false;
     const box=this.node('dialog','session-menu');this.box=box;box.setAttribute('aria-label',this.t('会话菜单'));
     box.addEventListener('close',()=>{box.remove();if(this.box===box){this.box=null;if(anchor?.element?.isConnected)anchor.element.focus();}});
@@ -288,7 +288,7 @@ class SessionMenu {
       const next=event.key==='Home'?0:event.key==='End'?items.length-1:(index+(event.key==='ArrowDown'?1:-1)+items.length)%items.length;
       items[next]?.focus();event.preventDefault();
     });
-    document.body.append(box);this.render();box.showModal();this.position();
+    document.body.append(box);this.render(view);box.showModal();this.position();
     box.querySelector('.sm-row:not(:disabled),button')?.focus();return box;
   }
   position(){

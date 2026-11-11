@@ -1042,6 +1042,7 @@ function renderState(view){
   // Parent workspace identity is resolved before opening the native child route.
   chatTimeline?.refreshActions();
   renderApprovals(access.canApprove?view.requests:[]);renderQueue(view.submissions||[]);
+  if(typeof composerCommands!=='undefined')composerCommands.refresh();
 }
 $('send-mode').onchange=()=>{codexDraftTouched=true;workModes.render(state,$('send-mode').value,sending);saveDraft();};
 function jsonPretty(value){return typeof value==='string'?value:JSON.stringify(value,null,2);}
@@ -1261,6 +1262,20 @@ $('composer').onsubmit=async event=>{
   finally{sending=false;attachments.setLocked(false);workModes.render(state,$('send-mode').value,false);$('send').disabled=!state||state.loadingHistory||state.activating||!attachments.ready()||!currentAccess().canSend;}
 };
 $('message').onkeydown=event=>{if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)){event.preventDefault();$('composer').requestSubmit();}};
+function chatCommandActions(chat,provider,button){
+  if(!chat?.id)return [];
+  const context=sessionMenuContext(chat,provider);
+  return ComposerCommands.session(context,view=>getSessionMenu().show(context,{element:button},view));
+}
+const composerCommands=new ComposerCommands({input:$('message'),
+  scope:()=>currentId&&desktopSessions.provider==='codex'&&!$('chat').hidden?JSON.stringify([listIdentity,currentHost,currentId,codexActiveAccountId]):null,
+  actions:()=>[...ComposerCommands.controls({model:$('model-button'),skills:$('skills-button'),permissions:$('permissions-button'),context:contextUsageControl,workMode:$('work-mode')}),
+    ...chatCommandActions({...state,id:currentId,host:currentHost},'codex',$('message')),
+    {id:'new',label:'新聊天',enabled:!$('new-chat').disabled,run:()=>$('new-chat').click()},
+    {id:'side',label:'侧边聊天',enabled:!!state&&currentAccess().canUseSideChat,run:()=>workbench.sideChat()}],onError:toast});
+desktopSessions.commandActions=()=>[...chatCommandActions({...desktopSessions.state,id:desktopSessions.sid},desktopSessions.provider,desktopSessions.input),
+  {id:'new',label:'新聊天',enabled:!$('new-chat').disabled,run:()=>$('new-chat').click()}];
+
 $('stop').onclick=async()=>{if(!currentAccess().canInterrupt)return;try{await api(sessionUrl(currentId,'stop'),{});toast('已请求停止');}catch(e){toast(e.message);}};
 $('history').onclick=async()=>{$('history').disabled=true;try{await api('/api/sessions/'+currentId+'/history',{});}catch(e){toast(e.message);}finally{$('history').disabled=false;}};
 $('reconnect').onclick=async()=>{
