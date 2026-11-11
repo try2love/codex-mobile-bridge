@@ -392,7 +392,7 @@ class CliSessions:
         return thread.get('modelProvider') == metadata['modelProvider'] or (
             metadata.get('historicalProvider') is not None and thread.get('modelProvider') == metadata['historicalProvider'])
 
-    def _connect_explicit(self):
+    def _connect_explicit(self, *, allow_start=True):
         if self.alias is None and isinstance(self.client, CodexAppServer):
             executable = _local_cli(self.home, self.configured_cli)
             self.client.command[0] = executable
@@ -400,6 +400,8 @@ class CliSessions:
         try:
             return self.client.connect()
         except AppServerUnavailable:
+            if not allow_start:
+                raise
             with self.start_lock:
                 if self.daemon_start_generation != generation:
                     return self.client.connect()
@@ -453,7 +455,7 @@ class CliSessions:
             raise AppServerUnavailable('Codex daemon started in another home')
 
     def _attach_explicit(self, thread_id, *, target_provider=None, expected_identity=None, before_resume=None):
-        info = self._connect_explicit()
+        info = self._connect_explicit(allow_start=before_resume is None)
         self._runtime_home(info)
         with self.lock:
             if thread_id in self.joined:

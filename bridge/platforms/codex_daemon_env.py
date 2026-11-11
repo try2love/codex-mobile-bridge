@@ -11,11 +11,13 @@ class DaemonEnvironmentUnavailable(OSError):
     pass
 
 
-def read_daemon_environment(home, executable, names):
+def read_daemon_environment(home, executable, names, *, require_home=False):
     """Return (selected values, process generation); never export a full environment."""
     home = Path(home).resolve()
     expected = Path(executable).resolve()
-    names = frozenset(names) | {'CODEX_HOME'}
+    fallback_name = 'USERPROFILE' if os.name == 'nt' else 'HOME'
+    wanted = frozenset(names)
+    names = wanted | ({'CODEX_HOME', fallback_name} if require_home else {'CODEX_HOME'})
     if (not names.issubset({name for name in names if isinstance(name, str) and
                              name and '=' not in name and '\0' not in name}) or len(names) > 32):
         raise DaemonEnvironmentUnavailable('Invalid daemon environment request')
@@ -30,6 +32,11 @@ def read_daemon_environment(home, executable, names):
                 getattr(info, 'st_file_attributes', 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT or
                 os.name != 'nt' and info.st_uid != os.getuid()):
             raise DaemonEnvironmentUnavailable('Codex daemon PID record is untrusted')
+        if require_home and os.name != 'nt':
+            directory = state.lstat()
+            if (not stat.S_ISDIR(directory.st_mode) or directory.st_uid != os.getuid()
+                    or (directory.st_mode | info.st_mode) & 0o022):
+                raise DaemonEnvironmentUnavailable('Codex daemon PID record is untrusted')
         if os.name == 'nt' and state.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
             raise DaemonEnvironmentUnavailable('Codex daemon state directory is untrusted')
         with record.open('rb') as stream:
@@ -52,6 +59,15 @@ def read_daemon_environment(home, executable, names):
             raise DaemonEnvironmentUnavailable('Codex daemon environment is unsupported')
         values, identity = read_process_environment(pid, payload, expected, names, record)
         daemon_home = values.pop('CODEX_HOME', None)
+        if require_home and not daemon_home:
+            parent = values.get(fallback_name)
+            if not parent or not Path(parent).is_absolute():
+                raise DaemonEnvironmentUnavailable('Codex daemon home could not be verified')
+            daemon_home = Path(parent) / '.codex'
+        if require_home and not Path(daemon_home).is_absolute():
+            raise DaemonEnvironmentUnavailable('Codex daemon home could not be verified')
+        if fallback_name not in wanted:
+            values.pop(fallback_name, None)
         if daemon_home is not None and Path(daemon_home).resolve() != home:
             raise DaemonEnvironmentUnavailable('Codex daemon belongs to another home')
         after = record.lstat()
@@ -96,14 +112,39 @@ def configuration_after_start(home, generation, *, files=('config.toml', 'auth.j
 def stop_daemon_gracefully(home, executable, expected, timeout=10, *, graceful_only=False):
     """Signal one verified generation once. Never escalate to a forced exit."""
     import signal
-    import time
-    _, current = read_daemon_environment(home, executable, ())
-    if current != expected:
-        raise DaemonEnvironmentUnavailable('Codex daemon process changed')
-    pid = expected[0]
     if graceful_only and sys.platform not in ('darwin', 'linux'):
         raise DaemonEnvironmentUnavailable('Graceful-only daemon shutdown is unsupported on this platform')
     requested_signal = signal.SIGHUP if graceful_only else signal.SIGTERM
+    _exit_posix_daemon(home, executable, expected, requested_signal, timeout,
+                       'Codex daemon did not exit normally; no force was used')
+
+
+def force_daemon_supported():
+    import signal
+    return (sys.platform in ('darwin', 'win32') or sys.platform == 'linux'
+            and hasattr(os, 'pidfd_open') and hasattr(signal, 'pidfd_send_signal'))
+
+
+def force_daemon_exit(home, executable, expected, checkpoint, timeout=10):
+    """Explicit force only. Persist intent with the verified process handle open."""
+    import signal
+    if sys.platform == 'win32':
+        from bridge.platforms.windows.codex_daemon_env import force_daemon_exit_windows
+        return force_daemon_exit_windows(home, executable, expected, checkpoint, timeout)
+    return _exit_posix_daemon(home, executable, expected, signal.SIGKILL, timeout,
+                              'CLI 原生进程退出结果待核对；不会重复强制退出', checkpoint)
+
+
+def _exit_posix_daemon(home, executable, expected, requested_signal, timeout, timeout_error, checkpoint=None):
+    import signal
+    import time
+    def current():
+        if checkpoint:
+            return read_daemon_environment(home, executable, (), require_home=True)[1]
+        return read_daemon_environment(home, executable, ())[1]
+    if current() != expected:
+        raise DaemonEnvironmentUnavailable('Codex daemon process changed')
+    pid = expected[0]
     if sys.platform == 'darwin':
         from bridge.platforms.macos.force_exit import Native
         native = Native()
@@ -112,6 +153,8 @@ def stop_daemon_gracefully(home, executable, expected, timeout=10, *, graceful_o
             raise DaemonEnvironmentUnavailable('Codex daemon process changed')
         handle = native.open(identity)
         try:
+            if checkpoint:
+                checkpoint()
             native.send_signal(handle, requested_signal)
         finally:
             native.close(handle)
@@ -125,11 +168,13 @@ def stop_daemon_gracefully(home, executable, expected, timeout=10, *, graceful_o
         import select
         descriptor = os.pidfd_open(pid)
         try:
-            if read_daemon_environment(home, executable, ())[1] != expected:
+            if current() != expected:
                 raise DaemonEnvironmentUnavailable('Codex daemon process changed')
+            if checkpoint:
+                checkpoint()
             signal.pidfd_send_signal(descriptor, requested_signal)
             if not select.select([descriptor], [], [], timeout)[0]:
-                raise DaemonEnvironmentUnavailable('Codex daemon did not exit normally; no force was used')
+                raise DaemonEnvironmentUnavailable(timeout_error)
         finally:
             os.close(descriptor)
         return
@@ -138,7 +183,7 @@ def stop_daemon_gracefully(home, executable, expected, timeout=10, *, graceful_o
     end = time.monotonic() + timeout
     while alive():
         if time.monotonic() >= end:
-            raise DaemonEnvironmentUnavailable('Codex daemon did not exit normally; no force was used')
+            raise DaemonEnvironmentUnavailable(timeout_error)
         time.sleep(.1)
 
 
@@ -180,3 +225,28 @@ def daemon_process_absent(home):
         except (OSError, ValueError, AttributeError):
             return False
     return found
+
+
+def daemon_generation_absent(expected):
+    """Read-only verification of a previously identified force target."""
+    try:
+        pid = expected[0]
+        if type(pid) is not int or pid <= 0:
+            return False
+        if sys.platform == 'darwin':
+            from bridge.platforms.macos.force_exit import Native
+            identity = Native().identity(pid)
+            return (identity['zombie'] or (identity['birth'], identity['started'], identity['image'])
+                    != (tuple(expected[1]), tuple(expected[2]), expected[3]))
+        if sys.platform == 'linux':
+            from bridge.platforms.linux.force_exit import Native
+            identity = Native().identity(pid)
+            return identity['zombie'] or (int(identity['birth']), identity['image']) != tuple(expected[1:])
+        if sys.platform == 'win32':
+            from bridge.platforms.windows.codex_daemon_env import recorded_process_absent
+            return recorded_process_absent(pid, {'processStartTime': str(expected[1])})
+    except ProcessLookupError:
+        return True
+    except (ValueError, TypeError, IndexError, OSError):
+        return False
+    return False

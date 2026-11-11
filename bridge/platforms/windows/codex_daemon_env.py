@@ -19,6 +19,7 @@ from select import select
 QUERY = 0x1000  # PROCESS_QUERY_LIMITED_INFORMATION
 VM_READ = 0x0010
 SYNCHRONIZE = 0x00100000
+TERMINATE = 0x0001
 TOKEN_QUERY = 0x0008
 MAX_ENV = 1_048_576
 FILETIME_UNIX_EPOCH = 116_444_736_000_000_000
@@ -335,25 +336,53 @@ class WindowsDaemonDrain:
 
 
 @contextmanager
-def windows_daemon_drain(home, executable, generation):
+def _verified_daemon_handle(home, executable, generation, *, normal=False):
     from bridge.platforms.codex_daemon_env import read_daemon_environment
     home = Path(home).resolve()
-    values, observed = read_daemon_environment(home, executable, {SHUTDOWN_FLAG})
-    if observed != generation or values.get(SHUTDOWN_FLAG) != '1':
+    values, observed = (read_daemon_environment(home, executable, {SHUTDOWN_FLAG}) if normal else
+                        read_daemon_environment(home, executable, (), require_home=True))
+    if observed != generation or normal and values.get(SHUTDOWN_FLAG) != '1':
         raise OSError('CLI daemon shutdown capability or generation changed')
     kernel = _kernel()
-    handle = kernel.OpenProcess(QUERY | SYNCHRONIZE | VM_READ, False, generation[0])
+    rights = QUERY | SYNCHRONIZE | VM_READ | (0 if normal else TERMINATE)
+    handle = kernel.OpenProcess(rights, False, generation[0])
     if not handle:
         raise OSError('CLI daemon process handle unavailable')
     try:
         _owner_sid(handle)
         if (generation[0], *_identity(kernel, handle, executable)) != generation:
             raise OSError('CLI daemon process generation changed')
-        values = _environment(kernel, handle, {SHUTDOWN_FLAG, 'CODEX_HOME'})
-        actual_home = Path(values['CODEX_HOME']) if values.get('CODEX_HOME') else Path.home() / '.codex'
-        if actual_home.resolve() != home or values.get(SHUTDOWN_FLAG) != '1':
+        values = _environment(kernel, handle, {SHUTDOWN_FLAG, 'CODEX_HOME'} if normal else {'CODEX_HOME', 'USERPROFILE'})
+        if values.get('CODEX_HOME'):
+            actual_home = Path(values['CODEX_HOME'])
+        elif normal:
+            actual_home = Path.home() / '.codex'
+        elif values.get('USERPROFILE'):
+            actual_home = Path(values['USERPROFILE']) / '.codex'
+        else:
             raise OSError('CLI daemon shutdown belongs to another home')
-        with _operation_lock(home / 'app-server-daemon' / 'daemon.lock') as acquired:
-            yield WindowsDaemonDrain(home, executable, kernel, handle, generation, acquired)
+        if not normal and not actual_home.is_absolute():
+            raise OSError('CLI daemon shutdown belongs to another home')
+        if actual_home.resolve() != home or normal and values.get(SHUTDOWN_FLAG) != '1':
+            raise OSError('CLI daemon shutdown belongs to another home')
+        yield home, kernel, handle
     finally:
         kernel.CloseHandle(handle)
+
+
+@contextmanager
+def windows_daemon_drain(home, executable, generation):
+    with _verified_daemon_handle(home, executable, generation, normal=True) as (home, kernel, handle):
+        with _operation_lock(home / 'app-server-daemon' / 'daemon.lock') as acquired:
+            yield WindowsDaemonDrain(home, executable, kernel, handle, generation, acquired)
+
+
+def force_daemon_exit_windows(home, executable, generation, checkpoint, timeout):
+    with _verified_daemon_handle(home, executable, generation) as (_home, kernel, handle):
+        if kernel.WaitForSingleObject(handle, 0) != WAIT_RUNNING:
+            raise OSError('CLI 原生进程已变化，未强制退出')
+        checkpoint()
+        kernel.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel.TerminateProcess.restype = wintypes.BOOL
+        if not kernel.TerminateProcess(handle, 1) or kernel.WaitForSingleObject(handle, int(timeout * 1000)) != WAIT_EXITED:
+            raise OSError('CLI 原生进程退出结果待核对；不会重复强制退出')

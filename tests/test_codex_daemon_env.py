@@ -99,6 +99,27 @@ class DaemonAbsenceTests(unittest.TestCase):
 
 
 class DaemonRecoveryBoundaryTests(unittest.TestCase):
+    @unittest.skipUnless(os.name != 'nt', 'POSIX launch home')
+    def test_force_home_fallback_uses_the_verified_process_not_gateway(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / '.tmp') as directory:
+            owner = Path(directory)
+            home = owner/'.codex'
+            state = home/'app-server-daemon'
+            state.mkdir(parents=True)
+            (state/'daemon.pid').write_text('{"pid":4321}')
+            with patch('bridge.platforms.codex_daemon_env.sys.platform', 'darwin'), \
+                    patch('bridge.platforms.macos.codex_daemon_env.read_process_environment') as observed:
+                observed.return_value = ({'HOME': str(owner)}, (4321, 'fixture'))
+                values, identity = read_daemon_environment(home, sys.executable, (), require_home=True)
+                self.assertEqual(values, {})
+                self.assertEqual(identity, (4321, 'fixture'))
+                observed.return_value = ({'HOME': str(owner/'other')}, (4321, 'fixture'))
+                with self.assertRaisesRegex(DaemonEnvironmentUnavailable, 'another home'):
+                    read_daemon_environment(home, sys.executable, (), require_home=True)
+                observed.return_value = ({}, (4321, 'fixture'))
+                with self.assertRaisesRegex(DaemonEnvironmentUnavailable, 'could not be verified'):
+                    read_daemon_environment(home, sys.executable, (), require_home=True)
+
     def test_configuration_age_uses_verified_process_birth(self):
         from bridge.platforms.codex_daemon_env import configuration_after_start
         with tempfile.TemporaryDirectory(dir=ROOT / '.tmp') as directory:

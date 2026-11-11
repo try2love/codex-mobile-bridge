@@ -1,6 +1,7 @@
 """Controlled Windows daemon maintenance tests; no system process is stopped."""
 import base64
 from contextlib import contextmanager
+from contextlib import nullcontext
 import ctypes
 import hashlib
 from pathlib import Path
@@ -159,3 +160,23 @@ class WindowsShutdownTests(unittest.TestCase):
             self.assertFalse(native.recorded_process_absent(4321, record))
             last.return_value = 87
             self.assertTrue(native.recorded_process_absent(4321, record))
+
+    def test_explicit_force_uses_held_verified_handle_and_records_before_terminate(self):
+        order = []
+        self.kernel.WaitForSingleObject.side_effect = [native.WAIT_RUNNING, native.WAIT_EXITED]
+        self.kernel.TerminateProcess.side_effect = lambda handle, code: order.append((handle, code)) or True
+        with patch.object(native, '_verified_daemon_handle',
+                          return_value=nullcontext((self.home, self.kernel, 8))) as opened:
+            native.force_daemon_exit_windows(self.home, self.executable, self.generation,
+                                             lambda: order.append('checkpoint'), 3)
+        opened.assert_called_once_with(self.home, self.executable, self.generation)
+        self.assertEqual(order, ['checkpoint', (8, 1)])
+        self.kernel.WaitForSingleObject.assert_called_with(8, 3000)
+
+    def test_explicit_force_never_calls_terminate_if_checkpoint_rejects(self):
+        with patch.object(native, '_verified_daemon_handle',
+                          return_value=nullcontext((self.home, self.kernel, 8))):
+            with self.assertRaises(ValueError):
+                native.force_daemon_exit_windows(self.home, self.executable, self.generation,
+                                                 Mock(side_effect=ValueError('stale scope')), 3)
+        self.kernel.TerminateProcess.assert_not_called()

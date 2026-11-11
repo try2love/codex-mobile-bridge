@@ -34,6 +34,8 @@ macOS 隔离 home 使用已安装 0.167.0 实际 daemon、两个自有线程和�
 
 ## 相关记录审计
 
+- [显式强制退出已核验的 CLI 服务](2026-11-11-cli-explicit-force.md)：保留本篇默认安全等待；只有新的明确确认可升级，原未知回执不重放。
+
 - [CLI 释放回执与安全恢复](../bug-fix/2026-11-10-cli-release-and-safe-recovery.md)：复用退出与接续事务，补充已确认恢复的等待阶段及经核验的 0.167.0；原共享生命周期风险仍成立。
 - [共享释放回执协调](../bug-fix/2026-11-11-cli-shared-release-receipt.md)：保留成功释放与恢复未决的区别；旧格式不会转成恢复等待。
 - [CLI 被动通知](2026-11-11-codex-cli-passive-notifications.md)：同样区分只读与显式操作；通知不进入维护事务。

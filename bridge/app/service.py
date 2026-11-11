@@ -46,6 +46,7 @@ from bridge.features.sessions.archive import ArchiveCommands
 from bridge.features.sessions.deletion import DeleteCommands, deletion_scope, delete_native
 from bridge.features.sessions.compaction import CompactCommands
 from bridge.features.sessions.cli_release import ReleasedSessions
+from bridge.features.sessions.cli_force import CliForce, maintenance_daemon_status
 from bridge.features.sessions.cli_maintenance import CliMaintenance, CliTasksPending, maintenance_receipt
 from bridge.features.sessions.organization_commands import OrganizationCommands
 from bridge.features.sessions.organization import OrganizationNotSent
@@ -289,6 +290,7 @@ class Bridge:
         self.compact_commands = CompactCommands(data_dir, private_json)
         self.released_cli = ReleasedSessions(data_dir, private_json)
         self.cli_maintenance = CliMaintenance()
+        self.cli_force = CliForce(self, private_json)
         self.organization_commands = OrganizationCommands(data_dir, private_json)
         self.hosts = AppHosts(codex_home)
         self.directory_projects = Projects(data_dir)
@@ -1632,6 +1634,20 @@ class Bridge:
         if (self.host != 'local' and not self.host.startswith('codex:') or origin not in ('cli', 'ide')
                 or _follow_account and origin != 'cli'):
             raise ValueError('只支持本机 Codex CLI')
+        if isinstance(body, dict) and body.get('action') == 'forcePreview' and set(body) == {'action'}:
+            return self.cli_force.preview(thread_id)
+        if isinstance(body, dict) and body.get('action') == 'force':
+            if (set(body) != {'action', 'confirmed', 'generation', 'operationId', 'requestId'}
+                    or body['confirmed'] is not True or not isinstance(body['generation'], str)
+                    or not isinstance(body['requestId'], str)
+                    or body['operationId'] is not None and not isinstance(body['operationId'], str)):
+                raise ValueError('请预览并确认强制退出范围')
+            return self.cli_force.execute(thread_id, body['requestId'], body['generation'], operation=body['operationId'])
+        if isinstance(body, dict) and body.get('action') == 'reconnect':
+            if (set(body) != {'action', 'confirmed', 'generation', 'requestId'} or body['confirmed'] is not True
+                    or not isinstance(body['generation'], str) or not isinstance(body['requestId'], str)):
+                raise ValueError('请检查并确认重新连接当前保存的 CLI 会话')
+            return self.cli_force.reconnect(thread_id, body['requestId'], body['generation'])
         if sys.platform not in ('darwin', 'linux', 'win32'):
             if body is not None:
                 raise ValueError('此平台请在电脑上正常重启 CLI 服务')
@@ -1642,6 +1658,10 @@ class Bridge:
         if isinstance(body, dict) and set(body) == {'action', 'operationId'} and body['action'] in ('status', 'cancel'):
             with self.cli_maintenance.lock:
                 record = self._cli_recovery_record()
+                if body['action'] == 'status':
+                    forced = self.cli_force.status(thread_id, body['operationId'])
+                    if forced is not None:
+                        return forced
                 if (record.get('purpose') != 'recovery' or record.get('operationId') != body['operationId']
                         or record.get('threadId') != thread_id or record.get('host') != self.host
                         or record.get('home') != str(cli.home.resolve())):
@@ -1662,6 +1682,12 @@ class Bridge:
         home_lock = maintenance_lock(cli.home) if confirmation else nullcontext()
         with self.accounts.gate, cli.start_lock, home_lock:
             recovery = self._cli_recovery_record()
+            if recovery.get('unresolvedResume'):
+                if body is not None:
+                    raise ValueError('以前的 CLI 接续结果仍未知；请重新检查并明确确认从保存状态连接。')
+                return (dict(self.cli_force.reconnect_preview(thread_id), maintenancePending=True)
+                        if not automatic else {'canRecover': False, 'requiresConfirmation': True,
+                        'maintenancePending': True, 'message': '以前的 CLI 接续结果仍未知；请检查并明确确认重新连接。'})
             maintenance = recovery.get('purpose') == 'recovery'
             waiting = maintenance and recovery.get('phase') == 'waiting'
             if maintenance and (recovery['host'] != self.host or recovery['home'] != str(cli.home.resolve())):
@@ -1748,7 +1774,7 @@ class Bridge:
                     if self._resume_cli_recovery(cli, executable, recovery):
                         return {'recovered': True, 'connected': False}
                 else:
-                    status = cli.daemon_status()
+                    status = maintenance_daemon_status(cli, recovery)
                     if status == 'running':
                         try:
                             self._resume_cli_recovery(cli, executable, recovery, check_only=True)
@@ -2129,7 +2155,7 @@ class Bridge:
             pass
         return False
 
-    def _continue_released_cli(self, cli, executable, record, thread_id):
+    def _continue_released_cli(self, cli, executable, record, thread_id, *, fresh_continuation=False):
         from bridge.clients.codex.daemon_network import configuration_stamp, native_recovery_target, file_auth_provider, AUTH_ENV_NAMES, PROXY_NAMES
         from bridge.features.accounts.cli_sync import LocalCliSync
         from bridge.features.endpoints.registry import load_toml
@@ -2139,9 +2165,10 @@ class Bridge:
         if {'id': saved['id'], 'cwd': saved['cwd'], 'modelProvider': saved['model_provider']} != record['releasedThread']:
             raise ValueError('释放后的原会话身份已变化，请重新核验；未启动 CLI')
         saved = cli.store.get(thread_id)
-        status = cli.daemon_status()
+        status = maintenance_daemon_status(cli, record)
         if status == 'stopped' or changed:
-            config = load_toml((cli.home/'config.toml').read_text(encoding='utf-8'))
+            path = cli.home/'config.toml'
+            config = load_toml(path.read_text(encoding='utf-8') if path.exists() else '')
             previous = cli.recovery_environment
             known = previous and previous['generation'] == record['generation']
             values = dict(previous['preserved']) if known else {}
@@ -2149,7 +2176,7 @@ class Bridge:
             sync = LocalCliSync(self)
             selected = sync.recovery_target(config)
             target = selected or native
-            if changed:
+            if changed or fresh_continuation and not known:
                 effective = {**config, **((config.get('profiles') or {}).get(config.get('profile')) or {})}
                 if target['provider'] != saved['model_provider']:
                     raise ValueError('释放后的当前提供商与原会话不同，未启动服务')
@@ -2183,6 +2210,8 @@ class Bridge:
         from bridge.platforms.codex_daemon_env import DaemonEnvironmentUnavailable
         cli = self.cli_sessions
         record = self._cli_recovery_record()
+        if record.get('unresolvedResume'):
+            raise IPCError('以前的 CLI 接续结果仍未知；请检查并明确确认从保存状态重新连接，操作未发送。')
         release_candidate = (isinstance(cli, CliSessions) and cli.alias is None and
                 (self.host == 'local' or self.host.startswith('codex:')) and
                 record.get('phase') in ('released', 'stopped'))
@@ -2512,7 +2541,7 @@ class Bridge:
                                 or LocalCliSync(self).current_file_auth_matches(probe, released_auth) is not True
                                 or configuration_stamp(cli.home) != record['configuration']):
                             raise ValueError('释放后的原生服务未确认当前认证；未接续会话')
-        status = cli.daemon_status()
+        status = maintenance_daemon_status(cli, record)
         if status == 'running':
             generation = read_daemon_environment(cli.home, executable, ())[1]
             if hashlib.sha256(json.dumps(generation).encode()).hexdigest() == record['generation']:
@@ -2624,8 +2653,10 @@ class Bridge:
             callback, sid = row['_release'], row['sessionId']
             release = lambda stop, callback=callback, sid=sid: self._release_cli_connection(sid, callback, stop)
             callbacks = {}
+            callbacks.update(self.cli_force_callbacks({**row, 'host': self.host}))
             if '_check' in row:
-                callbacks['_check'] = lambda callback=row['_check'], sid=sid: self._check_cli_connection(sid, callback)
+                callbacks['_check'] = lambda callback=row['_check'], sid=sid, key=row['key']: self._check_cli_connection(
+                    sid, callback, key=key)
                 from bridge.clients.codex.daemon_network import graceful_restart_supported
                 if (self.cli_sessions.alias is None and sys.platform in ('darwin', 'linux', 'win32') and
                         graceful_restart_supported(getattr(self.cli_sessions.client, 'server_info', None) or {})):
@@ -2641,6 +2672,37 @@ class Bridge:
             for source in sources:
                 rows.extend(source.cli_connections())
         return rows
+
+    def cli_force_callbacks(self, row):
+        if row.get('provider') != 'codex':
+            return {}
+        host = row.get('host')
+        if host != self.host:
+            if self.host == 'local' and isinstance(host, str) and host.startswith('codex:') and self.entries is not None:
+                with self.entries.lock:
+                    entry = self.entries.bridges.get(host)
+                if entry is not None:
+                    return entry.cli_force_callbacks(row)
+            return {}
+        sid, key = row.get('sessionId'), row.get('key')
+        if not isinstance(sid, str) or not isinstance(key, str) or not self.cli_force.available():
+            return {}
+        try:
+            if self.store.get(sid).get('origin') != 'cli':
+                return {}
+        except (KeyError, OSError, StoreUnavailable):
+            return {}
+        return {'canForce': True,
+                '_force_preview': lambda: self.cli_force.preview(sid, connection=key),
+                '_force': lambda operation_id, generation: self._force_cli_connection(sid, key, operation_id, generation),
+                '_check': lambda: self._check_cli_connection(sid, None, key=key)}
+
+    @operation
+    def _force_cli_connection(self, sid, key, operation_id, generation):
+        result = self.cli_force.execute(sid, operation_id, generation, connection=key)
+        if result['status'] == 'released':
+            self._record_cli_release(self.session(sid, attach=False, background=True), result)
+        return result
 
     def _release_ide_follower(self, sid, owner, generation, stop):
         session = self.live[sid]
@@ -2716,15 +2778,22 @@ class Bridge:
             return result
 
     @operation
-    def _check_cli_connection(self, sid, callback):
+    def _check_cli_connection(self, sid, callback, *, key=None):
         session = self.session(sid, attach=False, background=True)
         with session.activation_lock, session.action_lock, session.attach_lock:
+            if key is not None and self.cli_force.available():
+                forced = self.cli_force.check_connection(sid, key)
+                if forced is not None:
+                    self._record_cli_release(session, forced)
+                    return forced
             record = self._cli_recovery_record()
             if (record.get('phase') in ('draining', 'stopped') and isinstance(self.cli_sessions, CliSessions)
                     and self.cli_sessions.daemon_status() == 'stopped'):
                 self.cli_sessions.drained_connections.update(record['connections'])
                 record['phase'] = 'released' if record.get('purpose') == 'release' else 'stopped'
                 private_json(self.data_dir / 'cli-daemon-recovery.json', record)
+            if callback is None:
+                return {'status': 'unknown', 'error': '原连接无法自动核验，请在原客户端检查。'}
             result = callback()
             self._record_cli_release(session, result)
             return result
