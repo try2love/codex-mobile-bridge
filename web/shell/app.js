@@ -391,14 +391,16 @@ function sessionMenuContext(chat,provider='codex'){
     notifications:async()=>{await ensure();if(provider==='codex')return openChatNotifications();return desktopSessions.notifications();},
     manage:async()=>{try{await ensure();await openMessageManagement();}catch(error){toast(t(error.message));}}};
   if(['cli','ide'].includes(access.source)||view.backend==='cli'||view.runtime==='wsl')context.releaseCli=()=>cliConnectionsPanel.open({provider,sessionId:chat.id,host:identity.host});
-  if(provider==='codex' && ['cli','ide'].includes(access.source) && (identity.host==='local'||identity.host.startsWith('codex:')))context.cliNetwork=async()=>{
-    const url=sessionUrl(chat.id,'cli-network',identity.host), value=await api(url);
-    if(!isCurrent())return;
-    if(!value.canRecover)return {message:value.message};
-    if(!window.confirm(t(value.message)+' '+t('这会正常退出并重启此配置的共享 CLI 服务。请先结束全部任务，并确保恢复期间其他客户端不再发起任务。是否继续？')))return;
-    const result=await api(url,{confirmed:true,generation:value.generation},undefined,isCurrent);
-    return {message:result.connected?'CLI 连接已恢复':'请重新连接原会话'};
-  };
+  if(provider==='codex' && ['cli','ide'].includes(access.source) && (identity.host==='local'||identity.host.startsWith('codex:'))){
+    const selection=JSON.stringify([clientNavigation.provider,currentId,currentHost]);
+    context.cliNetworkIsCurrent=()=>isCurrent()&&selection===JSON.stringify([clientNavigation.provider,currentId,currentHost]);
+    context.cliNetwork=async body=>{
+      if(!context.cliNetworkIsCurrent())throw Error('连接或聊天已变化，请重新打开会话菜单');
+      const result=await api(sessionUrl(chat.id,'cli-network',identity.host),body,undefined,context.cliNetworkIsCurrent);
+      if(!context.cliNetworkIsCurrent())throw Error('连接或聊天已变化，请重新打开会话菜单');
+      return result;
+    };
+  }
   const renameIds=new Map();
   if(provider!=='codex'||access.canConfigure)context.rename=async title=>{
     if(!isCurrent())throw Error('连接或账号已变化，请重新打开会话菜单');

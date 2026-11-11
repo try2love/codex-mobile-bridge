@@ -14,7 +14,7 @@ function fixture(host,reply='copied'){
   const body=new Element('body'),nodes=new Map();
   const get=id=>{if(!nodes.has(id)){const node=new Element('button');node.textContent='复制';const html=read('web/index.html'),match=html.match(new RegExp('id="'+id+'" class="([^"]+)"'));node.className=match?.[1]||'';nodes.set(id,node);}return nodes.get(id);};
   const document={body,createElement:tag=>new Element(tag),addEventListener(name,fn){(events[name]||=[]).push(fn);},removeEventListener(name,fn){events[name]=(events[name]||[]).filter(value=>value!==fn);},dispatchEvent(event){for(const fn of events[event.type]||[])fn(event);}};
-  const c={document,navigator:{},prompt:(command,text)=>{writes.push({command,text});return reply;},setTimeout:fn=>timers.push(fn),CustomEvent:class{constructor(type,init){this.type=type;this.detail=init.detail;}},BridgeI18n:{t:x=>x,source:()=>null,language:()=> 'zh'},get,$:get,t:x=>x,toast:x=>notices.push(x)};
+  const c={document,navigator:{},prompt:(command,text)=>{writes.push({command,text});return reply;},setTimeout:fn=>timers.push(fn),clearTimeout(){},CustomEvent:class{constructor(type,init){this.type=type;this.detail=init.detail;}},BridgeI18n:{t:x=>x,source:()=>null,language:()=> 'zh'},get,$:get,t:x=>x,toast:x=>notices.push(x)};
   c.window=c;c.top=c;vm.createContext(c);vm.runInContext(read('web/features/chat/message-actions.js'),c);
   document.addEventListener('bridge-message-error',e=>notices.push(e.detail));
   vm.runInContext(read('tests/fixtures/mobile-clipboard-v215.js').replace('__BRIDGE_CLIPBOARD_TOKEN__',host+'-synthetic-token'),c);

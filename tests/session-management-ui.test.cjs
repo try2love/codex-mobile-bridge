@@ -78,6 +78,21 @@ test('account change invalidates a captured menu; read-only sources omit rename 
  ui.context.sessionAccess=()=>({canConfigure:false,canEditMessages:false});
  const restricted=ui.context.sessionMenuContext(ui.row('a',1));assert.equal(restricted.rename,undefined);assert.equal(restricted.fork,undefined);
 });
+test('CLI network handler preserves local home request fields and never opens SSH account recovery',async()=>{
+ for(const host of ['local','codex:'+ 'a'.repeat(32)]){
+  const ui=fixture(),chat={...ui.row('cli-native',1),host,access:{source:'cli'}};
+  const menu=ui.context.sessionMenuContext(chat),body={action:'force',confirmed:true,generation:'verified',operationId:null,requestId:'new-request'};
+  await menu.cliNetwork(body);assert.equal(ui.requests[0].url,`/${host}/cli-native/cli-network`);assert.equal(ui.requests[0].body,body);assert.equal(ui.requests.length,1);
+ }
+ const ui=fixture();assert.equal(ui.context.sessionMenuContext({...ui.row('remote-cli',1),host:'ssh:fixture',access:{source:'cli'}}).cliNetwork,undefined);
+});
+test('CLI network handler rejects changed authentication or navigation before and after a pending request',async()=>{
+ for(const change of [c=>c.csrf='other',c=>c.listIdentity='other',c=>c.currentId='other',c=>c.currentHost='other',c=>c.clientNavigation.provider='claude']){
+  const ui=fixture(),chat={...ui.row('cli-native',1),access:{source:'cli'}},menu=ui.context.sessionMenuContext(chat);let finish;
+  ui.context.api=async(url,body,_signal,current)=>{ui.requests.push({url,body});assert.equal(current(),true);return new Promise(resolve=>finish=resolve);};
+  const pending=menu.cliNetwork();change(ui.context);finish({canRecover:true,generation:'old'});await assert.rejects(pending,/连接或聊天已变化/);await assert.rejects(()=>menu.cliNetwork({confirmed:true,generation:'old'}),/连接或聊天已变化/);assert.equal(ui.requests.length,1);
+ }
+});
 test('rename response for another active chat never replaces the current header',async()=>{
  const ui=fixture(),chat=ui.row('a',1);ui.context.currentId='b';ui.context.state={title:'Other'};ui.$('chat-title').textContent='Other';
  await ui.context.sessionMenuContext(chat).rename('New');assert.equal(ui.$('chat-title').textContent,'Other');

@@ -46,6 +46,20 @@ test('Codex main composer columns and mixed capability states remain distinct', 
   }
 });
 
+test('CLI network panel keeps waiting, explicit force and saved-state recovery visible', async ({page}, testInfo) => {
+  await ready(page);await page.evaluate(()=>BridgeFeatures.load('chat'));
+  await page.evaluate(readFileSync(path.join(__dirname,'cli-network.browser.js'),'utf8'));
+  for(const width of [390,1280]){
+    await page.setViewportSize({width,height:844});
+    for(const language of ['zh','en']){
+      await page.evaluate(language=>BridgeI18n.setLanguage(language),language);
+      const result=await page.evaluate(()=>runCliNetworkPanelChecks());
+      expect(result.forceRequests).toBe(1);expect(result.modelRequests).toBe(0);expect(result.checks).toBeGreaterThan(30);
+      await testInfo.attach(`cli-network-${width}-${language}`,{body:JSON.stringify(result),contentType:'application/json'});
+    }
+  }
+});
+
 test('image preview has one header row and a bottom save icon', async ({page}, testInfo) => {
   for (const width of [320,390,844,1280]) {
     await page.setViewportSize({width,height:844});

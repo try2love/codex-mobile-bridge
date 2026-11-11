@@ -94,6 +94,7 @@ class SessionMenu {
     const path=document.createElementNS(svg.namespaceURI,'path');path.setAttribute('d',paths[name]||paths.info);svg.append(path);return svg;
   }
   close({immediate=false}={}){
+    this.clearCliNetwork();
     this.finishClosing?.();
     const box=this.box;if(!box)return;
     this.box=null;
@@ -114,6 +115,73 @@ class SessionMenu {
     box.addEventListener('animationend',end);timer=setTimeout(finish,260);
   }
   back(){if(!this.box)return;if(this.view!=='main'){this.render();this.box.querySelector('.sm-row:not(:disabled),button')?.focus();}else this.close();}
+  clearCliNetwork(){clearTimeout(this.cliNetwork?.timer);this.cliNetwork=null;}
+  networkCurrent(state){return this.cliNetwork===state&&this.context===state.context&&this.box===state.box&&this.box?.open&&this.view==='cli-network'&&(!state.context.isCurrent||state.context.isCurrent())&&(!state.context.cliNetworkIsCurrent||state.context.cliNetworkIsCurrent());}
+  openCliNetwork(){
+    this.clearCliNetwork();this.cliNetwork={context:this.context,box:this.box,data:null,error:'',pending:null,confirmation:null,uncertain:null};
+    this.render('cli-network');return this.requestCliNetwork();
+  }
+  async requestCliNetwork(body,kind='check'){
+    const state=this.cliNetwork;if(!state||state.pending||!this.networkCurrent(state))return;
+    clearTimeout(state.timer);state.pending=kind;state.error='';state.confirmation=null;this.render('cli-network');
+    try{
+      const data=await state.context.cliNetwork(body);if(!this.networkCurrent(state))return;
+      if(kind==='forcePreview'){
+        if(data.canForce===true&&typeof data.generation==='string'&&data.scopeLabel&&Array.isArray(data.impact))state.confirmation={kind:'force',preview:data};
+        else state.error=data.message||'当前无法核验原 CLI 进程或配置；未强制退出。';
+      }else{state.data=data;state.uncertain=null;}
+    }catch(error){
+      if(!this.networkCurrent(state))return;state.error=error.message;
+      if(['recover','force','reconnect'].includes(kind))state.uncertain={operationId:body.requestId||null};
+    }finally{
+      state.pending=null;if(this.networkCurrent(state)){
+        this.render('cli-network');
+        if(!state.confirmation&&!state.error&&['waiting','recovering'].includes(state.data?.state)&&state.data.operationId)
+          state.timer=setTimeout(()=>{if(this.networkCurrent(state)&&!document.hidden)this.requestCliNetwork({action:'status',operationId:state.data.operationId},'status');},5000);
+      }
+    }
+  }
+  confirmCliNetwork(kind,preview){
+    const state=this.cliNetwork;if(!state||state.pending||!this.networkCurrent(state))return;
+    clearTimeout(state.timer);state.confirmation={kind,preview};this.render('cli-network');
+  }
+  submitCliNetwork(){
+    const state=this.cliNetwork,confirmation=state?.confirmation;if(!confirmation||state.pending||!this.networkCurrent(state))return;
+    const {kind,preview}=confirmation;
+    const body=kind==='force'?{action:'force',confirmed:true,generation:preview.generation,operationId:preview.operationId??null,requestId:this.newId()}:
+      kind==='reconnect'?{action:'reconnect',confirmed:true,generation:preview.generation,requestId:this.newId()}:{confirmed:true,generation:preview.generation};
+    return this.requestCliNetwork(body,kind);
+  }
+  renderCliNetwork(){
+    const state=this.cliNetwork,box=this.box;if(!state)return;
+    const head=this.node('div','sm-head'),name=this.node('div','sm-name'),close=this.node('button','sm-icon');close.type='button';close.dataset.cliNetworkClose='true';close.setAttribute('aria-label',this.t('关闭'));close.append(this.icon('close'));close.onclick=()=>this.close();name.append(this.node('strong','',this.t('检查 CLI 网络')));head.append(name,this.node('small','',state.context.title),close);box.append(head);
+    const explain=text=>box.append(this.node('p','sm-explanation',this.t(text)));
+    if(state.error){const error=this.node('p','sm-error',this.t(state.error));error.setAttribute('role','alert');box.append(error);}
+    if(state.uncertain)explain('请求结果待核对；不会自动重试。请检查操作结果或重新检查网络。');
+    if(state.pending){const labels={check:'正在检查 CLI 网络…',status:'正在核对恢复状态…',cancel:'正在取消等待…',forcePreview:'正在核对强制恢复范围…',recover:'正在提交 CLI 恢复…',force:'正在提交强制恢复…',reconnect:'正在提交重新连接…'},status=this.node('p','sm-explanation',this.t(labels[state.pending]));status.setAttribute('role','status');box.append(status);}
+    const data=state.data,confirmation=state.confirmation;
+    if(confirmation){
+      const {kind,preview}=confirmation;explain(preview.message||'');
+      if(kind==='force'){
+        box.append(this.node('h3','sm-heading',this.t('确认强制恢复此配置？')));explain(preview.scopeLabel);
+        explain('将中断此配置中正在运行或状态未知的任务，影响范围可能包含未列出的会话。聊天历史会保留。');
+        const impact=this.node('ul','sm-explanation');for(const row of preview.impact)impact.append(this.node('li','',row.title||row.sessionId));box.append(impact);
+      }else if(kind==='reconnect'){box.append(this.node('h3','sm-heading',this.t('从当前保存状态重新连接？')));explain('以前的接续回执仍未知；此操作不重放旧提供商设置或消息。');}
+      else{box.append(this.node('h3','sm-heading',this.t('确认恢复共享服务？')));explain('将等待此配置的全部任务安全结束后恢复。恢复期间请勿从其他客户端发起新任务。');}
+      const actions=this.node('div','sm-confirm-actions'),confirm=this.node('button','primary',this.t(kind==='force'?'确认强制恢复':kind==='reconnect'?'确认重新连接':'确认恢复')),cancel=this.node('button','primary',this.t('返回检查结果'));
+      confirm.type=cancel.type='button';confirm.disabled=!!state.pending;confirm.onclick=()=>this.submitCliNetwork();cancel.onclick=()=>{state.confirmation=null;this.render('cli-network');};actions.append(confirm,cancel);box.append(actions);
+    }else{
+      if(data?.message||data?.notice)explain(data.message||data.notice);
+      else if(typeof data?.connected==='boolean')explain(data.connected?'CLI 连接已恢复':'CLI 连接尚未确认，请继续原会话或重新检查。');
+      if(data?.state){const labels={waiting:'等待任务安全结束',recovering:'正在恢复共享服务',cancelled:'已取消等待',complete:'恢复操作已结束',unknown:'操作结果待核对',failed:'恢复未完成',superseded:'此操作已被新的明确操作替代'};const status=this.node('p','sm-explanation',this.t(labels[data.state]||data.state));status.setAttribute('role','status');box.append(status);}
+      if(data?.canRecover===true&&typeof data.generation==='string'&&!state.uncertain)this.row(data.action==='reconnect'?'从当前保存状态重新连接…':data.willWait||data.state==='waiting'?'等待任务结束后恢复…':'恢复 CLI 连接…','link',()=>this.confirmCliNetwork(data.action==='reconnect'?'reconnect':'recover',data),{disabled:!!state.pending});
+      if(data?.canCancel===true&&data.operationId)this.row('取消等待','close',()=>this.requestCliNetwork({action:'cancel',operationId:data.operationId},'cancel'),{disabled:!!state.pending});
+      const operationId=state.uncertain?.operationId||data?.operationId;if(operationId)this.row('核对操作结果','info',()=>this.requestCliNetwork({action:'status',operationId},'status'),{disabled:!!state.pending});
+      this.row('重新检查网络','link',()=>this.requestCliNetwork(),{disabled:!!state.pending});
+      this.row('检查强制恢复范围…','info',()=>this.requestCliNetwork({action:'forcePreview'},'forcePreview'),{disabled:!!state.pending,danger:true});
+    }
+    explain('关闭或返回只收起面板，不会取消已提交的恢复。');
+  }
   bindDrag(box){
     let drag=null,timer;
     const reset=()=>{clearTimeout(timer);drag=null;box.classList.remove('sm-dragging','sm-returning');box.style.removeProperty('transform');};
@@ -178,6 +246,7 @@ class SessionMenu {
     finally{pending?.remove();if(this.box===box){this.busy=false;if(button?.isConnected)button.disabled=false;}}
   }
   render(view='main'){
+    if(view!=='cli-network')this.clearCliNetwork();
     const c=this.context,box=this.box;this.clearDrag?.();this.view=view;box.replaceChildren();box.append(this.node('div','sm-handle'));
     if(view!=='main')this.row('返回会话菜单','back',()=>this.back());
     else{
@@ -187,7 +256,9 @@ class SessionMenu {
       if(c.rename){const edit=this.node('button','sm-icon');edit.type='button';edit.setAttribute('aria-label',this.t('修改聊天名称'));edit.append(this.icon('pencil'));edit.onclick=()=>this.render('rename');line.append(edit);}
       head.append(line,this.node('small','',c.subtitle||''),close);box.append(head);
     }
-    if(view==='rename'){
+    if(view==='cli-network'){
+      this.renderCliNetwork();
+    }else if(view==='rename'){
       if(c.renameScope==='bridge')box.append(this.node('p','sm-explanation',this.t('仅在 Bridge 中生效')));
       const form=this.node('form','sm-form'),input=this.node('input');input.value=c.title;input.maxLength=120;input.required=true;input.setAttribute('aria-label',this.t('聊天名称'));
       const save=this.node('button','primary',this.t('保存'));save.type='submit';form.append(input,save);box.append(form);
@@ -220,7 +291,7 @@ class SessionMenu {
       if(c.fork)this.row('创建聊天分支','fork',button=>this.execute(()=>{this.close();return c.fork();},button));
       this.separator();if(c.manage)this.row('发送管理','list',()=>{this.close();c.manage();});
       if(c.notifications)this.row('聊天通知设置','info',button=>this.execute(()=>{this.close();return c.notifications();},button));
-      if(c.cliNetwork)this.row('检查 CLI 网络','link',button=>this.execute(c.cliNetwork,button,{close:false,pendingMessage:'正在检查 CLI 网络…'}));
+      if(c.cliNetwork)this.row('检查 CLI 网络','link',()=>this.openCliNetwork());
       if(c.releaseCli)this.row('释放 CLI 连接','link',()=>{this.close();c.releaseCli();});
       this.row('会话详情','info',()=>this.render('details'),{end:true});
       if(c.archive){this.separator();this.row(c.archived?'恢复会话':'停止任务并归档…','archive',button=>c.archived?this.execute(c.archive,button):this.render('archive'),{danger:!c.archived});}
