@@ -1,82 +1,150 @@
 'use strict';
 
 class CliConnectionsPanel {
-  constructor({request,notify,translate=text=>text,identity=()=>''}){
-    Object.assign(this,{request,notify,t:translate,identity});this.timer=null;
+  constructor({request,notify,translate=text=>text,identity=()=>'',currentClient=()=> 'codex',newId=()=>crypto.randomUUID()}){
+    Object.assign(this,{request,notify,t:translate,identity,currentClient,newId});this.timer=null;
     document.addEventListener('bridge-logged-out',()=>this.close());
   }
-  close(){clearTimeout(this.timer);this.dialog?.close();this.dialog?.remove();this.dialog=null;}
+  close(){clearTimeout(this.timer);this.dialog?.close();this.dialog?.remove();this.dialog=null;this.pending=null;this.readVersion=(this.readVersion||0)+1;}
   node(tag,text,cls){const node=document.createElement(tag);node.textContent=text===undefined?'':this.t(text);if(cls)node.className=cls;return node;}
   open(target=null){
-    this.close();this.target=target;this.scope=this.identity();this.selected=new Set();this.error=null;
-    const dialog=this.dialog=this.node('dialog',undefined,'picker');dialog.setAttribute('aria-label',this.t('CLI 连接管理'));
+    this.close();this.target=target;this.provider=target?.provider||this.currentClient();this.clientContext=this.currentClient();this.scope=this.identity();this.selected=new Set();this.error='';this.confirmation=null;this.revision=0;this.historyOpen=false;this.selectTarget=!!target?.sessionId;this.data={connections:[],operations:[]};this.rows=[];this.groups=[];
+    const dialog=this.dialog=this.node('dialog',undefined,'picker cli-connections-panel');dialog.setAttribute('aria-label',this.t('CLI 连接管理'));
     dialog.addEventListener('close',()=>{clearTimeout(this.timer);dialog.remove();if(this.dialog===dialog)this.dialog=null;});
-    const head=this.node('div',undefined,'picker-head');head.append(this.node('h2',this.target?'释放 CLI 连接':'CLI 连接管理'));this.closeButton(head);
-    dialog.append(head,this.node('p','正在读取 CLI 连接…','appearance-note'));
-    document.body.append(dialog);dialog.showModal();this.refresh();
+    this.header(dialog);dialog.append(this.node('p','正在读取 CLI 连接…','appearance-note'));document.body.append(dialog);dialog.showModal();this.refresh();
   }
-  valid(dialog){return dialog===this.dialog&&dialog.open&&this.scope===this.identity();}
+  valid(dialog){return dialog===this.dialog&&dialog.open&&this.scope===this.identity()&&this.clientContext===this.currentClient();}
+  matches(row){
+    const family=ClientIdentity.family(this.provider);if(row.provider!==family)return false;
+    if(this.provider!==family){if(ClientIdentity.entry(this.provider)?row.entry!==this.provider:row.host!==this.provider)return false;}
+    else if(row.entry&&row.entry!==this.provider)return false;
+    return !this.target?.sessionId||row.sessionId===this.target.sessionId&&(!this.target.host||row.host===this.target.host);
+  }
   async refresh(){
-    const dialog=this.dialog;if(!dialog)return;clearTimeout(this.timer);
+    const dialog=this.dialog;if(!dialog||this.pending)return;clearTimeout(this.timer);const version=++this.readVersion;
     try{
-      const data=await this.request('/api/cli-connections');if(!this.valid(dialog))return;
-      this.render(data);
-      if(data.operations.some(job=>job.results.some(row=>['waiting','releasing'].includes(row.status))))
-        this.timer=setTimeout(()=>{if(this.valid(dialog)&&!document.hidden)this.refresh();},5000);
-    }catch(error){if(this.valid(dialog)){dialog.replaceChildren(this.node('p',error.message,'error'));this.closeButton(dialog);this.button(dialog,'刷新',()=>this.refresh());}}
+      const data=await this.request('/api/cli-connections',undefined,undefined,()=>this.valid(dialog));if(!this.valid(dialog)||version!==this.readVersion)return;
+      this.data=data;this.render();
+      if(this.rows.some(row=>row.checking||['waiting','releasing'].includes(row.status)))this.timer=setTimeout(()=>{if(this.valid(dialog)&&!document.hidden)this.refresh();},5000);
+    }catch(error){if(this.valid(dialog)&&version===this.readVersion){this.error=error.message;this.render();}}
   }
-  button(parent,label,run){const button=this.node('button',label,'plain');button.type='button';button.onclick=run;parent.append(button);return button;}
+  button(parent,label,run,{disabled=false}={}){const button=this.node('button',label,'plain');button.type='button';button.disabled=disabled;button.onclick=run;parent.append(button);return button;}
   closeButton(parent){const button=this.button(parent,'关闭',()=>this.close());button.dataset.cliClose='true';return button;}
-  render(data){
-    const dialog=this.dialog;dialog.replaceChildren();
-    const head=this.node('div',undefined,'picker-head');head.append(this.node('h2',this.target?'释放 CLI 连接':'CLI 连接管理'));this.closeButton(head);dialog.append(head);
-    dialog.append(this.node('p','释放当前网关持有的连接，保留聊天历史。运行中的任务默认完成后释放。','appearance-note'));
+  header(dialog){const head=this.node('div',undefined,'picker-head');head.append(this.node('h2',this.target?.sessionId?'释放 CLI 连接':'CLI 连接管理'));this.closeButton(head);dialog.append(head);if(this.confirmation)this.button(dialog,'返回连接列表',()=>this.back());}
+  back(){this.confirmation=null;this.revision++;this.render();}
+  snapshot(){
+    const latest=new Map(),checks=new Map(),history=[];
+    for(const job of this.data.operations||[])for(const row of job.results||[])if(this.matches(row)){
+      const value={...row,job};history.push(value);
+      if(job.mode==='check')checks.set(row.key,{...value,observes:latest.get(row.key)?.job.id});else latest.set(row.key,value);
+    }
+    for(const [key,check] of checks){
+      const control=latest.get(key);
+      if(control&&(check.observes!==control.job.id||check.operationId&&check.operationId!==control.job.id||control.status==='released'))continue;
+      const checking=['waiting','releasing'].includes(check.status);
+      if(!control)latest.set(key,{...check,status:['released','detached'].includes(check.status)?check.status:'unknown',checking});
+      else if(check.status==='released'||check.status==='detached'&&control.status==='unknown')latest.set(key,check);
+      else latest.set(key,{...control,checking});
+    }
+    const rows=new Map();
+    for(const row of this.data.connections||[])if(this.matches(row)){
+      const last=latest.get(row.key);rows.set(row.key,{...row,status:last?.status||'connected',error:last?.error,notice:last?.notice,canCancel:last?.canCancel,checking:last?.checking,last,current:true});
+    }
+    for(const [key,row] of latest)if(!rows.has(key)&&['waiting','releasing','unknown','detached'].includes(row.status))rows.set(key,{...row,last:row,current:false});
+    const groups=new Map();
+    for(const row of rows.values()){
+      const runtime=row.host==='local'||row.host?.startsWith('codex:')?'local':row.host?.startsWith('wsl:')||row.host?.startsWith('wsl-claude:')?'wsl':row.host?'ssh':'unknown';
+      const kind=row.scopeKey&&row.scopeLabel&&row.sharedHome===true?'shared':row.configurationKey&&row.configurationLabel?'configuration':'connection';
+      const key=JSON.stringify([runtime,row.host,kind,kind==='shared'?row.scopeKey:kind==='configuration'?row.configurationKey:row.key]);
+      if(!groups.has(key))groups.set(key,{key,runtime,kind,scopeKey:kind==='shared'?row.scopeKey:null,label:kind==='shared'?row.scopeLabel:kind==='configuration'?row.configurationLabel:'配置范围待核验',rows:[]});groups.get(key).rows.push(row);
+    }
+    return {rows:[...rows.values()],groups:[...groups.values()].sort((a,b)=>['local','ssh','wsl','unknown'].indexOf(a.runtime)-['local','ssh','wsl','unknown'].indexOf(b.runtime)),history};
+  }
+  selectable(row,group){return row.current&&!['unknown','releasing','released'].includes(row.status)&&(row.status!=='waiting'||group.kind!=='shared');}
+  status(row){
+    if(row.checking||(row.last?.job||row.job)?.mode==='check'&&['waiting','releasing'].includes(row.status))return '正在核对结果';
+    if((row.last?.job||row.job)?.mode==='check'&&row.status==='failed')return '核验未完成';
+    return ({connected:'网关持有连接',waiting:'等待任务完成',releasing:'正在释放',released:'连接已释放',detached:'网关连接已释放，原生占用待核对',unknown:'结果待核对',failed:'尚未释放，可重试',superseded:'已由新的明确操作替代',cancelled:'已取消等待'})[row.status]||row.status;
+  }
+  render(){
+    const dialog=this.dialog;if(!dialog)return;this.historyOpen=dialog.querySelector('details.cli-release-history')?.open??this.historyOpen;const top=dialog.scrollTop;
+    const {rows,groups,history}=this.snapshot();this.rows=rows;this.groups=groups;
+    const eligible=new Set(groups.flatMap(group=>group.rows.filter(row=>this.selectable(row,group)).map(row=>row.key)));this.selected=new Set([...this.selected].filter(key=>eligible.has(key)));
+    if(this.selectTarget){for(const row of rows)if(eligible.has(row.key))this.selected.add(row.key);this.selectTarget=false;}
+    dialog.replaceChildren();this.header(dialog);
+    dialog.append(this.node('p','仅管理当前 Agent 的 CLI 连接。每个主机与配置独立释放，聊天历史保留。','appearance-note'));
     if(this.error){const error=this.node('p',this.error,'error');error.setAttribute('role','alert');dialog.append(error);}
-    const match=row=>!this.target||(row.provider===this.target.provider&&row.sessionId===this.target.sessionId&&
-      (row.provider!=='codex'||row.host===this.target.host));
-    const rows=data.connections.filter(match),busy=new Set(data.operations.flatMap(job=>job.results.filter(row=>['releasing','unknown'].includes(row.status)).map(row=>row.key)));
-    this.rows=rows;this.selected=new Set([...this.selected].filter(key=>rows.some(row=>row.key===key)&&!busy.has(key)));
-    if(!rows.length)dialog.append(this.node('p','没有由网关持有的 CLI 连接'));
-    for(const row of rows){
-      const label=this.node('label',undefined,'display-option'),text=this.node('span');text.textContent=[row.provider==='codex'?'Codex':'Claude',row.title,row.location].filter(Boolean).join(' · ');
-      const check=document.createElement('input');check.type='checkbox';check.disabled=busy.has(row.key);check.checked=this.target?!check.disabled:this.selected.has(row.key);
-      if(check.checked)this.selected.add(row.key);check.onchange=()=>{if(check.checked)this.selected.add(row.key);else this.selected.delete(row.key);};label.append(text,check);dialog.append(label);
+    if(this.pending){const status=this.node('p',this.pending.label,'appearance-note');status.setAttribute('role','status');dialog.append(status);}
+    if(this.confirmation){this.renderConfirmation();dialog.scrollTop=top;return;}
+    if(!rows.length)dialog.append(this.node('p','当前 Agent 没有由网关持有或待核对的 CLI 连接'));
+    let runtime;
+    for(const group of groups){
+      if(runtime!==group.runtime){runtime=group.runtime;dialog.append(this.node('h3',({local:'本机',ssh:'SSH',wsl:'WSL',unknown:'运行位置待核验'})[runtime]));}
+      const section=this.node('section',undefined,'cli-release-group');section.dataset.cliGroup=group.key;section.append(this.node('h4',group.label));
+      if(group.kind==='connection')section.append(this.node('p','配置范围尚未核验，仅支持逐连接操作。','appearance-note'));
+      for(const row of group.rows){
+        const article=this.node('div',undefined,'cli-release-row');article.dataset.cliConnection=row.key;
+        const label=this.node('label',undefined,'display-option'),text=this.node('span');text.append(this.node('strong',row.title||row.sessionId),this.node('small',[!row.current?this.t('旧连接待核对'):'',row.location,row.sessionId].filter(Boolean).join(' · ')));
+        const check=document.createElement('input');check.type='checkbox';check.disabled=!!this.pending||!this.selectable(row,group);check.checked=this.selected.has(row.key);check.onchange=()=>{if(check.checked)this.selected.add(row.key);else this.selected.delete(row.key);this.render();};label.append(text,check);article.append(label);
+        const status=this.node('p',this.status(row),'appearance-note');status.setAttribute('role','status');if(row.error||row.notice)status.append(this.node('span',' · '+this.t(row.error||row.notice)));article.append(status);
+        if(['unknown','detached'].includes(row.status))this.button(article,'核对结果',()=>this.submitLegacy('check',[row.key]),{disabled:!!this.pending||!!row.checking});
+        else if(row.current&&row.canForce===true&&group.kind!=='shared'&&!['releasing','released'].includes(row.status))this.button(article,'强制释放此连接…',()=>this.previewForce(row),{disabled:!!this.pending});
+        if(row.status==='detached'&&row.canUnload===true)this.button(article,'释放原生占用…',()=>this.confirmLegacy('unload',[row.key],group),{disabled:!!this.pending});
+        section.append(article);
+      }
+      const current=group.rows.filter(row=>row.current),selected=current.filter(row=>this.selected.has(row.key)),waiting=group.rows.filter(row=>['waiting','releasing'].includes(row.status)&&row.canCancel===true&&row.last?.job.mode==='scopeWait');
+      const cancels=new Map(waiting.map(row=>[row.last.job.id,row.last.job]));for(const [id] of cancels)this.button(section,'取消此范围等待',()=>this.perform({mode:'scopeCancel',id},'正在取消等待…'),{disabled:!!this.pending});
+      const blocked=group.rows.some(row=>['waiting','unknown','releasing'].includes(row.status)),normal=selected.length&&!selected.some(row=>['waiting','unknown','releasing'].includes(row.status))&&!(group.kind==='shared'&&blocked);
+      this.button(section,this.target?.sessionId?'释放连接…':'释放所选连接…',()=>this.previewRelease(group,selected.map(row=>row.key)),{disabled:!!this.pending||!normal});
+      if(group.kind!=='connection'&&current.length){
+        this.button(section,'释放此配置全部连接…',()=>this.previewRelease(group,current.map(row=>row.key),true),{disabled:!!this.pending||blocked||current.some(row=>!this.selectable(row,group)||row.status==='waiting')});
+        if(group.kind==='shared'&&current.some(row=>row.canForce===true&&row.status!=='released'))this.button(section,'强制释放此范围…',()=>this.previewRelease(group,current.map(row=>row.key),true,true),{disabled:!!this.pending});
+      }
+      if(group.kind!=='shared'&&selected.length)this.button(section,'停止任务并释放所选…',()=>this.confirmLegacy('stop',selected.map(row=>row.key),group),{disabled:!!this.pending});
+      dialog.append(section);
     }
-    if(rows.length){
-      if(!this.target)this.button(dialog,'选择全部',()=>{for(const row of rows)if(!busy.has(row.key))this.selected.add(row.key);this.render(data);});
-      this.button(dialog,this.target?'释放连接':'释放所选',()=>this.submit('wait'));
-      if(!this.target)this.button(dialog,'释放全部',()=>{this.selected=new Set(rows.filter(row=>!busy.has(row.key)).map(row=>row.key));this.submit('wait');});
-      this.button(dialog,'停止并释放…',()=>{
-        if(!rows.some(row=>this.selected.has(row.key)&&!busy.has(row.key)))return this.notify(this.t('请选择需要释放的 CLI 连接'));
-        const title=this.node('h3','停止任务并释放连接？'),text=this.node('p','将停止所选会话正在运行的任务并释放连接，聊天历史会保留。');
-        dialog.replaceChildren(head,title,text);this.button(dialog,'取消',()=>this.render(data));this.button(dialog,'确认停止并释放',()=>this.submit('stop'));
-      });
-    }
-    const statuses={waiting:'等待任务完成',releasing:'正在释放',released:'连接已释放',detached:'网关连接已释放，原生占用待核对',unknown:'结果待核对',failed:'尚未释放，可重试',superseded:'已改为停止并释放'};
-    for(const job of data.operations.slice(-10).reverse())for(const row of job.results.filter(match)){
-      const line=this.node('p',undefined,'appearance-note');line.textContent=row.title+'：'+this.t(statuses[row.status]||row.status)+((row.error||row.notice)?' · '+this.t(row.error||row.notice):'');dialog.append(line);
-      if(row.provider==='codex'&&['unknown','detached'].includes(row.status))this.button(line,'核对结果',()=>this.submit('check',[row.key]));
-      if(row.canUnload&&row.status==='detached')this.button(line,'释放原生占用…',()=>this.confirmUnload(row));
-    }
-    this.button(dialog,'刷新',()=>this.refresh());
+    if(history.length){const details=this.node('details',undefined,'cli-release-history');details.open=this.historyOpen;details.append(this.node('summary',this.t('历史操作回执')+' · '+history.length));
+      const load=()=>{if(!details.open||details.dataset.loaded)return;details.dataset.loaded='true';for(const row of [...history].reverse()){const line=this.node('p',undefined,'appearance-note');line.textContent=[row.title||row.sessionId,this.t(this.status(row)),row.job.id,row.error||row.notice?this.t(row.error||row.notice):''].filter(Boolean).join(' · ');details.append(line);}};details.addEventListener('toggle',load);load();dialog.append(details);}
+    this.button(dialog,'刷新',()=>this.refresh(),{disabled:!!this.pending});dialog.scrollTop=top;
   }
-  confirmUnload(row){
-    const dialog=this.dialog;if(!this.valid(dialog)||this.pendingDialog===dialog)return;
-    const head=dialog.firstElementChild;
-    dialog.replaceChildren(head,this.node('h3','释放原生占用？'),this.node('p','将退出此配置的共享 CLI 服务。请先结束全部任务，并确保操作完成前其他客户端不再发起任务。聊天历史会保留。'));
-    this.button(dialog,'取消',()=>this.refresh());this.button(dialog,'确认释放原生占用',()=>this.submit('unload',[row.key]));
+  async perform(body,label,preview=null){
+    const dialog=this.dialog;if(!this.valid(dialog)||this.pending)return;clearTimeout(this.timer);this.readVersion++;const revision=this.revision,token={label};this.pending=token;this.error='';this.render();
+    try{
+      const result=await this.request('/api/cli-connections',body,undefined,()=>this.valid(dialog));if(!this.valid(dialog))return;
+      if(preview){if(revision===this.revision)this.confirmation=preview(result);}
+      else{this.confirmation=null;this.revision++;this.selected.clear();if(result.results){const jobs=this.data.operations||[];this.data.operations=jobs.some(job=>job.id===result.id)?jobs.map(job=>job.id===result.id?result:job):[...jobs,result];}}
+    }catch(error){if(this.valid(dialog)){this.error=error.message;this.confirmation=null;}}
+    finally{if(this.pending===token)this.pending=null;if(this.valid(dialog)){this.render();if(!preview)await this.refresh();}}
   }
-  async submit(mode,selectedKeys=null){
-    const dialog=this.dialog,keys=selectedKeys||this.rows.filter(row=>this.selected.has(row.key)).map(row=>row.key);
-    if(!keys.length)return this.notify(this.t('请选择需要释放的 CLI 连接'));
-    if(!this.valid(dialog)||this.pendingDialog===dialog)return;
-    this.pendingDialog=dialog;this.error=null;
-    clearTimeout(this.timer);for(const b of dialog.querySelectorAll('button,input'))if(!b.dataset.cliClose)b.disabled=true;
-    const body={id:crypto.randomUUID(),connections:keys,mode};
-    try{await this.request('/api/cli-connections',body);if(this.valid(dialog)){this.selected.clear();this.notify(this.t('已提交释放请求'));await this.refresh();}}
-    catch(error){if(this.valid(dialog)){this.error=error.message;await this.refresh();}}
-    finally{if(this.pendingDialog===dialog)this.pendingDialog=null;}
+  previewRelease(group,keys,all=false,force=false){
+    if(!keys.length)return;
+    if(group.kind!=='shared')return this.confirmLegacy('wait',keys,group);
+    return this.perform({mode:'scopePreview',scopeKey:group.scopeKey,...(all?{all:true}:{connections:keys})},'正在核对释放范围…',value=>{
+      if(value.scopeKey!==group.scopeKey||typeof value.generation!=='string'||!value.generation||!Array.isArray(value.connections)||!value.scopeLabel||!Array.isArray(value.impact))throw Error(value.message||'CLI 范围尚未核验，请重新检查');
+      return {mode:force?'scopeForce':'scopeWait',preview:value,group};
+    });
   }
+  previewForce(row){return this.perform({mode:'forcePreview',connections:[row.key]},'正在核对释放范围…',value=>{
+    if(value.canForce!==true||typeof value.generation!=='string'||!value.generation||!value.scopeLabel||!Array.isArray(value.impact))throw Error(value.message||'当前无法核验此 CLI 连接及原生进程。');return {mode:'force',preview:value,keys:[row.key]};
+  });}
+  confirmLegacy(mode,keys,group){if(!this.valid(this.dialog)||this.pending)return;clearTimeout(this.timer);this.confirmation={mode,keys,group};this.revision++;this.render();}
+  renderConfirmation(){
+    const dialog=this.dialog,{mode,preview,keys,group}=this.confirmation,force=['scopeForce','force'].includes(mode),scope=mode.startsWith('scope');
+    dialog.append(this.node('h3',force?'确认强制释放？':mode==='stop'?'停止任务并释放连接？':mode==='unload'?'释放原生占用？':'确认释放 CLI 连接？'));
+    dialog.append(this.node('p',preview?.scopeLabel||group?.label,'appearance-note'));
+    if(preview?.message)dialog.append(this.node('p',preview.message,'appearance-note'));
+    dialog.append(this.node('p',force?'将中断运行中或状态未知的任务；范围可能包含未列出的会话。聊天历史保留。':scope||mode==='unload'?'此操作会退出此配置的整个共享 CLI 服务，包含其它连接。默认等待全部任务安全结束；期间请勿从其它客户端发起新任务。':mode==='stop'?'将停止所选连接的任务并逐条释放，聊天历史保留。':'逐条等待所选 CLI 任务安全结束后释放连接，不退出其它配置。','appearance-note'));
+    if(mode==='wait')dialog.append(this.node('p','此操作暂不支持取消等待；关闭面板不会取消已提交的释放。','appearance-note'));
+    const impact=this.node('ul');for(const item of preview?.impact||keys.map(key=>this.rows.find(row=>row.key===key)||{sessionId:key}))impact.append(this.node('li',item.title||item.sessionId));dialog.append(impact);
+    const allowed=!preview||(force?preview.canForce===true:preview.canRelease===true),actions=this.node('div',undefined,'sm-confirm-actions'),confirm=this.node('button',force?'确认强制释放':mode==='stop'?'确认停止并释放':'确认释放','primary');confirm.type='button';confirm.disabled=!!this.pending||!allowed;confirm.onclick=()=>this.confirm();actions.append(confirm);this.button(actions,'返回连接列表',()=>this.back()).className='primary';dialog.append(actions);
+  }
+  confirm(){
+    const value=this.confirmation;if(!value||this.pending||!this.valid(this.dialog))return;const {mode,preview,keys}=value;
+    if(preview&&(mode==='scopeWait'?preview.canRelease!==true:preview.canForce!==true))return;
+    const body=mode.startsWith('scope')?{mode,id:this.newId(),scopeKey:preview.scopeKey,connections:preview.connections,generation:preview.generation}:{mode,id:this.newId(),connections:keys,...(mode==='force'?{generation:preview.generation}:{})};
+    return this.perform(body,'正在提交释放请求…');
+  }
+  submitLegacy(mode,keys){return this.perform({mode,id:this.newId(),connections:keys},mode==='check'?'正在核对结果':'正在提交释放请求…');}
 }
 
 class SessionMenu {

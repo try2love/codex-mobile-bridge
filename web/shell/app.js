@@ -351,7 +351,7 @@ function bindSessionMenu(button,chat,provider='codex'){
   getSessionMenu().bind(button,()=>sessionMenuContext(chat,provider));
 }
 const cliConnectionsPanel=new CliConnectionsPanel({request:api,notify:toast,translate:t,
-  identity:()=>csrf+'|'+listIdentity});
+  identity:()=>csrf+'|'+listIdentity,currentClient:()=>clientNavigation.activeClient?.()||clientNavigation.provider,newId:uuid});
 $('cli-connections-button').onclick=()=>{ $('appearance-dialog').close();cliConnectionsPanel.open(); };
 function sessionMenuContext(chat,provider='codex'){
   const identity={provider,id:chat.id,host:chat.host||'local',runtime:chat.access?.runtime||chat.runtime};

@@ -60,6 +60,20 @@ test('CLI network panel keeps waiting, explicit force and saved-state recovery v
   }
 });
 
+test('CLI release panel separates Agent host and home while retaining operation history', async ({page}, testInfo) => {
+  await ready(page);await page.evaluate(()=>BridgeFeatures.load('chat'));
+  await page.evaluate(readFileSync(path.join(__dirname,'cli-release.browser.js'),'utf8'));
+  for(const width of [320,390,1280]){
+    await page.setViewportSize({width,height:844});
+    for(const language of ['zh','en']){
+      await page.evaluate(language=>BridgeI18n.setLanguage(language),language);
+      const result=await page.evaluate(()=>runCliReleaseChecks());
+      expect(result.modelRequests).toBe(0);expect(result.passed).toBeGreaterThan(35);
+      await testInfo.attach(`cli-release-${width}-${language}`,{body:JSON.stringify(result),contentType:'application/json'});
+    }
+  }
+});
+
 test('image preview has one header row and a bottom save icon', async ({page}, testInfo) => {
   for (const width of [320,390,844,1280]) {
     await page.setViewportSize({width,height:844});
@@ -281,7 +295,6 @@ for (const [name, file, invoke] of [
   ['shared chat reading state across refreshes', 'chat-reading-state', 'runChatReadingStateChecks'],
   ['account-scoped drafts and late send acknowledgement', 'persistent-drafts', 'runPersistentDraftTests'],
   ['API form labels, layout and upstream model selection', 'api-form', 'runApiFormBrowserChecks'],
-  ['CLI release single and all across local WSL SSH', 'cli-release', 'runCliReleaseChecks'],
   ['shared session menu on desktop and mobile', 'session-menu', 'runSessionMenuBrowserChecks'],
   ['composer quotes retain draft and layout', 'composer-quotes', 'runComposerQuoteLayoutChecks'],
 ]) {
