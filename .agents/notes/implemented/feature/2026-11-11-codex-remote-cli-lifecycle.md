@@ -50,6 +50,8 @@ SSH 控制 probe 使用被核验的目标 executable、socket 和 home，冷启�
 
 用户随后告知 Windows/Linux 不可达并暂停远端访问。暂停后仅等待既有调用自然结束并读取本地回执，没有新连远端。r3 外层 observer 尚未派发，暂停后的远端现状未回查；这不撤销已经完成的 SSH 四项实测，也不能扩展为暂停后的清理确认。四处 r3 源包已暂存并独立校验，但 Windows→WSL 的 cold-only 补验尚未执行，不能将 staging 当作冷恢复通过。原 WSL 两项通过与首轮失败全部保留，等待用户明确告知恢复后再补冷续及外层观察。精确私有 ELF 回收也未执行，保留报告、配置、回执与同 SHA 恢复副本。恢复位置和最后已知代次见 `.tmp/feedback-20261111-10/adapter-native-r3/paused-remote-checkpoint.md`。
 
+用户明确恢复远端访问后，沿原 r3 冻结脚本补齐外层观察及 Windows→WslEntry cold-only，未重复 SSH 已过链或 WSL scope 释放。SSH 外层 Mac 35 条、Ubuntu 11 条原代均已退出，源包复核一致；WSL 两个原 ID 的 cwd/provider 冷恢复通过，原 PID136594/startTicks3342782 换为 PID192098/startTicks4731725，同一 boot8446978a-775c-495a-8924-683e8fc4fe7c，新代一次正常退出。独立 WSL 7 条及 Windows 54 条记录均确认原代已消失或 PID 已换代，自有进程集合为空、两个 socket 均不存在。确认无占用后精确回收四项本轮私有 ELF 目录项，Ubuntu 空闲由 532295680 增至 840441856 字节，WSL 逻辑空闲增加 308142080 字节；Mac 同 SHA 中转恢复副本重新核验保留。报告、合成配置、回执和首轮失败记录保持，最终证据见 `.tmp/feedback-20261111-10/adapter-native-r3/acceptance.md` 与 `final-summary.json`；本段不宣称正式账号或固定样本验收。
+
 ## 影响
 
 已核验的 Linux SSH/WSL 配置可以进入同一范围释放与明确 force 流程。正常 SIGHUP 仍限原生已核验版本，force 不依赖任务或认证配置可读，但不能越过用户、home、映像、出生代次、socket 或持久回执身份。实际跨 provider 准入失败继续显示原生真实结果；本点不提供自动迁移或后台消息重发。
