@@ -30,6 +30,8 @@ CLI 服务仍继承旧的回环代理时，用户换端口后必须手动恢复�
 
 ## 相关记录审计
 
+- [飞鸟终端代理来源补充](../bug-fix/2026-11-11-macos-terminal-proxy-source.md)：后续新增 macOS 已知来源；保留本篇的同配置恢复和绕过规则，实机验证与限制见该记录。
+
 - [原明确确认的网络恢复](../bug-fix/2026-11-10-cli-system-proxy-following.md)：保留写入原生系统代理选项的确认与回执；自动路径仅采用已核验的当前代理环境。
 - [CLI 跟随同一原生配置的账号与接入](2026-11-11-cli-follows-native-account.md)：复用新操作前的准入与后台等待，不修改已有任务的停止、审批及旧排队合同。
 - [Windows 共享 CLI 正常排空](2026-11-11-windows-cli-daemon-drain.md)：Windows 走已验证的代次和单次排空边界；平台原生实机验收仍独立记录。
