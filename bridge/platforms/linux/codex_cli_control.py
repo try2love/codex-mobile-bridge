@@ -65,12 +65,20 @@ def _directory(path, *, parent=None, create=False):
         raise
 
 
-def _file(path, flags, *, parent=None):
+def _file(path, flags, *, parent=None, native=False):
     descriptor = os.open(path, flags | os.O_NOFOLLOW, 0o600, dir_fd=parent)
     try:
         info = os.fstat(descriptor)
+        shared_write = info.st_mode & 0o022
+        if native and parent is not None:
+            directory = os.fstat(parent)
+            if (stat.S_ISDIR(directory.st_mode) and directory.st_uid == os.getuid()
+                    and stat.S_IMODE(directory.st_mode) == 0o700):
+                # Native files inherit umask; a private directory prevents
+                # group traversal. Bridge-owned journals never use this branch.
+                shared_write = info.st_mode & 0o002
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                or info.st_mode & 0o022 or info.st_nlink != 1):
+                or shared_write or info.st_nlink != 1):
             raise ControlError('Lifecycle file ownership or permissions changed')
         return descriptor
     except BaseException:
@@ -78,12 +86,24 @@ def _file(path, flags, *, parent=None):
         raise
 
 
-def _json(path, *, parent=None):
-    with os.fdopen(_file(path, os.O_RDONLY, parent=parent), encoding='utf-8') as stream:
+def _json(path, *, parent=None, native=False):
+    with os.fdopen(_file(path, os.O_RDONLY, parent=parent, native=native), encoding='utf-8') as stream:
         value = json.load(stream)
     if not isinstance(value, dict):
         raise ControlError('Lifecycle record is invalid')
     return value
+
+
+def _native_record(home):
+    state = home/'app-server-daemon'
+    directory = _directory(state)
+    try:
+        try:
+            return _json('daemon.pid', parent=directory, native=True), state/'daemon.pid'
+        except FileNotFoundError:
+            return _json('app-server.pid', parent=directory, native=True), state/'app-server.pid'
+    finally:
+        os.close(directory)
 
 
 def _boot():
@@ -162,16 +182,7 @@ def inspect(home, executable, socket_path, native_version):
     executable = executable.resolve(strict=True)
     if not executable.is_file():
         raise ControlError('An existing native executable is required')
-    state = home/'app-server-daemon'
-    with ExitStack() as handles:
-        directory = _directory(state)
-        handles.callback(os.close, directory)
-        try:
-            record = _json('daemon.pid', parent=directory)
-            record_path = state/'daemon.pid'
-        except FileNotFoundError:
-            record = _json('app-server.pid', parent=directory)
-            record_path = state/'app-server.pid'
+    record, record_path = _native_record(home)
     pid = record.get('pid')
     identity = record.get('processIdentity') or record.get('linuxProcessIdentity') or {}
     if type(pid) is not int or pid <= 0 or not isinstance(identity, dict):
@@ -358,7 +369,7 @@ def dispatch(home, request_id, mode, expected, *, timeout=0):
         with ExitStack() as handles:
             native = _directory(home/'app-server-daemon')
             handles.callback(os.close, native)
-            lock = _file('daemon.lock', os.O_RDWR, parent=native)
+            lock = _file('daemon.lock', os.O_RDWR, parent=native, native=True)
             handles.callback(os.close, lock)
             _lock(lock)
             current = inspect(home, expected['executable'], expected['socket'], expected['nativeVersion'])

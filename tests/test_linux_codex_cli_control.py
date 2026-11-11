@@ -166,6 +166,49 @@ class LinuxCliControlTests(unittest.TestCase):
             self.inspect()
         self.assertFalse((self.home/'bridge-cli-maintenance').exists())
 
+    def test_native_group_writable_record_and_lock_in_private_directory(self):
+        for name in ('daemon.pid', 'daemon.lock'):
+            (self.state/name).chmod(0o664)
+        record, path = control._native_record(self.home)
+        self.assertEqual((record['pid'], path), (self.pid, self.state/'daemon.pid'))
+        self.assertEqual(self.inspect()['generation'], self.expected)
+        self.assertEqual(self.dispatch()['status'], 'requested')
+        self.assertEqual(self.actual_signals(), [signal.SIGHUP])
+
+    def test_native_group_write_requires_private_parent_and_never_allows_world_write_or_hardlinks(self):
+        record = self.state/'daemon.pid'
+        record.chmod(0o664)
+        self.state.chmod(0o755)
+        with self.assertRaises(control.ControlError):
+            self.inspect()
+        self.state.chmod(0o700)
+        record.chmod(0o666)
+        with self.assertRaises(control.ControlError):
+            self.inspect()
+        record.chmod(0o664)
+        link = self.root/'record-link'
+        os.link(record, link)
+        with self.assertRaises(control.ControlError):
+            self.inspect()
+        link.unlink()
+        (self.state/'daemon.lock').chmod(0o666)
+        with self.assertRaises(control.ControlError):
+            self.dispatch()
+        self.assertEqual(self.actual_signals(), [])
+
+    def test_bridge_journal_group_write_still_rejects_in_private_directory(self):
+        identifier = str(uuid.uuid4())
+        self.dispatch(identifier)
+        directory = self.home/'bridge-cli-maintenance/linux'
+        for name in ('control.lock', 'requests.json'):
+            with self.subTest(name=name):
+                path = directory/name
+                path.chmod(0o664)
+                with self.assertRaises(control.ControlError):
+                    control.check(self.home, identifier, self.expected)
+                path.chmod(0o600)
+        self.assertEqual(self.actual_signals(), [signal.SIGHUP])
+
     def test_live_process_scheduling_state_change_is_not_a_generation_change(self):
         original = identity._identity
         calls = 0
