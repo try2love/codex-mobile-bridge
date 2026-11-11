@@ -262,6 +262,121 @@ def reachable(endpoint):
         return False
 
 
+def _proxy_bypass(entries, hosts):
+    for value in entries:
+        value = value.strip().lower()
+        if not value:
+            continue
+        if value == '*':
+            return True
+        for hostname, port in hosts:
+            if value == '<local>':
+                if '.' not in hostname:
+                    return True
+                continue
+            if '/' in value:
+                try:
+                    network = ipaddress.ip_network(value, strict=False)
+                except ValueError:
+                    return True
+                try:
+                    if ipaddress.ip_address(hostname) in network:
+                        return True
+                except ValueError:
+                    pass  # The native CIDR rule compares literal IP destinations.
+                continue
+            host = f'[{hostname}]' if ':' in hostname else hostname
+            if urllib.request.proxy_bypass_environment(f'{host}:{port}', {'no': value.removeprefix('*.')}):
+                return True
+            if '*' in value.removeprefix('*.') or value.startswith('<'):
+                return True  # An unrecognized bypass rule is not safe to override.
+    return False
+
+
+def _static_loopback(value):
+    endpoint = local_endpoint(value)
+    if endpoint and urlsplit(value).path in ('', '/') and not any((urlsplit(value).query, urlsplit(value).fragment)):
+        return endpoint
+    return None
+
+
+def current_proxy_replacement(spec):
+    from bridge.platforms.codex_system_proxy import current_user_proxy_settings
+    settings = current_user_proxy_settings()
+    if not settings:
+        return {}
+    proxies, bypass, exclude_simple = settings
+    hosts, scheme = spec['hosts'], spec['scheme']
+    if (exclude_simple and any('.' not in host for host, _ in hosts)) or _proxy_bypass(bypass, hosts):
+        return {}
+    candidate = proxies.get(scheme)
+    endpoint = _static_loopback(candidate)
+    if not endpoint or endpoint == spec['previous'] or not reachable(endpoint):
+        return {}
+    key = scheme + '_proxy'
+    return {key: candidate, key.upper(): candidate}
+
+
+def proxy_update_stamp(values, scheme):
+    key = scheme + '_proxy'
+    pair = [values.get(key), values.get(key.upper())]
+    if sys.platform == 'win32':
+        pair = [pair[0] or pair[1], pair[1] or pair[0]]
+    return hashlib.sha256(json.dumps(pair).encode()).hexdigest()
+
+
+def automatic_proxy_update(config, provider, original, target_environment):
+    """Match a dead inherited route to a reachable current-user static proxy."""
+    profile = (config.get('profiles') or {}).get(config.get('profile')) or {}
+    config = {**config, **profile}
+    if (config.get('features') or {}).get('respect_system_proxy') is True:
+        return None, {}
+    definition = (config.get('model_providers') or {}).get(provider) or {}
+    base = definition.get('base_url')
+    if base:
+        destinations = [base]
+    elif provider == 'openai':
+        destinations = [config.get('openai_base_url') or target_environment.get('OPENAI_BASE_URL')
+                        or 'https://api.openai.com', config.get('chatgpt_base_url') or 'https://chatgpt.com']
+    else:
+        return None, {}
+    try:
+        urls = [urlsplit(value) for value in destinations]
+        scheme = urls[0].scheme
+        if scheme not in ('http', 'https') or any(url.scheme != scheme or not url.hostname for url in urls):
+            return None, {}
+        hosts = [(url.hostname, url.port or (443 if scheme == 'https' else 80)) for url in urls]
+        if any(host == 'localhost' or host.endswith('.localhost') for host, _ in hosts):
+            return None, {}
+        for host, _ in hosts:
+            try:
+                if ipaddress.ip_address(host).is_loopback:
+                    return None, {}
+            except ValueError:
+                pass
+    except (TypeError, ValueError):
+        return None, {}
+    def values(name):
+        return {original[key] for key in (name, name.upper()) if original.get(key) is not None}
+    specific = values(scheme + '_proxy')
+    bypass = values('no_proxy')
+    if len(specific) > 1 or len(bypass) > 1 or _proxy_bypass(next(iter(bypass), '').split(','), hosts):
+        return None, {}
+    existing = specific if any(specific) else values('all_proxy')
+    if len(existing) != 1:
+        return None, {}
+    if scheme == 'https' and not any(specific):
+        http = values('http_proxy')
+        if any(http) and http != existing:
+            return None, {}  # Native wss can use HTTP_PROXY before ALL_PROXY.
+    previous = _static_loopback(next(iter(existing)))
+    if not previous or reachable(previous):
+        return None, {}
+    spec = {'scheme': scheme, 'hosts': hosts, 'previous': previous}
+    updates = current_proxy_replacement(spec)
+    return (spec, updates) if updates else (None, {})
+
+
 def inspect_proxy(home, executable):
     old, generation = read_daemon_environment(home, executable, PROXY_NAMES)
     old = {name.lower(): value for name, value in old.items()}

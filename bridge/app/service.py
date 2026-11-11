@@ -1619,7 +1619,8 @@ class Bridge:
         from bridge.clients.codex.cli_session import _managed_cli
         from bridge.clients.codex.daemon_network import (inspect_proxy, configuration_stamp,
             graceful_restart_supported, system_proxy_user_layer, enable_system_proxy_following,
-            native_recovery_target, daemon_version, CliProviderMismatch, file_auth_provider, AUTH_ENV_NAMES)
+            native_recovery_target, daemon_version, CliProviderMismatch, file_auth_provider, AUTH_ENV_NAMES,
+            automatic_proxy_update)
         from bridge.features.accounts.cli_sync import LocalCliSync
         from bridge.clients.codex.daemon_lifecycle import maintenance_lock
         from bridge.clients.codex.release import ReleaseNotSent
@@ -1776,6 +1777,7 @@ class Bridge:
             configuration_changed = (configuration != baseline
                 if baseline is not None else configuration_after_start(cli.home, generation))
             plan, target, original, target_thread = None, None, None, None
+            auto_proxy = None
             if not automatic or _follow_account:
                 try:
                     with closing(CodexAppServer(cli.client.socket_path, cli=executable,
@@ -1828,6 +1830,13 @@ class Bridge:
                     if _follow_account or body is not None:
                         raise error
                     return {'canRecover': False, **error.details, 'message': str(error)}
+                if (_follow_account and self.host == 'local' and cli.home.resolve() == self.codex_home.resolve()
+                        and sys.platform in ('darwin', 'win32')):
+                    desired = ({**original, **target['environment']}
+                               if configuration_changed or provider != before['modelProvider'] else original)
+                    auto_proxy, updates = automatic_proxy_update(config, provider, original, desired)
+                    if updates:
+                        stamp = hashlib.sha256(json.dumps([stamp, updates], sort_keys=True).encode()).hexdigest()
                 if _follow_account and configuration_changed and provider == before['modelProvider']:
                     try:
                         route_changed = (configuration['config.toml'] != baseline['config.toml']
@@ -1844,7 +1853,9 @@ class Bridge:
                                     raise ValueError('核验账号期间原生配置已变化，未接续会话')
                                 cli.configuration_stamp = configuration
                                 cli.configuration_generation = generation_key
-                                return {'canRecover': False, 'followed': True}
+                                if not auto_proxy:
+                                    return {'canRecover': False, 'followed': True}
+                                configuration_changed = False
                     except (ValueError, OSError, AppServerError, KeyError, TypeError) as error:
                         # File age is sufficient evidence of drift on a fresh gateway.
                         # A failed native probe must not fall back to sending with the old cache.
@@ -1867,6 +1878,8 @@ class Bridge:
                             if maintenance and recovery['phase'] in ('cancelled', 'failed') else None)
             stamp = hashlib.sha256(json.dumps([stamp, generation_key, configuration, follow_system_proxy, target_thread, plan,
                 target.get('identity') if target else None, preview_salt], sort_keys=True).encode()).hexdigest()
+            if _waiting is not None and recovery.get('followProxy') and body != {'confirmed': True, 'generation': stamp}:
+                raise ValueError('等待期间当前系统代理已变化，请重新继续会话；未退出服务')
             if not updates and not configuration_changed and plan is None:
                 if automatic:
                     cli.configuration_stamp = configuration
@@ -1892,8 +1905,10 @@ class Bridge:
                     raise IPCError('当前 CLI 版本的正常重建能力尚未核验；请在原客户端同步账号。')
                 self._check_windows_cli_drain(cli, executable, generation)
                 confirmation = {'confirmed': True, 'generation': stamp}
+                message = ('正在等待此配置的任务安全结束，以采用当前系统代理。' if auto_proxy else
+                           '正在等待此配置的任务安全结束，以同步当前原生 CLI 接入。')
                 return self._queue_cli_maintenance(target_thread, confirmation, generation_key, configuration,
-                    preview_salt, '正在等待此配置的任务安全结束，以同步当前原生 CLI 接入。', follow_account=True)
+                    preview_salt, message, follow_account=True, follow_proxy=bool(auto_proxy))
             if automatic and not _follow_account:
                 return {'canRecover': False, 'requiresConfirmation': True,
                         'message': message + '请从会话菜单检查 CLI 网络并确认恢复；不会自动退出共享服务。'}
@@ -1942,8 +1957,11 @@ class Bridge:
             if self.closed.is_set() or not self.observation_enabled():
                 raise ValueError('CLI 接入已停用或网关正在关闭，未退出服务')
             preserved = {name: original.get(name) for name in names}
-            if target:
+            if target and (not auto_proxy or plan):
                 preserved.update(target['environment'])
+            if auto_proxy:
+                for name in updates:
+                    preserved.pop(name, None)  # The verified replacement wins over the original pair.
             setting_saved = False
             setting_dispatched = False
             receipt = maintenance_receipt(recovery) if _waiting is not None else {}
@@ -1975,7 +1993,8 @@ class Bridge:
                     configuration = after
                 self._drain_cli_daemon(cli, executable, generation, configuration, updates,
                                        preserved, follow_system_proxy=follow_system_proxy, provider_plan=plan,
-                                       waiting_operation=_waiting, setting_verified=setting_saved)
+                                       waiting_operation=_waiting, setting_verified=setting_saved,
+                                       auto_proxy=auto_proxy)
                 if self.closed.is_set() or not self.observation_enabled():
                     raise ValueError('CLI 已正常退出；接入已停用或关闭，未重新启动服务')
                 self._resume_cli_recovery(cli, executable, self._cli_recovery_record())
@@ -2005,7 +2024,8 @@ class Bridge:
             session = self.activate(thread_id)
         return {'connected': session.connected}
 
-    def _queue_cli_maintenance(self, target_thread, body, generation, configuration, preview_salt, message, *, follow_account=False):
+    def _queue_cli_maintenance(self, target_thread, body, generation, configuration, preview_salt, message, *,
+                               follow_account=False, follow_proxy=False):
         if self.closed.is_set() or not self.observation_enabled():
             raise ValueError('CLI 接入已停用或网关正在关闭')
         record = {'purpose': 'recovery', 'phase': 'waiting', 'operationId': str(uuid.uuid4()),
@@ -2014,6 +2034,8 @@ class Bridge:
                   'confirmation': body, 'generation': generation, 'configuration': configuration,
                   'previewSalt': preview_salt, 'message': message,
                   'wasReleased': self.released_cli.contains(target_thread['id']), 'followAccount': follow_account}
+        if follow_proxy:
+            record['followProxy'] = True
         with self.cli_maintenance.lock:
             private_json(self.data_dir/'cli-daemon-recovery.json', record)
             self._start_cli_maintenance(record)
@@ -2358,11 +2380,12 @@ class Bridge:
 
     def _drain_cli_daemon(self, cli, executable, generation, configuration, updates, preserved, connections=(), *,
                           follow_system_proxy=False, provider_plan=None, release_operation=None,
-                          waiting_operation=None, setting_verified=False):
+                          waiting_operation=None, setting_verified=False, auto_proxy=None):
         from contextlib import closing, nullcontext
         from bridge.clients.codex.app_server import CodexAppServer, daemon_shutting_down
         from bridge.clients.codex.daemon_lifecycle import request_windows_shutdown
-        from bridge.clients.codex.daemon_network import configuration_stamp, graceful_restart_supported
+        from bridge.clients.codex.daemon_network import (configuration_stamp, graceful_restart_supported,
+            current_proxy_replacement, proxy_update_stamp, reachable)
         from bridge.clients.codex.release import ReleaseNotSent
         from bridge.features.accounts.cli_sync import LocalCliSync
         from bridge.platforms.codex_daemon_env import stop_daemon_gracefully
@@ -2404,6 +2427,9 @@ class Bridge:
                           {token for token, process in cli.release_receipts.items() if process is cli.client.process})}
             if follow_system_proxy:
                 record['followSystemProxy'] = True
+            if auto_proxy:
+                scheme = auto_proxy['scheme']
+                record['automaticProxy'] = {'scheme': scheme, 'stamp': proxy_update_stamp(updates, scheme)}
             if provider_plan:
                 record['providerTarget'] = provider_plan
                 record['providerPhase'] = 'authorized'
@@ -2411,11 +2437,16 @@ class Bridge:
                 operation_id, identity, release_key = release_operation
                 record.update(purpose='release', operationId=operation_id, releasedThread=identity, releaseKey=release_key)
             def checkpoint():
+                if (auto_proxy and not observe and
+                        (current_proxy_replacement(auto_proxy) != updates or reachable(auto_proxy['previous']))):
+                    raise ReleaseNotSent('当前系统代理已变化，请重新继续会话；未退出服务')
                 if configuration_stamp(cli.home) != configuration or self.closed.is_set() or not self.observation_enabled():
                     raise ReleaseNotSent('配置正在变化或接入已关闭，未退出服务')
                 with self.cli_maintenance.lock:
                     self._verify_cli_waiting_dispatch(waiting_operation, setting_verified=own_setting)
                     cli.recovery_environment = {'generation': key, 'updates': updates, 'preserved': preserved}
+                    if auto_proxy:
+                        cli.recovery_environment['autoProxySpec'] = auto_proxy
                     private_json(self.data_dir / 'cli-daemon-recovery.json', record)
             if windows is None:
                 checkpoint()
@@ -2439,8 +2470,24 @@ class Bridge:
         from contextlib import closing
         from bridge.clients.codex.app_server import CodexAppServer
         from bridge.clients.codex.cli_session import _managed_cli
-        from bridge.clients.codex.daemon_network import configuration_stamp, file_auth_provider
+        from bridge.clients.codex.daemon_network import (configuration_stamp, current_proxy_replacement,
+            file_auth_provider, proxy_update_stamp)
         from bridge.platforms.codex_daemon_env import read_daemon_environment
+        def current_generation():
+            auto_proxy = record.get('automaticProxy')
+            if not auto_proxy:
+                return read_daemon_environment(cli.home, executable, ())[1]
+            scheme = auto_proxy.get('scheme')
+            if scheme not in ('http', 'https'):
+                raise ValueError('当前代理恢复回执无法核验；未接续会话')
+            key = scheme + '_proxy'
+            values, generation = read_daemon_environment(cli.home, executable, (key, key.upper()))
+            if proxy_update_stamp(values, scheme) != auto_proxy.get('stamp'):
+                raise ValueError('当前 CLI 代理环境与已核验的恢复目标不符；不会再次退出服务')
+            if configuration_stamp(cli.home) != record['configuration']:
+                raise ValueError('核验新代理时 CLI 配置已变化；未接续会话')
+            return generation
+
         def verify_proxy_setting():
             released_auth = record.get('releasedAuth')
             if record.get('followSystemProxy') or record.get('providerTarget') or released_auth:
@@ -2470,6 +2517,8 @@ class Bridge:
             generation = read_daemon_environment(cli.home, executable, ())[1]
             if hashlib.sha256(json.dumps(generation).encode()).hexdigest() == record['generation']:
                 raise ValueError('原 CLI 仍在排空任务，请等待完成；不会重复发送退出信号')
+            if record.get('automaticProxy') and current_generation() != generation:
+                raise ValueError('核验期间 CLI 进程已变化；不会再次退出服务')
             verify_proxy_setting()
             record['resumedGeneration'] = hashlib.sha256(json.dumps(generation).encode()).hexdigest()
             if record.get('releasedAuth') or record.get('providerTarget'):
@@ -2485,17 +2534,24 @@ class Bridge:
         environment = cli.recovery_environment
         if not environment or environment['generation'] != record['generation']:
             raise ValueError('此前服务环境已无法重新核验，请在电脑端正常启动此配置后继续')
+        updates = environment['updates']
+        if record.get('automaticProxy'):
+            spec = environment.get('autoProxySpec')
+            updates = current_proxy_replacement(spec) if spec else {}
+            if not updates:
+                raise ValueError('此配置的系统代理暂不可用；可用后请重新确认恢复，不会借用其他代理')
+            scheme = spec['scheme']
+            record['automaticProxy'] = {'scheme': scheme, 'stamp': proxy_update_stamp(updates, scheme)}
         if configuration_stamp(cli.home) != record['configuration']:
             raise ValueError('退出期间认证或配置已变化，请在电脑端正常启动此配置后继续')
         cli.drained_connections.update(record['connections'])
         record['phase'] = 'starting'
         private_json(self.data_dir / 'cli-daemon-recovery.json', record)
-        cli._start_daemon(environment['updates'], environment['preserved'])
+        cli._start_daemon(updates, environment['preserved'])
         cli.daemon_start_generation += 1
         executable = _managed_cli(cli.home) or executable
         verify_proxy_setting()
-        record['resumedGeneration'] = hashlib.sha256(json.dumps(
-            read_daemon_environment(cli.home, executable, ())[1]).encode()).hexdigest()
+        record['resumedGeneration'] = hashlib.sha256(json.dumps(current_generation()).encode()).hexdigest()
         cli.configuration_stamp = record['configuration']
         cli.configuration_generation = record['resumedGeneration']
         record['phase'] = 'complete'

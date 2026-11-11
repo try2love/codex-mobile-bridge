@@ -81,6 +81,8 @@ class CliNetworkRecoveryTests(CliBridgeFixture):
         self.patches.enter_context(patch('bridge.clients.codex.cli_session._managed_cli', return_value=self.home / 'codex'))
         self.patches.enter_context(patch('bridge.clients.codex.daemon_network.inspect_proxy',
             side_effect=lambda *_: (self.generation, self.proxy_updates, 'fixture-stamp')))
+        self.patches.enter_context(patch('bridge.platforms.codex_system_proxy.current_user_proxy_settings', return_value=None))
+        self.patches.enter_context(patch('bridge.clients.codex.daemon_network.reachable', return_value=False))
         self.patches.enter_context(patch('bridge.clients.codex.app_server.CodexAppServer', return_value=self.probe))
         self.patches.enter_context(patch('bridge.platforms.codex_daemon_env.read_daemon_environment',
             side_effect=lambda *_: ({'OPENAI_API_KEY': 'synthetic-key', 'HTTPS_PROXY': 'http://127.0.0.1:15722'}, self.generation)))
@@ -90,6 +92,163 @@ class CliNetworkRecoveryTests(CliBridgeFixture):
         preview = self.bridge.cli_network(self.thread_id)
         self.assertTrue(preview['canRecover'])
         return self.bridge.cli_network(self.thread_id, {'confirmed': True, 'generation': preview['generation']})
+
+    def automatic_proxy_fixture(self):
+        self.thread_provider = self.native_state['modelProvider'] = 'fixture'
+        self.current_config = {'model_provider': 'fixture', 'model_providers': {'fixture': {
+            'base_url': 'https://upstream.fixture.invalid/v1', 'requires_openai_auth': False}}}
+        old = 'http://127.0.0.1:15321'
+        unrelated = 'http://127.0.0.1:15329'
+        self.system_proxy = 'http://127.0.0.1:15322'
+        self.daemon_environment = {'https_proxy': old, 'HTTPS_PROXY': old,
+            'http_proxy': unrelated, 'HTTP_PROXY': unrelated, 'ALL_PROXY': unrelated, 'all_proxy': unrelated,
+            'NO_PROXY': 'localhost,ignored.invalid', 'no_proxy': 'localhost,ignored.invalid',
+            'OPENAI_API_KEY': 'fixture-original'}
+        def read(_home, _executable, names):
+            return {name: self.daemon_environment[name] for name in names
+                    if name in self.daemon_environment}, self.generation
+        def start(updates, preserved):
+            self.generation = ('fixture-pid', 'replacement')
+            self.daemon_environment = {**updates, **preserved}
+        self.cli._start_daemon.side_effect = start
+        stack = ExitStack()
+        stack.enter_context(patch('sys.platform', 'darwin'))
+        stack.enter_context(patch('bridge.features.sessions.cli_maintenance.WAIT_INTERVAL', .01))
+        stack.enter_context(patch('bridge.platforms.codex_daemon_env.read_daemon_environment', side_effect=read))
+        self.proxy_reachable = stack.enter_context(patch('bridge.clients.codex.daemon_network.reachable',
+                                                        side_effect=lambda endpoint: endpoint[1] != 15321))
+        self.system_proxy_source = stack.enter_context(patch(
+            'bridge.platforms.codex_system_proxy.current_user_proxy_settings',
+            side_effect=lambda: ({'https': self.system_proxy}, (), False)))
+        return stack
+
+    def test_automatic_proxy_waits_preserves_unrelated_environment_and_never_sends_draft(self):
+        self.busy = True
+        draft = str(uuid.uuid4())
+        before = (self.home/'config.toml').read_bytes()
+        with self.automatic_proxy_fixture():
+            expected = {name: value for name, value in self.daemon_environment.items() if name.lower() != 'https_proxy'}
+            with self.assertRaisesRegex(IPCError, '本次操作未发送'):
+                self.bridge.send(self.thread_id, 'keep this draft', draft)
+            pending = self.bridge._cli_recovery_record()
+            self.assertTrue(pending['followProxy'])
+            self.assertEqual(pending['phase'], 'waiting')
+            self.stop.assert_not_called()
+            self.busy = False
+            self.bridge.cli_maintenance.worker.join(2)
+            result = self.bridge.cli_network(self.thread_id, {'action': 'status', 'operationId': pending['operationId']})
+        self.assertEqual(result['state'], 'complete')
+        self.assertTrue(result['connected'])
+        self.stop.assert_called_once()
+        self.assertEqual(self.cli._start_daemon.call_args.args[0], {'HTTPS_PROXY': self.system_proxy,
+                                                                   'https_proxy': self.system_proxy})
+        self.assertEqual({name: self.daemon_environment[name] for name in expected}, expected)
+        self.assertNotIn(self.thread_id + ':' + draft, self.bridge.submissions)
+        self.assertEqual((self.home/'config.toml').read_bytes(), before)
+        self.assertFalse(any(method in ('config/value/write', 'turn/start') for method, _ in self.native_calls))
+
+    def test_changed_proxy_while_waiting_invalidates_the_old_recovery(self):
+        self.busy = True
+        with self.automatic_proxy_fixture():
+            with self.assertRaisesRegex(IPCError, '本次操作未发送'):
+                self.bridge.activate(self.thread_id)
+            pending = self.bridge._cli_recovery_record()
+            self.system_proxy = 'http://127.0.0.1:15323'
+            self.busy = False
+            self.bridge.cli_maintenance.worker.join(2)
+            result = self.bridge.cli_network(self.thread_id, {'action': 'status', 'operationId': pending['operationId']})
+            self.assertEqual(result['state'], 'failed')
+            self.stop.assert_not_called()
+            self.cli._start_daemon.assert_not_called()
+            with self.assertRaisesRegex(IPCError, '本次操作未发送'):
+                self.bridge.activate(self.thread_id)
+            self.bridge.cli_maintenance.worker.join(2)
+        self.assertNotEqual(self.bridge._cli_recovery_record()['operationId'], pending['operationId'])
+        self.stop.assert_called_once()
+        self.assertEqual(self.cli._start_daemon.call_args.args[0]['HTTPS_PROXY'], self.system_proxy)
+
+    def test_proxy_changes_after_graceful_exit_use_the_newest_verified_route(self):
+        with self.automatic_proxy_fixture():
+            self.stop.side_effect = lambda *_args, **_kwargs: setattr(self, 'system_proxy', 'http://127.0.0.1:15323')
+            with self.assertRaisesRegex(IPCError, '本次操作未发送'):
+                self.bridge.activate(self.thread_id)
+            self.bridge.cli_maintenance.worker.join(2)
+        self.stop.assert_called_once()
+        self.assertEqual(self.cli._start_daemon.call_args.args[0]['HTTPS_PROXY'], self.system_proxy)
+
+    def test_old_proxy_recovers_during_final_idle_check_without_drain(self):
+        from bridge.features.accounts.cli_sync import LocalCliSync
+        check_idle = LocalCliSync.check_idle_daemon
+        calls = []
+        def check(*args):
+            check_idle(*args)
+            calls.append(True)
+            if len(calls) == 2:
+                self.proxy_reachable.side_effect = lambda _endpoint: True
+        with self.automatic_proxy_fixture(), patch.object(LocalCliSync, 'check_idle_daemon', side_effect=check):
+            with self.assertRaisesRegex(IPCError, '本次操作未发送'):
+                self.bridge.activate(self.thread_id)
+            pending = self.bridge._cli_recovery_record()
+            self.bridge.cli_maintenance.worker.join(2)
+            result = self.bridge.cli_network(self.thread_id, {'action': 'status', 'operationId': pending['operationId']})
+            self.assertEqual(result['state'], 'failed')
+            self.assertIn('未退出服务', result['message'])
+        self.assertEqual(len(calls), 2)
+        self.stop.assert_not_called()
+        self.cli._start_daemon.assert_not_called()
+
+    def test_proxy_and_file_auth_follow_share_one_maintenance_transaction(self):
+        with self.automatic_proxy_fixture():
+            self.thread_provider = self.native_state['modelProvider'] = 'openai'
+            self.current_config = {'model_provider': 'openai', 'cli_auth_credentials_store': 'file'}
+            (self.home/'auth.json').write_text('{"auth_mode":"apikey","OPENAI_API_KEY":"fixture-new"}')
+            self.auth_cache = 'fixture-old'
+            start = self.cli._start_daemon.side_effect
+            def restart(updates, preserved):
+                start(updates, preserved)
+                self.auth_cache = 'fixture-new'
+            self.cli._start_daemon.side_effect = restart
+            with self.assertRaisesRegex(IPCError, '本次操作未发送'):
+                self.bridge.activate(self.thread_id)
+            pending = self.bridge._cli_recovery_record()
+            self.assertTrue(pending['followProxy'])
+            self.bridge.cli_maintenance.worker.join(2)
+            result = self.bridge.cli_network(self.thread_id, {'action': 'status', 'operationId': pending['operationId']})
+        self.assertEqual(result['state'], 'complete')
+        self.assertTrue(result['connected'])
+        self.stop.assert_called_once()
+        self.cli._start_daemon.assert_called_once()
+        self.assertEqual(self.cli._start_daemon.call_args.args[0]['HTTPS_PROXY'], self.system_proxy)
+        self.assertIsNone(self.cli._start_daemon.call_args.args[1]['OPENAI_API_KEY'])
+
+    def test_unverified_replacement_proxy_blocks_resume_without_a_second_stop(self):
+        with self.automatic_proxy_fixture():
+            start = self.cli._start_daemon.side_effect
+            def restart(updates, preserved):
+                start({'HTTPS_PROXY': 'http://127.0.0.1:15329'}, preserved)
+                self.cli.daemon_status.return_value = 'running'
+            self.cli._start_daemon.side_effect = restart
+            with self.assertRaisesRegex(IPCError, '本次操作未发送'):
+                self.bridge.activate(self.thread_id)
+            pending = self.bridge._cli_recovery_record()
+            self.bridge.cli_maintenance.worker.join(2)
+            self.assertEqual(self.bridge._cli_recovery_record()['phase'], 'starting')
+            result = self.bridge.cli_network(self.thread_id, {'action': 'status', 'operationId': pending['operationId']})
+            self.assertEqual(result['state'], 'unknown')
+            self.assertIn('代理环境', result['message'])
+            with self.assertRaises(IPCError):
+                self.bridge.activate(self.thread_id)
+        self.stop.assert_called_once()
+        self.cli._start_daemon.assert_called_once()
+        self.cli.attach.assert_not_called()
+
+    def test_independent_home_does_not_consult_main_user_system_proxy(self):
+        self.bridge.host = 'codex:isolated-fixture'
+        with self.automatic_proxy_fixture():
+            self.assertTrue(self.bridge.activate(self.thread_id).connected)
+            self.system_proxy_source.assert_not_called()
+        self.stop.assert_not_called()
+        self.cli._start_daemon.assert_not_called()
 
     def test_change_detection_never_automatically_exits_shared_daemon(self):
         session = self.bridge.session(self.thread_id, attach=False, background=True)

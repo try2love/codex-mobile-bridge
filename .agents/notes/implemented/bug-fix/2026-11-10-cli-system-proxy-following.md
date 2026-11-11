@@ -55,4 +55,6 @@ resuming 在实际 resume 派发前持久化。只读核对要求同 home、代�
 
 ## 相关记录审计
 
+[本机主 CLI 跟随已核验的代理端口](../feature/2026-11-11-cli-follows-current-proxy.md)另行加入同一配置的自动环境恢复；它不修改本篇需要明确确认的原生配置写入。
+
 [CLI 释放与恢复修复](2026-11-10-cli-release-and-safe-recovery.md)部分重叠：保留不自动停止共享服务、确认、任务核验和未知回执，只细化普通诊断与明确启用后的原生跟随。[独立 Codex 管理](../feature/2026-11-02-independent-codex-management.md)部分重叠：保留配置隔离与原环境身份，补充后续端口变化不再依赖旧启动变量。[CLI 继续聊天](../feature/2026-10-14-codex-cli-resume.md)部分重叠：普通继续仍不覆盖配置，单项设置只属于明确确认的网络恢复。[上下文与后台控制](../feature/2026-11-01-native-context-and-background-controls.md)部分重叠：保留旧代理故障和活动任务不受干预的历史证据，不把隔离成功改写为原服务已恢复。[CLI 模型目录环境](../feature/2026-10-18-local-cli-daemon-model-environment.md)管理目录端点和凭据读取，与本次系统代理选择无关，保持不变。泛“CLI 恢复”命中的 Desktop、Claude、WSL、归档、通知及初始化记录不改变；现有 proposed TCC 笔记不在本次范围。
