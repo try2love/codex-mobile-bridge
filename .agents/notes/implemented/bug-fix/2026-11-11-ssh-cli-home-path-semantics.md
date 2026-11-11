@@ -25,3 +25,7 @@ Codex CLI 的运行时目录统一经 `_runtime_home` 核验。本机保留本�
 ## 影响
 
 跨系统接入不会因网关路径语义误判而失败；远端 home 保持独立，不借用本机账号。已有 SSH 模型助手与会话协议保持不变。
+
+## 固定远端样本接续
+
+在 Windows 使用原保存 SSH 别名和已核对源码摘要的产品 CliSessions 适配器，用户指定 88Server 原 CLI 会话经 thread/resume 于 1969 ms 连通。真实目标为 Ubuntu 上的原生 0.160.0，原 ID、openai provider 与工作目录均保持不变；没有发送模型消息、替换账号或退出共享服务。仅关闭本次字节代理。此结果补齐适配器实际接续，Windows 新版安装包界面仍需最终验收，不能据此扩大 0.160 的正常排空支持范围。证据为本机 `.tmp/feedback-20261111-10/root-windows-ssh-heldout.json`。
