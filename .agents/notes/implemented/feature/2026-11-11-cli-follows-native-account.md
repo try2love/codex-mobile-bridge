@@ -37,4 +37,5 @@ Codex 0.164.0 支持经身份校验的原生冷 `thread/resume` provider overrid
 - [受管 CLI 认证同步](../bug-fix/2026-11-10-managed-cli-auth-sync.md)：保留明确的原生 login 写入和回执核验；外部文件变化使用新的只读跟随与待闲重建。
 - [已确认恢复等待共享任务](2026-11-11-cli-recovery-waits-for-idle.md)：沿用同一账本、目标身份与优雅退出，显式继续可以触发已核验账号同步。
 - [CLI 释放与安全恢复](../bug-fix/2026-11-10-cli-release-and-safe-recovery.md)：原释放证据保持；同 provider 已核验的新文件认证允许冷接续。
+- [Windows 共享 CLI 正常排空](2026-11-11-windows-cli-daemon-drain.md)：沿用本篇的同 home 账号规则，补上已核验 Windows 运行代次的正常排空通路。
 - 代理、强制恢复及 TCC 的独立决定保持不动。

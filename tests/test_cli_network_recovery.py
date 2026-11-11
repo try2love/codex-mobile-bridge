@@ -1,5 +1,5 @@
 """CLI change detection and explicitly confirmed recovery; no real model/process."""
-from contextlib import ExitStack, closing
+from contextlib import ExitStack, closing, nullcontext
 import hashlib
 import json
 import os
@@ -1405,11 +1405,78 @@ class CliNetworkRecoveryTests(CliBridgeFixture):
         self.stop.assert_not_called()
 
     def test_graceful_capability_never_guesses_from_os_or_future_version(self):
-        self.assertTrue(graceful_restart_supported({'userAgent': 'Codex Desktop/0.164.0 (Mac OS 15.6.1)'}))
-        self.assertTrue(graceful_restart_supported({'userAgent': 'codex-mobile-bridge-network-check/0.167.0 (Mac OS 26.1)'}))
-        self.assertFalse(graceful_restart_supported({'userAgent': 'Unknown (Mac OS 0.164.0)'}))
-        self.assertFalse(graceful_restart_supported({'userAgent': 'Codex Desktop/0.165.0'}))
-        self.assertTrue(graceful_restart_supported({'userAgent':
-            'codex-mobile-bridge-network-verify/0.164.0 (Mac OS 15.6.1; arm64) dumb (codex-tui; 1)'}))
-        self.assertFalse(graceful_restart_supported({'userAgent': 'codex-mobile-bridge-network-verify/0.165.0'}))
-        self.assertFalse(graceful_restart_supported({'userAgent': 'codex-mobile-bridge-unverified/0.164.0'}))
+        with patch('sys.platform', 'darwin'):
+            self.assertTrue(graceful_restart_supported({'userAgent': 'Codex Desktop/0.164.0 (Mac OS 15.6.1)'}))
+            self.assertTrue(graceful_restart_supported({'userAgent': 'codex-mobile-bridge-network-check/0.167.0 (Mac OS 26.1)'}))
+            self.assertFalse(graceful_restart_supported({'userAgent': 'Unknown (Mac OS 0.164.0)'}))
+            self.assertFalse(graceful_restart_supported({'userAgent': 'Codex Desktop/0.165.0'}))
+            self.assertTrue(graceful_restart_supported({'userAgent':
+                'codex-mobile-bridge-network-verify/0.164.0 (Mac OS 15.6.1; arm64) dumb (codex-tui; 1)'}))
+            self.assertFalse(graceful_restart_supported({'userAgent': 'codex-mobile-bridge-network-verify/0.165.0'}))
+            self.assertFalse(graceful_restart_supported({'userAgent': 'codex-mobile-bridge-unverified/0.164.0'}))
+        with patch('sys.platform', 'win32'):
+            for version in ('0.164.0', '0.167.0', '0.167.0-alpha.3.3', '0.168.0'):
+                self.assertFalse(graceful_restart_supported({'userAgent': 'codex_cli_rs/' + version}))
+            self.assertTrue(graceful_restart_supported({'userAgent': 'codex_cli_rs/0.167.0-alpha.3.2 (Windows)'}))
+
+    def test_windows_maintenance_uses_one_native_socket_request_and_waits_before_start(self):
+        from bridge.platforms.windows.codex_daemon_env import SHUTDOWN_FLAG
+        self.probe.connect = lambda: {'codexHome': str(self.home), 'userAgent': 'codex_cli_rs/0.167.0-alpha.3.2'}
+        drain = Mock(observe_only=False)
+        def dispatch(_, checkpoint):
+            checkpoint()
+            self.assertEqual(self.bridge._cli_recovery_record()['phase'], 'draining')
+        def wait(_):
+            self.cli._start_daemon.assert_not_called()
+        drain.wait.side_effect = wait
+        with patch('sys.platform', 'win32'), \
+                patch('bridge.platforms.windows.codex_daemon_env.bridge_maintenance_lock', return_value=nullcontext()), \
+                patch('bridge.platforms.codex_daemon_env.read_daemon_environment',
+                      return_value=({SHUTDOWN_FLAG: '1', 'CODEX_API_KEY': 'fixture'}, self.generation)), \
+                patch('bridge.platforms.windows.codex_daemon_env.windows_daemon_drain', return_value=nullcontext(drain)), \
+                patch('bridge.clients.codex.daemon_lifecycle.request_windows_shutdown', side_effect=dispatch) as request:
+            self.assertTrue(self.confirm()['connected'])
+        request.assert_called_once()
+        drain.wait.assert_called_once_with(10)
+        self.cli._start_daemon.assert_called_once()
+        self.stop.assert_not_called()
+
+    def test_windows_shutdown_admission_error_is_observed_without_replay(self):
+        from bridge.clients.codex.app_server import AppServerError
+        drain = Mock(observe_only=False)
+        self.probe.connect = lambda: {'codexHome': str(self.home), 'userAgent': 'codex_cli_rs/0.167.0-alpha.3.2'}
+        shutting_down = AppServerError('Native drain in progress')
+        shutting_down.rpc_error = {'code': -32600, 'data': {'reason': 'serverShuttingDown'}}
+        drain.wait.side_effect = OSError('exit is not confirmed')
+        with patch('sys.platform', 'win32'), \
+                patch('bridge.platforms.windows.codex_daemon_env.windows_daemon_drain', return_value=nullcontext(drain)), \
+                patch('bridge.features.accounts.cli_sync.LocalCliSync.check_idle_daemon', side_effect=shutting_down), \
+                patch('bridge.clients.codex.daemon_lifecycle.request_windows_shutdown') as request:
+            with self.assertRaisesRegex(OSError, 'not confirmed'):
+                self.bridge._drain_cli_daemon(self.cli, self.home / 'codex', self.generation,
+                                              configuration_stamp(self.home), {}, {})
+            with self.assertRaisesRegex(ValueError, '不会重复发送'):
+                self.bridge._drain_cli_daemon(self.cli, self.home / 'codex', self.generation,
+                                              configuration_stamp(self.home), {}, {})
+        request.assert_not_called()
+        drain.remember_shutdown.assert_called_once()
+        drain.wait.assert_called_once_with(10)
+        self.assertEqual(self.bridge._cli_recovery_record()['phase'], 'draining')
+        self.stop.assert_not_called()
+        self.cli._start_daemon.assert_not_called()
+
+    def test_windows_lock_busy_observes_original_exit_but_does_not_claim_a_new_writer(self):
+        drain = Mock(observe_only=True)
+        self.cli.daemon_status.return_value = 'running'
+        with patch('sys.platform', 'win32'), \
+                patch('bridge.platforms.windows.codex_daemon_env.windows_daemon_drain', return_value=nullcontext(drain)), \
+                patch('bridge.clients.codex.daemon_lifecycle.request_windows_shutdown') as request:
+            with self.assertRaisesRegex(ValueError, '退出仍待核对'):
+                self.bridge._drain_cli_daemon(self.cli, self.home / 'codex', self.generation,
+                                              configuration_stamp(self.home), {}, {})
+        drain.wait.assert_called_once_with(10)
+        drain.remember_shutdown.assert_not_called()
+        request.assert_not_called()
+        self.assertEqual(self.bridge._cli_recovery_record()['phase'], 'draining')
+        self.stop.assert_not_called()
+        self.cli._start_daemon.assert_not_called()

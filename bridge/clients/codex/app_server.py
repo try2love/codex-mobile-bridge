@@ -29,6 +29,11 @@ class AppServerUnsupported(AppServerError):
     pass
 
 
+def daemon_shutting_down(payload):
+    data = payload.get('data') if isinstance(payload, dict) and payload.get('code') == -32600 else None
+    return isinstance(data, dict) and data.get('reason') == 'serverShuttingDown'
+
+
 class _WebSocket(WebSocket):
     def __init__(self, reader, writer):
         super().__init__(reader, writer, error=AppServerError,
@@ -54,6 +59,7 @@ class CodexAppServer:
         self.on_disconnect = on_disconnect or (lambda: None)
         self.process_factory = process_factory or subprocess.Popen
         self.process = None
+        self.shutting_down_process = None
         self.transport = None
         self.server_info = None
         self.pending = {}
@@ -61,6 +67,11 @@ class CodexAppServer:
         self.lock = threading.RLock()
         self.write_lock = threading.Lock()
         self.connect_lock = threading.Lock()
+
+    @property
+    def is_shutting_down(self):
+        with self.lock:
+            return self.process is not None and self.shutting_down_process is self.process
 
     def connect(self, timeout=5):
         with self.connect_lock:
@@ -76,7 +87,9 @@ class CodexAppServer:
                     stderr=subprocess.DEVNULL, **options)
             except OSError as exc:
                 raise AppServerUnavailable('Could not connect to the existing Codex runtime') from exc
-            self.process = process
+            with self.lock:
+                self.shutting_down_process = None
+                self.process = process
             handshake = Future()
             def open_websocket():
                 try:
@@ -197,6 +210,8 @@ class CodexAppServer:
                             return
                         future = self.pending.get(message['id'])
                         if future is not None and not future.done():
+                            if daemon_shutting_down(message.get('error')):
+                                self.shutting_down_process = process
                             future.set_result(message)
                 elif 'id' in message and 'method' in message:
                     self.on_server_request(message)

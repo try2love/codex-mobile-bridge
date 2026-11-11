@@ -25,10 +25,13 @@ def read_daemon_environment(home, executable, names):
     if record is None or record.is_symlink():
         raise DaemonEnvironmentUnavailable('Codex daemon PID record is unavailable')
     try:
-        info = record.stat()
+        info = record.lstat()
         if (not stat.S_ISREG(info.st_mode) or info.st_size > 4096 or
+                getattr(info, 'st_file_attributes', 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT or
                 os.name != 'nt' and info.st_uid != os.getuid()):
             raise DaemonEnvironmentUnavailable('Codex daemon PID record is untrusted')
+        if os.name == 'nt' and state.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+            raise DaemonEnvironmentUnavailable('Codex daemon state directory is untrusted')
         with record.open('rb') as stream:
             raw = stream.read(4097)
         if len(raw) > 4096:
@@ -51,9 +54,9 @@ def read_daemon_environment(home, executable, names):
         daemon_home = values.pop('CODEX_HOME', None)
         if daemon_home is not None and Path(daemon_home).resolve() != home:
             raise DaemonEnvironmentUnavailable('Codex daemon belongs to another home')
-        after = record.stat()
-        if (after.st_mtime_ns, after.st_ino, after.st_size) != (
-                info.st_mtime_ns, info.st_ino, info.st_size):
+        after = record.lstat()
+        if (after.st_mode, after.st_mtime_ns, after.st_ino, after.st_size) != (
+                info.st_mode, info.st_mtime_ns, info.st_ino, info.st_size):
             raise DaemonEnvironmentUnavailable('Codex daemon PID record changed')
         return values, identity
     except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
@@ -73,6 +76,10 @@ def configuration_after_start(home, generation, *, files=('config.toml', 'auth.j
                         if line.startswith('btime '))
             # btime has one-second precision; conservatively include that second.
             started = (boot - 1) * 1_000_000_000 + generation[1] * 1_000_000_000 // os.sysconf('SC_CLK_TCK')
+        elif sys.platform == 'win32':
+            from bridge.platforms.windows.codex_daemon_env import FILETIME_UNIX_EPOCH
+            # FILETIME is in 100 ns ticks since 1601; stat uses the Unix epoch.
+            started = (generation[1] - FILETIME_UNIX_EPOCH) * 100
         else:
             raise ValueError('Unsupported process clock')
         for name in files:
@@ -137,8 +144,6 @@ def stop_daemon_gracefully(home, executable, expected, timeout=10, *, graceful_o
 
 def daemon_process_absent(home):
     """A stale PID file is not a running process; uncertainty stays blocking."""
-    if os.name == 'nt':
-        return False
     state = Path(home) / 'app-server-daemon'
     found = False
     for name in ('daemon.pid', 'app-server.pid'):
@@ -148,13 +153,25 @@ def daemon_process_absent(home):
         found = True
         try:
             info = path.lstat()
-            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_size > 4096:
+            if (not stat.S_ISREG(info.st_mode) or info.st_size > 4096 or
+                    getattr(info, 'st_file_attributes', 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT or
+                    os.name != 'nt' and info.st_uid != os.getuid()):
                 return False
             with path.open('rb') as stream:
                 payload = json.loads(stream.read(4097))
             pid = payload.get('pid')
             if type(pid) is not int or pid <= 0:
                 return False
+            if os.name == 'nt':
+                from bridge.platforms.windows.codex_daemon_env import recorded_process_absent
+                if (state.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
+                        or not recorded_process_absent(pid, payload)):
+                    return False
+                current = path.lstat()
+                if (current.st_ino, current.st_mtime_ns, current.st_size, current.st_file_attributes) != (
+                        info.st_ino, info.st_mtime_ns, info.st_size, info.st_file_attributes):
+                    return False
+                continue
             try:
                 os.kill(pid, 0)
             except ProcessLookupError:

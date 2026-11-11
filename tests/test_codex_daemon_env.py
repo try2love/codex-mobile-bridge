@@ -109,7 +109,19 @@ class DaemonRecoveryBoundaryTests(unittest.TestCase):
                 self.assertTrue(configuration_after_start(home, (1, (1,), (now - 10, 0), 'fixture')))
                 self.assertFalse(configuration_after_start(home, (1, (1,), (now + 10, 0), 'fixture')))
 
-    def test_graceful_only_is_explicitly_unsupported_on_windows(self):
+    def test_windows_configuration_age_converts_filetime_to_stat_epoch(self):
+        from bridge.platforms.codex_daemon_env import configuration_after_start
+        from bridge.platforms.windows.codex_daemon_env import FILETIME_UNIX_EPOCH
+        with tempfile.TemporaryDirectory(dir=ROOT / '.tmp') as directory:
+            home = Path(directory)
+            auth = home / 'auth.json'
+            auth.write_text('{"fixture":true}')
+            changed = max(auth.stat().st_mtime_ns, auth.stat().st_ctime_ns)
+            with patch('bridge.platforms.codex_daemon_env.sys.platform', 'win32'):
+                self.assertTrue(configuration_after_start(home, (1, FILETIME_UNIX_EPOCH + changed // 100 - 1, 'fixture')))
+                self.assertFalse(configuration_after_start(home, (1, FILETIME_UNIX_EPOCH + changed // 100 + 1, 'fixture')))
+
+    def test_posix_signal_entry_point_is_unsupported_on_windows(self):
         from bridge.platforms.codex_daemon_env import stop_daemon_gracefully
         generation = (1, 'fixture')
         with patch('bridge.platforms.codex_daemon_env.sys.platform', 'win32'), \

@@ -1621,7 +1621,7 @@ class Bridge:
             graceful_restart_supported, system_proxy_user_layer, enable_system_proxy_following,
             native_recovery_target, daemon_version, CliProviderMismatch, file_auth_provider, AUTH_ENV_NAMES)
         from bridge.features.accounts.cli_sync import LocalCliSync
-        from bridge.clients.codex.desktop_runtime import exclusive_lock
+        from bridge.clients.codex.daemon_lifecycle import maintenance_lock
         from bridge.clients.codex.release import ReleaseNotSent
         from bridge.platforms.codex_daemon_env import read_daemon_environment, configuration_after_start
         from contextlib import closing
@@ -1631,7 +1631,7 @@ class Bridge:
         if (self.host != 'local' and not self.host.startswith('codex:') or origin not in ('cli', 'ide')
                 or _follow_account and origin != 'cli'):
             raise ValueError('只支持本机 Codex CLI')
-        if sys.platform not in ('darwin', 'linux'):
+        if sys.platform not in ('darwin', 'linux', 'win32'):
             if body is not None:
                 raise ValueError('此平台请在电脑上正常重启 CLI 服务')
             return {'canRecover': False, 'message': '此平台请在电脑上正常重启 CLI 服务'}
@@ -1658,7 +1658,7 @@ class Bridge:
                     and record.get('host') == self.host and record.get('home') == str(cli.home.resolve())):
                 return self.cli_maintenance.status(record)
         confirmation = isinstance(body, dict) and body.get('confirmed') is True
-        home_lock = exclusive_lock(cli.home, 'cli-maintenance') if confirmation else nullcontext()
+        home_lock = maintenance_lock(cli.home) if confirmation else nullcontext()
         with self.accounts.gate, cli.start_lock, home_lock:
             recovery = self._cli_recovery_record()
             maintenance = recovery.get('purpose') == 'recovery'
@@ -1822,7 +1822,8 @@ class Bridge:
                         raise IPCError('当前 CLI 接入变化尚未核验；本次操作未发送。' + str(error)) from error
                     raise
                 provider = before['modelProvider'] if before['modelProvider'] in target['aliases'] else target['provider']
-                if daemon_version(runtime_info) == '0.167.0' and target['provider'] != before['modelProvider']:
+                if (daemon_version(runtime_info) in ('0.167.0', '0.167.0-alpha.3.2')
+                        and target['provider'] != before['modelProvider']):
                     error = CliProviderMismatch(before['modelProvider'], target['provider'])
                     if _follow_account or body is not None:
                         raise error
@@ -1889,6 +1890,7 @@ class Bridge:
             if _follow_account and body is None:
                 if not graceful_restart_supported(runtime_info):
                     raise IPCError('当前 CLI 版本的正常重建能力尚未核验；请在原客户端同步账号。')
+                self._check_windows_cli_drain(cli, executable, generation)
                 confirmation = {'confirmed': True, 'generation': stamp}
                 return self._queue_cli_maintenance(target_thread, confirmation, generation_key, configuration,
                     preview_salt, '正在等待此配置的任务安全结束，以同步当前原生 CLI 接入。', follow_account=True)
@@ -1898,8 +1900,6 @@ class Bridge:
             if body is not None and body != {'confirmed': True, 'generation': stamp}:
                 raise ValueError('恢复目标或网络状态已变化，请重新检查')
             try:
-                if sys.platform not in ('darwin', 'linux'):
-                    raise ValueError('此平台请在电脑上正常重启 CLI 服务')
                 live = self.live.get(thread_id)
                 if live and live.desktop_owner_probe == 'found':
                     raise ValueError('当前会话由 Codex App 持有')
@@ -1908,6 +1908,7 @@ class Bridge:
                     info = probe.connect()
                     if not graceful_restart_supported(info):
                         raise ValueError('当前 CLI 版本尚未核验安全排空能力，请在电脑端正常重启后继续')
+                    self._check_windows_cli_drain(cli, executable, generation)
                     LocalCliSync.check_idle_daemon(probe, cli.home)
                     if body is not None or follow_system_proxy:
                         snapshot = probe.request('config/read', {'includeLayers': follow_system_proxy}, replay_safe=True)
@@ -2155,7 +2156,7 @@ class Bridge:
     def _recover_cli_environment(self, thread_id, *, defer_start=False, follow_account=False):
         """Keep environment diagnostics advisory; an unfinished drain stays blocked."""
         from bridge.clients.codex.cli_session import CliSessions, _managed_cli, _local_cli
-        from bridge.clients.codex.desktop_runtime import exclusive_lock
+        from bridge.clients.codex.daemon_lifecycle import maintenance_lock
         from bridge.clients.codex.daemon_network import configuration_stamp
         from bridge.platforms.codex_daemon_env import DaemonEnvironmentUnavailable
         cli = self.cli_sessions
@@ -2175,7 +2176,7 @@ class Bridge:
                             executable = _local_cli(cli.home, cli.configured_cli)
                         if executable is None:
                             raise ValueError('无法核对已释放的 CLI 运行组件')
-                        with exclusive_lock(cli.home, 'cli-maintenance'):
+                        with maintenance_lock(cli.home):
                             self._continue_released_cli(cli, executable, record, thread_id)
                         return
             except (ValueError, OSError, KeyError, AppServerError) as error:
@@ -2194,7 +2195,7 @@ class Bridge:
             return
         if not Path(cli.client.socket_path).exists() and not pending:
             return
-        follow_account = (follow_account and sys.platform in ('darwin', 'linux')
+        follow_account = (follow_account and sys.platform in ('darwin', 'linux', 'win32')
                           and self.store.get(thread_id).get('origin') == 'cli')
         known_drift = (follow_account and cli.configuration_stamp is not None
                        and configuration_stamp(cli.home) != cli.configuration_stamp)
@@ -2346,12 +2347,22 @@ class Bridge:
         elif sync.current_file_auth_matches(probe, target) is False:
             raise ValueError('新服务尚未使用已核验的原生认证，未接续会话')
 
+    @staticmethod
+    def _check_windows_cli_drain(cli, executable, generation):
+        if sys.platform == 'win32':
+            from bridge.platforms.codex_daemon_env import read_daemon_environment
+            from bridge.platforms.windows.codex_daemon_env import SHUTDOWN_FLAG
+            values, current = read_daemon_environment(cli.home, executable, {SHUTDOWN_FLAG})
+            if current != generation or values.get(SHUTDOWN_FLAG) != '1':
+                raise IPCError('当前 CLI 的正常排空能力或进程身份尚未核验；请在原客户端处理。')
+
     def _drain_cli_daemon(self, cli, executable, generation, configuration, updates, preserved, connections=(), *,
                           follow_system_proxy=False, provider_plan=None, release_operation=None,
                           waiting_operation=None, setting_verified=False):
-        from contextlib import closing
-        from bridge.clients.codex.app_server import CodexAppServer
-        from bridge.clients.codex.daemon_network import graceful_restart_supported
+        from contextlib import closing, nullcontext
+        from bridge.clients.codex.app_server import CodexAppServer, daemon_shutting_down
+        from bridge.clients.codex.daemon_lifecycle import request_windows_shutdown
+        from bridge.clients.codex.daemon_network import configuration_stamp, graceful_restart_supported
         from bridge.clients.codex.release import ReleaseNotSent
         from bridge.features.accounts.cli_sync import LocalCliSync
         from bridge.platforms.codex_daemon_env import stop_daemon_gracefully
@@ -2364,19 +2375,28 @@ class Bridge:
         if previous.get('phase') == 'resuming' or (not own_setting and previous.get('generation') == key
                 and previous.get('phase') in ('configuringUnknown', 'draining', 'starting')):
             raise ValueError('原 CLI 正在排空或退出结果待核对，不会重复发送退出信号')
-        with closing(CodexAppServer(cli.client.socket_path, cli=executable,
-                                    client_name='codex-mobile-bridge-final-idle-check')) as probe:
-            try:
-                if not graceful_restart_supported(probe.connect()):
-                    raise ValueError('当前 CLI 版本尚未核验安全排空能力，请在电脑端正常重启')
-                LocalCliSync.check_idle_daemon(probe, cli.home)
-                if waiting_operation is not None:
-                    self._verify_cli_recovery_thread(probe, cli, previous['targetThread'])
-            except Exception as error:
-                raise ReleaseNotSent(error) from error
-            from bridge.clients.codex.daemon_network import configuration_stamp
-            if configuration_stamp(cli.home) != configuration or self.closed.is_set() or not self.observation_enabled():
-                raise ReleaseNotSent('配置正在变化或接入已关闭，未退出服务')
+        drain = nullcontext()
+        if sys.platform == 'win32':
+            from bridge.platforms.windows.codex_daemon_env import windows_daemon_drain
+            drain = windows_daemon_drain(cli.home, executable, generation)
+        with drain as windows:
+            known_shutdown = (windows is not None and cli.configuration_generation == key
+                              and cli.client.is_shutting_down)
+            observe = windows is not None and (windows.observe_only or known_shutdown)
+            if not observe:
+                with closing(CodexAppServer(cli.client.socket_path, cli=executable,
+                                            client_name='codex-mobile-bridge-final-idle-check')) as probe:
+                    try:
+                        if not graceful_restart_supported(probe.connect()):
+                            raise ValueError('当前 CLI 版本尚未核验安全排空能力，请在电脑端正常重启')
+                        LocalCliSync.check_idle_daemon(probe, cli.home)
+                        if waiting_operation is not None:
+                            self._verify_cli_recovery_thread(probe, cli, previous['targetThread'])
+                    except Exception as error:
+                        if windows is None or not (getattr(probe, 'is_shutting_down', False)
+                                or daemon_shutting_down(getattr(error, 'rpc_error', None))):
+                            raise ReleaseNotSent(error) from error
+                        observe = True
             receipt = maintenance_receipt(previous) if waiting_operation is not None else {}
             record = {**receipt, 'generation': key, 'phase': 'draining', 'configuration': configuration,
                       'connections': sorted(set(connections) |
@@ -2390,11 +2410,24 @@ class Bridge:
             if release_operation:
                 operation_id, identity, release_key = release_operation
                 record.update(purpose='release', operationId=operation_id, releasedThread=identity, releaseKey=release_key)
-            with self.cli_maintenance.lock:
-                self._verify_cli_waiting_dispatch(waiting_operation, setting_verified=own_setting)
-                cli.recovery_environment = {'generation': key, 'updates': updates, 'preserved': preserved}
-                private_json(self.data_dir / 'cli-daemon-recovery.json', record)
-            stop_daemon_gracefully(cli.home, executable, generation, graceful_only=True)
+            def checkpoint():
+                if configuration_stamp(cli.home) != configuration or self.closed.is_set() or not self.observation_enabled():
+                    raise ReleaseNotSent('配置正在变化或接入已关闭，未退出服务')
+                with self.cli_maintenance.lock:
+                    self._verify_cli_waiting_dispatch(waiting_operation, setting_verified=own_setting)
+                    cli.recovery_environment = {'generation': key, 'updates': updates, 'preserved': preserved}
+                    private_json(self.data_dir / 'cli-daemon-recovery.json', record)
+            if windows is None:
+                checkpoint()
+                stop_daemon_gracefully(cli.home, executable, generation, graceful_only=True)
+            else:
+                if observe:
+                    if not windows.observe_only:
+                        windows.remember_shutdown()
+                    checkpoint()
+                else:
+                    request_windows_shutdown(windows, checkpoint)
+                windows.wait(10)
         cli.close()
         if cli.daemon_status() != 'stopped':
             raise ValueError('原 CLI 退出仍待核对，不会重复发送退出信号')
@@ -2538,7 +2571,7 @@ class Bridge:
             if '_check' in row:
                 callbacks['_check'] = lambda callback=row['_check'], sid=sid: self._check_cli_connection(sid, callback)
                 from bridge.clients.codex.daemon_network import graceful_restart_supported
-                if (self.cli_sessions.alias is None and sys.platform in ('darwin', 'linux') and
+                if (self.cli_sessions.alias is None and sys.platform in ('darwin', 'linux', 'win32') and
                         graceful_restart_supported(getattr(self.cli_sessions.client, 'server_info', None) or {})):
                     callbacks['canUnload'] = True
                     callbacks['_unload'] = lambda operation_id, callback=row['_check'], sid=sid, key=row['key']: self._unload_cli_connection(sid, key, callback, operation_id)
@@ -2589,20 +2622,20 @@ class Bridge:
         """Explicit maintenance confirmation; never called by reading or reconnecting."""
         from bridge.clients.codex.cli_session import _managed_cli
         from bridge.clients.codex.daemon_network import AUTH_ENV_NAMES, PROXY_NAMES, configuration_stamp
-        from bridge.clients.codex.desktop_runtime import exclusive_lock
+        from bridge.clients.codex.daemon_lifecycle import maintenance_lock
         from bridge.clients.codex.release import ReleaseNotSent
         from bridge.platforms.codex_daemon_env import read_daemon_environment
         session = self.session(sid, attach=False, background=True)
         cli = self.cli_sessions
         with (session.activation_lock, session.action_lock, session.attach_lock, self.accounts.gate, cli.start_lock,
-              exclusive_lock(cli.home, 'cli-maintenance')):
+              maintenance_lock(cli.home)):
             try:
                 verified = check()
                 if verified['status'] == 'released':
                     self._record_cli_release(session, verified)
                     return verified
                 if (verified['status'] != 'detached' or cli.alias is not None or
-                        sys.platform not in ('darwin', 'linux') or cli.attaching or any(cli.requests.values()) or
+                        sys.platform not in ('darwin', 'linux', 'win32') or cli.attaching or any(cli.requests.values()) or
                         any(row.get('cleanupOnly') for row in cli.metadata.values()) or
                         any(row.get('status') in ('queued', 'unknown') for row in self.submissions.values())):
                     raise ValueError('原生占用尚不能安全释放，请先处理此配置的任务和待确认操作')
@@ -2616,6 +2649,7 @@ class Bridge:
                 for provider in (config.get('model_providers') or {}):
                     names.update(cli._required_model_environment(config, provider))
                 original, generation = read_daemon_environment(cli.home, executable, names)
+                self._check_windows_cli_drain(cli, executable, generation)
             except Exception as error:
                 raise ReleaseNotSent(error) from error
             self._drain_cli_daemon(cli, executable, generation, configuration_stamp(cli.home), {},
