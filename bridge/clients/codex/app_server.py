@@ -10,7 +10,7 @@ import subprocess
 import threading
 from concurrent.futures import Future, TimeoutError
 from bridge.clients.websocket import WebSocket
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 class AppServerError(RuntimeError):
@@ -46,7 +46,8 @@ class CodexAppServer:
     def __init__(self, socket_path, cli='codex', on_event=None,
                  on_server_request=None, on_disconnect=None, process_factory=None,
                  command=None, check_socket=True, client_name='codex-mobile-bridge'):
-        if not socket_path or not Path(socket_path).is_absolute():
+        if not socket_path or not (Path(socket_path).is_absolute() or
+                                   not check_socket and PurePosixPath(str(socket_path)).is_absolute()):
             raise ValueError('An absolute existing control socket path is required')
         self.socket_path = str(socket_path)
         self.cli = str(cli)

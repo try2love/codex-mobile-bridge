@@ -253,13 +253,18 @@ class LocalCliSync:
             raise ValueError('此配置的原生服务未确认退出，未切换账号')
 
     @staticmethod
-    def check_idle_daemon(client, home):
+    def check_idle_daemon(client, home, *, target_platform=None):
         from bridge.features.sessions.create import check_archive_runtime
         from bridge.clients.codex.app_server import AppServerError, AppServerUnsupported
         from bridge.clients.codex.release import GOAL_STATUSES
         from bridge.clients.codex.daemon_network import graceful_restart_supported
         info = client.connect()
-        if Path(info['codexHome']).resolve() != home.resolve():
+        if target_platform == 'linux':
+            from pathlib import PurePosixPath
+            same_home = PurePosixPath(info['codexHome']) == PurePosixPath(str(home))
+        else:
+            same_home = Path(info['codexHome']).resolve() == home.resolve()
+        if not same_home:
             raise ValueError('原生服务不属于此配置，未切换账号')
         def request(method, params):
             return client.request(method, params, replay_safe=True)
@@ -273,7 +278,7 @@ class LocalCliSync:
             blockers = []
             for identifier in threads:
                 try:
-                    check_archive_runtime(request, [identifier], allow_terminal_error=graceful_restart_supported(info))
+                    check_archive_runtime(request, [identifier], allow_terminal_error=graceful_restart_supported(info, platform=target_platform))
                     tasks = request('thread/backgroundTerminals/list', {'threadId': identifier, 'limit': 1})
                     if not isinstance(tasks.get('data'), list) or tasks['data'] or tasks.get('nextCursor'):
                         raise ValueError('有后台任务或状态未知')

@@ -16,14 +16,23 @@ class CliScope:
     def __init__(self, bridge, save):
         self.bridge, self.save = bridge, save
         self.cancelled, self.dispatched = set(), set()
+        self.target = None  # SSH/WSL inject target identity and operations, never another queue.
 
     def descriptor(self):
+        if self.target is not None:
+            value = self.target.control.cached()
+            return self._target_descriptor(value) if value else {}
         try:
             return self.bridge.cli_force.scope_descriptor()
         except (OSError, ValueError):
             return {}
 
     def preview(self, thread, key):
+        if self.target is not None:
+            try:
+                return self._target_snapshot(thread, key, self.bridge._cli_recovery_record())[0]
+            except (OSError, ValueError, KeyError):
+                return {'canRelease': False, 'canForce': False, 'message': '目标 CLI 进程与配置尚未核验；原逐条退订仍可单独核对。'}
         force = self.bridge.cli_force
         try:
             cli = force._scope()
@@ -47,6 +56,12 @@ class CliScope:
                 else '正在等待此配置的全部任务安全结束；尚未退出或释放原生占用。'}
 
     def record_released(self, result):
+        if self.target is not None:
+            self.target.released(result)
+            return
+        self.record_local_released(result)
+
+    def record_local_released(self, result):
         bridge, cli = self.bridge, self.bridge.cli_sessions
         for row in result['impact']:
             sid, token = row['sessionId'], row.get('connectionKey')
@@ -61,6 +76,20 @@ class CliScope:
                 bridge._record_cli_release(session, result)
 
     def check(self, key):
+        if self.target is not None:
+            record = self.bridge._cli_recovery_record()
+            if not record.get('targetGeneration') or key not in record.get('connections', ()):
+                return None
+            if record['phase'] == 'released':
+                return self._result(record, 'released')
+            if record['phase'] == 'waiting':
+                return self._result(record, 'waiting')
+            receipt = self.target.control.check(record['scopeRequestId'], record['targetGeneration'])
+            if receipt['status'] == 'exited':
+                record['phase'] = 'released'
+                self.save(self.bridge.data_dir/'cli-daemon-recovery.json', record)
+                return self._result(record, 'released')
+            return {'status': 'unknown', 'notice': '目标原代退出仍待核验；检查未重新派发。'}
         bridge, cli = self.bridge, self.bridge.cli_sessions
         record = bridge._cli_recovery_record()
         if (not record.get('scopeRequestId') or key not in record.get('connections', ())
@@ -103,6 +132,8 @@ class CliScope:
         return {name: values.get(name) for name in names}, generation
 
     def release(self, thread, key, operation_id, binding):
+        if self.target is not None:
+            return self._target_release(thread, key, operation_id, binding, force=False)
         from bridge.features.accounts.cli_sync import LocalCliSync
         bridge, force = self.bridge, self.bridge.cli_force
         cli = force._scope()
@@ -168,6 +199,8 @@ class CliScope:
             return result
 
     def force(self, thread, key, operation_id, binding):
+        if self.target is not None:
+            return self._target_release(thread, key, operation_id, binding, force=True)
         result = self.bridge.cli_force.execute(thread, operation_id, binding, connection=key)
         if result.get('forceDispatched'):
             record = self.bridge._cli_recovery_record()
@@ -179,3 +212,133 @@ class CliScope:
         if result['status'] == 'released':
             self.record_released(result)
         return result
+
+    def _target_descriptor(self, value):
+        from bridge.features.sessions.cli_force import _digest
+        generation = value['generation']
+        return {'scopeKey': _digest(['codex', self.bridge.host, generation['home'],
+                                     generation['uid'], generation['user']]),
+                'scopeLabel': self.target.label + ' · ' + generation['user'] + ' · ' + generation['home'],
+                'sharedHome': True}
+
+    @staticmethod
+    def _target_generation(value):
+        # A failed version read cannot remove a verified force capability.
+        return {key: item for key, item in value['generation'].items() if key != 'nativeVersion'}
+
+    def _target_snapshot(self, thread, key, previous):
+        from bridge.features.sessions.cli_force import _digest
+        from pathlib import PurePosixPath
+        if self.bridge.closed.is_set() or not self.target.enabled():
+            raise ReleaseNotSent('目标 CLI 接入已关闭')
+        value = self.target.control.inspect()
+        row = self.target.saved(thread, value['generation']['home'])
+        if (row.get('id') != thread or row.get('origin') != 'cli'
+                or not isinstance(row.get('cwd'), str) or not PurePosixPath(row['cwd']).is_absolute()
+                or not isinstance(row.get('model_provider'), str) or not row['model_provider']):
+            raise ReleaseNotSent('目标不是已核验的原 CLI 会话')
+        identity = {'id': thread, 'cwd': row['cwd'], 'modelProvider': row['model_provider']}
+        impact = self.target.impact(value['generation']['home'])
+        if not any(item['sessionId'] == thread for item in impact):
+            impact.append({'sessionId': thread, 'connectionKey': key})
+        impact = sorted(impact, key=lambda item: item['sessionId'])
+        descriptor = self._target_descriptor(value)
+        binding = _digest([descriptor['scopeKey'], self._target_generation(value), value['configuration'], identity, key, impact, previous])
+        return {**descriptor, 'generation': binding, 'impact': impact, 'canForce': value['canForce'],
+                'canRelease': value['canRelease'], 'taskState': 'unknown',
+                'message': '将释放目标配置的整个共享 CLI 服务，可能影响未列出的任务；默认等待安全结束。'}, value, identity
+
+    def _target_failed_wait(self, operation_id):
+        with self.bridge.cli_maintenance.lock:
+            record = self.bridge._cli_recovery_record()
+            if record.get('scopeRequestId') == operation_id and record['phase'] == 'waiting':
+                record['phase'] = 'failed'
+                self.save(self.bridge.data_dir/'cli-daemon-recovery.json', record)
+
+    def _target_release(self, thread, key, operation_id, binding, *, force):
+        from bridge.features.accounts.cli_sync import LocalCliSync
+        bridge, target = self.bridge, self.target
+        with target.guard():
+            self.check_cancelled(operation_id)
+            current = bridge._cli_recovery_record()
+            own = current.get('scopeRequestId') == operation_id
+            if own and current['phase'] in ('draining', 'released'):
+                result = self.check(key) or {'status': 'unknown'}
+                if result['status'] == 'unknown' and current['phase'] == 'draining':
+                    return {**result, 'status': 'waiting', 'canCancel': False} if not force else result
+                if result['status'] == 'released':
+                    self.record_released(result)
+                return result
+            if own and current['phase'] != 'waiting':
+                raise ReleaseNotSent('本次释放已取消或状态已变化')
+            previous = current['scopeBefore'] if own else current
+            try:
+                preview, value, identity = self._target_snapshot(thread, key, previous)
+            except (ValueError, OSError) as error:
+                if own:
+                    self._target_failed_wait(operation_id)
+                raise ReleaseNotSent('目标只读身份核验失败；未派发退出，请重新预览') from error
+            if binding != preview['generation']:
+                if own:
+                    self._target_failed_wait(operation_id)
+                raise ReleaseNotSent('目标主机、进程、配置或连接已变化，请重新预览')
+            if not preview['canForce' if force else 'canRelease']:
+                raise ReleaseNotSent('目标原生控制能力尚未核验')
+            if not own:
+                if not force and (current.get('unresolvedResume') or current.get('phase') in (
+                        'waiting', 'draining', 'starting', 'resuming', 'configuringUnknown')):
+                    return {'status': 'waiting', 'notice': '目标已有未完成维护；可取消本次等待或明确强制释放。'}
+                current = {'purpose': 'release', 'phase': 'waiting', 'scopeRequestId': operation_id,
+                    'operationId': operation_id, 'scopeKey': preview['scopeKey'], 'scopeImpact': preview['impact'],
+                    'scopeBefore': previous, 'scopeBinding': binding, 'targetGeneration': value['generation'],
+                    'host': bridge.host, 'home': value['generation']['home'], 'threadId': thread,
+                    'targetThread': identity, 'configuration': value['configuration'],
+                    'connections': sorted({item['connectionKey'] for item in preview['impact'] if item['connectionKey']} | {key})}
+                if not force:
+                    with bridge.cli_maintenance.lock:
+                        self.check_cancelled(operation_id)
+                        self.save(bridge.data_dir/'cli-daemon-recovery.json', current)
+            if not force:
+                if target.pending(value['generation']['home']):
+                    return self._result(current, 'waiting')
+                try:
+                    with target.probe(value) as probe:
+                        home = (value.get('initialize') or {}).get('codexHome') or value['generation']['home']
+                        LocalCliSync.check_idle_daemon(probe, home, target_platform='linux')
+                except (CliTasksPending, AppServerError, OSError, ValueError):
+                    return self._result(current, 'waiting')
+            # Identity/config are fresh; task uncertainty is bypassed only by force.
+            fresh = target.control.inspect()
+            if self._target_generation(fresh) != self._target_generation(value) or fresh['configuration'] != value['configuration']:
+                if not force or own:
+                    self._target_failed_wait(operation_id)
+                raise ReleaseNotSent('目标原生进程或配置已变化；未派发退出')
+            with bridge.cli_maintenance.lock:
+                self.check_cancelled(operation_id)
+                recorded = bridge._cli_recovery_record()
+                valid = (recorded == previous if force and not own else
+                         recorded.get('scopeRequestId') == operation_id and recorded.get('phase') == 'waiting')
+                if not valid:
+                    raise ReleaseNotSent('目标释放意图已变化；未派发退出')
+                current['phase'] = 'draining'
+                self.save(bridge.data_dir/'cli-daemon-recovery.json', current)
+                self.dispatched.add(operation_id)
+                queued = target.cancel_queued(value['generation']['home'], operation_id, preview['scopeKey']) if force else 0
+                cancelled = queued.get('cancelledQueued', 0) if isinstance(queued, dict) else queued
+                if isinstance(queued, dict) and queued.get('unresolvedQueued'):
+                    current['unresolvedQueued'] = queued['unresolvedQueued']
+                    self.save(bridge.data_dir/'cli-daemon-recovery.json', current)
+            try:
+                result = target.control.dispatch(operation_id, 'force' if force else 'graceful', value['generation'])
+            except (ValueError, OSError):
+                return {'status': 'unknown', 'forceDispatched': force, 'cancelledQueued': cancelled,
+                        'notice': '目标退出请求结果未知；请核验原代，不会自动重发。'}
+            if result['status'] == 'exited':
+                current['phase'] = 'released'
+                self.save(bridge.data_dir/'cli-daemon-recovery.json', current)
+                result = self._result(current, 'released')
+                self.record_released(result)
+            else:
+                result = {'status': 'unknown' if force else 'waiting', 'canCancel': False,
+                          'notice': '目标退出已请求，仍在核验原代；未重放业务操作。'}
+            return {**result, 'forceDispatched': force, 'cancelledQueued': cancelled}

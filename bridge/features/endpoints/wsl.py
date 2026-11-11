@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from functools import wraps
 from bridge.features.sessions.message_management import snapshot as management_snapshot, mutate as management_mutate
 from pathlib import Path
+from types import SimpleNamespace
 
 from bridge.app.lifecycle import private_json
 from bridge.clients.codex.ipc import IPCError
@@ -131,6 +132,21 @@ class WslEntry(WslFeatures):
         self.creations_path = self.data_dir / 'creations.json'
         self.creations = json.loads(self.creations_path.read_text(encoding='utf-8')) if self.creations_path.exists() else {}
         self.store = WslStore(self)
+        from bridge.features.sessions.cli_scope import CliScope
+        from bridge.features.sessions.cli_maintenance import CliMaintenance
+        from bridge.clients.codex.linux_control import LinuxCliControl, shared_cli_probe
+        self.cli_maintenance = CliMaintenance()
+        self.cli_scope = CliScope(self, private_json)
+        self.cli_origins = {}
+        self.lifecycle = LinuxCliControl(lambda: self.row['home'],
+            lambda source, timeout: self.read(self.row['distribution'], source, timeout))
+        self.cli_scope.target = SimpleNamespace(control=self.lifecycle, label='WSL · ' + self.row['distribution'],
+            enabled=lambda: not self.closed.is_set(), guard=lambda: self.write_lock,
+            saved=lambda sid, home: self.store.get(sid), impact=self._target_cli_impact,
+            pending=self._target_cli_pending, cancel_queued=self._target_cli_cancel_queued,
+            released=self._target_cli_released,
+            probe=lambda value: shared_cli_probe(wsl.Stream(self.row['distribution'], self.row['user'],
+                                                           value['generation']['home'], value['generation'])))
         self.directory_projects = Projects(self.data_dir)
         self.uploads = Uploads(self.data_dir, lambda *args: upload_file(self.row['distribution'], *args, reader=self.read))
         self._init_features()
@@ -619,6 +635,7 @@ class WslEntry(WslFeatures):
         if not activate and self.released_cli.contains(identifier):
             raise IPCError('CLI 连接已释放，请点击继续会话重新连接')
         metadata = self.store.get(identifier)
+        self.cli_origins[identifier] = metadata.get('origin')
         runtime = self.runtime(allow_start=activate)
         # Fresh native evidence, never a display cache. Explicit subscription is
         # allowed only to this already loaded thread on this original daemon.
@@ -683,9 +700,91 @@ class WslEntry(WslFeatures):
             return [{'key': self.subscription_tokens[sid], 'provider': 'codex', 'sessionId': sid,
                      'host': self.host, 'location': 'WSL · ' + self.row['distribution'],
                      'title': self.live[sid].state.get('title') or sid,
-                     '_release': lambda stop, sid=sid, token=self.subscription_tokens[sid]: self.release_connection(sid, token, stop)}
+                     '_release': lambda stop, sid=sid, token=self.subscription_tokens[sid]: self.release_connection(sid, token, stop),
+                     **self.cli_force_callbacks({'provider':'codex','host':self.host,'sessionId':sid,
+                                                'key':self.subscription_tokens[sid]})}
                     for sid, generation in self.subscriptions.items() if generation == self.generation
                     and sid in self.subscription_tokens and sid in self.live]
+
+    def _cli_recovery_record(self):
+        path = self.data_dir/'cli-daemon-recovery.json'
+        return json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+
+    def _check_scope_new_work(self):
+        record = self._cli_recovery_record()
+        if record.get('targetGeneration') and record.get('phase') in ('waiting', 'draining'):
+            raise IPCError('此 WSL 配置正在等待释放或退出待核验；新操作未发送，请先取消等待或核验结果。')
+
+    def cli_force_callbacks(self, row):
+        sid, key = row.get('sessionId'), row.get('key')
+        if (row.get('host') != self.host or row.get('provider') != 'codex' or
+                not isinstance(sid, str) or not isinstance(key, str) or self.closed.is_set()):
+            return {}
+        callbacks = {'_check': lambda: self._check_cli_connection(sid, key)}
+        if self.cli_origins.get(sid) not in (None, 'cli'):
+            return callbacks
+        return {**callbacks, **self.cli_scope.descriptor(), 'canForce': True,
+                '_force_preview': lambda: self.cli_scope.preview(sid, key),
+                '_force': lambda op, binding: self.cli_scope.force(sid, key, op, binding),
+                '_scope_preview': lambda: self.cli_scope.preview(sid, key),
+                '_scope_release': lambda op, binding: self.cli_scope.release(sid, key, op, binding),
+                '_scope_force': lambda op, binding: self.cli_scope.force(sid, key, op, binding),
+                '_scope_cancel': self.cli_scope.cancel}
+
+    def _target_cli_impact(self, home=None):
+        with self.lock:
+            rows = [{'sessionId': sid, 'connectionKey': token} for sid, token in self.subscription_tokens.items()]
+        known = {row['sessionId'] for row in rows}
+        for key, receipt in self.receipts.items():
+            sid = key.split(':send:', 1)[0]
+            if ':send:' in key and receipt.get('result', {}).get('status') == 'queued' and sid not in known:
+                rows.append({'sessionId': sid, 'connectionKey': None})
+                known.add(sid)
+        return rows
+
+    def _target_cli_pending(self, home=None):
+        return any(receipt.get('result', {}).get('status') in ('pending', 'queued', 'unknown')
+                   for receipt in self.receipts.values())
+
+    def _target_cli_cancel_queued(self, home=None, operation_id=None, scope_key=None):
+        rows = [key for key, receipt in self.receipts.items() if ':send:' in key
+                and receipt.get('result', {}).get('status') == 'queued']
+        for key in rows:
+            self.cancel_queued(*key.split(':send:', 1))
+        return len(rows)
+
+    def _target_cli_released(self, result):
+        tokens = {row['connectionKey'] for row in result['impact'] if row['connectionKey']}
+        if all(token in tokens for token in self.subscription_tokens.values()) and self.server is not None:
+            self.server.close()
+        for row in result['impact']:
+            sid, token = row['sessionId'], row.get('connectionKey')
+            if sid in self.subscription_tokens and self.subscription_tokens[sid] != token:
+                continue
+            self.released_cli.set(sid, True)
+            self.subscriptions.pop(sid, None)
+            self.subscription_tokens.pop(sid, None)
+            session = self.live.get(sid)
+            if session is not None:
+                with session.condition:
+                    session.connected = False
+                    session.state['requests'] = []
+                    session.error = result.get('notice')
+                    session.changed()
+
+    @_entry_write
+    def _check_cli_connection(self, identifier, key):
+        scoped = self.cli_scope.check(key)
+        if scoped is not None:
+            if scoped['status'] == 'released':
+                self.cli_scope.record_released(scoped)
+            return scoped
+        from bridge.clients.codex.release import check_release
+        if self.server is None or self.server.closed:
+            return {'status':'unknown','notice':'原 WSL 连接无法核验；未启动或重放操作。'}
+        if self.subscription_tokens.get(identifier) not in (None, key):
+            return {'status':'unknown','notice':'原 WSL 连接已变化；未操作新连接。'}
+        return check_release(self.server.request, identifier, unsubscribed=self.released_cli.contains(identifier))
 
     @_entry_write
     def release_connection(self, identifier, token, stop=False):
@@ -719,6 +818,7 @@ class WslEntry(WslFeatures):
     @_entry_write
     def activate(self, identifier):
         uuid.UUID(identifier)
+        self._check_scope_new_work()
         self.runtime(allow_start=True)
         self.released_cli.set(identifier, False)
         session = self.session(identifier, attach=False)
@@ -730,6 +830,7 @@ class WslEntry(WslFeatures):
                 runtime, thread = self._target(identifier, activate=True)
                 self._subscribe(identifier, runtime, thread)
                 self._refresh(session)
+                self.lifecycle.refresh()
                 return session
             except IPCError as exc:
                 with session.condition:
@@ -951,6 +1052,8 @@ class WslEntry(WslFeatures):
             previous = self._previous_send(identifier, key, value)
             if previous is not None and not (queued and previous.get('status') == 'queued'):
                 return previous
+            if not queued:
+                self._check_scope_new_work()
             runtime, thread = self._target(identifier, activate=mode != 'queue', managed_control=True)
             if (mode == 'send' or queued) and thread['status']['type'] == 'active':
                 raise ValueError('任务正在运行，请选择补充当前任务，或等待完成')

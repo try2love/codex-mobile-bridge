@@ -16,7 +16,8 @@ from bridge.features.sessions.identity import same_cwd
 from bridge.clients.codex.app_server import (
     AppServerError, AppServerUnavailable, AppServerUnknownResult, AppServerUnsupported, CodexAppServer)
 from bridge.clients.codex.catalog import Catalog, CatalogError, ModelStore, normalize_native_skills
-from bridge.clients.codex.remote import RemoteStore, RemoteUnavailable, remote_model_catalog, remote_model_identity
+from bridge.clients.codex.remote import RemoteStore, RemoteUnavailable, remote_model_catalog, remote_model_identity, ssh_read
+from bridge.clients.codex.linux_control import LinuxCliControl
 from bridge.platforms.codex_daemon_env import read_daemon_environment, DaemonEnvironmentUnavailable
 from bridge.features.sessions.goal import GoalError, GoalUnavailable, GoalUnsupported, normalize_goal_result
 from bridge.features.sessions import linux_permissions
@@ -65,7 +66,7 @@ def _ssh_managed_exec(*args):
              'exec "$root/current/codex" app-server ' + arguments + '; else exit 73; fi')
 
 
-def _ssh_proxy_command(alias):
+def _ssh_proxy_command(alias, home=None):
     if not alias or alias.startswith('-') or any(c.isspace() for c in alias):
         raise ValueError('Invalid SSH host alias')
     # Match RemoteStore's explicit user login shell and CODEX_HOME selection.
@@ -74,15 +75,21 @@ def _ssh_proxy_command(alias):
              'elif test -x "$HOME/.local/bin/codex"; then '
              'exec "$HOME/.local/bin/codex" app-server proxy; else '
              + _ssh_managed_exec('proxy') + '; fi')
+    if home is not None:
+        if not PurePosixPath(str(home)).is_absolute():
+            raise ValueError('An absolute target CLI home is required')
+        inner = 'export CODEX_HOME=' + shlex.quote(str(home)) + '; ' + inner
     remote = 'exec "$SHELL" -lc ' + shlex.quote(inner)
     return ['ssh', '-T', '-o', 'BatchMode=yes', '-o', 'ClearAllForwardings=yes',
             '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes',
             '-o', 'UpdateHostKeys=no', alias, remote]
 
 
-def _ssh_daemon_start_command(alias):
+def _ssh_daemon_start_command(alias, home=None):
     command = _ssh_proxy_command(alias)
     inner = _ssh_managed_exec('daemon', 'start')
+    if home is not None:
+        inner = 'export CODEX_HOME=' + shlex.quote(str(home)) + '; ' + inner
     command[-1] = 'exec "$SHELL" -lc ' + shlex.quote(inner)
     return command
 
@@ -140,6 +147,8 @@ class CliSessions:
             command=command, check_socket=alias is None, client_name='codex-mobile-bridge-cli')
         self.configured_cli = cli
         self.store = RemoteStore(alias) if alias else SessionStore(self.home)
+        self.lifecycle = (LinuxCliControl(lambda: str(self.remote_home) if self.remote_home else None,
+                          lambda source, timeout: ssh_read(alias, source, timeout)) if alias else None)
 
     def _runtime_home(self, info):
         """SSH paths belong to the POSIX target, including on a Windows gateway."""
@@ -152,6 +161,7 @@ class CliSessions:
             raise AppServerUnavailable('Codex CLI runtime belongs to another home')
         if self.alias is not None:
             self.remote_home = actual
+            self.client.command = _ssh_proxy_command(self.alias, actual)
         return actual
 
     def cli_connections(self):
@@ -345,8 +355,11 @@ class CliSessions:
         with self.lock:
             attach_lock = self.attach_locks.setdefault(thread_id, threading.Lock())
         with attach_lock:
-            return self._attach_explicit(thread_id, target_provider=target_provider,
-                                         expected_identity=expected_identity, before_resume=before_resume)
+            result = self._attach_explicit(thread_id, target_provider=target_provider,
+                                           expected_identity=expected_identity, before_resume=before_resume)
+        if self.lifecycle is not None:
+            self.lifecycle.refresh()
+        return result
 
     def observe(self, thread_id):
         """Read an already loaded native thread without subscribing or resuming it."""
@@ -432,7 +445,7 @@ class CliSessions:
                 else:
                     environment[name] = value
         else:
-            command = _ssh_daemon_start_command(self.alias)
+            command = _ssh_daemon_start_command(self.alias, self.remote_home)
             environment = None
         try:
             options = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}

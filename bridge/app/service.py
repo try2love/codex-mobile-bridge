@@ -14,6 +14,7 @@ import time
 import uuid
 import unicodedata
 from pathlib import Path
+from types import SimpleNamespace
 
 from bridge.features.endpoints.registry import codex_list_hosts
 from bridge.app.lifecycle import private_json
@@ -367,6 +368,15 @@ class Bridge:
         for key, value in self.submissions.items():
             if value.get("status") == "queued":
                 self.live.setdefault(key.split(":")[0], LiveSession(key.split(":")[0], question_skips=self.question_skips))
+        if alias and isinstance(self.cli_sessions, CliSessions):
+            from bridge.clients.codex.remote import ssh_cli_probe
+            self.cli_scope.target = SimpleNamespace(
+                control=self.cli_sessions.lifecycle, label=self.entry_label or self.host,
+                enabled=self.observation_enabled, guard=lambda: self.accounts.gate if self.accounts else self.message_lock,
+                saved=lambda sid, home: self.cli_sessions.store.call('get', {'thread_id': sid}, home=home),
+                probe=lambda value: ssh_cli_probe(alias, value), impact=self._target_cli_impact,
+                pending=self._target_cli_pending, cancel_queued=self._target_cli_cancel_queued,
+                released=self._target_cli_released)
         threading.Thread(target=self._maintain, daemon=True).start()
         threading.Thread(target=self._upload_gc, daemon=True).start()
 
@@ -2212,6 +2222,12 @@ class Bridge:
         from bridge.platforms.codex_daemon_env import DaemonEnvironmentUnavailable
         cli = self.cli_sessions
         record = self._cli_recovery_record()
+        if self.cli_scope.target is not None:
+            if record.get('targetGeneration') and record.get('phase') in ('waiting', 'draining'):
+                raise IPCError('目标 CLI 正在等待释放或退出待核验；请取消等待、检查结果或明确强制释放，操作未发送。')
+            # The target's later explicit cold start uses only its own home
+            # and login environment; local account/proxy recovery never runs.
+            return
         if record.get('unresolvedResume'):
             raise IPCError('以前的 CLI 接续结果仍未知；请检查并明确确认从保存状态重新连接，操作未发送。')
         release_candidate = (isinstance(cli, CliSessions) and cli.alias is None and
@@ -2687,13 +2703,36 @@ class Bridge:
             return {}
         host = row.get('host')
         if host != self.host:
-            if self.host == 'local' and isinstance(host, str) and host.startswith('codex:') and self.entries is not None:
+            if self.host == 'local':
+                with self.lock:
+                    remote = self.remote_bridges.get(host)
+                if remote is not None:
+                    return remote.cli_force_callbacks(row)
+            if self.host == 'local' and isinstance(host, str) and host.startswith(('codex:', 'wsl:')) and self.entries is not None:
                 with self.entries.lock:
                     entry = self.entries.bridges.get(host)
+                if entry is None and host.startswith('wsl:'):
+                    try:
+                        entry = self.entries.get(host)
+                    except (ValueError, KeyError, OSError):
+                        return {}
                 if entry is not None:
                     return entry.cli_force_callbacks(row)
             return {}
         sid, key = row.get('sessionId'), row.get('key')
+        if self.cli_scope.target is not None and isinstance(sid, str) and isinstance(key, str):
+            with self.lock:
+                origin = self.origins.get(sid) or getattr(self.live.get(sid), 'origin', None)
+            if origin is not None and origin != 'cli':
+                return {}
+            return {**self.cli_scope.descriptor(), 'canForce': True,
+                    '_force_preview': lambda: self.cli_scope.preview(sid, key),
+                    '_force': lambda op, binding: self._release_cli_scope(sid, key, op, binding, force=True),
+                    '_scope_preview': lambda: self.cli_scope.preview(sid, key),
+                    '_scope_release': lambda op, binding: self._release_cli_scope(sid, key, op, binding),
+                    '_scope_force': lambda op, binding: self._release_cli_scope(sid, key, op, binding, force=True),
+                    '_scope_cancel': self.cli_scope.cancel,
+                    '_check': lambda: self._check_cli_connection(sid, None, key=key)}
         if not isinstance(sid, str) or not isinstance(key, str) or not self.cli_force.available():
             return {}
         try:
@@ -2713,6 +2752,97 @@ class Bridge:
     @operation
     def _release_cli_scope(self, sid, key, operation_id, generation, *, force=False):
         return (self.cli_scope.force if force else self.cli_scope.release)(sid, key, operation_id, generation)
+
+    def _target_cli_membership(self, home=None, *, refresh=False):
+        """Resolve old receipts in the verified target home, never infer from an absent cache."""
+        with self.submit_lock:
+            entries = {key: dict(row) for key, row in self.submissions.items()
+                       if row.get('status') in ('queued', 'unknown')}
+        if home is None:
+            cached = self.cli_scope.target.control.cached() if self.cli_scope.target else None
+            home = (cached or {}).get('generation', {}).get('home')
+        stamp = (home, [(key, row['status'], row.get('runtime'), row.get('origin'), row.get('cliHome'), row.get('cliHomeVerified'))
+                        for key, row in entries.items()])
+        previous = getattr(self, '_cli_scope_membership', None)
+        if not refresh and previous and previous[0] == stamp:
+            return previous[1]
+        members, saved = {}, {}
+        for key, row in entries.items():
+            kind, sid = 'unknown', key.split(':', 1)[0]
+            if row.get('runtime') == 'cli' and row.get('cliHome') and home:
+                kind = 'cli' if row['cliHome'] == home else 'other' if row.get('cliHomeVerified') else 'unknown'
+            elif row.get('runtime') == 'desktop' and row.get('origin') in ('desktop', 'ide'):
+                kind = 'other'
+            elif home and self.cli_scope.target:
+                if sid not in saved:
+                    try:
+                        saved[sid] = self.cli_scope.target.saved(sid, home).get('origin')
+                    except (ValueError, KeyError, OSError, RuntimeError, StoreUnavailable):
+                        saved[sid] = None
+                kind = 'cli' if saved[sid] == 'cli' else 'other' if saved[sid] == 'desktop' else 'unknown'
+            members[key] = kind
+        self._cli_scope_membership = stamp, members
+        return members
+
+    def _target_cli_impact(self, home=None):
+        rows = [{'sessionId': row['sessionId'], 'connectionKey': row['key']}
+                for row in self.cli_sessions.cli_connections()]
+        known = {row['sessionId'] for row in rows}
+        for key, kind in self._target_cli_membership(home, refresh=True).items():
+            sid = key.split(':', 1)[0]
+            if kind == 'cli' and sid not in known:
+                rows.append({'sessionId': sid, 'connectionKey': None})
+                known.add(sid)
+        return rows
+
+    def _target_cli_pending(self, home=None):
+        members = self._target_cli_membership(home)
+        with self.cli_sessions.lock:
+            return bool(self.cli_sessions.attaching or any(self.cli_sessions.requests.values())
+                        or any(kind != 'other' for kind in members.values()))
+
+    def _target_cli_cancel_queued(self, home=None, operation_id=None, scope_key=None):
+        members = self._target_cli_membership(home)
+        with self.submit_lock:
+            rows = [key for key, row in self.submissions.items()
+                    if row.get('status') == 'queued' and members.get(key) == 'cli']
+            unresolved = [key for key, row in self.submissions.items()
+                          if row.get('status') == 'queued' and members.get(key, 'unknown') == 'unknown']
+            for key in rows:
+                self.submissions[key]['status'] = 'cancelled'
+            for key in unresolved:
+                self.submissions[key]['cliRelease'] = {'requestId': operation_id, 'home': home, 'scopeKey': scope_key}
+            if rows or unresolved:
+                self._save_ledger()
+        return {'cancelledQueued': len(rows), 'unresolvedQueued': unresolved}
+
+    def _settle_scope_queued(self, session, key):
+        with self.submit_lock:
+            marker = (self.submissions.get(key) or {}).get('cliRelease')
+        if not marker:
+            return False
+        kind = self._target_cli_membership(marker['home'], refresh=True).get(key, 'unknown')
+        with self.submit_lock:
+            row = self.submissions.get(key)
+            if not row or row.get('status') != 'queued':
+                return True
+            if kind == 'cli':
+                row['status'] = 'cancelled'
+            elif kind == 'other':
+                row.pop('cliRelease', None)
+            else:
+                return True
+            self._save_ledger()
+        with session.condition:
+            session.changed()
+        return kind != 'other'
+
+    def _target_cli_released(self, result):
+        tokens = {row['connectionKey'] for row in result['impact'] if row['connectionKey']}
+        current = self.cli_sessions.cli_connections()
+        if all(row['key'] in tokens for row in current):
+            self.cli_sessions.close()
+        self.cli_scope.record_local_released(result)
 
     @operation
     def _force_cli_connection(self, sid, key, operation_id, generation):
@@ -2798,6 +2928,13 @@ class Bridge:
     def _check_cli_connection(self, sid, callback, *, key=None):
         session = self.session(sid, attach=False, background=True)
         with session.activation_lock, session.action_lock, session.attach_lock:
+            if key is not None and self.cli_scope.target is not None:
+                with self.cli_scope.target.guard():
+                    scoped = self.cli_scope.check(key)
+                    if scoped is not None:
+                        if scoped['status'] == 'released':
+                            self.cli_scope.record_released(scoped)
+                        return scoped
             if key is not None and self.cli_force.available():
                 forced = self.cli_force.check_connection(sid, key)
                 if forced is not None:
@@ -3941,11 +4078,18 @@ class Bridge:
                 with self.submit_lock:
                     queued = [(k, dict(v)) for k, v in self.submissions.items() if k.startswith(session.id + ":") and v["status"] == "queued"]
                 if queued and session.connected and session.view().get("status") == "idle":
-                    key, entry = queued[0]
-                    try:
-                        self._send_queued(session, key, entry)
-                    except Exception:
-                        pass  # Unknown outcomes stay recorded and are never automatically replayed.
+                    for paused_key, paused in queued:
+                        if paused.get('cliRelease'):
+                            self._settle_scope_queued(session, paused_key)
+                    with self.submit_lock:
+                        queued = [(key, dict(row)) for key, row in self.submissions.items() if key.startswith(session.id + ':')
+                                  and row['status'] == 'queued' and not row.get('cliRelease')]
+                    if queued:
+                        key, entry = queued[0]
+                        try:
+                            self._send_queued(session, key, entry)
+                        except Exception:
+                            pass  # Unknown outcomes stay recorded and are never automatically replayed.
                 if (session.viewers > 0 or queued or session.watched) and not session.connected:
                     if session.activity_only and session.viewers == 0 and not queued:
                         if time.monotonic() >= session.retry_at:
@@ -5096,7 +5240,13 @@ class Bridge:
 
     def cancel_queued(self, thread_id, submission_id):
         uuid.UUID(submission_id)
-        session = self.session(thread_id, attach=False)
+        with self.submit_lock:
+            paused = bool((self.submissions.get(thread_id + ':' + submission_id) or {}).get('cliRelease'))
+        if paused:
+            with self.lock:
+                session = self.live.setdefault(thread_id, LiveSession(thread_id, question_skips=self.question_skips))
+        else:
+            session = self.session(thread_id, attach=False)
         with session.action_lock:
             with self.submit_lock:
                 key = thread_id + ":" + submission_id
@@ -5224,8 +5374,32 @@ class Bridge:
                             raise ValueError("计划已更新，请刷新后重试")
             if session.runtime == 'cli' and _async_response is None:
                 self._verify_cli_submission_account(session)
+            admission = None
+            if self.cli_scope.target is not None and session.runtime == 'cli' and _async_response is None:
+                with self.cli_sessions.lock:
+                    admission = (self.cli_sessions.client.process,
+                                 self.cli_sessions.metadata.get(thread_id, {}).get('connectionToken'))
             with self.submit_lock:
+                if admission is not None:
+                    # Force records draining before acquiring this same lock to
+                    # cancel accepted queues. No target I/O belongs in this gate.
+                    record = self._cli_recovery_record()
+                    with self.cli_sessions.lock:
+                        process, token = admission
+                        current_token = self.cli_sessions.metadata.get(thread_id, {}).get('connectionToken')
+                        current = (process is not None and token and process is self.cli_sessions.client.process
+                                   and process is self.cli_sessions.joined.get(thread_id) and token == current_token)
+                    if (not current or record.get('targetGeneration') and (
+                            record.get('phase') in ('waiting', 'draining') or
+                            record.get('phase') == 'released' and token in record.get('connections', ()))):
+                        raise IPCError('目标 CLI 释放意图或连接已变化，请明确重新连接后发送；消息未入队。')
                 entry = {"text": text, "mode": mode, "skills": selected, "status": "queued" if mode == "queue" else "unknown", "at": time.time()}
+                if self.cli_scope.target is not None:
+                    entry.update(origin=session.origin, runtime=session.runtime)
+                    if session.runtime == 'cli' and self.cli_sessions.remote_home:
+                        cached = self.cli_scope.target.control.cached()
+                        entry['cliHome'] = cached['generation']['home'] if cached else str(self.cli_sessions.remote_home)
+                        entry['cliHomeVerified'] = bool(cached)
                 if identifiers:
                     entry['attachments'] = identifiers
                 if references:
@@ -5249,12 +5423,15 @@ class Bridge:
     @operation
     def _send_queued(self, session, key, entry):
         with session.action_lock:
+            if self._settle_scope_queued(session, key):
+                return
             with session.condition:
                 if not session.connected or session.state.get("threadRuntimeStatus", {}).get("type") != "idle":
                     return
             with self.goal_lock:
                 with self.submit_lock:
-                    queued = [(k, v) for k, v in self.submissions.items() if k.startswith(session.id + ':') and v.get('status') == 'queued']
+                    queued = [(k, v) for k, v in self.submissions.items() if k.startswith(session.id + ':')
+                              and v.get('status') == 'queued' and not v.get('cliRelease')]
                     if not queued or queued[0][0] != key:
                         return
                     entry = copy.deepcopy(queued[0][1])
