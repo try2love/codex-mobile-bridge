@@ -86,6 +86,26 @@ class CliBridgeTests(CliBridgeFixture):
         self.bridge.ipc.owner.assert_not_called()
         self.bridge.ipc.follow.assert_not_called()
 
+    def test_native_0167_exec_record_lists_and_activates_through_cli_without_app_owner(self):
+        # The real exec JSONL/catalog fields were captured before the package test;
+        # this isolated contract DB does not edit the original native history.
+        with closing(sqlite3.connect(self.home / 'state_5.sqlite')) as db, db:
+            db.execute('ALTER TABLE threads ADD COLUMN thread_source TEXT')
+            db.execute("UPDATE threads SET originator='codex_exec',source='exec',thread_source='user'")
+        self.bridge.ipc.connect = Mock()
+        self.bridge.ipc.owner = Mock(return_value='desktop-owner')
+        rows, sources = self.bridge.list(source='cli', include_sources=True)
+        self.assertEqual([row['id'] for row in rows], [self.thread_id])
+        self.assertEqual(rows[0]['access']['source'], 'cli')
+        self.assertEqual(sources, ['cli'])
+        self.cli.attach.assert_not_called()
+        session = self.bridge.activate(self.thread_id)
+        self.assertEqual((session.origin, session.runtime), ('cli', 'cli'))
+        self.cli.attach.assert_called_once_with(self.thread_id, explicit=True)
+        self.bridge.ipc.connect.assert_not_called()
+        self.bridge.ipc.owner.assert_not_called()
+        self.bridge.ipc.follow.assert_not_called()
+
     def test_cli_native_failure_never_activates_or_reuses_app(self):
         self.cli.attach.side_effect = AppServerUnavailable('writer unavailable')
         with patch('bridge.app.service.open_in_desktop') as navigate:

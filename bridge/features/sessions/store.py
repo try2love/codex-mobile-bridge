@@ -195,7 +195,7 @@ class StoreUnavailable(RuntimeError):
 
 class SessionStore:
     DESKTOP_ORIGINATORS = ('Codex Desktop', 'codex_work_desktop', 'codex_mobile_bridge')
-    CLI_ORIGINATORS = ('codex-tui', 'codex_cli_rs', 'codex-mobile-bridge-cli',
+    CLI_ORIGINATORS = ('codex-tui', 'codex_cli_rs', 'codex_exec', 'codex-mobile-bridge-cli',
                        'codex_mobile_bridge_wsl', 'codex_mobile_bridge')
 
     def __init__(self, codex_home, source='all'):
@@ -397,7 +397,7 @@ class SessionStore:
     @staticmethod
     def _user_origin_filter(columns):
         if 'originator' in columns:
-            recognized = "originator IN ('Codex Desktop', 'codex_work_desktop', 'codex_mobile_bridge', 'codex-tui', 'codex_cli_rs', 'codex-mobile-bridge-cli', 'codex_mobile_bridge_wsl', 'codex_vscode')"
+            recognized = "originator IN ('Codex Desktop', 'codex_work_desktop', 'codex_mobile_bridge', 'codex-tui', 'codex_cli_rs', 'codex_exec', 'codex-mobile-bridge-cli', 'codex_mobile_bridge_wsl', 'codex_vscode')"
             if 'source' in columns:
                 return '(' + recognized + " OR (originator IS NULL AND source IN ('vscode', 'cli')))"
             return recognized
