@@ -164,6 +164,7 @@ if not any(r['home']==str(root) for r in existing):
     if found:candidates.append(Path(found))
     candidates.extend(home.glob('.nvm/versions/node/*/bin/codex'))
     candidates.extend([home/'.local/bin/codex',home/'.codex/bin/codex',Path('/usr/local/bin/codex')])
+    candidates.append(root/'packages/app-server-daemon/current/bin/codex')
     packages=root/'packages/app-server-daemon/releases'
     def version(p):return tuple(int(n) for n in re.match(r'(\d+)\.(\d+)\.(\d+)',p.parent.parent.name).groups())
     cached=[p for p in packages.glob('*/bin/codex') if re.match(r'\d+\.\d+\.\d+',p.parent.parent.name)]
