@@ -291,6 +291,66 @@ class OwnedControlTests(unittest.TestCase):
             self.assertEqual(source.cli_force_callbacks(row | changed), {})
         cli.cli_force_callbacks.assert_called_once_with(row)
 
+    def test_configuration_projection_is_stable_per_verified_profile_not_native_generation(self):
+        first = self.capture()
+        client = self.client(first)
+        row = client.cli_connections()[0]
+        self.assertEqual(row['configurationLabel'], '本机 Claude CLI · '+self.profile['directory'])
+        self.assertNotIn('scopeKey', row)
+        self.assertNotIn('sharedHome', row)
+        self.assertFalse(any(name.startswith('_scope_') for name in row))
+        self.token, self.sid = str(uuid.uuid4()), str(uuid.uuid4())
+        self.native.current['birth'] = (34, 57)
+        second = self.capture()
+        self.assertNotEqual(first.generation, second.generation)
+        self.assertEqual(first.configuration(), second.configuration())
+        for field, value in (('directory', str(self.root/'another-profile')), ('inode', 3), ('device', 9)):
+            changed = copy.deepcopy(second.binding)
+            changed['profile'][field] = value
+            self.assertNotEqual(owned_control.OwnedControl(changed).configuration()['configurationKey'], row['configurationKey'])
+        client.profile_resolver.assert_not_called()
+
+    def test_missing_configuration_evidence_does_not_guess_a_group_or_enable_remote_scope(self):
+        control = self.capture()
+        for field in ('directory', 'device', 'inode', 'uid'):
+            changed = copy.deepcopy(control.binding)
+            changed['profile'].pop(field)
+            self.assertEqual(owned_control.OwnedControl(changed).configuration(), {})
+        client = self.client(control)
+        for host in ('ssh:fixture', 'wsl:fixture'):
+            self.assertEqual(client.cli_force_callbacks(self.row(control) | {'host': host}), {})
+
+    def test_same_configuration_batch_wait_keeps_exact_owned_processes_and_other_profile(self):
+        first = self.capture()
+        client = self.client(first)
+        controls = [first]
+        for name in ('second', 'other-profile'):
+            self.token, self.sid = str(uuid.uuid4()), str(uuid.uuid4())
+            if name == 'other-profile':
+                self.profile = {**self.profile, 'directory': str(self.root/'other-profile'), 'inode': 3}
+            control = self.capture()
+            controls.append(control)
+            client.owned[self.sid] = self.owner(control)
+            client.index[control.binding['sessionId']] = {'nativeId': self.sid, 'origin': 'fixture-profile'}
+        rows = client.cli_connections()
+        selected = [row['key'] for row in rows if row['configurationKey'] == rows[0]['configurationKey']]
+        self.assertEqual(len(selected), 2)
+        expected = {owner.connection_token: owner for owner in client.owned.values()}
+        for owner in expected.values():
+            owner.release_connection = Mock(return_value={'status': 'released'})
+        manager = CliConnections(self.root, lambda: [client], private_json)
+        self.addCleanup(manager.close)
+        with patch('bridge.features.sessions.cli_release.threading.Thread'):
+            job = manager.submit({'id': str(uuid.uuid4()), 'mode': 'wait', 'connections': selected})
+        manager._run(manager.jobs[job['id']], {row['key']: row for row in rows})
+        for key, owner in expected.items():
+            if key in selected:
+                owner.release_connection.assert_called_once_with(False)
+            else:
+                owner.release_connection.assert_not_called()
+        self.assertEqual(len(client.owned), 1)
+        self.native.terminate.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -18,6 +18,8 @@ Claude stdio 执行器是每个会话独占的原生进程。正常 interrupt �
 
 释放成功只移除原连接 token，旧回调不删除后来恢复的新 owner。`DesktopSessions` 只薄转发本机 Claude 回调；SSH/WSL 与其他系统保持原通路，本点不新增远端强制原语或集合管理器。正常退出不删除原生 registry/history，不换 session ID、账号、provider 或 cwd。
 
+连接列表的只读 `configurationKey` / `configurationLabel` 来自已绑定 profile 的 canonical 目录、UID 与目录 device/inode，跨会话和进程代次稳定，目录身份改变时分组改变。仅展示用途，不是共享 daemon 的 `scopeKey`，不增加 `sharedHome` 或 `_scope_*` 回调。同配置的普通批量释放仍由现有 `CliConnections` 接收明确的 exactKeys 后逐个 `_Owned` 正常退出；force 仍只确认一个进程。元数据不足或来源非本机时不猜同组，不为列表新增文件扫描、profile 选择或认证读取。
+
 ## 备选方案
 
 仅凭 stdin wrapper 的退出码实现最小，但不能证明 native writer 已结束。把 registry/catalog 必有字段作为硬门槛可增加会话佐证，却会阻挡已有直接内核绑定的自有进程，因此只接受正向一致性核对，不补发首句取证。按名称扫描便于找回丢失 owner，但不能证明属于本轮明确创建；只恢复保存的精确可信绑定。另建 Claude 释放队列会复制共享业务，本点沿用既有操作与回执。
@@ -29,6 +31,8 @@ Claude stdio 执行器是每个会话独占的原生进程。正常 interrupt �
 已安装 Mac 2.1.292 的单次隔离 initialize 预检证明 catalog.pid 与直接 Mach-O PID 一致，零 user frame 也产生本轮 sessions registry，EOF 后原代已退出。该预检没有发模型首句、没有信号。
 
 随后新建一个独立 0700 HOME/config/project 的真实 Mach-O 执行器，bare 与白名单环境仅使用合成 key 和回环拒绝端点。通过真实 `_Owned` 单次 initialize 后，仅在夹具中登记其目标行及合成未知任务状态，未调用会发送首句的创建流程。真实 `CliConnections` 默认 wait 返回 unknown、零信号；明确 forcePreview/force 调用一次 audit-token，PID86026、UID501、birth21929933/34122238 的原代退出，Popen 回收为 -9。相同操作 ID 和精确旧绑定恢复后都只回执，原 unknown 历史保留，连接移除。八项检查全通过；另一次独立 Native 观察确认该 native 和夹具父 PID 均 absent，产品/夹具字节与执行 manifest 一致。全程零用户输入、未主动发起模型请求，回环服务未收到 HTTP/POST；此计数不作进程级零外发证明。证据 `.tmp/feedback-20261111-10/mac-claude-owned-force/run1/result.json` 与 `independent-observer.json`；正式 App、账号与用户会话未纳入。
+
+只读配置投影另有三项直接回归，覆盖同 profile 跨 native/token/出生代稳定、不同目录身份分离、缺字段与远端来源不补猜值，以及同组两个独占进程经已有 exactKeys wait 分别退出、其它 profile 的连接保持。该增量没有重跑真实 force 或共享 daemon 原语。
 
 ## 影响
 

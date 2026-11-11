@@ -708,7 +708,7 @@ class ClaudeCli:
                         if getattr(owned, 'connection_token', None) == row['key']:
                             self.owned.pop(native)
             return result
-        return {'canForce': control.durable, '_force_preview': control.preview,
+        return {**control.configuration(), 'canForce': control.durable, '_force_preview': control.preview,
                 '_force': lambda operation, generation: completed(control.force(operation, generation)),
                 '_check': lambda: completed(control.check())}
 

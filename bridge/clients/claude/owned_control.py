@@ -141,6 +141,16 @@ class OwnedControl:
     def generation(self):
         return _digest(self.binding)
 
+    def configuration(self):
+        profile = self.binding['profile']
+        if (not isinstance(profile.get('directory'), str) or not Path(profile['directory']).is_absolute()
+                or profile.get('uid') != os.getuid()
+                or any(type(profile.get(name)) is not int for name in ('device', 'inode'))):
+            return {}
+        return {'configurationKey': _digest(['claude', 'local', profile['uid'], profile['directory'],
+                                             profile['device'], profile['inode']]),
+                'configurationLabel': '本机 Claude CLI · ' + profile['directory']}
+
     def matches(self):
         expected = self.binding['process']
         current = self.native.identity(expected['pid'])
