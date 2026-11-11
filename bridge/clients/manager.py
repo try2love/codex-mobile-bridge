@@ -1088,6 +1088,12 @@ class DesktopSessions:
         adapter = self.adapters.get('claude')
         return adapter.cli.cli_connections() + adapter.remote_cli.cli_connections() if adapter else []
 
+    def cli_force_callbacks(self, row):
+        adapter = self.adapters.get('claude')
+        if adapter and row.get('provider') == 'claude' and row.get('host') == 'local':
+            return adapter.cli.cli_force_callbacks(row)
+        return {}
+
     def list_with_activity(self, provider):
         with self.read_lock:
             binding, adapter = self.binding_epochs[provider], self.adapters[provider]

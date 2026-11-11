@@ -31,7 +31,7 @@ class Claude:
         self.directory = Path(directory)
         self.hosts = hosts
         self.native_descriptor = descriptor
-        self.cli = ClaudeCli(self.directory.parent/'uploads',
+        self.cli = ClaudeCli(self.directory.parent/'uploads', control_directory=self.directory/'cli-owned',
                              **({'profile_resolver': lambda: None} if desktop_only else {}))
         if desktop_only:
             hosts = self.hosts = None

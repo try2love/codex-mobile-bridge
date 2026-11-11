@@ -459,7 +459,7 @@ def _saved(path, origin):
 
 
 class _Owned:
-    def __init__(self, process, origin, native, cwd):
+    def __init__(self, process, origin, native, cwd, *, spawn=None, control_directory=None):
         self.process, self.origin, self.native, self.cwd = process, origin, native, cwd
         self.connection_token = str(uuid.uuid4())
         self.condition = threading.Condition()
@@ -474,9 +474,21 @@ class _Owned:
         self.preflight = None
         self.finished = False
         self.native_process = None
+        self.spawn_profile = spawn
+        self.control_directory = control_directory
+        self.local_control = None
+        self.eof_sent = False
         threading.Thread(target=self._read, daemon=True, name='claude-cli-reader').start()
 
     def bind_native_process(self):
+        if sys.platform == 'darwin' and self.spawn_profile is not None:
+            from bridge.clients.claude.owned_control import OwnedControl
+            try:
+                self.local_control = OwnedControl.capture(self.process, self.connection_token, self.origin,
+                    self.native, self.cwd, self.spawn_profile, self.catalog, self.control_directory)
+            except (OSError, ValueError):
+                pass  # Keep existing task controls; unbound CLI force/exit proof stays unavailable.
+            return
         if sys.platform != 'win32':
             return
         from bridge.platforms.windows import claude_process
@@ -545,7 +557,8 @@ class _Owned:
 
     def write(self, frame):
         with self.condition:
-            if self.process.poll() is not None or self.error:
+            if (self.process.poll() is not None or self.error or self.eof_sent
+                    or self.local_control and self.local_control.intent()):
                 raise BridgeUnavailable(self.error or 'Claude Code 会话已关闭，请重新继续')
             try:
                 self.process.stdin.write(json.dumps(frame, ensure_ascii=False) + '\n')
@@ -573,12 +586,15 @@ class _Owned:
     def release_connection(self, stop=False, timeout=20):
         """Finish this owned CLI only; never terminate a foreign or shared process."""
         deadline = time.monotonic() + timeout
+        control = getattr(self, 'local_control', None)
+        if getattr(self, 'eof_sent', False) or control and control.intent():
+            return self.check_exit()
+        if self.process.poll() is not None:
+            return self.check_exit() if getattr(self, 'spawn_profile', None) is not None else None
         with self.condition:
             if self.error:
                 raise BridgeUnavailable(self.error)
             active = self.active or bool(self.pending)
-        if self.process.poll() is not None:
-            return
         if active and not stop:
             return {'status': 'waiting'}
         if active:
@@ -589,6 +605,7 @@ class _Owned:
             if self.error or self.active or self.pending:
                 raise BridgeUnavailable('停止结果待核对，连接尚未释放')
         # EOF lets the original executor flush and exit; no terminate/kill fallback.
+        self.eof_sent = True
         self.process.stdin.close()
         try:
             code = self.process.wait(timeout=max(.1, deadline-time.monotonic()))
@@ -597,7 +614,12 @@ class _Owned:
                 raise BridgeUnavailable('原会话未正常退出，连接释放结果待核对')
         except subprocess.TimeoutExpired:
             raise BridgeUnavailable('原会话连接尚未释放，请核对原会话') from None
-        return {'status': 'released', 'notice': '连接已释放，可在电脑端继续'}
+        return self.check_exit() if getattr(self, 'spawn_profile', None) is not None else {'status': 'released', 'notice': '连接已释放，可在电脑端继续'}
+
+    def check_exit(self):
+        if getattr(self, 'local_control', None) is not None:
+            return self.local_control.check()
+        return {'status': 'unknown', 'notice': '原 Claude CLI 的原生退出身份尚未核验，请在电脑端检查。'}
 
     def close(self):
         try:
@@ -617,10 +639,11 @@ class _Owned:
 
 
 class ClaudeCli:
-    def __init__(self, upload_root=None, profile_resolver=None):
+    def __init__(self, upload_root=None, profile_resolver=None, control_directory=None):
         self.profile_resolver = profile_resolver or (lambda: _profile())
         self.lock = threading.RLock()
         self.upload_root = Path(upload_root) if upload_root is not None else None
+        self.control_directory = Path(control_directory) if control_directory is not None else None
         self.owned = {}
         self.index = {}
         self.auth_cache = None
@@ -664,6 +687,30 @@ class ClaudeCli:
 
     def cli_connections(self):
         return owned_connections(self)
+
+    def cli_force_callbacks(self, row):
+        if sys.platform != 'darwin' or row.get('provider') != 'claude' or row.get('host') != 'local':
+            return {}
+        from bridge.clients.claude.owned_control import OwnedControl
+        with self.lock:
+            control = next((owned.local_control for owned in self.owned.values()
+                            if getattr(owned, 'connection_token', None) == row.get('key')
+                            and getattr(owned, 'local_control', None) is not None), None)
+        if control is None:
+            control = OwnedControl.restore(self.control_directory, row)
+        if control is None or any(control.binding.get(name) != row.get(name)
+                                  for name in ('key', 'provider', 'host', 'sessionId')):
+            return {}
+        def completed(result):
+            if result['status'] == 'released':
+                with self.lock:
+                    for native, owned in list(self.owned.items()):
+                        if getattr(owned, 'connection_token', None) == row['key']:
+                            self.owned.pop(native)
+            return result
+        return {'canForce': control.durable, '_force_preview': control.preview,
+                '_force': lambda operation, generation: completed(control.force(operation, generation)),
+                '_check': lambda: completed(control.check())}
 
     def busy(self):
         with self.lock:
@@ -824,10 +871,12 @@ class ClaudeCli:
             raise BridgeUnavailable('原 Claude Code 账号配置已变化或不可用')
         if account_identity is not None and project_account_identity(fresh) != account_identity:
             raise BridgeUnavailable('原 Claude Code 账号配置已变化或不可用')
+        from bridge.clients.claude.owned_control import spawn_profile
+        spawn = spawn_profile(profile)
         process = subprocess.Popen(command, cwd=str(project), env=env, stdin=subprocess.PIPE,
                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
                                    encoding='utf-8', errors='replace', bufsize=1)
-        owned = _Owned(process, origin, native, str(project))
+        owned = _Owned(process, origin, native, str(project), spawn=spawn, control_directory=self.control_directory)
         try:
             owned.catalog = owned.control({'subtype': 'initialize', 'hooks': None}, timeout=30)
             owned.bind_native_process()
@@ -986,10 +1035,12 @@ class ClaudeCli:
                     assert_session_closed(profile['directory'], native)
                 except BridgeUnavailable as exc:
                     raise ResumePreflightBlocked(str(exc)) from exc
+                from bridge.clients.claude.owned_control import spawn_profile
+                spawn = spawn_profile(profile)
                 process = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.PIPE,
                                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
                                            encoding='utf-8', errors='replace', bufsize=1)
-                owned = _Owned(process, profile['origin'], native, cwd)
+                owned = _Owned(process, profile['origin'], native, cwd, spawn=spawn, control_directory=self.control_directory)
                 try:
                     owned.catalog = owned.control({'subtype': 'initialize', 'hooks': None}, timeout=30)
                     owned.bind_native_process()
@@ -1104,7 +1155,10 @@ def owned_connections(client, remote=False):
                     if result and result['status'] == 'released':
                         client.owned.pop(sid if remote else native, None)
                     return result or {'status': 'released'}
-            rows.append({'key': token, 'provider': 'claude', 'sessionId': sid,
+            public = {'key': token, 'provider': 'claude', 'sessionId': sid,
                          'host': row.get('host', 'local'), 'title': row.get('title') or sid,
-                         'location': row.get('hostLabel') or row.get('host', '本机 CLI'), '_release': release})
+                         'location': row.get('hostLabel') or row.get('host', '本机 CLI'), '_release': release}
+            if not remote:
+                public.update(getattr(client, 'cli_force_callbacks', lambda _row: {})(public))
+            rows.append(public)
         return rows
