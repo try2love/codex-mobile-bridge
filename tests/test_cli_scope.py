@@ -47,7 +47,15 @@ class CliScopeTests(CliForceFixture):
         directory.mkdir(exist_ok=True)
         manager = CliConnections(directory, lambda: [SimpleNamespace(cli_connections=self.rows)], private_json)
         self.addCleanup(manager.close)
+        if not hasattr(self, 'managers'):
+            self.managers = []
+        self.managers.append(manager)
         return manager
+
+    def tearDown(self):
+        for manager in getattr(self, 'managers', ()):
+            manager.close()
+        super().tearDown()
 
     def test_scope_is_stable_across_generation_but_separates_host_home_and_user(self):
         first = self.scope.descriptor()['scopeKey']
