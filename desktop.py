@@ -2,7 +2,11 @@
 """Private stdio interface used by the desktop application."""
 import argparse
 import json
+import os
 import sys
+if sys.platform == 'win32' and os.environ.get('CMB_CODEX_DESKTOP_CONFIGURATION'):
+    from bridge.clients.codex.desktop_runtime_windows import run as windows_runtime_main
+    raise SystemExit(windows_runtime_main(os.environ['CMB_CODEX_DESKTOP_CONFIGURATION'], sys.argv[1:]))
 if sys.argv[1:2] == ['codex-desktop-runtime']:
     parser = argparse.ArgumentParser()
     parser.add_argument('--configuration', required=True)

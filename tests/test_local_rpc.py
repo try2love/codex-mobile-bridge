@@ -4,11 +4,34 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from contextlib import nullcontext
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
-from bridge.clients.local_rpc import LocalService, packet, unpack, read_packet, write_packet
+from bridge.clients.local_rpc import LocalService, LocalRequestNotSent, packet, unpack, read_packet, write_packet
 
 
 class LocalRpcTests(unittest.TestCase):
+    def test_windows_pre_dispatch_and_explicit_peer_rejection_remain_retryable(self):
+        from bridge.platforms import windows
+        service = LocalService('.tmp', 'fixture')
+        record = {'name': 'fixture', 'profile': str(service.profile), 'owner': {}, 'token': '0' * 64,
+                  'endpoint': r'\\.\pipe\cmb-rpc-fixture-' + '0' * 32}
+        native = SimpleNamespace(read_record=Mock(side_effect=PermissionError('private record')),
+            local_connect=Mock(side_effect=lambda *args, **kwargs: nullcontext(Mock())), require_peer=Mock(), byte_stream=Mock())
+        with patch.object(windows, 'local_service', native, create=True), \
+             patch('bridge.clients.local_rpc.os', SimpleNamespace(name='nt', path=os.path)):
+            with self.assertRaises(LocalRequestNotSent): service._exchange({})
+            native.local_connect.assert_not_called()
+            native.read_record.side_effect = None; native.read_record.return_value = record
+            pipe = Mock(send=Mock(side_effect=OSError('partial write')))
+            native.byte_stream.return_value = pipe
+            with self.assertRaises(OSError): service._exchange({})
+            pipe.send.side_effect = lambda data, **kwargs: len(data)
+            response = io.BytesIO(packet({'ok': False, 'notSent': True, 'error': 'generation changed'}))
+            pipe.recv.side_effect = lambda size, **kwargs: response.read(size)
+            with self.assertRaises(LocalRequestNotSent): service._exchange({})
+
     def test_fragmented_shared_frames_and_size_boundaries(self):
         value = {'token': 'fixture', 'request': {'text': '中文消息'}}
         data = packet(value);stream = io.BytesIO(data)

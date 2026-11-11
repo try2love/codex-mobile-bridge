@@ -3322,11 +3322,11 @@ class Bridge:
 
     def _desktop_metadata_operation(self, cwd, operation, failure_message, *, require_shared=False):
         from bridge.clients.codex.desktop_runtime import connect, initialization_lock
-        from bridge.clients.codex.app_server import AppServerError
+        from bridge.clients.codex.app_server import AppServerError, AppServerRequestNotSent
         from bridge.features.sessions.create import _runtime_operation
         with ExitStack() as locks:
             try:
-                if self.host == 'local' and sys.platform == 'darwin':
+                if self.host == 'local' and sys.platform in ('darwin', 'win32'):
                     # Every gateway using this home must finish its metadata
                     # transaction before initialization may quit the original App.
                     locks.enter_context(initialization_lock(self.codex_home))
@@ -3335,12 +3335,24 @@ class Bridge:
                 # Only connection/identity checks have run; no metadata write was sent.
                 raise CreationUnavailable(str(exc)) from exc
             if client is None:
-                if require_shared and self.host == 'local' and sys.platform == 'darwin':
+                if require_shared and self.host == 'local' and sys.platform in ('darwin', 'win32'):
                     raise CreationUnavailable('请先打开账号管理 → Codex 原生会话连接 → 初始化连接，在所有桌面任务结束后确认正常重启 Codex App；尚未创建侧边聊天')
                 return _runtime_operation(self.catalog_reader.executable, self.codex_home, cwd, operation,
                                           failure_message=failure_message, **_runtime_scope(self.host))
+            attempted = False
+            def request(*args, **kwargs):
+                nonlocal attempted
+                previous = attempted
+                attempted = True
+                try:
+                    value = client.request(*args, **kwargs)
+                except AppServerRequestNotSent as exc:
+                    if not previous:
+                        raise CreationUnavailable(str(exc)) from exc
+                    raise
+                return value
             try:
-                return operation(client.request)
+                return operation(request)
             except AppServerError as exc:
                 # A shared-runtime operation is never retried through a new writer.
                 raise CreationError(failure_message) from exc

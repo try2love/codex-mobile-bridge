@@ -10,11 +10,11 @@ Status: implemented
 
 用户确认以目标原生数据真正删除为准，不以关闭原 App 已打开标签作为阻断条件。本决定部分替代[共享运行时与标签同步提案](../../proposed/architecture/2026-11-08-codex-shared-desktop-runtime.md)的验收边界；旧文保留原始证据和标签限制，不将其改写为已经实现标签同步。
 
-默认本机 Codex 的账号管理复用现有控制流程，提供显式的原生连接初始化。先核验已安装 CLI 的 Unix transport 和 proxy 能力，再核验任务、默认配置目录和唯一 App 进程，正常退出后通过原 App 支持的 CLI 路径配置启动透明适配器。不修改原 App 安装包，不复制账号，不直接写原生数据库。当前仅对已验证的 macOS 开放；独立 Codex 配置、VS Code 与 Windows/Linux 保留原接入。
+默认本机 Codex 的账号管理复用现有控制流程，提供显式的原生连接初始化。先核验已安装 CLI 的 Unix transport 和 proxy 能力，再核验任务、默认配置目录和唯一 App 进程，正常退出后通过原 App 支持的 CLI 路径配置启动透明适配器。不修改原 App 安装包，不复制账号，不直接写原生数据库。macOS 使用本篇的 Unix transport；Windows 使用[原 App 持有的共享 stdio](../bug-fix/2026-11-12-windows-native-side-chat-writer.md)，其生命周期和实机证据单独记录。独立 Codex 配置、VS Code 与 Linux 保留原接入。
 
 初始化的任务保护按[Desktop 生命周期范围与核验期限](../bug-fix/2026-11-10-desktop-initialization-task-audit.md)区分已核验的独立 native CLI 和原 App owner；账号切换保护不收窄。历史候选的 owner 与快照核验有界并行，并共享绝对期限；未知状态仍拒绝重启。
 
-适配器由原 App 持有，保留原始初始化与其他配置，仅将主要运行时的 stdio 转为同用户私有 Unix socket。其他 CLI 命令、启动配置探测和辅助初始化透传。Bridge 只在用户明确创建或删除时临时连接同一个运行时；断开该连接不结束原 App。配置只有在由网关启动 App 时生效，已配置但普通启动未共享时明确拒绝另起 writer。默认 macOS 创建侧边聊天还要求先初始化：未配置时提前明确提示“账号管理 → Codex 原生会话连接 → 初始化连接”，不启动独立运行时，不重启原 App，不把尚未提交的操作记作未知写入。其他历史元数据操作保留未初始化时的原路径，避免阻断尚未被原 App 持有的历史删除。Windows/Linux 及独立配置的元数据路径不变。
+Mac 适配器由原 App 持有，保留原始初始化与其他配置，仅将主要运行时的 stdio 转为同用户私有 Unix socket。其他 CLI 命令、启动配置探测和辅助初始化透传。Bridge 只在用户明确创建或删除时临时连接同一个运行时；断开该连接不结束原 App。配置只有在由网关启动 App 时生效，已配置但普通启动未共享时明确拒绝另起 writer。默认 macOS 与 Windows 创建侧边聊天还要求先初始化：未配置时提前明确提示“账号管理 → Codex 原生会话连接 → 初始化连接”，不启动独立运行时，不重启原 App，不把尚未提交的操作记作未知写入。其他历史元数据操作保留未初始化时的原路径，避免阻断尚未被原 App 持有的历史删除。Linux 及独立配置的元数据路径不变。
 
 ## 身份与事务
 

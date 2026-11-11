@@ -32,6 +32,7 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
             'app_factory': patch.object(accounts_module, 'DesktopApp', return_value=self.app),
             'settings': patch.object(desktop_runtime, 'settings', return_value=None),
             'validate_runtime': patch.object(desktop_runtime, 'validate_runtime'),
+            'launcher_settings': patch.object(desktop_runtime, 'launcher_settings', return_value={}),
             'configure': patch.object(desktop_runtime, 'configure'),
             'connect': patch.object(desktop_runtime, 'connect', return_value=Mock()),
             'initialize_lock': patch.object(desktop_runtime, 'initialization_lock', side_effect=lambda home: nullcontext()),
@@ -62,7 +63,7 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
             self.manager.control(self.value)
         self.assertFalse(self.manager.desktop_runtime_status()['supported'])
         self.bridge.host = 'local'
-        with patch.object(accounts_module, 'sys', SimpleNamespace(platform='win32')):
+        with patch.object(accounts_module, 'sys', SimpleNamespace(platform='linux')):
             with self.assertRaisesRegex(ValueError, '不支持'):
                 self.manager.control(self.value)
         self.mocks['stop'].assert_not_called()
@@ -155,6 +156,27 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
         self.mocks['stop'].assert_not_called()
         self.mocks['configure'].assert_not_called()
         self.app.start.assert_not_called()
+
+    def test_unverified_windows_launcher_keeps_app_running_before_worker(self):
+        self.mocks['launcher_settings'].side_effect = ValueError('package identity unavailable')
+        with self.assertRaisesRegex(ValueError, 'package identity'):
+            self.manager.control(self.value)
+        self.assertIsNone(self.manager.thread)
+        self.mocks['stop'].assert_not_called()
+        self.app.start.assert_not_called()
+
+    def test_windows_initialization_uses_native_birth_and_original_home_checks(self):
+        self.mocks['identity'].return_value = {'pid': 41, 'image': str(self.app.executable), 'created': 12345, 'session': 1, 'parent': 10}
+        with patch.object(accounts_module, 'sys', SimpleNamespace(platform='win32')), \
+             patch('bridge.platforms.windows.codex_daemon_env.read_process_environment', return_value=({'CODEX_HOME': str(self.home)}, None)) as environment, \
+             patch('bridge.platforms.windows.desktop.commands', return_value={41: str(self.app.executable)}):
+            self.run_initialization()
+            self.assertEqual(self.manager.state['phase'], 'complete')
+            self.assertTrue(self.manager.desktop_runtime_status()['supported'])
+            self.assertEqual(environment.call_args.args[1], {'processStartTime': '12345'})
+            self.assertIn('USERPROFILE', environment.call_args.args[3])
+        self.mocks['stop'].assert_called_once()
+        self.mocks['launcher_settings'].assert_called_once_with(self.app.executable)
 
     def test_pending_gateway_submission_blocks_initialization_before_worker(self):
         self.bridge.submissions['chat:submission'] = {'status': 'unknown', 'title': 'Pending chat'}

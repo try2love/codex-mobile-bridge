@@ -335,7 +335,7 @@ class Accounts:
         return result
 
     def desktop_runtime_status(self):
-        supported = sys.platform == 'darwin' and getattr(self.bridge, 'host', 'local') == 'local'
+        supported = sys.platform in ('darwin', 'win32') and getattr(self.bridge, 'host', 'local') == 'local'
         result = {'supported': supported, 'configured': False}
         if supported:
             from bridge.clients.codex.desktop_runtime import settings
@@ -960,7 +960,7 @@ class Accounts:
     def desktop_runtime_lifecycle(self):
         # Lock even before initialization has saved settings: another gateway
         # may be between its idle audit and the first shared configuration write.
-        if sys.platform == 'darwin' and getattr(self.bridge, 'host', 'local') == 'local':
+        if sys.platform in ('darwin', 'win32') and getattr(self.bridge, 'host', 'local') == 'local':
             from bridge.clients.codex.desktop_runtime import initialization_lock
             return initialization_lock(self.home)
         return nullcontext()
@@ -1030,7 +1030,7 @@ class Accounts:
             return self.public()
 
     def initialize_desktop_runtime(self, value):
-        if sys.platform != 'darwin' or getattr(self.bridge, 'host', 'local') != 'local':
+        if sys.platform not in ('darwin', 'win32') or getattr(self.bridge, 'host', 'local') != 'local':
             raise ValueError('此入口不支持 Codex 原生连接初始化')
         required = {'action', 'confirmed', 'tasksConfirmed', 'requestId'}
         if (set(value) - {'acknowledgeUnavailable'} != required or value.get('confirmed') is not True
@@ -1060,8 +1060,9 @@ class Accounts:
                 raise ValueError('请先在桌面端指定 Codex 桌面程序路径')
             app = DesktopApp(executable, self.home)
             app.validate(self.runtime)
-            from bridge.clients.codex.desktop_runtime import validate_runtime
+            from bridge.clients.codex.desktop_runtime import validate_runtime, launcher_settings
             validate_runtime(self.runtime)
+            launcher_settings(app.executable)
             self.state = {'phase': 'preparing', 'operation': 'desktopRuntime', 'requestId': request_id, 'error': None}
             self.phase('preparing')
             self.thread = threading.Thread(target=self._initialize_desktop_runtime, args=(app, acknowledged), daemon=True)
@@ -1071,8 +1072,12 @@ class Accounts:
     def _initialize_desktop_runtime(self, app, acknowledged=False):
         from bridge.clients.codex.desktop_runtime import configure, connect, initialization_lock, process_identity
         from bridge.clients.lifecycle import inspect_client, stop_client
-        from bridge.platforms.macos.codex_daemon_env import read_process_environment
-        from bridge.platforms.macos.desktop import commands
+        if sys.platform == 'win32':
+            from bridge.platforms.windows.codex_daemon_env import read_process_environment
+            from bridge.platforms.windows.desktop import commands
+        else:
+            from bridge.platforms.macos.codex_daemon_env import read_process_environment
+            from bridge.platforms.macos.desktop import commands
         descriptor = {'id': 'codex', 'installed': True, 'executable': str(app.executable), 'dataDirectory': str(self.home)}
 
         def observed():
@@ -1081,15 +1086,17 @@ class Accounts:
             if state.get('unknown') or len(main) > 1 or state.get('running') and not main:
                 raise ValueError('无法确认唯一的 Codex 桌面进程，请在电脑端检查后重试')
             identities = {pid: process_identity(pid) for pid in main}
-            if any(identity['image'] != str(app.executable) for identity in identities.values()):
+            if any(identity['image'] != os.path.normcase(str(app.executable)) for identity in identities.values()):
                 raise ValueError('Codex 桌面进程身份已变化，请重新初始化连接')
             launch_commands = commands(main) if main else {}
             for pid, identity in identities.items():
-                record = {'processIdentity': {'uniqueId': identity['birth'][0], 'startSeconds': identity['started'][0],
-                                               'startMicroseconds': identity['started'][1]}}
+                record = ({'processStartTime': str(identity['created'])} if sys.platform == 'win32' else
+                          {'processIdentity': {'uniqueId': identity['birth'][0], 'startSeconds': identity['started'][0],
+                                               'startMicroseconds': identity['started'][1]}})
                 environment, _ = read_process_environment(pid, record, app.executable,
-                    ('CODEX_HOME', 'CODEX_SQLITE_HOME', 'CODEX_ELECTRON_USER_DATA_PATH', 'HOME'))
-                home = Path(environment.get('CODEX_HOME') or Path(environment.get('HOME') or Path.home())/'.codex').resolve()
+                    ('CODEX_HOME', 'CODEX_SQLITE_HOME', 'CODEX_ELECTRON_USER_DATA_PATH', 'HOME', 'USERPROFILE'))
+                user_home = environment.get('USERPROFILE' if sys.platform == 'win32' else 'HOME') or Path.home()
+                home = Path(environment.get('CODEX_HOME') or Path(user_home)/'.codex').resolve()
                 sqlite_home = Path(environment.get('CODEX_SQLITE_HOME') or home).resolve()
                 command = launch_commands.get(pid)
                 if (home != self.home.resolve() or sqlite_home != home or environment.get('CODEX_ELECTRON_USER_DATA_PATH')

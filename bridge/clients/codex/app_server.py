@@ -21,6 +21,14 @@ class AppServerUnavailable(AppServerError):
     pass
 
 
+class AppServerRequestNotSent(AppServerUnavailable):
+    """This request was rejected before writing any native RPC bytes."""
+
+
+class AppServerMessageTooLarge(ValueError):
+    pass
+
+
 class AppServerReadTimeout(AppServerUnavailable):
     pass
 
@@ -36,6 +44,26 @@ class AppServerUnsupported(AppServerError):
 def daemon_shutting_down(payload):
     data = payload.get('data') if isinstance(payload, dict) and payload.get('code') == -32600 else None
     return isinstance(data, dict) and data.get('reason') == 'serverShuttingDown'
+
+
+def response_result(method, params, response):
+    """Preserve native rejection semantics across shared runtime transports."""
+    if 'error' in response:
+        error = response['error']
+        if method == 'thread/delete' and isinstance(error, dict):
+            from bridge.features.sessions.create import native_delete_error
+            raise native_delete_error(error, (params or {}).get('threadId'))
+        code = error.get('code') if isinstance(error, dict) else None
+        detail = error.get('message', 'App-server request failed') if isinstance(error, dict) else str(error)
+        if method in ('thread/archive', 'thread/unarchive'):
+            from bridge.features.sessions.create import ArchiveRejected
+            raise ArchiveRejected(error)
+        if code == -32601:
+            raise AppServerUnsupported(detail)
+        failure = AppServerError(detail)
+        failure.rpc_error = error
+        raise failure
+    return response['result']
 
 
 class _WebSocket(WebSocket):
@@ -151,22 +179,7 @@ class CodexAppServer:
                 if replay_safe:
                     raise AppServerReadTimeout('Codex runtime read timed out') from exc
                 raise AppServerUnknownResult('Codex runtime response timed out; request may have completed') from exc
-            if 'error' in response:
-                error = response['error']
-                if method == 'thread/delete' and isinstance(error, dict):
-                    from bridge.features.sessions.create import native_delete_error
-                    raise native_delete_error(error, (params or {}).get('threadId'))
-                code = error.get('code') if isinstance(error, dict) else None
-                detail = error.get('message', 'App-server request failed') if isinstance(error, dict) else str(error)
-                if method in ('thread/archive', 'thread/unarchive'):
-                    from bridge.features.sessions.create import ArchiveRejected
-                    raise ArchiveRejected(error)
-                if code == -32601:
-                    raise AppServerUnsupported(detail)
-                failure = AppServerError(detail)
-                failure.rpc_error = error
-                raise failure
-            return response['result']
+            return response_result(method, params, response)
         finally:
             with self.lock:
                 self.pending.pop(request_id, None)
