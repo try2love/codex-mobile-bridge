@@ -18,7 +18,9 @@ Codex CLI 的运行时目录统一经 `_runtime_home` 核验。本机保留本�
 
 ## 验证
 
-`tests/test_cli_remote_home.py` 在 CLI 模块的本机路径类型替换为 `PureWindowsPath` 时覆盖 Linux home 的 resume、create、archive 和 creation_context；相对路径、Windows 路径与 home 变化均在写入前拒绝。模型助手同时覆盖 `PurePosixPath` JSON 传输。真实 Windows→Linux SSH 验收另行记录。
+`tests/test_cli_remote_home.py` 在 CLI 模块的本机路径类型替换为 `PureWindowsPath` 时覆盖 Linux home 的 resume、create、archive 和 creation_context；相对路径、Windows 路径与 home 变化均在写入前拒绝。模型助手同时覆盖 `PurePosixPath` JSON 传输。
+
+真实 Windows 通过已保存的 88Server SSH 别名，以已核验源码的产品 proxy 通路连接现存原生服务，initialize 返回 `/home/sp/.codex`；同一 Windows 进程中的旧 `Path.is_absolute()` 返回 false，新 `_runtime_home()` 接受并固定该 POSIX home。独立 socket peer 元数据对应目标用户的 0.160 二进制，握手版本也为 0.160。该检查未启动/退出 daemon、读取或接续固定会话、发送模型请求。原始证据为 `.tmp/feedback-20261111-10/root-windows-ssh-handshake.json` 和 `root-ssh-peer.json`；它证明实际跨系统握手与错误路径判断，不代替完整会话恢复或该版本排空验收。
 
 ## 影响
 
