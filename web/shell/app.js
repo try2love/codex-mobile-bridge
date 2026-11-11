@@ -481,6 +481,11 @@ async function loadList(reset=false){
     if(generation!==listGeneration)return [];
     const merged=[...groups.values()].flat().sort((a,b)=>(mode==='recent'?Number(pinRow(b).bridgePinned)-Number(pinRow(a).bridgePinned):0)||(b.recency-a.recency)||b.id.localeCompare(a.id)||b.host.localeCompare(a.host));
     listRows=merged.slice(0,targetCount);availableSources=[...sources].sort();renderList();
+    if(freshSources.size){
+      listOffset=listRows.length;listHasMore=merged.length>=targetCount;
+      listQuery=query;listArchived=archived;listFilterKey=filter;
+      saveListSnapshot(filter);
+    }
     return merged;
   };
   const read=async host=>{
@@ -511,8 +516,6 @@ async function loadList(reset=false){
     if(listComplete){
       availableSources=[...new Set([...freshSources.values()].flat())].sort();
       listRows=merged.slice(0,targetCount);
-      listOffset=listRows.length;listHasMore=merged.length>=targetCount;
-      listQuery=query;listArchived=archived;listFilterKey=filter;
       if(!renderSourceFilter()){loadList(true).catch(e=>toast(e.message));return;}
       saveListSnapshot(filter);clientNavigation.acknowledgeList('codex',{...local,unavailableHosts:[],complete:true});listSync.acknowledgeSuccess();
     }
