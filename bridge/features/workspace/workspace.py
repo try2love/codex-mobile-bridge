@@ -707,8 +707,57 @@ class GitWorkspace:
             return {'outcome': 'success', 'message': labels[action], 'state': result}
 
 
-def operate(root, action, params):
+def host_operation(root, action, params, history_path=None):
+    """Explicit read-only host navigation; project writes keep their old root."""
+    if action not in ('list', 'info', 'preview', 'download', 'download-stream', 'archive-stream'):
+        raise PermissionError('宿主机文件浏览仅支持读取')
+    params = dict(params)
+    params.pop('scope')
+    value = params.pop('path', '')
+    if not isinstance(value, str) or len(value) > 4096 or any(ord(c) < 32 for c in value):
+        raise ValueError('文件路径无效')
+    project = Path(root).resolve() if root and Path(root).is_absolute() else None
+    start = project or (Path(history_path).parent.resolve() if history_path and Path(history_path).is_absolute() else None)
+    path = Path(value) if value else start
+    if path is None:
+        raise ValueError('此聊天的记录目录暂不可用')
+    if not path.is_absolute():
+        if start is None or path.drive:
+            raise ValueError('请输入完整目录路径')
+        path = start/path
+    if (os.name == 'nt' and display_absolute_path(path.anchor).startswith('\\\\')
+            and (project is None or display_absolute_path(path.anchor).casefold() != display_absolute_path(project.anchor).casefold())):
+        raise PermissionError('只能浏览本机磁盘或当前项目的共享目录')
+    anchor = Path(path.anchor)
+    relative = path.relative_to(anchor).as_posix() if path != anchor else ''
+    Workspace.parts(relative)  # Do not normalize away traversal or follow links.
+    params['path'] = relative
+    if action == 'info' and not relative:
+        result = {'name': path.anchor, 'path': '', 'size': None, 'kind': 'directory'}
+    else:
+        result = operate(str(anchor), action, params)
+    if not isinstance(result, dict):
+        return result  # Keep the existing streaming context manager intact.
+    absolute = display_absolute_path(str(path)).replace(os.sep, '/')
+    result.update(path=absolute, absolutePath=absolute)
     try:
+        result['projectPath'] = path.relative_to(project).as_posix() if project else None
+        if result['projectPath'] == '.': result['projectPath'] = ''
+    except ValueError:
+        result['projectPath'] = None
+    if action == 'list':
+        result['project'] = display_absolute_path(str(project)).replace(os.sep, '/') if project else ''
+        result['parentPath'] = display_absolute_path(str(path.parent)).replace(os.sep, '/') if path != anchor else None
+        for entry in result['entries']:
+            entry['path'] = display_absolute_path(str(anchor/entry['path'])).replace(os.sep, '/')
+            entry['projectPath'] = ((result['projectPath'] + '/' if result['projectPath'] else '') + entry['name']) if result['projectPath'] is not None else None
+    return result
+
+
+def operate(root, action, params, history_path=None):
+    try:
+        if params.get('scope') == 'host':
+            return host_operation(root, action, params, history_path)
         workspace = Workspace(root)
         if action == 'git-status': return GitWorkspace(workspace).status()
         if action == 'git-diff': return GitWorkspace(workspace).diff(**params)

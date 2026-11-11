@@ -4390,16 +4390,18 @@ class Bridge:
     def workspace(self, thread_id, action, params):
         uuid.UUID(thread_id)
         # Read project metadata only: file browsing never activates a Codex owner.
-        root = self.store.get(thread_id).get('cwd')
+        metadata = self.store.get(thread_id)
+        root = metadata.get('cwd')
+        history_path = metadata.get('rollout_path')
         if self.local:
-            return workspace_operation(root, action, params)
+            return workspace_operation(root, action, params, history_path=history_path)
         if not isinstance(self.store, RemoteStore):
             raise RemoteUnavailable('此主机暂不支持文件浏览')
         source = source_text('features/workspace/workspace.py')
         if action in ('download-stream', 'archive-stream'):
-            source += '\nimport json, sys\ntry:\n with operate(**' + payload({'root': root, 'action': action, 'params': params}) + ') as (metadata, stream):\n  sys.stdout.buffer.write(json.dumps(metadata).encode()+b"\\n")\n  while True:\n   chunk=stream.read(65536)\n   if not chunk: break\n   sys.stdout.buffer.write(chunk)\nexcept (ValueError, PermissionError, OSError) as error:\n sys.stdout.buffer.write(json.dumps({"error": str(error), "permission": isinstance(error, PermissionError)}).encode()+b"\\n")\n'
+            source += '\nimport json, sys\ntry:\n with operate(**' + payload({'root': root, 'action': action, 'params': params, 'history_path': history_path}) + ') as (metadata, stream):\n  sys.stdout.buffer.write(json.dumps(metadata).encode()+b"\\n")\n  while True:\n   chunk=stream.read(65536)\n   if not chunk: break\n   sys.stdout.buffer.write(chunk)\nexcept (ValueError, PermissionError, OSError) as error:\n sys.stdout.buffer.write(json.dumps({"error": str(error), "permission": isinstance(error, PermissionError)}).encode()+b"\\n")\n'
             return ssh_download(self.store.alias, source)
-        source += '\nimport json\ntry:\n result={"value": operate(**' + payload({'root': root, 'action': action, 'params': params}) + ')}\nexcept (ValueError, PermissionError) as error:\n result={"error": str(error)}\nprint(json.dumps(result, ensure_ascii=False))\n'
+        source += '\nimport json\ntry:\n result={"value": operate(**' + payload({'root': root, 'action': action, 'params': params, 'history_path': history_path}) + ')}\nexcept (ValueError, PermissionError) as error:\n result={"error": str(error)}\nprint(json.dumps(result, ensure_ascii=False))\n'
         result = ssh_read(self.store.alias, source, timeout=60)
         if 'error' in result: raise ValueError(result['error'])
         return result['value']

@@ -8,6 +8,7 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+from urllib.parse import quote
 
 from bridge.clients.codex.remote import RemoteStore
 from bridge.app.service import Bridge
@@ -116,6 +117,22 @@ class DownloadHttpTests(unittest.TestCase):
         with path.open('wb') as stream:
             stream.truncate(MAX_TRANSFER + 1)
         self.assertEqual(self.get({**auth, 'Range': 'bytes=0-15'}, url+'?preview=1')[0], 400)
+
+    def test_host_file_scope_requires_auth_and_never_grants_write_or_git_access(self):
+        project = self.root/'project'; project.mkdir()
+        self.server.bridge.workspace = lambda thread, action, params: operate(str(project), action, params)
+        base = '/api/sessions/'+support.THREAD+'/workspace'
+        target = '?scope=host&path='+quote(self.file.as_posix(), safe='')
+        self.assertEqual(self.get({}, base+'/preview'+target)[0], 401)
+        auth = self.login()
+        status, _, body = self.get(auth, base+'/download'+target+'&info=1')
+        self.assertEqual(status, 200)
+        self.assertIn(b'"projectPath": null', body)
+        status, headers, data = self.get({**auth, 'Range': 'bytes=0-3'}, base+'/download'+target)
+        self.assertEqual((status, data), (206, self.data[:4]))
+        self.assertEqual(self.get(auth, base+'/git-status'+target)[0], 403)
+        self.assertEqual(self.request('POST', base+'/upload'+target, {}, auth)[0], 403)
+        self.assertEqual(self.get(auth, base+'?scope=unknown')[0], 400)
 
     def test_media_workspace_preview_is_typed_without_enabling_inline_html(self):
         auth = self.login()

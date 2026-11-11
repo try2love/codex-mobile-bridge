@@ -1513,9 +1513,10 @@ class WslEntry(WslFeatures):
 
     @_entry_write
     def workspace(self, identifier, action, params):
-        root = self.store.get(identifier)['cwd']
+        metadata = self.store.get(identifier)
+        root = metadata.get('cwd')
         source = source_text('features/workspace/workspace.py')
-        args = payload({'root': root, 'action': action, 'params': params})
+        args = payload({'root': root, 'action': action, 'params': params, 'history_path': metadata.get('rollout_path')})
         if action in ('download-stream', 'archive-stream'):
             source += '\nimport json,sys\ntry:\n with operate(**' + args + ') as (metadata,stream):\n  sys.stdout.buffer.write(json.dumps(metadata).encode()+b"\\n")\n  while True:\n   b=stream.read(65536)\n   if not b:break\n   sys.stdout.buffer.write(b)\nexcept (ValueError,PermissionError,OSError) as error:\n sys.stdout.buffer.write(json.dumps({"error":str(error),"permission":isinstance(error,PermissionError)}).encode()+b"\\n")\n'
             return self._download(source)

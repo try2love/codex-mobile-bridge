@@ -1226,6 +1226,11 @@ class Handler(BaseHTTPRequestHandler):
             if workspace_match:
                 thread_id, operation = workspace_match.groups()
                 relative = query.get('path', [''])[0]
+                if query.get('scope') not in (None, ['host']):
+                    raise ValueError('文件浏览范围无效')
+                scope = {'scope': 'host'} if query.get('scope') == ['host'] else {}
+                if scope and (write or operation not in (None, 'info', 'preview', 'download')):
+                    raise PermissionError('宿主机文件浏览仅支持读取')
                 if write:
                     if operation == 'git-action':
                         body = self.read_json()
@@ -1252,23 +1257,23 @@ class Handler(BaseHTTPRequestHandler):
                 if operation == 'git-diff':
                     return self.output(200, bridge.workspace(thread_id, operation, {'path': relative, 'section': query.get('section', ['unstaged'])[0]}))
                 if operation is None:
-                    return self.output(200, bridge.workspace(thread_id, 'list', {'path': relative, 'hidden': query.get('hidden') == ['true'],
+                    return self.output(200, bridge.workspace(thread_id, 'list', {**scope, 'path': relative, 'hidden': query.get('hidden') == ['true'],
                         'search': query.get('search', [''])[0], 'offset': int(query.get('offset', ['0'])[0])}))
                 if operation == 'download':
                     policy = transfer_settings(self.server.transfer_directory)
                     if query.get('info') == ['1']:
-                        return self.output(200, {**bridge.workspace(thread_id, 'info', {'path': relative}), **policy, 'locatable': True})
+                        return self.output(200, {**bridge.workspace(thread_id, 'info', {**scope, 'path': relative}), **policy, 'locatable': True})
                     preview = query.get('preview') == ['1']
                     if 'preview' in query and (not preview or 'explicit' in query or 'archive' in query):
                         raise ValueError('无效预览下载参数')
                     explicit = query.get('explicit') == ['1']
-                    params = {'path': relative, 'limit': min(MAX_TRANSFER, policy['clickDownloadMiB'] * 1024 * 1024) if preview else None if explicit else policy['clickDownloadMiB'] * 1024 * 1024, **self.download_request()}
+                    params = {**scope, 'path': relative, 'limit': min(MAX_TRANSFER, policy['clickDownloadMiB'] * 1024 * 1024) if preview else None if explicit else policy['clickDownloadMiB'] * 1024 * 1024, **self.download_request()}
                     action = 'archive-stream' if explicit and query.get('archive') == ['1'] else 'download-stream'
                     with bridge.workspace(thread_id, action, params) as (metadata, stream):
                         mime = media_type(metadata['name']) if preview else None
                         return self.download_response(metadata, stream, mime or 'application/octet-stream',
                                                       'inline' if mime else 'attachment')
-                result = bridge.workspace(thread_id, operation, {'path': relative})
+                result = bridge.workspace(thread_id, operation, {**scope, 'path': relative})
                 return self.output(200, result)
             file_match = re.fullmatch(r"/api/sessions/([0-9a-f-]{36})/files/([a-f0-9]{64})", path)
             if not write and file_match:
