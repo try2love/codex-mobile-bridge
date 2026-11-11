@@ -656,7 +656,7 @@ test('history updates retain expanded activities and honor visibility settings',
 });
 
 test('skill selection clears after acceptance and expired choices cannot be submitted',async()=>{
- const ui=fixture();let available=true;ui.setHandler(async(url,body)=>body?{status:'accepted'}:url.includes('/catalog')?{skills:available?[{id:'review',name:'Review',selectable:true}]:[]}:url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},capabilities:{skills:true},messages:[]}:{sessions:[]});await ui.view.choose('claude');await ui.view.open('a');await ui.view.skills();let dialog=ui.document.querySelector('dialog'),check=dialog.querySelector('input[type=checkbox]')||dialog.querySelector('.skill-option').querySelector('input');check.checked=true;check.onchange();dialog.close();ui.view.input.value='review';await ui.view.submit();assert.equal(ui.view.skillPills.textContent,'');
+ const ui=fixture();let available=true;ui.setHandler(async(url,body)=>body?{status:'accepted'}:url.includes('/catalog')?{skills:available?[{id:'review',name:'Review',selectable:true}]:[]}:url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},capabilities:{skills:true,send:true},messages:[]}:{sessions:[]});await ui.view.choose('claude');await ui.view.open('a');await ui.view.skills();let dialog=ui.document.querySelector('dialog'),check=dialog.querySelector('input[type=checkbox]')||dialog.querySelector('.skill-option').querySelector('input');check.checked=true;check.onchange();dialog.close();ui.view.input.value='review';await ui.view.submit();assert.equal(ui.view.skillPills.textContent,'');
  await ui.view.skills();dialog=ui.document.querySelector('dialog');check=dialog.querySelector('.skill-option').querySelector('input');check.checked=true;check.onchange();dialog.close();available=false;await ui.view.skills();assert.ok(ui.view.skillPills.children[0].classList.contains('invalid'));const count=ui.calls.filter(c=>c.body).length;ui.view.input.value='do not submit expired skill';await ui.view.submit();assert.equal(ui.calls.filter(c=>c.body).length,count);assert.match(ui.view.error.textContent,/失效/);
 });
 test('request updates and language changes preserve answers already entered',async()=>{
@@ -702,7 +702,7 @@ test('a completed mutation cannot reuse an earlier history read as fresh state',
  const old=ui.view.detail(ui.view.generation);await ui.view.mutate('settings',{model:'new-model'});assert.equal(pending.length,2,'write completion must start a new detail read');
  pending[0]({session:{id:'a',title:'Obsolete',model:'obsolete-model',status:'idle'},messages:[{id:'old',role:'assistant',text:'obsolete history'}]});await old;
  assert.doesNotMatch(ui.view.messages.textContent,/obsolete history/);assert.equal(ui.view.send.disabled,true);
- pending[1]({session:{id:'a',title:'Current',model:'new-model',status:'idle'},messages:[{id:'new',role:'assistant',text:'current history'}]});await new Promise(setImmediate);assert.match(ui.view.messages.textContent,/current history/);assert.equal(ui.view.send.disabled,false);
+ pending[1]({session:{id:'a',title:'Current',model:'new-model',status:'idle',capabilities:{send:true}},messages:[{id:'new',role:'assistant',text:'current history'}]});await new Promise(setImmediate);assert.match(ui.view.messages.textContent,/current history/);assert.equal(ui.view.send.disabled,false);
 });
 
 test('cached, failed and disconnected details remain readable without allowing task mutations',async()=>{
@@ -752,7 +752,7 @@ test('reads started before and during a write never replace its completion refre
  const ui=await opened(),pending=[];let accept;ui.setHandler((url,body)=>body?new Promise(resolve=>accept=resolve):url.includes('/detail')?new Promise(resolve=>pending.push(resolve)):Promise.resolve({sessions:[]}));
  const old=ui.view.detail(ui.view.generation),writing=ui.view.mutate('settings',{model:'new'}),during=ui.view.refresh();pending[0]({session:{id:'a',title:'Before',status:'idle'},messages:[{id:'old',role:'assistant',text:'before write'}]});await old;assert.equal(ui.view.messages.textContent.includes('before write'),false);
  accept({status:'accepted'});await writing;assert.equal(pending.length,3);pending[1]({session:{id:'a',title:'During',status:'idle'},messages:[{id:'mid',role:'assistant',text:'during write'}]});await during;await new Promise(setImmediate);assert.equal(ui.view.messages.textContent.includes('during write'),false);assert.equal(ui.view.send.disabled,true);
- pending[2]({session:{id:'a',title:'After',status:'idle'},messages:[{id:'new',role:'assistant',text:'after write'}]});await new Promise(setImmediate);assert.match(ui.view.messages.textContent,/after write/);assert.equal(ui.view.send.disabled,false);
+ pending[2]({session:{id:'a',title:'After',status:'idle',capabilities:{send:true}},messages:[{id:'new',role:'assistant',text:'after write'}]});await new Promise(setImmediate);assert.match(ui.view.messages.textContent,/after write/);assert.equal(ui.view.send.disabled,false);
 });
 
 test('an old account write cannot invalidate the new account list refresh',async()=>{
