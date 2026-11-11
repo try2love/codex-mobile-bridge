@@ -355,7 +355,7 @@ class DesktopConnectionsPanel {
     const form=node('div',undefined,'cli-access-form'),field=(title,control)=>{const label=node('label');label.append(node('span',title),control);form.append(label);control.setAttribute('aria-label',BridgeI18n.t(title));};
     const source=node('select'),session=node('select'),model=node('select'),permission=node('select');field('会话来源',source);field('聊天',session);field('发送模型',model);field('审批方式',permission);
     const modelActions=node('div',undefined,'actions'),models=node('button','刷新模型'),saveModel=node('button','应用模型'),savePermission=node('button','应用审批方式');for(const b of [models,saveModel,savePermission])b.type='button';modelActions.append(models,saveModel,savePermission);
-    const help=node('p','配置仅应用于所选来源的这条聊天。模型来自原客户端；审批需要原会话加载网关 Hook。账号与登录在原客户端管理。','account-muted');root.append(heading,status,error,plugin,form,modelActions,help);
+    const help=node('p','配置仅应用于所选来源的这条聊天。模型来自原客户端；审批需要原会话加载网关 Hook。账号接入在上方管理。','account-muted');root.append(heading,status,error,plugin,form,modelActions,help);
     let value=null,catalog=null,busy=false,stale=true;
     const currentSource=()=>value?.surfaces?.find(row=>row.id===source.value),currentSession=()=>currentSource()?.sessions?.find(row=>row.id===session.value);
     const option=(label,id)=>{const n=node('option',label);n.value=id;return n;};

@@ -3146,10 +3146,30 @@ class DesktopSessions:
     def client_accounts(self, provider, value):
         operation = value.get('operation', 'list')
         if provider == 'antigravity':
-            if operation != 'list':
-                raise ValueError('请在对应的 Antigravity 原客户端管理登录，再刷新账号状态')
-            return {**self.adapters[provider].accounts(), 'provider': provider,
-                    'gatewayRunning': self.gateway_running}
+            from bridge.clients.antigravity.accounts import AntigravityAccounts
+            adapter = self.adapters[provider]
+            key = (provider, str(adapter.home))
+            if key not in self.account_stores:
+                self.account_stores[key] = AntigravityAccounts(adapter.directory/'accounts', adapter.home, adapter.accounts)
+            store = self.account_stores[key]
+            if operation == 'list':
+                result = store.public()
+            elif operation == 'edit':
+                return store.edit(value.get('id'))
+            elif operation in ('import-current', 'switch', 'rename', 'remove'):
+                with self.client_lock, self._changing(provider):
+                    if operation == 'import-current':
+                        result = store.import_current(value.get('name', ''))
+                    elif operation == 'switch':
+                        result = store.restore(value.get('id'))
+                    elif operation == 'rename':
+                        result = store.rename(value.get('id'), value.get('name'))
+                    else:
+                        result = store.remove(value.get('id'))
+                    self.client_cache = None
+            else:
+                raise ValueError('此 Antigravity 配置请在原客户端管理')
+            return {**result, 'provider': provider, 'gatewayRunning': self.gateway_running}
         if provider == 'deepseek' and self.config.get('deepseekManualBinding'):
             if operation != 'list':
                 raise ValueError('手动绑定的账号和 API 请在第三方客户端中管理')

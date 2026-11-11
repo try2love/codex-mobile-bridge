@@ -362,7 +362,7 @@ class AntigravitySafetyTests(unittest.TestCase):
             self.assertEqual(value['accounts'], [])
             self.assertEqual(value['provider'], 'antigravity')
             self.assertFalse(value['canSwitch'])
-            for operation in ('switch', 'import-current', 'save-api'):
+            for operation in ('import-current', 'save-api'):
                 with self.assertRaisesRegex(ValueError, '原客户端'):
                     manager.client_accounts('antigravity', {'operation': operation})
 

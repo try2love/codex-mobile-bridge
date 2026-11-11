@@ -7,12 +7,79 @@ import plistlib
 import re
 import shlex
 import sys
+import subprocess
 from functools import lru_cache
 
 
 BUNDLE_IDS = {'com.google.antigravity': 'app', 'com.google.antigravity-ide': 'ide'}
 CLI_RELEASES = ('https://antigravity-cli-auto-updater-974169037036.us-central1.run.app',
                 'https://storage.googleapis.com/antigravity-public/antigravity-cli')
+
+
+def login_processes():
+    """Fresh process inventory covering frontends and servers sharing the login."""
+    names = ('agy', 'agy.exe', 'antigravity', 'antigravity.exe', 'antigravity ide',
+             'antigravity ide.exe', 'antigravity-ide')
+    def relevant(image):
+        path = Path(image)
+        if path.name.casefold() in names:
+            return True
+        if sys.platform == 'darwin':
+            bundle = next((parent for parent in path.parents if parent.suffix == '.app'), None)
+            if bundle is not None:
+                try:
+                    return plistlib.loads((bundle/'Contents/Info.plist').read_bytes()).get('CFBundleIdentifier') in BUNDLE_IDS
+                except FileNotFoundError:
+                    return 'antigravity' in bundle.name.casefold()
+        return any('antigravity' in part.casefold() for part in path.parts) and path.name.startswith('language_server')
+    if sys.platform == 'darwin':
+        from bridge.platforms.macos.desktop import _process_rows
+        return [pid for pid, image in _process_rows() if relevant(image)]
+    if sys.platform == 'linux':
+        result = []
+        for path in Path('/proc').iterdir():
+            if not path.name.isdigit():
+                continue
+            try:
+                if path.stat().st_uid != os.getuid():
+                    continue
+                # A running executable can be unlinked by an updater. Its
+                # kernel symlink remains evidence of a live credential writer.
+                image = os.readlink(path/'exe').removesuffix(' (deleted)')
+                if relevant(image):
+                    result.append(int(path.name))
+            except FileNotFoundError:
+                try:
+                    state = (path/'stat').read_text().rsplit(')', 1)[1].split()[0]
+                except FileNotFoundError:
+                    continue
+                if state not in ('Z', 'X'):
+                    raise ValueError('无法核验同用户进程，请稍后重试账号操作') from None
+            except PermissionError:
+                # Non-dumpable login helpers such as sd-pam are not clients.
+                # Keep an unreadable native candidate blocked, not silently idle.
+                try:
+                    name = (path/'comm').read_text().strip().casefold()
+                except FileNotFoundError:
+                    continue
+                if not name or name in names or name.startswith(('antigravity', 'language_server')):
+                    raise ValueError('无法核验 Antigravity 进程，请先在原客户端处理') from None
+        return result
+    if sys.platform == 'win32':
+        # Credential Manager is per user, including CLI processes in other sessions.
+        script = ("$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; "
+                  "$ids=@(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {"
+                  "$_.Name -match '^(agy|antigravity|antigravity ide|antigravity-ide)\\.exe$' -or "
+                  "($_.Name -match '^language_server.*\\.exe$' -and (!$_.ExecutablePath -or $_.ExecutablePath -match 'antigravity'))"
+                  "} | ForEach-Object {$owner=Invoke-CimMethod -InputObject $_ -MethodName GetOwnerSid -ErrorAction Stop; "
+                  "if($owner.ReturnValue -ne 0){throw 'process owner unavailable'}; "
+                  "if($owner.Sid -eq $sid){[int]$_.ProcessId}}); ConvertTo-Json -Compress -InputObject $ids")
+        result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
+                                 "$ErrorActionPreference='Stop'; "+script],
+                                capture_output=True, text=True, check=True, timeout=15,
+                                creationflags=subprocess.CREATE_NO_WINDOW)
+        return json.loads(result.stdout or '[]')
+    raise ValueError('当前系统无法核验 Antigravity 进程')
 
 
 @lru_cache(maxsize=8)
