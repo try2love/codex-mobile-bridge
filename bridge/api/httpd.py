@@ -6,6 +6,7 @@ import hmac
 import json
 import logging
 import mimetypes
+import os
 import re
 import secrets
 import socket
@@ -1487,8 +1488,9 @@ class Handler(BaseHTTPRequestHandler):
         if info:
             result = workspace.info(relative)
             cwd = bridge.store.get(thread_id).get('cwd')
-            result['path'] = workspace_relative_path(path, cwd)
-            result['locatable'] = result['path'] is not None
+            result['projectPath'] = workspace_relative_path(path, cwd)
+            result['path'] = result['absolutePath'].replace(os.sep, '/')
+            result['locatable'] = True
             return self.output(200, {**result, **policy})
         # Walk the authorized absolute path without following replaced parent
         # symlinks. Inline images retain their independent preview size bound.

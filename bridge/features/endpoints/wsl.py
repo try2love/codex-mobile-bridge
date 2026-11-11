@@ -33,6 +33,7 @@ from bridge.features.sessions.projects import Projects
 from bridge.features.endpoints.wsl_features import WslFeatures
 from bridge.features.endpoints.wsl_models import WslModelCatalog
 from bridge.features.workspace.uploads import Uploads
+from bridge.features.workspace.files import workspace_references
 from bridge.platforms.windows import wsl
 from bridge.resources import source_text
 
@@ -530,6 +531,7 @@ class WslEntry(WslFeatures):
                       files=[], queue=self._queue(identifier), submissions=self._submissions(identifier), goalRuntimeAvailable=False,
                       capabilities=CAPABILITIES, access=self._access(session),
                       accessManagement='external', forkedFrom=None)
+        result['files'] = workspace_references([message for turn in result['turns'] for message in turn['messages']], result.get('cwd'), host_files=True)
         for turn in result['turns']:
             turn['actionable'] = False
         result['capabilities'] = {**result['capabilities'], 'compact': result['connected'] and
@@ -551,9 +553,12 @@ class WslEntry(WslFeatures):
             if snapshot['sequence'] >= session.timeline.sequence:
                 session.timeline.update(snapshot)
             if mode == 'detail':
-                return session.timeline.detail(**options)
-            result = session.timeline.changes(**options) if mode == 'changes' else session.timeline.page(**options)
-            return {**result, 'files': []}
+                result = session.timeline.detail(**options)
+                messages = [{'role': 'assistant', 'text': session.timeline.details[result['key']]}]
+            else:
+                result = session.timeline.changes(**options) if mode == 'changes' else session.timeline.page(**options)
+                messages = result['rows']
+            return {**result, 'files': workspace_references(messages, snapshot.get('cwd'), host_files=True)}
 
     def full_history(self, identifier):
         session = self.session(identifier, attach=False)

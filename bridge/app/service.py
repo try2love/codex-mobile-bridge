@@ -33,7 +33,7 @@ from bridge.clients.desktop_app import DesktopApp
 from bridge.clients.codex.transport import ipc_endpoint
 from bridge.features.sessions.model import apply_patches, attachment_prompt, computer_use_approval, items_array, normalize_state, normalize_request, ordered_turns, pending_requests, async_requests, request_id, user_display_text, merge_saved_message_times
 from bridge.features.sessions.store import SessionStore, StoreUnavailable, persisted_submission_ids
-from bridge.features.workspace.files import artifact_paths, referenced_model_images
+from bridge.features.workspace.files import artifact_paths, referenced_model_images, host_file_links
 from bridge.features.workspace.workspace import operate as workspace_operation
 from bridge.clients.codex.catalog import Catalog, CatalogError, ModelStore, MODEL_REFRESH_SECONDS
 from bridge.platforms.codex_daemon_env import DaemonEnvironmentUnavailable
@@ -4251,6 +4251,7 @@ class Bridge:
             source = session.state if session.connected else session.history_state or session.state
             artifacts = artifact_paths(source or {}, self.store.home) if self.local else {}
         view["files"] = [{"id": k, "name": v["name"], "reference": v["reference"], "references": v["references"], "image": v["image"]} for k, v in artifacts.items()]
+        view['files'] = host_file_links(source or {}, view['files'])
         self._overlay_native_goal(session, thread_id, view)
         self._submission_meta(session, view)
         view["forkedFrom"] = self._fork_origin(thread_id)
@@ -4604,7 +4605,7 @@ class Bridge:
             self._merge_submission_attachments(session, projection.rows)
             if mode == 'detail':
                 result = projection.detail(**options)
-                texts = [projection.details[result['key']]]
+                file_items = [{'type': 'agentMessage', 'text': projection.details[result['key']]}]
             else:
                 result = projection.changes(**options) if mode == 'changes' else projection.page(**options)
                 result['meta'] = dict(result['meta'], host=self.host,
@@ -4614,7 +4615,9 @@ class Bridge:
                     result['meta']['linuxPermissionChecks'] = True
                     if session.connected:
                         result['meta']['permissionMode'] = linux_permissions.current_mode(session.state)
-                texts = [row['text'] for row in result['rows'] if row['role'] == 'assistant']
+                file_items = [{'type': 'userMessage' if row['role'] == 'user' else 'agentMessage',
+                               'text': row.get('text', ''), 'content': row.get('attachments', [])}
+                              for row in result['rows'] if row['role'] in ('user', 'assistant')]
             cwd = authoritative_view.get('cwd')
             # Resolve only evidence in the displayed window, not the entire
             # native snapshot on every poll.
@@ -4627,11 +4630,12 @@ class Bridge:
         if mode != 'detail':
             result['meta']['draftAccountIdentity'] = self._draft_account_identity(authoritative_view)
         file_state = {'cwd': cwd, 'turns': [
-            {'items': [{'type': 'agentMessage', 'text': text} for text in texts]},
+            {'items': file_items},
             {'items': media_items},
         ]}
         artifacts = artifact_paths(file_state, self.store.home) if self.local else {}
         result['files'] = [{'id': k, 'name': v['name'], 'reference': v['reference'], 'references': v['references'], 'image': v['image']} for k, v in artifacts.items()]
+        result['files'] = host_file_links(file_state, result['files'])
         if mode != 'detail':
             self._submission_meta(session, result['meta'])
             result['meta']['forkedFrom'] = self._fork_origin(thread_id)

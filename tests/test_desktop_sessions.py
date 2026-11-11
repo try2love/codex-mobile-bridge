@@ -75,7 +75,8 @@ class Adapters(unittest.TestCase):
             adapter.call.return_value = {'session': {'cwd': str(self.root)}, 'messages': [{'id': 'message', 'role': 'user', 'text': '', 'attachments': [{'type': 'file', 'path': str(file), 'name': file.name}]}]}
             detail = self.manager._read(provider, 'detail', 'chat')
             self.assertEqual(detail['messages'][0]['text'], '')
-            self.assertEqual(detail['files'][0]['path'], file.name)
+            self.assertEqual(detail['files'][0]['path'], file.as_posix())
+            self.assertEqual(detail['files'][0]['scope'], 'host')
 
     def test_native_work_mode_routes_once_through_shared_write_receipts(self):
         adapter = Mock(); adapter.receipts_path = None

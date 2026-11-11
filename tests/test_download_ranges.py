@@ -97,6 +97,19 @@ class DownloadHttpTests(unittest.TestCase):
         connection.close()
         return result
 
+    def test_trusted_artifact_outside_project_can_be_located_with_an_absolute_path(self):
+        import json
+        project = self.root/'project'; project.mkdir()
+        self.server.bridge.store = SimpleNamespace(get=lambda _: {'cwd': str(project)})
+        self.server.bridge.artifact = lambda thread, identifier: {'path': self.file, 'name': self.file.name, 'image': False}
+        url = '/api/sessions/' + support.THREAD + '/files/' + 'a' * 64 + '?info=1'
+        status, _, body = self.get(self.login(), url)
+        result = json.loads(body)
+        self.assertEqual(status, 200)
+        self.assertTrue(result['locatable'])
+        self.assertEqual(result['path'], self.file.as_posix())
+        self.assertIsNone(result['projectPath'])
+
     def test_audio_artifact_preview_keeps_range_and_original_download_action(self):
         path = self.root/'sound.wav'
         path.write_bytes(b'RIFF'+self.data)

@@ -533,7 +533,7 @@ class DesktopSessions:
                                                value.get('session', {}).get('cwd'))
                     self.history_images.bind(provider, sid, value.get('messages', []))
                     from bridge.features.workspace.files import workspace_references
-                    value['files'] = workspace_references(value.get('messages', []), value.get('session', {}).get('cwd'))
+                    value['files'] = workspace_references(value.get('messages', []), value.get('session', {}).get('cwd'), host_files=True)
                     # A truncated tail or any older page can start or end in
                     # the middle of a turn. Its last turn is not current state.
                     history = value.get('history')

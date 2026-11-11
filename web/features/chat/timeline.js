@@ -257,7 +257,7 @@ class ChatTimeline {
     }
     renderChatAttachments(node,row.attachments,{showToolImages:this.showToolImages,fileUrl:item=>{
       const file=[...this.files.values()].find(file=>file.reference===item.path||file.references?.includes(item.path));
-      return file?this.url('files/'+file.id):null;
+      return file?this.fileUrl(file):null;
     },url:item=>{
       if(!item.uploadId&&!item.desktopId)return null;
       const source=item.uploadId?this.url('uploads/'+encodeURIComponent(item.uploadId)+'/preview'):this.url('desktop-images/'+encodeURIComponent(item.desktopId));
@@ -265,6 +265,9 @@ class ChatTimeline {
     }});
     if(activity){content.open=!!open;content.ontoggle=()=>{if(content.open&&!this.details.has(row.key))load();};}
     return node;
+  }
+  fileUrl(file){
+    return file.scope==='host'?this.url('workspace/download')+'&scope=host&path='+encodeURIComponent(file.path):this.url('files/'+file.id);
   }
   fullText(row){
     const valid=()=>!this.abort.signal.aborted&&this.rows.get(row.key)?.row.version===row.version;
