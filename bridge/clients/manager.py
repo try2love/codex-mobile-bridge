@@ -2935,7 +2935,7 @@ class DesktopSessions:
         if provider == 'antigravity':
             with self.client_lock, self._changing(provider):
                 if not enabled and quit_desktop:
-                    raise ValueError('請在原電腦端退出 Antigravity；此處僅停用手機訪問')
+                    raise ValueError('请在电脑端退出 Antigravity；此处仅停用手机访问')
                 adapter = self.adapters['antigravity']
                 if enabled:
                     adapter.ensure_plugin()

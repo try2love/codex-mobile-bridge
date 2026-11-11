@@ -239,8 +239,8 @@ class HookIPCServer:
             'questions': [],
             'permissions': {},
             'options': [
-                {'id': 'accept', 'label': '允許 (Allow)'},
-                {'id': 'decline', 'label': '拒絕 (Deny)'},
+                {'id': 'accept', 'label': '允许 (Allow)'},
+                {'id': 'decline', 'label': '拒绝 (Deny)'},
             ],
         }
         pending = _PendingApproval(request_id, cid, tool_name, tool_args, prompt)
@@ -259,7 +259,7 @@ class HookIPCServer:
                 return {'decision': 'allow'}
             return {
                 'decision': 'deny',
-                'reason': pending.reason or '手機端已拒絕此操作 (Denied from mobile bridge)',
+                'reason': pending.reason or '手机端已拒绝此操作 (Denied from mobile bridge)',
             }
         finally:
             with self._lock:
@@ -321,7 +321,7 @@ class HookIPCServer:
         combined = '\n\n'.join(texts)
         return {
             'decision': 'continue',
-            'reason': f'手機端發來新追問，請直接接續處理並回覆使用者：\n\n{combined}',
+            'reason': f'手机端发来新追问，请直接继续处理并回复用户：\n\n{combined}',
         }
 
     def has_recent_heartbeat(self, conversation_id, ttl=HEARTBEAT_TTL):
@@ -349,7 +349,7 @@ class HookIPCServer:
         with self._lock:
             pending = self._pending.get(request_id)
             if pending is None or pending.conversation_id != conversation_id:
-                raise ValueError('該審批請求已過期或已在桌面端處理')
+                raise ValueError('该审批请求已过期或已在电脑端处理')
             normalized = str(decision_raw or '').strip().lower()
             if normalized in ('accept', 'allow', 'approve', 'approved', 'yes'):
                 pending.decision = 'allow'
@@ -360,7 +360,7 @@ class HookIPCServer:
     def enqueue_follow_up(self, conversation_id, text, mode='queue'):
         cleaned = str(text or '').strip()
         if not cleaned:
-            raise ValueError('訊息內容不能為空')
+            raise ValueError('消息内容不能为空')
         normalized_mode = 'steer' if str(mode or '').strip() == 'steer' else 'queue'
         entry = {
             'id': f'q-{uuid.uuid4().hex[:8]}',
@@ -387,9 +387,9 @@ class HookIPCServer:
                 continue
             item_mode = str(item.get('mode') or 'queue')
             title = (
-                '補充當前任務（將於當前步驟完成後立即注入）'
+                '补充当前任务（当前步骤完成后发送）'
                 if item_mode == 'steer'
-                else '完成後發送（已排隊，將於當前任務結束後送出）'
+                else '完成后发送（已排队，当前任务结束后发送）'
             )
             out.append({
                 'id': str(item.get('id') or f'queued-{idx}'),
@@ -485,7 +485,7 @@ class HookIPCServer:
             for item in list(self._pending.values()):
                 if item.conversation_id == conversation_id:
                     item.decision = 'deny'
-                    item.reason = '手機端已中止當前操作'
+                    item.reason = '手机端已停止当前操作'
                     item.event.set()
 
     def permission_mode(self, conversation_id):

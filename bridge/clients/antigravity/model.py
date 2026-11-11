@@ -78,7 +78,7 @@ def _diff_preview(target, replacement):
 def summarize_tool_title(tool_call):
     """Produce a concise native-style summary title (e.g. 'Ran ...', 'Read ...', 'Edited ...')."""
     if not isinstance(tool_call, dict):
-        return '工具調用'
+        return '工具调用'
     name = str(tool_call.get('name') or 'tool')
     args = _clean_args(tool_call.get('args'))
     if name == 'run_command':
@@ -126,11 +126,11 @@ def format_tool_call(tool_call):
         path = args.get('Path') or args.get('TargetFile') or ''
         diff = _diff_preview(args.get('Target') or args.get('TargetContent', ''),
                              args.get('Replacement') or args.get('ReplacementContent', ''))
-        return f'檔案: {path}\n{diff}'.strip()
+        return f'文件：{path}\n{diff}'.strip()
     if name == 'multi_replace_file_content':
         path = args.get('TargetFile') or args.get('Path') or ''
         chunks = args.get('ReplacementChunks') or []
-        parts = [f'檔案: {path}']
+        parts = [f'文件：{path}']
         if isinstance(chunks, list):
             for chunk in chunks[:10]:
                 if isinstance(chunk, dict):
@@ -142,7 +142,7 @@ def format_tool_call(tool_call):
         preview = '\n'.join(content.splitlines()[:40])
         if len(content.splitlines()) > 40:
             preview += '\n…'
-        return f'寫入檔案: {path}\n{preview}'.strip()
+        return f'写入文件：{path}\n{preview}'.strip()
     try:
         return json.dumps(args, ensure_ascii=False, indent=2)
     except (TypeError, ValueError):
