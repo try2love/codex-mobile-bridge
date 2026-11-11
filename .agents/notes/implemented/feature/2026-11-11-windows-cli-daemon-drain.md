@@ -26,7 +26,11 @@ Windows 实机的现有 Python 3.11.1 已创建并关闭数值 `AF_UNIX` 套接�
 
 上述 Job 启动失败没有进入 Bridge 维护，不能据此判断关闭协议成功或失败。通过现有 Explorer 启动后，隔离 daemon 实际启动、FILETIME 和原生锁核验通过。随后实机只读检查同一 socket 的 `SIO_AF_UNIX_GETPEERPID`：返回成功，在四字节 ULONG 中写入与所持进程句柄匹配的 PID，但报告字节数为 0。没有发送任何 WebSocket 应用数据。证据为 `.tmp/feedback-20261111-10/explorer-r4-r3/peer-pid-readonly.json`。
 
-[同版 Codex 的原生 Windows 核验](https://github.com/openai/codex/blob/c40729ea5cf8e947481b130c59807273eda2f8e9/codex-rs/uds/src/windows_peer.rs#L24-L46)也支持该回执。Bridge 现在接受 ioctl 成功、非零 PID、报告长度 0 或 4 的组合，仍须对端 PID 与持有的原进程句柄匹配；错误返回、零 PID 或其它长度拒绝。定向回归覆盖这些边界、对端变更和回执丢失。Windows 实机的完整正常排空、跨网关回执和实际退出仍单独验收。
+[同版 Codex 的原生 Windows 核验](https://github.com/openai/codex/blob/c40729ea5cf8e947481b130c59807273eda2f8e9/codex-rs/uds/src/windows_peer.rs#L24-L46)也支持该回执。Bridge 现在接受 ioctl 成功、非零 PID、报告长度 0 或 4 的组合，仍须对端 PID 与持有的原进程句柄匹配；错误返回、零 PID 或其它长度拒绝。定向回归覆盖这些边界、对端变更和回执丢失。
+
+修正 peer 回执后，同一冻结产品源的 Windows 实机验收由两轮分段完成九项检查。基础轮通过 FILETIME 对照、外部原生锁占用只观察、首代正常退出、回执丢失时活跃任务仍存活、不同网关数据目录共享同 home 的派发标记五项。该轮因夹具没有开启原生 INFO 日志而停在排空准入检查，原始失败结果保留；代理拒绝计数也混合了 CONNECT 和非预期 POST，不能据此宣称整轮通过。后续聚焦轮只补剩余四项：同代关闭回执、带一个活跃任务进入排空、`serverShuttingDown` 拒绝新 steer、任务正常完成后持原句柄确认退出。独立原生日志核验得到一次进入排空、一次等待任务、一次正常完成、零强制结束。证据见 `.tmp/feedback-20261111-10/windows-w07-maintenance-acceptance.md`、`explorer-r5-r4/observe.json` 及 `windows-focused-drain/{observe,verify-native-log}.json`。
+
+实际 Explorer 启动的隔离进程仍可属于 Windows Job；Job 成员布尔值本身不能证明后台启动失败，应以原生启动结果和具体限制为准。两轮均只用自有 home、合成凭据和回环模型上游，分别接受一个预期 POST，无有意外部或付费模型请求。聚焦轮另记录零非预期 POST、五个回环 CONNECT 拒绝；这些代理计数不能证明整个进程网络层零外发。全部记录的隔离 PID、活动映像和 socket 均已独立确认消失，旧 PID 文件保留为证据，临时任务已移除，正式 App、账号和现有 daemon 未操作。
 
 ## 影响
 
