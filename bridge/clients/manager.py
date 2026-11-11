@@ -2237,7 +2237,13 @@ class DesktopSessions:
         with self.client_lock, self._changing('deepseek'):
             if not self.config.get('discovered', {}).get('deepseek'):
                 self.scan(scan_wsl=False)
-            descriptor, adapter = self._descriptor('deepseek'), self.adapters['deepseek']
+            descriptor = self._descriptor('deepseek')
+            try:
+                adapter = self.adapters['deepseek']
+            except BridgeUnavailable:
+                # Broken connector restoration must not block process identity
+                # preview. Normal recovery still needs verified task evidence.
+                adapter = None
             if self.deepseek_recovery is None:
                 self.deepseek_recovery = DeepSeekRecovery()
             if value.get('action') == 'deepseek-recovery-preview':

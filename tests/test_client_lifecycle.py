@@ -591,6 +591,84 @@ class ClientLifecycleTests(unittest.TestCase):
         self.launch.assert_not_called()
         self.launch_dsh.assert_not_called()
 
+    def test_broken_lazy_connector_cannot_block_recovery_identity_preview(self):
+        factory = Mock(side_effect=BridgeUnavailable('existing connector cannot be verified'))
+        self.manager.adapters.defer('deepseek', factory)
+        recovery = Mock()
+        recovery.preview.return_value = {'token': 'identity-preview', 'unknown': True, 'canRecover': False}
+        self.manager.deepseek_recovery = recovery
+        result = self.manager.control({'action': 'deepseek-recovery-preview', 'restart': False})
+        self.assertEqual(result['token'], 'identity-preview')
+        self.assertIsNone(recovery.preview.call_args.args[1])
+        self.assertEqual(recovery.preview.call_args.args[0]['id'], 'deepseek')
+        factory.assert_called_once()
+        recovery.confirm.assert_not_called()
+        self.launch_dsh.assert_not_called()
+        self.stop_dsh.assert_not_called()
+
+    def test_windows_stopped_recovery_can_exit_or_restart_without_native_quit(self):
+        from test_deepseek_recovery import snapshot
+        self.dsh.discover_existing.return_value = {'installed': True}
+        with patch('bridge.clients.manager.sys.platform', 'win32'), \
+             patch('bridge.clients.deepseek.recovery.sys.platform', 'win32'), \
+             patch('bridge.clients.deepseek.recovery._snapshot', side_effect=lambda _: snapshot(gui=False, hosts=())), \
+             patch('bridge.clients.deepseek.recovery._query', side_effect=AssertionError('stopped scope has no endpoint')) as query, \
+             patch('bridge.clients.lifecycle.stop_deepseek') as native, \
+             patch.object(self.manager, '_start_deepseek') as start, \
+             patch.object(self.manager, 'clients', return_value={'clients': []}):
+            for restart in (False, True):
+                with self.subTest(restart=restart):
+                    preview = self.manager.control({'action': 'deepseek-recovery-preview', 'restart': restart})
+                    self.assertTrue(preview['canRecover'])
+                    self.manager.control({'action': 'deepseek-recovery-confirm', 'token': preview['token'],
+                                          'confirmed': True})
+                    self.assertEqual(self.manager.enabled('deepseek'), restart)
+                    self.assertEqual(start.call_count, int(restart))
+        query.assert_not_called()
+        native.assert_not_called()
+        self.stop_dsh.assert_not_called()
+        self.launch_dsh.assert_not_called()
+
+    def test_unverified_connector_normal_confirmation_has_no_native_or_setting_effect(self):
+        from test_deepseek_recovery import snapshot
+        self.manager.adapters.defer('deepseek', Mock(side_effect=BridgeUnavailable('broken connector')))
+        with patch('bridge.clients.deepseek.recovery._snapshot', side_effect=lambda _: snapshot()), \
+             patch('bridge.clients.deepseek.recovery._query', side_effect=AssertionError('untrusted connector query')) as query, \
+             patch('bridge.clients.deepseek.recovery._quit') as native, \
+             patch('bridge.clients.manager.private_json') as save:
+            preview = self.manager.control({'action': 'deepseek-recovery-preview', 'restart': False})
+            self.assertTrue(preview['unknown'])
+            self.assertFalse(preview['canRecover'])
+            with self.assertRaisesRegex(ValueError, '尚未提交退出'):
+                self.manager.control({'action': 'deepseek-recovery-confirm', 'token': preview['token'],
+                                      'confirmed': True, 'acknowledgeUnknown': True})
+        query.assert_not_called()
+        native.assert_not_called()
+        save.assert_not_called()
+        self.stop_dsh.assert_not_called()
+        self.launch_dsh.assert_not_called()
+        self.assertTrue(self.manager.enabled('deepseek'))
+
+    def test_explicit_force_does_not_load_broken_connector_or_query_tasks(self):
+        factory = Mock(side_effect=BridgeUnavailable('existing connector cannot be verified'))
+        self.manager.adapters.defer('deepseek', factory)
+        self.manager.config['deepseekAdapterDirectory'] = str(self.root/'absent-old-connector')
+        native = Mock(side_effect=self.finish)
+        with patch('bridge.clients.lifecycle.force_stop_client', native), \
+             patch('bridge.clients.manager.sys.platform', 'win32'), \
+             patch.object(self.manager, 'clients', return_value={'clients': []}), \
+             patch.object(self.manager, '_assert_idle', side_effect=AssertionError('explicit force bypasses task uncertainty')) as idle:
+            self.manager.toggle_client({'provider': 'deepseek', 'enabled': False, 'quitDesktop': True,
+                                        'forceDesktop': True, 'forceConfirmed': True})
+        native.assert_called_once()
+        self.assertEqual(native.call_args.args[0]['id'], 'deepseek')
+        self.assertTrue(native.call_args.kwargs['state']['running'])
+        factory.assert_not_called()
+        idle.assert_not_called()
+        self.stop_dsh.assert_not_called()
+        self.launch_dsh.assert_not_called()
+        self.assertFalse(self.manager.enabled('deepseek'))
+
     def test_desktop_recovery_full_exit_and_restart_only_persist_after_success(self):
         recovery = Mock()
         self.manager.deepseek_recovery = recovery

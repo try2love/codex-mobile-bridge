@@ -15,10 +15,12 @@ from pathlib import Path
 
 from bridge.clients.lifecycle import _app, _commands, inspect_client
 from bridge.clients.deepseek.adapter import LIFECYCLE_REVISIONS
+from bridge.clients.errors import BridgeUnavailable
 from bridge.features.accounts.models import NoRedirect
 
 CHANGED = 'Harness 进程已变化，请重新检查后再确认恢复'
 BUSY = '有任务运行或等待确认，请先结束任务再关闭或重启客户端'
+CONNECTOR_UNKNOWN = 'Harness 接入配置无法验证，任务状态未知，尚未提交退出；请在电脑端正常退出，或另行预览并确认强制关闭'
 
 
 def _identities(pids):
@@ -149,6 +151,19 @@ def _evidence(adapter, snapshot):
     return {'busy': bool(busy), 'unknown': bool(unknown), 'verifiedIdle': verified}
 
 
+def _recovery_evidence(adapter, snapshot):
+    # Process ownership is independent of the connector. Never probe an
+    # unverified connector or interpret its missing task evidence as idle.
+    if adapter is not None:
+        try:
+            installed = adapter.discover_existing()
+        except (OSError, ValueError, BridgeUnavailable):
+            installed = None
+        if isinstance(installed, dict) and installed.get('installed') is True:
+            return _evidence(adapter, snapshot), True
+    return {'busy': False, 'unknown': True, 'verifiedIdle': []}, False
+
+
 def _same_processes(descriptor, expected):
     current = _snapshot(descriptor)
     if (current['executable'], current['home'], current['identities']) != (
@@ -208,9 +223,18 @@ def _quitting_snapshot(descriptor, expected, *, gui_allowed=False):
     raise ValueError(CHANGED)
 
 
-def _quit(descriptor, expected):
-    """Quit the GUI first, then terminate only still-matching approved Hosts."""
+def _quit(descriptor, expected, *, adapter=None):
+    """Use verified native Windows quit; preserve the approved POSIX cleanup."""
     current = _same_processes(descriptor, expected)
+    if not current['state']['pids']:
+        return
+    if sys.platform == 'win32':
+        if adapter is None:
+            raise ValueError(CONNECTOR_UNKNOWN)
+        from bridge.clients.lifecycle import stop_deepseek
+        # CloseMainWindow hides some DSH versions; taskkill is not normal Quit.
+        stop_deepseek(descriptor, adapter, state=current['state'])
+        return
     app = _app(descriptor)
     main = current['state']['mainPids']
     if main and sys.platform == 'darwin':
@@ -220,13 +244,7 @@ def _quit(descriptor, expected):
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=25)
     else:
         for pid in main:
-            if sys.platform == 'win32':
-                script = '$p=Get-Process -Id ([int]$env:CMB_GUI_PID) -ErrorAction Stop; if (-not $p.CloseMainWindow()) {exit 2}'
-                subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
-                    env={**os.environ, 'CMB_GUI_PID': str(pid)}, check=True, stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
-            else:
-                os.kill(pid, signal.SIGTERM)
+            os.kill(pid, signal.SIGTERM)
     deadline = time.monotonic()+15
     while True:
         current = _quitting_snapshot(descriptor, expected, gui_allowed=True)
@@ -243,12 +261,8 @@ def _quit(descriptor, expected):
         if identity is None: continue
         old = expected['identities'][pid]
         if any(identity[key] != old[key] for key in ('start', 'command')): raise ValueError(CHANGED)
-        if sys.platform == 'win32':
-            subprocess.run(['taskkill.exe', '/PID', str(pid)], check=True, stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
-        else:
-            try: os.kill(pid, signal.SIGTERM)
-            except ProcessLookupError: pass
+        try: os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError: pass
     deadline = time.monotonic()+15
     while inspect_client(descriptor)['running']:
         if time.monotonic() >= deadline:
@@ -262,19 +276,20 @@ class DeepSeekRecovery:
 
     def preview(self, descriptor, adapter, restart=True):
         if type(restart) is not bool: raise ValueError('Harness 恢复选项无效')
-        # This validates the native profile and allowlisted connector before any probe.
-        adapter.discover_existing()
         snapshot = _snapshot(descriptor)
-        evidence = _evidence(adapter, snapshot)
+        evidence, connector_ready = _recovery_evidence(adapter, snapshot)
         state = snapshot['state']
         allowed = not snapshot['unrecognized'] and len(state['mainPids']) <= 1
         token = secrets.token_hex(24)
         self.pending = {'token': token, 'expires': time.monotonic()+300, 'snapshot': snapshot,
-                        'restart': restart, 'allowed': allowed, 'unknown': evidence['unknown']}
+                        'restart': restart, 'allowed': allowed, 'unknown': evidence['unknown'],
+                        'connectorReady': connector_ready}
         return {'token': token, 'expiresAt': time.time()+300, 'restart': restart,
                 'guiCount': len(state['mainPids']), 'backgroundCount': len(state['runtimePids']),
                 'busy': evidence['busy'], 'unknown': evidence['unknown'],
-                'requiresUnknownConfirmation': evidence['unknown'], 'canRecover': allowed and not evidence['busy']}
+                'requiresUnknownConfirmation': evidence['unknown'],
+                'canRecover': allowed and connector_ready and not evidence['busy'],
+                **({'message': CONNECTOR_UNKNOWN} if not connector_ready else {})}
 
     def confirm(self, descriptor, adapter, value):
         pending = self.pending
@@ -283,12 +298,13 @@ class DeepSeekRecovery:
             raise ValueError('Harness 恢复确认已过期，请重新检查')
         if value.get('confirmed') is not True: raise ValueError('请确认完整退出 Harness')
         snapshot = _same_processes(descriptor, pending['snapshot'])
-        adapter.discover_existing()
-        evidence = _evidence(adapter, snapshot)
+        evidence, connector_ready = _recovery_evidence(adapter, snapshot)
         if evidence['busy']: raise ValueError(BUSY)
         if not pending['allowed']: raise ValueError('检测到其他或无法识别的 Harness 实例，请先在电脑端退出这些实例')
+        if not pending['connectorReady'] or not connector_ready:
+            raise ValueError(CONNECTOR_UNKNOWN)
         if evidence['unknown'] and (not pending['unknown'] or value.get('acknowledgeUnknown') is not True):
             raise ValueError('无法核验 Harness 任务状态，请重新检查并明确确认可能中断任务')
         self.pending = None
-        _quit(descriptor, snapshot)
+        _quit(descriptor, snapshot, adapter=adapter)
         return pending['restart']
