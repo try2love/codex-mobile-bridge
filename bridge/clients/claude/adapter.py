@@ -25,6 +25,37 @@ from bridge.platforms.windows.session import DesktopUnavailable
 DESKTOP_WAIT_STATES = {'needs-screen-saver', 'needs-unlock', 'needs-desktop'}
 
 
+def metadata_record_path(home, surface, native):
+    """Locate one existing native metadata file; never guess a Cowork VM path."""
+    from bridge.features.workspace.workspace import Workspace
+    if not home or surface not in ('code', 'cowork') or not re.fullmatch(r'[A-Za-z0-9_-]{1,200}', native):
+        return None
+    workspace = Workspace(home)
+    directories = ['claude-code-sessions' if surface == 'code' else 'local-agent-mode-sessions']
+    matches = []
+    for depth in range(1, 4 if surface == 'cowork' else 3):
+        children = []
+        for directory in directories:
+            offset = 0
+            try:
+                while offset is not None:
+                    listing = workspace.listing(directory, hidden=True, offset=offset)
+                    children.extend(row['path'] for row in listing['entries'] if row['kind'] == 'directory')
+                    offset = listing['nextOffset']
+            except FileNotFoundError:
+                continue
+        directories = children
+        if depth >= 2:
+            for directory in directories:
+                try:
+                    info = workspace.info(directory+'/'+native+'.json')
+                    if info['kind'] == 'file':
+                        matches.append(info['absolutePath'])
+                except FileNotFoundError:
+                    continue
+    return matches[0] if len(matches) == 1 else None
+
+
 class Claude:
     def __init__(self, directory, *, auto_connect=True, hosts=None, wsl_entries=None,
                  desktop_only=False, descriptor=None):
@@ -803,6 +834,11 @@ class Claude:
         if not saved:
             raise ValueError('找不到 Claude 会话')
         kind, native = saved['backend'], saved['nativeId']
+        if action == 'record-location':
+            fresh = model.session(kind, await self.desktop.call(kind, 'getSession', native))
+            if fresh['id'] != sid:
+                raise BridgeUnavailable('Claude 会话身份已变化，请刷新后重试')
+            return {'path': await asyncio.to_thread(metadata_record_path, self.discovery.get('dataHome'), kind, native)}
         if action == 'image':
             if 'mobileImage' not in self.desktop.capabilities.get(kind, []):
                 raise ValueError('请更新 Claude 接入后预览历史图片')
@@ -1015,6 +1051,11 @@ class Claude:
         if result is False or isinstance(result, dict) and any(result.get(k) is False for k in ('ok', 'delivered', 'dispatched', 'applied')):
             raise BridgeUnavailable('桌面未接受操作，请检查原会话')
         return {'status': 'accepted'}
+
+    def record_path(self, sid):
+        if sid in self.index:
+            return self.call('record-location', sid, timeout=10).get('path')
+        return str(self.cli._get(sid)['path'])
 
     def call(self, action, sid=None, body=None, *, timeout=100):
         if action == 'work-mode':

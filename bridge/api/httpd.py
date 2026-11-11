@@ -1180,7 +1180,8 @@ class Handler(BaseHTTPRequestHandler):
                 provider, operation = desktop_workspace.groups()
                 sid = query.get('sessionId', [''])[0]
                 manager, _, _ = self.desktop_context(provider, query)
-                bridge = manager.workspace_bridge(provider, sid)
+                host_files = not write and query.get('scope') == ['host'] and operation in ('workspace', 'workspace/info', 'workspace/preview', 'workspace/download')
+                bridge = manager.workspace_bridge(provider, sid, **({'host_files': True, 'path': query.get('path', [''])[0]} if host_files else {}))
                 path = '/api/sessions/' + bridge.identifier + '/' + operation
             else:
                 bridge = self.server.bridge.for_host(query.get("host", ["local"])[0])

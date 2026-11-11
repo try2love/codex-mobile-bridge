@@ -3301,7 +3301,7 @@ class DesktopSessions:
                 self.client_cache = None
             return self._accounts_public(provider, result)
 
-    def workspace_bridge(self, provider, sid):
+    def workspace_bridge(self, provider, sid, *, host_files=False, path=''):
         # Obtain the root from the desktop, never from a browser-supplied path.
         self.require_enabled(provider)
         if not isinstance(sid, str) or not sid or len(sid) > 512:
@@ -3319,6 +3319,7 @@ class DesktopSessions:
             row = next((row for row in rows if row.get('id') == sid), None)
             if row is None:
                 raise ValueError('桌面会话不存在')
+            row = dict(row)
             with self.read_lock:
                 if self.binding_epochs[provider] != epoch or self.binding_changes[provider]:
                     raise BridgeUnavailable('客户端状态已变化，请重试')
@@ -3327,8 +3328,25 @@ class DesktopSessions:
         root = row.get('cwd')
         if provider == 'claude' and str(row.get('host', '')).startswith('wsl-claude:'):
             return WslClaudeWorkspace(self, sid, row)
-        Workspace(root)  # Reject unavailable and non-local workspaces (e.g. Cowork VM).
-        return DesktopWorkspace(self, provider, sid, root)
+        history_path = None
+        if host_files:
+            if row.get('host') not in (None, 'local'):
+                raise ValueError('此接入暂不支持宿主机文件浏览')
+            # Cowork's VM cwd is not a directory on the gateway computer.
+            if provider == 'claude' and row.get('backend') == 'cowork':
+                root = None
+            if not root and not Path(path).is_absolute():
+                with self.locks[provider]:
+                    self.require_enabled(provider)
+                    if self.binding_epochs[provider] != epoch or self.binding_changes[provider]:
+                        raise BridgeUnavailable('客户端状态已变化，请重试')
+                    if '_recordPath' not in row:
+                        reader = getattr(self.adapters[provider], 'record_path', None)
+                        row['_recordPath'] = reader(sid) if reader else None
+                    history_path = row['_recordPath']
+        else:
+            Workspace(root)  # Writes/terminals still require an original local project.
+        return DesktopWorkspace(self, provider, sid, root, history_path=history_path)
 
     def antigravity_management(self, value):
         adapter = self.adapters.get('antigravity')
@@ -3572,10 +3590,11 @@ class DesktopWorkspace:
     """Use the existing file and terminal services with a desktop-verified root."""
     host = 'local'
 
-    def __init__(self, manager, provider, sid, root):
+    def __init__(self, manager, provider, sid, root, history_path=None):
         from bridge.features.terminals.manager import TerminalManager
         self.manager, self.provider = manager, provider
         self.root = root
+        self.history_path = history_path
         self.identifier = str(uuid.uuid5(uuid.NAMESPACE_URL, provider + ':' + sid))
         with manager.client_lock:
             if not hasattr(manager, 'terminals'):
@@ -3594,7 +3613,7 @@ class DesktopWorkspace:
         # again under the same gate used by disabling access before any write.
         with self.manager.locks[self.provider]:
             self.manager.require_enabled(self.provider)
-            return operate(self.root, action, params)
+            return operate(self.root, action, params, history_path=self.history_path)
 
     def terminal(self, sid, owner, action, params):
         from bridge.app.service import Bridge
@@ -3625,7 +3644,7 @@ class WslClaudeWorkspace:
             if fresh['cwd'] != self.row['cwd'] or fresh['origin'] != self.row.get('origin', fresh['origin']):
                 raise ValueError('WSL Claude Code 工作目录或账号已变化')
             source = source_text('features/workspace/workspace.py')
-            arguments = payload({'root': fresh['cwd'], 'action': action, 'params': params})
+            arguments = payload({'root': fresh['cwd'], 'action': action, 'params': params, 'history_path': fresh.get('path')})
             if action in ('download-stream', 'archive-stream'):
                 source += '\nimport json,sys\ntry:\n with operate(**'+arguments+') as (metadata, stream):\n  sys.stdout.buffer.write(json.dumps(metadata).encode()+b"\\n")\n  while True:\n   chunk=stream.read(65536)\n   if not chunk: break\n   sys.stdout.buffer.write(chunk)\nexcept (ValueError, PermissionError, OSError) as error:\n sys.stdout.buffer.write(json.dumps({"error":str(error),"permission":isinstance(error,PermissionError)}).encode()+b"\\n")\n'
                 return self._download(fresh['host'], source)

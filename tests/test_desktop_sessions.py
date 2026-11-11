@@ -687,6 +687,23 @@ class HttpAdapters(unittest.TestCase):
             'provider': 'claude', 'enabled': False, 'quitDesktop': False, 'force': True}, headers)[0], 400)
 
 
+    def test_record_directory_is_available_only_to_explicit_host_read_requests(self):
+        temp = tempfile.TemporaryDirectory(dir=ROOT/'.tmp'); self.addCleanup(temp.cleanup)
+        root = Path(temp.name).resolve(); record = root/'record.json'; record.write_text('{}')
+        manager = DesktopSessions(root/'gateway'); self.addCleanup(manager.close)
+        manager.config['enabled'] = {'deepseek': True}; self.server.desktop_sessions = manager
+        adapter = Mock(); adapter.call.return_value = {'sessions': [{'id': 'native', 'host': 'local', 'cwd': ''}]}
+        adapter.record_path.return_value = str(record); manager.adapters['deepseek'] = adapter
+        path = '/api/desktop-sessions/deepseek/workspace?sessionId=native'
+        self.assertEqual(self.request('GET', path+'&scope=host')[0], 401)
+        headers = self.login()
+        result = self.request('GET', path+'&scope=host', headers=headers)
+        self.assertEqual(result[0], 200); self.assertEqual(result[2]['path'], root.as_posix())
+        self.assertIsNone(result[2]['projectPath'])
+        self.assertNotEqual(self.request('GET', path, headers=headers)[0], 200)
+        self.assertNotEqual(self.request('POST', path+'&scope=host', {}, headers)[0], 200)
+        adapter.record_path.assert_called_once_with('native')
+
     def test_client_management_and_workspace_http_are_authenticated_and_scoped(self):
         temp = tempfile.TemporaryDirectory(dir=ROOT/'.tmp'); self.addCleanup(temp.cleanup)
         root = Path(temp.name); (root/'only-here.txt').write_text('desktop workspace')

@@ -153,6 +153,22 @@ class Antigravity:
             'plugin': {**inspect_plugin(self.directory, self.home), 'active': bool(self.hooks)},
             'permissionOptions': PERMISSION_OPTIONS}
 
+    def record_path(self, sid):
+        from bridge.features.workspace.workspace import Workspace
+        row = self.store.resolve_session(sid)
+        if row is None:
+            raise ValueError('找不到 Antigravity 聊天')
+        workspace = Workspace(row['surfaceRoot'])
+        logs = 'brain/' + row['nativeId'] + '/.system_generated/logs/'
+        for relative in (logs+'transcript.jsonl', logs+'transcript_full.jsonl', 'conversation_summaries.db'):
+            try:
+                info = workspace.info(relative)
+                if info['kind'] == 'file':
+                    return info['absolutePath']
+            except (OSError, ValueError, PermissionError):
+                continue
+        return None
+
     @staticmethod
     def _prompt(body):
         text = str(body.get('text') or body.get('firstMessage') or '').strip()

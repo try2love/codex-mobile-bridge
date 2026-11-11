@@ -190,6 +190,13 @@ class DeepSeek:
         record.unlink()
         return {'installed': False, 'restartRequired': True}
 
+    def record_path(self, sid):
+        if self.call('status').get('recordLocation') is not True:
+            return None
+        value = self.call('record-location', sid)
+        path = value.get('path')
+        return path if isinstance(path, str) and Path(path).is_absolute() else None
+
     def call(self, action, sid=None, body=None):
         if action == 'create' and body and 'model' in body and self.call('status').get('createModels') is not True:
             raise ResumePreflightBlocked('Harness 接入需要更新后才能预设新会话模型；尚未创建会话')

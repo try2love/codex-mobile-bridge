@@ -172,6 +172,11 @@ class ZCodeDesktop:
     def release_window(self):
         self.window_binding = None
 
+    def record_path(self, sid):
+        from bridge.clients.zcode.history import saved_target
+        row = saved_target(self.home, sid)
+        return str(self.home/'tasks-index.sqlite' if row.get('indexOnly') else self.home.parent/'cli/db/db.sqlite')
+
     def call(self, action, sid=None, body=None):
         from bridge.clients.zcode.history import saved_sessions, saved_detail
         if action == 'image':
