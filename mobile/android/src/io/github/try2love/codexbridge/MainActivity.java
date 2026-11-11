@@ -33,7 +33,7 @@ public final class MainActivity extends Activity implements SharedPreferences.On
   getSystemService(android.net.ConnectivityManager.class).registerDefaultNetworkCallback(channelNetwork);
  }
  private void stopWatchingChannels(){
-  cancelChannelJobs();channelTicket++;lastProbeNetwork="";homeHandler.removeCallbacks(routeChanged);homeHandler.removeCallbacks(channelCatalogTick);
+  rollbackPeer();cancelChannelJobs();channelTicket++;lastProbeNetwork="";homeHandler.removeCallbacks(routeChanged);homeHandler.removeCallbacks(channelCatalogTick);
   if(channelNetwork!=null){getSystemService(android.net.ConnectivityManager.class).unregisterNetworkCallback(channelNetwork);channelNetwork=null;}
  }
  private boolean onWifi(){
@@ -129,7 +129,7 @@ public final class MainActivity extends Activity implements SharedPreferences.On
    GatewayChannels.probe(d,primary.token,targets,(url,ms)->runOnUiThread(()->{
     if(!current.getAsBoolean())return;
     DeviceBinding.Credential live=DeviceBinding.load(this,GatewayChannels.vault(d.optString("deviceId")));
-    if(live==null||!live.token.equals(primary.token))return;
+    if(live==null||!live.cookie().equals(primary.cookie())||!d.optString("anchor").equals(GatewayChannels.record(prefs,address)==null?"":GatewayChannels.record(prefs,address).optString("anchor")))return;
     long trafficAt=routeTraffic.getOrDefault(url,-30000L);
     long result=ms<0&&pageReady&&url.equals(origin)&&android.os.SystemClock.elapsedRealtime()-trafficAt<30000?times(d).getOrDefault(url,-1L):ms;
     times(d).put(url,result);
@@ -177,7 +177,7 @@ public final class MainActivity extends Activity implements SharedPreferences.On
    Peer next=pendingPeer;endPeerWindow();pendingPeer=null;return next.commit.getAsBoolean()?"accepted":"expired";
   }
   if(pendingPeer!=null&&cmd.equals("failed:"+pendingPeer.nonce)){
-   endPeerWindow();pendingPeer=null;Toast.makeText(this,L("信道暂不可达"),Toast.LENGTH_SHORT).show();return "ok";
+   endPeerWindow();rollbackPeer();Toast.makeText(this,L("信道暂不可达"),Toast.LENGTH_SHORT).show();return "ok";
   }
   return null;
  }
@@ -224,57 +224,100 @@ public final class MainActivity extends Activity implements SharedPreferences.On
   sweep(address,d,targets,current,(url,ms,select)->{progress.put(url,ms);render.run();if(select){if(url.equals(address))connect(address+suffix);else moveChannel(address,d,url,address+suffix,true,current,false);}},
     ()->{if(targets.contains(address))connect(address+suffix);else message(L("信道暂不可达"));});
  }
+ private final Map<String,String> channelCookieOwners=new HashMap<>();
  private void moveChannel(String address,JSONObject d,String next,String requested,boolean opening,java.util.function.BooleanSupplier current,boolean failure){
-  DeviceBinding.Credential primary=DeviceBinding.load(this,GatewayChannels.vault(d.optString("deviceId")));
-  if(primary==null||!current.getAsBoolean())return;
+  String id=d.optString("deviceId"),anchor=d.optString("anchor");
+  DeviceBinding.Credential primary=DeviceBinding.load(this,GatewayChannels.vault(id));
+  if(primary==null||!current.getAsBoolean()||!EventClient.cookieName(address).equals(primary.name))return;
+  final int ticket=channelTicket;
+  java.util.function.BooleanSupplier rooted=()->{
+   DeviceBinding.Credential live=DeviceBinding.load(this,GatewayChannels.vault(id));JSONObject record=GatewayChannels.record(prefs,address);
+   return live!=null&&live.cookie().equals(primary.cookie())&&record!=null&&
+    id.equals(record.optString("deviceId"))&&anchor.equals(record.optString("anchor"))&&
+    anchor.equals(prefs.getString("channel-anchor:"+id,anchor));
+  };
+  java.util.function.BooleanSupplier valid=()->current.getAsBoolean()&&ticket==channelTicket&&rooted.getAsBoolean()&&addresses(address).contains(next);
   try{
-   String nextToken=GatewayChannels.token(primary.token,d.getString("anchor"),next);
-   String sourceCookie=EventClient.sessionCookie(CookieManager.getInstance().getCookie(address+"/"),address);
+   String nextToken=GatewayChannels.token(primary.token,anchor,next),nextCookie=primary.name+"="+nextToken;
+   CookieManager store=CookieManager.getInstance();
+   String sourceCookie=EventClient.sessionCookie(store.getCookie(address+"/"),address);
    if(!opening&&sourceCookie.isEmpty())return;
-   String existing=BindingSelection.cookie(CookieManager.getInstance().getCookie(next+"/"),primary.name);
-   if(!existing.isEmpty()&&!existing.equals(primary.name+"="+nextToken)){
-    DeviceBinding.Credential saved=DeviceBinding.load(this,next);
-    if(!d.optString("deviceId").equals(GatewayChannels.identity(this,prefs,next))||saved==null||!saved.cookie().equals(existing)){
-     if(opening&&addresses(address).contains(address))connect(requested);android.widget.Toast.makeText(this,L("此地址的登录绑定已变化，请重新验证"),android.widget.Toast.LENGTH_SHORT).show();return;
-    }
+   String existing=BindingSelection.cookie(store.getCookie(next+"/"),primary.name);
+   String secureAddress="https://"+new java.net.URI(next).getRawAuthority()+"/";
+   String stored=BindingSelection.cookie(store.getCookie(secureAddress),primary.name);
+   DeviceBinding.Credential retained=DeviceBinding.load(this,next);
+   Set<String> aliases=new HashSet<>(GatewayChannels.endpoints(d));aliases.add(address);aliases.add(next);aliases.add(anchor);
+   Set<String> known=new HashSet<>();
+   for(String alias:aliases){
+    known.add(primary.name+"="+GatewayChannels.token(primary.token,anchor,alias));
+    DeviceBinding.Credential saved=DeviceBinding.load(this,alias);
+    if(id.equals(GatewayChannels.identity(this,prefs,alias))&&saved!=null&&saved.name.equals(primary.name))known.add(saved.cookie());
+   }
+   String identity=GatewayChannels.identity(this,prefs,next);
+   if((!identity.isEmpty()&&!identity.equals(id))||(retained!=null&&!retained.name.equals(primary.name))||
+      (!stored.isEmpty()&&!known.contains(stored))||(!existing.isEmpty()&&!known.contains(existing))||(!sourceCookie.isEmpty()&&!known.contains(sourceCookie))){
+    if(opening&&addresses(address).contains(address))connect(requested);android.widget.Toast.makeText(this,L("此地址的登录绑定已变化，请重新验证"),android.widget.Toast.LENGTH_SHORT).show();return;
    }
    String base=opening?address:pageOrigin;
    if(requested==null||!GatewayURL.sameOrigin(requested,base))return;
    final String destination=next+requested.substring(base.length());
-   CookieManager.getInstance().setCookie(next+"/",primary.name+"="+nextToken+"; Path=/; HttpOnly; SameSite=Strict"+(next.startsWith("https://")?"; Secure":"")+"; Max-Age=34560000",ok->{
-    if(!ok||!current.getAsBoolean())return;
+   boolean shared=new java.net.URI(address).getHost().equals(new java.net.URI(next).getHost())&&GatewayURL.cookiePath(address).equals("/");
+   String expectedSource=shared?(!address.startsWith("https://")&&next.startsWith("https://")?"":nextCookie):sourceCookie;
+   java.util.function.BooleanSupplier written=()->nextCookie.equals(BindingSelection.cookie(store.getCookie(next+"/"),primary.name))&&
+    expectedSource.equals(EventClient.sessionCookie(store.getCookie(address+"/"),address));
+   // getCookie omits an HTTP-invisible Secure cookie; use the HTTPS view only for the same storage slot.
+   String rollbackCookie=stored;
+   boolean rollbackSecure=!stored.isEmpty()&&!stored.equals(BindingSelection.cookie(store.getCookie("http://"+new java.net.URI(next).getRawAuthority()+"/"),primary.name));
+   String retainedCookie=retained==null?"":retained.cookie(),owner=UUID.randomUUID().toString();
+   String targetKey=primary.name+"\n"+new java.net.URI(next).getHost()+"\n/",sourceKey=primary.name+"\n"+new java.net.URI(address).getHost()+"\n"+GatewayURL.cookiePath(address);
+   Runnable release=()->{for(String key:new String[]{targetKey,sourceKey})if(owner.equals(channelCookieOwners.get(key)))channelCookieOwners.remove(key);};
+   java.util.function.BooleanSupplier owned=()->owner.equals(channelCookieOwners.get(targetKey))&&owner.equals(channelCookieOwners.get(sourceKey));
+   Runnable rollback=()->{
+    DeviceBinding.Credential live=DeviceBinding.load(this,next);
+    if(!rooted.getAsBoolean()||!owner.equals(channelCookieOwners.get(targetKey))||!written.getAsBoolean()||!retainedCookie.equals(live==null?"":live.cookie())){release.run();return;}
+    store.setCookie(rollbackSecure?secureAddress:next+"/",(rollbackCookie.isEmpty()?primary.name+"=; Max-Age=0":rollbackCookie+"; Max-Age=34560000")+
+      "; Path=/; HttpOnly; SameSite=Strict"+(rollbackSecure?"; Secure":""),ignored->{});
+    release.run();
+   };
+   if(!valid.getAsBoolean())return;
+   channelCookieOwners.put(targetKey,owner);channelCookieOwners.put(sourceKey,owner);
+   store.setCookie(secureAddress,nextCookie+"; Path=/; HttpOnly; SameSite=Strict"+(next.startsWith("https://")?"; Secure":"")+"; Max-Age=34560000",ok->{
+    if(!ok||!valid.getAsBoolean()||!owned.getAsBoolean()||!written.getAsBoolean()){rollback.run();return;}
     java.util.function.BooleanSupplier commit=()->{
-     if(!current.getAsBoolean()||!sourceCookie.equals(EventClient.sessionCookie(CookieManager.getInstance().getCookie(address+"/"),address)))return false;
-     try{DeviceBinding.save(this,next,primary.name,nextToken);}catch(Exception e){return false;}
+     DeviceBinding.Credential live=DeviceBinding.load(this,next);
+     if(!valid.getAsBoolean()||!owned.getAsBoolean()||!written.getAsBoolean()||!retainedCookie.equals(live==null?"":live.cookie())){rollback.run();return false;}
+     try{DeviceBinding.save(this,next,primary.name,nextToken);}catch(Exception e){rollback.run();return false;}
      SharedPreferences.Editor edit=prefs.edit();Set<String> all=saved();all.remove(address);all.add(next);
      JSONObject latest=GatewayChannels.record(prefs,address);
      edit.putStringSet("origins",all).putString("channels:"+next,(latest==null?d:latest).toString()).putString("cookieName:"+next,primary.name);
      for(String prefix:new String[]{"notificationsMuted:","computer-name:"}){Object v=prefs.getAll().get(prefix+address);if(v instanceof String)edit.putString(prefix+next,(String)v);if(v instanceof Boolean)edit.putBoolean(prefix+next,(Boolean)v);}
      try{NotificationCheckpoint cp=NotificationCheckpoint.restore(prefs.getString("notificationCheckpoint:"+address,null),EventClient.tokenValue(sourceCookie));if(!cp.stream.isEmpty())edit.putString("notificationCheckpoint:"+next,cp.encode(nextToken));}catch(Exception ignored){}
      edit.putString("active",next).apply();EventClient.setName(next,primary.name);MonitorService.bindingsChanged();
+     release.run();
      if(opening||!pageReady){connect(destination);arrivingVia=next;}
      else {origin=next;changedChannel(next);}
      return true;
     };
     if(opening||!pageReady)commit.getAsBoolean();
     else {
-     Peer peer=new Peer(next,d.optString("deviceId"),commit);pendingPeer=peer;
+     Peer peer=new Peer(next,id,commit,rollback);rollbackPeer();pendingPeer=peer;
      if(!next.equals(pageOrigin)){
       web.getSettings().setSupportMultipleWindows(true);web.getSettings().setJavaScriptCanOpenWindowsAutomatically(true);
-      homeHandler.postDelayed(()->{if(pendingPeer==peer){endPeerWindow();pendingPeer=null;}},12000);
+      homeHandler.postDelayed(()->{if(pendingPeer==peer){endPeerWindow();pendingPeer=null;peer.rollback.run();}},12000);
      }
      web.evaluateJavascript("window.BridgeChannelLink?.prepare("+JSONObject.quote(next)+","+JSONObject.quote(peer.nonce)+","+JSONObject.quote(peer.device)+")",null);
     }
    });
   }catch(Exception ignored){}
  }
+ private void rollbackPeer(){Peer peer=pendingPeer;pendingPeer=null;if(peer!=null)peer.rollback.run();}
  private LinearLayout entryProgress;
  private void hideEntryProgress(){if(entryProgress!=null&&entryProgress.getParent() instanceof ViewGroup)((ViewGroup)entryProgress.getParent()).removeView(entryProgress);entryProgress=null;}
  private String pageOrigin="";private boolean pageReady;
  private static final class Peer{
-  final String next,device,nonce=UUID.randomUUID().toString();final java.util.function.BooleanSupplier commit;
+  final String next,device,nonce=UUID.randomUUID().toString();final java.util.function.BooleanSupplier commit;final Runnable rollback;
   boolean opened;
-  Peer(String next,String device,java.util.function.BooleanSupplier commit){this.next=next;this.device=device;this.commit=commit;}
+  Peer(String next,String device,java.util.function.BooleanSupplier commit,Runnable rollback){this.next=next;this.device=device;this.commit=commit;this.rollback=rollback;}
   boolean matches(String url){return (next+"/mobile-channel#"+nonce).equals(url);}
  }
  private Peer pendingPeer;
@@ -546,7 +589,7 @@ public final class MainActivity extends Activity implements SharedPreferences.On
    connectionDeadline=null;showConnectionError(url);recoverConnection(url);
   };homeHandler.postDelayed(connectionDeadline,30000);
  }
- void clear(){hideConnectionError();navigationFailed=false;routeTraffic.clear();if(uu!=null)uu.scope="";hideEntryProgress();pageReady=false;pendingPeer=null;for(WebView peer:new ArrayList<>(peerViews))closePeer(peer);cancelChannelJobs();dismissGatewayMenu();cancelConnectionDeadline();if(connectionTask!=null){connectionTask.cancel(true);connectionTask=null;}if(preparingUpdate!=null){preparingUpdate.cancel();preparingUpdate=null;}pendingStorage=null;if(routeDiscovery!=null){routeDiscovery.cancel();routeDiscovery=null;}if(files!=null){files.onReceiveValue(null);files=null;fileView=null;}stopComputerChecks();homeStates.clear();addressLists.clear();computerTitles.clear();arrivingVia=null;deferredRoute=null;homeNotifications.clear();resetExitGesture();generation++;if(web!=null){web.stopLoading();web.destroy();web=null;}systemBars.update(pageColor(),pageColor());while(root.getChildCount()>2)root.removeViewAt(2);}
+ void clear(){hideConnectionError();navigationFailed=false;routeTraffic.clear();if(uu!=null)uu.scope="";hideEntryProgress();pageReady=false;rollbackPeer();for(WebView peer:new ArrayList<>(peerViews))closePeer(peer);cancelChannelJobs();dismissGatewayMenu();cancelConnectionDeadline();if(connectionTask!=null){connectionTask.cancel(true);connectionTask=null;}if(preparingUpdate!=null){preparingUpdate.cancel();preparingUpdate=null;}pendingStorage=null;if(routeDiscovery!=null){routeDiscovery.cancel();routeDiscovery=null;}if(files!=null){files.onReceiveValue(null);files=null;fileView=null;}stopComputerChecks();homeStates.clear();addressLists.clear();computerTitles.clear();arrivingVia=null;deferredRoute=null;homeNotifications.clear();resetExitGesture();generation++;if(web!=null){web.stopLoading();web.destroy();web=null;}systemBars.update(pageColor(),pageColor());while(root.getChildCount()>2)root.removeViewAt(2);}
  void home(){clear();header(false);status.setVisibility(View.GONE);ScrollView scroll=new ScrollView(ui.context);scroll.setFillViewport(true);LinearLayout content=column();content.setPadding(dp(20),dp(16),dp(20),dp(24));scroll.addView(content);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
   ImageView icon=new ImageView(ui.context);icon.setImageResource(getResources().getIdentifier("ic_computer","drawable",getPackageName()));icon.setColorFilter(textColor());icon.setScaleType(ImageView.ScaleType.FIT_CENTER);LinearLayout.LayoutParams ip=new LinearLayout.LayoutParams(dp(64),dp(58));ip.gravity=Gravity.CENTER;ip.bottomMargin=dp(24);content.addView(icon,ip);
   TextView headline=text(L("电脑上的工作，\n带在身边。"),30);headline.setTypeface(null,android.graphics.Typeface.BOLD);headline.setGravity(Gravity.CENTER);add(headline,content,10);
@@ -621,7 +664,7 @@ public final class MainActivity extends Activity implements SharedPreferences.On
   // Keep the WebView glyph size aligned with the terminal's 6px lower bound.
   s.setMinimumFontSize(6);s.setMinimumLogicalFontSize(6);
   web.setWebViewClient(new WebViewClient(){
-   public void onPageStarted(WebView view,String target,android.graphics.Bitmap favicon){if(view==web){navigationFailed=false;dismissGatewayMenu();}}
+   public void onPageStarted(WebView view,String target,android.graphics.Bitmap favicon){if(view==web){channelTicket++;rollbackPeer();navigationFailed=false;dismissGatewayMenu();}}
    public boolean shouldOverrideUrlLoading(WebView view,WebResourceRequest request){String target=request.getUrl().toString();if(!request.isForMainFrame())return !htmlPreviewShell(target);if(htmlPreviewShell(target))return true;if(target.equals("codexbridge://home")&&request.hasGesture()&&GatewayURL.sameOrigin(view.getUrl(),pageOrigin)){home();return true;}if(ArtifactDownload.accepts(target,pageOrigin)&&request.hasGesture()){downloadArtifact(target);return true;}if(GatewayURL.sameOrigin(target,pageOrigin))return false;if(request.hasGesture()&&("https".equals(request.getUrl().getScheme())||"http".equals(request.getUrl().getScheme())))new AlertDialog.Builder(ui.context).setMessage(L("在浏览器打开外部链接？\n")+request.getUrl().getHost()).setPositiveButton(L("打开"),(d,w)->startActivity(new Intent(Intent.ACTION_VIEW,request.getUrl()))).setNegativeButton(L("取消"),null).show();return true;}
    public void onPageCommitVisible(WebView view,String target){if(view==web&&!navigationFailed&&GatewayURL.sameOrigin(target,pageOrigin)){cancelConnectionDeadline();hideConnectionError();hideEntryProgress();syncWebTheme();status.setVisibility(View.GONE);}}
    public void onPageFinished(WebView view,String target){if(view==web&&!navigationFailed&&GatewayURL.sameOrigin(target,pageOrigin)){cancelConnectionDeadline();hideConnectionError();hideEntryProgress();pageReady=true;CookieManager.getInstance().flush();view.evaluateJavascript("window.BridgeMobileCapabilities = Object.freeze({ diagnosticsExport: true });",null);view.evaluateJavascript(appearance,null);syncWebTheme();status.setVisibility(View.GONE);registerPushToken();rememberConnection();
