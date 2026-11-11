@@ -63,6 +63,8 @@ function renderHostErrors(hosts){
     const key=gateway+(host.host||host.label),fault=String(host.error||'');
     if(dismissedHostFaults.get(key)===fault)continue;
     const row=el('div','host-error-row');row.append(el('span','',host.label+'：'+fault));
+    const retry=el('button','plain',t('重试'));retry.type='button';
+    retry.onclick=()=>listSync.update(true);row.append(retry);
     const close=el('button','plain','×');close.type='button';close.setAttribute('aria-label',t('关闭连接错误'));
     close.onclick=()=>{dismissedHostFaults.set(key,fault);row.remove();root.hidden=!root.childElementCount;};
     row.append(close);root.append(row);
@@ -520,7 +522,7 @@ async function loadList(reset=false){
       saveListSnapshot(filter);clientNavigation.acknowledgeList('codex',{...local,unavailableHosts:[],complete:true});listSync.acknowledgeSuccess();
     }
     renderHostErrors(errors);renderList();refreshActivity();if(!errors.length)window.BridgeFeatures?.prefetchChat();
-    if(errors.length)throw Error(errors[0].error);
+    return listComplete;
   }finally{listLoading--;if($('sessions-more'))$('sessions-more').disabled=false;}
 }
 function loadMoreSessions(){
