@@ -26,7 +26,9 @@ Status: implemented
 
 24 项 Edge Chromium/WebKit × 1280/390 px 浏览器场景通过，检查购买按钮直接弹窗、关闭按钮／Escape／背景关闭、重新打开读取、翻译与草稿保留、地址只读可选中、关闭隐藏、兑换区无横线且保留 24 px 留白。截图已检查。隔离 HTTPS Go 服务使用真实服务端路由下发图片，桌面 Controller 通过临时受信 CA 校验证书后读取，图片字节与服务端资产一致，没有账户凭据或本地生成。
 
-Windows x64 v2.2.0 完整构建存放于 `.local/deliveries/cloud-server-qr-dialog-2026-11-11/`。安装版与 ZIP 完整性、包内源码一致性及独立 Windows 程序烟测通过；包内不再含 sponsor.cjs。打包后的网关 EXE 通过真实 HTTPS 测试接口读取 PNG 和网页地址，两者与服务端输出一致，图片 SHA-256 为 `8eb63e89a18a91bcc3e5e69d8288f9fc6adf80492b1423fbac0522789bfb0aaf`；记录在同目录 `server-delivery-verification.json`。安装包未签名，未替换用户现有安装，服务端接口尚未部署。
+Windows x64 v2.2.0 完整构建存放于 `.local/deliveries/cloud-server-qr-dialog-2026-11-11/`。安装版与 ZIP 完整性、包内源码一致性及独立 Windows 程序烟测通过；包内不再含 sponsor.cjs。打包后的网关 EXE 通过真实 HTTPS 测试接口读取 PNG 和网页地址，两者与服务端输出一致，图片 SHA-256 为 `8eb63e89a18a91bcc3e5e69d8288f9fc6adf80492b1423fbac0522789bfb0aaf`；记录在同目录 `server-delivery-verification.json`。安装包未签名，未替换用户现有安装。
+
+2026-11-11 用户授权部署服务端和上传代码后，桌面功能提交 `62208392` 已推送 origin/main。服务端 `597c8b8` 已上线，打包网关使用正式域名和证书从公网读取购买 PNG，摘要与上述资产完全一致，结果保存为同目录 `production-qr-verification.json`；不需要客户端本地生成或恢复旧链接。
 
 ## Consequences
 
