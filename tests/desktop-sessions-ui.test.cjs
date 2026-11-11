@@ -50,6 +50,17 @@ function fixture({storage=new Map(),sessionStore=new Map()}={}){
  const View=vm.runInContext('DesktopSessionsView',context),view=new View({root,select,request:(url,body,signal)=>{calls.push({url,body});return handler(url,body,signal);},notify:text=>notices.push(text),onSelect(){},csrf:()=>'csrf-test',onUnauthorized(){}});
  return {view,root,document,calls,notices,storage,sessionStore,setHandler:fn=>handler=fn,setUploadHandler:fn=>uploadHandler=fn,run:s=>vm.runInContext(s,context),text:n=>n.textContent};
 }
+function hostPages(ui,handler){
+ ui.setHandler(async(url,...args)=>{
+  const query=new URL(url,'http://fixture').searchParams;
+  assert.equal(query.get('scope'),'host');
+  const value=await handler(url,...args),directory=query.get('path')||value.project;
+  assert.ok(directory.startsWith('/'));
+  return {...value,path:directory,parentPath:directory==='/'?null:directory.slice(0,directory.lastIndexOf('/'))||'/',
+   projectPath:directory===value.project?'':directory.startsWith(value.project+'/')?directory.slice(value.project.length+1):null,
+   entries:value.entries.map(row=>({...row,path:row.path.startsWith('/')?row.path:value.project+'/'+row.path}))};
+ });
+}
 async function opened(){const ui=fixture();await ui.view.choose('claude');await ui.view.open('a');return ui;}
 test('Antigravity lists filter APP CLI and IDE without crossing saved source selection',async()=>{
  const ui=fixture(),view=ui.view;ui.setHandler(async()=>({sessions:['app','cli','ide'].map(backend=>({id:backend,title:backend,cwd:'/same-project',backend}))}));
@@ -389,48 +400,48 @@ test('PDF reading position survives file-tab and chat-back navigation',async()=>
 test('header back returns Claude and DeepSeek directly to their list without changing file directory or draft',async()=>{
  for(const provider of ['claude','deepseek']){
   const ui=fixture();await ui.view.choose(provider);await ui.view.open('a');const wb=ui.view.workbench,session=wb.current;
-  const settle=()=>new Promise(setImmediate),entries={'':[{name:'src',path:'src',kind:'directory'}],src:[{name:'lib',path:'src/lib',kind:'directory'}],'src/lib':[]};
-  ui.setHandler(async url=>{const at=new URL(url,'http://fixture').searchParams.get('path');return {project:'/project',total:entries[at]?.length||0,entries:entries[at]||[],nextOffset:null};});
+  const settle=()=>new Promise(setImmediate),entries={'/project':[{name:'src',path:'/project/src',kind:'directory'}],'/project/src':[{name:'lib',path:'/project/src/lib',kind:'directory'}],'/project/src/lib':[]};
+  hostPages(ui,async url=>{const at=new URL(url,'http://fixture').searchParams.get('path')||'/project';return {project:'/project',total:entries[at]?.length||0,entries:entries[at]||[],nextOffset:null};});
   wb.files();await settle();const tab=session.files.find(t=>t.id==='files');
   tab.list.querySelector('.wb-file').click();await settle();tab.list.querySelector('.wb-file').click();await settle();
   ui.view.input.value='Keep my draft';ui.view.input.oninput();tab.list.scrollTop=120;
   const calls=ui.calls.length;wb.locateState={session,tab,row:tab.list};
   await ui.view.back.click();
-  assert.equal(ui.view.isChatOpen,false);assert.equal(session.directory,'src/lib');assert.equal(session.active,'files');assert.equal(session.files[0],tab);
+  assert.equal(ui.view.isChatOpen,false);assert.equal(session.directory,'/project/src/lib');assert.equal(session.active,'files');assert.equal(session.files[0],tab);
   assert.equal(tab.list.scrollTop,120);assert.equal(ui.view.drafts.get(provider+':a'),'Keep my draft');assert.equal(wb.locateState,null);assert.equal(ui.calls.length,calls);
-  await ui.view.open('a');assert.equal(wb.current,session);assert.equal(session.directory,'src/lib');assert.equal(session.active,'files');assert.equal(ui.view.input.value,'Keep my draft');
-  assert.equal(wb.back(),true);assert.equal(session.directory,'src');assert.equal(ui.view.isChatOpen,true);
+  await ui.view.open('a');assert.equal(wb.current,session);assert.equal(session.directory,'/project/src/lib');assert.equal(session.active,'chat');assert.equal(ui.view.input.value,'Keep my draft');wb.files();assert.equal(tab.list.scrollTop,120);
+  assert.equal(wb.back(),true);assert.equal(session.directory,'/project/src');assert.equal(ui.view.isChatOpen,true);
  }
 });
 test('rapid file backs ignore stale responses and a failed parent read stays in the file browser',async()=>{
  const ui=await opened(),wb=ui.view.workbench,session=wb.current,pending=[];
- ui.setHandler((url,_body)=>{const path=new URL(url,'http://fixture').searchParams.get('path');if(path==='')return Promise.resolve({project:'/project',total:0,entries:[],nextOffset:null});return new Promise((resolve,reject)=>pending.push({path,resolve,reject}));});
- wb.files();await Promise.resolve();const tab=session.files.find(t=>t.id==='files');
- const deep=wb.directory(session,tab,'src/lib');assert.equal(wb.back(),true);assert.equal(session.directory,'src');
- const parent=pending.at(-1);assert.equal(parent.path,'src');assert.equal(wb.back(),true);assert.equal(session.directory,'');
+ hostPages(ui,(url,_body)=>{const path=new URL(url,'http://fixture').searchParams.get('path');if(!path||path==='/project')return Promise.resolve({project:'/project',total:0,entries:[],nextOffset:null});return new Promise((resolve,reject)=>pending.push({path,resolve,reject}));});
+ wb.files();await new Promise(setImmediate);const tab=session.files.find(t=>t.id==='files');
+ const deep=wb.directory(session,tab,'/project/src/lib');assert.equal(wb.back(),true);assert.equal(session.directory,'/project/src');
+ const parent=pending.at(-1);assert.equal(parent.path,'/project/src');assert.equal(wb.back(),true);assert.equal(session.directory,'/project');
  parent.reject(Error('late parent failure'));pending[0].resolve({project:'/old',total:1,entries:[{name:'old',path:'old',kind:'file'}],nextOffset:null});
- await deep;await Promise.resolve();assert.equal(session.directory,'');assert.equal(tab.status.classList.contains('error'),false);assert.equal(tab.list.children.length,0);
- const failed=wb.directory(session,tab,'src');pending.at(-1).reject(Error('directory unavailable'));await failed;
- assert.equal(session.active,'files');assert.equal(session.directory,'src');assert.equal(tab.status.classList.contains('error'),true);
- assert.equal(wb.back(),true);await Promise.resolve();assert.equal(session.directory,'');assert.equal(session.active,'files');
+ await deep;await new Promise(setImmediate);assert.equal(session.directory,'/project');assert.equal(tab.status.classList.contains('error'),false);assert.equal(tab.list.children.length,0);
+ const failed=wb.directory(session,tab,'/project/src');pending.at(-1).reject(Error('directory unavailable'));await failed;
+ assert.equal(session.active,'files');assert.equal(session.directory,'/project/src');assert.equal(tab.status.classList.contains('error'),true);
+ assert.equal(wb.back(),true);await new Promise(setImmediate);assert.equal(session.directory,'/project');assert.equal(session.active,'files');
 });
 test('a directory response from an earlier chat cannot replace the selected chat file view',async()=>{
  const ui=await opened(),wb=ui.view.workbench,first=wb.current;let finish;
- ui.setHandler(url=>new Promise(resolve=>{const path=new URL(url,'http://fixture').searchParams.get('path');if(path==='src')finish=resolve;else resolve({project:'/second',total:0,entries:[],nextOffset:null});}));
- wb.files();await Promise.resolve();const oldTab=first.files.find(t=>t.id==='files'),reading=wb.directory(first,oldTab,'src');
- wb.open('b','local');wb.files();await Promise.resolve();const second=wb.current,secondTab=second.files.find(t=>t.id==='files');
- finish({project:'/first',total:1,entries:[{name:'old',path:'src/old',kind:'file'}],nextOffset:null});await reading;
- assert.equal(wb.current,second);assert.equal(second.directory,'');assert.equal(secondTab.list.children.length,0);assert.equal(wb.panel.firstElementChild,secondTab.body);
+ hostPages(ui,url=>new Promise(resolve=>{const path=new URL(url,'http://fixture').searchParams.get('path');if(path==='/project/src')finish=resolve;else resolve({project:'/second',total:0,entries:[],nextOffset:null});}));
+ wb.files();await new Promise(setImmediate);const oldTab=first.files.find(t=>t.id==='files'),reading=wb.directory(first,oldTab,'/project/src');
+ wb.open('b','local');wb.files();await new Promise(setImmediate);const second=wb.current,secondTab=second.files.find(t=>t.id==='files');
+ finish({project:'/first',total:1,entries:[{name:'old',path:'/project/src/old',kind:'file'}],nextOffset:null});await reading;
+ assert.equal(wb.current,second);assert.equal(second.directory,'/second');assert.equal(secondTab.list.children.length,0);assert.equal(wb.panel.firstElementChild,secondTab.body);
 });
 test('file locate loads later pages and centers only the file list before focusing the row',async()=>{
  const ui=await opened(),wb=ui.view.workbench,session=wb.current;let finish,focusOptions;
  ui.run('globalThis.frames=[];requestAnimationFrame=fn=>{frames.push(fn);return frames.length};cancelAnimationFrame=()=>{}');
- ui.setHandler(url=>{const offset=Number(new URL(url,'http://fixture').searchParams.get('offset'));return offset?new Promise(resolve=>finish=resolve):Promise.resolve({project:'/project',total:2,entries:[{name:'first.txt',path:'src/first.txt',kind:'file',size:1}],nextOffset:1});});
+ hostPages(ui,url=>{const offset=Number(new URL(url,'http://fixture').searchParams.get('offset'));return offset?new Promise(resolve=>finish=resolve):Promise.resolve({project:'/project',total:2,entries:[{name:'first.txt',path:'/project/src/first.txt',kind:'file',size:1}],nextOffset:1});});
  const original=wb.button.bind(wb);wb.button=(text,action,title)=>{const button=original(text,action,title);if(title==='late.txt'){button.getBoundingClientRect=()=>({top:700,bottom:750});button.focus=options=>{focusOptions=options;ui.document.activeElement=button;};}return button;};
- const locating=wb.locate(session,'src/late.txt');await new Promise(setImmediate);
+ const locating=wb.locate(session,'/project/src/late.txt');await new Promise(setImmediate);
  const tab=session.files.find(t=>t.id==='files'),list=tab.list;Object.assign(list,{clientHeight:200,scrollHeight:1000,scrollTop:0});list.getBoundingClientRect=()=>({top:100,bottom:300});
  const timeline=ui.view.messages,timelineTop=timeline.scrollTop=33;
- finish({project:'/project',total:2,entries:[{name:'late.txt',path:'src/late.txt',kind:'file',size:1}],nextOffset:null});await locating;
+ finish({project:'/project',total:2,entries:[{name:'late.txt',path:'/project/src/late.txt',kind:'file',size:1}],nextOffset:null});await locating;
  const row=list.children[1];assert.notEqual(ui.document.activeElement,row);assert.equal(ui.run('frames.length'),1);
  ui.run('frames.shift()(100)');assert.equal(list.scrollTop,0);ui.run('frames.shift()(250)');assert.ok(list.scrollTop>0&&list.scrollTop<525);
  ui.run('frames.shift()(400)');assert.equal(list.scrollTop,525);assert.equal(timeline.scrollTop,timelineTop);assert.equal(ui.document.activeElement,row);
@@ -439,33 +450,33 @@ test('file locate loads later pages and centers only the file list before focusi
 test('visible file locate leaves scroll untouched and repeated folder locate restarts its highlight',async()=>{
  const ui=await opened(),wb=ui.view.workbench,session=wb.current;
  ui.run('globalThis.frames=[];globalThis.timers=[];globalThis.cleared=[];requestAnimationFrame=fn=>{frames.push(fn);return frames.length};setTimeout=(fn,ms)=>{timers.push({fn,ms});return timers.length};clearTimeout=id=>cleared.push(id)');
- ui.setHandler(async()=>({project:'/project',total:1,entries:[{name:'docs',path:'src/docs',kind:'directory'}],nextOffset:null}));
- await wb.locate(session,'src/docs');const tab=session.files.find(t=>t.id==='files'),first=tab.list.children[0];
+ hostPages(ui,async()=>({project:'/project',total:1,entries:[{name:'docs',path:'/project/src/docs',kind:'directory'}],nextOffset:null}));
+ await wb.locate(session,'/project/src/docs');const tab=session.files.find(t=>t.id==='files'),first=tab.list.children[0];
  assert.equal(ui.run('frames.length'),0);assert.equal(tab.list.scrollTop,0);assert.equal(ui.document.activeElement,first);
  assert.equal(first.classList.contains('wb-locate-highlight'),true);assert.equal(ui.run('timers.at(-1).ms'),3400);
- await wb.locate(session,'src/docs');const second=tab.list.children[0];
+ await wb.locate(session,'/project/src/docs');const second=tab.list.children[0];
  assert.equal(second,first);assert.equal(ui.run('cleared.length'),1);assert.equal(ui.run('timers.length'),2);
  assert.equal(second.classList.contains('wb-locate-highlight'),true);assert.equal(ui.document.activeElement,second);
 });
 test('locating a fully visible row deep in an existing directory preserves its node and scroll',async()=>{
- const ui=await opened(),wb=ui.view.workbench,session=wb.current;session.directory='src';
- const entries=Array.from({length:30},(_,index)=>({name:`item-${index}.txt`,path:`src/item-${index}.txt`,kind:'file',size:1}));
- ui.setHandler(async()=>({project:'/project',total:entries.length,entries,nextOffset:null}));
+ const ui=await opened(),wb=ui.view.workbench,session=wb.current;session.directory='/project/src';
+ const entries=Array.from({length:30},(_,index)=>({name:`item-${index}.txt`,path:`/project/src/item-${index}.txt`,kind:'file',size:1}));
+ hostPages(ui,async()=>({project:'/project',total:entries.length,entries,nextOffset:null}));
  wb.files();await new Promise(setImmediate);const tab=session.files.find(t=>t.id==='files'),list=tab.list,row=list.children[22],calls=ui.calls.length;
  Object.assign(list,{clientHeight:200,scrollHeight:1800,scrollTop:1180});list.getBoundingClientRect=()=>({top:100,bottom:300});row.getBoundingClientRect=()=>({top:155,bottom:205});
  await wb.locate(session,row.dataset.path);
  assert.equal(ui.calls.length,calls);assert.equal(tab.list,list);assert.equal(list.children[22],row);assert.equal(list.scrollTop,1180);
- assert.equal(session.hidden,false);assert.equal(tab.body.querySelectorAll('input')[1].checked,false);
+ assert.equal(session.hidden,false);assert.equal([...tab.body.querySelectorAll('input')].find(input=>input.type==='checkbox').checked,false);
  assert.equal(ui.document.activeElement,row);assert.equal(row.classList.contains('wb-locate-highlight'),true);
  assert.equal(list.onwheel,null);assert.equal(list.ontouchstart,null);assert.equal(list.onpointerdown,null);
 });
 test('reduced motion locates offscreen files instantly and holds the cue for three seconds',async()=>{
  const ui=await opened(),wb=ui.view.workbench,session=wb.current;
  ui.run('window.matchMedia=()=>({matches:true});globalThis.frames=[];globalThis.timers=[];requestAnimationFrame=fn=>{frames.push(fn);return frames.length};setTimeout=(fn,ms)=>{timers.push({fn,ms});return timers.length}');
- ui.setHandler(async()=>({project:'/project',total:1,entries:[{name:'far.txt',path:'src/far.txt',kind:'file',size:1}],nextOffset:null}));
+ hostPages(ui,async()=>({project:'/project',total:1,entries:[{name:'far.txt',path:'/project/src/far.txt',kind:'file',size:1}],nextOffset:null}));
  const original=wb.node.bind(wb);wb.node=(tag,cls,text)=>{const node=original(tag,cls,text);if(cls==='wb-file-list'){Object.assign(node,{clientHeight:200,scrollHeight:1000});node.getBoundingClientRect=()=>({top:100,bottom:300});}return node;};
  const button=wb.button.bind(wb);wb.button=(text,action,title)=>{const node=button(text,action,title);if(title==='far.txt')node.getBoundingClientRect=()=>({top:700,bottom:750});return node;};
- await wb.locate(session,'src/far.txt');const tab=session.files.find(t=>t.id==='files'),row=tab.list.children[0];
+ await wb.locate(session,'/project/src/far.txt');const tab=session.files.find(t=>t.id==='files'),row=tab.list.children[0];
  assert.equal(tab.list.scrollTop,525);assert.equal(ui.run('frames.length'),0);assert.equal(ui.document.activeElement,row);
  assert.equal(ui.run('timers.at(-1).ms'),3000);assert.equal(row.classList.contains('wb-locate-highlight'),true);
  ui.run('timers.at(-1).fn()');assert.equal(row.classList.contains('wb-locate-highlight'),false);
@@ -473,18 +484,18 @@ test('reduced motion locates offscreen files instantly and holds the cue for thr
 test('manual input cancels locate motion and old pagination cannot displace a newer target',async()=>{
  const ui=await opened(),wb=ui.view.workbench,session=wb.current;let oldPage;
  ui.run('globalThis.frames=[];globalThis.cancelled=[];requestAnimationFrame=fn=>{frames.push(fn);return frames.length};cancelAnimationFrame=id=>cancelled.push(id)');
- let offsetReads=0;ui.setHandler(url=>{const offset=Number(new URL(url,'http://fixture').searchParams.get('offset'));
+ let offsetReads=0;hostPages(ui,url=>{const offset=Number(new URL(url,'http://fixture').searchParams.get('offset'));
    if(offset&&++offsetReads===1)return new Promise(resolve=>oldPage=resolve);
-   if(offset)return Promise.resolve({project:'/project',total:1,entries:[{name:'new.txt',path:'src/new.txt',kind:'file',size:1}],nextOffset:null});
+   if(offset)return Promise.resolve({project:'/project',total:1,entries:[{name:'new.txt',path:'/project/src/new.txt',kind:'file',size:1}],nextOffset:null});
    return Promise.resolve({project:'/project',total:2,entries:[],nextOffset:1});});
- const stale=wb.locate(session,'src/old.txt');await new Promise(setImmediate);assert.equal(typeof oldPage,'function');
- await wb.locate(session,'src/new.txt');const tab=session.files.find(t=>t.id==='files'),newRow=tab.list.children[0];
- oldPage({project:'/old',total:2,entries:[{name:'old.txt',path:'src/old.txt',kind:'file',size:1}],nextOffset:null});await stale;
+ const stale=wb.locate(session,'/project/src/old.txt');await new Promise(setImmediate);assert.equal(typeof oldPage,'function');
+ await wb.locate(session,'/project/src/new.txt');const tab=session.files.find(t=>t.id==='files'),newRow=tab.list.children[0];
+ oldPage({project:'/old',total:2,entries:[{name:'old.txt',path:'/project/src/old.txt',kind:'file',size:1}],nextOffset:null});await stale;
  assert.equal(tab.list.children.length,1);assert.equal(tab.list.children[0],newRow);assert.equal(ui.document.activeElement,newRow);
  const node=wb.node.bind(wb);wb.node=(tag,cls,text)=>{const result=node(tag,cls,text);if(cls==='wb-file-list'){Object.assign(result,{clientHeight:200,scrollHeight:1000});result.getBoundingClientRect=()=>({top:100,bottom:300});}return result;};
  const original=wb.button.bind(wb);wb.button=(text,action,title)=>{const row=original(text,action,title);if(title==='moving.txt')row.getBoundingClientRect=()=>({top:700,bottom:750});return row;};
- ui.setHandler(async()=>({project:'/project',total:1,entries:[{name:'moving.txt',path:'other/moving.txt',kind:'file',size:1}],nextOffset:null}));
- const locating=wb.locate(session,'other/moving.txt');await locating;const list=tab.list;
+ hostPages(ui,async()=>({project:'/project',total:1,entries:[{name:'moving.txt',path:'/project/other/moving.txt',kind:'file',size:1}],nextOffset:null}));
+ const locating=wb.locate(session,'/project/other/moving.txt');await locating;const list=tab.list;
  assert.equal(ui.run('frames.length'),1);const before=list.scrollTop;
  list.onwheel({type:'wheel'});assert.equal(ui.run('cancelled.length'),1);assert.equal(list.scrollTop,before);
  ui.run('frames.shift()(400)');assert.equal(list.scrollTop,before);assert.equal(ui.document.activeElement,newRow);
@@ -492,41 +503,41 @@ test('manual input cancels locate motion and old pagination cannot displace a ne
 });
 test('manual scroll during pagination and direct split switching discard pending locate',async()=>{
  const ui=await opened(),wb=ui.view.workbench,session=wb.current;let finish;
- ui.setHandler(url=>Number(new URL(url,'http://fixture').searchParams.get('offset'))
+ hostPages(ui,url=>Number(new URL(url,'http://fixture').searchParams.get('offset'))
    ?new Promise(resolve=>finish=resolve)
    :Promise.resolve({project:'/project',total:1,entries:[],nextOffset:1}));
- const first=wb.locate(session,'src/target.txt');await new Promise(setImmediate);
+ const first=wb.locate(session,'/project/src/target.txt');await new Promise(setImmediate);
  const tab=session.files.find(t=>t.id==='files'),list=tab.list;assert.equal(typeof list.onwheel,'function');
  list.onwheel({type:'wheel'});assert.equal(list.onwheel,null);
- finish({project:'/project',total:1,entries:[{name:'target.txt',path:'src/target.txt',kind:'file',size:1}],nextOffset:null});await first;
+ finish({project:'/project',total:1,entries:[{name:'target.txt',path:'/project/src/target.txt',kind:'file',size:1}],nextOffset:null});await first;
  assert.equal(list.children.length,1);assert.notEqual(ui.document.activeElement,list.children[0]);
- const second=wb.locate(session,'other/target.txt');await new Promise(setImmediate);
+ const second=wb.locate(session,'/project/other/target.txt');await new Promise(setImmediate);
  const terminal={id:'terminal',name:'Terminal',body:wb.node('div','wb-terminal')};session.files.push(terminal);wb.split('terminal');
  assert.equal(session.active,'terminal');assert.equal(tab.list.onwheel,null);
- finish({project:'/project',total:1,entries:[{name:'target.txt',path:'other/target.txt',kind:'file',size:1}],nextOffset:null});await second;
+ finish({project:'/project',total:1,entries:[{name:'target.txt',path:'/project/other/target.txt',kind:'file',size:1}],nextOffset:null});await second;
  assert.equal(tab.list.children.length,1);assert.notEqual(ui.document.activeElement,tab.list.children[0]);
 });
 test('touch during initial locate load still renders the directory without continuing locate',async()=>{
  const ui=await opened(),wb=ui.view.workbench,session=wb.current;let finish;
- ui.setHandler(()=>new Promise(resolve=>finish=resolve));
- const locating=wb.locate(session,'src/target.txt'),tab=session.files.find(t=>t.id==='files'),list=tab.list;
+ hostPages(ui,()=>new Promise(resolve=>finish=resolve));
+ const locating=wb.locate(session,'/project/src/target.txt'),tab=session.files.find(t=>t.id==='files'),list=tab.list;
  assert.equal(typeof list.ontouchstart,'function');list.ontouchstart({type:'touchstart'});
  assert.equal(list.ontouchstart,null);
- finish({project:'/project',total:1,entries:[{name:'target.txt',path:'src/target.txt',kind:'file',size:1}],nextOffset:null});await locating;
- assert.equal(session.directory,'src');assert.equal(list.children.length,1);assert.equal(tab.loaded,true);
+ finish({project:'/project',total:1,entries:[{name:'target.txt',path:'/project/src/target.txt',kind:'file',size:1}],nextOffset:null});await locating;
+ assert.equal(session.directory,'/project/src');assert.equal(list.children.length,1);assert.equal(tab.loaded,true);
  assert.notEqual(ui.document.activeElement,list.children[0]);assert.equal(list.scrollTop,0);
- const pending=new Map();ui.setHandler(url=>new Promise(resolve=>pending.set(new URL(url,'http://fixture').searchParams.get('path'),resolve)));
- const stale=wb.locate(session,'other/stale.txt'),current=wb.directory(session,tab,'manual');
- pending.get('manual')({project:'/project',total:1,entries:[{name:'current.txt',path:'manual/current.txt',kind:'file',size:1}],nextOffset:null});await current;
- pending.get('other')({project:'/old',total:1,entries:[{name:'stale.txt',path:'other/stale.txt',kind:'file',size:1}],nextOffset:null});await stale;
- assert.equal(session.directory,'manual');assert.equal(tab.list.children.length,1);assert.equal(tab.list.children[0].dataset.path,'manual/current.txt');
+ const pending=new Map();hostPages(ui,url=>new Promise(resolve=>pending.set(new URL(url,'http://fixture').searchParams.get('path'),resolve)));
+ const stale=wb.locate(session,'/project/other/stale.txt'),current=wb.directory(session,tab,'/project/manual');
+ pending.get('/project/manual')({project:'/project',total:1,entries:[{name:'current.txt',path:'/project/manual/current.txt',kind:'file',size:1}],nextOffset:null});await current;
+ pending.get('/project/other')({project:'/old',total:1,entries:[{name:'stale.txt',path:'/project/other/stale.txt',kind:'file',size:1}],nextOffset:null});await stale;
+ assert.equal(session.directory,'/project/manual');assert.equal(tab.list.children.length,1);assert.equal(tab.list.children[0].dataset.path,'/project/manual/current.txt');
 });
 test('wide split file back consumes the visible file tab, then returns to unsplit chat',async()=>{
  const ui=await opened(),wb=ui.view.workbench,session=wb.current;
- ui.setHandler(async()=>({project:'/project',total:0,entries:[],nextOffset:null}));wb.files();await Promise.resolve();const tab=session.files.find(t=>t.id==='files');
- wb.split('files');await wb.directory(session,tab,'src/lib');assert.equal(wb.isFileVisible,false);
- assert.equal(wb.back(),true);assert.equal(session.directory,'src');assert.equal(wb.splitMode,true);
- assert.equal(wb.back(),true);assert.equal(session.directory,'');assert.equal(wb.splitMode,true);
+ hostPages(ui,async()=>({project:'/project',total:0,entries:[],nextOffset:null}));wb.files();await new Promise(setImmediate);const tab=session.files.find(t=>t.id==='files');
+ wb.split('files');await wb.directory(session,tab,'/project/src/lib');assert.equal(wb.isFileVisible,false);
+ assert.equal(wb.back(),true);assert.equal(session.directory,'/project/src');assert.equal(wb.splitMode,true);
+ assert.equal(wb.back(),true);assert.equal(session.directory,'/project');assert.equal(wb.splitMode,true);
  assert.equal(wb.back(),true);assert.equal(session.active,'chat');assert.equal(session.splitTab,null);assert.equal(wb.splitMode,false);
  assert.equal(wb.back(),false);
 });

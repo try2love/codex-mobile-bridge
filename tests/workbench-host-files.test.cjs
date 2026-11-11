@@ -29,3 +29,11 @@ test('navigation cancels an earlier relative file lookup before it can replace t
  finish({absolutePath:'/old/relative.txt'});await pending;
  assert.equal(session.files.length,0);assert.equal(wb.locateState,undefined);
 });
+test('pending back navigation stays on the requested path and stops at native roots',()=>{
+ const wb=Object.create(Workbench.prototype);
+ for(const [path,parent] of [['/project/src/lib','/project/src'],['/project/','/'],['/',null],
+   ['F:\\project\\src','F:/project'],['F:/project','F:/'],['F:/',null],
+   ['//server/share/folder','//server/share'],['//server/share/',null],['relative/path',null]]){
+  assert.equal(wb.directoryParent(path),parent,path);
+ }
+});

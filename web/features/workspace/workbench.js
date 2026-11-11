@@ -435,12 +435,18 @@ class Workbench {
     }
     this.select('terminal');
   }
+  directoryParent(path){
+    const value=path.replaceAll('\\','/').replace(/\/+$/,'');
+    if(!/^(?:\/|[a-z]:\/)/i.test(value)||/^\/\/[^/]+\/[^/]+$/.test(value))return null;
+    const parent=value.slice(0,value.lastIndexOf('/'))||'/';
+    return /^[a-z]:$/i.test(parent)?parent+'/':parent;
+  }
   async directory(session, tab, path, append = false, locateState = null) {
     if(this.locateState&&this.locateState!==locateState)this.cancelLocate();
     tab.controller?.abort(); const controller = tab.controller = new AbortController();tab.loading=true;
     if (!append) {
       if (session === this.current) this.stopThumbnails();
-      session.directory = path; tab.next=null;tab.loaded=false;tab.body.replaceChildren();
+      session.directory = path; tab.parentPath=this.directoryParent(path);tab.next=null;tab.loaded=false;tab.body.replaceChildren();
       const toolbar = this.node('div', 'wb-toolbar');
       tab.up = this.button('‹', () => this.directory(session, tab, tab.parentPath), '上一级目录');tab.up.disabled=true;
       const address=this.node('form','wb-address'),crumb=this.node('input','wb-path');crumb.value=path;crumb.type='text';crumb.spellcheck=false;
