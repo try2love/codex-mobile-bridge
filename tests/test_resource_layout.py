@@ -59,6 +59,7 @@ SSH_SOURCES = {
 PLATFORM_SOURCES = {
     'bridge/platforms/codex_daemon_env.py',
     'bridge/platforms/linux/codex_daemon_env.py',
+    'bridge/platforms/linux/codex_cli_control.py',
     'bridge/platforms/macos/codex_daemon_env.py',
     'bridge/platforms/macos/force_exit.py',
     'bridge/platforms/windows/codex_daemon_env.py',
@@ -145,7 +146,8 @@ class ResourceLayoutTests(unittest.TestCase):
         manifest = json.loads((ROOT/'scripts/gateway-resources.json').read_text())
         self.assertEqual(len(manifest), len(set(manifest)))
         self.assertEqual({name for name in manifest if name.endswith('.py')},
-                         set(SSH_SOURCES) | PLATFORM_SOURCES | WSL_ACCOUNT_SOURCES)
+                         set(SSH_SOURCES) | PLATFORM_SOURCES | WSL_ACCOUNT_SOURCES |
+                         {'bridge/clients/websocket.py'})
         self.assertTrue(CONNECTORS <= set(manifest))
         self.assertIn('bridge/clients/LICENSE.coding-mobile', manifest)
         self.assertIn('bridge/vendor/wsl_tomli/LICENSE', manifest)
