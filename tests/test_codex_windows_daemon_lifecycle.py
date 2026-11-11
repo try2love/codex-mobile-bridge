@@ -1,8 +1,10 @@
 """Controlled Windows daemon maintenance tests; no system process is stopped."""
 import base64
 from contextlib import contextmanager
+import ctypes
 import hashlib
 from pathlib import Path
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
@@ -42,6 +44,28 @@ class WindowsShutdownTests(unittest.TestCase):
         self.generation = (4321, native.FILETIME_UNIX_EPOCH + 70, str(self.executable))
         self.kernel = Mock()
         self.kernel.WaitForSingleObject.return_value = native.WAIT_RUNNING
+
+    def test_peer_pid_accepts_only_successful_nonzero_ulong_on_old_and_new_windows(self):
+        for result, pid, returned, allowed in (
+            (0, 4321, 0, True), (0, 4321, 4, True),
+            (0, 0, 0, False), (0, 0, 4, False), (0, 4321, 2, False), (-1, 4321, 0, False),
+        ):
+            with self.subTest(result=result, pid=pid, returned=returned):
+                def ioctl(_socket, control, _input, _length, out_pid, out_length, out_size, *_):
+                    self.assertEqual((control, out_length), (0x58000100, 4))
+                    out_pid._obj.value = pid
+                    out_size._obj.value = returned
+                    return result
+                channel = Mock()
+                channel.fileno.return_value = 10
+                with patch.object(native.wintypes, 'DWORD', ctypes.c_uint32), \
+                        patch.object(ctypes, 'WinDLL', create=True,
+                                  return_value=SimpleNamespace(WSAIoctl=Mock(side_effect=ioctl))):
+                    if allowed:
+                        self.assertEqual(native._peer_pid(channel), pid)
+                    else:
+                        with self.assertRaisesRegex(OSError, 'peer PID'):
+                            native._peer_pid(channel)
 
     def test_exact_peer_pid_and_live_held_handle_are_required(self):
         with patch('bridge.platforms.windows.local_service.read_record', side_effect=FileNotFoundError):

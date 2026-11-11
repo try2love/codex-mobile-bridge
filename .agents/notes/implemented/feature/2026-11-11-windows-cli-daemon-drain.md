@@ -24,7 +24,9 @@ WebSocket 回显只确认收到了请求，旧进程退出由原句柄确认。�
 
 Windows 实机的现有 Python 3.11.1 已创建并关闭数值 `AF_UNIX` 套接字。两个隔离尝试都用同一已核验签名的 `0.167.0-alpha.3.2`，均停在原生 `daemon start`。首轮只得到退出码 1；诊断轮证明进程虽使用 session 1 普通令牌，仍在任务计划程序的 Windows Job 内。原生程序明确报告启动器限制后台进程存活并返回 Win32 拒绝访问 5。事后检查时未发现隔离 daemon PID 记录或 socket，没有模型请求，现场确认自有进程均已退出。证据见 `.tmp/feedback-20261111-10/windows-w07-{socket-preflight,r1-result,r2-result}.json`。
 
-在普通桌面启动上下文核验原生 daemon 后，仍须实测 socket peer PID、同 home 同代次关闭回执和持句柄正常退出。上述 Job 启动失败没有进入 Bridge 维护，不能据此判断关闭协议成功或失败，也不使用同一受限启动器反复重试。Windows 实机维护仍待验收。
+上述 Job 启动失败没有进入 Bridge 维护，不能据此判断关闭协议成功或失败。通过现有 Explorer 启动后，隔离 daemon 实际启动、FILETIME 和原生锁核验通过。随后实机只读检查同一 socket 的 `SIO_AF_UNIX_GETPEERPID`：返回成功，在四字节 ULONG 中写入与所持进程句柄匹配的 PID，但报告字节数为 0。没有发送任何 WebSocket 应用数据。证据为 `.tmp/feedback-20261111-10/explorer-r4-r3/peer-pid-readonly.json`。
+
+[同版 Codex 的原生 Windows 核验](https://github.com/openai/codex/blob/c40729ea5cf8e947481b130c59807273eda2f8e9/codex-rs/uds/src/windows_peer.rs#L24-L46)也支持该回执。Bridge 现在接受 ioctl 成功、非零 PID、报告长度 0 或 4 的组合，仍须对端 PID 与持有的原进程句柄匹配；错误返回、零 PID 或其它长度拒绝。定向回归覆盖这些边界、对端变更和回执丢失。Windows 实机的完整正常排空、跨网关回执和实际退出仍单独验收。
 
 ## 影响
 

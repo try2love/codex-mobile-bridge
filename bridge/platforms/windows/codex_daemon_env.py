@@ -246,12 +246,16 @@ def bridge_maintenance_lock(home):
 def _peer_pid(channel):
     winsock = ctypes.WinDLL('ws2_32')
     winsock.WSAIoctl.argtypes = [ctypes.c_size_t, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
-        ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p, ctypes.c_void_p]
+        ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p, ctypes.c_void_p]
     winsock.WSAIoctl.restype = ctypes.c_int
-    pid, size = wintypes.DWORD(), wintypes.DWORD()
+    pid, size = ctypes.c_uint32(), ctypes.c_uint32()
     # SDK afunix.h: SIO_AF_UNIX_GETPEERPID = _WSAIOR(IOC_VENDOR, 256).
     if winsock.WSAIoctl(channel.fileno(), 0x58000100, None, 0, ctypes.byref(pid),
-                       ctypes.sizeof(pid), ctypes.byref(size), None, None) or size.value != ctypes.sizeof(pid):
+                       ctypes.sizeof(pid), ctypes.byref(size), None, None):
+        raise OSError('CLI shutdown socket peer PID could not be verified')
+    # Older Windows fills the ULONG but reports zero bytes, as handled by
+    # Codex's own Windows AF_UNIX peer validation.
+    if not pid.value or size.value not in (0, ctypes.sizeof(pid)):
         raise OSError('CLI shutdown socket peer PID could not be verified')
     return pid.value
 
