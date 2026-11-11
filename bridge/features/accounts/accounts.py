@@ -25,6 +25,7 @@ from urllib.parse import urlsplit
 
 from bridge.features.accounts.account import AccountRPC, AccountError, Account
 from bridge.clients.desktop_app import DesktopApp
+from bridge.clients.errors import TaskStateUnavailable, TaskAuditIncomplete
 from bridge.features.accounts.models import model_catalog, model_ids, valid_model_id
 from bridge.clients.codex.catalog import Catalog, ModelStore, MODEL_REFRESH_SECONDS
 from bridge.features.accounts.info import AccountInfo
@@ -1031,7 +1032,10 @@ class Accounts:
     def initialize_desktop_runtime(self, value):
         if sys.platform != 'darwin' or getattr(self.bridge, 'host', 'local') != 'local':
             raise ValueError('此入口不支持 Codex 原生连接初始化')
-        if set(value) != {'action', 'confirmed', 'tasksConfirmed', 'requestId'} or value.get('confirmed') is not True or value.get('tasksConfirmed') is not True:
+        required = {'action', 'confirmed', 'tasksConfirmed', 'requestId'}
+        if (set(value) - {'acknowledgeUnavailable'} != required or value.get('confirmed') is not True
+                or value.get('tasksConfirmed') is not True
+                or 'acknowledgeUnavailable' in value and value['acknowledgeUnavailable'] is not True):
             raise ValueError('请确认所有桌面任务已结束，并同意重启 Codex 桌面应用')
         request_id = value.get('requestId')
         try:
@@ -1045,6 +1049,11 @@ class Accounts:
             if self.state.get('operation') == 'desktopRuntime' and self.state.get('requestId') == request_id:
                 return self.public()
             self.assert_editable()
+            acknowledged = value.get('acknowledgeUnavailable') is True
+            if acknowledged and not (self.state.get('operation') == 'desktopRuntime'
+                                     and self.state.get('phase') == 'failed'
+                                     and self.state.get('taskStateUnavailable') is True):
+                raise ValueError('请先核验原生连接初始化的任务状态，再确认是否继续')
             self.idle(pending_only=True)
             executable = self.index.get('desktopExecutable') or DesktopApp.discover(self.runtime)
             if not executable:
@@ -1055,11 +1064,11 @@ class Accounts:
             validate_runtime(self.runtime)
             self.state = {'phase': 'preparing', 'operation': 'desktopRuntime', 'requestId': request_id, 'error': None}
             self.phase('preparing')
-            self.thread = threading.Thread(target=self._initialize_desktop_runtime, args=(app,), daemon=True)
+            self.thread = threading.Thread(target=self._initialize_desktop_runtime, args=(app, acknowledged), daemon=True)
             self.thread.start()
             return self.public()
 
-    def _initialize_desktop_runtime(self, app):
+    def _initialize_desktop_runtime(self, app, acknowledged=False):
         from bridge.clients.codex.desktop_runtime import configure, connect, initialization_lock, process_identity
         from bridge.clients.lifecycle import inspect_client, stop_client
         from bridge.platforms.macos.codex_daemon_env import read_process_environment
@@ -1093,7 +1102,15 @@ class Accounts:
         try:
             with self.gate, self.bridge.account.lock, initialization_lock(self.home):
                 state, identities = observed()
-                self.bridge.assert_desktop_idle(allow_stopped_app=not state['running'], desktop_only=True)
+                try:
+                    self.bridge.assert_desktop_idle(allow_stopped_app=not state['running'], desktop_only=True)
+                except (TaskStateUnavailable, TaskAuditIncomplete) as exc:
+                    if not acknowledged:
+                        self.phase('failed', error=str(exc), taskStateUnavailable=True)
+                        return
+                    # Consent covers unknown tasks, never a new queued/unknown
+                    # write or a known busy owner found by the fresh audit.
+                    self.idle(pending_only=True)
                 current, current_identities = observed()
                 if identities != current_identities or set(state['pids']) != set(current['pids']):
                     raise ValueError('Codex 桌面进程已变化，请重新初始化连接')

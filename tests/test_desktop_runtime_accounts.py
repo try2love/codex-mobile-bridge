@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 import test_accounts
 from bridge.features.accounts import accounts as accounts_module
 from bridge.clients.codex import desktop_runtime
+from bridge.clients.errors import TaskStateUnavailable, TaskAuditIncomplete
 
 
 class DesktopRuntimeAccountsTests(unittest.TestCase):
@@ -96,6 +97,53 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
         self.mocks['stop'].assert_not_called()
         self.mocks['configure'].assert_not_called()
         self.app.start.assert_not_called()
+
+    def test_unavailable_task_audit_offers_explicit_normal_restart(self):
+        self.bridge.assert_desktop_idle.side_effect = TaskStateUnavailable('tasks unavailable')
+        self.run_initialization()
+        self.assertIs(self.manager.state.get('taskStateUnavailable'), True)
+        self.mocks['stop'].assert_not_called()
+        self.mocks['inspect'].side_effect = [self.running, self.running, self.stopped]
+        self.value = {**self.value, 'requestId': str(uuid.uuid4()), 'acknowledgeUnavailable': True}
+        self.run_initialization()
+        self.assertEqual(self.manager.state['phase'], 'complete')
+        self.assertNotIn('taskStateUnavailable', self.manager.state)
+        self.assertEqual(self.bridge.assert_desktop_idle.call_count, 2)
+        self.mocks['stop'].assert_called_once()
+        self.assertEqual(self.manager.snapshot_files(), self.original)
+
+    def test_incomplete_task_audit_is_exposed_for_explicit_retry(self):
+        self.bridge.assert_desktop_idle.side_effect = TaskAuditIncomplete('audit timeout')
+        self.run_initialization()
+        self.assertIs(self.manager.state.get('taskStateUnavailable'), True)
+        self.assertIn('audit timeout', self.manager.state['error'])
+        self.mocks['stop'].assert_not_called()
+
+    def test_unavailable_confirmation_requires_failed_audit_and_never_skips_busy_tasks(self):
+        with self.assertRaisesRegex(ValueError, '核验'):
+            self.manager.control({**self.value, 'acknowledgeUnavailable': True})
+        self.bridge.assert_desktop_idle.side_effect = TaskStateUnavailable('tasks unavailable')
+        self.run_initialization()
+        self.bridge.assert_desktop_idle.side_effect = ValueError('known busy task')
+        self.value = {**self.value, 'requestId': str(uuid.uuid4()), 'acknowledgeUnavailable': True}
+        self.run_initialization()
+        self.assertEqual(self.manager.state['phase'], 'failed')
+        self.assertIn('known busy task', self.manager.state['error'])
+        self.assertNotIn('taskStateUnavailable', self.manager.state)
+        self.mocks['stop'].assert_not_called()
+
+    def test_unavailable_confirmation_rechecks_pending_operations_after_audit(self):
+        self.bridge.assert_desktop_idle.side_effect = TaskStateUnavailable('tasks unavailable')
+        self.run_initialization()
+        def unavailable_with_pending(**kwargs):
+            self.bridge.submissions['chat:pending'] = {'status': 'unknown', 'title': 'Pending chat'}
+            raise TaskStateUnavailable('tasks unavailable')
+        self.bridge.assert_desktop_idle.side_effect = unavailable_with_pending
+        self.value = {**self.value, 'requestId': str(uuid.uuid4()), 'acknowledgeUnavailable': True}
+        self.run_initialization()
+        self.assertEqual(self.manager.state['phase'], 'failed')
+        self.assertIn('Pending chat', self.manager.state['error'])
+        self.mocks['stop'].assert_not_called()
 
     def test_unsupported_runtime_keeps_app_running_before_preparing_or_worker(self):
         self.mocks['validate_runtime'].side_effect = ValueError('shared connection is unsupported')

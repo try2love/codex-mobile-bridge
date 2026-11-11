@@ -25,7 +25,7 @@ from bridge.features.terminals.manager import TerminalManager
 from bridge.features.sessions.side_chat import SideChats
 from bridge.features.sessions import linux_permissions
 from bridge.clients.codex.ipc import DesktopIPC, IPCError
-from bridge.clients.errors import TaskStateUnavailable
+from bridge.clients.errors import TaskStateUnavailable, TaskAuditIncomplete
 from bridge.clients.codex.app_server import AppServerError, AppServerUnavailable
 from bridge.clients.codex.cli_session import CliSessions
 from bridge.features.sessions.identity import same_cwd
@@ -1333,8 +1333,8 @@ class Bridge:
         def remaining():
             value = deadline - time.monotonic()
             if value <= 0:
-                # An incomplete audit cannot use the unavailable-state quit override.
-                raise ValueError('Codex 任务核验超时，仍有会话未检查，请稍后重试')
+                # Strict lifecycle callers still reject an incomplete audit.
+                raise TaskAuditIncomplete('Codex 任务核验超时，仍有会话未检查，请稍后重试')
             return value
 
         def check_submissions(*, final=False):
@@ -1378,6 +1378,8 @@ class Bridge:
                 remaining()
                 if host not in sources:
                     sources[host] = self.for_host(host)
+        except TaskAuditIncomplete:
+            raise
         except Exception as exc:
             raise ValueError('无法读取 Codex 桌面和 SSH 会话，请检查连接后重试') from exc
         check_submissions()
@@ -1565,7 +1567,7 @@ class Bridge:
                 while pending:
                     done, _ = wait(pending, timeout=remaining(), return_when=FIRST_COMPLETED)
                     if not done:
-                        raise ValueError('Codex 任务核验超时，仍有会话未检查，请稍后重试')
+                        raise TaskAuditIncomplete('Codex 任务核验超时，仍有会话未检查，请稍后重试')
                     pending.difference_update(done)
                     for future in done:
                         unavailable = future.result() or unavailable
@@ -1595,6 +1597,17 @@ class Bridge:
                 raise TaskStateUnavailable(unknown)
             if metadata_error:
                 raise TaskStateUnavailable('无法读取 Codex 桌面和 SSH 会话，请检查连接后重试') from metadata_error
+        except TaskAuditIncomplete:
+            # A stalled historical lookup must not conceal a busy snapshot
+            # already delivered by another owner during this same audit.
+            with condition:
+                for record in followed.values():
+                    try:
+                        check_state(record)
+                    except TaskStateUnavailable:
+                        pass
+            check_submissions()
+            raise
         except IPCError as exc:
             raise TaskStateUnavailable(unknown) from exc
         finally:

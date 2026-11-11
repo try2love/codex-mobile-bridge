@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from bridge.clients.codex.ipc import IPCError
-from bridge.clients.errors import TaskStateUnavailable
+from bridge.clients.errors import TaskStateUnavailable, TaskAuditIncomplete
 from bridge.app.service import Bridge
 from bridge.features.sessions.store import SessionStore, StoreUnavailable
 from bridge.features.accounts.accounts import Accounts
@@ -106,13 +106,31 @@ class DesktopIdle(unittest.TestCase):
         self.before_request = before
         started = time.monotonic()
         try:
-            with self.assertRaisesRegex(ValueError, '超时'):
+            with self.assertRaisesRegex(TaskAuditIncomplete, '超时') as failure:
                 self.bridge.assert_desktop_idle(timeout=.04)
+            self.assertNotIsInstance(failure.exception, TaskStateUnavailable)
             self.assertLess(time.monotonic()-started, .4)
         finally:
             release.set()
             self.assertTrue(finished.wait(1))
         self.assertTrue(all(instance.closed for instance in self.instances))
+
+    def test_audit_timeout_preserves_busy_snapshot_delivered_by_a_stalled_follower(self):
+        release, finished = threading.Event(), threading.Event()
+        self.states[('local', 'desktop-only')] = {'id': 'desktop-only', 'threadRuntimeStatus': {'type': 'active'}}
+        def hold(sid, follower):
+            try:
+                release.wait(1)
+            finally:
+                finished.set()
+        self.after_follow = hold
+        try:
+            with self.assertRaisesRegex(ValueError, '任务运行') as failure:
+                self.bridge.assert_desktop_idle(timeout=.04)
+            self.assertNotIsInstance(failure.exception, TaskAuditIncomplete)
+        finally:
+            release.set()
+            self.assertTrue(finished.wait(1))
 
     def test_discovery_has_only_eight_requests_in_flight(self):
         identifiers = [f'history-{index:04}' for index in range(24)]

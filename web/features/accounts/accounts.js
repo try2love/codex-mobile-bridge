@@ -47,7 +47,8 @@ class AccountsPanel {
     this.desktopRuntime=this.node('section');this.desktopRuntime.hidden=true;
     this.runtimeStatus=this.node('p',undefined,'account-muted');
     this.initializeRuntime=this.button('初始化连接',()=>{if(window.confirm(this.text('确认所有 Codex 桌面任务已结束，并初始化原生连接？正在运行的 App 会正常退出并重新启动；账号和聊天记录保持不变。')))return this.perform({action:'initializeDesktopRuntime',requestId:this.requestId(),confirmed:true,tasksConfirmed:true});});
-    this.desktopRuntime.append(this.node('h3','Codex 原生会话连接'),this.runtimeStatus,this.initializeRuntime);this.tools.append(this.desktopRuntime);
+    this.forceInitializeRuntime=this.button('强制继续初始化',()=>{if(window.confirm(this.text('部分任务状态无法核验。继续会正常重启 Codex App，可能中断这些任务或待确认操作；聊天记录保留，可稍后继续。是否继续？')))return this.perform({action:'initializeDesktopRuntime',requestId:this.requestId(),confirmed:true,tasksConfirmed:true,acknowledgeUnavailable:true});});this.forceInitializeRuntime.hidden=true;
+    this.desktopRuntime.append(this.node('h3','Codex 原生会话连接'),this.runtimeStatus,this.initializeRuntime,this.forceInitializeRuntime);this.tools.append(this.desktopRuntime);
     if(!this.desktop){this.root.append(this.node('p','官方账号登录请在电脑端完成。','account-muted'));return;}
     const scanDetails=this.node('details');scanDetails.append(this.node('summary','扫描本机配置'));
     this.scanSource=this.field('Codex 配置目录');this.scanSource.input.placeholder=this.configurationPlaceholder||this.text('留空使用当前 Codex 数据目录');
@@ -451,6 +452,8 @@ class AccountsPanel {
     this.runtimeStatus.textContent=this.text(runtime.error||(runtime.configured?'已保存原生连接设置；由网关启动 App 时生效。':'初始化后，手机与 Codex App 共用原生侧边聊天和删除功能。'));
     this.initializeRuntime.textContent=this.text(runtime.configured?'重新初始化连接':'初始化连接');
     this.initializeRuntime.disabled=this.busy||switching||external||(!this.desktop&&value.canSwitch===false);
+    this.forceInitializeRuntime.hidden=value.switch?.operation!=='desktopRuntime'||phase!=='failed'||value.switch?.taskStateUnavailable!==true;
+    this.forceInitializeRuntime.disabled=this.initializeRuntime.disabled;
     const resetAccount=this.accountRows().find(row=>row.id===this.resetAccountId);
     if(this.resetDialog?.open&&(switching||!resetAccount||this.resetAccountKey&&this.resetAccountKey!==resetAccount.accountKey))this.resetDialog.close();
     this.status.textContent=this.text(labels[phase]||phase)+(value.switch?.error?' · '+this.text(value.switch.error):'');
