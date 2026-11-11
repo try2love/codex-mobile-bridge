@@ -272,6 +272,17 @@ class WslReleaseTests(unittest.TestCase):
     setUp = wsl_fixtures.WslSessionTests.setUp
     make_entry = wsl_fixtures.WslSessionTests.make_entry
 
+    def test_first_explicit_resume_persists_state_in_a_new_entry_directory(self):
+        directory = Path(self.temp.name) / 'codex-entries' / self.row['id'][4:]
+        with patch.object(self.temp, 'name', str(directory)):
+            entry = self.make_entry()
+        self.addCleanup(entry.close)
+        self.assertFalse(directory.exists())
+        entry.activate(self.identifier)
+        self.assertFalse(entry.released_cli.contains(self.identifier))
+        self.assertEqual(json.loads((directory / 'released-cli-sessions.json').read_text()), [])
+        self.assertTrue(entry.session(self.identifier, attach=False).connected)
+
     def test_release_blocks_automatic_reacquire_but_explicit_resume_is_allowed(self):
         self.entry.activate(self.identifier)
         runtime = self.entry.server

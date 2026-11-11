@@ -18,6 +18,8 @@ CLI 释放后再次继续时先查询 App owner 的决定由[来源执行路由]
 
 ## 决策
 
+`ReleasedSessions` 在首次显式写入时创建自己的私有状态目录，构造和读取仍不建目录。新登记 WSL 入口尚无状态目录时，`activate → released_cli.set → private_json` 原先会报 `FileNotFoundError`，阻断继续会话；该异常已由 Windows 网关日志和当前源码的冷入口回归对应确认。沿用共享账本落盘入口处理，不在 Windows 或 WSL 调用者各补一份目录初始化；恢复后释放记录仍能跨网关重启保留。
+
 等待操作可通过新 ID 明确升级为停止释放。worker 在操作锁内先将 waiting 改为 releasing 并保存，再调用适配器；仅仍 waiting 的旧操作可被 superseded，新 worker 不与旧 worker 重复派发。只读预检失败为 failed/notSent，可显式重试；发生过原生写入的未知结果继续禁止重放。
 
 退订确认与原生卸载分别记录。最后读取失败保留 detached/unsubscribed，停止自动接入；check 仅核验原线程、原连接世代，不重复停止、退订或 resume。成功 resume 后校验或初始化失败时，清理同一连接对原线程的订阅；未确认清理的连接保持可管理、禁止发送及再次恢复，不关闭其他线程共用的代理。

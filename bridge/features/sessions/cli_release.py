@@ -20,6 +20,7 @@ class ReleasedSessions:
 
     def set(self, identifier, released):
         with self.lock:
+            self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             if released:
                 self.ids.add(identifier)
             else:
