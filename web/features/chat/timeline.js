@@ -160,6 +160,15 @@ class ChatTimeline {
       this.rows.set(row.key,{row,sequence:page.sequence});
       const stamp=JSON.stringify(row),old=this.nodes.get(row.key);
       if(old?.stamp===stamp)continue;
+      if(old&&previous&&previous.row.timestamp!==row.timestamp){
+        const {timestamp:priorTime,...before}=previous.row,{timestamp,...after}=row;
+        const actions=old.node.querySelector('.message-actions');
+        if(actions&&JSON.stringify(before)===JSON.stringify(after)){
+          // Late native clocks must not replace text selection or a player.
+          actions.querySelector('.message-time')?.remove();renderChatMessageTime(actions,timestamp);
+          old.stamp=stamp;continue;
+        }
+      }
       const node=this.renderRow(row);node.dataset.key=row.key;
       node.hidden=!this.rowVisible(row);changed=changed||!node.hidden;
       this.nodes.set(row.key,{node,stamp});

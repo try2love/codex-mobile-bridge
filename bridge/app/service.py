@@ -114,6 +114,8 @@ class LiveSession:
         self.history_refreshing = False
         self.history_receipt_key = None
         self.history_receipt_attempts = 0
+        self.history_time_key = None
+        self.history_time_attempts = 0
         self.error = None
         self.cli_recovery = None
         self.rebuild_recommended = False
@@ -3480,6 +3482,7 @@ class Bridge:
                 return
         if isinstance(self.store, RemoteStore):
             return
+        refresh_times = False
         with session.condition:
             if session.history_refreshing or self.closed.is_set():
                 return
@@ -3495,17 +3498,35 @@ class Bridge:
                 elif session.history_receipt_attempts >= 4 or time.monotonic() < session.history_retry_at:
                     return
                 session.history_receipt_attempts += 1
-            elif (session.connected or session.connecting or session.saved_view is None or
+            elif session.connected:
+                # Live snapshots can omit clocks that are written later to the
+                # native rollout. Reuse the bounded presentation, not message
+                # text or poll sequence, to coalesce those evidence reads.
+                time_key = tuple((turn['id'], turn.get('status'), message['id'], message['kind'], message['role'])
+                                 for turn in session.timeline_view()['turns'] if turn.get('actionable', True)
+                                 for message in turn['messages']
+                                 if message['role'] in ('user', 'assistant') and message.get('timestamp') is None
+                                 and isinstance(message.get('id'), str) and message['id'] and not message.get('_syntheticId'))
+                if not time_key:
+                    return
+                if time_key != session.history_time_key:
+                    session.history_time_key, session.history_time_attempts = time_key, 0
+                elif session.history_time_attempts >= 4 or time.monotonic() < session.history_retry_at:
+                    return
+                session.history_time_attempts += 1
+                refresh_times = True
+            elif (session.connecting or session.saved_view is None or
                   time.monotonic() < session.history_retry_at):
                 return
             session.history_refreshing = True
-            session.history_retry_at = time.monotonic() + (2 ** session.history_receipt_attempts if receipts else 2)
+            attempts = session.history_receipt_attempts if receipts else session.history_time_attempts if refresh_times else 1
+            session.history_retry_at = time.monotonic() + 2 ** attempts
         def refresh():
             try:
                 fallback = self._saved_history(session)
                 normalized = normalize_state(fallback, False, image_cache=session.tool_image_cache, item_limit=session.timeline_limit)
                 with session.condition:
-                    if receipts or not session.connected and session.saved_view != normalized:
+                    if receipts or (refresh_times or not session.connected) and session.saved_view != normalized:
                         session.set_history(fallback)
                 self._reconcile_submissions(session)
             except (OSError, ValueError, KeyError, RemoteUnavailable, StoreUnavailable):

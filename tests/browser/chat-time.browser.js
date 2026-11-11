@@ -54,8 +54,12 @@ window.runChatTimeChecks=async function(){
     timeline.refreshActions();
     actionsFollow(container.querySelector('[data-key="user"]'),'Codex dynamically added edit','编辑并重新发送');
     actionsFollow(container.querySelector('[data-key="reply"]'),'Codex dynamically added fork','从这里分支');
+    const old=container.querySelector('[data-key="old"]'),body=old.querySelector('.message-body'),audio=document.createElement('audio');body.append(audio);
+    timeline.apply({rows:[{...rows[2],timestamp:stamp}],meta:{},sequence:2,epoch:'fixture',before:null,hasMore:false});
+    check(container.querySelector('[data-key="old"]')===old&&old.querySelector('audio')===audio,'Late clock preserves existing content and media controls');
+    actionsFollow(old,'Codex late native clock','从这里分支');
     // Native side chats use this same timeline with their own endpoint identity.
-    timeline.url=()=>'/synthetic/side-chat';timeline.apply({rows:[{...rows[1],text:'Side reply'}],meta:{},sequence:2,epoch:'side',before:null,hasMore:false},true);
+    timeline.url=()=>'/synthetic/side-chat';timeline.apply({rows:[{...rows[1],text:'Side reply'}],meta:{},sequence:3,epoch:'side',before:null,hasMore:false},true);
     actionsFollow(container.querySelector('[data-key="reply"]'),'Native side chat','从这里分支');
   }finally{timeline.dispose();viewport.remove();}
   const detail=document.createElement('div');detail.style.cssText='position:fixed;inset:0;overflow:auto;background:var(--page);z-index:10';document.body.append(detail);

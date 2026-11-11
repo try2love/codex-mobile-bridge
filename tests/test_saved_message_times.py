@@ -2,12 +2,14 @@ import copy
 import json
 import sqlite3
 import tempfile
+import threading
 import unittest
 from contextlib import closing
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
-from bridge.app.service import LiveSession
+from bridge.app.service import Bridge, LiveSession
 from bridge.features.sessions.store import SessionStore
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -65,6 +67,56 @@ class SavedMessageTimeJoinTests(unittest.TestCase):
         self.assertNotEqual(row['_timestampSource'], 'native-turn-start')
         live['turns'][0]['items'][0]['timestamp'] = STAMP - 500
         self.assertEqual(self.join(saved, live)['turns'][0]['messages'][0]['timestamp'], STAMP - 500)
+
+    def test_connected_reply_refreshes_new_native_clock_without_reconnecting(self):
+        session = LiveSession('thread')
+        with session.condition:
+            session.set_history(self.state())
+            session.state = self.state()
+            session.connected = True
+        native = copy.deepcopy(session.state)
+        bridge = object.__new__(Bridge)
+        bridge.store = SimpleNamespace()
+        bridge.closed = threading.Event()
+        bridge._saved_history = Mock(return_value=self.state(timestamp=STAMP))
+        bridge._reconcile_submissions = Mock()
+        # Execute the existing background callback deterministically.
+        worker = lambda *, target, daemon: SimpleNamespace(start=target)
+        with patch('bridge.app.service.threading.Thread', side_effect=worker):
+            bridge._refresh_saved_async(session)
+            self.assertEqual(session.timeline_view()['turns'][0]['messages'][0].get('timestamp'), STAMP)
+            bridge._refresh_saved_async(session)
+        self.assertEqual(bridge._saved_history.call_count, 1)
+        self.assertEqual(session.state, native)
+        self.assertTrue(session.connected)
+
+    def test_missing_live_clock_retries_are_bounded_and_new_turn_can_retry(self):
+        session = LiveSession('thread')
+        with session.condition:
+            session.set_history(self.state())
+            session.state = self.state()
+            session.connected = True
+        bridge = object.__new__(Bridge)
+        bridge.store = SimpleNamespace()
+        bridge.closed = threading.Event()
+        bridge._saved_history = Mock(return_value=self.state())
+        bridge._reconcile_submissions = Mock()
+        worker = lambda *, target, daemon: SimpleNamespace(start=target)
+        with patch('bridge.app.service.threading.Thread', side_effect=worker), patch('bridge.app.service.time.monotonic', return_value=100):
+            bridge._refresh_saved_async(session)
+            bridge._refresh_saved_async(session)
+            self.assertEqual(bridge._saved_history.call_count, 1)
+            for _ in range(8):
+                session.history_retry_at = 0
+                bridge._refresh_saved_async(session)
+            self.assertEqual(bridge._saved_history.call_count, 4)
+            with session.condition:
+                session.state = self.state(item_id='next-reply', turn_id='next-turn')
+                session.changed()
+            bridge._saved_history.return_value = self.state(item_id='next-reply', turn_id='next-turn', timestamp=STAMP)
+            bridge._refresh_saved_async(session)
+            self.assertEqual(bridge._saved_history.call_count, 5)
+            self.assertEqual(session.view()['turns'][0]['messages'][0].get('timestamp'), STAMP)
 
 
 class RolloutMessageTimeTests(unittest.TestCase):
