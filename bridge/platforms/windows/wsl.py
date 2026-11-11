@@ -66,6 +66,26 @@ def read(distribution, source, user=None, timeout=20, allow_start=False):
         raise OSError('WSL 返回了无法识别的数据') from exc
 
 
+def configuration_source(user, directory):
+    """Validate a selected Linux user's existing directory inside that WSL user."""
+    if (not isinstance(user, str) or not user.strip() or user != user.strip()
+            or user.startswith('-') or any(ord(c) < 32 or ord(c) == 127 for c in user)):
+        raise ValueError('请填写 WSL Linux 用户名')
+    if (not isinstance(directory, str) or not directory.startswith('/') or directory.startswith('//')
+            or '\\' in directory or any(ord(c) < 32 or ord(c) == 127 for c in directory)):
+        raise ValueError('请填写 WSL 配置目录的 Linux 绝对路径')
+    return 'requested_user='+repr(user)+'\nrequested_directory='+repr(directory)+'\n'+r'''
+import json,os,pwd
+from pathlib import Path
+uid=os.getuid(); account=pwd.getpwuid(uid)
+if account.pw_name!=requested_user:raise ValueError('WSL Linux user mismatch')
+selected_directory=Path(requested_directory).resolve(strict=True)
+if (not selected_directory.is_dir() or selected_directory.stat().st_uid!=uid
+        or not os.access(selected_directory,os.R_OK|os.X_OK)):
+    raise ValueError('WSL configuration directory is not owned and readable by this Linux user')
+'''
+
+
 # Only same-user process identities and native filesystem metadata are returned.
 # Do not return command lines or general environment/configuration contents.
 _INVENTORY = r'''
@@ -110,8 +130,22 @@ inventory={'user':user,'userHome':str(home),'homes':rows}
 PROBE = _INVENTORY + '\nprint(json.dumps(inventory))\n'
 
 
-def probe(distribution, user=None):
-    return read(distribution, PROBE, user)
+def probe(distribution, user=None, home=None):
+    if home is None:
+        return read(distribution, PROBE, user)
+    source = configuration_source(user, home) + '''
+if not any((selected_directory/name).exists() for name in ('config.toml','auth.json','sessions','app-server-control')):
+    raise ValueError('Not an existing Codex configuration directory')
+import subprocess
+windows=None
+try:
+    result=subprocess.run(['wslpath','-w',str(selected_directory)],capture_output=True,text=True,timeout=3)
+    if not result.returncode:windows=result.stdout.strip()
+except (OSError,subprocess.TimeoutExpired):pass
+print(json.dumps({'user':account.pw_name,'userHome':account.pw_dir,
+    'homes':[{'home':str(selected_directory),'daemon':None,'windowsHome':windows}]}))
+'''
+    return read(distribution, source, user)
 
 
 _START_DAEMON = r'''

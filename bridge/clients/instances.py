@@ -84,6 +84,11 @@ class ClientInstances:
             result.append(self.manager.zcode_application_capability())
         if target in (None, 'antigravity'):
             result.append(self.manager.antigravity_application_capability())
+        if sys.platform == 'win32':
+            for row in result:
+                if row['family'] in ('codex', 'claude'):
+                    registry = self.registry.codex if row['family'] == 'codex' else self.manager.claude_wsl
+                    row['wslSupported'] = registry is not None
         return result
 
     def metadata(self, family=None):
@@ -170,7 +175,7 @@ class ClientInstances:
             'profileInitialized': lambda: self.registry.pin_initialized_roots(selected.id)}
 
     def control(self, value):
-        allowed = {'action', 'operation', 'family', 'kind', 'label', 'home', 'application', 'entry', 'confirmed'}
+        allowed = {'action', 'operation', 'family', 'kind', 'label', 'home', 'application', 'entry', 'confirmed', 'distribution', 'user'}
         if not isinstance(value, dict) or set(value)-allowed:
             raise ValueError('独立配置管理请求无效')
         operation = value.get('operation', 'list')
@@ -222,6 +227,16 @@ class ClientInstances:
                 raise ValueError('客户端保存请求无效')
             register = self.manager.register_zcode_application if family == 'zcode' else self.manager.register_antigravity_application
             return register(value['application'])
+        if operation == 'save' and value.get('kind') == 'wsl-cli':
+            if (sys.platform != 'win32' or family not in ('codex', 'claude')
+                    or set(value)-{'action', 'operation'} != {'family', 'kind', 'label', 'home', 'distribution', 'user'}):
+                raise ValueError('WSL 客户端保存请求无效')
+            registry = self.registry.codex if family == 'codex' else self.manager.claude_wsl
+            if registry is None:
+                raise ValueError('当前电脑不支持 WSL 应用')
+            identifier = registry.save_wsl(value['distribution'], value['user'], value['home'], value['label'])
+            self.manager.client_cache = None
+            return {'entry': identifier, 'instances': self.registry.list(), 'capabilities': self.capabilities()}
         if operation != 'save' or set(value)-{'action', 'operation'} != {'family', 'kind', 'label', 'home'}:
             raise ValueError('独立配置保存请求无效')
         capability = next((row for row in self.capabilities() if row['family'] == family), None)

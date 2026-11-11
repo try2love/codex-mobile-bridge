@@ -32,8 +32,8 @@ if not native_wsl_binary(binary):
     binary=next((str(p) for p in (home/'.local/bin/claude',Path('/usr/local/bin/claude'),home/'.npm-global/bin/claude',
                     *home.glob('.nvm/versions/node/*/bin/claude'))
                  if p.is_file() and os.access(p,os.X_OK) and native_wsl_binary(p)),None)
-directories={str((home/'.claude').resolve())}
-for p in Path('/proc').iterdir():
+directories={str(selected_directory)} if 'selected_directory' in globals() else {str((home/'.claude').resolve())}
+for p in (() if 'selected_directory' in globals() else Path('/proc').iterdir()):
     if not p.name.isdigit(): continue
     try:
         if p.stat().st_uid!=uid: continue
@@ -98,21 +98,66 @@ class WslClaudeEntries:
                  'reason': '可在本网关管理此 WSL API 接入；官方登录仍在原 Claude Code CLI 完成。'}
                 for row in rows.values()]
 
-    def configure(self, identifier, enabled):
+    def save_wsl(self, distribution, user, home, label):
+        if (not isinstance(label, str) or not 1 <= len(label.strip()) <= 80
+                or any(ord(c) < 32 or ord(c) == 127 for c in label)):
+            raise ValueError('请输入 1–80 字的接入名称，不能包含控制字符')
+        source = (wsl.configuration_source(user, home) + '\n__name__="wsl_claude_probe"\n'
+                  + worker_source() + PROBE)
+        info = wsl.read(distribution, source, user)
+        if info.get('user') != user or len(info.get('profiles', [])) != 1:
+            raise ValueError('未找到所选目录的原生 WSL Claude Code 环境')
+        directory = info['profiles'][0]['configDir']
+        identifier = entry_id(distribution, user, directory)
+        candidate = {'id': identifier, 'distribution': distribution, 'user': user,
+                     'configDir': directory, 'label': label.strip()}
+        with self.lock:
+            if any(row['id'] == identifier for row in self.entries):
+                raise ValueError('此 WSL 配置目录已登记，请使用已有入口')
+            previous = self.candidates.get(identifier)
+            self.candidates[identifier] = candidate
+            try:
+                self.configure(identifier, True, _manual=True)
+            except Exception:
+                if previous is None:
+                    self.candidates.pop(identifier, None)
+                else:
+                    self.candidates[identifier] = previous
+                raise
+        return identifier
+
+    def configure(self, identifier, enabled, *, _manual=False):
         if type(enabled) is not bool or not isinstance(identifier, str) or not re.fullmatch(r'wsl-claude:[0-9a-f]{32}', identifier):
             raise ValueError('WSL Claude Code 入口开关无效')
         with self.lock:
             row = next((r for r in self.entries if r['id'] == identifier), None)
+            if _manual and row is not None:
+                raise ValueError('此 WSL 配置目录已登记，请使用已有入口')
             if row is None:
                 if not enabled or identifier not in self.candidates:
                     raise ValueError('请先扫描并选择已有 WSL Claude Code 入口')
                 if len(self.entries) >= 16:
                     raise ValueError('最多登记 16 个 WSL Claude Code 入口')
                 row = dict(self.candidates[identifier])
-                self.entries.append(row)
+                if not _manual:
+                    self.entries.append(row)
             row['enabled'] = enabled
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            private_json(self.path, {'version': 1, 'entries': self.entries})
+            if _manual:
+                updated = [*self.entries, row]
+                payload = {'version': 1, 'entries': updated}
+                try:
+                    private_json(self.path, payload)
+                except OSError:
+                    try:
+                        persisted = self.path.read_bytes() == json.dumps(payload).encode('utf-8')
+                    except OSError:
+                        persisted = False
+                    if not persisted:
+                        raise
+                self.entries = updated
+            else:
+                private_json(self.path, {'version': 1, 'entries': self.entries})
 
     def selected(self, identifier):
         with self.lock:
