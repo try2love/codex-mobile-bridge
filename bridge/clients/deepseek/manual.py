@@ -75,6 +75,9 @@ def _private(path):
 class ManualDeepSeek(DeepSeek):
     manual = True
 
+    def connection_error(self):
+        return '已绑定的 Harness 档案“'+self.binding['profile']+'”尚未连接，请在原客户端重新加载接入插件；无需重复安装桌面接入。'
+
     def __init__(self, binding_file, instance_id=None):
         path = Path(binding_file).expanduser().absolute()
         if path.name != 'binding.json':

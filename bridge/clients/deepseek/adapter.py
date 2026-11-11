@@ -41,6 +41,11 @@ class DeepSeek:
     def install(self):
         return self.ensure_installed()
 
+    def connection_error(self):
+        if not (self.home/'profiles/desktop/cordis.patch.yml').is_file():
+            return '未找到 Harness 桌面档案。使用 Web 或第三方客户端时，请在“第三方客户端：手动安装与绑定”中扫描并绑定其接入插件；官方桌面版请先启动一次并确认数据目录。'
+        return 'DeepSeek 桌面未连接，请安装接入插件并重新打开 Harness'
+
     def repair_missing_connector(self, expected, check_stopped):
         from bridge.clients.deepseek.orphan import repair
         return repair(self, expected, check_stopped, private_json)
@@ -214,7 +219,7 @@ class DeepSeek:
                 message = 'Harness 拒绝了操作'
             raise BridgeUnavailable(message) from exc
         except (OSError, KeyError) as exc:
-            raise BridgeUnavailable('DeepSeek 桌面未连接，请安装接入插件并重新打开 Harness') from exc
+            raise BridgeUnavailable(self.connection_error()) from exc
         if action == 'archive' and value.get('archiveNotSent') is True:
             raise ArchiveNotSent(value.get('message') or '原生客户端拒绝归档，操作未发送')
         if action == 'detail':
