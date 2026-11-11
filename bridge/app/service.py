@@ -4735,16 +4735,21 @@ class Bridge:
     def catalog(self, thread_id, refresh=False, kind=None, query='', offset=0, limit=200, ids=None):
         session = self.session(thread_id, attach=False, background=True)
         if session.origin not in ('cli', 'ide'):
-            session = self.session(thread_id, attach=False)
+            try:
+                session = self.session(thread_id, attach=False)
+            except FileNotFoundError:
+                # A stale rollout path must not hide the selected entry's models.
+                # The first read already verified this thread's database metadata.
+                pass
         with session.condition:
             state = session.state if session.connected else session.history_state or session.state or {}
             native = session.origin in ('cli', 'ide') and session.runtime == 'cli' and session.connected
             if session.origin in ('cli', 'ide') and not session.connected:
                 raise ValueError('请先继续此会话，再读取模型或 Skill')
-            cwd = state.get("cwd") if session.origin not in ('cli', 'ide') else state.get("cwd") or session.saved_cwd
+            cwd = state.get("cwd") or session.saved_cwd
             model = state.get("latestModel")
             effort = state.get("latestReasoningEffort") or (state.get("latestThreadSettings") or {}).get("effort")
-            provider = state.get('modelProvider')
+            provider = state.get('modelProvider') or session.saved_provider
         if native:
             if kind in ('models', 'skills'):
                 value = (self._native_models(thread_id, cwd, provider, refresh=refresh) if kind == 'models' else
