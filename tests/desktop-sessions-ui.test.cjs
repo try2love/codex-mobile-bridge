@@ -1272,6 +1272,19 @@ test('a verified ZCode initialization immediately refreshes readable history for
  await view.setClientStates([ready]);assert.equal(reads,1);assert.equal(view.connectionInitialize.hidden,true);
  await view.setClientStates([ready]);assert.equal(reads,1);
 });
+test('shared creation leaves title blank without weakening required first messages',async()=>{
+ for(const provider of ['claude','deepseek'])for(const titleValue of ['', '  ', 'Custom']){
+  const ui=fixture();ui.view.provider=provider;ui.view.generation=1;
+  const requiresMessage=provider==='claude';
+  ui.setHandler(async(url,body)=>url.endsWith('/projects')?{projects:[{key:'p',environment:'scope',cwd:'/p',name:'Project'}],environments:[{key:'scope',surface:requiresMessage?'code':'desktop',createRequiresMessage:requiresMessage}],browseDirectories:false}:url.endsWith('/create')?{status:'accepted',result:{id:'native'}}:url.includes('/detail')?{session:{id:'native',title:'Native',status:'idle'},messages:[]}:{sessions:[]});
+  await ui.view.create();const dialog=ui.document.querySelector('dialog'),form=dialog.querySelector('form'),title=dialog.querySelector('input'),message=dialog.querySelector('textarea');
+  assert.equal(title.value,'');assert.ok(!title.required);assert.equal(title.placeholder,'留空将由 Agent 自行命名');title.value=titleValue;
+  if(requiresMessage){await form.onsubmit({preventDefault(){}});assert.equal(ui.calls.some(call=>call.url.endsWith('/create')),false);message.value='FIRST';}
+  await form.onsubmit({preventDefault(){}});
+  const sent=ui.calls.find(call=>call.url.endsWith('/create')).body;assert.equal(sent.title,titleValue.trim()||undefined);assert.equal(sent.firstMessage,requiresMessage?'FIRST':undefined);
+ }
+});
+
 test('ZCode native create reuses firstMessage contract and omits hidden title',async()=>{
  const ui=fixture();ui.view.provider='zcode';ui.view.generation=1;
  ui.setHandler(async(url,body)=>url.endsWith('/projects')?{projects:[{key:'p',environment:'desktop',cwd:'/p',name:'Project'}],environments:[{key:'desktop',surface:'desktop',createRequiresMessage:true,createTitle:false}],browseDirectories:false}:url.endsWith('/create')?{status:'accepted',result:{id:'native'}}:url.includes('/detail')?{session:{id:'native',title:'Native',status:'idle'},messages:[]}:{sessions:[]});

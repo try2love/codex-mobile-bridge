@@ -84,6 +84,21 @@ class CreationChoices(unittest.TestCase):
 
 
 class ClaudeCreationChoices(unittest.IsolatedAsyncioTestCase):
+    async def test_optional_native_title_uses_code_naming_and_never_overrides_custom_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for surface in ('code', 'cowork'):
+                for title in ('', '  ', ' Custom '):
+                    adapter = Claude(Path(directory)/surface)
+                    adapter.desktop = Mock(capabilities={surface: ['start']})
+                    with patch.object(adapter, 'status', return_value={'connected': True}), \
+                         patch.object(adapter, '_start_desktop_project', new_callable=AsyncMock, return_value={'status': 'ready'}) as start:
+                        await adapter.dispatch('create', None, {'title': title, 'firstMessage': 'FIRST',
+                            'directoryProject': {'surface': surface, 'cwd': directory}})
+                    options = start.call_args.args[1]
+                    self.assertEqual(options.get('title'), title.strip() or None)
+                    self.assertEqual(options.get('generateTitleViaCli'), True if surface == 'code' and not title.strip() else None)
+                    self.assertEqual(options['message'], 'FIRST')
+
     async def test_code_and_cowork_start_include_choice_with_the_very_first_message(self):
         with tempfile.TemporaryDirectory() as directory:
             for surface in ('code','cowork'):

@@ -1203,6 +1203,7 @@ const en={
 "选择已有项目，或不选择项目创建独立聊天。电脑会打开这条聊天。":"Select an existing project, or choose No project to create an independent chat. The desktop app will open this chat.",
 "在此电脑创建独立聊天":"Create an independent chat on this computer",
 "请选择项目或不选择项目，并填写聊天名称。":"Select a project or No project, and enter a chat name.",
+"留空将由 Agent 自行命名":"Leave blank to let the agent name the chat",
 "当前 Linux 运行环境不支持安全强制关闭，请在电脑端退出应用":"This Linux runtime cannot safely force quit apps. Quit the app on your computer.",
 "此系统不支持客户端强制结束":"This system does not support force quitting desktop clients.",
 "已核验电脑端安装版本已更新":"The installed desktop version has been verified as updated",

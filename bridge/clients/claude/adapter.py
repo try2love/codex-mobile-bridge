@@ -757,10 +757,12 @@ class Claude:
             message = body.get('firstMessage', '')
             if not isinstance(message, str) or not message.strip() or len(message) > 100000:
                 raise ValueError('请输入首条消息，Claude 将创建会话并发送此消息')
-            options = {'title': body.get('title') or '新会话', 'message': message,
+            options = {'message': message, **({'title': body['title'].strip()} if body.get('title', '').strip() else {}),
                        **{key: body[key] for key in ('model', 'effort') if key in body}}
             if project['surface'] == 'code':
                 options.update(cwd=project['cwd'], useWorktree=False)
+                if 'title' not in options:
+                    options['generateTitleViaCli'] = True
             else:
                 options['userSelectedFolders'] = [project['cwd']]
             return await self._start_desktop_project(project, options)
@@ -821,10 +823,12 @@ class Claude:
             message = body.get('firstMessage', body.get('text', ''))
             if not isinstance(message, str) or not message.strip() or len(message) > 100000:
                 raise ValueError('请输入首条消息，Claude 将创建会话并发送此消息')
-            options = {'title': body.get('title') or '新会话', 'message': message,
+            options = {'message': message, **({'title': body['title'].strip()} if body.get('title', '').strip() else {}),
                        **{key: body[key] for key in ('model', 'effort') if key in body}}
             if project['surface'] == 'code':
                 options.update(cwd=project['cwd'], useWorktree=False)
+                if 'title' not in options:
+                    options['generateTitleViaCli'] = True
             else:
                 options['userSelectedFolders'] = project['folders']
             return await self._start_desktop_project(project, options)

@@ -694,7 +694,7 @@ class DesktopSessionsView {
       const projects=value.projects||[],canBrowse=Array.isArray(value.environments)&&value.browseDirectories!==false,environments=Array.isArray(value.environments)?value.environments:ClientIdentity.family(provider)==='claude'?['code','cowork','cli'].filter(kind=>projects.some(row=>row.surface===kind)).map(kind=>({key:kind,surface:kind,name:kind==='code'?'Claude · Code':kind==='cowork'?'Claude · Cowork':'Claude Code CLI'})):[{key:'desktop',surface:'desktop',name:'DeepSeek Harness'}];
       if(environments.length===1){const env=environments[0];clientLabel.textContent=env.host==='local'?(env.name||env.hostLabel||'此电脑').replace('此电脑',BridgeI18n.t('此电脑')):env.name||clientLabel.textContent;}
       const form=this.node('form'),surface=this.node('select'),project=this.node('select'),title=this.node('input'),message=this.node('textarea'),error=this.node('p','error'),workspace=this.node('section','project-picker-workspace'),location=this.node('details','project-picker-location'),summary=this.node('summary'),fullPath=this.node('p','muted'),browse=this.button('选择目录',()=>chooseDirectory());
-      this.label(surface,'运行环境');this.label(project,'项目');title.maxLength=120;title.value=BridgeI18n.t('新会话');this.label(title,'聊天名称');message.rows=3;message.maxLength=100000;this.label(message,'首条消息');error.setAttribute('role','alert');browse.className='plain project-picker-browse';location.append(summary,fullPath);workspace.append(location,browse);
+      this.label(surface,'运行环境');this.label(project,'项目');title.maxLength=120;title.placeholder=BridgeI18n.t('留空将由 Agent 自行命名');this.label(title,'聊天名称');message.rows=3;message.maxLength=100000;this.label(message,'首条消息');error.setAttribute('role','alert');browse.className='plain project-picker-browse';location.append(summary,fullPath);workspace.append(location,browse);
       const field=(label,input,parent=form)=>{const node=this.node('label');node.append(this.translated('span',label),input);parent.append(node);return node;};
       for(const row of environments)surface.add(new Option(row.host==='local'?(row.name||row.hostLabel||row.key).replace('此电脑',BridgeI18n.t('此电脑')):row.name||row.hostLabel||row.key,row.key));
       const preferred=environments.find(row=>row.surface===(this.state?.surfaceDirKey||this.state?.backend)&&(!this.state?.host||row.host===this.state.host));if(preferred)surface.value=preferred.key;
@@ -722,7 +722,7 @@ class DesktopSessionsView {
       const update=()=>{
         if(trustTarget&&(trustTarget.environment!==environment()?.key||trustTarget.path!==path())){trustTarget=null;trust.hidden=true;}
         const env=environment(),cli=env?.surface==='cli',requiresMessage=env?.createRequiresMessage??(ClientIdentity.family(provider)==='claude'||value.createRequiresMessage===true),cwd=path()||'';
-        title.required=!cli&&env?.createTitle!==false;titleField.hidden=cli||env?.createTitle===false;message.required=requiresMessage;messageField.hidden=!requiresMessage;
+        titleField.hidden=cli||env?.createTitle===false;message.required=requiresMessage;messageField.hidden=!requiresMessage;
         create.dataset.i18n=requiresMessage?'创建并发送':'创建并打开';create.textContent=BridgeI18n.t(create.dataset.i18n);create.disabled=saving||!env||!project.value||project.value==='__directory__'&&!directory||!!modelPicker&&!modelPicker.valid();
         location.hidden=!cwd;summary.textContent=cwd.split(/[\\/]/).filter(Boolean).slice(-2).join(' / ')||cwd;fullPath.textContent=cwd;location.open=false;browse.hidden=!canBrowse||!env;browse.dataset.i18n=cwd?'更换目录':'选择目录';browse.textContent=BridgeI18n.t(browse.dataset.i18n);
       };
@@ -746,7 +746,7 @@ class DesktopSessionsView {
       form.onsubmit=async event=>{
         event.preventDefault();if(!current())return dialog.close();if(saving||create.disabled)return;
         const env=environment(),cli=env?.surface==='cli';
-        if(!cli&&env?.createTitle!==false&&!title.value.trim()||message.required&&!message.value.trim()){error.textContent=BridgeI18n.t(cli||env?.createTitle===false?'请输入首条消息':message.required?'请填写聊天名称和首条消息':'请输入聊天名称');return;}
+        if(message.required&&!message.value.trim()){error.textContent=BridgeI18n.t('请输入首条消息');return;}
         saving=true;modelPicker?.setBusy(true);error.textContent='';form.querySelectorAll('input,textarea,select,button').forEach(node=>node.disabled=true);
         try{
           const selection=modelPicker?{environment:env.key,...modelPicker.selection()}:{};
@@ -755,7 +755,7 @@ class DesktopSessionsView {
             const registered=await this.request(this.path('projects/register',null,provider),{environment:env.key,path:directory.path,createDirectory:false});
             if(!current())return;const row=registered.project;projects.push(row);project.add(new Option(row.name,row.key));project.value=row.key;projectKey=row.key;
           }
-          const body={projectKey,...selection};if(!cli&&env?.createTitle!==false)body.title=title.value.trim();if(message.required)body.firstMessage=message.value.trim();
+          const body={projectKey,...selection};if(!cli&&env?.createTitle!==false&&title.value.trim())body.title=title.value.trim();if(message.required)body.firstMessage=message.value.trim();
           const result=await this.mutate('create',body,null);
           if(current()&&result?.code==='workspace-trust-required'&&result.canConfirmTrust&&canBrowse&&result.workspace===path()){
             trustTarget={environment:env.key,path:result.workspace};trust.hidden=false;
