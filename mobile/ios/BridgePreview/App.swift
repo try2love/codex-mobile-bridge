@@ -424,7 +424,8 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
     private func openComputer(_ address:String,_ url:URL){
         guard !addresses(address).isEmpty else{manageComputer(address);return}
         guard let d=channelRecord(address) else{connect(url,address:address);return}
-        clear();navigation(home:false);origin=address;subtitle.isHidden=false
+        clear();navigation(home:false);origin=address;documentAddress=address;requestedRoute=url;subtitle.isHidden=false
+        pendingEntry=(address,url,UIApplication.shared.applicationState != .active)
         let screen=generation,targets=addresses(address)
         var progress=[String:String]()
         subtitle.isHidden=true
@@ -438,7 +439,13 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             let row=UIStackView(arrangedSubviews:[label(url,size:14),time]);row.spacing=10;row.alignment = .center;rows.addArrangedSubview(row);labels[url]=time
         }
         func render(){for url in targets{labels[url]?.text=progress[url] ?? MobileStrings.text("连接中…")}}
-        func current()->Bool{generation==screen && web==nil && UIApplication.shared.applicationState == .active}
+        func current()->Bool{generation==screen && web==nil && connectionError==nil && UIApplication.shared.applicationState == .active}
+        let deadline=DispatchWorkItem{[weak self] in
+            guard let self,self.generation==screen,self.web==nil,self.connectionError==nil,
+                  UIApplication.shared.applicationState == .active else{return}
+            self.cancelChannelJobs();self.showConnectionError(status:nil)
+        }
+        connectionDeadline=deadline;DispatchQueue.main.asyncAfter(deadline:.now()+10,execute:deadline)
         render()
         sweep(address,d,targets:targets,current:current,sample:{next,ms,select in
             progress[next]=ms.map{"\($0) ms"} ?? "○";render()
@@ -562,6 +569,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
     }
     private var routeScript=""
     private var entryProgress:UIView?
+    private var pendingEntry:(address:String,url:URL,interrupted:Bool)?
     private func hideEntryProgress(){entryProgress?.removeFromSuperview();entryProgress=nil}
     private var documentAddress="",pageReady=false
     private var pendingPeer:RoutePeer?
@@ -849,7 +857,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         let inbox = UIBarButtonItem(image: UIImage(systemName: "bell"), style: .plain, target: self, action: #selector(self.inbox)); inbox.accessibilityLabel = MobileStrings.text("通知")
         navigationItem.rightBarButtonItems = [settings, inbox]
     }
-    private func clear() { routeTraffic.removeAll();uu.scope = ""; hideEntryProgress();pageReady=false;rollbackPeer();for child in Array(peerViews.keys){child.stopLoading();webViewDidClose(child)};cancelChannelJobs();connectionDeadline?.cancel(); connectionDeadline = nil; updateSystemBars(reset: true); connectionError = nil; pendingStorage = nil; nativeMainNavigation = nil; routeDiscovery?.cancel(); routeDiscovery = nil; cancelSync(); finishUpload(nil); if let folder = mediaUploadDirectory { try? FileManager.default.removeItem(at: folder); mediaUploadDirectory = nil }; stopComputerChecks(); computerStates.removeAll();addressLists.removeAll();computerTitles.removeAll();arrivingVia=nil;deferredRoute=nil; computerNotifications.removeAll(); gatewayMenuTop?.isActive = false; gatewayMenuTop = nil; generation += 1; web?.stopLoading(); web?.navigationDelegate = nil; web?.uiDelegate = nil; web = nil; for v in page.arrangedSubviews where v !== subtitle { page.removeArrangedSubview(v); v.removeFromSuperview() } }
+    private func clear() { pendingEntry=nil;routeTraffic.removeAll();uu.scope = ""; hideEntryProgress();pageReady=false;rollbackPeer();for child in Array(peerViews.keys){child.stopLoading();webViewDidClose(child)};cancelChannelJobs();connectionDeadline?.cancel(); connectionDeadline = nil; updateSystemBars(reset: true); connectionError = nil; pendingStorage = nil; nativeMainNavigation = nil; routeDiscovery?.cancel(); routeDiscovery = nil; cancelSync(); finishUpload(nil); if let folder = mediaUploadDirectory { try? FileManager.default.removeItem(at: folder); mediaUploadDirectory = nil }; stopComputerChecks(); computerStates.removeAll();addressLists.removeAll();computerTitles.removeAll();arrivingVia=nil;deferredRoute=nil; computerNotifications.removeAll(); gatewayMenuTop?.isActive = false; gatewayMenuTop = nil; generation += 1; web?.stopLoading(); web?.navigationDelegate = nil; web?.uiDelegate = nil; web = nil; for v in page.arrangedSubviews where v !== subtitle { page.removeArrangedSubview(v); v.removeFromSuperview() } }
     @objc func home() {
         clear(); navigation(home: true); subtitle.isHidden = true
         let container = UIView(); page.addArrangedSubview(container); let content = scrollContent(in: container)
@@ -1248,10 +1256,10 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         recoverConnection()
     }
     private func showConnectionError(status: Int?) {
-        guard let web, connectionError == nil, let route = requestedRoute else { return }
-        connectionDeadline?.cancel(); connectionDeadline = nil
+        guard connectionError == nil, let route = requestedRoute else { return }
+        pendingEntry=nil;connectionDeadline?.cancel(); connectionDeadline = nil
         hideEntryProgress();let address = origin, ticket = generation
-        updateSystemBars(reset: true); web.isHidden = true; subtitle.isHidden = true; gatewayMenu.isHidden = true
+        updateSystemBars(reset: true); web?.isHidden = true; subtitle.isHidden = true; gatewayMenu.isHidden = true
         let container = UIView(); page.addArrangedSubview(container); connectionError = container; let content = scrollContent(in: container)
         let visual = UIImageView(image: UIImage(systemName: "wifi.exclamationmark")); visual.tintColor = .secondaryLabel; visual.contentMode = .scaleAspectFit; visual.heightAnchor.constraint(equalToConstant: 48).isActive = true
         let heading = label(MobileStrings.text("暂时无法连接电脑"), size: 22, weight: .semibold); heading.textAlignment = .center
@@ -1616,8 +1624,8 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             }
         }
     } }
-    @objc private func active() { watchChannels(); computerNotifications.values.forEach { $0.alpha = 0.5 }; cancelSync(); checkComputers(); foregroundBaselines.removeAll();sync(); activityTimer?.invalidate(); activityTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.syncLiveActivity() }; syncLiveActivity(); timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.sync() } }
-    @objc private func inactive() { rollbackPeer();cancelChannelJobs();lastChannelProbe=nil;channelSignature="";channelTicket += 1; channelMonitor?.cancel(); channelMonitor = nil;channelCatalogTimer?.invalidate();channelCatalogTimer=nil; routeDiscovery?.cancel(); routeDiscovery = nil; routeAttempted = false; computerNotifications.values.forEach { $0.alpha = 0.5 }; cancelSync(); downloads.pause(); stopComputerChecks(); timer?.invalidate(); timer = nil; activityTimer?.invalidate(); activityTimer = nil; if #available(iOS 16.2, *) { Task { await LiveActivityController.shared.pause() } } }
+    @objc private func active() { if let entry=pendingEntry,entry.interrupted,web==nil,UIApplication.shared.applicationState == .active {openComputer(entry.address,entry.url)};watchChannels(); computerNotifications.values.forEach { $0.alpha = 0.5 }; cancelSync(); checkComputers(); foregroundBaselines.removeAll();sync(); activityTimer?.invalidate(); activityTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.syncLiveActivity() }; syncLiveActivity(); timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.sync() } }
+    @objc private func inactive() { pendingEntry?.interrupted=true;rollbackPeer();cancelChannelJobs();lastChannelProbe=nil;channelSignature="";channelTicket += 1; channelMonitor?.cancel(); channelMonitor = nil;channelCatalogTimer?.invalidate();channelCatalogTimer=nil; routeDiscovery?.cancel(); routeDiscovery = nil; routeAttempted = false; computerNotifications.values.forEach { $0.alpha = 0.5 }; cancelSync(); downloads.pause(); stopComputerChecks(); timer?.invalidate(); timer = nil; activityTimer?.invalidate(); activityTimer = nil; if #available(iOS 16.2, *) { Task { await LiveActivityController.shared.pause() } } }
     private func cancelSync() {
         pollGeneration += 1; pollTasks.values.forEach { $0.cancel() }; pollTasks.removeAll(); polling.removeAll()
     }
