@@ -20,6 +20,8 @@ Restart Manager 私有原型中，零 force 返回成功和进程退出没有提
 
 ## 既有笔记审计
 
+[Codex 后台退出](2026-11-11-windows-codex-quiet-quit.md)单独将同一要求落实到另一套原生菜单选择器，不改变本篇 Claude 的实现。
+
 [桌面任务退出证据](2026-10-16-claude-desktop-quit-evidence.md)约束任务清单和即时身份，本次不改变这些守卫；[本机 CLI 显式释放](../feature/2026-11-11-mac-claude-owned-cli-release.md)操作网关持有的独占 CLI，本次只收紧 Windows Desktop GUI 的 Quit，互不替代。两篇仍有独立范围。
 
 ## 备选方案
