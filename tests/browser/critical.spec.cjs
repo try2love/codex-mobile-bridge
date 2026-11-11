@@ -96,6 +96,14 @@ test('image preview has one header row and a bottom save icon', async ({page}, t
   await testInfo.attach('image-toolbar',{body:await page.screenshot(),contentType:'image/png'});
 });
 
+test('shared chat media preserves file actions and waits for playback', async ({page}, testInfo) => {
+  await ready(page);await page.evaluate(()=>BridgeFeatures.load('chat'));
+  await page.evaluate(readFileSync(path.join(__dirname,'chat-media.browser.js'),'utf8'));
+  const result=await page.evaluate(()=>runChatMediaChecks());
+  expect(result.passed).toBe(12);
+  await testInfo.attach('chat-media',{body:JSON.stringify(result),contentType:'application/json'});
+});
+
 test('Markdown, literal code and math rendering', async ({page}, testInfo) => {
   await ready(page);
   await expect(page.locator('#bootstrap-status')).toBeHidden();

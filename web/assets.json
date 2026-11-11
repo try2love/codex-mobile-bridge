@@ -92,6 +92,7 @@
     "shared/mermaid-viewer.js",
     "shared/mermaid-cards.js",
     "shared/output-directives.js",
+    "shared/chat-media.js",
     "shared/markdown.js"
   ],
   "/image-viewer.js": "shared/image-viewer.js",

@@ -20,7 +20,7 @@ from pathlib import Path
 from bridge.features.workspace.uploads import MAX_FILE
 from bridge.features.workspace.workspace import MAX_TRANSFER, Workspace
 from bridge.features.workspace.preferences import transfer_settings
-from bridge.features.workspace.files import workspace_relative_path
+from bridge.features.workspace.files import workspace_relative_path, media_type
 from bridge.features.notifications.channels import settings as notification_settings, save_settings as save_notification_settings, save_webhook_endpoint, webhook_config, publish, publish_bark, publish_pushplus, publish_webhook, visible_webhook, WebhookDeliveryError, resolved_webhook_provider
 from socketserver import TCPServer
 from urllib.parse import parse_qs, parse_qsl, urlsplit, quote
@@ -1260,17 +1260,19 @@ class Handler(BaseHTTPRequestHandler):
                         return self.output(200, {**bridge.workspace(thread_id, 'info', {'path': relative}), **policy, 'locatable': True})
                     preview = query.get('preview') == ['1']
                     if 'preview' in query and (not preview or 'explicit' in query or 'archive' in query):
-                        raise ValueError('无效 PDF 预览下载参数')
+                        raise ValueError('无效预览下载参数')
                     explicit = query.get('explicit') == ['1']
                     params = {'path': relative, 'limit': min(MAX_TRANSFER, policy['clickDownloadMiB'] * 1024 * 1024) if preview else None if explicit else policy['clickDownloadMiB'] * 1024 * 1024, **self.download_request()}
                     action = 'archive-stream' if explicit and query.get('archive') == ['1'] else 'download-stream'
                     with bridge.workspace(thread_id, action, params) as (metadata, stream):
-                        return self.download_response(metadata, stream)
+                        mime = media_type(metadata['name']) if preview else None
+                        return self.download_response(metadata, stream, mime or 'application/octet-stream',
+                                                      'inline' if mime else 'attachment')
                 result = bridge.workspace(thread_id, operation, {'path': relative})
                 return self.output(200, result)
             file_match = re.fullmatch(r"/api/sessions/([0-9a-f-]{36})/files/([a-f0-9]{64})", path)
             if not write and file_match:
-                return self.download(bridge, *file_match.groups(), info=query.get('info') == ['1'])
+                return self.download(bridge, *file_match.groups(), info=query.get('info') == ['1'], preview=query.get('preview') == ['1'])
             preview_match = UPLOAD_PREVIEW_ROUTE.fullmatch(path)
             if not write and preview_match:
                 return self.upload_preview(bridge, *preview_match.groups(), variant=query.get('variant', ['thumb'])[0], side=side, download=query.get('download') == ['1'])
@@ -1471,7 +1473,7 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
             self.output(500, {"error": "网关操作失败，请查看本机日志"})
 
-    def download(self, bridge, thread_id, artifact_id, info=False):
+    def download(self, bridge, thread_id, artifact_id, info=False, preview=False):
         artifact = bridge.artifact(thread_id, artifact_id)
         path = artifact['path']
         policy = transfer_settings(self.server.transfer_directory)
@@ -1487,9 +1489,9 @@ class Handler(BaseHTTPRequestHandler):
         # symlinks. Inline images retain their independent preview size bound.
         with Workspace(path.anchor).download(path.relative_to(path.anchor).as_posix(),
                 limit=50 * 1024 * 1024 if artifact['image'] else policy['clickDownloadMiB'] * 1024 * 1024, **self.download_request()) as (metadata, stream):
-            mime = mimetypes.guess_type(artifact['name'])[0] if artifact['image'] else None
+            mime = mimetypes.guess_type(artifact['name'])[0] if artifact['image'] else media_type(artifact['name']) if preview else None
             return self.download_response(metadata, stream, mime or 'application/octet-stream',
-                                          'inline' if artifact['image'] else 'attachment')
+                                          'inline' if artifact['image'] or mime else 'attachment')
 
     def download_request(self):
         # Duplicate Range fields are an unsupported multi-range request.

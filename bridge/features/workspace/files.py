@@ -13,6 +13,17 @@ MARKDOWN_PATH = re.compile(r'!?\[[^\]\n]*\]\((?:<([^>]+)>|([^\n)]+))\)')
 IMAGE_MARKDOWN_PATH = re.compile(r'!\[[^\]\n]*\]\((?:<([^>]+)>|([^\n)]+))\)')
 AGENT_KINDS = ('agentMessage', 'assistantMessage', 'planImplementation')
 IMAGE_SUFFIXES = {'.png', '.jpg', '.jpeg', '.gif', '.webp'}
+MEDIA_TYPES = {
+    '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4',
+    '.aac': 'audio/aac', '.ogg': 'audio/ogg', '.oga': 'audio/ogg',
+    '.opus': 'audio/ogg', '.flac': 'audio/flac', '.aif': 'audio/aiff', '.aiff': 'audio/aiff',
+    '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.webm': 'video/webm',
+    '.ogv': 'video/ogg', '.mov': 'video/quicktime',
+}
+
+
+def media_type(name):
+    return MEDIA_TYPES.get(Path(name).suffix.lower())
 
 
 def code_comment_references(text):
