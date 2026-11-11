@@ -78,15 +78,44 @@ class Antigravity:
 
     def account_scope(self):
         accounts = []
-        for row in self.store.surfaces():
+        for surface in SURFACE_LABELS:
             try:
-                status = self.cli.user_status(row['key'])
+                status = self.cli.user_status(surface)
             except (OSError, ValueError, BridgeUnavailable):
                 continue
             identity = status.get('email') or status.get('userId')
             if identity:
-                accounts.append((row['key'], identity))
+                accounts.append((surface, identity))
         return hashlib.sha256(json.dumps(accounts, sort_keys=True).encode()).hexdigest() if accounts else ''
+
+    def accounts(self):
+        """Project native identities into the shared account panel, without reading credentials."""
+        accounts, notices = [], []
+        for surface, label in SURFACE_LABELS.items():
+            if not self.cli.available(surface):
+                notices.append(label+'：原生服务未连接')
+                continue
+            try:
+                user = self.cli.user_status(surface)
+            except (OSError, ValueError, BridgeUnavailable):
+                notices.append(label+'：账号状态暂不可用')
+                continue
+            identity = user.get('email') or user.get('userId')
+            if not isinstance(identity, str) or not identity:
+                notices.append(label+'：尚未登录')
+                continue
+            identifier = surface+':'+hashlib.sha256(identity.encode()).hexdigest()
+            accounts.append({'id': identifier, 'surface': surface,
+                             'name': label+' · '+(user.get('name') or identity),
+                             'email': user.get('email') or '', 'kind': 'official',
+                             'saved': False, 'canReadQuota': False})
+        return {'accounts': accounts, 'activeIds': [row['id'] for row in accounts],
+                'activeId': accounts[0]['id'] if accounts else None,
+                'current': {'name': ' / '.join(row['name'] for row in accounts)},
+                'readOnly': True, 'canImport': False, 'canSwitch': False,
+                'capabilities': {'addApi': False, 'quota': False},
+                'message': '；'.join(notices),
+                'enrollmentHint': 'APP、CLI、IDE 的登录状态分别读取。请在对应原客户端登录或切换账号，再刷新此页。'}
 
     def project_environments(self):
         return [{'surface': row['key'], 'host': 'local', 'hostLabel': '此电脑', 'name': row['name'],
@@ -151,13 +180,26 @@ class Antigravity:
         if action == 'projects':
             return {'projects': self.store.discover_projects(), 'createRequiresMessage': True, 'createModels': True}
         if action == 'account':
-            surfaces = self.store.surfaces()
             if body.get('surface'):
-                surfaces = [row for row in surfaces if row['key'] == body['surface']]
-            for row in surfaces:
-                if self.cli.available(row['key']):
-                    return self._account(row['key'], body.get('refresh') is True)
-            return {'models': [], 'notice': '电脑原生服务尚未连接', 'capabilities': {'models': False, 'effort': False}}
+                surface = body['surface']
+                if surface not in SURFACE_LABELS:
+                    raise ValueError('Antigravity 来源无效')
+                if self.cli.available(surface):
+                    return self._account(surface, body.get('refresh') is True)
+                return {'models': [], 'notice': '电脑原生服务尚未连接', 'capabilities': {'models': False, 'effort': False}}
+            groups, errors = [], []
+            for surface, label in SURFACE_LABELS.items():
+                if not self.cli.available(surface):
+                    continue
+                try:
+                    value = self._account(surface, body.get('refresh') is True)
+                except (OSError, ValueError, BridgeUnavailable):
+                    value = {'models': [], 'notice': '原客户端模型暂不可用'}
+                    errors.append(label+'：'+value['notice'])
+                groups.append({'surface': surface, 'label': label, **value})
+            return {'groups': groups, 'models': [], 'modelError': '；'.join(errors),
+                    'notice': '' if groups else '电脑原生服务尚未连接',
+                    'capabilities': {'models': bool(groups), 'effort': False}}
         if action == 'create':
             prompt = self._prompt(body)
             project = body.get('directoryProject') or next((p for p in self.store.discover_projects()

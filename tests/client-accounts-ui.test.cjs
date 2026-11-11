@@ -13,6 +13,22 @@ function fixture({desktop=false,provider='deepseek',toolbar=false}={}){
 }
 const row=(id,kind='account',usage)=>({id,name:id,kind,usage});
 const snapshot=(accounts,activeIds=['current'])=>({accounts,activeId:activeIds[0],activeIds,current:{name:'Current desktop access'},canSwitch:true});
+test('native read-only accounts keep login guidance visible and do not imply saved copies',()=>{
+  const ui=fixture({desktop:true,provider:'antigravity'});
+  ui.panel.accept({...snapshot([{id:'app',name:'APP · Fixture',kind:'official',saved:false}],['app']),readOnly:true,canSwitch:false,canImport:false,capabilities:{quota:false,addApi:false},enrollmentHint:'在对应原客户端登录后刷新。'});
+  assert.equal(ui.panel.heading.textContent,'当前接入');assert.equal(ui.panel.hint.parentNode,ui.root);
+  assert.equal(ui.panel.scanDetails.hidden,true);assert.equal(ui.panel.apiDetails.hidden,true);
+  const all=node=>[node,...node.children.flatMap(all)];
+  assert.equal(all(ui.panel.rows).some(node=>node.textContent==='尚未保存'),false);
+  assert.equal(all(ui.panel.rows).filter(node=>node.tag==='button').some(node=>!node.disabled&&node.textContent==='切换到此接入'),false);
+  assert.match(ui.panel.hint.textContent,/原客户端/);
+});
+test('account model groups retain unavailable source labels beside working models',async()=>{
+  const ui=fixture({provider:'antigravity'});ui.panel.accept(snapshot([]));
+  ui.setHandler(async()=>({models:[],modelError:'APP 暂不可用',groups:[{label:'APP',models:[],notice:'原客户端模型暂不可用'},{label:'CLI',models:[{id:'cli-model'}]}]}));
+  await ui.panel.toggleModels();
+  assert.match(ui.text(),/APP · 可用模型/);assert.match(ui.text(),/原客户端模型暂不可用/);assert.match(ui.text(),/cli-model/);
+});
 test('native API editors share Codex fold placement and fetch models before saving',async()=>{
   for(const provider of ['claude','deepseek','zcode']){
     const ui=fixture({provider,desktop:true}),formats=provider==='zcode'?[{value:'openai-responses',label:'OpenAI Responses'}]:undefined;

@@ -319,6 +319,90 @@ class AntigravitySafetyTests(unittest.TestCase):
         self.assertIsNone(adapter.store.resolve_session(CID))
         self.assertEqual(adapter.store.resolve_session(gateway_id('ide', CID))['surfaceDirKey'], 'ide')
 
+    def test_shared_accounts_preserve_native_source_and_never_read_secrets(self):
+        adapter = self.adapter()
+        # Login may be available before the first conversation creates history.
+        with mock.patch.object(adapter.cli, 'available', side_effect=lambda surface: surface != 'ide'), \
+                mock.patch.object(adapter.cli, 'user_status', side_effect=lambda surface: {
+                    'email': surface+'@example.invalid', 'userId': surface,
+                    'accessToken': 'must-not-leak', 'name': surface}) as status:
+            value = adapter.accounts()
+        self.assertEqual([row['surface'] for row in value['accounts']], ['app', 'cli'])
+        self.assertEqual(len(set(value['activeIds'])), 2)
+        self.assertTrue(value['readOnly'])
+        self.assertFalse(value['canSwitch'])
+        self.assertFalse(value['canImport'])
+        self.assertNotIn('must-not-leak', json.dumps(value))
+        self.assertEqual([call.args[0] for call in status.call_args_list], ['app', 'cli'])
+        self.assertIn('IDE', value['message'])
+
+    def test_shared_accounts_keep_other_sources_when_one_rpc_fails(self):
+        adapter = self.adapter()
+        def status(surface):
+            if surface == 'app':
+                raise BridgeUnavailable('native read failed')
+            return {'email': 'same@example.invalid'} if surface == 'cli' else {}
+        with mock.patch.object(adapter.cli, 'available', return_value=True), \
+                mock.patch.object(adapter.cli, 'user_status', side_effect=status):
+            value = adapter.accounts()
+        self.assertEqual(len(value['accounts']), 1)
+        self.assertEqual(value['accounts'][0]['surface'], 'cli')
+        self.assertIn('账号状态暂不可用', value['message'])
+        self.assertIn('尚未登录', value['message'])
+
+    def test_shared_accounts_manager_does_not_fall_through_to_deepseek_store(self):
+        settings = self.directory/'desktop-sessions/settings.json'
+        settings.parent.mkdir(parents=True)
+        settings.write_text(json.dumps({'antigravityHome': str(self.home), 'enabled': {'antigravity': True}}))
+        manager = DesktopSessions(self.directory)
+        self.addCleanup(manager.close)
+        with mock.patch.object(manager.adapters['antigravity'].cli, 'available', return_value=False), \
+                mock.patch.object(manager, '_account_store', side_effect=AssertionError('wrong account store')):
+            value = manager.client_accounts('antigravity', {'operation': 'list'})
+            self.assertEqual(value['accounts'], [])
+            self.assertEqual(value['provider'], 'antigravity')
+            self.assertFalse(value['canSwitch'])
+            for operation in ('switch', 'import-current', 'save-api'):
+                with self.assertRaisesRegex(ValueError, '原客户端'):
+                    manager.client_accounts('antigravity', {'operation': operation})
+
+    def test_account_model_directory_groups_sources_without_history(self):
+        adapter = self.adapter()
+        with mock.patch.object(adapter.cli, 'available', side_effect=lambda surface: surface != 'ide'), \
+                mock.patch.object(adapter, '_account', side_effect=lambda surface, refresh: {
+                    'models': [{'id': 'same-model', 'name': surface}], 'notice': ''}) as read:
+            value = adapter.call('account')
+            self.assertEqual([row['surface'] for row in value['groups']], ['app', 'cli'])
+            self.assertEqual([row['models'][0]['name'] for row in value['groups']], ['app', 'cli'])
+            read.reset_mock()
+            value = adapter.call('account', body={'surface': 'cli'})
+            self.assertEqual(value['models'][0]['name'], 'cli')
+            read.assert_called_once_with('cli', False)
+            with self.assertRaisesRegex(ValueError, '来源无效'):
+                adapter.call('account', body={'surface': 'other'})
+
+    def test_account_model_source_failure_keeps_previous_shared_cache(self):
+        settings = self.directory/'desktop-sessions/settings.json'
+        settings.parent.mkdir(parents=True)
+        settings.write_text(json.dumps({'antigravityHome': str(self.home), 'enabled': {'antigravity': True}}))
+        manager = DesktopSessions(self.directory)
+        self.addCleanup(manager.close)
+        adapter = manager.adapters['antigravity']
+        with mock.patch.object(manager, '_account_model_identity', return_value='a'*64), \
+                mock.patch.object(manager, '_schedule_account_model_refresh'), \
+                mock.patch.object(manager, '_read', side_effect=lambda provider, action: adapter.call(action)), \
+                mock.patch.object(adapter.cli, 'available', side_effect=lambda surface: surface != 'ide'), \
+                mock.patch.object(adapter, '_account', return_value={'models': [{'id': 'known'}]}) as read:
+            good = manager._account_models('antigravity', refresh=True)
+            read.side_effect = lambda surface, refresh: (_ for _ in ()).throw(BridgeUnavailable('offline')) if surface == 'app' else {'models': [{'id': 'new'}]}
+            partial = adapter.call('account')
+            self.assertIn('原客户端模型暂不可用', partial['modelError'])
+            self.assertEqual(partial['groups'][1]['models'][0]['id'], 'new')
+            stale = manager._account_models('antigravity', refresh=True)
+            self.assertEqual(stale['groups'], good['groups'])
+            self.assertEqual(stale['cache']['updatedAt'], good['cache']['updatedAt'])
+            self.assertEqual(stale['cache']['state'], 'stale')
+
     def test_cli_display_source_never_redirects_app_history_to_the_independent_cli_owner(self):
         cli_row = (*self.row[:7], 'CORTEX_TRAJECTORY_SOURCE_CLI', *self.row[8:])
         _create_surface_db(self.root, [cli_row])

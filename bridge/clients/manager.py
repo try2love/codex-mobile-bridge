@@ -2610,7 +2610,7 @@ class DesktopSessions:
                     'reason': status.get('reason') or ('Antigravity 已接入' if connected else '已发现 Antigravity，启用后可查看本机历史'),
                     'accountNotice': '账号与登录由原客户端管理',
                     'canQuitDesktop': False,
-                    'capabilities': {'create': connected, 'accounts': False, 'management': True, 'notifications': True},
+                    'capabilities': {'create': connected, 'accounts': True, 'management': True, 'notifications': True},
                 })
             if self.instance is not None:
                 rows = [row for row in rows if row['id'] == self.instance.family]
@@ -3145,6 +3145,11 @@ class DesktopSessions:
 
     def client_accounts(self, provider, value):
         operation = value.get('operation', 'list')
+        if provider == 'antigravity':
+            if operation != 'list':
+                raise ValueError('请在对应的 Antigravity 原客户端管理登录，再刷新账号状态')
+            return {**self.adapters[provider].accounts(), 'provider': provider,
+                    'gatewayRunning': self.gateway_running}
         if provider == 'deepseek' and self.config.get('deepseekManualBinding'):
             if operation != 'list':
                 raise ValueError('手动绑定的账号和 API 请在第三方客户端中管理')

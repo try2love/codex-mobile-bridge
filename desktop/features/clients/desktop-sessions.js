@@ -300,8 +300,6 @@ class DesktopConnectionsPanel {
             read:selected=>this.api.cliAccess({action:'wslAccounts',provider,entry:selected,operation:'list'}),
             request:({action,provider:_provider,entry:_entry,...fields})=>this.api.cliAccess({action:'wslAccounts',provider,entry,operation:action,...fields})});
           this.managementPages.set(entry,{panel,open:()=>panel.select(entry)});
-        }else if(client.id==='antigravity'&&client.capabilities?.management===true){
-          this.mountAntigravityManagement(content,client);
         }else if(client.capabilities?.accounts===true){
           const provider=client.family||client.id,entry=client.kind==='desktop-profile'?client.id:null,scope=entry?{entry}:{},panel=new DesktopClientAccountsPanel({root:content,provider,desktop:true,
             read:()=>this.api.desktopSessions({action:'accounts',provider,...scope,operation:'list'}),
@@ -310,6 +308,12 @@ class DesktopConnectionsPanel {
             visible:()=>!document.hidden&&!page.hidden&&!page.classList.contains('client-config-hidden'),
             onUpdate:value=>this.renderClientAccount(client.id,value),onChanged:()=>this.refreshClients(true)});
           this.accountPanels[client.id]=panel;this.managementPages.set(client.id,{panel,open:()=>panel.resume()});
+        }
+        if(client.id==='antigravity'&&client.capabilities?.management===true){
+          const native=document.createElement('section'),accounts=this.managementPages.get(client.id);article.append(native);
+          this.mountAntigravityManagement(native,client);
+          const management=this.managementPages.get(client.id);
+          if(accounts)this.managementPages.set(client.id,{panel:accounts.panel,open:()=>{accounts.open();return management.open();}});
         }
       }
       if(['codex-local','desktop-profile'].includes(client.kind))this.mountClientRemoval(layout.clientPage(client.id),client);
@@ -444,7 +448,7 @@ class DesktopConnectionsPanel {
       cell.append(node('span',row.name));const usage=row.usage||row.quota;
       for(const bucket of usage?.limits||[])for(const window of bucket.windows||[]){cell.append(node('small',bucket.name+' · '+(window.remainingPercent==null?BridgeI18n.t('暂未提供'):BridgeI18n.t('剩余 ')+Math.round(window.remainingPercent)+'%')));if(Number.isFinite(window.remainingPercent)){const bar=node('progress','');bar.max=100;bar.value=window.remainingPercent;cell.append(bar);}}
       for(const wallet of usage?.balance?.wallets||[])cell.append(node('small',BridgeI18n.t('账户余额')+' · '+wallet.currency+' '+wallet.remaining));
-      if(row.kind!=='api'||usage?.balance){const refresh=node('button','查看剩余额度');refresh.type='button';refresh.className='quota-link';refresh.disabled=this.accountPanels[provider].busy||this.accountPanels[provider].loading;refresh.onclick=async()=>{refresh.disabled=true;await this.accountPanels[provider].perform({action:'details',id:row.id,refresh:true});this.renderClientAccount(provider,this.accountPanels[provider].value);};cell.append(refresh);}
+      if(value.capabilities?.quota!==false&&row.canReadQuota!==false&&(row.kind!=='api'||usage?.balance)){const refresh=node('button','查看剩余额度');refresh.type='button';refresh.className='quota-link';refresh.disabled=this.accountPanels[provider].busy||this.accountPanels[provider].loading;refresh.onclick=async()=>{refresh.disabled=true;await this.accountPanels[provider].perform({action:'details',id:row.id,refresh:true});this.renderClientAccount(provider,this.accountPanels[provider].value);};cell.append(refresh);}
     }
   }
   renderAccount(value){
