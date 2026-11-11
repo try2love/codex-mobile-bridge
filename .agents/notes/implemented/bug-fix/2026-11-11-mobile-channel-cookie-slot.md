@@ -36,6 +36,8 @@ Android 原样 moveChannel/rollbackPeer/Peer 在项目内官方来源 JDK 17 的
 
 分段日志、生成源码、属性/头格式对照和最终本机 `java-local-r7-receipt.json` 均保留在 `.tmp/feedback-20261111-10/mobile-binding/`。
 
+2026-11-12 复用旧 Android 35 Pixel 8 虚拟设备，以只读、不保存快照方式启动。独立包原样提取 moveChannel、rollbackPeer 和 Peer，使用真实 Android CookieManager、WebView 124.0.6367.219、SharedPreferences 与 Android Keystore，仅保存合成凭据。十五项通过：打开/活动两入口跨端口、HTTP/HTTPS 双向与不同域迁移，陌生网关/未知 Cookie 拒绝，失败与旧票据回滚，以及新登录优先。连接回调是受控结果收集器，本组未执行真实网关 HMAC 探测或网页 handoff。v2.2.0 原样 moveChannel 在同环境第一项 HTTPS 同主机跨端口即返回原地址，目标提交断言失败；不是单凭新版通过推断旧版有问题。回执在 `.tmp/feedback-20261112/android-native/result.json` 与 `baseline-result.json`，旧设备与实体手机未覆盖安装。
+
 ## 影响
 
 同网关的已证明别名可以正确使用共享 Cookie 位置，未知值与不同身份仍保持拒绝。旧异步操作不获得覆盖新根或新票据的提交权限，正常聊天和草稿继续沿既有页面 handoff。此改动属于原生手机壳，桌面包更新不能使已安装手机 App 获得修复；本点没有发布或安装正式手机版本，也未宣称真实手机报告已经完整复现或解决。
