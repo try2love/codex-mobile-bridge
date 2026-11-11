@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 
 from bridge.clients.claude.file_archive import archive_paths, state as archive_file_state, change as archive_file_change, supported as archive_supported, assert_no_cli as archive_assert_no_cli
-from bridge.clients.claude.history import image_event, session_custom_title
+from bridge.clients.claude.history import image_event, session_custom_title, local_command_text
 from bridge.clients.claude.creation import creation_launch_options
 
 MODES = {'default', 'acceptEdits', 'plan', 'dontAsk', 'auto', 'bypassPermissions'}
@@ -278,6 +278,8 @@ def history_page(path, identity, before=None, limit=40):
 
 
 def saved(path, found, *, include_events=False):
+    command_chain = {}
+    command_title = None
     try:
         native = str(uuid.UUID(path.stem))
         if path.is_symlink() or not path.is_file():
@@ -300,11 +302,14 @@ def saved(path, found, *, include_events=False):
                 if include_events:
                     history.append(event)
                 kind = event.get('type')
+                command = local_command_text(event, command_chain)
+                if command_title is None and command_chain.get('phase') == 'command':
+                    command_title = command[:120]
                 custom_title = session_custom_title(event, native)
                 if custom_title is not None:
                     title = custom_title
                 if kind == 'user' and not event.get('isSidechain'):
-                    if title is None:
+                    if title is None and command is None and not event.get('isMeta') and not event.get('isSynthetic'):
                         message = event.get('message') if isinstance(event.get('message'), dict) else {}
                         content = message.get('content', '')
                         if isinstance(content, list):
@@ -355,6 +360,8 @@ def saved(path, found, *, include_events=False):
             return None
     except OSError:
         return None
+    if title is None:
+        title = command_title
     if title is None:
         return None
     if not cwd:

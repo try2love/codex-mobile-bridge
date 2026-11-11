@@ -14,7 +14,7 @@ from collections import deque
 from pathlib import Path
 
 from bridge.clients.claude import model, file_archive
-from bridge.clients.claude.history import file_stamp, page as history_page, image_event, session_custom_title
+from bridge.clients.claude.history import file_stamp, page as history_page, image_event, session_custom_title, local_command_text
 from bridge.clients.claude.context import context_fields
 from bridge.clients.claude.session_registry import assert_session_closed
 from bridge.clients.claude.creation import creation_launch_options
@@ -377,6 +377,8 @@ def _saved(path, origin):
     user_permission = None
     recent = deque(maxlen=128)
     context_events = deque(maxlen=3)
+    command_chain = {}
+    command_title = None
     try:
         with path.open(encoding='utf-8', errors='replace') as source:
             for line in source:
@@ -387,11 +389,14 @@ def _saved(path, origin):
                 if not isinstance(event, dict):
                     continue
                 kind = event.get('type')
+                command = local_command_text(event, command_chain)
+                if command_title is None and command_chain.get('phase') == 'command':
+                    command_title = command[:120]
                 custom_title = session_custom_title(event, native)
                 if custom_title is not None:
                     title = custom_title
                 if kind == 'user' and not event.get('isSidechain'):
-                    if title is None:
+                    if title is None and command is None and not event.get('isMeta') and not event.get('isSynthetic'):
                         message = event.get('message') if isinstance(event.get('message'), dict) else {}
                         lines = _text(message.get('content')).strip().splitlines()
                         title = lines[0][:120] if lines else 'Claude Code 会话'
@@ -444,6 +449,8 @@ def _saved(path, origin):
         return None
     if final != stamp:
         return None
+    if title is None:
+        title = command_title
     if title is None:
         return None
     if not cwd:

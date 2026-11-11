@@ -36,10 +36,10 @@ def worker_source():
     source = source.replace(marker, helper + '\narchive_file_state = state\narchive_file_change = change\narchive_supported = supported\narchive_assert_no_cli = assert_no_cli\n')
     history = source_text('clients/claude/history.py')
     readers = [node for node in ast.parse(history).body if isinstance(node, ast.FunctionDef) and
-               node.name in ('image_event', 'session_custom_title')]
-    if len(readers) != 2:
+               node.name in ('image_event', 'session_custom_title', 'local_command_text')]
+    if len(readers) != 3:
         raise ValueError('Claude Code 远端历史读取模块无法加载')
-    return source.replace('from bridge.clients.claude.history import image_event, session_custom_title',
+    return source.replace('from bridge.clients.claude.history import image_event, session_custom_title, local_command_text',
                           '\n\n'.join(ast.get_source_segment(history, node) for node in readers))
 
 
