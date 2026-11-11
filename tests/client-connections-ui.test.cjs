@@ -551,7 +551,7 @@ test('shared independent profile form scans, picks and manually saves the select
   if(family==='codex')await ui.panel.codexProfile();else await ui.panel.clientProfile(family);
   const dialog=ui.document.body.children[0],form=dialog.querySelector('form'),inputs=form.querySelectorAll('input'),button=text=>form.querySelectorAll('button').find(b=>b.textContent===text);
   assert.equal(ui.calls.length,1);assert.equal(ui.calls[0].operation,'list');assert.equal(form.querySelector('.error').textContent,'');
-  assert.ok(button('保存配置'));if(family==='codex')assert.match(form.querySelectorAll('label')[1].textContent,/\.codex 文件夹/);
+  assert.ok(button('保存配置'));assert.equal(form.querySelectorAll('label')[1].textContent,label+' 配置目录');
   await button('扫描配置').onclick();assert.deepEqual(JSON.parse(JSON.stringify(ui.calls.at(-1))),{action:'client-profiles',operation:'scan',family,kind});assert.equal(button('/wrong'),undefined);
   button(profile.home).onclick();assert.equal(inputs[1].value,profile.home);
   ui.setChosen('/fixture/chosen');await button('选择文件夹').onclick();assert.equal(inputs[1].value,'/fixture/chosen');

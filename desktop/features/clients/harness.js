@@ -18,6 +18,7 @@ class HarnessPanel {
     this.buttons();
   }
   buttons() {
+    this.root.querySelector('[name=home]').placeholder=this.value?.config.home||'';
     for(const button of this.root.querySelectorAll('button'))button.disabled=this.busy;
     const running=this.value?.running||this.value?.state==='starting';
     this.root.querySelectorAll('input,[data-harness-choose],button[type=submit]').forEach(node=>node.disabled=this.busy||running);

@@ -3,6 +3,7 @@ class DesktopConnectionsPanel {
   constructor({root,api,feedback}) {
     Object.assign(this,{root,api,feedback,clientsRevision:0,statusRevision:0});
     this.deepseekHome=root.querySelector('[data-deepseek-home]');
+    this.deepseekHome.placeholder=this.configurationExample('deepseek');
     const add=document.getElementById('add-client');if(add)add.onclick=()=>this.addClient();
     const refresh=document.getElementById('refresh-clients');if(refresh)refresh.onclick=()=>this.scan(true);
     document.addEventListener('visibilitychange',()=>{this.syncPolling();if(!document.hidden)this.pollClients();});
@@ -11,6 +12,11 @@ class DesktopConnectionsPanel {
     document.addEventListener('bridge-language',()=>{this.renderClients();this.renderScan();});
     this.accountPanels={};this.managementPages=new Map();this.removalControls=new Map();
     document.addEventListener('bridge-client-config',event=>{for(const [id,control] of this.removalControls)control.hidden=id!==event.detail;this.ensureAccountPanel(event.detail);this.resumeAccounts();});
+  }
+  configurationExample(family){
+    const windows=this.api.platform==='win32',home=windows?'C:\\Users\\username':this.api.platform==='darwin'?'/Users/username':'/home/username';
+    if(family==='claude')return home+(windows?'\\AppData\\Roaming\\Claude':this.api.platform==='darwin'?'/Library/Application Support/Claude':'/.config/Claude');
+    return home+(windows?'\\':'/')+(family==='codex'?'.codex':'.dsh');
   }
   ensureAccountPanel(provider){
     if(!['claude','deepseek'].includes(provider)||typeof DesktopClientAccountsPanel==='undefined')return;
@@ -210,8 +216,8 @@ class DesktopConnectionsPanel {
     const kind=capability.kind,application=kind==='default-application',t=BridgeI18n.t,dialog=document.createElement('dialog');dialog.className='client-disable-dialog';
     const title=document.createElement('h2');title.textContent=t('添加 Codex 客户端').replace('Codex',label);
     const form=document.createElement('form'),nameLabel=document.createElement('label'),homeLabel=document.createElement('label');
-    form.className='client-config-form';nameLabel.textContent=t('客户端名称');homeLabel.textContent=application?t('应用程序路径'):family==='codex'?t('Codex 配置目录（.codex 文件夹）'):t('Codex 配置目录').replace('Codex',label);
-    const name=document.createElement('input'),home=document.createElement('input');name.required=true;name.maxLength=80;name.value=t('Codex 独立配置').replace('Codex',label);home.required=true;home.placeholder=t(application?'选择应用程序，或输入完整路径':'输入完整路径，或选择文件夹');nameLabel.append(name);homeLabel.append(home);
+    form.className='client-config-form';nameLabel.textContent=t('客户端名称');homeLabel.textContent=application?t('应用程序路径'):t('Codex 配置目录').replace('Codex',label);
+    const name=document.createElement('input'),home=document.createElement('input');name.required=true;name.maxLength=80;name.value=t('Codex 独立配置').replace('Codex',label);home.required=true;home.placeholder=application?t('选择应用程序，或输入完整路径'):this.configurationExample(family);nameLabel.append(name);homeLabel.append(home);
     const help=document.createElement('p');help.className='hint';help.textContent=application?(family==='antigravity'?t('选择已安装的 Antigravity App、IDE 或官方 agy 程序，保留原客户端的账号和会话。'):t('选择已安装的 ZCode 应用，保存后在管理页选择连接方式并启用。')):t('选择此电脑上的独立 Codex 配置目录，保留其中的账号和会话。默认 Codex 接入保持不变。').replaceAll('Codex',label);
     const actions=document.createElement('div');actions.className='actions';
     const choose=document.createElement('button'),scan=document.createElement('button'),save=document.createElement('button'),cancel=document.createElement('button');
