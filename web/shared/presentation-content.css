@@ -31,6 +31,7 @@
 .composer.is-collapsed .composer-tools{margin-bottom:0}
 .composer textarea{display:block;background:var(--surface);border:1px solid var(--line);border-radius:16px;resize:none;min-height:48px;height:48px;max-height:160px;line-height:1.6;font-size:16px;padding:10px 14px}
 .compose-bottom{display:grid;grid-template-columns:30px minmax(0,1fr) minmax(0,1fr) auto;align-items:center;padding-top:6px;gap:8px}
+.compose-bottom>.attach-button{grid-column:1}.compose-bottom>select:not(.work-mode-select):not(#work-mode){grid-column:2}.compose-bottom>#work-mode,.compose-bottom>.work-mode-select{grid-column:3}.compose-bottom>.compose-actions{grid-column:4}
 .compose-bottom select{width:100%;font-size:11px;max-width:100%;min-width:0;padding:8px 0;color:var(--muted);text-overflow:ellipsis}
 .compose-actions{flex:none;gap:6px}
 .goal-toggle{display:flex;align-items:center;justify-content:center;gap:5px;flex:none;min-height:36px;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:transparent;color:var(--green);font-size:11px;white-space:nowrap}

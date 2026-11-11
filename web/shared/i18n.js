@@ -1714,6 +1714,8 @@ const en={
 "已选择，启动网关后自动接入":"Selected. Connects automatically when the gateway starts.",
 "随网关启动":"Start with gateway",
 "重新扫描并接入":"Scan & connect again",
+"当前接入不支持此功能":"This connection does not support this feature",
+"正在确认可用功能…":"Checking available features…",
 "自动发现本机应用并沿用已有登录或 API；安装新应用后可重新扫描。":"Automatically discover local apps and reuse their existing sign-in or API setup. Scan again after installing an app.",
 "自动沿用 Harness 已有账号、模型和工作目录。":"Use the existing Harness account, models and working directory.",
 "正在检查接入…":"Checking connection…",

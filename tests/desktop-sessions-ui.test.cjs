@@ -43,7 +43,7 @@ function fixture({storage=new Map(),sessionStore=new Map()}={}){
   showModal(){this.open=true;}close(){this.open=false;this.onclose?.();}focus(){document.activeElement=this;}select(){}setSelectionRange(start,end){this.selectionStart=start;this.selectionEnd=end;}click(){return this.onclick?.({preventDefault(){}});}contains(n){return n===this||this.children.some(c=>c.contains(n));}
  }
  document={body:new Node('body'),documentElement:new Node('html'),hidden:false,activeElement:null,getSelection:()=>null,createElement:tag=>new Node(tag),createElementNS:(_,tag)=>new Node(tag),createTextNode:text=>{const n=new Node('#text');n.textContent=text;return n;},querySelectorAll:s=>document.body.querySelectorAll(s),querySelector:s=>document.body.querySelector(s),getElementById:id=>document.body.querySelector('#'+id),addEventListener:(type,fn)=>listeners[type]=fn,dispatchEvent:event=>listeners[event.type]?.(event)};
- const root=new Node('div');root.className='app';document.body.append(root);const select=new Node('select'),calls=[],notices=[];let uploadHandler=async()=>({ok:true,status:200,json:async()=>({image:true,size:16,name:'image.png'})}),handler=async(url,body)=>body?{status:'accepted'}:url.includes('/detail')?{session:{id:'a',title:'Chat',model:'model-a',effort:'high',status:'idle',capabilities:{}},messages:[]}:url.includes('/workspace')?{entries:[],total:0,project:'/project'}:{sessions:[]};
+ const root=new Node('div');root.className='app';document.body.append(root);const select=new Node('select'),calls=[],notices=[];let uploadHandler=async()=>({ok:true,status:200,json:async()=>({image:true,size:16,name:'image.png'})}),handler=async(url,body)=>body?{status:'accepted'}:url.includes('/detail')?{session:{id:'a',title:'Chat',model:'model-a',effort:'high',status:'idle',capabilities:{send:true,queue:true,steer:true}},messages:[]}:url.includes('/workspace')?{entries:[],total:0,project:'/project'}:{sessions:[]};
  const context=vm.createContext({document,window:{addEventListener:(type,fn)=>listeners['window:'+type]=fn,dispatchEvent:event=>listeners['window:'+event.type]?.(event)},navigator:{},location:{pathname:'/'},history:{replaceState(){}},localStorage:{get length(){return storage.size;},key:i=>[...storage.keys()][i],getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},sessionStorage:{get length(){return sessionStore.size;},key:i=>[...sessionStore.keys()][i],getItem:k=>sessionStore.get(k),setItem:(k,v)=>sessionStore.set(k,v),removeItem:k=>sessionStore.delete(k)},crypto:{getRandomValues:array=>webcrypto.getRandomValues(array)},Uint8Array,TextEncoder,Option:class extends Node{constructor(text,value){super('option');this.textContent=text;this.value=value;this.setAttribute('value',value);}},ResizeObserver:class{observe(){}},MutationObserver:class{observe(){}},AbortController,URLSearchParams,requestAnimationFrame:fn=>fn(),cancelAnimationFrame(){},getComputedStyle:()=>({getPropertyValue:()=>8}),setTimeout(){return 1;},clearTimeout(){},fetch:async(url,options)=>{calls.push({url,upload:options});return uploadHandler(url,options);},renderMarkdown:(node,text)=>node.textContent=text,CustomEvent:class{constructor(type,options){this.type=type;Object.assign(this,options);}}});
  vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/shell/app.js'),'utf8').match(/^function uuid\(\).*$/m)[0],context);
  for(const file of ['web/layouts/viewport.js','web/features/chat/activity.js','web/features/chat/composer-drafts.js','web/features/chat/composer-quotes.js','web/features/chat/attachments.js','web/shared/i18n.js','web/features/clients/client-lifecycle.js','web/features/chat/message-actions.js','web/features/chat/permissions.js','web/features/chat/modes.js','web/features/workspace/workbench.js','web/features/chat/list-sync.js','web/shared/creation-model-picker.js','web/features/clients/desktop-sessions.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
@@ -272,12 +272,12 @@ test('desktop client keeps cached rows through brief polling failures and clears
  ui.setHandler(async()=>({sessions:[{id:'a',title:'Current chat',backend:'code'}]}));await ui.view.refreshList();assert.match(ui.view.rowsRoot.textContent,/Current chat/);
 });
 test('LAN HTTP send creates a secure id and retries the same unconfirmed operation',async()=>{
- const ui=await opened();ui.run('uuid=undefined');let attempt=0;ui.setHandler(async(url,body)=>{if(body){if(++attempt===1)throw Error('connection lost');return {status:'accepted'};}return url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},messages:[]}:{sessions:[]};});
+ const ui=await opened();ui.run('uuid=undefined');let attempt=0;ui.setHandler(async(url,body)=>{if(body){if(++attempt===1)throw Error('connection lost');return {status:'accepted'};}return url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},capabilities:{send:true},messages:[]}:{sessions:[]};});
  ui.view.input.value='hello';await ui.view.submit();assert.equal(ui.view.input.value,'hello');await ui.view.detail(ui.view.generation);await ui.view.submit();const writes=ui.calls.filter(c=>c.body);assert.equal(writes.length,2);assert.match(writes[0].body.id,/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);assert.equal(writes[0].body.id,writes[1].body.id);assert.equal(ui.view.input.value,'');
 });
 test('unknown desktop send keeps its ID when account identity arrives before manual retry',async()=>{
  const ui=await opened();ui.view.bindDraftGateway('gateway-a');let writes=0;
- ui.setHandler(async(url,body)=>body?{status:++writes===1?'unknown':'accepted'}:url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},draftAccountIdentity:'account-a',messages:[]}:{sessions:[]});
+ ui.setHandler(async(url,body)=>body?{status:++writes===1?'unknown':'accepted'}:url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},capabilities:{send:true},draftAccountIdentity:'account-a',messages:[]}:{sessions:[]});
  ui.view.input.value='same message';ui.view.input.oninput();await ui.view.submit();const first=ui.calls.filter(c=>c.body)[0].body.id;
  await ui.view.detail(ui.view.generation);ui.view.bindDraftScope({draftAccountIdentity:'account-a'});await ui.view.submit();
  const sent=ui.calls.filter(c=>c.body);assert.equal(sent.length,2);assert.equal(sent[1].body.id,first);assert.equal(ui.view.composerDrafts.pending({gateway:'gateway-a',provider:'claude',account:'account-a',host:'local',session:'a'}),null);
@@ -286,7 +286,7 @@ test('desktop storage write failure keeps the uncertain ID when storage recovers
  const ui=await opened();ui.view.bindDraftGateway('gateway-a');ui.view.bindDraftScope({draftAccountIdentity:'account-a'});
  const original=ui.view.composerDrafts.storage;let fail=true,writes=0;
  ui.view.composerDrafts.storage={getItem:key=>original.getItem(key),removeItem:key=>original.removeItem(key),setItem:(key,value)=>{if(fail)throw Error('quota');original.setItem(key,value);}};
- ui.setHandler(async(url,body)=>body?{status:++writes===1?'unknown':'accepted'}:url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},draftAccountIdentity:'account-a',messages:[]}:{sessions:[]});
+ ui.setHandler(async(url,body)=>body?{status:++writes===1?'unknown':'accepted'}:url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},capabilities:{send:true},draftAccountIdentity:'account-a',messages:[]}:{sessions:[]});
  ui.view.input.value='same message';ui.view.input.oninput();await ui.view.submit();const first=ui.calls.filter(c=>c.body)[0].body.id;
  assert.equal(ui.view.provisionalDrafts.get('claude:a').text,'same message');
  fail=false;await ui.view.detail(ui.view.generation);await ui.view.submit();
@@ -295,7 +295,7 @@ test('desktop storage write failure keeps the uncertain ID when storage recovers
 test('confirmed desktop send clears the provisional draft while an unknown result keeps it',async()=>{
  const ui=await opened();ui.view.bindDraftGateway('gateway-a');ui.view.bindDraftScope({draftAccountIdentity:'account-a'});
  ui.view.composerDrafts.storage={getItem(){return null;},setItem(){throw Error('quota');},removeItem(){}};
- let writes=0;ui.setHandler(async(url,body)=>body?{status:++writes===1?'unknown':'accepted'}:url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},draftAccountIdentity:'account-a',messages:[]}:{sessions:[]});
+ let writes=0;ui.setHandler(async(url,body)=>body?{status:++writes===1?'unknown':'accepted'}:url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},capabilities:{send:true},draftAccountIdentity:'account-a',messages:[]}:{sessions:[]});
  ui.view.input.value='same message';ui.view.input.oninput();await ui.view.submit();assert.equal(ui.view.provisionalDrafts.get('claude:a').text,'same message');
  await ui.view.detail(ui.view.generation);await ui.view.submit();assert.equal(writes,2);assert.equal(ui.view.provisionalDrafts.has('claude:a'),false);assert.equal(ui.view.drafts.has('claude:a'),false);
 });
@@ -587,7 +587,7 @@ test('late send completion preserves text typed while the request was in flight'
  const ui=await opened();let finish;ui.setHandler((url,body)=>body?new Promise(resolve=>finish=resolve):Promise.resolve({sessions:[]}));ui.view.input.value='sent';const sending=ui.view.submit();ui.view.input.value='next draft';ui.view.input.oninput();finish({status:'accepted'});await sending;assert.equal(ui.view.input.value,'next draft');assert.equal(ui.view.drafts.get('claude:a'),'next draft');
 });
 test('detail capabilities gate actual model, permission and queue actions',async()=>{
- const ui=fixture();await ui.view.choose('claude');ui.setHandler(async()=>({session:{id:'a',title:'Chat',status:'active'},capabilities:{models:false,permissions:false,queue:false,steer:false},messages:[]}));await ui.view.open('a');assert.equal(ui.view.modelButton.disabled,true);assert.equal(ui.view.permissionsButton.hidden,true);assert.equal(ui.view.mode.options[1].disabled,true);assert.equal(ui.view.mode.options[2].disabled,true);
+ const ui=fixture();await ui.view.choose('claude');ui.setHandler(async()=>({session:{id:'a',title:'Chat',status:'active'},capabilities:{models:false,permissions:false,queue:false,steer:false},messages:[]}));await ui.view.open('a');assert.equal(ui.view.modelButton.disabled,true);assert.equal(ui.view.permissionsButton.hidden,false);assert.equal(ui.view.permissionsButton.disabled,true);assert.equal(ui.view.mode.options[1].disabled,true);assert.equal(ui.view.mode.options[2].disabled,true);
 });
 test('HTTP clipboard fallback uses the shared selectable copy dialog',async()=>{
  const ui=fixture();await ui.view.choose('deepseek');ui.setHandler(async()=>({session:{id:'a',title:'Chat',status:'idle'},messages:[{id:'1',role:'assistant',text:'copy me'}]}));await ui.view.open('a');await ui.view.messages.querySelector('button').click();assert.equal(ui.document.querySelector('.copy-dialog').querySelector('textarea').value,'copy me');
@@ -612,7 +612,7 @@ test('Claude CLI creation uses its own project and native first message without 
 });
 
 test('shared attachments handle paste, block send until upload, and submit only upload ids',async()=>{
- const ui=fixture();await ui.view.choose('claude');ui.setHandler(async(url,body)=>body?{status:'accepted'}:url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},capabilities:{attachments:true},messages:[]}:{sessions:[]});await ui.view.open('a');let finish;ui.setUploadHandler(()=>new Promise(resolve=>finish=resolve));let prevented=false;ui.view.input.onpaste({clipboardData:{files:[{name:'image.png',type:'image/png',size:16}]},preventDefault(){prevented=true;}});assert.equal(prevented,true);assert.equal(ui.view.send.disabled,true);assert.equal(ui.view.attachments.rows[0].status,'uploading');await ui.view.submit();assert.equal(ui.calls.some(c=>c.body),false);
+ const ui=fixture();await ui.view.choose('claude');ui.setHandler(async(url,body)=>body?{status:'accepted'}:url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},capabilities:{attachments:true,send:true},messages:[]}:{sessions:[]});await ui.view.open('a');let finish;ui.setUploadHandler(()=>new Promise(resolve=>finish=resolve));let prevented=false;ui.view.input.onpaste({clipboardData:{files:[{name:'image.png',type:'image/png',size:16}]},preventDefault(){prevented=true;}});assert.equal(prevented,true);assert.equal(ui.view.send.disabled,true);assert.equal(ui.view.attachments.rows[0].status,'uploading');await ui.view.submit();assert.equal(ui.calls.some(c=>c.body),false);
  finish({ok:true,status:200,json:async()=>({name:'image.png',size:16,image:true})});await new Promise(setImmediate);assert.equal(ui.view.send.disabled,false);const row=ui.view.attachments.rows[0];assert.equal(row.status,'ready');assert.match(ui.calls.find(c=>c.upload).url,/claude\/uploads\?sessionId=a&id=/);assert.equal(ui.calls.find(c=>c.upload).upload.headers['X-CSRF-Token'],'csrf-test');await ui.view.submit();assert.equal(ui.calls.find(c=>c.body).body.attachments[0],row.id);assert.equal(ui.view.attachments.rows.length,0);
 });
 test('attachment upload remains scoped to its source chat after provider switching',async()=>{
@@ -634,7 +634,7 @@ test('question cards submit exact native question keys and do not invent Harness
  await ui.view.choose('deepseek');await ui.view.open('a');ui.view.renderRequests([{id:'q2',tool:'Question',needsInput:true,input:{questions:[]}}]);assert.equal(ui.view.requests.querySelectorAll('button').length,1);ui.view.renderRequests([{id:'approval',tool:'Write',needsInput:false,input:{reason:'write a file'}}]);await ui.view.requests.querySelectorAll('button')[1].click();assert.equal(ui.calls.filter(c=>c.body).at(-1).body.decision,'decline');
 });
 test('skills send only selectable installed skills and preserve failed-send selection',async()=>{
- const ui=fixture();ui.setHandler(async(url,body)=>body?{status:'unknown'}:url.includes('/catalog')?{skills:[{id:'review',name:'Review',kind:'skill',selectable:true},{id:'installed:tools',name:'Tools',kind:'plugin',selectable:false}]}:url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},capabilities:{skills:true},messages:[]}:{sessions:[]});await ui.view.choose('deepseek');await ui.view.open('a');assert.equal(ui.view.skillsButton.hidden,false);await ui.view.skills();const options=ui.document.querySelectorAll('.skill-option'),checks=options.map(n=>n.querySelector('input'));assert.equal(checks[1].disabled,true);checks[0].checked=true;checks[0].onchange();ui.view.input.value='review this';await ui.view.submit();assert.deepEqual(Array.from(ui.calls.find(c=>c.body).body.plugins),['review']);assert.match(ui.view.skillPills.textContent,/Review/);
+ const ui=fixture();ui.setHandler(async(url,body)=>body?{status:'unknown'}:url.includes('/catalog')?{skills:[{id:'review',name:'Review',kind:'skill',selectable:true},{id:'installed:tools',name:'Tools',kind:'plugin',selectable:false}]}:url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},capabilities:{skills:true,send:true},messages:[]}:{sessions:[]});await ui.view.choose('deepseek');await ui.view.open('a');assert.equal(ui.view.skillsButton.hidden,false);await ui.view.skills();const options=ui.document.querySelectorAll('.skill-option'),checks=options.map(n=>n.querySelector('input'));assert.equal(checks[1].disabled,true);checks[0].checked=true;checks[0].onchange();ui.view.input.value='review this';await ui.view.submit();assert.deepEqual(Array.from(ui.calls.find(c=>c.body).body.plugins),['review']);assert.match(ui.view.skillPills.textContent,/Review/);
  await ui.view.choose('claude');await ui.view.open('a');assert.equal(ui.view.skillPills.textContent,'');await ui.view.choose('deepseek');await ui.view.open('a');assert.match(ui.view.skillPills.textContent,/Review/);
 });
 test('Claude request-size limit stays in attachment help and rejects oversized images before upload',async()=>{
@@ -751,9 +751,9 @@ test('an old account write cannot invalidate the new account list refresh',async
 });
 
 test('provider return paints cached list and selected history before either network response',async()=>{
- const ui=fixture();ui.setHandler(async url=>url.includes('/detail')?{session:{id:'a',title:'Cached chat',status:'idle'},capabilities:{attachments:true,skills:true},messages:[{id:'m',role:'assistant',text:'cached answer'}]}:{sessions:[{id:'a',title:'Cached chat',backend:'code'}]});await ui.view.choose('claude');await ui.view.open('a');ui.view.input.value='unfinished';ui.view.input.oninput();ui.view.selectedSkills().set('review',{id:'review',name:'Review'});ui.view.attachments.add([{name:'draft.png',type:'image/png',size:16}]);await new Promise(setImmediate);await ui.view.choose('deepseek');
+ const ui=fixture();ui.setHandler(async url=>url.includes('/detail')?{session:{id:'a',title:'Cached chat',status:'idle'},capabilities:{attachments:true,skills:true,send:true},messages:[{id:'m',role:'assistant',text:'cached answer'}]}:{sessions:[{id:'a',title:'Cached chat',backend:'code'}]});await ui.view.choose('claude');await ui.view.open('a');ui.view.input.value='unfinished';ui.view.input.oninput();ui.view.selectedSkills().set('review',{id:'review',name:'Review'});ui.view.attachments.add([{name:'draft.png',type:'image/png',size:16}]);await new Promise(setImmediate);await ui.view.choose('deepseek');
  const pending=[];ui.setHandler(url=>new Promise(resolve=>pending.push({url,resolve})));const returning=ui.view.choose('claude');assert.match(ui.view.rowsRoot.textContent,/Cached chat/);assert.equal(ui.view.sid,'a');assert.match(ui.view.messages.textContent,/cached answer/);assert.equal(ui.view.input.value,'unfinished');assert.match(ui.view.skillPills.textContent,/Review/);assert.equal(ui.view.attachments.rows.length,1);assert.equal(ui.view.attachments.rows[0].status,'ready');assert.equal(ui.view.send.disabled,true);
- for(const call of pending)call.resolve(call.url.includes('/detail')?{session:{id:'a',title:'Fresh chat',status:'idle'},capabilities:{attachments:true,skills:true},messages:[{id:'m',role:'assistant',text:'fresh answer'}]}:{sessions:[{id:'a',title:'Fresh chat',backend:'code'}]});await returning;assert.match(ui.view.messages.textContent,/fresh answer/);assert.equal(ui.view.input.value,'unfinished');assert.equal(ui.view.send.disabled,false);
+ for(const call of pending)call.resolve(call.url.includes('/detail')?{session:{id:'a',title:'Fresh chat',status:'idle'},capabilities:{attachments:true,skills:true,send:true},messages:[{id:'m',role:'assistant',text:'fresh answer'}]}:{sessions:[{id:'a',title:'Fresh chat',backend:'code'}]});await returning;assert.match(ui.view.messages.textContent,/fresh answer/);assert.equal(ui.view.input.value,'unfinished');assert.equal(ui.view.send.disabled,false);
 });
 
 test('reads finishing after a provider switch warm only their own list and history cache',async()=>{
@@ -1403,8 +1403,8 @@ test('a verified per-session connection enables only text without granting app-w
  assert.equal(view.canResume(),true);view.setClientStates([client]);assert.equal(view.canResume(),true);
  await view.mutate('resume',{});assert.equal(bound,true);
  await view.detail(view.generation);assert.equal(view.canMutate(),true);
- assert.equal(view.attachButton.hidden,true);assert.equal(view.modelButton.disabled,true);assert.equal(view.workMode.hidden,true);
- assert.equal(view.stop.hidden,true);assert.equal(view.skillsButton.hidden,true);assert.equal(view.canResume(),false);
+ assert.equal(view.attachButton.hidden,false);assert.equal(view.attachButton.disabled,true);assert.equal(view.modelButton.disabled,true);assert.equal(view.workMode.hidden,false);assert.equal(view.workMode.disabled,true);
+ assert.equal(view.stop.hidden,true);assert.equal(view.skillsButton.hidden,false);assert.equal(view.skillsButton.disabled,true);assert.equal(view.canResume(),false);
  assert.equal(ui.calls.filter(c=>c.body).length,1);
 });
 
@@ -1499,6 +1499,47 @@ test('connection method changes invalidate old write state without clearing draf
  await view.setClientStates([{...client,connectionMode:'official-remote'}]);assert.equal(reads,1);
 });
 
+
+test('fresh unknown send queue and steer capabilities stay disabled without erasing a draft',async()=>{
+ const ui=await opened(),view=ui.view;view.applyDetail({session:{id:'a',title:'Connected',status:'active'},capabilities:{},messages:[]});view.input.value='Keep unknown draft';
+ assert.equal(view.send.disabled,true);assert.equal(view.mode.disabled,true);assert.equal(view.mode.options[1].disabled,true);assert.equal(view.mode.options[2].disabled,true);assert.equal(view.input.disabled,false);
+ for(const mode of ['send','queue','steer']){view.mode.value=mode;await view.submit();}assert.equal(ui.calls.some(call=>call.body),false);assert.equal(view.input.value,'Keep unknown draft');
+ view.applyDetail({session:{id:'a',title:'Connected',status:'active'},capabilities:{send:true,queue:false,steer:false},messages:[]});
+ for(const mode of ['queue','steer']){view.mode.value=mode;await view.submit();}assert.equal(ui.calls.some(call=>call.body),false);
+ view.state.capabilities.queue=view.state.capabilities.steer=true;view.updateComposer();assert.equal(view.send.disabled,false);assert.equal(view.mode.options[1].disabled,false);assert.equal(view.mode.options[2].disabled,false);ui.setHandler(async()=>({status:'unknown'}));await view.submit();assert.equal(ui.calls.filter(call=>call.body).length,1);assert.equal(view.input.value,'Keep unknown draft');
+});
+
+test('cwd without declared project reference capability keeps attachments and saved references inert',async()=>{
+ const ui=await opened(),view=ui.view,reference={kind:'file',path:'saved.txt',absolutePath:'/project/saved.txt',name:'saved.txt'};
+ view.applyDetail({session:{id:'a',title:'Ready',status:'idle',cwd:'/project'},capabilities:{send:true,attachments:false},messages:[]});
+ assert.equal(view.attachButton.hidden,false);assert.equal(view.attachButton.disabled,true);assert.equal(view.attachButton.dataset.capabilityState,'unknown');assert.equal(view.workbench.referenceFile(view.workbench.current,reference),false);
+ ui.run('globalThis.referencePicks=0;window.BridgeFileActions={attach:(_button,_upload,reference)=>reference(),pickReference:()=>referencePicks++};');view.state.capabilities.attachments=true;view.updateComposer();await view.attachButton.click();assert.equal(ui.run('referencePicks'),0);view.state.capabilities.attachments=false;view.updateComposer();
+ view.attachments.rows.push({id:'saved',name:'saved.txt',status:'ready',reference:{path:reference.path,absolutePath:reference.absolutePath}});view.input.value='Keep draft';view.updateComposer();
+ assert.equal(view.send.disabled,true);await view.submit();assert.equal(ui.calls.some(call=>call.body),false);assert.equal(view.input.value,'Keep draft');assert.equal(view.attachments.rows.length,1);
+ view.state.capabilities.projectReferences=true;view.updateComposer();assert.equal(view.attachButton.disabled,false);assert.equal(view.attachButton.dataset.capabilityState,'supported');assert.equal(view.workbench.referenceFile(view.workbench.current,reference),true);
+ ui.setHandler(async()=>({status:'unknown'}));await view.submit();assert.equal(ui.calls.filter(call=>call.body).length,1);assert.deepEqual(Array.from(ui.calls.find(call=>call.body).body.references,row=>({...row})),[{path:'saved.txt',absolutePath:'/project/saved.txt'}]);assert.equal(view.input.value,'Keep draft');assert.equal(view.attachments.rows.length,1);
+});
+
+test('mixed work mode capability states remain unknown until both modes are unsupported',async()=>{
+ const ui=await opened(),view=ui.view;
+ for(const [plan,goal,expected] of [[undefined,undefined,'unknown'],[undefined,false,'unknown'],[false,undefined,'unknown'],[false,false,'unsupported'],[true,false,'supported'],[false,true,'supported'],[undefined,true,'supported'],[true,undefined,'supported'],[true,true,'supported']]){
+  view.applyDetail({session:{id:'a',title:'Ready',status:'idle'},capabilities:{send:true,plan,goal},messages:[]});assert.equal(view.workMode.hidden,false);assert.equal(view.workMode.dataset.capabilityState,expected,`plan=${plan}, goal=${goal}`);assert.equal(view.workMode.disabled,expected!=='supported');
+ }
+});
+
+for(const provider of ['claude','deepseek','zcode','antigravity'])test(`${provider} keeps complete shared composer slots while capability state changes`,()=>{
+ const ui=fixture(),view=ui.view,sid='composer-loading';view.provider=provider;view.setClientStates([{id:provider,enabled:true,connected:true,historyAvailable:true}]);view.rows=[{id:sid,title:'Loading',model:'native-model'}];view.prepareChat(sid);
+ const controls=[view.modelButton,view.skillsButton,view.permissionsButton,view.contextButton,view.attachButton,view.mode,view.workMode,view.input,view.send];
+ assert.ok(controls.every(control=>control.hidden===false));assert.equal(view.modelName.textContent,'native-model');assert.equal(view.modelButton.dataset.capabilityState,'unknown');assert.equal(view.skillsButton.dataset.capabilityState,'unknown');assert.equal(view.send.disabled,true);assert.equal(view.input.disabled,false);
+ view.input.value='offline draft';const input=view.input,attachments=view.attachments;view.attachments.rows.push({id:'saved',name:'saved.png',status:'ready'});
+ const detail=capabilities=>({session:{id:sid,title:'Ready',model:'native-model',status:'idle',connectionState:'ready'},capabilities,messages:[]});
+ view.applyDetail(detail({send:true,models:false,skills:false,permissions:false,attachments:false,projectReferences:false,plan:false,goal:false}));
+ assert.ok(controls.every(control=>control.hidden===false));for(const control of [view.modelButton,view.skillsButton,view.permissionsButton,view.attachButton,view.workMode]){assert.equal(control.disabled,true);assert.equal(control.dataset.capabilityState,'unsupported');}
+ view.applyDetail(detail({send:true,models:true,skills:true,permissions:true,attachments:true,plan:true,goal:true}));
+ for(const control of [view.modelButton,view.skillsButton,view.permissionsButton,view.attachButton,view.workMode]){assert.equal(control.disabled,false);assert.equal(control.dataset.capabilityState,'supported');}
+ assert.equal(view.input,input);assert.equal(view.input.value,'offline draft');assert.equal(view.attachments,attachments);assert.equal(view.attachments.rows[0].id,'saved');assert.equal(ui.calls.length,0);
+ view.staleDetail();assert.ok(controls.every(control=>control.hidden===false));assert.equal(view.send.disabled,true);assert.equal(view.attachments.locked,true);assert.equal(view.input.value,'offline draft');
+});
 
 test('saved composer presentation keeps native controls stable without granting live permissions',async()=>{
  const ui=fixture(),view=ui.view,sid='sess_presentation',presentation={models:true,effort:true,skills:true,permissions:true,attachments:true,plan:true,goal:true};

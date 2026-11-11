@@ -506,6 +506,16 @@ class DesktopSessions:
             try:
                 value = self._adapter_call(provider, action, sid, body)
                 if action == 'detail' and isinstance(value, dict):
+                    caps = value.get('capabilities', value.get('session', {}).get('capabilities', {}))
+                    if isinstance(caps, dict) and type(caps.get('attachments')) is bool:
+                        # Built-in adapters translate validated resolvedReferences
+                        # through the same native prompt route as attachments.
+                        # Missing native route metadata remains unknown; explicit
+                        # send/reference restrictions always take precedence.
+                        caps = dict(caps)
+                        caps.setdefault('send', caps['attachments'])
+                        caps.setdefault('projectReferences', caps['attachments'])
+                        value['capabilities'] = caps
                     from bridge.features.sessions.model import desktop_file_attachments, user_display_text
                     for message in value.get('messages', []):
                         if message.get('role') == 'user':

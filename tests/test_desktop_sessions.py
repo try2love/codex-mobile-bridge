@@ -1,9 +1,10 @@
+import asyncio
 import json
 import tempfile
 import unittest
 import uuid
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from bridge.clients.manager import DesktopSessions
 from bridge.clients.claude.accounts import ClaudeAccounts
@@ -21,6 +22,38 @@ class Adapters(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.manager = DesktopSessions(self.root)
         self.addCleanup(self.manager.close)
+
+    def test_native_claude_detail_projects_verified_prompt_capabilities_for_shared_composer(self):
+        from bridge.clients.claude.model import session
+        adapter = self.manager.adapters['claude']
+        raw = {'sessionId': 'composer-native', 'cwd': str(self.root), 'turnRunning': False}
+        row = session('code', raw)
+        adapter.index[row['id']] = row
+        adapter.desktop = Mock(connected=True, capabilities={'code': ['mobileDetail', 'sendMessage']})
+        adapter.desktop.call = AsyncMock(return_value={'session': raw, 'transcript': []})
+        native = lambda action, sid=None, body=None, **kwargs: asyncio.run(adapter.dispatch(action, sid, body or {}))
+        with patch.object(adapter, '_call', side_effect=native), \
+             patch.object(self.manager, '_model_identity', return_value='fixture-account'), \
+             patch.object(self.manager, '_draft_account_identity', return_value='fixture-draft'):
+            detail = self.manager.call('claude', 'detail', row['id'])
+            self.assertTrue(detail['capabilities']['send'])
+            self.assertTrue(detail['capabilities']['projectReferences'])
+            self.assertTrue(detail['capabilities']['queue'])
+            self.assertTrue(detail['capabilities']['steer'])
+            adapter.desktop.capabilities['code'].remove('sendMessage')
+            unavailable = self.manager.call('claude', 'detail', row['id'])
+            self.assertFalse(unavailable['capabilities']['send'])
+            self.assertFalse(unavailable['capabilities']['projectReferences'])
+        self.assertEqual([call.args[1] for call in adapter.desktop.call.call_args_list], ['mobileDetail', 'mobileDetail'])
+
+    def test_detail_prompt_projection_preserves_unknown_and_explicit_native_restrictions(self):
+        adapter = Mock()
+        self.manager.adapters['deepseek'] = adapter
+        for caps, expected in [({}, {}), ({'attachments': 'unknown'}, {'attachments': 'unknown'}),
+                               ({'attachments': True, 'send': False, 'projectReferences': False},
+                                {'attachments': True, 'send': False, 'projectReferences': False})]:
+            adapter.call.return_value = {'session': {'id': 'composer', 'cwd': str(self.root)}, 'capabilities': caps}
+            self.assertEqual(self.manager._read('deepseek', 'detail', 'composer')['capabilities'], expected)
 
     def test_host_references_are_resolved_once_and_left_to_native_adapters(self):
         from bridge.features.workspace.workspace import operate

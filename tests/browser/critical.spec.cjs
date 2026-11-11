@@ -18,6 +18,34 @@ async function ready(page, scenario = 'success') {
   });
 }
 
+test('shared composer preserves complete loading and unsupported slots', async ({page}, testInfo) => {
+  await ready(page);await page.evaluate(()=>BridgeFeatures.load('chat'));
+  await page.evaluate(readFileSync(path.join(__dirname,'shared-composer-loading.browser.js'),'utf8'));
+  for(const width of [320,350,390,1280]){
+    await page.setViewportSize({width,height:844});
+    for(const language of ['zh','en']){
+      await page.evaluate(language=>BridgeI18n.setLanguage(language),language);
+      const result=await page.evaluate(()=>runSharedComposerLoadingChecks());
+      expect(result.requests).toBe(0);expect(result.checks).toBeGreaterThan(80);
+      await testInfo.attach(`composer-${width}-${language}`,{body:JSON.stringify(result),contentType:'application/json'});
+    }
+  }
+});
+
+test('Codex main composer columns and mixed capability states remain distinct', async ({page}, testInfo) => {
+  await ready(page);await page.evaluate(()=>BridgeFeatures.load('chat'));
+  await page.evaluate(readFileSync(path.join(__dirname,'shared-composer-loading.browser.js'),'utf8'));
+  for(const width of [320,390]){
+    await page.setViewportSize({width,height:844});
+    for(const language of ['zh','en']){
+      await page.evaluate(language=>BridgeI18n.setLanguage(language),language);
+      const result=await page.evaluate(()=>runComposerReviewRegressionChecks());
+      expect(result.requests).toBe(0);expect(result.checks).toBe(18);
+      await testInfo.attach(`composer-review-${width}-${language}`,{body:JSON.stringify(result),contentType:'application/json'});
+    }
+  }
+});
+
 test('image preview has one header row and a bottom save icon', async ({page}, testInfo) => {
   for (const width of [320,390,844,1280]) {
     await page.setViewportSize({width,height:844});
