@@ -692,3 +692,14 @@ test('Codex alone creates no other account editors or account reads; invisible l
   assert.deepEqual(Object.keys(ui.panel.accountPanels),['deepseek']);assert.ok(ui.calls.some(call=>call.provider==='deepseek'));
   assert.ok(!ui.calls.some(call=>call.provider==='claude'));
 });
+
+test('DSH missing connector repair previews paths and requires the explicit repair acknowledgement',async()=>{
+ const ui=fixture();ui.english();ui.panel.clients=[];
+ ui.setHandler(async body=>body.action==='deepseek-recovery-preview'?{token:'repair-token',canRecover:true,configurationRepair:true,oldDirectory:'F:/old/desktop-sessions/deepseek',newDirectory:'F:/gateway/desktop-sessions/deepseek'}:body.action==='status'?{backends:{}}:{clients:[]});
+ await ui.panel.recoverDeepseek(true);
+ const confirmation=ui.calls.find(row=>row.action==='deepseek-recovery-confirm');
+ assert.equal(confirmation.confirmConfigurationRepair,true);assert.equal(confirmation.token,'repair-token');assert.equal(confirmation.acknowledgeUnknown,undefined);
+ assert.match(ui.prompts[0],/backed up/);assert.match(ui.prompts[0],/F:\/old/);assert.match(ui.prompts[0],/F:\/gateway/);assert.doesNotMatch(ui.prompts[0],/[\u4e00-\u9fff]/);
+ const cancelled=fixture();cancelled.panel.clients=[];cancelled.confirm(false);cancelled.setHandler(async body=>body.action==='deepseek-recovery-preview'?{token:'cancel',canRecover:true,configurationRepair:true,oldDirectory:'old',newDirectory:'new'}:body.action==='status'?{backends:{}}:{clients:[]});
+ await cancelled.panel.recoverDeepseek(true);assert.equal(cancelled.calls.some(row=>row.action==='deepseek-recovery-confirm'),false);
+});

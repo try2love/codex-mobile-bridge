@@ -41,6 +41,10 @@ class DeepSeek:
     def install(self):
         return self.ensure_installed()
 
+    def repair_missing_connector(self, expected, check_stopped):
+        from bridge.clients.deepseek.orphan import repair
+        return repair(self, expected, check_stopped, private_json)
+
     def _line(self):
         entry = {'insert': [{'id': 'codex-mobile-desktop', 'name': (self.directory/'mobile-host.mjs').as_uri(),
                              'config': {'configPath': str(self.directory/'connection.json')}}]}

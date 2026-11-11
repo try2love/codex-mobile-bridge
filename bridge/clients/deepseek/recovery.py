@@ -14,7 +14,7 @@ import urllib.request
 from pathlib import Path
 
 from bridge.clients.lifecycle import _app, _commands, inspect_client
-from bridge.clients.deepseek.adapter import LIFECYCLE_REVISIONS
+from bridge.clients.deepseek.adapter import DeepSeek, LIFECYCLE_REVISIONS
 from bridge.clients.errors import BridgeUnavailable
 from bridge.features.accounts.models import NoRedirect
 
@@ -280,16 +280,26 @@ class DeepSeekRecovery:
         evidence, connector_ready = _recovery_evidence(adapter, snapshot)
         state = snapshot['state']
         allowed = not snapshot['unrecognized'] and len(state['mainPids']) <= 1
+        repair = None
+        repair_error = None
+        if restart and not connector_ready and not state['pids'] and isinstance(adapter, DeepSeek):
+            from bridge.clients.deepseek.orphan import inspect
+            try:
+                repair = inspect(adapter, snapshot['home'])
+            except (OSError, ValueError) as error:
+                repair_error = str(error)
         token = secrets.token_hex(24)
         self.pending = {'token': token, 'expires': time.monotonic()+300, 'snapshot': snapshot,
                         'restart': restart, 'allowed': allowed, 'unknown': evidence['unknown'],
-                        'connectorReady': connector_ready}
+                        'connectorReady': connector_ready, 'repair': repair}
         return {'token': token, 'expiresAt': time.time()+300, 'restart': restart,
                 'guiCount': len(state['mainPids']), 'backgroundCount': len(state['runtimePids']),
                 'busy': evidence['busy'], 'unknown': evidence['unknown'],
-                'requiresUnknownConfirmation': evidence['unknown'],
-                'canRecover': allowed and connector_ready and not evidence['busy'],
-                **({'message': CONNECTOR_UNKNOWN} if not connector_ready else {})}
+                'requiresUnknownConfirmation': evidence['unknown'] and repair is None,
+                'canRecover': allowed and (connector_ready or repair is not None) and not evidence['busy'],
+                **({'configurationRepair': True, 'oldDirectory': str(repair['old']),
+                    'newDirectory': repair['directory']} if repair else {}),
+                **({'message': repair_error or CONNECTOR_UNKNOWN} if not connector_ready and not repair else {})}
 
     def confirm(self, descriptor, adapter, value):
         pending = self.pending
@@ -298,6 +308,17 @@ class DeepSeekRecovery:
             raise ValueError('Harness 恢复确认已过期，请重新检查')
         if value.get('confirmed') is not True: raise ValueError('请确认完整退出 Harness')
         snapshot = _same_processes(descriptor, pending['snapshot'])
+        if pending.get('repair'):
+            if value.get('confirmConfigurationRepair') is not True:
+                raise ValueError('请明确确认备份并替换失效的 Harness 接入配置')
+            def check_stopped():
+                current = _same_processes(descriptor, pending['snapshot'])
+                if current['state']['pids'] or current['state']['running']:
+                    raise ValueError('Harness 已运行，尚未替换接入配置，请退出后重新预览')
+            check_stopped()
+            self.pending = None
+            adapter.repair_missing_connector(pending['repair'], check_stopped)
+            return pending['restart']
         evidence, connector_ready = _recovery_evidence(adapter, snapshot)
         if evidence['busy']: raise ValueError(BUSY)
         if not pending['allowed']: raise ValueError('检测到其他或无法识别的 Harness 实例，请先在电脑端退出这些实例')

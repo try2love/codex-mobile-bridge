@@ -1424,6 +1424,7 @@ const en={
 "完整退出":"Quit completely",
 "DSH 仍有任务运行或等待确认，请先在桌面结束任务":"DSH still has running tasks or pending approvals. Finish them on your computer first.",
 "将完整退出 DSH 的桌面和后台进程，更新接入后重新打开。":"This quits DSH and its background processes, updates the connection, then opens it again.",
+"旧接入目录已不存在。将备份完整配置，仅替换失效的网关接入项，然后重新打开 DSH。":"The old connection directory is missing. The full configuration will be backed up, only the broken gateway entry will be replaced, and DSH will reopen.",
 "将完整退出 DSH 的桌面和后台进程。":"This quits DSH and its background processes completely.",
 "桌面进程：":"Desktop processes: ",
 "后台进程：":"Background processes: ",

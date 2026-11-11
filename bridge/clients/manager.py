@@ -2243,7 +2243,7 @@ class DesktopSessions:
             except BridgeUnavailable:
                 # Broken connector restoration must not block process identity
                 # preview. Normal recovery still needs verified task evidence.
-                adapter = None
+                adapter = DeepSeek(self.directory/'deepseek', descriptor['dataDirectory'])
             if self.deepseek_recovery is None:
                 self.deepseek_recovery = DeepSeekRecovery()
             if value.get('action') == 'deepseek-recovery-preview':
@@ -2254,6 +2254,10 @@ class DesktopSessions:
                 installed = adapter.ensure_installed()
                 if installed.get('updateRequired'):
                     adapter.update_existing()
+                self.adapters['deepseek'] = adapter
+                self.config['deepseekHome'] = str(adapter.home)
+                self.config['deepseekAdapterDirectory'] = str(adapter.directory)
+                private_json(self.config_path, self.config)
                 self.deepseek_restore_error = None
                 self.config.setdefault('setup', {})['deepseek'] = {'setupStatus': 'connecting', 'reason': '正在等待 Harness 连接'}
                 self._start_deepseek()

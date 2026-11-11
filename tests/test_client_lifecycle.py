@@ -599,7 +599,9 @@ class ClientLifecycleTests(unittest.TestCase):
         self.manager.deepseek_recovery = recovery
         result = self.manager.control({'action': 'deepseek-recovery-preview', 'restart': False})
         self.assertEqual(result['token'], 'identity-preview')
-        self.assertIsNone(recovery.preview.call_args.args[1])
+        adapter = recovery.preview.call_args.args[1]
+        self.assertEqual(adapter.directory, (self.manager.directory/'deepseek').resolve())
+        self.assertEqual(str(adapter.home), recovery.preview.call_args.args[0]['dataDirectory'])
         self.assertEqual(recovery.preview.call_args.args[0]['id'], 'deepseek')
         factory.assert_called_once()
         recovery.confirm.assert_not_called()
@@ -628,6 +630,34 @@ class ClientLifecycleTests(unittest.TestCase):
         native.assert_not_called()
         self.stop_dsh.assert_not_called()
         self.launch_dsh.assert_not_called()
+
+    def test_missing_connector_recovery_rebinds_the_persistent_adapter_before_launch(self):
+        from bridge.clients.deepseek.adapter import DeepSeek
+        from bridge.clients.deepseek.setup import MARKER
+        from test_deepseek_recovery import snapshot
+        descriptor=self.manager._descriptor('deepseek')
+        home=Path(descriptor['dataDirectory']).resolve()
+        file=home/'profiles/desktop/cordis.patch.yml';file.parent.mkdir(parents=True,exist_ok=True)
+        old=DeepSeek(self.root/'gone/desktop-sessions/deepseek',home)
+        file.write_text(MARKER+'\n'+old._line()+'\n')
+        self.manager.adapters.defer('deepseek',Mock(side_effect=BridgeUnavailable('old connector missing')))
+        state=snapshot(gui=False,hosts=());state['home']=str(home)
+        def launch():
+            adapter=self.manager.adapters['deepseek']
+            self.assertTrue(adapter.discover_existing()['installed'])
+            self.assertEqual(self.manager.config['deepseekAdapterDirectory'],str(adapter.directory))
+            saved=json.loads(self.manager.config_path.read_text())
+            self.assertEqual(saved['deepseekAdapterDirectory'],str(adapter.directory))
+        with patch('bridge.clients.manager.DeepSeek',DeepSeek), \
+                patch('bridge.clients.deepseek.recovery._snapshot',return_value=state), \
+                patch.object(self.manager,'_start_deepseek',side_effect=launch) as start, \
+                patch.object(self.manager,'clients',return_value={'clients':[]}):
+            preview=self.manager.control({'action':'deepseek-recovery-preview','restart':True})
+            self.assertTrue(preview['configurationRepair'])
+            self.manager.control({'action':'deepseek-recovery-confirm','token':preview['token'],
+                                  'confirmed':True,'confirmConfigurationRepair':True})
+        start.assert_called_once()
+        self.assertIsNone(self.manager.deepseek_restore_error)
 
     def test_unverified_connector_normal_confirmation_has_no_native_or_setting_effect(self):
         from test_deepseek_recovery import snapshot
