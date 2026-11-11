@@ -14,7 +14,7 @@ from pathlib import Path, PurePosixPath
 
 from bridge.features.sessions.identity import same_cwd
 from bridge.clients.codex.app_server import (
-    AppServerError, AppServerUnavailable, AppServerUnknownResult, AppServerUnsupported, CodexAppServer)
+    AppServerError, AppServerUnavailable, AppServerReadTimeout, AppServerUnknownResult, AppServerUnsupported, CodexAppServer)
 from bridge.clients.codex.catalog import Catalog, CatalogError, ModelStore, normalize_native_skills
 from bridge.clients.codex.remote import RemoteStore, RemoteUnavailable, remote_model_catalog, remote_model_identity, ssh_read
 from bridge.clients.codex.linux_control import LinuxCliControl
@@ -476,7 +476,17 @@ class CliSessions:
                 if target_provider is not None and self.metadata[thread_id]['modelProvider'] != target_provider:
                     raise AppServerUnsupported('目标会话仍被原生加载，请先明确确认 CLI 服务维护；未迁移提供商。')
                 return copy.deepcopy(self.states[thread_id])
-        loaded = self.client.is_loaded(thread_id)
+        process = self.client.process
+        try:
+            loaded = self.client.is_loaded(thread_id)
+        except AppServerReadTimeout:
+            # Nothing has been resumed yet. Retire only the stalled proxy;
+            # serialize old subscription cleanup before any new connection.
+            with self.client.connect_lock:
+                if self.client.close(expected_process=process):
+                    self._disconnect()
+            self._runtime_home(self.client.connect())
+            loaded = self.client.is_loaded(thread_id)
         before = self.client.request('thread/read', {'threadId': thread_id, 'includeTurns': False},
                                      replay_safe=True)['thread']
         if before.get('id') != thread_id:

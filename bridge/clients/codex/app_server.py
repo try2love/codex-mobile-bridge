@@ -21,6 +21,10 @@ class AppServerUnavailable(AppServerError):
     pass
 
 
+class AppServerReadTimeout(AppServerUnavailable):
+    pass
+
+
 class AppServerUnknownResult(AppServerError):
     """The request may have reached the runtime; the caller must not replay it."""
 
@@ -145,7 +149,7 @@ class CodexAppServer:
                 response = future.result(timeout=timeout)
             except TimeoutError as exc:
                 if replay_safe:
-                    raise AppServerUnavailable('Codex runtime read timed out') from exc
+                    raise AppServerReadTimeout('Codex runtime read timed out') from exc
                 raise AppServerUnknownResult('Codex runtime response timed out; request may have completed') from exc
             if 'error' in response:
                 error = response['error']
@@ -235,9 +239,11 @@ class CodexAppServer:
                 self._stop_process(process)
                 self.on_disconnect()
 
-    def close(self):
+    def close(self, *, expected_process=None):
         """Disconnect this proxy client; never stop or restart the daemon."""
         with self.lock:
+            if expected_process is not None and self.process is not expected_process:
+                return False
             process = self.process
             self.process = None
             self.transport = None
@@ -248,6 +254,7 @@ class CodexAppServer:
                         'Codex runtime connection closed; request result is unknown'))
         if process is not None:
             self._stop_process(process)
+        return process is not None
 
     @staticmethod
     def _stop_process(process):
