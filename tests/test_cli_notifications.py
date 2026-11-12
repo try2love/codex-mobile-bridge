@@ -29,6 +29,8 @@ class CliNotificationsTests(CliBridgeFixture):
     def install_native(self, bridge, home, alias=None):
         native = CliSessions(home, bridge._cli_state, bridge._cli_disconnected, alias=alias)
         fake = FakeClient(home)
+        if alias:
+            fake.server_info['codexHome'] = '/remote/codex-home'
         fake.thread.update(id=self.thread_id, cwd=self.native_state['cwd'], modelProvider='openai')
         native.client, native.store = fake, SessionStore(home)
         native._start_daemon = Mock(side_effect=AssertionError('notifications started a daemon'))
