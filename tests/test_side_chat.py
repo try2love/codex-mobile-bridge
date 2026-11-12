@@ -258,7 +258,9 @@ class SideChatServiceTests(unittest.TestCase):
             result = kwargs['runtime_operation'](lambda request: request('thread/fork', {'threadId': args[3]}))
             args[6](result['thread']['id'])
             return result['thread']['id']
+        from contextlib import nullcontext
         with patch.object(desktop_runtime.sys, 'platform', 'darwin'), \
+             patch.object(desktop_runtime, 'initialization_lock', return_value=nullcontext()), \
              patch.object(desktop_runtime, 'connect', side_effect=[None, client]), \
              patch('bridge.features.sessions.create._runtime_operation') as spawn, \
              patch('bridge.app.service.fork_attached', side_effect=fork):

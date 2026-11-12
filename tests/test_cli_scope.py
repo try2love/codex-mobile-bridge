@@ -16,6 +16,7 @@ from tests.test_cli_force import CliForceFixture
 class CliScopeTests(CliForceFixture):
     def setUp(self):
         super().setUp()
+        self.patches.enter_context(patch('sys.platform', 'linux'))
         self.other = str(uuid.uuid4())
         with closing(sqlite3.connect(self.home/'state_5.sqlite')) as db, db:
             db.execute('INSERT INTO threads SELECT ?,title,cwd,updated_at,archived,originator,source,rollout_path,model_provider FROM threads LIMIT 1', (self.other,))

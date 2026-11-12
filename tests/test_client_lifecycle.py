@@ -395,7 +395,7 @@ class ClientLifecycleTests(unittest.TestCase):
             finally:
                 disabled.set()
 
-        with patch('bridge.features.workspace.workspace.operate', side_effect=lambda *_: mutate()):
+        with patch('bridge.features.workspace.workspace.operate', side_effect=lambda *_, **kwargs: mutate()):
             writer = threading.Thread(target=run_write)
             toggler = threading.Thread(target=disable)
             writer.start()

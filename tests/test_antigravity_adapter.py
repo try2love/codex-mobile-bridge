@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import base64
 import json
 import os
@@ -230,7 +232,7 @@ class AntigravityStoreTest(unittest.TestCase):
             sessions = store.list_sessions()
             self.assertEqual([row['nativeId'] for row in sessions], [cid_main, cid_ide])
             self.assertEqual(sessions[0]['backend'], 'app')
-            self.assertEqual(sessions[0]['cwd'], '/home/lks/aios/codex-mobile-bridge')
+            self.assertEqual(sessions[0]['cwd'], r'\home\lks\aios\codex-mobile-bridge' if os.name == 'nt' else '/home/lks/aios/codex-mobile-bridge')
             self.assertEqual(sessions[1]['backend'], 'ide')
 
             tasks = store.list_tasks(app_root, cid_main)
@@ -673,7 +675,9 @@ class AntigravitySafetyTests(unittest.TestCase):
         from bridge.clients.antigravity.hook_client import _send_and_recv
         from bridge.clients.antigravity.hook_ipc import _verify_peer_uid
         import socket
-        state = self.directory/('中文'*6)
+        base = self.directory.parent
+        count = max(1, (100 - len(os.fsencode(base/'hook.sock')) + 2) // 3)
+        state = base/('中'*count)
         self.assertLess(len(str(state/'hook.sock')), 100)
         self.assertGreaterEqual(len(os.fsencode(state/'hook.sock')), 100)
         server = HookIPCServer(state, session_resolver=lambda payload: 'scoped')

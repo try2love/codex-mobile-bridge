@@ -172,7 +172,8 @@ class AntigravityAccountTests(unittest.TestCase):
         (process/'stat').write_text('123 (agy) S 1 0')
         def path(value):
             return proc if value == '/proc' else Path(value)
-        with mock.patch.object(native.sys, 'platform', 'linux'), mock.patch.object(native, 'Path', side_effect=path):
+        with mock.patch.object(native.sys, 'platform', 'linux'), mock.patch.object(native, 'Path', side_effect=path), \
+                mock.patch.object(native.os, 'getuid', return_value=process.stat().st_uid, create=True):
             self.assertEqual(native.login_processes(), [123])
 
     def test_linux_non_dumpable_unrelated_process_is_not_an_antigravity_writer(self):
@@ -183,6 +184,7 @@ class AntigravityAccountTests(unittest.TestCase):
         def path(value):
             return proc if value == '/proc' else Path(value)
         with mock.patch.object(native.sys, 'platform', 'linux'), mock.patch.object(native, 'Path', side_effect=path), \
+                mock.patch.object(native.os, 'getuid', return_value=process.stat().st_uid, create=True), \
                 mock.patch.object(native.os, 'readlink', side_effect=PermissionError('not dumpable')):
             self.assertEqual(native.login_processes(), [])
             (process/'comm').write_text('agy\n')

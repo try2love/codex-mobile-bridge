@@ -1,5 +1,6 @@
 """Terminal native errors must not strand account selection or subscriptions."""
 import unittest
+import sys
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -17,7 +18,7 @@ class SystemErrorTests(unittest.TestCase):
         self.loaded = ['failed-a']
         self.client = Mock()
         self.client.connect.return_value = {'codexHome': str(Path('.tmp').resolve()),
-                                           'userAgent': 'codex-mobile-bridge-cli/0.164.0 (fixture)'}
+                                           'userAgent': 'codex-mobile-bridge-cli/' + ('0.167.0-alpha.3.2' if sys.platform == 'win32' else '0.164.0') + ' (fixture)'}
         self.client.loaded_threads.side_effect = lambda: list(self.loaded)
         self.client.request.side_effect = self.request
 

@@ -215,7 +215,7 @@ class ProfileCloseTests(ProfileRegistryTests):
         self.addCleanup(target.close)
         entered,finish,closed=threading.Event(),threading.Event(),threading.Event()
         target.store.get=Mock(return_value={'cwd':str(self.other)})
-        def write(*args):
+        def write(*args, **kwargs):
             entered.set();self.assertTrue(finish.wait(3));return {'ok':True}
         with patch('bridge.app.service.workspace_operation',side_effect=write) as native:
             worker=threading.Thread(target=lambda:target.workspace(str(uuid.uuid4()),'upload',{}))

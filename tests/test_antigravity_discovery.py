@@ -49,7 +49,8 @@ class AntigravityDiscoveryTests(unittest.TestCase):
     def target(self, image, args, *, surface='app', changed=False, listener=True):
         identity = {'pid': 123, 'uid': 1, 'image': str(image), 'birth': [1, 2]}
         sequence = [identity, {**identity, 'birth': [2, 3]}] if changed else None
-        with mock.patch.object(Path, 'home', return_value=self.home), \
+        with mock.patch.object(native.sys, 'platform', 'darwin'), \
+                mock.patch.object(Path, 'home', return_value=self.home), \
                 mock.patch.object(native, '_candidates', return_value=[(123, args)]), \
                 mock.patch.object(native, '_identity', return_value=identity, side_effect=sequence), \
                 mock.patch.object(native, '_listener', return_value=listener) as listeners:
@@ -132,7 +133,8 @@ class AntigravityDiscoveryTests(unittest.TestCase):
         ide, _ = self.bundle('ide')
         cli = self.cli(self.home/'custom/bin')
         original = discover_clients
-        with mock.patch.object(manager, '_discovery_preferences', side_effect=lambda: {
+        with mock.patch.object(native.sys, 'platform', 'darwin'), \
+                mock.patch.object(manager, '_discovery_preferences', side_effect=lambda: {
                 'antigravityApplications': manager.config.get('antigravityApplications', {})}), \
                 mock.patch('bridge.clients.discovery.discover_clients', side_effect=lambda p: original(
                     p, platform='darwin', home=self.home, env={}, applications=[])), \

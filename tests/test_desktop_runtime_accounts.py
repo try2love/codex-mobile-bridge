@@ -26,7 +26,7 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
         self.manager.invalidate = Mock()
         self.running = {'running': True, 'pids': [41], 'mainPids': [41], 'runtimePids': [], 'unknown': False}
         self.stopped = {**self.running, 'running': False, 'pids': [], 'mainPids': []}
-        self.identity = {'pid': 41, 'image': str(self.app.executable), 'birth': [100, 1], 'started': [1000, 0]}
+        self.identity = {'pid': 41, 'image': os.path.normcase(str(self.app.executable)), 'birth': [100, 1], 'started': [1000, 0]}
         self.real_initialization_lock = desktop_runtime.initialization_lock
         patches = {
             'platform': patch.object(accounts_module, 'sys', SimpleNamespace(platform='darwin')),
@@ -369,7 +369,7 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
         self.app.start.assert_not_called()
 
     def test_windows_initialization_uses_native_birth_and_original_home_checks(self):
-        self.mocks['identity'].return_value = {'pid': 41, 'image': str(self.app.executable), 'created': 12345, 'session': 1, 'parent': 10}
+        self.mocks['identity'].return_value = {'pid': 41, 'image': os.path.normcase(str(self.app.executable)), 'created': 12345, 'session': 1, 'parent': 10}
         with patch.object(accounts_module, 'sys', SimpleNamespace(platform='win32')), \
              patch('bridge.platforms.windows.codex_daemon_env.read_process_environment', return_value=({'CODEX_HOME': str(self.home)}, None)) as environment, \
              patch('bridge.platforms.windows.desktop.commands', return_value={41: str(self.app.executable)}):

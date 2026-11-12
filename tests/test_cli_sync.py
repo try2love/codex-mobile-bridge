@@ -53,7 +53,7 @@ class LocalCliSyncTests(unittest.TestCase):
             desktop.return_value.processes.return_value = []
             self.assertEqual(self.sync.apply('codex', row)['status'], 'applied')
         self.assertEqual(self.accounts.index['activeId'], row['id'])
-        self.assertEqual(json.loads((self.home/'auth.json').read_text())['OPENAI_API_KEY'], 'fixture-key')
+        self.assertEqual(json.loads((self.home/'auth.json').read_text(encoding='utf-8'))['OPENAI_API_KEY'], 'fixture-key')
 
     def test_live_codex_daemon_blocks_shared_config_mutation(self):
         self.bridge.cli_sessions.daemon_may_be_running.return_value = True
@@ -66,7 +66,8 @@ class LocalCliSyncTests(unittest.TestCase):
     def test_api_runtime_accepts_only_verified_current_native_client_versions(self):
         client = Mock()
         self.bridge.cli_sessions.client = client
-        with patch('bridge.clients.codex.cli_session._managed_cli', return_value=self.root/'codex-bin'), \
+        with patch('bridge.clients.codex.daemon_network.sys', SimpleNamespace(platform='linux')), \
+             patch('bridge.clients.codex.cli_session._managed_cli', return_value=self.root/'codex-bin'), \
              patch('bridge.platforms.codex_daemon_env.read_daemon_environment', return_value=({}, [42, 123])):
             for agent, supported in (('codex-tui/0.164.0', True),
                     ('codex-mobile-bridge-network-verify/0.164.0 (Mac OS)', True),
@@ -219,7 +220,7 @@ class LocalCliSyncTests(unittest.TestCase):
         with patch.object(self.sync, '_claude_auth', return_value={'loggedIn': True}) as auth:
             self.assertEqual(self.sync.verify('claude', row)['status'], 'configured')
         auth.assert_called_once_with(directory.resolve(), 'oauth_token')
-        settings = json.loads((directory/'settings.json').read_text())
+        settings = json.loads((directory/'settings.json').read_text(encoding='utf-8'))
         self.assertEqual(settings['env']['ANTHROPIC_AUTH_TOKEN'], 'fixture-key')
         self.assertNotIn('ANTHROPIC_API_KEY', settings['env'])
         self.assertEqual(settings['env']['UNRELATED'], 'keep')
@@ -324,9 +325,9 @@ class ManagedApiSwitchTests(unittest.TestCase):
             if method == 'getAuthStatus':
                 return {'authMethod': 'apikey', 'authToken': self.native_key if params['includeToken'] else None}
             if method == 'account/login/start':
-                receipt = json.loads((self.accounts.root/'switch.json').read_text())
+                receipt = json.loads((self.accounts.root/'switch.json').read_text(encoding='utf-8'))
                 self.assertEqual(receipt['phase'], 'authUnknown')
-                self.assertEqual(json.loads((self.accounts.root/'requests.json').read_text())[receipt['requestId']], self.target['id'])
+                self.assertEqual(json.loads((self.accounts.root/'requests.json').read_text(encoding='utf-8'))[receipt['requestId']], self.target['id'])
                 self.writes.append(params['apiKey'])
                 self.native_key = params['apiKey']
                 private_json(self.home/'auth.json', {'OPENAI_API_KEY': params['apiKey']})
@@ -358,7 +359,7 @@ class ManagedApiSwitchTests(unittest.TestCase):
             'auth.json': hashlib.sha256((self.home/'auth.json').read_bytes()).hexdigest()})
         self.accounts.switch(value)
         self.assertEqual(self.writes, ['fixture-B'])
-        self.assertNotIn('fixture-B', (self.accounts.root/'switch.json').read_text())
+        self.assertNotIn('fixture-B', (self.accounts.root/'switch.json').read_text(encoding='utf-8'))
         self.assertNotIn('fixture-B', json.dumps(self.accounts.public()))
 
     def test_unknown_effect_reconciles_only_from_same_native_cached_key(self):

@@ -1,4 +1,5 @@
 import tempfile
+import sys
 import io
 import json
 import os
@@ -198,7 +199,7 @@ class CliSessionTests(unittest.TestCase):
                 return {'data': [{'id': 'failed', 'status': 'failed', 'completedAt': 1794332820}]}
             return request(method, params, **kwargs)
         self.fake.request = completed
-        self.fake.server_info['userAgent'] = 'codex-mobile-bridge-cli/0.164.0 (fixture)'
+        self.fake.server_info['userAgent'] = 'codex-mobile-bridge-cli/' + ('0.167.0-alpha.3.2' if sys.platform == 'win32' else '0.164.0') + ' (fixture)'
         self.assertEqual(self.sessions.release_connection('thread-a', token)['status'], 'detached')
         self.assertNotIn('thread-a', self.sessions.joined)
 
@@ -327,6 +328,7 @@ class CliSessionTests(unittest.TestCase):
 
     def test_ssh_cold_resume_does_not_use_local_windows_path_identity(self):
         self.sessions.alias = '88server'
+        self.fake.server_info['codexHome'] = '/remote/codex-home'
         self.fake.loaded = False
         saved = {'id': 'thread-a', 'origin': 'cli',
                  'cwd': r'\\?\C:\project', 'model_provider': 'original-provider'}
@@ -1194,6 +1196,7 @@ class CliSessionTests(unittest.TestCase):
         remote = CliSessions(self.home / 'local-only-path', lambda *_: None,
                              lambda: None, alias='saved-host')
         remote.client = FakeClient(self.home)
+        remote.client.server_info['codexHome'] = '/remote/codex-home'
         self.assertTrue(remote.available())
         self.assertEqual(remote.attach('thread-a', explicit=True)['id'], 'thread-a')
 

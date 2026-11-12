@@ -113,6 +113,9 @@ class LinuxControlTransportTests(unittest.TestCase):
 class TargetScopeTests(CliForceFixture):
     def setUp(self):
         super().setUp()
+        self.cwd = '/srv/custom/project'
+        with closing(sqlite3.connect(self.home/'state_5.sqlite')) as db, db:
+            db.execute('UPDATE threads SET cwd = ?', (self.cwd,))
         self.value = LinuxControlTransportTests().value()
         self.value['canRelease'] = True
         self.value['generation']['nativeVersion'] = '0.164.0'

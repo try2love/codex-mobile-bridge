@@ -125,7 +125,12 @@ class MissingConnector(unittest.TestCase):
         self.assertEqual(next(self.adapter.directory.glob('cordis.patch.before-repair-*.yml')).read_bytes(),self.raw)
 
     def test_prepared_target_credentials_change_invalidates_the_preview(self):
-        with patch('bridge.clients.deepseek.orphan.os.replace',side_effect=OSError('write blocked')):
+        replace = os.replace
+        def block_patch(source, target):
+            if Path(target) == self.patch:
+                raise OSError('write blocked')
+            return replace(source, target)
+        with patch('bridge.clients.deepseek.orphan.os.replace', side_effect=block_patch):
             with self.assertRaises(OSError):self.confirm(self.preview())
         preview=self.preview()
         config=self.adapter.directory/'connection.json';value=json.loads(config.read_text())

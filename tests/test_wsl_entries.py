@@ -158,14 +158,14 @@ class CliStoreTests(unittest.TestCase):
             desktop = SessionStore(home, source='desktop')
             all_sessions = SessionStore(home)
             self.assertEqual({r['id'] for r in cli.list()},
-                             {'cli', 'shared', 'old', 'mobile', 'legacy-mobile'})
+                             {'cli', 'shared', 'old', 'mobile', 'legacy-mobile', 'exec'})
             self.assertEqual({r['id'] for r in desktop.list()},
                              {'desktop', 'vscode', 'legacy-mobile'})
             self.assertEqual({r['id'] for r in all_sessions.list()},
-                             {'cli', 'shared', 'old', 'mobile', 'legacy-mobile', 'desktop', 'vscode'})
+                             {'cli', 'shared', 'old', 'mobile', 'legacy-mobile', 'desktop', 'vscode', 'exec'})
             self.assertEqual(cli.get('legacy-mobile')['title'], 'Legacy mobile')
             self.assertEqual([r['id'] for r in cli.list(query='Legacy')], ['legacy-mobile'])
-            for identifier in ('desktop', 'vscode', 'child', 'legacy-child', 'exec'):
+            for identifier in ('desktop', 'vscode', 'child', 'legacy-child'):
                 with self.assertRaises(KeyError):
                     cli.get(identifier)
             self.assertEqual(cli.get('shared')['originator'], 'codex-tui')

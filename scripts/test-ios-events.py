@@ -115,6 +115,11 @@ var routeDiscovery: ConnectionDiscovery?
 var routeAttempted = false
 
 final class BridgeController: NSObject {
+    var pendingEntry: (address: String, url: URL, interrupted: Bool)?
+    var web: NSObject?
+    func openComputer(_ address: String, _ url: URL) { pendingEntry = nil }
+    func rollbackPeer() {}
+
     var channelMonitor: ConnectionDiscovery?
     var channelCatalogTimer: Timer?
     var lastChannelProbe: (key: String, time: TimeInterval)?

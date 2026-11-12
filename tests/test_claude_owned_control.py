@@ -34,6 +34,7 @@ class NativeFixture:
         self.current = None
 
 
+@unittest.skipIf(os.name == 'nt', 'macOS owned processes require POSIX identity and private file modes')
 class OwnedControlTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -154,6 +155,7 @@ class OwnedControlTests(unittest.TestCase):
 
     def test_private_storage_failure_preserves_normal_kernel_proof_but_no_force(self):
         self.directory.mkdir(mode=0o755)
+        self.directory.chmod(0o755)
         control = self.capture()
         self.assertFalse(control.preview()['canForce'])
         with self.assertRaises(BridgeUnavailable):

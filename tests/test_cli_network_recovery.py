@@ -78,6 +78,8 @@ class CliNetworkRecoveryTests(CliBridgeFixture):
                                      loaded_threads=lambda: ['unrelated-thread'], request=request, close=Mock())
         self.patches = ExitStack()
         self.addCleanup(self.patches.close)
+        self.patches.enter_context(patch('bridge.clients.codex.desktop_runtime.sys', SimpleNamespace(platform=sys.platform)))
+        self.patches.enter_context(patch('sys.platform', 'linux'))
         self.patches.enter_context(patch('bridge.clients.codex.cli_session._managed_cli', return_value=self.home / 'codex'))
         self.patches.enter_context(patch('bridge.clients.codex.daemon_network.inspect_proxy',
             side_effect=lambda *_: (self.generation, self.proxy_updates, 'fixture-stamp')))
@@ -853,7 +855,7 @@ class CliNetworkRecoveryTests(CliBridgeFixture):
     def test_timed_out_drain_never_signals_twice_and_resumes_only_after_confirmation(self):
         self.cli.daemon_status.return_value = 'running'
         self.stop.side_effect = OSError('still draining')
-        with self.assertRaisesRegex(ValueError, '设置已保存，CLI 服务尚未恢复'): self.confirm()
+        with patch('sys.platform', 'darwin'), self.assertRaisesRegex(ValueError, '设置已保存，CLI 服务尚未恢复'): self.confirm()
         record = self.bridge._cli_recovery_record()
         self.assertEqual(record['phase'], 'draining')
         self.bridge.cli_network(self.thread_id, automatic=True)

@@ -107,7 +107,9 @@ class DesktopIdle(unittest.TestCase):
             self.bridge.assert_desktop_idle()
         self.assertTrue(first_finished.wait(1))
         self.assertEqual(overlapping, [True], 'A silent historical owner must not hold up the other candidates')
-        self.assertEqual({call[2] for call in self.calls if call[0] == 'thread-owner-discovery'}, set(identifiers))
+        requested = {call[2] for call in self.calls if call[0] == 'thread-owner-discovery'}
+        # Detecting a busy owner may cancel requests still queued in the pool.
+        self.assertTrue({identifiers[0], 'tail-busy'} <= requested <= set(identifiers))
         self.bridge.activate.assert_not_called()
         self.bridge.store.history.assert_not_called()
 
@@ -379,8 +381,12 @@ class DesktopIdle(unittest.TestCase):
 
     def test_task_becoming_active_while_other_sessions_are_audited_blocks_shutdown(self):
         self.bridge.store.lifecycle_threads.return_value = [{'id': 'a'}, {'id': 'b'}]
+        a_followed = threading.Event()
         def update(sid, follower):
+            if sid == 'a':
+                a_followed.set()
             if sid == 'b':
+                self.assertTrue(a_followed.wait(2))
                 follower.on_event({'method': 'thread-stream-state-changed', 'version': 11, 'sourceClientId': 'owner',
                                    'params': {'hostId': 'local', 'conversationId': 'a', 'change': {
                                        'type': 'patches', 'baseRevision': 1, 'revision': 2,

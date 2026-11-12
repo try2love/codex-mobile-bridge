@@ -183,7 +183,8 @@ class TransactionTests(unittest.TestCase):
         return Child()
 
     def run_update(self, health=lambda *args: None, wait=lambda pid: None, desktop=None):
-        with patch.object(updater, 'registry_version'):
+        with patch.object(updater, 'registry_version'), \
+             patch('bridge.platforms.windows.updates.require_update_ready', return_value={'ready': True}):
             return updater.apply(self.plan_file, desktop=desktop or self.desktop, wait=wait,
                                  launch=self.launch, health=health, start=self.start)
 

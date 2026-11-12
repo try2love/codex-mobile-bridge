@@ -66,7 +66,7 @@ class PdfPreviewLimitTests(unittest.TestCase):
         params = {'path': 'sample.pdf', 'limit': MAX_TRANSFER, 'range_header': 'bytes=0-1023', 'if_range': ''}
         with patch('bridge.app.service.ssh_download', return_value='synthetic-stream') as download:
             self.assertEqual(Bridge.workspace(bridge, support.THREAD, 'download-stream', params), 'synthetic-stream')
-        self.assertIn(payload({'root': '/synthetic/project', 'action': 'download-stream', 'params': params}), download.call_args.args[1])
+        self.assertIn(payload({'root': '/synthetic/project', 'action': 'download-stream', 'params': params, 'history_path': None}), download.call_args.args[1])
         path = '/api/sessions/' + support.THREAD + '/workspace/download?path=sample.pdf&preview=1'
         validate('GET', path)
         for provider in ('claude', 'deepseek'):

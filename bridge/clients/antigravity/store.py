@@ -6,8 +6,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
-from urllib.parse import urlsplit
-from urllib.request import url2pathname
+from urllib.parse import unquote, urlsplit
 
 from bridge.features.workspace.uploads import MAX_FILE, image_type
 from .model import SURFACE_LABELS, extract_user_text, gateway_id, normalize_steps
@@ -53,7 +52,7 @@ def local_file_path(uri, *, windows=None):
         return windows_path(('//' + parsed.netloc if parsed.netloc else '') + parsed.path)
     if parsed.netloc not in ('', 'localhost'):
         return ''
-    return url2pathname(parsed.path)
+    return unquote(parsed.path)
 
 
 def parse_workspace_uris(raw):

@@ -300,6 +300,7 @@ class MetadataRoutingTests(unittest.TestCase):
 
     def test_uninitialized_mac_desktop_refuses_before_starting_another_writer(self):
         with patch.object(runtime.sys, 'platform', 'darwin'), \
+             patch.object(runtime, 'initialization_lock', return_value=nullcontext()), \
              patch.object(runtime, 'connect', return_value=None), \
              patch('bridge.features.sessions.create._runtime_operation') as spawn:
             operation = Mock()
@@ -317,6 +318,7 @@ class MetadataRoutingTests(unittest.TestCase):
 
     def test_unconfigured_mac_history_metadata_keeps_existing_runtime_path(self):
         with patch.object(runtime.sys, 'platform', 'darwin'), \
+             patch.object(runtime, 'initialization_lock', return_value=nullcontext()), \
              patch.object(runtime, 'connect', return_value=None), \
              patch('bridge.features.sessions.create._runtime_operation', return_value='native') as spawn:
             self.assertEqual(self.call(Mock()), 'native')

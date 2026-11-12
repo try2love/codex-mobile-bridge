@@ -1,7 +1,7 @@
 import copy
 from contextlib import ExitStack, nullcontext
 import hashlib
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError, wait
 import json
 import logging
 import os
@@ -1491,7 +1491,7 @@ class Bridge:
                 handshake = audits.submit(ipc.connect, deadline=deadline)
                 try:
                     handshake.result(timeout=remaining())
-                except TimeoutError as exc:
+                except FutureTimeoutError as exc:
                     raise TaskStateUnavailable(unknown) from exc
             except IPCError as exc:
                 if isinstance(exc.__cause__, FileNotFoundError):
