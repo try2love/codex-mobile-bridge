@@ -4699,8 +4699,8 @@ class Bridge:
                                             account.get('type') == 'apiKey')):
             try:
                 environment_identity = self.cli_sessions.model_environment_identity(config, provider, account, cwd=cwd)
-            except (DaemonEnvironmentUnavailable, CatalogError):
-                environment_identity = 'unavailable'
+            except (DaemonEnvironmentUnavailable, CatalogError) as exc:
+                raise AppServerUnavailable('无法核验当前 CLI 后台服务的启动环境，请重新连接后刷新模型列表') from exc
         return ModelStore.key('codex-cli-models-v3', self.host, self.cli_sessions.alias,
                               str(runtime_home), cwd, provider, config, account, local_auth,
                               environment_identity)
@@ -4785,7 +4785,8 @@ class Bridge:
                         'cache': {'state': 'stale', 'updatedAt': persisted[0], 'identity': identity}}
             if self._native_model_identity(cwd, provider) != identity:
                 raise ValueError('账号身份已变化，请重新读取模型列表')
-            return {**value, 'cache': {'state': 'fresh', 'updatedAt': updated_at, 'identity': identity}} if not value.get('modelError') else value
+            return {**value, 'cache': {'state': 'fresh', 'updatedAt': updated_at, 'identity': identity}} if not value.get('modelError') else {
+                **value, 'cache': {'state': 'unavailable', 'identity': identity}}
 
     def catalog(self, thread_id, refresh=False, kind=None, query='', offset=0, limit=200, ids=None):
         session = self.session(thread_id, attach=False, background=True)

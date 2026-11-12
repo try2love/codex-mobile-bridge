@@ -13,6 +13,31 @@ from bridge.app.service import Bridge
 
 
 class CreationChoices(unittest.TestCase):
+    def test_failed_api_directory_allows_manual_selection_without_caching_failure(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            reader = Catalog(root, 'fixture', allow_background_refresh=False)
+            reader._fetch = Mock(return_value={'models': [], 'modelSource': 'api',
+                '_defaultProvider': 'custom', 'modelError': '模型目录暂不可用'})
+            bridge = object.__new__(Bridge)
+            bridge.host = 'local'
+            bridge.projects = lambda host=None: [{'key': 'local|p', 'host': 'local', 'cwd': folder, 'type': 'desktop'}]
+            bridge.project_host = lambda key: 'local'
+            bridge.for_host = lambda host: bridge
+            bridge.catalog_reader = reader
+            value = bridge.creation_models('local|p')
+            identity = value['cache']['identity']
+            self.assertEqual(value['cache']['state'], 'unavailable')
+            self.assertNotIn('updatedAt', value['cache'])
+            self.assertIsNone(reader.model_store.read(identity))
+            choice = {'model': 'manual-model', 'effort': 'high', 'manualModel': True,
+                      'manualEffort': True, 'modelCatalogIdentity': identity}
+            self.assertEqual(validate(choice, value)['model'], 'manual-model')
+            (root/'auth.json').write_text('{"account":"changed"}')
+            changed = bridge.creation_models('local|p')
+            with self.assertRaisesRegex(ValueError, '账号或运行环境已变化'):
+                validate(choice, changed)
+
     def test_independent_codex_entry_never_routes_empty_project_to_default_account(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);home=root/'separate-home';home.mkdir();bridge=Bridge(home,root/'entry-data',host='codex:separate')

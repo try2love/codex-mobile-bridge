@@ -30,6 +30,8 @@ Web 与手机的新建弹窗使用同一 `CreationModelPicker`，复用现有模
 
 Codex Desktop 的新建目录按目标 cwd 读取，不借用全局账号目录代替项目配置。共享 `Catalog.model_identity` 纳入 cwd 及父级候选 `.codex/config.toml` 摘要，项目层覆盖改变会使旧目录失效；摘要不包含可公开还原的配置或凭据。CLI/SSH 复用原 daemon 的有效配置、账号和执行环境证明及 `native_model_store`。WSL 复用现有 `WslModelCatalog`；没有线程的新建预览不添加线程巡检定时器。
 
+原生配置与身份已核验、但上游模型目录不可用时，无旧缓存的响应仍携带该身份，状态明确为 `unavailable`，不附成功更新时间、不保存空目录。这样既有手动填写入口能通过创建前的身份复核；此前虽显示手动输入，却因缺少目录身份始终无法提交。同身份已有缓存时继续优先返回旧模型及原时间，账号或项目变化仍拒绝旧选择。此规则不能绕过运行时缺失、配置读取失败或未知执行环境。
+
 Claude Desktop 按 Code/Cowork 过滤同账号缓存。Claude CLI 优先复用同账号、主机、目录的模型缓存；没有已接入会话且没有可复用目录时允许明确手填，不为探测目录持有新的 CLI 会话。此时手动刷新不能伪称取得了新目录，保留缓存和时间并说明限制。本机目录选择不会额外访问不相关 SSH 主机。
 
 新建、聊天设置和账号目录按已核验的执行身份共用模型目录。Claude Desktop、DSH、ZCode 的新建和聊天设置都从同一账号目录取得数据；Claude 的 Code/Cowork 使用目录身份加 surface 的投影身份，并保留完整分组。已有原生分组缺少目标 surface 时返回空目录，不能借用另一个 surface 的模型；只有明确的纯 API 分组可共用上游模型。返回的 `cache.directoryIdentity` 与 `cache.surface` 让前端同步基目录更新，同时保持投影边界。

@@ -960,7 +960,8 @@ class Catalog:
                     raise CatalogError('模型接入已变化，请重试')
                 if value.get('modelError'):
                     return ({**ModelStore.directory(persisted[1]), 'kind': 'models', 'modelError': value['modelError'],
-                             'cache': {'state': 'stale', 'updatedAt': persisted[0], 'identity': identity}} if persisted else value)
+                             'cache': {'state': 'stale', 'updatedAt': persisted[0], 'identity': identity}} if persisted else
+                            {**value, 'cache': {'state': 'unavailable', 'identity': identity}})
                 try:
                     updated_at = self.model_store.write(identity, ModelStore.directory(value))
                 except (OSError, sqlite3.DatabaseError):
