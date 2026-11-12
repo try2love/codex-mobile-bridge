@@ -71,7 +71,7 @@ class WindowsDesktopLaunchTests(unittest.TestCase):
         self.assertEqual(spawn.call_args.args[0], [str(self.executable)])
         self.assertEqual(spawn.call_args.kwargs['env']['CODEX_HOME'], str(self.root))
 
-    def test_shared_desktop_start_uses_verified_alias_with_transport_environment(self):
+    def test_shared_desktop_start_preserves_gui_identity_with_verified_alias(self):
         alias = self.root/'WindowsApps/chatgpt-desktop.exe'
         shared = {'CODEX_CLI_PATH': str(self.root/'gateway.exe'),
                   'CMB_CODEX_DESKTOP_CONFIGURATION': str(self.root/'settings.json')}
@@ -81,7 +81,10 @@ class WindowsDesktopLaunchTests(unittest.TestCase):
                 patch('subprocess.Popen') as spawn:
             DesktopApp(self.executable, self.root).start()
         spawn.assert_called_once()
-        self.assertEqual(spawn.call_args.args[0], [str(alias)])
+        # The native shell selects its window profile from argv[0]. Using the
+        # alias name here creates a different profile from codex:// activation.
+        self.assertEqual(spawn.call_args.args[0], [str(self.executable)])
+        self.assertEqual(spawn.call_args.kwargs['executable'], str(alias))
         for key, value in {**shared, 'CODEX_HOME': str(self.root)}.items():
             self.assertEqual(spawn.call_args.kwargs['env'][key], value)
 

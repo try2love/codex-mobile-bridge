@@ -233,8 +233,9 @@ def launch_windows_desktop(executable, *, cancelled=None, require_environment=Fa
             if launcher is None:
                 raise ValueError('无法核验应用启动别名，尚未启动；请检查应用安装与执行别名设置')
         check_cancelled()
-        # Explorer activation does not carry the caller's private environment.
-        return subprocess.Popen([str(launcher)], **options)
+        # Activate through the alias without making it argv[0]: the native shell
+        # uses that name for its window profile and single-instance identity.
+        return subprocess.Popen([str(executable)], executable=str(launcher), **options)
     try:
         return subprocess.Popen([str(executable)], **options)
     except OSError as exc:
