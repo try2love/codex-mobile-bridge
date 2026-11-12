@@ -68,7 +68,7 @@ class HistoryControlTests(unittest.TestCase):
     def test_native_snapshot_normalizes_only_loaded_bodies_and_keeps_control_base(self):
         state = self.fixture.state
         state['turns'] = [{'turnId': 'turn', 'items': [
-            {'id': str(i), 'type': 'agentMessage', 'text': 'row ' + str(i)} for i in range(10000)]}]
+            {'id': str(i), 'type': 'agentMessage', 'text': 'row ' + str(i), 'timestamp': 1700000000 + i} for i in range(10000)]}]
         state['requests'] = [{'id': 9, 'method': 'item/commandExecution/requestApproval', 'params': {'command': 'pwd'}}]
         session = self.bridge.session(THREAD)
         with patch.object(model, 'normalize_item', wraps=model.normalize_item) as normalize:

@@ -10,6 +10,7 @@ import threading
 import time
 import unittest
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from bridge.clients.codex.catalog import Catalog, CatalogError
@@ -46,6 +47,7 @@ class ModelResponseTests(unittest.TestCase):
 class RuntimeDiscoveryTests(unittest.TestCase):
     def test_mac_without_desktop_uses_installed_path_cli(self):
         with patch('bridge.clients.codex.catalog.sys.platform', 'darwin'), \
+             patch('bridge.clients.codex.catalog.os', SimpleNamespace(name='posix')), \
              patch('bridge.clients.codex.catalog.Path', side_effect=lambda value: PurePosixPath(value)), \
              patch.object(PurePosixPath, 'is_file', return_value=False, create=True), \
              patch('bridge.clients.codex.catalog.shutil.which', return_value='/installed/bin/codex') as which:
@@ -54,6 +56,7 @@ class RuntimeDiscoveryTests(unittest.TestCase):
 
     def test_missing_cli_and_desktop_remains_unavailable(self):
         with patch('bridge.clients.codex.catalog.sys.platform', 'darwin'), \
+             patch('bridge.clients.codex.catalog.os', SimpleNamespace(name='posix')), \
              patch('bridge.clients.codex.catalog.Path', side_effect=lambda value: PurePosixPath(value)), \
              patch.object(PurePosixPath, 'is_file', return_value=False, create=True), \
              patch('bridge.clients.codex.catalog.shutil.which', return_value=None):

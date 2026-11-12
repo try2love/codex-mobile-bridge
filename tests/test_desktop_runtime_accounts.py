@@ -5,7 +5,7 @@ import unittest
 import uuid
 from contextlib import nullcontext
 from pathlib import Path
-from types import MethodType, SimpleNamespace
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import test_accounts
@@ -62,12 +62,15 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
 
     def test_desktop_ipc_before_native_handshake_does_not_fail_or_restart(self):
         from bridge.clients.codex.app_server import AppServerUnavailable
-        self.manager.wait_ready = MethodType(accounts_module.Accounts.wait_ready, self.manager)
         client = Mock()
         self.mocks['connect'].side_effect = [AppServerUnavailable('handshake pending'), client]
         clock = SimpleNamespace(monotonic=Mock(side_effect=[0, 0, 1]), sleep=Mock())
-        with patch.object(accounts_module, 'time', clock):
-            self.run_initialization()
+        def ready(*args, **kwargs):
+            # Scope the handshake clock away from Windows atomic-write retries.
+            with patch.object(accounts_module, 'time', clock):
+                return accounts_module.Accounts.wait_ready(self.manager, *args, **kwargs)
+        self.manager.wait_ready.side_effect = ready
+        self.run_initialization()
         self.assertEqual(self.manager.state['phase'], 'complete')
         self.assertEqual(self.manager.desktop_preparation['state'], 'ready')
         self.assertEqual(self.mocks['connect'].call_count, 2)
@@ -78,11 +81,14 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
 
     def test_native_handshake_timeout_preserves_pending_receipt_without_relaunch(self):
         from bridge.clients.codex.app_server import AppServerUnavailable
-        self.manager.wait_ready = MethodType(accounts_module.Accounts.wait_ready, self.manager)
         self.mocks['connect'].side_effect = AppServerUnavailable('handshake pending')
         clock = SimpleNamespace(monotonic=Mock(side_effect=[0, 0, 36]), sleep=Mock())
-        with patch.object(accounts_module, 'time', clock):
-            self.run_initialization()
+        def ready(*args, **kwargs):
+            # Scope the handshake clock away from Windows atomic-write retries.
+            with patch.object(accounts_module, 'time', clock):
+                return accounts_module.Accounts.wait_ready(self.manager, *args, **kwargs)
+        self.manager.wait_ready.side_effect = ready
+        self.run_initialization()
         self.assertEqual(self.manager.state['phase'], 'failed')
         self.assertEqual(desktop_runtime.preparation(self.home)['state'], 'pending')
         self.app.start.assert_called_once()

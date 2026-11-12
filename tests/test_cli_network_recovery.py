@@ -1375,7 +1375,7 @@ class CliNetworkRecoveryTests(CliBridgeFixture):
         self.stop.assert_not_called()
 
     def _assert_completed_path_release(self, legacy):
-        managed = self.home/'packages/app-server-daemon/current/bin/codex'
+        managed = self.home/'packages/app-server-daemon/current/bin'/('codex.exe' if os.name == 'nt' else 'codex')
         def start(*_args):
             managed.parent.mkdir(parents=True)
             managed.write_text('#!/bin/sh\nexit 0\n')

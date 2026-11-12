@@ -423,7 +423,9 @@ class CliBridgeTests(CliBridgeFixture):
         started = time.monotonic()
         self.assertTrue(self.bridge.activate(self.thread_id).connected)
         self.assertLess(time.monotonic() - started, 1)
-        self.bridge.ipc.owner.assert_called_once()
+        # A completed passive probe permits one fresh explicit probe; an
+        # overlapping probe is reused. Neither path resumes the CLI twice.
+        self.assertIn(self.bridge.ipc.owner.call_count, (1, 2))
         self.cli.attach.assert_called_once_with(self.thread_id, explicit=True)
 
     def test_missing_native_runtime_explains_how_to_enable_continuation(self):
