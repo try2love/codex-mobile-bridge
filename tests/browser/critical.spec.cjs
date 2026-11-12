@@ -18,6 +18,29 @@ async function ready(page, scenario = 'success') {
   });
 }
 
+test('login status follows language changes without resetting attempts or credentials', async ({page}) => {
+  await page.route('**/api/auth', route => route.fulfill({json: {
+    authenticated: false, passwordless: false,
+    loginStatus: {attemptsRemaining: 3, attemptLimit: 5, blocked: false},
+  }}));
+  await ready(page);
+  await page.locator('#password').fill('synthetic-unsent-password');
+  await page.locator('#phone-language').selectOption('en');
+  await expect(page.locator('#login-attempts')).toHaveText('Attempts remaining: 3/5; 5 consecutive failures will block this IP.');
+  await page.locator('#phone-language').selectOption('zh');
+  await expect(page.locator('#login-attempts')).toHaveText('剩余尝试次数：3/5；连续输错 5 次将封禁此 IP。');
+  // Native/shared language changes also use the public language event.
+  await page.evaluate(() => BridgeI18n.setLanguage('en'));
+  await expect(page.locator('#login-attempts')).toHaveText('Attempts remaining: 3/5; 5 consecutive failures will block this IP.');
+  await expect(page.locator('#password')).toHaveValue('synthetic-unsent-password');
+  await expect(page.locator('#login-button')).toBeEnabled();
+  await page.evaluate(() => renderLoginStatus({attemptsRemaining: 0, attemptLimit: 5, blocked: true}));
+  await expect(page.locator('#login-attempts')).toHaveText( 'This IP is blocked. Unblock it under Login devices in the desktop gateway app.');
+  await page.locator('#phone-language').selectOption('zh');
+  await expect(page.locator('#login-attempts')).toHaveText('此 IP 已被封禁，请在电脑网关 App 的“登录设备”中解除。');
+  await expect(page.locator('#login-button')).toBeDisabled();
+});
+
 test('shared composer preserves complete loading and unsupported slots', async ({page}, testInfo) => {
   await ready(page);await page.evaluate(()=>BridgeFeatures.load('chat'));
   await page.evaluate(readFileSync(path.join(__dirname,'shared-composer-loading.browser.js'),'utf8'));
