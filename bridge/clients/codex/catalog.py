@@ -587,7 +587,12 @@ class Catalog:
         env['CODEX_HOME'] = str(self.home)
         options = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
         try:
-            process = subprocess.Popen([str(executable), 'app-server', '--listen', 'stdio://'], cwd=cwd, env=env,
+            # History can outlive its project directory. Only move the read-only
+            # helper's launch directory; RPCs and cache keys retain the original cwd.
+            launch_cwd = Path(cwd)
+            while not launch_cwd.is_dir() and launch_cwd != launch_cwd.parent:
+                launch_cwd = launch_cwd.parent
+            process = subprocess.Popen([str(executable), 'app-server', '--listen', 'stdio://'], cwd=launch_cwd, env=env,
                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                        text=True, encoding='utf-8', **options)
         except OSError as exc:

@@ -279,6 +279,52 @@ class ApiCatalogTests(unittest.TestCase):
         self.assertEqual(self.reader.get(self.home,provider='second')['models'][0]['id'],'second')
         self.reader.get(self.home,provider='first');self.assertEqual(calls,['first','second'])
 
+    def test_catalog_helper_preserves_project_context_when_directory_is_missing(self):
+        server = self.home/'fixture-catalog.py'
+        record = self.home/'requests.jsonl'
+        server.write_text('''import json, os, sys
+from pathlib import Path
+record = Path(os.environ['CODEX_HOME'])/'requests.jsonl'
+with record.open('w', encoding='utf-8') as log:
+    log.write(json.dumps({'processCwd': os.getcwd(), 'home': os.environ['CODEX_HOME']}) + '\\n')
+    for line in sys.stdin:
+        message = json.loads(line)
+        log.write(json.dumps(message) + '\\n'); log.flush()
+        if 'id' not in message:
+            continue
+        method = message['method']
+        result = {'config': {'model_provider': 'fixture-provider', 'model_catalog_json': 'fixture.json'}} if method == 'config/read' else (
+            {'data': [{'model': 'fixture-model'}]} if method == 'model/list' else {})
+        print(json.dumps({'id': message['id'], 'result': result}), flush=True)
+''', encoding='utf-8')
+        project = self.home/'project'
+        project.mkdir()
+        original_popen = subprocess.Popen
+        def launch(argv, **kwargs):
+            return original_popen([sys.executable, '-u', str(server)], **kwargs)
+        for cwd in (project, project/'removed'/'nested'):
+            with self.subTest(cwd=cwd), patch('bridge.clients.codex.catalog.subprocess.Popen', side_effect=launch):
+                result = self.reader._fetch(str(cwd), provider='fixture-provider', request_timeout=3)
+                self.assertEqual(result['models'], [{'model': 'fixture-model'}])
+                self.assertEqual(result['_defaultProvider'], 'fixture-provider')
+                rows = [json.loads(line) for line in record.read_text(encoding='utf-8').splitlines()]
+                self.assertEqual(Path(rows[0]['processCwd']), project)
+                self.assertEqual(rows[0]['home'], str(self.home))
+                configs = [row['params']['cwd'] for row in rows[1:] if row.get('method') == 'config/read']
+                self.assertTrue(configs)
+                self.assertEqual(set(configs), {str(cwd)})
+                skills = [row['params']['cwds'] for row in rows[1:] if row.get('method') == 'skills/list']
+                self.assertEqual(skills, [[str(cwd)]])
+                self.assertFalse((project/'removed').exists())
+
+    def test_catalog_helper_does_not_retry_permission_denied(self):
+        with patch('bridge.clients.codex.catalog.subprocess.Popen', side_effect=PermissionError('denied')) as launch:
+            with self.assertRaises(CatalogError) as error:
+                self.reader._fetch(str(self.home))
+            self.assertIsInstance(error.exception.__cause__, PermissionError)
+            launch.assert_called_once()
+            self.assertEqual(Path(launch.call_args.kwargs['cwd']), self.home)
+
     def test_model_read_does_not_wait_for_inherited_stdout_writer(self):
         release = self.home/'release-writer'
         server = self.home/'fixture-app-server.py'
