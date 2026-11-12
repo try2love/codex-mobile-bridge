@@ -58,10 +58,33 @@ class DesktopStdioTests(unittest.TestCase):
         self.router.from_app({'method': 'initialize', 'id': 1, 'params': {'clientInfo': {'name': 'Codex Desktop'}}})
         self.router.from_native({'id': self.writes[-1]['id'], 'result': {'codexHome': 'home'}})
         self.assertEqual(self.app, [{'id': 1, 'result': {'codexHome': 'home'}}])
-        self.assertFalse(self.router.ready)
+        self.assertTrue(self.router.ready)
         self.router.from_app({'method': 'initialized'})
         self.assertTrue(self.router.ready)
         self.assertEqual(self.initialized, [{'codexHome': 'home'}])
+
+    def test_desktop_without_initialized_notification_can_use_metadata_after_handshake(self):
+        self.router.from_app({'method': 'initialize', 'id': 1, 'params': {'clientInfo': {'name': 'Codex Desktop'}}})
+        with self.assertRaises(AppServerRequestNotSent): self.router.request_packet('thread/list', {})
+        self.router.from_native({'id': self.writes[-1]['id'], 'result': {'codexHome': 'home'}})
+        self.changed.clear()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(self.router.request_packet, 'thread/list', {})
+            self.assertTrue(self.changed.wait(1))
+            self.router.from_native({'id': self.writes[-1]['id'], 'result': {'data': []}})
+            self.assertEqual(pending.result(1)['result'], {'data': []})
+        self.assertEqual(self.initialized, [{'codexHome': 'home'}])
+
+    def test_rejected_or_unverified_handshake_never_marks_ready(self):
+        self.router.from_app({'method': 'initialize', 'id': 1, 'params': {}})
+        self.router.from_native({'id': self.writes[-1]['id'], 'error': {'code': -32600, 'message': 'rejected'}})
+        self.assertFalse(self.router.ready)
+        self.assertFalse(self.initialized)
+        self.router.from_app({'method': 'initialize', 'id': 2, 'params': {}})
+        self.router.initialized = Mock(side_effect=ValueError('owner changed'))
+        with self.assertRaisesRegex(ValueError, 'owner changed'):
+            self.router.from_native({'id': self.writes[-1]['id'], 'result': {'codexHome': 'other'}})
+        self.assertFalse(self.router.ready)
 
     def test_only_app_initializes_and_bridge_cannot_execute_turns(self):
         with self.assertRaises(AppServerUnavailable): self.router.request_packet('thread/read', {})

@@ -25,7 +25,6 @@ class DesktopStdio:
         self.prefix, self.sequence = secrets.token_hex(16) + ':', 0
         self.closed = False
         self.ready = False
-        self.handshake = None
 
     def _send(self, value):
         data = json.dumps(value, ensure_ascii=False, separators=(',', ':')).encode('utf-8') + b'\n'
@@ -52,9 +51,6 @@ class DesktopStdio:
                 if value is not message:
                     self.pending.pop(value['id'], None)
                 raise
-            if message.get('method') == 'initialized' and self.handshake is not None:
-                self.initialized(self.handshake)
-                self.ready = True
 
     def from_native(self, message):
         # Native requests use their own ID namespace. App approval responses go
@@ -71,7 +67,10 @@ class DesktopStdio:
                 return
             _, identifier, method = pending
             if method == 'initialize' and 'result' in message:
-                self.handshake = message['result']
+                # Desktop completes its handshake on this response; current
+                # versions do not send a separate "initialized" notification.
+                self.initialized(message['result'])
+                self.ready = True
         self.emit({**message, 'id': identifier})
 
     def request_packet(self, method, params, timeout=90):
