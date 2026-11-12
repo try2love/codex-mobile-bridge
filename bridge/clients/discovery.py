@@ -102,15 +102,39 @@ def discover_clients(preferences=None, *, platform=None, home=None, env=None, ap
         result[provider] = row
     agy_home = _path(preferences.get('antigravityHome') or env.get('ANTIGRAVITY_HOME'), home) or home
     agy_surfaces = [agy_home/'.gemini/antigravity', agy_home/'.gemini/antigravity-ide', agy_home/'.gemini/antigravity-cli']
-    agy_bin = agy_home/'.antigravity/antigravity/bin/agy'
-    if any((s/'conversation_summaries.db').is_file() or (s/'brain').is_dir() for s in agy_surfaces) or agy_bin.is_file():
-        exe = str(agy_bin) if agy_bin.is_file() else ''
+    from bridge.clients.antigravity.setup import discover_agy_binary
+    agy_bin = discover_agy_binary(agy_home, platform=platform)
+    desktop_candidates = []
+    if platform == 'linux':
+        desktop_candidates = [
+            agy_home / 'agy/Antigravity/Antigravity-x64/antigravity',
+            agy_home / '.local/share/Antigravity/antigravity',
+            Path('/opt/Antigravity/antigravity'),
+            Path('/usr/bin/antigravity'),
+        ]
+    elif platform == 'darwin':
+        desktop_candidates = [
+            Path('/Applications/Antigravity.app/Contents/MacOS/Antigravity'),
+            agy_home / 'Applications/Antigravity.app/Contents/MacOS/Antigravity',
+        ]
+    elif platform == 'win32':
+        local_app = Path(os.environ.get('LOCALAPPDATA', str(agy_home / 'AppData/Local')))
+        desktop_candidates = [
+            local_app / 'Programs/Antigravity/Antigravity.exe',
+            agy_home / 'AppData/Local/Programs/Antigravity/Antigravity.exe',
+        ]
+    desktop_exe = next((str(p) for p in desktop_candidates if p.is_file()), '')
+    chosen_exe = desktop_exe or agy_bin or ''
+    launcher_script = agy_home / 'agy/Antigravity/antigravity-launcher.sh'
+    launcher = str(launcher_script) if launcher_script.is_file() else ''
+    if any((s/'conversation_summaries.db').is_file() or (s/'brain').is_dir() for s in agy_surfaces) or chosen_exe:
         result['antigravity'] = {
             'id': 'antigravity',
             'name': 'Antigravity',
             'installed': True,
-            'application': exe,
-            'executable': exe,
+            'application': chosen_exe,
+            'executable': chosen_exe,
+            'launcher': launcher,
             'dataDirectory': str(agy_surfaces[0]),
         }
     return result

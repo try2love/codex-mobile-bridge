@@ -1803,7 +1803,7 @@ function openCurrentAccounts(){
   const head=dialog.querySelector('.picker-head'),title=head.querySelector('h2'),toolbar=el('div','accounts-dialog-heading');
   title.classList.add('dialog-content-start');title.tabIndex=-1;title.autofocus=true;title.replaceWith(toolbar);toolbar.append(title);
   dialog.append(el('p','account-muted',name),content);
-  const panel=new DesktopClientAccountsPanel({root:content,provider,toolbar,
+  const panel=new DesktopClientAccountsPanel({root:content,provider,toolbar,desktop:true,
     read:()=>api(ClientIdentity.path(entry,'accounts')),
     request:value=>api(ClientIdentity.path(entry,'accounts'),value),
     readModels:async(refresh=false)=>{const namespace=[desktopSessions.listCacheIdentity,desktopSessions.listCacheHost||'local',entry],value=await api(ClientIdentity.path(entry,'account',null,refresh?{refresh:'true'}:{}));return {...value,...window.BridgeModelCatalogCache.write(desktopSessions.modelCatalogs,namespace,value)};},

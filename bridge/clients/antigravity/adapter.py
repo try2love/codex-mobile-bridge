@@ -100,6 +100,25 @@ class Antigravity:
             'reason': 'Antigravity 狀態庫、Hook 管道與 CLI 均已就緒' if installed else '尚未偵測到 Antigravity 安裝或資料目錄',
         }
 
+    def reconnect(self):
+        self.cli._ls_cache = None
+        self.cli._catalog_cache = None
+        return self.status()
+
+    def assert_idle(self):
+        """Verify that Antigravity has no active sessions, running CLI processes, or pending approvals."""
+        listing = self.call('lifecycle')
+        sessions = listing.get('sessions') or []
+        for row in sessions:
+            if not isinstance(row, dict):
+                continue
+            if row.get('requests'):
+                name = row.get('name') or row.get('nativeId') or '會話'
+                raise ValueError(f'Antigravity 正在等待確認操作（{name}），請先處理或結束後再切換帳號')
+            if row.get('status') in ('active', 'running', 'waiting', 'busy'):
+                name = row.get('name') or row.get('nativeId') or '會話'
+                raise ValueError(f'Antigravity 正在執行任務（{name}），請等待工作完成後再切換帳號')
+
     def project_environments(self):
         surfaces = self.store.surfaces()
         if not surfaces and self.cli.available():
@@ -182,6 +201,7 @@ class Antigravity:
             'reasoningEffort': effort_normalized,
             'permissionMode': self.hooks.permission_mode(cid),
             'connectionState': 'ready',
+            'runtimeKnown': True,
             'capabilities': capabilities,
         }
 

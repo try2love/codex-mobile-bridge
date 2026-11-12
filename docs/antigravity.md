@@ -130,3 +130,17 @@ Antigravity 的日誌採用 Append-only 的 `transcript.jsonl`。當發生重新
 python3 scripts/check-boundaries.py
 PYTHONPATH=. python3 tests/test_antigravity_adapter.py -v
 ```
+
+---
+
+## 六、多帳號管理與開源參考致謝（Acknowledgements & Licensing）
+
+本模組的多帳號快照隔離、系統 Keyring 憑證同步與安全平滑重載機制，在遵循 MIT 開源協議的前提下，參考與借鑒了以下開源專案與標準規範：
+
+1. **AntiGravity Switch (`agy-switch`)** (MIT License):
+   - 借鑒其在 Linux 桌面環境下的進程平滑退出策略（先向主進程發送 SIGTERM，超時後清理殘留 Helper 進程並釋放 Chromium Singleton 鎖）。
+   - 參考其在 Linux/GNOME 下自動適配 `--ozone-platform=wayland` 與日誌重定向的穩定拉起實踐。
+2. **freedesktop.org Secret Service 規範 / GNOME libsecret**:
+   - 遵循標準 Secret Service D-Bus 規範對 Antigravity 系統憑證（`service: gemini, username: antigravity`）進行安全同步。
+3. **Codex Mobile Bridge 原生架構 (try2love/codex-mobile-bridge)** (MIT License):
+   - 深度整合上游項目的 `DesktopSessions` 生命週期狀態機、任務前置閒置斷言（Task-Check Gate）與多客戶端快照安全回滾設計。

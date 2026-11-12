@@ -15,31 +15,39 @@ PRE_TOOL_MATCHER = (
 )
 
 
-def discover_agy_binary(home=None):
+def discover_agy_binary(home=None, platform=None):
     """Locate the local agy CLI binary across PATH and standard installation roots."""
-    env_bin = os.environ.get('AGY_BIN', '').strip()
-    if env_bin and Path(env_bin).is_file():
-        return str(Path(env_bin).resolve())
-    which_bin = shutil.which('agy')
-    if which_bin:
-        return str(Path(which_bin).resolve())
+    target_platform = platform or sys.platform
     base_home = Path(home).expanduser().resolve() if home else Path.home().resolve()
+    if target_platform == sys.platform:
+        env_bin = os.environ.get('AGY_BIN', '').strip()
+        if env_bin and Path(env_bin).is_file():
+            return str(Path(env_bin).resolve())
+        which_bin = shutil.which('agy')
+        if which_bin:
+            return str(Path(which_bin).resolve())
+
     candidates = [
         base_home / '.antigravity/antigravity/bin/agy',
         base_home / '.local/bin/agy',
-        Path('/usr/local/bin/agy'),
-        Path('/usr/bin/agy'),
     ]
-    if os.name == 'nt':
+    if target_platform in ('win32', 'nt'):
         local_app = Path(os.environ.get('LOCALAPPDATA', str(base_home / 'AppData/Local')))
         candidates.extend([
             local_app / 'Programs/Antigravity/bin/agy.cmd',
             local_app / 'Programs/Antigravity/bin/agy.exe',
+            base_home / 'AppData/Local/Programs/Antigravity/bin/agy.cmd',
+            base_home / 'AppData/Local/Programs/Antigravity/bin/agy.exe',
         ])
-    elif sys.platform == 'darwin':
+    elif target_platform == 'darwin':
         candidates.extend([
             Path('/Applications/Antigravity.app/Contents/Resources/app/bin/agy'),
             base_home / 'Applications/Antigravity.app/Contents/Resources/app/bin/agy',
+        ])
+    elif target_platform == 'linux':
+        candidates.extend([
+            Path('/usr/local/bin/agy'),
+            Path('/usr/bin/agy'),
         ])
     for candidate in candidates:
         if candidate.is_file():

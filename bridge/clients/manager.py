@@ -1981,6 +1981,10 @@ class DesktopSessions:
             self.bridge.accounts.idle()
             self.bridge.assert_desktop_idle()
             return
+        if provider == 'antigravity':
+            if 'antigravity' in self.adapters:
+                self.adapters['antigravity'].assert_idle()
+            return
         adapter = self.adapters[provider]
         if provider == 'claude' and self._claude_native_cli_busy():
             raise ValueError('有 Claude Code 任务运行或等待确认，请先结束任务再关闭客户端')
@@ -2528,7 +2532,7 @@ class DesktopSessions:
                     'setupStatus': 'ready' if connected else ('discovered' if installed else 'not-installed'),
                     'reason': status.get('reason') or ('Antigravity 已接入' if connected else '已發現 Antigravity，啟用後即可同步會話與審批'),
                     'canQuitDesktop': False,
-                    'capabilities': {'create': True, 'accounts': False, 'notifications': True},
+                    'capabilities': {'create': True, 'accounts': True, 'notifications': True},
                 })
             if self.instance is not None:
                 rows = [row for row in rows if row['id'] == self.instance.family]
@@ -3013,6 +3017,15 @@ class DesktopSessions:
                     executable=descriptor.get('executable'), package_family=descriptor.get('packageFamilyName'),
                     explicit_home=bool(descriptor.get('dataDirectoryExplicit')),
                     **({'native_profile': self.instance.profile} if getattr(self, 'instance', None) else {}))
+            elif provider == 'antigravity':
+                from bridge.clients.antigravity.accounts import AntigravityAccounts
+                user_home = getattr(self.adapters.get('antigravity'), 'home', None) or Path.home()
+                store = AntigravityAccounts(
+                    self.directory/'antigravity-accounts',
+                    config_dir=user_home/'.config'/'Antigravity',
+                    auth_dir=user_home/'.config'/'antigravity',
+                    metadata=lambda: self.adapters[provider].call('account'),
+                )
             else:
                 from bridge.clients.deepseek.accounts import DeepSeekAccounts
                 store = DeepSeekAccounts(self.directory/'deepseek-accounts', home,
@@ -3042,6 +3055,17 @@ class DesktopSessions:
                 raise ValueError('ZCode 尚未启动，请在电脑端检查后重试')
         elif provider == 'deepseek':
             self._start_deepseek()
+        elif provider == 'antigravity':
+            from bridge.clients.lifecycle import inspect_client
+            if inspect_client(descriptor)['running']:
+                if self.gateway_running and self.enabled(provider):
+                    self.adapters[provider].reconnect()
+            else:
+                result = launch_client(descriptor)
+                if not result.get('running'):
+                    raise ValueError('Antigravity 尚未啟動，請在電腦端檢查後重試')
+                if self.gateway_running and self.enabled(provider):
+                    self.adapters[provider].reconnect()
         elif provider == 'claude' and sys.platform == 'win32' and self.instance is None:
             from bridge.clients.claude.setup import background_running_app
             reconnect = self.gateway_running and self.enabled(provider)
@@ -3120,6 +3144,12 @@ class DesktopSessions:
                 options = {'kind': value.get('kind', '')} if provider == 'deepseek' else {}
                 result = store.import_current(name=value.get('name', ''), **options)
                 return self._accounts_public(provider, result)
+
+            # Antigravity importing current account is non-destructive
+            if provider == 'antigravity' and operation == 'import-current':
+                result = store.import_current(name=value.get('name', ''))
+                return self._accounts_public(provider, result)
+
             descriptor = self._descriptor(provider)
             state = inspect_client(descriptor)
             restart = state['running'] or self.gateway_running and self.enabled(provider)
@@ -3138,6 +3168,8 @@ class DesktopSessions:
                     options = {'kind': value.get('kind', '')} if provider == 'deepseek' else {}
                     result = store.import_current(name=value.get('name', ''), **options)
                 else:
+                    if provider == 'antigravity' and hasattr(self.adapters.get('antigravity'), 'reconnect'):
+                        self.adapters['antigravity'].reconnect()
                     rollback = store.restore(value.get('id'))
                     result = store.public()
                     active = result.get('activeIds', [result.get('activeId')])
@@ -3146,6 +3178,8 @@ class DesktopSessions:
                 if restart:
                     self._launch_account_client(provider, descriptor)
                     if operation == 'switch':
+                        if provider == 'antigravity' and hasattr(self.adapters.get('antigravity'), 'reconnect'):
+                            self.adapters['antigravity'].reconnect()
                         result = store.public()
                         active = result.get('activeIds', [result.get('activeId')])
                         if value.get('id') not in active:

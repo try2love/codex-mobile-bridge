@@ -13,7 +13,7 @@ class DesktopConnectionsPanel {
     document.addEventListener('bridge-client-config',event=>{for(const [id,control] of this.removalControls)control.hidden=id!==event.detail;this.ensureAccountPanel(event.detail);this.resumeAccounts();});
   }
   ensureAccountPanel(provider){
-    if(!['claude','deepseek'].includes(provider)||typeof DesktopClientAccountsPanel==='undefined')return;
+    if(!['claude','deepseek','antigravity'].includes(provider)||typeof DesktopClientAccountsPanel==='undefined')return;
     if(this.accountPanels[provider])return this.accountPanels[provider];
     const article=this.root.querySelector('[data-client-config="'+provider+'"]');if(!article)return;
     const content=document.createElement('div');article.querySelector('.client-auto-setup').after(content);
@@ -32,7 +32,7 @@ class DesktopConnectionsPanel {
   renderDetails(){
     const value=this.connectionValue;
     const binding=this.root.querySelector('[data-deepseek-binding]');if(binding)binding.textContent=value?.deepseekBinding?.file||'';
-    for(const provider of ['deepseek','claude']){
+    for(const provider of ['deepseek','claude','antigravity']){
       const client=this.clients?.find(client=>client.id===provider),backend=value?.backends?.[provider],node=this.root.querySelector('[data-desktop-status='+provider+']');
       const reason=(client?this.connection(client).reason:'')||this.statusError||backend?.reason||(backend?(backend.connected?'已连接桌面':'尚未连接'):'正在检查接入…');
       node.dataset.i18n=reason;node.textContent=BridgeI18n.t(reason);

@@ -1,4 +1,6 @@
 """Launch the discovered Harness desktop against its existing user data."""
+import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -57,7 +59,7 @@ def launch_deepseek(descriptor, restart=False):
 
 
 def _app(descriptor):
-    if descriptor.get('id') not in ('codex', 'claude', 'deepseek', 'zcode') or not descriptor.get('installed'):
+    if descriptor.get('id') not in ('codex', 'claude', 'deepseek', 'zcode', 'antigravity') or not descriptor.get('installed'):
         raise ValueError('未找到已配置的桌面应用，请重新扫描')
     executable, home = descriptor.get('executable'), descriptor.get('dataDirectory')
     if not executable or not home or not Path(executable).is_file():
@@ -145,6 +147,8 @@ def _process_state(descriptor, app, pids, commands):
 def stop_client(descriptor, *, state):
     if sys.platform == 'win32' and descriptor.get('id') == 'claude':
         return stop_claude(descriptor, state=state)
+    if descriptor.get('id') == 'antigravity':
+        return stop_antigravity(descriptor, state=state)
     # Revalidate process identities immediately before sending native quit.
     current = inspect_client(descriptor)
     if current['unknown'] or set(current['pids']) - set(state['pids']):
@@ -232,6 +236,134 @@ def stop_claude(descriptor, *, state):
         time.sleep(.25)
 
 
+def stop_antigravity(descriptor, *, state):
+    """Gracefully stop Antigravity IDE and clean up helper processes and singleton locks.
+
+    References & Acknowledgements:
+    - Step-down process termination (SIGTERM -> wait -> SIGKILL lingering helpers) and
+      singleton lock cleanup patterns inspired by AntiGravity Switch (MIT License).
+    """
+    current = inspect_client(descriptor)
+    if not current['running']:
+        return
+
+    import signal
+    main_pids = current.get('mainPids', [])
+    all_pids = current.get('pids', [])
+
+    if sys.platform == 'win32':
+        for pid in all_pids:
+            try:
+                subprocess.run(['taskkill', '/F', '/PID', str(pid)], capture_output=True)
+            except Exception:
+                pass
+    else:
+        # Phase 1: Graceful stop - send SIGTERM to main process
+        for pid in main_pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+
+        # Wait up to 3.5 seconds for graceful shutdown
+        deadline = time.monotonic() + 3.5
+        while time.monotonic() < deadline:
+            st = inspect_client(descriptor)
+            if not st['running']:
+                break
+            if not any(pid in st.get('mainPids', []) for pid in main_pids):
+                break
+            time.sleep(0.2)
+
+        # Phase 2: Terminate any lingering helper processes
+        remaining = inspect_client(descriptor)
+        if remaining['running']:
+            for pid in remaining.get('pids', []):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            time.sleep(0.3)
+
+        # Terminate any orphaned language_server process for this user
+        if sys.platform == 'linux':
+            try:
+                from bridge.platforms.linux.desktop import _process_rows
+                for path, exe in _process_rows():
+                    if 'language_server' in exe.name:
+                        try:
+                            os.kill(int(path.name), signal.SIGTERM)
+                        except ProcessLookupError:
+                            pass
+            except Exception:
+                pass
+
+    # Phase 3: Clean up stale SingletonLock and SingletonSocket symlinks
+    config_dir = Path.home() / '.config' / 'Antigravity'
+    for name in ('SingletonLock', 'SingletonSocket', 'SingletonCookie'):
+        lock_file = config_dir / name
+        try:
+            if lock_file.is_symlink() or lock_file.exists():
+                lock_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    # Wait up to 2 seconds for process table to fully clear
+    deadline = time.monotonic() + 2.0
+    while inspect_client(descriptor)['running'] and time.monotonic() < deadline:
+        time.sleep(0.1)
+
+
+def launch_antigravity(descriptor):
+    """Launch Antigravity with proper desktop environment, Wayland support and protected logs.
+
+    References & Acknowledgements:
+    - Wayland ozone flag conventions and background detached execution
+      inspired by AntiGravity Switch (MIT License).
+    """
+    app = _app(descriptor)
+    launcher = descriptor.get('launcher')
+    if not launcher:
+        script = app.executable.parent.parent / 'antigravity-launcher.sh'
+        if script.is_file() and os.access(script, os.X_OK):
+            launcher = str(script)
+
+    env = dict(os.environ)
+    if sys.platform == 'linux':
+        if not env.get('DISPLAY') and Path('/tmp/.X11-unix/X0').exists():
+            env['DISPLAY'] = ':0'
+        if not env.get('WAYLAND_DISPLAY') and Path(f'/run/user/{os.getuid()}/wayland-0').exists():
+            env['WAYLAND_DISPLAY'] = 'wayland-0'
+        if not env.get('XDG_RUNTIME_DIR'):
+            env['XDG_RUNTIME_DIR'] = f'/run/user/{os.getuid()}'
+        if not env.get('DBUS_SESSION_BUS_ADDRESS'):
+            bus_path = Path(f'/run/user/{os.getuid()}/bus')
+            if bus_path.exists():
+                env['DBUS_SESSION_BUS_ADDRESS'] = f'unix:path={bus_path}'
+
+    if launcher and Path(launcher).is_file():
+        cmd = [str(launcher)]
+    else:
+        cmd = [str(app.executable)]
+        if sys.platform == 'linux' and (env.get('WAYLAND_DISPLAY') or env.get('XDG_SESSION_TYPE') == 'wayland'):
+            cmd.append('--ozone-platform=wayland')
+
+    log_dir = Path.home() / '.config' / 'Antigravity' / 'logs'
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / 'antigravity-gui.log'
+    out = open(log_file, 'a', encoding='utf-8')
+
+    subprocess.Popen(
+        cmd,
+        cwd=str(Path.home()),
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=out,
+        stderr=out,
+        start_new_session=True,
+    )
+
+
 def stop_deepseek(descriptor, adapter, *, state):
     """Request DSH's native teardown; closing its window only hides the app."""
     import json
@@ -310,6 +442,8 @@ def launch_client(descriptor, *, allow_native_relaunch=False):
     elif descriptor['id'] == 'zcode':
         from bridge.clients.zcode.installation import launch
         launch(app.executable, app.home, debug_port=descriptor.get('debugFallbackPort'))
+    elif descriptor['id'] == 'antigravity':
+        launch_antigravity(descriptor)
     else:
         # Claude owns its native profile selection, including third-party login.
         from bridge.clients.claude.setup import running_app
@@ -317,7 +451,7 @@ def launch_client(descriptor, *, allow_native_relaunch=False):
             profile_running_app(descriptor)
         else:
             running_app(str(app.executable), str(app.home))
-    deadline = time.monotonic() + 3
+    deadline = time.monotonic() + (5.0 if descriptor.get('id') == 'antigravity' else 3.0)
     while not inspect_client(descriptor)['running']:
         if time.monotonic() >= deadline:
             return {'running': False, 'launched': True}

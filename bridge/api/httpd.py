@@ -664,7 +664,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.output(503, {'error': '桌面会话接入不可用'})
                 value = self.read_json() if write else {'action': 'list'}
                 operation = value.get('action')
-                if operation not in (('details', 'switch') if write else ('list',)):
+                allowed = (('details', 'switch', 'import-current', 'rename', 'remove') if desktop_accounts.group(1) == 'antigravity' else ('details', 'switch')) if write else ('list',)
+                if operation not in allowed:
                     return self.output(403, {'error': '添加、修改与删除账号请在电脑端完成。'})
                 if write and operation == 'switch' and (set(value) - {'action', 'id', 'syncLocalCli'} or not isinstance(value.get('id'), str) or value.get('syncLocalCli', False) not in (True, False)):
                     raise ValueError('账号切换请求包含不支持的字段')
