@@ -905,7 +905,9 @@ class Handler(BaseHTTPRequestHandler):
                 if self.server.auth.config.get('mode') == 'none':
                     raise PermissionError('免密访问不能初始化桌面连接，请在桌面端操作')
                 body = self.read_json()
-                if not isinstance(body, dict) or set(body) != {'requestId', 'confirmed', 'tasksConfirmed'}:
+                if (not isinstance(body, dict)
+                        or set(body) - {'acknowledgeUnavailable'} != {'requestId', 'confirmed', 'tasksConfirmed'}
+                        or 'acknowledgeUnavailable' in body and body['acknowledgeUnavailable'] is not True):
                     raise ValueError('初始化请求包含不支持的字段')
                 return self.output(202, account_bridge.accounts.control({'action': 'initializeDesktopRuntime', **body}))
             if write and path == '/api/accounts/account':
