@@ -2,6 +2,7 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"结束临时侧聊并清除内容？主聊天不受影响。":"End this temporary side chat and clear its contents? The main chat will not be affected.",
 "无法播放此文件，请通过文件菜单下载后打开。":"This file cannot be played. Download it from the file menu to open it.",
 "Codex 原生会话连接":"Codex native chat connection",
 "初始化连接":"Initialize connection",

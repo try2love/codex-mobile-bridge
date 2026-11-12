@@ -141,7 +141,7 @@ test('dismissed SSH faults stay hidden on refresh, then return after recovery or
   vm.createContext(ctx);vm.runInContext(extract('function renderHostErrors(hosts){','function authLost()'),ctx);
   const fault=[{host:'remote-1',label:'Remote',error:'SSH unavailable'}];ctx.renderHostErrors(fault);
   assert.equal($('host-errors').childElementCount,1);
-  $('host-errors').children[0].children[1].onclick();ctx.renderHostErrors(fault);
+  $('host-errors').children[0].children.find(child=>child.textContent==='×').onclick();ctx.renderHostErrors(fault);
   assert.equal($('host-errors').childElementCount,0);
   ctx.window.BridgeRelayBase='/relay/b';ctx.renderHostErrors(fault);
   assert.equal($('host-errors').childElementCount,1);
