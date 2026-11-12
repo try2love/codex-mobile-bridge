@@ -1057,7 +1057,7 @@ class Accounts:
             self.idle(pending_only=True)
             executable = self.index.get('desktopExecutable') or DesktopApp.discover(self.runtime)
             if not executable:
-                raise ValueError('请先在桌面端指定 Codex 桌面程序路径')
+                executable = DesktopApp.scan(self.runtime, self.home)
             app = DesktopApp(executable, self.home)
             app.validate(self.runtime)
             from bridge.clients.codex.desktop_runtime import validate_runtime, launcher_settings

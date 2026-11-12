@@ -69,6 +69,15 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
         self.mocks['stop'].assert_not_called()
         self.mocks['configure'].assert_not_called()
 
+    def test_explicit_initialization_scans_installed_app_when_runtime_is_separate(self):
+        self.manager.index['desktopExecutable'] = ''
+        self.mocks['app_factory'].discover.return_value = ''
+        self.mocks['app_factory'].scan.return_value = str(self.app.executable)
+        self.run_initialization()
+        self.mocks['app_factory'].scan.assert_called_once_with(self.manager.runtime, self.home)
+        self.app.validate.assert_called_once_with(self.manager.runtime)
+        self.assertEqual(self.manager.state['phase'], 'complete')
+
     def test_native_idle_identity_normal_restart_and_shared_handshake_are_required(self):
         order = []
         self.mocks['validate_runtime'].side_effect = lambda cli: order.append('capabilities')
