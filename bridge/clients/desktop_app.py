@@ -134,7 +134,7 @@ class DesktopApp:
             _native().start(self.executable, self.home, environment)
             return
         if sys.platform == 'win32':
-            self.child = self.launch(cwd=self.home, env={**os.environ, **environment},
+            self.child = self.launch(require_environment=bool(shared), cwd=self.home, env={**os.environ, **environment},
                                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                      stderr=subprocess.DEVNULL,
                                      creationflags=subprocess.CREATE_NEW_PROCESS_GROUP, close_fds=True)

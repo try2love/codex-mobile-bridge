@@ -231,11 +231,13 @@ def launcher_settings(application):
         return {}
     if not getattr(sys, 'frozen', False):
         raise ValueError('请使用已编译的网关 App 初始化 Windows 原生连接')
-    from bridge.platforms.windows.discovery_ext import application_user_model_id
+    from bridge.platforms.windows.discovery_ext import application_user_model_id, application_execution_alias
     identity = application_user_model_id(application)
     packaged = any((parent / 'AppxManifest.xml').is_file() for parent in Path(application).parents)
     if packaged and not identity:
         raise ValueError('无法核验 Codex 安装包身份；尚未改变原生连接设置')
+    if packaged and application_execution_alias(application) is None:
+        raise ValueError('无法核验 Codex 应用启动别名；尚未改变原生连接设置')
     return {'launcher': str(Path(sys.executable).resolve()), 'sandboxFamily': identity.split('!')[0]}
 
 

@@ -28,8 +28,11 @@ class DesktopRuntimeTests(unittest.TestCase):
             root = Path(folder); application = root/'app'/'Codex.exe'
             (root/'AppxManifest.xml').write_text('<fixture/>')
             with patch.object(runtime, 'sys', SimpleNamespace(platform='win32', frozen=True, executable=str(root/'gateway.exe'))), \
-                 patch('bridge.platforms.windows.discovery_ext.application_user_model_id', return_value='OpenAI.Codex_fixture!App') as identity:
+                 patch('bridge.platforms.windows.discovery_ext.application_user_model_id', return_value='OpenAI.Codex_fixture!App') as identity, \
+                 patch('bridge.platforms.windows.discovery_ext.application_execution_alias', return_value=root/'alias.exe') as alias:
                 self.assertEqual(runtime.launcher_settings(application), {'launcher': str((root/'gateway.exe').resolve()), 'sandboxFamily': 'OpenAI.Codex_fixture'})
+                alias.return_value = None
+                with self.assertRaisesRegex(ValueError, '启动别名'): runtime.launcher_settings(application)
                 identity.return_value = ''
                 with self.assertRaisesRegex(ValueError, '安装包身份'): runtime.launcher_settings(application)
             with patch.object(runtime, 'sys', SimpleNamespace(platform='win32', frozen=False)):

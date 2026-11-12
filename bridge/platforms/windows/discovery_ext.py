@@ -220,12 +220,21 @@ def application_execution_alias(executable):
     return next(iter(matches)) if len(matches) == 1 else None
 
 
-def launch_windows_desktop(executable, *, cancelled=None, **options):
+def launch_windows_desktop(executable, *, cancelled=None, require_environment=False, **options):
     """Preserve direct-launch environments, falling back for protected Store apps."""
     def check_cancelled():
         if cancelled is not None and cancelled.is_set():
             raise ValueError('已取消桌面程序启动')
     check_cancelled()
+    if require_environment:
+        launcher = executable
+        if any((folder/'AppxManifest.xml').is_file() for folder in Path(executable).parents):
+            launcher = application_execution_alias(executable)
+            if launcher is None:
+                raise ValueError('无法核验应用启动别名，尚未启动；请检查应用安装与执行别名设置')
+        check_cancelled()
+        # Explorer activation does not carry the caller's private environment.
+        return subprocess.Popen([str(launcher)], **options)
     try:
         return subprocess.Popen([str(executable)], **options)
     except OSError as exc:
