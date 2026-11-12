@@ -25,7 +25,7 @@
 
 ### 使用范围与升级
 
-这是预览版本，欢迎反馈连接恢复、CLI 释放、侧边聊天和 Antigravity 接入的实际体验。覆盖安装时保持原应用标识、签名和数据目录，不要先卸载，以保留账号、配置、手机绑定和草稿；手机原生连接恢复等改动需要同步更新手机 App。
+这是预览版本，欢迎反馈连接恢复、CLI 释放、侧边聊天和 Antigravity 接入的实际体验。桌面和 iOS 覆盖安装时保持原应用标识、签名和数据目录，不要先卸载。Android 本次提供独立的 **Bridge Preview**，与原 App 并存；请保留原 App，并在预览 App 中重新添加电脑连接，原绑定和草稿不会自动迁移。手机原生连接恢复等改动需要更新对应手机 App。
 
 Antigravity、独立配置及 WSL 相关能力仍以当前接入实际支持为准。临时侧聊仅适用于受支持的本机桌面入口，不写入原生历史，网关重启后不会恢复；关闭标签与结束临时会话是不同操作。恢复和释放结果不明时，不自动重发消息或重放操作。iOS 源码与未签名 IPA 仍需自行签名安装。
 
@@ -49,7 +49,7 @@ This preview adds Antigravity integration and improves CLI handoff and recovery,
 - **Network and desktop:** support custom HTTPS ports for SSH server entries and a monochrome macOS menu-bar icon. [#145](https://github.com/try2love/codex-mobile-bridge/issues/145) · [PR #146](https://github.com/try2love/codex-mobile-bridge/pull/146) · [#156](https://github.com/try2love/codex-mobile-bridge/issues/156) · [PR #157](https://github.com/try2love/codex-mobile-bridge/pull/157)
 - **Fixes:** improve Windows Store Codex launch identity and readiness, quiet native exits, ZCode window matching, DSH connector recovery, iOS entry deadlines and foreground recovery, Android cookie migration, model catalogs without saved history, and partial chat-list refreshes. Check Windows update blockers before downloading. [#153](https://github.com/try2love/codex-mobile-bridge/issues/153) · [#159](https://github.com/try2love/codex-mobile-bridge/issues/159)
 
-Install over the existing app using the same identity, signature and data directory; do not uninstall first. Update the mobile app for native connection changes. Antigravity, independent profiles and WSL capabilities depend on the selected native integration. Temporary side chats are limited to supported local desktop entry points, do not enter native history and do not survive gateway restart. Closing a tab does not end a temporary chat. Unknown writes are not automatically replayed. iOS source and unsigned IPA packages require your own signing.
+For desktop and iOS upgrades, retain the existing identity, signature and data directory; do not uninstall first. Android is supplied as a separate **Bridge Preview** app that coexists with the original app. Keep the original app and add your computer connections to Preview; existing bindings and drafts are not migrated automatically. Update the corresponding mobile app for native connection changes. Antigravity, independent profiles and WSL capabilities depend on the selected native integration. Temporary side chats are limited to supported local desktop entry points, do not enter native history and do not survive gateway restart. Closing a tab does not end a temporary chat. Unknown writes are not automatically replayed. iOS source and unsigned IPA packages require your own signing.
 
 
 Thanks to [@windowmmk](https://github.com/windowmmk) for the Antigravity foundation in [PR #150](https://github.com/try2love/codex-mobile-bridge/pull/150), and [@heiqiu47](https://github.com/heiqiu47) for [PR #146](https://github.com/try2love/codex-mobile-bridge/pull/146) and [PR #157](https://github.com/try2love/codex-mobile-bridge/pull/157).

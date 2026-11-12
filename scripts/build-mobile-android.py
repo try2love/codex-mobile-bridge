@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a local debug APK using project-local JDK/SDK; never installs tools."""
+"""Build an APK with an existing signing key and project-local JDK/SDK."""
 import hashlib
 import argparse
 import json
@@ -12,7 +12,15 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--output-dir', type=Path, default=ROOT/'dist/mobile-preview')
+parser.add_argument('--keystore', type=Path, required=True)
+parser.add_argument('--store-pass-env', default='CMB_ANDROID_STORE_PASSWORD')
+parser.add_argument('--isolated-preview', action='store_true', help='Build a separate Bridge Preview app; preserve the installed stable app.')
 options = parser.parse_args()
+key = options.keystore.resolve()
+if not key.is_file():
+    parser.error('Signing keystore not found; an existing key is required. No replacement key will be generated.')
+if not os.environ.get(options.store_pass_env):
+    parser.error('Set the keystore password in the selected environment variable.')
 tools = ROOT/'.tmp/mobile-tools'
 jdks = list((tools/'jdk').glob('*/Contents/Home'))
 if not jdks:
@@ -35,8 +43,14 @@ env = {**os.environ, 'JAVA_HOME': str(jdk), 'PATH': str(jdk/'bin')+os.pathsep+os
 def run(*args):
     subprocess.run([str(a) for a in args], env=env, check=True, cwd=ROOT)
 source = ROOT/'mobile/android'
+manifest = source/'AndroidManifest.xml'
+if options.isolated_preview:
+    manifest = work/'AndroidManifest.xml'
+    manifest.write_text((source/'AndroidManifest.xml').read_text().replace(
+        'io.github.try2love.codexbridge.preview', 'io.github.try2love.codexbridge.previewchannel').replace(
+        'android:label="Codex Bridge"', 'android:label="Bridge Preview"'))
 run(build_tools/'aapt2','compile','--dir',source/'res','-o',work/'resources.zip')
-run(build_tools/'aapt2','link','-I',android,'--manifest',source/'AndroidManifest.xml','--java',work/'gen','-o',work/'base.apk',work/'resources.zip')
+run(build_tools/'aapt2','link','-I',android,'--manifest',manifest,'--java',work/'gen','-o',work/'base.apk',work/'resources.zip')
 java = list((source/'src').rglob('*.java')) + list((work/'gen').rglob('*.java'))
 run(jdk/'bin/javac','-encoding','UTF-8','--release','8','-classpath',str(android)+os.pathsep+str(zxing),'-d',work/'classes',*java)
 run(build_tools/'d8','--lib',android,'--min-api','26','--output',work/'dex',*list((work/'classes').rglob('*.class')),zxing)
@@ -53,15 +67,12 @@ with zipfile.ZipFile(work/'unsigned.apk','a') as archive:
         archive.write(ROOT/name, 'assets/'+name)
     archive.write(ROOT/'mobile/NOTICE.md','assets/NOTICE.md')
     archive.write(ROOT/'mobile/licenses/ZXing-LICENSE.txt','assets/ZXing-LICENSE.txt')
-key = tools/'preview-debug.p12'
-if not key.exists():
-    run(jdk/'bin/keytool','-genkeypair','-keystore',key,'-storepass','android','-keypass','android','-alias','preview','-keyalg','RSA','-keysize','2048','-validity','3650','-dname','CN=Bridge Local Preview')
 run(build_tools/'zipalign','-f','4',work/'unsigned.apk',work/'aligned.apk')
 out = options.output_dir.resolve()
 out.mkdir(parents=True,exist_ok=True)
 version = json.loads((ROOT/'package.json').read_text())['version']
 apk = out/('Codex-Mobile-Bridge-'+version+'-Android.apk')
-run(build_tools/'apksigner','sign','--ks',key,'--ks-pass','pass:android','--out',apk,work/'aligned.apk')
+run(build_tools/'apksigner','sign','--ks',key,'--ks-pass','env:'+options.store_pass_env,'--out',apk,work/'aligned.apk')
 run(build_tools/'apksigner','verify','--verbose',apk)
 print(apk)
 print('SHA-256',hashlib.sha256(apk.read_bytes()).hexdigest())

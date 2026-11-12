@@ -221,7 +221,7 @@ macOS/Linux 使用登录 shell 与 PTY；Windows 10 1809 及以上使用 ConPTY 
 
 两端共用的页面适配、剪贴板等在 `shared/web/` 保留单一源码，原生平台分开维护。源码资源回归使用 `node --test mobile/tests/*.test.cjs`，不会运行原生编译器。
 
-Android 入口是 `scripts/build-mobile-android.py`，使用项目 `.tmp/mobile-tools` 中已准备的 JDK、SDK 和 ZXing；发布必须保留既有签名，不能以新建密钥替代升级验证。地址边界验证见 `scripts/test-mobile-urls.py`，会话验证见 `scripts/test-mobile-session.py`，通知事件见 `tests/test_mobile_events.py`。
+Android 入口是 `scripts/build-mobile-android.py`，使用项目 `.tmp/mobile-tools` 中已准备的 JDK、SDK 和 ZXing；构建必须通过 `--keystore` 指定已有签名文件，并使用 `CMB_ANDROID_STORE_PASSWORD` 环境变量传入密码；签名缺失时停止，不自动生成。密钥与备份应长期保存在非临时、未跟踪目录。覆盖升级必须保留既有签名，不能以新建密钥替代升级验证。`--isolated-preview` 生成独立的 `io.github.try2love.codexbridge.previewchannel`（Bridge Preview），隔离下载提供程序及远控回调，与原 App 并存，数据不自动迁移。CI 仅显式生成短期夹具签名，不发布该 APK。地址边界验证见 `scripts/test-mobile-urls.py`，会话验证见 `scripts/test-mobile-session.py`，通知事件见 `tests/test_mobile_events.py`。
 
 iOS 构建入口 `scripts/build-mobile-ios.py` 生成未签名 IPA 和包含受版本管理源码的 Xcode ZIP；`--source-only` 只导出源码，无需 Xcode。脚本不会自动安装模拟器运行时；模拟器 SDK 编译与实际启动测试应分别记录。
 

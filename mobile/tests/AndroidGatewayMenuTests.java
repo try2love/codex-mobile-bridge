@@ -55,7 +55,8 @@ public class AndroidGatewayMenuTests extends Instrumentation {
   runOnMainSync(()->web().loadDataWithBaseURL(origin+"/",html,"text/html","UTF-8",origin+"/"));
   for(int i=0;i<30&&!"true".equals(js("!!window.fixtureReady"));i++)Thread.sleep(100);
   check("true".equals(js("!!window.fixtureReady")),"Local page loaded");Object retained=web();
-  menu();check((int)field(popup(),"surface")==0xff272a32,"Page dark palette actual="+field(popup(),"surface")+" url="+js("location.href")+" origin="+field(app,"origin")+" css="+js("JSON.stringify(['--raised','--text','--muted','--line','--surface'].map(k=>getComputedStyle(document.documentElement).getPropertyValue(k)))"));shot("menu-dark");
+  js("localStorage.setItem('fixture-draft',document.getElementById('draft').value);document.cookie='fixture_binding=synthetic;path=/;max-age=86400';true");
+  menu();for(int i=0;i<30&&(int)field(popup(),"surface")!=0xff272a32;i++)settle();check((int)field(popup(),"surface")==0xff272a32,"Page dark palette actual="+field(popup(),"surface")+" url="+js("location.href")+" origin="+field(app,"origin")+" pageOrigin="+field(app,"pageOrigin")+" css="+js("JSON.stringify(['--raised','--text','--muted','--line','--surface'].map(k=>getComputedStyle(document.documentElement).getPropertyValue(k)))"));shot("menu-dark");
   sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);settle();check(popup()==null,"System Back closes native popup");check(js("window.backs").equals("0"),"Popup Back leaves underlying page alone");
   runOnMainSync(()->{call(app,"gatewayMenu",new Class[]{View.class},field(app,"chatMenu"));call(app,"handleBack",new Class[]{});});settle();check(popup()==null,"Back cancels pending palette and delayed show");
   theme("light");check(js("document.documentElement.dataset.nativeTheme").equals("\"light\""),"Native theme still reaches web");
@@ -78,6 +79,8 @@ public class AndroidGatewayMenuTests extends Instrumentation {
   menu();runOnMainSync(()->row("手机设置").performClick());settle();check(popup()==null,"Settings action closes popup");check(((Dialog)field(app,"settingsPage")).isShowing(),"Settings entry still works");
   for(int i=0;i<sources.length;i++)check(prefs.getBoolean("notificationsMuted:"+sources[i],false)==(i>0),"Per-connection notification preference retained");
   runOnMainSync(()->((Dialog)field(app,"settingsPage")).dismiss());settle();check(retained==web(),"Settings retains chat WebView");
+  check(js("localStorage.getItem('fixture-draft')").equals("\"未发送的测试草稿\""),"Web storage draft retained");
+  android.webkit.CookieManager.getInstance().flush();
   result.putString("result","PASS palette, fallback, native theme sync, pending/system Back, nested cancel, navigation/pause, app icons, settings and four notification preferences");
   result.putString("screenshots",output.toString());finish(Activity.RESULT_OK,result);
  }catch(Throwable e){result.putString("failure",android.util.Log.getStackTraceString(e));try{shot("failure");}catch(Exception ignored){}finish(Activity.RESULT_CANCELED,result);}}

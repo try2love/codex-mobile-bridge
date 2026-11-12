@@ -21,7 +21,7 @@
 
 # Codex Mobile Bridge · A remote workbench for desktop agents
 
-> **v2.2.1-preview.1 (preview):** [Preview release](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1-preview.1) · [Release notes](RELEASE_NOTES.md). Antigravity, CLI connection management and chat improvements. v2.2.0 remains the latest stable release.
+> **v2.2.1-preview.1 (preview):** [Preview release](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1-preview.1) · [Release notes](RELEASE_NOTES.md). Antigravity, CLI connection management and chat improvements. v2.2.0 remains the latest stable release. Android Preview installs separately as Bridge Preview; keep the original app and add your computer connections again.
 
 > **v2.2.0 (stable):** [Release page](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.0) · [Full release notes](RELEASE_NOTES.md) · [Mobile installation](mobile/README.md). ZCode, multiple routes per computer, native side chats and lower idle resource usage.
 

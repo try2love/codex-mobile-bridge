@@ -78,6 +78,6 @@ iOS 通知回归在 macOS 上运行 `scripts/test-ios-events.py`、`scripts/test
 
 Android 设置页资源合约：`node --test mobile/tests/settings.test.cjs mobile/tests/resources.test.cjs` 检查浅深色资源对齐、文字对比度及两种宿主的配置声明。原生交互另外验收整行与开关点击、后台服务启停、权限返回刷新、设置页主题作用域、主题持久化与跟随系统、提示吐司、翻译、返回原聊天，以及窄屏和大字体布局。
 
-Android 原生电脑选项菜单：`python3 scripts/test-android-gateway-menu.py --adb <已有adb路径> --serial emulator-5556 --apk <本轮Test包>`。仅对明确可丢弃的模拟器运行，会清空该模拟器中 Test 的偏好、保存合成连接并授予通知权限；拒绝真机序列号。使用生产 Activity/WebView 检查页面颜色、原生主题回退、系统和逐级返回、晚回调取消、导航与生命周期清理、草稿保留以及通知来源偏好。结果位于 `.tmp/android-gateway-menu-tests/`，不等于真机或真实客户端会话验收。
+Android 原生电脑选项菜单：`python3 scripts/test-android-gateway-menu.py --adb <已有adb路径> --serial emulator-5556 --apk <本轮Test包> --keystore <同签名密钥> --application-id <Test应用标识>`。签名密码由 `CMB_ANDROID_STORE_PASSWORD` 传入。仅对明确可丢弃的模拟器运行，会清空该模拟器中 Test 的偏好、保存合成连接并授予通知权限；拒绝真机序列号。使用生产 Activity/WebView 检查页面颜色、原生主题回退、系统和逐级返回、晚回调取消、导航与生命周期清理、草稿保留以及通知来源偏好。结果位于 `.tmp/android-gateway-menu-tests/`，不等于真机或真实客户端会话验收。
 
 设置页动效另外检查进入和返回、开关与权限布局、主题弹层及浅深色交叉淡化的中间帧；同时覆盖快速反向操作、系统动画时长为零时的直接呈现，以及关闭窗口后的动画和临时画面清理。

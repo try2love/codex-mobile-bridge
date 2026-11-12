@@ -21,7 +21,7 @@
 
 # Codex Mobile Bridge · 多客户端远程工作台
 
-> **v2.2.1-preview.1（预览版）：** [预览版下载](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1-preview.1) · [更新说明](RELEASE_NOTES.md)。新增 Antigravity 接入、CLI 连接管理与会话体验改进；v2.2.0 仍为最新稳定版。
+> **v2.2.1-preview.1（预览版）：** [预览版下载](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1-preview.1) · [更新说明](RELEASE_NOTES.md)。新增 Antigravity 接入、CLI 连接管理与会话体验改进；v2.2.0 仍为最新稳定版。Android 预览版作为独立的 Bridge Preview 安装，保留原 App，需重新添加电脑连接。
 
 > **v2.2.0 正式版**：[发布页](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.0) · [完整更新说明](RELEASE_NOTES.md) · [手机安装说明](mobile/README.md)。新增 ZCode、多信道连接与原生侧边聊天，优化空闲资源占用。
 
