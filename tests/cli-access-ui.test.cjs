@@ -141,7 +141,7 @@ test('dismissed SSH faults stay hidden on refresh, then return after recovery or
   vm.createContext(ctx);vm.runInContext(extract('function renderHostErrors(hosts){','function authLost()'),ctx);
   const fault=[{host:'remote-1',label:'Remote',error:'SSH unavailable'}];ctx.renderHostErrors(fault);
   assert.equal($('host-errors').childElementCount,1);
-  $('host-errors').children[0].children[1].onclick();ctx.renderHostErrors(fault);
+  $('host-errors').children[0].children.find(child=>child.textContent==='×').onclick();ctx.renderHostErrors(fault);
   assert.equal($('host-errors').childElementCount,0);
   ctx.window.BridgeRelayBase='/relay/b';ctx.renderHostErrors(fault);
   assert.equal($('host-errors').childElementCount,1);
@@ -171,9 +171,9 @@ test('WSL source badges remain distinct from CLI and APP without changing access
 test('switching from a restricted WSL chat restores APP controls and queue availability',()=>{
   const {ctx,$}=fixture(),queue=node(),steer=node();$('send-mode').querySelector=selector=>selector==='[value=queue]'?queue:steer;ctx.workModes.selection='default';
   ctx.renderState({host:'wsl:fixture',endpointId:'wsl:fixture',access:{...cli,runtime:'wsl'},capabilities:{permissions:false,skills:false,notifications:false,queue:false,plan:false},connected:false,status:'idle',requests:[],submissions:[],historyComplete:true});
-  assert.equal($('skills-button').hidden,true);assert.equal($('permissions-button').hidden,true);assert.equal($('notify-button').hidden,true);assert.equal($('work-mode').hidden,true);assert.equal(queue.disabled,true);
+  assert.equal($('skills-button').hidden,true);assert.equal($('permissions-button').hidden,true);assert.equal($('work-mode').hidden,true);assert.equal(queue.disabled,true);
   ctx.renderState({host:'local',access:{source:'desktop'},connected:true,status:'idle',requests:[],submissions:[],historyComplete:true});
-  assert.equal($('skills-button').hidden,false);assert.equal($('permissions-button').hidden,false);assert.equal($('notify-button').hidden,false);assert.equal($('work-mode').hidden,false);assert.equal(queue.disabled,false);
+  assert.equal($('skills-button').hidden,false);assert.equal($('permissions-button').hidden,false);assert.equal($('work-mode').hidden,false);assert.equal(queue.disabled,false);
 });
 
 test('desktop router failure offers explicit rebuild and keeps failure plus draft visible',async()=>{

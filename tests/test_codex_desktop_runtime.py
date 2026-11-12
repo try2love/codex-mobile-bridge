@@ -8,12 +8,13 @@ import tempfile
 import threading
 import unittest
 import uuid
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from bridge.clients.codex import desktop_runtime as runtime
-from bridge.clients.codex.app_server import AppServerUnavailable, AppServerUnknownResult
+from bridge.clients.codex.app_server import AppServerUnavailable, AppServerUnknownResult, AppServerRequestNotSent
 from bridge.features.sessions.create import CreationError, CreationUnavailable
 from bridge.app.service import Bridge
 
@@ -22,6 +23,29 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @unittest.skipIf(os.name == 'nt', 'POSIX private runtime directory and sockets')
 class DesktopRuntimeTests(unittest.TestCase):
+    def test_windows_launcher_requires_frozen_entry_and_verified_msix_family(self):
+        with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as folder:
+            root = Path(folder); application = root/'app'/'Codex.exe'
+            (root/'AppxManifest.xml').write_text('<fixture/>')
+            with patch.object(runtime, 'sys', SimpleNamespace(platform='win32', frozen=True, executable=str(root/'gateway.exe'))), \
+                 patch('bridge.platforms.windows.discovery_ext.application_user_model_id', return_value='OpenAI.Codex_fixture!App') as identity, \
+                 patch('bridge.platforms.windows.discovery_ext.application_execution_alias', return_value=root/'alias.exe') as alias:
+                self.assertEqual(runtime.launcher_settings(application), {'launcher': str((root/'gateway.exe').resolve()), 'sandboxFamily': 'OpenAI.Codex_fixture'})
+                alias.return_value = None
+                with self.assertRaisesRegex(ValueError, '启动别名'): runtime.launcher_settings(application)
+                identity.return_value = ''
+                with self.assertRaisesRegex(ValueError, '安装包身份'): runtime.launcher_settings(application)
+            with patch.object(runtime, 'sys', SimpleNamespace(platform='win32', frozen=False)):
+                with self.assertRaisesRegex(ValueError, '已编译'): runtime.launcher_settings(application)
+
+    def test_windows_exited_generation_does_not_require_a_live_image_query(self):
+        with patch.object(runtime, 'sys', SimpleNamespace(platform='win32')), \
+             patch('bridge.platforms.windows.codex_daemon_env.recorded_process_absent', return_value=True) as absent, \
+             patch.object(runtime, 'process_identity', side_effect=OSError('image already gone')) as identify:
+            self.assertFalse(runtime.runtime_alive({'pid': 41, 'created': 1234}))
+            absent.assert_called_once_with(41, {'processStartTime': '1234'})
+            identify.assert_not_called()
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(dir=ROOT / '.tmp')
         self.addCleanup(self.tmp.cleanup)
@@ -232,8 +256,8 @@ class MetadataRoutingTests(unittest.TestCase):
         self.bridge = SimpleNamespace(host='local', codex_home=Path(temporary.name),
                                       catalog_reader=SimpleNamespace(executable='/fixture-cli'))
 
-    def call(self, operation):
-        return Bridge._desktop_metadata_operation(self.bridge, '/project', operation, 'unknown write')
+    def call(self, operation, **options):
+        return Bridge._desktop_metadata_operation(self.bridge, '/project', operation, 'unknown write', **options)
 
     def test_shared_writer_is_closed_only_as_a_connection_never_replaced(self):
         client = Mock(); client.request.return_value = {'id': 'child'}
@@ -261,6 +285,53 @@ class MetadataRoutingTests(unittest.TestCase):
             self.assertEqual(self.call(Mock()), 'native')
             shared.assert_not_called()
             self.assertTrue(fallback.call_args.kwargs['isolated_home'])
+
+    def test_explicit_not_sent_allows_only_first_metadata_request_retry(self):
+        client = Mock()
+        with patch.object(runtime, 'connect', return_value=client):
+            client.request.side_effect = AppServerRequestNotSent('pipe unavailable')
+            with self.assertRaises(CreationUnavailable): self.call(lambda request: request('thread/fork', {}))
+            client.request.side_effect = [{'thread': {'id': 'child'}}, AppServerRequestNotSent('pipe unavailable')]
+            def operation(request):
+                request('thread/fork', {})
+                request('thread/name/set', {})
+            with self.assertRaises(CreationError) as failure: self.call(operation)
+            self.assertNotIsInstance(failure.exception, CreationUnavailable)
+
+    def test_uninitialized_mac_desktop_refuses_before_starting_another_writer(self):
+        with patch.object(runtime.sys, 'platform', 'darwin'), \
+             patch.object(runtime, 'initialization_lock', return_value=nullcontext()), \
+             patch.object(runtime, 'connect', return_value=None), \
+             patch('bridge.features.sessions.create._runtime_operation') as spawn:
+            operation = Mock()
+            with self.assertRaisesRegex(CreationUnavailable, '自动完成'):
+                self.call(operation, require_shared=True)
+            operation.assert_not_called()
+            spawn.assert_not_called()
+
+    def test_unconfigured_other_platform_retains_existing_metadata_runtime(self):
+        with patch.object(runtime.sys, 'platform', 'linux'), \
+             patch.object(runtime, 'connect', return_value=None), \
+             patch('bridge.features.sessions.create._runtime_operation', return_value='native') as spawn:
+            self.assertEqual(self.call(Mock(), require_shared=True), 'native')
+            spawn.assert_called_once()
+
+    def test_unconfigured_mac_history_metadata_keeps_existing_runtime_path(self):
+        with patch.object(runtime.sys, 'platform', 'darwin'), \
+             patch.object(runtime, 'initialization_lock', return_value=nullcontext()), \
+             patch.object(runtime, 'connect', return_value=None), \
+             patch('bridge.features.sessions.create._runtime_operation', return_value='native') as spawn:
+            self.assertEqual(self.call(Mock()), 'native')
+            spawn.assert_called_once()
+
+    def test_uninitialized_windows_desktop_refuses_before_starting_another_writer(self):
+        with patch.object(runtime.sys, 'platform', 'win32'), \
+             patch.object(runtime, 'initialization_lock', return_value=nullcontext()), \
+             patch.object(runtime, 'connect', return_value=None), \
+             patch('bridge.features.sessions.create._runtime_operation') as spawn:
+            with self.assertRaisesRegex(CreationUnavailable, '自动完成'):
+                self.call(Mock(), require_shared=True)
+            spawn.assert_not_called()
 
     @unittest.skipIf(os.name == 'nt', 'POSIX shared-runtime lock')
     def test_another_gateway_cannot_initialize_during_a_metadata_write(self):

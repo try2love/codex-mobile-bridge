@@ -15,7 +15,7 @@ from bridge.features.auth.auth import replace_session_file, session_file_lock
 from bridge.features.endpoints.registry import local_entry_id, local_home
 
 
-FAMILIES = ('codex', 'claude', 'deepseek', 'zcode')
+FAMILIES = ('codex', 'claude', 'deepseek', 'zcode', 'antigravity')
 ENTRY = re.compile(r'([a-z][a-z0-9-]{0,31}):([0-9a-f]{32})\Z')
 RECORD_FIELDS = {'id', 'family', 'kind', 'label', 'home', 'roots'}
 PROOF_FIELDS = {'path', 'identity', 'anchor', 'anchorIdentity'}

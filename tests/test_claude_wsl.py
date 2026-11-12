@@ -172,7 +172,7 @@ class WslClaudeContract(unittest.TestCase):
             manager = DesktopSessions(self.root/'manager')
         self.addCleanup(manager.close)
         manager.clients = Mock(return_value={'clients': []})
-        manager.claude_wsl.scan = Mock()
+        manager.claude_wsl.scan = Mock(return_value={'errors': []})
         discovered = {name: {'installed': False} for name in ('claude', 'deepseek')}
         with patch('bridge.clients.manager.sys.platform', 'win32'), \
              patch('bridge.app.desktop.Desktop') as desktop, \

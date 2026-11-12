@@ -1,9 +1,9 @@
-"""Serve only artifacts referenced by this chat inside its workspace/visualizations."""
+"""Separate trusted image artifacts from explicit host-file actions in a chat."""
 import hashlib
 import ntpath
 import os
 import re
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from urllib.parse import unquote, urlsplit
 from urllib.request import url2pathname
 
@@ -13,6 +13,17 @@ MARKDOWN_PATH = re.compile(r'!?\[[^\]\n]*\]\((?:<([^>]+)>|([^\n)]+))\)')
 IMAGE_MARKDOWN_PATH = re.compile(r'!\[[^\]\n]*\]\((?:<([^>]+)>|([^\n)]+))\)')
 AGENT_KINDS = ('agentMessage', 'assistantMessage', 'planImplementation')
 IMAGE_SUFFIXES = {'.png', '.jpg', '.jpeg', '.gif', '.webp'}
+MEDIA_TYPES = {
+    '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4',
+    '.aac': 'audio/aac', '.ogg': 'audio/ogg', '.oga': 'audio/ogg',
+    '.opus': 'audio/ogg', '.flac': 'audio/flac', '.aif': 'audio/aiff', '.aiff': 'audio/aiff',
+    '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.webm': 'video/webm',
+    '.ogv': 'video/ogg', '.mov': 'video/quicktime',
+}
+
+
+def media_type(name):
+    return MEDIA_TYPES.get(Path(name).suffix.lower())
 
 
 def code_comment_references(text):
@@ -248,11 +259,7 @@ def referenced_model_images(state, image_views_only=False):
     return trusted_views if image_views_only else result
 
 
-def artifact_paths(state, codex_home):
-    roots = [Path(codex_home) / 'visualizations'] if codex_home else []
-    if state.get('cwd'):
-        roots.append(Path(state['cwd']))
-    roots = [root.resolve() for root in roots]
+def _references(state):
     candidates = set()
     user_candidates = set()
     comments = set()
@@ -276,6 +283,59 @@ def artifact_paths(state, codex_home):
                     value = attachment.get('path', attachment.get('url'))
                     if isinstance(value, str):
                         (user_candidates if item.get('type') == 'userMessage' else candidates).add(value)
+    return candidates, comments, user_candidates
+
+
+def host_file_links(state, files=()):
+    """Offer explicit host-file actions without reading a path while rendering.
+
+    The workspace endpoint validates the selected target on the selected host
+    when clicked. These links never acquire automatic image-preview trust.
+    """
+    known = {ref for file in files for ref in [file.get('reference'), *file.get('references', [])]}
+    result = {}
+    for raw in sorted(set().union(*_references(state)) - known):
+        value = re.sub(r':\d+$', '', raw)
+        if len(value) > 4096 or any(ord(c) < 32 for c in value):
+            continue
+        try:
+            if value.startswith('file:'):
+                url = urlsplit(value)
+                if url.netloc not in ('', 'localhost') or url.query or url.fragment:
+                    continue
+                value = unquote(url.path)
+            elif not re.match(r'^/?[A-Za-z]:[\\/]', value):
+                url = urlsplit(value)
+                if url.scheme or url.netloc:
+                    continue
+                value = unquote(url.path)
+            if re.match(r'^/[A-Za-z]:[\\/]', value):
+                value = value[1:]
+            if value.startswith(('\\\\', '//')):
+                continue
+            cwd = state.get('cwd') or ''
+            path_type = PureWindowsPath if re.match(r'^[A-Za-z]:[\\/]', value or cwd) or re.match(r'^[A-Za-z]:[\\/]', cwd) else PurePosixPath
+            path = path_type(value)
+            if not path.is_absolute():
+                path = path_type(cwd) / path
+            if not path.is_absolute() or '..' in path.parts or (path_type is PureWindowsPath and path.drive.startswith('\\\\')):
+                continue
+            absolute = path.as_posix()
+            key = 'host-' + hashlib.sha256((absolute.casefold() if path_type is PureWindowsPath else absolute).encode()).hexdigest()
+            row = result.setdefault(key, {'id': key, 'path': absolute, 'name': path.name or absolute,
+                                         'reference': raw, 'references': [], 'image': False, 'scope': 'host'})
+            row['references'].append(raw)
+        except ValueError:
+            continue
+    return [*files, *result.values()]
+
+
+def artifact_paths(state, codex_home):
+    roots = [Path(codex_home) / 'visualizations'] if codex_home else []
+    if state.get('cwd'):
+        roots.append(Path(state['cwd']))
+    roots = [root.resolve() for root in roots]
+    candidates, comments, user_candidates = _references(state)
     result = {}
     model_images, trusted_views = _model_image_references(state)
     for raw in sorted(candidates | comments | user_candidates):
@@ -339,11 +399,13 @@ def artifact_paths(state, codex_home):
     return result
 
 
-def workspace_references(messages, cwd):
-    """Expose only file links inside this client's own workspace."""
-    if not cwd or not Path(cwd).is_absolute(): return []
+def workspace_references(messages, cwd, host_files=False):
+    """Link displayed files, using host scope only for explicit read-only actions."""
     state = {'cwd': cwd, 'turns': [{'items': [{'type': 'userMessage' if row.get('role') == 'user' else 'agentMessage', 'text': row.get('text', ''), 'content': row.get('attachments', [])}
              for row in messages if row.get('role') in ('assistant', 'user')]} ]}
+    if host_files:
+        return host_file_links(state)
+    if not cwd or not Path(cwd).is_absolute(): return []
     root = Path(cwd).resolve()
     return [{'id': key, 'name': value['name'], 'reference': value['reference'],
              'references': value['references'], 'path': workspace_relative_path(value['path'], root),

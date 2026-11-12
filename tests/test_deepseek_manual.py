@@ -84,10 +84,20 @@ class ManualPluginTests(unittest.TestCase):
         self.assertEqual(discover_plugins(str(self.root/'home')), [])
         self.assertEqual(discover_plugins(str(self.root/'not-installed')), [])
 
+    def test_unloaded_bound_profile_points_to_reload_instead_of_desktop_install(self):
+        self.modern()
+        adapter = ManualDeepSeek(self.directory/'binding.json')
+        before = (self.directory/'binding.json').read_bytes()
+        (self.directory/'endpoint.json').unlink()
+        with self.assertRaisesRegex(Exception, '档案“fixture”.*重新加载.*无需重复安装'):
+            adapter.call('list')
+        self.assertEqual((self.directory/'binding.json').read_bytes(), before)
+        self.assertEqual(self.calls, [])
+
     def test_export_contains_same_host_and_no_private_state(self):
         result = export_package(str(self.root))
         with zipfile.ZipFile(result['path']) as archive:
-            self.assertEqual(len(archive.namelist()), 7)
+            self.assertEqual(len(archive.namelist()), 8)
             self.assertEqual(archive.read('dsh-codex-mobile-bridge/host.mjs'),
                              (ROOT/'bridge/clients/deepseek/host.mjs').read_bytes())
             self.assertFalse(any('connection' in name or 'binding' in name for name in archive.namelist()))

@@ -3,9 +3,10 @@
 async function runSideChatTests(){
  const wb=window.BridgeWorkbench,checks=[],check=(ok,label)=>{if(!ok)throw Error(label);checks.push(label);};
  const wait=async f=>{for(let i=0;i<100;i++){if(f())return;await new Promise(r=>setTimeout(r,10));}throw Error('Native side directory did not settle');};
- const originals={request:wb.request,openChat:wb.openChat,menu:wb.openSessionMenu};
+ const originals={request:wb.request,openChat:wb.openChat,menu:wb.openSessionMenu,confirm:window.confirm,cleanup:wb.temporaryCleanup};
  const calls=[],opened=[],menus=[],parent='aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',child='11111111-2222-3333-4444-555555555555';
- let failCreation=true;
+ let failCreation=true,temporary=false;
+ const temporaryId='22222222-3333-4444-5555-666666666666';
  try{
   wb.open(parent,'local');
   wb.openChat=(id,host)=>opened.push({id,host});
@@ -13,8 +14,10 @@ async function runSideChatTests(){
   wb.request=async(url,body)=>{
    check(url.includes('/'+parent+'/side-chat?host=local&view=native'),'Directory requests retain exact parent and host');
    calls.push({url,body});
+   if(body?.action==='create-temporary'){temporary=true;return{id:temporaryId,host:'local',temporary:true,parentId:parent};}
+   if(body?.action==='close'){check(body.id===temporaryId,'Ending is scoped to the temporary child');temporary=false;wb.current=null;return{closed:true};}
    if(body){if(failCreation){failCreation=false;throw Error('Response lost');}return{id:child,host:'local',parentId:parent};}
-   return{parentId:parent,chats:[{id:child,host:'local',title:'原生侧边聊天',attachedParentId:parent,archived:false},{id:'archived-child',host:'local',title:'已归档的侧边聊天',archived:true}]};
+   return{parentId:parent,chats:[...(temporary?[{id:temporaryId,host:'local',title:'临时侧边聊天',temporary:true}]:[]),{id:child,host:'local',title:'原生侧边聊天',attachedParentId:parent,archived:false},{id:'archived-child',host:'local',title:'已归档的侧边聊天',archived:true}]};
   };
   document.querySelector('#message').value='parent draft';
   wb.sideChat();let panel=wb.current.files.find(t=>t.id==='sidechat').sideChat;
@@ -37,12 +40,25 @@ async function runSideChatTests(){
   wb.sideChat();panel=wb.current.files.find(t=>t.id==='sidechat').sideChat;await wait(()=>panel.chats);
   check(panel.chats[0].id===child,'Reopening discovers the same persistent child');
   await wb.close('sidechat');
-  wb.open(child,'local');wb.setAttachedParent({id:parent,host:'local',available:true});
-  wb.tabs.querySelector('.wb-parent-chat').click();
-  wb.tabs.querySelector('[data-tab="chat"] [aria-label="关闭"]').click();
-  check(opened.slice(-2).every(row=>row.id===parent),'Return and close child view both return to the native parent');
+  wb.open(child,'local',{rootId:parent,title:'原生侧边聊天'});
+  check(wb.current.id===parent&&wb.current.chatId===child,'Native child retains the parent workspace');
+  wb.tabs.querySelector('[data-tab="chat"] button').click();
+  await wb.close('child:'+child);
+  check(opened.slice(-2).every(row=>row.id===parent),'Main tab and closing the child return to the native parent');
   check(calls.filter(call=>call.body).length===2,'Leaving a child never stops or destroys its history');
   wb.open(parent,'local');wb.sideChat();await wait(()=>wb.current.files.find(t=>t.id==='sidechat').sideChat.chats);
+  panel=wb.current.files.find(t=>t.id==='sidechat').sideChat;
+  await panel.create(true);
+  check(opened.at(-1).id===temporaryId,'Temporary child uses the same normal chat navigation');
+  check(!!panel.list.querySelector('[aria-label="结束临时侧聊"]'),'Temporary lifecycle is explicit');
+  window.confirm=()=>true;
+  let cleaned=false;
+  wb.temporaryCleanup=(id,host)=>{check(id===temporaryId&&host==='local','Cleanup captures original identity before close');return()=>{cleaned=true;};};
+  await panel.end(panel.chats.find(chat=>chat.temporary));
+  check(cleaned,'Successful close cleans the original scope even after leaving the workspace');
+  wb.open(parent,'local');wb.select('sidechat');
+  check(!panel.chats.some(chat=>chat.temporary),'Ending removes only the temporary entry');
+  check(calls.filter(call=>call.body?.action==='close').length===1,'Ending is submitted exactly once');
   return{checks,passed:checks.length};
- }finally{wb.request=originals.request;wb.openChat=originals.openChat;wb.openSessionMenu=originals.menu;}
+ }finally{wb.request=originals.request;wb.openChat=originals.openChat;wb.openSessionMenu=originals.menu;window.confirm=originals.confirm;wb.temporaryCleanup=originals.cleanup;}
 }

@@ -1,5 +1,7 @@
 """A live but retired router must not trap the gateway after explicit recovery."""
 import os
+import socket
+import time
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
@@ -14,6 +16,159 @@ from test_bridge import DesktopFixture, THREAD
 class RecoveryTests(unittest.TestCase):
     setUp = test_bridge.IntegrationTests.setUp
     tearDown = test_bridge.IntegrationTests.tearDown
+
+    def test_observed_socket_disconnect_recovers_before_old_success_cooldown(self):
+        if os.name == 'nt':
+            self.skipTest('Unix pathname replacement')
+        session = self.bridge.session(THREAD)
+        self.assertTrue(session.connected)
+        session.viewers = 1
+        session.retry_at = time.monotonic() + 15
+        old = self.fixture
+        old.loaded = False
+        Path(old.path).unlink()
+        alternate = self.root/'fast-router'
+        alternate.mkdir()
+        fresh = DesktopFixture(alternate)
+        fresh.state['title'] = 'Replacement owner'
+        Path(fresh.path).rename(old.path)
+        self.addCleanup(fresh.close)
+        started = time.monotonic()
+        old.client.shutdown(socket.SHUT_RDWR)
+        with session.condition:
+            recovered = session.condition.wait_for(
+                lambda: session.connected and session.state.get('title') == 'Replacement owner', timeout=4.5)
+        self.assertTrue(recovered, 'A ready replacement owner must not wait for the old 15-second success cooldown')
+        self.assertLess(time.monotonic()-started, 4.5)
+        self.assertEqual(session.state['modelProvider'], 'custom-api')
+        self.assertFalse(any(r['method'].startswith('thread-follower-') for r in fresh.requests))
+
+    def test_first_failed_probe_during_native_router_startup_has_bounded_short_retry(self):
+        if os.name == 'nt':
+            self.skipTest('Unix pathname replacement')
+        session = self.bridge.session(THREAD)
+        session.viewers = 1
+        old = self.fixture
+        old.loaded = False
+        Path(old.path).unlink()
+        fresh = []
+        def publish_router():
+            time.sleep(1)
+            alternate = self.root/'delayed-router'
+            alternate.mkdir()
+            replacement = DesktopFixture(alternate)
+            replacement.state['title'] = 'Delayed replacement'
+            Path(replacement.path).rename(old.path)
+            fresh.append(replacement)
+        worker = threading.Thread(target=publish_router, daemon=True)
+        started = time.monotonic()
+        old.client.shutdown(socket.SHUT_RDWR)
+        with session.condition:
+            self.assertTrue(session.condition.wait_for(lambda: not session.connected, timeout=1))
+        worker.start()
+        try:
+            # Fail before the native replacement is listening, then let the
+            # ordinary maintainer recover without an explicit user activation.
+            self.bridge._refresh_async(session, force=True)
+            with session.condition:
+                recovered = session.condition.wait_for(
+                    lambda: session.connected and session.state.get('title') == 'Delayed replacement', timeout=4.5)
+            self.assertTrue(recovered)
+            self.assertLess(time.monotonic()-started, 4.5)
+            self.assertFalse(any(r['method'].startswith('thread-follower-') for f in fresh for r in f.requests))
+        finally:
+            worker.join(2)
+            for replacement in fresh:
+                replacement.close()
+
+    def test_short_failure_retry_expires_and_success_has_no_failure_cooldown(self):
+        session = self.bridge.session(THREAD)
+        with patch.object(self.bridge, '_attach'):
+            for window, low, high in ((6, .3, .7), (-1, 14, 16)):
+                with session.condition:
+                    session.connected = False
+                    session.retry_at = 0
+                    session.desktop_recovery_until = time.monotonic()+window
+                self.bridge._refresh_async(session)
+                with session.condition:
+                    self.assertTrue(session.condition.wait_for(lambda: not session.connecting, timeout=1))
+                    remaining = session.retry_at-time.monotonic()
+                self.assertGreater(remaining, low)
+                self.assertLess(remaining, high)
+        self.bridge._refresh_async(session, force=True)
+        with session.condition:
+            self.assertTrue(session.condition.wait_for(lambda: session.connected and not session.connecting, timeout=1))
+            self.assertEqual(session.retry_at, 0)
+
+    def test_activity_and_notification_probes_keep_the_short_recovery_deadline(self):
+        session = self.bridge.session(THREAD)
+        self.bridge.listed.add(THREAD)
+        for source in ('activity', 'notification'):
+            started, release = threading.Event(), threading.Event()
+            def attach(*args, **kwargs):
+                started.set()
+                release.wait(1)
+            with session.condition:
+                session.connected = False
+                session.retry_at = 0
+                session.desktop_recovery_until = time.monotonic()+6
+            with patch.object(self.bridge, '_attach', side_effect=attach):
+                try:
+                    if source == 'activity':
+                        self.bridge.activity([THREAD])
+                    else:
+                        self.bridge.notification_session(THREAD)
+                    self.assertTrue(started.wait(1), source)
+                    self.assertLess(session.retry_at-time.monotonic(), 1, source)
+                finally:
+                    release.set()
+
+    def test_passive_deadline_assignment_serializes_with_invalidation(self):
+        session = self.bridge.session(THREAD)
+        self.bridge.listed.add(THREAD)
+        for source in ('activity', 'maintenance'):
+            checked, started, release = [], threading.Event(), threading.Event()
+            class Deadline:
+                def __gt__(self, now):
+                    checked.append(session.condition._is_owned())
+                    return True
+            def attach(*args, **kwargs):
+                started.set()
+                release.wait(1)
+            with session.condition:
+                session.connected = False
+                session.retry_at = 0
+                session.desktop_recovery_until = Deadline()
+                session.activity_only = source == 'maintenance'
+                session.watched = source == 'maintenance'
+            with patch.object(self.bridge, '_attach', side_effect=attach):
+                try:
+                    if source == 'activity':
+                        self.bridge.activity([THREAD])
+                    self.assertTrue(started.wait(4), source)
+                    self.assertTrue(checked[0], source+' must atomically read the window and assign its deadline')
+                finally:
+                    release.set()
+                    with session.condition:
+                        session.desktop_recovery_until = 0
+
+    def test_late_old_refresh_cannot_restore_deadline_after_disconnect(self):
+        session = self.bridge.session(THREAD)
+        started, release = threading.Event(), threading.Event()
+        def attach(*_):
+            started.set()
+            release.wait(2)
+        with session.condition:
+            session.connected = False
+            session.retry_at = 0
+        with patch.object(self.bridge, '_attach', side_effect=attach):
+            self.bridge._refresh_async(session)
+            self.assertTrue(started.wait(1))
+            self.bridge._invalidate(session, 'connection reset', runtime='desktop', reason='desktop_ipc_disconnected')
+            release.set()
+            with session.condition:
+                self.assertTrue(session.condition.wait_for(lambda: not session.connecting, timeout=1))
+                self.assertEqual(session.retry_at, 0, 'The retired probe must not replace the fresh recovery deadline')
 
     def test_explicit_connect_replaces_retired_socket_even_if_snapshot_was_connected(self):
         if os.name == 'nt':

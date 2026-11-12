@@ -108,8 +108,8 @@ async function transfer(fetch,url,{limit,signal,file,onProgress=()=>{}}){
   }finally{await handle?.close();await reader.cancel();}
 }
 class Updater{
-  constructor({current,platform=process.platform,arch=process.arch,key,fetch,directory,install,supported=true,skipFile}){
-    Object.assign(this,{current,platform,arch,key,fetch,directory,apply:install,supported,skipFile});
+  constructor({current,platform=process.platform,arch=process.arch,key,fetch,directory,install,preflight,supported=true,skipFile}){
+    Object.assign(this,{current,platform,arch,key,fetch,directory,apply:install,preflight,supported,skipFile});
     this.skipIdentity=platform+'-'+arch+':'+(current.match(/-(alpha|beta|preview|rc)\./)?.[1]||'stable');
     this.state={state:supported?'idle':'unsupported',current};
   }
@@ -156,8 +156,10 @@ class Updater{
     if(this.busy)return this.status();
     if(!this.candidate||this.checking)throw Error('请先检查更新。');
     const candidate=this.candidate;let staging;
-    this.set('downloading',{version:candidate.version,received:0,total:candidate.asset.size});
+    this.set('preparing',{version:candidate.version});
     try{
+      await this.preflight?.();
+      this.set('downloading',{version:candidate.version,received:0,total:candidate.asset.size});
       await fs.mkdir(this.directory,{recursive:true,mode:0o700});
       staging=await fs.mkdtemp(path.join(this.directory,'download-'));
       const archive=path.join(staging,'update.zip');

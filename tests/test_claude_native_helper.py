@@ -252,7 +252,8 @@ class WindowsNativeWindowSelectors(unittest.TestCase):
         self.assertIn('packaged launch OK', result.stdout)
         self.assertIn('atomic console submission OK', result.stdout)
         self.assertIn('detached console reuse OK', result.stdout)
-        self.assertIn('native menu quit guards OK', result.stdout)
+        self.assertIn('existing background quit guards OK', result.stdout)
+        self.assertIn('atomic quit cancellation guards OK', result.stdout)
         self.assertIn('background console guards OK', result.stdout)
         self.assertIn('background cleanup guards OK', result.stdout)
         self.assertIn('background startup readiness OK', result.stdout)
@@ -454,9 +455,9 @@ class QuitFixture {
             // Match the product's in-window accessible menu shape. Real UIA
             // provider methods expand/invoke directly, without key injection.
             var menu=new StackPanel();var file=new InlineItem {Content="File"};
-            var exit=new InlineItem {Content="Exit",Visibility=Visibility.Collapsed};
+            var exit=new InlineItem {Content="Exit",Visibility=args[3]=="normal"||args[3]=="pending"||args[3]=="dispatch-error"?Visibility.Visible:Visibility.Collapsed};
             if(args[3]=="dispatch-error")exit.ErrorMarker=args[2];
-            file.Open=()=>exit.Visibility=Visibility.Visible;
+            file.Open=()=>{File.AppendAllText(args[2],"expanded\\n");exit.Visibility=Visibility.Visible;};
             menu.Children.Add(file);menu.Children.Add(exit);window.Content=menu;
             exit.Click+=(sender,eventArgs)=>quit();
         }
@@ -479,7 +480,8 @@ class QuitFixture {
         };
         window.Loaded+=(sender,eventArgs)=>{
             Console.Error.WriteLine("fixture window loaded");
-            if(args[3]=="initialize")window.Hide();
+            if(args[3]=="initialize"||args[3]=="hidden-quit")window.Hide();
+            if(args[3]=="hidden-quit")window.IsVisibleChanged+=(s,e)=>{if(window.IsVisible)File.AppendAllText(args[2],"shown\\n");};
             if(args[3]=="background-cleanup-foreign") {
                 var other=new Window {Title="Developer Tools - file:///C:/Claude/main_window/index.html",Owner=window,Width=260,Height=120};
                 other.Closing+=(s,e)=>File.AppendAllText(args[2],"foreign-closed\\n");other.Show();
@@ -500,7 +502,7 @@ class QuitFixture {
 
         # This desktop is never activated or switched to. All tested apps are
         # disposable fixtures; the real Claude and user's input remain untouched.
-        for iteration, mode in enumerate(('normal',) * 10 + ('pending', 'dispatch-error', 'native-popup', 'initialize',
+        for iteration, mode in enumerate(('normal',) * 10 + ('pending', 'dispatch-error', 'native-popup', 'missing-quit', 'hidden-quit', 'initialize',
                      'background-connect', 'background-cancel', 'background-cleanup',
                      'background-cleanup-cancel', 'background-cleanup-foreign')):
             with self.subTest(mode=mode, iteration=iteration):
@@ -567,13 +569,13 @@ class QuitFixture {
                         self.assertFalse(exited(app))
                         self.assertEqual(user.GetForegroundWindow(), foreground)
                         continue
-                    if mode == 'native-popup':
-                        # WPF's standard popup currently does not expose Exit
-                        # here. Keep this real provider limitation covered:
-                        # fail fast, no foreground fallback or fabricated exit.
+                    if mode in ('native-popup', 'missing-quit', 'hidden-quit'):
+                        # Only an already exposed Quit may be invoked. Never
+                        # restore a hidden window or expand a menu to find it.
                         self.assertEqual(code, 1, result)
                         self.assertEqual(result['quitState'], 'failed', result)
-                        self.assertIn('桌面不可用', result['reason'])
+                        self.assertIn('尚未提交退出', result['reason'])
+                        self.assertIn('电脑端正常退出', result['reason'])
                         self.assertLess(time.monotonic()-started, 12)
                         self.assertFalse(marker.exists())
                         self.assertEqual(len(replies), 1, 'unsubmitted failure must not report dispatch')

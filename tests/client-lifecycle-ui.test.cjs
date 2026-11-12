@@ -292,3 +292,14 @@ test('ZCode phone disconnect, unknown-state quit and force are independent choic
   if(calls.length){assert.equal(calls[0].quitDesktop,selection!=='disconnect');assert.equal(!!calls[0].acknowledgeUnavailable,selection==='quit');assert.equal(!!calls[0].forceConfirmed,selection==='force');}
  }
 });
+
+
+test('Antigravity shares desktop identity and only disables phone access',async()=>{
+ const ui=fixture();ui.context.URLSearchParams=URLSearchParams;const identity=vm.runInContext('ClientIdentity',ui.context);
+ assert.equal(identity.desktop('antigravity'),true);
+ assert.equal(identity.path('antigravity','detail','scoped'),'/api/desktop-sessions/antigravity/detail?sessionId=scoped');
+ const result=ui.choose({id:'antigravity',name:'Antigravity',canQuitDesktop:false,canForceQuit:false});
+ const buttons=ui.dialog().children.at(-1).children;
+ assert.equal(buttons.length,2);assert.doesNotMatch(ui.dialog().textContent,/正常退出电脑 App|强制关闭 App/);
+ buttons[0].onclick();assert.equal(await result,false);
+});

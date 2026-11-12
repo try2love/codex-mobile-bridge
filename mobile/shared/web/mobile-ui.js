@@ -132,26 +132,38 @@
     option.className = 'display-option';
     const caption = document.createElement('span'), title = document.createElement('strong');
     const hint = document.createElement('small'), toggle = document.createElement('input');
-    const forget = document.createElement('button');
-    toggle.type = 'checkbox'; forget.type = 'button'; forget.className = 'plain';
-    caption.append(title, hint); option.append(caption, toggle); section.append(legend, option, forget);
+    const forget = document.createElement('button'), retry = document.createElement('button');
+    toggle.type = 'checkbox'; forget.type = retry.type = 'button'; forget.className = retry.className = 'plain';
+    caption.append(title, hint); option.append(caption, toggle); section.append(legend, option, forget, retry);
     const end = uuDialog.querySelector('.appearance-actions');
     (end?.parentNode || uuDialog).insertBefore(section, end);
     const label = (zh, en) => document.documentElement.lang.startsWith('en') ? en : zh;
+    let timer = 0, timedOut = false;
     function render(action = 'read') {
       const value = state(action);
-      section.hidden = app.hidden || !value.supported;
+      const ready = value.supported === true, unsupported = value.availability === 'unsupported';
+      if (ready || unsupported) timedOut = false;
+      const unavailable = value.availability === 'unavailable' || timedOut;
+      section.hidden = app.hidden;
       legend.textContent = label('远程控制', 'Remote control');
       title.textContent = label('使用 UU 远程', 'Use UU Remote');
-      hint.textContent = label('需要 UU 远程 4.42 或更高版本。首次使用时在 UU 中选择这台电脑。',
-        'Requires UU Remote 4.42 or later. Select this computer in UU the first time.');
-      toggle.checked = value.enabled === true;
-      forget.hidden = !toggle.checked || !value.bound;
+      hint.textContent = ready ? label('需要 UU 远程 4.42 或更高版本。首次使用时在 UU 中选择这台电脑。',
+        'Requires UU Remote 4.42 or later. Select this computer in UU the first time.')
+        : unsupported ? label('当前电脑暂不支持 UU 远程接入。', 'UU Remote is unavailable for this computer.')
+        : unavailable ? label('未能确认当前电脑的远控状态，请重新检查。', 'Could not verify remote control for this computer. Check again.')
+        : label('正在确认当前电脑的远控状态…', 'Checking remote control for this computer…');
+      toggle.disabled = !ready;
+      if (ready) toggle.checked = value.enabled === true;
+      forget.disabled = !ready; forget.hidden = !ready || !toggle.checked || !value.bound;
       forget.textContent = label('解除 UU 设备绑定', 'Unlink UU device');
+      retry.textContent = label('重新检查', 'Check again'); retry.hidden = ready || unsupported || !unavailable;
+      if (ready || unsupported || unavailable || app.hidden) { clearTimeout(timer); timer = 0; }
+      else if (!timer && uuDialog.open) timer = setTimeout(() => { timer = 0; timedOut = true; if (uuDialog.open) render(); }, 8000);
       return value;
     }
-    toggle.onchange = event => { if (event.isTrusted) render(toggle.checked ? 'enable' : 'disable'); };
-    forget.onclick = event => { if (event.isTrusted) render('forget'); };
+    toggle.onchange = event => { if (event.isTrusted && !toggle.disabled) render(toggle.checked ? 'enable' : 'disable'); };
+    forget.onclick = event => { if (event.isTrusted && !forget.disabled) render('forget'); };
+    retry.onclick = event => { if (event.isTrusted) { timedOut = false; render('retry'); } };
     window.BridgeUURemote = {
       refresh() { if (uuDialog.open) render(); },
       menu(value) {
@@ -162,8 +174,11 @@
         return actions;
       }
     };
-    new MutationObserver(() => { if (uuDialog.open) render(); }).observe(uuDialog, {attributes:true, attributeFilter:['open']});
+    new MutationObserver(() => {
+      if (uuDialog.open) render(); else { clearTimeout(timer); timer = 0; }
+    }).observe(uuDialog, {attributes:true, attributeFilter:['open']});
     document.addEventListener('bridge-computer', () => { if (uuDialog.open) render(); });
+    if (uuDialog.open) render();
   }
   const account = document.getElementById('accounts-button');
   if (account) {

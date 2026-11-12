@@ -1,3 +1,61 @@
+## v2.2.1-preview.1 · Antigravity 接入、CLI 连接管理与会话体验改进
+
+本次预览版新增 Antigravity 接入，重点完善 CLI 连接释放与恢复、侧边聊天和文件浏览，并修复 Windows 客户端启动、手机连接恢复及模型列表读取中的问题。
+
+### 新增与改进
+
+- **Antigravity 接入。** 在手机和 Web 查看 Antigravity App、IDE、CLI 的本机历史，使用受支持的原生连接继续聊天、新建项目聊天、切换模型、发送附件和处理审批。增加按来源展示的账号信息，以及受支持默认本机 Google 登录的账号副本管理。[PR #150](https://github.com/try2love/codex-mobile-bridge/pull/150)
+- **CLI 连接管理更清晰。** 按当前 Agent、本机／SSH／WSL 和配置分组，支持单条或配置范围释放。共享服务操作前展示实际影响范围，区分等待任务结束、明确强制释放和结果待核验；改善释放后接回原会话的流程。[#122](https://github.com/try2love/codex-mobile-bridge/issues/122)
+- **CLI 账号与网络恢复。** 在受支持的本机接入中核验原生账号和代理变化，增加网络恢复入口；需要重建服务时先检查任务与审批，保留未发送内容。SSH 和 WSL 继续使用各自的账号、目录和运行环境。
+- **原生与临时侧聊。** 原生侧聊继续保留在父会话工作台中；恢复明确的临时侧聊入口，复用常规聊天的输入、附件、模型和审批界面。修复子标签错位及 Windows 原生侧聊的运行时连接问题。[#149](https://github.com/try2love/codex-mobile-bridge/issues/149)
+- **更完整的文件浏览。** 文件页支持经权限校验的宿主机目录、完整路径导航和“返回项目文件夹”；聊天中的文件链接可以定位到对应文件。项目外浏览为只读，上传和发送引用仍遵循原项目范围。[#160](https://github.com/try2love/codex-mobile-bridge/issues/160)
+- **共享聊天操作。** 输入框增加 `/` 命令入口，复用当前接入支持的操作；新建聊天名称改为可选，留空时保留原生自动命名行为。[#154](https://github.com/try2love/codex-mobile-bridge/issues/154) · [#161](https://github.com/try2love/codex-mobile-bridge/issues/161)
+- **消息展示与通知。** 展示可读取的原生交互日期和时间，支持授权音视频附件播放，精简会话提醒入口并保留独立通知控制。[#148](https://github.com/try2love/codex-mobile-bridge/issues/148) · [#158](https://github.com/try2love/codex-mobile-bridge/issues/158) · [#141](https://github.com/try2love/codex-mobile-bridge/issues/141)
+- **连接与桌面体验。** 自有服务器＋SSH 入口支持自定义 HTTPS 端口；macOS 菜单栏采用单色图标。[#145](https://github.com/try2love/codex-mobile-bridge/issues/145) · [PR #146](https://github.com/try2love/codex-mobile-bridge/pull/146) · [#156](https://github.com/try2love/codex-mobile-bridge/issues/156) · [PR #157](https://github.com/try2love/codex-mobile-bridge/pull/157)
+
+### 修复与优化
+
+- 修复 Windows 商店版 Codex 的启动身份、共享运行环境和就绪判断，改善初始化及冷启动恢复。
+- 改善 Windows Claude、Codex 正常退出时的窗口行为；修复 ZCode 本地连接的窗口路径匹配问题。[#153](https://github.com/try2love/codex-mobile-bridge/issues/153)
+- 改善 DSH 缺失连接器的确认修复及旧连接器兼容，连接器异常时仍可独立核验应用退出。
+- 修复 iOS 进入电脑时长时间停留在连接页、后台中断后不能继续，以及连接页“更多”按钮的安全区域问题；完善 Android Cookie 迁移和网关身份保留。[#159](https://github.com/try2love/codex-mobile-bridge/issues/159)
+- 修复项目目录或历史文件缺失时模型列表不可用的问题；改善独立 CLI 发现、WSL 首次扫描与显式启动。
+- 部分主机读取失败时保留已成功加载的聊天列表，并提供对应错误与重试入口；改善文件页连续返回和迟到响应处理。
+- Windows 更新前先检查影响安装的应用占用，减少下载完成后才发现无法更新的情况。
+
+### 使用范围与升级
+
+这是预览版本，欢迎反馈连接恢复、CLI 释放、侧边聊天和 Antigravity 接入的实际体验。桌面和 iOS 覆盖安装时保持原应用标识、签名和数据目录，不要先卸载。Android 本次提供独立的 **Bridge Preview**，与原 App 并存；请保留原 App，并在预览 App 中重新添加电脑连接，原绑定和草稿不会自动迁移。手机原生连接恢复等改动需要更新对应手机 App。
+
+Antigravity、独立配置及 WSL 相关能力仍以当前接入实际支持为准。临时侧聊仅适用于受支持的本机桌面入口，不写入原生历史，网关重启后不会恢复；关闭标签与结束临时会话是不同操作。恢复和释放结果不明时，不自动重发消息或重放操作。iOS 源码与未签名 IPA 仍需自行签名安装。
+
+### 贡献
+
+
+感谢 [@windowmmk](https://github.com/windowmmk) 在 [PR #150](https://github.com/try2love/codex-mobile-bridge/pull/150) 中提供的 Antigravity 接入基础，以及 [@heiqiu47](https://github.com/heiqiu47) 在 [PR #146](https://github.com/try2love/codex-mobile-bridge/pull/146) 和 [PR #157](https://github.com/try2love/codex-mobile-bridge/pull/157) 中贡献的自定义 HTTPS 端口与 macOS 菜单栏图标改进。
+
+---
+
+### English · Antigravity, CLI connection management and chat improvements
+
+This preview adds Antigravity integration and improves CLI handoff and recovery, side chats, file browsing, Windows startup and mobile connection recovery.
+
+- **Antigravity:** browse local App, IDE and CLI history and use supported native connections for chat continuation, project chats, model selection, attachments and approvals. View source-specific account information and manage snapshots for supported default local Google sign-ins. [PR #150](https://github.com/try2love/codex-mobile-bridge/pull/150)
+- **CLI management:** group connections by agent, local/SSH/WSL runtime and verified configuration. Preview the impact of shared-service operations, wait for active work, explicitly force supported releases, and distinguish uncertain results from completed handoffs. [#122](https://github.com/try2love/codex-mobile-bridge/issues/122)
+- **Account and network recovery:** check native account and proxy changes for supported local CLI connections. Preserve unsent input while checking tasks and approvals before service recovery. SSH and WSL retain their own accounts and environments.
+- **Side chats:** keep native side chats in the parent workbench and restore an explicit temporary side-chat option using shared chat controls. Fix attached-tab layout and Windows native side-chat runtime connections. [#149](https://github.com/try2love/codex-mobile-bridge/issues/149)
+- **Files:** browse authorized host directories, navigate by full path, return to the chat project and locate files referenced in messages. Browsing outside the project remains read-only; uploads and send-time references retain project boundaries. [#160](https://github.com/try2love/codex-mobile-bridge/issues/160)
+- **Chat controls:** add a shared `/` command menu, optional names for new chats, available native message dates and times, authorized audio/video playback, and simpler notification controls. [#154](https://github.com/try2love/codex-mobile-bridge/issues/154) · [#161](https://github.com/try2love/codex-mobile-bridge/issues/161) · [#148](https://github.com/try2love/codex-mobile-bridge/issues/148) · [#158](https://github.com/try2love/codex-mobile-bridge/issues/158) · [#141](https://github.com/try2love/codex-mobile-bridge/issues/141)
+- **Network and desktop:** support custom HTTPS ports for SSH server entries and a monochrome macOS menu-bar icon. [#145](https://github.com/try2love/codex-mobile-bridge/issues/145) · [PR #146](https://github.com/try2love/codex-mobile-bridge/pull/146) · [#156](https://github.com/try2love/codex-mobile-bridge/issues/156) · [PR #157](https://github.com/try2love/codex-mobile-bridge/pull/157)
+- **Fixes:** improve Windows Store Codex launch identity and readiness, quiet native exits, ZCode window matching, DSH connector recovery, iOS entry deadlines and foreground recovery, Android cookie migration, model catalogs without saved history, and partial chat-list refreshes. Check Windows update blockers before downloading. [#153](https://github.com/try2love/codex-mobile-bridge/issues/153) · [#159](https://github.com/try2love/codex-mobile-bridge/issues/159)
+
+For desktop and iOS upgrades, retain the existing identity, signature and data directory; do not uninstall first. Android is supplied as a separate **Bridge Preview** app that coexists with the original app. Keep the original app and add your computer connections to Preview; existing bindings and drafts are not migrated automatically. Update the corresponding mobile app for native connection changes. Antigravity, independent profiles and WSL capabilities depend on the selected native integration. Temporary side chats are limited to supported local desktop entry points, do not enter native history and do not survive gateway restart. Closing a tab does not end a temporary chat. Unknown writes are not automatically replayed. iOS source and unsigned IPA packages require your own signing.
+
+
+Thanks to [@windowmmk](https://github.com/windowmmk) for the Antigravity foundation in [PR #150](https://github.com/try2love/codex-mobile-bridge/pull/150), and [@heiqiu47](https://github.com/heiqiu47) for [PR #146](https://github.com/try2love/codex-mobile-bridge/pull/146) and [PR #157](https://github.com/try2love/codex-mobile-bridge/pull/157).
+
+---
+
 ## v2.2.0 · ZCode 接入、多信道连接与原生会话管理
 
 v2.2.0 将 ZCode 加入远程工作台，完善手机多信道切换、原生侧边聊天和账号模型管理，并改善连接恢复、通知与后台资源占用。

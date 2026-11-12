@@ -101,11 +101,11 @@ test('iOS missing resources stop connection visibly before replacing the current
 });
 
 
-test('native apps package the three original client icons from the shared web source',()=>{
+test('native apps package client icons from the shared web source',()=>{
  const objects=xcodeObjects(),resources=[...objects.values()].find(body=>field(body,'isa')==='PBXResourcesBuildPhase'&&field(body,'files')?.includes('A00000000000000000000054'));
  const paths=ids(field(resources,'files')).map(id=>field(objects.get(field(objects.get(id),'fileRef')),'path'));
  const build=read('scripts/build-mobile-android.py'),gradle=read('mobile/android-push/build.gradle');
- for(const provider of ['codex','claude','deepseek'])assert.ok(paths.includes('../../web/client-icons/'+provider+'.png'));
+ for(const provider of ['codex','claude','deepseek','zcode','antigravity'])assert.ok(paths.includes('../../web/client-icons/'+provider+'.png'));
  assert.match(build,/archive.write\(ROOT\/'web\/client-icons'\/f'\{provider\}.png', 'assets\/'\+provider\+'.png'\)/);
  assert.ok(gradle.includes('../../web/client-icons'));
 });

@@ -57,6 +57,8 @@ const titles={'desktop-sessions':'桌面会话',harness:'Harness 官方 Web',ove
 const watchPanel=new WatchPanel({root:$('watches'),change:value=>api.notificationWatches(value)});
 const harnessPanel=typeof HarnessPanel==='undefined'?null:new HarnessPanel({root:$('harness-panel'),api,t,feedback});
 const desktopConnections=typeof DesktopConnectionsPanel==='undefined'?null:new DesktopConnectionsPanel({root:$('desktop-connections'),api,feedback});
+const codexPathExample=desktopConnections?.configurationExample?.('codex')||'~/.codex';
+$('codex-home').placeholder=codexPathExample;
 // Only these scalar controls submit through collect(). Client editors and instant-save
 // panels may mount inside the same form but own their values and validation.
 const gatewayFieldIds=new Set([
@@ -194,7 +196,7 @@ function tab(name){const requested=name;name=moduleName(name);activeTab=name;
   document.querySelectorAll('[data-panel]').forEach(node=>node.hidden=moduleName(node.dataset.panel)!==name);
   desktopConnections?.syncPolling();
   if(name==='accounts'){
-    if(!desktopConnections?.clients)desktopConnections?.scan();
+    if(!desktopConnections?.clients)desktopConnections?.loadClients();
     else {desktopConnections.refresh();desktopConnections.refreshClients();}
     if(!$('harness-panel').classList.contains('client-config-hidden'))harnessPanel?.refresh();
     if(typeof wslAccountScopes!=='undefined')for(const scope of wslAccountScopes)scope.loadVisible();
@@ -587,7 +589,7 @@ const claudeCliAccessPanel=typeof CliAccessPanel==='undefined'?null:new CliAcces
 document.addEventListener('bridge-client-config',event=>{if(event.detail==='deepseek')harnessPanel?.refresh();claudeCliAccessPanel?.clear();if(event.detail==='claude'&&!$('cli-access-claude-content').hidden)claudeCliAccessPanel?.refresh();});
 let codexAccountEntry='desktop';
 document.addEventListener('bridge-client-config',event=>{const next=event.detail?.startsWith('codex:')?event.detail:'desktop';if(codexAccountEntry!==next){codexAccountEntry=next;accountsPanel?.clear();accountsPanel?.resetForm();}if(event.detail==='codex'||next!=='desktop')accountsPanel?.refresh();});
-const accountsPanel=typeof AccountsPanel==='undefined'?null:new AccountsPanel({root:$('accounts-content'),desktop:true,read:force=>api.accounts({entry:codexAccountEntry,action:'list',resetForecast:accountsPanel?.visible()&&accountsPanel?.value?.resetDynamicEnabled?(force?'refresh':true):false}),request:value=>api.accounts({...value,entry:codexAccountEntry}),onUpdate:value=>{if(codexAccountEntry==='desktop')desktopConnections?.renderAccount(value);}});
+const accountsPanel=typeof AccountsPanel==='undefined'?null:new AccountsPanel({root:$('accounts-content'),desktop:true,configurationPlaceholder:codexPathExample,read:force=>api.accounts({entry:codexAccountEntry,action:'list',resetForecast:accountsPanel?.visible()&&accountsPanel?.value?.resetDynamicEnabled?(force?'refresh':true):false}),request:value=>api.accounts({...value,entry:codexAccountEntry}),onUpdate:value=>{if(codexAccountEntry==='desktop')desktopConnections?.renderAccount(value);}});
 if(accountsPanel){
   if(desktopConnections)desktopConnections.onClientsRendered=()=>accountsPanel.resume();
   const visible=accountsPanel.visible.bind(accountsPanel);

@@ -55,6 +55,7 @@ DSH 的高层 `sessionController.rename` 能处理冷会话，但会解析或恢
 
 ## 既有记录审计
 
+- [原生命令显示](../bug-fix/2026-11-11-claude-native-command-display.md)：默认标题跳过内部 meta 与 synthetic 记录；原生 custom-title 优先级和原生日志保持不变。
 - [显示元数据与别名](2026-10-28-desktop-session-display-metadata.md)：部分取代。本轮撤销改名的别名回退，旧方案理由保留，Bridge 项目/分区仍有效。
 - [原生会话元数据](2026-10-28-native-session-metadata.md)：部分重叠。保留非激活和原 cwd 约束，补充 CLI 控制通路、DSH Session store 与 ZCode 持久任务服务。
 - [共享会话菜单](2026-10-28-shared-session-menu.md)：交互外壳继续复用，能力与原生结果由本文约束；不新增独立客户端菜单实现。

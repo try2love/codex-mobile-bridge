@@ -82,7 +82,7 @@ class Workbench {
     this.chat.style.setProperty('--wb-left',`calc(${ratio*100}% - var(--wb-divider-width, 8px) / 2)`);
     this.divider.setAttribute('aria-valuemin',String(Math.round(minimum*100)));this.divider.setAttribute('aria-valuemax',String(Math.round((1-minimum)*100)));this.divider.setAttribute('aria-valuenow',String(Math.round(ratio*100)));
   }
-  split(id){if(!this.canSplit()||!this.current?.files.some(t=>t.id===id))return;if(id!=='files')this.cancelLocate();this.rememberScroll();this.current.splitTab=id;this.current.active=id;this.paint();}
+  split(id){if(!this.canSplit()||!this.current?.files.some(t=>t.id===id&&!t.chatId))return;if(id!=='files')this.cancelLocate();this.rememberScroll();this.current.splitTab=id;this.current.active=id;this.paint();}
   unsplit(){if(!this.current)return;this.current.active=this.current.splitTab||this.current.active;this.current.splitTab=null;this.paint();}
   endDrag(){this.dragTab=null;this.layout.classList.remove('wb-dragging');}
   node(tag, cls = '', text) { const n = document.createElement(tag); n.className = cls; if (text !== undefined) { n._rawText=text;n.textContent = ['pre','code'].includes(tag)?text:BridgeI18n.t(text); const source=BridgeI18n.source(text); if(source&&!['pre','code'].includes(tag))n.dataset.i18n=source; } return n; }
@@ -163,13 +163,35 @@ class Workbench {
       icon.append(image); icon.classList.add('wb-has-thumbnail');
     } catch (error) { if (!signal.aborted) icon.dataset.thumbnailFailed = 'true'; }
   }
-  open(id, host) {
+  async resolveChat(id, host, read) {
+    let rootId=id, title, cwd;
+    const seen=new Set();
+    for (;;) {
+      if(seen.has(rootId))throw Error('侧边聊天的父会话关系无效');
+      seen.add(rootId);
+      const metadata=await read(rootId);
+      if(rootId===id)title=metadata.title;
+      cwd=metadata.cwd;
+      const parent=metadata.attachedParent;
+      if(!parent)break;
+      if(!parent.available||typeof parent.id!=='string'||parent.host!==host)throw Error('主聊天不可用');
+      rootId=parent.id;
+    }
+    return {rootId,title,cwd};
+  }
+  open(id, host, {rootId=id, title, cwd} = {}) {
     this.rememberScroll();
-    const key = (this.provider&&this.provider!=='codex'?this.provider+'|':'')+host + '|' + id;
+    const key = (this.provider&&this.provider!=='codex'?this.provider+'|':'')+host + '|' + rootId;
     if (this.current?.key !== key) this.cancelLocate();
     if (this.previewFullscreen && this.previewFullscreen.session.key !== key) this.closePreviewFullscreen();
-    if (!this.sessions.has(key)) this.sessions.set(key, {id, host, key, provider:this.provider, active: 'chat', files: [], directory: '', search: '', hidden: false, scroll: 0});
-    this.current = this.sessions.get(key); this.paint();
+    if (!this.sessions.has(key)) this.sessions.set(key, {id:rootId, host, key, provider:this.provider, active: 'chat', files: [], directory: '', search: '', hidden: false, scroll: 0});
+    this.current = this.sessions.get(key);
+    this.current.chatId = id;
+    this.current.cwd = cwd;
+    this.current.scroll = this.current.chatScroll?.get(id) || 0;
+    if (id !== rootId && !this.current.files.some(tab => tab.chatId === id)) this.current.files.push({id:'child:'+id, chatId:id, name:title||BridgeI18n.t('侧边聊天'), body:this.node('div')});
+    this.current.active = id === rootId ? 'chat' : 'child:'+id;
+    this.paint();
   }
   reset(provider=null) {
     if(provider)window.BridgeMermaidCards?.resetScope(this.mermaidScope);
@@ -181,25 +203,26 @@ class Workbench {
     for(const [key,session] of this.sessions)if(!provider||session.provider===provider){for(const tab of session.files){tab.controller?.abort();tab.pdf?.dispose();tab.html?.dispose();tab.markdown?.dispose();tab.fileFont?.dispose();tab.git?.dispose();tab.terminal?.dispose();tab.agents?.dispose();tab.sideChat?.dispose();}this.sessions.delete(key);}
     if(visible){this.current=null;this.chat.classList.remove('workbench-active','wb-split');this.endDrag();this.panel.replaceChildren();this.panel.hidden=true;this.tabs.replaceChildren();}
   }
-  get isFileVisible() { return !!this.current && !this.splitMode && this.current.active !== 'chat'; }
+  get isFileVisible() { return !!this.current && !this.splitMode && this.current.active !== 'chat' && !this.current.active.startsWith('child:'); }
   endpoint(session, action) {
     const path = session.provider && session.provider !== 'codex'
       ? ClientIdentity.path(session.provider,action,session.id)
       : '/api/sessions/'+session.id+'/'+action+'?host='+encodeURIComponent(session.host);
     return window.BridgeRelayURL?.(path)||path;
   }
-  url(session, operation = '', path = '') { return this.endpoint(session,'workspace'+(operation?'/'+operation:''))+'&path='+encodeURIComponent(path); }
-  rememberScroll() { const timeline=this.chat.querySelector('.timeline');if (this.current && !this.chat.classList.contains('workbench-active') && timeline.clientHeight) this.current.scroll = timeline.scrollTop; }
-  setAttachedParent(parent) {
-    if (!this.current || JSON.stringify(this.current.attachedParent || null) === JSON.stringify(parent || null)) return;
-    this.current.attachedParent = parent || null; this.paint();
+  url(session, operation = '', path = '', scope = 'host') {
+    return this.endpoint(session,'workspace'+(operation?'/'+operation:''))+'&path='+encodeURIComponent(path)+
+      (scope==='host'&&['','info','preview','download'].includes(operation)?'&scope=host':'');
   }
+  rememberScroll() { const timeline=this.chat.querySelector('.timeline');if (this.current && !this.chat.classList.contains('workbench-active') && timeline.clientHeight) {this.current.scroll = timeline.scrollTop;(this.current.chatScroll ||= new Map()).set(this.current.chatId||this.current.id,timeline.scrollTop);} }
   select(id) {
     if (!this.current) return;
+    const target = id === 'chat' ? this.current.id : this.current.files.find(tab => tab.id === id)?.chatId;
+    if (target && target !== (this.current.chatId || this.current.id)) return this.openChat(target, this.current.host);
     if(id!=='terminal')this.current.files.find(tab=>tab.id==='terminal')?.terminal?.clearCompletion?.();
     if (id !== 'files') this.cancelLocate();
     if (this.previewFullscreen && this.previewFullscreen.tab.id !== id) this.closePreviewFullscreen();
-    this.rememberScroll(); this.current.active = id; if(this.current.splitTab&&id!=='chat')this.current.splitTab=id; this.paint();
+    this.rememberScroll(); this.current.active = id; if(this.current.splitTab&&id!=='chat'&&!this.current.files.find(tab=>tab.id===id)?.chatId)this.current.splitTab=id; this.paint();
     if(id==='terminal')this.current.files.find(tab=>tab.id==='terminal')?.terminal?.focusOnSelect?.();
     if(id==='sidechat')this.current.files.find(tab=>tab.id==='sidechat')?.sideChat?.load();
     if (id === 'chat') { const session = this.current; requestAnimationFrame(() => { if (session === this.current && session.active === 'chat') this.chat.querySelector('.timeline').scrollTop = session.scroll; }); }
@@ -211,25 +234,20 @@ class Workbench {
     for (const stage of this.panel.querySelectorAll('.wb-pdf-stage,.wb-source-body')) this.scrollPositions.set(stage, {top:stage.scrollTop, left:stage.scrollLeft});
     this.splitEligible=this.canSplit();
     this.tabs.replaceChildren();
-    if (session.attachedParent?.available) {
-      const parent = this.button('返回主聊天', () => this.openChat(session.attachedParent.id, session.host));
-      parent.className = 'wb-parent-chat'; this.tabs.append(parent);
-    }
-    for (const tab of [{id: 'chat', name: BridgeI18n.t(session.attachedParent ? '侧边聊天' : '聊天')}, ...session.files]) {
-      const group = this.node('div', 'wb-tab');group.dataset.tab=tab.id; group.classList.toggle('selected', this.splitMode ? ['chat',session.splitTab].includes(tab.id) : session.active === tab.id);
-      const select = this.button(tab.name, () => this.select(tab.id)); if(tab.id.startsWith('file:'))this.raw(select); select.setAttribute('role', 'tab'); select.setAttribute('aria-selected', String(this.splitMode?['chat',session.splitTab].includes(tab.id):session.active===tab.id));
+    for (const tab of [{id: 'chat', name: BridgeI18n.t('聊天')}, ...session.files]) {
+      const group = this.node('div', 'wb-tab');group.dataset.tab=tab.id; group.classList.toggle('selected', this.splitMode ? [session.chatId&&session.chatId!==session.id?'child:'+session.chatId:'chat',session.splitTab].includes(tab.id) : session.active === tab.id);
+      const select = this.button(tab.name, () => this.select(tab.id)); if(tab.id.startsWith('file:'))this.raw(select); select.setAttribute('role', 'tab'); select.setAttribute('aria-selected', String(this.splitMode?[session.chatId&&session.chatId!==session.id?'child:'+session.chatId:'chat',session.splitTab].includes(tab.id):session.active===tab.id));
       group.append(select);
-      group.draggable=this.splitEligible&&tab.id!=='chat';
+      group.draggable=this.splitEligible&&tab.id!=='chat'&&!tab.chatId;
       group.ondragstart=event=>{if(!group.draggable){event.preventDefault();return;}this.dragTab=tab.id;event.dataTransfer.setData('text/plain',tab.id);event.dataTransfer.effectAllowed='move';this.layout.classList.add('wb-dragging');};
       group.ondragend=()=>this.endDrag();
       if (tab.id !== 'chat') group.append(this.button('×', () => this.close(tab.id), BridgeI18n.t('关闭')));
-      else if (session.attachedParent?.available) group.append(this.button('×', () => this.openChat(session.attachedParent.id, session.host), BridgeI18n.t('关闭')));
       this.tabs.append(group);
     }
     this.chat.classList.toggle('workbench-active', this.isFileVisible); this.panel.hidden = !this.isFileVisible&&!this.splitMode;
-    this.chat.classList.toggle('wb-split',this.splitMode);this.splitButton.hidden=!this.splitEligible;this.splitButton.disabled=!this.splitMode&&session.active==='chat';
+    this.chat.classList.toggle('wb-split',this.splitMode);this.splitButton.hidden=!this.splitEligible;this.splitButton.disabled=!this.splitMode&&(session.active==='chat'||session.active.startsWith('child:'));
     const splitLabel=this.splitMode?'退出分屏':'在右侧分屏';this.splitButton.dataset.i18nTitle=splitLabel;this.splitButton.dataset.i18nAriaLabel=splitLabel;this.splitButton.title=BridgeI18n.t(splitLabel);this.splitButton.setAttribute('aria-label',BridgeI18n.t(splitLabel));this.splitButton.setAttribute('aria-pressed',String(this.splitMode));if(this.splitMode)this.setRatio(session.splitRatio??.5,false);
-    const active = session.files.find(t => t.id === (this.splitMode?session.splitTab:session.active));
+    const active = session.files.find(t => !t.chatId && t.id === (this.splitMode?session.splitTab:session.active));
     // Keep the visible tool mounted across resizing (including its focus and scroll).
     if(this.panel.firstElementChild!==active?.body)this.panel.replaceChildren(...(active?[active.body]:[]));
     if (active) {
@@ -244,7 +262,7 @@ class Workbench {
     const floating=this.panel.querySelector('.wb-float'); if(floating){floating.querySelector('.wb-float-close').click();return true;}
     const session=this.current,files=session?.files.find(tab=>tab.id==='files');
     const viewingFiles=files&&(this.splitMode?session.splitTab==='files':session.active==='files');
-    if(viewingFiles&&session.directory){this.directory(session,files,session.directory.split('/').slice(0,-1).join('/'));return true;}
+    if(viewingFiles&&files.parentPath!=null&&session.directory!==files.initialDirectory){this.directory(session,files,files.parentPath);return true;}
     if(this.splitMode){if(!viewingFiles)return false;session.splitTab=null;this.select('chat');return true;}
     if(!this.isFileVisible)return false;
     this.select('chat');return true;
@@ -252,6 +270,12 @@ class Workbench {
   async close(id) {
     const session = this.current, index = session.files.findIndex(t => t.id === id);
     if (index < 0) return;
+    if (session.files[index].chatId) {
+      const selected = session.chatId === session.files[index].chatId;
+      session.files.splice(index, 1);
+      if (selected) return this.openChat(session.id, session.host);
+      this.paint(); return;
+    }
     if (id === 'files') this.cancelLocate();
     if (this.previewFullscreen?.tab === session.files[index]) this.closePreviewFullscreen();
     if (!session.files[index] || session.files[index].id !== id) return;
@@ -273,10 +297,13 @@ class Workbench {
   referenceFile(session, info) {
     const input=this.composer;
     if(session!==this.current||!input||input.disabled||input.readOnly)return false;
+    if(info.projectPath===null){this.notify(BridgeI18n.t('只能引用当前聊天项目中的文件'));return false;}
+    if(typeof info.projectPath==='string')info={...info,path:info.projectPath};
     if(!this.attachReference?.(info))return false;
     this.select('chat');this.onReference?.();input.focus();return true;
   }
   cancelLocate() {
+    this.locateGeneration=(this.locateGeneration||0)+1;
     const state=this.locateState;if(!state)return;
     this.locateState=null;
     if(state.frame!==undefined)cancelAnimationFrame(state.frame);
@@ -301,16 +328,24 @@ class Workbench {
   async locate(session,path) {
     if(session!==this.current)return;
     this.cancelLocate();
-    const directory=path.split('/').slice(0,-1).join('/');
+    const generation=this.locateGeneration;
+    if(!/^(?:[a-z]:[\\/]|\/)/i.test(path)){
+      const info=await this.request(this.url(session,'info',path));
+      if(session!==this.current||generation!==this.locateGeneration)return;
+      path=info.absolutePath;
+    }
+    path=path.replaceAll('\\','/');
+    const slash=path.lastIndexOf('/'),directory=path.slice(0,slash)||(path.startsWith('/')?'/':'');
+    const parent=/^[a-z]:$/i.test(directory)?directory+'/':directory;
     let tab=session.files.find(t=>t.id==='files');
     const loadedRow=tab?.list&&Array.from(tab.list.children).find(row=>row.dataset.path===path);
-    const reusable=tab?.loaded&&tab.list&&session.directory===directory&&session.search===''&&
+    const reusable=tab?.loaded&&tab.list&&session.directory===parent&&session.search===''&&
       (loadedRow||(session.hidden&&Number.isInteger(tab.next)));
     session.search='';if(!reusable)session.hidden=true;
     if(!tab){tab={id:'files',name:BridgeI18n.t('文件'),body:this.node('div','wb-browser')};session.files.unshift(tab);}
-    const state=this.locateState={session,tab,directory,row:null};
+    const state=this.locateState={session,tab,directory:parent,row:null};
     this.select('files');
-    if(!reusable){const reading=this.directory(session,tab,directory,false,state);this.watchLocateInput(state,tab.list);await reading;}
+    if(!reusable){const reading=this.directory(session,tab,parent,false,state);this.watchLocateInput(state,tab.list);await reading;}
     else{
       if(tab.loading&&loadedRow){tab.controller?.abort();tab.loading=false;}
       this.watchLocateInput(state,tab.list);
@@ -400,32 +435,50 @@ class Workbench {
     }
     this.select('terminal');
   }
+  directoryParent(path){
+    const value=path.replaceAll('\\','/').replace(/\/+$/,'');
+    if(!/^(?:\/|[a-z]:\/)/i.test(value)||/^\/\/[^/]+\/[^/]+$/.test(value))return null;
+    const parent=value.slice(0,value.lastIndexOf('/'))||'/';
+    return /^[a-z]:$/i.test(parent)?parent+'/':parent;
+  }
   async directory(session, tab, path, append = false, locateState = null) {
     if(this.locateState&&this.locateState!==locateState)this.cancelLocate();
     tab.controller?.abort(); const controller = tab.controller = new AbortController();tab.loading=true;
     if (!append) {
       if (session === this.current) this.stopThumbnails();
-      session.directory = path; tab.next=null;tab.loaded=false;tab.body.replaceChildren();
+      session.directory = path; tab.parentPath=this.directoryParent(path);tab.next=null;tab.loaded=false;tab.body.replaceChildren();
       const toolbar = this.node('div', 'wb-toolbar');
-      const up = this.button('‹', () => this.directory(session, tab, path.split('/').slice(0, -1).join('/')), BridgeI18n.t('上一级目录')); up.disabled = !path;
-      const crumb = this.node('div', 'wb-path', path || BridgeI18n.t('项目文件')); if(path)this.raw(crumb);else crumb.dataset.i18nTitle='当前聊天的项目目录';crumb.title = path || BridgeI18n.t('当前聊天的项目目录');
-      toolbar.append(up, crumb, this.button('↻', () => this.directory(session, tab, path), BridgeI18n.t('刷新目录')), this.button(BridgeI18n.t('上传'), () => this.uploadDialog(session, tab, path)));
+      tab.up = this.button('‹', () => this.directory(session, tab, tab.parentPath), '上一级目录');tab.up.disabled=true;
+      const address=this.node('form','wb-address'),crumb=this.node('input','wb-path');crumb.value=path;crumb.type='text';crumb.spellcheck=false;
+      crumb.dataset.i18nAriaLabel='完整目录路径';crumb.setAttribute('aria-label',BridgeI18n.t('完整目录路径'));crumb.placeholder=session.project||BridgeI18n.t('当前聊天的项目目录');
+      address.onsubmit=event=>{event.preventDefault();session.search='';this.directory(session,tab,crumb.value.trim());};
+      const go=this.button('前往',()=>address.requestSubmit());address.append(crumb,go);
+      tab.upload=this.button('上传',()=>this.uploadDialog(session,tab,tab.projectPath));tab.upload.disabled=true;
+      toolbar.append(tab.up,address,this.button('↻',()=>this.directory(session,tab,session.directory),'刷新目录'),tab.upload);
       const filters = this.node('div', 'wb-filters');
       const search = this.node('input'); search.type = 'search'; search.setAttribute("data-i18n-placeholder",'搜索当前目录');search.placeholder = BridgeI18n.t('搜索当前目录'); search.setAttribute("data-i18n-aria-label",'搜索当前目录');search.setAttribute('aria-label', BridgeI18n.t('搜索当前目录')); search.value = session.search;
-      const form = this.node('form', 'wb-search'); form.append(search, this.button(BridgeI18n.t('搜索'), () => { session.search = search.value; this.directory(session, tab, path); }));
-      form.onsubmit = e => { e.preventDefault(); session.search = search.value; this.directory(session, tab, path); };
+      const form = this.node('form', 'wb-search'); form.append(search, this.button(BridgeI18n.t('搜索'), () => { session.search = search.value; this.directory(session, tab, session.directory); }));
+      form.onsubmit = e => { e.preventDefault(); session.search = search.value; this.directory(session, tab, session.directory); };
       const label = this.node('label'), hidden = this.node('input'); hidden.type = 'checkbox'; hidden.checked = session.hidden;
-      hidden.onchange = () => { session.hidden = hidden.checked; this.directory(session, tab, path); }; label.append(hidden, this.node('span', '', '隐藏文件'));
+      hidden.onchange = () => { session.hidden = hidden.checked; this.directory(session, tab, session.directory); }; label.append(hidden, this.node('span', '', '隐藏文件'));
       filters.append(form, label); tab.list = this.node('div', 'wb-file-list'); tab.status = this.node('p', 'wb-status', BridgeI18n.t('正在读取文件…')); tab.status.setAttribute('role', 'status');
-      tab.body.append(toolbar, filters, tab.status, tab.list);
+      const summary=this.node('div','wb-file-summary');
+      tab.project=this.button('返回项目文件夹',()=>{session.search='';this.directory(session,tab,session.project);});
+      tab.project.disabled=!session.project||path===session.project;
+      summary.append(tab.status,tab.project);tab.body.append(toolbar, filters, summary, tab.list);
     }
     try {
       const url = this.url(session, '', path) + '&hidden=' + session.hidden + '&search=' + encodeURIComponent(session.search) + '&offset=' + (append ? tab.next : 0);
       const result = await this.request(url, undefined, controller.signal);
       if (controller.signal.aborted || tab.controller!==controller || this.sessions.get(session.key)!==session || !session.files.includes(tab) || session.directory!==path) return;
-      session.project = result.project; const crumb=tab.body.querySelector('.wb-path');delete crumb.dataset.i18n;crumb.textContent = result.project + (path ? ' / ' + path : '');
+      session.project=result.project;session.directory=result.path;
+      tab.project.disabled=!result.project||result.path===result.project;
+      if(!path)tab.initialDirectory=result.path;
+      if(locateState)locateState.directory=result.path;
+      tab.parentPath=result.parentPath;tab.projectPath=result.projectPath;tab.up.disabled=result.parentPath==null;tab.upload.disabled=result.projectPath==null;
+      const crumb=tab.body.querySelector('.wb-path');crumb.value=result.path;crumb.title=result.path;
       delete tab.status.dataset.i18n;
-      tab.status.replaceChildren(...(result.total ? [this.node('span', '', String(result.total)), this.node('span', '', ' 项 · '), this.node('span', '', session.host === 'local' ? '电脑上的项目' : 'SSH 项目')] : [this.node('span', '', '当前目录没有匹配的文件')]));
+      tab.status.replaceChildren(...(result.total ? [this.node('span', '', String(result.total)), this.node('span', '', ' 项 · '), this.node('span', '', session.host === 'local' ? '电脑上的文件' : 'SSH 文件')] : [this.node('span', '', '当前目录没有匹配的文件')]));
       tab.body.querySelector('.wb-load-more')?.remove();
       for (const entry of result.entries) {
         const row = this.raw(this.button('', () => { if (entry.kind === 'directory') { session.search = ''; this.directory(session, tab, entry.path); } else this.preview(session, entry); }, entry.name));
@@ -435,7 +488,7 @@ class Workbench {
         tab.list.append(row);
       }
       tab.next = result.nextOffset;tab.loaded=true;
-      if (tab.next !== null) { const more = this.button(BridgeI18n.t('加载更多'), () => this.directory(session, tab, path, true)); more.className = 'wb-load-more'; tab.body.append(more); }
+      if (tab.next !== null) { const more = this.button(BridgeI18n.t('加载更多'), () => this.directory(session, tab, session.directory, true)); more.className = 'wb-load-more'; tab.body.append(more); }
       if (session === this.current) this.refreshThumbnails();
     } catch (error) { if (!controller.signal.aborted && this.sessions.has(session.key) && error.name !== 'AbortError') { tab.status.textContent=BridgeI18n.t(error.message); tab.status.classList.add('error'); } }
     finally {if(tab.controller===controller)tab.loading=false;}
@@ -593,6 +646,8 @@ class Workbench {
     } catch (error) { if (error.name !== 'AbortError') tab.body.replaceChildren(this.node('p', 'wb-status error', error.message), this.button(BridgeI18n.t('重试'), () => { this.close(id); this.preview(session, entry); })); }
   }
   uploadDialog(session, tab, directory) {
+    if(typeof directory!=='string')return;
+    const viewedDirectory=session.directory;
     const dialog = this.node('dialog', 'picker wb-upload'), form = this.node('form');
     const file = this.node('input'); file.type = 'file'; file.required = true; file.setAttribute("data-i18n-aria-label",'选择上传文件');file.setAttribute('aria-label', BridgeI18n.t('选择上传文件'));
     const name = this.node('input'); name.required = true; name.setAttribute("data-i18n-aria-label",'保存文件名');name.setAttribute('aria-label', BridgeI18n.t('保存文件名')); name.setAttribute("data-i18n-placeholder",'保存文件名');name.placeholder = BridgeI18n.t('保存文件名');
@@ -612,7 +667,7 @@ class Workbench {
       try {
         const result = await this.upload(this.url(session, 'upload', path), selected, value => { progress.value = value; status.textContent = value === 100 ? BridgeI18n.t('正在确认保存结果…') : BridgeI18n.t('正在上传 ') + value + '%'; });
         dialog.close(); this.notify(result.existing ? BridgeI18n.t('同名文件内容一致，已核对保存结果') : BridgeI18n.t('文件已上传到项目目录'));
-        if (this.sessions.has(session.key) && session.files.includes(tab) && session.directory === directory) this.directory(session, tab, directory);
+        if (this.sessions.has(session.key) && session.files.includes(tab) && session.directory === viewedDirectory) this.directory(session, tab, viewedDirectory);
       } catch (failure) { error.textContent=BridgeI18n.t(failure.message); status.textContent = ''; }
       finally { submit.disabled = false; file.disabled = name.disabled = false; }
     };

@@ -18,6 +18,28 @@ function fixture({accounts=false}={}){
   return {panel,nodes,timers,calls,errors,scan,pages,selected,storage,prompts,choices,initializations,setInitializeChoice:value=>initializeChoice=value,decideInitialize:value=>finishInitialize(value),setChoice:value=>closeChoice=value,decide:value=>finishChoice(value),statuses,workspace,claudeHome,claudeData,input,choose,root,document:context.document,setChosen:value=>chosen=value,poll:async()=>{panel.syncPolling();await timers.find(Boolean)?.fn();},apply:()=>vm.runInContext('BridgeI18n.apply()',context),confirm:value=>confirmed=value,setHandler:fn=>handler=fn,all:()=>all(nodes['client-overview']),text:()=>all(nodes['client-overview']).map(n=>n.textContent).join('\n'),english:()=>vm.runInContext("BridgeI18n.setLanguage('en')",context)};
 }
 
+test('Antigravity management edits only the selected source session without claiming accounts support',async()=>{
+  const ui=fixture(),client={id:'antigravity',name:'Antigravity',enabled:true,installed:true,capabilities:{accounts:false,management:true}};ui.panel.clients=[client];
+  const sources=['app','cli','ide'].map(id=>({id,name:id.toUpperCase(),historyAvailable:true,connected:id==='cli',sessions:[{id:id+'-session',title:id,model:'',permissionMode:'desktop'}]}));
+  ui.setHandler(async body=>body.operation==='catalog'?{models:[{id:'cli-model',name:'CLI Model'}],cache:{identity:'cli-account'},capabilities:{models:true}}:{enabled:true,surfaces:sources,plugin:{active:true},permissionOptions:[{value:'desktop',label:'电脑端处理'},{value:'mobile-ask',label:'手机端审批'}]});
+  await ui.panel.manageClient(client);await new Promise(setImmediate);const root=ui.pages.get('antigravity').querySelector('[data-antigravity-management]');assert.ok(root);
+  const [source,session,model,permission]=root.querySelectorAll('select'),buttons=root.querySelectorAll('button');
+  assert.equal(source.value,'app');assert.equal(session.value,'app-session');assert.equal(model.disabled,true);assert.equal(permission.disabled,false);
+  source.value='cli';source.onchange();assert.equal(session.value,'cli-session');await buttons.find(b=>b.textContent==='刷新模型').onclick();
+  assert.equal(ui.calls.at(-1).surface,'cli');assert.equal(ui.calls.at(-1).sessionId,'cli-session');model.value='cli-model';model.onchange();
+  assert.equal(buttons.find(b=>b.textContent==='应用模型').disabled,false);
+  source.value='ide';source.onchange();assert.equal(model.value,'');assert.equal(buttons.find(b=>b.textContent==='应用模型').disabled,true);
+  assert.equal(ui.calls.some(body=>body.action==='accounts'),false);
+});
+
+test('Antigravity management failures block stale configuration until an explicit reload',async()=>{
+  const ui=fixture(),client={id:'antigravity',name:'Antigravity',capabilities:{management:true}};ui.panel.clients=[client];
+  ui.setHandler(async()=>{throw Error('配置读取失败');});await ui.panel.manageClient(client);await new Promise(setImmediate);
+  const root=ui.pages.get('antigravity').querySelector('[data-antigravity-management]');assert.equal(root.querySelector('[role="alert"]').textContent,'配置读取失败');
+  assert.equal(root.querySelectorAll('button').find(b=>b.textContent==='应用模型').disabled,true);
+  assert.equal(root.querySelectorAll('button').find(b=>b.textContent==='应用审批方式').disabled,true);
+});
+
 test('first Claude setup guides both permissions without launching, trusting or copying the connector',async()=>{
   const ui=fixture(),workspace='/Users/fixture/本地文稿/想法/claude';
   ui.panel.clients=[{id:'claude',installed:true,enabled:true,connected:false}];ui.panel.connectionValue={claudeWorkspace:workspace};
@@ -172,6 +194,27 @@ test('desktop ZCode access switch stays separate from private-pipe initializatio
  assert.equal(writes().length,1);assert.deepEqual(ui.initializations,['zcode']);
  ui.panel.operationFailures=new Map([['zcode',{action:'initialize',uncertain:false}]]);ui.setInitializeChoice(true);
  await ui.panel.retryOperation('zcode');assert.equal(writes().at(-1).initializeDesktop,true);assert.equal(writes().at(-1).provider,'zcode');
+});
+
+test('failed ZCode enable keeps initialization reachable and retry requests consent',async()=>{
+ for(const uncertain of [false,true]){
+  const ui=fixture(),client={id:'zcode',name:'ZCode',configured:true,installed:true,enabled:true,canInitializeDesktop:true,pipeSupported:true,connectionMode:'private-pipe',setupStatus:'needs-initialization'};
+  ui.panel.clients=[client];ui.panel.operationFailures=new Map([['zcode',{action:'enable',uncertain,message:'Initialize local connection first',connectionMode:'private-pipe'}]]);
+  ui.setHandler(async()=>({clients:[client]}));ui.panel.renderClients();
+  const initialize=ui.all().find(node=>node.tag==='button'&&node.textContent==='初始化连接');
+  assert.equal(!!initialize,!uncertain);
+  if(uncertain){await ui.panel.retryOperation('zcode');assert.equal(ui.initializations.length,0);assert.equal(ui.calls.length,0);continue;}
+  ui.setInitializeChoice(false);await ui.panel.retryOperation('zcode');assert.deepEqual(ui.initializations,['zcode']);assert.equal(ui.calls.length,0);
+  ui.setInitializeChoice({connectionMode:'private-pipe'});await initialize.onclick();
+  const writes=ui.calls.filter(call=>call.action==='toggle-client');assert.equal(writes.length,1);assert.equal(writes[0].initializeDesktop,true);assert.equal(writes[0].connectionMode,'private-pipe');
+ }
+});
+
+test('retrying an official ZCode connection preserves its transport without local initialization',async()=>{
+ const ui=fixture(),client={id:'zcode',name:'ZCode',configured:true,installed:true,enabled:true,canInitializeDesktop:true,pipeSupported:true,connectionMode:'private-pipe'};
+ ui.panel.clients=[client];ui.panel.operationFailures=new Map([['zcode',{action:'enable',uncertain:false,connectionMode:'official-remote'}]]);
+ ui.setHandler(async()=>({clients:[client]}));await ui.panel.retryOperation('zcode');
+ const writes=ui.calls.filter(call=>call.action==='toggle-client');assert.equal(writes.length,1);assert.equal(writes[0].connectionMode,'official-remote');assert.equal(writes[0].initializeDesktop,undefined);assert.equal(ui.initializations.length,0);
 });
 
 test('desktop enabling and retrying Claude never submit initialization intent',async()=>{
@@ -433,7 +476,7 @@ test('absent unconfigured clients do not occupy the list, but offline configured
  ui.panel.clients=[];ui.panel.renderClients();assert.match(ui.text(),/尚未发现客户端/);
  ui.setHandler(async()=>({capabilities:[{family:'codex',kind:'codex-local',supported:true},{family:'claude',kind:'desktop-profile',supported:true},{family:'deepseek',kind:'desktop-profile',supported:true},{family:'zcode',supported:false,reason:'仅使用默认接入'}]}));
  await ui.panel.addClient();const dialog=ui.document.body.children[0],buttons=dialog.children[1].children;
- assert.equal(dialog.open,true);assert.deepEqual(buttons.map(button=>button.textContent),['Codex','Claude','DSH','ZCode · 仅使用默认接入','取消']);assert.equal(buttons[3].disabled,true);buttons[3].onclick();assert.equal(dialog.open,true);await buttons[2].onclick();assert.notEqual(ui.document.body.children[0],dialog);assert.match(ui.document.body.children[0].querySelector('h2').textContent,/DSH/);assert.equal(ui.selected.length,0,'adding never opens the default account page');
+ assert.equal(dialog.open,true);assert.deepEqual(buttons.map(button=>button.textContent),['Codex','Claude','DSH','ZCode · 仅使用默认接入','Antigravity','取消']);assert.equal(buttons[3].disabled,true);assert.equal(buttons[4].disabled,true);buttons[3].onclick();assert.equal(dialog.open,true);await buttons[2].onclick();assert.notEqual(ui.document.body.children[0],dialog);assert.match(ui.document.body.children[0].querySelector('h2').textContent,/DSH/);assert.equal(ui.selected.length,0,'adding never opens the default account page');
 });
 
 test('ZCode uses its own logo and shared next-level management page',async()=>{
@@ -508,7 +551,7 @@ test('shared independent profile form scans, picks and manually saves the select
   if(family==='codex')await ui.panel.codexProfile();else await ui.panel.clientProfile(family);
   const dialog=ui.document.body.children[0],form=dialog.querySelector('form'),inputs=form.querySelectorAll('input'),button=text=>form.querySelectorAll('button').find(b=>b.textContent===text);
   assert.equal(ui.calls.length,1);assert.equal(ui.calls[0].operation,'list');assert.equal(form.querySelector('.error').textContent,'');
-  assert.ok(button('保存配置'));if(family==='codex')assert.match(form.querySelectorAll('label')[1].textContent,/\.codex 文件夹/);
+  assert.ok(button('保存配置'));assert.equal(form.querySelectorAll('label')[1].textContent,label+' 配置目录');
   await button('扫描配置').onclick();assert.deepEqual(JSON.parse(JSON.stringify(ui.calls.at(-1))),{action:'client-profiles',operation:'scan',family,kind});assert.equal(button('/wrong'),undefined);
   button(profile.home).onclick();assert.equal(inputs[1].value,profile.home);
   ui.setChosen('/fixture/chosen');await button('选择文件夹').onclick();assert.equal(inputs[1].value,'/fixture/chosen');
@@ -557,6 +600,43 @@ test('profile errors retain the form and unsupported capabilities never open a d
  assert.equal(dialog.open,true);assert.match(form.querySelector('.error').textContent,/already used/);assert.equal(ui.selected.length,0);
 });
 
+
+test('saved installation inventory loads first and only missing inventory or manual rescan discovers clients',async()=>{
+ const ui=fixture();let inventory=true;
+ ui.setHandler(async body=>body.action==='status'?{backends:{}}:{clients:[],inventoryAvailable:inventory});
+ await ui.panel.loadClients();await ui.panel.loadClients();
+ assert.equal(ui.calls.filter(body=>body.action==='scan').length,0);
+ inventory=false;await ui.panel.loadClients();
+ assert.equal(ui.calls.filter(body=>body.action==='scan').length,1);
+ assert.equal(ui.calls.find(body=>body.action==='scan').inventoryOnly,true);
+ inventory=true;await ui.panel.loadClients();await ui.panel.scan(true);
+ assert.equal(ui.calls.filter(body=>body.action==='scan').at(-1).inventoryOnly,false);
+});
+
+test('partial WSL inventory keeps discovered clients and its error until an explicit successful rescan',async()=>{
+ const ui=fixture(),client={id:'wsl:'+'a'.repeat(32),kind:'wsl-cli',name:'WSL Codex',installed:true,configured:true,enabled:false};let errors=[{distribution:'Ubuntu',error:'Claude Code inventory unavailable'}];
+ ui.setHandler(async body=>body.action==='status'?{backends:{}}:{clients:[client],inventoryAvailable:true,errors});
+ await ui.panel.scan();assert.equal(ui.panel.scanError,true);assert.match(ui.nodes['client-scan-status'].textContent,/Ubuntu.*Claude Code inventory unavailable/);assert.equal(ui.panel.clients[0].id,client.id);assert.equal(ui.panel.clients[0].enabled,false);
+ await ui.panel.refreshClients();assert.equal(ui.panel.scanError,true);assert.match(ui.nodes['client-scan-status'].textContent,/inventory unavailable/);
+ errors=[];await ui.panel.scan(true);assert.equal(ui.panel.scanError,false);assert.doesNotMatch(ui.nodes['client-scan-status'].textContent,/inventory unavailable/);assert.equal(ui.panel.clients[0].id,client.id);
+});
+
+test('Antigravity App IDE and CLI paths use the shared default-application form',async()=>{
+ for(const english of [false,true]){
+  const ui=fixture();if(english)ui.english();const capability={family:'antigravity',kind:'default-application',supported:true};
+  const client={id:'antigravity',name:'Antigravity',installed:true,enabled:false};let selected;
+  ui.panel.manageClient=async value=>{selected=value.id;};
+  ui.setHandler(async body=>body.action==='client-profiles'?body.operation==='save'?{entry:'antigravity',instance:client}:{capabilities:[capability]}:{clients:[client]});
+  await ui.panel.addClient();await ui.document.body.children[0].querySelectorAll('button').find(button=>button.textContent==='Antigravity').onclick();
+  const dialog=ui.document.body.children[0],form=dialog.querySelector('form');
+  assert.equal(form.querySelectorAll('input').length,1);
+  assert.match(form.querySelector('.hint').textContent,/Antigravity App.*IDE.*agy/);
+  if(english)assert.doesNotMatch(form.querySelector('.hint').textContent,/[\u4e00-\u9fff]/);
+  form.querySelector('input').value='/user/.gemini/bin/agy';await form.onsubmit({preventDefault(){}});
+  assert.deepEqual(JSON.parse(JSON.stringify(ui.calls.find(body=>body.operation==='save'))),{action:'client-profiles',operation:'save',family:'antigravity',kind:'default-application',application:'/user/.gemini/bin/agy'});
+  assert.equal(selected,'antigravity');
+ }
+});
 
 test('missing ZCode can be added through the shared client form without creating an independent profile',async()=>{
  for(const english of [false,true]){
@@ -611,4 +691,15 @@ test('Codex alone creates no other account editors or account reads; invisible l
   ui.nodes['clients-page'].hidden=false;ui.panel.clients[2].enabled=true;ui.panel.renderClients();
   assert.deepEqual(Object.keys(ui.panel.accountPanels),['deepseek']);assert.ok(ui.calls.some(call=>call.provider==='deepseek'));
   assert.ok(!ui.calls.some(call=>call.provider==='claude'));
+});
+
+test('DSH missing connector repair previews paths and requires the explicit repair acknowledgement',async()=>{
+ const ui=fixture();ui.english();ui.panel.clients=[];
+ ui.setHandler(async body=>body.action==='deepseek-recovery-preview'?{token:'repair-token',canRecover:true,configurationRepair:true,oldDirectory:'F:/old/desktop-sessions/deepseek',newDirectory:'F:/gateway/desktop-sessions/deepseek'}:body.action==='status'?{backends:{}}:{clients:[]});
+ await ui.panel.recoverDeepseek(true);
+ const confirmation=ui.calls.find(row=>row.action==='deepseek-recovery-confirm');
+ assert.equal(confirmation.confirmConfigurationRepair,true);assert.equal(confirmation.token,'repair-token');assert.equal(confirmation.acknowledgeUnknown,undefined);
+ assert.match(ui.prompts[0],/backed up/);assert.match(ui.prompts[0],/F:\/old/);assert.match(ui.prompts[0],/F:\/gateway/);assert.doesNotMatch(ui.prompts[0],/[\u4e00-\u9fff]/);
+ const cancelled=fixture();cancelled.panel.clients=[];cancelled.confirm(false);cancelled.setHandler(async body=>body.action==='deepseek-recovery-preview'?{token:'cancel',canRecover:true,configurationRepair:true,oldDirectory:'old',newDirectory:'new'}:body.action==='status'?{backends:{}}:{clients:[]});
+ await cancelled.panel.recoverDeepseek(true);assert.equal(cancelled.calls.some(row=>row.action==='deepseek-recovery-confirm'),false);
 });

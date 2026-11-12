@@ -21,6 +21,8 @@
 
 # Codex Mobile Bridge · 多客户端远程工作台
 
+> **v2.2.1-preview.1（预览版）：** [预览版下载](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1-preview.1) · [更新说明](RELEASE_NOTES.md)。新增 Antigravity 接入、CLI 连接管理与会话体验改进；v2.2.0 仍为最新稳定版。Android 预览版作为独立的 Bridge Preview 安装，保留原 App，需重新添加电脑连接。
+
 > **v2.2.0 正式版**：[发布页](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.0) · [完整更新说明](RELEASE_NOTES.md) · [手机安装说明](mobile/README.md)。新增 ZCode、多信道连接与原生侧边聊天，优化空闲资源占用。
 
 [简体中文](README.md) · [English](README_EN.md)
@@ -929,6 +931,8 @@ python3 -B -m unittest discover -s tests -v
 
 感谢 [LINUX DO](https://linux.do/) 社区及各位佬友的支持。
 
+感谢 [@windowmmk](https://github.com/windowmmk) 在 [PR #150](https://github.com/try2love/codex-mobile-bridge/pull/150) 中提供已采纳的 Antigravity 接入基础，以及 [@heiqiu47](https://github.com/heiqiu47) 在 [PR #146](https://github.com/try2love/codex-mobile-bridge/pull/146) 和 [PR #157](https://github.com/try2love/codex-mobile-bridge/pull/157) 中贡献自定义 HTTPS 端口与 macOS 菜单栏图标。保留实际采纳部分的原作者提交，后续整合调整单独提交。
+
 感谢 [@heiqiu47](https://github.com/heiqiu47) 的 PR [#85](https://github.com/try2love/codex-mobile-bridge/pull/85)、[#86](https://github.com/try2love/codex-mobile-bridge/pull/86)、[#92](https://github.com/try2love/codex-mobile-bridge/pull/92)、[#95](https://github.com/try2love/codex-mobile-bridge/pull/95)，[@mc373906408（waken）](https://github.com/mc373906408) 的 [#88](https://github.com/try2love/codex-mobile-bridge/pull/88)，以及 [@littltstream](https://github.com/littltstream) 的 [#96](https://github.com/try2love/codex-mobile-bridge/pull/96)。原作者提交完整保留，各项贡献见 [v2.1.7 发布说明](RELEASE_NOTES.md#v217)。
 
 感谢 [@we-worker](https://github.com/we-worker) 在 [PR #64](https://github.com/try2love/codex-mobile-bridge/pull/64) 中贡献 Windows WSL Codex 接入、Magpie 兼容与项目目录能力。v2.1.5 保留全部 8 个原始提交，统一界面及跨接入新建项目的调整另行提交。
@@ -953,7 +957,7 @@ python3 -B -m unittest discover -s tests -v
 
 ## 许可证与参考
 
-项目源码使用 [MIT License](LICENSE)。Codex App 为独立软件，不随本项目分发。桌面构建内置 cloudflared 并附带其许可证；二进制不提交到源码仓库，遵循其自身许可。
+项目整体使用 [GNU AGPLv3（仅第 3 版，`AGPL-3.0-only`）](LICENSE)。旧版 MIT 代码的许可与版权通知保留在 [NOTICE](NOTICE)，第三方组件继续遵循各自许可。此前按 MIT 发布的版本不受本次变更影响。修改版本供用户通过网络交互时，须依照 AGPL 第 13 条向这些用户提供对应源码。Codex App 为独立软件，不随本项目分发。桌面构建内置 cloudflared 并附带其许可证；二进制不提交到源码仓库，遵循其自身许可。
 
 - [OpenAI Codex App Server 文档](https://learn.chatgpt.com/docs/app-server)
 - [Cloudflare Quick Tunnel 文档](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/)

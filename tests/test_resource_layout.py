@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # directories and manifest entries must not become public URLs.
 PUBLIC_URLS = set('''
 / /bootstrap.js /host.js /layout.js /permissions.js /downloads.js /downloads.css
-/client-icons/codex.png /client-icons/claude.png /client-icons/deepseek.png /client-icons/zcode.png
+/client-icons/codex.png /client-icons/claude.png /client-icons/deepseek.png /client-icons/zcode.png /client-icons/antigravity.png
 /client-navigation.js /client-navigation.css /client-lifecycle.js /client-lifecycle.css /desktop-sessions.js
 /client-accounts.js /cli-access.js /wsl-accounts.js /desktop-sessions.css /vendor/xterm/xterm.js
 /vendor/xterm/addon-fit.js /vendor/xterm/xterm.css /command-terminal-panel.js
@@ -59,6 +59,7 @@ SSH_SOURCES = {
 PLATFORM_SOURCES = {
     'bridge/platforms/codex_daemon_env.py',
     'bridge/platforms/linux/codex_daemon_env.py',
+    'bridge/platforms/linux/codex_cli_control.py',
     'bridge/platforms/macos/codex_daemon_env.py',
     'bridge/platforms/macos/force_exit.py',
     'bridge/platforms/windows/codex_daemon_env.py',
@@ -145,7 +146,8 @@ class ResourceLayoutTests(unittest.TestCase):
         manifest = json.loads((ROOT/'scripts/gateway-resources.json').read_text())
         self.assertEqual(len(manifest), len(set(manifest)))
         self.assertEqual({name for name in manifest if name.endswith('.py')},
-                         set(SSH_SOURCES) | PLATFORM_SOURCES | WSL_ACCOUNT_SOURCES)
+                         set(SSH_SOURCES) | PLATFORM_SOURCES | WSL_ACCOUNT_SOURCES |
+                         {'bridge/clients/websocket.py'})
         self.assertTrue(CONNECTORS <= set(manifest))
         self.assertIn('bridge/clients/LICENSE.coding-mobile', manifest)
         self.assertIn('bridge/vendor/wsl_tomli/LICENSE', manifest)

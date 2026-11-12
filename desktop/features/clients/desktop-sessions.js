@@ -3,6 +3,7 @@ class DesktopConnectionsPanel {
   constructor({root,api,feedback}) {
     Object.assign(this,{root,api,feedback,clientsRevision:0,statusRevision:0});
     this.deepseekHome=root.querySelector('[data-deepseek-home]');
+    this.deepseekHome.placeholder=this.configurationExample('deepseek');
     const add=document.getElementById('add-client');if(add)add.onclick=()=>this.addClient();
     const refresh=document.getElementById('refresh-clients');if(refresh)refresh.onclick=()=>this.scan(true);
     document.addEventListener('visibilitychange',()=>{this.syncPolling();if(!document.hidden)this.pollClients();});
@@ -11,6 +12,11 @@ class DesktopConnectionsPanel {
     document.addEventListener('bridge-language',()=>{this.renderClients();this.renderScan();});
     this.accountPanels={};this.managementPages=new Map();this.removalControls=new Map();
     document.addEventListener('bridge-client-config',event=>{for(const [id,control] of this.removalControls)control.hidden=id!==event.detail;this.ensureAccountPanel(event.detail);this.resumeAccounts();});
+  }
+  configurationExample(family){
+    const windows=this.api.platform==='win32',home=windows?'C:\\Users\\username':this.api.platform==='darwin'?'/Users/username':'/home/username';
+    if(family==='claude')return home+(windows?'\\AppData\\Roaming\\Claude':this.api.platform==='darwin'?'/Library/Application Support/Claude':'/.config/Claude');
+    return home+(windows?'\\':'/')+(family==='codex'?'.codex':'.dsh');
   }
   ensureAccountPanel(provider){
     if(!['claude','deepseek'].includes(provider)||typeof DesktopClientAccountsPanel==='undefined')return;
@@ -45,7 +51,7 @@ class DesktopConnectionsPanel {
     if(container){
       let actions=container.querySelector('.deepseek-recovery-actions');if(!actions){actions=document.createElement('div');actions.className='actions deepseek-recovery-actions';container.append(actions);}actions.replaceChildren();
       const client=this.clients?.find(row=>row.id==='deepseek');
-      if(client?.backgroundRunning){const reconnect=document.createElement('button');reconnect.type='button';reconnect.textContent=BridgeI18n.t('恢复并重新接入');reconnect.disabled=this.busy||this.scanning||!!this.choosingClient||this.hasUncertain();reconnect.onclick=()=>this.recoverDeepseek(true);actions.append(reconnect);}
+      if(client?.backgroundRunning||client?.installed&&client.setupStatus==='failed'){const reconnect=document.createElement('button');reconnect.type='button';reconnect.textContent=BridgeI18n.t('恢复并重新接入');reconnect.disabled=this.busy||this.scanning||!!this.choosingClient||this.hasUncertain();reconnect.onclick=()=>this.recoverDeepseek(true);actions.append(reconnect);}
       if(client?.running){const quit=document.createElement('button');quit.type='button';quit.textContent=BridgeI18n.t('完整退出');quit.disabled=this.busy||this.scanning||!!this.choosingClient||this.hasUncertain();quit.onclick=()=>this.recoverDeepseek(false);actions.append(quit);}
     }
   }
@@ -60,7 +66,12 @@ class DesktopConnectionsPanel {
   applyClientSnapshot(value){
     ClientLifecycle.reconcile(this.operationFailures,this.managementClients(value.clients));
     this.clients=value.clients;this.instanceError=value.instanceError||'';
+    this.inventoryAvailable=value.inventoryAvailable??this.inventoryAvailable;
     this.gatewayRunning=value.gatewayRunning??this.gatewayRunning;this.windowsSession=value.windowsSession??this.windowsSession;
+  }
+  async loadClients(){
+    await this.refreshClients();
+    if(this.inventoryAvailable===false)await this.scan();
   }
   async refreshClients(refresh=false){
     const root=document.getElementById('client-overview');if(!root||this.scanning||this.choosingClient||(this.busy&&!refresh))return;
@@ -81,6 +92,7 @@ class DesktopConnectionsPanel {
     if(typeof failure.recoveryRestart==='boolean')return this.recoverDeepseek(failure.recoveryRestart);
     if(failure.desktopAction)return this.action(failure.desktopAction);
     if(failure.action==='initialize')return id==='claude'?this.action('connect-claude'):this.toggleClient(id,true,{initializeDesktop:true});
+    if(id==='zcode'&&failure.action==='enable'&&failure.connectionMode!=='official-remote'&&this.connection(this.managementClients().find(client=>client.id===id)).canInitialize)return this.toggleClient(id,true,{initializeDesktop:true});
     return this.toggleClient(id,failure.action==='enable',{connectionMode:failure.connectionMode});
   }
   syncPolling(){
@@ -97,7 +109,7 @@ class DesktopConnectionsPanel {
   async scan(manual=false){
     if(this.scanning||this.busy||this.choosingClient)return;this.scanning=true;this.clientsRevision++;this.statusRevision++;this.scanMessage='正在扫描本机客户端…';this.scanError=false;this.renderScan();
     let gotSnapshot=false;
-    try{const value=await this.api.desktopSessions({action:'scan',setup:false,inventoryOnly:!manual});if(value.clients){this.applyClientSnapshot(value);gotSnapshot=true;}this.scanMessage='扫描完成；各客户端的接入状态如下。';}
+    try{const value=await this.api.desktopSessions({action:'scan',setup:false,inventoryOnly:!manual});if(value.clients){this.applyClientSnapshot(value);gotSnapshot=true;}this.scanError=!!value.errors?.length;this.scanMessage=this.scanError?value.errors.map(row=>row.distribution+'：'+BridgeI18n.t(row.error)).join('\n'):'扫描完成；各客户端的接入状态如下。';}
     catch(error){this.scanMessage=error.message;this.scanError=true;if(manual)this.feedback(error.message,true);}
     finally{this.scanning=false;this.renderScan();if(gotSnapshot)this.renderClients();else await this.refreshClients(true);await this.refresh();}
     await this.showClaudeSetup(true);
@@ -148,7 +160,7 @@ class DesktopConnectionsPanel {
   }
   renderScan(){
     const node=document.getElementById('client-scan-status');if(node){node.textContent=BridgeI18n.t(this.instanceError||this.scanMessage||(this.visibleClients().some(client=>client.id==='claude')?'选择需要接入的应用。macOS Claude 默认后台启动并尝试恢复已有连接；“初始化连接”经确认后使用电脑前台。Windows 优先尝试后台初始化。':'选择已有客户端，或通过“添加客户端”配置新的客户端。'))+' '+BridgeI18n.t(ClientLifecycle.sessionNotice(this.windowsSession));node.classList.toggle('error',!!this.scanError||!!this.instanceError);}
-    const button=document.getElementById('refresh-clients');if(button){button.disabled=!!this.scanning||!!this.busy||!!this.choosingClient;button.textContent=BridgeI18n.t(this.scanning?'正在扫描…':'重新扫描');}
+    const button=document.getElementById('refresh-clients');if(button){button.disabled=!!this.scanning||!!this.busy||!!this.choosingClient;button.dataset.i18n=this.scanning?'正在扫描…':'重新扫描';button.textContent=BridgeI18n.t(button.dataset.i18n);}
     this.root.querySelectorAll('[data-desktop-action]').forEach(button=>button.disabled=!!this.scanning||!!this.busy||!!this.choosingClient||(button.dataset.desktopAction!=='scan'&&this.hasUncertain()));
   }
   async toggleClient(id,enabled,{initializeDesktop=false,connectionMode}={}){
@@ -186,7 +198,7 @@ class DesktopConnectionsPanel {
     const dialog=document.createElement('dialog');dialog.className='client-disable-dialog';dialog.setAttribute('aria-labelledby','client-add-title');
     const heading=document.createElement('h2');heading.id='client-add-title';heading.textContent=BridgeI18n.t('添加客户端');dialog.append(heading);
     const actions=document.createElement('div');actions.className='actions';
-    for(const [family,label] of [['codex','Codex'],['claude','Claude'],['deepseek','DSH'],['zcode','ZCode']]){
+    for(const [family,label] of [['codex','Codex'],['claude','Claude'],['deepseek','DSH'],['zcode','ZCode'],['antigravity','Antigravity']]){
       const capability=value.capabilities?.find(row=>row.family===family),button=document.createElement('button');button.type='button';button.textContent=label;
       button.disabled=capability?.supported!==true;button.title=BridgeI18n.t(capability?.reason||'');
       if(family==='zcode'&&button.disabled)button.textContent+=' · '+BridgeI18n.t(capability?.kind==='default-application'?'已添加':'仅使用默认接入');
@@ -197,30 +209,38 @@ class DesktopConnectionsPanel {
   }
   codexProfile(){return this.clientProfile('codex');}
   async clientProfile(family,capability){
-    const label=({codex:'Codex',claude:'Claude',deepseek:'DSH',zcode:'ZCode'})[family];if(!label)return;
+    const label=({codex:'Codex',claude:'Claude',deepseek:'DSH',zcode:'ZCode',antigravity:'Antigravity'})[family];if(!label)return;
     try{if(!capability)capability=(await this.api.desktopSessions({action:'client-profiles',operation:'list'})).capabilities?.find(row=>row.family===family);}
     catch(error){this.feedback(error.message,true);return;}
     if(capability?.supported!==true){this.feedback(BridgeI18n.t(capability?.reason||'暂不可用'),true);return;}
     const kind=capability.kind,application=kind==='default-application',t=BridgeI18n.t,dialog=document.createElement('dialog');dialog.className='client-disable-dialog';
     const title=document.createElement('h2');title.textContent=t('添加 Codex 客户端').replace('Codex',label);
     const form=document.createElement('form'),nameLabel=document.createElement('label'),homeLabel=document.createElement('label');
-    form.className='client-config-form';nameLabel.textContent=t('客户端名称');homeLabel.textContent=application?t('应用程序路径'):family==='codex'?t('Codex 配置目录（.codex 文件夹）'):t('Codex 配置目录').replace('Codex',label);
-    const name=document.createElement('input'),home=document.createElement('input');name.required=true;name.maxLength=80;name.value=t('Codex 独立配置').replace('Codex',label);home.required=true;home.placeholder=t(application?'选择应用程序，或输入完整路径':'输入完整路径，或选择文件夹');nameLabel.append(name);homeLabel.append(home);
-    const help=document.createElement('p');help.className='hint';help.textContent=application?t('选择已安装的 ZCode 应用，保存后在管理页选择连接方式并启用。'):t('选择此电脑上的独立 Codex 配置目录，保留其中的账号和会话。默认 Codex 接入保持不变。').replaceAll('Codex',label);
+    form.className='client-config-form';nameLabel.textContent=t('客户端名称');homeLabel.textContent=application?t('应用程序路径'):t('Codex 配置目录').replace('Codex',label);
+    const name=document.createElement('input'),home=document.createElement('input');name.required=true;name.maxLength=80;name.value=t('Codex 独立配置').replace('Codex',label);home.required=true;home.placeholder=application?t('选择应用程序，或输入完整路径'):this.configurationExample(family);nameLabel.append(name);homeLabel.append(home);
+    const help=document.createElement('p');help.className='hint';help.textContent=application?(family==='antigravity'?t('选择已安装的 Antigravity App、IDE 或官方 agy 程序，保留原客户端的账号和会话。'):t('选择已安装的 ZCode 应用，保存后在管理页选择连接方式并启用。')):t('选择此电脑上的独立 Codex 配置目录，保留其中的账号和会话。默认 Codex 接入保持不变。').replaceAll('Codex',label);
+    const localHelp=help.textContent,wslSupported=this.api.platform==='win32'&&capability.wslSupported===true&&['codex','claude'].includes(family);
+    const environmentLabel=document.createElement('label'),environment=document.createElement('select'),distributionLabel=document.createElement('label'),distribution=document.createElement('input'),userLabel=document.createElement('label'),user=document.createElement('input');
+    environmentLabel.textContent=t('运行环境');for(const [value,text] of [['local','此电脑'],['wsl','WSL']]){const option=document.createElement('option');option.value=value;option.textContent=t(text);environment.append(option);}environment.value='local';environmentLabel.append(environment);
+    distributionLabel.textContent=t('WSL 发行版');distribution.required=true;distribution.maxLength=256;distribution.placeholder='Ubuntu-24.04';distributionLabel.append(distribution);
+    userLabel.textContent=t('Linux 用户');user.required=true;user.maxLength=256;user.placeholder='username';userLabel.append(user);
+    const isWsl=()=>wslSupported&&environment.value==='wsl',drafts={local:'',wsl:''};let previousEnvironment='local';
     const actions=document.createElement('div');actions.className='actions';
     const choose=document.createElement('button'),scan=document.createElement('button'),save=document.createElement('button'),cancel=document.createElement('button');
     choose.type=scan.type=cancel.type='button';save.type='submit';choose.textContent=t(application?'选择应用程序':'选择文件夹');scan.textContent=t('扫描配置');scan.hidden=application;save.textContent=t('保存配置');cancel.textContent=t('关闭');
     const error=document.createElement('p');error.className='error';error.setAttribute('role','alert');
     const candidates=document.createElement('div');candidates.className='client-config-candidates';let busy=false,closed=false;
-    const run=async task=>{if(busy||closed)return;busy=true;error.textContent='';for(const b of [choose,scan,save])b.disabled=true;try{await task();}catch(e){if(!closed)error.textContent=t(e.message);}finally{busy=false;for(const b of [choose,scan,save])b.disabled=false;}};
+    const updateEnvironment=()=>{const selected=isWsl();distributionLabel.hidden=userLabel.hidden=!selected;distribution.disabled=user.disabled=!selected||busy;environment.disabled=busy;choose.hidden=selected;scan.hidden=application||selected;if(wslSupported)homeLabel.firstChild.textContent=selected?t('Linux 配置目录'):t('Codex 配置目录').replace('Codex',label);home.placeholder=selected?'/home/'+(user.value.trim()||'username')+(family==='codex'?'/.codex':'/.claude'):application?t('选择应用程序，或输入完整路径'):this.configurationExample(family);help.textContent=selected?t('填写当前运行中的 WSL 发行版、Linux 用户和已有配置目录。保存只核验目录；若检测到发行版已停止，会提示你先启动。'):localHelp;};
+    environment.onchange=()=>{drafts[previousEnvironment]=home.value;previousEnvironment=environment.value;home.value=drafts[previousEnvironment]||'';candidates.replaceChildren();error.textContent='';updateEnvironment();};user.oninput=updateEnvironment;updateEnvironment();
+    const run=async task=>{if(busy||closed)return;busy=true;error.textContent='';for(const b of [choose,scan,save])b.disabled=true;updateEnvironment();try{await task();}catch(e){if(!closed)error.textContent=t(e.message);}finally{busy=false;for(const b of [choose,scan,save])b.disabled=false;updateEnvironment();}};
     choose.onclick=()=>run(async()=>{const path=await this.api.choose(application?'file':'folder');if(path&&!closed)home.value=path;});
     scan.onclick=()=>run(async()=>{const value=await this.api.desktopSessions({action:'client-profiles',operation:'scan',family,kind});if(closed)return;candidates.replaceChildren();const rows=(value.candidates||[]).filter(row=>row.family===family&&row.kind===kind);if(!rows.length){candidates.textContent=t('未发现新的配置目录，可选择文件夹或手动输入路径。');return;}for(const row of rows){const button=document.createElement('button');button.type='button';button.textContent=row.home;button.onclick=()=>{home.value=row.home;name.value=row.label;};candidates.append(button);}});
-    form.onsubmit=event=>{event.preventDefault();return run(async()=>{const value=await this.api.desktopSessions({action:'client-profiles',operation:'save',family,kind,...(application?{application:home.value}:{home:home.value,label:name.value})});dialog.close();await this.refreshClients(true);this.feedback(t('Codex 客户端已保存').replace('Codex',label));if(value.instance?.id)await this.manageClient(this.managementClients().find(row=>row.id===value.instance.id)||value.instance);});};
-    cancel.onclick=()=>dialog.close();actions.append(choose,scan,save,cancel);form.append(...(application?[]:[nameLabel]),homeLabel,help,candidates,error,actions);dialog.append(title,form);dialog.addEventListener('close',()=>{closed=true;dialog.remove();});document.body.append(dialog);dialog.showModal();
+    form.onsubmit=event=>{event.preventDefault();return run(async()=>{const value=await this.api.desktopSessions({action:'client-profiles',operation:'save',family,kind:isWsl()?'wsl-cli':kind,...(isWsl()?{distribution:distribution.value,user:user.value,home:home.value,label:name.value}:application?{application:home.value}:{home:home.value,label:name.value})});if(closed)return;dialog.close();await this.refreshClients(true);this.feedback(t('Codex 客户端已保存').replace('Codex',label));if(value.instance?.id)await this.manageClient(this.managementClients().find(row=>row.id===value.instance.id)||value.instance);});};
+    cancel.onclick=()=>dialog.close();actions.append(choose,scan,save,cancel);form.append(...(wslSupported?[environmentLabel]:[]),...(application?[]:[nameLabel]),...(wslSupported?[distributionLabel,userLabel]:[]),homeLabel,help,candidates,error,actions);dialog.append(title,form);dialog.addEventListener('close',()=>{closed=true;dialog.remove();});document.body.append(dialog);dialog.showModal();
     home.focus();
   }
   visibleClients(){
-    return this.managementClients().filter(client=>client.installed||client.configured||client.enabled||client.connected||client.running||client.kind==='desktop-profile'||client.bindingMode==='manual');
+    return this.managementClients().filter(client=>client.installed||client.cliAvailable||client.configured||client.enabled||client.connected||client.running||client.kind==='desktop-profile'||client.bindingMode==='manual');
   }
   renderClients(){
     this.renderDetails();
@@ -231,7 +251,7 @@ class DesktopConnectionsPanel {
     for(const client of this.visibleClients()){
       const row=node('tr'),identity=node('td'),name=node('div',undefined,'connection-name'),logo=node('span',undefined,'client-logo');row.dataset.clientId=client.id;if(client.parentId)row.dataset.clientParent=client.parentId;
       const img=node('img');img.src='../web/client-icons/'+(client.icon||client.id)+'.png';img.alt='';logo.append(img);
-      const label=node('div');label.append(node('strong',client.name),node('small',client.description|| (client.kind==='wsl-claude-cli'?'WSL Claude Code':client.kind==='wsl-cli'?'WSL Codex CLI':({codex:'Codex Desktop',claude:'Claude Desktop',deepseek:'DeepSeek Harness'})[client.id])));name.append(logo,label);identity.append(name);
+      const label=node('div');label.append(node('strong',client.name),node('small',client.description|| (client.kind==='wsl-claude-cli'?'WSL Claude Code':client.kind==='wsl-cli'?'WSL Codex CLI':({codex:'Codex Desktop',claude:'Claude Desktop',deepseek:'DeepSeek Harness',antigravity:'Google Antigravity'})[client.id])));name.append(logo,label);identity.append(name);
       const access=node('td'),toggle=node('input');toggle.type='checkbox';toggle.className='client-toggle';toggle.checked=client.enabled;toggle.disabled=(!client.enabled&&!(client.selectable??client.configured))||this.scanning||this.busy||!!this.choosingClient;toggle.setAttribute('aria-label',t('启用')+' '+client.name);toggle.title=t(client.reason);toggle.onchange=()=>this.toggleClient(client.id,toggle.checked);access.append(toggle,node('small',this.pendingClient?.id===client.id?(this.gatewayRunning===false?'正在保存…':this.pendingClient.enabled?(client.id==='claude'?'正在连接…':'正在打开应用…'):this.pendingClient.forceDesktop?'正在后台强制结束…':this.pendingClient.quitDesktop?'正在退出应用…':'正在停用接入…'):client.setupStatus==='unsupported'?'暂不可用':client.enabled?(this.gatewayRunning===false?'随网关启动':'已启用'):!client.installed&&!client.configured?'待配置':'未启用'));
       toggle.disabled=toggle.disabled||this.hasUncertain();const state=this.connection(client),failure=this.operationFailures?.get(client.id),status=node('td'),stateLabel=node('span',state.label,state.waiting?'state-pending client-connection-waiting':state.ready?'state-ready':state.error?'state-error':state.action?'state-pending':'');if(state.modeLabel)stateLabel.textContent+=' · '+BridgeI18n.t(state.modeLabel);stateLabel.setAttribute('role','status');stateLabel.setAttribute('aria-busy',String(state.waiting));status.append(stateLabel,node('small',failure?ClientLifecycle.failureMessage(failure):state.reason));
       const account=node('td');account.dataset.clientAccount=client.id;
@@ -239,7 +259,7 @@ class DesktopConnectionsPanel {
       const actions=node('td'),buttons=node('div',undefined,'connection-actions'),manage=node('button',client.setupStatus==='unsupported'?'查看详情':client.configured?'管理':'配置');
       if(failure){const retry=node('button',failure.uncertain?'刷新状态':ClientLifecycle.retryLabel(failure.action),'primary');retry.type='button';retry.disabled=this.busy||this.scanning||!!this.choosingClient||!!this.clientsLoading||(!failure.uncertain&&this.hasUncertain());retry.onclick=()=>failure.uncertain?this.refreshClients(true):this.retryOperation(client.id);buttons.append(retry);}
       if(!failure&&state.retryable&&this.gatewayRunning!==false){const retry=node('button','重试连接','primary');retry.type='button';retry.disabled=this.busy||this.scanning||!!this.choosingClient||this.hasUncertain();retry.onclick=()=>this.toggleClient(client.id,true);buttons.append(retry);}
-      if(!failure&&client.id==='zcode'&&state.canInitialize&&this.gatewayRunning!==false){
+      if(!failure?.uncertain&&client.id==='zcode'&&state.canInitialize&&this.gatewayRunning!==false){
         const initialize=node('button',state.initializeLabel);initialize.type='button';initialize.disabled=this.busy||this.scanning||!!this.choosingClient||this.hasUncertain();initialize.onclick=()=>this.toggleClient(client.id,true,{initializeDesktop:true});buttons.append(initialize);
       }
       if(!failure&&client.id==='deepseek'&&client.backgroundRunning&&(!client.mainRunning||['restart-required','failed'].includes(client.setupStatus))){
@@ -289,6 +309,12 @@ class DesktopConnectionsPanel {
             onUpdate:value=>this.renderClientAccount(client.id,value),onChanged:()=>this.refreshClients(true)});
           this.accountPanels[client.id]=panel;this.managementPages.set(client.id,{panel,open:()=>panel.resume()});
         }
+        if(client.id==='antigravity'&&client.capabilities?.management===true){
+          const native=document.createElement('section'),accounts=this.managementPages.get(client.id);article.append(native);
+          this.mountAntigravityManagement(native,client);
+          const management=this.managementPages.get(client.id);
+          if(accounts)this.managementPages.set(client.id,{panel:accounts.panel,open:()=>{accounts.open();return management.open();}});
+        }
       }
       if(['codex-local','desktop-profile'].includes(client.kind))this.mountClientRemoval(layout.clientPage(client.id),client);
       layout.selectClient(client.id);this.managementPages.get(client.id)?.open();
@@ -320,6 +346,40 @@ class DesktopConnectionsPanel {
     const methods=ClientLifecycle.mountConnectionModes(section);
     const render=value=>methods.update(value,{disabled:this.busy||this.scanning||!!this.choosingClient||this.hasUncertain(),select:mode=>this.selectConnectionMode(client.id,mode)});
     this.connectionModePanels??=new Map();this.connectionModePanels.set(client.id,{render});render(client);
+  }
+  mountAntigravityManagement(root,client){
+    const node=(tag,text,cls='')=>{const n=document.createElement(tag);n.className=cls;if(text!==undefined)n.textContent=BridgeI18n.t(text);return n;};
+    root.className='accounts-panel';root.dataset.antigravityManagement='';
+    const heading=node('div',undefined,'accounts-toolbar'),refresh=node('button','重新加载');refresh.type='button';heading.append(node('h3','聊天与模型'),refresh);
+    const status=node('p',undefined,'account-muted'),error=node('p',undefined,'error'),plugin=node('p',undefined,'account-muted');status.setAttribute('role','status');error.setAttribute('role','alert');
+    const form=node('div',undefined,'cli-access-form'),field=(title,control)=>{const label=node('label');label.append(node('span',title),control);form.append(label);control.setAttribute('aria-label',BridgeI18n.t(title));};
+    const source=node('select'),session=node('select'),model=node('select'),permission=node('select');field('会话来源',source);field('聊天',session);field('发送模型',model);field('审批方式',permission);
+    const modelActions=node('div',undefined,'actions'),models=node('button','刷新模型'),saveModel=node('button','应用模型'),savePermission=node('button','应用审批方式');for(const b of [models,saveModel,savePermission])b.type='button';modelActions.append(models,saveModel,savePermission);
+    const help=node('p','配置仅应用于所选来源的这条聊天。模型来自原客户端；审批需要原会话加载网关 Hook。账号接入在上方管理。','account-muted');root.append(heading,status,error,plugin,form,modelActions,help);
+    let value=null,catalog=null,busy=false,stale=true;
+    const currentSource=()=>value?.surfaces?.find(row=>row.id===source.value),currentSession=()=>currentSource()?.sessions?.find(row=>row.id===session.value);
+    const option=(label,id)=>{const n=node('option',label);n.value=id;return n;};
+    const render=()=>{
+      const origin=currentSource(),row=currentSession(),enabled=value?.enabled===true;
+      status.textContent=BridgeI18n.t(busy?'正在读取配置…':origin?(origin.historyAvailable?'本机历史可用':'未发现本机历史')+' · '+(origin.connected?'原生服务已连接':'原生服务未连接'):'');
+      plugin.textContent=BridgeI18n.t(value?.plugin?.active?'网关 Hook 已启用；原会话加载后可使用审批与排队。':value?.plugin?.enabled?'网关 Hook 已安装；启用接入后生效。':'启用 Antigravity 接入后可安装并启用网关 Hook。');
+      for(const control of [source,session,model,permission,models,saveModel,savePermission,refresh])control.disabled=busy;
+      session.disabled=busy||!origin?.sessions?.length;model.disabled=busy||stale||!enabled||!origin?.connected||!catalog?.models?.length;
+      models.disabled=busy||stale||!enabled||!origin?.connected||!row;
+      saveModel.disabled=model.disabled||catalog?.capabilities?.models!==true||!catalog?.cache?.identity||!model.value||model.value===row?.model;
+      permission.disabled=busy||stale||!enabled||!row||value?.plugin?.active!==true;
+      savePermission.disabled=permission.disabled||permission.value===row?.permissionMode;
+      if(!busy&&!error.textContent&&catalog?.notice)status.textContent+=' · '+BridgeI18n.t(catalog.notice);
+    };
+    const selectSession=()=>{catalog=null;const row=currentSession();model.replaceChildren(option(row?.model||'请先刷新模型',row?.model||''));model.value=row?.model||'';permission.replaceChildren(...(value?.permissionOptions||[]).map(o=>option(o.label,o.value)));permission.value=row?.permissionMode||'desktop';render();};
+    const selectSource=()=>{const rows=currentSource()?.sessions||[],previous=session.value;session.replaceChildren(...rows.map(row=>option(row.title||'新会话',row.id)));session.value=rows.some(row=>row.id===previous)?previous:rows[0]?.id||'';selectSession();};
+    const read=async()=>{value=await this.api.desktopSessions({action:'antigravity-management',operation:'list'});stale=false;const previous=source.value;source.replaceChildren(...(value.surfaces||[]).map(row=>option(row.name,row.id)));source.value=value.surfaces?.some(row=>row.id===previous)?previous:value.surfaces?.find(row=>row.historyAvailable)?.id||value.surfaces?.[0]?.id||'';selectSource();};
+    const run=async task=>{if(busy)return;busy=true;error.textContent='';render();try{await task();}catch(e){stale=true;catalog=null;error.textContent=BridgeI18n.t(e.message);}finally{busy=false;render();}};
+    refresh.onclick=()=>run(read);source.onchange=selectSource;session.onchange=selectSession;model.onchange=permission.onchange=render;
+    models.onclick=()=>{if(models.disabled)return;return run(async()=>{const origin=source.value,sid=session.value;catalog=await this.api.desktopSessions({action:'antigravity-management',operation:'catalog',surface:origin,sessionId:sid,refresh:true});model.replaceChildren(option('选择模型',''),...(catalog.models||[]).map(row=>option(row.name||row.id,row.id)));model.value=(catalog.models||[]).some(row=>row.id===currentSession()?.model)?currentSession().model:'';});};
+    const save=operation=>{const button=operation==='settings'?saveModel:savePermission;if(button.disabled)return;return run(async()=>{const result=await this.api.desktopSessions({action:'antigravity-management',operation,surface:source.value,sessionId:session.value,id:crypto.randomUUID(),...(operation==='settings'?{model:model.value,modelCatalogIdentity:catalog.cache.identity}:{mode:permission.value})});if(result.status!=='accepted')throw Error(result.message||'配置结果待核对，请重新加载');await read();this.feedback(BridgeI18n.t('配置已保存'));});};
+    saveModel.onclick=()=>save('settings');savePermission.onclick=()=>save('access');
+    this.managementPages.set(client.id,{open:()=>run(read)});render();
   }
   mountZcodeOfficial(article,before){
     const node=(tag,text,cls='')=>{const value=document.createElement(tag);value.className=cls;if(text!==undefined)value.textContent=BridgeI18n.t(text);return value;};
@@ -388,7 +448,7 @@ class DesktopConnectionsPanel {
       cell.append(node('span',row.name));const usage=row.usage||row.quota;
       for(const bucket of usage?.limits||[])for(const window of bucket.windows||[]){cell.append(node('small',bucket.name+' · '+(window.remainingPercent==null?BridgeI18n.t('暂未提供'):BridgeI18n.t('剩余 ')+Math.round(window.remainingPercent)+'%')));if(Number.isFinite(window.remainingPercent)){const bar=node('progress','');bar.max=100;bar.value=window.remainingPercent;cell.append(bar);}}
       for(const wallet of usage?.balance?.wallets||[])cell.append(node('small',BridgeI18n.t('账户余额')+' · '+wallet.currency+' '+wallet.remaining));
-      if(row.kind!=='api'||usage?.balance){const refresh=node('button','查看剩余额度');refresh.type='button';refresh.className='quota-link';refresh.disabled=this.accountPanels[provider].busy||this.accountPanels[provider].loading;refresh.onclick=async()=>{refresh.disabled=true;await this.accountPanels[provider].perform({action:'details',id:row.id,refresh:true});this.renderClientAccount(provider,this.accountPanels[provider].value);};cell.append(refresh);}
+      if(value.capabilities?.quota!==false&&row.canReadQuota!==false&&(row.kind!=='api'||usage?.balance)){const refresh=node('button','查看剩余额度');refresh.type='button';refresh.className='quota-link';refresh.disabled=this.accountPanels[provider].busy||this.accountPanels[provider].loading;refresh.onclick=async()=>{refresh.disabled=true;await this.accountPanels[provider].perform({action:'details',id:row.id,refresh:true});this.renderClientAccount(provider,this.accountPanels[provider].value);};cell.append(refresh);}
     }
   }
   renderAccount(value){
@@ -407,10 +467,10 @@ class DesktopConnectionsPanel {
       const preview=await ClientLifecycle.request(()=>this.api.desktopSessions({action:'deepseek-recovery-preview',restart}),{timeout:this.statusTimeout??10000,uncertain:false,message:'客户端状态读取超时，请重试。'});
       if(preview.busy)throw Error(preview.message||'DSH 仍有任务运行或等待确认，请先在桌面结束任务');
       if(!preview.canRecover)throw Error(preview.message||'当前 DSH 进程无法安全恢复，请在桌面检查后重新扫描');
-      const t=BridgeI18n.t,prompt=[t(restart?'将完整退出 DSH 的桌面和后台进程，更新接入后重新打开。':'将完整退出 DSH 的桌面和后台进程。'),t('桌面进程：')+(preview.guiCount||0)+' · '+t('后台进程：')+(preview.backgroundCount||0),preview.requiresUnknownConfirmation?t('部分后台进程无法核验任务状态。确认继续表示你已检查并结束任务、保存工作。'):t('请确认已保存工作。')].join('\n\n');
+      const t=BridgeI18n.t,prompt=preview.configurationRepair?[t('旧接入目录已不存在。将备份完整配置，仅替换失效的网关接入项，然后重新打开 DSH。'),preview.oldDirectory+' → '+preview.newDirectory].join('\n\n'):[t(restart?'将完整退出 DSH 的桌面和后台进程，更新接入后重新打开。':'将完整退出 DSH 的桌面和后台进程。'),t('桌面进程：')+(preview.guiCount||0)+' · '+t('后台进程：')+(preview.backgroundCount||0),preview.requiresUnknownConfirmation?t('部分后台进程无法核验任务状态。确认继续表示你已检查并结束任务、保存工作。'):t('请确认已保存工作。')].join('\n\n');
       if(!window.confirm(prompt))return;
       attempted=true;this.operationFailures??=new Map();this.operationFailures.delete('deepseek');
-      const value=await ClientLifecycle.request(()=>this.api.desktopSessions({action:'deepseek-recovery-confirm',token:preview.token,confirmed:true,...(preview.requiresUnknownConfirmation?{acknowledgeUnknown:true}:{})}),{timeout:this.lifecycleTimeout??45000});
+      const value=await ClientLifecycle.request(()=>this.api.desktopSessions({action:'deepseek-recovery-confirm',token:preview.token,confirmed:true,...(preview.configurationRepair?{confirmConfigurationRepair:true}:{}),...(preview.requiresUnknownConfirmation?{acknowledgeUnknown:true}:{})}),{timeout:this.lifecycleTimeout??45000});
       if(value.clients){this.clients=value.clients;this.gatewayRunning=value.gatewayRunning??this.gatewayRunning;}this.feedback(restart?(value.clients?.find(row=>row.id==='deepseek')?.connected?'DSH 已重新接入':'正在等待 Harness 连接'):'DSH 已完整退出');
     }catch(error){if(attempted)this.operationFailures.set('deepseek',{...ClientLifecycle.failure('recover',error,'desktop'),recoveryRestart:restart});this.feedback(error.message,true);}
     finally{this.busy=false;this.renderClients();this.renderScan();await this.refreshClients(true);await this.refresh();}

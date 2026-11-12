@@ -6,6 +6,7 @@ import hmac
 import json
 import logging
 import mimetypes
+import os
 import re
 import secrets
 import socket
@@ -20,7 +21,7 @@ from pathlib import Path
 from bridge.features.workspace.uploads import MAX_FILE
 from bridge.features.workspace.workspace import MAX_TRANSFER, Workspace
 from bridge.features.workspace.preferences import transfer_settings
-from bridge.features.workspace.files import workspace_relative_path
+from bridge.features.workspace.files import workspace_relative_path, media_type
 from bridge.features.notifications.channels import settings as notification_settings, save_settings as save_notification_settings, save_webhook_endpoint, webhook_config, publish, publish_bark, publish_pushplus, publish_webhook, visible_webhook, WebhookDeliveryError, resolved_webhook_provider
 from socketserver import TCPServer
 from urllib.parse import parse_qs, parse_qsl, urlsplit, quote
@@ -614,7 +615,7 @@ class Handler(BaseHTTPRequestHandler):
                         raise PermissionError('请启用密码保护后再连接 ZCode')
                     return self.output(200, manager.toggle_client(value))
                 return self.output(200, manager.clients_status())
-            desktop_image = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode)/images/([0-9a-f]{64})', path)
+            desktop_image = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode|antigravity)/images/([0-9a-f]{64})', path)
             if desktop_image:
                 if write:
                     return self.output(405, {'error': '请求方式无效'})
@@ -625,7 +626,7 @@ class Handler(BaseHTTPRequestHandler):
                 manager, _, _ = self.desktop_context(provider, query)
                 artifact, variant = manager.image_preview(provider, query.get('sessionId', [None])[0], identifier)
                 return self.attachment_preview(artifact, variant, private=True, download=query.get('download') == ['1'])
-            desktop_upload = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode)/uploads(?:/([0-9a-f-]{36})/(thumb|preview))?', path)
+            desktop_upload = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode|antigravity)/uploads(?:/([0-9a-f-]{36})/(thumb|preview))?', path)
             if desktop_upload:
                 manager, uploads = self.server.desktop_sessions, self.server.desktop_uploads
                 if manager is None or uploads is None:
@@ -657,7 +658,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     result = uploads.store.put(scope, query.get('id', [''])[0], query.get('name', [''])[0], data)
                 return self.output(200, result)
-            desktop_accounts = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode)/accounts', path)
+            desktop_accounts = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode|antigravity)/accounts', path)
             if desktop_accounts:
                 manager, _, _ = self.desktop_context(desktop_accounts.group(1), query, require_enabled=False)
                 if manager is None:
@@ -671,7 +672,7 @@ class Handler(BaseHTTPRequestHandler):
                 if operation == 'switch' and self.server.auth.config.get('mode') == 'none':
                     raise PermissionError('请启用密码保护后再切换账号')
                 return self.output(200, manager.client_accounts(desktop_accounts.group(1), {**value, 'operation': operation}))
-            desktop_notifications = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode)/notifications', path)
+            desktop_notifications = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode|antigravity)/notifications', path)
             if desktop_notifications:
                 manager = self.server.desktop_sessions
                 if manager is None or self.server.notifications is None:
@@ -682,8 +683,8 @@ class Handler(BaseHTTPRequestHandler):
                 sid = query.get('sessionId', [''])[0]
                 return self.output(200, self.server.notifications.policy(
                     sid, notification_host, self.read_json() if write else None))
-            desktop_workspace = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode)/(workspace(?:/[a-z-]+)?|terminal)', path)
-            desktop_projects = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode)/projects/(browse|register|trust)', path)
+            desktop_workspace = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode|antigravity)/(workspace(?:/[a-z-]+)?|terminal)', path)
+            desktop_projects = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode|antigravity)/projects/(browse|register|trust)', path)
             if desktop_projects:
                 if not write:
                     return self.output(405, {'error': '请通过目录选择器浏览'})
@@ -715,7 +716,7 @@ class Handler(BaseHTTPRequestHandler):
                 manager = self.server.desktop_sessions
                 if manager is None:
                     return self.output(503, {'error': '桌面会话接入不可用'})
-                if len(parts) != 4 or parts[2] not in ('deepseek', 'claude', 'zcode') or parts[3] not in (WRITES if write else READS):
+                if len(parts) != 4 or parts[2] not in ('deepseek', 'claude', 'zcode', 'antigravity') or parts[3] not in (WRITES if write else READS):
                     return self.output(404, {'error': '接口不存在'})
                 manager, uploads, _ = self.desktop_context(parts[2], query)
                 manager.require_enabled(parts[2])
@@ -808,6 +809,7 @@ class Handler(BaseHTTPRequestHandler):
                     body = self.read_json()
                     common = {'provider', 'entry', 'action'}
                     fields = {'switch': (common | {'id', 'expectedIdentity'}, set()),
+                              'connect': (common, set()),
                               'models': (common | {'id'}, {'refresh'}),
                               'recover-restart': (common | {'expectedIdentity'}, set()),
                               'save-api': (common | {'name', 'baseUrl', 'model'}, {'id', 'apiKey', 'authScheme'}),
@@ -833,7 +835,7 @@ class Handler(BaseHTTPRequestHandler):
                 result = manager.read(provider, query['entry'][0])
                 if self.server.auth.config.get('mode') == 'none':
                     result = {**result, 'capabilities': {**result.get('capabilities', {}),
-                        'save': False, 'import': False, 'capture': False, 'switch': False, 'restore': False,
+                        'connect': False, 'save': False, 'import': False, 'capture': False, 'switch': False, 'restore': False,
                         'attemptSwitch': False, 'attemptRestore': False, 'recoverRestart': False}}
                 return self.output(200, result)
             if path == '/api/cli-access':
@@ -904,7 +906,9 @@ class Handler(BaseHTTPRequestHandler):
                 if self.server.auth.config.get('mode') == 'none':
                     raise PermissionError('免密访问不能初始化桌面连接，请在桌面端操作')
                 body = self.read_json()
-                if not isinstance(body, dict) or set(body) != {'requestId', 'confirmed', 'tasksConfirmed'}:
+                if (not isinstance(body, dict)
+                        or set(body) - {'acknowledgeUnavailable'} != {'requestId', 'confirmed', 'tasksConfirmed'}
+                        or 'acknowledgeUnavailable' in body and body['acknowledgeUnavailable'] is not True):
                     raise ValueError('初始化请求包含不支持的字段')
                 return self.output(202, account_bridge.accounts.control({'action': 'initializeDesktopRuntime', **body}))
             if write and path == '/api/accounts/account':
@@ -1179,7 +1183,8 @@ class Handler(BaseHTTPRequestHandler):
                 provider, operation = desktop_workspace.groups()
                 sid = query.get('sessionId', [''])[0]
                 manager, _, _ = self.desktop_context(provider, query)
-                bridge = manager.workspace_bridge(provider, sid)
+                host_files = not write and query.get('scope') == ['host'] and operation in ('workspace', 'workspace/info', 'workspace/preview', 'workspace/download')
+                bridge = manager.workspace_bridge(provider, sid, **({'host_files': True, 'path': query.get('path', [''])[0]} if host_files else {}))
                 path = '/api/sessions/' + bridge.identifier + '/' + operation
             else:
                 bridge = self.server.bridge.for_host(query.get("host", ["local"])[0])
@@ -1196,7 +1201,7 @@ class Handler(BaseHTTPRequestHandler):
                 owner = self.server.auth.key(self.token())
                 body = self.read_json() if write else {}
                 action = body.get('action') if write else 'list' if query.get('view') == ['native'] else 'read'
-                fields = {'create': {'action', 'creationId'}, 'send': {'action', 'id', 'text', 'submissionId', 'attachments', 'skills', 'mode', 'workMode'},
+                fields = {'create': {'action', 'creationId'}, 'create-temporary': {'action', 'creationId'}, 'send': {'action', 'id', 'text', 'submissionId', 'attachments', 'skills', 'mode', 'workMode'},
                           'catalog': {'action', 'id'}, 'skills': {'action', 'id', 'query', 'offset', 'refresh', 'selected'},
                           'linux-permission-options': {'action', 'id'},
                           'permissions': {'action', 'id', 'preset', 'confirmed'}, 'cancel-queued': {'action', 'id', 'submissionId'}, 'settings': {'action', 'id', 'model', 'effort'},
@@ -1205,6 +1210,22 @@ class Handler(BaseHTTPRequestHandler):
                 if action not in fields or set(body) - fields[action] or (write and action in ('read', 'list')):
                     raise ValueError('无效侧边聊天操作')
                 return self.output(200, bridge.side_chat(side_match[1], owner, action, body))
+            temporary_match = re.match(r'/api/sessions/([0-9a-f-]{36})(?:/|$)', path)
+            temporary = (bridge.side_chats.find(temporary_match[1])
+                         if temporary_match and hasattr(bridge, 'side_chats') else None)
+            if temporary:
+                if self.server.auth.config.get('mode') == 'none':
+                    raise PermissionError('侧边聊天需要启用网关密码保护')
+                if side is not None:
+                    raise ValueError('临时侧聊附件使用当前聊天标识')
+                from bridge.features.sessions.temporary_session import TemporarySession
+                route = THREAD_ROUTE.fullmatch(path)
+                if ((route and route[2] not in TemporarySession.actions) or
+                        (not route and not any(pattern.fullmatch(path) for pattern in
+                            (UPLOAD_PREVIEW_ROUTE, UPLOAD_THUMB_ROUTE)) and
+                         not re.fullmatch(r'/api/sessions/[0-9a-f-]{36}/files/[a-f0-9]{64}', path))):
+                    raise ValueError('临时侧边聊天不支持此操作，请返回主聊天')
+                bridge = TemporarySession(bridge, temporary)
             agent_match = re.fullmatch(r"/api/sessions/([0-9a-f-]{36})/subagents", path)
             if agent_match:
                 if write: return self.output(405, {'error': '子智能体面板仅查看现有任务'})
@@ -1226,6 +1247,11 @@ class Handler(BaseHTTPRequestHandler):
             if workspace_match:
                 thread_id, operation = workspace_match.groups()
                 relative = query.get('path', [''])[0]
+                if query.get('scope') not in (None, ['host']):
+                    raise ValueError('文件浏览范围无效')
+                scope = {'scope': 'host'} if query.get('scope') == ['host'] else {}
+                if scope and (write or operation not in (None, 'info', 'preview', 'download')):
+                    raise PermissionError('宿主机文件浏览仅支持读取')
                 if write:
                     if operation == 'git-action':
                         body = self.read_json()
@@ -1252,25 +1278,27 @@ class Handler(BaseHTTPRequestHandler):
                 if operation == 'git-diff':
                     return self.output(200, bridge.workspace(thread_id, operation, {'path': relative, 'section': query.get('section', ['unstaged'])[0]}))
                 if operation is None:
-                    return self.output(200, bridge.workspace(thread_id, 'list', {'path': relative, 'hidden': query.get('hidden') == ['true'],
+                    return self.output(200, bridge.workspace(thread_id, 'list', {**scope, 'path': relative, 'hidden': query.get('hidden') == ['true'],
                         'search': query.get('search', [''])[0], 'offset': int(query.get('offset', ['0'])[0])}))
                 if operation == 'download':
                     policy = transfer_settings(self.server.transfer_directory)
                     if query.get('info') == ['1']:
-                        return self.output(200, {**bridge.workspace(thread_id, 'info', {'path': relative}), **policy, 'locatable': True})
+                        return self.output(200, {**bridge.workspace(thread_id, 'info', {**scope, 'path': relative}), **policy, 'locatable': True})
                     preview = query.get('preview') == ['1']
                     if 'preview' in query and (not preview or 'explicit' in query or 'archive' in query):
-                        raise ValueError('无效 PDF 预览下载参数')
+                        raise ValueError('无效预览下载参数')
                     explicit = query.get('explicit') == ['1']
-                    params = {'path': relative, 'limit': min(MAX_TRANSFER, policy['clickDownloadMiB'] * 1024 * 1024) if preview else None if explicit else policy['clickDownloadMiB'] * 1024 * 1024, **self.download_request()}
+                    params = {**scope, 'path': relative, 'limit': min(MAX_TRANSFER, policy['clickDownloadMiB'] * 1024 * 1024) if preview else None if explicit else policy['clickDownloadMiB'] * 1024 * 1024, **self.download_request()}
                     action = 'archive-stream' if explicit and query.get('archive') == ['1'] else 'download-stream'
                     with bridge.workspace(thread_id, action, params) as (metadata, stream):
-                        return self.download_response(metadata, stream)
-                result = bridge.workspace(thread_id, operation, {'path': relative})
+                        mime = media_type(metadata['name']) if preview else None
+                        return self.download_response(metadata, stream, mime or 'application/octet-stream',
+                                                      'inline' if mime else 'attachment')
+                result = bridge.workspace(thread_id, operation, {**scope, 'path': relative})
                 return self.output(200, result)
             file_match = re.fullmatch(r"/api/sessions/([0-9a-f-]{36})/files/([a-f0-9]{64})", path)
             if not write and file_match:
-                return self.download(bridge, *file_match.groups(), info=query.get('info') == ['1'])
+                return self.download(bridge, *file_match.groups(), info=query.get('info') == ['1'], preview=query.get('preview') == ['1'])
             preview_match = UPLOAD_PREVIEW_ROUTE.fullmatch(path)
             if not write and preview_match:
                 return self.upload_preview(bridge, *preview_match.groups(), variant=query.get('variant', ['thumb'])[0], side=side, download=query.get('download') == ['1'])
@@ -1339,7 +1367,7 @@ class Handler(BaseHTTPRequestHandler):
             if action == 'notifications':
                 if getattr(bridge, 'capabilities', {}).get('notifications') is False:
                     if write:
-                        raise ValueError('此 WSL 入口暂不提供后台通知')
+                        raise ValueError('此会话暂不提供后台通知')
                     return self.output(200, {'available': False, 'watching': False, 'notifyOnCompletion': False})
                 if self.server.notifications is None:
                     return self.output(200, {'available': False, 'watching': False, 'notifyOnCompletion': False})
@@ -1471,7 +1499,7 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
             self.output(500, {"error": "网关操作失败，请查看本机日志"})
 
-    def download(self, bridge, thread_id, artifact_id, info=False):
+    def download(self, bridge, thread_id, artifact_id, info=False, preview=False):
         artifact = bridge.artifact(thread_id, artifact_id)
         path = artifact['path']
         policy = transfer_settings(self.server.transfer_directory)
@@ -1480,16 +1508,17 @@ class Handler(BaseHTTPRequestHandler):
         if info:
             result = workspace.info(relative)
             cwd = bridge.store.get(thread_id).get('cwd')
-            result['path'] = workspace_relative_path(path, cwd)
-            result['locatable'] = result['path'] is not None
+            result['projectPath'] = workspace_relative_path(path, cwd)
+            result['path'] = result['absolutePath'].replace(os.sep, '/')
+            result['locatable'] = True
             return self.output(200, {**result, **policy})
         # Walk the authorized absolute path without following replaced parent
         # symlinks. Inline images retain their independent preview size bound.
         with Workspace(path.anchor).download(path.relative_to(path.anchor).as_posix(),
                 limit=50 * 1024 * 1024 if artifact['image'] else policy['clickDownloadMiB'] * 1024 * 1024, **self.download_request()) as (metadata, stream):
-            mime = mimetypes.guess_type(artifact['name'])[0] if artifact['image'] else None
+            mime = mimetypes.guess_type(artifact['name'])[0] if artifact['image'] else media_type(artifact['name']) if preview else None
             return self.download_response(metadata, stream, mime or 'application/octet-stream',
-                                          'inline' if artifact['image'] else 'attachment')
+                                          'inline' if artifact['image'] or mime else 'attachment')
 
     def download_request(self):
         # Duplicate Range fields are an unsupported multi-range request.
@@ -1524,7 +1553,7 @@ class Handler(BaseHTTPRequestHandler):
         if download:
             variant = 'original'
         artifact, served_variant = bridge.side_attachment(thread_id, side, 'preview', upload_id, variant) if side is not None else bridge.upload_preview(thread_id, upload_id, variant)
-        return self.attachment_preview(artifact, served_variant, private=side is not None, download=download)
+        return self.attachment_preview(artifact, served_variant, private=side is not None or getattr(bridge, 'temporary', False), download=download)
 
     def attachment_preview(self, artifact, served_variant, private=False, download=False):
         data = artifact['previewBytes'] if 'previewBytes' in artifact else Path(artifact["previewPath"]).read_bytes()

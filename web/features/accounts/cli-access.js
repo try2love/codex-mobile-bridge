@@ -2,7 +2,7 @@
 class CliAccessPanel {
   constructor({root,provider,read,request,formOnly=false,onChanged=()=>{}}){
     if(!['codex','claude'].includes(provider))throw Error('Invalid CLI provider');
-    Object.assign(this,{root,provider,read,request,formOnly,onChanged});this.value=null;this.busy=false;this.generation=0;this.draftRevision=0;this.apiResults=new Map();
+    Object.assign(this,{root,provider,read,request,formOnly,onChanged});this.value=null;this.busy=false;this.generation=0;this.draftRevision=0;this.apiResults=new Map();this.switchRequests=new Map();
     this.build();
   }
   t(key){return BridgeI18n.t(key);}
@@ -72,7 +72,7 @@ class CliAccessPanel {
     if(this.busy)return;
     const generation=++this.generation;
     this.setBusy(true);this.status.textContent=this.t('正在读取…');this.error.textContent='';
-    try{const value=await this.read();if(generation===this.generation){this.value=value;for(const row of value?.[this.provider]?.accounts||[])if(!row.modelCatalogIdentity)this.apiResults.delete(row.id);this.render();}}
+    try{const value=await this.read();if(generation===this.generation){this.value=value;const receipt=value?.codex?.switch;if(['complete','failed','restored'].includes(receipt?.phase))this.switchRequests.delete(receipt.targetId);for(const row of value?.[this.provider]?.accounts||[])if(!row.modelCatalogIdentity)this.apiResults.delete(row.id);this.render();}}
     catch(error){if(generation===this.generation){this.error.textContent=this.t(error.message);this.status.textContent='';}}
     finally{if(generation===this.generation)this.setBusy(false);}
   }
@@ -80,7 +80,7 @@ class CliAccessPanel {
     if(this.busy)return;
     const generation=++this.generation;
     this.setBusy(true);this.error.textContent='';this.status.textContent=this.t('正在保存…');
-    try{const result=await this.request(value);if(generation===this.generation){this.value=result;this.apiResults.clear();this.resetForm();this.onChanged();}}
+    try{const result=await this.request(value);if(generation===this.generation){this.value=result;const receipt=result?.codex?.switch;if(['complete','failed','restored'].includes(receipt?.phase))this.switchRequests.delete(receipt.targetId);this.apiResults.clear();this.resetForm();this.onChanged();}}
     catch(error){if(generation===this.generation){this.error.textContent=this.t(error.message);this.status.textContent='';}}
     finally{if(value.apiKey)value.apiKey='';if(generation===this.generation)this.setBusy(false);}
   }
@@ -149,13 +149,20 @@ class CliAccessPanel {
     if(this.root.parentNode?.tagName==='DETAILS')this.root.parentNode.open=true;
     this.name.input.focus();
   }
+  requestId(){
+    if(typeof crypto.randomUUID==='function')return crypto.randomUUID();
+    const bytes=crypto.getRandomValues(new Uint8Array(16));bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;
+    const h=[...bytes].map(x=>x.toString(16).padStart(2,'0')).join('');return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);
+  }
   switchTo(provider,id,data){
     if(provider==='codex'&&data.sharedWithDesktop){
       const confirm=this.node('div',null,'cli-access-confirm');
-      const tasks=this.field('已结束正在运行的任务','checkbox'),restart=this.field('同意在需要时重启 Codex Desktop','checkbox');
+      confirm.append(this.node('p','此接入同时用于本机 Codex CLI。切换会同步共享认证；仅在需要时重启 Codex Desktop。'));
+      const tasks=this.field('已结束所有任务，并在切换完成前暂停其他客户端发起任务','checkbox'),restart=this.field('同意在需要时重启 Codex Desktop','checkbox');
       const submit=this.button('确认切换',()=>{
         if(!tasks.input.checked||!restart.input.checked)return;
-        confirm.remove();this.perform({provider,action:'switch',id,confirmed:true,tasksConfirmed:true,desktopRestartConfirmed:true});
+        if(!this.switchRequests.has(id))this.switchRequests.set(id,this.requestId());
+        confirm.remove();this.perform({provider,action:'switch',id,requestId:this.switchRequests.get(id),confirmed:true,tasksConfirmed:true,desktopRestartConfirmed:true});
       });
       const cancel=this.button('取消',()=>confirm.remove());
       confirm.append(tasks.label,restart.label,submit,cancel);this.rows.prepend(confirm);

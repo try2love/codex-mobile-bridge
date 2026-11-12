@@ -23,6 +23,8 @@ function renderChatAttachments(node,items,{url,fileUrl,showToolImages=true}={}){
     if(href)link.href=href;
     else{link.type='button';link.className='plain';link.dataset.unavailableFile='true';}
     label.append(link);
+    const player=href && window.BridgeChatMedia?.create(name,href);
+    if(player)attachments.append(player);
   });
   attachments.append(label);node.append(attachments);
 }

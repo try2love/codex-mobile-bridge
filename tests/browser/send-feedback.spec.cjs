@@ -12,7 +12,7 @@ for(const [provider,backend] of [['claude','code'],['claude','cowork'],['deepsee
   const root=document.createElement('div');root.className='app';root.id='send-feedback-root';root.style.cssText='position:fixed;inset:0;background:var(--page);z-index:10';document.body.append(root);
   const select=document.createElement('select');['codex','claude','deepseek'].forEach(id=>select.add(new Option(id,id)));
   const fixture=window.sendFeedbackFixture={writes:[],notices:[],finish:null};
-  const detail={session:{id:'feedback-test',title:'发送交互验证',backend,status:'idle',capabilities:{send:true,attachments:true}},messages:[{id:'reply',role:'assistant',text:'可以发送一条测试消息。'}],connected:true};
+  const detail={session:{id:'feedback-test',title:'发送交互验证',backend,status:'idle',capabilities:{send:true,attachments:true,projectReferences:true}},messages:[{id:'reply',role:'assistant',text:'可以发送一条测试消息。'}],connected:true};
   const view=fixture.view=new DesktopSessionsView({root,select,notify:text=>fixture.notices.push(text),onSelect(){},csrf:()=>'',onUnauthorized(){},request:async(url,body)=>{
    if(body){fixture.writes.push(body);return new Promise(resolve=>fixture.finish=resolve);}
    if(url.includes('/detail'))return detail;if(url.includes('/workspace'))return {entries:[],total:0,project:'/fixture'};

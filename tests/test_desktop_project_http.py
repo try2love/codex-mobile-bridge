@@ -1,6 +1,8 @@
 import unittest
 from unittest.mock import Mock
 import test_bridge
+from bridge.app.service import Bridge
+from bridge.clients.codex.app_server import AppServerUnavailable
 
 
 class DesktopProjectHTTP(unittest.TestCase):
@@ -45,3 +47,20 @@ class DesktopProjectHTTP(unittest.TestCase):
         headers=self.login();status,_,_=self.request('POST','/api/sessions',fields,headers)
         self.assertEqual(status,200)
         self.server.bridge.create_chat.assert_called_once_with('project','Title','request',model_options={'model':'chosen','effort':'low','modelCatalogIdentity':'scope'})
+
+    def test_cli_creation_runtime_failure_keeps_actionable_error(self):
+        bridge = self.server.bridge
+        bridge.host = 'local'
+        bridge.projects = Mock(return_value=[{'key': 'local|p', 'host': 'local', 'cwd': '/p', 'type': 'cli'}])
+        bridge.project_host = Mock(return_value='local')
+        bridge.for_host = Mock(return_value=bridge)
+        bridge.cli_sessions = Mock()
+        message = '此 Codex CLI 缺少完整的后台运行组件。请安装或修复完整的 Codex CLI 后重试。'
+        bridge.cli_sessions.creation_context.side_effect = AppServerUnavailable(message)
+        bridge.creation_models = Bridge.creation_models.__get__(bridge)
+        path = '/api/projects/models?project=local%7Cp&kind=cli'
+        self.assertEqual(self.request('GET', path)[0], 401)
+        status, _, value = self.request('GET', path, headers=self.login())
+        self.assertEqual(status, 409)
+        self.assertEqual(value['error'], message)
+        bridge.cli_sessions.create.assert_not_called()

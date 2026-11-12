@@ -97,7 +97,8 @@ class WslAccounts:
                 if row['distribution'] not in wsl.running_distributions():
                     return self._public(provider, row, {'available': False, 'identity': None, 'accounts': [],
                         'activeId': None, 'blockers': ['WSL 已停止，请在电脑端启动后查看账号'],
-                        'capabilities': {'save': False, 'import': False, 'switch': False, 'restore': False, 'models': False}})
+                        'capabilities': {'connect': row.get('enabled', True), 'save': False, 'import': False,
+                                         'switch': False, 'restore': False, 'models': False}})
                 value = self._call(provider, row, {'action': 'read'})
                 if not row.get('enabled', True):
                     value['blockers'].append('此 WSL 入口已关闭')
@@ -225,8 +226,10 @@ class WslAccounts:
         if set(value)-allowed:
             raise ValueError('WSL 账号请求包含未知字段')
         provider, entry, action = value.get('provider'), value.get('entry'), value.get('action')
-        if action not in ('read', 'save-api', 'import-api', 'import-current', 'import-sources', 'switch', 'delete', 'rename', 'models', 'recover-restart'):
+        if action not in ('read', 'connect', 'save-api', 'import-api', 'import-current', 'import-sources', 'switch', 'delete', 'rename', 'models', 'recover-restart'):
             raise ValueError('WSL 账号操作不支持')
+        if action == 'connect' and set(value) != {'provider', 'entry', 'action'}:
+            raise ValueError('WSL 启动请求字段无效')
         if action == 'models':
             return self.model_catalog.get(value)
         with self.lock:
@@ -237,6 +240,15 @@ class WslAccounts:
             if action == 'recover-restart' and provider != 'codex':
                 raise ValueError('仅 WSL Codex 支持恢复共享服务')
             registry = self._registry(provider)
+            if action == 'connect':
+                with registry.lock:
+                    row = self._row(provider, entry, enabled=True)
+                    try:
+                        wsl.read(row['distribution'], 'import json\nprint(json.dumps({"ok": True}))',
+                                 row['user'], timeout=25, allow_start=True)
+                    except OSError as exc:
+                        raise ValueError(str(exc)) from exc
+                return self.read(provider, entry)
             with self._change_scope(provider, entry, action) as release:
                 row = self._row(provider, entry, enabled=action != 'read')
                 if action == 'import-sources':

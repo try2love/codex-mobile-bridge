@@ -2,6 +2,8 @@
 
 Status: implemented
 
+CLI 观察现由[只读原生通知](../feature/2026-11-11-codex-cli-passive-notifications.md)替代旧 App owner 探测，继续复用本篇的后台槽位和投递隔离；App/IDE 的跟随路径保留。
+
 ## 问题
 
 用户在 PR #85 本地 Test 中观察到手机通知晚于第三方通知，HTTPS 比局域网更晚，并反馈 Claude、DSH 没有提醒。既有代码实际已有两个客户端的通知路径，但隔离复现确认三个缺陷：Claude 扫描把桌面连接当成 CLI 通知的前提；DSH 最新历史分页丢掉上一轮锚点后，新完成记录被忽略；第三方 HTTP 与手机入箱串行，同一次发送及之后的扫描都可能等待外部请求。

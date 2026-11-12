@@ -34,6 +34,7 @@ def package_files():
                ('package.json', 'cordis.patch.yml', 'index.mjs', 'README.md')},
             'host.mjs': (SOURCE/'host.mjs').read_bytes(),
             'LICENSE': (SOURCE.parents[2]/'LICENSE').read_bytes(),
+            'NOTICE': (SOURCE.parents[2]/'NOTICE').read_bytes(),
             'LICENSE.coding-mobile': (SOURCE.parent/'LICENSE.coding-mobile').read_bytes()}
 
 
@@ -74,6 +75,9 @@ def _private(path):
 
 class ManualDeepSeek(DeepSeek):
     manual = True
+
+    def connection_error(self):
+        return '已绑定的 Harness 档案“'+self.binding['profile']+'”尚未连接，请在原客户端重新加载接入插件；无需重复安装桌面接入。'
 
     def __init__(self, binding_file, instance_id=None):
         path = Path(binding_file).expanduser().absolute()

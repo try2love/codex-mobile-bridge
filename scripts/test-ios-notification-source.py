@@ -14,7 +14,7 @@ APP = WORK / 'SourceTests.app/Contents'
     'CFBundleIdentifier': 'io.github.try2love.codexbridge.notification-source-tests',
     'CFBundleExecutable': 'source-tests', 'CFBundlePackageType': 'APPL',
 }))
-for provider in ('codex', 'claude', 'deepseek', 'zcode'):
+for provider in ('codex', 'claude', 'deepseek', 'zcode', 'antigravity'):
     shutil.copyfile(ROOT / f'web/client-icons/{provider}.png', APP / f'Resources/{provider}.png')
 # macOS does not accept the iOS image attachment type in this command-line
 # harness. Replace only the OS data holders; exercise the production resource
@@ -31,7 +31,7 @@ struct UNNotificationAttachment {
 }
 """ + source)
 (WORK / 'main.swift').write_text('''import Foundation
-for (provider, host, expected) in [("codex", "local", "Codex"), ("claude", "desktop:claude", "Claude"), ("deepseek", "desktop:deepseek", "DeepSeek Harness"), ("zcode", "desktop:zcode", "ZCode"), ("unknown", "desktop:zcode", "ZCode"), ("unknown", "desktop:claude", "Claude"), ("unknown", "desktop:claude:" + String(repeating: "a", count: 32), "Claude"), ("unknown", "desktop:deepseek:" + String(repeating: "b", count: 32), "DeepSeek Harness")] {
+for (provider, host, expected) in [("codex", "local", "Codex"), ("claude", "desktop:claude", "Claude"), ("deepseek", "desktop:deepseek", "DeepSeek Harness"), ("zcode", "desktop:zcode", "ZCode"), ("antigravity", "desktop:antigravity", "Antigravity"), ("unknown", "desktop:antigravity", "Antigravity"), ("unknown", "desktop:zcode", "ZCode"), ("unknown", "desktop:claude", "Claude"), ("unknown", "desktop:claude:" + String(repeating: "a", count: 32), "Claude"), ("unknown", "desktop:deepseek:" + String(repeating: "b", count: 32), "DeepSeek Harness")] {
     let content = UNMutableNotificationContent()
     NotificationSource.apply(content, provider: provider, host: host)
     precondition(content.subtitle == expected)

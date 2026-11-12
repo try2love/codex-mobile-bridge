@@ -5,6 +5,10 @@ async function runPersistentDraftTests(){
   const old={id:currentId,host:currentHost,scope:codexDraftScope,gateway:draftGateway,touched:codexDraftTouched,text:$('message').value,skills:selectedSkills,mode:workModes.selection,state,fetch:window.fetch,listRows,timelineStart:ChatTimeline.prototype.start};
   const gateway='fixture-drafts-'+crypto.randomUUID(),a='11111111-1111-4111-8111-111111111111',b='22222222-2222-4222-8222-222222222222';
   const scope=(session,account='account-a')=>({gateway,provider:'codex',account,host:'local',session});
+  const fixtureFetch=async(url,options)=>{
+    if (/\/api\/sessions\/[^/]+\/timeline\?/.test(String(url))) return new Response(JSON.stringify({meta:{cwd:'/synthetic/project',access:{source:'desktop'}},items:[]}),{headers:{'Content-Type':'application/json'}});
+    return old.fetch.call(window,url,options);
+  };
   try{
     check(typeof $('message').onkeydown==='function'&&typeof $('stop').onclick==='function'&&typeof $('history').onclick==='function','Existing composer keyboard, stop and history handlers remain bound');
     draftGateway=gateway;currentHost='local';currentId=a;codexDraftScope=null;codexDraftTouched=false;$('message').value='';selectedSkills=new Set();
@@ -22,7 +26,7 @@ async function runPersistentDraftTests(){
     draftGateway=gateway;currentId=a;codexDraftScope=null;codexDraftTouched=false;$('message').value='';bindCodexDraft({draftAccountIdentity:'account-a'});
     state={status:'idle',access:{source:'desktop',canSend:true}};
     let resolveSend,sentPayload=null;
-    window.fetch=async(url,options)=>{if(String(url).includes('/api/sessions/'+a+'/send')){sentPayload=JSON.parse(options.body);return new Promise(resolve=>{resolveSend=resolve;});}return old.fetch.call(window,url,options);};
+    window.fetch=async(url,options)=>{if(String(url).includes('/api/sessions/'+a+'/send')){sentPayload=JSON.parse(options.body);return new Promise(resolve=>{resolveSend=resolve;});}return fixtureFetch(url,options);};
     $('message').value='submitted';$('message').dispatchEvent(new Event('input',{bubbles:true}));
     const sendingPromise=$('composer').onsubmit({preventDefault(){}});
     const sendDeadline=performance.now()+3000;while(!sentPayload&&performance.now()<sendDeadline)await new Promise(resolve=>setTimeout(resolve,10));
@@ -32,7 +36,7 @@ async function runPersistentDraftTests(){
     check($('message').value==='edited while sending'&&composerDrafts.load(scope(a)).text==='edited while sending','Delayed acknowledgement preserves the later DOM edit');
     check(composerDrafts.pendingSend(scope(a))===null,'Confirmed send clears its durable pending id');
     currentId=b;codexDraftScope=null;codexDraftTouched=false;$('message').value='';state={status:'idle',access:{source:'desktop',canSend:true}};
-    let attempts=[];window.fetch=async(url,options)=>{if(String(url).includes('/api/sessions/'+b+'/send')){attempts.push(JSON.parse(options.body));return {ok:true,status:200,json:async()=>({status:attempts.length===1?'unknown':'accepted'})};}return old.fetch.call(window,url,options);};
+    let attempts=[];window.fetch=async(url,options)=>{if(String(url).includes('/api/sessions/'+b+'/send')){attempts.push(JSON.parse(options.body));return {ok:true,status:200,json:async()=>({status:attempts.length===1?'unknown':'accepted'})};}return fixtureFetch(url,options);};
     $('message').value='sent before account scope';$('message').dispatchEvent(new Event('input',{bubbles:true}));
     await $('composer').onsubmit({preventDefault(){}});
     const temporary=JSON.parse(sessionStorage.getItem('pending:local|'+b));
@@ -62,7 +66,7 @@ async function runPersistentDraftTests(){
     await openChat(d);bindCodexDraft({draftAccountIdentity:'account-a'});
     check($('message').value==='pending D'&&composerDrafts.load(scope(d))?.text==='pending D','Pending D survives the same open path independently');
     const e='55555555-5555-4555-8555-555555555555';await openChat(e);state={status:'idle',access:{source:'desktop',canSend:true}};$('message').value='confirmed provisional';$('message').dispatchEvent(new Event('input',{bubbles:true}));
-    let acceptProvisional;window.fetch=async(url,options)=>String(url).includes('/api/sessions/'+e+'/send')?new Promise(resolve=>acceptProvisional=resolve):old.fetch.call(window,url,options);
+    let acceptProvisional;window.fetch=async(url,options)=>String(url).includes('/api/sessions/'+e+'/send')?new Promise(resolve=>acceptProvisional=resolve):fixtureFetch(url,options);
     const sendingProvisional=$('composer').onsubmit({preventDefault(){}}),originalProvisional=codexProvisionalDrafts.get('local|'+e);
     $('back').onclick();await openChat(c);
     check(codexProvisionalDrafts.get('local|'+e)!==originalProvisional&&codexProvisionalDrafts.get('local|'+e)?.text==='confirmed provisional','Navigation rebuilds the pending provisional draft during send');
@@ -72,7 +76,7 @@ async function runPersistentDraftTests(){
     draftGateway='';codexDraftScope=null;currentId=b;$('message').value='temporary';$('message').dispatchEvent(new Event('input',{bubbles:true}));
     check(sessionStorage.getItem('draft:local|'+b)==='temporary','Gateway without draft identity keeps temporary composer behavior');
     let sent=null;state={status:'idle',access:{source:'desktop',canSend:true}};
-    window.fetch=async(url,options)=>{if(String(url).includes('/api/sessions/'+b+'/send')){sent=JSON.parse(options.body);return {ok:true,status:200,json:async()=>({status:'accepted'})};}return old.fetch.call(window,url,options);};
+    window.fetch=async(url,options)=>{if(String(url).includes('/api/sessions/'+b+'/send')){sent=JSON.parse(options.body);return {ok:true,status:200,json:async()=>({status:'accepted'})};}return fixtureFetch(url,options);};
     await $('composer').onsubmit({preventDefault(){}});
     check(sent?.text==='temporary','Gateway without draft identity can still send');
     return {passed:checks.length,checks};

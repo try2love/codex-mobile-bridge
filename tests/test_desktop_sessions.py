@@ -1,9 +1,10 @@
+import asyncio
 import json
 import tempfile
 import unittest
 import uuid
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from bridge.clients.manager import DesktopSessions
 from bridge.clients.claude.accounts import ClaudeAccounts
@@ -21,6 +22,38 @@ class Adapters(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.manager = DesktopSessions(self.root)
         self.addCleanup(self.manager.close)
+
+    def test_native_claude_detail_projects_verified_prompt_capabilities_for_shared_composer(self):
+        from bridge.clients.claude.model import session
+        adapter = self.manager.adapters['claude']
+        raw = {'sessionId': 'composer-native', 'cwd': str(self.root), 'turnRunning': False}
+        row = session('code', raw)
+        adapter.index[row['id']] = row
+        adapter.desktop = Mock(connected=True, capabilities={'code': ['mobileDetail', 'sendMessage']})
+        adapter.desktop.call = AsyncMock(return_value={'session': raw, 'transcript': []})
+        native = lambda action, sid=None, body=None, **kwargs: asyncio.run(adapter.dispatch(action, sid, body or {}))
+        with patch.object(adapter, '_call', side_effect=native), \
+             patch.object(self.manager, '_model_identity', return_value='fixture-account'), \
+             patch.object(self.manager, '_draft_account_identity', return_value='fixture-draft'):
+            detail = self.manager.call('claude', 'detail', row['id'])
+            self.assertTrue(detail['capabilities']['send'])
+            self.assertTrue(detail['capabilities']['projectReferences'])
+            self.assertTrue(detail['capabilities']['queue'])
+            self.assertTrue(detail['capabilities']['steer'])
+            adapter.desktop.capabilities['code'].remove('sendMessage')
+            unavailable = self.manager.call('claude', 'detail', row['id'])
+            self.assertFalse(unavailable['capabilities']['send'])
+            self.assertFalse(unavailable['capabilities']['projectReferences'])
+        self.assertEqual([call.args[1] for call in adapter.desktop.call.call_args_list], ['mobileDetail', 'mobileDetail'])
+
+    def test_detail_prompt_projection_preserves_unknown_and_explicit_native_restrictions(self):
+        adapter = Mock()
+        self.manager.adapters['deepseek'] = adapter
+        for caps, expected in [({}, {}), ({'attachments': 'unknown'}, {'attachments': 'unknown'}),
+                               ({'attachments': True, 'send': False, 'projectReferences': False},
+                                {'attachments': True, 'send': False, 'projectReferences': False})]:
+            adapter.call.return_value = {'session': {'id': 'composer', 'cwd': str(self.root)}, 'capabilities': caps}
+            self.assertEqual(self.manager._read('deepseek', 'detail', 'composer')['capabilities'], expected)
 
     def test_host_references_are_resolved_once_and_left_to_native_adapters(self):
         from bridge.features.workspace.workspace import operate
@@ -42,7 +75,8 @@ class Adapters(unittest.TestCase):
             adapter.call.return_value = {'session': {'cwd': str(self.root)}, 'messages': [{'id': 'message', 'role': 'user', 'text': '', 'attachments': [{'type': 'file', 'path': str(file), 'name': file.name}]}]}
             detail = self.manager._read(provider, 'detail', 'chat')
             self.assertEqual(detail['messages'][0]['text'], '')
-            self.assertEqual(detail['files'][0]['path'], file.name)
+            self.assertEqual(detail['files'][0]['path'], file.as_posix())
+            self.assertEqual(detail['files'][0]['scope'], 'host')
 
     def test_native_work_mode_routes_once_through_shared_write_receipts(self):
         adapter = Mock(); adapter.receipts_path = None
@@ -652,6 +686,23 @@ class HttpAdapters(unittest.TestCase):
         self.assertEqual(self.request('POST', '/api/clients', {
             'provider': 'claude', 'enabled': False, 'quitDesktop': False, 'force': True}, headers)[0], 400)
 
+
+    def test_record_directory_is_available_only_to_explicit_host_read_requests(self):
+        temp = tempfile.TemporaryDirectory(dir=ROOT/'.tmp'); self.addCleanup(temp.cleanup)
+        root = Path(temp.name).resolve(); record = root/'record.json'; record.write_text('{}')
+        manager = DesktopSessions(root/'gateway'); self.addCleanup(manager.close)
+        manager.config['enabled'] = {'deepseek': True}; self.server.desktop_sessions = manager
+        adapter = Mock(); adapter.call.return_value = {'sessions': [{'id': 'native', 'host': 'local', 'cwd': ''}]}
+        adapter.record_path.return_value = str(record); manager.adapters['deepseek'] = adapter
+        path = '/api/desktop-sessions/deepseek/workspace?sessionId=native'
+        self.assertEqual(self.request('GET', path+'&scope=host')[0], 401)
+        headers = self.login()
+        result = self.request('GET', path+'&scope=host', headers=headers)
+        self.assertEqual(result[0], 200); self.assertEqual(result[2]['path'], root.as_posix())
+        self.assertIsNone(result[2]['projectPath'])
+        self.assertNotEqual(self.request('GET', path, headers=headers)[0], 200)
+        self.assertNotEqual(self.request('POST', path+'&scope=host', {}, headers)[0], 200)
+        adapter.record_path.assert_called_once_with('native')
 
     def test_client_management_and_workspace_http_are_authenticated_and_scoped(self):
         temp = tempfile.TemporaryDirectory(dir=ROOT/'.tmp'); self.addCleanup(temp.cleanup)

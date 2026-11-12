@@ -2,16 +2,25 @@ name: Python tests
 
 on:
   push:
+    branches: [main]
+    tags: ['v*']
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  mobile-scope:
+  change-scope:
     runs-on: ubuntu-24.04
     outputs:
-      changed: ${{ steps.scope.outputs.mobile }}
+      backend: ${{ steps.scope.outputs.backend }}
+      ui: ${{ steps.scope.outputs.ui }}
+      frontend: ${{ steps.scope.outputs.frontend }}
+      browser: ${{ steps.scope.outputs.browser }}
+      android: ${{ steps.scope.outputs.android }}
+      ios: ${{ steps.scope.outputs.ios }}
+      mobile_update: ${{ steps.scope.outputs.mobile_update }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -21,10 +30,11 @@ jobs:
           # Release tags check the entire tree; the previous tag object may no longer be reachable.
           BASE_SHA: ${{ github.ref_type != 'tag' && (github.event.pull_request.base.sha || github.event.before) || '' }}
           HEAD_SHA: ${{ github.sha }}
-        run: python3 scripts/ci-mobile-scope.py
+          EVENT_NAME: ${{ github.event_name }}
+        run: python3 scripts/ci-test-scope.py
   android-compile:
-    needs: mobile-scope
-    if: needs.mobile-scope.outputs.changed == 'true'
+    needs: change-scope
+    if: needs.change-scope.outputs.android == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -34,12 +44,14 @@ jobs:
           java-version: '17'
       - run: bash scripts/ci-android-build.sh
   ios-compile:
-    needs: mobile-scope
-    if: needs.mobile-scope.outputs.changed == 'true'
+    needs: change-scope
+    if: needs.change-scope.outputs.ios == 'true'
     uses: ./.github/workflows/mobile.yml
     with:
       source_ref: ${{ github.sha }}
   mobile-update-tests:
+    needs: change-scope
+    if: needs.change-scope.outputs.mobile_update == 'true'
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -53,7 +65,10 @@ jobs:
       - run: python3 scripts/test-ios-notification-routing.py
       - run: python3 scripts/test-ios-notification-source.py
       - run: python3 scripts/test-ios-notification-sources.py
+  # These five matrix names are required by main's existing branch protection.
   test:
+    needs: change-scope
+    if: always()
     strategy:
       fail-fast: false
       matrix:
@@ -62,50 +77,57 @@ jobs:
         include:
           - os: macos-latest
             python: '3.13'
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ needs.change-scope.outputs.backend == 'true' && matrix.os || 'ubuntu-latest' }}
     steps:
+      - name: Validate selection and report unaffected backend
+        env:
+          SCOPE_RESULT: ${{ needs.change-scope.result }}
+          BACKEND: ${{ needs.change-scope.outputs.backend }}
+        shell: bash
+        run: |
+          test "$SCOPE_RESULT" = success
+          case "$BACKEND" in
+            true) echo "Backend checks selected" ;;
+            false) echo "Backend checks skipped: no affected source" ;;
+            *) exit 1 ;;
+          esac
       - uses: actions/checkout@v4
+        if: needs.change-scope.outputs.backend == 'true'
       - uses: actions/setup-python@v5
+        if: needs.change-scope.outputs.backend == 'true'
         with:
           python-version: ${{ matrix.python }}
       - name: Install shell used by PTY integration tests
-        if: runner.os == 'Linux'
+        if: needs.change-scope.outputs.backend == 'true' && runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y zsh
       - name: Verify Windows continuous terminal before the full suite
-        if: runner.os == 'Windows'
+        if: needs.change-scope.outputs.backend == 'true' && runner.os == 'Windows'
         run: python -B -m unittest discover -s tests -p test_windows_terminal.py -v
       - name: Verify Windows native Claude controls before the full suite
-        if: runner.os == 'Windows'
+        if: needs.change-scope.outputs.backend == 'true' && runner.os == 'Windows'
         run: python -B -m unittest discover -s tests -p test_claude_native_helper.py -v
       - name: Install relay transport and Claude encrypted-reply support for integration tests
+        if: needs.change-scope.outputs.backend == 'true'
         run: python -m pip install -r requirements-relay.txt cryptography
-      - run: python -B -m unittest discover -s tests -v
+      - if: needs.change-scope.outputs.backend == 'true'
+        run: python -B -m unittest discover -s tests -v
 
-  desktop-tests:
-    needs: [mobile-scope, android-compile, ios-compile, mobile-update-tests]
-    if: always()
+  ui-tests:
+    needs: change-scope
+    if: needs.change-scope.outputs.ui == 'true'
     runs-on: ubuntu-24.04
-    env:
-      PLAYWRIGHT_BROWSERS_PATH: .local/tools/playwright
     steps:
-      - name: Require selected mobile builds to succeed
-        env:
-          SCOPE_RESULT: ${{ needs.mobile-scope.result }}
-          MOBILE_CHANGED: ${{ needs.mobile-scope.outputs.changed }}
-          ANDROID_RESULT: ${{ needs.android-compile.result }}
-          IOS_RESULT: ${{ needs.ios-compile.result }}
-          MOBILE_UPDATE_RESULT: ${{ needs.mobile-update-tests.result }}
-        run: |
-          test "$SCOPE_RESULT" = success
-          test "$MOBILE_UPDATE_RESULT" = success
-          if [ "$MOBILE_CHANGED" = true ]; then
-            test "$ANDROID_RESULT" = success
-            test "$IOS_RESULT" = success
-          else
-            test "$MOBILE_CHANGED" = false
-            test "$ANDROID_RESULT" = skipped
-            test "$IOS_RESULT" = skipped
-          fi
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: node --test tests/layouts.test.cjs tests/frontend-assets.test.cjs
+
+  frontend-tests:
+    needs: change-scope
+    if: needs.change-scope.outputs.frontend == 'true'
+    runs-on: ubuntu-24.04
+    steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
@@ -114,6 +136,20 @@ jobs:
       - run: npm ci
       - run: npm run test:desktop
       - run: npm run test:updater
+
+  browser-tests:
+    needs: change-scope
+    if: needs.change-scope.outputs.browser == 'true'
+    runs-on: ubuntu-24.04
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: .local/tools/playwright
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
       - run: npx playwright install --with-deps chromium webkit
       - run: npm run test:browser
       - name: Save browser failure evidence
@@ -124,3 +160,29 @@ jobs:
           path: .tmp/browser-results/
           if-no-files-found: ignore
           include-hidden-files: true
+
+  # Keep the existing required check name, including for documentation-only PRs.
+  desktop-tests:
+    needs: [change-scope, test, ui-tests, frontend-tests, browser-tests, android-compile, ios-compile, mobile-update-tests]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require every selected check to succeed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, runpy
+          needs = json.loads(os.environ['NEEDS_JSON'])
+          if needs['change-scope']['result'] != 'success':
+              raise SystemExit('Change classification failed')
+          outputs = needs['change-scope']['outputs']
+          jobs = {'backend': 'test', 'ui': 'ui-tests', 'frontend': 'frontend-tests', 'browser': 'browser-tests',
+                  'android': 'android-compile', 'ios': 'ios-compile', 'mobile_update': 'mobile-update-tests'}
+          if any(outputs.get(key) not in ('true', 'false') for key in jobs):
+              raise SystemExit('Missing or invalid check selection')
+          scope = {key: outputs[key] == 'true' for key in jobs}
+          results = {key: needs[job]['result'] for key, job in jobs.items()}
+          runpy.run_path('scripts/ci-test-scope.py')['verify_results'](scope, results)
+          PYTHON

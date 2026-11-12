@@ -10,7 +10,7 @@ import subprocess
 import threading
 from concurrent.futures import Future, TimeoutError
 from bridge.clients.websocket import WebSocket
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 class AppServerError(RuntimeError):
@@ -21,12 +21,49 @@ class AppServerUnavailable(AppServerError):
     pass
 
 
+class AppServerRequestNotSent(AppServerUnavailable):
+    """This request was rejected before writing any native RPC bytes."""
+
+
+class AppServerMessageTooLarge(ValueError):
+    pass
+
+
+class AppServerReadTimeout(AppServerUnavailable):
+    pass
+
+
 class AppServerUnknownResult(AppServerError):
     """The request may have reached the runtime; the caller must not replay it."""
 
 
 class AppServerUnsupported(AppServerError):
     pass
+
+
+def daemon_shutting_down(payload):
+    data = payload.get('data') if isinstance(payload, dict) and payload.get('code') == -32600 else None
+    return isinstance(data, dict) and data.get('reason') == 'serverShuttingDown'
+
+
+def response_result(method, params, response):
+    """Preserve native rejection semantics across shared runtime transports."""
+    if 'error' in response:
+        error = response['error']
+        if method == 'thread/delete' and isinstance(error, dict):
+            from bridge.features.sessions.create import native_delete_error
+            raise native_delete_error(error, (params or {}).get('threadId'))
+        code = error.get('code') if isinstance(error, dict) else None
+        detail = error.get('message', 'App-server request failed') if isinstance(error, dict) else str(error)
+        if method in ('thread/archive', 'thread/unarchive'):
+            from bridge.features.sessions.create import ArchiveRejected
+            raise ArchiveRejected(error)
+        if code == -32601:
+            raise AppServerUnsupported(detail)
+        failure = AppServerError(detail)
+        failure.rpc_error = error
+        raise failure
+    return response['result']
 
 
 class _WebSocket(WebSocket):
@@ -41,7 +78,8 @@ class CodexAppServer:
     def __init__(self, socket_path, cli='codex', on_event=None,
                  on_server_request=None, on_disconnect=None, process_factory=None,
                  command=None, check_socket=True, client_name='codex-mobile-bridge'):
-        if not socket_path or not Path(socket_path).is_absolute():
+        if not socket_path or not (Path(socket_path).is_absolute() or
+                                   not check_socket and PurePosixPath(str(socket_path)).is_absolute()):
             raise ValueError('An absolute existing control socket path is required')
         self.socket_path = str(socket_path)
         self.cli = str(cli)
@@ -54,6 +92,7 @@ class CodexAppServer:
         self.on_disconnect = on_disconnect or (lambda: None)
         self.process_factory = process_factory or subprocess.Popen
         self.process = None
+        self.shutting_down_process = None
         self.transport = None
         self.server_info = None
         self.pending = {}
@@ -61,6 +100,11 @@ class CodexAppServer:
         self.lock = threading.RLock()
         self.write_lock = threading.Lock()
         self.connect_lock = threading.Lock()
+
+    @property
+    def is_shutting_down(self):
+        with self.lock:
+            return self.process is not None and self.shutting_down_process is self.process
 
     def connect(self, timeout=5):
         with self.connect_lock:
@@ -76,7 +120,9 @@ class CodexAppServer:
                     stderr=subprocess.DEVNULL, **options)
             except OSError as exc:
                 raise AppServerUnavailable('Could not connect to the existing Codex runtime') from exc
-            self.process = process
+            with self.lock:
+                self.shutting_down_process = None
+                self.process = process
             handshake = Future()
             def open_websocket():
                 try:
@@ -131,22 +177,9 @@ class CodexAppServer:
                 response = future.result(timeout=timeout)
             except TimeoutError as exc:
                 if replay_safe:
-                    raise AppServerUnavailable('Codex runtime read timed out') from exc
+                    raise AppServerReadTimeout('Codex runtime read timed out') from exc
                 raise AppServerUnknownResult('Codex runtime response timed out; request may have completed') from exc
-            if 'error' in response:
-                error = response['error']
-                if method == 'thread/delete' and isinstance(error, dict):
-                    from bridge.features.sessions.create import native_delete_error
-                    raise native_delete_error(error, (params or {}).get('threadId'))
-                code = error.get('code') if isinstance(error, dict) else None
-                detail = error.get('message', 'App-server request failed') if isinstance(error, dict) else str(error)
-                if method in ('thread/archive', 'thread/unarchive'):
-                    from bridge.features.sessions.create import ArchiveRejected
-                    raise ArchiveRejected(error)
-                if code == -32601:
-                    raise AppServerUnsupported(detail)
-                raise AppServerError(detail)
-            return response['result']
+            return response_result(method, params, response)
         finally:
             with self.lock:
                 self.pending.pop(request_id, None)
@@ -195,6 +228,8 @@ class CodexAppServer:
                             return
                         future = self.pending.get(message['id'])
                         if future is not None and not future.done():
+                            if daemon_shutting_down(message.get('error')):
+                                self.shutting_down_process = process
                             future.set_result(message)
                 elif 'id' in message and 'method' in message:
                     self.on_server_request(message)
@@ -217,9 +252,11 @@ class CodexAppServer:
                 self._stop_process(process)
                 self.on_disconnect()
 
-    def close(self):
+    def close(self, *, expected_process=None):
         """Disconnect this proxy client; never stop or restart the daemon."""
         with self.lock:
+            if expected_process is not None and self.process is not expected_process:
+                return False
             process = self.process
             self.process = None
             self.transport = None
@@ -230,6 +267,7 @@ class CodexAppServer:
                         'Codex runtime connection closed; request result is unknown'))
         if process is not None:
             self._stop_process(process)
+        return process is not None
 
     @staticmethod
     def _stop_process(process):

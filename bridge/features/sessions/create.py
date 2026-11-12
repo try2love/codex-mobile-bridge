@@ -318,6 +318,16 @@ def model_overrides(model=None, effort=None):
     return {'model': model, **({'config': {'model_reasoning_effort': effort}} if effort is not None else {})}
 
 
+def save_new_thread(request, thread, title):
+    """Materialize a newly created empty chat without inventing a native name."""
+    if title:
+        request('thread/name/set', {'threadId': thread['id'], 'name': title})
+    else:
+        # Native placement flushes the empty rollout before another client resumes
+        # it. Preserve its initial section; never apply this to an existing chat.
+        request('thread/section/move', {'threadId': thread['id'], 'sectionId': thread.get('sectionId')})
+
+
 def create_empty(executable, codex_home, cwd, title, project=None, model=None, effort=None):
     overrides = model_overrides(model, effort)
     supported = project is not None and _native_project_support(executable, project.get('required', False))
@@ -333,7 +343,7 @@ def create_empty(executable, codex_home, cwd, title, project=None, model=None, e
             raise CreationError('聊天已创建，但模型或思考强度尚未确认，请检查原会话；不会重复创建')
         if project_id is not None and result['thread'].get('projectId') != project_id:
             raise CreationError('聊天已创建但原生项目归属未确认，请检查电脑 App，不要重复创建')
-        request('thread/name/set', {'threadId': thread_id, 'name': title})
+        save_new_thread(request, result['thread'], title)
         saved = request('thread/read', {'threadId': thread_id, 'includeTurns': True})
         if project_id is not None and saved['thread'].get('projectId') != project_id:
             raise CreationError('聊天已创建但项目归属未持久化确认，请检查电脑 App，不要重复创建')
@@ -502,14 +512,18 @@ class ArchiveNotSent(CreationError):
     """Archive validation failed before a native mutation was dispatched."""
 
 
-def check_archive_runtime(request, identifiers):
+def check_archive_runtime(request, identifiers, *, allow_terminal_error=False):
     """Read only: never resume a thread to establish archive safety."""
     for identifier in identifiers:
         thread = request('thread/read', {'threadId': identifier, 'includeTurns': False})['thread']
         status = (thread.get('status') or {}).get('type')
-        if (thread.get('id') != identifier or status not in ('idle', 'notLoaded') or
+        terminal_error = allow_terminal_error and status == 'systemError'
+        if (thread.get('id') != identifier or (status not in ('idle', 'notLoaded') and not terminal_error) or
                 thread.get('requests') or any(turn.get('status') == 'inProgress' for turn in thread.get('turns', []))):
             raise ValueError('聊天或子智能体正在运行、等待确认或状态未知，请先在原客户端处理')
+        if terminal_error:
+            from bridge.clients.codex.release import check_terminal_system_error
+            check_terminal_system_error(request, thread)
 
 
 def stop_archive_runtime(request, identifiers, timeout=20):

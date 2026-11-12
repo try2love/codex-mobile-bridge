@@ -9,6 +9,37 @@ from pathlib import Path
 MAX_PAGE_BYTES = 4 * 1024 * 1024
 
 
+def local_command_text(event, chain):
+    """Format only the native CLI caveat -> command -> stdout record chain."""
+    import re
+    previous = dict(chain)
+    chain.clear()
+    message = event.get('message')
+    if (event.get('type') != 'user' or event.get('entrypoint') != 'cli'
+            or not isinstance(message, dict) or message.get('role') != 'user'
+            or not isinstance(message.get('content'), str)
+            or not all(isinstance(event.get(key), str) and event[key] for key in ('uuid', 'promptId', 'sessionId'))):
+        return None
+    text = message['content'].strip()
+    phase, display = None, None
+    if event.get('isMeta') is True and re.fullmatch(r'<local-command-caveat>.*</local-command-caveat>', text, re.S):
+        phase = 'caveat'
+    elif (event.get('parentUuid') == previous.get('uuid') and event['promptId'] == previous.get('promptId')
+            and event['sessionId'] == previous.get('sessionId')):
+        if previous.get('phase') == 'caveat':
+            command = re.fullmatch(r'<command-name>([^<]+)</command-name>\s*<command-message>[^<]*</command-message>\s*<command-args>(.*?)</command-args>', text, re.S)
+            if command and command[1].strip():
+                phase = 'command'
+                display = command[1].strip() + (' ' + command[2].strip() if command[2].strip() else '')
+        elif previous.get('phase') == 'command':
+            output = re.fullmatch(r'<local-command-stdout>(.*)</local-command-stdout>', text, re.S)
+            if output:
+                phase, display = 'stdout', output[1]
+    if phase:
+        chain.update({key: event[key] for key in ('uuid', 'promptId', 'sessionId')}, phase=phase)
+    return display
+
+
 def session_custom_title(event, native):
     """Read the CLI's own title event; never write or infer a title mutation."""
     title = event.get('customTitle')

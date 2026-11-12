@@ -4,14 +4,15 @@
   "description": "Connect an existing DeepSeek Harness profile to Codex Mobile Bridge",
   "type": "module",
   "main": "index.mjs",
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "files": [
     "index.mjs",
     "host.mjs",
     "cordis.patch.yml",
     "README.md",
     "LICENSE.coding-mobile",
-    "LICENSE"
+    "LICENSE",
+    "NOTICE"
   ],
   "dsh": {
     "bundle": {

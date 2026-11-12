@@ -77,6 +77,12 @@ class WebSocket:
         self._write(header + mask + payload)
 
     def receive(self):
+        return json.loads(self._receive_bytes())
+
+    def receive_text(self):
+        return self._receive_bytes().decode('utf-8')
+
+    def _receive_bytes(self):
         fragments = []
         total = 0
         while True:
@@ -102,7 +108,7 @@ class WebSocket:
             if total > 64 * 1024 * 1024:
                 raise self.unsupported('Native WebSocket message is too large')
             if head[0] & 128:
-                return json.loads(b''.join(fragments))
+                return b''.join(fragments)
 
     def _exact(self, length):
         chunks = bytearray()

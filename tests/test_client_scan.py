@@ -1,5 +1,6 @@
 """Exercise discovery/setup orchestration without touching native app profiles."""
 import json
+from contextlib import nullcontext
 import plistlib
 import tempfile
 import unittest
@@ -119,6 +120,42 @@ class ClientScanTests(unittest.TestCase):
 
     def scan(self):
         return {row['id']: row for row in self.manager.scan()['clients']}
+
+    def test_cli_only_is_selectable_without_launching_a_desktop_or_daemon(self):
+        self.discovered['codex'].update(installed=False, executable='')
+        self.accounts.index = {}
+        self.accounts.assert_editable = Mock()
+        self.accounts.gate = nullcontext()
+        self.accounts.lock = nullcontext()
+        self.bridge.cli_sessions = SimpleNamespace(available=Mock(return_value=True))
+        self.manager.gateway_running = True
+        self.manager.config['enabled'] = {'codex': False}
+        with patch('bridge.clients.desktop_app.DesktopApp.discover', return_value=None), \
+             patch('bridge.clients.lifecycle.launch_client') as launch:
+            row = self.scan()['codex']['entries'][0]
+            self.assertTrue(row['cliAvailable'])
+            self.assertTrue(row['selectable'])
+            self.assertFalse(row['installed'])
+            self.assertFalse(row['canQuitDesktop'])
+            result = self.manager.toggle_client({'provider': 'codex', 'enabled': True})
+            row = next(r for r in result['clients'] if r['id'] == 'codex')['entries'][0]
+            self.assertTrue(row['enabled'])
+            self.assertTrue(row['configured'])
+            self.assertFalse(row['connected'])
+            launch.assert_not_called()
+
+    def test_cli_readiness_without_inventory_never_grants_desktop_controls(self):
+        self.accounts.index = {}
+        self.bridge.cli_sessions = SimpleNamespace(available=Mock(return_value=True))
+        self.manager.config.pop('discovered', None)
+        self.manager.gateway_running = True
+        with patch('bridge.clients.desktop_app.DesktopApp.discover', return_value=None):
+            row = self.manager.clients(refresh=True)['clients'][0]['entries'][0]
+        self.assertTrue(row['configured'])
+        self.assertTrue(row['cliAvailable'])
+        self.assertFalse(row['installed'])
+        self.assertFalse(row['canQuitDesktop'])
+        self.assertFalse(row['canForceQuit'])
 
     def test_scan_only_discovers_even_for_previously_enabled_clients(self):
         self.manager.config['enabled'] = {'claude': True, 'deepseek': True}

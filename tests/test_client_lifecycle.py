@@ -104,7 +104,7 @@ class ClientLifecycleTests(unittest.TestCase):
         self.dsh.call.side_effect = lambda action, *args: ({'connected': True, 'configured': True, 'bridgeRevision': 3}
             if action == 'status' else {'connected': True, 'complete': True, 'bridgeRevision': 3, 'sessions': []})
         self.accounts = SimpleNamespace(gate=threading.RLock(), lock=threading.RLock(),
-            assert_editable=Mock(), idle=Mock(), index={}, runtime=None,
+            assert_editable=Mock(), idle=Mock(), prepare_desktop_runtime=Mock(return_value=False), index={}, runtime=None,
             info=SimpleNamespace(current=lambda: {'status': 'ready', 'kind': 'chatgpt'}), home=self.root)
         self.bridge = SimpleNamespace(accounts=self.accounts, assert_desktop_idle=Mock(), suspend_observation=Mock())
         self.bridge.for_host = lambda _: self.bridge
@@ -238,15 +238,17 @@ class ClientLifecycleTests(unittest.TestCase):
         self.accounts.index['desktopExecutable'] = ''
         self.accounts.runtime = self.root/'cache/hash/codex.exe'
         self.running = False
-        with patch('bridge.clients.desktop_app.DesktopApp.discover', return_value=''):
+        with patch('bridge.clients.desktop_app.DesktopApp.discover', return_value=''), \
+             patch.object(self.manager, '_prepare_codex_runtime') as prepare:
             rows = self.manager.toggle_client({'provider': 'codex', 'enabled': True})['clients']
-        descriptor = self.launch.call_args.args[0]
+        descriptor = prepare.call_args.args[0]
         self.assertEqual(descriptor['executable'], self.manager.config['discovered']['codex']['executable'])
         self.assertTrue(descriptor['installed'])
         self.assertEqual(descriptor['dataDirectory'], str(self.accounts.home))
         codex = next(row for row in rows if row['id'] == 'codex')
         self.assertTrue(codex['configured'])
-        self.assertTrue(codex['connected'])
+        self.assertFalse(codex['connected'])
+        self.launch.assert_not_called()
 
     def test_explicit_codex_gui_keeps_precedence_even_when_missing(self):
         selected = self.root/'selected.exe'
@@ -393,7 +395,7 @@ class ClientLifecycleTests(unittest.TestCase):
             finally:
                 disabled.set()
 
-        with patch('bridge.features.workspace.workspace.operate', side_effect=lambda *_: mutate()):
+        with patch('bridge.features.workspace.workspace.operate', side_effect=lambda *_, **kwargs: mutate()):
             writer = threading.Thread(target=run_write)
             toggler = threading.Thread(target=disable)
             writer.start()
@@ -553,6 +555,36 @@ class ClientLifecycleTests(unittest.TestCase):
         self.claude.reconnect.assert_called_once_with()
         self.claude.connect.assert_not_called()
 
+    def test_codex_background_preparation_waits_for_enabled_selection(self):
+        self.manager.config['enabled']['codex'] = False
+        self.manager.toggle_client({'provider': 'codex', 'enabled': True})
+        self.manager.runtime_preparation_thread.join(3)
+        self.assertFalse(self.manager.runtime_preparation_thread.is_alive())
+        self.accounts.prepare_desktop_runtime.assert_called_once()
+        app = self.accounts.prepare_desktop_runtime.call_args.args[0]
+        self.assertEqual(str(app.executable), self.manager.config['discovered']['codex']['executable'])
+        self.assertEqual(app.home, self.accounts.home)
+        self.launch.assert_not_called()
+
+    def test_codex_disable_cancels_preparation_before_waiting_for_its_gate(self):
+        entered, cancelled = threading.Event(), threading.Event()
+        # Hold the preparation gate until the disable request cancels it.
+        def held_prepare(app, **options):
+            with self.accounts.gate:
+                entered.set()
+                if self.manager.runtime_preparation_cancel.wait(3):
+                    self.assertTrue(options['cancelled']())
+                    cancelled.set()
+            return False
+        self.accounts.prepare_desktop_runtime.side_effect = held_prepare
+        self.manager.toggle_client({'provider': 'codex', 'enabled': True})
+        self.assertTrue(entered.wait(2))
+        self.manager.toggle_client({'provider': 'codex', 'enabled': False, 'quitDesktop': False})
+        self.manager.runtime_preparation_thread.join(3)
+        self.assertTrue(cancelled.is_set())
+        self.assertFalse(self.manager.enabled('codex'))
+        self.launch.assert_not_called()
+
     def test_offline_selection_never_launches_or_quits_clients(self):
         self.manager.gateway_running = False
         for provider in ('codex', 'claude', 'deepseek'):
@@ -590,6 +622,114 @@ class ClientLifecycleTests(unittest.TestCase):
         scan.assert_not_called()
         self.launch.assert_not_called()
         self.launch_dsh.assert_not_called()
+
+    def test_broken_lazy_connector_cannot_block_recovery_identity_preview(self):
+        factory = Mock(side_effect=BridgeUnavailable('existing connector cannot be verified'))
+        self.manager.adapters.defer('deepseek', factory)
+        recovery = Mock()
+        recovery.preview.return_value = {'token': 'identity-preview', 'unknown': True, 'canRecover': False}
+        self.manager.deepseek_recovery = recovery
+        result = self.manager.control({'action': 'deepseek-recovery-preview', 'restart': False})
+        self.assertEqual(result['token'], 'identity-preview')
+        adapter = recovery.preview.call_args.args[1]
+        self.assertEqual(adapter.directory, (self.manager.directory/'deepseek').resolve())
+        self.assertEqual(str(adapter.home), recovery.preview.call_args.args[0]['dataDirectory'])
+        self.assertEqual(recovery.preview.call_args.args[0]['id'], 'deepseek')
+        factory.assert_called_once()
+        recovery.confirm.assert_not_called()
+        self.launch_dsh.assert_not_called()
+        self.stop_dsh.assert_not_called()
+
+    def test_windows_stopped_recovery_can_exit_or_restart_without_native_quit(self):
+        from test_deepseek_recovery import snapshot
+        self.dsh.discover_existing.return_value = {'installed': True}
+        with patch('bridge.clients.manager.sys.platform', 'win32'), \
+             patch('bridge.clients.deepseek.recovery.sys.platform', 'win32'), \
+             patch('bridge.clients.deepseek.recovery._snapshot', side_effect=lambda _: snapshot(gui=False, hosts=())), \
+             patch('bridge.clients.deepseek.recovery._query', side_effect=AssertionError('stopped scope has no endpoint')) as query, \
+             patch('bridge.clients.lifecycle.stop_deepseek') as native, \
+             patch.object(self.manager, '_start_deepseek') as start, \
+             patch.object(self.manager, 'clients', return_value={'clients': []}):
+            for restart in (False, True):
+                with self.subTest(restart=restart):
+                    preview = self.manager.control({'action': 'deepseek-recovery-preview', 'restart': restart})
+                    self.assertTrue(preview['canRecover'])
+                    self.manager.control({'action': 'deepseek-recovery-confirm', 'token': preview['token'],
+                                          'confirmed': True})
+                    self.assertEqual(self.manager.enabled('deepseek'), restart)
+                    self.assertEqual(start.call_count, int(restart))
+        query.assert_not_called()
+        native.assert_not_called()
+        self.stop_dsh.assert_not_called()
+        self.launch_dsh.assert_not_called()
+
+    def test_missing_connector_recovery_rebinds_the_persistent_adapter_before_launch(self):
+        from bridge.clients.deepseek.adapter import DeepSeek
+        from bridge.clients.deepseek.setup import MARKER
+        from test_deepseek_recovery import snapshot
+        descriptor=self.manager._descriptor('deepseek')
+        home=Path(descriptor['dataDirectory']).resolve()
+        file=home/'profiles/desktop/cordis.patch.yml';file.parent.mkdir(parents=True,exist_ok=True)
+        old=DeepSeek(self.root/'gone/desktop-sessions/deepseek',home)
+        file.write_text(MARKER+'\n'+old._line()+'\n')
+        self.manager.adapters.defer('deepseek',Mock(side_effect=BridgeUnavailable('old connector missing')))
+        state=snapshot(gui=False,hosts=());state['home']=str(home)
+        def launch():
+            adapter=self.manager.adapters['deepseek']
+            self.assertTrue(adapter.discover_existing()['installed'])
+            self.assertEqual(self.manager.config['deepseekAdapterDirectory'],str(adapter.directory))
+            saved=json.loads(self.manager.config_path.read_text())
+            self.assertEqual(saved['deepseekAdapterDirectory'],str(adapter.directory))
+        with patch('bridge.clients.manager.DeepSeek',DeepSeek), \
+                patch('bridge.clients.deepseek.recovery._snapshot',return_value=state), \
+                patch.object(self.manager,'_start_deepseek',side_effect=launch) as start, \
+                patch.object(self.manager,'clients',return_value={'clients':[]}):
+            preview=self.manager.control({'action':'deepseek-recovery-preview','restart':True})
+            self.assertTrue(preview['configurationRepair'])
+            self.manager.control({'action':'deepseek-recovery-confirm','token':preview['token'],
+                                  'confirmed':True,'confirmConfigurationRepair':True})
+        start.assert_called_once()
+        self.assertIsNone(self.manager.deepseek_restore_error)
+
+    def test_unverified_connector_normal_confirmation_has_no_native_or_setting_effect(self):
+        from test_deepseek_recovery import snapshot
+        self.manager.adapters.defer('deepseek', Mock(side_effect=BridgeUnavailable('broken connector')))
+        with patch('bridge.clients.deepseek.recovery._snapshot', side_effect=lambda _: snapshot()), \
+             patch('bridge.clients.deepseek.recovery._query', side_effect=AssertionError('untrusted connector query')) as query, \
+             patch('bridge.clients.deepseek.recovery._quit') as native, \
+             patch('bridge.clients.manager.private_json') as save:
+            preview = self.manager.control({'action': 'deepseek-recovery-preview', 'restart': False})
+            self.assertTrue(preview['unknown'])
+            self.assertFalse(preview['canRecover'])
+            with self.assertRaisesRegex(ValueError, '尚未提交退出'):
+                self.manager.control({'action': 'deepseek-recovery-confirm', 'token': preview['token'],
+                                      'confirmed': True, 'acknowledgeUnknown': True})
+        query.assert_not_called()
+        native.assert_not_called()
+        save.assert_not_called()
+        self.stop_dsh.assert_not_called()
+        self.launch_dsh.assert_not_called()
+        self.assertTrue(self.manager.enabled('deepseek'))
+
+    def test_explicit_force_does_not_load_broken_connector_or_query_tasks(self):
+        factory = Mock(side_effect=BridgeUnavailable('existing connector cannot be verified'))
+        self.manager.adapters.defer('deepseek', factory)
+        self.manager.config['deepseekAdapterDirectory'] = str(self.root/'absent-old-connector')
+        native = Mock(side_effect=self.finish)
+        with patch('bridge.clients.lifecycle.force_stop_client', native), \
+             patch('bridge.clients.manager.sys.platform', 'win32'), \
+             patch.object(self.manager, 'clients', return_value={'clients': []}), \
+             patch.object(self.manager, '_assert_idle', side_effect=AssertionError('explicit force bypasses task uncertainty')) as idle:
+            self.manager.toggle_client({'provider': 'deepseek', 'enabled': False, 'quitDesktop': True,
+                                        'forceDesktop': True, 'forceConfirmed': True})
+        native.assert_called_once()
+        self.assertEqual(native.call_args.args[0]['id'], 'deepseek')
+        self.assertTrue(native.call_args.kwargs['state']['running'])
+        factory.assert_not_called()
+        idle.assert_not_called()
+        self.stop_dsh.assert_not_called()
+        self.launch_dsh.assert_not_called()
+        self.assertFalse(self.manager.enabled('deepseek'))
 
     def test_desktop_recovery_full_exit_and_restart_only_persist_after_success(self):
         recovery = Mock()

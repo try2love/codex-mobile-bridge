@@ -81,7 +81,10 @@ COMPATIBLE_OFFICIAL_SOURCES = ('1608bf0b7b4c1f6e2927a1103467b3c56dfaef4d80c68213
                                '5bd8ece728f7cc4aeb96d775dbc6d6d79631e48d8aae4d70cfeea36906e69e2f',
                                # Revision 11 before credential provenance (c057e6b), LF and CRLF.
                                '9dfb9fe8eaba3f5f162b9177f6a9d551f2899f6316f9ee94bf82fbc5c59089d6',
-                               'd9b394e55b8436209ead3a953da0d374cb08f2454848718db0eb6a59e7ee9a1f')
+                               'd9b394e55b8436209ead3a953da0d374cb08f2454848718db0eb6a59e7ee9a1f',
+                               # Revision 11 before saved-record path reads (069ba77e), LF and CRLF.
+                               '0c6a9586ecb2e52c6392f576dda7c1bddb1629ceb41e757bef27c905869db228',
+                               'bdc236e7f02cc59a9a23b917683849d1a14473e8145dad14af6e7ae2934c2c71')
 
 def without_empty_array(text):
     """Remove only an otherwise empty YAML document's array tokens.

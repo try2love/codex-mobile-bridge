@@ -3,7 +3,7 @@
 const ClientIdentity=(()=>{
   const entry=id=>typeof id==='string'&&/^(claude|deepseek):[0-9a-f]{32}$/.test(id);
   const family=id=>entry(id)?id.split(':')[0]:typeof id==='string'&&/^wsl-claude:[0-9a-f]{32}$/.test(id)?'claude':typeof id==='string'&&/^(codex|wsl):[0-9a-f]{32}$/.test(id)?'codex':id;
-  const desktop=id=>entry(id)||['claude','deepseek','zcode'].includes(id);
+  const desktop=id=>entry(id)||['claude','deepseek','zcode','antigravity'].includes(id);
   function path(id,action,sessionId=null,extra={}){
     if(!desktop(id))throw Error('未知客户端接入');
     const query=new URLSearchParams(extra);
@@ -32,7 +32,7 @@ const ClientLifecycle=(()=>{
       label=({'needs-unlock':'电脑已锁定','needs-desktop':'电脑桌面暂不可用'})[setup]||({'error':'连接失败','timeout':'连接超时','needs-initialization':'需要初始化连接'})[stage]
         ||({'history-only':'本机历史（只读）','unsupported':'暂不支持自动接入','needs-initialization':'需要初始化连接','needs-first-launch':'需要完成首次设置','restart-required':'等待重启','needs-permission':'等待授权','needs-developer-mode':'等待开发者模式确认','needs-trust':'等待目录授权','owner-conflict':'连接被其他网关占用','cancelled':'已取消连接','failed':'连接失败','needs-retry':'连接失败'})[setup];
       action=!!label;
-      label=label||(client.installed===false?'未安装':client.running===true?'应用运行中，尚未连接':client.running===false?'应用未运行':'尚未连接');
+      label=label||(client.installed===false?(client.cliAvailable?'CLI 可用':'未安装'):client.running===true?'应用运行中，尚未连接':client.running===false?'应用未运行':'尚未连接');
     }
     const canStartDesktop=client.id==='claude'&&client.canStartDesktop===true&&!client.connected&&!pending;
     const canReconnect=client.id==='claude'&&client.canReconnect===true&&client.reconnectSupported===true&&!client.connected&&!pending&&!['recovery-required','restart-required'].includes(setup);
@@ -144,7 +144,7 @@ const ClientLifecycle=(()=>{
         ['仅停用手机接入','保留电脑 App 和现有任务。',false],
         ['正常退出电脑 App',client.confirmTaskState?'通过原生方式退出；无法核验任务时需要再次确认。':client.id==='claude'?'通过 Claude 原生菜单正常退出；如有任务或保存确认，请在电脑端处理。下次开启时会尝试重新连接。':client.id==='codex'&&client.canForceQuit===true?'仅在所有任务结束且没有待确认操作时，通过 Codex 原生菜单正常退出。锁屏时可能不可用；如有退出确认，请在电脑端处理。':'仅在所有任务结束且没有待确认操作时退出。',true]
       ];
-      if(client.bindingMode==='manual')options.splice(1);
+      if(client.bindingMode==='manual'||client.canQuitDesktop===false)options.splice(1);
       if(client.canForceQuit===true)options.push(['强制关闭 App','结束应用进程，可能丢失未保存内容或中断任务。锁屏时也可使用。','force']);
       for(const [label,note,value] of options){
         const button=document.createElement('button');button.type='button';button.dataset.quitDesktop=String(value!==false);

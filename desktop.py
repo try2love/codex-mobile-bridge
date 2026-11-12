@@ -2,7 +2,11 @@
 """Private stdio interface used by the desktop application."""
 import argparse
 import json
+import os
 import sys
+if sys.platform == 'win32' and os.environ.get('CMB_CODEX_DESKTOP_CONFIGURATION'):
+    from bridge.clients.codex.desktop_runtime_windows import run as windows_runtime_main
+    raise SystemExit(windows_runtime_main(os.environ['CMB_CODEX_DESKTOP_CONFIGURATION'], sys.argv[1:]))
 if sys.argv[1:2] == ['codex-desktop-runtime']:
     parser = argparse.ArgumentParser()
     parser.add_argument('--configuration', required=True)
@@ -43,6 +47,10 @@ if sys.argv[1:2] == ['local-service-host']:
     serve(options.data_dir, options.name, options.parent_pid)
     raise SystemExit(0)
 
+if sys.argv[1:2] == ['antigravity-hook']:
+    from bridge.clients.antigravity.hook_client import main as hook_main
+    raise SystemExit(hook_main(sys.argv[2:]))
+
 from bridge.app.desktop import Desktop
 
 
@@ -50,7 +58,7 @@ def main():
     sys.stdout.reconfigure(encoding='utf-8')
     sys.stdin.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser()
-    parser.add_argument('action', choices=['management-stream', 'tailscale-setup', 'read-credentials', 'server-setup', 'connection-credentials', 'snapshot-stream', 'snapshot', 'save', 'start', 'stop', 'logs', 'test-notification', 'webhook-endpoint', 'deployment', 'export-deployment', 'check-entry', 'devices', 'pairing', 'account', 'accounts', 'cli-access', 'harness', 'desktop-sessions', 'notification-watches', 'transfer-settings', 'network-adaptation', 'serve', 'update-prepare', 'update-apply'])
+    parser.add_argument('action', choices=['management-stream', 'tailscale-setup', 'read-credentials', 'server-setup', 'connection-credentials', 'snapshot-stream', 'snapshot', 'save', 'start', 'stop', 'logs', 'test-notification', 'webhook-endpoint', 'deployment', 'export-deployment', 'check-entry', 'devices', 'pairing', 'account', 'accounts', 'cli-access', 'harness', 'desktop-sessions', 'notification-watches', 'transfer-settings', 'network-adaptation', 'serve', 'update-preflight', 'update-prepare', 'update-apply'])
     parser.add_argument('--data-dir', required=True)
     parser.add_argument('--plan')
     parser.add_argument('--connection-secrets-stdin', action='store_true')
@@ -92,7 +100,10 @@ def main():
         run.main(connections=desktop.preferences()['connections'], connection_secrets=json.loads(sys.stdin.read(1000000) or '{}') if args.connection_secrets_stdin else {})
         return
     try:
-        if args.action == 'update-prepare':
+        if args.action == 'update-preflight':
+            from bridge.features.updates.gateway import preflight
+            result = preflight(json.loads(sys.stdin.read(100000) or '{}')['target'])
+        elif args.action == 'update-prepare':
             from bridge.features.updates.gateway import prepare
             result = prepare(args.data_dir, json.loads(sys.stdin.read(100000) or '{}'))
         elif args.action == 'update-apply':

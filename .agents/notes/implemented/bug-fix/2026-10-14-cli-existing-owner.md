@@ -2,6 +2,8 @@
 
 Status: implemented
 
+CLI 来源先寻找 App owner 的决定由[按原生来源选择执行通路](2026-11-11-codex-source-execution-routing.md)替代；本篇保留旧理由与原生 writer 冲突证据，身份和未知写入保护继续适用。
+
 模型、Skill、计划与本地 Goal 的限制由[CLI 会话控制](../feature/2026-10-14-cli-session-controls.md)替代；权限限制由[CLI 权限切换](../feature/2026-10-14-cli-permission-switching.md)替代。编辑/分叉、重命名和旁支聊天的限制仍然有效。
 
 ## 问题

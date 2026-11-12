@@ -23,10 +23,15 @@ VERSION = 1
 
 
 def directory(home):
-    return Path(home).resolve() / 'bridge-desktop-runtime'
+    root = Path(home).resolve() / 'bridge-desktop-runtime'
+    return root / 'records' if sys.platform == 'win32' else root
 
 
 def private_directory(root):
+    if sys.platform == 'win32':
+        from bridge.platforms.windows import local_service
+        local_service.directory(root.parent, create=True)
+        return local_service.directory(root, create=True)
     root.mkdir(mode=0o700, exist_ok=True)
     info = root.lstat()
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
@@ -78,8 +83,25 @@ def verified_socket(endpoint):
     return (str(target), info.st_dev, info.st_ino, advertised.st_dev, advertised.st_ino)
 
 
+class DesktopRuntimeBusy(ValueError):
+    """Another verified lifecycle operation still owns this runtime lock."""
+
+
 @contextmanager
 def exclusive_lock(home, name, *, timeout=0):
+    if sys.platform == 'win32':
+        from bridge.platforms.windows.codex_daemon_env import _operation_lock
+        root = private_directory(directory(home))
+        deadline = time.monotonic() + timeout
+        while True:
+            with _operation_lock(root / (name + '.lock'), create=True) as acquired:
+                if acquired:
+                    yield
+                    return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise DesktopRuntimeBusy('共享接入仍在使用或退出中，请稍后重试')
+            time.sleep(min(.25, remaining))
     import fcntl
     root = private_directory(directory(home))
     fd = os.open(root / (name + '.lock'), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
@@ -95,7 +117,7 @@ def exclusive_lock(home, name, *, timeout=0):
             except BlockingIOError as exc:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise ValueError('共享接入仍在使用或退出中，请稍后重试') from exc
+                    raise DesktopRuntimeBusy('共享接入仍在使用或退出中，请稍后重试') from exc
                 time.sleep(min(.25, remaining))
         yield
     finally:
@@ -107,6 +129,9 @@ def initialization_lock(home):
 
 
 def _read(path):
+    if sys.platform == 'win32':
+        from bridge.platforms.windows.local_service import read_record
+        return read_record(path)
     info = path.lstat()
     if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
             info.st_mode & 0o077 or info.st_size > 65536):
@@ -115,6 +140,9 @@ def _read(path):
 
 
 def _write(path, value, mode=0o600):
+    if sys.platform == 'win32':
+        from bridge.platforms.windows.local_service import write_record
+        return write_record(path, json.loads(value))
     # Same-directory atomic publication; never follow a preexisting temporary file.
     import tempfile
     fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=path.name + '-')
@@ -139,9 +167,27 @@ def settings(home):
     return value
 
 
+def preparation(home):
+    """Caller holds initialization_lock; all gateways share this write receipt."""
+    path = directory(home) / 'preparation.json'
+    if not path.exists() and not path.is_symlink():
+        return None
+    value = _read(path)
+    if (value.get('version') != VERSION or value.get('home') != str(Path(home).resolve())
+            or value.get('state') not in ('pending', 'complete') or not isinstance(value.get('requestId'), str)):
+        raise ValueError('原生连接准备记录无法核验，请在账号管理中检查')
+    return value
+
+
+def record_preparation(home, request_id, *, complete=False):
+    root = private_directory(directory(home))
+    _write(root / 'preparation.json', json.dumps({'version': VERSION, 'home': str(Path(home).resolve()),
+        'requestId': request_id, 'state': 'complete' if complete else 'pending'}))
+
+
 def configure(home, application, cli):
     """Called only after the lifecycle owner has verified idle and normal exit."""
-    if sys.platform != 'darwin':
+    if sys.platform not in ('darwin', 'win32'):
         raise ValueError('此系统尚未验证 Codex 共享接入')
     # GUI exit precedes the adapter's cooperative proxy/native shutdown.
     with exclusive_lock(home, 'runtime', timeout=35):
@@ -165,14 +211,34 @@ def _configure(home, application, cli):
         old = _read(active)
         require_inactive(old)
         active.unlink()
+    value = {'version': VERSION, 'home': str(Path(home).resolve()),
+             'application': os.path.normcase(str(Path(application).resolve())), 'cli': str(Path(cli).resolve())}
+    if sys.platform == 'win32':
+        value.update(launcher_settings(application))
+        _write(root / 'settings.json', json.dumps(value))
+        return
     launcher = root / 'codex-cli'
     command = ([sys.executable] if getattr(sys, 'frozen', False) else
                [sys.executable, str(project_root() / 'desktop.py')])
     command += ['codex-desktop-runtime', '--configuration', str(root / 'settings.json'), '--']
     _write(launcher, '#!/bin/sh\nexec ' + shlex.join(command) + ' "$@"\n', 0o700)
-    value = {'version': VERSION, 'home': str(Path(home).resolve()),
-             'application': str(Path(application).resolve()), 'cli': str(Path(cli).resolve())}
     _write(root / 'settings.json', json.dumps(value))
+
+
+def launcher_settings(application):
+    """Check Windows launch prerequisites before quitting the original App."""
+    if sys.platform != 'win32':
+        return {}
+    if not getattr(sys, 'frozen', False):
+        raise ValueError('请使用已编译的网关 App 初始化 Windows 原生连接')
+    from bridge.platforms.windows.discovery_ext import application_user_model_id, application_execution_alias
+    identity = application_user_model_id(application)
+    packaged = any((parent / 'AppxManifest.xml').is_file() for parent in Path(application).parents)
+    if packaged and not identity:
+        raise ValueError('无法核验 Codex 安装包身份；尚未改变原生连接设置')
+    if packaged and application_execution_alias(application) is None:
+        raise ValueError('无法核验 Codex 应用启动别名；尚未改变原生连接设置')
+    return {'launcher': str(Path(sys.executable).resolve()), 'sandboxFamily': identity.split('!')[0]}
 
 
 def validate_runtime(cli):
@@ -180,9 +246,10 @@ def validate_runtime(cli):
     try:
         for arguments, required in ((['app-server', '--help'], 'unix://'),
                                     (['app-server', 'proxy', '--help'], '--sock')):
+            options = {'creationflags': subprocess.CREATE_NO_WINDOW} if sys.platform == 'win32' else {}
             result = subprocess.run([str(cli), *arguments], stdin=subprocess.DEVNULL,
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                    text=True, timeout=10, check=True)
+                                    text=True, timeout=10, check=True, **options)
             if required not in result.stdout:
                 raise ValueError('此 Codex 版本不支持共享接入，请先更新原 App')
     except (OSError, subprocess.SubprocessError) as exc:
@@ -190,11 +257,17 @@ def validate_runtime(cli):
 
 
 def launch_environment(home, application):
-    value = settings(home) if sys.platform == 'darwin' else None
+    value = settings(home) if sys.platform in ('darwin', 'win32') else None
     if value is None:
         return {}
-    if value['application'] != str(Path(application).resolve()):
+    if value['application'] != os.path.normcase(str(Path(application).resolve())):
         raise ValueError('Codex 程序已变化，请重新初始化共享接入')
+    if sys.platform == 'win32':
+        launcher = Path(value['launcher'])
+        if not launcher.is_file() or launcher.resolve() != Path(sys.executable).resolve():
+            raise ValueError('网关程序已变化，请重新初始化 Codex 原生连接')
+        return {'CODEX_CLI_PATH': str(launcher), 'CMB_CODEX_DESKTOP_CONFIGURATION': str(directory(home) / 'settings.json'),
+                'CODEX_APP_SERVER_WS_URL': '', 'CODEX_APP_SERVER_FORCE_CLI': '0'}
     launcher = directory(home) / 'codex-cli'
     info = launcher.lstat()
     if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
@@ -205,6 +278,9 @@ def launch_environment(home, application):
 
 def process_identity(pid):
     # Keep the protocol independent of the platform identity implementation.
+    if sys.platform == 'win32':
+        from bridge.platforms.windows.zcode_pipe import _identity
+        return _identity(pid, parent=True)
     from bridge.platforms.macos.force_exit import Native
     value = Native().identity(pid)
     if value['uid'] != os.getuid() or value['ruid'] != os.getuid() or value['zombie']:
@@ -213,13 +289,20 @@ def process_identity(pid):
 
 
 def runtime_alive(identity):
+    if sys.platform == 'win32':
+        from bridge.platforms.windows.codex_daemon_env import recorded_process_absent
+        # A terminated Windows process can retain a PID/handle while image
+        # queries already fail. The recorded birth and wait state prove exit.
+        if recorded_process_absent(identity['pid'], {'processStartTime': str(identity['created'])}):
+            return False
     try:
         current = process_identity(identity['pid'])
     except ProcessLookupError:
         return False
     # If an adapter exits before native shutdown completes, macOS reparents the
     # child. A changed parent alone never permits starting a second writer.
-    return all(current[key] == identity[key] for key in ('pid', 'birth', 'started', 'image', 'uid', 'ruid'))
+    keys = ('pid', 'created', 'session', 'image') if sys.platform == 'win32' else ('pid', 'birth', 'started', 'image', 'uid', 'ruid')
+    return all(current[key] == identity[key] for key in keys)
 
 
 def require_inactive(record):
@@ -227,7 +310,7 @@ def require_inactive(record):
     identity = record.get('runtime')
     if not identity:
         raise ValueError('原共享运行时启动结果待核对，请在电脑端检查；不会重复启动')
-    if record.get('ready') is True:
+    if record.get('ready') is True or sys.platform == 'win32':
         alive = runtime_alive(identity)
     else:
         try:
@@ -247,7 +330,7 @@ def require_inactive(record):
 def connect(home, cli):
     """None means never configured; configured but unavailable must fail closed."""
     try:
-        value = settings(home) if sys.platform == 'darwin' else None
+        value = settings(home) if sys.platform in ('darwin', 'win32') else None
         if value is None:
             return None
         record = _read(directory(home) / 'active.json')
@@ -261,6 +344,11 @@ def connect(home, cli):
         for kind in ('app', 'adapter', 'runtime'):
             if process_identity(record[kind]['pid']) != record[kind]:
                 raise ValueError('Shared runtime generation changed')
+        if sys.platform == 'win32':
+            from bridge.clients.codex.desktop_runtime_windows import MetadataClient
+            client = MetadataClient(directory(home), record)
+            client.connect()
+            return client
         expected = socket_path(home, record['generation'])
         if record['socket'] != str(expected):
             raise ValueError('Shared runtime socket mismatch')
@@ -280,7 +368,7 @@ def connect(home, cli):
             client.close()
             raise
     except (OSError, KeyError, TypeError, ValueError, AppServerUnavailable) as exc:
-        raise AppServerUnavailable('Codex 共享接入尚未就绪，请在账号管理中初始化连接；不会另起运行时重试写入') from exc
+        raise AppServerUnavailable('Codex 原生共享连接尚未就绪，可在账号管理中查看自动准备状态；不会另起运行时重试写入') from exc
 
 
 def server_arguments(arguments, socket_path):

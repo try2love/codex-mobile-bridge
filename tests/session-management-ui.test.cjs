@@ -6,7 +6,7 @@ function fixture(){
  const nodes=new Map(),timers=new Map(),requests=[],dialogs=[],copies=[];let timer=0;
  const node=(tag='',cls='',textContent='')=>({tag,cls,textContent,dataset:{},classList:{add(){}},children:[],events:{},scrollTop:0,isConnected:true,append(...items){this.children.push(...items);},replaceChildren(...items){this.children=items;},addEventListener(name,run){this.events[name]=run;},setAttribute(){},focus(){this.focused=true;},showModal(){this.open=true;},close(){this.open=false;this.events.close?.();},remove(){this.isConnected=false;}});
  const $=id=>{if(!nodes.has(id))nodes.set(id,node());return nodes.get(id);};$('list-mode').value='recent';
- const context=vm.createContext({CliConnectionsPanel:class{},$,el:node,window:{BridgeSessionLinks:{text:identity=>'codex://threads/'+identity.id}},document:{body:{append:box=>dialogs.push(box)}},SessionMenu:class{constructor(){}bind(button,context){button.menuContext=context;}},
+ const context=vm.createContext({CliConnectionsPanel:class{constructor(options){this.options=options;}open(target){requests.push({action:'cli-connections-open',target,currentClient:this.options.currentClient()});}},$,el:node,window:{BridgeSessionLinks:{text:identity=>'codex://threads/'+identity.id}},document:{body:{append:box=>dialogs.push(box)}},SessionMenu:class{constructor(){}bind(button,context){button.menuContext=context;}},
    BridgeClipboard:{copyWithFeedback:async(get,item)=>{if(item.disabled)return;copies.push(get());}},BridgeI18n:{locale:()=> 'en-US'},t:s=>s,localStorage:{getItem(){return null;},setItem(){}},
    workbench:{},listIdentity:'gateway',csrf:'token',clientNavigation:{provider:'codex',clients:[]},state:null,listRows:[],currentId:null,currentHost:'local',listHasMore:false,listRenderStamp:'',listComplete:true,listReadFinished:true,availableSources:[],
    renderActivity(){},sessionAccess:v=>({canConfigure:true,canEditMessages:true,...v}),sourceLabel:()=> 'APP',dateText:()=>'',toast(){},pinRow:row=>row,sessionPins:{value:(_identity,pinned)=>!!pinned,set(identity,pinned){requests.push({url:`/${identity.host}/${identity.id}/pin`,body:{pinned}});}},desktopSessions:{refresh:async()=>{}},openChat:async()=>{},
@@ -78,6 +78,25 @@ test('account change invalidates a captured menu; read-only sources omit rename 
  ui.context.sessionAccess=()=>({canConfigure:false,canEditMessages:false});
  const restricted=ui.context.sessionMenuContext(ui.row('a',1));assert.equal(restricted.rename,undefined);assert.equal(restricted.fork,undefined);
 });
+test('CLI network handler preserves local home request fields and never opens SSH account recovery',async()=>{
+ for(const host of ['local','codex:'+ 'a'.repeat(32)]){
+  const ui=fixture(),chat={...ui.row('cli-native',1),host,access:{source:'cli'}};
+  const menu=ui.context.sessionMenuContext(chat),body={action:'force',confirmed:true,generation:'verified',operationId:null,requestId:'new-request'};
+  await menu.cliNetwork(body);assert.equal(ui.requests[0].url,`/${host}/cli-native/cli-network`);assert.equal(ui.requests[0].body,body);assert.equal(ui.requests.length,1);
+ }
+ const ui=fixture();assert.equal(ui.context.sessionMenuContext({...ui.row('remote-cli',1),host:'ssh:fixture',access:{source:'cli'}}).cliNetwork,undefined);
+});
+test('CLI release settings capture the active Agent and session entry preserves its exact host and identity',()=>{
+ const ui=fixture();ui.context.clientNavigation.provider='claude';ui.$('cli-connections-button').onclick();assert.equal(ui.requests[0].currentClient,'claude');assert.equal(ui.requests[0].target,undefined);
+ const provider='claude:'+ 'a'.repeat(32),chat={...ui.row('same-session',1),host:'ssh:server',backend:'cli'};ui.context.sessionMenuContext(chat,provider).releaseCli();assert.equal(ui.requests[1].target.provider,provider);assert.equal(ui.requests[1].target.sessionId,'same-session');assert.equal(ui.requests[1].target.host,'ssh:server');
+});
+test('CLI network handler rejects changed authentication or navigation before and after a pending request',async()=>{
+ for(const change of [c=>c.csrf='other',c=>c.listIdentity='other',c=>c.currentId='other',c=>c.currentHost='other',c=>c.clientNavigation.provider='claude']){
+  const ui=fixture(),chat={...ui.row('cli-native',1),access:{source:'cli'}},menu=ui.context.sessionMenuContext(chat);let finish;
+  ui.context.api=async(url,body,_signal,current)=>{ui.requests.push({url,body});assert.equal(current(),true);return new Promise(resolve=>finish=resolve);};
+  const pending=menu.cliNetwork();change(ui.context);finish({canRecover:true,generation:'old'});await assert.rejects(pending,/连接或聊天已变化/);await assert.rejects(()=>menu.cliNetwork({confirmed:true,generation:'old'}),/连接或聊天已变化/);assert.equal(ui.requests.length,1);
+ }
+});
 test('rename response for another active chat never replaces the current header',async()=>{
  const ui=fixture(),chat=ui.row('a',1);ui.context.currentId='b';ui.context.state={title:'Other'};ui.$('chat-title').textContent='Other';
  await ui.context.sessionMenuContext(chat).rename('New');assert.equal(ui.$('chat-title').textContent,'Other');
@@ -87,7 +106,7 @@ for(const [provider,runtime] of [['codex','desktop'],['codex','cli'],['claude','
   const ui=fixture(),chat={...ui.row('provider-session',1),runtime,capabilities:{fork:true,archive:true,unarchive:true}};
   let notified=0;
   if(provider==='codex'){
-   ui.context.currentId=chat.id;ui.$('notify-button').onclick=()=>{notified++;};
+   ui.context.currentId=chat.id;ui.context.openChatNotifications=()=>{notified++;};
   }else{
    ui.context.desktopSessions={provider,sid:chat.id,state:null,notifications:()=>{notified++;}};
   }

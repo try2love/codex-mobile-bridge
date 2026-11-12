@@ -3,6 +3,12 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 const context=vm.createContext({window:{},BridgeI18n:{t:value=>value}});
 vm.runInContext(fs.readFileSync('web/features/chat/timeline.js','utf8'),context);
 const relative=vm.runInContext('timelineFilePath',context);
+test('explicit host file actions preserve the captured host and legacy image route',()=>{
+ const Type=vm.runInContext('ChatTimeline',context),ui=Object.assign(Object.create(Type.prototype),{url:action=>'/api/sessions/chat/'+action+'?host=remote%3Assh'});
+ const url=new URL(ui.fileUrl({id:'host-link',scope:'host',path:'F:/Outside/voice.wav'}),'http://fixture');
+ assert.equal(url.searchParams.get('host'),'remote:ssh');assert.equal(url.searchParams.get('scope'),'host');assert.equal(url.searchParams.get('path'),'F:/Outside/voice.wav');
+ assert.equal(ui.fileUrl({id:'native-image',image:true}),'/api/sessions/chat/files/native-image?host=remote%3Assh');
+});
 test('summary paths resolve inside original POSIX, WSL and SSH workspaces',()=>{
  for(const cwd of ['/repo','/home/fixture/项目']){
   assert.equal(relative(cwd+'/space name.py',cwd),'space name.py');

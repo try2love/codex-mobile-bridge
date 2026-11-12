@@ -12,6 +12,8 @@ Status: implemented
 
 `CliConnections` 统一管理持久化回执与至多一次派发；每个适配器在操作前核验原会话和连接身份。未知结果不会重放。网关重启时未完成操作转为待核对，普通读取不会恢复释放任务。等待检查仅存在于用户发起的未完成释放操作。
 
+等待升级、只读核验、退订事实保留和单独确认的原生占用维护出口见 [CLI 释放与恢复修复](../bug-fix/2026-11-10-cli-release-and-safe-recovery.md)。普通释放仍不关闭共享 daemon；显式维护与退订使用不同操作和确认。
+
 Claude 通过原执行器的 interrupt 和 stdin EOF 正常退出，不强杀。Codex 本机、SSH、WSL 复用同一原生 unsubscribe 流程，释放后持久化禁止自动接入，只有显式继续会话才能恢复。保留原 session ID、provider、auth、cwd 和历史，不关闭共享 daemon 或 WSL 发行版，不归档聊天。
 
 ## 原生边界与证据

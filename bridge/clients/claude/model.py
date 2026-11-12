@@ -4,6 +4,7 @@ import uuid
 import json
 import re
 from bridge.clients.file_mentions import display_file_mentions
+from bridge.clients.claude.history import local_command_text
 
 NAMESPACE = uuid.UUID('6b9ab66b-a02a-4074-a7d6-fde5a3115173')
 EMPTY_RETRY = '[Your previous response had no visible output. Please continue and produce a user-visible response.]'
@@ -82,11 +83,13 @@ def turns(value):
 
 def transcript(value):
     result = []
+    command_chain = {}
     tasks = {}
     task_creations = {}
     def task_snapshot():
         return [dict(task) for task in tasks.values()]
     for index, event in enumerate(rows(value)):
+        command = local_command_text(event, command_chain)
         if event.get('isSynthetic') is True or event.get('isMeta') is True:
             continue
         kind = event.get('type')
@@ -94,10 +97,11 @@ def transcript(value):
         role = message.get('role', kind)
         if role not in ('user', 'assistant'):
             continue
-        content = message.get('content', [])
+        content = command if command is not None else message.get('content', [])
         blocks = [{'type': 'text', 'text': content}] if isinstance(content, str) else content
         if not isinstance(blocks, list):
             continue
+        first_part = len(result)
         texts = []
         text_part = 0
         event_id=event.get('uuid') or message.get('id') or str(index)
@@ -168,6 +172,12 @@ def transcript(value):
                 summary=block.get('text') or block.get('summary')
                 if summary:result.append({'id':str(event_id)+':thinking:'+str(part),'role':'reasoning','kind':'reasoning','title':'思考摘要','text':str(summary)})
         flush()
+        # One native event can contain multiple text/image/tool blocks.
+        for row in result[first_part:]:
+            if row['role'] in ('user', 'assistant'):
+                if event.get('timestamp') is not None:
+                    row['timestamp'] = event['timestamp']
+                break
     for message in result:
         display_file_mentions(message)
     return result

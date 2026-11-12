@@ -142,7 +142,6 @@ else {
     });
     ipcMain.on('fixture-expanded', event => {
       fs.appendFileSync(path.join(base, 'expands.log'), 'expand\n');
-      if (state.mode.endsWith('late-cancel')) fs.writeFileSync(path.join(base, 'cancel'), 'cancel');
       event.returnValue = true;
     });
     await window.loadFile(path.join(__dirname, 'index.html'));
@@ -162,7 +161,6 @@ const mode=MODE, label=LABEL, accelerator=mode==='wrong-accelerator'?'Ctrl+W':'C
 function open(){
   file.setAttribute('aria-expanded','true');content.hidden=false;
   window.fixture.expanded();
-  if(mode.endsWith('late-cancel')){setTimeout(render,500);return;}
   render();
 }
 function render(){
@@ -172,6 +170,7 @@ function render(){
 }
 file.addEventListener('click',()=>file.getAttribute('aria-expanded')==='false'?open():close());
 function close(){file.setAttribute('aria-expanded','false');content.hidden=true;content.replaceChildren();}
+if(mode!=='closed-menu'){file.setAttribute('aria-expanded','true');content.hidden=false;render();}
 </script>'''
 
 
@@ -221,7 +220,7 @@ class CodexNativeQuit(unittest.TestCase):
         (app/'main.js').write_text(MAIN, encoding='utf-8')
         (app/'preload.js').write_text(PRELOAD, encoding='utf-8')
         state = target/'resources'
-        for mode in ('normal', 'hidden', 'pending', 'duplicate', 'wrong-accelerator', 'cancelled', 'late-cancel', 'wrong-creation', 'hidden-late-cancel'):
+        for mode in ('normal', 'hidden', 'closed-menu', 'pending', 'duplicate', 'wrong-accelerator', 'cancelled', 'wrong-creation'):
             with self.subTest(mode=mode):
                 for name in ('stop', 'ready.json', 'dispatches.log', 'reopens.log', 'expands.log'):
                     (state/name).unlink(missing_ok=True)
@@ -251,11 +250,11 @@ class CodexNativeQuit(unittest.TestCase):
                     rows = [json.loads(line) for line in output.splitlines()]
                     reply = rows[-1]
                     sent = (state/'dispatches.log').read_text().splitlines() if (state/'dispatches.log').exists() else []
-                    expected = mode in ('normal', 'hidden', 'pending')
+                    expected = mode in ('normal', 'pending')
                     self.assertEqual(len(sent), int(expected), output)
                     self.assertEqual(sum(row.get('quitPhase') == 'dispatching' for row in rows), int(expected), output)
                     self.assertEqual(reply['pid'], pid)
-                    if mode in ('normal', 'hidden'):
+                    if mode == 'normal':
                         # The helper may finish before Electron's child cleanup.
                         # Independently require actual normal exit, without stop.
                         self.assertIn(reply['quitState'], ('exited', 'submitted'), output)
@@ -270,10 +269,9 @@ class CodexNativeQuit(unittest.TestCase):
                     self.assertEqual(len(reopens), 0, output)
                     if mode == 'wrong-creation':
                         self.assertIn('启动身份', reply['reason'])
-                    if mode.endswith('late-cancel'):
-                        self.assertEqual((state/'expands.log').read_text().splitlines(), ['expand'])
-                    if mode == 'hidden-late-cancel':
-                        self.assertFalse(desktop.user.IsWindowVisible(int(ready['handle'])), 'cancelled quit did not restore the hidden window')
+                    self.assertFalse((state/'expands.log').exists(), 'helper opened a visible application menu')
+                    if mode == 'hidden':
+                        self.assertFalse(desktop.user.IsWindowVisible(int(ready['handle'])), 'helper exposed the hidden window')
                     self.assertEqual(desktop.user.GetForegroundWindow(), desktop.foreground)
                 finally:
                     (state/'stop').write_text('stop', encoding='utf-8')

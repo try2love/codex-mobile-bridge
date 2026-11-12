@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Exercise the legacy temporary runtime with isolated history and a loopback model fixture.
+"""Exercise temporary side chats with isolated history and a loopback model fixture.
 
 No real account, API key, external model call, or desktop thread is used.
-New side chats use native attached persistence; this script only checks old views.
+Keep the original writer alive while the temporary child uses its own runtime.
 Run from repo root with PYTHONPATH=. python scripts/smoke-side-chat.py.
 """
 import json
@@ -52,6 +52,7 @@ class Handler(BaseHTTPRequestHandler):
 
 server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
 worker = threading.Thread(target=server.serve_forever, daemon=True); worker.start()
+primary = None
 try:
     with tempfile.TemporaryDirectory(dir=ROOT/'.tmp', prefix='side-native-') as folder:
         root = Path(folder); home = root/'home'; home.mkdir()
@@ -78,8 +79,9 @@ enabled=false
             parent = primary.request('thread/start', {'cwd': str(root), 'ephemeral': False})['thread']
             primary.request('turn/start', {'threadId': parent['id'], 'input': [{'type': 'text', 'text': 'PARENT_CONTEXT_MARKER', 'text_elements': []}]})
             assert completed.wait(25), 'Synthetic parent turn did not complete'
-        finally:
+        except Exception:
             primary.close()
+            raise
         captured.clear()
         path = Path(parent['path'])
         original = path.read_bytes()
@@ -135,11 +137,32 @@ enabled=false
             listed = chat.runtime.request('thread/list', {'limit': 100})
             assert chat.id not in [t['id'] for t in listed['data']]
             assert path.read_bytes() == original, 'Parent history changed'
+            assert primary.process.poll() is None, 'Original writer stopped'
+            assert primary.request('thread/read', {'threadId': parent['id']})['thread']['id'] == parent['id']
             print('PASS: real runtime ephemeral fork, inherited context and boundary, custom-provider turn via loopback, streamed response, hidden history, parent unchanged.')
+            if '--serve' in sys.argv:
+                from bridge.app.service import Bridge
+                from bridge.api.httpd import GatewayServer
+                from bridge.features.auth.auth import password_record
+                gateway = Bridge(home, root/'gateway', ipc_path=str(root/'unused.sock'), codex_bin=runtime,
+                                 observation_enabled=lambda: False)
+                gateway.side_chats.chats[parent['id']] = chat
+                web = GatewayServer(('127.0.0.1', 18315), gateway,
+                    {'auth': {'mode':'password', 'username':'fixture', **password_record('temporary-side-fixture')}, 'origins':[]}, ROOT/'web')
+                web.origins.add('http://127.0.0.1:18315'); web.hosts.add('127.0.0.1:18315')
+                print('BROWSER:', json.dumps({'url':'http://127.0.0.1:18315', 'child':chat.id, 'parent':parent['id']}), flush=True)
+                try:
+                    web.serve_forever()
+                except KeyboardInterrupt:
+                    pass
+                finally:
+                    web.server_close(); gateway.close()
         finally:
             chat.close()
         assert chat.runtime.process.poll() is not None
         assert not chat.view()['turns'] and not chat.view()['connected']
         print('PASS: explicit close stops runtime and clears temporary content.')
 finally:
+    if primary:
+        primary.close()
     server.shutdown(); server.server_close(); worker.join()

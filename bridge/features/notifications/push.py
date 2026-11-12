@@ -149,7 +149,7 @@ def payload(device, event):
     # Push carries generic state only. Full inbox content stays behind gateway authentication.
     title = ('运行遇到问题，需要你处理' if event['kind'] == 'attention' else
              '本轮已结束' if event['kind'] == 'completion' else '有任务等待你确认')
-    client = {'claude': 'Claude', 'deepseek': 'DeepSeek Harness', 'codex': 'Codex'}[provider]
+    client = {'claude': 'Claude', 'deepseek': 'DeepSeek Harness', 'codex': 'Codex', 'zcode': 'ZCode', 'antigravity': 'Antigravity'}[provider]
     heading = client + ' · Codex Bridge'
     if device['kind'] == 'fcm':
         if device.get('sourceIcon'):

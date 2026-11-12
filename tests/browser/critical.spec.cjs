@@ -18,6 +18,85 @@ async function ready(page, scenario = 'success') {
   });
 }
 
+test('login status follows language changes without resetting attempts or credentials', async ({page}) => {
+  await page.route('**/api/auth', route => route.fulfill({json: {
+    authenticated: false, passwordless: false,
+    loginStatus: {attemptsRemaining: 3, attemptLimit: 5, blocked: false},
+  }}));
+  await ready(page);
+  await page.locator('#password').fill('synthetic-unsent-password');
+  await page.locator('#phone-language').selectOption('en');
+  await expect(page.locator('#login-attempts')).toHaveText('Attempts remaining: 3/5; 5 consecutive failures will block this IP.');
+  await page.locator('#phone-language').selectOption('zh');
+  await expect(page.locator('#login-attempts')).toHaveText('剩余尝试次数：3/5；连续输错 5 次将封禁此 IP。');
+  // Native/shared language changes also use the public language event.
+  await page.evaluate(() => BridgeI18n.setLanguage('en'));
+  await expect(page.locator('#login-attempts')).toHaveText('Attempts remaining: 3/5; 5 consecutive failures will block this IP.');
+  await expect(page.locator('#password')).toHaveValue('synthetic-unsent-password');
+  await expect(page.locator('#login-button')).toBeEnabled();
+  await page.evaluate(() => renderLoginStatus({attemptsRemaining: 0, attemptLimit: 5, blocked: true}));
+  await expect(page.locator('#login-attempts')).toHaveText( 'This IP is blocked. Unblock it under Login devices in the desktop gateway app.');
+  await page.locator('#phone-language').selectOption('zh');
+  await expect(page.locator('#login-attempts')).toHaveText('此 IP 已被封禁，请在电脑网关 App 的“登录设备”中解除。');
+  await expect(page.locator('#login-button')).toBeDisabled();
+});
+
+test('shared composer preserves complete loading and unsupported slots', async ({page}, testInfo) => {
+  await ready(page);await page.evaluate(()=>BridgeFeatures.load('chat'));
+  await page.evaluate(readFileSync(path.join(__dirname,'shared-composer-loading.browser.js'),'utf8'));
+  for(const width of [320,350,390,1280]){
+    await page.setViewportSize({width,height:844});
+    for(const language of ['zh','en']){
+      await page.evaluate(language=>BridgeI18n.setLanguage(language),language);
+      const result=await page.evaluate(()=>runSharedComposerLoadingChecks());
+      expect(result.requests).toBe(0);expect(result.checks).toBeGreaterThan(80);
+      await testInfo.attach(`composer-${width}-${language}`,{body:JSON.stringify(result),contentType:'application/json'});
+    }
+  }
+});
+
+test('Codex main composer columns and mixed capability states remain distinct', async ({page}, testInfo) => {
+  await ready(page);await page.evaluate(()=>BridgeFeatures.load('chat'));
+  await page.evaluate(readFileSync(path.join(__dirname,'shared-composer-loading.browser.js'),'utf8'));
+  for(const width of [320,390]){
+    await page.setViewportSize({width,height:844});
+    for(const language of ['zh','en']){
+      await page.evaluate(language=>BridgeI18n.setLanguage(language),language);
+      const result=await page.evaluate(()=>runComposerReviewRegressionChecks());
+      expect(result.requests).toBe(0);expect(result.checks).toBe(18);
+      await testInfo.attach(`composer-review-${width}-${language}`,{body:JSON.stringify(result),contentType:'application/json'});
+    }
+  }
+});
+
+test('CLI network panel keeps waiting, explicit force and saved-state recovery visible', async ({page}, testInfo) => {
+  await ready(page);await page.evaluate(()=>BridgeFeatures.load('chat'));
+  await page.evaluate(readFileSync(path.join(__dirname,'cli-network.browser.js'),'utf8'));
+  for(const width of [390,1280]){
+    await page.setViewportSize({width,height:844});
+    for(const language of ['zh','en']){
+      await page.evaluate(language=>BridgeI18n.setLanguage(language),language);
+      const result=await page.evaluate(()=>runCliNetworkPanelChecks());
+      expect(result.forceRequests).toBe(1);expect(result.modelRequests).toBe(0);expect(result.checks).toBeGreaterThan(30);
+      await testInfo.attach(`cli-network-${width}-${language}`,{body:JSON.stringify(result),contentType:'application/json'});
+    }
+  }
+});
+
+test('CLI release panel separates Agent host and home while retaining operation history', async ({page}, testInfo) => {
+  await ready(page);await page.evaluate(()=>BridgeFeatures.load('chat'));
+  await page.evaluate(readFileSync(path.join(__dirname,'cli-release.browser.js'),'utf8'));
+  for(const width of [320,390,1280]){
+    await page.setViewportSize({width,height:844});
+    for(const language of ['zh','en']){
+      await page.evaluate(language=>BridgeI18n.setLanguage(language),language);
+      const result=await page.evaluate(()=>runCliReleaseChecks());
+      expect(result.modelRequests).toBe(0);expect(result.passed).toBeGreaterThan(35);
+      await testInfo.attach(`cli-release-${width}-${language}`,{body:JSON.stringify(result),contentType:'application/json'});
+    }
+  }
+});
+
 test('image preview has one header row and a bottom save icon', async ({page}, testInfo) => {
   for (const width of [320,390,844,1280]) {
     await page.setViewportSize({width,height:844});
@@ -38,6 +117,14 @@ test('image preview has one header row and a bottom save icon', async ({page}, t
     button.dataset.imageName='Screenshot_2026-11-01_很长的原始图片文件名.png';button.click();
   });
   await testInfo.attach('image-toolbar',{body:await page.screenshot(),contentType:'image/png'});
+});
+
+test('shared chat media preserves file actions and waits for playback', async ({page}, testInfo) => {
+  await ready(page);await page.evaluate(()=>BridgeFeatures.load('chat'));
+  await page.evaluate(readFileSync(path.join(__dirname,'chat-media.browser.js'),'utf8'));
+  const result=await page.evaluate(()=>runChatMediaChecks());
+  expect(result.passed).toBe(12);
+  await testInfo.attach('chat-media',{body:JSON.stringify(result),contentType:'application/json'});
 });
 
 test('Markdown, literal code and math rendering', async ({page}, testInfo) => {
@@ -239,7 +326,6 @@ for (const [name, file, invoke] of [
   ['shared chat reading state across refreshes', 'chat-reading-state', 'runChatReadingStateChecks'],
   ['account-scoped drafts and late send acknowledgement', 'persistent-drafts', 'runPersistentDraftTests'],
   ['API form labels, layout and upstream model selection', 'api-form', 'runApiFormBrowserChecks'],
-  ['CLI release single and all across local WSL SSH', 'cli-release', 'runCliReleaseChecks'],
   ['shared session menu on desktop and mobile', 'session-menu', 'runSessionMenuBrowserChecks'],
   ['composer quotes retain draft and layout', 'composer-quotes', 'runComposerQuoteLayoutChecks'],
 ]) {
@@ -436,7 +522,7 @@ for(const surface of ['code','cowork','deepseek']){
   await ready(page,'session-menu');await expect(page.locator('#login')).toBeHidden();
   await page.addScriptTag({url:'/__browser/agent-model-settings.browser.js'});
   await page.evaluate(surface=>runAgentModelSettingsChecks({provider:surface==='deepseek'?'deepseek':'claude',surface,leaveOpen:true}),surface);
-  await expect(page.locator('.ds-model-dialog')).toBeVisible();await expect(page.locator('#app')).toHaveClass(/chat-open/);
+  await expect(page.locator('.ds-model-dialog[open]')).toBeVisible();await expect(page.locator('#app')).toHaveClass(/chat-open/);
   for(const theme of ['light','dark']){await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);await page.screenshot({path:testInfo.outputPath(surface+'-'+theme+'-model-settings.png')});}
  });
 }
@@ -669,7 +755,7 @@ test('native saved and connected composer keeps production control geometry and 
     view.setClientStates([{id:'zcode',enabled:true,connected:true,historyAvailable:true}]);await view.choose('zcode');await view.open(session.id);clearTimeout(view.timer);
     view.input.value='保留这份尚未发送的草稿';view.attachments.rows.push({id:'fixture-upload',name:'notes.txt',size:20,status:'ready'});view.attachments.render();view.messages.scrollTop=120;view.rememberReading();
     await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
-    const items=[view.modelButton,view.reminderButton,view.skillsButton,view.permissionsButton,view.contextButton,view.composerToggle,view.attachButton,view.mode,view.workMode,view.send];
+    const items=[view.modelButton,view.skillsButton,view.permissionsButton,view.contextButton,view.composerToggle,view.attachButton,view.mode,view.workMode,view.send];
     const measure=()=>items.map(node=>{const b=node.getBoundingClientRect();return {left:b.left,top:b.top,width:b.width,height:b.height,hidden:node.hidden};});
     globalThis.__composerLayout={root,view,live,measure,first:view.messageList.firstElementChild,scroll:view.messages.scrollTop};
     return {rects:measure(),disabled:[view.modelButton,view.skillsButton,view.permissionsButton,view.workMode,view.send].every(n=>n.disabled),text:view.modelName.textContent,modelLabelWidth:view.modelName.clientWidth,scroll:view.messages.scrollTop};
@@ -784,4 +870,100 @@ test('cached new-chat choices survive catalog verification', async ({page}) => {
   await page.evaluate(async()=>{const value=window.__creationCacheRace;value.finish({...value.catalog,cache:{identity:'account-b'}});await value.pending;});
   await expect(model).toHaveValue('');expect(await page.evaluate(()=>window.__creationCacheRace.picker.valid())).toBe(false);
   await page.evaluate(()=>{window.__creationCacheRace.picker.dispose();window.__creationCacheRace.root.remove();delete window.__creationCacheRace;});
+});
+
+test('native interaction clocks and notification entry fit all chat surfaces', async ({page}, testInfo) => {
+  await ready(page);
+  await page.evaluate(()=>BridgeFeatures.load('chat'));
+  await page.evaluate(readFileSync(path.join(__dirname,'chat-time.browser.js'),'utf8'));
+  expect(await page.evaluate(()=>runChatTimeChecks())).toEqual({providers:4});
+  await testInfo.attach('chat-time-checks',{body:JSON.stringify({providers:4}),contentType:'application/json'});
+});
+
+test('Antigravity shared chat preserves source identity and composer geometry while offline',async({page},info)=>{
+ await ready(page);await page.evaluate(()=>BridgeFeatures.load('chat'));
+ const result=await page.evaluate(async()=>{
+  document.getElementById('login').hidden=true;const root=document.createElement('div');root.id='agy-chat';root.className='app';root.style.cssText='position:fixed;inset:0;background:var(--page);z-index:10';document.body.append(root);
+  const select=document.createElement('select');for(const id of ['codex','antigravity'])select.add(new Option(id,id));
+  const presentation={models:true,skills:true,permissions:true,attachments:true,plan:true,goal:true};
+  const sessions=['app','cli','ide'].map((backend,index)=>({id:backend+'-session',title:['项目进度整理','测试失败排查','接口文档更新'][index],cwd:'/workspace/project',backend,model:'Gemini Pro',permissionMode:'desktop',permissionLabel:'电脑端处理',composerCapabilities:presentation,updatedAt:1794200000-index*60}));
+  const messages=[{id:'user',role:'user',text:'请检查当前项目的测试结果。',timestamp:1794200000000},{id:'reply',role:'assistant',text:'已整理测试结果，接下来检查失败的用例。',timestamp:1794200060000}];
+  const caps={send:true,models:true,effort:false,skills:false,permissions:true,attachments:true,plan:false,goal:false,queue:false,steer:false};
+  const client={id:'antigravity',name:'Antigravity',enabled:true,connected:true,historyAvailable:true};let catalogCase='normal';
+  const view=new DesktopSessionsView({root,select,notify(){},onSelect(){},csrf:()=>'',onUnauthorized(){},request:async(url,body)=>{
+   if(body)throw Error('Unexpected write');if(url.includes('/catalog')){if(catalogCase==='error')throw Error('模型目录暂不可用');return {models:catalogCase==='empty'?[]:[{id:'Gemini Pro',name:'Gemini Pro'}],capabilities:{models:true,effort:false,manualModels:false},cache:{identity:'synthetic-source'}};}
+   if(url.includes('/detail'))return {session:{...sessions.find(row=>url.includes(row.id))||sessions[0],status:'idle',connectionState:'ready'},capabilities:caps,messages};
+   return url.includes('/workspace')?{entries:[],project:'/workspace/project'}:{connected:true,sessions};
+  }});view.setClientStates([client]);await view.choose('antigravity');clearTimeout(view.timer);
+  globalThis.__agyChat={root,view,sessions,messages,caps,client,setCatalog:value=>catalogCase=value};
+  return {labels:[...root.querySelectorAll('.ds-session-type')].map(node=>node.textContent),options:[...view.surface.options].map(option=>option.value)};
+ });
+ expect(result.labels).toEqual(['APP','CLI','IDE']);expect(result.options).toEqual(['all','app','cli','ide']);
+ await page.screenshot({path:path.join(__dirname,'../../.tmp/feedback-20261110/agy-'+info.project.name+'-list.png')});
+ await page.locator('#agy-chat .ds-surface').selectOption('cli');await expect(page.locator('#agy-chat .ds-session-row')).toHaveCount(1);await page.locator('#agy-chat .ds-session-row').click();
+ await expect(page.locator('#agy-chat .ds-title')).toHaveText('测试失败排查');
+ const before=await page.evaluate(()=>{const v=__agyChat.view;clearTimeout(v.timer);v.input.value='请继续检查';v.input.oninput();const controls=[v.modelButton,v.skillsButton,v.permissionsButton,v.contextButton,v.composerToggle,v.attachButton,v.mode,v.workMode,v.send];__agyChat.controls=controls;return controls.map(n=>{const b=n.getBoundingClientRect();return {left:b.left,top:b.top,width:b.width,height:b.height,hidden:n.hidden,disabled:n.disabled};});});
+ expect(before.every(row=>!row.hidden&&row.width>10)).toBe(true);expect(before[1].disabled).toBe(true);expect(before[7].disabled).toBe(true);expect(before[8].disabled).toBe(false);
+ await page.screenshot({path:path.join(__dirname,'../../.tmp/feedback-20261110/agy-'+info.project.name+'-connected.png')});
+ const after=await page.evaluate(()=>{const f=__agyChat,v=f.view;v.clientStates=[{...f.client,connected:false}];v.applyDetail({session:{...f.sessions[1],readOnly:true,status:'idle',connectionState:'detached'},capabilities:{...f.caps,send:false,models:false,permissions:false,attachments:false},messages:f.messages});return {controls:f.controls.map(n=>{const b=n.getBoundingClientRect();return {left:b.left,top:b.top,width:b.width,height:b.height,hidden:n.hidden,disabled:n.disabled};}),draft:v.input.value,overflow:v.form.scrollWidth>v.form.clientWidth+1};});
+ expect(after.draft).toBe('请继续检查');expect(after.overflow).toBe(false);expect(after.controls.every(row=>!row.hidden)).toBe(true);expect(after.controls[8].disabled).toBe(true);
+ for(let i=0;i<before.length;i++)for(const key of ['left','top','width','height'])expect(Math.abs(before[i][key]-after.controls[i][key]),i+' '+key).toBeLessThanOrEqual(1);
+ await page.screenshot({path:path.join(__dirname,'../../.tmp/feedback-20261110/agy-'+info.project.name+'-offline.png')});
+ await page.evaluate(async()=>{const f=__agyChat;f.view.clientStates=[f.client];f.view.applyDetail({session:{...f.sessions[1],status:'idle',connectionState:'ready'},capabilities:f.caps,messages:f.messages});f.setCatalog('empty');await f.view.models();});
+ await expect(page.locator('.ds-model-dialog[open]')).toContainText('暂未提供可用模型');await expect(page.locator('.ds-model-dialog[open] .primary')).toBeDisabled();await page.evaluate(()=>__agyChat.view.modelDialog.close());
+ await page.evaluate(async()=>{__agyChat.setCatalog('error');await __agyChat.view.models();});await expect(page.locator('.ds-model-dialog[open]')).toContainText('模型目录暂不可用');await expect(page.locator('.ds-model-dialog[open] .primary')).toBeDisabled();
+ await page.evaluate(()=>{__agyChat.view.clear();__agyChat.root.remove();delete globalThis.__agyChat;});
+});
+
+test('Antigravity shared installation form loads saved inventory and registers App IDE or CLI paths',async({page},info)=>{
+ await page.setViewportSize({width:Math.max(820,page.viewportSize().width),height:900});
+ const root=path.resolve(__dirname,'../..');
+ const bootstrap=`window.testCalls=[];window.bridgeDesktop={};
+ const client={id:'antigravity',name:'Antigravity',enabled:false,configured:true,installed:true,connected:false,capabilities:{management:true}};
+ window.testPanel=new DesktopConnectionsPanel({root:document.getElementById('desktop-connections'),feedback(){},api:{desktopSessions:async body=>{testCalls.push(body);if(body.action==='client-profiles')return body.operation==='save'?{entry:'antigravity',instance:client}:{capabilities:[{family:'antigravity',kind:'default-application',supported:true}]};if(body.action==='antigravity-management')return {surfaces:[],plugin:{active:false},permissionOptions:[]};if(body.action==='status')return {backends:{}};return {clients:[client],inventoryAvailable:true};}}});
+ document.querySelectorAll('[data-panel]').forEach(node=>node.hidden=!['accounts','account','desktop-sessions','harness'].includes(node.dataset.panel));GatewayLayout.tab('accounts');testPanel.loadClients().then(()=>window.inventoryReady=true);`;
+ await page.route('**/desktop/**',async route=>{const filename=new URL(route.request().url()).pathname;if(filename==='/desktop/shell/renderer.js')return route.fulfill({contentType:'text/javascript',body:bootstrap});const file=path.resolve(root,'.'+filename);if(!file.startsWith(root+path.sep))return route.abort();try{return route.fulfill({body:readFileSync(file),contentType:filename.endsWith('.html')?'text/html':filename.endsWith('.js')?'text/javascript':filename.endsWith('.css')?'text/css':'image/png'});}catch{return route.abort();}});
+ await page.route('**/web/**',route=>{const filename=new URL(route.request().url()).pathname;try{return route.fulfill({body:readFileSync(path.resolve(root,'.'+filename)),contentType:filename.endsWith('.js')?'text/javascript':filename.endsWith('.css')?'text/css':'image/png'});}catch{return route.abort();}});
+ await page.goto('/desktop/index.html');await page.waitForFunction(()=>window.inventoryReady);
+ expect(await page.evaluate(()=>testCalls.filter(body=>body.action==='scan').length)).toBe(0);
+ for(const [language,application] of [['zh','/Applications/Antigravity.app'],['en','/user/.gemini/bin/agy']]){
+  await page.evaluate(language=>{GatewayLayout.selectClient(null);BridgeI18n.setLanguage(language);},language);
+  await page.locator('#add-client').click();await page.locator('dialog[open]').getByRole('button',{name:'Antigravity',exact:true}).click();
+  const dialog=page.locator('dialog[open]');await expect(dialog.locator('input')).toHaveCount(1);
+  await expect(dialog.locator('.hint')).toContainText('agy');
+  await dialog.locator('input').fill(application);await page.screenshot({path:path.join(root,'.tmp/agy-add-'+info.project.name+'-'+language+'.png')});await dialog.getByRole('button',{name:language==='en'?'Save settings':'保存配置',exact:true}).click();
+  await expect(dialog).toHaveCount(0);await expect(page.locator('[data-antigravity-management]')).toBeVisible();
+  const saved=await page.evaluate(()=>testCalls.filter(body=>body.operation==='save').at(-1));
+  expect(saved).toEqual({action:'client-profiles',operation:'save',family:'antigravity',kind:'default-application',application});
+ }
+ expect(await page.evaluate(()=>testCalls.some(body=>body.action==='scan'||['send','start','toggle-client'].includes(body.action)))).toBe(false);
+});
+
+test('Antigravity desktop management configures existing models and approvals per source',async({page},info)=>{
+ await page.setViewportSize({width:Math.max(820,page.viewportSize().width),height:900});
+ const root=path.resolve(__dirname,'../..');
+ const bootstrap=`window.testCalls=[];window.bridgeDesktop={};window.__agyFail=false;
+ const client={id:'antigravity',name:'Antigravity',enabled:true,configured:true,installed:true,connected:true,accountNotice:'账号与登录由原客户端管理',capabilities:{accounts:false,management:true}};
+ const sources=['app','cli','ide'].map((id,index)=>({id,name:['Antigravity App','Antigravity CLI','Antigravity IDE'][index],historyAvailable:id!=='ide',connected:id==='cli',sessions:id==='ide'?[]:[{id:id+'-session',title:id==='cli'?'测试失败排查':'项目进度整理',model:'',permissionMode:'desktop'}]}));
+ const state=()=>({enabled:true,surfaces:sources,plugin:{active:true},permissionOptions:[{value:'desktop',label:'电脑端处理'},{value:'mobile-ask',label:'手机端审批'},{value:'auto-allow',label:'自动允许'}]});
+ window.testPanel=new DesktopConnectionsPanel({root:document.getElementById('desktop-connections'),feedback(){},api:{desktopSessions:async body=>{testCalls.push(body);if(window.__agyFail)throw Error('配置读取失败');if(body.operation==='catalog')return {models:[{id:'cli-model',name:'Gemini Pro'}],cache:{identity:'cli-account'},capabilities:{models:true}};if(['settings','access'].includes(body.operation)){if(body.surface!=='cli'||body.sessionId!=='cli-session')throw Error('Wrong source');const row=sources[1].sessions[0];if(body.operation==='settings')row.model=body.model;else row.permissionMode=body.mode;return {status:'accepted'};}return state();}}});testPanel.clients=[client];testPanel.renderClients();document.querySelectorAll('[data-panel]').forEach(node=>node.hidden=!['accounts','account','desktop-sessions','harness'].includes(node.dataset.panel));GatewayLayout.tab('accounts');`;
+ await page.route('**/desktop/**',async route=>{const filename=new URL(route.request().url()).pathname;if(filename==='/desktop/shell/renderer.js')return route.fulfill({contentType:'text/javascript',body:bootstrap});const file=path.resolve(root,'.'+filename);if(!file.startsWith(root+path.sep))return route.abort();try{return route.fulfill({body:readFileSync(file),contentType:filename.endsWith('.html')?'text/html':filename.endsWith('.js')?'text/javascript':filename.endsWith('.css')?'text/css':'image/png'});}catch{return route.abort();}});
+ await page.route('**/web/**',route=>{const filename=new URL(route.request().url()).pathname;try{return route.fulfill({body:readFileSync(path.resolve(root,'.'+filename)),contentType:filename.endsWith('.js')?'text/javascript':filename.endsWith('.css')?'text/css':'image/png'});}catch{return route.abort();}});
+ await page.goto('/desktop/index.html');await page.locator('[data-client-id="antigravity"] button').filter({hasText:/^管理$/}).click();
+ const panel=page.locator('[data-antigravity-management]');await expect(panel.getByRole('status')).toContainText('本机历史可用 · 原生服务未连接');
+ await expect(panel.getByRole('button',{name:'应用模型',exact:true})).toBeDisabled();await panel.getByLabel('会话来源',{exact:true}).selectOption('cli');await expect(panel.getByLabel('聊天',{exact:true})).toHaveValue('cli-session');
+ await panel.getByRole('button',{name:'刷新模型',exact:true}).click();await panel.getByLabel('发送模型',{exact:true}).selectOption('cli-model');await panel.getByRole('button',{name:'应用模型',exact:true}).click();
+ await panel.getByLabel('审批方式',{exact:true}).selectOption('mobile-ask');await panel.getByRole('button',{name:'应用审批方式',exact:true}).click();await expect(panel.getByLabel('审批方式',{exact:true})).toHaveValue('mobile-ask');
+ await page.screenshot({path:path.join(root,'.tmp/feedback-20261110/agy-'+info.project.name+'-management-'+page.viewportSize().width+'.png'),fullPage:true});
+ const writes=await page.evaluate(()=>testCalls.filter(row=>['settings','access'].includes(row.operation)));expect(writes.map(row=>row.surface)).toEqual(['cli','cli']);expect(writes.map(row=>row.sessionId)).toEqual(['cli-session','cli-session']);expect(writes[0].modelCatalogIdentity).toBe('cli-account');expect(await page.evaluate(()=>testCalls.some(row=>row.action==='accounts'))).toBe(false);
+ await panel.getByLabel('会话来源',{exact:true}).selectOption('ide');await expect(panel.getByRole('status')).toContainText('未发现本机历史');await expect(panel.getByRole('button',{name:'应用审批方式',exact:true})).toBeDisabled();
+ await page.evaluate(()=>window.__agyFail=true);await panel.getByRole('button',{name:'重新加载',exact:true}).click();await expect(panel.getByRole('alert')).toContainText('配置读取失败');await expect(panel.getByRole('button',{name:'应用模型',exact:true})).toBeDisabled();
+});
+
+test('shared session menu retains working chat notification settings without a composer reminder',async({page})=>{
+ let writes=[];await page.route('**/api/desktop-sessions/claude/detail?*',route=>route.fulfill({json:{session:{id:'claude-synthetic-0',title:'Claude · 页面交互验证',cwd:'/synthetic/project',status:'idle'},capabilities:{send:true},messages:[]}}));
+ await page.route('**/api/desktop-sessions/claude/notifications?*',route=>{const body=route.request().postDataJSON();if(body)writes.push(body);return route.fulfill({json:{available:true,requests:body?.requests||'inherit',completion:body?.completion||'off'}});});
+ await ready(page,'session-menu');await page.locator('#client-switch').getByRole('button',{name:'Claude',exact:true}).click();const row=page.locator('.ds-session-row:visible').filter({hasText:'Claude · 页面交互验证'}).first();await expect(row).toBeVisible();
+ if(page.viewportSize().width<=640){await row.dispatchEvent('pointerdown',{pointerType:'touch',button:0,clientX:80,clientY:150});await expect(page.locator('dialog.session-menu')).toBeVisible();await row.dispatchEvent('pointerup',{pointerType:'touch',button:0});}else await row.click({button:'right'});
+ await page.locator('dialog.session-menu').getByRole('button',{name:'聊天通知设置',exact:true}).click();const dialog=page.locator('dialog[open]').filter({hasText:'聊天通知设置'});await expect(dialog).toBeVisible();await dialog.getByLabel('请求处理通知',{exact:true}).selectOption('on');await dialog.getByLabel('运行完毕通知',{exact:true}).selectOption('inherit');await dialog.getByRole('button',{name:'保存配置',exact:true}).click();await expect(dialog).toHaveCount(0);expect(writes).toEqual([{requests:'on',completion:'inherit'}]);expect(await page.locator('.ds-composer .composer-tools').getByRole('button',{name:/提醒/}).count()).toBe(0);
 });

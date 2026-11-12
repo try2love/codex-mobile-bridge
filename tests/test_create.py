@@ -6,9 +6,9 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from bridge.features.sessions.create import CreationUnavailable, create_empty, rename_thread, open_in_desktop, CreationError
+from bridge.features.sessions.create import CreationUnavailable, create_empty, save_new_thread, rename_thread, open_in_desktop, CreationError
 from bridge.features.sessions.create import project_directory, project_directory_listing
 from bridge.clients.codex.remote import AppHosts
 from bridge.app.service import Bridge
@@ -274,9 +274,24 @@ class CreationTests(unittest.TestCase):
             self.assertTrue(result['opened'])
             create.assert_called_once()
 
+    def test_unnamed_new_thread_retains_its_native_section(self):
+        request = Mock(return_value={})
+        save_new_thread(request, {'id': self.tid, 'sectionId': 'native-initial-section'}, '')
+        request.assert_called_once_with('thread/section/move', {'threadId': self.tid, 'sectionId': 'native-initial-section'})
+
+    def test_blank_chat_name_reaches_native_creation_without_a_placeholder(self):
+        with patch('bridge.app.service.create_empty', return_value=self.tid) as create, \
+             patch('bridge.app.service.open_in_desktop'):
+            attempt = str(uuid.uuid4())
+            first = self.bridge.create_chat('local|p', '  ', attempt)
+            second = self.bridge.create_chat('local|p', '', attempt)
+        self.assertEqual(first['id'], second['id'])
+        self.assertEqual(create.call_count, 1)
+        self.assertEqual(create.call_args.args[3], '')
+
     def test_only_saved_project_and_valid_title_are_accepted(self):
         with patch('bridge.app.service.create_empty') as create:
-            for project,title,request in [('unknown','ok',str(uuid.uuid4())),('local|p',' ',str(uuid.uuid4())),('local|p','a'*121,str(uuid.uuid4())),('local|p','ok',None)]:
+            for project,title,request in [('unknown','ok',str(uuid.uuid4())),('local|p',None,str(uuid.uuid4())),('local|p','a'*121,str(uuid.uuid4())),('local|p','ok',None)]:
                 with self.assertRaises(ValueError):self.bridge.create_chat(project,title,request)
             create.assert_not_called()
 
@@ -354,6 +369,11 @@ Path(''' + repr(str(log)) + ''').write_text(json.dumps(calls))
         self.assertEqual([c['method'] for c in calls],['initialize','initialized','thread/start','thread/name/set','thread/read'])
         self.assertEqual(calls[-1]['params'],{'threadId':self.tid,'includeTurns':True})
         self.assertEqual(calls[2]['params'],{'cwd':str(self.root),'ephemeral':False})
+        with patch('bridge.features.sessions.create.subprocess.Popen',side_effect=spawn):
+            self.assertEqual(create_empty('runtime',self.root,str(self.root),''),self.tid)
+        calls=json.loads(log.read_text())
+        self.assertEqual([c['method'] for c in calls],['initialize','initialized','thread/start','thread/section/move','thread/read'])
+        self.assertEqual(calls[3]['params'],{'threadId':self.tid,'sectionId':None})
         with patch('bridge.features.sessions.create.subprocess.Popen',side_effect=spawn):
             rename_thread('runtime', self.root, self.tid, 'Renamed')
         calls=json.loads(log.read_text())

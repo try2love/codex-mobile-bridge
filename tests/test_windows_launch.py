@@ -71,6 +71,44 @@ class WindowsDesktopLaunchTests(unittest.TestCase):
         self.assertEqual(spawn.call_args.args[0], [str(self.executable)])
         self.assertEqual(spawn.call_args.kwargs['env']['CODEX_HOME'], str(self.root))
 
+    def test_shared_desktop_start_preserves_gui_identity_with_verified_alias(self):
+        alias = self.root/'WindowsApps/chatgpt-desktop.exe'
+        shared = {'CODEX_CLI_PATH': str(self.root/'gateway.exe'),
+                  'CMB_CODEX_DESKTOP_CONFIGURATION': str(self.root/'settings.json')}
+        with patch('bridge.clients.codex.desktop_runtime.launch_environment', return_value=shared), \
+                patch('bridge.clients.codex.desktop_runtime.wait_stopped'), \
+                patch('bridge.platforms.windows.discovery_ext.application_execution_alias', return_value=alias), \
+                patch('subprocess.Popen') as spawn:
+            DesktopApp(self.executable, self.root).start()
+        spawn.assert_called_once()
+        # The native shell selects its window profile from argv[0]. Using the
+        # alias name here creates a different profile from codex:// activation.
+        self.assertEqual(spawn.call_args.args[0], [str(self.executable)])
+        self.assertEqual(spawn.call_args.kwargs['executable'], str(alias))
+        for key, value in {**shared, 'CODEX_HOME': str(self.root)}.items():
+            self.assertEqual(spawn.call_args.kwargs['env'][key], value)
+
+    def test_shared_desktop_start_cannot_fall_back_to_explorer_without_alias(self):
+        with patch('bridge.clients.codex.desktop_runtime.launch_environment', return_value={'CODEX_CLI_PATH': 'adapter'}), \
+                patch('bridge.clients.codex.desktop_runtime.wait_stopped'), \
+                patch('bridge.platforms.windows.discovery_ext.application_execution_alias', return_value=None), \
+                patch('subprocess.Popen') as spawn:
+            with self.assertRaisesRegex(ValueError, '启动别名'):
+                DesktopApp(self.executable, self.root).start()
+        spawn.assert_not_called()
+
+    def test_shared_unpacked_desktop_retains_direct_launch(self):
+        executable = self.root/'Portable/ChatGPT.exe'
+        executable.parent.mkdir(); executable.write_bytes(b'MZ')
+        with patch('bridge.clients.codex.desktop_runtime.launch_environment', return_value={'CODEX_CLI_PATH': 'adapter'}), \
+                patch('bridge.clients.codex.desktop_runtime.wait_stopped'), \
+                patch('bridge.platforms.windows.discovery_ext.application_execution_alias') as alias, \
+                patch('subprocess.Popen') as spawn:
+            DesktopApp(executable, self.root).start()
+        alias.assert_not_called()
+        spawn.assert_called_once()
+        self.assertEqual(spawn.call_args.args[0], [str(executable)])
+
     def test_direct_dsh_launch_preserves_existing_home(self):
         executable = self.root/'DSH Desktop.exe'; executable.write_bytes(b'MZ')
         descriptor = {'id': 'deepseek', 'installed': True, 'executable': str(executable),

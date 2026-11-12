@@ -1,5 +1,6 @@
 """Guarded local CLI account selection; never touches SSH profiles."""
 
+import base64
 import hashlib
 import json
 import subprocess
@@ -8,9 +9,21 @@ from pathlib import Path
 
 from bridge.clients.desktop_app import DesktopApp
 from bridge.features.accounts.accounts import ManagedRPC, private_bytes, private_json, token_owner
+from bridge.features.sessions.cli_maintenance import CliTasksPending
 
 
 CLAUDE_ENV_KEYS = ('ANTHROPIC_BASE_URL', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_MODEL')
+
+
+def _matches_chatgpt_owner(status, owner):
+    try:
+        encoded = status['authToken'].split('.')[1]
+        claims = json.loads(base64.urlsafe_b64decode(encoded + '=' * (-len(encoded) % 4)))
+        return bool(owner and len(owner) == 3 and owner[0] and owner[1] and status.get('authMethod') == 'chatgpt'
+                    and (claims.get('https://api.openai.com/auth') or {}).get('chatgpt_account_id') == owner[0]
+                    and claims.get('sub') == owner[1])
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+        return False
 
 
 class LocalCliSync:
@@ -21,6 +34,189 @@ class LocalCliSync:
 
     def _accounts(self):
         return self.bridge.accounts
+
+    @staticmethod
+    def _file_auth(config, provider):
+        from bridge.clients.codex.daemon_network import file_auth_provider
+        definition = (config.get('model_providers') or {}).get(provider) or {}
+        return file_auth_provider(config, provider) and not any(
+            definition.get(key) for key in ('http_headers', 'env_http_headers'))
+
+    def recovery_target(self, config):
+        """Resolve only an explicitly selected, unchanged managed file credential."""
+        from bridge.clients.codex.daemon_network import AUTH_ENV_NAMES
+        accounts = self._accounts()
+        if accounts.management()['external'] or not accounts.index.get('activeId'):
+            return None
+        if not accounts.active_matches():
+            return None
+        row = accounts.row(accounts.index['activeId'])
+        provider = 'bridge_api' if row['kind'] == 'api' else 'openai'
+        if (config.get('profile') or (config.get('model_provider') or 'openai') != provider
+                or config.get('cli_auth_credentials_store') != 'file'
+                or not self._file_auth(config, provider)):
+            raise ValueError('当前 CLI 的认证注入来源与已选择接入不同，请重新确认接入')
+        aliases = [provider]
+        if row['kind'] == 'api':
+            definition = (config.get('model_providers') or {}).get(provider) or {}
+            auth = json.loads((accounts.home/'auth.json').read_text(encoding='utf-8'))
+            key = json.loads((accounts.directory(row['id'])/'api.json').read_text(encoding='utf-8'))['key']
+            if (not key or auth.get('OPENAI_API_KEY') != key or definition.get('base_url') != row['baseUrl']
+                    or config.get('openai_base_url') != row['baseUrl'] or config.get('model') != row['model']):
+                raise ValueError('当前 CLI 的 API 接入与已选择账号不同')
+            if not (config.get('model_providers') or {}).get('openai'):
+                aliases.append('openai')
+        else:
+            auth = json.loads((accounts.home/'auth.json').read_text(encoding='utf-8'))
+            if (not row.get('tokenOwner') or token_owner(auth) != row['tokenOwner']
+                    or config.get('openai_base_url')
+                    or ((config.get('model_providers') or {}).get('openai') or {}).get('base_url')):
+                raise ValueError('当前 CLI 的登录账号与已选择账号不同')
+            alias = (config.get('model_providers') or {}).get('bridge_api') or {}
+            if self._file_auth(config, 'bridge_api') and not alias.get('base_url'):
+                aliases.append('bridge_api')
+        identity = hashlib.sha256(json.dumps([row['id'], accounts.index['activeStamp'], config],
+                                            sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        return {'accountId': row['id'], 'provider': provider, 'aliases': aliases,
+                'environment': dict.fromkeys(AUTH_ENV_NAMES),
+                'identity': identity, 'kind': row['kind']}
+
+    def verify_runtime_auth(self, probe, target):
+        """Compare native cached auth in memory; never return or persist a token."""
+        row = self._accounts().row(target['accountId'])
+        status = probe.request('getAuthStatus', {'includeToken': True, 'refreshToken': False}, replay_safe=True)
+        token = status.get('authToken')
+        if row['kind'] == 'api':
+            key = json.loads((self._accounts().directory(row['id'])/'api.json').read_text(encoding='utf-8'))['key']
+            valid = status.get('authMethod') == 'apikey' and bool(key) and token == key
+        else:
+            valid = _matches_chatgpt_owner(status, row.get('tokenOwner'))
+        if not valid:
+            raise ValueError('原生服务尚未使用所选账号，请明确确认同步或维护后再继续')
+        return True
+
+    def file_auth_identity(self, kind):
+        try:
+            auth = json.loads((self._accounts().home/'auth.json').read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(auth, dict):
+            return None
+        if kind == 'api':
+            expected = auth.get('OPENAI_API_KEY')
+            return expected if auth.get('auth_mode') in (None, 'apikey') and isinstance(expected, str) and expected else None
+        if kind == 'chatgpt' and auth.get('auth_mode') in (None, 'chatgpt') and isinstance(auth.get('tokens'), dict):
+            owner = token_owner(auth)
+            return owner if owner and owner[0] and owner[1] else None
+
+    def current_file_auth_matches(self, probe, target):
+        """Compare the selected home file with native auth without a login write."""
+        from bridge.clients.codex.app_server import AppServerError
+        kind = target.get('kind')
+        if kind not in ('api', 'chatgpt'):
+            return None
+        expected = self.file_auth_identity(kind)
+        if expected is None:
+            return False
+        try:
+            current = probe.request('getAuthStatus', {'includeToken': True, 'refreshToken': False}, replay_safe=True)
+        except (AppServerError, OSError) as error:
+            raise ValueError('无法核验此配置的原生认证缓存') from error
+        if not isinstance(current, dict):
+            return False
+        if kind == 'api':
+            return current.get('authMethod') == 'apikey' and current.get('authToken') == expected
+        return _matches_chatgpt_owner(current, expected)
+
+    def _api_runtime(self):
+        from bridge.clients.codex.cli_session import _managed_cli
+        from bridge.clients.codex.daemon_network import graceful_restart_supported
+        from bridge.platforms.codex_daemon_env import read_daemon_environment
+        accounts = self._accounts()
+        client = self.bridge.cli_sessions.client
+        info = client.connect()
+        if (Path(info.get('codexHome', '')).resolve() != accounts.home.resolve()
+                or not graceful_restart_supported(info)):
+            raise ValueError('原生服务的配置目录或账号同步协议无法核验')
+        executable = _managed_cli(accounts.home)
+        if executable is None:
+            raise ValueError('找不到此配置的受管原生服务')
+        generation = read_daemon_environment(accounts.home, executable, ())[1]
+        return client, json.loads(json.dumps(generation))
+
+    def switch_live_api(self, row, request_id, *, reconcile=False):
+        """One acknowledged login, or read-only reconciliation of its receipt."""
+        accounts = self._accounts()
+        cli = self.bridge.cli_sessions
+        running, _ = self._codex_runtime()
+        if running or row['kind'] != 'api':
+            return False
+        if not reconcile and cli.daemon_status() != 'running':
+            return False
+        if not reconcile:
+            with cli.lock:
+                if cli.attaching or any(cli.requests.values()):
+                    raise ValueError('请先完成本机 CLI 连接或待处理请求后再同步账号')
+            accounts.idle()
+        client, generation = self._api_runtime()
+        config = client.request('config/read', {'includeLayers': False}, replay_safe=True)['config']
+        definition = (config.get('model_providers') or {}).get('bridge_api') or {}
+        if (config.get('profile') or config.get('model_provider') != 'bridge_api'
+                or config.get('cli_auth_credentials_store') != 'file'
+                or not self._file_auth(config, 'bridge_api')
+                or definition.get('base_url') != row['baseUrl']
+                or config.get('openai_base_url') != row['baseUrl'] or config.get('model') != row['model']):
+            if reconcile:
+                raise ValueError('接入定义已变化，账号写入结果仍待核验，请勿重复切换')
+            return False
+        config_hash = hashlib.sha256((accounts.home/'config.toml').read_bytes()).hexdigest()
+        key = json.loads((accounts.directory(row['id'])/'api.json').read_text(encoding='utf-8'))['key']
+        saved = (accounts.directory(row['id'])/'api.json').stat()
+        key_version = [saved.st_dev, saved.st_ino, saved.st_mtime_ns, saved.st_size]
+        if reconcile:
+            if (accounts.state.get('generation') != generation or accounts.state.get('configHash') != config_hash
+                    or accounts.state.get('keyVersion') != key_version):
+                raise ValueError('原生服务或配置已变化，账号写入结果仍待核验，请勿重复切换')
+        else:
+            previous = accounts.index.get('activeId')
+            if (not previous or accounts.row(previous)['kind'] != 'api'
+                    or (accounts.index.get('activeStamp') or {}).get('config') != config_hash):
+                return False
+            cached = client.request('getAuthStatus', {'includeToken': False, 'refreshToken': False}, replay_safe=True)
+            if cached.get('authMethod') != 'apikey':
+                return False
+            self.check_idle_daemon(client, accounts.home)
+            accounts.idle()
+            if self._api_runtime()[1] != generation or hashlib.sha256((accounts.home/'config.toml').read_bytes()).hexdigest() != config_hash:
+                raise ValueError('原生服务或配置已变化，请重新确认账号切换')
+            # This receipt precedes the only write. Repeated requests only read.
+            accounts.state = {'operation': 'cliAuth', 'requestId': request_id, 'targetId': row['id'],
+                              'generation': generation, 'configHash': config_hash, 'keyVersion': key_version}
+            accounts.phase('authUnknown', error='账号同步结果待核验，请勿重复切换')
+            from bridge.features.notifications.channels import read_json
+            ledger = read_json(accounts.root/'requests.json', {})
+            ledger[request_id] = row['id']
+            private_json(accounts.root/'requests.json', ledger)
+            try:
+                client.request('account/login/start', {'type': 'apiKey', 'apiKey': key})
+            except Exception as error:
+                # An explicit native rejection is known; transport failures are not.
+                if getattr(error, 'rpc_error', None) is not None:
+                    accounts.phase('failed', error='原生服务拒绝账号同步，未确认恢复')
+                raise ValueError('账号同步尚未核验，请使用同一请求检查，勿重复提交') from None
+        self.verify_runtime_auth(client, {'accountId': row['id']})
+        if self._api_runtime()[1] != generation or hashlib.sha256((accounts.home/'config.toml').read_bytes()).hexdigest() != config_hash:
+            raise ValueError('原生服务或配置已变化，账号同步尚未核验')
+        verified_auth = (accounts.home/'auth.json').read_bytes()
+        if json.loads(verified_auth).get('OPENAI_API_KEY') != json.loads((accounts.directory(row['id'])/'api.json').read_text(encoding='utf-8'))['key']:
+            raise ValueError('账号文件已变化，账号同步尚未核验')
+        accounts.mark_active(row['id'])
+        # Do not absorb later, unverified file changes into this baseline.
+        cli.configuration_stamp = {'config.toml': config_hash,
+                                   'auth.json': hashlib.sha256(verified_auth).hexdigest()}
+        cli.configuration_generation = hashlib.sha256(json.dumps(generation).encode()).hexdigest()
+        accounts.phase('complete', error=None, cliSync={'status': 'verified'})
+        return True
 
     def _codex_runtime(self):
         accounts = self._accounts()
@@ -57,20 +253,32 @@ class LocalCliSync:
             raise ValueError('此配置的原生服务未确认退出，未切换账号')
 
     @staticmethod
-    def check_idle_daemon(client, home):
+    def check_idle_daemon(client, home, *, target_platform=None):
         from bridge.features.sessions.create import check_archive_runtime
-        from bridge.clients.codex.app_server import AppServerUnsupported
+        from bridge.clients.codex.app_server import AppServerError, AppServerUnsupported
+        from bridge.clients.codex.release import GOAL_STATUSES
+        from bridge.clients.codex.daemon_network import graceful_restart_supported
         info = client.connect()
-        if Path(info['codexHome']).resolve() != home.resolve():
+        if target_platform == 'linux':
+            from pathlib import PurePosixPath
+            same_home = PurePosixPath(info['codexHome']) == PurePosixPath(str(home))
+        else:
+            same_home = Path(info['codexHome']).resolve() == home.resolve()
+        if not same_home:
             raise ValueError('原生服务不属于此配置，未切换账号')
         def request(method, params):
             return client.request(method, params, replay_safe=True)
-        identifiers = client.loaded_threads()
+        def loaded_threads():
+            try:
+                return client.loaded_threads()
+            except (AppServerError, OSError) as error:
+                raise CliTasksPending('无法核验此配置的原生任务') from error
+        identifiers = loaded_threads()
         def check(threads):
             blockers = []
             for identifier in threads:
                 try:
-                    check_archive_runtime(request, [identifier])
+                    check_archive_runtime(request, [identifier], allow_terminal_error=graceful_restart_supported(info, platform=target_platform))
                     tasks = request('thread/backgroundTerminals/list', {'threadId': identifier, 'limit': 1})
                     if not isinstance(tasks.get('data'), list) or tasks['data'] or tasks.get('nextCursor'):
                         raise ValueError('有后台任务或状态未知')
@@ -78,15 +286,17 @@ class LocalCliSync:
                         goal = request('thread/goal/get', {'threadId': identifier})['goal']
                     except AppServerUnsupported:
                         goal = None
+                    if goal is not None and (not isinstance(goal, dict) or goal.get('status') not in GOAL_STATUSES):
+                        raise ValueError('目标状态未知')
                     if goal and goal.get('status') == 'active':
                         raise ValueError('有运行中的目标')
-                except ValueError as error:
+                except (AppServerError, OSError, ValueError, KeyError, TypeError) as error:
                     blockers.append(f"{identifier}：{error}")
             if blockers:
-                raise ValueError('；'.join(blockers))
+                raise CliTasksPending('；'.join(blockers))
         check(identifiers)
-        if client.loaded_threads() != identifiers:
-            raise ValueError('此配置的会话已变化，请重新检查')
+        if loaded_threads() != identifiers:
+            raise CliTasksPending('此配置的会话已变化，请重新检查')
         check(identifiers)
 
 

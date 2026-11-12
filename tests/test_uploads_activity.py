@@ -169,7 +169,8 @@ class UploadActivityTests(unittest.TestCase):
             with session.condition: self.assertTrue(session.condition.wait_for(lambda: session.state['threadRuntimeStatus']['type']=='active', timeout=2))
             self.assertEqual(self.bridge.activity([THREAD])[0]['status'], 'active')
             self.bridge._disconnected()
-            self.assertEqual(self.bridge.activity([THREAD])[0]['status'], 'unknown')
+            with patch.object(self.bridge, '_attach'):
+                self.assertEqual(self.bridge.activity([THREAD])[0]['status'], 'unknown')
 
     def test_opening_activity_only_session_still_loads_saved_prefix(self):
         self.fixture.state['turnsPagination'] = {'hasLoadedOldest': False}

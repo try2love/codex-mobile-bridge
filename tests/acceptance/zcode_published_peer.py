@@ -37,10 +37,15 @@ else:
     raise ValueError(mode)
 '''
 from pathlib import Path
-import json, os, plistlib, shutil, subprocess, sys, tempfile
+import argparse, json, os, plistlib, shutil, subprocess, sys, tempfile
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 source=Path(__file__).resolve().parents[2]
+parser=argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--product',choices=['production','test'],default='production')
+selected=parser.parse_args().product
+product='io.github.try2love.codexmobilebridge'+('.test' if selected=='test' else '')
+version='2.2.0-test.fixture' if selected=='test' else '2.2.0'
 if sys.platform != 'darwin':
  raise RuntimeError('This native acceptance requires macOS')
 (source/'.tmp').mkdir(exist_ok=True)
@@ -49,7 +54,8 @@ root=Path(workspace.name)
 entry=root/'probe.py';entry.write_text(PROBE)
 subprocess.run([sys.executable,'-m','PyInstaller','--noconfirm','--onedir',
  '--name','codex-mobile-gateway','--paths',str(source),'--distpath',str(root/'dist'),
- '--workpath',str(root/'build'),'--specpath',str(root),str(entry)],check=True)
+ '--workpath',str(root/'build'),'--specpath',str(root),str(entry)],check=True,
+ env={**os.environ,'PYINSTALLER_CONFIG_DIR':str(root/'pyinstaller-cache')})
 fixture=root/'hook-source';fixture.mkdir(exist_ok=True)
 for relative in ['scripts/sign-zcode-launcher.cjs','scripts/zcode_starter_bundle.py','bridge/platforms/macos/zcode-pipe-starter.m']:
  p=fixture/relative;p.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source/relative,p)
@@ -63,11 +69,11 @@ shutil.copytree(root/'dist/codex-mobile-gateway',app/'Contents/Resources/gateway
 (app/'Contents/MacOS').mkdir()
 shutil.copyfile('/usr/bin/true',app/'Contents/MacOS/Bridge')
 (app/'Contents/MacOS/Bridge').chmod(0o755)
-(app/'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':'io.github.try2love.codexmobilebridge','CFBundleExecutable':'Bridge','CFBundleName':'Bridge','CFBundlePackageType':'APPL','CFBundleVersion':'1'}))
-(app/'Contents/Resources/update-version.json').write_text(json.dumps({'version':'2.2.0'}))
-node="const hook=require(process.argv[1]);hook({electronPlatformName:'darwin',appOutDir:process.argv[2],packager:{appInfo:{id:'io.github.try2love.codexmobilebridge',productFilename:'Current',version:'2.2.0'},platformSpecificBuildOptions:{identity:'-'}}}).catch(e=>{console.error(e.message);process.exitCode=1});"
+(app/'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':product,'CFBundleExecutable':'Bridge','CFBundleName':'Bridge','CFBundlePackageType':'APPL','CFBundleVersion':'1'}))
+(app/'Contents/Resources/update-version.json').write_text(json.dumps({'version':version}))
+node="const hook=require(process.argv[1]);hook({electronPlatformName:'darwin',appOutDir:process.argv[2],packager:{appInfo:{id:process.argv[3],productFilename:'Current',version:process.argv[4]},platformSpecificBuildOptions:{identity:'-'}}}).catch(e=>{console.error(e.message);process.exitCode=1});"
 def finish():
- result=subprocess.run(['node','-e',node,str(fixture/'scripts/sign-zcode-launcher.cjs'),str(root)],env={**os.environ,'CMB_UPDATE_SIGNING_KEY':private},capture_output=True,text=True)
+ result=subprocess.run(['node','-e',node,str(fixture/'scripts/sign-zcode-launcher.cjs'),str(root),product,version],env={**os.environ,'CMB_UPDATE_SIGNING_KEY':private},capture_output=True,text=True)
  if result.returncode:raise RuntimeError(result.stderr)
 def probe(relocate=False):
  endpoint=root/socket
@@ -93,5 +99,5 @@ def probe(relocate=False):
   endpoint.unlink(missing_ok=True)
 finish()
 results=[probe(),probe(True)]
-print('PASS published production peers, native launcher, and different-build handoff')
+print('PASS published '+selected+' peers, native launcher, and different-build handoff')
 workspace.cleanup()

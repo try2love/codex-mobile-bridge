@@ -43,14 +43,32 @@ function fixture({storage=new Map(),sessionStore=new Map()}={}){
   showModal(){this.open=true;}close(){this.open=false;this.onclose?.();}focus(){document.activeElement=this;}select(){}setSelectionRange(start,end){this.selectionStart=start;this.selectionEnd=end;}click(){return this.onclick?.({preventDefault(){}});}contains(n){return n===this||this.children.some(c=>c.contains(n));}
  }
  document={body:new Node('body'),documentElement:new Node('html'),hidden:false,activeElement:null,getSelection:()=>null,createElement:tag=>new Node(tag),createElementNS:(_,tag)=>new Node(tag),createTextNode:text=>{const n=new Node('#text');n.textContent=text;return n;},querySelectorAll:s=>document.body.querySelectorAll(s),querySelector:s=>document.body.querySelector(s),getElementById:id=>document.body.querySelector('#'+id),addEventListener:(type,fn)=>listeners[type]=fn,dispatchEvent:event=>listeners[event.type]?.(event)};
- const root=new Node('div');root.className='app';document.body.append(root);const select=new Node('select'),calls=[],notices=[];let uploadHandler=async()=>({ok:true,status:200,json:async()=>({image:true,size:16,name:'image.png'})}),handler=async(url,body)=>body?{status:'accepted'}:url.includes('/detail')?{session:{id:'a',title:'Chat',model:'model-a',effort:'high',status:'idle',capabilities:{}},messages:[]}:url.includes('/workspace')?{entries:[],total:0,project:'/project'}:{sessions:[]};
+ const root=new Node('div');root.className='app';document.body.append(root);const select=new Node('select'),calls=[],notices=[];let uploadHandler=async()=>({ok:true,status:200,json:async()=>({image:true,size:16,name:'image.png'})}),handler=async(url,body)=>body?{status:'accepted'}:url.includes('/detail')?{session:{id:'a',title:'Chat',model:'model-a',effort:'high',status:'idle',capabilities:{send:true,queue:true,steer:true}},messages:[]}:url.includes('/workspace')?{entries:[],total:0,project:'/project'}:{sessions:[]};
  const context=vm.createContext({document,window:{addEventListener:(type,fn)=>listeners['window:'+type]=fn,dispatchEvent:event=>listeners['window:'+event.type]?.(event)},navigator:{},location:{pathname:'/'},history:{replaceState(){}},localStorage:{get length(){return storage.size;},key:i=>[...storage.keys()][i],getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},sessionStorage:{get length(){return sessionStore.size;},key:i=>[...sessionStore.keys()][i],getItem:k=>sessionStore.get(k),setItem:(k,v)=>sessionStore.set(k,v),removeItem:k=>sessionStore.delete(k)},crypto:{getRandomValues:array=>webcrypto.getRandomValues(array)},Uint8Array,TextEncoder,Option:class extends Node{constructor(text,value){super('option');this.textContent=text;this.value=value;this.setAttribute('value',value);}},ResizeObserver:class{observe(){}},MutationObserver:class{observe(){}},AbortController,URLSearchParams,requestAnimationFrame:fn=>fn(),cancelAnimationFrame(){},getComputedStyle:()=>({getPropertyValue:()=>8}),setTimeout(){return 1;},clearTimeout(){},fetch:async(url,options)=>{calls.push({url,upload:options});return uploadHandler(url,options);},renderMarkdown:(node,text)=>node.textContent=text,CustomEvent:class{constructor(type,options){this.type=type;Object.assign(this,options);}}});
  vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/shell/app.js'),'utf8').match(/^function uuid\(\).*$/m)[0],context);
  for(const file of ['web/layouts/viewport.js','web/features/chat/activity.js','web/features/chat/composer-drafts.js','web/features/chat/composer-quotes.js','web/features/chat/attachments.js','web/shared/i18n.js','web/features/clients/client-lifecycle.js','web/features/chat/message-actions.js','web/features/chat/permissions.js','web/features/chat/modes.js','web/features/workspace/workbench.js','web/features/chat/list-sync.js','web/shared/creation-model-picker.js','web/features/clients/desktop-sessions.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
  const View=vm.runInContext('DesktopSessionsView',context),view=new View({root,select,request:(url,body,signal)=>{calls.push({url,body});return handler(url,body,signal);},notify:text=>notices.push(text),onSelect(){},csrf:()=>'csrf-test',onUnauthorized(){}});
  return {view,root,document,calls,notices,storage,sessionStore,setHandler:fn=>handler=fn,setUploadHandler:fn=>uploadHandler=fn,run:s=>vm.runInContext(s,context),text:n=>n.textContent};
 }
+function hostPages(ui,handler){
+ ui.setHandler(async(url,...args)=>{
+  const query=new URL(url,'http://fixture').searchParams;
+  assert.equal(query.get('scope'),'host');
+  const value=await handler(url,...args),directory=query.get('path')||value.project;
+  assert.ok(directory.startsWith('/'));
+  return {...value,path:directory,parentPath:directory==='/'?null:directory.slice(0,directory.lastIndexOf('/'))||'/',
+   projectPath:directory===value.project?'':directory.startsWith(value.project+'/')?directory.slice(value.project.length+1):null,
+   entries:value.entries.map(row=>({...row,path:row.path.startsWith('/')?row.path:value.project+'/'+row.path}))};
+ });
+}
 async function opened(){const ui=fixture();await ui.view.choose('claude');await ui.view.open('a');return ui;}
+test('Antigravity lists filter APP CLI and IDE without crossing saved source selection',async()=>{
+ const ui=fixture(),view=ui.view;ui.setHandler(async()=>({sessions:['app','cli','ide'].map(backend=>({id:backend,title:backend,cwd:'/same-project',backend}))}));
+ await view.choose('antigravity');assert.equal(view.surface.hidden,false);assert.deepEqual(view.surface.children.map(n=>n.value),['all','app','cli','ide']);
+ assert.deepEqual(view.rowsRoot.querySelectorAll('.ds-session-type').map(n=>n.textContent),['APP','CLI','IDE']);
+ view.surface.value='ide';view.surface.onchange();assert.deepEqual(view.rowsRoot.querySelectorAll('.session').map(n=>n.dataset.id),['ide']);
+ await view.choose('deepseek');await view.choose('antigravity');assert.equal(view.surface.value,'ide');assert.deepEqual(view.rowsRoot.querySelectorAll('.session').map(n=>n.dataset.id),['ide']);
+});
 test('independent desktops keep the same native session in separate drafts attachments and workspace routes',async()=>{
  const ui=fixture(),view=ui.view,a='claude:'+ 'a'.repeat(32),b='claude:'+ 'b'.repeat(32);
  view.clientStates=[a,b].map(id=>({id,family:'claude',enabled:true,connected:true}));
@@ -265,12 +283,12 @@ test('desktop client keeps cached rows through brief polling failures and clears
  ui.setHandler(async()=>({sessions:[{id:'a',title:'Current chat',backend:'code'}]}));await ui.view.refreshList();assert.match(ui.view.rowsRoot.textContent,/Current chat/);
 });
 test('LAN HTTP send creates a secure id and retries the same unconfirmed operation',async()=>{
- const ui=await opened();ui.run('uuid=undefined');let attempt=0;ui.setHandler(async(url,body)=>{if(body){if(++attempt===1)throw Error('connection lost');return {status:'accepted'};}return url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},messages:[]}:{sessions:[]};});
+ const ui=await opened();ui.run('uuid=undefined');let attempt=0;ui.setHandler(async(url,body)=>{if(body){if(++attempt===1)throw Error('connection lost');return {status:'accepted'};}return url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},capabilities:{send:true},messages:[]}:{sessions:[]};});
  ui.view.input.value='hello';await ui.view.submit();assert.equal(ui.view.input.value,'hello');await ui.view.detail(ui.view.generation);await ui.view.submit();const writes=ui.calls.filter(c=>c.body);assert.equal(writes.length,2);assert.match(writes[0].body.id,/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);assert.equal(writes[0].body.id,writes[1].body.id);assert.equal(ui.view.input.value,'');
 });
 test('unknown desktop send keeps its ID when account identity arrives before manual retry',async()=>{
  const ui=await opened();ui.view.bindDraftGateway('gateway-a');let writes=0;
- ui.setHandler(async(url,body)=>body?{status:++writes===1?'unknown':'accepted'}:url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},draftAccountIdentity:'account-a',messages:[]}:{sessions:[]});
+ ui.setHandler(async(url,body)=>body?{status:++writes===1?'unknown':'accepted'}:url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},capabilities:{send:true},draftAccountIdentity:'account-a',messages:[]}:{sessions:[]});
  ui.view.input.value='same message';ui.view.input.oninput();await ui.view.submit();const first=ui.calls.filter(c=>c.body)[0].body.id;
  await ui.view.detail(ui.view.generation);ui.view.bindDraftScope({draftAccountIdentity:'account-a'});await ui.view.submit();
  const sent=ui.calls.filter(c=>c.body);assert.equal(sent.length,2);assert.equal(sent[1].body.id,first);assert.equal(ui.view.composerDrafts.pending({gateway:'gateway-a',provider:'claude',account:'account-a',host:'local',session:'a'}),null);
@@ -279,7 +297,7 @@ test('desktop storage write failure keeps the uncertain ID when storage recovers
  const ui=await opened();ui.view.bindDraftGateway('gateway-a');ui.view.bindDraftScope({draftAccountIdentity:'account-a'});
  const original=ui.view.composerDrafts.storage;let fail=true,writes=0;
  ui.view.composerDrafts.storage={getItem:key=>original.getItem(key),removeItem:key=>original.removeItem(key),setItem:(key,value)=>{if(fail)throw Error('quota');original.setItem(key,value);}};
- ui.setHandler(async(url,body)=>body?{status:++writes===1?'unknown':'accepted'}:url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},draftAccountIdentity:'account-a',messages:[]}:{sessions:[]});
+ ui.setHandler(async(url,body)=>body?{status:++writes===1?'unknown':'accepted'}:url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},capabilities:{send:true},draftAccountIdentity:'account-a',messages:[]}:{sessions:[]});
  ui.view.input.value='same message';ui.view.input.oninput();await ui.view.submit();const first=ui.calls.filter(c=>c.body)[0].body.id;
  assert.equal(ui.view.provisionalDrafts.get('claude:a').text,'same message');
  fail=false;await ui.view.detail(ui.view.generation);await ui.view.submit();
@@ -288,7 +306,7 @@ test('desktop storage write failure keeps the uncertain ID when storage recovers
 test('confirmed desktop send clears the provisional draft while an unknown result keeps it',async()=>{
  const ui=await opened();ui.view.bindDraftGateway('gateway-a');ui.view.bindDraftScope({draftAccountIdentity:'account-a'});
  ui.view.composerDrafts.storage={getItem(){return null;},setItem(){throw Error('quota');},removeItem(){}};
- let writes=0;ui.setHandler(async(url,body)=>body?{status:++writes===1?'unknown':'accepted'}:url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},draftAccountIdentity:'account-a',messages:[]}:{sessions:[]});
+ let writes=0;ui.setHandler(async(url,body)=>body?{status:++writes===1?'unknown':'accepted'}:url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},capabilities:{send:true},draftAccountIdentity:'account-a',messages:[]}:{sessions:[]});
  ui.view.input.value='same message';ui.view.input.oninput();await ui.view.submit();assert.equal(ui.view.provisionalDrafts.get('claude:a').text,'same message');
  await ui.view.detail(ui.view.generation);await ui.view.submit();assert.equal(writes,2);assert.equal(ui.view.provisionalDrafts.has('claude:a'),false);assert.equal(ui.view.drafts.has('claude:a'),false);
 });
@@ -382,48 +400,48 @@ test('PDF reading position survives file-tab and chat-back navigation',async()=>
 test('header back returns Claude and DeepSeek directly to their list without changing file directory or draft',async()=>{
  for(const provider of ['claude','deepseek']){
   const ui=fixture();await ui.view.choose(provider);await ui.view.open('a');const wb=ui.view.workbench,session=wb.current;
-  const settle=()=>new Promise(setImmediate),entries={'':[{name:'src',path:'src',kind:'directory'}],src:[{name:'lib',path:'src/lib',kind:'directory'}],'src/lib':[]};
-  ui.setHandler(async url=>{const at=new URL(url,'http://fixture').searchParams.get('path');return {project:'/project',total:entries[at]?.length||0,entries:entries[at]||[],nextOffset:null};});
+  const settle=()=>new Promise(setImmediate),entries={'/project':[{name:'src',path:'/project/src',kind:'directory'}],'/project/src':[{name:'lib',path:'/project/src/lib',kind:'directory'}],'/project/src/lib':[]};
+  hostPages(ui,async url=>{const at=new URL(url,'http://fixture').searchParams.get('path')||'/project';return {project:'/project',total:entries[at]?.length||0,entries:entries[at]||[],nextOffset:null};});
   wb.files();await settle();const tab=session.files.find(t=>t.id==='files');
   tab.list.querySelector('.wb-file').click();await settle();tab.list.querySelector('.wb-file').click();await settle();
   ui.view.input.value='Keep my draft';ui.view.input.oninput();tab.list.scrollTop=120;
   const calls=ui.calls.length;wb.locateState={session,tab,row:tab.list};
   await ui.view.back.click();
-  assert.equal(ui.view.isChatOpen,false);assert.equal(session.directory,'src/lib');assert.equal(session.active,'files');assert.equal(session.files[0],tab);
+  assert.equal(ui.view.isChatOpen,false);assert.equal(session.directory,'/project/src/lib');assert.equal(session.active,'files');assert.equal(session.files[0],tab);
   assert.equal(tab.list.scrollTop,120);assert.equal(ui.view.drafts.get(provider+':a'),'Keep my draft');assert.equal(wb.locateState,null);assert.equal(ui.calls.length,calls);
-  await ui.view.open('a');assert.equal(wb.current,session);assert.equal(session.directory,'src/lib');assert.equal(session.active,'files');assert.equal(ui.view.input.value,'Keep my draft');
-  assert.equal(wb.back(),true);assert.equal(session.directory,'src');assert.equal(ui.view.isChatOpen,true);
+  await ui.view.open('a');assert.equal(wb.current,session);assert.equal(session.directory,'/project/src/lib');assert.equal(session.active,'chat');assert.equal(ui.view.input.value,'Keep my draft');wb.files();assert.equal(tab.list.scrollTop,120);
+  assert.equal(wb.back(),true);assert.equal(session.directory,'/project/src');assert.equal(ui.view.isChatOpen,true);
  }
 });
 test('rapid file backs ignore stale responses and a failed parent read stays in the file browser',async()=>{
  const ui=await opened(),wb=ui.view.workbench,session=wb.current,pending=[];
- ui.setHandler((url,_body)=>{const path=new URL(url,'http://fixture').searchParams.get('path');if(path==='')return Promise.resolve({project:'/project',total:0,entries:[],nextOffset:null});return new Promise((resolve,reject)=>pending.push({path,resolve,reject}));});
- wb.files();await Promise.resolve();const tab=session.files.find(t=>t.id==='files');
- const deep=wb.directory(session,tab,'src/lib');assert.equal(wb.back(),true);assert.equal(session.directory,'src');
- const parent=pending.at(-1);assert.equal(parent.path,'src');assert.equal(wb.back(),true);assert.equal(session.directory,'');
+ hostPages(ui,(url,_body)=>{const path=new URL(url,'http://fixture').searchParams.get('path');if(!path||path==='/project')return Promise.resolve({project:'/project',total:0,entries:[],nextOffset:null});return new Promise((resolve,reject)=>pending.push({path,resolve,reject}));});
+ wb.files();await new Promise(setImmediate);const tab=session.files.find(t=>t.id==='files');
+ const deep=wb.directory(session,tab,'/project/src/lib');assert.equal(wb.back(),true);assert.equal(session.directory,'/project/src');
+ const parent=pending.at(-1);assert.equal(parent.path,'/project/src');assert.equal(wb.back(),true);assert.equal(session.directory,'/project');
  parent.reject(Error('late parent failure'));pending[0].resolve({project:'/old',total:1,entries:[{name:'old',path:'old',kind:'file'}],nextOffset:null});
- await deep;await Promise.resolve();assert.equal(session.directory,'');assert.equal(tab.status.classList.contains('error'),false);assert.equal(tab.list.children.length,0);
- const failed=wb.directory(session,tab,'src');pending.at(-1).reject(Error('directory unavailable'));await failed;
- assert.equal(session.active,'files');assert.equal(session.directory,'src');assert.equal(tab.status.classList.contains('error'),true);
- assert.equal(wb.back(),true);await Promise.resolve();assert.equal(session.directory,'');assert.equal(session.active,'files');
+ await deep;await new Promise(setImmediate);assert.equal(session.directory,'/project');assert.equal(tab.status.classList.contains('error'),false);assert.equal(tab.list.children.length,0);
+ const failed=wb.directory(session,tab,'/project/src');pending.at(-1).reject(Error('directory unavailable'));await failed;
+ assert.equal(session.active,'files');assert.equal(session.directory,'/project/src');assert.equal(tab.status.classList.contains('error'),true);
+ assert.equal(wb.back(),true);await new Promise(setImmediate);assert.equal(session.directory,'/project');assert.equal(session.active,'files');
 });
 test('a directory response from an earlier chat cannot replace the selected chat file view',async()=>{
  const ui=await opened(),wb=ui.view.workbench,first=wb.current;let finish;
- ui.setHandler(url=>new Promise(resolve=>{const path=new URL(url,'http://fixture').searchParams.get('path');if(path==='src')finish=resolve;else resolve({project:'/second',total:0,entries:[],nextOffset:null});}));
- wb.files();await Promise.resolve();const oldTab=first.files.find(t=>t.id==='files'),reading=wb.directory(first,oldTab,'src');
- wb.open('b','local');wb.files();await Promise.resolve();const second=wb.current,secondTab=second.files.find(t=>t.id==='files');
- finish({project:'/first',total:1,entries:[{name:'old',path:'src/old',kind:'file'}],nextOffset:null});await reading;
- assert.equal(wb.current,second);assert.equal(second.directory,'');assert.equal(secondTab.list.children.length,0);assert.equal(wb.panel.firstElementChild,secondTab.body);
+ hostPages(ui,url=>new Promise(resolve=>{const path=new URL(url,'http://fixture').searchParams.get('path');if(path==='/project/src')finish=resolve;else resolve({project:'/second',total:0,entries:[],nextOffset:null});}));
+ wb.files();await new Promise(setImmediate);const oldTab=first.files.find(t=>t.id==='files'),reading=wb.directory(first,oldTab,'/project/src');
+ wb.open('b','local');wb.files();await new Promise(setImmediate);const second=wb.current,secondTab=second.files.find(t=>t.id==='files');
+ finish({project:'/first',total:1,entries:[{name:'old',path:'/project/src/old',kind:'file'}],nextOffset:null});await reading;
+ assert.equal(wb.current,second);assert.equal(second.directory,'/second');assert.equal(secondTab.list.children.length,0);assert.equal(wb.panel.firstElementChild,secondTab.body);
 });
 test('file locate loads later pages and centers only the file list before focusing the row',async()=>{
  const ui=await opened(),wb=ui.view.workbench,session=wb.current;let finish,focusOptions;
  ui.run('globalThis.frames=[];requestAnimationFrame=fn=>{frames.push(fn);return frames.length};cancelAnimationFrame=()=>{}');
- ui.setHandler(url=>{const offset=Number(new URL(url,'http://fixture').searchParams.get('offset'));return offset?new Promise(resolve=>finish=resolve):Promise.resolve({project:'/project',total:2,entries:[{name:'first.txt',path:'src/first.txt',kind:'file',size:1}],nextOffset:1});});
+ hostPages(ui,url=>{const offset=Number(new URL(url,'http://fixture').searchParams.get('offset'));return offset?new Promise(resolve=>finish=resolve):Promise.resolve({project:'/project',total:2,entries:[{name:'first.txt',path:'/project/src/first.txt',kind:'file',size:1}],nextOffset:1});});
  const original=wb.button.bind(wb);wb.button=(text,action,title)=>{const button=original(text,action,title);if(title==='late.txt'){button.getBoundingClientRect=()=>({top:700,bottom:750});button.focus=options=>{focusOptions=options;ui.document.activeElement=button;};}return button;};
- const locating=wb.locate(session,'src/late.txt');await new Promise(setImmediate);
+ const locating=wb.locate(session,'/project/src/late.txt');await new Promise(setImmediate);
  const tab=session.files.find(t=>t.id==='files'),list=tab.list;Object.assign(list,{clientHeight:200,scrollHeight:1000,scrollTop:0});list.getBoundingClientRect=()=>({top:100,bottom:300});
  const timeline=ui.view.messages,timelineTop=timeline.scrollTop=33;
- finish({project:'/project',total:2,entries:[{name:'late.txt',path:'src/late.txt',kind:'file',size:1}],nextOffset:null});await locating;
+ finish({project:'/project',total:2,entries:[{name:'late.txt',path:'/project/src/late.txt',kind:'file',size:1}],nextOffset:null});await locating;
  const row=list.children[1];assert.notEqual(ui.document.activeElement,row);assert.equal(ui.run('frames.length'),1);
  ui.run('frames.shift()(100)');assert.equal(list.scrollTop,0);ui.run('frames.shift()(250)');assert.ok(list.scrollTop>0&&list.scrollTop<525);
  ui.run('frames.shift()(400)');assert.equal(list.scrollTop,525);assert.equal(timeline.scrollTop,timelineTop);assert.equal(ui.document.activeElement,row);
@@ -432,33 +450,33 @@ test('file locate loads later pages and centers only the file list before focusi
 test('visible file locate leaves scroll untouched and repeated folder locate restarts its highlight',async()=>{
  const ui=await opened(),wb=ui.view.workbench,session=wb.current;
  ui.run('globalThis.frames=[];globalThis.timers=[];globalThis.cleared=[];requestAnimationFrame=fn=>{frames.push(fn);return frames.length};setTimeout=(fn,ms)=>{timers.push({fn,ms});return timers.length};clearTimeout=id=>cleared.push(id)');
- ui.setHandler(async()=>({project:'/project',total:1,entries:[{name:'docs',path:'src/docs',kind:'directory'}],nextOffset:null}));
- await wb.locate(session,'src/docs');const tab=session.files.find(t=>t.id==='files'),first=tab.list.children[0];
+ hostPages(ui,async()=>({project:'/project',total:1,entries:[{name:'docs',path:'/project/src/docs',kind:'directory'}],nextOffset:null}));
+ await wb.locate(session,'/project/src/docs');const tab=session.files.find(t=>t.id==='files'),first=tab.list.children[0];
  assert.equal(ui.run('frames.length'),0);assert.equal(tab.list.scrollTop,0);assert.equal(ui.document.activeElement,first);
  assert.equal(first.classList.contains('wb-locate-highlight'),true);assert.equal(ui.run('timers.at(-1).ms'),3400);
- await wb.locate(session,'src/docs');const second=tab.list.children[0];
+ await wb.locate(session,'/project/src/docs');const second=tab.list.children[0];
  assert.equal(second,first);assert.equal(ui.run('cleared.length'),1);assert.equal(ui.run('timers.length'),2);
  assert.equal(second.classList.contains('wb-locate-highlight'),true);assert.equal(ui.document.activeElement,second);
 });
 test('locating a fully visible row deep in an existing directory preserves its node and scroll',async()=>{
- const ui=await opened(),wb=ui.view.workbench,session=wb.current;session.directory='src';
- const entries=Array.from({length:30},(_,index)=>({name:`item-${index}.txt`,path:`src/item-${index}.txt`,kind:'file',size:1}));
- ui.setHandler(async()=>({project:'/project',total:entries.length,entries,nextOffset:null}));
+ const ui=await opened(),wb=ui.view.workbench,session=wb.current;session.directory='/project/src';
+ const entries=Array.from({length:30},(_,index)=>({name:`item-${index}.txt`,path:`/project/src/item-${index}.txt`,kind:'file',size:1}));
+ hostPages(ui,async()=>({project:'/project',total:entries.length,entries,nextOffset:null}));
  wb.files();await new Promise(setImmediate);const tab=session.files.find(t=>t.id==='files'),list=tab.list,row=list.children[22],calls=ui.calls.length;
  Object.assign(list,{clientHeight:200,scrollHeight:1800,scrollTop:1180});list.getBoundingClientRect=()=>({top:100,bottom:300});row.getBoundingClientRect=()=>({top:155,bottom:205});
  await wb.locate(session,row.dataset.path);
  assert.equal(ui.calls.length,calls);assert.equal(tab.list,list);assert.equal(list.children[22],row);assert.equal(list.scrollTop,1180);
- assert.equal(session.hidden,false);assert.equal(tab.body.querySelectorAll('input')[1].checked,false);
+ assert.equal(session.hidden,false);assert.equal([...tab.body.querySelectorAll('input')].find(input=>input.type==='checkbox').checked,false);
  assert.equal(ui.document.activeElement,row);assert.equal(row.classList.contains('wb-locate-highlight'),true);
  assert.equal(list.onwheel,null);assert.equal(list.ontouchstart,null);assert.equal(list.onpointerdown,null);
 });
 test('reduced motion locates offscreen files instantly and holds the cue for three seconds',async()=>{
  const ui=await opened(),wb=ui.view.workbench,session=wb.current;
  ui.run('window.matchMedia=()=>({matches:true});globalThis.frames=[];globalThis.timers=[];requestAnimationFrame=fn=>{frames.push(fn);return frames.length};setTimeout=(fn,ms)=>{timers.push({fn,ms});return timers.length}');
- ui.setHandler(async()=>({project:'/project',total:1,entries:[{name:'far.txt',path:'src/far.txt',kind:'file',size:1}],nextOffset:null}));
+ hostPages(ui,async()=>({project:'/project',total:1,entries:[{name:'far.txt',path:'/project/src/far.txt',kind:'file',size:1}],nextOffset:null}));
  const original=wb.node.bind(wb);wb.node=(tag,cls,text)=>{const node=original(tag,cls,text);if(cls==='wb-file-list'){Object.assign(node,{clientHeight:200,scrollHeight:1000});node.getBoundingClientRect=()=>({top:100,bottom:300});}return node;};
  const button=wb.button.bind(wb);wb.button=(text,action,title)=>{const node=button(text,action,title);if(title==='far.txt')node.getBoundingClientRect=()=>({top:700,bottom:750});return node;};
- await wb.locate(session,'src/far.txt');const tab=session.files.find(t=>t.id==='files'),row=tab.list.children[0];
+ await wb.locate(session,'/project/src/far.txt');const tab=session.files.find(t=>t.id==='files'),row=tab.list.children[0];
  assert.equal(tab.list.scrollTop,525);assert.equal(ui.run('frames.length'),0);assert.equal(ui.document.activeElement,row);
  assert.equal(ui.run('timers.at(-1).ms'),3000);assert.equal(row.classList.contains('wb-locate-highlight'),true);
  ui.run('timers.at(-1).fn()');assert.equal(row.classList.contains('wb-locate-highlight'),false);
@@ -466,18 +484,18 @@ test('reduced motion locates offscreen files instantly and holds the cue for thr
 test('manual input cancels locate motion and old pagination cannot displace a newer target',async()=>{
  const ui=await opened(),wb=ui.view.workbench,session=wb.current;let oldPage;
  ui.run('globalThis.frames=[];globalThis.cancelled=[];requestAnimationFrame=fn=>{frames.push(fn);return frames.length};cancelAnimationFrame=id=>cancelled.push(id)');
- let offsetReads=0;ui.setHandler(url=>{const offset=Number(new URL(url,'http://fixture').searchParams.get('offset'));
+ let offsetReads=0;hostPages(ui,url=>{const offset=Number(new URL(url,'http://fixture').searchParams.get('offset'));
    if(offset&&++offsetReads===1)return new Promise(resolve=>oldPage=resolve);
-   if(offset)return Promise.resolve({project:'/project',total:1,entries:[{name:'new.txt',path:'src/new.txt',kind:'file',size:1}],nextOffset:null});
+   if(offset)return Promise.resolve({project:'/project',total:1,entries:[{name:'new.txt',path:'/project/src/new.txt',kind:'file',size:1}],nextOffset:null});
    return Promise.resolve({project:'/project',total:2,entries:[],nextOffset:1});});
- const stale=wb.locate(session,'src/old.txt');await new Promise(setImmediate);assert.equal(typeof oldPage,'function');
- await wb.locate(session,'src/new.txt');const tab=session.files.find(t=>t.id==='files'),newRow=tab.list.children[0];
- oldPage({project:'/old',total:2,entries:[{name:'old.txt',path:'src/old.txt',kind:'file',size:1}],nextOffset:null});await stale;
+ const stale=wb.locate(session,'/project/src/old.txt');await new Promise(setImmediate);assert.equal(typeof oldPage,'function');
+ await wb.locate(session,'/project/src/new.txt');const tab=session.files.find(t=>t.id==='files'),newRow=tab.list.children[0];
+ oldPage({project:'/old',total:2,entries:[{name:'old.txt',path:'/project/src/old.txt',kind:'file',size:1}],nextOffset:null});await stale;
  assert.equal(tab.list.children.length,1);assert.equal(tab.list.children[0],newRow);assert.equal(ui.document.activeElement,newRow);
  const node=wb.node.bind(wb);wb.node=(tag,cls,text)=>{const result=node(tag,cls,text);if(cls==='wb-file-list'){Object.assign(result,{clientHeight:200,scrollHeight:1000});result.getBoundingClientRect=()=>({top:100,bottom:300});}return result;};
  const original=wb.button.bind(wb);wb.button=(text,action,title)=>{const row=original(text,action,title);if(title==='moving.txt')row.getBoundingClientRect=()=>({top:700,bottom:750});return row;};
- ui.setHandler(async()=>({project:'/project',total:1,entries:[{name:'moving.txt',path:'other/moving.txt',kind:'file',size:1}],nextOffset:null}));
- const locating=wb.locate(session,'other/moving.txt');await locating;const list=tab.list;
+ hostPages(ui,async()=>({project:'/project',total:1,entries:[{name:'moving.txt',path:'/project/other/moving.txt',kind:'file',size:1}],nextOffset:null}));
+ const locating=wb.locate(session,'/project/other/moving.txt');await locating;const list=tab.list;
  assert.equal(ui.run('frames.length'),1);const before=list.scrollTop;
  list.onwheel({type:'wheel'});assert.equal(ui.run('cancelled.length'),1);assert.equal(list.scrollTop,before);
  ui.run('frames.shift()(400)');assert.equal(list.scrollTop,before);assert.equal(ui.document.activeElement,newRow);
@@ -485,41 +503,41 @@ test('manual input cancels locate motion and old pagination cannot displace a ne
 });
 test('manual scroll during pagination and direct split switching discard pending locate',async()=>{
  const ui=await opened(),wb=ui.view.workbench,session=wb.current;let finish;
- ui.setHandler(url=>Number(new URL(url,'http://fixture').searchParams.get('offset'))
+ hostPages(ui,url=>Number(new URL(url,'http://fixture').searchParams.get('offset'))
    ?new Promise(resolve=>finish=resolve)
    :Promise.resolve({project:'/project',total:1,entries:[],nextOffset:1}));
- const first=wb.locate(session,'src/target.txt');await new Promise(setImmediate);
+ const first=wb.locate(session,'/project/src/target.txt');await new Promise(setImmediate);
  const tab=session.files.find(t=>t.id==='files'),list=tab.list;assert.equal(typeof list.onwheel,'function');
  list.onwheel({type:'wheel'});assert.equal(list.onwheel,null);
- finish({project:'/project',total:1,entries:[{name:'target.txt',path:'src/target.txt',kind:'file',size:1}],nextOffset:null});await first;
+ finish({project:'/project',total:1,entries:[{name:'target.txt',path:'/project/src/target.txt',kind:'file',size:1}],nextOffset:null});await first;
  assert.equal(list.children.length,1);assert.notEqual(ui.document.activeElement,list.children[0]);
- const second=wb.locate(session,'other/target.txt');await new Promise(setImmediate);
+ const second=wb.locate(session,'/project/other/target.txt');await new Promise(setImmediate);
  const terminal={id:'terminal',name:'Terminal',body:wb.node('div','wb-terminal')};session.files.push(terminal);wb.split('terminal');
  assert.equal(session.active,'terminal');assert.equal(tab.list.onwheel,null);
- finish({project:'/project',total:1,entries:[{name:'target.txt',path:'other/target.txt',kind:'file',size:1}],nextOffset:null});await second;
+ finish({project:'/project',total:1,entries:[{name:'target.txt',path:'/project/other/target.txt',kind:'file',size:1}],nextOffset:null});await second;
  assert.equal(tab.list.children.length,1);assert.notEqual(ui.document.activeElement,tab.list.children[0]);
 });
 test('touch during initial locate load still renders the directory without continuing locate',async()=>{
  const ui=await opened(),wb=ui.view.workbench,session=wb.current;let finish;
- ui.setHandler(()=>new Promise(resolve=>finish=resolve));
- const locating=wb.locate(session,'src/target.txt'),tab=session.files.find(t=>t.id==='files'),list=tab.list;
+ hostPages(ui,()=>new Promise(resolve=>finish=resolve));
+ const locating=wb.locate(session,'/project/src/target.txt'),tab=session.files.find(t=>t.id==='files'),list=tab.list;
  assert.equal(typeof list.ontouchstart,'function');list.ontouchstart({type:'touchstart'});
  assert.equal(list.ontouchstart,null);
- finish({project:'/project',total:1,entries:[{name:'target.txt',path:'src/target.txt',kind:'file',size:1}],nextOffset:null});await locating;
- assert.equal(session.directory,'src');assert.equal(list.children.length,1);assert.equal(tab.loaded,true);
+ finish({project:'/project',total:1,entries:[{name:'target.txt',path:'/project/src/target.txt',kind:'file',size:1}],nextOffset:null});await locating;
+ assert.equal(session.directory,'/project/src');assert.equal(list.children.length,1);assert.equal(tab.loaded,true);
  assert.notEqual(ui.document.activeElement,list.children[0]);assert.equal(list.scrollTop,0);
- const pending=new Map();ui.setHandler(url=>new Promise(resolve=>pending.set(new URL(url,'http://fixture').searchParams.get('path'),resolve)));
- const stale=wb.locate(session,'other/stale.txt'),current=wb.directory(session,tab,'manual');
- pending.get('manual')({project:'/project',total:1,entries:[{name:'current.txt',path:'manual/current.txt',kind:'file',size:1}],nextOffset:null});await current;
- pending.get('other')({project:'/old',total:1,entries:[{name:'stale.txt',path:'other/stale.txt',kind:'file',size:1}],nextOffset:null});await stale;
- assert.equal(session.directory,'manual');assert.equal(tab.list.children.length,1);assert.equal(tab.list.children[0].dataset.path,'manual/current.txt');
+ const pending=new Map();hostPages(ui,url=>new Promise(resolve=>pending.set(new URL(url,'http://fixture').searchParams.get('path'),resolve)));
+ const stale=wb.locate(session,'/project/other/stale.txt'),current=wb.directory(session,tab,'/project/manual');
+ pending.get('/project/manual')({project:'/project',total:1,entries:[{name:'current.txt',path:'/project/manual/current.txt',kind:'file',size:1}],nextOffset:null});await current;
+ pending.get('/project/other')({project:'/old',total:1,entries:[{name:'stale.txt',path:'/project/other/stale.txt',kind:'file',size:1}],nextOffset:null});await stale;
+ assert.equal(session.directory,'/project/manual');assert.equal(tab.list.children.length,1);assert.equal(tab.list.children[0].dataset.path,'/project/manual/current.txt');
 });
 test('wide split file back consumes the visible file tab, then returns to unsplit chat',async()=>{
  const ui=await opened(),wb=ui.view.workbench,session=wb.current;
- ui.setHandler(async()=>({project:'/project',total:0,entries:[],nextOffset:null}));wb.files();await Promise.resolve();const tab=session.files.find(t=>t.id==='files');
- wb.split('files');await wb.directory(session,tab,'src/lib');assert.equal(wb.isFileVisible,false);
- assert.equal(wb.back(),true);assert.equal(session.directory,'src');assert.equal(wb.splitMode,true);
- assert.equal(wb.back(),true);assert.equal(session.directory,'');assert.equal(wb.splitMode,true);
+ hostPages(ui,async()=>({project:'/project',total:0,entries:[],nextOffset:null}));wb.files();await new Promise(setImmediate);const tab=session.files.find(t=>t.id==='files');
+ wb.split('files');await wb.directory(session,tab,'/project/src/lib');assert.equal(wb.isFileVisible,false);
+ assert.equal(wb.back(),true);assert.equal(session.directory,'/project/src');assert.equal(wb.splitMode,true);
+ assert.equal(wb.back(),true);assert.equal(session.directory,'/project');assert.equal(wb.splitMode,true);
  assert.equal(wb.back(),true);assert.equal(session.active,'chat');assert.equal(session.splitTab,null);assert.equal(wb.splitMode,false);
  assert.equal(wb.back(),false);
 });
@@ -580,7 +598,7 @@ test('late send completion preserves text typed while the request was in flight'
  const ui=await opened();let finish;ui.setHandler((url,body)=>body?new Promise(resolve=>finish=resolve):Promise.resolve({sessions:[]}));ui.view.input.value='sent';const sending=ui.view.submit();ui.view.input.value='next draft';ui.view.input.oninput();finish({status:'accepted'});await sending;assert.equal(ui.view.input.value,'next draft');assert.equal(ui.view.drafts.get('claude:a'),'next draft');
 });
 test('detail capabilities gate actual model, permission and queue actions',async()=>{
- const ui=fixture();await ui.view.choose('claude');ui.setHandler(async()=>({session:{id:'a',title:'Chat',status:'active'},capabilities:{models:false,permissions:false,queue:false,steer:false},messages:[]}));await ui.view.open('a');assert.equal(ui.view.modelButton.disabled,true);assert.equal(ui.view.permissionsButton.hidden,true);assert.equal(ui.view.mode.options[1].disabled,true);assert.equal(ui.view.mode.options[2].disabled,true);
+ const ui=fixture();await ui.view.choose('claude');ui.setHandler(async()=>({session:{id:'a',title:'Chat',status:'active'},capabilities:{models:false,permissions:false,queue:false,steer:false},messages:[]}));await ui.view.open('a');assert.equal(ui.view.modelButton.disabled,true);assert.equal(ui.view.permissionsButton.hidden,false);assert.equal(ui.view.permissionsButton.disabled,true);assert.equal(ui.view.mode.options[1].disabled,true);assert.equal(ui.view.mode.options[2].disabled,true);
 });
 test('HTTP clipboard fallback uses the shared selectable copy dialog',async()=>{
  const ui=fixture();await ui.view.choose('deepseek');ui.setHandler(async()=>({session:{id:'a',title:'Chat',status:'idle'},messages:[{id:'1',role:'assistant',text:'copy me'}]}));await ui.view.open('a');await ui.view.messages.querySelector('button').click();assert.equal(ui.document.querySelector('.copy-dialog').querySelector('textarea').value,'copy me');
@@ -605,7 +623,7 @@ test('Claude CLI creation uses its own project and native first message without 
 });
 
 test('shared attachments handle paste, block send until upload, and submit only upload ids',async()=>{
- const ui=fixture();await ui.view.choose('claude');ui.setHandler(async(url,body)=>body?{status:'accepted'}:url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},capabilities:{attachments:true},messages:[]}:{sessions:[]});await ui.view.open('a');let finish;ui.setUploadHandler(()=>new Promise(resolve=>finish=resolve));let prevented=false;ui.view.input.onpaste({clipboardData:{files:[{name:'image.png',type:'image/png',size:16}]},preventDefault(){prevented=true;}});assert.equal(prevented,true);assert.equal(ui.view.send.disabled,true);assert.equal(ui.view.attachments.rows[0].status,'uploading');await ui.view.submit();assert.equal(ui.calls.some(c=>c.body),false);
+ const ui=fixture();await ui.view.choose('claude');ui.setHandler(async(url,body)=>body?{status:'accepted'}:url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},capabilities:{attachments:true,send:true},messages:[]}:{sessions:[]});await ui.view.open('a');let finish;ui.setUploadHandler(()=>new Promise(resolve=>finish=resolve));let prevented=false;ui.view.input.onpaste({clipboardData:{files:[{name:'image.png',type:'image/png',size:16}]},preventDefault(){prevented=true;}});assert.equal(prevented,true);assert.equal(ui.view.send.disabled,true);assert.equal(ui.view.attachments.rows[0].status,'uploading');await ui.view.submit();assert.equal(ui.calls.some(c=>c.body),false);
  finish({ok:true,status:200,json:async()=>({name:'image.png',size:16,image:true})});await new Promise(setImmediate);assert.equal(ui.view.send.disabled,false);const row=ui.view.attachments.rows[0];assert.equal(row.status,'ready');assert.match(ui.calls.find(c=>c.upload).url,/claude\/uploads\?sessionId=a&id=/);assert.equal(ui.calls.find(c=>c.upload).upload.headers['X-CSRF-Token'],'csrf-test');await ui.view.submit();assert.equal(ui.calls.find(c=>c.body).body.attachments[0],row.id);assert.equal(ui.view.attachments.rows.length,0);
 });
 test('attachment upload remains scoped to its source chat after provider switching',async()=>{
@@ -627,7 +645,7 @@ test('question cards submit exact native question keys and do not invent Harness
  await ui.view.choose('deepseek');await ui.view.open('a');ui.view.renderRequests([{id:'q2',tool:'Question',needsInput:true,input:{questions:[]}}]);assert.equal(ui.view.requests.querySelectorAll('button').length,1);ui.view.renderRequests([{id:'approval',tool:'Write',needsInput:false,input:{reason:'write a file'}}]);await ui.view.requests.querySelectorAll('button')[1].click();assert.equal(ui.calls.filter(c=>c.body).at(-1).body.decision,'decline');
 });
 test('skills send only selectable installed skills and preserve failed-send selection',async()=>{
- const ui=fixture();ui.setHandler(async(url,body)=>body?{status:'unknown'}:url.includes('/catalog')?{skills:[{id:'review',name:'Review',kind:'skill',selectable:true},{id:'installed:tools',name:'Tools',kind:'plugin',selectable:false}]}:url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},capabilities:{skills:true},messages:[]}:{sessions:[]});await ui.view.choose('deepseek');await ui.view.open('a');assert.equal(ui.view.skillsButton.hidden,false);await ui.view.skills();const options=ui.document.querySelectorAll('.skill-option'),checks=options.map(n=>n.querySelector('input'));assert.equal(checks[1].disabled,true);checks[0].checked=true;checks[0].onchange();ui.view.input.value='review this';await ui.view.submit();assert.deepEqual(Array.from(ui.calls.find(c=>c.body).body.plugins),['review']);assert.match(ui.view.skillPills.textContent,/Review/);
+ const ui=fixture();ui.setHandler(async(url,body)=>body?{status:'unknown'}:url.includes('/catalog')?{skills:[{id:'review',name:'Review',kind:'skill',selectable:true},{id:'installed:tools',name:'Tools',kind:'plugin',selectable:false}]}:url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},capabilities:{skills:true,send:true},messages:[]}:{sessions:[]});await ui.view.choose('deepseek');await ui.view.open('a');assert.equal(ui.view.skillsButton.hidden,false);await ui.view.skills();const options=ui.document.querySelectorAll('.skill-option'),checks=options.map(n=>n.querySelector('input'));assert.equal(checks[1].disabled,true);checks[0].checked=true;checks[0].onchange();ui.view.input.value='review this';await ui.view.submit();assert.deepEqual(Array.from(ui.calls.find(c=>c.body).body.plugins),['review']);assert.match(ui.view.skillPills.textContent,/Review/);
  await ui.view.choose('claude');await ui.view.open('a');assert.equal(ui.view.skillPills.textContent,'');await ui.view.choose('deepseek');await ui.view.open('a');assert.match(ui.view.skillPills.textContent,/Review/);
 });
 test('Claude request-size limit stays in attachment help and rejects oversized images before upload',async()=>{
@@ -638,7 +656,7 @@ test('history updates retain expanded activities and honor visibility settings',
 });
 
 test('skill selection clears after acceptance and expired choices cannot be submitted',async()=>{
- const ui=fixture();let available=true;ui.setHandler(async(url,body)=>body?{status:'accepted'}:url.includes('/catalog')?{skills:available?[{id:'review',name:'Review',selectable:true}]:[]}:url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},capabilities:{skills:true},messages:[]}:{sessions:[]});await ui.view.choose('claude');await ui.view.open('a');await ui.view.skills();let dialog=ui.document.querySelector('dialog'),check=dialog.querySelector('input[type=checkbox]')||dialog.querySelector('.skill-option').querySelector('input');check.checked=true;check.onchange();dialog.close();ui.view.input.value='review';await ui.view.submit();assert.equal(ui.view.skillPills.textContent,'');
+ const ui=fixture();let available=true;ui.setHandler(async(url,body)=>body?{status:'accepted'}:url.includes('/catalog')?{skills:available?[{id:'review',name:'Review',selectable:true}]:[]}:url.includes('/detail')?{session:{id:'a',title:'Chat',status:'idle'},capabilities:{skills:true,send:true},messages:[]}:{sessions:[]});await ui.view.choose('claude');await ui.view.open('a');await ui.view.skills();let dialog=ui.document.querySelector('dialog'),check=dialog.querySelector('input[type=checkbox]')||dialog.querySelector('.skill-option').querySelector('input');check.checked=true;check.onchange();dialog.close();ui.view.input.value='review';await ui.view.submit();assert.equal(ui.view.skillPills.textContent,'');
  await ui.view.skills();dialog=ui.document.querySelector('dialog');check=dialog.querySelector('.skill-option').querySelector('input');check.checked=true;check.onchange();dialog.close();available=false;await ui.view.skills();assert.ok(ui.view.skillPills.children[0].classList.contains('invalid'));const count=ui.calls.filter(c=>c.body).length;ui.view.input.value='do not submit expired skill';await ui.view.submit();assert.equal(ui.calls.filter(c=>c.body).length,count);assert.match(ui.view.error.textContent,/失效/);
 });
 test('request updates and language changes preserve answers already entered',async()=>{
@@ -684,7 +702,7 @@ test('a completed mutation cannot reuse an earlier history read as fresh state',
  const old=ui.view.detail(ui.view.generation);await ui.view.mutate('settings',{model:'new-model'});assert.equal(pending.length,2,'write completion must start a new detail read');
  pending[0]({session:{id:'a',title:'Obsolete',model:'obsolete-model',status:'idle'},messages:[{id:'old',role:'assistant',text:'obsolete history'}]});await old;
  assert.doesNotMatch(ui.view.messages.textContent,/obsolete history/);assert.equal(ui.view.send.disabled,true);
- pending[1]({session:{id:'a',title:'Current',model:'new-model',status:'idle'},messages:[{id:'new',role:'assistant',text:'current history'}]});await new Promise(setImmediate);assert.match(ui.view.messages.textContent,/current history/);assert.equal(ui.view.send.disabled,false);
+ pending[1]({session:{id:'a',title:'Current',model:'new-model',status:'idle',capabilities:{send:true}},messages:[{id:'new',role:'assistant',text:'current history'}]});await new Promise(setImmediate);assert.match(ui.view.messages.textContent,/current history/);assert.equal(ui.view.send.disabled,false);
 });
 
 test('cached, failed and disconnected details remain readable without allowing task mutations',async()=>{
@@ -734,7 +752,7 @@ test('reads started before and during a write never replace its completion refre
  const ui=await opened(),pending=[];let accept;ui.setHandler((url,body)=>body?new Promise(resolve=>accept=resolve):url.includes('/detail')?new Promise(resolve=>pending.push(resolve)):Promise.resolve({sessions:[]}));
  const old=ui.view.detail(ui.view.generation),writing=ui.view.mutate('settings',{model:'new'}),during=ui.view.refresh();pending[0]({session:{id:'a',title:'Before',status:'idle'},messages:[{id:'old',role:'assistant',text:'before write'}]});await old;assert.equal(ui.view.messages.textContent.includes('before write'),false);
  accept({status:'accepted'});await writing;assert.equal(pending.length,3);pending[1]({session:{id:'a',title:'During',status:'idle'},messages:[{id:'mid',role:'assistant',text:'during write'}]});await during;await new Promise(setImmediate);assert.equal(ui.view.messages.textContent.includes('during write'),false);assert.equal(ui.view.send.disabled,true);
- pending[2]({session:{id:'a',title:'After',status:'idle'},messages:[{id:'new',role:'assistant',text:'after write'}]});await new Promise(setImmediate);assert.match(ui.view.messages.textContent,/after write/);assert.equal(ui.view.send.disabled,false);
+ pending[2]({session:{id:'a',title:'After',status:'idle',capabilities:{send:true}},messages:[{id:'new',role:'assistant',text:'after write'}]});await new Promise(setImmediate);assert.match(ui.view.messages.textContent,/after write/);assert.equal(ui.view.send.disabled,false);
 });
 
 test('an old account write cannot invalidate the new account list refresh',async()=>{
@@ -744,9 +762,9 @@ test('an old account write cannot invalidate the new account list refresh',async
 });
 
 test('provider return paints cached list and selected history before either network response',async()=>{
- const ui=fixture();ui.setHandler(async url=>url.includes('/detail')?{session:{id:'a',title:'Cached chat',status:'idle'},capabilities:{attachments:true,skills:true},messages:[{id:'m',role:'assistant',text:'cached answer'}]}:{sessions:[{id:'a',title:'Cached chat',backend:'code'}]});await ui.view.choose('claude');await ui.view.open('a');ui.view.input.value='unfinished';ui.view.input.oninput();ui.view.selectedSkills().set('review',{id:'review',name:'Review'});ui.view.attachments.add([{name:'draft.png',type:'image/png',size:16}]);await new Promise(setImmediate);await ui.view.choose('deepseek');
+ const ui=fixture();ui.setHandler(async url=>url.includes('/detail')?{session:{id:'a',title:'Cached chat',status:'idle'},capabilities:{attachments:true,skills:true,send:true},messages:[{id:'m',role:'assistant',text:'cached answer'}]}:{sessions:[{id:'a',title:'Cached chat',backend:'code'}]});await ui.view.choose('claude');await ui.view.open('a');ui.view.input.value='unfinished';ui.view.input.oninput();ui.view.selectedSkills().set('review',{id:'review',name:'Review'});ui.view.attachments.add([{name:'draft.png',type:'image/png',size:16}]);await new Promise(setImmediate);await ui.view.choose('deepseek');
  const pending=[];ui.setHandler(url=>new Promise(resolve=>pending.push({url,resolve})));const returning=ui.view.choose('claude');assert.match(ui.view.rowsRoot.textContent,/Cached chat/);assert.equal(ui.view.sid,'a');assert.match(ui.view.messages.textContent,/cached answer/);assert.equal(ui.view.input.value,'unfinished');assert.match(ui.view.skillPills.textContent,/Review/);assert.equal(ui.view.attachments.rows.length,1);assert.equal(ui.view.attachments.rows[0].status,'ready');assert.equal(ui.view.send.disabled,true);
- for(const call of pending)call.resolve(call.url.includes('/detail')?{session:{id:'a',title:'Fresh chat',status:'idle'},capabilities:{attachments:true,skills:true},messages:[{id:'m',role:'assistant',text:'fresh answer'}]}:{sessions:[{id:'a',title:'Fresh chat',backend:'code'}]});await returning;assert.match(ui.view.messages.textContent,/fresh answer/);assert.equal(ui.view.input.value,'unfinished');assert.equal(ui.view.send.disabled,false);
+ for(const call of pending)call.resolve(call.url.includes('/detail')?{session:{id:'a',title:'Fresh chat',status:'idle'},capabilities:{attachments:true,skills:true,send:true},messages:[{id:'m',role:'assistant',text:'fresh answer'}]}:{sessions:[{id:'a',title:'Fresh chat',backend:'code'}]});await returning;assert.match(ui.view.messages.textContent,/fresh answer/);assert.equal(ui.view.input.value,'unfinished');assert.equal(ui.view.send.disabled,false);
 });
 
 test('reads finishing after a provider switch warm only their own list and history cache',async()=>{
@@ -1254,6 +1272,19 @@ test('a verified ZCode initialization immediately refreshes readable history for
  await view.setClientStates([ready]);assert.equal(reads,1);assert.equal(view.connectionInitialize.hidden,true);
  await view.setClientStates([ready]);assert.equal(reads,1);
 });
+test('shared creation leaves title blank without weakening required first messages',async()=>{
+ for(const provider of ['claude','deepseek'])for(const titleValue of ['', '  ', 'Custom']){
+  const ui=fixture();ui.view.provider=provider;ui.view.generation=1;
+  const requiresMessage=provider==='claude';
+  ui.setHandler(async(url,body)=>url.endsWith('/projects')?{projects:[{key:'p',environment:'scope',cwd:'/p',name:'Project'}],environments:[{key:'scope',surface:requiresMessage?'code':'desktop',createRequiresMessage:requiresMessage}],browseDirectories:false}:url.endsWith('/create')?{status:'accepted',result:{id:'native'}}:url.includes('/detail')?{session:{id:'native',title:'Native',status:'idle'},messages:[]}:{sessions:[]});
+  await ui.view.create();const dialog=ui.document.querySelector('dialog'),form=dialog.querySelector('form'),title=dialog.querySelector('input'),message=dialog.querySelector('textarea');
+  assert.equal(title.value,'');assert.ok(!title.required);assert.equal(title.placeholder,'留空将由Agent自行命名');title.value=titleValue;
+  if(requiresMessage){await form.onsubmit({preventDefault(){}});assert.equal(ui.calls.some(call=>call.url.endsWith('/create')),false);message.value='FIRST';}
+  await form.onsubmit({preventDefault(){}});
+  const sent=ui.calls.find(call=>call.url.endsWith('/create')).body;assert.equal(sent.title,titleValue.trim()||undefined);assert.equal(sent.firstMessage,requiresMessage?'FIRST':undefined);
+ }
+});
+
 test('ZCode native create reuses firstMessage contract and omits hidden title',async()=>{
  const ui=fixture();ui.view.provider='zcode';ui.view.generation=1;
  ui.setHandler(async(url,body)=>url.endsWith('/projects')?{projects:[{key:'p',environment:'desktop',cwd:'/p',name:'Project'}],environments:[{key:'desktop',surface:'desktop',createRequiresMessage:true,createTitle:false}],browseDirectories:false}:url.endsWith('/create')?{status:'accepted',result:{id:'native'}}:url.includes('/detail')?{session:{id:'native',title:'Native',status:'idle'},messages:[]}:{sessions:[]});
@@ -1396,8 +1427,8 @@ test('a verified per-session connection enables only text without granting app-w
  assert.equal(view.canResume(),true);view.setClientStates([client]);assert.equal(view.canResume(),true);
  await view.mutate('resume',{});assert.equal(bound,true);
  await view.detail(view.generation);assert.equal(view.canMutate(),true);
- assert.equal(view.attachButton.hidden,true);assert.equal(view.modelButton.disabled,true);assert.equal(view.workMode.hidden,true);
- assert.equal(view.stop.hidden,true);assert.equal(view.skillsButton.hidden,true);assert.equal(view.canResume(),false);
+ assert.equal(view.attachButton.hidden,false);assert.equal(view.attachButton.disabled,true);assert.equal(view.modelButton.disabled,true);assert.equal(view.workMode.hidden,false);assert.equal(view.workMode.disabled,true);
+ assert.equal(view.stop.hidden,true);assert.equal(view.skillsButton.hidden,false);assert.equal(view.skillsButton.disabled,true);assert.equal(view.canResume(),false);
  assert.equal(ui.calls.filter(c=>c.body).length,1);
 });
 
@@ -1493,13 +1524,54 @@ test('connection method changes invalidate old write state without clearing draf
 });
 
 
+test('fresh unknown send queue and steer capabilities stay disabled without erasing a draft',async()=>{
+ const ui=await opened(),view=ui.view;view.applyDetail({session:{id:'a',title:'Connected',status:'active'},capabilities:{},messages:[]});view.input.value='Keep unknown draft';
+ assert.equal(view.send.disabled,true);assert.equal(view.mode.disabled,true);assert.equal(view.mode.options[1].disabled,true);assert.equal(view.mode.options[2].disabled,true);assert.equal(view.input.disabled,false);
+ for(const mode of ['send','queue','steer']){view.mode.value=mode;await view.submit();}assert.equal(ui.calls.some(call=>call.body),false);assert.equal(view.input.value,'Keep unknown draft');
+ view.applyDetail({session:{id:'a',title:'Connected',status:'active'},capabilities:{send:true,queue:false,steer:false},messages:[]});
+ for(const mode of ['queue','steer']){view.mode.value=mode;await view.submit();}assert.equal(ui.calls.some(call=>call.body),false);
+ view.state.capabilities.queue=view.state.capabilities.steer=true;view.updateComposer();assert.equal(view.send.disabled,false);assert.equal(view.mode.options[1].disabled,false);assert.equal(view.mode.options[2].disabled,false);ui.setHandler(async()=>({status:'unknown'}));await view.submit();assert.equal(ui.calls.filter(call=>call.body).length,1);assert.equal(view.input.value,'Keep unknown draft');
+});
+
+test('cwd without declared project reference capability keeps attachments and saved references inert',async()=>{
+ const ui=await opened(),view=ui.view,reference={kind:'file',path:'saved.txt',absolutePath:'/project/saved.txt',name:'saved.txt'};
+ view.applyDetail({session:{id:'a',title:'Ready',status:'idle',cwd:'/project'},capabilities:{send:true,attachments:false},messages:[]});
+ assert.equal(view.attachButton.hidden,false);assert.equal(view.attachButton.disabled,true);assert.equal(view.attachButton.dataset.capabilityState,'unknown');assert.equal(view.workbench.referenceFile(view.workbench.current,reference),false);
+ ui.run('globalThis.referencePicks=0;window.BridgeFileActions={attach:(_button,_upload,reference)=>reference(),pickReference:()=>referencePicks++};');view.state.capabilities.attachments=true;view.updateComposer();await view.attachButton.click();assert.equal(ui.run('referencePicks'),0);view.state.capabilities.attachments=false;view.updateComposer();
+ view.attachments.rows.push({id:'saved',name:'saved.txt',status:'ready',reference:{path:reference.path,absolutePath:reference.absolutePath}});view.input.value='Keep draft';view.updateComposer();
+ assert.equal(view.send.disabled,true);await view.submit();assert.equal(ui.calls.some(call=>call.body),false);assert.equal(view.input.value,'Keep draft');assert.equal(view.attachments.rows.length,1);
+ view.state.capabilities.projectReferences=true;view.updateComposer();assert.equal(view.attachButton.disabled,false);assert.equal(view.attachButton.dataset.capabilityState,'supported');assert.equal(view.workbench.referenceFile(view.workbench.current,reference),true);
+ ui.setHandler(async()=>({status:'unknown'}));await view.submit();assert.equal(ui.calls.filter(call=>call.body).length,1);assert.deepEqual(Array.from(ui.calls.find(call=>call.body).body.references,row=>({...row})),[{path:'saved.txt',absolutePath:'/project/saved.txt'}]);assert.equal(view.input.value,'Keep draft');assert.equal(view.attachments.rows.length,1);
+});
+
+test('mixed work mode capability states remain unknown until both modes are unsupported',async()=>{
+ const ui=await opened(),view=ui.view;
+ for(const [plan,goal,expected] of [[undefined,undefined,'unknown'],[undefined,false,'unknown'],[false,undefined,'unknown'],[false,false,'unsupported'],[true,false,'supported'],[false,true,'supported'],[undefined,true,'supported'],[true,undefined,'supported'],[true,true,'supported']]){
+  view.applyDetail({session:{id:'a',title:'Ready',status:'idle'},capabilities:{send:true,plan,goal},messages:[]});assert.equal(view.workMode.hidden,false);assert.equal(view.workMode.dataset.capabilityState,expected,`plan=${plan}, goal=${goal}`);assert.equal(view.workMode.disabled,expected!=='supported');
+ }
+});
+
+for(const provider of ['claude','deepseek','zcode','antigravity'])test(`${provider} keeps complete shared composer slots while capability state changes`,()=>{
+ const ui=fixture(),view=ui.view,sid='composer-loading';view.provider=provider;view.setClientStates([{id:provider,enabled:true,connected:true,historyAvailable:true}]);view.rows=[{id:sid,title:'Loading',model:'native-model'}];view.prepareChat(sid);
+ const controls=[view.modelButton,view.skillsButton,view.permissionsButton,view.contextButton,view.attachButton,view.mode,view.workMode,view.input,view.send];
+ assert.ok(controls.every(control=>control.hidden===false));assert.equal(view.modelName.textContent,'native-model');assert.equal(view.modelButton.dataset.capabilityState,'unknown');assert.equal(view.skillsButton.dataset.capabilityState,'unknown');assert.equal(view.send.disabled,true);assert.equal(view.input.disabled,false);
+ view.input.value='offline draft';const input=view.input,attachments=view.attachments;view.attachments.rows.push({id:'saved',name:'saved.png',status:'ready'});
+ const detail=capabilities=>({session:{id:sid,title:'Ready',model:'native-model',status:'idle',connectionState:'ready'},capabilities,messages:[]});
+ view.applyDetail(detail({send:true,models:false,skills:false,permissions:false,attachments:false,projectReferences:false,plan:false,goal:false}));
+ assert.ok(controls.every(control=>control.hidden===false));for(const control of [view.modelButton,view.skillsButton,view.permissionsButton,view.attachButton,view.workMode]){assert.equal(control.disabled,true);assert.equal(control.dataset.capabilityState,'unsupported');}
+ view.applyDetail(detail({send:true,models:true,skills:true,permissions:true,attachments:true,plan:true,goal:true}));
+ for(const control of [view.modelButton,view.skillsButton,view.permissionsButton,view.attachButton,view.workMode]){assert.equal(control.disabled,false);assert.equal(control.dataset.capabilityState,'supported');}
+ assert.equal(view.input,input);assert.equal(view.input.value,'offline draft');assert.equal(view.attachments,attachments);assert.equal(view.attachments.rows[0].id,'saved');assert.equal(ui.calls.length,0);
+ view.staleDetail();assert.ok(controls.every(control=>control.hidden===false));assert.equal(view.send.disabled,true);assert.equal(view.attachments.locked,true);assert.equal(view.input.value,'offline draft');
+});
+
 test('saved composer presentation keeps native controls stable without granting live permissions',async()=>{
  const ui=fixture(),view=ui.view,sid='sess_presentation',presentation={models:true,effort:true,skills:true,permissions:true,attachments:true,plan:true,goal:true};
  view.provider='zcode';view.setClientStates([{id:'zcode',enabled:true,connected:true,historyAvailable:true}]);
  const session={id:sid,title:'Native',cwd:'/project',model:'account:zai-start-plan/GLM-5.3-Flash$low',modelDisplayName:'GLM-5.3-Flash',effort:'low',composerCapabilities:presentation};
  view.rows=[session];view.prepareChat(sid);
- const controls=[view.modelButton,view.reminderButton,view.skillsButton,view.permissionsButton,view.attachButton,view.workMode];
- assert.deepEqual(controls.map(button=>button.hidden),[false,false,false,false,false,false]);assert.equal(view.modelName.textContent,'GLM-5.3-Flash');
+ const controls=[view.modelButton,view.skillsButton,view.permissionsButton,view.attachButton,view.workMode];
+ assert.deepEqual(controls.map(button=>button.hidden),[false,false,false,false,false]);assert.equal(view.modelName.textContent,'GLM-5.3-Flash');
  const saved={session:{...session,status:'unknown',connectionState:'detached',readOnly:true},readOnly:true,capabilities:{send:false,resume:true,stop:false,plan:false,goal:false},messages:[{id:'saved',role:'assistant',text:'Saved reply'}]};
  view.workModes.selection='plan';view.applyDetail(saved);
  assert.equal(view.workMode.value,'plan');assert.equal(view.workMode.disabled,true);assert.equal(view.send.disabled,true);
@@ -1507,9 +1579,9 @@ test('saved composer presentation keeps native controls stable without granting 
  const calls=ui.calls.length;await view.models();await view.skills();await view.permissions();assert.equal(ui.calls.length,calls);
  view.input.value='Keep draft';view.attachments.rows.push({id:'saved-upload',status:'ready',name:'file.png'});view.messages.scrollTop=42;view.reading={following:false,top:42};const before=view.messageList.children[0];
  const live={session:{...session,status:'idle',connectionState:'ready',permissionMode:'build',permissionLabel:'变更前确认'},capabilities:{send:true,models:true,skills:true,permissions:true,attachments:true,plan:true,goal:true},messages:saved.messages};
- view.applyDetail(live);assert.deepEqual(controls.map(button=>button.hidden),[false,false,false,false,false,false]);assert.equal(view.workMode.value,'plan');assert.equal(view.workMode.disabled,false);assert.equal(view.skillsButton.disabled,false);assert.equal(view.modelButton.disabled,false);
+ view.applyDetail(live);assert.deepEqual(controls.map(button=>button.hidden),[false,false,false,false,false]);assert.equal(view.workMode.value,'plan');assert.equal(view.workMode.disabled,false);assert.equal(view.skillsButton.disabled,false);assert.equal(view.modelButton.disabled,false);
  assert.equal(view.input.value,'Keep draft');assert.equal(view.attachments.rows[0].id,'saved-upload');assert.equal(view.messages.scrollTop,42);assert.equal(view.messageList.children[0],before);
- view.applyDetail(saved);assert.deepEqual(controls.map(button=>button.hidden),[false,false,false,false,false,false]);assert.equal(view.send.disabled,true);assert.equal(view.workMode.value,'plan');assert.equal(view.input.value,'Keep draft');assert.equal(view.attachments.rows[0].id,'saved-upload');
+ view.applyDetail(saved);assert.deepEqual(controls.map(button=>button.hidden),[false,false,false,false,false]);assert.equal(view.send.disabled,true);assert.equal(view.workMode.value,'plan');assert.equal(view.input.value,'Keep draft');assert.equal(view.attachments.rows[0].id,'saved-upload');
 });
 
 
@@ -1581,4 +1653,13 @@ test('account directory refresh updates known Code and Cowork projections withou
  assert.equal(shared.forScope(cache,'code').cache.updatedAt,5);
 
  shared.forget(cache,namespace);assert.equal(shared.forScope(cache,'code'),null);assert.equal(shared.forScope(cache,'cowork'),null);
+});
+
+test('Antigravity creation keeps native directory source separate from CLI display labels',async()=>{
+ const ui=fixture(),view=ui.view;view.provider='antigravity';view.state={backend:'cli',surfaceDirKey:'app'};view.generation=1;view.open=async()=>{};
+ const environments=['app','cli','ide'].map(surface=>({key:surface,surface,host:'local',name:surface,createRequiresMessage:true,createTitle:false}));
+ ui.setHandler(async(url,body)=>url.endsWith('/projects')?{createModels:true,projects:environments.map(row=>({key:row.surface+'-project',environment:row.key,surface:row.surface,host:'local',cwd:'/same',name:row.surface})),environments,browseDirectories:false}:url.includes('/create-models?')?{models:[{id:new URL(url,'http://fixture').searchParams.get('environment')+'-model'}],cache:{identity:'source-account'},capabilities:{models:true,effort:false}}:url.endsWith('/create')?{status:'accepted',result:{id:'created'}}:{sessions:[]});
+ await view.create();await new Promise(setImmediate);const dialog=ui.document.querySelector('dialog'),environment=dialog.querySelector('[aria-label="运行环境"]');assert.equal(environment.value,'app');
+ environment.value='ide';environment.onchange();await new Promise(setImmediate);const model=dialog.querySelector('[aria-label="模型"]');model.value='ide-model';model.onchange();dialog.querySelector('textarea').value='FIRST';await dialog.querySelector('form').onsubmit({preventDefault(){}});
+ const write=ui.calls.find(row=>row.url.endsWith('/create')).body;assert.equal(write.environment,'ide');assert.equal(write.projectKey,'ide-project');assert.equal(write.model,'ide-model');assert.equal(write.effort,undefined);assert.equal(write.firstMessage,'FIRST');assert.equal(write.title,undefined);
 });

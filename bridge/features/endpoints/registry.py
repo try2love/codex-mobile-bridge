@@ -99,7 +99,7 @@ class Entries:
                                  'enabled': True, 'running': True}, *values.values()]}
 
     def scan(self):
-        # Explicit action only. No startup/periodic automatic distribution probing.
+        # First full inventory or explicit scan only; never periodic probing.
         if not self.wsl:
             raise ValueError('当前电脑不支持 WSL 应用')
         candidates, errors = {}, []
@@ -136,6 +136,34 @@ class Entries:
                     except (OSError, ValueError):
                         continue
         return {'profiles': rows, 'candidates': candidates}
+
+    def save_wsl(self, distribution, user, home, label):
+        if self.wsl is None:
+            raise ValueError('当前电脑不支持 WSL 应用')
+        if (not isinstance(label, str) or not 1 <= len(label.strip()) <= 80
+                or any(ord(c) < 32 or ord(c) == 127 for c in label)):
+            raise ValueError('请输入 1–80 字的接入名称，不能包含控制字符')
+        info = self.wsl.probe(distribution, user, home=home)
+        if info.get('user') != user or len(info.get('homes', [])) != 1:
+            raise ValueError('无法核验所选 WSL 用户和配置目录')
+        selected = info['homes'][0]
+        identifier = entry_id(distribution, user, selected['home'])
+        candidate = {'id': identifier, 'distribution': distribution, 'user': user,
+                     'home': selected['home'], 'windowsHome': selected.get('windowsHome'), 'label': label.strip()}
+        with self.lock:
+            if any(row['id'] == identifier for row in self.entries):
+                raise ValueError('此 WSL 配置目录已登记，请使用已有入口')
+            previous = self.candidates.get(identifier)
+            self.candidates[identifier] = candidate
+            try:
+                self.configure(identifier, True, _manual=True)
+            except Exception:
+                if previous is None:
+                    self.candidates.pop(identifier, None)
+                else:
+                    self.candidates[identifier] = previous
+                raise
+        return identifier
 
     def save_local(self, home, label):
         home = local_home(home)
@@ -220,13 +248,15 @@ class Entries:
                                     if row['running'] else '打开此应用时可启动已登记的 WSL 环境和原生共享服务。')})
         return rows
 
-    def configure(self, identifier, enabled):
+    def configure(self, identifier, enabled, *, _manual=False):
         if not isinstance(enabled, bool):
             raise ValueError('入口开关无效')
         if not isinstance(identifier, str) or not re.fullmatch(r'(?:wsl|codex):[0-9a-f]{32}', identifier):
             raise ValueError('Codex 入口标识无效，请先扫描或添加配置')
         with self.lock:
             row = next((r for r in self.entries if r['id'] == identifier), None)
+            if _manual and row is not None:
+                raise ValueError('此 WSL 配置目录已登记，请使用已有入口')
             if row is None:
                 candidate = self.candidates.get(identifier)
                 if candidate is None or not enabled:
@@ -241,10 +271,25 @@ class Entries:
                 if len(self.entries) >= 16:
                     raise ValueError('最多登记 16 个 WSL 入口')
                 row = dict(candidate)
-                self.entries.append(row)
+                if not _manual:
+                    self.entries.append(row)
             row['enabled'] = enabled
             self.directory.mkdir(parents=True, exist_ok=True)
-            private_json(self.path, {'version': 1, 'entries': self.entries})
+            if _manual:
+                updated = [*self.entries, row]
+                payload = {'version': 1, 'entries': updated}
+                try:
+                    private_json(self.path, payload)
+                except OSError:
+                    try:
+                        persisted = self.path.read_bytes() == json.dumps(payload).encode('utf-8')
+                    except OSError:
+                        persisted = False
+                    if not persisted:
+                        raise
+                self.entries = updated
+            else:
+                private_json(self.path, {'version': 1, 'entries': self.entries})
             old = self.bridges.pop(identifier, None) if not enabled else None
             if old is not None:
                 old.close()

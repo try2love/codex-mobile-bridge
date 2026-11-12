@@ -14,13 +14,10 @@ from bridge.clients.codex.desktop_runtime import (
     VERSION, _read, _write, directory, process_identity, server_arguments,
     exclusive_lock, private_directory, socket_path, require_inactive, verified_socket)
 from bridge.clients.websocket import WebSocket
+from bridge.clients.codex.app_server import AppServerMessageTooLarge as MessageTooLarge
 
 
 MAX_LINE = 64 * 1024 * 1024
-
-
-class MessageTooLarge(ValueError):
-    pass
 
 
 def _forward_input(stream, transport, emit, stop):

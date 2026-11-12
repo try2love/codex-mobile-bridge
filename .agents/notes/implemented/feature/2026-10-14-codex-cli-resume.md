@@ -2,6 +2,8 @@
 
 Status: implemented
 
+CLI 再继续直接使用原生 daemon 的现行规则见[来源执行路由](../bug-fix/2026-11-11-codex-source-execution-routing.md)；下述旧 owner 路由说明保留为历史决定，不再用于 CLI 来源。
+
 模型、Skill、计划和本地 Goal 限制由 [CLI 会话控制](2026-10-14-cli-session-controls.md)替代；权限限制由 [CLI 权限切换](2026-10-14-cli-permission-switching.md)替代。编辑/分叉、重命名和旁支聊天限制仍有效。
 
 下述按来源排除 Desktop 的规则由[现有执行归属路由](../bug-fix/2026-10-14-cli-existing-owner.md)部分替代：CLI 来源描述起源，已活跃的 Desktop 归属进程会被复用，不创建替代运行时。

@@ -12,7 +12,7 @@ class ProgressiveLoadingTests(unittest.TestCase):
 
     def test_unchanged_pages_reuse_projection_and_patch_invalidates_it(self):
         self.fixture.state['turns'] = [{'turnId': 'turn', 'status': 'completed', 'items': [
-            {'id': str(i), 'type': 'agentMessage', 'text': 'row ' + str(i)} for i in range(10000)]}]
+            {'id': str(i), 'type': 'agentMessage', 'text': 'row ' + str(i), 'timestamp': 1700000000 + i} for i in range(10000)]}]
         session = self.bridge.session(THREAD)
         first = self.bridge.timeline_read(THREAD)
         self.assertEqual(len(first['rows']), 20)

@@ -27,5 +27,6 @@
 @media(max-width:640px){.session-menu .sm-handle{width:100%;height:18px;margin:0;display:flex;align-items:center;justify-content:center;background:transparent;touch-action:none}.sm-handle::before{content:'';width:32px;height:4px;border-radius:4px;background:var(--line)}.session-menu .sm-head,.session-menu .sm-heading{touch-action:none}.session-menu.sm-dragging,.session-menu.sm-returning{animation:none}.session-menu.sm-returning{transition:transform 160ms ease-out}}
 @media(prefers-reduced-motion:reduce){.session-menu.sm-returning{transition:none}}
 
-.session-menu .sm-confirm-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:10px}
-.session-menu .sm-confirm-actions button{width:100%;min-width:0;min-height:44px;margin:0;padding:10px;white-space:nowrap;font:inherit;font-weight:600}
+.session-menu .sm-confirm-actions,.cli-connections-panel .sm-confirm-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:10px}
+.session-menu .sm-confirm-actions button,.cli-connections-panel .sm-confirm-actions button{width:100%;min-width:0;min-height:44px;margin:0;padding:10px;white-space:normal;font:inherit;font-weight:600}
+.cli-connections-panel p,.cli-connections-panel li,.cli-connections-panel h4{overflow-wrap:anywhere}.cli-release-group{border:1px solid var(--line);border-radius:12px;padding:12px;margin:12px 0}.cli-release-group h4{margin:0 0 8px;font-size:13px}.cli-release-row{padding:4px 0;border-bottom:1px solid var(--line)}.cli-release-row .display-option{padding:8px 0}.cli-release-row .appearance-note{margin:0 0 8px}.cli-release-history{border-top:1px solid var(--line);padding-top:14px;margin-top:16px}.cli-release-history summary{cursor:pointer;font-size:12px}.cli-connections-panel>h3{font-size:14px;margin:18px 0 8px}

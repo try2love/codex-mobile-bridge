@@ -11,6 +11,10 @@ import time
 MAX_FRAME = 64 * 1024 * 1024
 
 
+class LocalRequestNotSent(ValueError):
+    """Local RPC failed before dispatch, or its verified peer refused dispatch."""
+
+
 def packet(value):
     data = json.dumps(value, ensure_ascii=False).encode()
     if not 0 < len(data) <= MAX_FRAME:raise ValueError('本机请求过大')
@@ -57,16 +61,28 @@ class LocalService:
     def _exchange(self, request, timeout=130):
         if os.name == 'nt':
             from bridge.platforms.windows import local_service as native
-            record = native.read_record(self.record)
-            if (not isinstance(record, dict) or record.get('name') != self.name or os.path.normcase(record.get('profile', '')) != os.path.normcase(str(self.profile))
-                    or not isinstance(record.get('token'), str) or not re.fullmatch('[0-9a-f]{64}', record['token'])
-                    or not re.fullmatch(r'\\\\\.\\pipe\\cmb-rpc-[a-z-]+-[0-9a-f]{32}', record.get('endpoint', ''))):
-                raise ValueError('本机服务记录与当前资料目录不匹配')
-            with native.local_connect(record['endpoint'], timeout=min(timeout, 5)) as stream:
-                native.require_peer(stream, server=False, expected=record['owner'])
-                pipe = native.byte_stream(stream);deadline = time.monotonic() + timeout
-                write_packet(lambda data: pipe.send(data, timeout=deadline-time.monotonic()), {'token': record['token'], 'request': request})
-                result = read_packet(lambda size: pipe.recv(size, timeout=deadline-time.monotonic()))
+            dispatched = False
+            try:
+                record = native.read_record(self.record)
+                if (not isinstance(record, dict) or record.get('name') != self.name or os.path.normcase(record.get('profile', '')) != os.path.normcase(str(self.profile))
+                        or not isinstance(record.get('token'), str) or not re.fullmatch('[0-9a-f]{64}', record['token'])
+                        or not re.fullmatch(r'\\\\\.\\pipe\\cmb-rpc-[a-z-]+-[0-9a-f]{32}', record.get('endpoint', ''))):
+                    raise ValueError('本机服务记录与当前资料目录不匹配')
+                with native.local_connect(record['endpoint'], timeout=min(timeout, 5)) as stream:
+                    native.require_peer(stream, server=False, expected=record['owner'])
+                    pipe = native.byte_stream(stream);deadline = time.monotonic() + timeout
+                    def send(data):
+                        nonlocal dispatched
+                        dispatched = True
+                        return pipe.send(data, timeout=deadline-time.monotonic())
+                    write_packet(send, {'token': record['token'], 'request': request})
+                    result = read_packet(lambda size: pipe.recv(size, timeout=deadline-time.monotonic()))
+            except (OSError, ValueError, EOFError, KeyError, TypeError) as exc:
+                if not dispatched:
+                    raise LocalRequestNotSent(str(exc)) from exc
+                raise
+            if result.get('ok') is False and result.get('notSent') is True:
+                raise LocalRequestNotSent(result.get('error', '本机请求尚未发送'))
             return self._result(result)
         fd = os.open(self.record, os.O_RDONLY | os.O_NOFOLLOW)
         with os.fdopen(fd, 'rb') as source:
