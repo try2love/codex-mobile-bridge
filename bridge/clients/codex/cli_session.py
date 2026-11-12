@@ -268,7 +268,7 @@ class CliSessions:
         """An explicit new CLI chat; no turn is started."""
         if not isinstance(cwd, str) or not cwd or (self.alias is None and not Path(cwd).is_dir()):
             raise AppServerUnavailable('CLI 项目目录不存在')
-        from bridge.features.sessions.create import model_overrides
+        from bridge.features.sessions.create import model_overrides, save_new_thread
         overrides = model_overrides(model, effort)
         info = self._connect_explicit()
         self._runtime_home(info)
@@ -294,7 +294,7 @@ class CliSessions:
                                         'permissions': {key: copy.deepcopy(result[key]) for key in
                                                         ('approvalPolicy', 'approvalsReviewer', 'sandbox', 'activePermissionProfile')
                                                         if key in result}, 'goal': None}
-        self.client.request('thread/name/set', {'threadId': thread_id, 'name': title})
+        save_new_thread(self.client.request, thread, title)
         return self.refresh(thread_id)
 
     def archive_call(self, thread_id, archived, identifiers, disconnect=False, check_scope=None):

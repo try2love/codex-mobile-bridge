@@ -92,6 +92,21 @@ class CliSessionTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_create_without_name_materializes_only_the_new_cli_thread(self):
+        identifier = '00000000-0000-4000-8000-000000000001'
+        self.fake.thread.update(id=identifier, cwd=str(self.home), name=None, sectionId=None)
+        original = self.fake.request
+        def request(method, params, **kwargs):
+            if method == 'thread/start':
+                self.fake.sent.append((method, params))
+                return {'thread': self.fake.thread.copy()}
+            return original(method, params, **kwargs)
+        self.fake.request = request
+        self.sessions.create(str(self.home), '')
+        self.assertIn(('thread/section/move', {'threadId': identifier, 'sectionId': None}), self.fake.sent)
+        self.assertFalse(any(method in ('turn/start', 'thread/name/set') for method, _ in self.fake.sent))
+        self.assertIn(identifier, self.sessions.joined)
+
     def test_native_message_times_survive_live_turn_and_item_replacement(self):
         self.sessions.attach('thread-a', explicit=True)
         stamp = 1794211440000

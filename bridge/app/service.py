@@ -946,8 +946,8 @@ class Bridge:
         if not isinstance(request_id, str):
             raise ValueError('创建请求标识无效')
         uuid.UUID(request_id)
-        if not isinstance(title, str) or not title.strip() or len(title) > 120:
-            raise ValueError('请输入 1–120 字的聊天名称')
+        if not isinstance(title, str) or len(title.strip()) > 120:
+            raise ValueError('聊天名称不能超过 120 字')
         if kind not in ('desktop', 'cli'):
             raise ValueError('未知聊天类型')
         available = [project for project in self.projects(host=self.project_host(project_key))

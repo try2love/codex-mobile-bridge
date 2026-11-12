@@ -594,8 +594,6 @@ const contextUsageControl=new ContextUsageControl({onCompact:async()=>{
 let newChatProjects=[],newChatEnvironments=[],newChatCanBrowse=false,newChatEntry='desktop',newChatPreferredHost='local',creatingChat=false,approvalBusy=0;
 const newChatUrl=path=>path+(isCodexEntry(newChatEntry)?'?entry='+encodeURIComponent(newChatEntry):'');
 const independentProject=()=>newChatEntry.startsWith('wsl:')||newChatEntry.startsWith('codex:')?newChatEntry+'|independent':'local|independent';
-$('new-chat-title').value=t('新聊天');
-$('new-chat-title').oninput=()=>{$('new-chat-title').dataset.edited='true';};
 let newChatRequest=0,newChatModelsEnabled=false,newChatModelPicker=null;
 function updateNewChatSubmit(){const selected=$('new-chat-project').value;$('new-chat-submit').disabled=creatingChat||!selected||selected==='__directory__'&&!$('new-chat-directory-path').value||newChatModelsEnabled&&(!newChatModelPicker||!newChatModelPicker.valid());}
 function syncNewChatModels(){
@@ -715,7 +713,7 @@ $('new-chat-form').onsubmit=async event=>{
   if(newChatModelsEnabled&&(!newChatModelPicker||!newChatModelPicker.valid()))return;
   const modelOptions=newChatModelsEnabled?newChatModelPicker.selection():{};
   const selection=directory?JSON.stringify(directory):project;
-  if(!project||!title){$('new-chat-error').textContent=t('请选择项目或不选择项目，并填写聊天名称。');return;}
+  if(!project){$('new-chat-error').textContent=t('请选择项目或不选择项目');return;}
   let attempt;
   try{attempt=JSON.parse(sessionStorage.getItem('new-chat-attempt')||'null');}catch{}
   const attemptKind=kind==='wsl'?undefined:kind;
@@ -1533,7 +1531,6 @@ $('phone-language').onchange=()=>{
   if(approvalBusy||creatingChat)return;
   const replies=[...$('approvals').querySelectorAll('input,textarea,select')].map(node=>({value:node.value,checked:node.checked}));
   BridgeI18n.setLanguage($('phone-language').value);BridgeI18n.apply();if(typeof accountsPanel!=="undefined")accountsPanel?.render();renderSourceFilter();renderList();
-  if(!$('new-chat-title').dataset.edited)$('new-chat-title').value=t('新聊天');
   $('new-chat-help').textContent=t($('new-chat-type').value==='cli'?'选择已有 CLI 项目目录，在此创建聊天。':'选择已有项目，或不选择项目创建独立聊天。电脑会打开这条聊天。');
   $('new-chat-submit').textContent=t($('new-chat-type').value==='desktop'?'创建并打开':'创建聊天');
   renderLoginStatus();

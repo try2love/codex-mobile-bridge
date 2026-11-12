@@ -919,8 +919,8 @@ class WslEntry(WslFeatures):
         if not isinstance(request_id, str):
             raise ValueError('创建请求标识无效')
         uuid.UUID(request_id)
-        if not isinstance(title, str) or not 1 <= len(title.strip()) <= 120:
-            raise ValueError('请输入 1–120 字的聊天名称')
+        if not isinstance(title, str) or len(title.strip()) > 120:
+            raise ValueError('聊天名称不能超过 120 字')
         if not isinstance(project_key, str) or not project_key.startswith(self.host + '|'):
             raise ValueError('请选择此 WSL 应用的已有项目或独立聊天')
         independent = project_key == self.host + '|independent'
@@ -956,7 +956,7 @@ class WslEntry(WslFeatures):
                 self.data_dir.mkdir(parents=True, exist_ok=True)
                 private_json(self.creations_path, self.creations)
                 try:
-                    from bridge.features.sessions.create import model_overrides
+                    from bridge.features.sessions.create import model_overrides, save_new_thread
                     started = runtime.request('thread/start', {'cwd': cwd, 'ephemeral': False,
                         **model_overrides(model_options.get('model'), model_options.get('effort'))})
                     created = started['thread']
@@ -973,7 +973,7 @@ class WslEntry(WslFeatures):
                     if model_options and (started.get('model') != model_options['model'] or
                             'effort' in model_options and started.get('reasoningEffort') != model_options['effort']):
                         raise IPCError('新聊天已创建，但模型或思考强度未确认；请检查原会话')
-                    runtime.request('thread/name/set', {'threadId': identifier, 'name': title})
+                    save_new_thread(runtime.request, created, title)
                     # Force durable empty-thread history before exposing it in lists.
                     runtime.request('thread/read', {'threadId': identifier, 'includeTurns': True})
                 except Exception:

@@ -318,6 +318,16 @@ def model_overrides(model=None, effort=None):
     return {'model': model, **({'config': {'model_reasoning_effort': effort}} if effort is not None else {})}
 
 
+def save_new_thread(request, thread, title):
+    """Materialize a newly created empty chat without inventing a native name."""
+    if title:
+        request('thread/name/set', {'threadId': thread['id'], 'name': title})
+    else:
+        # Native placement flushes the empty rollout before another client resumes
+        # it. Preserve its initial section; never apply this to an existing chat.
+        request('thread/section/move', {'threadId': thread['id'], 'sectionId': thread.get('sectionId')})
+
+
 def create_empty(executable, codex_home, cwd, title, project=None, model=None, effort=None):
     overrides = model_overrides(model, effort)
     supported = project is not None and _native_project_support(executable, project.get('required', False))
@@ -333,7 +343,7 @@ def create_empty(executable, codex_home, cwd, title, project=None, model=None, e
             raise CreationError('聊天已创建，但模型或思考强度尚未确认，请检查原会话；不会重复创建')
         if project_id is not None and result['thread'].get('projectId') != project_id:
             raise CreationError('聊天已创建但原生项目归属未确认，请检查电脑 App，不要重复创建')
-        request('thread/name/set', {'threadId': thread_id, 'name': title})
+        save_new_thread(request, result['thread'], title)
         saved = request('thread/read', {'threadId': thread_id, 'includeTurns': True})
         if project_id is not None and saved['thread'].get('projectId') != project_id:
             raise CreationError('聊天已创建但项目归属未持久化确认，请检查电脑 App，不要重复创建')

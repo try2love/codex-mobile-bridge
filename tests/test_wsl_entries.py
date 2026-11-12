@@ -698,6 +698,26 @@ class WslSessionTests(unittest.TestCase):
         self.entry.server.request = Mock(side_effect=AssertionError('Must not replay native creation'))
         with self.assertRaisesRegex(IPCError, '不会重复创建'): self.entry.create_chat(project, 'Unknown', uncertain)
 
+    def test_blank_wsl_chat_is_materialized_without_a_name_or_model_turn(self):
+        self.entry.store.list=lambda **kwargs:[{'cwd':'/home/fixture/project'}]
+        self.entry.read=lambda *args,**kwargs:{'cwd':'/home/fixture/project'}
+        created=str(uuid.uuid4());original=self.entry.server.request
+        def request(method,params):
+            if method=='thread/start':
+                self.entry.server.calls.append((method,copy.deepcopy(params)))
+                self.entry.server.thread.update(id=created,name=None,sectionId=None)
+                return {'thread':copy.deepcopy(self.entry.server.thread)}
+            if method=='thread/section/move':
+                self.entry.server.calls.append((method,copy.deepcopy(params)));return {}
+            return original(method,params)
+        self.entry.server.request=request
+        project=self.entry.host+'|/home/fixture/project';attempt=str(uuid.uuid4())
+        self.assertEqual(self.entry.create_chat(project,'  ',attempt)['id'],created)
+        self.assertEqual(self.entry.create_chat(project,'',attempt)['id'],created)
+        self.assertEqual(sum(m=='thread/start' for m,_ in self.entry.server.calls),1)
+        self.assertIn(('thread/section/move',{'threadId':created,'sectionId':None}),self.entry.server.calls)
+        self.assertFalse(any(m in ('turn/start','thread/name/set') for m,_ in self.entry.server.calls))
+
     def test_wsl_creation_includes_and_verifies_model_before_exposing_the_empty_chat(self):
         self.entry.store.list=lambda **kwargs:[{'cwd':'/home/fixture/project'}]
         self.entry.read=lambda *args,**kwargs:{'cwd':'/home/fixture/project'}
