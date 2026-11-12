@@ -3600,6 +3600,7 @@ const en={
   "连续会话 · 关闭标签将结束终端": "Persistent session · Closing this tab ends the terminal",
   "终端已退出": "Terminal exited",
   "新建侧边聊天": "New side chat",
+  "侧边聊天使用 Codex App 原生方案；临时侧聊在结束或网关重启后清除。": "Side chats use the native Codex App implementation; temporary side chats are cleared when ended or when the gateway restarts.",
   "停止回复": "Stop response",
   "结束聊天": "End chat",
   "模型与思考程度": "Model and reasoning",

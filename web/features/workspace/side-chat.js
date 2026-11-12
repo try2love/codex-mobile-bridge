@@ -13,7 +13,7 @@ class SideChatPanel {
     this.temporaryButton = workbench.button('新建临时侧聊', () => this.create(true));
     this.refreshButton = workbench.button('↻', () => this.load(), '刷新');
     this.toolbar.append(this.createButton, this.temporaryButton, this.refreshButton);
-    this.help = n('p', 'wb-status', '临时侧聊沿用创建时的上下文；结束或网关重启后清除。');
+    this.help = n('p', 'wb-status', '侧边聊天使用 Codex App 原生方案；临时侧聊在结束或网关重启后清除。');
     this.status = n('p', 'wb-status'); this.status.setAttribute('role', 'status');
     this.list = n('div', 'wb-agents-list');
     tab.body.append(this.toolbar, this.help, this.status, this.list);
