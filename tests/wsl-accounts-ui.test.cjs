@@ -105,3 +105,12 @@ test('applied Codex configuration exposes explicit service recovery instead of r
 test('Codex restartPending never signals completed continuity before explicit recovery succeeds',async()=>{
  let continued=0;const calls=[],p=panel({onSwitched:()=>continued++,request:async value=>{calls.push({...value});return value.action==='switch'?{...snapshot('wsl'),restartPending:true,restartError:'Applied; recovery pending',capabilities:{recoverRestart:true}}:snapshot('wsl');}});await p.select('wsl');await p.perform('switch',{id:'saved'});assert.equal(continued,0);assert.equal(p.error,'Applied; recovery pending');assert.equal(p.value.restartPending,true);await p.perform('recover-restart');assert.equal(continued,1);assert.deepEqual(calls.map(value=>value.action),['switch','recover-restart']);
 });
+
+test('stopped WSL starts only through the explicit selected-environment button',async()=>{
+ const calls=[],p=panel({read:async entry=>({...snapshot(entry),available:false,capabilities:{connect:true}}),request:async value=>{calls.push({...value});return snapshot(value.entry);}});
+ await p.select('stopped');await p.refresh();assert.equal(calls.length,0);
+ await p.perform('switch',{id:'saved'});assert.equal(calls.length,0);
+ const connect=all(p.root).find(node=>node.textContent==='启动并连接 WSL');assert.ok(connect);assert.equal(connect.disabled,false);
+ await connect.onclick();assert.equal(calls.length,1);assert.deepEqual(calls[0],{provider:'codex',entry:'stopped',action:'connect'});assert.equal(p.value.available,true);
+ assert.equal(all(p.root).some(node=>node.textContent==='启动并连接 WSL'),false);
+});

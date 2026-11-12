@@ -809,6 +809,7 @@ class Handler(BaseHTTPRequestHandler):
                     body = self.read_json()
                     common = {'provider', 'entry', 'action'}
                     fields = {'switch': (common | {'id', 'expectedIdentity'}, set()),
+                              'connect': (common, set()),
                               'models': (common | {'id'}, {'refresh'}),
                               'recover-restart': (common | {'expectedIdentity'}, set()),
                               'save-api': (common | {'name', 'baseUrl', 'model'}, {'id', 'apiKey', 'authScheme'}),
@@ -834,7 +835,7 @@ class Handler(BaseHTTPRequestHandler):
                 result = manager.read(provider, query['entry'][0])
                 if self.server.auth.config.get('mode') == 'none':
                     result = {**result, 'capabilities': {**result.get('capabilities', {}),
-                        'save': False, 'import': False, 'capture': False, 'switch': False, 'restore': False,
+                        'connect': False, 'save': False, 'import': False, 'capture': False, 'switch': False, 'restore': False,
                         'attemptSwitch': False, 'attemptRestore': False, 'recoverRestart': False}}
                 return self.output(200, result)
             if path == '/api/cli-access':

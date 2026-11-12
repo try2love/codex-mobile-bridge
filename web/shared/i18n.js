@@ -666,6 +666,7 @@ const en={
 "请选择 WSL 环境":"Choose a WSL environment",
 "WSL 配置已读取；登录有效性以核验结果为准。":"WSL configuration loaded. Login validity depends on verification.",
 "WSL 环境不可用；请启动发行版后刷新。":"WSL environment unavailable. Start the distribution, then refresh.",
+"启动并连接 WSL":"Start and connect WSL",
 "核验状态":"Verification status",
 "此配置目录与其他接入共用。":"This configuration directory is shared with other access.",
 "缓存状态":"Cache status",
