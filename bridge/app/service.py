@@ -925,9 +925,12 @@ class Bridge:
             raise ValueError('请选择电脑 App 中已保存的项目')
         target = self.for_host(project['host'])
         if kind == 'cli':
-            config = target.cli_sessions.creation_context(project['cwd'])
-            provider = config.get('model_provider') or 'openai'
-            value = target._native_models(None, project['cwd'], provider, refresh=refresh)
+            try:
+                config = target.cli_sessions.creation_context(project['cwd'])
+                provider = config.get('model_provider') or 'openai'
+                value = target._native_models(None, project['cwd'], provider, refresh=refresh)
+            except AppServerError as exc:
+                raise CreationError(str(exc)) from exc
             value = {**value, 'currentModel': config.get('model'), 'currentEffort': config.get('model_reasoning_effort')}
         else:
             value = target.catalog_reader.get_kind('models', project['cwd'], refresh=refresh)
