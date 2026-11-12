@@ -3419,6 +3419,7 @@ const en={
   "前往": "Go",
   "电脑上的文件": "Files on this computer",
   "返回项目文件夹": "Back to project folder",
+  "CLI 可用": "CLI available",
   "SSH 文件": "Files on the SSH host",
   "只能引用当前聊天项目中的文件": "Only files in the current chat project can be attached",
   "宿主机文件浏览仅支持读取": "Host file browsing is read-only",

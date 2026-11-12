@@ -530,7 +530,8 @@ class Catalog:
             candidate = Path('/Applications') / (app + '.app') / 'Contents/Resources/codex-cli/bin/codex'
             if candidate.is_file():
                 return candidate
-        return None
+        executable = shutil.which('codex')
+        return Path(executable) if executable else None
 
     @staticmethod
     def find_linux_runtime():

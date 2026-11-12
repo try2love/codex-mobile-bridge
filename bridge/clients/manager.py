@@ -2450,6 +2450,9 @@ class DesktopSessions:
             rows = []
             discovered = self.config.get('discovered', {})
             ready = False
+            desktop_installed = False
+            cli = getattr(self.bridge, 'cli_sessions', None)
+            cli_available = bool(cli and cli.available() is True)
             reason = '请在电脑端安装 Codex 并配置账号或 API'
             if self.bridge is not None and not self.native_enabled('codex') and probe != 'codex':
                 # Preserve display knowledge without AccountInfo.current() spawning
@@ -2466,15 +2469,19 @@ class DesktopSessions:
                     accounts = self.bridge.for_host('local').accounts
                     current = accounts.info.current()
                     installed = self._codex_executable(accounts)
-                    ready = bool(installed and Path(installed).is_file() and current.get('status') == 'ready' and current.get('kind') in ('chatgpt', 'api'))
+                    desktop_installed = bool(installed and Path(installed).is_file())
+                    ready = bool((cli_available or desktop_installed) and current.get('status') == 'ready' and current.get('kind') in ('chatgpt', 'api'))
                     if ready and current.get('kind') == 'api':
                         ready = bool((accounts.info.identity or {}).get('key') or accounts.active_matches())
                     reason = '接入配置已就绪' if ready else ('正在检查账号配置' if current.get('status') == 'checking' else reason)
                 except (AttributeError, ValueError, OSError):
                     pass
-            rows.append({'id': 'codex', 'name': 'Codex', 'installed': discovered.get('codex', {}).get('installed', ready), 'configured': ready, 'connected': False,
+            rows.append({'id': 'codex', 'name': 'Codex', 'installed': discovered.get('codex', {}).get('installed', desktop_installed), 'configured': ready, 'connected': False,
                          'setupStatus': 'ready' if ready else 'unconfigured',
                          'enabled': self.enabled('codex'), 'reason': reason})
+            rows[-1]['cliAvailable'] = cli_available
+            if cli_available and not rows[-1]['installed']:
+                rows[-1]['canQuitDesktop'] = False
             for provider, name in [('claude', 'Claude'), ('deepseek', 'DSH')]:
                 if provider not in self.adapters:
                     continue
@@ -3039,6 +3046,8 @@ class DesktopSessions:
                             self.adapters[provider].reconnect(launch=True)
                     else:
                         raise ValueError('此系统不支持 Claude 桌面连接')
+                elif provider == 'codex' and not descriptor['installed'] and row.get('cliAvailable'):
+                    pass  # CLI-only access starts its runtime on an explicit chat operation.
                 else:
                     result = launch_client(descriptor)
                     if provider == 'zcode' and not startup and not result.get('launched'):

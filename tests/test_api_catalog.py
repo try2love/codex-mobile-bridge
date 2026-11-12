@@ -43,6 +43,23 @@ class ModelResponseTests(unittest.TestCase):
             self.read({'data': [], 'models': [{'slug': 'native-model'}]})
 
 
+class RuntimeDiscoveryTests(unittest.TestCase):
+    def test_mac_without_desktop_uses_installed_path_cli(self):
+        with patch('bridge.clients.codex.catalog.sys.platform', 'darwin'), \
+             patch('bridge.clients.codex.catalog.os.name', 'posix'), \
+             patch('bridge.clients.codex.catalog.Path.is_file', return_value=False), \
+             patch('bridge.clients.codex.catalog.shutil.which', return_value='/installed/bin/codex') as which:
+            self.assertEqual(str(Catalog.find_runtime()), '/installed/bin/codex')
+        which.assert_called_once_with('codex')
+
+    def test_missing_cli_and_desktop_remains_unavailable(self):
+        with patch('bridge.clients.codex.catalog.sys.platform', 'darwin'), \
+             patch('bridge.clients.codex.catalog.os.name', 'posix'), \
+             patch('bridge.clients.codex.catalog.Path.is_file', return_value=False), \
+             patch('bridge.clients.codex.catalog.shutil.which', return_value=None):
+            self.assertIsNone(Catalog.find_runtime())
+
+
 class ApiCatalogTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(dir=ROOT/'.tmp')

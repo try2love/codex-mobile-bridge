@@ -240,7 +240,7 @@ class DesktopConnectionsPanel {
     home.focus();
   }
   visibleClients(){
-    return this.managementClients().filter(client=>client.installed||client.configured||client.enabled||client.connected||client.running||client.kind==='desktop-profile'||client.bindingMode==='manual');
+    return this.managementClients().filter(client=>client.installed||client.cliAvailable||client.configured||client.enabled||client.connected||client.running||client.kind==='desktop-profile'||client.bindingMode==='manual');
   }
   renderClients(){
     this.renderDetails();

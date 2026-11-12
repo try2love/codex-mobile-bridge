@@ -46,3 +46,5 @@ CLI 的接入行为随原生来源保持稳定，纯 CLI 不再等待 App owner�
 - [VS Code 共用原会话](2026-11-03-vscode-shared-owner.md)：边界互补，IDE 的原 owner 与双端同步决定不变。
 - [CLI 释放与安全恢复](2026-11-10-cli-release-and-safe-recovery.md)：部分重叠，仅 CLI 再继续时的 App owner 优先规则由本决定替代，其他回执与维护规则不变。
 - 共享 Desktop 运行时提案及 macOS TCC 提案不属于本次路由改变，保持不动。
+
+纯 CLI 安装补齐：macOS 模型/账号目录在未发现桌面 App 时从 PATH 查找既有 Codex；管理页复用 CLI 连接层的被动 available 结果，允许未安装 App 的本机接入显示、启用和管理，保留 installed 为桌面安装事实。启用只保存接入，不启动不存在的桌面或提前创建 daemon；实际聊天操作仍走原 CLI 链路。CLI-only 不提供桌面退出。17 项发现/扫描检查及24项共享生命周期UI检查通过，三端完整新用户验收仍待冻结构建。
