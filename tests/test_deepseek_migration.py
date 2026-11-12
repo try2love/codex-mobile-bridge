@@ -242,15 +242,29 @@ class DeepSeekMigrationTests(unittest.TestCase):
                 self.assertFalse(adapter.discover_existing()['updateRequired'])
                 self.assertEqual(source.read_bytes(), before)
 
+    def test_shipped_revision11_predecessor_remains_recognized(self):
+        from bridge.clients.deepseek import setup
+        source = self.old.directory/'mobile-host.mjs'
+        content = b'// shipped revision 11 connector before record-path reads'
+        source.write_bytes(content)
+        original_sha = hashlib.sha256
+        for predecessor in ('0c6a9586ecb2e52c6392f576dda7c1bddb1629ceb41e757bef27c905869db228',
+                            'bdc236e7f02cc59a9a23b917683849d1a14473e8145dad14af6e7ae2934c2c71'):
+            before = {path: path.read_bytes() for path in (*self.old.directory.iterdir(), self.profile)}
+            def digest(value):
+                return Mock(hexdigest=lambda: predecessor) if value == content else original_sha(value)
+            with patch.object(setup.hashlib, 'sha256', side_effect=digest):
+                adapter = DeepSeek(self.new_path, self.home)
+                self.assertTrue(adapter.discover_existing()['reused'])
+                self.assertFalse(adapter.legacy_protocol)
+            self.assertEqual({path: path.read_bytes() for path in before}, before)
+            self.assertFalse(self.new_path.exists())
+
     def test_current_source_lf_and_crlf_are_reused_as_current_without_writes(self):
         source = self.old.directory/'mobile-host.mjs'
         current = Path(__file__).resolve().parents[1]/'bridge/clients/deepseek/host.mjs'
         lf = current.read_bytes().replace(b'\r\n', b'\n')
         self.assertIn(b'\n', lf)
-        self.assertEqual(hashlib.sha256(lf).hexdigest(),
-                         '0c6a9586ecb2e52c6392f576dda7c1bddb1629ceb41e757bef27c905869db228')
-        self.assertEqual(hashlib.sha256(lf.replace(b'\n', b'\r\n')).hexdigest(),
-                         'bdc236e7f02cc59a9a23b917683849d1a14473e8145dad14af6e7ae2934c2c71')
         for content in (lf, lf.replace(b'\n', b'\r\n')):
             with self.subTest(line_ending='CRLF' if b'\r\n' in content else 'LF'):
                 source.write_bytes(content)
