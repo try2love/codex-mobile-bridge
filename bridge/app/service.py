@@ -338,7 +338,7 @@ class Bridge:
         self.live = {}
         self.origins = {}
         self.cli_sessions = cli_sessions or CliSessions(self.codex_home, self._cli_state, self._cli_disconnected,
-            alias=alias, allow_installed_runtime=self.local, clear_sqlite_home=host.startswith('codex:'))
+            cli=codex_bin or 'codex', alias=alias, allow_installed_runtime=self.local, clear_sqlite_home=host.startswith('codex:'))
         self.lock = threading.RLock()
         self.reconnect_pending = {}
         self.ipc = DesktopIPC(ipc_path or ipc_endpoint(codex_home), self._event, self._disconnected)

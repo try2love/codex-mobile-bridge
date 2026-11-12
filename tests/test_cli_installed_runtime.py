@@ -22,7 +22,7 @@ class InstalledLocalCliTests(CliBridgeFixture):
         self.path_cli = patch('bridge.clients.codex.cli_session.shutil.which', return_value=str(self.installed))
         self.path_cli.start()
         self.addCleanup(self.path_cli.stop)
-        self.bridge = Bridge(self.home, self.home / 'bridge-data', codex_bin=self.home / 'absent-app')
+        self.bridge = Bridge(self.home, self.home / 'bridge-data')
         self.bridge.ipc.connect = Mock(side_effect=AssertionError('CLI must not connect App'))
         self.native = self.bridge.cli_sessions
         self.fake = FakeClient(self.home)
@@ -63,11 +63,24 @@ class InstalledLocalCliTests(CliBridgeFixture):
         self.assertEqual(self.fake.sent, [])
         self.bridge.ipc.connect.assert_not_called()
 
+    def test_explicit_runtime_path_is_used_without_path_or_desktop_discovery(self):
+        configured = Bridge(self.home, self.home / 'configured-data', codex_bin=self.installed)
+        self.addCleanup(configured.close)
+        native = configured.cli_sessions
+        report = {'status': 'started', 'socketPath': native.client.socket_path}
+        with patch('bridge.clients.codex.cli_session.shutil.which', return_value=None), \
+             patch('bridge.clients.codex.cli_session.Catalog.find_runtime', side_effect=AssertionError('No desktop fallback')), \
+             patch('bridge.clients.codex.cli_session.subprocess.run', return_value=
+                   subprocess.CompletedProcess([], 0, json.dumps(report))) as run:
+            native._start_daemon()
+        self.assertEqual(native.configured_cli, self.installed)
+        self.assertEqual(run.call_args.args[0], [str(self.installed), 'app-server', 'daemon', 'start'])
+
     def test_only_an_independent_home_clears_the_default_database_environment(self):
         extra = self.home / 'independent-home'
         extra.mkdir()
         independent = Bridge(extra, extra / 'bridge-data', host='codex:' + '1' * 32,
-                             codex_bin=self.home / 'absent-app')
+                             codex_bin=self.installed)
         self.addCleanup(independent.close)
         for native, expected in ((self.native, '/default/sqlite'), (independent.cli_sessions, None)):
             with self.subTest(home=str(native.home)), patch.dict('os.environ', {'CODEX_SQLITE_HOME': '/default/sqlite'}):
