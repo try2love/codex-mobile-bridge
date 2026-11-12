@@ -1220,12 +1220,7 @@ class Accounts:
                 self.phase('starting')
                 app.start()
                 self.phase('verifying')
-                self.wait_ready(app)
-                if not preparation_error:
-                    client = connect(self.home, self.runtime)
-                    if client is None:
-                        raise ValueError('未能确认 Codex 原生共享连接，请重新初始化连接')
-                    client.close()
+                self.wait_ready(app, native_runtime=not preparation_error)
                 record_preparation(self.home, self.state['requestId'], complete=True)
                 self.phase('complete', error=None)
                 self.desktop_preparation = ({'state': 'failed', 'reason': str(preparation_error)}
@@ -1321,7 +1316,7 @@ class Accounts:
             time.sleep(.25)
         raise ValueError('仍有桌面实例占用连接，请在电脑端关闭后重试')
 
-    def wait_ready(self, app, row=None):
+    def wait_ready(self, app, row=None, *, native_runtime=False):
         end = time.monotonic()+35
         while time.monotonic() < end:
             try:
@@ -1329,6 +1324,13 @@ class Accounts:
                     time.sleep(.5)
                     continue
                 self.bridge.ipc.connect()
+                if native_runtime:
+                    # Desktop IPC can be available before the shared handshake.
+                    from bridge.clients.codex.desktop_runtime import connect
+                    client = connect(self.home, self.runtime)
+                    if client is None:
+                        raise ValueError('未能确认 Codex 原生共享连接')
+                    client.close()
                 if row:
                     with ManagedRPC(self.home, self.runtime) as rpc:
                         config = rpc.request('config/read', {'includeLayers': False}).get('config', {})
