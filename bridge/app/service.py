@@ -1313,7 +1313,7 @@ class Bridge:
             target.store.poll_results.clear()
 
     def assert_desktop_idle(self, timeout=20, identifiers=None, allow_missing_ipc=False, allow_stopped_app=False,
-                            *, desktop_only=False):
+                            *, desktop_only=False, desktop_executable=None):
         """Passively check every desktop owner before an application shutdown.
 
         The caller holds the account operation gate until shutdown completes.
@@ -1499,7 +1499,8 @@ class Bridge:
                         return
                     if allow_stopped_app and self.host == 'local':
                         try:
-                            executable = self.accounts.index.get('desktopExecutable') or DesktopApp.discover(self.catalog_reader.executable)
+                            executable = (desktop_executable or self.accounts.index.get('desktopExecutable')
+                                          or DesktopApp.discover(self.catalog_reader.executable))
                             if not executable:
                                 raise TaskStateUnavailable(unknown)
                             app = DesktopApp(executable, self.codex_home)

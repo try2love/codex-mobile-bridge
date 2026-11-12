@@ -75,7 +75,8 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
         self.assertEqual(order, ['configure', 'start'])
         self.mocks['stop'].assert_not_called()
         self.assertEqual(self.manager.desktop_preparation['state'], 'ready')
-        self.bridge.assert_desktop_idle.assert_called_once_with(allow_stopped_app=True, desktop_only=True, timeout=3)
+        self.bridge.assert_desktop_idle.assert_called_once_with(allow_stopped_app=True, desktop_only=True,
+            desktop_executable=self.app.executable, timeout=3)
 
     def test_startup_busy_and_unknown_tasks_defer_without_blocking_account_state(self):
         self.mocks['connect'].return_value = None
@@ -91,6 +92,31 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
         self.mocks['stop'].assert_not_called()
         self.mocks['configure'].assert_not_called()
         self.app.start.assert_not_called()
+
+    def test_cold_start_audits_the_discovered_app_when_cli_is_installed_separately(self):
+        from bridge.app.service import Bridge
+        from bridge.clients.codex.ipc import IPCError
+        self.manager.index['desktopExecutable'] = ''
+        self.mocks['connect'].side_effect = [None, Mock()]
+        self.mocks['inspect'].side_effect = [self.stopped] * 3
+        self.bridge.hosts = SimpleNamespace(lifecycle_hosts=lambda: {})
+        self.bridge.store = SimpleNamespace(lifecycle_threads=lambda: [])
+        self.bridge.accounts = self.manager
+        self.bridge.assert_desktop_idle.side_effect = lambda **kwargs: Bridge.assert_desktop_idle(self.bridge, **kwargs)
+        self.app.processes.return_value = []
+        missing = IPCError('Desktop is not running')
+        missing.__cause__ = FileNotFoundError('desktop IPC is absent')
+        with patch('bridge.app.service.DesktopIPC') as ipc, \
+                patch('bridge.app.service.DesktopApp', return_value=self.app) as desktop:
+            desktop.discover.return_value = ''
+            ipc.return_value.connect.side_effect = missing
+            self.assertFalse(self.manager.prepare_desktop_runtime(self.app))
+            desktop.assert_called_once_with(self.app.executable, self.home)
+            desktop.discover.assert_not_called()
+        self.assertEqual(self.manager.desktop_preparation['state'], 'ready')
+        self.app.processes.assert_called_once()
+        self.app.start.assert_called_once()
+        self.mocks['stop'].assert_not_called()
 
     def test_startup_never_repeats_an_uncertain_launch(self):
         self.mocks['connect'].return_value = None
@@ -220,7 +246,8 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
         self.mocks['validate_runtime'].assert_called_once_with(self.manager.runtime)
         self.assertEqual(self.manager.state['phase'], 'complete')
         self.assertEqual(self.manager.state['operation'], 'desktopRuntime')
-        self.bridge.assert_desktop_idle.assert_called_once_with(allow_stopped_app=False, desktop_only=True)
+        self.bridge.assert_desktop_idle.assert_called_once_with(allow_stopped_app=False, desktop_only=True,
+            desktop_executable=self.app.executable)
         self.assertEqual(self.mocks['identity'].call_count, 4)
         self.mocks['configure'].assert_called_once_with(self.home, self.app.executable, self.manager.runtime)
         self.mocks['connect'].assert_called_once_with(self.home, self.manager.runtime)
@@ -426,7 +453,8 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
         self.mocks['inspect'].return_value = self.stopped
         self.run_initialization()
         self.assertEqual(self.manager.state['phase'], 'complete')
-        self.bridge.assert_desktop_idle.assert_called_once_with(allow_stopped_app=True, desktop_only=True)
+        self.bridge.assert_desktop_idle.assert_called_once_with(allow_stopped_app=True, desktop_only=True,
+            desktop_executable=self.app.executable)
         self.mocks['stop'].assert_not_called()
         self.app.start.assert_called_once()
 

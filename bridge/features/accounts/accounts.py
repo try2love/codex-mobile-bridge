@@ -1173,6 +1173,7 @@ class Accounts:
                     raise preparation_error
                 try:
                     self.bridge.assert_desktop_idle(allow_stopped_app=not state['running'], desktop_only=True,
+                        desktop_executable=app.executable,
                         **({'timeout': 3} if automatic else {}))
                 except (TaskStateUnavailable, TaskAuditIncomplete) as exc:
                     if automatic:

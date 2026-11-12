@@ -73,6 +73,21 @@ class DesktopIdle(unittest.TestCase):
         self.bridge.activate.assert_not_called(); self.bridge.store.history.assert_not_called()
         self.assertTrue(all(instance.closed for instance in self.instances))
 
+    def test_missing_ipc_does_not_prove_the_selected_desktop_is_stopped(self):
+        self.bridge.accounts.index = {}
+        self.bridge.catalog_reader = SimpleNamespace(executable='separately-installed-cli')
+        def missing(options):
+            raise IPCError('Desktop IPC is absent') from FileNotFoundError()
+        self.before_connect = missing
+        with patch('bridge.app.service.DesktopApp') as desktop:
+            desktop.return_value.processes.return_value = [41]
+            with self.assertRaises(TaskStateUnavailable):
+                self.bridge.assert_desktop_idle(allow_stopped_app=True, desktop_executable='selected-desktop')
+            desktop.assert_called_once_with('selected-desktop', self.bridge.codex_home)
+            desktop.return_value.validate.assert_called_once_with('separately-installed-cli')
+            desktop.return_value.processes.assert_called_once()
+            desktop.discover.assert_not_called()
+
     def test_601_history_candidates_do_not_serialize_a_silent_owner_before_tail_busy(self):
         identifiers = [f'history-{index:04}' for index in range(600)] + ['tail-busy']
         self.bridge.store.lifecycle_threads.return_value = [{'id': sid} for sid in identifiers]
