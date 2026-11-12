@@ -660,7 +660,7 @@ Thanks to [@we-worker](https://github.com/we-worker) for Windows WSL Codex suppo
 
 ## License and references
 
-[MIT License](LICENSE).
+The project as a whole is licensed under [GNU AGPLv3, version 3 only (`AGPL-3.0-only`)](LICENSE). Historical MIT notices are retained in [NOTICE](NOTICE); third-party components retain their own licenses. Versions previously released under MIT are unaffected. Modified versions used over a network must offer their Corresponding Source to those users as required by section 13 of the AGPL.
 
 - [OpenAI Codex](https://github.com/openai/codex)
 - [Cloudflare Tunnel documentation](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)

@@ -18,6 +18,8 @@ B00000000000000000000017 = {isa = PBXCopyFilesBuildPhase; buildActionMask = 2147
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXBuildFile section */
+FA6000000000000000000001 /* LICENSE in Resources */ = {isa = PBXBuildFile; fileRef = FA6000000000000000000002; };
+FA6000000000000000000003 /* NOTICE in Resources */ = {isa = PBXBuildFile; fileRef = FA6000000000000000000004; };
 F50000000000000000000003 = {isa = PBXBuildFile; fileRef = F50000000000000000000002; };
 F50000000000000000000001 = {isa = PBXBuildFile; fileRef = F50000000000000000000000; };
 E00000000000000000000009 /* mobile-system-bars.js in Resources */ = {isa = PBXBuildFile; fileRef = E00000000000000000000008; };
@@ -59,6 +61,8 @@ F40000000000000000000013 = {isa = PBXBuildFile; fileRef = F100000000000000000000
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+FA6000000000000000000002 /* LICENSE */ = {isa = PBXFileReference; lastKnownFileType = text; path = ../../LICENSE; sourceTree = SOURCE_ROOT; };
+FA6000000000000000000004 /* NOTICE */ = {isa = PBXFileReference; lastKnownFileType = text; path = ../../NOTICE; sourceTree = SOURCE_ROOT; };
 F50000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DshMobile.swift; sourceTree = "<group>"; };
 F50000000000000000000000 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DshMobileURL.swift; sourceTree = "<group>"; };
 E00000000000000000000008 /* mobile-system-bars.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = ../shared/web/mobile-system-bars.js; sourceTree = SOURCE_ROOT; };
@@ -111,6 +115,7 @@ B00000000000000000000016 = {isa = PBXFrameworksBuildPhase; buildActionMask = 214
 			children = (
 				A00000000000000000000006 /* BridgePreview */,
 E00000000000000000000007 /* Shared Web */,
+FA6000000000000000000002 /* LICENSE */, FA6000000000000000000004 /* NOTICE */,
 B00000000000000000000014, F40000000000000000000014,
 				A00000000000000000000004 /* Products */,
 			);
@@ -214,6 +219,7 @@ B00000000000000000000019, F40000000000000000000017,
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+FA6000000000000000000001 /* LICENSE in Resources */, FA6000000000000000000003 /* NOTICE in Resources */,
 				A00000000000000000000054 /* AppIcon83x83@2x.png in Resources */, F4000000000000000000000B,
 F20000000000000000000002, F20000000000000000000003, F20000000000000000000004,
 F20000000000000000000001,

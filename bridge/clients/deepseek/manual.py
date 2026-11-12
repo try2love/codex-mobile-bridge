@@ -34,6 +34,7 @@ def package_files():
                ('package.json', 'cordis.patch.yml', 'index.mjs', 'README.md')},
             'host.mjs': (SOURCE/'host.mjs').read_bytes(),
             'LICENSE': (SOURCE.parents[2]/'LICENSE').read_bytes(),
+            'NOTICE': (SOURCE.parents[2]/'NOTICE').read_bytes(),
             'LICENSE.coding-mobile': (SOURCE.parent/'LICENSE.coding-mobile').read_bytes()}
 
 

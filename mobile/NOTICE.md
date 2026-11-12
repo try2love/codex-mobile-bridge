@@ -1,6 +1,6 @@
 # Mobile companion preview
 
-Copyright (c) 2026 try2love. Project code is covered by the repository MIT license.
+Copyright (c) 2026 try2love. Project code is covered by GNU AGPLv3, version 3 only (AGPL-3.0-only). See the repository LICENSE and NOTICE for the license and retained historical MIT notice.
 
 Android QR scanning uses ZXing Core 3.5.3, Copyright ZXing authors, Apache License 2.0:
 Full license: `licenses/ZXing-LICENSE.txt` (bundled in the APK as `assets/ZXing-LICENSE.txt`).

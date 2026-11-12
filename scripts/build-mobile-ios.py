@@ -14,13 +14,13 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_PATHS = ('mobile/ios', 'mobile/shared/web', 'web/client-icons',
                 'mobile/README.md', 'mobile/NOTICE.md', 'mobile/licenses',
-                'LICENSE', 'README.md')
+                'LICENSE', 'NOTICE', 'README.md')
 REQUIRED_SOURCES = ('mobile/ios/BridgePreview.xcodeproj/project.pbxproj',
                     'mobile/ios/BridgePreview/Info.plist',
                     'mobile/shared/web/channel-link.js', 'mobile/shared/web/mobile-ui.js', 'mobile/shared/web/mobile-clipboard.js',
                     'mobile/shared/web/mobile-system-bars.js',
                     'web/client-icons/codex.png', 'web/client-icons/claude.png',
-                    'web/client-icons/deepseek.png', 'web/client-icons/zcode.png', 'mobile/README.md', 'LICENSE')
+                    'web/client-icons/deepseek.png', 'web/client-icons/zcode.png', 'mobile/README.md', 'LICENSE', 'NOTICE')
 
 
 def source_archive(root, destination):
@@ -58,7 +58,7 @@ def verify_app(app, version, build):
         if (bundle/'embedded.mobileprovision').exists() or (bundle/'_CodeSignature').exists():
             raise RuntimeError('Expected an unsigned iOS bundle: '+str(bundle))
         subprocess.run(['xcrun', 'lipo', str(executable), '-verify_arch', 'arm64'], check=True)
-    for name in ('channel-link.js', 'mobile-ui.js', 'mobile-clipboard.js', 'mobile-system-bars.js', 'codex.png', 'claude.png', 'deepseek.png', 'zcode.png'):
+    for name in ('channel-link.js', 'mobile-ui.js', 'mobile-clipboard.js', 'mobile-system-bars.js', 'codex.png', 'claude.png', 'deepseek.png', 'zcode.png', 'LICENSE', 'NOTICE'):
         if not (app/name).is_file():
             raise RuntimeError('Missing iOS resource: '+name)
     info = plistlib.loads((app/'Info.plist').read_bytes())

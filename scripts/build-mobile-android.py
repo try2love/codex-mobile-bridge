@@ -49,6 +49,8 @@ with zipfile.ZipFile(work/'unsigned.apk','a') as archive:
             archive.write(asset,'assets/'+asset.name)
     for provider in ('codex', 'claude', 'deepseek', 'zcode', 'antigravity'):
         archive.write(ROOT/'web/client-icons'/f'{provider}.png', 'assets/'+provider+'.png')
+    for name in ('LICENSE', 'NOTICE'):
+        archive.write(ROOT/name, 'assets/'+name)
     archive.write(ROOT/'mobile/NOTICE.md','assets/NOTICE.md')
     archive.write(ROOT/'mobile/licenses/ZXing-LICENSE.txt','assets/ZXing-LICENSE.txt')
 key = tools/'preview-debug.p12'

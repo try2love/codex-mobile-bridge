@@ -953,7 +953,7 @@ python3 -B -m unittest discover -s tests -v
 
 ## 许可证与参考
 
-项目源码使用 [MIT License](LICENSE)。Codex App 为独立软件，不随本项目分发。桌面构建内置 cloudflared 并附带其许可证；二进制不提交到源码仓库，遵循其自身许可。
+项目整体使用 [GNU AGPLv3（仅第 3 版，`AGPL-3.0-only`）](LICENSE)。旧版 MIT 代码的许可与版权通知保留在 [NOTICE](NOTICE)，第三方组件继续遵循各自许可。此前按 MIT 发布的版本不受本次变更影响。修改版本供用户通过网络交互时，须依照 AGPL 第 13 条向这些用户提供对应源码。Codex App 为独立软件，不随本项目分发。桌面构建内置 cloudflared 并附带其许可证；二进制不提交到源码仓库，遵循其自身许可。
 
 - [OpenAI Codex App Server 文档](https://learn.chatgpt.com/docs/app-server)
 - [Cloudflare Quick Tunnel 文档](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/)

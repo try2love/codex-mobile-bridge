@@ -97,7 +97,7 @@ class ManualPluginTests(unittest.TestCase):
     def test_export_contains_same_host_and_no_private_state(self):
         result = export_package(str(self.root))
         with zipfile.ZipFile(result['path']) as archive:
-            self.assertEqual(len(archive.namelist()), 7)
+            self.assertEqual(len(archive.namelist()), 8)
             self.assertEqual(archive.read('dsh-codex-mobile-bridge/host.mjs'),
                              (ROOT/'bridge/clients/deepseek/host.mjs').read_bytes())
             self.assertFalse(any('connection' in name or 'binding' in name for name in archive.namelist()))
