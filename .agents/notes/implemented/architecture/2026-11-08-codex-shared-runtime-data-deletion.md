@@ -43,3 +43,7 @@ Mac 适配器由原 App 持有，保留原始初始化与其他配置，仅将�
 ## 历史笔记核对
 
 [原生侧边聊天](../feature/2026-11-07-native-attached-side-chats.md)与[永久删除](../feature/2026-11-07-native-session-deletion.md)部分重叠，保留原生关系、确认和账本规则并互链。[VS Code 共享 owner](../bug-fix/2026-11-03-vscode-shared-owner.md)是另一条通道，保留。旧共享运行时提案只被部分替代，保留其原始界面同步证据；CLI、SSH 与归档笔记不在本次变更范围。
+
+## 启动时准备
+
+[自动准备原生连接](../feature/2026-11-12-native-runtime-startup-preparation.md)部分取代本篇仅手动初始化的入口决定。已共享直接复用；未共享在确认空闲后正常准备，未知事务不自动重放；本篇的传输、身份、写入与数据删除边界保持。

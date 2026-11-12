@@ -83,6 +83,10 @@ def verified_socket(endpoint):
     return (str(target), info.st_dev, info.st_ino, advertised.st_dev, advertised.st_ino)
 
 
+class DesktopRuntimeBusy(ValueError):
+    """Another verified lifecycle operation still owns this runtime lock."""
+
+
 @contextmanager
 def exclusive_lock(home, name, *, timeout=0):
     if sys.platform == 'win32':
@@ -96,7 +100,7 @@ def exclusive_lock(home, name, *, timeout=0):
                     return
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise ValueError('共享接入仍在使用或退出中，请稍后重试')
+                raise DesktopRuntimeBusy('共享接入仍在使用或退出中，请稍后重试')
             time.sleep(min(.25, remaining))
     import fcntl
     root = private_directory(directory(home))
@@ -113,7 +117,7 @@ def exclusive_lock(home, name, *, timeout=0):
             except BlockingIOError as exc:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise ValueError('共享接入仍在使用或退出中，请稍后重试') from exc
+                    raise DesktopRuntimeBusy('共享接入仍在使用或退出中，请稍后重试') from exc
                 time.sleep(min(.25, remaining))
         yield
     finally:
@@ -161,6 +165,24 @@ def settings(home):
     if value.get('version') != VERSION or value.get('home') != str(Path(home).resolve()):
         raise ValueError('共享接入配置不匹配，请重新初始化')
     return value
+
+
+def preparation(home):
+    """Caller holds initialization_lock; all gateways share this write receipt."""
+    path = directory(home) / 'preparation.json'
+    if not path.exists() and not path.is_symlink():
+        return None
+    value = _read(path)
+    if (value.get('version') != VERSION or value.get('home') != str(Path(home).resolve())
+            or value.get('state') not in ('pending', 'complete') or not isinstance(value.get('requestId'), str)):
+        raise ValueError('原生连接准备记录无法核验，请在账号管理中检查')
+    return value
+
+
+def record_preparation(home, request_id, *, complete=False):
+    root = private_directory(directory(home))
+    _write(root / 'preparation.json', json.dumps({'version': VERSION, 'home': str(Path(home).resolve()),
+        'requestId': request_id, 'state': 'complete' if complete else 'pending'}))
 
 
 def configure(home, application, cli):
@@ -344,7 +366,7 @@ def connect(home, cli):
             client.close()
             raise
     except (OSError, KeyError, TypeError, ValueError, AppServerUnavailable) as exc:
-        raise AppServerUnavailable('Codex 共享接入尚未就绪，请在账号管理中初始化连接；不会另起运行时重试写入') from exc
+        raise AppServerUnavailable('Codex 原生共享连接尚未就绪，可在账号管理中查看自动准备状态；不会另起运行时重试写入') from exc
 
 
 def server_arguments(arguments, socket_path):

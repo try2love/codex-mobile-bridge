@@ -3339,7 +3339,7 @@ class Bridge:
                 raise CreationUnavailable(str(exc)) from exc
             if client is None:
                 if require_shared and self.host == 'local' and sys.platform in ('darwin', 'win32'):
-                    raise CreationUnavailable('请先打开账号管理 → Codex 原生会话连接 → 初始化连接，在所有桌面任务结束后确认正常重启 Codex App；尚未创建侧边聊天')
+                    raise CreationUnavailable('原生侧聊连接正在等待准备；桌面任务结束并确认空闲后会自动完成。也可在账号管理中查看准备状态；尚未创建侧边聊天')
                 return _runtime_operation(self.catalog_reader.executable, self.codex_home, cwd, operation,
                                           failure_message=failure_message, **_runtime_scope(self.host))
             attempted = False

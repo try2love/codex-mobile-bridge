@@ -20,6 +20,7 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
     def setUp(self):
         test_accounts.AccountsTests.setUp(self)
         self.bridge.host = 'local'
+        self.bridge.closed = threading.Event()
         self.bridge.assert_desktop_idle = Mock()
         self.manager.public = lambda: {'switch': dict(self.manager.state), 'desktopRuntime': self.manager.desktop_runtime_status()}
         self.manager.invalidate = Mock()
@@ -51,6 +52,135 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
     def run_initialization(self):
         self.manager.control(self.value)
         test_accounts.wait_for_account_worker(self)
+
+    def test_startup_reuses_shared_owner_without_task_audit_or_restart(self):
+        original = dict(self.manager.state)
+        self.assertFalse(self.manager.prepare_desktop_runtime(self.app))
+        self.assertEqual(self.manager.desktop_preparation['state'], 'ready')
+        self.mocks['connect'].return_value.close.assert_called_once()
+        self.bridge.assert_desktop_idle.assert_not_called()
+        self.mocks['inspect'].assert_not_called()
+        self.mocks['stop'].assert_not_called()
+        self.mocks['configure'].assert_not_called()
+        self.assertEqual(self.manager.state, original)
+
+    def test_startup_cold_launch_refreshes_configuration_before_start(self):
+        from bridge.clients.codex.app_server import AppServerUnavailable
+        self.mocks['connect'].side_effect = [AppServerUnavailable('old launcher is unavailable'), Mock()]
+        self.mocks['inspect'].side_effect = [self.stopped] * 3
+        order = []
+        self.mocks['configure'].side_effect = lambda *args: order.append('configure')
+        self.app.start.side_effect = lambda: order.append('start')
+        self.assertFalse(self.manager.prepare_desktop_runtime(self.app))
+        self.assertEqual(order, ['configure', 'start'])
+        self.mocks['stop'].assert_not_called()
+        self.assertEqual(self.manager.desktop_preparation['state'], 'ready')
+        self.bridge.assert_desktop_idle.assert_called_once_with(allow_stopped_app=True, desktop_only=True, timeout=3)
+
+    def test_startup_busy_and_unknown_tasks_defer_without_blocking_account_state(self):
+        self.mocks['connect'].return_value = None
+        original = dict(self.manager.state)
+        for error in (ValueError('busy'), TaskStateUnavailable('unknown'), TaskAuditIncomplete('not checked')):
+            with self.subTest(error=error):
+                self.mocks['inspect'].side_effect = [self.running]
+                self.bridge.assert_desktop_idle.side_effect = error
+                self.assertTrue(self.manager.prepare_desktop_runtime(self.app))
+                self.assertEqual(self.manager.state, original)
+                self.assertEqual(self.manager.desktop_preparation['state'], 'waiting')
+                self.assertEqual(self.manager.desktop_preparation.get('taskStateUnavailable', False), isinstance(error, (TaskStateUnavailable, TaskAuditIncomplete)))
+        self.mocks['stop'].assert_not_called()
+        self.mocks['configure'].assert_not_called()
+        self.app.start.assert_not_called()
+
+    def test_startup_never_repeats_an_uncertain_launch(self):
+        self.mocks['connect'].return_value = None
+        self.app.start.side_effect = ValueError('launch result unknown')
+        self.assertFalse(self.manager.prepare_desktop_runtime(self.app))
+        self.assertEqual(self.manager.state['phase'], 'failed')
+        self.assertTrue(self.manager.state['automatic'])
+        self.assertFalse(self.manager.prepare_desktop_runtime(self.app))
+        self.app.start.assert_called_once()
+        self.mocks['stop'].assert_called_once()
+
+    def test_startup_defers_another_gateway_lock_and_honors_cancellation(self):
+        self.mocks['initialize_lock'].side_effect = desktop_runtime.DesktopRuntimeBusy('another gateway')
+        self.assertTrue(self.manager.prepare_desktop_runtime(self.app))
+        self.assertEqual(self.manager.desktop_preparation['state'], 'waiting')
+        self.assertFalse(self.manager.prepare_desktop_runtime(self.app, cancelled=lambda: True))
+        self.mocks['stop'].assert_not_called()
+        self.app.start.assert_not_called()
+
+    def test_another_gateway_cannot_replay_an_uncertain_launch(self):
+        self.mocks['connect'].return_value = None
+        self.app.start.side_effect = ValueError('launch result unknown')
+        self.manager.prepare_desktop_runtime(self.app)
+        other_bridge = SimpleNamespace(**vars(self.bridge))
+        other_bridge.data_dir = self.root / 'other-gateway'
+        other = accounts_module.Accounts(other_bridge)
+        other.prepare_desktop_runtime(self.app)
+        self.assertEqual(other.desktop_preparation['state'], 'failed')
+        self.assertEqual(desktop_runtime.preparation(self.home)['state'], 'pending')
+        self.app.start.assert_called_once()
+
+    def test_a_verified_shared_owner_resolves_a_pending_launch(self):
+        request_id = str(uuid.uuid4())
+        desktop_runtime.record_preparation(self.home, request_id)
+        self.manager.prepare_desktop_runtime(self.app)
+        self.assertEqual(desktop_runtime.preparation(self.home), {
+            'version': desktop_runtime.VERSION, 'home': str(self.home.resolve()),
+            'requestId': request_id, 'state': 'complete'})
+        self.assertEqual(self.manager.desktop_preparation['state'], 'ready')
+        self.app.start.assert_not_called()
+
+    def test_shutdown_during_configuration_does_not_launch_or_replay(self):
+        self.mocks['connect'].return_value = None
+        self.mocks['configure'].side_effect = lambda *args: self.bridge.closed.set()
+        self.manager.prepare_desktop_runtime(self.app)
+        self.assertEqual(self.manager.state['phase'], 'failed')
+        self.assertEqual(desktop_runtime.preparation(self.home)['state'], 'pending')
+        self.bridge.closed.clear()
+        self.manager.prepare_desktop_runtime(self.app)
+        self.app.start.assert_not_called()
+        self.mocks['configure'].assert_called_once()
+
+    def test_disable_during_normal_stop_does_not_configure_or_launch(self):
+        cancelled = threading.Event()
+        self.mocks['connect'].return_value = None
+        self.manager.wait_stopped.side_effect = cancelled.set
+        self.manager.prepare_desktop_runtime(self.app, cancelled=cancelled.is_set)
+        self.assertEqual(desktop_runtime.preparation(self.home)['state'], 'pending')
+        self.mocks['configure'].assert_not_called()
+        self.app.start.assert_not_called()
+
+    def test_unsupported_shared_transport_keeps_ordinary_cold_launch(self):
+        self.mocks['connect'].return_value = None
+        self.mocks['launcher_settings'].side_effect = ValueError('compiled gateway required')
+        self.mocks['inspect'].side_effect = [self.stopped] * 3
+        self.manager.prepare_desktop_runtime(self.app)
+        self.app.start.assert_called_once()
+        self.mocks['configure'].assert_not_called()
+        self.mocks['stop'].assert_not_called()
+        self.assertEqual(self.manager.desktop_preparation['state'], 'failed')
+        self.assertEqual(self.manager.state['phase'], 'complete')
+
+    def test_unsupported_transport_never_restarts_an_app_or_ignores_shared_settings(self):
+        self.mocks['connect'].return_value = None
+        self.mocks['validate_runtime'].side_effect = ValueError('unsupported runtime')
+        self.manager.prepare_desktop_runtime(self.app)
+        self.assertEqual(self.manager.desktop_preparation['state'], 'failed')
+        self.mocks['settings'].return_value = {'configured': True}
+        self.mocks['inspect'].side_effect = [self.stopped] * 3
+        self.manager.prepare_desktop_runtime(self.app)
+        self.mocks['stop'].assert_not_called()
+        self.mocks['configure'].assert_not_called()
+        self.app.start.assert_not_called()
+
+    def test_explicit_unknown_retry_accepts_automatic_audit_evidence(self):
+        self.manager.desktop_preparation = {'state': 'waiting', 'taskStateUnavailable': True}
+        self.bridge.assert_desktop_idle.side_effect = TaskStateUnavailable('unknown')
+        self.value['acknowledgeUnavailable'] = True
+        self.run_initialization()
+        self.assertEqual(self.manager.state['phase'], 'complete')
 
     def test_requires_confirmation_and_rejects_independent_or_other_platform(self):
         for key in ('confirmed', 'tasksConfirmed'):

@@ -83,13 +83,22 @@ for(const desktop of [false,true])test(`${desktop?'desktop':'web'} explicitly in
  ui.panel.accept({...ui.value(),desktopRuntime:{supported:true,configured:true},switch:{phase:'verifying',operation:'desktopRuntime'}});
  assert.equal(ui.panel.initializeRuntime.disabled,true);assert.match(ui.panel.status.textContent,/核验原生连接/);
  ui.panel.accept({...ui.value(),desktopRuntime:{supported:true,configured:true},switch:{phase:'failed',operation:'desktopRuntime',error:'test failure'}});
- assert.equal(ui.panel.initializeRuntime.disabled,false);assert.equal(ui.panel.initializeRuntime.textContent,'重新初始化连接');assert.match(ui.panel.status.textContent,/原生连接初始化未完成/);
+ assert.equal(ui.panel.initializeRuntime.disabled,false);assert.equal(ui.panel.initializeRuntime.textContent,'重新准备连接');assert.match(ui.panel.status.textContent,/原生连接初始化未完成/);
  ui.panel.accept({...ui.value(),scope:'profile'});assert.equal(ui.panel.desktopRuntime.hidden,true);
  ui.panel.clear();assert.equal(ui.panel.desktopRuntime.hidden,true);
 });
 test('native initialization remains unavailable for passwordless remote access',async()=>{
  const ui=fixture();ui.panel.accept({...ui.value(),canSwitch:false,desktopRuntime:{supported:true,configured:false}});assert.equal(ui.panel.initializeRuntime.disabled,true);
  ui.panel.accept({...ui.value(),desktopRuntime:{supported:false}});assert.equal(ui.panel.desktopRuntime.hidden,true);
+});
+test('automatic native preparation stays passive and offers unknown-task recovery',()=>{
+ const ui=fixture();ui.panel.accept({...ui.value(),desktopRuntime:{supported:true,preparation:{state:'checking'}}});
+ assert.match(ui.panel.runtimeStatus.textContent,/自动检查/);assert.equal(ui.requests.length,0);
+ ui.panel.accept({...ui.value(),desktopRuntime:{supported:true,preparation:{state:'waiting',taskStateUnavailable:true}}});
+ assert.match(ui.panel.runtimeStatus.textContent,/空闲后自动准备/);assert.equal(ui.panel.forceInitializeRuntime.hidden,false);
+ ui.panel.accept({...ui.value(),desktopRuntime:{supported:true,configured:true,preparation:{state:'ready'}}});
+ assert.match(ui.panel.runtimeStatus.textContent,/准备好/);assert.equal(ui.panel.forceInitializeRuntime.hidden,true);
+ assert.equal(ui.requests.length,0);
 });
 
 for(const desktop of [false,true])test(`${desktop?'desktop':'web'} offers a confirmed retry only for unavailable native task state`,async()=>{

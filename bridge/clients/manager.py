@@ -162,6 +162,8 @@ class DesktopSessions:
         self.gateway_running = gateway_running
         self.closed = threading.Event()
         self.startup_thread = None
+        self.runtime_preparation_thread = None
+        self.runtime_preparation_cancel = threading.Event()
         self.client_lock = threading.RLock()
         self.client_cache = None
         self.client_snapshot = None
@@ -1935,6 +1937,25 @@ class DesktopSessions:
             self.startup_thread = threading.Thread(target=self.start_enabled, daemon=True)
             self.startup_thread.start()
 
+    def _prepare_codex_runtime(self, descriptor):
+        if (self.runtime_preparation_thread and self.runtime_preparation_thread.is_alive()
+                and not self.runtime_preparation_cancel.is_set()):
+            return
+        cancelled = self.runtime_preparation_cancel = threading.Event()
+        from bridge.clients.desktop_app import DesktopApp
+        app = DesktopApp(descriptor['executable'], descriptor['dataDirectory'])
+        def prepare():
+            while not self.closed.is_set() and not cancelled.is_set():
+                with self.client_lock:
+                    if not self.config.get('enabled', {}).get('codex', True):
+                        return
+                if not self.bridge.accounts.prepare_desktop_runtime(app, cancelled=lambda: self.closed.is_set() or cancelled.is_set()):
+                    return
+                if cancelled.wait(60):
+                    return
+        self.runtime_preparation_thread = threading.Thread(target=prepare, daemon=True, name='native-side-chat-preparation')
+        self.runtime_preparation_thread.start()
+
     def _descriptor(self, provider, *, inventory=False):
         if getattr(self, 'instance', None) is not None:
             if provider != self.instance.family:
@@ -2964,6 +2985,8 @@ class DesktopSessions:
                 return self.clients(refresh=True)
         from bridge.clients.lifecycle import inspect_client, launch_client
         accounts = self.bridge.accounts if provider == 'codex' and self.bridge else None
+        if provider == 'codex' and not enabled:
+            self.runtime_preparation_cancel.set()
         account_gate = (_closing_gate(accounts.gate) if accounts and not enabled and quit_desktop
                         else accounts.gate if accounts else nullcontext())
         with self.client_lock, self._changing(provider, rebind='connectionMode' not in value), account_gate, accounts.lock if accounts else nullcontext():
@@ -3048,6 +3071,9 @@ class DesktopSessions:
                         raise ValueError('此系统不支持 Claude 桌面连接')
                 elif provider == 'codex' and not descriptor['installed'] and row.get('cliAvailable'):
                     pass  # CLI-only access starts its runtime on an explicit chat operation.
+                elif (provider == 'codex' and accounts and sys.platform in ('darwin', 'win32')
+                      and getattr(self.bridge, 'host', 'local') == 'local'):
+                    self._prepare_codex_runtime(descriptor)
                 else:
                     result = launch_client(descriptor)
                     if provider == 'zcode' and not startup and not result.get('launched'):
@@ -3563,6 +3589,7 @@ class DesktopSessions:
 
     def close(self):
         self.closed.set()
+        self.runtime_preparation_cancel.set()
         if self.instances is not None:
             self.instances.close()
         with self.model_lock:
@@ -3571,6 +3598,8 @@ class DesktopSessions:
             self.model_timers.clear()
         if self.startup_thread:
             self.startup_thread.join(timeout=5)
+        if self.runtime_preparation_thread:
+            self.runtime_preparation_thread.join(timeout=5)
         if self.bridge is not None and getattr(self.bridge.accounts, 'require_client_enabled', None) is self._codex_guard:
             del self.bridge.accounts.require_client_enabled
         if hasattr(self, 'terminals'):

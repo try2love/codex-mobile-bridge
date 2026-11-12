@@ -449,10 +449,11 @@ class AccountsPanel {
     const phase=value.switch?.phase||'idle',labels={idle:'请选择已保存的接入',preparing:'正在准备账号',stopping:'正在退出 Codex 桌面应用',applying:'正在应用接入配置',starting:'正在启动 Codex 桌面应用',verifying:'正在核验账号与桌面连接',authUnknown:'账号同步结果待核验',complete:'切换完成',restoring:'正在恢复原接入',restored:'已恢复原接入',failed:'切换未完成',interrupted:'需要在桌面端恢复原接入'};
     const switching=!['idle','complete','restored','failed'].includes(phase);
     const runtime=value.desktopRuntime||{};this.desktopRuntime.hidden=runtime.supported!==true||value.scope==='profile';
-    this.runtimeStatus.textContent=this.text(runtime.error||(runtime.configured?'已保存原生连接设置；由网关启动 App 时生效。':'初始化后，手机与 Codex App 共用原生侧边聊天和删除功能。'));
-    this.initializeRuntime.textContent=this.text(runtime.configured?'重新初始化连接':'初始化连接');
+    const preparation=runtime.preparation||{};
+    this.runtimeStatus.textContent=this.text(runtime.error||({ready:'原生侧聊连接已准备好',checking:'正在自动检查原生侧聊连接',preparing:'正在自动准备原生侧聊连接',waiting:'等待桌面空闲后自动准备；现有聊天可继续使用',failed:'自动准备未完成，请重新准备连接'}[preparation.state])||(runtime.configured?'已保存原生连接设置；由网关启动 App 时生效。':'网关启动时会自动准备原生侧聊连接。'))+(preparation.reason?' · '+this.text(preparation.reason):'');
+    this.initializeRuntime.textContent=this.text('重新准备连接');
     this.initializeRuntime.disabled=this.busy||switching||external||(!this.desktop&&value.canSwitch===false);
-    this.forceInitializeRuntime.hidden=value.switch?.operation!=='desktopRuntime'||phase!=='failed'||value.switch?.taskStateUnavailable!==true;
+    this.forceInitializeRuntime.hidden=!(value.switch?.operation==='desktopRuntime'&&phase==='failed'&&value.switch?.taskStateUnavailable===true||preparation.state==='waiting'&&preparation.taskStateUnavailable===true);
     this.forceInitializeRuntime.disabled=this.initializeRuntime.disabled;
     const resetAccount=this.accountRows().find(row=>row.id===this.resetAccountId);
     if(this.resetDialog?.open&&(switching||!resetAccount||this.resetAccountKey&&this.resetAccountKey!==resetAccount.accountKey))this.resetDialog.close();

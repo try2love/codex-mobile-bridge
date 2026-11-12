@@ -262,7 +262,7 @@ class SideChatServiceTests(unittest.TestCase):
              patch.object(desktop_runtime, 'connect', side_effect=[None, client]), \
              patch('bridge.features.sessions.create._runtime_operation') as spawn, \
              patch('bridge.app.service.fork_attached', side_effect=fork):
-            with self.assertRaisesRegex(CreationUnavailable, '账号管理.*初始化连接'):
+            with self.assertRaisesRegex(CreationUnavailable, '自动完成.*账号管理'):
                 bridge.side_chat(support.THREAD, 'phone', 'create', body)
             self.assertNotIn(body['creationId'], bridge.message_actions)
             client.request.assert_not_called()

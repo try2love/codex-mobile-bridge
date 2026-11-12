@@ -300,7 +300,7 @@ class MetadataRoutingTests(unittest.TestCase):
              patch.object(runtime, 'connect', return_value=None), \
              patch('bridge.features.sessions.create._runtime_operation') as spawn:
             operation = Mock()
-            with self.assertRaisesRegex(CreationUnavailable, '初始化连接'):
+            with self.assertRaisesRegex(CreationUnavailable, '自动完成'):
                 self.call(operation, require_shared=True)
             operation.assert_not_called()
             spawn.assert_not_called()
@@ -324,7 +324,7 @@ class MetadataRoutingTests(unittest.TestCase):
              patch.object(runtime, 'initialization_lock', return_value=nullcontext()), \
              patch.object(runtime, 'connect', return_value=None), \
              patch('bridge.features.sessions.create._runtime_operation') as spawn:
-            with self.assertRaisesRegex(CreationUnavailable, '初始化连接'):
+            with self.assertRaisesRegex(CreationUnavailable, '自动完成'):
                 self.call(Mock(), require_shared=True)
             spawn.assert_not_called()
 

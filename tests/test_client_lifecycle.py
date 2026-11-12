@@ -104,7 +104,7 @@ class ClientLifecycleTests(unittest.TestCase):
         self.dsh.call.side_effect = lambda action, *args: ({'connected': True, 'configured': True, 'bridgeRevision': 3}
             if action == 'status' else {'connected': True, 'complete': True, 'bridgeRevision': 3, 'sessions': []})
         self.accounts = SimpleNamespace(gate=threading.RLock(), lock=threading.RLock(),
-            assert_editable=Mock(), idle=Mock(), index={}, runtime=None,
+            assert_editable=Mock(), idle=Mock(), prepare_desktop_runtime=Mock(return_value=False), index={}, runtime=None,
             info=SimpleNamespace(current=lambda: {'status': 'ready', 'kind': 'chatgpt'}), home=self.root)
         self.bridge = SimpleNamespace(accounts=self.accounts, assert_desktop_idle=Mock(), suspend_observation=Mock())
         self.bridge.for_host = lambda _: self.bridge
@@ -238,15 +238,17 @@ class ClientLifecycleTests(unittest.TestCase):
         self.accounts.index['desktopExecutable'] = ''
         self.accounts.runtime = self.root/'cache/hash/codex.exe'
         self.running = False
-        with patch('bridge.clients.desktop_app.DesktopApp.discover', return_value=''):
+        with patch('bridge.clients.desktop_app.DesktopApp.discover', return_value=''), \
+             patch.object(self.manager, '_prepare_codex_runtime') as prepare:
             rows = self.manager.toggle_client({'provider': 'codex', 'enabled': True})['clients']
-        descriptor = self.launch.call_args.args[0]
+        descriptor = prepare.call_args.args[0]
         self.assertEqual(descriptor['executable'], self.manager.config['discovered']['codex']['executable'])
         self.assertTrue(descriptor['installed'])
         self.assertEqual(descriptor['dataDirectory'], str(self.accounts.home))
         codex = next(row for row in rows if row['id'] == 'codex')
         self.assertTrue(codex['configured'])
-        self.assertTrue(codex['connected'])
+        self.assertFalse(codex['connected'])
+        self.launch.assert_not_called()
 
     def test_explicit_codex_gui_keeps_precedence_even_when_missing(self):
         selected = self.root/'selected.exe'
@@ -552,6 +554,36 @@ class ClientLifecycleTests(unittest.TestCase):
         self.assertTrue(self.manager.enabled('claude'))
         self.claude.reconnect.assert_called_once_with()
         self.claude.connect.assert_not_called()
+
+    def test_codex_background_preparation_waits_for_enabled_selection(self):
+        self.manager.config['enabled']['codex'] = False
+        self.manager.toggle_client({'provider': 'codex', 'enabled': True})
+        self.manager.runtime_preparation_thread.join(3)
+        self.assertFalse(self.manager.runtime_preparation_thread.is_alive())
+        self.accounts.prepare_desktop_runtime.assert_called_once()
+        app = self.accounts.prepare_desktop_runtime.call_args.args[0]
+        self.assertEqual(str(app.executable), self.manager.config['discovered']['codex']['executable'])
+        self.assertEqual(app.home, self.accounts.home)
+        self.launch.assert_not_called()
+
+    def test_codex_disable_cancels_preparation_before_waiting_for_its_gate(self):
+        entered, cancelled = threading.Event(), threading.Event()
+        # Hold the preparation gate until the disable request cancels it.
+        def held_prepare(app, **options):
+            with self.accounts.gate:
+                entered.set()
+                if self.manager.runtime_preparation_cancel.wait(3):
+                    self.assertTrue(options['cancelled']())
+                    cancelled.set()
+            return False
+        self.accounts.prepare_desktop_runtime.side_effect = held_prepare
+        self.manager.toggle_client({'provider': 'codex', 'enabled': True})
+        self.assertTrue(entered.wait(2))
+        self.manager.toggle_client({'provider': 'codex', 'enabled': False, 'quitDesktop': False})
+        self.manager.runtime_preparation_thread.join(3)
+        self.assertTrue(cancelled.is_set())
+        self.assertFalse(self.manager.enabled('codex'))
+        self.launch.assert_not_called()
 
     def test_offline_selection_never_launches_or_quits_clients(self):
         self.manager.gateway_running = False

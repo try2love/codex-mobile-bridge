@@ -197,6 +197,7 @@ class Accounts:
         self.monitor = AccountMonitor(self)
         self.login_cancel = threading.Event()
         self.thread = None
+        self.desktop_preparation = {'state': 'idle'}
 
     @property
     def independent(self):
@@ -336,7 +337,7 @@ class Accounts:
 
     def desktop_runtime_status(self):
         supported = sys.platform in ('darwin', 'win32') and getattr(self.bridge, 'host', 'local') == 'local'
-        result = {'supported': supported, 'configured': False}
+        result = {'supported': supported, 'configured': False, 'preparation': dict(self.desktop_preparation)}
         if supported:
             from bridge.clients.codex.desktop_runtime import settings
             try:
@@ -1052,7 +1053,9 @@ class Accounts:
             acknowledged = value.get('acknowledgeUnavailable') is True
             if acknowledged and not (self.state.get('operation') == 'desktopRuntime'
                                      and self.state.get('phase') == 'failed'
-                                     and self.state.get('taskStateUnavailable') is True):
+                                     and self.state.get('taskStateUnavailable') is True
+                                     or self.desktop_preparation.get('state') == 'waiting'
+                                     and self.desktop_preparation.get('taskStateUnavailable') is True):
                 raise ValueError('请先核验原生连接初始化的任务状态，再确认是否继续')
             self.idle(pending_only=True)
             executable = self.index.get('desktopExecutable') or DesktopApp.discover(self.runtime)
@@ -1069,8 +1072,32 @@ class Accounts:
             self.thread.start()
             return self.public()
 
-    def _initialize_desktop_runtime(self, app, acknowledged=False):
-        from bridge.clients.codex.desktop_runtime import configure, connect, initialization_lock, process_identity
+    def prepare_desktop_runtime(self, app, *, cancelled=lambda: False):
+        """Startup preparation; return True only when a passive retry is safe.
+
+        Waiting does not change account state or hold a gate between attempts.
+        Once a lifecycle write starts, a failure requires explicit recovery.
+        """
+        if sys.platform not in ('darwin', 'win32') or getattr(self.bridge, 'host', 'local') != 'local':
+            return False
+        if not self.gate.acquire(timeout=0):
+            self.desktop_preparation = {'state': 'waiting', 'reason': '等待当前操作结束后自动准备原生侧聊'}
+            return True
+        try:
+            if self.bridge.closed.is_set() or cancelled():
+                return False
+            self.assert_editable()
+            return self._initialize_desktop_runtime(app, automatic=True, cancelled=cancelled)
+        except ValueError as exc:
+            self.desktop_preparation = {'state': 'waiting', 'reason': str(exc)}
+            return True
+        finally:
+            self.gate.release()
+
+    def _initialize_desktop_runtime(self, app, acknowledged=False, *, automatic=False, cancelled=lambda: False):
+        from bridge.clients.codex.desktop_runtime import configure, connect, initialization_lock, process_identity, DesktopRuntimeBusy
+        from bridge.clients.codex.desktop_runtime import preparation, record_preparation, settings
+        from bridge.clients.codex.app_server import AppServerUnavailable
         from bridge.clients.lifecycle import inspect_client, stop_client
         if sys.platform == 'win32':
             from bridge.platforms.windows.codex_daemon_env import read_process_environment
@@ -1108,19 +1135,73 @@ class Accounts:
 
         try:
             with self.gate, self.bridge.account.lock, initialization_lock(self.home):
+                preparation_error = None
+                if automatic:
+                    self.desktop_preparation = {'state': 'checking'}
+                    # Recheck under the shared initialization lock: another
+                    # gateway may have prepared this same App in the meantime.
+                    try:
+                        client = connect(self.home, self.runtime)
+                    except (OSError, ValueError, AppServerUnavailable):
+                        client = None
+                    if client is not None:
+                        client.close()
+                        prior = preparation(self.home)
+                        if prior and prior['state'] == 'pending':
+                            record_preparation(self.home, prior['requestId'], complete=True)
+                        self.desktop_preparation = {'state': 'ready'}
+                        return False
+                    prior = preparation(self.home)
+                    if prior and prior['state'] == 'pending':
+                        self.desktop_preparation = {'state': 'failed', 'reason': '上次原生连接准备结果待核对，请在账号管理中重新准备；不会自动重复重启'}
+                        return False
+                    app.validate(self.runtime)
+                    from bridge.clients.codex.desktop_runtime import validate_runtime, launcher_settings
+                    try:
+                        self.require_managed_writes()
+                        validate_runtime(self.runtime)
+                        launcher_settings(app.executable)
+                    except ValueError as exc:
+                        # An unsupported shared transport must not prevent an
+                        # ordinary cold App launch. Existing shared settings or
+                        # an uncertain launch never use this fallback.
+                        if settings(self.home) is not None:
+                            raise
+                        preparation_error = exc
                 state, identities = observed()
+                if preparation_error and state['running']:
+                    raise preparation_error
                 try:
-                    self.bridge.assert_desktop_idle(allow_stopped_app=not state['running'], desktop_only=True)
+                    self.bridge.assert_desktop_idle(allow_stopped_app=not state['running'], desktop_only=True,
+                        **({'timeout': 3} if automatic else {}))
                 except (TaskStateUnavailable, TaskAuditIncomplete) as exc:
+                    if automatic:
+                        self.desktop_preparation = {'state': 'waiting', 'reason': str(exc), 'taskStateUnavailable': True}
+                        return True
                     if not acknowledged:
                         self.phase('failed', error=str(exc), taskStateUnavailable=True)
                         return
                     # Consent covers unknown tasks, never a new queued/unknown
                     # write or a known busy owner found by the fresh audit.
                     self.idle(pending_only=True)
+                except ValueError as exc:
+                    if not automatic:
+                        raise
+                    self.desktop_preparation = {'state': 'waiting', 'reason': str(exc)}
+                    return True
                 current, current_identities = observed()
                 if identities != current_identities or set(state['pids']) != set(current['pids']):
                     raise ValueError('Codex 桌面进程已变化，请重新初始化连接')
+                if automatic:
+                    if self.bridge.closed.is_set() or cancelled():
+                        return False
+                    self.state = {'phase': 'preparing', 'operation': 'desktopRuntime', 'automatic': True,
+                                  'requestId': str(uuid.uuid4()), 'error': None}
+                    self.phase('preparing')
+                    self.desktop_preparation = {'state': 'preparing'}
+                # This receipt must precede stop/configure/start and live beside
+                # the shared lock, not in a gateway-specific account directory.
+                record_preparation(self.home, self.state['requestId'])
                 if state['running']:
                     self.phase('stopping')
                     stop_client(descriptor, state=current)
@@ -1128,21 +1209,37 @@ class Accounts:
                 self.invalidate()
                 if observed()[0]['running']:
                     raise ValueError('Codex 桌面已被重新启动，请重新初始化连接')
-                self.phase('applying')
-                configure(self.home, app.executable, self.runtime)
+                if automatic and (self.bridge.closed.is_set() or cancelled()):
+                    raise ValueError('网关已停止准备，原生连接尚未完成；请在账号管理中重新准备')
+                if not preparation_error:
+                    self.phase('applying')
+                    configure(self.home, app.executable, self.runtime)
+                if automatic and (self.bridge.closed.is_set() or cancelled()):
+                    raise ValueError('网关已停止准备，尚未启动 Codex；请在账号管理中重新准备')
                 self.phase('starting')
                 app.start()
                 self.phase('verifying')
                 self.wait_ready(app)
-                client = connect(self.home, self.runtime)
-                if client is None:
-                    raise ValueError('未能确认 Codex 原生共享连接，请重新初始化连接')
-                client.close()
+                if not preparation_error:
+                    client = connect(self.home, self.runtime)
+                    if client is None:
+                        raise ValueError('未能确认 Codex 原生共享连接，请重新初始化连接')
+                    client.close()
+                record_preparation(self.home, self.state['requestId'], complete=True)
                 self.phase('complete', error=None)
+                self.desktop_preparation = ({'state': 'failed', 'reason': str(preparation_error)}
+                                            if preparation_error else {'state': 'ready'})
+                return False
         except Exception as exc:
             # Keep a successfully saved configuration available for an explicit
             # retry. Never force-stop or automatically start the App a second time.
-            self.phase('failed', error=str(exc))
+            if automatic and isinstance(exc, DesktopRuntimeBusy) and self.desktop_preparation.get('state') != 'preparing':
+                self.desktop_preparation = {'state': 'waiting', 'reason': str(exc)}
+                return True
+            if not automatic or self.desktop_preparation.get('state') == 'preparing':
+                self.phase('failed', error=str(exc))
+            self.desktop_preparation = {'state': 'failed', 'reason': str(exc)}
+            return False
 
     def snapshot_files(self):
         result = {}
