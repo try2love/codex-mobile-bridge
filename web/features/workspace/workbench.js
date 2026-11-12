@@ -462,13 +462,17 @@ class Workbench {
       const label = this.node('label'), hidden = this.node('input'); hidden.type = 'checkbox'; hidden.checked = session.hidden;
       hidden.onchange = () => { session.hidden = hidden.checked; this.directory(session, tab, session.directory); }; label.append(hidden, this.node('span', '', '隐藏文件'));
       filters.append(form, label); tab.list = this.node('div', 'wb-file-list'); tab.status = this.node('p', 'wb-status', BridgeI18n.t('正在读取文件…')); tab.status.setAttribute('role', 'status');
-      tab.body.append(toolbar, filters, tab.status, tab.list);
+      const summary=this.node('div','wb-file-summary');
+      tab.project=this.button('返回项目文件夹',()=>{session.search='';this.directory(session,tab,session.project);});
+      tab.project.disabled=!session.project||path===session.project;
+      summary.append(tab.status,tab.project);tab.body.append(toolbar, filters, summary, tab.list);
     }
     try {
       const url = this.url(session, '', path) + '&hidden=' + session.hidden + '&search=' + encodeURIComponent(session.search) + '&offset=' + (append ? tab.next : 0);
       const result = await this.request(url, undefined, controller.signal);
       if (controller.signal.aborted || tab.controller!==controller || this.sessions.get(session.key)!==session || !session.files.includes(tab) || session.directory!==path) return;
       session.project=result.project;session.directory=result.path;
+      tab.project.disabled=!result.project||result.path===result.project;
       if(!path)tab.initialDirectory=result.path;
       if(locateState)locateState.directory=result.path;
       tab.parentPath=result.parentPath;tab.projectPath=result.projectPath;tab.up.disabled=result.parentPath==null;tab.upload.disabled=result.projectPath==null;
