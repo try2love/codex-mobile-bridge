@@ -20,6 +20,8 @@ Windows 默认本机 Desktop 初始化复用现有账号面板、任务核验和
 
 共享启动还必须保留调用者的环境。Store App 使用现有注册、manifest 与 AppExecLink 三重核验的执行别名；准备前核验别名，启动时再次核验，不允许回退 Explorer 激活。普通启动保留已有行为，非打包共享 App 仍直接启动。Microsoft 的[执行别名说明](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/desktop-to-uwp-extensions)说明了别名与打包应用的对应关系，具体环境继承以实机验证为准。
 
+Windows 的一次性原生命令通过等待子进程完成来转发，显式传递 stdin、stdout、stderr 并返回原退出码。辅助 stdio 调用也显式传递输出句柄。不能照搬 POSIX 的 `os.execve`：Windows 实机上该调用在 UCRT 中以 `0xc0000005` 崩溃，导致 App 的 `--print-startup-config` 收不到 JSON，显示启动策略协议错误。未冻结 Python 的最小调用同样复现，因此不通过调整 PyInstaller DLL 搜索路径处理。主 writer 的路由和所有权规则不变。
+
 创建、权限、幂等账本和成功后的 attached 查询缓存失效继续使用共享业务。Bridge 连接关闭不关闭原 App 或原生运行时，未初始化时明确提示，不回退到独立 writer。
 
 ## 备选方案
@@ -30,6 +32,8 @@ Windows 默认本机 Desktop 初始化复用现有账号面板、任务核验和
 
 Explorer 激活能打开拒绝直接 CreateProcess 的商店版，但不会继承这次共享接入环境，不能用于要求保留环境的启动。复用已有执行别名核验，避免修改系统环境变量或 App 安装包。
 
+`os.execve` 在 POSIX 上可保留进程替换语义，但 Windows 实测不适用。仅换成默认 `subprocess.call` 虽能退出 0，却仍丢失非继承的标准输出句柄；显式传递三个标准流才能保留启动配置 JSON 和错误输出，不使用缓冲整段输出或伪造成功响应。
+
 ## 验证
 
 Windows 实机使用原生 `0.167.0-alpha.3.2`、全新隔离 home 和 Node 模拟 App，经过产品初始化转发、私有命名管道和元数据客户端，最终 r5 的 17 项检查通过：创建原父聊天、附属 fork/关系、边界写入、Bridge 断开后 App 保持连接、列表刷新后 App 读取并恢复子聊天、正常 EOF 后原生退出码 0、模拟 App 消失后的原生退出码 0、遗留记录核验和下一代重连。没有使用真实账号、调用模型或修改用户聊天。Windows 外层 Job 下的独立生命周期夹具同样观察到退出码 0；不是仅以 PID 消失判断正常退出。
@@ -39,6 +43,8 @@ Windows 实机使用原生 `0.167.0-alpha.3.2`、全新隔离 home 和 Node 模�
 隔离模拟 App 证据不等于真实 Windows GUI App 或最终冻结程序验收。实际 App 初始化、最终包和双端界面仍需单独验证；当前正在承载开发任务的 Mac 正式 App 没有被重启。
 
 `.15` 实机自动准备越过冷启动路径核验后，暴露了上述 Explorer 问题：原 App 父进程为既有 Explorer，子进程为普通内置 CLI，共享 active 记录缺失；已核验安装具有有效执行别名。新增跨 DesktopApp.start 与平台启动层的回归先失败，再在修复后通过，覆盖环境传递、无别名拒绝启动及非打包直启。40 项启动及共享连接回归通过，其中 4 项 Unix socket 检查因沙箱拒绝绑定而单独在允许本机 socket 的环境补跑；模块边界通过。实际别名启动与侧聊创建仍须最终包验收，不能用这些回归代替。
+
+`.16` 真实 App 经执行别名启动后已保留共享配置环境，随后启动策略检查暴露 UCRT 崩溃。修复前冻结入口与未冻结最小 `os.execve` 调用均退出 `3221225477`；修复后源码入口与原生 CLI 的版本输出、启动配置 JSON、错误输出及退出码 2 完全一致。8 项 stdio 定向回归通过。此结果覆盖辅助命令转发，不等于最终冻结包或真实原生侧聊已经通过。
 
 ## 影响
 

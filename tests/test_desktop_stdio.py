@@ -1,5 +1,8 @@
 import json
 import io
+import os
+from pathlib import Path
+import sys
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -10,8 +13,36 @@ from bridge.clients.codex.desktop_stdio import DesktopStdio
 from bridge.clients.codex.app_server import AppServerUnavailable, AppServerUnknownResult, AppServerRequestNotSent
 from bridge.clients.codex.desktop_runtime_host import _forward_input
 from bridge.clients.codex.desktop_runtime_windows import MetadataClient
+from bridge.clients.codex import desktop_runtime_windows as windows_runtime
 from bridge.clients.local_rpc import LocalRequestNotSent
 from bridge.features.sessions.create import DeleteRejected
+
+
+class WindowsAuxiliaryCommandTests(unittest.TestCase):
+    def test_auxiliary_commands_wait_and_preserve_native_exit_status_and_streams(self):
+        home = Path('.tmp/desktop-auxiliary-home').resolve()
+        config = {'version': 1, 'home': str(home), 'launcher': sys.executable,
+                  'cli': 'native.exe', 'sandboxFamily': 'OpenAI.Codex_fixture'}
+        configuration = windows_runtime.directory(home) / 'settings.json'
+        env = {'CMB_CODEX_DESKTOP_CONFIGURATION': str(configuration), 'CODEX_HOME': str(home)}
+        with patch.dict(sys.modules, {'msvcrt': SimpleNamespace(setmode=Mock())}), \
+             patch.object(windows_runtime, '_read', return_value=config), \
+             patch.object(windows_runtime.os, 'O_BINARY', 0, create=True), \
+             patch.object(windows_runtime.sys, 'stdin', Mock()), \
+             patch.object(windows_runtime.sys, 'stdout', Mock()), \
+             patch.dict(os.environ, env, clear=True), \
+             patch.object(windows_runtime.subprocess, 'CREATE_NO_WINDOW', 0x08000000, create=True), \
+             patch.object(windows_runtime.subprocess, 'call', return_value=23) as call, \
+             patch.object(windows_runtime.os, 'execve', side_effect=AssertionError('Windows CRT overlay')), \
+             patch.object(windows_runtime, 'process_identity', side_effect=AssertionError('not a writer')):
+            for args in (['--version'], ['app-server', '--print-startup-config']):
+                with self.subTest(arguments=args):
+                    self.assertEqual(windows_runtime.run(str(configuration), args), 23)
+                    call.assert_called_with(['native.exe', *args],
+                        env={'CODEX_HOME': str(home), 'CODEX_WINDOWS_SANDBOX_PACKAGE_FAMILY': 'OpenAI.Codex_fixture'},
+                        stdin=windows_runtime.sys.stdin, stdout=windows_runtime.sys.stdout,
+                        stderr=windows_runtime.sys.stderr,
+                        creationflags=0x08000000)
 
 
 class DesktopStdioTests(unittest.TestCase):

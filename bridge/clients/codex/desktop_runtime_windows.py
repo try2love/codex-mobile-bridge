@@ -87,7 +87,9 @@ def run(configuration, arguments):
         env['CODEX_WINDOWS_SANDBOX_PACKAGE_FAMILY'] = config['sandboxFamily']
     cli = config['cli']
     if server_arguments(arguments, Path('unused.sock')) is None:
-        os.execve(cli, [cli, *arguments], env)
+        # Windows CRT process overlay can crash before forwarding startup output.
+        return subprocess.call([cli, *arguments], env=env, stdin=sys.stdin, stdout=sys.stdout,
+                               stderr=sys.stderr, creationflags=subprocess.CREATE_NO_WINDOW)
     app = process_identity(os.getppid())
     if (app['image'] != config['application'] or Path(env.get('CODEX_HOME', '')).resolve() != home
             or Path(env.get('CODEX_SQLITE_HOME') or home).resolve() != home):
@@ -102,7 +104,8 @@ def run(configuration, arguments):
     if not (isinstance(initialize, dict) and initialize.get('method') == 'initialize'
             and initialize.get('params', {}).get('clientInfo', {}).get('name') == 'Codex Desktop'):
         # This launcher can also be used by an auxiliary native CLI caller.
-        child = subprocess.Popen([cli, *arguments], env=env, stdin=subprocess.PIPE, bufsize=0,
+        child = subprocess.Popen([cli, *arguments], env=env, stdin=subprocess.PIPE,
+                                 stdout=sys.stdout, stderr=sys.stderr, bufsize=0,
                                  creationflags=subprocess.CREATE_NO_WINDOW)
         try:
             child.stdin.write(first)
