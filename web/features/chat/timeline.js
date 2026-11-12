@@ -25,7 +25,7 @@ function timelineFilePath(path,cwd){
 
 // History and live changes share stable keys, but never share a request queue.
 class ChatTimeline {
-  static clearCache(){recentTimelinePages.clear();}
+  static clearCache(key){if(key)recentTimelinePages.delete(key);else recentTimelinePages.clear();}
   constructor({url, request, renderMeta, renderText, status, onAction, onFile, onReady, canEdit = () => true, elements = {}, active = () => true, cacheKey = ''}) {
     Object.assign(this,{url,request,renderMeta,renderText,status,onAction,onFile,onReady,active,cacheKey});
     this.canEdit=()=>!this.cached&&canEdit();

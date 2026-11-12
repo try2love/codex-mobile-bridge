@@ -1201,7 +1201,7 @@ class Handler(BaseHTTPRequestHandler):
                 owner = self.server.auth.key(self.token())
                 body = self.read_json() if write else {}
                 action = body.get('action') if write else 'list' if query.get('view') == ['native'] else 'read'
-                fields = {'create': {'action', 'creationId'}, 'send': {'action', 'id', 'text', 'submissionId', 'attachments', 'skills', 'mode', 'workMode'},
+                fields = {'create': {'action', 'creationId'}, 'create-temporary': {'action', 'creationId'}, 'send': {'action', 'id', 'text', 'submissionId', 'attachments', 'skills', 'mode', 'workMode'},
                           'catalog': {'action', 'id'}, 'skills': {'action', 'id', 'query', 'offset', 'refresh', 'selected'},
                           'linux-permission-options': {'action', 'id'},
                           'permissions': {'action', 'id', 'preset', 'confirmed'}, 'cancel-queued': {'action', 'id', 'submissionId'}, 'settings': {'action', 'id', 'model', 'effort'},
@@ -1210,6 +1210,22 @@ class Handler(BaseHTTPRequestHandler):
                 if action not in fields or set(body) - fields[action] or (write and action in ('read', 'list')):
                     raise ValueError('无效侧边聊天操作')
                 return self.output(200, bridge.side_chat(side_match[1], owner, action, body))
+            temporary_match = re.match(r'/api/sessions/([0-9a-f-]{36})(?:/|$)', path)
+            temporary = (bridge.side_chats.find(temporary_match[1])
+                         if temporary_match and hasattr(bridge, 'side_chats') else None)
+            if temporary:
+                if self.server.auth.config.get('mode') == 'none':
+                    raise PermissionError('侧边聊天需要启用网关密码保护')
+                if side is not None:
+                    raise ValueError('临时侧聊附件使用当前聊天标识')
+                from bridge.features.sessions.temporary_session import TemporarySession
+                route = THREAD_ROUTE.fullmatch(path)
+                if ((route and route[2] not in TemporarySession.actions) or
+                        (not route and not any(pattern.fullmatch(path) for pattern in
+                            (UPLOAD_PREVIEW_ROUTE, UPLOAD_THUMB_ROUTE)) and
+                         not re.fullmatch(r'/api/sessions/[0-9a-f-]{36}/files/[a-f0-9]{64}', path))):
+                    raise ValueError('临时侧边聊天不支持此操作，请返回主聊天')
+                bridge = TemporarySession(bridge, temporary)
             agent_match = re.fullmatch(r"/api/sessions/([0-9a-f-]{36})/subagents", path)
             if agent_match:
                 if write: return self.output(405, {'error': '子智能体面板仅查看现有任务'})
@@ -1351,7 +1367,7 @@ class Handler(BaseHTTPRequestHandler):
             if action == 'notifications':
                 if getattr(bridge, 'capabilities', {}).get('notifications') is False:
                     if write:
-                        raise ValueError('此 WSL 入口暂不提供后台通知')
+                        raise ValueError('此会话暂不提供后台通知')
                     return self.output(200, {'available': False, 'watching': False, 'notifyOnCompletion': False})
                 if self.server.notifications is None:
                     return self.output(200, {'available': False, 'watching': False, 'notifyOnCompletion': False})
@@ -1537,7 +1553,7 @@ class Handler(BaseHTTPRequestHandler):
         if download:
             variant = 'original'
         artifact, served_variant = bridge.side_attachment(thread_id, side, 'preview', upload_id, variant) if side is not None else bridge.upload_preview(thread_id, upload_id, variant)
-        return self.attachment_preview(artifact, served_variant, private=side is not None, download=download)
+        return self.attachment_preview(artifact, served_variant, private=side is not None or getattr(bridge, 'temporary', False), download=download)
 
     def attachment_preview(self, artifact, served_variant, private=False, download=False):
         data = artifact['previewBytes'] if 'previewBytes' in artifact else Path(artifact["previewPath"]).read_bytes()

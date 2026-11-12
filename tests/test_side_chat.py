@@ -194,6 +194,20 @@ class SideChatServiceTests(unittest.TestCase):
     setUp = support.IntegrationTests.setUp
     tearDown = support.IntegrationTests.tearDown
 
+    def test_temporary_creation_does_not_require_shared_desktop_initialization(self):
+        self.fixture.state['cwd'] = str(self.root)
+        self.bridge.side_chats.factory = lambda *args: SideChat(*args, runtime_factory=RuntimeFixture)
+        with patch('bridge.features.sessions.side_chat.check_runtime'), \
+             patch.object(self.bridge, '_desktop_metadata_operation', side_effect=AssertionError('No native writer change')), \
+             patch.object(self.bridge, 'activate', side_effect=AssertionError('Parent must not activate')):
+            result = self.bridge.side_chat(support.THREAD, 'phone', 'create-temporary', {'creationId': str(uuid.uuid4())})
+        self.assertTrue(result['temporary'])
+        chat = self.bridge.side_chats.find(result['id'])
+        self.assertIsNotNone(chat)
+        self.assertEqual(chat.state['cwd'], str(self.root))
+        self.assertEqual(chat.state['modelProvider'], self.fixture.state['modelProvider'])
+        self.assertFalse(any(r['method'] == 'thread-follower-start-turn' for r in self.fixture.requests))
+
     def test_service_creation_preserves_parent_and_shared_identity(self):
         bridge = self.bridge
         # The fixture runtime also needs an explicit catalog identity; CI has no Codex installation.
@@ -285,6 +299,7 @@ class SideChatHttpTests(unittest.TestCase):
         self.assertEqual(self.request('GET', path+'?view=native', headers=auth)[0], 200)
         self.assertEqual(calls[-1][2], 'list')
         for body in ({'action': 'create', 'creationId': str(uuid.uuid4())},
+                     {'action': 'create-temporary', 'creationId': str(uuid.uuid4())},
                      {'action': 'close', 'id': support.THREAD}, {'action': 'stop', 'id': support.THREAD},
                      {'action': 'respond', 'id': support.THREAD, 'requestId': 1, 'response': {'decision': 'decline'}},
                      {'action': 'send', 'id': support.THREAD, 'submissionId': str(uuid.uuid4()), 'text': 'question'}):
@@ -293,6 +308,80 @@ class SideChatHttpTests(unittest.TestCase):
             self.assertEqual(self.request('POST', path, body, auth)[0], 200)
         self.assertEqual(self.request('POST', path, {'action': 'create', 'modelProvider': 'other'}, auth)[0], 400)
         self.assertEqual(self.request('POST', path, {'action': 'connect'}, auth)[0], 400)
+
+    def test_temporary_child_uses_standard_routes_without_parent_fallback(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory(dir=support.ROOT/'.tmp') as directory:
+            manager = SideChats('fixture', directory, directory, 'local',
+                factory=lambda *args: SideChat(*args, runtime_factory=RuntimeFixture))
+            self.addCleanup(manager.close)
+            with patch('bridge.features.sessions.side_chat.check_runtime'):
+                view = manager.operate(support.THREAD, 'create', {'creationId': str(uuid.uuid4())},
+                    {'cwd': directory}, {'model': 'fixture', 'modelProvider': 'custom'})
+            child = view['id']
+            bridge = self.server.bridge
+            bridge.side_chats, bridge.host, bridge.host_label = manager, 'local', '此电脑'
+            bridge.store = SimpleNamespace(home=Path(directory))
+            bridge.catalog_reader = Mock()
+            bridge.send = Mock(side_effect=AssertionError('No parent executor'))
+            auth = self.login()
+            url = '/api/sessions/' + child
+            self.assertEqual(self.request('GET', url + '/timeline')[0], 401)
+            status, _, page = self.request('GET', url + '/timeline', headers=auth)
+            self.assertEqual(status, 200)
+            self.assertEqual(page['meta']['attachedParent']['id'], support.THREAD)
+            self.assertTrue(page['meta']['temporary'])
+            self.assertFalse(page['meta']['access']['canEditMessages'])
+            submission = str(uuid.uuid4())
+            self.assertEqual(self.request('POST', url + '/send', {'text':'question','id':submission}, auth)[0], 200)
+            chat = manager.find(child)
+            chat.runtime.emit('item/agentMessage/delta', turnId='turn', itemId='reply', delta='temporary answer')
+            status, _, changed = self.request('GET', url + '/changes?after=' + str(page['sequence']) + '&epoch=' + page['epoch'], headers=auth)
+            self.assertEqual(status, 200)
+            self.assertTrue(any(row['text'] == 'temporary answer' for row in changed['rows']))
+            self.assertTrue(all(not row['editable'] and not row['forkable'] for row in changed['rows']))
+            self.assertFalse(changed['meta']['submissions'])
+            status, _, receipts = self.request('GET', url + '/message-management?id=' + submission, headers=auth)
+            self.assertEqual(status, 200)
+            self.assertEqual(receipts['receipts'], [{'id': submission, 'status': 'accepted'}])
+            self.assertEqual(receipts['queue'], [])
+            self.assertEqual(receipts['draftAccountIdentity'], 'temporary:' + child)
+            queued = str(uuid.uuid4())
+            self.assertEqual(self.request('POST', url + '/send', {'text':'queued question','id':queued,'mode':'queue'}, auth)[0], 200)
+            receipt = self.request('GET', url + '/message-management', headers=auth)[2]
+            body = {'action':'withdraw','version':receipt['version'],'id':queued,'expectedAccount':'other'}
+            self.assertEqual(self.request('POST', url + '/message-management', body, auth)[0], 400)
+            body['expectedAccount'] = 'temporary:' + child
+            self.assertEqual(self.request('POST', url + '/message-management', body, auth)[2]['queue'], [])
+            self.assertTrue(self.request('POST', url + '/permissions', {'preset':'ask'}, auth)[2]['confirmed'])
+            for action in ('archive', 'delete', 'rename', 'organization', 'reconnect', 'message-action'):
+                self.assertEqual(self.request('POST', url + '/' + action, {}, auth)[0], 400)
+            bridge.send.assert_not_called()
+            chat.runtime.close = Mock(side_effect=SideChatError('waiting for normal exit'))
+            with self.assertRaises(SideChatError):
+                manager.operate(support.THREAD, 'close', {'id':child})
+            self.assertIs(manager.find(child), chat)
+            self.assertEqual(self.request('GET', url + '/timeline', headers=auth)[2]['meta']['access']['runtime'], 'temporary')
+            self.assertEqual(self.request('POST', url + '/send', {'text':'no replay','id':str(uuid.uuid4())}, auth)[0], 400)
+            chat.runtime.close.side_effect = None
+            self.server.auth.config['mode'] = 'none'
+            self.assertEqual(self.request('GET', url + '/timeline', headers=auth)[0], 403)
+
+    def test_temporary_reference_is_revalidated_before_queue_dispatch(self):
+        with tempfile.TemporaryDirectory(dir=support.ROOT/'.tmp') as directory:
+            chat = SideChat('fixture', directory, support.THREAD, directory,
+                {'model':'fixture','modelProvider':'custom'}, RuntimeFixture)
+            self.addCleanup(chat.close)
+            file = Path(directory) / 'reference.txt'
+            file.write_text('local reference')
+            reference = {'path': file.name, 'absolutePath': str(file.resolve())}
+            chat.state['threadRuntimeStatus']['type'] = 'active'
+            identifier = str(uuid.uuid4())
+            chat.send('question', identifier, mode='queue', references=[reference])
+            file.unlink()
+            with self.assertRaises((ValueError, FileNotFoundError)):
+                chat._dispatch(identifier, chat.submissions[identifier])
+            self.assertFalse(any(method == 'turn/start' for method, _ in chat.runtime.calls))
 
 class SideSettingsTests(unittest.TestCase):
     def test_next_turn_settings_shared_without_parent_mutation(self):

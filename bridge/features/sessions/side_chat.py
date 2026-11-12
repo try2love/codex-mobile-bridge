@@ -11,6 +11,7 @@ import queue
 import subprocess
 import tempfile
 import threading
+import time
 import uuid
 from functools import partial
 from pathlib import Path
@@ -19,7 +20,9 @@ from bridge.features.sessions.create import runtime_environment
 from bridge.features.sessions.model import attachment_prompt, normalize_state, normalize_request
 from bridge.features.sessions.tool_images import TOOL_IMAGE_CACHE, public_turns
 from bridge.features.workspace.uploads import Uploads
+from bridge.features.workspace.workspace import Workspace
 from bridge.features.accounts.models import valid_model_id
+from bridge.features.sessions.timeline import Timeline
 
 
 BOUNDARY = """You are in a temporary side conversation, separate from the main thread.
@@ -117,23 +120,18 @@ class SideRuntime:
 
     def close(self):
         with self.lock:
-            if self.closed:
-                return
-            self.closed = True
-            try:
-                self.process.stdin.close()
-            except OSError:
-                pass
+            if not self.closed:
+                self.closed = True
+                try:
+                    self.process.stdin.close()
+                except OSError:
+                    pass
         try:
-            self.process.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait()
-        self.reader.join(timeout=2)
+            self.process.wait(timeout=10)
+        except subprocess.TimeoutExpired as exc:
+            raise SideChatError('临时侧聊正在正常退出，请稍后再次结束；尚未清除内容') from exc
+        if self.reader.ident is not None:
+            self.reader.join(timeout=2)
         self.process.stdout.close()
 
 
@@ -153,6 +151,9 @@ class SideChat:
     def __init__(self, executable, home, parent, cwd, settings, runtime_factory=SideRuntime):
         self.parent, self.id = parent, None
         self.lock = threading.RLock()
+        self.condition = threading.Condition(self.lock)
+        self.sequence, self.viewers, self.touched = 0, 0, time.monotonic()
+        self.timeline = Timeline()
         self.actions = threading.Lock()
         self.closed = False
         self.ready = False
@@ -206,6 +207,7 @@ class SideChat:
         with self.lock:
             if self.closed:
                 return
+            self.changed()
             if method == 'bridge/disconnected':
                 self.error = '侧边聊天已失效，请关闭后新建'
                 self.state['requests'] = []
@@ -248,6 +250,9 @@ class SideChat:
                 item = copy.deepcopy(params['item'])
                 index = next((i for i, x in enumerate(turn['items']) if x['id'] == item['id']), None)
                 if index is None:
+                    if item.get('timestamp') is None and item.get('type') in ('userMessage', 'agentMessage'):
+                        item['timestamp'] = (turn.get('turnStartedAtMs') if item['type'] == 'userMessage' and
+                            not any(row.get('type') == 'userMessage' for row in turn['items']) else None) or int(time.time() * 1000)
                     turn['items'].append(item)
                 else:
                     if item.get('timestamp') is None and turn['items'][index].get('timestamp') is not None:
@@ -265,6 +270,11 @@ class SideChat:
             elif method == 'error' and not params.get('willRetry'):
                 self.error = '侧边聊天执行失败，请检查模型接入后重试'
                 self.state['threadRuntimeStatus']['type'] = 'idle'
+
+    def changed(self):
+        with self.condition:
+            self.sequence += 1
+            self.condition.notify_all()
 
     def view(self):
         with self.lock:
@@ -295,7 +305,7 @@ class SideChat:
                     request['supported'] = False
                     request['params'] = {'message': '此请求暂不支持在侧边聊天处理，请停止本次回复。'}
             # Side-chat screenshots have no preview route; omit their descriptors.
-            return {**result, 'turns': public_turns(result['turns'], image_previews=False), 'parentId': self.parent, 'error': self.error,
+            return {**result, 'sequence': self.sequence, 'turns': public_turns(result['turns'], image_previews=False), 'parentId': self.parent, 'error': self.error,
                     'submissions': [{'id': k, 'status': v['status'], 'text': v['text'], 'mode': v.get('mode', 'send'), 'workMode': v.get('workMode', 'default'), 'attachments': v.get('attachments', []), 'error': v.get('error')} for k, v in self.submissions.items()]}
 
     def settings(self, model, effort, catalog):
@@ -344,19 +354,20 @@ class SideChat:
             raise ValueError('Skill 不可用，请刷新列表')
         return rows
 
-    def send(self, text, submission, attachments=None, *, mode='send', work_mode='default', skills=None, catalog_reader=None):
+    def send(self, text, submission, attachments=None, *, mode='send', work_mode='default', skills=None, catalog_reader=None, references=None):
         uuid.UUID(str(submission))
-        if not isinstance(text, str) or (not text.strip() and not attachments) or len(text) > 20000:
+        if not isinstance(text, str) or (not text.strip() and not attachments and not references) or len(text) > 20000:
             raise ValueError('请输入 1–20000 字的消息')
         if mode not in ('send', 'queue', 'steer') or (work_mode not in ('default', 'plan') if mode != 'steer' else work_mode is not None):
             raise ValueError('侧边聊天支持普通模式和计划模式；补充内容沿用当前任务模式')
         attachments = [] if attachments is None else attachments
         skills = [] if skills is None else skills
+        references = [] if references is None else references
         if not isinstance(attachments, list) or any(not isinstance(value, str) for value in attachments):
             raise ValueError('附件列表格式不正确')
         if not isinstance(skills, list) or len(skills) > 8 or any(not isinstance(value, str) for value in skills):
             raise ValueError('最多选择 8 个 Skill')
-        digest = hashlib.sha256(json.dumps([text, attachments, mode, work_mode, sorted(set(skills))], ensure_ascii=False).encode()).hexdigest()
+        digest = hashlib.sha256(json.dumps([text, attachments, mode, work_mode, sorted(set(skills)), references], ensure_ascii=False).encode()).hexdigest()
         with self.actions:
             with self.lock:
                 prior = self.submissions.get(submission)
@@ -374,12 +385,15 @@ class SideChat:
                 if sum(row['status'] == 'queued' for row in self.submissions.values()) >= 20:
                     raise ValueError('待发送消息已达上限，请先等待或取消排队')
             files = self.uploads.resolve(self.id, attachments) if self.uploads else []
+            files += Workspace(self.state['cwd']).references(references) if references else []
+            if not isinstance(references, list) or len(files) > 10:
+                raise ValueError('每条消息最多添加 10 个不同附件')
             if attachments and not self.uploads:
                 raise ValueError('附件已不可用，请重新上传')
             self._skills(skills, catalog_reader, self.state['cwd'])
             row = {'digest': digest, 'status': 'queued', 'text': text, 'mode': mode, 'workMode': work_mode,
                    'attachments': [Uploads.public(file) for file in files], 'attachmentIds': attachments,
-                   'skills': skills, 'catalog': catalog_reader}
+                   'skills': skills, 'catalog': catalog_reader, 'references': references}
             with self.lock:
                 self.submissions[submission] = row
             if mode == 'queue':
@@ -397,6 +411,8 @@ class SideChat:
     def _dispatch(self, submission, row):
         # Caller holds actions. Revalidate queued references immediately before use.
         files = self.uploads.resolve(self.id, row['attachmentIds']) if self.uploads else []
+        if row.get('references'):
+            files += Workspace(self.state['cwd']).references(row['references'])
         skills = self._skills(row['skills'], row['catalog'], self.state['cwd'])
         prompt = attachment_prompt(row['text'], files)
         inputs = [{'type': 'text', 'text': prompt, 'text_elements': []}]
@@ -457,6 +473,8 @@ class SideChat:
                                 queued[1]['status'] = 'failed'
                                 queued[1]['error'] = str(error)
                         # Leave later messages queued until an explicit action or event.
+                    finally:
+                        self.changed()
 
     def cancel_queued(self, submission):
         with self.actions, self.lock:
@@ -518,6 +536,10 @@ class SideChat:
     def close(self):
         with self.actions:
             with self.lock:
+                turn = next((t for t in reversed(self.state['turns']) if t.get('status') == 'inProgress'), None)
+            if turn and self.ready and not self.closed:
+                self.runtime.request('turn/interrupt', {'threadId': self.id, 'turnId': turn['turnId']})
+            with self.lock:
                 self.closed = True
                 self.ready = False
                 self.queue_event.set()
@@ -526,6 +548,7 @@ class SideChat:
                 self.state['turns'] = []
                 self.state['requests'] = []
                 self.submissions.clear()
+                self.changed()
             if self.file_directory:
                 self.file_directory.cleanup()
                 self.file_directory = None
@@ -548,6 +571,10 @@ class SideChats:
         self.creations = {}
         self.checked = False
         self._checked_executable = executable
+
+    def find(self, identifier):
+        with self.lock:
+            return next((chat for chat in self.chats.values() if chat.id == identifier), None)
 
     def operate(self, parent, action, body, snapshot=None, settings=None, catalog_reader=None):
         with self.lock:
@@ -605,7 +632,7 @@ class SideChats:
                 return {**catalog, 'currentModel': view['model'], 'currentEffort': view['effort']}
             return chat.settings(body.get('model'), body.get('effort'), catalog)
         if action == 'send':
-            return chat.send(body.get('text'), body.get('submissionId'), body.get('attachments', []), mode=body.get('mode', 'send'), work_mode=body.get('workMode', 'default'), skills=body.get('skills', []), catalog_reader=catalog_reader)
+            return chat.send(body.get('text'), body.get('submissionId'), body.get('attachments', []), mode=body.get('mode', 'send'), work_mode=body.get('workMode', 'default'), skills=body.get('skills', []), catalog_reader=catalog_reader, references=body.get('references'))
         if action == 'stop':
             return chat.stop()
         if action == 'respond':

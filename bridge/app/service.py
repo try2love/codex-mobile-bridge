@@ -3381,8 +3381,12 @@ class Bridge:
             rows = self.store.attached_children(thread_id)
             for row in rows:
                 row.update(host=self.host, title=row.get('name') or row.get('title') or '未命名聊天')
+            temporary = self.side_chats.operate(thread_id, 'read', {})
+            if temporary.get('id'):
+                rows.insert(0, {'id': temporary['id'], 'host': self.host, 'parentId': thread_id,
+                                'title': '临时侧边聊天', 'temporary': True})
             return {'parentId': thread_id, 'chats': rows}
-        if action == 'create':
+        if action in ('create', 'create-temporary'):
             self._require_desktop_feature(thread_id)
             if not self.local:
                 raise ValueError('此预览暂支持网关电脑上的聊天，SSH 远程工作区尚未接入侧边聊天')
@@ -3393,6 +3397,9 @@ class Bridge:
                     raise ValueError('尚未取得主聊天的实时配置，请等待连接完成后重试')
                 snapshot = copy.deepcopy(session.state)
                 settings = self._fork_settings(snapshot)
+            if action == 'create-temporary':
+                result = self.side_chats.operate(thread_id, 'create', body, snapshot, settings, self.catalog_reader)
+                return {'id': result['id'], 'host': self.host, 'parentId': thread_id, 'temporary': True}
             permissions = snapshot.get('currentPermissions') or {}
             policy = permissions.get('sandboxPolicy') or {}
             if not settings.get('permissions') and policy.get('type'):
@@ -3436,8 +3443,8 @@ class Bridge:
                 self._save_actions()
                 self._invalidate_attached_threads(thread_id)
                 return {'id': child, 'host': self.host, 'parentId': thread_id}
-        # Existing temporary views may finish their current lifecycle, but no
-        # endpoint creates another temporary runtime after the native migration.
+        # Temporary children keep their own explicit lifecycle; never fall back
+        # here after a persistent fork with an uncertain result.
         result = self.side_chats.operate(thread_id, action, body, None, None, self.catalog_reader)
         if (self.local and isinstance(result, dict) and result.get('id') and
                 result.get('cwd') and result.get('provider')):

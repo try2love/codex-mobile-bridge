@@ -362,6 +362,8 @@ function sessionMenuContext(chat,provider='codex'){
     desktopSessions.provider===provider&&desktopSessions.sid===chat.id;
   const detail=current()?(provider==='codex'?state:desktopSessions.state):null;
   const view={...chat,...detail},access=sessionAccess(view.access),caps=view.capabilities||{},nativeId=view.nativeId||(ClientIdentity.family(provider)==='claude'?null:chat.id);
+  if (view.temporary) return {title:view.title, subtitle:t('临时侧边聊天'), isCurrent,
+    source:{title:view.attachedParent?.title||t('主聊天'),open:()=>openChat(view.parentId,identity.host)}};
   const ensure=async()=>{
     if(!isCurrent())throw Error('连接或账号已变化，请重新打开会话菜单');
     if(!current()){
@@ -758,6 +760,17 @@ function messageManagementTarget(){
   return currentId&&codexDraftScope?{scope:codexDraftScope,drafts:composerDrafts,temporary:sessionStorage,temporaryKey:'pending:'+chatKey(),
     url:sessionUrl(currentId,'message-management',currentHost),sendUrl:sessionUrl(currentId,'send',currentHost),uuid}:null;
 }
+workbench.temporaryCleanup=(id,host)=>{
+  const scope={gateway:draftGateway,provider:'codex',account:'temporary:'+id,host,session:id};
+  const cacheKey=JSON.stringify([listIdentity,host,id]),key=chatKey(id,host);
+  return ()=>{
+    for(const kind of ['draft','pending','pending-v2','queue-editor'])composerDrafts?.remove(composerDrafts.key(scope,kind));
+    ChatTimeline.clearCache(cacheKey);
+    if(draftGateway!==scope.gateway)return;
+    codexProvisionalDrafts.delete(key);composerDrafts?.temporaryPending.delete('pending:'+key);
+    for(const prefix of ['draft:','skills:','pending:'])sessionStorage.removeItem(prefix+key);
+  };
+};
 function messageManagementChanged(recovery){
   if(currentId&&clientNavigation.provider==='codex'){
     const cleared=recovery?.clearedDraft;
@@ -906,9 +919,9 @@ async function openChat(id,host="local"){
   if(currentId===id&&currentHost===host&&chatTimeline&&!chatTimeline.abort.signal.aborted){
     workbench.select(workbench.current?.chatId===workbench.current?.id?'chat':'child:'+id);$('app').classList.add('chat-open');window.BridgePresentation?.openChat();browserNavigation.sync();reportVisibleChat();return;
   }
-  let route;
+  let route, routeAccess;
   const known=listRows.find(row=>row.id===id&&row.host===host);
-  try {route=known&&!known.attachedParentId?{rootId:id,cwd:known.cwd}:await workbench.resolveChat(id,host,async target=>(await api(sessionUrl(target,'timeline',host)+'&limit=1')).meta);}
+  try {route=known&&!known.attachedParentId?{rootId:id,cwd:known.cwd}:await workbench.resolveChat(id,host,async target=>{const meta=(await api(sessionUrl(target,'timeline',host)+'&limit=1')).meta;if(target===id)routeAccess=meta.access;return meta;});}
   catch(error) {if(openGeneration===chatOpenGeneration)toast(t(error.message));return;}
   if(openGeneration!==chatOpenGeneration||clientNavigation.provider!==routeProvider)return;
   messageActions.dialog.close();workbench.open(id,host,route);saveDraft();chatTimeline?.dispose();codexQuotes?.reset();currentId=id;currentHost=host;refreshEntryAccounts();codexDraftScope=null;codexDraftTouched=false;state=null;catalogStarted=false;workbench.current.access=sessionAccess(listRows.find(row=>row.id===id&&row.host===host)?.access);contextUsageControl.update(null);workModes.open(chatKey(id,host));$('send-mode').value='send';attachments.open(chatKey(id,host));modelCatalogGeneration++;catalogData={models:null,skills:null};catalogResults={models:null,skills:null};catalogTasks={models:null,skills:null};skillIndex=new Map();skillTotal=0;skillPages=[];skillQuery={q:'',offset:0,limit:200};invalidSkills=new Set();skillRequest++;modelRequest++;modelTarget=null;fastModeControl.reset();$('model-dialog').close();notificationState={available:false,watching:false,notifyOnCompletion:false};notificationRequest++;$('notify-dialog').close();try{selectedSkills=new Set(JSON.parse(!draftGateway?sessionStorage.getItem('skills:'+chatKey(id,host))||'[]':'[]'));}catch{selectedSkills=new Set();}renderSkillPills();approvalStamp='';submittedRequestIds.clear();$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();$('message').value=!draftGateway?sessionStorage.getItem('draft:'+chatKey(id,host))||'':'';$('send-error').textContent='';$('chat-title').textContent=t('正在连接…');$('status').textContent=t('连接中');$('welcome').hidden=true;$('chat').hidden=false;$('app').classList.add('chat-open');$('send').disabled=true;if(!browserNavigation.sync({provider:'codex',id,host}))history.replaceState(null,'','#'+id+'~'+encodeURIComponent(host));document.querySelectorAll('.session').forEach(n=>n.classList.toggle('selected',n.dataset.id===id&&n.dataset.host===host));const opening=workbench.current;
@@ -918,7 +931,7 @@ const timeline=chatTimeline=new ChatTimeline({cacheKey:listIdentity?JSON.stringi
   reconnectFailure=null;
   window.BridgePresentation?.openChat();
   const reading=timeline.start();
-  const openingAccess=sessionAccess(listRows.find(row=>row.id===id&&row.host===host)?.access);
+  const openingAccess=sessionAccess(known?.access||routeAccess);
   if(openingAccess.source==='desktop'&&openingAccess.canReconnect)api(sessionUrl(id,'reconnect',host),{activate:true},timeline.abort.signal).catch(error=>{if(!timeline.abort.signal.aborted)toast(error.message);});
   await reading;
   if(!timeline.abort.signal.aborted&&workbench.current?.chatScroll?.has(id))$('timeline').scrollTop=workbench.current.chatScroll.get(id);
@@ -1193,6 +1206,7 @@ function renderQueue(rows){
       card.append(el('p','muted',t('请检查聊天记录。网关不会自动重发这条消息。')));
       const ignore=el('button','plain',t('忽略'));
       ignore.onclick=async()=>{
+        if(state?.temporary)return openMessageManagement();
         if(!window.confirm(t('忽略只会移除未确认提示，不会撤回或重发消息。请先检查聊天记录。')))return;
         ignore.disabled=true;
         try{accountsPanel?.accept(await ignoreSubmission({threadId:target,submissionId:row.id,host}));toast('已忽略未确认记录');}
