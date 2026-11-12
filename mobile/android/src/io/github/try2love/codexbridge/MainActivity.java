@@ -386,6 +386,7 @@ public final class MainActivity extends Activity implements SharedPreferences.On
  private GatewayUpdate preparingUpdate;
  private ServiceConnection monitor;private ValueCallback<Uri[]> files;private WebView fileView;private int fileGeneration;private int generation;private int navigationRequest;private boolean authLossAttempted;
  private UURemote uu;
+ private String uuAvailability="checking";
  private SettingsPage settingsPage;private SettingsUi ui;private ImageButton chatMenu;
  private int pageColor(){return ui.dark?ui.page:0xfff5f5f3;}
  private int textColor(){return ui.dark?ui.text:0xff202124;}
@@ -447,10 +448,11 @@ public final class MainActivity extends Activity implements SharedPreferences.On
     JSONObject computer=auth.optJSONObject("computer");
     String platform=computer==null?"":computer.optString("platform");
     uu.scope=auth.optBoolean("authenticated")&&("Windows".equals(platform)||"Darwin".equals(platform))?UURemote.device(name):"";
+    uuAvailability=!uu.scope.isEmpty()?"ready":auth.optBoolean("authenticated")&&!platform.isEmpty()?"unsupported":"unavailable";
     if(web!=null)web.evaluateJavascript("window.BridgeUURemote?.refresh()",null);
     if(enrollment!=null&&web!=null)web.evaluateJavascript("window.BridgeMobileChannels?.bound()",null);
     if(data!=null)prefs.edit().putString("connection:"+address,data.toString()).apply();else prefs.edit().remove("connection:"+address).apply();});
-  }catch(Exception ignored){}});
+  }catch(Exception ignored){runOnUiThread(()->{if(ticket==generation&&address.equals(origin)){uuAvailability="unavailable";if(web!=null)web.evaluateJavascript("window.BridgeUURemote?.refresh()",null);}});}});
  }
  void loadWithRecovery(String address,String url,WebView current,int ticket){
   if(ticket!=generation||web!=current||!address.equals(origin)||!saved().contains(address))return;
@@ -589,7 +591,7 @@ public final class MainActivity extends Activity implements SharedPreferences.On
    connectionDeadline=null;showConnectionError(url);recoverConnection(url);
   };homeHandler.postDelayed(connectionDeadline,30000);
  }
- void clear(){hideConnectionError();navigationFailed=false;routeTraffic.clear();if(uu!=null)uu.scope="";hideEntryProgress();pageReady=false;rollbackPeer();for(WebView peer:new ArrayList<>(peerViews))closePeer(peer);cancelChannelJobs();dismissGatewayMenu();cancelConnectionDeadline();if(connectionTask!=null){connectionTask.cancel(true);connectionTask=null;}if(preparingUpdate!=null){preparingUpdate.cancel();preparingUpdate=null;}pendingStorage=null;if(routeDiscovery!=null){routeDiscovery.cancel();routeDiscovery=null;}if(files!=null){files.onReceiveValue(null);files=null;fileView=null;}stopComputerChecks();homeStates.clear();addressLists.clear();computerTitles.clear();arrivingVia=null;deferredRoute=null;homeNotifications.clear();resetExitGesture();generation++;if(web!=null){web.stopLoading();web.destroy();web=null;}systemBars.update(pageColor(),pageColor());while(root.getChildCount()>2)root.removeViewAt(2);}
+ void clear(){hideConnectionError();navigationFailed=false;routeTraffic.clear();if(uu!=null)uu.scope="";uuAvailability="checking";hideEntryProgress();pageReady=false;rollbackPeer();for(WebView peer:new ArrayList<>(peerViews))closePeer(peer);cancelChannelJobs();dismissGatewayMenu();cancelConnectionDeadline();if(connectionTask!=null){connectionTask.cancel(true);connectionTask=null;}if(preparingUpdate!=null){preparingUpdate.cancel();preparingUpdate=null;}pendingStorage=null;if(routeDiscovery!=null){routeDiscovery.cancel();routeDiscovery=null;}if(files!=null){files.onReceiveValue(null);files=null;fileView=null;}stopComputerChecks();homeStates.clear();addressLists.clear();computerTitles.clear();arrivingVia=null;deferredRoute=null;homeNotifications.clear();resetExitGesture();generation++;if(web!=null){web.stopLoading();web.destroy();web=null;}systemBars.update(pageColor(),pageColor());while(root.getChildCount()>2)root.removeViewAt(2);}
  void home(){clear();header(false);status.setVisibility(View.GONE);ScrollView scroll=new ScrollView(ui.context);scroll.setFillViewport(true);LinearLayout content=column();content.setPadding(dp(20),dp(16),dp(20),dp(24));scroll.addView(content);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
   ImageView icon=new ImageView(ui.context);icon.setImageResource(getResources().getIdentifier("ic_computer","drawable",getPackageName()));icon.setColorFilter(textColor());icon.setScaleType(ImageView.ScaleType.FIT_CENTER);LinearLayout.LayoutParams ip=new LinearLayout.LayoutParams(dp(64),dp(58));ip.gravity=Gravity.CENTER;ip.bottomMargin=dp(24);content.addView(icon,ip);
   TextView headline=text(L("电脑上的工作，\n带在身边。"),30);headline.setTypeface(null,android.graphics.Typeface.BOLD);headline.setGravity(Gravity.CENTER);add(headline,content,10);
@@ -683,8 +685,15 @@ public final class MainActivity extends Activity implements SharedPreferences.On
      result.cancel();return true;
     }
     if(prompt.equals("codexbridge-uu:"+clipboardToken)){
+     if(view==web&&view.hasWindowFocus()&&GatewayURL.sameOrigin(url,pageOrigin)&&GatewayURL.sameOrigin(view.getUrl(),pageOrigin)&&
+       ("read".equals(value)||"retry".equals(value))){
+      if("retry".equals(value)&&saved().contains(origin)){uuAvailability="checking";rememberConnection();}
+      if(uuContext())result.confirm(uu.settings("read"));
+      else result.confirm("{\"supported\":false,\"availability\":\""+uuAvailability+"\"}");
+      return true;
+     }
      if(view==web&&view.hasWindowFocus()&&GatewayURL.sameOrigin(url,pageOrigin)&&uuContext()&&
-       ("read".equals(value)||"enable".equals(value)||"disable".equals(value)||"forget".equals(value)))result.confirm(uu.settings(value));else result.cancel();
+       ("enable".equals(value)||"disable".equals(value)||"forget".equals(value)))result.confirm(uu.settings(value));else result.cancel();
      return true;
     }
     if(prompt.equals("codexbridge-modal:"+clipboardToken)){

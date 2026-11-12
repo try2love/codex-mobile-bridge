@@ -592,6 +592,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
     private var connectionDeadline: DispatchWorkItem?
     private var pendingStorage: String?
     private lazy var uu = UURemote(defaults)
+    private var uuAvailability = "checking"
     private var clipboardToken = ""
     private var downloadState = DownloadManager.Snapshot()
     private let downloadPanel = DownloadPanel()
@@ -857,7 +858,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         let inbox = UIBarButtonItem(image: UIImage(systemName: "bell"), style: .plain, target: self, action: #selector(self.inbox)); inbox.accessibilityLabel = MobileStrings.text("通知")
         navigationItem.rightBarButtonItems = [settings, inbox]
     }
-    private func clear() { pendingEntry=nil;routeTraffic.removeAll();uu.scope = ""; hideEntryProgress();pageReady=false;rollbackPeer();for child in Array(peerViews.keys){child.stopLoading();webViewDidClose(child)};cancelChannelJobs();connectionDeadline?.cancel(); connectionDeadline = nil; updateSystemBars(reset: true); connectionError = nil; pendingStorage = nil; nativeMainNavigation = nil; routeDiscovery?.cancel(); routeDiscovery = nil; cancelSync(); finishUpload(nil); if let folder = mediaUploadDirectory { try? FileManager.default.removeItem(at: folder); mediaUploadDirectory = nil }; stopComputerChecks(); computerStates.removeAll();addressLists.removeAll();computerTitles.removeAll();arrivingVia=nil;deferredRoute=nil; computerNotifications.removeAll(); gatewayMenuTop?.isActive = false; gatewayMenuTop = nil; generation += 1; web?.stopLoading(); web?.navigationDelegate = nil; web?.uiDelegate = nil; web = nil; for v in page.arrangedSubviews where v !== subtitle { page.removeArrangedSubview(v); v.removeFromSuperview() } }
+    private func clear() { pendingEntry=nil;routeTraffic.removeAll();uu.scope = ""; uuAvailability = "checking"; hideEntryProgress();pageReady=false;rollbackPeer();for child in Array(peerViews.keys){child.stopLoading();webViewDidClose(child)};cancelChannelJobs();connectionDeadline?.cancel(); connectionDeadline = nil; updateSystemBars(reset: true); connectionError = nil; pendingStorage = nil; nativeMainNavigation = nil; routeDiscovery?.cancel(); routeDiscovery = nil; cancelSync(); finishUpload(nil); if let folder = mediaUploadDirectory { try? FileManager.default.removeItem(at: folder); mediaUploadDirectory = nil }; stopComputerChecks(); computerStates.removeAll();addressLists.removeAll();computerTitles.removeAll();arrivingVia=nil;deferredRoute=nil; computerNotifications.removeAll(); gatewayMenuTop?.isActive = false; gatewayMenuTop = nil; generation += 1; web?.stopLoading(); web?.navigationDelegate = nil; web?.uiDelegate = nil; web = nil; for v in page.arrangedSubviews where v !== subtitle { page.removeArrangedSubview(v); v.removeFromSuperview() } }
     @objc func home() {
         clear(); navigation(home: true); subtitle.isHidden = true
         let container = UIView(); page.addArrangedSubview(container); let content = scrollContent(in: container)
@@ -1027,7 +1028,12 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             let sent = sentCookies.filter { self.cookieMatches($0, address: address, discover: true) }
             guard !sent.isEmpty else { return }
         self.fetch(address: address, route: "/api/auth") { result in
-            guard ticket == self.generation, case .success(let auth) = result else { return }
+            guard ticket == self.generation else { return }
+            guard case .success(let auth) = result else {
+                self.uuAvailability = "unavailable"
+                self.web?.evaluateJavaScript("window.BridgeUURemote?.refresh()",completionHandler:nil)
+                return
+            }
             self.binding(address) { cookie in
                 guard let cookie, ticket == self.generation else { return }
                 self.binding(address) { current in
@@ -1042,6 +1048,8 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
                     let platform = (auth["computer"] as? [String:Any])?["platform"] as? String ?? ""
                     self.uu.scope = auth["authenticated"] as? Bool == true && ["Darwin","Windows"].contains(platform)
                         ? UURemote.device(cookie.name) : ""
+                    self.uuAvailability = !self.uu.scope.isEmpty ? "ready"
+                        : auth["authenticated"] as? Bool == true && !platform.isEmpty ? "unsupported" : "unavailable"
                     self.web?.evaluateJavaScript("window.BridgeUURemote?.refresh()",completionHandler:nil)
                     self.enrollChannels(auth,address:address,cookie:cookie,ticket:ticket)
                     self.defaults.set(ConnectionDiscovery.descriptor(auth, secret: cookie.value), forKey: "connection:" + address)
@@ -1279,9 +1287,17 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             uploadSource = (value, Date()); completionHandler("selected"); return
         }
         if prompt == "codexbridge-uu:" + clipboardToken {
+            if connectionError == nil, UIApplication.shared.applicationState == .active, frame.isMainFrame,
+               let source = frame.request.url, GatewayURL.same(source, documentAddress),
+               let current = webView.url, GatewayURL.same(current, documentAddress),
+               let command = defaultText, ["read","retry"].contains(command) {
+                if command == "retry", saved.contains(origin) { uuAvailability = "checking"; rememberConnection() }
+                completionHandler(uuContext() ? uu.settings("read") : "{\"supported\":false,\"availability\":\"" + uuAvailability + "\"}")
+                return
+            }
             guard uuContext(), UIApplication.shared.applicationState == .active, frame.isMainFrame,
                   let source = frame.request.url, GatewayURL.same(source, documentAddress),
-                  let command = defaultText, ["read","enable","disable","forget"].contains(command) else { completionHandler(nil); return }
+                  let command = defaultText, ["enable","disable","forget"].contains(command) else { completionHandler(nil); return }
             completionHandler(uu.settings(command)); return
         }
         if prompt == "codexbridge-theme:" + clipboardToken {
