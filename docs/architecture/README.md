@@ -23,6 +23,7 @@
 | 文件、图片、上传下载、Git | `bridge/features/workspace/` | `web/features/workspace/`、`web/shared/image-viewer.js` |
 | 源码高亮、PDF/HTML 预览与全屏、目录返回 | `web/features/workspace/` | `bridge/api/html_preview.py`、`httpd.py`、原生手机导航；[模块约定](../../web/README.md#文件阅读模块) |
 | 聊天与 Markdown 文件中的 Mermaid 图表、源码和全屏 | `web/shared/mermaid-*.js`、`markdown.js` | `bridge/api/mermaid_render.py`、中继与 iOS 子页面导航；[模块约定](../../web/README.md#mermaid-preview) |
+| Codex 聊天内 visualize 交互图表 | `web/shared/visualize*`、`bridge/features/workspace/visualize.py` | `bridge/api/visualize.py`、`app/service.py`、中继及 Android/iOS 预览导航 |
 | Claude 手动额度与成功查询快照 | `bridge/clients/claude/accounts.py` | `web/features/accounts/client-accounts.js`；[决定与边界](../../.agents/notes/implemented/bug-fix/2026-10-12-keychain-access-and-manual-quota.md) |
 | 终端会话与命令 | `bridge/features/terminals/manager.py` | `bridge/platforms/windows/terminal.py`、`posix/terminal.py` |
 | 通知、后台巡检、事件游标 | `bridge/features/notifications/` | `desktop/features/notifications/`，`mobile/android/`、`mobile/ios/` |
