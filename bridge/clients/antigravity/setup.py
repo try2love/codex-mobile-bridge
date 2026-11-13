@@ -23,9 +23,12 @@ def discover_agy_binary(home=None, platform=None):
         env_bin = os.environ.get('AGY_BIN', '').strip()
         if env_bin and Path(env_bin).is_file():
             return str(Path(env_bin).resolve())
-        which_bin = shutil.which('agy')
-        if which_bin:
-            return str(Path(which_bin).resolve())
+        try:
+            which_bin = shutil.which('agy')
+            if which_bin:
+                return str(Path(which_bin).resolve())
+        except Exception:
+            pass
 
     candidates = [
         base_home / '.antigravity/antigravity/bin/agy',

@@ -26,6 +26,13 @@ CANONICAL_BASE_MODELS = (
         'contextWindow': 1_048_576,
     },
     {
+        'id': 'gemini-4-hydrogen',
+        'name': 'Gemini 4 Hydrogen',
+        'efforts': ['low', 'medium', 'high', 'xhigh'],
+        'defaultEffort': 'high',
+        'contextWindow': 1_048_576,
+    },
+    {
         'id': 'gemini-3.8-flash',
         'name': 'Gemini 3.8 Flash',
         'efforts': ['low', 'medium', 'high'],
@@ -59,6 +66,10 @@ MODEL_ALIAS_MAP = {
     ('gemini-4-argon', 'low'): 'gemini-4-argon-low',
     ('gemini-4-argon', 'medium'): 'gemini-4-argon-medium',
     ('gemini-4-argon', 'high'): 'gemini-4-argon-high',
+    ('gemini-4-hydrogen', 'low'): 'gemini-4-hydrogen-low',
+    ('gemini-4-hydrogen', 'medium'): 'gemini-4-hydrogen-medium',
+    ('gemini-4-hydrogen', 'high'): 'gemini-4-hydrogen-high',
+    ('gemini-4-hydrogen', 'xhigh'): 'gemini-4-hydrogen-xhigh',
     ('gemini-3.8-flash', 'low'): 'gemini-3.8-flash-low',
     ('gemini-3.8-flash', 'medium'): 'gemini-3.8-flash-medium',
     ('gemini-3.8-flash', 'high'): 'gemini-3.8-flash-high',
@@ -235,16 +246,76 @@ class AntigravityCli:
         plan_status = user_status.get('planStatus') or {}
         configs = user_status.get('cascadeModelConfigData', {}).get('clientModelConfigs', [])
         quotas = {}
-        for c in configs:
-            mid = c.get('modelId')
-            q = c.get('quotaInfo')
-            if mid and q:
-                quotas[mid] = q
+
+        EFFORT_ORDER = ['low', 'medium', 'high', 'xhigh']
+        canonical_map = {m['id']: dict(m) for m in CANONICAL_BASE_MODELS}
+        effective_models = []
+        seen_model_ids = set()
+
+        if configs:
+            discovered_map = {}
+            for c in configs:
+                if c.get('disabled') or c.get('tagTitle') == 'Unavailable':
+                    continue
+                mid = c.get('modelId') or ''
+                if not mid or mid.endswith('-disabled'):
+                    continue
+
+                q = c.get('quotaInfo')
+                if q:
+                    quotas[mid] = q
+
+                effort = None
+                base_id = mid
+                for s in ('-xhigh', '-high', '-medium', '-low'):
+                    if mid.endswith(s):
+                        effort = s[1:]
+                        base_id = mid[:-len(s)]
+                        break
+
+                if mid in canonical_map:
+                    target_id = mid
+                elif base_id in canonical_map:
+                    target_id = base_id
+                else:
+                    target_id = base_id
+
+                label = c.get('label') or mid
+                base_name = re.sub(r'\s*\((XHigh|High|Medium|Low)\)\s*$', '', label, flags=re.I).strip()
+
+                if target_id not in discovered_map:
+                    canon = canonical_map.get(target_id, {})
+                    discovered_map[target_id] = {
+                        'id': target_id,
+                        'name': canon.get('name') or base_name,
+                        'efforts': list(canon.get('efforts') or ([effort] if effort else ['medium'])),
+                        'defaultEffort': canon.get('defaultEffort') or (effort or 'medium'),
+                        'contextWindow': canon.get('contextWindow') or (200_000 if 'claude' in target_id else (131_072 if 'gpt' in target_id else 1_048_576)),
+                    }
+                if effort and effort not in discovered_map[target_id]['efforts']:
+                    discovered_map[target_id]['efforts'].append(effort)
+
+            for b in discovered_map.values():
+                b['efforts'].sort(key=lambda x: EFFORT_ORDER.index(x) if x in EFFORT_ORDER else 99)
+
+            for base in CANONICAL_BASE_MODELS:
+                bid = base['id']
+                if bid in discovered_map:
+                    effective_models.append(discovered_map[bid])
+                    seen_model_ids.add(bid)
+
+            for bid, binfo in discovered_map.items():
+                if bid not in seen_model_ids:
+                    effective_models.append(binfo)
+                    seen_model_ids.add(bid)
+
+        if not effective_models:
+            effective_models = [dict(m) for m in CANONICAL_BASE_MODELS]
 
         notice_lines = [f'【官方帳號與額度 · {tier_name}】']
         catalog_models = []
 
-        for base in CANONICAL_BASE_MODELS:
+        for base in effective_models:
             bid = base['id']
             # Find representative quota
             sample_keys = [
@@ -362,13 +433,13 @@ class AntigravityCli:
             m_str = 'gemini-3.8-flash'
         e_str = str(effort or '').strip().lower()
         if not e_str or e_str == 'auto':
-            for suffix in ('-high', '-medium', '-low'):
+            for suffix in ('-xhigh', '-high', '-medium', '-low'):
                 if m_str.endswith(suffix):
                     e_str = suffix[1:]
                     m_str = m_str[:-len(suffix)]
                     break
         if not e_str or e_str == 'auto':
-            e_str = 'high' if 'flash' in m_str else 'medium'
+            e_str = 'high' if ('flash' in m_str or 'hydrogen' in m_str) else 'medium'
 
         target_model_id = MODEL_ALIAS_MAP.get((m_str, e_str), f'{m_str}-{e_str}')
 
@@ -387,6 +458,10 @@ class AntigravityCli:
             'gemini-4-argon-high': 'MODEL_PLACEHOLDER_M417',
             'gemini-4-argon-medium': 'MODEL_PLACEHOLDER_M418',
             'gemini-4-argon-low': 'MODEL_PLACEHOLDER_M419',
+            'gemini-4-hydrogen-high': 'MODEL_PLACEHOLDER_M525',
+            'gemini-4-hydrogen-xhigh': 'MODEL_PLACEHOLDER_M528',
+            'gemini-4-hydrogen-medium': 'MODEL_PLACEHOLDER_M526',
+            'gemini-4-hydrogen-low': 'MODEL_PLACEHOLDER_M527',
             'gemini-3.8-flash-high': 'MODEL_PLACEHOLDER_M318',
             'gemini-3.8-flash-medium': 'MODEL_PLACEHOLDER_M319',
             'gemini-3.8-flash-low': 'MODEL_PLACEHOLDER_M320',

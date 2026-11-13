@@ -1,8 +1,10 @@
 """Antigravity 2.0 / IDE / CLI hybrid adapter for Codex Mobile Bridge."""
+from datetime import datetime
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import threading
 import time
 
@@ -165,10 +167,10 @@ class Antigravity:
             raw_model = 'gemini-3.8-flash'
         raw_effort = str(prefs.get('effort') or '').strip().lower()
 
-        # Normalize models with embedded effort suffixes like gemini-3.8-flash-high
+        # Normalize models with embedded effort suffixes like gemini-4-hydrogen-high
         model_id = raw_model
         effort_val = raw_effort
-        for suffix in ('-high', '-medium', '-low'):
+        for suffix in ('-xhigh', '-high', '-medium', '-low'):
             if raw_model.endswith(suffix):
                 model_id = raw_model[:-len(suffix)]
                 if not effort_val or effort_val == 'auto':
@@ -176,19 +178,28 @@ class Antigravity:
                 break
 
         if not effort_val or effort_val == 'auto':
-            effort_val = 'high' if 'flash' in model_id else 'medium'
+            effort_val = 'high' if ('flash' in model_id or 'hydrogen' in model_id) else 'medium'
 
         display_names = {
             'gemini-4-argon': 'Gemini 4 Argon',
+            'gemini-4-hydrogen': 'Gemini 4 Hydrogen',
             'gemini-3.8-flash': 'Gemini 3.8 Flash',
             'claude-opus-5-5': 'Claude Opus 5.5',
             'claude-sonnet-5-5': 'Claude Sonnet 5.5',
             'gpt-oss-120b-medium': 'GPT-OSS 120B',
             'gpt-oss-120b': 'GPT-OSS 120B',
         }
-        display_name = display_names.get(model_id, model_id)
+        display_name = display_names.get(model_id)
+        if not display_name:
+            display_name = model_id.replace('-', ' ').title()
+
         effort_normalized = effort_val.lower()
-        effort_label = effort_normalized.capitalize() if effort_normalized not in ('auto', 'none') else ''
+        if effort_normalized == 'xhigh':
+            effort_label = 'XHigh'
+        elif effort_normalized not in ('auto', 'none'):
+            effort_label = effort_normalized.capitalize()
+        else:
+            effort_label = ''
 
         return {
             **row,
@@ -248,7 +259,11 @@ class Antigravity:
             limits = []
             seen_bases = set()
             for c in configs:
+                if c.get('disabled') or c.get('tagTitle') == 'Unavailable':
+                    continue
                 mid = c.get('modelId') or ''
+                if not mid or mid.endswith('-disabled'):
+                    continue
                 base_id = mid.rsplit('-', 1)[0] if '-' in mid else mid
                 if base_id in seen_bases:
                     continue
@@ -263,8 +278,10 @@ class Antigravity:
                         resets_at = int(datetime.fromisoformat(reset_iso.replace('Z', '+00:00')).timestamp())
                     except Exception:
                         pass
+                label = c.get('label') or mid
+                clean_name = re.sub(r'\s*\((XHigh|High|Medium|Low)\)\s*$', '', label, flags=re.I).strip()
                 limits.append({
-                    'name': c.get('label') or mid,
+                    'name': clean_name or label,
                     'windows': [
                         {
                             'remainingPercent': pct,

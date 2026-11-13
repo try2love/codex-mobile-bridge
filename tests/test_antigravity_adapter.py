@@ -267,6 +267,10 @@ class AntigravityStoreTest(unittest.TestCase):
             self.assertEqual(m_high, 'MODEL_PLACEHOLDER_M318')
             m_argon = cli.resolve_model_enum('gemini-4-argon', 'medium')
             self.assertEqual(m_argon, 'MODEL_PLACEHOLDER_M418')
+            m_hydro_high = cli.resolve_model_enum('gemini-4-hydrogen', 'high')
+            self.assertEqual(m_hydro_high, 'MODEL_PLACEHOLDER_M525')
+            m_hydro_xhigh = cli.resolve_model_enum('gemini-4-hydrogen-xhigh')
+            self.assertEqual(m_hydro_xhigh, 'MODEL_PLACEHOLDER_M528')
 
             adapter = Antigravity(Path(tmp))
             decorated = adapter._decorate_session({
@@ -279,6 +283,28 @@ class AntigravityStoreTest(unittest.TestCase):
             self.assertEqual(decorated['effort'], 'high')
             self.assertEqual(decorated['reasoningEffort'], 'high')
             self.assertEqual(decorated['effortLabel'], 'High')
+
+            # Test decoration with Gemini 4 Hydrogen and XHigh effort
+            adapter._settings['cid-hydro'] = {'model': 'gemini-4-hydrogen-xhigh', 'effort': 'xhigh'}
+            decorated_hydro = adapter._decorate_session({
+                'id': 'sess-hydro',
+                'nativeId': 'cid-hydro',
+                'title': 'Hydrogen Session',
+                'status': 'idle',
+            })
+            self.assertEqual(decorated_hydro['model'], 'gemini-4-hydrogen')
+            self.assertEqual(decorated_hydro['modelDisplayName'], 'Gemini 4 Hydrogen')
+            self.assertEqual(decorated_hydro['effort'], 'xhigh')
+            self.assertEqual(decorated_hydro['effortLabel'], 'XHigh')
+
+            # Test catalog models discovery
+            cat = cli.catalog_models(refresh=True)
+            model_ids = [m['id'] for m in cat['models']]
+            self.assertIn('gemini-4-hydrogen', model_ids)
+            hydro_model = next(m for m in cat['models'] if m['id'] == 'gemini-4-hydrogen')
+            self.assertEqual(hydro_model['name'], 'Gemini 4 Hydrogen')
+            self.assertIn('xhigh', hydro_model['efforts'])
+            self.assertEqual(hydro_model['defaultEffort'], 'high')
 
     def test_create_session_flow_and_prompt_composition(self):
         from bridge.clients.antigravity.adapter import Antigravity
