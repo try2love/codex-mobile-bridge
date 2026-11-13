@@ -63,13 +63,14 @@ class AntigravityAccounts:
     def supported(self):
         return self.home == Path.home().resolve()
 
-    def _check(self):
+    def _check(self, *, stopped=True):
         if not self.supported():
             raise ValueError('仅支持默认用户目录的 Antigravity 账号；自定义目录请在原客户端管理')
         safe(self.directory)
         for name in TOKEN_FILES:
             safe(self.home/'.gemini'/name)
-        require_stopped()
+        if stopped:
+            require_stopped()
 
     def _index(self):
         raw = read(self.directory/'index.json')
@@ -110,7 +111,7 @@ class AntigravityAccounts:
                     'activeId': active[0] if active else None,
                     'readOnly': not supported, 'canImport': supported, 'canSwitch': supported,
                     'enrollmentHint': SCOPE_HINT,
-                    'switchConfirmation': '请先正常退出此电脑的 Antigravity APP、CLI、IDE。应用将更新三类入口共用的 Google 登录，使用同一系统登录的自定义入口也会受影响；其他电脑不变。重新打开后才能验证登录。确认应用？',
+                    'switchConfirmation': '将更新此电脑 APP、CLI、IDE 共用的 Google 登录，使用同一系统登录的自定义入口也会受影响；其他电脑不变。已核验空闲的单个 APP 或 IDE 会正常退出并重新打开；独立 CLI、其他实例或无法核验的入口需要先手动退出。聊天、配置和草稿保留。确认应用？',
                     'capabilities': {'addApi': False, 'quota': False, 'switchRequiresStopped': True}}
 
     def _snapshot(self, vault):
@@ -127,6 +128,16 @@ class AntigravityAccounts:
         if len(emails) != 1:
             raise ValueError('默认入口的登录身份不一致，请先在原客户端统一登录后保存')
         return next(iter(emails))
+
+    def validate_saved(self, identifier):
+        """Reject invalid selections before requesting any native exit."""
+        with self.lock:
+            self._check(stopped=False)
+            row = self._row(identifier)
+            value = json.loads(read(self.directory/(identifier+'.json')) or '{}')
+            if self._validate(value) != row['email'] or fingerprint(value) != row['fingerprint']:
+                raise ValueError('已保存的登录快照不完整，请重新保存')
+            return row['email']
 
     def import_current(self, name=''):
         if not isinstance(name, str) or len(name.strip()) > 100:

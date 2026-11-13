@@ -3196,7 +3196,8 @@ class DesktopSessions:
                     if operation == 'import-current':
                         result = store.import_current(value.get('name', ''))
                     elif operation == 'switch':
-                        result = store.restore(value.get('id'))
+                        from bridge.clients.antigravity.account_switch import switch_account
+                        result = switch_account(store, adapter, self._descriptor(provider), value.get('id'))
                     elif operation == 'rename':
                         result = store.rename(value.get('id'), value.get('name'))
                     else:

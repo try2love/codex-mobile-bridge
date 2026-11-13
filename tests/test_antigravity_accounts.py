@@ -71,6 +71,29 @@ class AntigravityAccountTests(unittest.TestCase):
         self.assertEqual(result['activeIds'], [])
         self.assertIn('尚未验证登录', result['message'])
 
+    def test_switch_preserves_profile_drafts_bindings_and_gateway_config(self):
+        paths = ('antigravity/browser/Local Storage/draft.json', 'antigravity/SingletonLock',
+                 'antigravity/settings.json', 'gateway/mobile-bindings.json', 'gateway/config.json')
+        sentinels = {name: self.file(name, 'original:'+name) for name in paths}
+        identifier = self.store.import_current('first')['accounts'][0]['id']
+        self.secret = token('second@example.invalid', 'second')
+        self.assertEqual(self.store.validate_saved(identifier), 'first@example.invalid')
+        self.store.restore(identifier)
+        for name, path in sentinels.items():
+            self.assertEqual(path.read_text(), 'original:'+name)
+
+    def test_preflight_does_not_read_vault_and_rejects_changed_saved_snapshot(self):
+        identifier = self.store.import_current('first')['accounts'][0]['id']
+        self.vault.reset_mock()
+        self.stopped.reset_mock()
+        self.store.validate_saved(identifier)
+        self.vault.read.assert_not_called()
+        self.stopped.assert_not_called()
+        path = self.store.directory/(identifier+'.json')
+        path.write_text('{}')
+        with self.assertRaises(ValueError):
+            self.store.validate_saved(identifier)
+
     def test_running_clients_and_custom_home_block_before_credentials(self):
         self.stopped.side_effect = ValueError('请正常退出 APP、CLI、IDE')
         with self.assertRaisesRegex(ValueError, '正常退出'):
