@@ -88,10 +88,12 @@ class AntigravityDiscoveryTests(unittest.TestCase):
         _, image = self.bundle()
         log = self.home/'Library/Logs/Antigravity/language_server.log'
         log.parent.mkdir(parents=True)
+        def write_log(value):
+            log.write_bytes(value.encode('utf-8'))
         args = ['--standalone', '--app_data_dir', 'antigravity', '--csrf_token', 'a'*32]
         # Desktop App overwrites log on startup with the port at line 6, then grows > 320 KB.
         padding = ('I1114 03:00:00.000000 1 runner.go:1] routine log line padding\n' * 6500)
-        log.write_text(
+        write_log(
             'Starting language server process with pid 123\n'
             'Language server listening on random port at 12345 for HTTP\n' + padding
         )
@@ -101,7 +103,7 @@ class AntigravityDiscoveryTests(unittest.TestCase):
         self.assertEqual(value['address'], 'http://127.0.0.1:12345')
 
         # Appending log > 320 KB with a stale port at the head and active port at the tail.
-        log.write_text(
+        write_log(
             'Language server listening on random port at 11111 for HTTP\n' + padding
             + 'Language server listening on random port at 22222 for HTTP\n'
         )
@@ -116,7 +118,7 @@ class AntigravityDiscoveryTests(unittest.TestCase):
 
         # Port line straddling the 64 KB head chunk boundary still resolves.
         prefix = ('X' * 63 + '\n') * 1023 + 'X' * 40
-        log.write_text(prefix + 'Language server listening on random port at 33333 for HTTP\n' + padding)
+        write_log(prefix + 'Language server listening on random port at 33333 for HTTP\n' + padding)
         self.assertGreater(log.stat().st_size, 320 * 1024)
         value, port = self.target(image, args)
         self.assertEqual(port, 33333)

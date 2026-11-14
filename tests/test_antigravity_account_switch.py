@@ -1,3 +1,4 @@
+import os
 import tempfile
 import threading
 import unittest
@@ -172,7 +173,7 @@ class ProcessScopeTests(unittest.TestCase):
         self.exe = Path(self.directory.name).resolve()/'Antigravity'
         self.exe.write_bytes(b'fixture')
         self.install = {'application': str(self.exe), 'executable': str(self.exe), 'surface': 'app'}
-        self.rows = {41: {'pid': 41, 'parent': 1, 'image': str(self.exe), 'birth': 'one'},
+        self.rows = {41: {'pid': 41, 'parent': 1, 'image': os.path.normcase(str(self.exe)), 'birth': 'one'},
                      42: {'pid': 42, 'parent': 41, 'image': 'language_server', 'birth': 'two'}}
         self.pids = [41, 42]
         self.platform = Mock()

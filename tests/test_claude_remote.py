@@ -102,6 +102,7 @@ class RemoteWorkerContract(unittest.TestCase):
         with patch.dict(os.environ, self.env, clear=True), \
              patch.object(remote_worker.os, 'chdir'), \
              patch('builtins.print'), \
+             patch.object(remote_worker, 'pid_domain', return_value='fixture-remote-host'), \
              patch.object(remote_worker.os, 'execvpe') as execute:
             profile = remote_worker.profile()
             request = {'origin': profile['origin'], 'native': self.native,

@@ -1224,7 +1224,7 @@ class AntigravitySafetyTests(unittest.TestCase):
         self.addCleanup(server.close)
         q_steer = server.enqueue_follow_up('scoped-cid', 'steer 1', mode='steer')
         q_queue = server.enqueue_follow_up('scoped-cid', 'queue 2', mode='queue')
-        client_sock, server_sock = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+        client_sock, server_sock = socket.socketpair()
         self.addCleanup(client_sock.close)
         _write_frame(client_sock, {'token': server.token, 'event': 'post_invocation', 'payload': {'verified': True}})
         client_sock.shutdown(socket.SHUT_WR)
