@@ -471,7 +471,9 @@ def normalize_request(request):
 
 
 def form_supported(schema):
-    if schema.get("type") != "object" or set(schema) - {"type", "properties", "required", "title", "description", "$schema", "additionalProperties"}:
+    if (not isinstance(schema, dict) or schema.get("type") != "object"
+            or not isinstance(schema.get('properties', {}), dict)
+            or set(schema) - {"type", "properties", "required", "title", "description", "$schema", "additionalProperties"}):
         return False
     allowed = {"type", "title", "description", "enum", "enumNames", "default", "minLength", "maxLength", "minimum", "maximum"}
     return all(isinstance(field, dict) and not set(field) - allowed and field.get("type", "string") in ("string", "number", "integer", "boolean") for field in schema.get("properties", {}).values())

@@ -1166,6 +1166,17 @@ class ModelTests(unittest.TestCase):
         self.assertFalse(req['supported'])
         self.assertNotIn('secret', json.dumps(req))
 
+    def test_unreadable_form_schema_preserves_pending_desktop_request(self):
+        for schema in (None, [], 'future-schema', {'type': 'object', 'properties': []}):
+            with self.subTest(schema=schema):
+                value = state()
+                value['requests'] = [{'id': 'pending', 'method': 'mcpServer/elicitation/request',
+                                      'params': {'requestedSchema': schema}}]
+                request = normalize_state(value)['requests'][0]
+                self.assertEqual(request['id'], 'pending')
+                self.assertFalse(request['supported'])
+                self.assertEqual(request['params'], {'message': '请在桌面 App 处理此请求'})
+
     @unittest.skipUnless(os.name == 'nt', 'Windows drive path syntax')
     def test_reference_path_accepts_windows_drive_paths(self):
         from bridge.features.workspace.files import reference_path
