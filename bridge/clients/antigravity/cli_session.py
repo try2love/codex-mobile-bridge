@@ -524,6 +524,7 @@ class AntigravityCli:
         'GetUserStatus',
         'GetAllCascadeTrajectories',
         'GetCascadeTrajectory',
+        'GetSlashCommands',
         'StartCascade',
         'SendUserCascadeMessage',
         'CancelCascadeInvocation',
@@ -779,14 +780,10 @@ class AntigravityCli:
         usage_items = []
         notice_lines = []
         for row in configs:
-            if not isinstance(row, dict) or row.get('disabled') is True or not isinstance(row.get('modelId'), str):
+            if not self._is_enabled_model_row(row):
                 continue
             mid = row['modelId']
-            if row.get('disabled') or row.get('tagTitle') == 'Unavailable' or mid.endswith('-disabled'):
-                continue
-            alias = row.get('modelOrAlias')
-            if not isinstance(alias, dict) or not alias.get('model'):
-                continue
+            alias = row['modelOrAlias']
             name = row.get('label') or mid
             entry = {'id': mid, 'name': name, 'efforts': [], 'supportsEffort': False, 'nativeModel': alias['model']}
             quota = self._quota_info(row)
@@ -820,6 +817,18 @@ class AntigravityCli:
             result['usageSummary'] = {'tier': tier_name, 'items': usage_items, 'credits': credits_line}
         return result
 
+    @staticmethod
+    def _is_enabled_model_row(row):
+        if not isinstance(row, dict):
+            return False
+        mid = row.get('modelId')
+        if not isinstance(mid, str) or not mid:
+            return False
+        if row.get('disabled') or row.get('tagTitle') == 'Unavailable' or mid.endswith('-disabled'):
+            return False
+        alias = row.get('modelOrAlias')
+        return isinstance(alias, dict) and bool(alias.get('model'))
+
     def _model(self, model, surface):
         if model is None:
             return None  # Preserve the original server's selected default.
@@ -832,8 +841,79 @@ class AntigravityCli:
             raise ValueError('未找到此模型的原生标识，请刷新目录或手动填写完整 MODEL_ 标识')
         return found[0]
 
-    def send_user_message(self, conversation_id, prompt, model=None, effort=None, *, surface='app'):
-        body = {'cascade_id': conversation_id, 'items': [{'text': prompt}]}
+    def _raw_model_for_commands(self, model=None, surface='app'):
+        if isinstance(model, str) and re.fullmatch(r'MODEL_[A-Z0-9_]+', model):
+            return model
+        status = self.user_status(surface)
+        model_data = status.get('cascadeModelConfigData') if isinstance(status.get('cascadeModelConfigData'), dict) else {}
+        configs = model_data.get('clientModelConfigs') if isinstance(model_data.get('clientModelConfigs'), list) else []
+        if model and model != 'auto':
+            for row in configs:
+                if self._is_enabled_model_row(row) and row.get('modelId') == model:
+                    return row['modelOrAlias']['model']
+        default_cfg = model_data.get('defaultOverrideModelConfig')
+        if isinstance(default_cfg, dict):
+            alias = default_cfg.get('modelOrAlias')
+            if isinstance(alias, dict) and alias.get('model'):
+                return alias['model']
+        for row in configs:
+            if self._is_enabled_model_row(row):
+                return row['modelOrAlias']['model']
+        return None
+
+    def slash_commands(self, *, surface='app', conversation_id=None, model=None, cwd=None):
+        payload = {'enablePersonal': True}
+        if isinstance(conversation_id, str) and conversation_id.strip():
+            payload['cascadeId'] = conversation_id.strip()
+        if isinstance(cwd, str) and cwd.strip():
+            try:
+                path = Path(cwd).resolve()
+                if path.is_dir():
+                    payload['workspaceUris'] = [path.as_uri()]
+            except (OSError, ValueError):
+                pass
+        raw_model = self._raw_model_for_commands(model, surface)
+        if raw_model:
+            payload['cascadeConfig'] = {'plannerConfig': {'requestedModel': {'model': raw_model}}}
+        res = self.call_ls_rpc('GetSlashCommands', payload, surface=surface)
+        raw_commands = res.get('commands') if isinstance(res.get('commands'), list) else []
+        commands = []
+        seen = set()
+        for row in raw_commands:
+            if not isinstance(row, dict):
+                continue
+            info = row.get('info')
+            if not isinstance(info, dict):
+                continue
+            name = str(info.get('name') or '').strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            cmd_type = str(info.get('type') or '')
+            if cmd_type == 'SLASH_COMMAND_TYPE_SYSTEM':
+                category = 'system'
+            elif cmd_type == 'SLASH_COMMAND_TYPE_SKILL':
+                category = 'skill'
+            else:
+                category = 'workflow'
+            title = str(row.get('title') or name).strip() or name
+            description = str(row.get('description') or '').strip()
+            commands.append({
+                'id': name,
+                'name': name,
+                'title': title,
+                'description': description,
+                'category': category,
+                'type': cmd_type,
+                'info': dict(info),
+            })
+        return commands
+
+    def send_user_message(self, conversation_id, prompt, model=None, effort=None, *, surface='app', items=None):
+        normalized_items = list(items) if items is not None else [{'text': prompt}]
+        if not normalized_items:
+            raise ValueError('Antigravity 消息内容不能为空')
+        body = {'cascade_id': conversation_id, 'items': normalized_items}
         selected = self._model(model, surface)
         if selected:
             body['cascade_config'] = {'planner_config': {'requested_model': {'model': selected}}}
