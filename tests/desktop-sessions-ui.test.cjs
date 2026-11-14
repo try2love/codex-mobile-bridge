@@ -1689,6 +1689,23 @@ test('interactive questions support canSkip, exclusiveWriteIn and explicit canCa
  assert.equal(ui.calls.filter(c=>c.body).at(-1).body.decision,'decline');
 });
 
+test('schema questions restrict fixed choices without changing other question write-ins',async()=>{
+ const ui=await opened();
+ const req={id:'form',needsInput:true,canCancel:true,input:{questions:[
+  {id:'choices',question:'Choose',multiSelect:true,allowCustom:false,options:[{label:'1'},{label:'2'}]},
+  {id:'note',question:'Note',options:[]}
+ ]}};
+ ui.view.renderRequests([req]);
+ let form=ui.view.requests.querySelector('form');
+ assert.equal(form.querySelectorAll('input').length,3);
+ form.answerInputs[0].area.querySelectorAll('input')[0].checked=true;
+ form.answerInputs[1].custom.value='preserved draft';
+ ui.view.renderRequests([req]);form=ui.view.requests.querySelector('form');
+ assert.equal(form.answerInputs[1].custom.value,'preserved draft');
+ await form.onsubmit({preventDefault(){}});await new Promise(setImmediate);
+ assert.deepEqual(JSON.parse(JSON.stringify(ui.calls.filter(c=>c.body).at(-1).body.answers)),{choices:{answers:['1']},note:{answers:['preserved draft']}});
+});
+
 test('model picker renders quota badges and structured usageSummary without altering plain notices',async()=>{
  const ui=await opened();
  ui.setHandler(async()=>({

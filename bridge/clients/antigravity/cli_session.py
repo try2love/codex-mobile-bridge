@@ -1,5 +1,6 @@
 """Use the verified original Antigravity server; never spawn a competing CLI."""
 import json
+import math
 from pathlib import Path
 import threading
 import subprocess
@@ -118,25 +119,31 @@ def _schema_to_elicitation_questions(schema_raw):
         schema = json.loads(schema_raw)
     except ValueError:
         return [], {}
-    if not isinstance(schema, dict):
+    if (not isinstance(schema, dict) or schema.get('type') != 'object'
+            or set(schema) - {'type', 'properties', 'required', 'title', 'description', '$schema', 'additionalProperties'}
+            or schema.get('additionalProperties', False) is not False):
         return [], {}
     props = schema.get('properties')
     if not isinstance(props, dict) or not props:
         return [], {}
-    required = set(schema.get('required') or [])
+    required = schema.get('required', [])
+    if not isinstance(required, list) or any(not isinstance(k, str) or k not in props for k in required):
+        return [], {}
     questions = []
     prop_specs = {}
     for prop_name, prop_spec in props.items():
-        if not isinstance(prop_spec, dict):
-            continue
+        if not _supported_elicitation_property(prop_spec):
+            return [], {}
         title = str(prop_spec.get('title') or prop_name)
         desc = str(prop_spec.get('description') or '').strip()
         label = f'{title} — {desc}' if desc else title
-        enum_vals = prop_spec.get('enum')
-        prop_type = str(prop_spec.get('type') or 'string')
+        prop_type = prop_spec['type']
+        value_spec = prop_spec['items'] if prop_type == 'array' else prop_spec
+        enum_vals = value_spec.get('enum')
         options = []
         if isinstance(enum_vals, list) and enum_vals:
-            options = [{'id': str(v), 'label': str(v)} for v in enum_vals]
+            options = [{'id': str(v).lower() if isinstance(v, bool) else str(v),
+                        'label': str(v).lower() if isinstance(v, bool) else str(v)} for v in enum_vals]
         elif prop_type == 'boolean':
             options = [{'id': 'true', 'label': '是 (true)'}, {'id': 'false', 'label': '否 (false)'}]
         questions.append({
@@ -145,9 +152,32 @@ def _schema_to_elicitation_questions(schema_raw):
             'multiSelect': prop_type == 'array',
             'canSkip': prop_name not in required,
             'options': options,
+            'allowCustom': not options,
         })
         prop_specs[prop_name] = prop_spec
     return questions, prop_specs
+
+
+def _supported_elicitation_property(spec, *, item=False):
+    if not isinstance(spec, dict):
+        return False
+    kind = spec.get('type')
+    common = {'type', 'title', 'description', 'default', 'enum'}
+    fields = {'string': {'minLength', 'maxLength'}, 'integer': {'minimum', 'maximum'},
+              'number': {'minimum', 'maximum'}, 'boolean': set(),
+              'array': {'items', 'minItems', 'maxItems'}}
+    if not isinstance(kind, str) or kind not in fields or set(spec) - common - fields[kind]:
+        return False
+    for key in fields[kind] - {'items'}:
+        if key in spec and (type(spec[key]) not in (int, float) or not math.isfinite(spec[key])
+                            or (key not in ('minimum', 'maximum') and (type(spec[key]) is not int or spec[key] < 0))):
+            return False
+    if kind == 'array':
+        return (not item and 'enum' not in spec and _supported_elicitation_property(spec.get('items'), item=True)
+                and isinstance(spec['items'].get('enum'), list) and bool(spec['items']['enum']))
+    enum = spec.get('enum')
+    return enum is None or (isinstance(enum, list) and bool(enum)
+                           and all(isinstance(v, (str, bool, int, float)) for v in enum))
 
 
 def _normalize_ask_question(request_id, prefix, step, requested, meta):
@@ -198,6 +228,7 @@ def _normalize_elicitation(request_id, prefix, requested, meta):
         if message:
             questions[0] = {**questions[0], 'question': f"{message}\n{questions[0]['question']}"}
         meta['elicitationProps'] = prop_specs
+        meta['elicitationRequired'] = [q['id'] for q in questions if not q['canSkip']]
         return {
             'id': request_id,
             'tool': f'{prefix}MCP 信息补充 · {server_name}',
@@ -207,15 +238,16 @@ def _normalize_elicitation(request_id, prefix, requested, meta):
             'exclusiveWriteIn': True,
             'input': {'questions': questions},
         }, meta
+    # Unsupported forms must not silently turn into an approval with no data.
+    unsupported = spec.get('mode') != 'url' or bool(spec.get('requestedSchemaJson'))
+    meta['elicitationUnsupported'] = unsupported
     return {
         'id': request_id,
         'tool': f'{prefix}MCP 授权确认 · {server_name}',
         'needsInput': False,
-        'input': _non_empty_dict(server=server_name, mode=spec.get('mode'), message=message, url=spec.get('url')),
-        'decisions': [
-            {'id': 'accept', 'label': '允许本次'},
-            {'id': 'decline', 'label': '拒绝'},
-        ],
+        'input': _non_empty_dict(server=server_name, mode=spec.get('mode'), message=message, url=spec.get('url'),
+                                 notice='此表单请在原客户端完成' if unsupported else None),
+        'decisions': ([] if unsupported else [{'id': 'accept', 'label': '允许本次'}]) + [{'id': 'decline', 'label': '拒绝'}],
     }, meta
 
 
@@ -322,16 +354,33 @@ def _normalize_waiting_step(request_id, surface, cascade_id, trajectory_id, step
 
 
 def _coerce_elicitation_value(raw_vals, prop_spec):
-    prop_type = str((prop_spec or {}).get('type') or 'string')
+    if not isinstance(raw_vals, list) or not raw_vals or any(not isinstance(v, str) for v in raw_vals):
+        raise ValueError('回答格式无效')
+    prop_type = prop_spec['type']
     if prop_type == 'array':
-        return list(raw_vals)
+        values = [_coerce_elicitation_value([v], prop_spec['items']) for v in raw_vals]
+        if len(values) < prop_spec.get('minItems', 0) or len(values) > prop_spec.get('maxItems', len(values)):
+            raise ValueError('选择数量不符合要求')
+        return values
+    if len(raw_vals) != 1:
+        raise ValueError('此项只能填写一个答案')
     val = str(raw_vals[0]).strip()
     if prop_type == 'boolean':
-        return val.lower() in ('true', '1', 'yes', '是 (true)', '是')
-    if prop_type == 'integer':
-        return int(val)
-    if prop_type == 'number':
-        return float(val)
+        if val.lower() not in ('true', 'false', '是 (true)', '否 (false)'):
+            raise ValueError('请选择是或否')
+        val = val.lower() in ('true', '是 (true)')
+    elif prop_type in ('integer', 'number'):
+        val = int(val) if prop_type == 'integer' else float(val)
+        if not math.isfinite(val) or val < prop_spec.get('minimum', val) or val > prop_spec.get('maximum', val):
+            raise ValueError('数字不符合要求')
+    elif prop_type == 'string':
+        if len(val) < prop_spec.get('minLength', 0) or len(val) > prop_spec.get('maxLength', len(val)):
+            raise ValueError('文本长度不符合要求')
+    else:
+        raise ValueError('此回答类型请在原客户端处理')
+    if 'enum' in prop_spec and not any(val == v and (type(val) is type(v)
+            or (type(val) in (int, float) and type(v) in (int, float))) for v in prop_spec['enum']):
+        raise ValueError('请选择问题中提供的选项')
     return val
 
 
@@ -419,6 +468,10 @@ def _build_interaction_response(meta, decision, answers=None):
     if kind == 'elicitation':
         if is_decline:
             return {'elicitation': {'action': 'decline'}}
+        if meta.get('elicitationUnsupported'):
+            raise ValueError('此表单请在原客户端完成')
+        if decision_norm not in _ACCEPT_DECISIONS:
+            raise ValueError('请选择允许或拒绝')
         prop_specs = meta.get('elicitationProps')
         if prop_specs:
             if not isinstance(answers, dict):
@@ -426,13 +479,14 @@ def _build_interaction_response(meta, decision, answers=None):
             payload = {}
             for prop_name, prop_spec in prop_specs.items():
                 ans_entry = answers.get(prop_name)
-                if isinstance(ans_entry, dict) and ans_entry.get('skipped') is True:
-                    continue
+                skipped = isinstance(ans_entry, dict) and ans_entry.get('skipped') is True
                 raw_vals = ans_entry.get('answers') if isinstance(ans_entry, dict) else None
-                cleaned = [str(v).strip() for v in (raw_vals or []) if isinstance(v, str) and str(v).strip()]
-                if cleaned:
-                    payload[prop_name] = _coerce_elicitation_value(cleaned, prop_spec)
-            return {'elicitation': {'action': 'accept', 'contentJson': json.dumps(payload, ensure_ascii=False)}}
+                if skipped or not raw_vals:
+                    if prop_name in meta.get('elicitationRequired', []):
+                        raise ValueError('请回答每一项必填问题')
+                    continue
+                payload[prop_name] = _coerce_elicitation_value(raw_vals, prop_spec)
+            return {'elicitation': {'action': 'accept', 'contentJson': json.dumps(payload, ensure_ascii=False, allow_nan=False)}}
         if decision_norm not in _ACCEPT_DECISIONS:
             raise ValueError('请选择允许或拒绝')
         return {'elicitation': {'action': 'accept'}}
