@@ -24,7 +24,8 @@ from bridge.features.sessions.message_management import snapshot as management_s
 from bridge.features.terminals.manager import TerminalManager
 from bridge.features.sessions.side_chat import SideChats
 from bridge.features.sessions import linux_permissions
-from bridge.clients.codex.ipc import DesktopIPC, IPCError
+from bridge.clients.codex.ipc import (DesktopIPC, IPCError, StreamCompatibilityError,
+                                     KNOWN_STREAM_VERSIONS, validate_stream_version, validate_stream_state)
 from bridge.clients.errors import TaskStateUnavailable, TaskAuditIncomplete
 from bridge.clients.codex.app_server import AppServerError, AppServerUnavailable
 from bridge.clients.codex.cli_session import CliSessions
@@ -120,6 +121,8 @@ class LiveSession:
         self.cli_recovery = None
         self.rebuild_recommended = False
         self.desktop_restart_recommended = False
+        self.desktop_stream_error = None
+        self.desktop_stream_version = None
         self.viewers = 0
         self.watched = False
         self.notification_probe_until = 0
@@ -1432,6 +1435,8 @@ class Bridge:
 
         def event(message):
             params = message.get('params', {})
+            if not isinstance(params, dict):
+                return
             with condition:
                 if message.get('method') == 'client-status-changed':
                     if params.get('status') == 'disconnected':
@@ -1447,7 +1452,8 @@ class Bridge:
                 if record is None:
                     return
                 try:
-                    if message.get('version') != 11 or message.get('sourceClientId') != record['owner']:
+                    validate_stream_version(message.get('version'))
+                    if message.get('sourceClientId') != record['owner']:
                         raise ValueError('Desktop owner changed')
                     change = params['change']
                     if type(change.get('revision')) is not int:
@@ -1464,6 +1470,7 @@ class Bridge:
                         raise ValueError('Missing snapshot')
                     if not isinstance(state, dict) or state.get('id') != key[1]:
                         raise ValueError('Session mismatch')
+                    validate_stream_state(message.get('version'), state)
                     record.update(state=state, revision=change['revision'])
                 except (ValueError, KeyError, IndexError, TypeError, AttributeError):
                     record['invalid'] = True
@@ -1628,7 +1635,7 @@ class Bridge:
         cli_controls = connected and origin in ('cli', 'ide')
         goal = (self._goal_runtime_available()
                 if not session or session.runtime != 'cli' else session.native_goal_supported is True)
-        return {'source': origin, 'runtime': (session.runtime if connected else None),
+        access = {'source': origin, 'runtime': (session.runtime if connected else None),
                 'readOnly': not writable, 'canSend': writable, 'canInterrupt': writable,
                 'canApprove': writable, 'canReconnect': reconnect,
                 'canConfigure': desktop_controls, 'canChangePermissions': desktop or cli_controls,
@@ -1638,6 +1645,10 @@ class Bridge:
                 'canUseGoal': (desktop and self.host == 'local') or cli_controls and goal,
                 'canUseSideChat': desktop_controls, 'canEditMessages': desktop_controls,
                 'reason': None if reconnect else '未找到可用的 Codex CLI 后台服务或已安装的服务包；请先在电脑上安装或更新 Codex CLI，并运行一次。'}
+        if session and session.desktop_stream_error:
+            access.update({key: False for key in access if key.startswith('can')})
+            access.update(readOnly=True, reason=session.desktop_stream_error)
+        return access
 
     def _require_desktop_feature(self, thread_id):
         metadata = self.store.get(thread_id)
@@ -3810,6 +3821,9 @@ class Bridge:
             with session.condition:
                 if session.connected:
                     return session
+                if session.desktop_stream_error:
+                    session.error = session.desktop_stream_error
+                    raise IPCError(session.error) from exc
                 session.rebuild_recommended = True
                 session.desktop_restart_recommended = True
                 session.error = ('已重建网关连接，但原桌面会话仍未恢复。可在应用管理中核对任务后重启 Codex；操作未发送。'
@@ -3849,6 +3863,9 @@ class Bridge:
                     and record.get('providerPhase') == 'authorized'):
                 return self._activate_cli_recovery(thread_id, plan)
         session = self.session(thread_id, background=True)
+        with session.condition:
+            if session.desktop_stream_error and not session.connected:
+                raise IPCError(session.desktop_stream_error)
         if self.host.startswith('codex:') and self.store.get(thread_id).get('origin') == 'desktop':
             raise ValueError('此独立入口只接入原 VS Code / CLI 会话')
         with session.activation_lock:
@@ -3971,8 +3988,11 @@ class Bridge:
                 return session
             except IPCError as exc:
                 with session.condition:
-                    session.rebuild_recommended = session.origin == 'desktop' and self.host == 'local'
-                    if session.rebuild_recommended and _transport_rebuilt:
+                    session.rebuild_recommended = not session.desktop_stream_error and session.origin == 'desktop' and self.host == 'local'
+                    if session.desktop_stream_error:
+                        session.error = session.desktop_stream_error
+                        session.desktop_restart_recommended = False
+                    elif session.rebuild_recommended and _transport_rebuilt:
                         session.desktop_restart_recommended = True
                         session.error = '已重建网关连接，但原桌面会话仍未恢复。可在应用管理中核对任务后重启 Codex；操作未发送。'
                     else:
@@ -4004,6 +4024,8 @@ class Bridge:
         if message.get("method") != "thread-stream-state-changed":
             return
         params = message.get("params", {})
+        if not isinstance(params, dict):
+            return
         if params.get("hostId") != self.native_host:
             return
         with self.lock:
@@ -4016,30 +4038,38 @@ class Bridge:
                 return
             if session.origin in ('cli', 'ide') and session.desktop_owner_probe != 'found':
                 return
-            if message.get('version') != 11:
-                if session.owner and session.owner == message.get('sourceClientId'):
-                    self._invalidate(session, '原客户端的会话同步协议与网关不兼容，请更新 Codex 客户端后重连。',
-                                     runtime='desktop', owner=session.owner, reason='desktop_stream_version')
-                return
-            if session.discovering and session.origin not in ('cli', 'ide') and change.get("type") == "snapshot" and (change.get("conversationState") or {}).get("id") == session.id:
+            if session.discovering and session.origin not in ('cli', 'ide') and isinstance(change, dict) and change.get("type") == "snapshot" and isinstance(change.get('conversationState'), dict) and change['conversationState'].get('id') == session.id:
                 session.owner = message.get("sourceClientId")
                 session.discovering = False
             if not session.owner or message.get("sourceClientId") != session.owner:
                 return
             reason = 'snapshot_invalid'
             try:
+                validate_stream_version(message.get('version'))
+                if not isinstance(change, dict):
+                    raise StreamCompatibilityError('Missing desktop stream change')
+                if type(change.get('revision')) is not int or change['revision'] < 0:
+                    if message.get('version') not in KNOWN_STREAM_VERSIONS:
+                        raise StreamCompatibilityError('Desktop stream revision format changed')
+                    raise ValueError('Missing revision')
                 if change.get("type") == "snapshot":
                     state = change["conversationState"]
                 elif change.get("type") == "patches":
+                    if message.get('version') not in KNOWN_STREAM_VERSIONS and (
+                            not isinstance(change.get('patches'), list) or type(change.get('baseRevision')) is not int):
+                        raise StreamCompatibilityError('Desktop stream patch format changed')
                     if session.revision is None or change.get("baseRevision") != session.revision:
                         reason = 'revision_mismatch'
                         raise ValueError("Revision mismatch")
                     state = apply_patches(session.state, change["patches"])
                 else:
+                    if message.get('version') not in KNOWN_STREAM_VERSIONS:
+                        raise StreamCompatibilityError('Unknown desktop stream change')
                     return
-                if state.get('id') != session.id:
+                if not isinstance(state, dict) or state.get('id') != session.id:
                     reason = 'thread_id_mismatch'
                     raise ValueError("Session mismatch")
+                validate_stream_state(message.get('version'), state)
                 previous_cwd = session.state.get('cwd') if session.connected and session.state else None
                 if session.origin in ('cli', 'ide') and (state.get('hostId', self.native_host) != self.native_host or
                         not session.saved_cwd or not session.saved_provider or
@@ -4057,6 +4087,11 @@ class Bridge:
                 session.rebuild_recommended = False
                 session.desktop_restart_recommended = False
                 session.error = None
+                session.desktop_stream_error = None
+                version = message.get('version')
+                if version not in KNOWN_STREAM_VERSIONS and session.desktop_stream_version != version:
+                    logging.getLogger(__name__).info('Codex stream structurally compatible version=%s', version)
+                session.desktop_stream_version = version
                 session.access = self._access(session.origin, session)
                 session.changed()
                 if newly_connected:
@@ -4065,7 +4100,18 @@ class Bridge:
                 with self.lock:
                     self.notification_dirty.add(session.id)
                 self.notification_event.set()
-            except (ValueError, KeyError, IndexError, TypeError):
+            except StreamCompatibilityError:
+                session.connected = False
+                session.revision = None
+                session.rebuild_recommended = False
+                session.desktop_restart_recommended = False
+                if not session.desktop_stream_error:
+                    logging.getLogger(__name__).warning('Codex stream contract rejected; Bridge update required')
+                session.desktop_stream_error = 'Codex 会话同步格式已变化，请更新 Bridge；历史和草稿仍可查看。'
+                session.error = session.desktop_stream_error
+                session.access = self._access(session.origin, session)
+                session.changed()
+            except (ValueError, KeyError, IndexError, TypeError, AttributeError):
                 logging.getLogger(__name__).info(
                     "Codex connection transition thread=%s cause=%s", session.id, reason)
                 session.connected = False
@@ -4182,6 +4228,9 @@ class Bridge:
 
     @operation
     def _call(self, session, method, params, timeout=30):
+        with session.condition:
+            if session.desktop_stream_error:
+                raise IPCError(session.desktop_stream_error)
         # The existing desktop owner retains this thread's provider and credentials.
         # A newly selected default account must not gate unrelated existing providers.
         if session.runtime == "cli":

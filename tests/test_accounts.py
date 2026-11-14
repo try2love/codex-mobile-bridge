@@ -439,7 +439,8 @@ class AccountsTests(unittest.TestCase):
         row=self.api();self.manager.mark_active(row['id']);self.bridge.host='local'
         self.bridge.ipc.request.return_value={'result':{'ok':True}}
         for provider in ('openai','bridge_api'):
-            session=SimpleNamespace(id='fixture',owner='desktop',runtime='desktop',view=lambda:{'provider':provider})
+            session=SimpleNamespace(id='fixture',owner='desktop',runtime='desktop',condition=threading.Condition(),
+                                    desktop_stream_error=None,view=lambda:{'provider':provider})
             self.assertEqual(Bridge._call(self.bridge,session,'thread-follower-start-turn',{}),{'ok':True})
         self.assertEqual(self.bridge.ipc.request.call_count,2)
 
@@ -447,7 +448,8 @@ class AccountsTests(unittest.TestCase):
         row=self.api();self.manager.mark_active(row['id'])
         self.bridge.host='local'
         self.bridge.ipc.request.return_value={'result':{'ok':True}}
-        session=SimpleNamespace(id='fixture',owner='original-desktop',runtime='desktop',view=lambda:{'provider':'other-custom'})
+        session=SimpleNamespace(id='fixture',owner='original-desktop',runtime='desktop',condition=threading.Condition(),
+                                desktop_stream_error=None,view=lambda:{'provider':'other-custom'})
         self.assertEqual(Bridge._call(self.bridge,session,'thread-follower-start-turn',{}), {'ok':True})
         self.assertEqual(self.bridge.ipc.request.call_args.kwargs['target'], 'original-desktop')
 

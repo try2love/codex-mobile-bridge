@@ -11,6 +11,71 @@ from concurrent.futures import Future, TimeoutError
 from bridge.clients.codex.transport import connect_stream, endpoint_identity
 
 
+KNOWN_STREAM_VERSIONS = frozenset((11, 13))
+
+
+class StreamCompatibilityError(ValueError):
+    pass
+
+
+def validate_stream_version(version):
+    if type(version) is not int or version < 11:
+        raise StreamCompatibilityError('Unsupported desktop stream version')
+
+
+def validate_stream_state(version, state):
+    validate_stream_version(version)
+    if version in KNOWN_STREAM_VERSIONS:
+        return
+
+    def require(condition):
+        if not condition:
+            raise StreamCompatibilityError('Desktop stream control state changed')
+
+    def entities(value):
+        require(isinstance(value, dict))
+        records, islands = value.get('entitiesByKey'), value.get('islands')
+        require(isinstance(records, dict) and isinstance(islands, list))
+        result = []
+        for island in islands:
+            require(isinstance(island, dict) and isinstance(island.get('entries'), list))
+            for entry in island['entries']:
+                require(isinstance(entry, dict) and isinstance(entry.get('value'), str))
+                require(entry['value'] in records)
+                result.append(records[entry['value']])
+        return result
+
+    # Future versions may add fields, but control-critical collections must
+    # remain readable before any existing owner-bound operation can proceed.
+    require(isinstance(state, dict))
+    require(isinstance(state.get('id'), str) and bool(state['id']))
+    require(isinstance(state.get('modelProvider'), str) and bool(state['modelProvider']))
+    require(isinstance(state.get('cwd'), str) and bool(state['cwd']))
+    runtime = state.get('threadRuntimeStatus')
+    require(isinstance(runtime, dict) and runtime.get('type') in ('idle', 'active', 'running', 'waiting', 'busy'))
+    requests = state.get('requests')
+    require(isinstance(requests, list))
+    for request in requests:
+        require(isinstance(request, dict))
+        require(type(request.get('id')) in (int, str) and isinstance(request.get('method'), str))
+        require(isinstance(request.get('params', {}), dict))
+    history = state.get('turnHistory')
+    if history is not None:
+        require(isinstance(history, dict) and history.get('kind') == 'canonical')
+        turns = entities(history.get('history'))
+    else:
+        turns = state.get('turns')
+        require(isinstance(turns, list))
+    for turn in turns:
+        require(isinstance(turn, dict) and turn.get('status') in ('inProgress', 'completed', 'failed', 'interrupted'))
+        items = turn.get('items', [])
+        if isinstance(items, dict):
+            items = entities(items) if items.get('entitiesByKey') else items.get('items')
+        require(isinstance(items, list))
+        for item in items:
+            require(isinstance(item, dict) and isinstance(item.get('type'), str))
+
+
 class IPCError(Exception):
     pass
 

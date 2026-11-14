@@ -349,11 +349,18 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(page['meta']['provider'], 'custom-api')
         self.assertEqual(page['meta']['requests'][0]['id'], 7)
         self.assertNotIn('turns', page['meta'])
+        session = self.bridge.session(THREAD)
+        with session.condition:
+            sequence = session.sequence
+            self.fixture.snapshot()
+            self.assertTrue(session.condition.wait_for(lambda: session.sequence > sequence, timeout=2))
         older = self.bridge.timeline_read(THREAD, limit=80, before=page['before'])
         self.assertEqual(len(older['rows']), 80)
         detail = self.bridge.timeline_read(THREAD, 'detail', cursor=page['before'])
         self.assertEqual(detail['text'], 'row 130')
-        changes = self.bridge.timeline_read(THREAD, 'changes', after=page['sequence'], epoch=page['epoch'], start=older['before'])
+        # The older page acknowledges the expanded window, even if a snapshot
+        # arrived while it was loading. Poll from that page's sequence.
+        changes = self.bridge.timeline_read(THREAD, 'changes', after=older['sequence'], epoch=older['epoch'], start=older['before'])
         self.assertEqual(changes['rows'], [])
 
     def test_timeline_meta_refreshes_draft_identity_without_sequence_change(self):
@@ -1036,6 +1043,66 @@ class IntegrationTests(unittest.TestCase):
         self.assertNotIn('modelProvider', call['params']['turnStart']['request'])
         self.assertEqual(self.fixture.state['modelProvider'], 'custom-api')
 
+
+
+    def test_v13_canonical_snapshot_and_patches_preserve_owner_and_history(self):
+        self.assertTrue(self.bridge.view(THREAD)['connected'])
+        session = self.bridge.session(THREAD)
+        value = state()
+        value['turnHistory'] = {'kind': 'canonical', 'history': {'isComplete': True,
+            'entitiesByKey': {'turn': {'turnId': 'turn', 'status': 'inProgress', 'items': [{'type': 'agentMessage', 'text': 'live'}]}},
+            'islands': [{'entries': [{'value': 'turn'}]}]}}
+        def emit(change, owner='owner', version=13):
+            self.bridge._event({'method': 'thread-stream-state-changed', 'version': version, 'sourceClientId': owner,
+                'params': {'hostId': 'local', 'conversationId': THREAD, 'change': change}})
+        emit({'type': 'snapshot', 'revision': 50, 'conversationState': value})
+        self.assertTrue(session.connected)
+        self.assertEqual(normalize_state(session.state)['turns'][0]['messages'][0]['text'], 'live')
+        change = {'type': 'patches', 'baseRevision': 50, 'revision': 51, 'patches': [
+            {'op': 'replace', 'path': ['turnHistory', 'history', 'entitiesByKey', 'turn', 'items', 0, 'text'], 'value': 'updated'}]}
+        emit(change, owner='another-owner')
+        self.assertEqual(session.revision, 50)
+        emit(change)
+        self.assertEqual(session.revision, 51)
+        self.assertEqual(normalize_state(session.state)['turns'][0]['messages'][0]['text'], 'updated')
+        self.assertEqual(session.owner, 'owner')
+        self.assertEqual(session.state['modelProvider'], 'custom-api')
+        value['cwd'] = str(self.root)
+        emit({'type': 'snapshot', 'revision': 52, 'conversationState': value}, version=99)
+        self.assertTrue(session.connected)
+        self.assertEqual(session.desktop_stream_version, 99)
+        emit({'type': 'patches', 'baseRevision': 52, 'revision': 53,
+              'patches': [{'op': 'remove', 'path': ['requests']}]}, version=99)
+        self.assertFalse(session.connected)
+        self.assertIn('更新 Bridge', session.error)
+        self.assertFalse(session.rebuild_recommended)
+        self.assertFalse(session.access['canSend'])
+        request_count = len(self.fixture.requests)
+        with self.assertRaisesRegex(IPCError, '更新 Bridge'):
+            self.bridge._call(session, 'thread-follower-start-turn', {})
+        self.assertEqual(len(self.fixture.requests), request_count)
+        emit({'type': 'snapshot', 'revision': 54, 'conversationState': state()}, version=13)
+        self.assertTrue(session.connected)
+        self.assertIsNone(session.desktop_stream_error)
+        self.assertTrue(session.access['canSend'])
+
+
+    def test_future_stream_changed_envelopes_pause_controls(self):
+        self.assertTrue(self.bridge.view(THREAD)['connected'])
+        session = self.bridge.session(THREAD)
+        for change in (None, {'type': 'snapshot', 'revision': 'new-format'},
+                       {'type': 'patches', 'revision': 2, 'baseRevision': 1, 'patches': {}},
+                       {'type': 'patches', 'revision': 2, 'baseRevision': True, 'patches': []},
+                       {'type': 'new-change', 'revision': 2}):
+            self.bridge._event({'method': 'thread-stream-state-changed', 'version': 99, 'sourceClientId': 'owner',
+                'params': {'hostId': 'local', 'conversationId': THREAD, 'change': change}})
+            self.assertFalse(session.connected)
+            self.assertFalse(session.access['canSend'])
+            self.assertIn('更新 Bridge', session.error)
+            self.bridge._event({'method': 'thread-stream-state-changed', 'version': 13, 'sourceClientId': 'owner',
+                'params': {'hostId': 'local', 'conversationId': THREAD,
+                           'change': {'type': 'snapshot', 'revision': 1, 'conversationState': state()}}})
+            self.assertTrue(session.connected)
 
 
 class ModelTests(unittest.TestCase):
