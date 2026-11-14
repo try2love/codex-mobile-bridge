@@ -24,7 +24,13 @@ function activeUpdateHandoff(env,target,version,pid){
        read('ready.json').token!==token)return null;
     // The helper records the PID immediately after spawning this GUI. A fast
     // child may reach startup first; recheck before writing its acknowledgement.
-    if(sync.existsSync(path.join(transaction,'launched.json'))&&read('launched.json').pid!==pid)return null;
+    const launcher=env.CMB_UPDATE_LAUNCHER_PID;
+    if(launcher&&(!/^[1-9]\d*$/.test(launcher)||!Number.isSafeInteger(Number(launcher))||Number(launcher)===pid))return null;
+    if(sync.existsSync(path.join(transaction,'launched.json'))&&read('launched.json').pid!==(launcher?Number(launcher):pid))return null;
+    if(launcher&&sync.existsSync(path.join(transaction,'launch-services.json'))){
+      const receipt=read('launch-services.json');
+      if(receipt.pid!==pid||receipt.launcherPid!==Number(launcher)||receipt.token!==token)return null;
+    }
     return {transaction,token,dataDir:path.resolve(dataDir)};
   }catch{return null;}
 }
