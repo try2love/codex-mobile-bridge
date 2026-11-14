@@ -1,10 +1,12 @@
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from bridge.clients.antigravity.adapter import Antigravity
 from bridge.clients.antigravity.cli_session import make_waiting_request_id
+from bridge.clients.antigravity import cli_session
 from bridge.clients.antigravity.model import gateway_id
 from bridge.clients.errors import BridgeUnavailable
 from test_antigravity_adapter import CID, ROOT, _create_surface_db
@@ -119,3 +121,51 @@ class WaitingTests(unittest.TestCase):
         with mock.patch.object(self.adapter.cli, '_collect_step_fallback', return_value=full_step):
             self.adapter.cli.respond_interaction(CID, rid, 'accept')
         self.assertEqual(len(self.writes), 1)
+
+    def test_late_display_read_cannot_replace_the_response_fresh_check(self):
+        rid = self.wait()
+        display_started, release_display = threading.Event(), threading.Event()
+        response_started, fresh_read = threading.Event(), threading.Event()
+        errors = []
+        normalize = cli_session._normalize_waiting_step
+
+        def delayed_normalize(*args, **kwargs):
+            if threading.current_thread().name == 'waiting-display':
+                display_started.set()
+                if not release_display.wait(3):
+                    raise RuntimeError('display timeout')
+            return normalize(*args, **kwargs)
+
+        def rpc(method, body=None, **kwargs):
+            if method == 'GetAllCascadeTrajectories' and threading.current_thread().name == 'waiting-response':
+                fresh_read.set()
+                return {}
+            return self.call_rpc(method, body, **kwargs)
+
+        def respond():
+            response_started.set()
+            try:
+                self.adapter.cli.respond_interaction(CID, rid, 'accept')
+            except Exception as error:
+                errors.append(error)
+
+        with mock.patch.object(cli_session, '_normalize_waiting_step', side_effect=delayed_normalize), \
+                mock.patch.object(self.adapter.cli, 'call_ls_rpc', side_effect=rpc):
+            display = threading.Thread(target=self.adapter.cli.waiting_state_by_cid, name='waiting-display')
+            response = threading.Thread(target=respond, name='waiting-response')
+            display.start()
+            try:
+                self.assertTrue(display_started.wait(2))
+                response.start()
+                self.assertTrue(response_started.wait(2))
+                overlapped = fresh_read.wait(.1)
+            finally:
+                release_display.set()
+                display.join(3)
+                if response.ident is not None:
+                    response.join(3)
+            self.assertFalse(display.is_alive() or response.is_alive())
+        self.assertFalse(overlapped, 'fresh check must follow the complete display snapshot')
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], ValueError)
+        self.assertEqual(self.writes, [])

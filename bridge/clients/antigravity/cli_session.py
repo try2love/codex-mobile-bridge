@@ -593,79 +593,80 @@ class AntigravityCli:
 
     def waiting_state_by_cid(self, *, surface='app', max_age=2.0):
         """Return (waiting_requests_by_cid, active_cids) for a surface."""
-        now = time.monotonic()
         with self._lock:
-            cached = self._trajectories_cache.get(surface)
-            if max_age > 0 and cached and (now - cached[0]) < max_age:
-                return {k: [dict(r) for r in v] for k, v in cached[1].items()}, set(cached[2])
+            now = time.monotonic()
+            with self._lock:
+                cached = self._trajectories_cache.get(surface)
+                if max_age > 0 and cached and (now - cached[0]) < max_age:
+                    return {k: [dict(r) for r in v] for k, v in cached[1].items()}, set(cached[2])
 
-        res = self.call_ls_rpc('GetAllCascadeTrajectories', {}, surface=surface)
-        summaries = res.get('trajectorySummaries', {})
-        if not isinstance(summaries, dict):
-            raise BridgeUnavailable('原会话等待状态未确认，请稍后重试')
+            res = self.call_ls_rpc('GetAllCascadeTrajectories', {}, surface=surface)
+            summaries = res.get('trajectorySummaries', {})
+            if not isinstance(summaries, dict):
+                raise BridgeUnavailable('原会话等待状态未确认，请稍后重试')
 
-        waiting_by_cid = {}
-        active_cids = set()
-        fresh_cache = {}
-        for traj_cid, summary in summaries.items():
-            if not isinstance(summary, dict):
-                continue
-            status = str(summary.get('status') or '')
-            meta = summary.get('trajectoryMetadata') if isinstance(summary.get('trajectoryMetadata'), dict) else {}
-            root_cid = str(meta.get('rootCascadeId') or meta.get('rootConversationId') or '').strip()
-            parent_cid = str(meta.get('parentCascadeId') or meta.get('parentConversationId') or '').strip()
-            target_cids = [traj_cid]
-            for ancestor in (root_cid, parent_cid):
-                if ancestor and ancestor not in target_cids:
-                    target_cids.append(ancestor)
-            if (status in _ACTIVE_RUN_STATUSES
-                    or any(summary.get(k) is True for k in ('notFullyIdle', 'hasActiveChildren', 'hasRunningSubagents'))
-                    or (isinstance(summary.get('backgroundTaskCount'), (int, float)) and summary['backgroundTaskCount'] > 0)
-                    or any(isinstance(summary.get(k), list) and summary.get(k) for k in ('waitingSteps', 'subagentWaitingSteps'))):
-                active_cids.update(target_cids)
-
-            sources = []
-            for entry in (summary.get('waitingSteps') or []):
-                if isinstance(entry, dict):
-                    sources.append((entry, traj_cid, entry.get('trajectoryId') or summary.get('trajectoryId'), None))
-            for entry in (summary.get('subagentWaitingSteps') or []):
-                if isinstance(entry, dict):
-                    sub_cid = str(entry.get('subagentCascadeId') or entry.get('subagentConversationId') or '').strip()
-                    sources.append((entry, sub_cid, entry.get('subagentTrajectoryId'), entry.get('stepIndex')))
-
-            for entry, cascade_id, trajectory_id, explicit_step_idx in sources:
-                step = entry.get('step') if isinstance(entry.get('step'), dict) else {}
-                step_index = explicit_step_idx if explicit_step_idx is not None else entry.get('stepIndex')
-                if not cascade_id or not trajectory_id or step_index is None:
+            waiting_by_cid = {}
+            active_cids = set()
+            fresh_cache = {}
+            for traj_cid, summary in summaries.items():
+                if not isinstance(summary, dict):
                     continue
-                req_id = make_waiting_request_id(surface, cascade_id, trajectory_id, step_index)
-                public, item_meta = _normalize_waiting_step(
-                    req_id, surface, cascade_id, trajectory_id, step_index, step,
-                    root_cid=root_cid or traj_cid, parent_cid=parent_cid,
-                )
-                if public is None:
-                    full_step = self._collect_step_fallback(cascade_id, int(step_index), surface=surface)
-                    if isinstance(full_step, dict):
-                        public, item_meta = _normalize_waiting_step(
-                            req_id, surface, cascade_id, trajectory_id, step_index, full_step,
-                            root_cid=root_cid or traj_cid, parent_cid=parent_cid,
-                        )
-                if public is None or item_meta is None:
-                    continue
-                fresh_cache[req_id] = item_meta
-                for owner in target_cids:
-                    waiting_by_cid.setdefault(owner, []).append(dict(public))
+                status = str(summary.get('status') or '')
+                meta = summary.get('trajectoryMetadata') if isinstance(summary.get('trajectoryMetadata'), dict) else {}
+                root_cid = str(meta.get('rootCascadeId') or meta.get('rootConversationId') or '').strip()
+                parent_cid = str(meta.get('parentCascadeId') or meta.get('parentConversationId') or '').strip()
+                target_cids = [traj_cid]
+                for ancestor in (root_cid, parent_cid):
+                    if ancestor and ancestor not in target_cids:
+                        target_cids.append(ancestor)
+                if (status in _ACTIVE_RUN_STATUSES
+                        or any(summary.get(k) is True for k in ('notFullyIdle', 'hasActiveChildren', 'hasRunningSubagents'))
+                        or (isinstance(summary.get('backgroundTaskCount'), (int, float)) and summary['backgroundTaskCount'] > 0)
+                        or any(isinstance(summary.get(k), list) and summary.get(k) for k in ('waitingSteps', 'subagentWaitingSteps'))):
+                    active_cids.update(target_cids)
 
-        with self._lock:
-            self._trajectories_cache[surface] = (time.monotonic(), {k: [dict(r) for r in v] for k, v in waiting_by_cid.items()}, set(active_cids))
-            self._waiting_cache = {key: value for key, value in self._waiting_cache.items() if value.get('surface') != surface}
-            self._waiting_cache.update(fresh_cache)
-            if len(self._waiting_cache) > 256:
-                for stale_key in list(self._waiting_cache.keys())[:-128]:
-                    if stale_key not in fresh_cache:
-                        self._waiting_cache.pop(stale_key, None)
+                sources = []
+                for entry in (summary.get('waitingSteps') or []):
+                    if isinstance(entry, dict):
+                        sources.append((entry, traj_cid, entry.get('trajectoryId') or summary.get('trajectoryId'), None))
+                for entry in (summary.get('subagentWaitingSteps') or []):
+                    if isinstance(entry, dict):
+                        sub_cid = str(entry.get('subagentCascadeId') or entry.get('subagentConversationId') or '').strip()
+                        sources.append((entry, sub_cid, entry.get('subagentTrajectoryId'), entry.get('stepIndex')))
 
-        return waiting_by_cid, active_cids
+                for entry, cascade_id, trajectory_id, explicit_step_idx in sources:
+                    step = entry.get('step') if isinstance(entry.get('step'), dict) else {}
+                    step_index = explicit_step_idx if explicit_step_idx is not None else entry.get('stepIndex')
+                    if not cascade_id or not trajectory_id or step_index is None:
+                        continue
+                    req_id = make_waiting_request_id(surface, cascade_id, trajectory_id, step_index)
+                    public, item_meta = _normalize_waiting_step(
+                        req_id, surface, cascade_id, trajectory_id, step_index, step,
+                        root_cid=root_cid or traj_cid, parent_cid=parent_cid,
+                    )
+                    if public is None:
+                        full_step = self._collect_step_fallback(cascade_id, int(step_index), surface=surface)
+                        if isinstance(full_step, dict):
+                            public, item_meta = _normalize_waiting_step(
+                                req_id, surface, cascade_id, trajectory_id, step_index, full_step,
+                                root_cid=root_cid or traj_cid, parent_cid=parent_cid,
+                            )
+                    if public is None or item_meta is None:
+                        continue
+                    fresh_cache[req_id] = item_meta
+                    for owner in target_cids:
+                        waiting_by_cid.setdefault(owner, []).append(dict(public))
+
+            with self._lock:
+                self._trajectories_cache[surface] = (time.monotonic(), {k: [dict(r) for r in v] for k, v in waiting_by_cid.items()}, set(active_cids))
+                self._waiting_cache = {key: value for key, value in self._waiting_cache.items() if value.get('surface') != surface}
+                self._waiting_cache.update(fresh_cache)
+                if len(self._waiting_cache) > 256:
+                    for stale_key in list(self._waiting_cache.keys())[:-128]:
+                        if stale_key not in fresh_cache:
+                            self._waiting_cache.pop(stale_key, None)
+
+            return waiting_by_cid, active_cids
 
     def has_waiting_interactions(self, conversation_id, *, surface='app'):
         if not conversation_id:
@@ -693,21 +694,22 @@ class AntigravityCli:
 
     def respond_interaction(self, conversation_id, request_id, decision, answers=None, *, surface='app'):
         """Submit user answers or approval decisions via HandleCascadeUserInteraction."""
-        meta = self._resolve_waiting_meta(conversation_id, request_id, surface=surface)
-        interaction_field = _build_interaction_response(meta, decision, answers=answers)
-        payload = {
-            'cascadeId': meta['cascadeId'],
-            'interaction': {
-                'trajectoryId': meta['trajectoryId'],
-                'stepIndex': meta['stepIndex'],
-                **interaction_field,
-            },
-        }
-        self.call_ls_rpc('HandleCascadeUserInteraction', payload, surface=surface)
-        self._invalidate_trajectories_cache(surface)
         with self._lock:
-            self._waiting_cache.pop(request_id, None)
-        return True
+            meta = self._resolve_waiting_meta(conversation_id, request_id, surface=surface)
+            interaction_field = _build_interaction_response(meta, decision, answers=answers)
+            payload = {
+                'cascadeId': meta['cascadeId'],
+                'interaction': {
+                    'trajectoryId': meta['trajectoryId'],
+                    'stepIndex': meta['stepIndex'],
+                    **interaction_field,
+                },
+            }
+            self.call_ls_rpc('HandleCascadeUserInteraction', payload, surface=surface)
+            self._invalidate_trajectories_cache(surface)
+            with self._lock:
+                self._waiting_cache.pop(request_id, None)
+            return True
 
     def user_status(self, surface='app'):
         return self.call_ls_rpc('GetUserStatus', surface=surface).get('userStatus') or {}
