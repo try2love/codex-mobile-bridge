@@ -247,6 +247,30 @@ def _listener(pid, port, image):
     return len(listeners) == 1 and listeners[0][0] == '0100007F' and listeners[0][1] in sockets
 
 
+_PORT_RE = re.compile(r'Language server listening on \w+ port at (\d+) for (?:local )?HTTP\b')
+_LOG_HEAD_BYTES = 64 * 1024
+_LOG_TAIL_BYTES = 256 * 1024
+
+
+def _log_ports(log):
+    """Extract listening HTTP ports from both log head and tail for large logs."""
+    ports = set()
+    with log.open('rb') as stream:
+        stream.seek(0, os.SEEK_END)
+        size = stream.tell()
+        stream.seek(0)
+        if size <= _LOG_HEAD_BYTES + _LOG_TAIL_BYTES:
+            chunks = [stream.read()]
+        else:
+            chunks = [stream.read(_LOG_HEAD_BYTES) + stream.readline(4096)]
+            stream.seek(max(0, size - _LOG_TAIL_BYTES))
+            chunks.append(stream.read(_LOG_TAIL_BYTES))
+    for chunk in chunks:
+        text = chunk.decode('utf-8', errors='replace')
+        ports.update(int(p) for p in _PORT_RE.findall(text))
+    return ports
+
+
 def endpoint(surface, home):
     """Return one same-user, same-surface server, or fail without contacting it."""
     if Path(home).resolve() != Path.home().resolve():
@@ -284,10 +308,7 @@ def endpoint(surface, home):
         ports = set()
         for log in logs:
             if log.is_file():
-                with log.open('rb') as stream:
-                    stream.seek(max(0, log.stat().st_size - 256 * 1024))
-                    text = stream.read(256 * 1024).decode('utf-8', errors='replace')
-                ports.update(int(p) for p in re.findall(r'Language server listening on \w+ port at (\d+) for (?:local )?HTTP\b', text))
+                ports.update(_log_ports(log))
         for port in ports:
             try:
                 if 1024 <= port <= 65535 and _listener(pid, port, before['image']) and _identity(pid) == before:
