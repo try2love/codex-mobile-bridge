@@ -931,7 +931,7 @@ python3 -B -m unittest discover -s tests -v
 
 感谢 [LINUX DO](https://linux.do/) 社区及各位佬友的支持。
 
-感谢 [@windowmmk](https://github.com/windowmmk) 在 [PR #150](https://github.com/try2love/codex-mobile-bridge/pull/150) 中提供已采纳的 Antigravity 接入基础，以及 [@heiqiu47](https://github.com/heiqiu47) 在 [PR #146](https://github.com/try2love/codex-mobile-bridge/pull/146) 和 [PR #157](https://github.com/try2love/codex-mobile-bridge/pull/157) 中贡献自定义 HTTPS 端口与 macOS 菜单栏图标。保留实际采纳部分的原作者提交，后续整合调整单独提交。
+感谢 [@windowmmk](https://github.com/windowmmk) 在 [PR #150](https://github.com/try2love/codex-mobile-bridge/pull/150) 中提供已采纳的 Antigravity 接入基础，并在 [PR #170](https://github.com/try2love/codex-mobile-bridge/pull/170) 中贡献原生等待交互、模型额度和历史图片增强；感谢 [@heiqiu47](https://github.com/heiqiu47) 在 [PR #146](https://github.com/try2love/codex-mobile-bridge/pull/146) 和 [PR #157](https://github.com/try2love/codex-mobile-bridge/pull/157) 中贡献自定义 HTTPS 端口与 macOS 菜单栏图标。原作者提交完整保留，选择性采纳、修复与整合调整单独提交。
 
 感谢 [@heiqiu47](https://github.com/heiqiu47) 的 PR [#85](https://github.com/try2love/codex-mobile-bridge/pull/85)、[#86](https://github.com/try2love/codex-mobile-bridge/pull/86)、[#92](https://github.com/try2love/codex-mobile-bridge/pull/92)、[#95](https://github.com/try2love/codex-mobile-bridge/pull/95)，[@mc373906408（waken）](https://github.com/mc373906408) 的 [#88](https://github.com/try2love/codex-mobile-bridge/pull/88)，以及 [@littltstream](https://github.com/littltstream) 的 [#96](https://github.com/try2love/codex-mobile-bridge/pull/96)。原作者提交完整保留，各项贡献见 [v2.1.7 发布说明](RELEASE_NOTES.md#v217)。
 
