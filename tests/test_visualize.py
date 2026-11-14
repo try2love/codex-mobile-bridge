@@ -83,7 +83,8 @@ class VisualizeSourceTests(unittest.TestCase):
         bridge.local = False; bridge.host = 'remote:fixture'; bridge.store = RemoteStore('fixture')
         def ssh(alias, payload, **kwargs):
             self.assertEqual(alias, 'fixture')
-            result = subprocess.run([sys.executable, '-I', '-S', '-B', '-c', payload], capture_output=True, text=True, cwd=self.base)
+            result = subprocess.run([sys.executable, '-I', '-S', '-B', '-X', 'utf8', '-'],
+                                    input=payload, capture_output=True, encoding='utf-8', cwd=self.base)
             self.assertEqual(result.returncode, 0, result.stderr)
             return json.loads(result.stdout)
         with patch('bridge.app.service.ssh_read', side_effect=ssh):
