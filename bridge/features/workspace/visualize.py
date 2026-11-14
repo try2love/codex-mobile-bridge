@@ -55,11 +55,12 @@ def read_source(path, cwd, home=None):
         raise PermissionError('可视化文件路径无效')
     roots = [Path(cwd)] if cwd else []
     roots.append(Path(home or os.environ.get('CODEX_HOME') or Path.home() / '.codex') / 'visualizations')
-    absolute = Path(os.path.abspath(target))
     resolved = target.resolve(strict=True)
     if not any(root.resolve() in resolved.parents for root in roots):
         raise PermissionError('可视化文件超出授权目录')
-    with Workspace(absolute.anchor).download(absolute.relative_to(absolute.anchor).as_posix(), limit=MAX_BYTES) as (_, stream):
+    # Preserve original components: collapsing symlink/.. before the guarded
+    # walk can read a different file from the one authorized above.
+    with Workspace(target.anchor).download(target.relative_to(target.anchor).as_posix(), limit=MAX_BYTES) as (_, stream):
         raw = stream.read(MAX_BYTES + 1)
     if len(raw) > MAX_BYTES:
         raise ValueError('可视化内容超过 1 MB')

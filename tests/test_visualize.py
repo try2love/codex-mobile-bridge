@@ -93,6 +93,16 @@ class VisualizeSourceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 Bridge.visualization(bridge, support.THREAD, identifier(str(project_file)))
 
+    def test_parent_components_cannot_change_the_authorized_symlink_target(self):
+        outside = self.base / 'outside'; outside.mkdir()
+        (self.project / 'sub').mkdir()
+        (self.project / 'secret.html').write_text('authorized')
+        (outside / 'secret.html').write_text('outside project')
+        link = outside / 'link'; link.symlink_to(self.project / 'sub')
+        path = str(link / '..' / 'secret.html')
+        with self.assertRaises((PermissionError, ValueError)):
+            read_source(path, str(self.project), str(self.home))
+
     def test_saved_prefix_is_readable_until_a_complete_snapshot_removes_it(self):
         saved = {'cwd': str(self.project), 'turns': [
             {'turnId': 'older', 'items': [{'id': 'viz', 'type': 'agentMessage', 'text': reference(self.file)}]},
