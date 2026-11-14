@@ -17,9 +17,18 @@ class StreamCompatibilityTests(unittest.TestCase):
             value['turns'][0]['extra'] = 1
             validate_stream_state(version, value)
 
-    def test_known_versions_preserve_existing_partial_snapshots(self):
-        for version in (11, 13):
-            validate_stream_state(version, {'id': 'thread'})
+    def test_legacy_partial_snapshots_remain_readable(self):
+        validate_stream_state(11, {'id': 'thread'})
+
+    def test_v13_requires_readable_control_state(self):
+        for key, value in [('requests', None), ('threadRuntimeStatus', {'type': 'unknown'}),
+                           ('turns', [{'status': 'new-status', 'items': []}])]:
+            state = self.state()
+            state[key] = value
+            with self.subTest(key=key), self.assertRaises(StreamCompatibilityError):
+                validate_stream_state(13, state)
+        with self.assertRaises(StreamCompatibilityError):
+            validate_stream_state(13, {'id': 'thread'})
 
     def test_future_versions_accept_canonical_history_and_pending_approvals(self):
         value = self.state()

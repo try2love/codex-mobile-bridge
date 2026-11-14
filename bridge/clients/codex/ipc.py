@@ -25,7 +25,9 @@ def validate_stream_version(version):
 
 def validate_stream_state(version, state):
     validate_stream_version(version)
-    if version in KNOWN_STREAM_VERSIONS:
+    # Preserve the v11 parser's partial snapshots; newer streams must prove
+    # their control contract rather than gain an exemption from a known number.
+    if version == 11:
         return
 
     def require(condition):

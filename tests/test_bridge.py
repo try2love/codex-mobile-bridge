@@ -30,7 +30,7 @@ THREAD = str(uuid.uuid4())
 
 
 def state():
-    return {"id": THREAD, "title": "Desktop test", "modelProvider": "custom-api", "latestModel": "same-model",
+    return {"id": THREAD, "title": "Desktop test", "modelProvider": "custom-api", "latestModel": "same-model", "cwd": "/workspace",
             "threadRuntimeStatus": {"type": "idle"}, "turns": [], "requests": []}
 
 

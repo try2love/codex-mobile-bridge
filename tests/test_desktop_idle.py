@@ -66,7 +66,11 @@ class DesktopIdle(unittest.TestCase):
         self.factory.start(); self.addCleanup(self.factory.stop)
 
     def test_v13_canonical_busy_thread_prevents_shutdown(self):
-        self.transform_event = lambda message: {**message, 'version': 13}
+        def v13(message):
+            message['version'] = 13
+            message['params']['change']['conversationState'].update(modelProvider='original-provider', cwd='/original/project')
+            return message
+        self.transform_event = v13
         self.states[('local', 'desktop-only')] = {'id': 'desktop-only', 'threadRuntimeStatus': {'type': 'idle'},
             'turns': [], 'requests': [], 'turnHistory': {'kind': 'canonical', 'history': {
                 'entitiesByKey': {'turn': {'turnId': 'turn', 'status': 'inProgress'}},
