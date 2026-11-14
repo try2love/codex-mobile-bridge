@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+from bridge.clients.codex.catalog import CatalogIdentityChanged
 from bridge.app.service import Bridge
 from bridge.clients.codex.catalog import ModelStore
 from bridge.clients.codex.app_server import AppServerUnavailable
@@ -86,7 +87,7 @@ class NativeModelCacheTests(unittest.TestCase):
             self.bridge._native_model_identity.return_value = 'identity-b'
             return {'models': [{'id': 'old-account'}]}
         self.bridge.cli_sessions.get_kind.side_effect = changed
-        with self.assertRaisesRegex(ValueError, '账号身份已变化'):
+        with self.assertRaisesRegex(CatalogIdentityChanged, '账号身份已变化'):
             self.bridge._native_models('thread', self.temp.name, 'openai')
         self.assertIsNone(self.bridge.native_model_store.read('identity-a'))
 

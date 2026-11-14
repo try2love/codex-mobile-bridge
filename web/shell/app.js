@@ -29,7 +29,8 @@ function bumpRecency(id,host,at=Date.now()){
 }
 let activityBusy=false;
 const fastModeControl=new FastModeControl({root:$('fast-mode-control'),input:$('fast-mode-enabled')});
-let modelRequest=0,modelTarget=null,modelSaving=false;
+let modelRequest=0,modelTarget=null,modelSaving=false,modelScope='',modelIdentityInvalid=false;
+function modelScopeKey(){return JSON.stringify([listIdentity,currentId,currentHost,state?.provider,state?.modelCatalogIdentity||'']);}
 async function goalAction(action,payload) {
   const id=currentId,host=currentHost;
   const result=await api(sessionUrl(id,'goal/'+action,host),payload);
@@ -1310,7 +1311,7 @@ async function loadCatalogKind(kind,refresh=false){
   if(!refresh&&catalogTasks[kind]?.identity===identity)return catalogTasks[kind];
   const request=api('/api/sessions/'+target+'/catalog?kind='+kind+(refresh?'&refresh=true':'')).then(value=>{
     if(currentId!==target||currentHost!==targetHost||state?.provider!==provider||(state?.modelCatalogIdentity||'')!==accountIdentity||listIdentity!==gatewayIdentity||generation!==modelCatalogGeneration)throw Error(t('聊天已切换'));
-    if(accountIdentity&&value?.cache?.identity!==accountIdentity)throw Error(t('账号已切换，请重新打开模型设置'));
+    if(accountIdentity&&value?.cache?.identity!==accountIdentity)throw Object.assign(Error(t('账号已切换，请重新打开模型设置')),{code:'model_identity_changed'});
     const payload=value?.[kind]??value?.data??value;
     if(!Array.isArray(payload)){
       const actual=payload===null?'null':typeof payload;
@@ -1439,12 +1440,12 @@ function renderEfforts({effort=state?.effort,keepFast=false}={}){
   $('effort-select').value=options.includes(effort)?effort:options.includes(model?.defaultEffort)?model.defaultEffort:model?.efforts?.length?options[0]:'';
   $('effort-select').disabled=!options.length;
   renderEffortChoices();
-  if(!keepFast)fastModeControl.select(id);$('model-save').disabled=!state?.connected||!id||(id==='__custom__'&&!$('custom-model').value.trim());
+  if(!keepFast)fastModeControl.select(id);$('model-save').disabled=modelIdentityInvalid||modelScope!==modelScopeKey()||!state?.connected||!id||(id==='__custom__'&&!$('custom-model').value.trim());
 }
 async function openModelDialog(forceRefresh=false){
   if(modelSaving)return;
   $('model-refresh').disabled=true;
-  const request=++modelRequest,target=chatKey();modelTarget=target;fastModeControl.reset();
+  const request=++modelRequest,target=chatKey();modelTarget=target;modelScope=modelScopeKey();modelIdentityInvalid=false;fastModeControl.reset();
   $('model-form').querySelectorAll('input,select,button').forEach(n=>n.disabled=false);
   const identity=state?.modelCatalogIdentity||'',scope=JSON.stringify([listIdentity,currentId,currentHost,state?.provider,identity]),cached=window.BridgeModelCatalogCache.read(modelCatalogs,[listIdentity,currentHost,'codex'],identity)||(catalogResults.models?._scope===scope?catalogResults.models:null);
   const active=()=>request===modelRequest&&target===chatKey()&&scope===JSON.stringify([listIdentity,currentId,currentHost,state?.provider,state?.modelCatalogIdentity||'']);
@@ -1459,9 +1460,10 @@ async function openModelDialog(forceRefresh=false){
   $('model-error').textContent='';if(cached?.models?.length)showCatalog(cached);else{$('model-updated').textContent='';$('model-select').replaceChildren(new Option(t('读取模型列表…'),''));$('model-options').textContent=t('读取模型列表…');$('effort-options').replaceChildren();$('model-save').disabled=true;}if(!$('model-dialog').open)$('model-dialog').showModal();
   try{
     const catalog=await loadCatalogKind('models',forceRefresh);
-    if(!active())return;
+    if(!active()){if(request===modelRequest)$('model-dialog').close();return;}
     showCatalog(catalog);
   }catch(e){if(active()){
+    if(e.code==='model_identity_changed'){modelIdentityInvalid=true;$('model-error').textContent=t(e.message);$('model-updated').textContent='';$('model-save').disabled=true;return;}
     if(!cached?.models?.length)showCatalog({models:[],fastMode:{allowed:false}});
     $('model-updated').textContent=t(e.message)+' · '+t('可手动填写模型');
   }}
@@ -1472,7 +1474,7 @@ $('model-refresh').onclick=()=>openModelDialog(true);
 $('model-select').onchange=renderEfforts;
 $('custom-model').oninput=renderEfforts;
 $('model-form').onsubmit=async event=>{
-  event.preventDefault();if(modelSaving||modelTarget!==chatKey()||$('model-save').disabled)return;
+  event.preventDefault();if(modelSaving||modelIdentityInvalid||modelScope!==modelScopeKey()||modelTarget!==chatKey()||$('model-save').disabled)return;
   const request=modelRequest,target=currentId,host=currentHost;
   const model=$('model-select').value==='__custom__'?$('custom-model').value.trim():$('model-select').value;
   const body={model,...($('effort-select').value?{effort:$('effort-select').value}:{}),...fastModeControl.payload()};

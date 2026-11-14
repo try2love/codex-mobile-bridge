@@ -36,7 +36,7 @@ from bridge.features.auth.auth import Auth, LoginRejected
 from bridge.features.updates.mobile import MobileUpdates
 from bridge.clients.codex.ipc import IPCError
 from bridge.features.sessions.goal import GoalError
-from bridge.clients.codex.catalog import CatalogError
+from bridge.clients.codex.catalog import CatalogError, CatalogIdentityChanged
 from bridge.features.sessions.store import StoreUnavailable
 from bridge.clients.codex.remote import RemoteUnavailable
 from bridge.features.sessions.create import ArchiveRejected, CreationError
@@ -1492,6 +1492,9 @@ class Handler(BaseHTTPRequestHandler):
         except SubmissionRejected as exc:
             self.close_connection = True
             self.output(400, {"error": str(exc), "code": "send_not_submitted"})
+        except CatalogIdentityChanged as exc:
+            self.close_connection = True
+            self.output(409, {"error": str(exc), "code": exc.code})
         except ValueError as exc:
             self.close_connection = True
             self.output(400, {"error": str(exc)})

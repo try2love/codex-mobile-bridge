@@ -38,7 +38,7 @@ from bridge.features.workspace.files import artifact_paths, referenced_model_ima
 from bridge.features.workspace.visualize import identifier as visualization_id, read_source as read_visualization
 from bridge.features.workspace.visualize_payload import read_request as visualization_read_request
 from bridge.features.workspace.workspace import operate as workspace_operation
-from bridge.clients.codex.catalog import Catalog, CatalogError, ModelStore, MODEL_REFRESH_SECONDS
+from bridge.clients.codex.catalog import Catalog, CatalogError, CatalogIdentityChanged, ModelStore, MODEL_REFRESH_SECONDS
 from bridge.platforms.codex_daemon_env import DaemonEnvironmentUnavailable
 from bridge.clients.codex.remote import AppHosts, RemoteStore, RemoteCatalog, RemoteUnavailable, ssh_read, ssh_download, payload, project_path_name, ssh_connection, retry_ssh
 from bridge.features.sessions.create import (
@@ -4849,14 +4849,14 @@ class Bridge:
                                                     query='', offset=0, limit=200, ids=None))
             except (OSError, ValueError, AppServerError):
                 if self._native_model_identity(cwd, provider) != identity:
-                    raise ValueError('账号身份已变化，请重新读取模型列表')
+                    raise CatalogIdentityChanged('账号身份已变化，请重新读取模型列表')
                 if persisted:
                     return {**stable(persisted[1]), 'modelError': '模型列表刷新失败，已保留上次结果',
                             'cache': {'state': 'stale', 'updatedAt': persisted[0], 'identity': identity}}
                 return {'models': [], 'modelError': '模型目录暂不可用，可手动填写模型',
                         'fastMode': {'allowed': False}, 'cache': {'state': 'unavailable', 'identity': identity}}
             if self._native_model_identity(cwd, provider) != identity:
-                raise ValueError('账号身份已变化，请重新读取模型列表')
+                raise CatalogIdentityChanged('账号身份已变化，请重新读取模型列表')
             if not value.get('models') and not value.get('modelError'):
                 value = {**value, 'modelError': '模型目录暂不可用，可手动填写模型'}
             if not value.get('modelError'):
@@ -4869,7 +4869,7 @@ class Bridge:
                 return {**stable(persisted[1]), 'modelError': value['modelError'],
                         'cache': {'state': 'stale', 'updatedAt': persisted[0], 'identity': identity}}
             if self._native_model_identity(cwd, provider) != identity:
-                raise ValueError('账号身份已变化，请重新读取模型列表')
+                raise CatalogIdentityChanged('账号身份已变化，请重新读取模型列表')
             return {**value, 'cache': {'state': 'fresh', 'updatedAt': updated_at, 'identity': identity}} if not value.get('modelError') else {
                 **value, 'cache': {'state': 'unavailable', 'identity': identity}}
 

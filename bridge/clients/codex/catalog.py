@@ -33,6 +33,10 @@ class CatalogError(RuntimeError):
     pass
 
 
+class CatalogIdentityChanged(CatalogError):
+    code = 'model_identity_changed'
+
+
 class SkillPathChanged(ValueError):
     pass
 
@@ -945,14 +949,14 @@ class Catalog:
                     raw = self._fetch(cwd, provider, kind)
                 except CatalogError as exc:
                     if self._model_scope(cwd) != scope:
-                        raise CatalogError('模型接入已变化，请重试') from exc
+                        raise CatalogIdentityChanged('模型接入已变化，请重试') from exc
                     if persisted:
                         return {**ModelStore.directory(persisted[1]), 'kind': 'models', 'modelError': str(exc),
                                 'cache': {'state': 'stale', 'updatedAt': persisted[0], 'identity': identity}}
                     return {'models': [], 'kind': 'models', 'modelError': str(exc),
                             'fastMode': {'allowed': False}, 'cache': {'state': 'unavailable', 'identity': identity}}
                 if self._model_scope(cwd) != scope:
-                    raise CatalogError('模型接入已变化，请重试')
+                    raise CatalogIdentityChanged('模型接入已变化，请重试')
                 self._remember_model_provider(scope, raw)
                 identity = self.model_identity(cwd, provider)
                 models = self.normalize_models(raw['models'])
@@ -961,7 +965,7 @@ class Catalog:
                          'modelError': raw.get('modelError'), 'currentModel': raw.get('currentModel'),
                          'currentEffort': raw.get('currentEffort')}
                 if self.model_identity(cwd, provider) != identity:
-                    raise CatalogError('模型接入已变化，请重试')
+                    raise CatalogIdentityChanged('模型接入已变化，请重试')
                 if value.get('modelError') or not models:
                     value['modelError'] = value.get('modelError') or '模型目录暂不可用，可手动填写模型'
                     return ({**ModelStore.directory(persisted[1]), 'kind': 'models', 'modelError': value['modelError'],
@@ -1067,7 +1071,7 @@ class Catalog:
                 self.cache.pop(key, None)
                 raise
             if self._model_scope(cwd) != scope:
-                raise CatalogError('模型接入已变化，请重试')
+                raise CatalogIdentityChanged('模型接入已变化，请重试')
             self._remember_model_provider(scope, raw)
             identity = self.model_identity(cwd, provider)
             key = (cwd, identity)

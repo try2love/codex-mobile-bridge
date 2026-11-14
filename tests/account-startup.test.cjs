@@ -501,3 +501,18 @@ test('first model read failure preserves custom input and the exact submitted mo
  assert.equal(ui.responses.at(-1).model,'exact/custom-model');
  assert.equal(ui.responses.at(-1).effort,undefined);
 });
+
+
+test('model identity change is not treated as an editable directory outage',async()=>{
+ const catalog={models:[{id:'old-model',efforts:[]}],cache:{identity:'account-a'}};
+ const ui=await fixture(r=>r(official),'chatgpt',catalog);ui.run("currentId='thread';state={connected:true,model:'old-model',modelCatalogIdentity:'account-a'}");
+ await ui.nodes.get('model-button').onclick();catalog.cache.identity='account-b';await ui.nodes.get('model-refresh').onclick();
+ assert.equal(ui.nodes.get('model-save').disabled,true);assert.match(ui.nodes.get('model-error').textContent,/账号已切换/);assert.doesNotMatch(ui.nodes.get('model-updated').textContent,/手动/);
+ ui.nodes.get('custom-model').value='old-model';ui.nodes.get('custom-model').oninput();assert.equal(ui.nodes.get('model-save').disabled,true);
+ await ui.nodes.get('model-form').onsubmit({preventDefault(){}});assert.equal(ui.responses.length,0);
+});
+test('model submission rejects a changed account even before its detail repaint',async()=>{
+ const ui=await fixture(r=>r(official),'chatgpt',{models:[{id:'old-model',efforts:[]}],cache:{identity:'account-a'}});
+ ui.run("currentId='thread';state={connected:true,model:'old-model',modelCatalogIdentity:'account-a'}");await ui.nodes.get('model-button').onclick();
+ ui.run("state.modelCatalogIdentity='account-b'");await ui.nodes.get('model-form').onsubmit({preventDefault(){}});assert.equal(ui.responses.length,0);
+});
