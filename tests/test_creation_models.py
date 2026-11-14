@@ -178,6 +178,8 @@ class CreationCatalogScope(unittest.TestCase):
         request={'environment':'scope','projectKey':'code:/fixture'}
         result=self.manager.creation_models('claude',request)
         self.assertEqual(result['models'], result['groups'][0]['models'])
+        self.assertTrue(result['capabilities']['manualModels'])
+        self.assertTrue(result['capabilities']['manualEffort'])
         self.assertEqual([row['id'] for row in result['models']], ['code-model'])
         self.assertEqual(result['cache']['directoryIdentity'], catalog['cache']['identity'])
         self.assertEqual(result['cache']['surface'], 'code')

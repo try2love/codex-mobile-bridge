@@ -41,3 +41,7 @@ Antigravity 管理页复用共享 CreationModelPicker，按来源和会话保持
 ## ZCode 原生选择
 
 完整 provider/model 按首个斜杠拆分，目录临时失败仍将明确选择提交原生校验；设置省略强度时发送空 thought，使用所选模型的原生默认。新建的 config 与 firstInput.modelSelection 同时保留精确模型，防止原生 config 失败后默认模型继续首条消息。已知强度限制、空闲状态、owner、revision 与日志 epoch 校验保留。原生调用结构13项定向回归通过，拒绝时不重放或替换模型。
+
+## Claude 目录失败
+
+Claude Desktop 新建开放原生 start 已支持的手填模型与强度；设置时目录临时不可读，仍提交明确模型/强度至原生 setter并读取确认结果。原生方法能力、已知强度限制和 Code/Cowork 的默认强度语义保持不变。覆盖两来源目录失败、原样提交、确认失败及默认强度回归。
