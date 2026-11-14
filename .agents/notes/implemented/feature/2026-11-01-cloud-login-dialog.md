@@ -14,7 +14,7 @@ Status: implemented
 
 原帮助抽屉中的注册/找回入口已由[可见账号入口](2026-11-01-cloud-account-entry-forms.md)部分取代；本篇继续持有模态表单与登录边界，并取代[官方服务默认值](2026-11-01-official-cloud-default.md)中的内联地址按钮。
 
-[桌面赞助入口](2026-11-11-official-cloud-sponsor.md)位于模态框外的云摘要中，未登录时跟随官方云选项显示，购买按钮独立打开外链并保留本篇的表单隔离规则。
+[桌面赞助入口](2026-11-14-sponsor-after-official-login.md)位于模态框外的云摘要中，仅在登录官方云账号后显示。购买按钮打开[独立二维码弹窗](2026-11-11-sponsor-dialog-and-web-address.md)，保留本篇的表单隔离规则。
 
 ## Alternatives considered
 

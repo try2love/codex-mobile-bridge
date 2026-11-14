@@ -2,7 +2,7 @@
 
 Status: implemented
 
-[购买二维码弹窗与服务端下发](2026-11-11-sponsor-dialog-and-web-address.md)部分取代本篇的外链、双按钮和本地生成购买图决定；以下保留初版取舍和已交付产物证据。官方云显示范围和手动兑换边界继续有效。
+[购买二维码弹窗与服务端下发](2026-11-11-sponsor-dialog-and-web-address.md)部分取代本篇的外链、双按钮和本地生成购买图决定；[登录后显示赞助支持](2026-11-14-sponsor-after-official-login.md)部分取代未登录时跟随官方云选项显示的决定。以下保留初版取舍和已交付产物证据，精确官方 origin 与手动兑换边界继续有效。
 
 ## Problem
 

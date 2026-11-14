@@ -427,11 +427,12 @@ test('confirmed redemption with a status refresh failure warns against redeeming
   expect(await page.evaluate(()=>window.cloudCalls.filter(call=>call.action==='redeem').length)).toBe(1);
 });
 
-test('sponsorship follows official cloud selection before login and account origin after login',async({page})=>{
+test('sponsorship appears only for a signed-in official cloud account',async({page},testInfo)=>{
   const sponsor=page.locator('[data-cloud-sponsor]');
   await expect(sponsor).toBeHidden();
   await page.evaluate(()=>{window.cloudStatus={configured:false,enabled:false};window.CloudPanel.update(window.cloudStatus);});
-  await expect(sponsor).toBeVisible();
+  await expect(sponsor).toBeHidden();
+  await page.screenshot({path:testInfo.outputPath('cloud-sponsor-signed-out.png')});
   await openLogin(page);
   await page.locator('[data-cloud-server]').selectOption('custom');
   await expect(sponsor).toBeHidden();
@@ -441,7 +442,7 @@ test('sponsorship follows official cloud selection before login and account orig
   await page.evaluate(()=>window.CloudPanel.update(window.cloudStatus));
   await expect(sponsor).toBeHidden();
   await page.locator('[data-cloud-server]').selectOption('official');
-  await expect(sponsor).toBeVisible();
+  await expect(sponsor).toBeHidden();
   await page.locator('[data-cloud-server]').selectOption('custom');
   await closeLogin(page);
   for(const entitlement of [null,{required:true,active:false,expires_at:null},{required:true,active:true,expires_at:'2031-01-01T00:00:00Z'},{required:true,active:false,expires_at:'2029-01-01T00:00:00Z'}]){
@@ -454,6 +455,19 @@ test('sponsorship follows official cloud selection before login and account orig
   await page.evaluate(()=>window.CloudPanel.update(window.cloudOriginalAccount));
   await expect(sponsor).toBeHidden();
   expect(await page.evaluate(()=>window.cloudAllCalls)).toEqual([]);
+  await page.evaluate(()=>{
+    window.cloudStatus={...window.cloudOriginalAccount,origin:'https://bridge.waken.cloudns.be:8787'};
+    window.CloudPanel.update(window.cloudStatus);
+  });
+  await expect(sponsor).toBeVisible();
+  await language(page,'zh');
+  await page.screenshot({path:testInfo.outputPath('cloud-sponsor-signed-in.png')});
+  await action(page,'logout');
+  await expect(sponsor).toBeHidden();
+  await language(page,'en');
+  await page.evaluate(()=>window.CloudPanel.update(window.cloudStatus));
+  await expect(sponsor).toBeHidden();
+  expect(await page.evaluate(()=>window.cloudAllCalls)).toEqual([{action:'logout'}]);
 });
 
 test('sponsor purchase opens a QR dialog, preserves drafts and fits both UI languages',async({page},testInfo)=>{
@@ -494,7 +508,7 @@ test('sponsor purchase opens a QR dialog, preserves drafts and fits both UI lang
   expect(await page.evaluate(()=>({opened:window.cloudOpened,cloud:window.cloudAllCalls,submissions:window.settingsSubmissions}))).toEqual({opened:[],cloud:Array.from({length:3},()=>({action:'sponsorship',origin:'https://bridge.waken.cloudns.be:8787'})),submissions:0});
 });
 
-test('sponsor QR errors retry only on reopening and a custom account dismisses the dialog',async({page})=>{
+test('sponsor QR retries on reopening and closes on a custom account or logout',async({page})=>{
   const qr=await sponsorImage();
   await page.evaluate(qr=>{
     window.cloudErrors.sponsorship='synthetic QR failure';window.cloudResponses.sponsorship=qr;
@@ -510,6 +524,20 @@ test('sponsor QR errors retry only on reopening and a custom account dismisses t
   expect(await page.evaluate(()=>window.cloudAllCalls.length)).toBe(2);
   await page.evaluate(()=>window.CloudPanel.update(window.cloudOriginalAccount));await expect(modal).toBeHidden();
   expect(await page.evaluate(()=>({cloud:window.cloudAllCalls,settings:window.settingsSubmissions}))).toEqual({cloud:Array.from({length:2},()=>({action:'sponsorship',origin:'https://bridge.waken.cloudns.be:8787'})),settings:0});
+  await page.evaluate(()=>{
+    window.CloudPanel.update(window.cloudStatus);
+    window.cloudPendingAction='sponsorship';
+  });
+  await button.click();await expect(modal).toBeVisible();
+  await expect(page.locator('[data-cloud-sponsor-qr-status]')).toHaveText('Loading QR code...');
+  await page.evaluate(()=>{
+    window.cloudStatus={configured:false,enabled:false};
+    window.CloudPanel.update(window.cloudStatus);
+  });
+  await expect(modal).toBeHidden();await expect(page.locator('[data-cloud-sponsor]')).toBeHidden();
+  await page.evaluate(()=>window.finishCloud());
+  await expect(page.locator('[data-cloud-sponsor-qr-status]')).toHaveText('');
+  await expect(modal).toBeHidden();await expect(page.locator('[data-cloud-sponsor]')).toBeHidden();
 });
 
 test('enabled web cloud access displays the advertised origin without the redemption separator',async({page},testInfo)=>{

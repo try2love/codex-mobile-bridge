@@ -14,7 +14,7 @@ Status: implemented
 
 ## 记录归属
 
-部分取代[原赞助入口](2026-11-11-official-cloud-sponsor.md)的双按钮／外链交互和本地生成购买图规则，官方云显示范围由原篇继续持有；购买目的地由服务端图片持有。[网页许可总开关](2026-11-08-cloud-web-access-switch.md)继续持有授权边界。本篇只展示地址，不授予或扩大网页权限。检索上述机制未发现重复提案。
+部分取代[原赞助入口](2026-11-11-official-cloud-sponsor.md)的双按钮／外链交互和本地生成购买图规则，显示范围由[登录后显示赞助支持](2026-11-14-sponsor-after-official-login.md)持有；购买目的地由服务端图片持有。[网页许可总开关](2026-11-08-cloud-web-access-switch.md)继续持有授权边界。本篇只展示地址，不授予或扩大网页权限。检索上述机制未发现重复提案。
 
 ## Alternatives considered
 

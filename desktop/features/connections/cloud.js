@@ -197,7 +197,7 @@
     const custom=$('server').value==='custom';
     $('custom-origin').hidden=!custom;$('origin').disabled=busy||!custom;
     const value=state;
-    $('sponsor').hidden=value.configured?value.origin!==officialOrigin:custom;
+    $('sponsor').hidden=!value.configured||value.origin!==officialOrigin;
     if($('sponsor').hidden&&sponsorDialog.open)sponsorDialog.close();
     renderSponsorQR();
     $('account').hidden=!value.configured;
