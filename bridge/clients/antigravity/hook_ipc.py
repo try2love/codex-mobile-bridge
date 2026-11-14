@@ -189,30 +189,13 @@ class HookIPCServer:
             if not isinstance(payload, dict):
                 payload = {}
             cid = self._resolve_cid(payload)
-            pre_queue = None
-            if cid and event in ('post_invocation', 'stop'):
-                with self._lock:
-                    pre_queue = list(self._queues.get(cid) or [])
             resp = self._dispatch_resolved(cid, event, payload)
             try:
                 _write_frame(conn, resp)
             except OSError:
-                if cid and pre_queue:
-                    with self._lock:
-                        cur = list(self._queues.get(cid) or [])
-                        existing_ids = {
-                            item.get('id')
-                            for item in cur
-                            if isinstance(item, dict) and item.get('id')
-                        }
-                        unacked = [
-                            item
-                            for item in pre_queue
-                            if not (isinstance(item, dict) and item.get('id') in existing_ids)
-                        ]
-                        if unacked:
-                            self._queues[cid] = unacked + cur
-                            self._save_json(self.queues_file, self._queues)
+                # A partial reply may already have reached the Hook. Other Hooks
+                # or user edits can also consume the queue; never restore a snapshot.
+                return
 
     def _resolve_cid(self, payload):
         return (

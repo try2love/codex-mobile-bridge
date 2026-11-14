@@ -1130,8 +1130,8 @@ class AntigravitySafetyTests(unittest.TestCase):
             server._handle_client(server_sock)
         self.assertEqual(resolved_count, 1)
         restored = server.get_queued_items('scoped-cid')
-        self.assertEqual([item['id'] for item in restored], [q_steer['id'], q_queue['id']])
+        self.assertEqual([item['id'] for item in restored], [q_queue['id']])
         reloaded = json.loads(server.queues_file.read_text(encoding='utf-8'))
-        self.assertEqual([item['id'] for item in reloaded['scoped-cid']], [q_steer['id'], q_queue['id']])
+        self.assertEqual([item['id'] for item in reloaded['scoped-cid']], [q_queue['id']])
 
 

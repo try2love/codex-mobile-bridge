@@ -55,4 +55,8 @@ Antigravity App、IDE、CLI 将历史保存在不同目录。把端口日志、�
 
 Mac 原生 Keychain、Ubuntu Secret Service、Windows Credential Manager 的随机测试项均完成新增、读回、更新和删除，没有读取真实账号。Windows SSH 会话返回错误 1312；同用户 Interactive/Limited 的一次性后台任务验证成功后移除，不能把 SSH 的不可用当作桌面凭据格式错误。Ubuntu 原生 sleep 副本在运行中 unlink 后仍被停止核验识别，随后正常退出。AGY 实际账号无法登录，未做真实账号切换或模型请求；这些结果证明存储及流程兼容，不能替代登录有效性和新版冻结包验证。
 
-2026-11-14 基于 `v2.2.1-preview.1` 的运行态增强验证：覆盖原生等待交互与子智能体交互传播/跨来源隔离、disabled/Unavailable 模型过滤与真实 `quotaInfo`/`planStatus`/`contextUsage`、`CodeContent`/`ERROR_MESSAGE`/`CHECKPOINT`/工具图片、回滚 `transcript_full.jsonl` 水合与 `read_image` 符号链接拦截、`stop-task` 子任务归属核验及 `HookIPCServer` socket 写失败回补。以上基于隔离夹具与合成 RPC/socketpair；模块边界与桌面 UI 相关 Node 用例通过，真实 Antigravity 桌面客户端实机联调、真机手机 WebView 与 Playwright 浏览器套件仍待端到端验证。
+2026-11-14 基于 `v2.2.1-preview.1` 的运行态增强验证：覆盖原生等待交互与子智能体交互传播/跨来源隔离、disabled/Unavailable 模型过滤与真实 `quotaInfo`/`planStatus`/`contextUsage`、`CodeContent`/`ERROR_MESSAGE`/`CHECKPOINT`/工具图片、回滚 `transcript_full.jsonl` 水合与 `read_image` 符号链接拦截、`stop-task` 子任务归属核验及 `HookIPCServer` socket 写失败不重放。以上基于隔离夹具与合成 RPC/socketpair；模块边界与桌面 UI 相关 Node 用例通过，真实 Antigravity 桌面客户端实机联调、真机手机 WebView 与 Playwright 浏览器套件仍待端到端验证。
+
+## Hook 写回未知结果
+
+队列由原生Hook事件在原有锁内一次性消费。socket写回失败可能发生在部分内容已送出后，也可能与其他Hook消费、用户撤回/编辑交错，因此不恢复派发前的队列快照。保留未选中的排队项，不推断已消费消息送达成功，也不自动重发；用户应核对原客户端结果后决定是否重新发送。恢复“看似未送达”队列能减少掉线时的丢消息，却无法证明未送达，故不采用。定向socketpair测试覆盖成功消费交错、撤回/编辑、半包错误、未选中项持久化及下一Hook不重放。
