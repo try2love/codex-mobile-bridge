@@ -7,3 +7,11 @@
 .ds-model-form .error:empty,.ds-model-form .muted:empty{display:none}
 
 .ds-send-feedback{margin:8px 0;font-size:12px}.ds-send-feedback p{max-height:4.5em;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;margin:5px 0 0}
+.model-choice-badge{font-size:11px;padding:1px 7px;border-radius:10px;border:1px solid var(--line);color:var(--muted);margin-left:auto;margin-right:6px;white-space:nowrap}
+.model-choice-badge.badge-warning{color:#b45309;border-color:color-mix(in srgb,#d97706 40%,transparent)}
+.model-choice-badge.badge-exhausted{color:#dc2626;border-color:color-mix(in srgb,#dc2626 40%,transparent)}
+.ds-usage-card{margin:10px 0;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--raised);font-size:12px}
+.ds-usage-card-header{font-weight:600;margin-bottom:6px;color:var(--muted)}
+.ds-usage-row{display:flex;justify-content:space-between;gap:12px;padding:3px 0}
+.ds-usage-val.warning{color:#b45309}.ds-usage-val.exhausted{color:#dc2626}
+.ds-usage-credits{margin-top:6px;padding-top:6px;border-top:1px solid var(--line);color:var(--muted)}

@@ -13,6 +13,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class FirstConnection(unittest.TestCase):
     def test_trusted_folder_connects_without_a_session_or_model_and_bounds_unacknowledged_replies(self):
+        self.check_first_connection()
+
+    def test_definite_staging_failure_recovers_without_a_session_or_model(self):
+        self.check_first_connection(first_save='reject')
+
+    def check_first_connection(self, first_save=''):
         with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as temp:
             root = Path(temp)
             stage = root/'profile/pending-uploads'
@@ -25,7 +31,7 @@ class FirstConnection(unittest.TestCase):
             try:
                 adapter.prepare()
                 desktop = adapter.desktop
-                process = subprocess.Popen(['node', str(ROOT/'tests/fixtures/claude-no-turn.cjs'), str(directory), str(stage)],
+                process = subprocess.Popen(['node', str(ROOT/'tests/fixtures/claude-no-turn.cjs'), str(directory), str(stage), first_save],
                                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
                 try:
                     deadline = time.monotonic()+5
@@ -36,6 +42,8 @@ class FirstConnection(unittest.TestCase):
                     self.assertEqual(call.result(timeout=7), [])
                     counts = json.loads((directory/'counts.json').read_text())
                     self.assertEqual((counts['starts'],counts['sends'],counts['trust']), (0,0,1))
+                    if first_save:
+                        self.assertGreaterEqual(counts['attempts'],2)
                     self.assertEqual(own_attachment.read_text(), 'untouched')
                     self.assertTrue((directory/'staged-ack.json').is_file())
                     # Stop the gateway reader. Desktop can publish its stop receipt

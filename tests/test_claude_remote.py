@@ -98,6 +98,25 @@ class RemoteWorkerContract(unittest.TestCase):
         self.assertFalse(self.cwd.exists())
         self.assertFalse((self.config/'mobile-bridge').exists())
 
+    def test_create_and_resume_keep_stdio_permissions_without_new_optional_flag(self):
+        with patch.dict(os.environ, self.env, clear=True), \
+             patch.object(remote_worker.os, 'chdir'), \
+             patch('builtins.print'), \
+             patch.object(remote_worker, 'pid_domain', return_value='fixture-remote-host'), \
+             patch.object(remote_worker.os, 'execvpe') as execute:
+            profile = remote_worker.profile()
+            request = {'origin': profile['origin'], 'native': self.native,
+                       'cwd': str(self.cwd), 'model': 'fixture-model',
+                       'permissionMode': 'plan', 'scope': str(uuid.uuid4())}
+            for operation in (remote_worker.create, remote_worker.resume):
+                with self.subTest(operation=operation.__name__):
+                    operation(request)
+                    binary, arguments, env = execute.call_args.args
+                    self.assertEqual(binary, profile['binary'])
+                    self.assertNotIn('--permission-prompts', arguments)
+                    self.assertEqual(arguments[arguments.index('--permission-prompt-tool') + 1], 'stdio')
+                    self.assertEqual(env['CLAUDE_CONFIG_DIR'], str(self.config))
+
     def test_resume_preflight_preserves_unknown_permission_and_rejects_changed_settings(self):
         profile = self.run_worker({'operation': 'list'})['value']['profile']
         request = {'operation': 'resume-preflight', 'origin': profile['origin'], 'native': self.native,
@@ -521,6 +540,38 @@ class RemoteAdapterContract(unittest.TestCase):
         self.assertEqual(result['history'], {'before': 'older', 'hasMore': True})
         self.assertEqual(calls[0]['operation'], 'history')
         self.assertEqual((calls[0]['historyBefore'], calls[0]['historyLimit']), ('cursor', 10))
+
+    def test_live_detail_uses_recent_page_and_only_the_unpersisted_stream_tail(self):
+        row = self.cli._row('ssh:test', self.hosts.hosts()['ssh:test'],
+                            {**self.row, 'stamp': [1, 2, 3, 4]})
+        sid = row['id']
+        self.cli.index[sid] = row
+        events = [{'type': 'assistant', 'uuid': f'a{index}',
+                   'message': {'role': 'assistant', 'content': str(index)}} for index in range(1000)]
+        result = lambda rid: {'type': 'result', 'uuid': rid, 'subtype': 'success',
+                              'is_error': False, 'num_turns': 1}
+        live = events[:1] + [result('R1')] + events[1:] + [result('R2'),
+            {'type': 'assistant', 'uuid': 'new', 'message': {'role': 'assistant', 'content': 'not saved'}}]
+        owned = SimpleNamespace(origin=row['origin'], process=Mock(), error=None,
+            condition=threading.Condition(), events=live, pending={}, active=False,
+            catalog={}, model=None, permission=None)
+        owned.process.poll.return_value = None
+        self.cli.owned[sid] = owned
+        self.addCleanup(self.cli.owned.clear)
+        def response(_alias, request, **_kwargs):
+            self.assertEqual(request['operation'], 'history')
+            page = events[-80:-40] if request['historyBefore'] else events[-40:]
+            return {'events': page, 'history': {'before': 'older', 'hasMore': True}, 'stamp': row['stamp']}
+        with patch.object(self.cli, '_remote', side_effect=response):
+            recent = self.cli.call('detail', sid, {'historyLimit': 40})
+            older = self.cli.call('detail', sid, {'historyBefore': 'older', 'historyLimit': 40})
+        self.assertEqual([message['eventId'] for message in recent['messages']],
+                         [f'a{index}' for index in range(960, 1000)] + ['new'])
+        self.assertEqual([message['eventId'] for message in older['messages']],
+                         [f'a{index}' for index in range(920, 960)])
+        self.assertEqual([turn['turnId'] for turn in recent['turns']], ['R1', 'R2'])
+        self.assertEqual(older['turns'], [])
+        self.assertIs(owned.events, live)
 
     def test_detail_exposes_remote_directory_preflight_before_resume(self):
         row = self.cli._row('ssh:test', self.hosts.hosts()['ssh:test'], {**self.row, 'stamp': [1, 2, 3, 4]})

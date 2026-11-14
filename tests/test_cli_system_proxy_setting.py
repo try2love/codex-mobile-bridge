@@ -148,6 +148,7 @@ class CliSystemProxySettingTests(unittest.TestCase):
             self.assertTrue(graceful_restart_supported({'userAgent': agent}, platform='darwin'))
             self.assertFalse(graceful_restart_supported({'userAgent': agent}, platform='win32'))
         for agent in ('other-codex-tui/0.164.0', 'codex-tui/0.164.00', 'codex-tui/0.164.0-beta',
-                      'codex-tui/0.165.0', 'codex-tui/0.164.0evil'):
+                      'codex-tui/0.164.0evil'):
             self.assertFalse(graceful_restart_supported({'userAgent': agent}, platform='darwin'))
+        self.assertTrue(graceful_restart_supported({'userAgent': 'codex-tui/0.165.0'}, platform='darwin'))
         self.assertTrue(graceful_restart_supported({'userAgent': 'codex-tui/0.167.0-alpha.3.2 (Windows 10)'}, platform='win32'))

@@ -34,7 +34,8 @@
         typeof state.suspended === 'boolean' && typeof state.writing === 'boolean' :
         state?.transport === 'cdp' && typeof state.busy === 'boolean';
       canHandoff = state?.transport === 'file' &&
-        (state.connectorRevision === config.connectorRevision || state.connectorRevision === 14 && config.connectorRevision === 15) && typeof existing.handoff === 'function';
+        (state.connectorRevision === config.connectorRevision || state.connectorRevision === 14 && config.connectorRevision === 15 ||
+          [14,15].includes(state.connectorRevision) && config.connectorRevision === 16) && typeof existing.handoff === 'function';
       if (typeof existing.owns === 'function') sameOwner = existing.owns(config.cwd) === true;
       else if (state?.transport === 'file' && state.sessionId) {
         // Legacy connectors expose only a session ID. Check Desktop's live
@@ -528,9 +529,16 @@
         for(let offset=0;offset<packet.length;offset+=24576)
           chunks.push(btoa(String.fromCharCode(...packet.subarray(offset,offset+24576))));
         if (staging.pending?.generation===generation || generation!==value.generation || stopped) {dirty=true;return;}
-        staging.pending={generation,receipt:value.receipt};
-        const saved=await api.FileSystem.savePastedFile(chunks.join(''),'application/octet-stream',staging.name);
-        if (!saved?.path) throw new Error('Claude 未能暂存连接回执，请重新初始化连接');
+        const pending=staging.pending={generation,receipt:value.receipt};
+        try {
+          const saved=await api.FileSystem.savePastedFile(chunks.join(''),'application/octet-stream',staging.name);
+          if (!saved?.path) throw new Error('Claude 未能暂存连接回执，请重新初始化连接');
+        } catch (error) {
+          // The outer publish deadline does not settle this native write. Only
+          // its actual failure permits retry; a late failure cannot clear a new receipt.
+          if (staging.pending===pending) staging.pending=null;
+          throw error;
+        }
       } else {
         const result = await api.LocalSessions.writeSessionFile(sessionId, config.response, text);
         if (!result?.hash) throw new Error('Claude 拒绝写入桥接文件，请检查目录信任和文件权限');

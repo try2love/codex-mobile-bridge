@@ -9,9 +9,9 @@ function fixture({accounts=false}={}){
   const calls=[],errors=[],prompts=[],choices=[],initializations=[];let closeChoice=true,finishChoice,initializeChoice=true,finishInitialize,chosen='',confirmed=true,handler=async body=>body.action==='status'?{backends:{},deepseekHome:'/fixture'}:body.action==='accounts'?{accounts:[]}:{clients:[]};
   const listeners={},timers=[],storage=new Map(),pages=new Map(),selected=[];
   const layout={hasClient:id=>['codex','claude','deepseek'].includes(id)||id.startsWith('codex:')||pages.has(id),clientPage(id){if(pages.has(id))return pages.get(id);const page=node('section');pages.set(id,page);return page;},forgetClient(id){pages.delete(id);this.selectClient(null);},selectClient(id){selected.push(id);listeners['bridge-client-config']?.({detail:id});}};
-  const context=vm.createContext({ClientLifecycle:{...require('../web/features/clients/client-lifecycle.js'),chooseDisable(client){choices.push(client.id);return closeChoice==='pending'?new Promise(resolve=>finishChoice=resolve):closeChoice;}},CustomEvent:class{constructor(type){this.type=type;}},document:{body:node('body'),documentElement:{},getElementById:id=>nodes[id],createElement:node,querySelector:()=>null,querySelectorAll:selector=>selector==='[data-i18n]'?Object.values(statuses):[],hidden:false,addEventListener(type,fn){listeners[type]=fn;},removeEventListener(type,fn){if(listeners[type]===fn)delete listeners[type];},dispatchEvent(event){listeners[event.type]?.(event);}},setInterval(fn,ms){timers.push({fn,ms});return timers.length;},clearInterval(id){if(id)timers[id-1]=null;},setTimeout(){},clearTimeout(){},localStorage:{getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value)},window:{confirm:message=>{prompts.push(message);return confirmed;},GatewayLayout:layout}});
+  const context=vm.createContext({crypto:require('node:crypto').webcrypto,ClientLifecycle:{...require('../web/features/clients/client-lifecycle.js'),chooseDisable(client){choices.push(client.id);return closeChoice==='pending'?new Promise(resolve=>finishChoice=resolve):closeChoice;}},CustomEvent:class{constructor(type){this.type=type;}},document:{body:node('body'),documentElement:{},getElementById:id=>nodes[id],createElement:node,querySelector:()=>null,querySelectorAll:selector=>selector==='[data-i18n]'?Object.values(statuses):[],hidden:false,addEventListener(type,fn){listeners[type]=fn;},removeEventListener(type,fn){if(listeners[type]===fn)delete listeners[type];},dispatchEvent(event){listeners[event.type]?.(event);}},setInterval(fn,ms){timers.push({fn,ms});return timers.length;},clearInterval(id){if(id)timers[id-1]=null;},setTimeout(){},clearTimeout(){},localStorage:{getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value)},window:{confirm:message=>{prompts.push(message);return confirmed;},GatewayLayout:layout}});
   context.ClientLifecycle.chooseInitialize=client=>{initializations.push(client.id);return initializeChoice==='pending'?new Promise(resolve=>finishInitialize=resolve):initializeChoice;};
-  for(const file of ['web/shared/i18n.js','web/features/accounts/wsl-accounts.js',...(accounts?['web/features/accounts/api-editor.js','web/features/accounts/client-accounts.js']:[]),'desktop/features/clients/desktop-sessions.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
+  for(const file of ['web/shared/i18n.js','web/shared/creation-model-picker.js','web/features/accounts/wsl-accounts.js',...(accounts?['web/features/accounts/api-editor.js','web/features/accounts/client-accounts.js']:[]),'desktop/features/clients/desktop-sessions.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
   context.ClientLifecycle.mountConnectionModes=vm.runInContext('(function(){'+fs.readFileSync('web/features/clients/client-lifecycle.js','utf8')+';return ClientLifecycle.mountConnectionModes;})()',context);context.ClientLifecycle.confirmConnectionMode=async()=>confirmed;
   const Class=vm.runInContext('DesktopConnectionsPanel',context),panel=new Class({root,api:{choose:async()=>chosen,cliAccess:body=>{calls.push(body);return handler(body);},desktopSessions:body=>{calls.push(body);return handler(body);}},feedback:message=>errors.push(message)});
   const all=n=>[n,...n.children.flatMap(all)];
@@ -23,9 +23,9 @@ test('Antigravity management edits only the selected source session without clai
   const sources=['app','cli','ide'].map(id=>({id,name:id.toUpperCase(),historyAvailable:true,connected:id==='cli',sessions:[{id:id+'-session',title:id,model:'',permissionMode:'desktop'}]}));
   ui.setHandler(async body=>body.operation==='catalog'?{models:[{id:'cli-model',name:'CLI Model'}],cache:{identity:'cli-account'},capabilities:{models:true}}:{enabled:true,surfaces:sources,plugin:{active:true},permissionOptions:[{value:'desktop',label:'电脑端处理'},{value:'mobile-ask',label:'手机端审批'}]});
   await ui.panel.manageClient(client);await new Promise(setImmediate);const root=ui.pages.get('antigravity').querySelector('[data-antigravity-management]');assert.ok(root);
-  const [source,session,model,permission]=root.querySelectorAll('select'),buttons=root.querySelectorAll('button');
+  const [source,session,model,effort,permission]=root.querySelectorAll('select'),buttons=root.querySelectorAll('button');
   assert.equal(source.value,'app');assert.equal(session.value,'app-session');assert.equal(model.disabled,true);assert.equal(permission.disabled,false);
-  source.value='cli';source.onchange();assert.equal(session.value,'cli-session');await buttons.find(b=>b.textContent==='刷新模型').onclick();
+  source.value='cli';await source.onchange();assert.equal(session.value,'cli-session');await buttons.find(b=>b.textContent==='刷新模型').onclick();
   assert.equal(ui.calls.at(-1).surface,'cli');assert.equal(ui.calls.at(-1).sessionId,'cli-session');model.value='cli-model';model.onchange();
   assert.equal(buttons.find(b=>b.textContent==='应用模型').disabled,false);
   source.value='ide';source.onchange();assert.equal(model.value,'');assert.equal(buttons.find(b=>b.textContent==='应用模型').disabled,true);
@@ -454,6 +454,24 @@ test('desktop WSL Manage buttons mount the real account panel for the exact prov
   await button.onclick();assert.equal(ui.pages.size,1,'reuse the management page');
  }
 });
+
+test('desktop list starts only the selected enabled WSL through the existing account action',async(t)=>{
+ for(const [provider,kind,prefix] of [['codex','wsl-cli','wsl:'],['claude','wsl-claude-cli','wsl-claude:']]){
+  const ui=fixture(),client={id:prefix+'b'.repeat(32),kind,name:'WSL fixture',enabled:true,configured:true,installed:true,distributionRunning:false,connected:false};
+  ui.panel.clients=[client];ui.panel.gatewayRunning=true;let finish,refreshes=0;t.after(()=>finish?.({}));
+  ui.setHandler(()=>new Promise(resolve=>finish=resolve));ui.panel.refreshClients=async()=>{refreshes++;};ui.panel.renderClients();
+  const button=ui.all().find(n=>n.tag==='button'&&n.textContent==='启动并连接 WSL');assert.ok(button);
+  const pending=button.onclick();await ui.panel.connectWsl(client.id);
+  assert.equal(ui.calls.length,1);assert.deepEqual(JSON.parse(JSON.stringify(ui.calls[0])),{action:'wslAccounts',provider,entry:client.id,operation:'connect'});
+  assert.equal(ui.all().find(n=>n.tag==='button'&&n.textContent==='正在连接，请稍候…').disabled,true);
+  finish({provider,entry:client.id,available:true});await pending;
+  assert.equal(refreshes,1);assert.equal(client.connected,false,'starting WSL does not prove a CLI connection');assert.equal(client.enabled,true);
+  for(const change of [{enabled:false},{distributionRunning:true},{connected:true}]){
+   ui.panel.clients=[{...client,...change}];ui.panel.renderClients();assert.equal(ui.all().some(n=>n.tag==='button'&&n.textContent==='启动并连接 WSL'),false);
+  }
+  ui.panel.clients=[client];ui.panel.gatewayRunning=false;await ui.panel.connectWsl(client.id);assert.equal(ui.calls.length,1);
+ }
+});
 test('desktop WSL resource is optional and remains in the package',()=>{
  const html=fs.readFileSync(path.join(__dirname,'../desktop/index.html'),'utf8');assert.ok(html.includes('../web/features/accounts/account.css'));assert.equal(html.includes('src="../web/features/accounts/wsl-accounts.js"'),false);assert.ok(fs.existsSync(path.join(__dirname,'../web/features/accounts/wsl-accounts.js')));
 });
@@ -702,4 +720,23 @@ test('DSH missing connector repair previews paths and requires the explicit repa
  assert.match(ui.prompts[0],/backed up/);assert.match(ui.prompts[0],/F:\/old/);assert.match(ui.prompts[0],/F:\/gateway/);assert.doesNotMatch(ui.prompts[0],/[\u4e00-\u9fff]/);
  const cancelled=fixture();cancelled.panel.clients=[];cancelled.confirm(false);cancelled.setHandler(async body=>body.action==='deepseek-recovery-preview'?{token:'cancel',canRecover:true,configurationRepair:true,oldDirectory:'old',newDirectory:'new'}:body.action==='status'?{backends:{}}:{clients:[]});
  await cancelled.panel.recoverDeepseek(true);assert.equal(cancelled.calls.some(row=>row.action==='deepseek-recovery-confirm'),false);
+});
+
+
+test('Antigravity management keeps exact manual model after catalog refresh failure',async()=>{
+ const ui=fixture(),client={id:'antigravity',name:'Antigravity',enabled:true,capabilities:{management:true}};ui.panel.clients=[client];let fail=false;
+ const state={enabled:true,surfaces:[{id:'app',name:'APP',connected:true,historyAvailable:true,sessions:[{id:'chat',model:'original'}]}],permissionOptions:[]};
+ ui.setHandler(async body=>{if(body.operation==='settings')return {status:'accepted'};if(body.operation!=='catalog')return state;if(fail)throw Error('temporary directory failure');return {models:[{id:'original'}],cache:{identity:'verified-account',updatedAt:100},capabilities:{models:true,effort:false,manualModels:true}};});
+ await ui.panel.manageClient(client);await new Promise(setImmediate);const root=ui.pages.get('antigravity').querySelector('[data-antigravity-management]'),model=root.querySelector('[aria-label="模型"]'),manual=root.querySelector('[aria-label="手动输入模型"]');
+ model.value='__manual__';model.onchange();manual.value='MODEL_EXPLICIT_525';manual.oninput();fail=true;await root.querySelectorAll('button').find(b=>b.textContent==='刷新模型').onclick();
+ await root.querySelectorAll('button').find(b=>b.textContent==='重新加载').onclick();assert.equal(manual.value,'MODEL_EXPLICIT_525');assert.equal(manual.disabled,false);assert.equal(root.querySelector('.project-picker-models').querySelector('.error').textContent,'');
+ await root.querySelectorAll('button').find(b=>b.textContent==='应用模型').onclick();const write=ui.calls.find(body=>body.operation==='settings');assert.equal(write.model,'MODEL_EXPLICIT_525');assert.equal(write.manualModel,true);assert.equal(write.modelCatalogIdentity,'verified-account');
+});
+
+test('Antigravity cached source keeps manual entry when its next directory read fails',async()=>{
+ const ui=fixture(),client={id:'antigravity',name:'Antigravity',enabled:true,capabilities:{management:true}};ui.panel.clients=[client];let fail=false;
+ const state={enabled:true,surfaces:['app','ide'].map(id=>({id,name:id,connected:true,historyAvailable:true,sessions:[{id:id+'-chat',model:'original'}]})),permissionOptions:[]};
+ ui.setHandler(async body=>{if(body.operation!=='catalog')return state;if(fail)throw Error('offline');return {models:[{id:'original'}],cache:{identity:body.surface,updatedAt:100},capabilities:{models:true,manualModels:true,effort:false}};});
+ await ui.panel.manageClient(client);await new Promise(setImmediate);const root=ui.pages.get('antigravity').querySelector('[data-antigravity-management]'),source=root.querySelector('[aria-label="会话来源"]'),model=root.querySelector('[aria-label="模型"]');
+ source.value='ide';await source.onchange();fail=true;source.value='app';await source.onchange();assert.ok(model.children.some(row=>row.value==='__manual__'));model.value='__manual__';model.onchange();const manual=root.querySelector('[aria-label="手动输入模型"]');assert.equal(manual.disabled,false);assert.equal(manual.hidden,false);assert.equal(root.querySelector('[aria-label="思考强度"]').parent.hidden,true);
 });

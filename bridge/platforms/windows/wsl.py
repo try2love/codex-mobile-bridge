@@ -12,28 +12,37 @@ def _options():
     return {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
 
 
-def _distributions(running=True):
+def _distributions(running=True, *, strict=False):
     if os.name != 'nt':
         return []
     try:
         result = subprocess.run(['wsl.exe', '--list', *(['--running'] if running else []), '--quiet'],
                                 capture_output=True, timeout=8, **_options())
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        if strict:
+            raise OSError('WSL 状态暂未确认，请刷新后重试') from exc
         return []
     if result.returncode:
+        if strict:
+            raise OSError('WSL 状态暂未确认，请刷新后重试')
         return []  # Missing WSL/no distros is not a reason to break desktop reads.
     data = result.stdout
     text = data.decode('utf-16-le' if b'\0' in data else 'utf-8-sig', errors='strict')
     return [s.strip().lstrip('\ufeff') for s in text.splitlines() if s.strip().lstrip('\ufeff')]
 
 
-def running_distributions():
-    return _distributions()
+def running_distributions(*, strict=False):
+    return _distributions(strict=strict)
 
 
 def displayed_distributions(rows):
     # Local desktop profiles share the registry but never require wsl.exe.
-    return set(running_distributions()) if any(row.get('distribution') for row in rows) else set()
+    if not any(row.get('distribution') for row in rows):
+        return set()
+    try:
+        return set(running_distributions(strict=True))
+    except (OSError, UnicodeError):
+        return None  # A failed display query is not evidence that WSL stopped.
 
 
 def command(distribution, user=None, allow_start=False):

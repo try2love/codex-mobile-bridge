@@ -77,6 +77,18 @@ class ClaudeContract(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.rows[kind]['model'], 'new-model')
             self.assertEqual(self.rows[kind]['effort'], 'high')
 
+    async def test_catalog_failure_preserves_explicit_cached_selection_and_readback(self):
+        original = self.call
+        async def call(kind, method, *args, **kwargs):
+            if method == 'mobileCatalog':
+                raise BridgeUnavailable('catalog temporarily unavailable')
+            return await original(kind, method, *args, **kwargs)
+        self.adapter.desktop.call.side_effect = call
+        for kind in ('code', 'cowork'):
+            await self.adapter.dispatch('settings', self.sid(kind), {'model': 'exact/custom-model', 'effort': 'high'})
+            self.assertEqual(self.rows[kind]['model'], 'exact/custom-model')
+            self.assertEqual(self.rows[kind]['effort'], 'high')
+
     async def test_unconfirmed_manual_selection_never_claims_success(self):
         async def call(kind, method, *args, **kwargs):
             if method == 'setModel': return False

@@ -1,5 +1,6 @@
 """Official App/agy launch shapes and inventory reuse, without native clients."""
 import hashlib
+import io
 import json
 from pathlib import Path
 import plistlib
@@ -82,6 +83,59 @@ class AntigravityDiscoveryTests(unittest.TestCase):
         for options in ({'changed': True}, {'listener': False}):
             with self.assertRaises(ValueError):
                 self.target(image, args, **options)
+
+    def test_large_language_server_log_preserves_head_and_tail_ports(self):
+        _, image = self.bundle()
+        log = self.home/'Library/Logs/Antigravity/language_server.log'
+        log.parent.mkdir(parents=True)
+        def write_log(value):
+            log.write_bytes(value.encode('utf-8'))
+        args = ['--standalone', '--app_data_dir', 'antigravity', '--csrf_token', 'a'*32]
+        # Desktop App overwrites log on startup with the port at line 6, then grows > 320 KB.
+        padding = ('I1114 03:00:00.000000 1 runner.go:1] routine log line padding\n' * 6500)
+        write_log(
+            'Starting language server process with pid 123\n'
+            'Language server listening on random port at 12345 for HTTP\n' + padding
+        )
+        self.assertGreater(log.stat().st_size, 320 * 1024)
+        value, port = self.target(image, args)
+        self.assertEqual(port, 12345)
+        self.assertEqual(value['address'], 'http://127.0.0.1:12345')
+
+        # Appending log > 320 KB with a stale port at the head and active port at the tail.
+        write_log(
+            'Language server listening on random port at 11111 for HTTP\n' + padding
+            + 'Language server listening on random port at 22222 for HTTP\n'
+        )
+        identity = {'pid': 123, 'uid': 1, 'image': str(image), 'birth': [1, 2]}
+        with mock.patch.object(native.sys, 'platform', 'darwin'), \
+                mock.patch.object(Path, 'home', return_value=self.home), \
+                mock.patch.object(native, '_candidates', return_value=[(123, args)]), \
+                mock.patch.object(native, '_identity', return_value=identity), \
+                mock.patch.object(native, '_listener', side_effect=lambda _pid, p, _img: p == 22222):
+            value = native.endpoint('app', self.home)
+        self.assertEqual(value['address'], 'http://127.0.0.1:22222')
+
+        # Port line straddling the 64 KB head chunk boundary still resolves.
+        prefix = ('X' * 63 + '\n') * 1023 + 'X' * 40
+        write_log(prefix + 'Language server listening on random port at 33333 for HTTP\n' + padding)
+        self.assertGreater(log.stat().st_size, 320 * 1024)
+        value, port = self.target(image, args)
+        self.assertEqual(port, 33333)
+
+    def test_log_growth_after_size_check_stays_within_snapshot(self):
+        initial = b'Language server listening on random port at 12345 for HTTP\n'
+        appended = b'x' * (2 * 1024 * 1024) + b'\nLanguage server listening on random port at 22222 for HTTP\n'
+
+        class GrowingLog(io.BytesIO):
+            def seek(self, offset, whence=0):
+                if whence == 0 and offset == 0 and self.tell() == len(initial):
+                    self.write(appended)
+                return super().seek(offset, whence)
+
+        log = mock.Mock()
+        log.open.return_value = GrowingLog(initial)
+        self.assertEqual(native._log_ports(log), {12345})
 
     def test_cli_installation_metadata_and_native_rpc_are_independently_verified(self):
         image = self.cli()

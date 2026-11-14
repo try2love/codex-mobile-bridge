@@ -25,14 +25,17 @@ const ClientLifecycle=(()=>{
     let label,reason=client.reason||'',pending=false,action=false;
     if(setup==='recovery-required'||(background&&!waiting&&!client.pendingEnable))label=background?'后台运行，桌面未打开':'需要恢复连接';
     else if(ready)label='已连接';
-    else if(client.pendingEnable){label='正在启动应用…';reason='正在等待客户端连接，完成后会自动显示聊天。';pending=true;}
+    else if(client.pendingEnable){const wsl=['wsl-cli','wsl-claude-cli'].includes(client.kind);label=wsl?'正在连接，请稍候…':'正在启动应用…';reason=wsl?'正在启动 WSL 并读取接入状态。':'正在等待客户端连接，完成后会自动显示聊天。';pending=true;}
     else if(waiting){label=({'needs-screen-saver':'等待退出屏保','needs-unlock':'等待解锁','needs-desktop':'等待桌面恢复'})[setup]||
       (stage==='starting'?'正在启动应用…':'正在连接，请稍候…');pending=true;}
     else{
       label=({'needs-unlock':'电脑已锁定','needs-desktop':'电脑桌面暂不可用'})[setup]||({'error':'连接失败','timeout':'连接超时','needs-initialization':'需要初始化连接'})[stage]
         ||({'history-only':'本机历史（只读）','unsupported':'暂不支持自动接入','needs-initialization':'需要初始化连接','needs-first-launch':'需要完成首次设置','restart-required':'等待重启','needs-permission':'等待授权','needs-developer-mode':'等待开发者模式确认','needs-trust':'等待目录授权','owner-conflict':'连接被其他网关占用','cancelled':'已取消连接','failed':'连接失败','needs-retry':'连接失败'})[setup];
       action=!!label;
-      label=label||(client.installed===false?(client.cliAvailable?'CLI 可用':'未安装'):client.running===true?'应用运行中，尚未连接':client.running===false?'应用未运行':'尚未连接');
+      if(['wsl-cli','wsl-claude-cli'].includes(client.kind)){
+        label=label||(client.distributionRunning===false?'WSL 未启动':client.distributionRunning===true?'WSL 已启动，待连接':'WSL 状态暂未确认');
+        if(client.distributionRunning==null)reason='WSL 状态暂未确认，请刷新后重试';
+      }else label=label||(client.installed===false?(client.cliAvailable?'CLI 可用':'未安装'):client.running===true?'应用运行中，尚未连接':client.running===false?'应用未运行':'尚未连接');
     }
     const canStartDesktop=client.id==='claude'&&client.canStartDesktop===true&&!client.connected&&!pending;
     const canReconnect=client.id==='claude'&&client.canReconnect===true&&client.reconnectSupported===true&&!client.connected&&!pending&&!['recovery-required','restart-required'].includes(setup);
@@ -42,7 +45,13 @@ const ClientLifecycle=(()=>{
       :client.id==='claude'&&!canStartDesktop&&client.enabled&&client.installed!==false&&!client.connected&&!pending&&(['needs-initialization','needs-retry','needs-developer-mode','needs-trust','needs-permission','needs-unlock','needs-desktop','cancelled','failed'].includes(setup)||stage==='needs-initialization'||client.canInitializeDesktop===true&&!canReconnect);
     const initializeLabel=canReconnect?'重新初始化连接':'初始化连接';
     const retryable=client.retryable===true&&client.enabled&&!ready&&!pending&&!canInitialize&&!canReconnect&&!canStartDesktop&&!['recovery-required','restart-required'].includes(setup);
-    return {label,modeLabel:connectionModeLabel(client),reason,ready,waiting:pending,action:action||setup==='recovery-required',retryable:!!retryable,canReconnect:!!canReconnect,canInitialize:!!canInitialize,initializeLabel,canStartDesktop:!!canStartDesktop,error:!pending&&!ready&&(['error','timeout'].includes(stage)||setup==='failed')};
+    const canConnectWsl=['wsl-cli','wsl-claude-cli'].includes(client.kind)&&client.enabled===true&&!ready&&!pending&&client.distributionRunning!==true;
+    return {label,modeLabel:connectionModeLabel(client),reason,ready,waiting:pending,action:action||setup==='recovery-required',retryable:!!retryable,canReconnect:!!canReconnect,canInitialize:!!canInitialize,initializeLabel,canStartDesktop:!!canStartDesktop,canConnectWsl,error:!pending&&!ready&&(['error','timeout'].includes(stage)||setup==='failed')};
+  }
+  function connectWsl(client,operation,options){
+    if(!connection(client).canConnectWsl)return Promise.resolve();
+    const payload={provider:client.kind==='wsl-claude-cli'?'claude':'codex',entry:client.id,action:'connect'};
+    return request(signal=>operation(payload,signal),options);
   }
   function request(operation,{timeout=45000,uncertain=true,message='操作结果尚未确认，请刷新状态后再重试。'}={}){
     const controller=typeof AbortController!=='undefined'?new AbortController():null;let timer;
@@ -56,10 +65,15 @@ const ClientLifecycle=(()=>{
     return {action,message:error.message,uncertain};
   }
   function failureMessage(value){return value.uncertain?'操作结果尚未确认，请刷新状态后再重试。':value.message;}
-  function retryLabel(action){return ({enable:'重试开启',quit:'重试退出',force:'重试后台强制结束',disable:'重试停用',initialize:'重试初始化'})[action]||'重试操作';}
+  function retryLabel(action){return ({enable:'重试开启',quit:'重试退出',force:'重试后台强制结束',disable:'重试停用',initialize:'重试初始化','connect-wsl':'启动并连接 WSL'})[action]||'重试操作';}
   function reconcile(failures,clients){
     for(const [id,value] of failures||[]){
       if(!value.uncertain)continue;const client=clients.find(row=>row.id===id);
+      if(value.action==='connect-wsl'){
+        if(client?.distributionRunning===true)failures.delete(id);
+        else if(client?.distributionRunning===false)failures.set(id,{...value,uncertain:false,message:'WSL 未启动'});
+        continue; // Unknown WSL status cannot authorize another start attempt.
+      }
       const ready=client&&(client.connected||client.setupStatus==='session-access');
       const initialized=id==='zcode'?value.connectionMode==='private-pipe'&&(client?.pipeReady===true||ready&&client.pipeSupported===true):client&&(client.connected||connection(client).waiting);
       const completed=client&&(['quit','force'].includes(value.action)?client.enabled===false&&client.running===false:value.action==='disable'?client.enabled===false:value.action==='initialize'?initialized:value.action==='enable'?(!value.connectionMode||client.connectionMode===value.connectionMode)&&client.enabled&&(client.running||client.connected||connection(client).waiting):false);
@@ -178,6 +192,6 @@ const ClientLifecycle=(()=>{
       dialog.addEventListener('cancel',event=>{event.preventDefault();finish(null);});dialog.addEventListener('close',()=>{dialog.remove();resolve(choice);},{once:true});document.body.append(dialog);dialog.showModal();cancel.focus();
     });
   }
-  return {chooseDisable,chooseForce,chooseInitialize,mountConnectionModes,confirmConnectionMode,connectionModes,connectionModeLabel,initializationFields,connection,request,failure,failureMessage,retryLabel,reconcile,sessionNotice};
+  return {chooseDisable,chooseForce,chooseInitialize,mountConnectionModes,confirmConnectionMode,connectionModes,connectionModeLabel,initializationFields,connection,connectWsl,request,failure,failureMessage,retryLabel,reconcile,sessionNotice};
 })();
 if(typeof module!=='undefined')module.exports={...ClientLifecycle,ClientIdentity};

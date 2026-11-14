@@ -1,6 +1,6 @@
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const {webcrypto,randomUUID}=require('node:crypto');
-const [root,profile]=process.argv.slice(2),stats={starts:0,sends:0,trust:0,files:0};
+const [root,profile,firstSave]=process.argv.slice(2),stats={starts:0,sends:0,trust:0,files:0,attempts:0};
 const api={
   getAll:async()=>[],checkTrust:async cwd=>{stats.trust++;return {trusted:cwd===root};},
   readFileAtCwd:async(cwd,name)=>({contents:fs.readFileSync(path.join(cwd,name),'utf8')}),
@@ -9,6 +9,7 @@ const api={
   sendMessage:async()=>{stats.sends++;throw Error('unexpected model turn');},
 };
 const app={'claude.web':{LocalSessions:api,FileSystem:{async savePastedFile(base64,mime,name){
+  if(++stats.attempts===1&&firstSave==='reject')throw Error('first staging failed');
   const file=path.join(profile,randomUUID()+'-'+name);
   fs.writeFileSync(file,Buffer.from(base64,'base64'));stats.files++;return {path:file};
 }}}};

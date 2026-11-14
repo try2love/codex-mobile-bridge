@@ -582,11 +582,11 @@ test('model picker cancel writes nothing and only shows catalog-supported effort
 test('DeepSeek model picker writes only the selected model when effort is unsupported',async()=>{
  const ui=fixture();await ui.view.choose('deepseek');await ui.view.open('a');ui.setHandler(async(url,body)=>body?{status:'accepted'}:{models:[{id:'deepseek/model-a',name:'Model A',efforts:[]}],currentModel:'deepseek/model-a',capabilities:{models:true,effort:false}});await ui.view.models();const dialog=ui.document.querySelector('dialog');assert.equal(dialog.querySelector('.effort-options').parentElement.hidden,true);await dialog.querySelector('.ds-model-form').onsubmit({preventDefault(){}});const write=ui.calls.find(call=>call.url.includes('/settings'));assert.equal(write.body.model,'deepseek/model-a');assert.equal('effort' in write.body,false);assert.equal('fastMode' in write.body,false);assert.equal(dialog.open,false);
 });
-test('model picker cannot save while its catalog refresh is pending',async()=>{
- const ui=await opened(),catalog={models:[{id:'model-a',efforts:['low']},{id:'model-b',efforts:['high']}],currentModel:'model-a',currentEffort:'low',capabilities:{models:true,effort:true}};let finish,reads=0;ui.setHandler(async(url,body)=>{if(body)return {status:'accepted'};if(++reads===2)return new Promise(resolve=>finish=resolve);return catalog;});await ui.view.models();const dialog=ui.document.querySelector('dialog'),form=dialog.querySelector('.ds-model-form'),save=dialog.querySelector('.ds-model-actions').querySelector('.primary');assert.equal(dialog.querySelector('.effort-options').querySelector('input:checked').parentElement.textContent,'低');assert.match(ui.calls.at(-1).url,/section=models/);assert.doesNotMatch(ui.calls.at(-1).url,/refresh=true/);const refreshing=dialog.querySelector('.ds-model-refresh').click();assert.match(ui.calls.at(-1).url,/refresh=true/);assert.equal(save.disabled,true);assert.equal(dialog.querySelector('.model-options').querySelector('input:checked').disabled,true);await form.onsubmit({preventDefault(){}});assert.equal(ui.calls.filter(call=>call.body).length,0);finish(catalog);await refreshing;assert.equal(save.disabled,false);assert.equal(dialog.querySelector('.model-options').querySelector('input:checked').value,'model-a');
+test('model picker can save verified cached choices while catalog refresh is pending',async()=>{
+ const ui=await opened();ui.view.state.modelCatalogIdentity='verified-account';const catalog={cache:{identity:'verified-account'},models:[{id:'model-a',efforts:['low']},{id:'model-b',efforts:['high']}],currentModel:'model-a',currentEffort:'low',capabilities:{models:true,effort:true}};let finish,reads=0;ui.setHandler(async(url,body)=>{if(body)return {status:'accepted'};if(++reads===2)return new Promise(resolve=>finish=resolve);return catalog;});await ui.view.models();const dialog=ui.document.querySelector('dialog'),form=dialog.querySelector('.ds-model-form'),save=dialog.querySelector('.ds-model-actions').querySelector('.primary');assert.equal(dialog.querySelector('.effort-options').querySelector('input:checked').parentElement.textContent,'低');assert.match(ui.calls.at(-1).url,/section=models/);assert.doesNotMatch(ui.calls.at(-1).url,/refresh=true/);const refreshing=dialog.querySelector('.ds-model-refresh').click();assert.match(ui.calls.at(-1).url,/refresh=true/);assert.equal(save.disabled,false);assert.equal(dialog.querySelector('.model-options').querySelector('input:checked').disabled,false);await form.onsubmit({preventDefault(){}});const writes=ui.calls.filter(call=>call.body);assert.equal(writes.length,1);assert.equal(writes[0].body.model,'model-a');assert.equal(writes[0].body.modelCatalogIdentity,'verified-account');finish(catalog);await refreshing;assert.equal(dialog.open,false);
 });
 test('model picker refresh and failed save keep the draft until a successful reload',async()=>{
- const ui=await opened(),catalog={models:[{id:'model-a',efforts:['high']},{id:'model-b',efforts:['low']}],currentModel:'model-a',currentEffort:'high',capabilities:{models:true,effort:true}};let failRead=false;ui.setHandler(async(url,body)=>{if(body)throw Error('write unknown');if(failRead)throw Error('read failed');return catalog;});await ui.view.models();const dialog=ui.document.querySelector('dialog'),choice=dialog.querySelector('.model-options').querySelectorAll('input')[1];choice.checked=true;choice.onchange();failRead=true;await dialog.querySelector('.ds-model-refresh').click();assert.equal(dialog.querySelector('.model-options').querySelector('input:checked').value,'model-b');assert.match(dialog.querySelector('.error').textContent,/read failed/);await dialog.querySelector('.ds-model-form').onsubmit({preventDefault(){}});assert.equal(dialog.open,true);assert.equal(dialog.querySelector('.model-options').querySelector('input:checked').value,'model-b');assert.equal(dialog.querySelector('.ds-model-actions').querySelector('.primary').disabled,true);failRead=false;await dialog.querySelector('.ds-model-refresh').click();assert.equal(dialog.querySelector('.model-options').querySelector('input:checked').value,'model-b');assert.equal(dialog.querySelector('.ds-model-actions').querySelector('.primary').disabled,false);assert.equal(ui.calls.filter(call=>call.body).length,1);
+ const ui=await opened(),catalog={models:[{id:'model-a',efforts:['high']},{id:'model-b',efforts:['low']}],currentModel:'model-a',currentEffort:'high',capabilities:{models:true,effort:true}};let failRead=false;ui.setHandler(async(url,body)=>{if(body)throw Error('write unknown');if(failRead)throw Error('read failed');return catalog;});await ui.view.models();const dialog=ui.document.querySelector('dialog'),choice=dialog.querySelector('.model-options').querySelectorAll('input')[1];choice.checked=true;choice.onchange();failRead=true;await dialog.querySelector('.ds-model-refresh').click();assert.equal(dialog.querySelector('.model-options').querySelector('input:checked').value,'model-b');assert.match(dialog.querySelector('.muted').textContent,/read failed/);assert.equal(dialog.querySelector('.error').textContent,'');await dialog.querySelector('.ds-model-form').onsubmit({preventDefault(){}});assert.equal(dialog.open,true);assert.equal(dialog.querySelector('.model-options').querySelector('input:checked').value,'model-b');assert.equal(dialog.querySelector('.ds-model-actions').querySelector('.primary').disabled,true);failRead=false;await dialog.querySelector('.ds-model-refresh').click();assert.equal(dialog.querySelector('.model-options').querySelector('input:checked').value,'model-b');assert.equal(dialog.querySelector('.ds-model-actions').querySelector('.primary').disabled,false);assert.equal(ui.calls.filter(call=>call.body).length,1);
 });
 test('a late model catalog cannot populate another session or send a settings write',async()=>{
  const ui=await opened();let finish;ui.setHandler(url=>url.includes('/catalog')?new Promise(resolve=>finish=resolve):Promise.resolve({session:{id:'b',title:'Other',status:'idle',capabilities:{}},messages:[]}));const pending=ui.view.models(),dialog=ui.document.querySelector('dialog');await ui.view.open('b');finish({models:[{id:'old',efforts:['high']}],currentModel:'old'});await pending;assert.equal(dialog.open,false);assert.equal(dialog.querySelectorAll('.model-choice').length,0);assert.equal(ui.calls.filter(call=>call.body).length,0);
@@ -1662,4 +1662,92 @@ test('Antigravity creation keeps native directory source separate from CLI displ
  await view.create();await new Promise(setImmediate);const dialog=ui.document.querySelector('dialog'),environment=dialog.querySelector('[aria-label="运行环境"]');assert.equal(environment.value,'app');
  environment.value='ide';environment.onchange();await new Promise(setImmediate);const model=dialog.querySelector('[aria-label="模型"]');model.value='ide-model';model.onchange();dialog.querySelector('textarea').value='FIRST';await dialog.querySelector('form').onsubmit({preventDefault(){}});
  const write=ui.calls.find(row=>row.url.endsWith('/create')).body;assert.equal(write.environment,'ide');assert.equal(write.projectKey,'ide-project');assert.equal(write.model,'ide-model');assert.equal(write.effort,undefined);assert.equal(write.firstMessage,'FIRST');assert.equal(write.title,undefined);
+});
+
+test('creation catalog outage keeps manual drafts editable without inventing an account identity',async()=>{
+ const ui=fixture(),Picker=ui.run('window.BridgeCreationModelPicker');
+ const picker=new Picker({root:ui.document.createElement('section')});
+ await picker.load('offline',async()=>{throw Error('目录暂不可用');});
+ assert.equal(picker.model.disabled,false);picker.model.value='__manual__';picker.model.onchange();
+ assert.equal(picker.manualModel.hidden,false);assert.equal(picker.manualModel.disabled,false);
+ picker.manualModel.value='exact/model';picker.manualModel.oninput();
+ assert.equal(picker.error.textContent,'');assert.match(picker.feedback.textContent,/目录暂不可用/);
+ assert.equal(picker.valid(),false,'a draft cannot invent the execution identity');
+ await picker.load('offline',async()=>({models:[],cache:{identity:'verified'},capabilities:{models:true,manualModels:true,manualEffort:true}}),true);
+ assert.equal(picker.manualModel.value,'exact/model');assert.equal(picker.selection().model,'exact/model');
+ assert.equal(picker.selection().modelCatalogIdentity,'verified');picker.dispose();
+});
+
+test('interactive questions support canSkip, exclusiveWriteIn and explicit canCancel',async()=>{
+ const ui=await opened();ui.view.state={...ui.view.state,status:'active',capabilities:{...ui.view.state.capabilities,send:true}};
+ const req={id:'agy-wait:app:c:t:1',tool:'提问',needsInput:true,canCancel:true,cancelLabel:'取消',exclusiveWriteIn:true,input:{questions:[
+  {id:'0',question:'Single choice',multiSelect:false,canSkip:true,options:[{id:'1',label:'Option A'},{id:'2',label:'Option B'}]},
+  {id:'1',question:'Optional note',multiSelect:true,canSkip:true,options:[{id:'x',label:'Check X'}]}
+ ]}};
+ ui.view.renderRequests([req]);
+ const form=ui.view.requests.querySelector('form'),allInputs=form.querySelectorAll('input');
+ const radios=allInputs.filter(n=>n.type==='radio'),checkboxes=allInputs.filter(n=>n.type==='checkbox'),texts=allInputs.filter(n=>n.type!=='radio'&&n.type!=='checkbox');
+ // exclusiveWriteIn clears radio when typing and clears write-in when selecting radio
+ radios[0].checked=true;radios[0].onchange();texts[0].value='Custom';texts[0].oninput();assert.equal(radios[0].checked,false);
+ radios[1].checked=true;radios[1].onchange();assert.equal(texts[0].value,'');
+ // second question skip checkbox clears inputs and submits skipped:true
+ checkboxes[1].checked=true;checkboxes[2].checked=true;checkboxes[2].onchange();assert.equal(checkboxes[1].checked,false);
+ await form.onsubmit({preventDefault(){}});
+ await new Promise(setImmediate);
+ const acceptWrite=ui.calls.filter(c=>c.body).at(-1).body;
+ assert.equal(acceptWrite.decision,'accept');
+ assert.deepEqual(JSON.parse(JSON.stringify(acceptWrite.answers)),{'0':{answers:['Option B']},'1':{answers:[],skipped:true}});
+ const buttons=form.querySelectorAll('button');assert.equal(buttons.length,2);assert.equal(buttons[1].textContent,'取消');
+ await buttons[1].click();
+ await new Promise(setImmediate);
+ assert.equal(ui.calls.filter(c=>c.body).at(-1).body.decision,'decline');
+});
+
+test('schema questions restrict fixed choices without changing other question write-ins',async()=>{
+ const ui=await opened();
+ const req={id:'form',needsInput:true,canCancel:true,input:{questions:[
+  {id:'choices',question:'Choose',multiSelect:true,allowCustom:false,options:[{label:'1'},{label:'2'}]},
+  {id:'note',question:'Note',options:[]}
+ ]}};
+ ui.view.renderRequests([req]);
+ let form=ui.view.requests.querySelector('form');
+ assert.equal(form.querySelectorAll('input').length,3);
+ form.answerInputs[0].area.querySelectorAll('input')[0].checked=true;
+ form.answerInputs[1].custom.value='preserved draft';
+ ui.view.renderRequests([req]);form=ui.view.requests.querySelector('form');
+ assert.equal(form.answerInputs[1].custom.value,'preserved draft');
+ await form.onsubmit({preventDefault(){}});await new Promise(setImmediate);
+ assert.deepEqual(JSON.parse(JSON.stringify(ui.calls.filter(c=>c.body).at(-1).body.answers)),{choices:{answers:['1']},note:{answers:['preserved draft']}});
+});
+
+test('model picker renders quota badges and structured usageSummary without altering plain notices',async()=>{
+ const ui=await opened();
+ ui.setHandler(async()=>({
+  models:[
+   {id:'m-low',name:'Low Model',efforts:[],quotaTag:'剩余 15.0%',quotaStatus:'warning'},
+   {id:'m-empty',name:'Empty Model',efforts:[],quotaTag:'已用尽',quotaStatus:'exhausted'}
+  ],
+  currentModel:'m-low',
+  capabilities:{models:true,effort:false},
+  usageSummary:{tier:'Google AI Pro',items:[{name:'Low Model',val:'剩余 15.0%',note:'将于 11/14 12:30 重置',status:'warning'}],credits:'可用 Prompt 点数: 120 · Flow 点数: 45'}
+ }));
+ await ui.view.models();
+ const dialog=ui.document.querySelector('dialog');
+ const badges=dialog.querySelectorAll('.model-choice-badge');
+ assert.equal(badges.length,2);
+ assert.equal(badges[0].classList.contains('badge-warning'),true);
+ assert.equal(badges[1].classList.contains('badge-exhausted'),true);
+ const card=dialog.querySelector('.ds-usage-card');
+ assert.ok(card);
+ assert.equal(card.querySelector('.ds-usage-title').textContent,'Google AI Pro');
+ assert.equal(card.querySelector('.ds-usage-row').querySelector('.ds-usage-name').textContent,'Low Model');
+ assert.equal(card.querySelector('.ds-usage-credits').textContent,'可用 Prompt 点数: 120 · Flow 点数: 45');
+ dialog.close();
+
+ ui.setHandler(async()=>({models:[{id:'m-plain',name:'Plain',efforts:[]}],currentModel:'m-plain',notice:'plain notice',capabilities:{models:true,effort:false}}));
+ await ui.view.models();
+ const plainDialog=ui.view.modelDialog;
+ assert.equal(plainDialog.querySelector('.ds-usage-card'),null);
+ assert.equal(plainDialog.querySelector('.muted').textContent,'plain notice');
+ plainDialog.close();
 });

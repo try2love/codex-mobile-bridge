@@ -13,6 +13,7 @@ from pathlib import Path
 
 from bridge.clients.claude import model
 from bridge.clients.claude.context import context_fields
+from bridge.clients.claude.history import merge_live_page
 from bridge.clients.claude.cli_session import (_Owned, _message_content, _skill_catalog, _cli_catalog,
                                                 _set_cli_settings, _supports_compact, _compact_cli, _supports_rename, _rename_cli, MODES,
                                                 _verify_creation_settings, PERMISSION_OPTIONS, ResumePreflightBlocked)
@@ -513,7 +514,7 @@ class RemoteClaudeCli:
                 if live:
                     with owned.condition:
                         live_events = list(owned.events) if before is None else []
-                    history = history + live_events
+                    history = merge_live_page(history, live_events)
                 else:
                     live_events = []
                 public.update(context_fields((row.get('contextEvents') or []) + live_events))
@@ -531,7 +532,8 @@ class RemoteClaudeCli:
                         notice = str(exc)
                 return {'connected': True, 'session': public,
                         'messages': list({item['id']: item for item in messages}.values()),
-                        'turns': model.turns(history),
+                        # Preserve prior completion anchors even when their messages are paged out.
+                        'turns': model.turns(page['events'] + live_events),
                         'history': page['history'],
                         'notice': notice,
                         'capabilities': {**row.get('capabilities', {}), 'resume': not live and not row.get('archived') and ready, 'send': live and public['connectionState'] == 'ready',

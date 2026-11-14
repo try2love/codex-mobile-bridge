@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+from bridge.clients.codex.catalog import CatalogIdentityChanged
 from bridge.app.service import Bridge
 from bridge.clients.codex.catalog import ModelStore
 from bridge.clients.codex.app_server import AppServerUnavailable
@@ -12,6 +13,21 @@ from bridge.platforms.codex_daemon_env import DaemonEnvironmentUnavailable
 
 
 class NativeModelCacheTests(unittest.TestCase):
+    def test_initial_read_failure_keeps_verified_manual_identity_without_caching_error(self):
+        self.bridge.cli_sessions.get_kind.side_effect = AppServerUnavailable('offline')
+        value = self.bridge._native_models('thread', self.temp.name, 'openai')
+        self.assertEqual(value['cache'], {'state': 'unavailable', 'identity': 'identity-a'})
+        self.assertEqual(value['models'], [])
+        self.assertIsNone(self.bridge.native_model_store.read('identity-a'))
+
+    def test_empty_directory_does_not_replace_last_good_models_or_timestamp(self):
+        first = self.bridge._native_models('thread', self.temp.name, 'openai')
+        self.bridge.cli_sessions.get_kind.return_value = {'models': []}
+        value = self.bridge._native_models('thread', self.temp.name, 'openai', refresh=True)
+        self.assertEqual(value['models'], first['models'])
+        self.assertEqual(value['cache']['updatedAt'], first['cache']['updatedAt'])
+        self.assertEqual(value['cache']['state'], 'stale')
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]/'.tmp')
         self.addCleanup(self.temp.cleanup)
@@ -71,7 +87,7 @@ class NativeModelCacheTests(unittest.TestCase):
             self.bridge._native_model_identity.return_value = 'identity-b'
             return {'models': [{'id': 'old-account'}]}
         self.bridge.cli_sessions.get_kind.side_effect = changed
-        with self.assertRaisesRegex(ValueError, '账号身份已变化'):
+        with self.assertRaisesRegex(CatalogIdentityChanged, '账号身份已变化'):
             self.bridge._native_models('thread', self.temp.name, 'openai')
         self.assertIsNone(self.bridge.native_model_store.read('identity-a'))
 

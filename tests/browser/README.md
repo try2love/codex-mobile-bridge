@@ -110,3 +110,7 @@ Codex 的环境路由、目录登记和创建回执由 `codex-entries.browser.js
 ## 共享客户端会话控件
 
 在隔离 `bootstrap-fixture.py` 的成功页面中注入 `desktop-parity.browser.js`，调用并等待 `runDesktopParityChecks({language:'zh'})`。检查三客户端底栏同排、原生上下文占比、共享引用入口，以及长文件名图片预览按钮不换行；所有数据和请求均为合成，不发送模型消息。覆盖 320/390 像素中英文、横屏和宽屏。`keepOpen:true` 保留图片预览供截图；会话菜单 ID 复制另由 `session-menu.browser.js` 验证。
+
+## visualize 回归
+
+`npx playwright test -c tests/browser/playwright.config.cjs visualize.spec.cjs` 在 Chromium 与 WebKit 的宽窄视口运行生产 Markdown、预览壳和运行时。覆盖交互、状态恢复、主题、保持脚本内存的全屏、提问草稿、失败重试及隔离边界。合成 API 与外网拦截保证这些用例只操作夹具。

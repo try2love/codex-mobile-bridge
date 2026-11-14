@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from bridge.clients.claude import model
 from bridge.clients.claude.adapter import Claude
-from bridge.clients.claude.cli_session import ClaudeCli, ClaudeControlRejected, ResumePreflightBlocked, _Owned, _skill_catalog, _model_catalog, _cli_catalog, _cli_selection, _set_cli_settings, _auth_ready, _events, _saved, _permission_prompt_args
+from bridge.clients.claude.cli_session import ClaudeCli, ClaudeControlRejected, ResumePreflightBlocked, _Owned, _skill_catalog, _model_catalog, _cli_catalog, _cli_selection, _set_cli_settings, _auth_ready, _events, _saved
 from bridge.clients.errors import BridgeUnavailable
 from bridge.clients.manager import DesktopSessions
 from bridge.clients.uploads import DesktopUploads
@@ -47,11 +47,8 @@ class ClaudeCliContract(unittest.TestCase):
         self.profile = {'binary': '/fixture/claude', 'directory': self.config, 'origin': 'fixture:account'}
         self.profile_patch = patch('bridge.clients.claude.cli_session._profile', return_value=self.profile)
         self.auth_patch = patch('bridge.clients.claude.cli_session._auth_ready', return_value=True)
-        self.prompt_patch = patch('bridge.clients.claude.cli_session._permission_prompt_args',
-                                  return_value=['--permission-prompts', 'host'])
-        self.profile_patch.start(); self.auth_patch.start(); self.prompt_patch.start()
+        self.profile_patch.start(); self.auth_patch.start()
         self.addCleanup(self.profile_patch.stop); self.addCleanup(self.auth_patch.stop)
-        self.addCleanup(self.prompt_patch.stop)
         self.cli = ClaudeCli(self.root/'uploads')
 
     @unittest.skipUnless(os.name == 'posix', 'Real Claude file archive requires POSIX ownership and fsync semantics')
@@ -302,6 +299,8 @@ class ClaudeCliContract(unittest.TestCase):
             created = self.cli.create(str(self.cwd), self.profile['origin'], 'First request')
         self.assertEqual(created['status'], 'ready')
         self.assertEqual(popen.call_args.kwargs['encoding'], 'utf-8')
+        self.assertNotIn('--permission-prompts', popen.call_args.args[0])
+        self.assertEqual(popen.call_args.args[0][popen.call_args.args[0].index('--permission-prompt-tool') + 1], 'stdio')
         owner.write.assert_called_once()
 
     def test_resume_uses_original_config_cwd_model_permission_and_no_prompt(self):
@@ -332,6 +331,8 @@ class ClaudeCliContract(unittest.TestCase):
             self.assertEqual(args[0][args[0].index('--permission-mode') + 1], 'plan')
             self.assertEqual(args[0][args[0].index('--model') + 1], 'fixture-model')
             self.assertIn('--resume', args[0])
+            self.assertNotIn('--permission-prompts', args[0])
+            self.assertEqual(args[0][args[0].index('--permission-prompt-tool') + 1], 'stdio')
             scope = str((self.root/'uploads'/DesktopUploads.scope('claude', self.sid)).resolve())
             self.assertEqual(args[0][args[0].index('--add-dir') + 1], scope)
             self.assertNotIn('Fixture request', args[0])
@@ -693,16 +694,6 @@ class ClaudeCliContract(unittest.TestCase):
 
 
 class ClaudeCliVersionContract(unittest.TestCase):
-    def test_native_legacy_stdio_routing_and_newer_host_routing(self):
-        with patch('bridge.clients.claude.cli_session.subprocess.run') as run:
-            run.return_value.returncode = 0
-            run.return_value.stdout = '2.1.168 (Claude Code)\n'
-            self.assertEqual(_permission_prompt_args('claude.cmd', {}), [])
-            run.return_value.stdout = '2.1.287 (Claude Code)\n'
-            self.assertEqual(_permission_prompt_args('claude.cmd', {}),
-                             ['--permission-prompts', 'host'])
-            self.assertEqual(run.call_args.kwargs['encoding'], 'utf-8')
-
     def test_installed_cli_effort_control_is_session_only_and_read_back(self):
         binary = shutil.which('claude')
         if not binary:

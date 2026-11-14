@@ -8,11 +8,29 @@ from bridge.clients.claude.adapter import Claude
 from bridge.clients.manager import DesktopSessions
 from bridge.features.sessions.create import create_empty, CreationError
 from bridge.features.sessions.creation_models import validate
-from bridge.clients.codex.catalog import Catalog
+from bridge.clients.codex.catalog import Catalog, CatalogError
 from bridge.app.service import Bridge
 
 
 class CreationChoices(unittest.TestCase):
+    def test_official_directory_failure_keeps_manual_creation_and_verified_identity(self):
+        with tempfile.TemporaryDirectory() as folder:
+            reader = Catalog(Path(folder), 'fixture', allow_background_refresh=False)
+            reader._fetch = Mock(side_effect=CatalogError('offline'))
+            bridge = object.__new__(Bridge)
+            bridge.host = 'local'
+            bridge.projects = lambda host=None: [{'key': 'local|p', 'host': 'local', 'cwd': folder}]
+            bridge.project_host = lambda key: 'local'
+            bridge.for_host = lambda host: bridge
+            bridge.catalog_reader = reader
+            value = bridge.creation_models('local|p')
+            choice = {'model': 'exact/custom-model', 'manualModel': True,
+                      'modelCatalogIdentity': value['cache']['identity']}
+            self.assertEqual(validate(choice, value)['model'], choice['model'])
+            self.assertNotIn('effort', validate(choice, value))
+            self.assertEqual(value['cache']['state'], 'unavailable')
+            self.assertIsNone(reader.model_store.read(value['cache']['identity']))
+
     def test_failed_api_directory_allows_manual_selection_without_caching_failure(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -160,6 +178,8 @@ class CreationCatalogScope(unittest.TestCase):
         request={'environment':'scope','projectKey':'code:/fixture'}
         result=self.manager.creation_models('claude',request)
         self.assertEqual(result['models'], result['groups'][0]['models'])
+        self.assertTrue(result['capabilities']['manualModels'])
+        self.assertTrue(result['capabilities']['manualEffort'])
         self.assertEqual([row['id'] for row in result['models']], ['code-model'])
         self.assertEqual(result['cache']['directoryIdentity'], catalog['cache']['identity'])
         self.assertEqual(result['cache']['surface'], 'code')

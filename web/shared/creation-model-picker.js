@@ -42,8 +42,8 @@ window.BridgeModelCatalogCache={
 // Account-bound catalog shape and choices are shared by all new-chat surfaces.
 class CreationModelPicker {
   static intent(value){return Object.fromEntries(Object.entries(value).filter(([key])=>!['modelCatalogIdentity','environment'].includes(key)));}
-  constructor({root,cache=new Map(),namespace=()=>[],isCurrent=()=>true,onChange=()=>{}}){
-    Object.assign(this,{root,cache,namespace,isCurrent,onChange});this.revision=0;this.selectionRevision=0;this.busy=false;this.catalog=null;this.scope='';
+  constructor({root,cache=new Map(),namespace=()=>[],isCurrent=()=>true,onChange=()=>{},fallbackCapabilities={manualModels:true,manualEffort:true}}){
+    Object.assign(this,{root,cache,namespace,isCurrent,onChange,fallbackCapabilities});this.revision=0;this.selectionRevision=0;this.busy=false;this.catalog=null;this.scope='';
     const node=(tag,text)=>{const result=document.createElement(tag);if(text!==undefined)result.textContent=BridgeI18n.t(text);return result;};this.node=node;
     root.classList.add('project-picker-models');
     const header=node('div'),label=node('strong','模型与思考强度');header.className='project-picker-model-head';
@@ -65,7 +65,7 @@ class CreationModelPicker {
     const defaults=this.rows.filter(row=>row.isDefault===true),proposed=preserve?previousModel:allowDefault?(catalog?.currentModel||(defaults.length===1?defaults[0].id:'')):'';
     this.model.value=this.rows.some(row=>row.id===proposed)||proposed==='__manual__'&&this.capabilities.manualModels?proposed:'';
     if(!preserve){this.manualModel.value='';this.manualEffort.value='';}
-    if(!preserve&&typeof proposed==='string'&&proposed&&!this.model.value&&this.capabilities.manualModels){this.model.value='__manual__';this.manualModel.value=proposed;}
+    if(typeof proposed==='string'&&proposed&&proposed!=='__manual__'&&!this.model.value&&this.capabilities.manualModels){this.model.value='__manual__';this.manualModel.value=proposed;}
     this.effortValue=preserve?previousEffort:catalog?.currentEffort||'';this.renderEffort();this.changed();
   }
   renderEffort(){
@@ -100,7 +100,7 @@ class CreationModelPicker {
     if(scope===this.scope&&this.read&&(!refresh||this.loading))return;
     const changed=scope!==this.scope;this.scope=scope;this.read=read;const revision=++this.revision;
     const namespace=this.namespace();
-    if(changed)this.show(window.BridgeModelCatalogCache.forScope(this.cache,scope));
+    if(changed)this.show({models:[],capabilities:this.fallbackCapabilities,...window.BridgeModelCatalogCache.forScope(this.cache,scope)});
     const selectionRevision=this.selectionRevision;
     this.loading=true;this.error.textContent='';this.feedback.textContent=BridgeI18n.t(this.catalog?'正在核对模型目录…':'正在读取模型…');this.changed();
     try{
@@ -112,7 +112,7 @@ class CreationModelPicker {
       const preserve=!identityChanged&&(!changed||selectionRevision!==this.selectionRevision);
       this.show(value,preserve,!identityChanged);
       this.feedback.textContent=BridgeI18n.t(identityChanged?'账号或配置已变化，请重新选择模型与思考强度':value.notice||value.modelError||(!value.currentModel&&!this.model.value?'请选择模型；不会自动选用目录中的第一个模型。':''));
-    }catch(error){if(revision===this.revision&&this.isCurrent())this.error.textContent=BridgeI18n.t(error.message);}
+    }catch(error){if(revision===this.revision&&this.isCurrent())this.feedback.textContent=BridgeI18n.t(error.message)+' · '+BridgeI18n.t('可手动填写模型');}
     finally{if(revision===this.revision&&this.isCurrent()){this.loading=false;this.changed();}}
   }
   clear(){this.revision++;this.scope='';this.read=null;this.loading=false;this.feedback.textContent='';this.error.textContent='';this.show(null);}

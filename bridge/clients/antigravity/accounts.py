@@ -1,12 +1,14 @@
 """Default local OAuth snapshots; shared UI, no Electron/profile directory copies."""
 import hashlib
 import json
+import logging
 from pathlib import Path
 import re
 import threading
 import uuid
 
 from bridge.features.accounts.accounts import private_bytes, private_json
+from bridge.clients.errors import BridgeUnavailable
 from bridge.platforms.antigravity import login_processes, profile_lease
 from .credentials import NativeCredentials
 
@@ -63,13 +65,14 @@ class AntigravityAccounts:
     def supported(self):
         return self.home == Path.home().resolve()
 
-    def _check(self):
+    def _check(self, *, stopped=True):
         if not self.supported():
             raise ValueError('仅支持默认用户目录的 Antigravity 账号；自定义目录请在原客户端管理')
         safe(self.directory)
         for name in TOKEN_FILES:
             safe(self.home/'.gemini'/name)
-        require_stopped()
+        if stopped:
+            require_stopped()
 
     def _index(self):
         raw = read(self.directory/'index.json')
@@ -87,10 +90,10 @@ class AntigravityAccounts:
             raise ValueError('保存的 Antigravity 账号不存在')
         return row
 
-    def public(self):
+    def public(self, *, native=None):
         # Polling reads native identity and private metadata only, never the vault.
         with self.lock:
-            native = self.metadata()
+            native = self.metadata() if native is None else native
             rows, active, matched = [], [], set()
             for saved in self._index():
                 row = {key: saved[key] for key in ('id', 'name', 'email')}
@@ -110,7 +113,7 @@ class AntigravityAccounts:
                     'activeId': active[0] if active else None,
                     'readOnly': not supported, 'canImport': supported, 'canSwitch': supported,
                     'enrollmentHint': SCOPE_HINT,
-                    'switchConfirmation': '请先正常退出此电脑的 Antigravity APP、CLI、IDE。应用将更新三类入口共用的 Google 登录，使用同一系统登录的自定义入口也会受影响；其他电脑不变。重新打开后才能验证登录。确认应用？',
+                    'switchConfirmation': '将更新此电脑 APP、CLI、IDE 共用的 Google 登录，使用同一系统登录的自定义入口也会受影响；其他电脑不变。已核验空闲的单个 APP 或 IDE 会正常退出并重新打开；独立 CLI、其他实例或无法核验的入口需要先手动退出。聊天、配置和草稿保留。确认应用？',
                     'capabilities': {'addApi': False, 'quota': False, 'switchRequiresStopped': True}}
 
     def _snapshot(self, vault):
@@ -127,6 +130,16 @@ class AntigravityAccounts:
         if len(emails) != 1:
             raise ValueError('默认入口的登录身份不一致，请先在原客户端统一登录后保存')
         return next(iter(emails))
+
+    def validate_saved(self, identifier):
+        """Reject invalid selections before requesting any native exit."""
+        with self.lock:
+            self._check(stopped=False)
+            row = self._row(identifier)
+            value = json.loads(read(self.directory/(identifier+'.json')) or '{}')
+            if self._validate(value) != row['email'] or fingerprint(value) != row['fingerprint']:
+                raise ValueError('已保存的登录快照不完整，请重新保存')
+            return row['email']
 
     def import_current(self, name=''):
         if not isinstance(name, str) or len(name.strip()) > 100:
@@ -173,6 +186,9 @@ class AntigravityAccounts:
             self._validate(selected)
             if fingerprint(selected) != row['fingerprint']:
                 raise ValueError('保存的 Antigravity 登录快照已变化')
+            # Retain the saved list if post-commit discovery fails, but never
+            # carry the previous native login identity across a switch.
+            result = self.public(native={'accounts': []})
             with profile_lease(self.home/'.gemini/.bridge-account.lock'):
                 vault = NativeCredentials()
                 before = self._snapshot(vault)
@@ -217,8 +233,17 @@ class AntigravityAccounts:
                     if complete:
                         backup.unlink(missing_ok=True)
                     raise ValueError('账号应用未完成；'+('已恢复原配置' if complete else '未覆盖外部变化，恢复备份已保留，请在电脑端检查')) from None
-                backup.unlink(missing_ok=True)
-                return {**self.public(), 'message': '登录配置已应用，尚未验证登录；请重新打开原客户端后刷新。'}
+                try:
+                    backup.unlink(missing_ok=True)
+                except OSError:
+                    logging.getLogger(__name__).warning('Antigravity login applied; rollback backup retained')
+                # Credential read-back above is the commit point. Cleanup or
+                # presentation failures must not prevent the one safe restart.
+                try:
+                    result = self.public()
+                except (OSError, ValueError, BridgeUnavailable):
+                    pass
+                return {**result, 'message': '登录配置已应用，尚未验证登录；请重新打开原客户端后刷新。'}
 
     def edit(self, identifier):
         row = self._row(identifier)

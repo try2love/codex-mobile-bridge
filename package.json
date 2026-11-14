@@ -1,7 +1,7 @@
 {
   "name": "codex-mobile-bridge-desktop",
   "desktopName": "codex-mobile-bridge.desktop",
-  "version": "2.2.1-preview.1",
+  "version": "2.2.1",
   "description": "Codex App 手机网关桌面启动器",
   "author": "try2love",
   "license": "AGPL-3.0-only",
@@ -43,6 +43,7 @@
       "desktop/**",
       "web/shared/i18n.js",
       "web/shared/dialog-dismiss.js",
+      "web/shared/creation-model-picker.js",
       "web/features/accounts/account.js",
       "web/features/accounts/api-editor.js",
       "web/features/accounts/accounts.js",

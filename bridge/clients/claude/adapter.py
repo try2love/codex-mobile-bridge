@@ -992,18 +992,25 @@ class Claude:
         elif action == 'stop':
             result = await self.desktop.call(kind, 'interrupt' if kind == 'code' else 'stop', native)
         elif action == 'settings':
-            catalog = {'models': []} if body.get('manualModel') is True else await self.desktop.call(kind, 'mobileCatalog', native)
+            try:
+                catalog = {'models': []} if body.get('manualModel') is True else await self.desktop.call(kind, 'mobileCatalog', native)
+            except (OSError, ValueError, BridgeUnavailable):
+                if not isinstance(body.get('model'), str):
+                    raise
+                catalog = {'models': []}
             selected = next((m for m in catalog['models'] if m['id'] == body.get('model', row.get('model'))), None)
             identifier = body.get('model', row.get('model'))
             if not isinstance(identifier, str) or not re.fullmatch(r'[^\s\x00-\x1f\x7f]{1,256}', identifier):
                 raise ValueError('请输入有效的模型名称')
             if not self.session_capabilities(kind)['models']:
                 raise ValueError('当前客户端未提供模型设置接口')
+            known = selected is not None
             if selected is None:
                 selected = {'id': identifier, 'efforts': []}
-            if body.get('manualEffort') is True and (not isinstance(body.get('effort'), str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', body['effort'])):
+            if 'effort' in body and (not isinstance(body.get('effort'), str) or
+                    (body['effort'] or body.get('manualEffort') is True) and not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', body['effort'])):
                 raise ValueError('请输入有效的思考强度')
-            if body.get('effort') and body.get('manualEffort') is not True and body['effort'] not in selected.get('efforts', []):
+            if known and body.get('effort') and body.get('manualEffort') is not True and body['effort'] not in selected.get('efforts', []):
                 raise ValueError('该模型不支持此思考强度')
             effort = body.get('effort') or (selected.get('defaultEffort') if kind == 'cowork' else None)
             if 'effort' in body and (not self.session_capabilities(kind)['effort'] or kind == 'cowork' and not effort):

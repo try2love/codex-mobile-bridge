@@ -1,11 +1,13 @@
 import json
 import os
 import tempfile
+import threading
 import time
 import unittest
 import uuid
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from bridge.clients.claude import model
 from bridge.clients.claude.cli_session import ClaudeCli, _saved
@@ -49,6 +51,96 @@ class ClaudeCliHistory(unittest.TestCase):
         self.assertEqual(recent['messages'][0]['eventId'], 'a240')
         self.assertEqual(older['messages'][-1]['eventId'], 'a239')
         self.assertTrue(recent['history']['hasMore'])
+
+    def test_live_recent_page_does_not_reappend_persisted_stream_prefix(self):
+        self.write(1000)
+        events = [json.loads(line) for line in self.path.read_text().splitlines()][1:]
+        owned = SimpleNamespace(origin=self.origin, process=Mock(), error=None,
+            condition=threading.Condition(), events=events, pending={}, active=False,
+            catalog={}, model=None, permission=None)
+        owned.process.poll.return_value = None
+        self.cli.owned[self.native] = owned
+        recent = self.cli.call('detail', self.sid, {'historyLimit': 40})
+        self.assertEqual([message['eventId'] for message in recent['messages']],
+                         [f'a{index}' for index in range(960, 1000)])
+        self.assertEqual(len(owned.events), 1000)
+        older = self.cli.call('detail', self.sid, {'historyLimit': 40,
+            'historyBefore': recent['history']['before']})
+        self.assertEqual([message['eventId'] for message in older['messages']],
+                         [f'a{index}' for index in range(920, 960)])
+
+    def test_live_overlap_preserves_tools_unpersisted_tail_and_context(self):
+        self.write(3)
+        events = [json.loads(line) for line in self.path.read_text().splitlines()][1:]
+        call = {'type': 'assistant', 'message': {'id': 'native-call', 'role': 'assistant',
+            'content': [{'type': 'text', 'text': 'saved call'},
+                        {'type': 'tool_use', 'id': 'create', 'name': 'TaskCreate',
+                         'input': {'subject': 'work'}}]}}
+        result = {'type': 'user', 'uuid': 'tool-result', 'message': {'role': 'user',
+            'content': [{'type': 'tool_result', 'tool_use_id': 'create', 'content': 'Task #7 created'}]}}
+        with self.path.open('a') as target:
+            target.write(json.dumps(call) + '\n' + json.dumps(result) + '\n')
+        call = {**call, 'message': {**call['message'], 'content': [
+            {'type': 'text', 'text': 'live call'}, call['message']['content'][1]]}}
+        events += [call, {'type': 'system', 'subtype': 'compact_boundary'},
+            {'type': 'assistant', 'uuid': 'tail', 'message': {'role': 'assistant', 'model': 'model-a',
+                'usage': {'input_tokens': 11}, 'content': [
+                    {'type': 'tool_use', 'id': 'update', 'name': 'TaskUpdate',
+                     'input': {'taskId': '7', 'status': 'completed'}}]}},
+            {'type': 'result', 'uuid': 'finished', 'subtype': 'success', 'is_error': False,
+             'num_turns': 1, 'modelUsage': {'model-a': {'contextWindow': 200}}}]
+        owned = SimpleNamespace(origin=self.origin, process=Mock(), error=None,
+            condition=threading.Condition(), events=events,
+            pending={'approval': {'request': {'tool_name': 'Bash'}}}, active=True,
+            catalog={}, model=None, permission=None)
+        owned.process.poll.return_value = None
+        self.cli.owned[self.native] = owned
+        detail = self.cli.call('detail', self.sid, {'historyLimit': 2})
+        self.assertEqual(detail['messages'][0]['text'], 'live call')
+        self.assertEqual(detail['messages'][-1]['tasks'], [{'content': 'work', 'status': 'completed'}])
+        self.assertEqual(detail['turns'], [{'turnId': 'finished', 'status': 'completed'}])
+        self.assertEqual(detail['session']['contextUsage']['usedTokens'], 11)
+        self.assertEqual(detail['session']['contextUsage']['contextWindow'], 200)
+        self.assertTrue(detail['session']['contextUsage']['compacted'])
+        self.assertEqual(detail['session']['requests'][0]['id'], 'approval')
+        self.assertIs(owned.events, events)
+
+    def test_live_events_without_a_saved_identity_match_are_preserved(self):
+        self.write(80)
+        events = [{'type': 'assistant', 'message': {'role': 'assistant', 'content': 'not saved'}}]
+        owned = SimpleNamespace(origin=self.origin, process=Mock(), error=None,
+            condition=threading.Condition(), events=events, pending={}, active=False,
+            catalog={}, model=None, permission=None)
+        owned.process.poll.return_value = None
+        self.cli.owned[self.native] = owned
+        detail = self.cli.call('detail', self.sid, {'historyLimit': 40})
+        self.assertEqual(len(detail['messages']), 41)
+        self.assertEqual(detail['messages'][-1]['text'], 'not saved')
+        self.assertEqual(owned.events, events)
+
+    def test_live_result_anchor_survives_message_page_merge(self):
+        from bridge.features.notifications.channels import Notifications
+
+        self.write(2)
+        saved = [json.loads(line) for line in self.path.read_text().splitlines()][1:]
+        result = lambda rid: {'type': 'result', 'uuid': rid, 'subtype': 'success',
+                              'is_error': False, 'num_turns': 1}
+        events = [saved[0], result('R1'), saved[1], result('R2')]
+        owned = SimpleNamespace(origin=self.origin, process=Mock(), error=None,
+            condition=threading.Condition(), events=events, pending={}, active=False,
+            catalog={}, model=None, permission=None)
+        owned.process.poll.return_value = None
+        self.cli.owned[self.native] = owned
+        notifications = Notifications(Mock(), self.root)
+        self.addCleanup(notifications.close)
+        row = {'id': self.sid, 'host': 'desktop:claude'}
+        with patch.object(notifications, '_effective', return_value={'notifyOnCompletion': True}):
+            self.assertEqual(notifications._completion_pending(row, model.turns([result('R1')]), 'mobile'), [])
+            detail = self.cli.call('detail', self.sid, {'historyLimit': 2})
+            self.assertEqual(notifications._completion_pending(row, detail['turns'], 'mobile'),
+                             [notifications._delivery_key(row, 'R2', completion=True, target='mobile')])
+        self.assertEqual([turn['turnId'] for turn in detail['turns']], ['R1', 'R2'])
+        self.assertEqual([message['eventId'] for message in detail['messages']], ['a0', 'a1'])
 
     def test_append_and_rollback_invalidate_cursor(self):
         self.write(80)

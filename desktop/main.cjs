@@ -10,6 +10,8 @@ const {normalize,translate}=require('./shared/i18n.js');
 const {publishLanguage}=require('./shared/gateway-language.cjs');
 const cloudflared=require('./features/connections/cloudflared.cjs');
 const {Updater,allowedMirrorUrl,activeUpdateHandoff}=require('./features/updates/updater.cjs');
+const {relaunchMacUpdate,restoreMacUpdate}=require('./features/updates/mac-handoff.cjs');
+relaunchMacUpdate({app,process});
 const {createLoginStartup,restoreDevelopmentEnvironment}=require('./login-startup.cjs');
 restoreDevelopmentEnvironment(app);
 const loginStartup=createLoginStartup(app);
@@ -66,7 +68,10 @@ function updateResult(){try{return JSON.parse(fs.readFileSync(path.join(dataDir,
 function updateManaged(){
   if(handoff){
     const current=currentHandoff();
-    if(!current||current.transaction!==handoff.transaction||current.token!==handoff.token||current.dataDir!==handoff.dataDir)handoff=null;
+    if(!current||current.transaction!==handoff.transaction||current.token!==handoff.token||current.dataDir!==handoff.dataDir){
+      handoff=null;
+      delete process.env.CMB_UPDATE_LAUNCHER_PID;
+    }
   }
   return !!handoff;
 }
@@ -337,6 +342,7 @@ function register(){
 async function acknowledgeUpdate(){
   if(!updateManaged())return;
   try{
+    if(process.platform==='darwin')await restoreMacUpdate({handoff,env:process.env,pid:process.pid,worker,stillManaged:updateManaged});
     await worker('snapshot');
     if(updateManaged()&&handoff.dataDir===dataDir)
       fs.writeFileSync(path.join(handoff.transaction,'ack.json'),JSON.stringify({token:handoff.token,version:app.getVersion(),dataDir}),{mode:0o600,flag:'wx'});

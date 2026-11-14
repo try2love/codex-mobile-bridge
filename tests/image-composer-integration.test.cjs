@@ -32,6 +32,11 @@ test('current-session file and desktop image grants work for local, SSH and WSL 
   for(const kind of ['files','desktop-images'])assert.equal(ui.api.canReuse({url:`/api/sessions/${sid}/${kind}/${'f'.repeat(64)}?host=${encodeURIComponent(host)}`}),true);
   assert.equal(await ui.api.add(ui.value,ui.api.scope()),true);assert.equal(ui.uploads[0].key,host+'|'+sid);
  }
+ const agy=fixture('antigravity');
+ const agyImg=`/api/desktop-sessions/antigravity/images/${'f'.repeat(64)}?sessionId=native-chat`;
+ assert.equal(agy.api.canReuse({url:agyImg}),true);
+ assert.equal(agy.api.canReuse({url:agyImg+'&variant=original'}),false);
+ assert.equal(await agy.api.add({url:agyImg,name:'history.png'},agy.api.scope()),true);
 });
 
 test('callback rejects cross-session, cross-host, cross-provider, arbitrary and redirected URLs before adding',async()=>{

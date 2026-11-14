@@ -24,7 +24,8 @@ from bridge.features.sessions.message_management import snapshot as management_s
 from bridge.features.terminals.manager import TerminalManager
 from bridge.features.sessions.side_chat import SideChats
 from bridge.features.sessions import linux_permissions
-from bridge.clients.codex.ipc import DesktopIPC, IPCError
+from bridge.clients.codex.ipc import (DesktopIPC, IPCError, StreamCompatibilityError,
+                                     KNOWN_STREAM_VERSIONS, validate_stream_version, validate_stream_state)
 from bridge.clients.errors import TaskStateUnavailable, TaskAuditIncomplete
 from bridge.clients.codex.app_server import AppServerError, AppServerUnavailable
 from bridge.clients.codex.cli_session import CliSessions
@@ -33,9 +34,11 @@ from bridge.clients.desktop_app import DesktopApp
 from bridge.clients.codex.transport import ipc_endpoint
 from bridge.features.sessions.model import apply_patches, attachment_prompt, computer_use_approval, items_array, normalize_state, normalize_request, ordered_turns, pending_requests, async_requests, request_id, user_display_text, merge_saved_message_times
 from bridge.features.sessions.store import SessionStore, StoreUnavailable, persisted_submission_ids
-from bridge.features.workspace.files import artifact_paths, referenced_model_images, host_file_links
+from bridge.features.workspace.files import artifact_paths, referenced_model_images, host_file_links, visualization_files, visualization_paths
+from bridge.features.workspace.visualize import identifier as visualization_id, read_source as read_visualization
+from bridge.features.workspace.visualize_payload import read_request as visualization_read_request
 from bridge.features.workspace.workspace import operate as workspace_operation
-from bridge.clients.codex.catalog import Catalog, CatalogError, ModelStore, MODEL_REFRESH_SECONDS
+from bridge.clients.codex.catalog import Catalog, CatalogError, CatalogIdentityChanged, ModelStore, MODEL_REFRESH_SECONDS
 from bridge.platforms.codex_daemon_env import DaemonEnvironmentUnavailable
 from bridge.clients.codex.remote import AppHosts, RemoteStore, RemoteCatalog, RemoteUnavailable, ssh_read, ssh_download, payload, project_path_name, ssh_connection, retry_ssh
 from bridge.features.sessions.create import (
@@ -120,6 +123,8 @@ class LiveSession:
         self.cli_recovery = None
         self.rebuild_recommended = False
         self.desktop_restart_recommended = False
+        self.desktop_stream_error = None
+        self.desktop_stream_version = None
         self.viewers = 0
         self.watched = False
         self.notification_probe_until = 0
@@ -934,8 +939,7 @@ class Bridge:
             value = {**value, 'currentModel': config.get('model'), 'currentEffort': config.get('model_reasoning_effort')}
         else:
             value = target.catalog_reader.get_kind('models', project['cwd'], refresh=refresh)
-        api = value.get('modelSource') == 'api'
-        return {**value, 'capabilities': {'models': True, 'effort': True, 'manualModels': api, 'manualEffort': api}}
+        return {**value, 'capabilities': {'models': True, 'effort': True, 'manualModels': True, 'manualEffort': True}}
 
     @operation(project='project_key')
     def create_chat(self, project_key, title, request_id, kind='desktop', model_options=None):
@@ -1432,6 +1436,8 @@ class Bridge:
 
         def event(message):
             params = message.get('params', {})
+            if not isinstance(params, dict):
+                return
             with condition:
                 if message.get('method') == 'client-status-changed':
                     if params.get('status') == 'disconnected':
@@ -1447,7 +1453,8 @@ class Bridge:
                 if record is None:
                     return
                 try:
-                    if message.get('version') != 11 or message.get('sourceClientId') != record['owner']:
+                    validate_stream_version(message.get('version'))
+                    if message.get('sourceClientId') != record['owner']:
                         raise ValueError('Desktop owner changed')
                     change = params['change']
                     if type(change.get('revision')) is not int:
@@ -1464,6 +1471,7 @@ class Bridge:
                         raise ValueError('Missing snapshot')
                     if not isinstance(state, dict) or state.get('id') != key[1]:
                         raise ValueError('Session mismatch')
+                    validate_stream_state(message.get('version'), state)
                     record.update(state=state, revision=change['revision'])
                 except (ValueError, KeyError, IndexError, TypeError, AttributeError):
                     record['invalid'] = True
@@ -1628,7 +1636,7 @@ class Bridge:
         cli_controls = connected and origin in ('cli', 'ide')
         goal = (self._goal_runtime_available()
                 if not session or session.runtime != 'cli' else session.native_goal_supported is True)
-        return {'source': origin, 'runtime': (session.runtime if connected else None),
+        access = {'source': origin, 'runtime': (session.runtime if connected else None),
                 'readOnly': not writable, 'canSend': writable, 'canInterrupt': writable,
                 'canApprove': writable, 'canReconnect': reconnect,
                 'canConfigure': desktop_controls, 'canChangePermissions': desktop or cli_controls,
@@ -1638,6 +1646,10 @@ class Bridge:
                 'canUseGoal': (desktop and self.host == 'local') or cli_controls and goal,
                 'canUseSideChat': desktop_controls, 'canEditMessages': desktop_controls,
                 'reason': None if reconnect else '未找到可用的 Codex CLI 后台服务或已安装的服务包；请先在电脑上安装或更新 Codex CLI，并运行一次。'}
+        if session and session.desktop_stream_error:
+            access.update({key: False for key in access if key.startswith('can')})
+            access.update(readOnly=True, reason=session.desktop_stream_error)
+        return access
 
     def _require_desktop_feature(self, thread_id):
         metadata = self.store.get(thread_id)
@@ -3810,6 +3822,9 @@ class Bridge:
             with session.condition:
                 if session.connected:
                     return session
+                if session.desktop_stream_error:
+                    session.error = session.desktop_stream_error
+                    raise IPCError(session.error) from exc
                 session.rebuild_recommended = True
                 session.desktop_restart_recommended = True
                 session.error = ('已重建网关连接，但原桌面会话仍未恢复。可在应用管理中核对任务后重启 Codex；操作未发送。'
@@ -3849,6 +3864,9 @@ class Bridge:
                     and record.get('providerPhase') == 'authorized'):
                 return self._activate_cli_recovery(thread_id, plan)
         session = self.session(thread_id, background=True)
+        with session.condition:
+            if session.desktop_stream_error and not session.connected:
+                raise IPCError(session.desktop_stream_error)
         if self.host.startswith('codex:') and self.store.get(thread_id).get('origin') == 'desktop':
             raise ValueError('此独立入口只接入原 VS Code / CLI 会话')
         with session.activation_lock:
@@ -3971,8 +3989,11 @@ class Bridge:
                 return session
             except IPCError as exc:
                 with session.condition:
-                    session.rebuild_recommended = session.origin == 'desktop' and self.host == 'local'
-                    if session.rebuild_recommended and _transport_rebuilt:
+                    session.rebuild_recommended = not session.desktop_stream_error and session.origin == 'desktop' and self.host == 'local'
+                    if session.desktop_stream_error:
+                        session.error = session.desktop_stream_error
+                        session.desktop_restart_recommended = False
+                    elif session.rebuild_recommended and _transport_rebuilt:
                         session.desktop_restart_recommended = True
                         session.error = '已重建网关连接，但原桌面会话仍未恢复。可在应用管理中核对任务后重启 Codex；操作未发送。'
                     else:
@@ -4004,6 +4025,8 @@ class Bridge:
         if message.get("method") != "thread-stream-state-changed":
             return
         params = message.get("params", {})
+        if not isinstance(params, dict):
+            return
         if params.get("hostId") != self.native_host:
             return
         with self.lock:
@@ -4016,30 +4039,38 @@ class Bridge:
                 return
             if session.origin in ('cli', 'ide') and session.desktop_owner_probe != 'found':
                 return
-            if message.get('version') != 11:
-                if session.owner and session.owner == message.get('sourceClientId'):
-                    self._invalidate(session, '原客户端的会话同步协议与网关不兼容，请更新 Codex 客户端后重连。',
-                                     runtime='desktop', owner=session.owner, reason='desktop_stream_version')
-                return
-            if session.discovering and session.origin not in ('cli', 'ide') and change.get("type") == "snapshot" and (change.get("conversationState") or {}).get("id") == session.id:
+            if session.discovering and session.origin not in ('cli', 'ide') and isinstance(change, dict) and change.get("type") == "snapshot" and isinstance(change.get('conversationState'), dict) and change['conversationState'].get('id') == session.id:
                 session.owner = message.get("sourceClientId")
                 session.discovering = False
             if not session.owner or message.get("sourceClientId") != session.owner:
                 return
             reason = 'snapshot_invalid'
             try:
+                validate_stream_version(message.get('version'))
+                if not isinstance(change, dict):
+                    raise StreamCompatibilityError('Missing desktop stream change')
+                if type(change.get('revision')) is not int or change['revision'] < 0:
+                    if message.get('version') not in KNOWN_STREAM_VERSIONS:
+                        raise StreamCompatibilityError('Desktop stream revision format changed')
+                    raise ValueError('Missing revision')
                 if change.get("type") == "snapshot":
                     state = change["conversationState"]
                 elif change.get("type") == "patches":
+                    if message.get('version') not in KNOWN_STREAM_VERSIONS and (
+                            not isinstance(change.get('patches'), list) or type(change.get('baseRevision')) is not int):
+                        raise StreamCompatibilityError('Desktop stream patch format changed')
                     if session.revision is None or change.get("baseRevision") != session.revision:
                         reason = 'revision_mismatch'
                         raise ValueError("Revision mismatch")
                     state = apply_patches(session.state, change["patches"])
                 else:
+                    if message.get('version') not in KNOWN_STREAM_VERSIONS:
+                        raise StreamCompatibilityError('Unknown desktop stream change')
                     return
-                if state.get('id') != session.id:
+                if not isinstance(state, dict) or state.get('id') != session.id:
                     reason = 'thread_id_mismatch'
                     raise ValueError("Session mismatch")
+                validate_stream_state(message.get('version'), state)
                 previous_cwd = session.state.get('cwd') if session.connected and session.state else None
                 if session.origin in ('cli', 'ide') and (state.get('hostId', self.native_host) != self.native_host or
                         not session.saved_cwd or not session.saved_provider or
@@ -4057,6 +4088,11 @@ class Bridge:
                 session.rebuild_recommended = False
                 session.desktop_restart_recommended = False
                 session.error = None
+                session.desktop_stream_error = None
+                version = message.get('version')
+                if version not in KNOWN_STREAM_VERSIONS and session.desktop_stream_version != version:
+                    logging.getLogger(__name__).info('Codex stream structurally compatible version=%s', version)
+                session.desktop_stream_version = version
                 session.access = self._access(session.origin, session)
                 session.changed()
                 if newly_connected:
@@ -4065,7 +4101,18 @@ class Bridge:
                 with self.lock:
                     self.notification_dirty.add(session.id)
                 self.notification_event.set()
-            except (ValueError, KeyError, IndexError, TypeError):
+            except StreamCompatibilityError:
+                session.connected = False
+                session.revision = None
+                session.rebuild_recommended = False
+                session.desktop_restart_recommended = False
+                if not session.desktop_stream_error:
+                    logging.getLogger(__name__).warning('Codex stream contract rejected; Bridge update required')
+                session.desktop_stream_error = 'Codex 会话同步格式已变化，请更新 Bridge；历史和草稿仍可查看。'
+                session.error = session.desktop_stream_error
+                session.access = self._access(session.origin, session)
+                session.changed()
+            except (ValueError, KeyError, IndexError, TypeError, AttributeError):
                 logging.getLogger(__name__).info(
                     "Codex connection transition thread=%s cause=%s", session.id, reason)
                 session.connected = False
@@ -4182,6 +4229,9 @@ class Bridge:
 
     @operation
     def _call(self, session, method, params, timeout=30):
+        with session.condition:
+            if session.desktop_stream_error:
+                raise IPCError(session.desktop_stream_error)
         # The existing desktop owner retains this thread's provider and credentials.
         # A newly selected default account must not gate unrelated existing providers.
         if session.runtime == "cli":
@@ -4287,7 +4337,7 @@ class Bridge:
             source = session.state if session.connected else session.history_state or session.state
             artifacts = artifact_paths(source or {}, self.store.home) if self.local else {}
         view["files"] = [{"id": k, "name": v["name"], "reference": v["reference"], "references": v["references"], "image": v["image"]} for k, v in artifacts.items()]
-        view['files'] = host_file_links(source or {}, view['files'])
+        view['files'] = visualization_files(source or {}, host_file_links(source or {}, view['files']))
         self._overlay_native_goal(session, thread_id, view)
         self._submission_meta(session, view)
         view["forkedFrom"] = self._fork_origin(thread_id)
@@ -4501,6 +4551,28 @@ class Bridge:
             raise KeyError("文件不属于此聊天的工作目录")
         return files[artifact_id]
 
+    @operation(entry_only=True)
+    def visualization(self, thread_id, identifier):
+        session = self.session(thread_id, attach=False)
+        with session.condition:
+            view = session.view()
+            paths = visualization_paths(
+                message.get('text', '')
+                for turn in view['turns'] for message in turn['messages'] if message['role'] == 'assistant'
+            )
+            cwd = view.get('cwd')
+        path = next((path for path in paths if visualization_id(path) == identifier), None)
+        if path is None:
+            raise PermissionError('可视化文件未被此聊天引用')
+        if self.local:
+            return read_visualization(path, cwd, self.store.home)
+        if not isinstance(self.store, RemoteStore):
+            raise RemoteUnavailable('此主机暂时无法读取可视化文件')
+        result = ssh_read(self.store.alias, visualization_read_request(path, cwd), timeout=60)
+        if 'error' in result:
+            raise ValueError(result['error'])
+        return result['value']
+
     def _annotate_upload_attachments(self, session, rows):
         """Add preview ids only for images recorded in this chat's upload ledger."""
         paths = {a['path'] for row in rows for a in row.get('attachments', [])
@@ -4671,7 +4743,7 @@ class Bridge:
         ]}
         artifacts = artifact_paths(file_state, self.store.home) if self.local else {}
         result['files'] = [{'id': k, 'name': v['name'], 'reference': v['reference'], 'references': v['references'], 'image': v['image']} for k, v in artifacts.items()]
-        result['files'] = host_file_links(file_state, result['files'])
+        result['files'] = visualization_files(file_state, host_file_links(file_state, result['files']))
         if mode != 'detail':
             self._submission_meta(session, result['meta'])
             result['meta']['forkedFrom'] = self._fork_origin(thread_id)
@@ -4776,12 +4848,17 @@ class Bridge:
                          self.cli_sessions.get_kind(thread_id, 'models', refresh=refresh,
                                                     query='', offset=0, limit=200, ids=None))
             except (OSError, ValueError, AppServerError):
+                if self._native_model_identity(cwd, provider) != identity:
+                    raise CatalogIdentityChanged('账号身份已变化，请重新读取模型列表')
                 if persisted:
                     return {**stable(persisted[1]), 'modelError': '模型列表刷新失败，已保留上次结果',
                             'cache': {'state': 'stale', 'updatedAt': persisted[0], 'identity': identity}}
-                raise
+                return {'models': [], 'modelError': '模型目录暂不可用，可手动填写模型',
+                        'fastMode': {'allowed': False}, 'cache': {'state': 'unavailable', 'identity': identity}}
             if self._native_model_identity(cwd, provider) != identity:
-                raise ValueError('账号身份已变化，请重新读取模型列表')
+                raise CatalogIdentityChanged('账号身份已变化，请重新读取模型列表')
+            if not value.get('models') and not value.get('modelError'):
+                value = {**value, 'modelError': '模型目录暂不可用，可手动填写模型'}
             if not value.get('modelError'):
                 try:
                     updated_at = self.native_model_store.write(identity, stable(value))
@@ -4792,7 +4869,7 @@ class Bridge:
                 return {**stable(persisted[1]), 'modelError': value['modelError'],
                         'cache': {'state': 'stale', 'updatedAt': persisted[0], 'identity': identity}}
             if self._native_model_identity(cwd, provider) != identity:
-                raise ValueError('账号身份已变化，请重新读取模型列表')
+                raise CatalogIdentityChanged('账号身份已变化，请重新读取模型列表')
             return {**value, 'cache': {'state': 'fresh', 'updatedAt': updated_at, 'identity': identity}} if not value.get('modelError') else {
                 **value, 'cache': {'state': 'unavailable', 'identity': identity}}
 
@@ -5078,7 +5155,7 @@ class Bridge:
     def settings(self, thread_id, model, effort, *, fast_mode=None):
         if not valid_model_id(model):
             raise ValueError("模型 ID 格式不正确")
-        if effort not in ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"):
+        if effort is not None and effort not in ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"):
             raise ValueError("请选择有效的推理强度")
         if fast_mode is not None and not isinstance(fast_mode, bool):
             raise ValueError('Fast 模式开关无效')
@@ -5094,11 +5171,9 @@ class Bridge:
             # Recheck login/model/policy on the execution host before a speed change.
             catalog = self.catalog(session.id, refresh=fast_mode is not None, kind='models')
             known = next((m for m in catalog["models"] if m["id"] == model), None)
-            if catalog.get('modelSource') == 'codex' and (not known or not known.get('efforts')):
-                raise ValueError('未能读取此模型的推理能力，请重新打开模型设置')
-            if known and known["efforts"] and effort not in known["efforts"]:
+            if effort is not None and known and known["efforts"] and effort not in known["efforts"]:
                 raise ValueError("这个模型不支持所选推理强度")
-            settings = {'model': model, 'effort': effort}
+            settings = {'model': model, **({'effort': effort} if effort is not None else {})}
             if fast_mode is not None:
                 if not catalog.get('fastMode', {}).get('allowed') or not known or not known.get('fastTier'):
                     raise ValueError('当前账号、模型或工作区不支持 Fast 模式，请刷新模型设置')
@@ -5108,7 +5183,7 @@ class Bridge:
         if not result.get("applied"):
             raise IPCError("Codex 未应用模型设置，请刷新后重试")
         with session.condition:
-            confirmed = session.condition.wait_for(lambda: session.state.get("latestModel") == model and session.view().get("effort") == effort and
+            confirmed = session.condition.wait_for(lambda: session.state.get("latestModel") == model and (effort is None or session.view().get("effort") == effort) and
                 (fast_mode is None or (session.state.get('latestThreadSettings') or {}).get('serviceTier') == settings['serviceTier']), timeout=5)
         return {"applied": True, "confirmed": confirmed, "model": model, "effort": effort,
                 **({'serviceTier': settings['serviceTier']} if fast_mode is not None else {})}

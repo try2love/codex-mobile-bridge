@@ -14,7 +14,7 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--output-dir', type=Path, default=ROOT/'dist/mobile-preview')
 parser.add_argument('--keystore', type=Path, required=True)
 parser.add_argument('--store-pass-env', default='CMB_ANDROID_STORE_PASSWORD')
-parser.add_argument('--isolated-preview', action='store_true', help='Build a separate Bridge Preview app; preserve the installed stable app.')
+parser.add_argument('--isolated-preview', action='store_true', help='Build the separate Bridge app (compatible with Bridge Preview); preserve the installed stable app.')
 options = parser.parse_args()
 key = options.keystore.resolve()
 if not key.is_file():
@@ -48,7 +48,7 @@ if options.isolated_preview:
     manifest = work/'AndroidManifest.xml'
     manifest.write_text((source/'AndroidManifest.xml').read_text().replace(
         'io.github.try2love.codexbridge.preview', 'io.github.try2love.codexbridge.previewchannel').replace(
-        'android:label="Codex Bridge"', 'android:label="Bridge Preview"'))
+        'android:label="Codex Bridge"', 'android:label="Bridge"'))
 run(build_tools/'aapt2','compile','--dir',source/'res','-o',work/'resources.zip')
 run(build_tools/'aapt2','link','-I',android,'--manifest',manifest,'--java',work/'gen','-o',work/'base.apk',work/'resources.zip')
 java = list((source/'src').rglob('*.java')) + list((work/'gen').rglob('*.java'))

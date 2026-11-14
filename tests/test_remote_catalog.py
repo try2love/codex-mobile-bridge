@@ -16,6 +16,20 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RemoteCatalogRegressionTests(unittest.TestCase):
+    def test_remote_account_change_keeps_structured_identity_error(self):
+        from bridge.clients.codex.catalog import CatalogIdentityChanged
+        reader = RemoteCatalog('fixture')
+        self.addCleanup(reader.stop_model_refresh)
+        source = "import json\nclass CatalogIdentityChanged(Exception):\n code='model_identity_changed'\nclass Reader:\n def get_kind(self,*args,**kwargs): raise CatalogIdentityChanged('account changed')\nreader=Reader()\n"
+        def read(alias, script, timeout):
+            process = subprocess.run([sys.executable, '-I', '-S', '-B', '-'], input=script, text=True, capture_output=True, check=True)
+            return json.loads(process.stdout)
+        with patch.object(reader, '_source', return_value=source), patch('bridge.clients.codex.remote.ssh_read', side_effect=read):
+            with self.assertRaises(CatalogIdentityChanged) as error:
+                reader.get_kind('models', '/fixture')
+            self.assertEqual(error.exception.code, 'model_identity_changed')
+            self.assertEqual(reader.kind_caches['models'], {})
+
     @unittest.skipUnless(sys.platform in ('linux', 'darwin'), 'POSIX SSH runtime fixture')
     def test_app_managed_runtime_without_path_install_reads_models_and_skills(self):
         with tempfile.TemporaryDirectory(dir=ROOT / '.tmp') as folder:

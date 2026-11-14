@@ -28,6 +28,7 @@ class ClientNavigation {
   constructor({view,request,notify}) {
     Object.assign(this,{view,request,notify});this.clients=[];this.revision=0;this.pending=new Set();this.restoreClientSelection();
     this.heading=document.querySelector('#sidebar .list-heading');this.sidebar=document.getElementById('sidebar');
+    this.listToggle=document.createElement('button');this.listToggle.type='button';this.listToggle.className='chat-list-toggle';this.view.list.id='desktop-chat-list';this.listToggle.setAttribute('aria-controls','sidebar desktop-chat-list');this.listToggle.onclick=()=>{this.preference('chat-list-collapsed',!this.preference('chat-list-collapsed',undefined,false));this.paintChatList();};document.getElementById('app').append(this.listToggle);
     this.footer=document.querySelector('.sidebar-foot');this.footer.classList.add('client-functions');
     this.navigation=document.createElement('div');this.navigation.className='client-navigation';this.sidebar.append(this.navigation);this.navigation.append(this.footer);
     document.addEventListener('bridge-channels-ready',()=>{if(this.clientPicker)this.clientPicker.disabled=false;});
@@ -238,8 +239,9 @@ class ClientNavigation {
   withClientEnabled(id,enabled){return this.clients.map(client=>{if(client.id==='codex'&&client.entries?.length){const entries=client.entries.map(entry=>(entry.id==='desktop'?'codex':entry.id)===id?{...entry,enabled}:entry);return {...client,entries,desktopEnabled:entries.find(entry=>entry.id==='desktop')?.enabled,enabled:entries.some(entry=>entry.enabled)};}if(client.id==='claude'&&client.entries?.length){const entries=client.entries.map(entry=>entry.id===id?{...entry,enabled}:entry),nativeEnabled=client.id===id?enabled:client.nativeEnabled??client.enabled;return {...client,entries,nativeEnabled,enabled:nativeEnabled||entries.some(entry=>entry.enabled)};}return client.id===id?{...client,enabled}:client;});}
   hasUncertain(){return [...(this.operationFailures?.values()||[])].some(value=>value.uncertain);}
   syncViewClients(){this.view.setClientStates?.(this.clients.map(client=>({...client,operationFailure:this.operationFailures?.get(client.id),operationUncertain:this.hasUncertain(),pendingEnable:this.gatewayRunning!==false&&this.pending.has(client.id)&&client.enabled})),id=>this.toggle(id,true),id=>this.initialize(id),()=>this.refresh(),id=>this.reconnect(id));}
-  retryOperation(id){const failure=this.operationFailures?.get(id);if(!failure||this.hasUncertain())return;return failure.action==='initialize'?this.initialize(id):this.toggle(id,failure.action==='enable',{connectionMode:failure.connectionMode});}
+  retryOperation(id){const failure=this.operationFailures?.get(id);if(!failure||this.hasUncertain())return;return failure.action==='connect-wsl'?this.connectWsl(id):failure.action==='initialize'?this.initialize(id):this.toggle(id,failure.action==='enable',{connectionMode:failure.connectionMode});}
   async choose(id,{activate=true,fromStatus=false,loadList=true}={}){
+    if(/^wsl-claude:[0-9a-f]{32}$/.test(id))id='claude';
     if(!fromStatus)this.pendingChatLink=null;
     this.cancelListSwipe();
     const previousClient=this.activeClient(),host=isCodexEntry(id)?id:undefined;if(host)id='codex';
@@ -329,13 +331,29 @@ class ClientNavigation {
     catch(error){failed=true;this.operationFailures.set(id,{...ClientLifecycle.failure(initialization?'initialize':enabled?'enable':forceDesktop?'force':quitDesktop?'quit':'disable',error),connectionMode:intent.connectionMode});this.provider=previous;this.applyClients({clients:before});throw error;}
     finally{this.pending.delete(id);this.pendingQuitDesktop=false;this.pendingForceDesktop=false;++this.revision;this.paint();if(failed)await this.refresh();}
   }
+  async connectWsl(id){
+    const client=this.managementClients().find(row=>row.id===id);
+    if(window.BridgeSharedRelay||!client||this.pending.size||this.choosing||this.hasUncertain()||this.gatewayRunning===false||!this.connection(client).canConnectWsl)return;
+    this.operationFailures??=new Map();this.operationFailures.delete(id);
+    this.pending.add(id);this.connectingWsl=id;++this.revision;this.paint();
+    try{await ClientLifecycle.connectWsl(client,(payload,signal)=>this.request('/api/wsl-accounts',payload,signal),{timeout:this.lifecycleTimeout??45000});}
+    catch(error){this.operationFailures.set(id,ClientLifecycle.failure('connect-wsl',error));throw error;}
+    finally{this.pending.delete(id);this.connectingWsl=null;++this.revision;this.paint();await this.refresh();}
+  }
   async reconnect(id){
     const client=this.clients.find(row=>row.id===id);if(this.pending.size||this.hasUncertain()||ClientIdentity.family(id)!=='claude'||!this.connection(client||{}).canReconnect)return;
     this.pending.add(id);this.reconnecting=id;++this.revision;this.paint();
     try{const data=await this.request('/api/clients/claude/reconnect'+(ClientIdentity.entry(id)?'?entry='+encodeURIComponent(id):''),{});this.applyClients(data);const connected=data.clients.find(row=>row.id===id)?.connected;this.notify(connected?'Claude 已连接':'已发起重新连接');if(connected&&this.provider===id)await this.view.refresh();}
     finally{this.pending.delete(id);this.reconnecting=null;++this.revision;this.paint();}
   }
+  paintChatList(){
+    const collapsed=this.preference('chat-list-collapsed',undefined,false),label=BridgeI18n.t(collapsed?'展开聊天列表':'收起聊天列表');
+    if(collapsed&&(this.sidebar.contains(document.activeElement)||this.view.list.contains(document.activeElement)))this.listToggle.focus();
+    document.getElementById('app').classList.toggle('chat-list-collapsed',collapsed);
+    this.listToggle.textContent=collapsed?'›':'‹';this.listToggle.title=label;this.listToggle.setAttribute('aria-label',label);this.listToggle.setAttribute('aria-expanded',String(!collapsed));
+  }
   paint(){
+    this.paintChatList();
     for(const render of this.accountManagementRenderers||[])render();
     if((this.listGesture||this.swipePreview)&&(!this.clients.some(c=>c.id===this.activeClient()&&c.enabled)||this.swipePreview&&this.swipePreview.provider!==this.activeClient()))this.cancelListSwipe();
     this.syncViewClients();
@@ -395,6 +413,7 @@ class ClientNavigation {
       toggle.type='button';toggle.className='client-management-switch';toggle.setAttribute('role','switch');toggle.setAttribute('aria-checked',String(client.enabled));toggle.setAttribute('aria-label',BridgeI18n.t('启用')+' '+client.name);toggle.setAttribute('aria-busy',String(this.pending.has(client.id)));toggle.disabled=(!client.enabled&&!(client.selectable??client.configured))||this.pending.size>0||!!this.choosing||this.hasUncertain();
       toggle.append(document.createElement('span'));control.append(toggle,label);row.append(this.icon(client.id),text,control);parent.append(row);
       toggle.onclick=()=>this.toggle(client.id,!client.enabled).catch(error=>this.notify(error.message));
+      if(!window.BridgeSharedRelay&&!failure&&(state.canConnectWsl||this.connectingWsl===client.id)&&this.gatewayRunning!==false){const connect=document.createElement('button');connect.type='button';connect.textContent=BridgeI18n.t(this.connectingWsl===client.id?'正在连接，请稍候…':'启动并连接 WSL');connect.disabled=this.pending.size>0||!!this.choosing||this.hasUncertain();connect.onclick=()=>this.connectWsl(client.id).catch(error=>this.notify(error.message));control.append(connect);}
       if(ClientLifecycle.connectionModes(client).length>1){const methods=document.createElement('div');text.append(methods);ClientLifecycle.mountConnectionModes(methods).update(client,{disabled:this.pending.size>0||!!this.choosing||this.hasUncertain(),select:mode=>this.selectConnectionMode(client.id,mode).catch(error=>this.notify(error.message))});}
       if(!client.enabled&&client.running&&client.canQuitDesktop!==false&&this.gatewayRunning!==false){const quit=document.createElement('button');quit.type='button';quit.textContent=BridgeI18n.t('关闭电脑 App…');quit.disabled=this.pending.size>0||!!this.choosing||this.hasUncertain();quit.onclick=()=>this.toggle(client.id,false).catch(error=>this.notify(error.message));control.append(quit);}
       if(client.enabled){const open=document.createElement('button');open.type='button';open.textContent=BridgeI18n.t('查看聊天');open.onclick=()=>{manager.dialog.close();this.choose(client.id).catch(error=>this.notify(error.message));};control.append(open);}

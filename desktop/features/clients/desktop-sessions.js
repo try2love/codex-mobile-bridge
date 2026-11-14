@@ -89,6 +89,7 @@ class DesktopConnectionsPanel {
   hasUncertain(){return [...(this.operationFailures?.values()||[])].some(value=>value.uncertain);}
   retryOperation(id){
     const failure=this.operationFailures?.get(id);if(!failure||this.hasUncertain())return;
+    if(failure.action==='connect-wsl')return this.connectWsl(id);
     if(typeof failure.recoveryRestart==='boolean')return this.recoverDeepseek(failure.recoveryRestart);
     if(failure.desktopAction)return this.action(failure.desktopAction);
     if(failure.action==='initialize')return id==='claude'?this.action('connect-claude'):this.toggleClient(id,true,{initializeDesktop:true});
@@ -186,6 +187,15 @@ class DesktopConnectionsPanel {
     catch(error){this.operationFailures.set(id,{...ClientLifecycle.failure(initializeDesktop?'initialize':enabled?'enable':forceDesktop?'force':quitDesktop?'quit':'disable',error,'desktop'),connectionMode:intent.connectionMode});this.clients=before;this.feedback(error.message,true);}
     finally{this.busy=false;this.pendingClient=null;this.renderClients();this.renderScan();await this.refreshClients(true);}
   }
+  async connectWsl(id){
+    const client=this.managementClients().find(row=>row.id===id);
+    if(!client||this.busy||this.scanning||this.choosingClient||this.hasUncertain()||this.gatewayRunning===false||!this.connection(client).canConnectWsl)return;
+    this.operationFailures??=new Map();this.operationFailures.delete(id);
+    this.busy=true;this.connectingWsl=id;this.clientsRevision++;this.statusRevision++;this.renderClients();this.renderScan();
+    try{await ClientLifecycle.connectWsl(client,({action,...fields})=>this.api.cliAccess({action:'wslAccounts',...fields,operation:action}),{timeout:this.lifecycleTimeout??45000});}
+    catch(error){this.operationFailures.set(id,ClientLifecycle.failure('connect-wsl',error,'desktop'));this.feedback(error.message,true);}
+    finally{this.busy=false;this.connectingWsl=null;this.renderClients();this.renderScan();await this.refreshClients(true);}
+  }
   async selectConnectionMode(id,mode){
     const client=this.managementClients().find(row=>row.id===id);
     if(!client||this.busy||this.scanning||this.choosingClient||this.hasUncertain())return;
@@ -257,6 +267,7 @@ class DesktopConnectionsPanel {
       const account=node('td');account.dataset.clientAccount=client.id;
       if(client.id!=='codex')account.append(node('span',client.configured?'已配置':'待配置'),node('small',client.accountNotice|| (client.kind==='codex-local'?'独立管理账号与 API':['wsl-cli','wsl-claude-cli'].includes(client.kind)?'在网关中管理 WSL 账号与 API':'在网关管理账号与API')));
       const actions=node('td'),buttons=node('div',undefined,'connection-actions'),manage=node('button',client.setupStatus==='unsupported'?'查看详情':client.configured?'管理':'配置');
+      if(!failure&&(state.canConnectWsl||this.connectingWsl===client.id)&&this.gatewayRunning!==false){const connect=node('button',this.connectingWsl===client.id?'正在连接，请稍候…':'启动并连接 WSL','primary');connect.type='button';connect.disabled=this.busy||this.scanning||!!this.choosingClient||this.hasUncertain();connect.onclick=()=>this.connectWsl(client.id);buttons.append(connect);}
       if(failure){const retry=node('button',failure.uncertain?'刷新状态':ClientLifecycle.retryLabel(failure.action),'primary');retry.type='button';retry.disabled=this.busy||this.scanning||!!this.choosingClient||!!this.clientsLoading||(!failure.uncertain&&this.hasUncertain());retry.onclick=()=>failure.uncertain?this.refreshClients(true):this.retryOperation(client.id);buttons.append(retry);}
       if(!failure&&state.retryable&&this.gatewayRunning!==false){const retry=node('button','重试连接','primary');retry.type='button';retry.disabled=this.busy||this.scanning||!!this.choosingClient||this.hasUncertain();retry.onclick=()=>this.toggleClient(client.id,true);buttons.append(retry);}
       if(!failure?.uncertain&&client.id==='zcode'&&state.canInitialize&&this.gatewayRunning!==false){
@@ -353,33 +364,35 @@ class DesktopConnectionsPanel {
     const heading=node('div',undefined,'accounts-toolbar'),refresh=node('button','重新加载');refresh.type='button';heading.append(node('h3','聊天与模型'),refresh);
     const status=node('p',undefined,'account-muted'),error=node('p',undefined,'error'),plugin=node('p',undefined,'account-muted');status.setAttribute('role','status');error.setAttribute('role','alert');
     const form=node('div',undefined,'cli-access-form'),field=(title,control)=>{const label=node('label');label.append(node('span',title),control);form.append(label);control.setAttribute('aria-label',BridgeI18n.t(title));};
-    const source=node('select'),session=node('select'),model=node('select'),permission=node('select');field('会话来源',source);field('聊天',session);field('发送模型',model);field('审批方式',permission);
-    const modelActions=node('div',undefined,'actions'),models=node('button','刷新模型'),saveModel=node('button','应用模型'),savePermission=node('button','应用审批方式');for(const b of [models,saveModel,savePermission])b.type='button';modelActions.append(models,saveModel,savePermission);
+    const source=node('select'),session=node('select'),permission=node('select'),modelRoot=node('div');field('会话来源',source);field('聊天',session);form.append(modelRoot);field('审批方式',permission);
+    const modelActions=node('div',undefined,'actions'),saveModel=node('button','应用模型'),savePermission=node('button','应用审批方式');for(const b of [saveModel,savePermission])b.type='button';modelActions.append(saveModel,savePermission);
     const help=node('p','配置仅应用于所选来源的这条聊天。模型来自原客户端；审批需要原会话加载网关 Hook。账号接入在上方管理。','account-muted');root.append(heading,status,error,plugin,form,modelActions,help);
-    let value=null,catalog=null,busy=false,stale=true;
+    let value=null,busy=false,stale=true,picker;
     const currentSource=()=>value?.surfaces?.find(row=>row.id===source.value),currentSession=()=>currentSource()?.sessions?.find(row=>row.id===session.value);
     const option=(label,id)=>{const n=node('option',label);n.value=id;return n;};
+    const updateModel=()=>{saveModel.disabled=busy||stale||!value?.enabled||!currentSource()?.connected||!currentSession()||!picker?.valid()||picker.selection().model===currentSession()?.model;};
+    picker=new window.BridgeCreationModelPicker({root:modelRoot,cache:new Map(),namespace:()=>[client.id,source.value],onChange:updateModel,fallbackCapabilities:{manualModels:true,manualEffort:false,effort:false}});
+    picker.manualModel.placeholder=BridgeI18n.t('完整原生模型标识，例如 MODEL_PLACEHOLDER_M525');
     const render=()=>{
       const origin=currentSource(),row=currentSession(),enabled=value?.enabled===true;
       status.textContent=BridgeI18n.t(busy?'正在读取配置…':origin?(origin.historyAvailable?'本机历史可用':'未发现本机历史')+' · '+(origin.connected?'原生服务已连接':'原生服务未连接'):'');
       plugin.textContent=BridgeI18n.t(value?.plugin?.active?'网关 Hook 已启用；原会话加载后可使用审批与排队。':value?.plugin?.enabled?'网关 Hook 已安装；启用接入后生效。':'启用 Antigravity 接入后可安装并启用网关 Hook。');
-      for(const control of [source,session,model,permission,models,saveModel,savePermission,refresh])control.disabled=busy;
-      session.disabled=busy||!origin?.sessions?.length;model.disabled=busy||stale||!enabled||!origin?.connected||!catalog?.models?.length;
-      models.disabled=busy||stale||!enabled||!origin?.connected||!row;
-      saveModel.disabled=model.disabled||catalog?.capabilities?.models!==true||!catalog?.cache?.identity||!model.value||model.value===row?.model;
+      source.disabled=refresh.disabled=busy;session.disabled=busy||!origin?.sessions?.length;
+      picker.setBusy(busy||stale||!enabled||!origin?.connected||!row);
       permission.disabled=busy||stale||!enabled||!row||value?.plugin?.active!==true;
       savePermission.disabled=permission.disabled||permission.value===row?.permissionMode;
-      if(!busy&&!error.textContent&&catalog?.notice)status.textContent+=' · '+BridgeI18n.t(catalog.notice);
+      updateModel();
     };
-    const selectSession=()=>{catalog=null;const row=currentSession();model.replaceChildren(option(row?.model||'请先刷新模型',row?.model||''));model.value=row?.model||'';permission.replaceChildren(...(value?.permissionOptions||[]).map(o=>option(o.label,o.value)));permission.value=row?.permissionMode||'desktop';render();};
-    const selectSource=()=>{const rows=currentSource()?.sessions||[],previous=session.value;session.replaceChildren(...rows.map(row=>option(row.title||'新会话',row.id)));session.value=rows.some(row=>row.id===previous)?previous:rows[0]?.id||'';selectSession();};
-    const read=async()=>{value=await this.api.desktopSessions({action:'antigravity-management',operation:'list'});stale=false;const previous=source.value;source.replaceChildren(...(value.surfaces||[]).map(row=>option(row.name,row.id)));source.value=value.surfaces?.some(row=>row.id===previous)?previous:value.surfaces?.find(row=>row.historyAvailable)?.id||value.surfaces?.[0]?.id||'';selectSource();};
-    const run=async task=>{if(busy)return;busy=true;error.textContent='';render();try{await task();}catch(e){stale=true;catalog=null;error.textContent=BridgeI18n.t(e.message);}finally{busy=false;render();}};
-    refresh.onclick=()=>run(read);source.onchange=selectSource;session.onchange=selectSession;model.onchange=permission.onchange=render;
-    models.onclick=()=>{if(models.disabled)return;return run(async()=>{const origin=source.value,sid=session.value;catalog=await this.api.desktopSessions({action:'antigravity-management',operation:'catalog',surface:origin,sessionId:sid,refresh:true});model.replaceChildren(option('选择模型',''),...(catalog.models||[]).map(row=>option(row.name||row.id,row.id)));model.value=(catalog.models||[]).some(row=>row.id===currentSession()?.model)?currentSession().model:'';});};
-    const save=operation=>{const button=operation==='settings'?saveModel:savePermission;if(button.disabled)return;return run(async()=>{const result=await this.api.desktopSessions({action:'antigravity-management',operation,surface:source.value,sessionId:session.value,id:crypto.randomUUID(),...(operation==='settings'?{model:model.value,modelCatalogIdentity:catalog.cache.identity}:{mode:permission.value})});if(result.status!=='accepted')throw Error(result.message||'配置结果待核对，请重新加载');await read();this.feedback(BridgeI18n.t('配置已保存'));});};
+    const selectSession=async()=>{const row=currentSession(),surface=source.value,sid=session.value;permission.replaceChildren(...(value?.permissionOptions||[]).map(o=>option(o.label,o.value)));permission.value=row?.permissionMode||'desktop';const same=picker.scope===JSON.stringify([surface,sid]);if(!same)picker.clear();render();if(!row||!value?.enabled||!currentSource()?.connected)return;
+      await picker.load(JSON.stringify([surface,sid]),async refresh=>({...await this.api.desktopSessions({action:'antigravity-management',operation:'catalog',surface,sessionId:sid,refresh}),currentModel:row.model||''}),same);};
+    const selectSource=async()=>{const rows=currentSource()?.sessions||[],previous=session.value;session.replaceChildren(...rows.map(row=>option(row.title||'新会话',row.id)));session.value=rows.some(row=>row.id===previous)?previous:rows[0]?.id||'';await selectSession();};
+    const read=async()=>{value=await this.api.desktopSessions({action:'antigravity-management',operation:'list'});stale=false;const previous=source.value;source.replaceChildren(...(value.surfaces||[]).map(row=>option(row.name,row.id)));source.value=value.surfaces?.some(row=>row.id===previous)?previous:value.surfaces?.find(row=>row.historyAvailable)?.id||value.surfaces?.[0]?.id||'';};
+    const run=async task=>{if(busy)return;busy=true;error.textContent='';render();let ok=false;try{await task();ok=true;}catch(e){stale=true;error.textContent=BridgeI18n.t(e.message);}finally{busy=false;render();}return ok;};
+    const reload=async()=>{if(await run(read))await selectSource();};
+    refresh.onclick=reload;source.onchange=selectSource;session.onchange=selectSession;permission.onchange=render;
+    const save=async operation=>{const button=operation==='settings'?saveModel:savePermission;if(button.disabled)return;const choice=operation==='settings'?picker.selection():{mode:permission.value};if(await run(async()=>{const result=await this.api.desktopSessions({action:'antigravity-management',operation,surface:source.value,sessionId:session.value,id:crypto.randomUUID(),...choice});if(result.status!=='accepted')throw Error(result.message||'配置结果待核对，请重新加载');await read();this.feedback(BridgeI18n.t('配置已保存'));}))await selectSource();};
     saveModel.onclick=()=>save('settings');savePermission.onclick=()=>save('access');
-    this.managementPages.set(client.id,{open:()=>run(read)});render();
+    this.managementPages.set(client.id,{open:reload});render();
   }
   mountZcodeOfficial(article,before){
     const node=(tag,text,cls='')=>{const value=document.createElement(tag);value.className=cls;if(text!==undefined)value.textContent=BridgeI18n.t(text);return value;};

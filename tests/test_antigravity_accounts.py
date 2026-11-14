@@ -1,11 +1,14 @@
 import json
 import base64
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from bridge.clients.antigravity.accounts import AntigravityAccounts, TOKEN_FILES
+from bridge.clients.antigravity.account_switch import switch_account
 from bridge.clients.antigravity.credentials import NativeCredentials
 from bridge.platforms import antigravity as native
 
@@ -55,6 +58,51 @@ class AntigravityAccountTests(unittest.TestCase):
         self.assertTrue(value['canSwitch'])
         self.assertIn('APP、CLI、IDE', value['switchConfirmation'])
 
+    def test_account_poll_and_switch_complete_without_lock_inversion(self):
+        identifier = self.store.import_current('first')['accounts'][0]['id']
+        cli_lock = threading.RLock()
+        poll_inside = threading.Event()
+        errors = []
+
+        def metadata():
+            if threading.current_thread() is poll:
+                poll_inside.set()
+            if not cli_lock.acquire(timeout=0.5):
+                raise TimeoutError('account poll blocked by switch')
+            try:
+                return self.native
+            finally:
+                cli_lock.release()
+
+        def read_accounts():
+            try:
+                self.store.public()
+            except Exception as exc:
+                errors.append(exc)
+
+        poll = threading.Thread(target=read_accounts)
+        self.store.metadata = metadata
+        adapter = SimpleNamespace(home=self.home, hooks=None,
+                                  cli=mock.Mock(_lock=cli_lock, assert_idle=mock.Mock()))
+        with mock.patch('bridge.clients.antigravity.account_switch.native') as lifecycle, \
+                mock.patch('bridge.clients.antigravity.account_switch.endpoint',
+                           return_value={'identity': {'pid': 42}}), \
+                mock.patch('bridge.clients.antigravity.account_switch.verify_endpoint'):
+            lifecycle.prepare.return_value = {'installation': {'surface': 'app'}}
+
+            def stop(_):
+                poll.start()
+                # The old order admits polling with store.lock held here;
+                # the corrected order keeps it outside the transaction.
+                poll_inside.wait(0.1)
+
+            lifecycle.stop.side_effect = stop
+            result = switch_account(self.store, adapter, {}, identifier)
+        poll.join(timeout=1)
+        self.assertFalse(poll.is_alive())
+        self.assertEqual(errors, [])
+        self.assertIn('已请求重新打开', result['message'])
+
     def test_import_and_restore_preserve_raw_fields_and_missing_files(self):
         first = self.secret
         path = self.file(TOKEN_FILES[0], first+'\n')
@@ -70,6 +118,59 @@ class AntigravityAccountTests(unittest.TestCase):
         self.assertEqual(plugin.read_text(), 'unrelated')
         self.assertEqual(result['activeIds'], [])
         self.assertIn('尚未验证登录', result['message'])
+
+    def test_committed_switch_restarts_even_if_cleanup_or_metadata_fails(self):
+        identifier = self.store.import_current('first')['accounts'][0]['id']
+        selected = self.secret
+        original_unlink = Path.unlink
+        adapter = SimpleNamespace(home=self.home, hooks=None,
+                                  cli=mock.Mock(_lock=threading.RLock(), assert_idle=mock.Mock()))
+        for failure in ('cleanup', 'metadata'):
+            with self.subTest(failure=failure):
+                self.secret = token('second@example.invalid', 'second')
+
+                def unlink(path, *args, **kwargs):
+                    if failure == 'cleanup' and path.name.startswith('rollback-'):
+                        raise OSError('backup cleanup refused')
+                    return original_unlink(path, *args, **kwargs)
+
+                self.store.metadata = mock.Mock(return_value=self.native,
+                    side_effect=OSError('metadata unavailable') if failure == 'metadata' else None)
+                with mock.patch.object(Path, 'unlink', unlink), \
+                        mock.patch('bridge.clients.antigravity.account_switch.native') as lifecycle, \
+                        mock.patch('bridge.clients.antigravity.account_switch.endpoint',
+                                   return_value={'identity': {'pid': 42}}), \
+                        mock.patch('bridge.clients.antigravity.account_switch.verify_endpoint'):
+                    lifecycle.prepare.return_value = {'installation': {'surface': 'app'}}
+                    result = switch_account(self.store, adapter, {}, identifier)
+                lifecycle.restart.assert_called_once()
+                self.assertEqual(self.secret, selected)
+                self.assertEqual(result['accounts'][0]['id'], identifier)
+                self.assertEqual(result['activeIds'], [])
+                self.assertIn('已请求重新打开', result['message'])
+
+    def test_switch_preserves_profile_drafts_bindings_and_gateway_config(self):
+        paths = ('antigravity/browser/Local Storage/draft.json', 'antigravity/SingletonLock',
+                 'antigravity/settings.json', 'gateway/mobile-bindings.json', 'gateway/config.json')
+        sentinels = {name: self.file(name, 'original:'+name) for name in paths}
+        identifier = self.store.import_current('first')['accounts'][0]['id']
+        self.secret = token('second@example.invalid', 'second')
+        self.assertEqual(self.store.validate_saved(identifier), 'first@example.invalid')
+        self.store.restore(identifier)
+        for name, path in sentinels.items():
+            self.assertEqual(path.read_text(), 'original:'+name)
+
+    def test_preflight_does_not_read_vault_and_rejects_changed_saved_snapshot(self):
+        identifier = self.store.import_current('first')['accounts'][0]['id']
+        self.vault.reset_mock()
+        self.stopped.reset_mock()
+        self.store.validate_saved(identifier)
+        self.vault.read.assert_not_called()
+        self.stopped.assert_not_called()
+        path = self.store.directory/(identifier+'.json')
+        path.write_text('{}')
+        with self.assertRaises(ValueError):
+            self.store.validate_saved(identifier)
 
     def test_running_clients_and_custom_home_block_before_credentials(self):
         self.stopped.side_effect = ValueError('请正常退出 APP、CLI、IDE')
