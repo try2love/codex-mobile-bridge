@@ -812,12 +812,13 @@ class AntigravitySafetyTests(unittest.TestCase):
                 adapter.cli._waiting_cache.clear()
                 adapter.cli._trajectories_cache.clear()
             state['trajectories'] = {}
-            adapter.call('respond', sid, {
-                'requestId': req_id,
-                'decision': 'accept',
-                'answers': {'0': {'answers': ['Staging']}, '1': {'answers': ['Unit tests']}},
-            })
-            self.assertTrue(any(m == 'GetCascadeTrajectory' for _, m, _ in rpc_calls))
+            with self.assertRaisesRegex(ValueError, '已过期'):
+                adapter.call('respond', sid, {
+                    'requestId': req_id,
+                    'decision': 'accept',
+                    'answers': {'0': {'answers': ['Staging']}, '1': {'answers': ['Unit tests']}},
+                })
+            self.assertEqual(rpc_calls[-1][1], 'GetAllCascadeTrajectories')
 
         with mock.patch.object(adapter.cli, 'available', return_value=True), \
                 mock.patch.object(adapter.cli, 'call_ls_rpc', side_effect=BridgeUnavailable('transient')):

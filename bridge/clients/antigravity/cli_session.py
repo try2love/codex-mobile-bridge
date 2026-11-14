@@ -539,9 +539,9 @@ class AntigravityCli:
                 return {k: [dict(r) for r in v] for k, v in cached[1].items()}, set(cached[2])
 
         res = self.call_ls_rpc('GetAllCascadeTrajectories', {}, surface=surface)
-        summaries = res.get('trajectorySummaries')
+        summaries = res.get('trajectorySummaries', {})
         if not isinstance(summaries, dict):
-            return {}, set()
+            raise BridgeUnavailable('原会话等待状态未确认，请稍后重试')
 
         waiting_by_cid = {}
         active_cids = set()
@@ -557,8 +557,11 @@ class AntigravityCli:
             for ancestor in (root_cid, parent_cid):
                 if ancestor and ancestor not in target_cids:
                     target_cids.append(ancestor)
-            if status in _ACTIVE_RUN_STATUSES or any(isinstance(summary.get(k), list) and summary.get(k) for k in ('waitingSteps', 'subagentWaitingSteps')):
-                active_cids.add(traj_cid)
+            if (status in _ACTIVE_RUN_STATUSES
+                    or any(summary.get(k) is True for k in ('notFullyIdle', 'hasActiveChildren', 'hasRunningSubagents'))
+                    or (isinstance(summary.get('backgroundTaskCount'), (int, float)) and summary['backgroundTaskCount'] > 0)
+                    or any(isinstance(summary.get(k), list) and summary.get(k) for k in ('waitingSteps', 'subagentWaitingSteps'))):
+                active_cids.update(target_cids)
 
             sources = []
             for entry in (summary.get('waitingSteps') or []):
@@ -594,6 +597,7 @@ class AntigravityCli:
 
         with self._lock:
             self._trajectories_cache[surface] = (time.monotonic(), {k: [dict(r) for r in v] for k, v in waiting_by_cid.items()}, set(active_cids))
+            self._waiting_cache = {key: value for key, value in self._waiting_cache.items() if value.get('surface') != surface}
             self._waiting_cache.update(fresh_cache)
             if len(self._waiting_cache) > 256:
                 for stale_key in list(self._waiting_cache.keys())[:-128]:
@@ -609,21 +613,14 @@ class AntigravityCli:
         return bool(waiting_by_cid.get(conversation_id))
 
     def _resolve_waiting_meta(self, expected_cid, request_id, *, surface='app'):
+        parsed = parse_waiting_request_id(request_id)
+        if not parsed or (parsed[0] and parsed[0] != surface):
+            raise ValueError('该互动请求来源不匹配')
+        # Display caches cannot authorize a response: a question may have been
+        # answered, or moved to another parent, since it was shown.
+        self.waiting_state_by_cid(surface=surface, max_age=0.0)
         with self._lock:
             meta = self._waiting_cache.get(request_id)
-        if meta is None:
-            self.waiting_state_by_cid(surface=surface, max_age=0.0)
-            with self._lock:
-                meta = self._waiting_cache.get(request_id)
-        if meta is None:
-            parsed = parse_waiting_request_id(request_id)
-            if parsed:
-                parsed_surface, cascade_id, trajectory_id, step_index = parsed
-                if parsed_surface and parsed_surface != surface:
-                    raise ValueError('该互动请求来源不匹配')
-                full_step = self._collect_step_fallback(cascade_id, step_index, surface=surface)
-                if isinstance(full_step, dict) and full_step.get('status') == 'CORTEX_STEP_STATUS_WAITING':
-                    _, meta = _normalize_waiting_step(request_id, surface, cascade_id, trajectory_id, step_index, full_step)
         if meta is None:
             raise ValueError('该互动请求已过期或已在桌面端处理')
         if meta.get('surface') != surface:

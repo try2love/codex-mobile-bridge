@@ -121,9 +121,11 @@ class Antigravity:
         return [{'surface': row['key'], 'host': 'local', 'hostLabel': '此电脑', 'name': row['name'],
                  'scope': str(row['root']), 'createRequiresMessage': True, 'createTitle': False} for row in self.store.surfaces()]
 
-    def _waiting_state(self, surface, *, live=True):
+    def _waiting_state(self, surface, *, live=True, fresh=False):
         if not live:
             return {}, set()
+        if fresh:
+            return self.cli.waiting_state_by_cid(surface=surface, max_age=0)
         try:
             return self.cli.waiting_state_by_cid(surface=surface)
         except (OSError, ValueError, BridgeUnavailable):
@@ -339,7 +341,7 @@ class Antigravity:
             prompt, mode = self._prompt(body), body.get('mode') or 'send'
             if not prompt or mode not in ('send', 'queue', 'steer'):
                 raise ValueError('Antigravity 消息或发送方式无效')
-            waiting_by_cid, active_cids = self._waiting_state(surface, live=True)
+            waiting_by_cid, active_cids = self._waiting_state(surface, live=True, fresh=True)
             if (waiting_by_cid.get(cid) or (self.hooks and self.hooks.has_pending_approvals(key))) and mode == 'send':
                 raise BridgeUnavailable('原会话正在等待交互确认，请先回应后再发送')
             if native_busy or cid in active_cids:
