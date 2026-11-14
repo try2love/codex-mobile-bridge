@@ -16,7 +16,7 @@ function fixture(t){
 test('only the verified macOS update direct child replaces itself before opening the UI',t=>{
  const f=fixture(t),calls=[];f.runtime.execve=(...args)=>calls.push(args);
  relaunchMacUpdate({app:f.app,process:f.runtime});assert.equal(calls.length,1);
- assert.match(calls[0][0],/client-helpers\/update-launcher$/);assert.deepEqual(calls[0][1],[calls[0][0],f.target,f.transaction]);assert.equal(calls[0][2],f.env);
+ assert.equal(calls[0][0],path.join(f.runtime.resourcesPath,'gateway','_internal','client-helpers','update-launcher'));assert.deepEqual(calls[0][1],[calls[0][0],f.target,f.transaction]);assert.equal(calls[0][2],f.env);
  for(const alter of [()=>f.runtime.platform='win32',()=>{f.runtime.platform='darwin';f.env.CMB_UPDATE_TOKEN='wrong';},()=>{f.env.CMB_UPDATE_TOKEN=f.token;f.app.isPackaged=false;}]){
   alter();relaunchMacUpdate({app:f.app,process:f.runtime});assert.equal(calls.length,1);
  }
