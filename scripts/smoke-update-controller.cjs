@@ -217,6 +217,11 @@ async function runScenario(gatewayRunning){
     const launched=JSON.parse(await fs.readFile(path.join(transaction,'launched.json'),'utf8'));
     const ack=JSON.parse(await fs.readFile(path.join(transaction,'ack.json'),'utf8'));
     launchedPid=launched.pid;
+    if(mac){
+      const receipt=JSON.parse(await fs.readFile(path.join(transaction,'launch-services.json'),'utf8'));
+      assert.equal(receipt.launcherPid,launched.pid);assert.equal(receipt.token,plan.token);
+      assert.ok(Number.isSafeInteger(receipt.pid)&&receipt.pid>0);launchedPid=receipt.pid;
+    }
     assert.equal(result.state,'updated',result.message||result.state);
     assert.equal(result.version,nextVersion);
     assert.equal(ack.version,nextVersion);
@@ -233,10 +238,8 @@ async function runScenario(gatewayRunning){
     if(mac)assert.equal(await run('/usr/libexec/PlistBuddy',['-c','Print :CFBundleShortVersionString',targetPaths.plist]).then(value=>value.stdout.trim()),nextVersion);
     console.log(JSON.stringify({ok:true,scenario:gatewayRunning?(quickTunnel?'gateway-running-real-quick-tunnel':'gateway-running-local'):'gateway-stopped',oldPid:appChild.pid,oldExit:oldExitValue,newPid:launchedPid,result,ack,work},null,2));
     cdp?.close();
-    try{
-      if(mac)process.kill(-launchedPid,'SIGTERM');else process.kill(launchedPid,'SIGTERM');
-    }catch(error){}
-    await delay(500);
+    try{process.kill(launchedPid,'SIGTERM');}catch(error){if(error.code!=='ESRCH')throw error;}
+    await until(()=>processGone(launchedPid),'isolated updated GUI exit');
     if(gatewayRunning)await worker(candidatePaths.runtime,data,'stop').catch(error=>console.error('cleanup gateway stop:',error.message));
   }catch(error){
     console.error(error.stack||error);
