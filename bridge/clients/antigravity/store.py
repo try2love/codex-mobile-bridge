@@ -336,9 +336,8 @@ class AntigravityStore:
 
                 steps.append(obj)
 
-        # Ensure we include at least min(6, available) complete USER_INPUT turns
-        # and align the page start to a USER_INPUT step so a turn with many tool
-        # calls never pushes its own user prompt or recent replies off the screen.
+        # Prefer six complete turns within the page budget. A single long turn
+        # must still paginate; its earlier prompt remains available in older pages.
         target_steps = max(int(limit or 40), 120)
         start_pos = max(0, len(steps) - target_steps)
         user_positions = [i for i, s in enumerate(steps) if s.get('type') == 'USER_INPUT']
@@ -351,7 +350,7 @@ class AntigravityStore:
                 start_pos = earlier_users[-1]
         start_pos = max(0, len(steps) - 260, start_pos)
         if start_pos > 0:
-            earlier_users = [pos for pos in user_positions if pos <= start_pos]
+            earlier_users = [pos for pos in user_positions if len(steps) - 260 <= pos <= start_pos]
             if earlier_users:
                 start_pos = earlier_users[-1]
 

@@ -95,6 +95,32 @@ def _write_transcript(
 
 
 class AntigravityStoreTest(unittest.TestCase):
+    def test_long_single_turn_is_paged_without_losing_older_steps(self):
+        with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as tmp:
+            home = Path(tmp)
+            root = home/'.gemini/antigravity'
+            steps = [{'step_index': 0, 'type': 'USER_INPUT', 'content': 'long turn'}]
+            steps += [{'step_index': i, 'type': 'PLANNER_RESPONSE', 'content': str(i)}
+                      for i in range(1, 601)]
+            _write_transcript(root, CID, steps)
+            store = AntigravityStore(home/'scratch', home=home)
+            seen, before = set(), None
+            while True:
+                page = store.read_transcript_page(root, CID, limit=40, before=before, session_active=True)
+                ids = {message['id'] for message in page['messages']}
+                self.assertLessEqual(len(ids), 260)
+                self.assertFalse(seen & ids)
+                seen.update(ids)
+                if before is not None:
+                    self.assertTrue(all(turn['status'] == 'completed' for turn in page['turns']))
+                if not page['history']['hasMore']:
+                    break
+                next_before = page['history']['before']
+                self.assertTrue(before is None or int(next_before) < int(before))
+                before = next_before
+            self.assertEqual(len(seen), len(steps))
+            self.assertIn('step-0-user', seen)
+
     def test_parse_timestamp_handles_nanoseconds(self):
         ts = parse_timestamp('2026-11-08T01:23:45.123456789Z')
         self.assertGreater(ts, 1700000000.0)
