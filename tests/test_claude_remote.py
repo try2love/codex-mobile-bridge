@@ -547,8 +547,10 @@ class RemoteAdapterContract(unittest.TestCase):
         self.cli.index[sid] = row
         events = [{'type': 'assistant', 'uuid': f'a{index}',
                    'message': {'role': 'assistant', 'content': str(index)}} for index in range(1000)]
-        live = events + [{'type': 'assistant', 'uuid': 'new',
-                         'message': {'role': 'assistant', 'content': 'not saved'}}]
+        result = lambda rid: {'type': 'result', 'uuid': rid, 'subtype': 'success',
+                              'is_error': False, 'num_turns': 1}
+        live = events[:1] + [result('R1')] + events[1:] + [result('R2'),
+            {'type': 'assistant', 'uuid': 'new', 'message': {'role': 'assistant', 'content': 'not saved'}}]
         owned = SimpleNamespace(origin=row['origin'], process=Mock(), error=None,
             condition=threading.Condition(), events=live, pending={}, active=False,
             catalog={}, model=None, permission=None)
@@ -566,6 +568,8 @@ class RemoteAdapterContract(unittest.TestCase):
                          [f'a{index}' for index in range(960, 1000)] + ['new'])
         self.assertEqual([message['eventId'] for message in older['messages']],
                          [f'a{index}' for index in range(920, 960)])
+        self.assertEqual([turn['turnId'] for turn in recent['turns']], ['R1', 'R2'])
+        self.assertEqual(older['turns'], [])
         self.assertIs(owned.events, live)
 
     def test_detail_exposes_remote_directory_preflight_before_resume(self):

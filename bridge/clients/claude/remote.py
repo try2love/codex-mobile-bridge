@@ -532,7 +532,8 @@ class RemoteClaudeCli:
                         notice = str(exc)
                 return {'connected': True, 'session': public,
                         'messages': list({item['id']: item for item in messages}.values()),
-                        'turns': model.turns(history),
+                        # Preserve prior completion anchors even when their messages are paged out.
+                        'turns': model.turns(page['events'] + live_events),
                         'history': page['history'],
                         'notice': notice,
                         'capabilities': {**row.get('capabilities', {}), 'resume': not live and not row.get('archived') and ready, 'send': live and public['connectionState'] == 'ready',

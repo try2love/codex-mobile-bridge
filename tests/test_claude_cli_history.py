@@ -118,6 +118,30 @@ class ClaudeCliHistory(unittest.TestCase):
         self.assertEqual(detail['messages'][-1]['text'], 'not saved')
         self.assertEqual(owned.events, events)
 
+    def test_live_result_anchor_survives_message_page_merge(self):
+        from bridge.features.notifications.channels import Notifications
+
+        self.write(2)
+        saved = [json.loads(line) for line in self.path.read_text().splitlines()][1:]
+        result = lambda rid: {'type': 'result', 'uuid': rid, 'subtype': 'success',
+                              'is_error': False, 'num_turns': 1}
+        events = [saved[0], result('R1'), saved[1], result('R2')]
+        owned = SimpleNamespace(origin=self.origin, process=Mock(), error=None,
+            condition=threading.Condition(), events=events, pending={}, active=False,
+            catalog={}, model=None, permission=None)
+        owned.process.poll.return_value = None
+        self.cli.owned[self.native] = owned
+        notifications = Notifications(Mock(), self.root)
+        self.addCleanup(notifications.close)
+        row = {'id': self.sid, 'host': 'desktop:claude'}
+        with patch.object(notifications, '_effective', return_value={'notifyOnCompletion': True}):
+            self.assertEqual(notifications._completion_pending(row, model.turns([result('R1')]), 'mobile'), [])
+            detail = self.cli.call('detail', self.sid, {'historyLimit': 2})
+            self.assertEqual(notifications._completion_pending(row, detail['turns'], 'mobile'),
+                             [notifications._delivery_key(row, 'R2', completion=True, target='mobile')])
+        self.assertEqual([turn['turnId'] for turn in detail['turns']], ['R1', 'R2'])
+        self.assertEqual([message['eventId'] for message in detail['messages']], ['a0', 'a1'])
+
     def test_append_and_rollback_invalidate_cursor(self):
         self.write(80)
         first = self.cli.call('detail', self.sid, {})

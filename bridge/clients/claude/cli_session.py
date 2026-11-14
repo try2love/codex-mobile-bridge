@@ -978,7 +978,8 @@ class ClaudeCli:
                 can_resume = (not row['archived'] and not live and row['permissionKnown'] and self._ready(self.profile_resolver())
                               and Path(row['cwd']).is_dir())
                 return {'connected': True, 'session': public, 'messages': list(unique.values()),
-                        'turns': model.turns(events),
+                        # Completion UUIDs are notification anchors, not message-window state.
+                        'turns': model.turns(history_events + (live_events if before is None else [])),
                         'history': {'before': cursor, 'hasMore': has_more},
                         'notice': '无法确认原会话权限模式，请在电脑端继续' if not live and not row['permissionKnown'] else '',
                         'capabilities': {
