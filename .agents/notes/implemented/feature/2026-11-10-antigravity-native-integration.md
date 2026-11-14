@@ -70,3 +70,5 @@ Mac 原生 Keychain、Ubuntu Secret Service、Windows Credential Manager 的随�
 MCP 表单复用共享问题控件，保留字符串、有限数值、严格布尔值和枚举数组的类型，并校验必填、枚举、长度及数值边界。固定选项通过问题能力 `allowCustom=false` 隐藏补充文本，其他客户端问题的手填行为不变。无答案、跳过、false 和零分别处理；不把任意文本转换为 false，也不截取多个答案伪装成单选。嵌套对象、未支持的约束或损坏的 schema 只提示回到原客户端并保留拒绝入口，后端亦拒绝空内容的“允许”。完整引入 JSON Schema 引擎可支持更多格式，但当前共享控件不能表达全部格式，因此保留明确子集，不新增依赖。
 
 六项 Python 回归覆盖类型与约束反例，两项共享 UI 回归覆盖固定选项、跳过、取消及刷新保留草稿。依据为已安装官方原生 descriptor 和 [MCP 的表单验证约定](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/2025-11-25/docs/docs/learn/client-concepts.mdx)，尚不代表真实上游表单往返。
+
+额度随同来源、同账号模型目录保存为成功查询快照，沿用原更新时间与手动刷新，不增加自动请求。官方 protobuf 中存在 `quotaInfo` 或 `planStatus` 消息而省略非 optional 数值字段时代表零；整个消息缺失仍不显示未知额度。重置时间复用原时间解析并显示本机时区，不把 UTC 文本截断为本地时间。三项定向回归及原目录/上下文用例覆盖消息缺失、零值与 UTC 转换。

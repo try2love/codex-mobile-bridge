@@ -2,6 +2,7 @@
 import json
 import re
 import math
+from datetime import datetime
 from pathlib import Path
 import threading
 import subprocess
@@ -11,7 +12,7 @@ import urllib.request
 
 from bridge.clients.errors import BridgeUnavailable
 from bridge.platforms.antigravity import endpoint, verify_endpoint
-from .model import SURFACE_LABELS, format_tool_call
+from .model import SURFACE_LABELS, format_tool_call, _parse_iso_seconds
 
 _CONFIRM_INTERACTION_LABELS = {
     'openBrowserUrl': '开启网页确认',
@@ -736,11 +737,9 @@ class AntigravityCli:
         text = str(reset_time or '').strip()
         if not text:
             return ''
-        if 'T' in text:
-            date_part, _, time_part = text.partition('T')
-            parts = date_part.split('-')
-            if len(parts) == 3 and len(time_part) >= 5:
-                return f'将于 {parts[1]}/{parts[2]} {time_part[:5]} 重置'
+        stamp = _parse_iso_seconds(text)
+        if stamp is not None:
+            return f'将于 {datetime.fromtimestamp(stamp).astimezone():%m/%d %H:%M %Z} 重置'
         return f'重置时间 {text}'
 
     @staticmethod
@@ -748,7 +747,7 @@ class AntigravityCli:
         q = row.get('quotaInfo')
         if not isinstance(q, dict):
             return None
-        frac = q.get('remainingFraction')
+        frac = q.get('remainingFraction', 0)  # Present protobuf message; omitted scalar means zero.
         reset_note = AntigravityCli._format_reset_note(q.get('resetTime'))
         if not isinstance(frac, (int, float)):
             return ({'quotaTag': '', 'quotaStatus': '', 'resetNote': reset_note} if reset_note else None)
@@ -800,10 +799,10 @@ class AntigravityCli:
                     notice_lines.append(line)
             models.append(entry)
 
-        p_credits = plan_status.get('availablePromptCredits')
-        f_credits = plan_status.get('availableFlowCredits')
+        p_credits = plan_status.get('availablePromptCredits', 0)
+        f_credits = plan_status.get('availableFlowCredits', 0)
         credits_line = ''
-        if p_credits is not None or f_credits is not None:
+        if isinstance(status.get('planStatus'), dict):
             credits_line = f'可用 Prompt 点数: {p_credits or 0} · Flow 点数: {f_credits or 0}'
             notice_lines.append(credits_line)
 

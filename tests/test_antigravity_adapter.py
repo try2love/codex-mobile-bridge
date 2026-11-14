@@ -1039,7 +1039,7 @@ class AntigravitySafetyTests(unittest.TestCase):
             self.assertNotIn('resetNote', by_id['m-good'])
             self.assertEqual(by_id['m-low']['quotaTag'], '剩余 15.0%')
             self.assertEqual(by_id['m-low']['quotaStatus'], 'warning')
-            self.assertEqual(by_id['m-low']['resetNote'], '将于 11/14 12:30 重置')
+            self.assertEqual(by_id['m-low']['resetNote'], adapter.cli._format_reset_note('2026-11-14T12:30:00Z'))
             self.assertEqual(by_id['m-empty']['quotaTag'], '已用尽')
             self.assertEqual(by_id['m-empty']['quotaStatus'], 'exhausted')
             summary = catalog['usageSummary']
