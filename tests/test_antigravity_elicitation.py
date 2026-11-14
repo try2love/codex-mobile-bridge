@@ -68,3 +68,7 @@ class ElicitationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.respond({'type': 'string'}, 'not-a-list')
 
+    def test_string_enum_values_keep_exact_whitespace(self):
+        self.assertEqual(self.respond({'type': 'string', 'enum': [' padded ']}, [' padded ']), {'answer': ' padded '})
+        self.assertEqual(self.respond({'type': 'array', 'items': {'type': 'string', 'enum': [' a ', 'b']}}, [' a ', 'b']), {'answer': [' a ', 'b']})
+

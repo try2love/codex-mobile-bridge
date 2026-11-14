@@ -366,7 +366,7 @@ def _coerce_elicitation_value(raw_vals, prop_spec):
         return values
     if len(raw_vals) != 1:
         raise ValueError('此项只能填写一个答案')
-    val = str(raw_vals[0]).strip()
+    val = raw_vals[0] if prop_type == 'string' else raw_vals[0].strip()
     if prop_type == 'boolean':
         if val.lower() not in ('true', 'false', '是 (true)', '否 (false)'):
             raise ValueError('请选择是或否')
