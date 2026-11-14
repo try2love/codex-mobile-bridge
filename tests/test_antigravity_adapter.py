@@ -1490,5 +1490,13 @@ class AntigravitySafetyTests(unittest.TestCase):
             self.assertEqual(def_res['status'], 'accepted')
             self.assertNotIn('items', send_mock.call_args.kwargs)
 
+            cmd_catalog = manager.call('antigravity', 'catalog', sid, {'section': 'commands'})
+            self.assertIn('teamwork', [row['id'] for row in cmd_catalog['commands']])
+            self.assertEqual([row['id'] for row in cmd_catalog['skills']], ['gdrive', 'generative_ui'])
+            self.assertTrue(cmd_catalog['capabilities']['slashCommands'])
+            full_catalog = manager.call('antigravity', 'catalog', sid, {})
+            self.assertIn('boost', [row['id'] for row in full_catalog['commands']])
+            self.assertEqual([row['id'] for row in full_catalog['skills']], ['gdrive', 'generative_ui'])
+
 
 

@@ -3683,6 +3683,18 @@ const en={
   "工作流": "Workflow",
   "暂时无法读取 Antigravity 原生指令与 Skill 列表": "Could not load Antigravity native commands and skills.",
   "原会话运行中，排队或插话暂不支持 /指令 与 Skill，请等待当前回复结束后直接发送": "The session is busy. Queued or steered messages do not support slash commands or Skills; wait for the current reply to finish and send directly.",
+  "所选 Skill 参数无效": "Invalid Skill selection",
+  "Antigravity 工作模式无效": "Invalid Antigravity work mode",
+  "原会话正在等待交互确认，请先回应后再切换工作模式": "The session is waiting for your confirmation. Respond before changing work mode.",
+  "Antigravity 暂不支持此目标状态操作，请在原对话继续交互": "Antigravity does not support this goal status action yet. Continue in the original conversation.",
+  "请输入目标内容": "Enter a goal objective",
+  "目标不能超过 4000 字": "Goal objectives cannot exceed 4,000 characters",
+  "原会话正在等待交互确认，请先回应后再设定目标": "The session is waiting for your confirmation. Respond before setting a goal.",
+  "请等待 Antigravity 原生会话空闲后再设定目标": "Wait for the Antigravity session to become idle before setting a goal.",
+  "当前 Antigravity 原生环境暂未提供 /goal 指令": "The current Antigravity native environment does not provide the /goal command.",
+  "原会话正在等待交互确认，请先回应后再压缩上下文": "The session is waiting for your confirmation. Respond before compacting context.",
+  "请等待 Antigravity 原生会话空闲后再压缩上下文": "Wait for the Antigravity session to become idle before compacting context.",
+  "当前 Antigravity 原生环境暂未提供 /compact 指令": "The current Antigravity native environment does not provide the /compact command.",
   "当前账号 · 重置卡与额度详情": "Current account · Usage and resets",
   "请求处理通知": "Approval notifications",
   "跟随全局设置": "Use global setting",
@@ -4058,6 +4070,8 @@ function translateEnglish(source){
   if(dingtalk)return 'DingTalk did not accept the notification ('+dingtalk[1]+': '+(en[dingtalk[2]]||en['请检查机器人配置'])+').';
   const providerError=/^(飞书|钉钉|Discord|Telegram)\s*(响应格式不正确|未接受通知，请检查地址和网络|未接受通知（HTTP (\d+)）)$/.exec(source);
   if(providerError){const name=({飞书:'Feishu',钉钉:'DingTalk'})[providerError[1]]||providerError[1];return providerError[2]==='响应格式不正确'?'Invalid response from '+name+'.':providerError[3]?name+' did not accept the notification (HTTP '+providerError[3]+').':name+' did not accept the notification. Check the endpoint and network.';}
+  const agyCommand=/^当前 Antigravity 原生环境暂未提供 \/(\S+) (指令|模式)$/.exec(source);
+  if(agyCommand)return 'The current Antigravity native environment does not provide the /'+agyCommand[1]+(agyCommand[2]==='模式'?' mode.':' command.');
   return source;
 }
 function t(source){return lang==='en'?translateEnglish(source):(zh[source]??source);}
