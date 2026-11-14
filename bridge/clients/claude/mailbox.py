@@ -23,7 +23,7 @@ MAX_PACKET = 32 * 1024 * 1024
 MAX_REQUEST = 10 * 1024 * 1024
 # Bump when the injected renderer must reload a changed API contract. A new
 # owner generation alone only reconnects the existing JavaScript closure.
-CONNECTOR_REVISION = 15
+CONNECTOR_REVISION = 16
 MUTATIONS = {'sendMessage', 'interrupt', 'stop', 'respondToToolPermission', 'start', 'archive', 'unarchive', 'mobileArchive',
              'delete', 'updateSession', 'setPermissionMode', 'setModel', 'setEffort', 'setThinkingSummariesWanted', 'mobileFork', 'mobileRename'}
 
