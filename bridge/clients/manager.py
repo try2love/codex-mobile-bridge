@@ -3398,9 +3398,11 @@ class DesktopSessions:
         if operation == 'catalog' and set(value) <= {'action', 'operation', 'surface', 'sessionId', 'refresh'}:
             return self.call('antigravity', 'catalog', sid, {'section': 'models', 'refresh': value.get('refresh') is True})
         fields = {'settings': {'model', 'modelCatalogIdentity'}, 'access': {'mode'}}.get(operation)
-        if fields is None or set(value) != {'action', 'operation', 'surface', 'sessionId', 'id', *fields}:
+        required = {'action', 'operation', 'surface', 'sessionId', 'id', *(fields or ())}
+        optional = {'manualModel'} if operation == 'settings' else set()
+        if fields is None or not required <= set(value) or set(value) - required - optional:
             raise ValueError('Antigravity 配置请求无效')
-        return self.call('antigravity', operation, sid, {key: value[key] for key in ('id', *fields)})
+        return self.call('antigravity', operation, sid, {key: value[key] for key in ('id', *fields, *optional) if key in value})
 
     def control(self, value):
         action = value.get('action', 'status')
