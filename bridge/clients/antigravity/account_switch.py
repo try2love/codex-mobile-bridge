@@ -5,10 +5,10 @@ from bridge.platforms.antigravity import endpoint, verify_endpoint
 
 
 def switch_account(store, adapter, descriptor, identifier):
-    store.validate_saved(identifier)
-    # Serialize native bridge writes with this switch. The manager also fences
-    # new operations through its existing provider-changing gate.
-    with adapter.cli._lock:
+    # Match public()'s store -> CLI order so account polling cannot deadlock
+    # this transaction. The manager also fences new provider operations.
+    with store.lock, adapter.cli._lock:
+        store.validate_saved(identifier)
         plan = native.prepare(descriptor)
         if plan:
             surface = plan['installation']['surface']

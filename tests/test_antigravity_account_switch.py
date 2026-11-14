@@ -79,6 +79,7 @@ class NativeIdleTests(unittest.TestCase):
 class SwitchTests(unittest.TestCase):
     def setUp(self):
         self.store = Mock()
+        self.store.lock = threading.RLock()
         self.store.restore.return_value = {'accounts': [], 'activeIds': [], 'message': 'applied'}
         self.store.public.return_value = {'accounts': [], 'activeIds': []}
         self.adapter = SimpleNamespace(home=Path.home(),

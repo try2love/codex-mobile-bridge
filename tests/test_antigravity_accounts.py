@@ -1,11 +1,14 @@
 import json
 import base64
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from bridge.clients.antigravity.accounts import AntigravityAccounts, TOKEN_FILES
+from bridge.clients.antigravity.account_switch import switch_account
 from bridge.clients.antigravity.credentials import NativeCredentials
 from bridge.platforms import antigravity as native
 
@@ -54,6 +57,51 @@ class AntigravityAccountTests(unittest.TestCase):
         self.stopped.assert_not_called()
         self.assertTrue(value['canSwitch'])
         self.assertIn('APP、CLI、IDE', value['switchConfirmation'])
+
+    def test_account_poll_and_switch_complete_without_lock_inversion(self):
+        identifier = self.store.import_current('first')['accounts'][0]['id']
+        cli_lock = threading.RLock()
+        poll_inside = threading.Event()
+        errors = []
+
+        def metadata():
+            if threading.current_thread() is poll:
+                poll_inside.set()
+            if not cli_lock.acquire(timeout=0.5):
+                raise TimeoutError('account poll blocked by switch')
+            try:
+                return self.native
+            finally:
+                cli_lock.release()
+
+        def read_accounts():
+            try:
+                self.store.public()
+            except Exception as exc:
+                errors.append(exc)
+
+        poll = threading.Thread(target=read_accounts)
+        self.store.metadata = metadata
+        adapter = SimpleNamespace(home=self.home, hooks=None,
+                                  cli=mock.Mock(_lock=cli_lock, assert_idle=mock.Mock()))
+        with mock.patch('bridge.clients.antigravity.account_switch.native') as lifecycle, \
+                mock.patch('bridge.clients.antigravity.account_switch.endpoint',
+                           return_value={'identity': {'pid': 42}}), \
+                mock.patch('bridge.clients.antigravity.account_switch.verify_endpoint'):
+            lifecycle.prepare.return_value = {'installation': {'surface': 'app'}}
+
+            def stop(_):
+                poll.start()
+                # The old order admits polling with store.lock held here;
+                # the corrected order keeps it outside the transaction.
+                poll_inside.wait(0.1)
+
+            lifecycle.stop.side_effect = stop
+            result = switch_account(self.store, adapter, {}, identifier)
+        poll.join(timeout=1)
+        self.assertFalse(poll.is_alive())
+        self.assertEqual(errors, [])
+        self.assertIn('已请求重新打开', result['message'])
 
     def test_import_and_restore_preserve_raw_fields_and_missing_files(self):
         first = self.secret
