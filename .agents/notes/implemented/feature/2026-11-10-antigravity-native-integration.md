@@ -55,7 +55,13 @@ Antigravity App、IDE、CLI 将历史保存在不同目录。把端口日志、�
 
 Mac 原生 Keychain、Ubuntu Secret Service、Windows Credential Manager 的随机测试项均完成新增、读回、更新和删除，没有读取真实账号。Windows SSH 会话返回错误 1312；同用户 Interactive/Limited 的一次性后台任务验证成功后移除，不能把 SSH 的不可用当作桌面凭据格式错误。Ubuntu 原生 sleep 副本在运行中 unlink 后仍被停止核验识别，随后正常退出。AGY 实际账号无法登录，未做真实账号切换或模型请求；这些结果证明存储及流程兼容，不能替代登录有效性和新版冻结包验证。
 
-2026-11-14 基于 `v2.2.1-preview.1` 的运行态增强验证：覆盖原生等待交互与子智能体交互传播/跨来源隔离、disabled/Unavailable 模型过滤与真实 `quotaInfo`/`planStatus`/`contextUsage`、`CodeContent`/`ERROR_MESSAGE`/`CHECKPOINT`/工具图片、回滚 `transcript_full.jsonl` 水合与 `read_image` 符号链接拦截、子任务保持只读及 `HookIPCServer` socket 写失败不重放。以上基于隔离夹具与合成 RPC/socketpair；模块边界与桌面 UI 相关 Node 用例通过，真实 Antigravity 桌面客户端实机联调、真机手机 WebView 与 Playwright 浏览器套件仍待端到端验证。
+2026-11-14 的 PR #170 本地集成保留作者 windowmmk 的三个原始提交（`14d2a335`、`3ad2df49`、`4fdd0bf9`），修复分别提交；中英文 README 补充贡献署名。未来获准发布 v2.2.1 时须保留这些原始提交的祖先关系，并核对 GitHub 贡献者显示，本轮没有合入 main 或推送。
+
+运行态增强的隔离回归覆盖原生等待交互与子智能体交互传播/跨来源隔离、disabled/Unavailable 模型过滤与 `quotaInfo`/`planStatus`/`contextUsage`、`CodeContent`/`ERROR_MESSAGE`/`CHECKPOINT`/工具图片、回滚 `transcript_full.jsonl` 水合与 `read_image` 符号链接拦截、子任务保持只读及 Hook socket 写失败不重放。相关 Python 回归、217 项 Node 用例和模块边界检查通过；复审发现的等待缓存竞态、嵌套请求归属和含空格枚举值均有修前反例与修后定向回归。
+
+生产网页资源的浏览器隔离夹具验证问题单次提交、跳过、取消、严格类型转换，以及目录失败后保留有效缓存和精确手填模型；390px 窄屏问题卡片完成视觉检查。另启动无账号的官方原生 LS，生产适配器完成发现、监听归属、401/200、即时等待查询及过期请求拒绝，随后正常退出。没有模型调用；这些证据不替代已登录 AGY 的实际问题回应、账号切换或模型收发。
+
+冻结源码 `95308af9` 构建 Mac 与 Android `2.2.1-test.20261114.5`。Mac 正常替换并打开，8788 监听和已认证历史/账号页面可用，实际返回资源与已安装包的带指纹资源一致；替换时 13 项配置、绑定及操作记录校验一致，本次未出现新钥匙串授权。Android build 64 沿用原 Test 包标识及证书，完成包级校验，未宣称本轮真机 WebView 验收通过。Windows/Linux 未操作。构建、浏览器和原生隔离回执保存在本地 `.tmp/pr170-20261114/`。
 
 ## Hook 写回未知结果
 
@@ -73,6 +79,6 @@ Mac 原生 Keychain、Ubuntu Secret Service、Windows Credential Manager 的随�
 
 MCP 表单复用共享问题控件，保留字符串、有限数值、严格布尔值和枚举数组的类型，并校验必填、枚举、长度及数值边界。固定选项通过问题能力 `allowCustom=false` 隐藏补充文本，其他客户端问题的手填行为不变。无答案、跳过、false 和零分别处理；不把任意文本转换为 false，也不截取多个答案伪装成单选。嵌套对象、未支持的约束或损坏的 schema 只提示回到原客户端并保留拒绝入口，后端亦拒绝空内容的“允许”。完整引入 JSON Schema 引擎可支持更多格式，但当前共享控件不能表达全部格式，因此保留明确子集，不新增依赖。
 
-六项 Python 回归覆盖类型与约束反例，两项共享 UI 回归覆盖固定选项、跳过、取消及刷新保留草稿。依据为已安装官方原生 descriptor 和 [MCP 的表单验证约定](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/2025-11-25/docs/docs/learn/client-concepts.mdx)，尚不代表真实上游表单往返。
+七项 Python 回归覆盖类型与约束反例，两项共享 UI 回归覆盖固定选项、跳过、取消及刷新保留草稿。字符串枚举及数组元素保留原值空格，不用文本清理改变合法答案。依据为已安装官方原生 descriptor 和 [MCP 的表单验证约定](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/2025-11-25/docs/docs/learn/client-concepts.mdx)，尚不代表真实上游表单往返。
 
 额度随同来源、同账号模型目录保存为成功查询快照，沿用原更新时间与手动刷新，不增加自动请求。官方 protobuf 中存在 `quotaInfo` 或 `planStatus` 消息而省略非 optional 数值字段时代表零；整个消息缺失仍不显示未知额度。重置时间复用原时间解析并显示本机时区，不把 UTC 文本截断为本地时间。三项定向回归及原目录/上下文用例覆盖消息缺失、零值与 UTC 转换。
