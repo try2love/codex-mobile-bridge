@@ -1310,8 +1310,8 @@ class DesktopSessions:
                     'notice': '此环境尚无可复用模型目录，可手动填写；不会为读取目录启动 CLI 会话。'}
         value = self._desktop_model_directory(provider, environment['surface'], refresh=refresh)
         capabilities = {'models': value.get('capabilities', {}).get('models') is True if provider == 'antigravity' else True,
-                        'effort': provider != 'antigravity', 'manualModels': provider in ('deepseek', 'antigravity'),
-                        'manualEffort': provider == 'deepseek'}
+                        'effort': provider != 'antigravity', 'manualModels': provider in ('deepseek', 'antigravity', 'zcode'),
+                        'manualEffort': provider in ('deepseek', 'zcode')}
         return {**value, 'capabilities': capabilities}
 
     def _project_alias(self, environment):
