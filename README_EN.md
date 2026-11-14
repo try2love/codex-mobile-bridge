@@ -21,7 +21,7 @@
 
 # Codex Mobile Bridge · A remote workbench for desktop agents
 
-> **v2.2.1-preview.1 (preview):** [Preview release](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1-preview.1) · [Release notes](RELEASE_NOTES.md). Antigravity, CLI connection management and chat improvements. v2.2.0 remains the latest stable release. Android Preview installs separately as Bridge Preview; keep the original app and add your computer connections again.
+> **v2.2.1:** [Stable release](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1) · [Release notes](RELEASE_NOTES.md). Updating is recommended for native connections to the latest Codex App. Adds Antigravity and interactive charts, with improvements to long chats and model caching.
 
 > **v2.2.0 (stable):** [Release page](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.0) · [Full release notes](RELEASE_NOTES.md) · [Mobile installation](mobile/README.md). ZCode, multiple routes per computer, native side chats and lower idle resource usage.
 
@@ -639,6 +639,8 @@ Report the OS, App/runtime version, branch/commit and redacted reproduction step
 Thanks to the [LINUX DO](https://linux.do/) community and its members for their support.
 
 Thanks to [@qybgh (Luoran Yau)](https://github.com/qybgh) for contributing mobile Plan and Goal support, attachment previews and UI improvements in [PR #8](https://github.com/try2love/codex-mobile-bridge/pull/8). Version 1.3.1 builds on that contribution with Goal controls, notification preferences and interaction refinements.
+
+Thanks to [@heiqiu47](https://github.com/heiqiu47) for interactive charts and Codex compatibility in [PR #167](https://github.com/try2love/codex-mobile-bridge/pull/167) and [PR #169](https://github.com/try2love/codex-mobile-bridge/pull/169), and [@windowmmk](https://github.com/windowmmk) for large-log port discovery in [PR #171](https://github.com/try2love/codex-mobile-bridge/pull/171).
 
 Thanks to [@windowmmk](https://github.com/windowmmk) for the accepted Antigravity foundation in [PR #150](https://github.com/try2love/codex-mobile-bridge/pull/150) and native waiting interactions, model quotas and history images in [PR #170](https://github.com/try2love/codex-mobile-bridge/pull/170). Thanks to [@heiqiu47](https://github.com/heiqiu47) for custom HTTPS ports in [PR #146](https://github.com/try2love/codex-mobile-bridge/pull/146) and the macOS menu-bar icon in [PR #157](https://github.com/try2love/codex-mobile-bridge/pull/157). Original commits are preserved in full; selective adoption, fixes and integration changes are separate.
 
