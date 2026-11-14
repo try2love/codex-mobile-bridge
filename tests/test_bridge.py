@@ -1071,10 +1071,12 @@ class IntegrationTests(unittest.TestCase):
         emit({'type': 'snapshot', 'revision': 52, 'conversationState': value}, version=99)
         self.assertTrue(session.connected)
         self.assertEqual(session.desktop_stream_version, 99)
+        saved_state = copy.deepcopy(session.state)
         emit({'type': 'patches', 'baseRevision': 52, 'revision': 53,
               'patches': [{'op': 'remove', 'path': ['requests']}]}, version=99)
         self.assertFalse(session.connected)
         self.assertIn('更新 Bridge', session.error)
+        self.assertEqual(session.state, saved_state)
         self.assertFalse(session.rebuild_recommended)
         self.assertFalse(session.access['canSend'])
         request_count = len(self.fixture.requests)
@@ -1138,8 +1140,26 @@ class ModelTests(unittest.TestCase):
 
     def test_array_patch(self):
         value = {'items': [1, 2]}
-        apply_patches(value, [{'op': 'add', 'path': ['items', 1], 'value': 3}, {'op': 'remove', 'path': '/items/0'}])
+        value = apply_patches(value, [{'op': 'add', 'path': ['items', 1], 'value': 3}, {'op': 'remove', 'path': '/items/0'}])
         self.assertEqual(value, {'items': [3, 2]})
+
+    def test_patch_copies_changed_paths_and_reuses_untouched_history(self):
+        history = {'items': [{'text': 'saved'}]}
+        value = {'history': history, 'live': {'items': [{'text': 'before'}]}}
+        result = apply_patches(value, [
+            {'op': 'replace', 'path': '/live/items/0/text', 'value': 'after'},
+            {'op': 'add', 'path': '/live/items/-', 'value': {'text': 'next'}}])
+        self.assertIs(result['history'], history)
+        self.assertEqual(value['live']['items'], [{'text': 'before'}])
+        self.assertEqual(result['live']['items'], [{'text': 'after'}, {'text': 'next'}])
+
+    def test_partial_patch_failure_does_not_change_the_original_snapshot(self):
+        value = {'items': [{'text': 'saved'}]}
+        with self.assertRaises(KeyError):
+            apply_patches(value, [
+                {'op': 'replace', 'path': '/items/0/text', 'value': 'rejected'},
+                {'op': 'remove', 'path': '/missing/child'}])
+        self.assertEqual(value, {'items': [{'text': 'saved'}]})
 
     def test_identity_verification_not_exposed(self):
         req = normalize_request({'id': 'x', 'method': 'mcpServer/elicitation/request', 'params': {'_meta': {'openai/userVerification': {'token': 'secret'}}}})

@@ -12,6 +12,9 @@ from bridge.features.sessions.store import items_array, native_file_changes, nat
 
 
 def apply_patches(state, patches):
+    # Keep the last validated snapshot intact until the caller accepts the result.
+    # Copy only modified paths so unchanged history remains shared between updates.
+    state = copy.copy(state)
     for patch in patches:
         path = patch.get("path", [])
         if isinstance(path, str):
@@ -23,7 +26,9 @@ def apply_patches(state, patches):
             continue
         target = state
         for key in path[:-1]:
-            target = target[int(key)] if isinstance(target, list) else target[key]
+            key = int(key) if isinstance(target, list) else key
+            target[key] = copy.copy(target[key])
+            target = target[key]
         key = path[-1]
         operation = patch["op"]
         if isinstance(target, list):
