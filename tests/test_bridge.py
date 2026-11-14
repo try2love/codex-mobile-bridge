@@ -795,11 +795,12 @@ class IntegrationTests(unittest.TestCase):
                        if r['method'] == 'thread-follower-update-thread-settings')
         self.assertEqual(request['params']['threadSettings'], {'model': model, 'effort': 'xhigh'})
 
-    def test_official_model_without_capabilities_cannot_save_guessed_effort(self):
+    def test_official_model_without_catalog_keeps_explicit_model_and_native_effort(self):
         self.bridge.catalog_reader.get_kind = lambda *a, **k: {'models': [{'id':'official-missing','efforts':[]}], 'modelSource':'codex'}
-        with self.assertRaisesRegex(ValueError, '推理能力'):
-            self.bridge.settings(THREAD, 'official-missing', 'minimal')
-        self.assertFalse(any(r['method'] == 'thread-follower-update-thread-settings' for r in self.fixture.requests))
+        result = self.bridge.settings(THREAD, 'official-missing', None)
+        self.assertTrue(result['confirmed'])
+        request = next(r for r in self.fixture.requests if r['method'] == 'thread-follower-update-thread-settings')
+        self.assertEqual(request['params']['threadSettings'], {'model': 'official-missing'})
 
     def test_desktop_catalog_keeps_project_scope_instead_of_global_account_models(self):
         from unittest.mock import Mock

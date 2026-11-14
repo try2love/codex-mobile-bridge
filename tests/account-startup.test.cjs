@@ -123,7 +123,7 @@ test('API model discovery failure shows its error with manual input instead of s
  const ui=await fixture(r=>r(official),'api',{models:[],skills:[],modelSource:'api',modelError:'上游拒绝访问，请检查 API Key 和模型列表权限',fastMode:{allowed:false}});
  ui.run("currentId='11111111-1111-4111-8111-111111111111';state={model:'gpt-old',provider:'openai',connected:true}");
  await ui.nodes.get('model-button').onclick();
- assert.match(ui.nodes.get('model-error').textContent,/上游拒绝/);assert.equal(ui.nodes.get('custom-model-label').hidden,false);
+ assert.match(ui.nodes.get('model-updated').textContent,/上游拒绝/);assert.equal(ui.nodes.get('custom-model-label').hidden,false);
  assert.equal(ui.nodes.get('model-select').children.some(o=>o.value.startsWith('gpt')),false);
  assert.equal(ui.responses.length,0);
 });
@@ -170,7 +170,7 @@ test('model catalog accepts legacy array payloads and reports invalid payload ty
   const bad=await fixture(r=>r(official),'api',{...catalog,models:'invalid'});
   bad.run("currentId='11111111-1111-4111-8111-111111111111';currentHost='local';state={connected:true,model:'fixture-model'}");
   await bad.nodes.get('model-button').onclick();
-  assert.match(bad.nodes.get('model-error').textContent,/models: string/);
+  assert.match(bad.nodes.get('model-updated').textContent,/models: string/);
 });
 test('skill catalog preloads one page, renders full descriptions, and repeated opens do not refetch',async()=>{
   const rows=Array.from({length:5000},(_,i)=>({id:'skill-'+i,name:'skill-'+i,displayName:'Skill '+i,description:'Fixture skill '+i}));
@@ -300,15 +300,15 @@ test('account switch discards API model capabilities before opening the official
  await ui.nodes.get('model-form').onsubmit({preventDefault(){}});
  assert.equal(ui.responses.at(-1).effort,'low');
 });
-test('official model with unknown capabilities explains the disabled save until a supported model is selected',async()=>{
+test('official model with unknown capabilities keeps explicit model and optional native effort',async()=>{
  const catalog={models:[{id:'official-missing',name:'Missing',efforts:[]},{id:'official-ready',name:'Ready',efforts:['high']}],modelSource:'codex'};
  const ui=await fixture(r=>r(official),'chatgpt',catalog);
  ui.run("currentId='11111111-1111-4111-8111-111111111111';state={connected:true,model:'official-missing',effort:'minimal'}");
  await ui.nodes.get('model-button').onclick();
- assert.equal(ui.nodes.get('effort-select').disabled,true);
- assert.equal(ui.nodes.get('effort-select').children.some(o=>o.value==='none'||o.value==='minimal'),false);
- assert.equal(ui.nodes.get('model-save').disabled,true);
- assert.match(ui.nodes.get('model-error').textContent,/未能读取此模型/);
+ assert.equal(ui.nodes.get('effort-select').disabled,false);
+ assert.equal(ui.nodes.get('effort-select').value,'minimal');
+ assert.equal(ui.nodes.get('model-save').disabled,false);
+ assert.equal(ui.nodes.get('model-error').textContent,'');
  ui.nodes.get('model-select').value='official-ready';ui.nodes.get('model-select').onchange();
  assert.equal(ui.nodes.get('model-error').textContent,'');assert.equal(ui.nodes.get('model-save').disabled,false);
 });
@@ -353,12 +353,12 @@ test('a provider change replaces its model list and discards an old in-flight re
 test('reopening a failed model query reads the recovered backend result',async()=>{
  const catalog={models:[],modelSource:'api',modelError:'Temporary failure'},ui=await fixture(r=>r(official),'api',catalog);
  ui.run("currentId='11111111-1111-4111-8111-111111111111';state={connected:true,provider:'api'}");
- await ui.nodes.get('model-button').onclick();assert.match(ui.nodes.get('model-error').textContent,/Temporary failure/);
+ await ui.nodes.get('model-button').onclick();assert.match(ui.nodes.get('model-updated').textContent,/Temporary failure/);
  delete catalog.modelError;catalog.models=[{id:'ready',name:'Ready'}];
  await ui.nodes.get('model-button').onclick();
  assert.equal(ui.requests.filter(url=>url.includes('catalog?kind=models')).length,2);
  assert.ok(ui.nodes.get('model-select').children.some(row=>row.value==='ready'));
- assert.doesNotMatch(ui.nodes.get('model-error').textContent,/Temporary failure/);
+ assert.doesNotMatch(ui.nodes.get('model-updated').textContent,/Temporary failure/);
 });
 test('same chat reopens model rows before a delayed catalog read',async()=>{
  const catalog={models:[{id:'ready',name:'Ready',efforts:['low']}],modelSource:'codex',cache:{identity:'a'.repeat(64),updatedAt:1000}},ui=await fixture(r=>r(official),'chatgpt',catalog);
@@ -384,7 +384,7 @@ test('legacy model fields are normalized and a failed directory ends the loading
  assert.ok(ui.nodes.get('model-select').children.some(row=>row.value==='string-model'));
  ui.run("api=async()=>{throw Error('Offline')}");await ui.nodes.get('model-refresh').onclick();
  assert.ok(ui.nodes.get('model-options').children.some(row=>row.children[0].value==='legacy'),'failed refresh keeps visible rows');
- assert.match(ui.nodes.get('model-error').textContent,/Offline/);
+ assert.match(ui.nodes.get('model-updated').textContent,/Offline/);
  assert.equal(ui.nodes.get('model-save').disabled,true);assert.equal(ui.nodes.get('model-refresh').disabled,false);
 });
 
@@ -487,4 +487,17 @@ test('deferred startup refresh is discarded after leaving the authenticated page
  await ui.run("location.hash='#target';clientNavigation.chatTarget=()=>({id:'target'});clientNavigation.openChatLink=async()=>true;enter({authenticated:true,enabledClients:['codex']})");
  ui.run("clientNavigation.refresh=()=>{throw Error('stale refresh')};csrf='';");
  const timer=[...ui.timers.values()].find(timer=>timer.delay===0);assert.ok(timer);await timer.fn();
+});
+
+test('first model read failure preserves custom input and the exact submitted model',async()=>{
+ const ui=await fixture(r=>r(official),'chatgpt',{models:[]});
+ ui.run("const originalApi=api;api=(url,body)=>url.includes('/catalog?kind=models')?Promise.reject(Error('Offline')):originalApi(url,body)");
+ ui.run("currentId='11111111-1111-4111-8111-111111111111';state={connected:true,model:'exact/custom-model',provider:'openai'}");
+ await ui.nodes.get('model-button').onclick();
+ assert.equal(ui.nodes.get('custom-model-label').hidden,false);
+ assert.equal(ui.nodes.get('model-error').textContent,'');
+ assert.equal(ui.nodes.get('model-save').disabled,false);
+ await ui.nodes.get('model-form').onsubmit({preventDefault(){}});
+ assert.equal(ui.responses.at(-1).model,'exact/custom-model');
+ assert.equal(ui.responses.at(-1).effort,undefined);
 });

@@ -939,8 +939,7 @@ class Bridge:
             value = {**value, 'currentModel': config.get('model'), 'currentEffort': config.get('model_reasoning_effort')}
         else:
             value = target.catalog_reader.get_kind('models', project['cwd'], refresh=refresh)
-        api = value.get('modelSource') == 'api'
-        return {**value, 'capabilities': {'models': True, 'effort': True, 'manualModels': api, 'manualEffort': api}}
+        return {**value, 'capabilities': {'models': True, 'effort': True, 'manualModels': True, 'manualEffort': True}}
 
     @operation(project='project_key')
     def create_chat(self, project_key, title, request_id, kind='desktop', model_options=None):
@@ -4849,12 +4848,17 @@ class Bridge:
                          self.cli_sessions.get_kind(thread_id, 'models', refresh=refresh,
                                                     query='', offset=0, limit=200, ids=None))
             except (OSError, ValueError, AppServerError):
+                if self._native_model_identity(cwd, provider) != identity:
+                    raise ValueError('账号身份已变化，请重新读取模型列表')
                 if persisted:
                     return {**stable(persisted[1]), 'modelError': '模型列表刷新失败，已保留上次结果',
                             'cache': {'state': 'stale', 'updatedAt': persisted[0], 'identity': identity}}
-                raise
+                return {'models': [], 'modelError': '模型目录暂不可用，可手动填写模型',
+                        'fastMode': {'allowed': False}, 'cache': {'state': 'unavailable', 'identity': identity}}
             if self._native_model_identity(cwd, provider) != identity:
                 raise ValueError('账号身份已变化，请重新读取模型列表')
+            if not value.get('models') and not value.get('modelError'):
+                value = {**value, 'modelError': '模型目录暂不可用，可手动填写模型'}
             if not value.get('modelError'):
                 try:
                     updated_at = self.native_model_store.write(identity, stable(value))
@@ -5151,7 +5155,7 @@ class Bridge:
     def settings(self, thread_id, model, effort, *, fast_mode=None):
         if not valid_model_id(model):
             raise ValueError("模型 ID 格式不正确")
-        if effort not in ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"):
+        if effort is not None and effort not in ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"):
             raise ValueError("请选择有效的推理强度")
         if fast_mode is not None and not isinstance(fast_mode, bool):
             raise ValueError('Fast 模式开关无效')
@@ -5167,11 +5171,9 @@ class Bridge:
             # Recheck login/model/policy on the execution host before a speed change.
             catalog = self.catalog(session.id, refresh=fast_mode is not None, kind='models')
             known = next((m for m in catalog["models"] if m["id"] == model), None)
-            if catalog.get('modelSource') == 'codex' and (not known or not known.get('efforts')):
-                raise ValueError('未能读取此模型的推理能力，请重新打开模型设置')
-            if known and known["efforts"] and effort not in known["efforts"]:
+            if effort is not None and known and known["efforts"] and effort not in known["efforts"]:
                 raise ValueError("这个模型不支持所选推理强度")
-            settings = {'model': model, 'effort': effort}
+            settings = {'model': model, **({'effort': effort} if effort is not None else {})}
             if fast_mode is not None:
                 if not catalog.get('fastMode', {}).get('allowed') or not known or not known.get('fastTier'):
                     raise ValueError('当前账号、模型或工作区不支持 Fast 模式，请刷新模型设置')
@@ -5181,7 +5183,7 @@ class Bridge:
         if not result.get("applied"):
             raise IPCError("Codex 未应用模型设置，请刷新后重试")
         with session.condition:
-            confirmed = session.condition.wait_for(lambda: session.state.get("latestModel") == model and session.view().get("effort") == effort and
+            confirmed = session.condition.wait_for(lambda: session.state.get("latestModel") == model and (effort is None or session.view().get("effort") == effort) and
                 (fast_mode is None or (session.state.get('latestThreadSettings') or {}).get('serviceTier') == settings['serviceTier']), timeout=5)
         return {"applied": True, "confirmed": confirmed, "model": model, "effort": effort,
                 **({'serviceTier': settings['serviceTier']} if fast_mode is not None else {})}
