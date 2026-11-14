@@ -194,10 +194,13 @@ class Antigravity:
     def _account(self, surface='app', refresh=False):
         payload = self.cli.catalog_models(surface=surface, refresh=refresh)
         user = payload['userStatus']
-        return {'account': {'provider': 'antigravity', 'name': user.get('name') or 'Antigravity',
-                            'email': user.get('email') or '', 'tier': (user.get('userTier') or {}).get('name') or ''},
-                'models': payload['models'], 'notice': payload['notice'],
-                'capabilities': {'models': True, 'effort': False, 'manualModels': False, 'manualEffort': False}}
+        out = {'account': {'provider': 'antigravity', 'name': user.get('name') or 'Antigravity',
+                           'email': user.get('email') or '', 'tier': (user.get('userTier') or {}).get('name') or ''},
+               'models': payload['models'], 'notice': payload['notice'],
+               'capabilities': {'models': True, 'effort': False, 'manualModels': False, 'manualEffort': False}}
+        if payload.get('usageSummary'):
+            out['usageSummary'] = payload['usageSummary']
+        return out
 
     def call(self, action, sid=None, body=None):
         body = body or {}
@@ -252,6 +255,8 @@ class Antigravity:
         if action == 'detail':
             page = self.store.read_transcript_page(row['surfaceRoot'], cid, limit=body.get('historyLimit') or 40,
                                                    before=body.get('historyBefore'), session_active=session['status'] == 'active')
+            if page.get('contextUsage'):
+                session['contextUsage'] = page['contextUsage']
             queued = self.hooks.get_queued_items(key) if self.hooks else []
             return {'connected': True, 'session': session, **{k: page[k] for k in ('messages', 'turns', 'history')},
                     'readOnly': session['readOnly'],

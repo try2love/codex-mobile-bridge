@@ -1688,3 +1688,36 @@ test('interactive questions support canSkip, exclusiveWriteIn and explicit canCa
  await new Promise(setImmediate);
  assert.equal(ui.calls.filter(c=>c.body).at(-1).body.decision,'decline');
 });
+
+test('model picker renders quota badges and structured usageSummary without altering plain notices',async()=>{
+ const ui=await opened();
+ ui.setHandler(async()=>({
+  models:[
+   {id:'m-low',name:'Low Model',efforts:[],quotaTag:'剩余 15.0%',quotaStatus:'warning'},
+   {id:'m-empty',name:'Empty Model',efforts:[],quotaTag:'已用尽',quotaStatus:'exhausted'}
+  ],
+  currentModel:'m-low',
+  capabilities:{models:true,effort:false},
+  usageSummary:{tier:'Google AI Pro',items:[{name:'Low Model',val:'剩余 15.0%',note:'将于 11/14 12:30 重置',status:'warning'}],credits:'可用 Prompt 点数: 120 · Flow 点数: 45'}
+ }));
+ await ui.view.models();
+ const dialog=ui.document.querySelector('dialog');
+ const badges=dialog.querySelectorAll('.model-choice-badge');
+ assert.equal(badges.length,2);
+ assert.equal(badges[0].classList.contains('badge-warning'),true);
+ assert.equal(badges[1].classList.contains('badge-exhausted'),true);
+ const card=dialog.querySelector('.ds-usage-card');
+ assert.ok(card);
+ assert.equal(card.querySelector('.ds-usage-title').textContent,'Google AI Pro');
+ assert.equal(card.querySelector('.ds-usage-row').querySelector('.ds-usage-name').textContent,'Low Model');
+ assert.equal(card.querySelector('.ds-usage-credits').textContent,'可用 Prompt 点数: 120 · Flow 点数: 45');
+ dialog.close();
+
+ ui.setHandler(async()=>({models:[{id:'m-plain',name:'Plain',efforts:[]}],currentModel:'m-plain',notice:'plain notice',capabilities:{models:true,effort:false}}));
+ await ui.view.models();
+ const plainDialog=ui.view.modelDialog;
+ assert.equal(plainDialog.querySelector('.ds-usage-card'),null);
+ assert.equal(plainDialog.querySelector('.muted').textContent,'plain notice');
+ plainDialog.close();
+});
+

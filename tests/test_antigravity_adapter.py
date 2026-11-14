@@ -931,3 +931,68 @@ class AntigravitySafetyTests(unittest.TestCase):
         self.assertEqual(pending[0]['decisions'][0]['id'], 'accept')
         server.resolve_approval(parent_sid, pending[0]['id'], 'decline')
         t.join(timeout=2.0)
+
+    def test_catalog_filters_disabled_exposes_real_quota_and_context_usage(self):
+        adapter = self.adapter()
+        status = {
+            'userTier': {'name': 'Google AI Pro'},
+            'planStatus': {'availablePromptCredits': 120, 'availableFlowCredits': 45},
+            'cascadeModelConfigData': {
+                'clientModelConfigs': [
+                    {'modelId': 'm-good', 'label': 'Good', 'modelOrAlias': {'model': 'GOOD_ENUM'},
+                     'quotaInfo': {'remainingFraction': 1.0, 'resetTime': '2026-11-14T12:30:00Z'}},
+                    {'modelId': 'm-low', 'label': 'Low', 'modelOrAlias': {'model': 'LOW_ENUM'},
+                     'quotaInfo': {'remainingFraction': 0.15, 'resetTime': '2026-11-14T12:30:00Z'}},
+                    {'modelId': 'm-empty', 'label': 'Empty', 'modelOrAlias': {'model': 'EMPTY_ENUM'},
+                     'quotaInfo': {'remainingFraction': 0.0, 'resetTime': '2026-11-14T12:30:00Z'}},
+                    {'modelId': 'm-dis-flag', 'label': 'Flag', 'disabled': True, 'modelOrAlias': {'model': 'FLAG_ENUM'}},
+                    {'modelId': 'm-unavail', 'label': 'Unavail', 'tagTitle': 'Unavailable', 'modelOrAlias': {'model': 'UNAV_ENUM'}},
+                    {'modelId': 'm-legacy-disabled', 'label': 'Legacy', 'modelOrAlias': {'model': 'LEG_ENUM'}},
+                ]
+            },
+        }
+        with mock.patch.object(adapter.cli, 'available', return_value=True), \
+                mock.patch.object(adapter.cli, 'user_status', return_value=status):
+            catalog = adapter.cli.catalog_models(surface='app')
+            self.assertEqual([m['id'] for m in catalog['models']], ['m-good', 'm-low', 'm-empty'])
+            self.assertNotIn('usage', catalog)
+            by_id = {m['id']: m for m in catalog['models']}
+            self.assertEqual(by_id['m-good']['quotaTag'], '剩余 100%')
+            self.assertEqual(by_id['m-good']['quotaStatus'], 'good')
+            self.assertNotIn('resetNote', by_id['m-good'])
+            self.assertEqual(by_id['m-low']['quotaTag'], '剩余 15.0%')
+            self.assertEqual(by_id['m-low']['quotaStatus'], 'warning')
+            self.assertEqual(by_id['m-low']['resetNote'], '将于 11/14 12:30 重置')
+            self.assertEqual(by_id['m-empty']['quotaTag'], '已用尽')
+            self.assertEqual(by_id['m-empty']['quotaStatus'], 'exhausted')
+            summary = catalog['usageSummary']
+            self.assertEqual(summary['tier'], 'Google AI Pro')
+            self.assertEqual(len(summary['items']), 3)
+            self.assertEqual(summary['credits'], '可用 Prompt 点数: 120 · Flow 点数: 45')
+            account = adapter.call('account', body={'surface': 'app'})
+            self.assertEqual(account['usageSummary'], summary)
+            for blocked in ('m-dis-flag', 'm-unavail', 'm-legacy-disabled'):
+                with self.assertRaises(ValueError):
+                    adapter.cli._model(blocked, 'app')
+
+        bare_status = {'cascadeModelConfigData': {'clientModelConfigs': [
+            {'modelId': 'm-plain', 'label': 'Plain', 'modelOrAlias': {'model': 'PLAIN_ENUM'}}]}}
+        with mock.patch.object(adapter.cli, 'user_status', return_value=bare_status):
+            bare = adapter.cli.catalog_models(surface='app')
+            self.assertNotIn('usageSummary', bare)
+            self.assertEqual(bare['notice'], '')
+
+        _write_transcript(self.root, CID, [
+            {'step_index': 0, 'type': 'USER_INPUT', 'content': 'hi', 'created_at': '2026-11-14T00:00:00Z'},
+            {'step_index': 1, 'type': 'PLANNER_RESPONSE', 'content': 'done',
+             'input_tokens': 50, 'cache_read_tokens': 100, 'cache_write_tokens': 25, 'output_tokens': 12,
+             'created_at': '2026-11-14T00:00:01Z'},
+        ])
+        with mock.patch.object(adapter.cli, 'available', return_value=False):
+            detail = adapter.call('detail', gateway_id('app', CID))
+        ctx = detail['session']['contextUsage']
+        self.assertEqual(ctx['usedTokens'], 150)
+        self.assertIsNone(ctx['contextWindow'])
+        self.assertEqual(ctx['outputTokens'], 12)
+        self.assertEqual(ctx['cache'], {'inputTokens': 50, 'cacheReadTokens': 100, 'cacheWriteTokens': 25})
+

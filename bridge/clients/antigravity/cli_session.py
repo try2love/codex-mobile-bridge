@@ -654,27 +654,98 @@ class AntigravityCli:
     def user_status(self, surface='app'):
         return self.call_ls_rpc('GetUserStatus', surface=surface).get('userStatus') or {}
 
+    @staticmethod
+    def _format_reset_note(reset_time):
+        text = str(reset_time or '').strip()
+        if not text:
+            return ''
+        if 'T' in text:
+            date_part, _, time_part = text.partition('T')
+            parts = date_part.split('-')
+            if len(parts) == 3 and len(time_part) >= 5:
+                return f'将于 {parts[1]}/{parts[2]} {time_part[:5]} 重置'
+        return f'重置时间 {text}'
+
+    @staticmethod
+    def _quota_info(row):
+        q = row.get('quotaInfo')
+        if not isinstance(q, dict):
+            return None
+        frac = q.get('remainingFraction')
+        reset_note = AntigravityCli._format_reset_note(q.get('resetTime'))
+        if not isinstance(frac, (int, float)):
+            return ({'quotaTag': '', 'quotaStatus': '', 'resetNote': reset_note} if reset_note else None)
+        if frac <= 0.0:
+            return {'quotaTag': '已用尽', 'quotaStatus': 'exhausted', 'resetNote': reset_note}
+        if frac <= 0.005:
+            return {'quotaTag': f'剩余 {frac * 100.0:.1f}%', 'quotaStatus': 'exhausted', 'resetNote': reset_note}
+        if frac >= 0.999:
+            return {'quotaTag': '剩余 100%', 'quotaStatus': 'good', 'resetNote': ''}
+        return {
+            'quotaTag': f'剩余 {frac * 100.0:.1f}%',
+            'quotaStatus': 'warning' if frac < 0.2 else 'good',
+            'resetNote': reset_note,
+        }
+
     def catalog_models(self, *, refresh=False, surface='app'):
         status = self.user_status(surface)
         configs = status.get('cascadeModelConfigData', {}).get('clientModelConfigs', [])
+        user_tier = status.get('userTier') if isinstance(status.get('userTier'), dict) else {}
+        tier_name = str(user_tier.get('name') or '').strip()
+        plan_status = status.get('planStatus') if isinstance(status.get('planStatus'), dict) else {}
         models = []
+        usage_items = []
+        notice_lines = []
         for row in configs:
             if not isinstance(row, dict) or not isinstance(row.get('modelId'), str):
+                continue
+            mid = row['modelId']
+            if row.get('disabled') or row.get('tagTitle') == 'Unavailable' or mid.endswith('-disabled'):
                 continue
             alias = row.get('modelOrAlias')
             if not isinstance(alias, dict) or not alias.get('model'):
                 continue
-            models.append({'id': row['modelId'], 'name': row.get('label') or row['modelId'],
-                           'efforts': [], 'supportsEffort': False})
-        return {'models': models, 'userStatus': status,
-                'notice': '' if models else '原客户端暂未提供可用模型列表'}
+            name = row.get('label') or mid
+            entry = {'id': mid, 'name': name, 'efforts': [], 'supportsEffort': False}
+            quota = self._quota_info(row)
+            if quota:
+                entry.update({k: v for k, v in quota.items() if v})
+                if quota['quotaTag']:
+                    usage_items.append({
+                        'name': name,
+                        'val': quota['quotaTag'],
+                        'note': quota['resetNote'],
+                        'status': quota['quotaStatus'],
+                    })
+                    line = f"• {name}: {quota['quotaTag']}"
+                    if quota['resetNote']:
+                        line += f" ({quota['resetNote']})"
+                    notice_lines.append(line)
+            models.append(entry)
+
+        p_credits = plan_status.get('availablePromptCredits')
+        f_credits = plan_status.get('availableFlowCredits')
+        credits_line = ''
+        if p_credits is not None or f_credits is not None:
+            credits_line = f'可用 Prompt 点数: {p_credits or 0} · Flow 点数: {f_credits or 0}'
+            notice_lines.append(credits_line)
+
+        if notice_lines and tier_name:
+            notice_lines.insert(0, f'账号等级 · {tier_name}')
+        notice = '\n'.join(notice_lines) if notice_lines else ('' if models else '原客户端暂未提供可用模型列表')
+        result = {'models': models, 'userStatus': status, 'notice': notice}
+        if usage_items or credits_line:
+            result['usageSummary'] = {'tier': tier_name, 'items': usage_items, 'credits': credits_line}
+        return result
 
     def _model(self, model, surface):
         if not model or model == 'auto':
             return None  # Preserve the original server's selected default.
         configs = self.user_status(surface).get('cascadeModelConfigData', {}).get('clientModelConfigs', [])
         found = [row.get('modelOrAlias', {}).get('model') for row in configs
-                 if isinstance(row, dict) and row.get('modelId') == model]
+                 if isinstance(row, dict) and row.get('modelId') == model
+                 and not row.get('disabled') and row.get('tagTitle') != 'Unavailable'
+                 and not str(row.get('modelId') or '').endswith('-disabled')]
         if len(found) != 1 or not found[0]:
             raise ValueError('所选模型不在当前原客户端的可用目录中')
         return found[0]

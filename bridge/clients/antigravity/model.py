@@ -237,6 +237,7 @@ def normalize_steps(steps, *, session_active=False):
             pending_tool_msgs.clear()
             in_tok = step.get('input_tokens')
             cache_tok = step.get('cache_read_tokens') or 0
+            cache_write_tok = step.get('cache_write_tokens') or 0
             out_tok = step.get('output_tokens') or 0
             if isinstance(in_tok, int) and in_tok >= 0:
                 total_used = in_tok + (cache_tok if isinstance(cache_tok, int) else 0)
@@ -244,10 +245,11 @@ def normalize_steps(steps, *, session_active=False):
                     'usedTokens': total_used,
                     'contextWindow': None,
                     'measurement': 'session',
+                    'outputTokens': out_tok if isinstance(out_tok, int) else 0,
                     'cache': {
                         'inputTokens': in_tok,
                         'cacheReadTokens': cache_tok if isinstance(cache_tok, int) else 0,
-                        'cacheWriteTokens': out_tok if isinstance(out_tok, int) else 0,
+                        'cacheWriteTokens': cache_write_tok if isinstance(cache_write_tok, int) else 0,
                     },
                 }
             thinking = step.get('thinking')
