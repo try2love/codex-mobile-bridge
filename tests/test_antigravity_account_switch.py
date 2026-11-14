@@ -286,7 +286,10 @@ class ProcessScopeTests(unittest.TestCase):
     def test_changed_installation_blocks_restart(self):
         plan = self.prepare()
         self.pids.clear()
-        self.exe.write_bytes(b'updated')
+        replacement = self.exe.with_suffix('.replacement')
+        replacement.write_bytes(b'updated')
+        replacement.replace(self.exe)
+        self.assertNotEqual(native._file_identity(self.exe), plan['imageIdentity'])
         with self.assertRaises(ValueError):
             native.restart(plan)
         self.platform.start.assert_not_called()
