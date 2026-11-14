@@ -284,7 +284,7 @@ class AntigravityStore:
                 'id': cid,
                 'title': title,
                 'status': status,
-                'cancellable': False,
+                'cancellable': status == 'running',
             })
         return tasks
 
@@ -368,8 +368,6 @@ class AntigravityStore:
             hydrated = {}
             with full_path.open('r', encoding='utf-8', errors='replace') as stream:
                 for idx, line in enumerate(stream):
-                    if len(hydrated) >= len(truncated_indices):
-                        break
                     if '"step_index"' not in line and idx not in truncated_indices:
                         continue
                     try:
@@ -392,6 +390,34 @@ class AntigravityStore:
             'contextUsage': usage,
         }
 
+    @staticmethod
+    def _extract_image_uri(jsonl_path, target_step, target_media):
+        active = []
+        with jsonl_path.open('r', encoding='utf-8', errors='replace') as stream:
+            for idx, line in enumerate(stream):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                step_idx = obj.get('step_index', idx)
+                while active and active[-1][0] >= step_idx:
+                    active.pop()
+                uri = None
+                if step_idx == target_step:
+                    media = obj.get('media')
+                    if isinstance(media, list) and target_media < len(media) and isinstance(media[target_media], dict):
+                        uri = str(media[target_media].get('uri') or '')
+                active.append((step_idx, uri))
+        for step_idx, uri in active:
+            if step_idx == target_step and uri:
+                return uri
+        return None
+
     def read_image(self, surface_root, conversation_id, source):
         """Re-verify image membership in transcript.jsonl and return base64 bytes + MIME."""
         if not isinstance(source, dict):
@@ -400,35 +426,59 @@ class AntigravityStore:
         target_media = source.get('mediaIndex')
         if type(target_step) is not int or type(target_media) is not int or target_step < 0 or target_media < 0:
             raise ValueError('图片索引无效')
-        compact_path = Path(surface_root) / 'brain' / conversation_id / '.system_generated' / 'logs' / 'transcript.jsonl'
-        if not compact_path.is_file():
+        if not re.fullmatch(r'[0-9a-fA-F-]{36}', str(conversation_id or '')):
+            raise ValueError('原生会话路径无效')
+        raw_session_dir = Path(surface_root) / 'brain' / conversation_id
+        if raw_session_dir.is_symlink():
+            raise ValueError('原生会话路径无效')
+        logs_dir = raw_session_dir / '.system_generated' / 'logs'
+        compact_path = logs_dir / 'transcript.jsonl'
+        full_path = logs_dir / 'transcript_full.jsonl'
+        if not compact_path.is_file() and not full_path.is_file():
             raise ValueError('找不到原始会话记录')
 
-        uri = None
-        with compact_path.open('r', encoding='utf-8', errors='replace') as stream:
-            for idx, line in enumerate(stream):
-                try:
-                    obj = json.loads(line)
-                except ValueError:
-                    continue
-                if not isinstance(obj, dict):
-                    continue
-                if obj.get('step_index', idx) != target_step:
-                    continue
-                media = obj.get('media')
-                if isinstance(media, list) and target_media < len(media) and isinstance(media[target_media], dict):
-                    uri = str(media[target_media].get('uri') or '')
-                break
+        uri = self._extract_image_uri(compact_path, target_step, target_media) if compact_path.is_file() else None
+        if not uri and full_path.is_file():
+            uri = self._extract_image_uri(full_path, target_step, target_media)
 
         if not uri:
             raise ValueError('图片不在该会话历史记录中')
         raw_path = local_file_path(uri) if uri.startswith('file://') else uri
-        image_path = Path(raw_path).resolve()
-        session_dir = (Path(surface_root)/'brain'/conversation_id).resolve()
-        owner = self.resolve_session(gateway_id(next((r['key'] for r in self.surfaces() if r['root'] == Path(surface_root)), 'app'), conversation_id))
-        allowed = [session_dir] + ([Path(owner['cwd']).resolve()] if owner and owner.get('cwd') else [])
-        if not any(root == image_path or root in image_path.parents for root in allowed):
+        raw_candidate = Path(raw_path)
+        if not raw_candidate.is_absolute() or '..' in raw_candidate.parts:
             raise ValueError('原始图片不在当前会话或项目目录中')
+        if raw_candidate.is_symlink():
+            raise ValueError('不允许预览符号链接图片')
+        image_path = raw_candidate.resolve()
+        session_dir = raw_session_dir.resolve()
+        surface_key = next((r['key'] for r in self.surfaces() if r['root'] == Path(surface_root)), 'app')
+        owner = self.resolve_session(gateway_id(surface_key, conversation_id))
+        allowed_pairs = [(raw_session_dir, session_dir)]
+        if owner and owner.get('cwd'):
+            cwd_path = Path(owner['cwd'])
+            allowed_pairs.append((cwd_path, cwd_path.resolve()))
+        matched = [(raw_root, resolved_root) for raw_root, resolved_root in allowed_pairs
+                   if resolved_root == image_path or resolved_root in image_path.parents]
+        if not matched:
+            raise ValueError('原始图片不在当前会话或项目目录中')
+        verified_lexical = False
+        for raw_root, resolved_root in matched:
+            for base in (raw_root, resolved_root):
+                try:
+                    rel = raw_candidate.relative_to(base)
+                except ValueError:
+                    continue
+                cur = base
+                for part in rel.parts:
+                    cur = cur / part
+                    if cur.is_symlink():
+                        raise ValueError('不允许预览符号链接图片')
+                verified_lexical = True
+                break
+            if verified_lexical:
+                break
+        if not verified_lexical:
+            raise ValueError('不允许预览符号链接图片')
         if not image_path.is_file():
             raise ValueError('原始图片文件已移除或不可读')
         size = image_path.stat().st_size

@@ -267,6 +267,19 @@ class Antigravity:
             return {**self._account(surface, body.get('refresh') is True), 'currentModel': session['model'], 'skills': []}
         if action == 'tasks':
             return {'tasks': self.store.list_tasks(row['surfaceRoot'], cid)}
+        if action == 'stop-task':
+            task_id = body.get('taskId')
+            if not isinstance(task_id, str) or not task_id.strip():
+                raise ValueError('缺少子任务 ID')
+            child = next((t for t in self.store.list_tasks(row['surfaceRoot'], cid) if t['id'] == task_id), None)
+            if child is None:
+                raise ValueError('找不到此子智能体任务')
+            if child['status'] != 'running':
+                raise ValueError('该子任务已结束，无需停止')
+            if self.hooks:
+                self.hooks.request_stop(gateway_id(surface, task_id))
+            self.cli.stop(task_id, surface=surface)
+            return {'status': 'accepted', 'taskId': task_id}
         if action == 'image':
             return self.store.read_image(row['surfaceRoot'], cid, body.get('source'))
         if action == 'resume':

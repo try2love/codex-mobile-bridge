@@ -66,7 +66,7 @@ def validate(method, path, size=0):
     if desktop:
         if p.path.startswith('/api/desktop-sessions/antigravity/'):
             allowed = ({'create-models', 'tasks'} if method == 'GET' else
-                       {'resume', 'queue-action', 'projects/browse', 'projects/register', 'projects/trust'})
+                       {'resume', 'queue-action', 'stop-task', 'projects/browse', 'projects/register', 'projects/trust'})
             if desktop[1] in allowed or method == 'GET' and re.fullmatch(r'images/[a-f0-9]{64}', desktop[1]):
                 return
         if desktop[1] in (DESKTOP_READ if method == 'GET' else DESKTOP_WRITE):

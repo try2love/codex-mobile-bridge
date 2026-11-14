@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -15,12 +17,12 @@ import uuid
 from pathlib import Path, PureWindowsPath
 
 from bridge.clients.antigravity.adapter import Antigravity
-from bridge.clients.antigravity.hook_ipc import HookIPCServer
-from bridge.clients.antigravity.setup import disable_plugin, ensure_plugin, inspect_plugin
+from bridge.clients.antigravity.hook_ipc import HookIPCServer, _write_frame
+from bridge.clients.antigravity.setup import PRE_TOOL_MATCHER, disable_plugin, ensure_plugin, inspect_plugin
 from bridge.clients.antigravity.store import AntigravityStore, parse_timestamp, local_file_path
 from bridge.clients.antigravity.cli_session import AntigravityCli
 from bridge.clients.errors import BridgeUnavailable
-from bridge.clients.antigravity.model import gateway_id, normalize_steps
+from bridge.clients.antigravity.model import format_tool_call, gateway_id, normalize_steps
 from bridge.platforms import antigravity as native
 from bridge.clients.discovery import discover_clients
 from bridge.clients.manager import DesktopSessions
@@ -995,4 +997,141 @@ class AntigravitySafetyTests(unittest.TestCase):
         self.assertIsNone(ctx['contextWindow'])
         self.assertEqual(ctx['outputTokens'], 12)
         self.assertEqual(ctx['cache'], {'inputTokens': 50, 'cacheReadTokens': 100, 'cacheWriteTokens': 25})
+
+    def test_model_normalization_rewound_hydration_and_read_image_safety(self):
+        adapter = self.adapter()
+        self.assertEqual(
+            format_tool_call({'name': 'write_to_file', 'args': {'TargetFile': '/tmp/a.py', 'CodeContent': 'print(1)'}}),
+            '写入文件：/tmp/a.py\nprint(1)',
+        )
+        session_dir = self.root / 'brain' / CID
+        session_dir.mkdir(parents=True, exist_ok=True)
+        img_bytes = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89'
+        old_img = session_dir / 'old.png'
+        new_img = session_dir / 'new.png'
+        full_img = session_dir / 'full.png'
+        old_img.write_bytes(img_bytes + b'old')
+        new_img.write_bytes(img_bytes + b'new')
+        full_img.write_bytes(img_bytes + b'full')
+        sym_leaf = session_dir / 'sym.png'
+        sym_leaf.symlink_to(new_img)
+        real_sub = session_dir / 'real_sub'
+        real_sub.mkdir()
+        (real_sub / 'target.png').write_bytes(img_bytes)
+        sym_dir = session_dir / 'sym_dir'
+        sym_dir.symlink_to(real_sub)
+
+        compact = [
+            {'step_index': 0, 'type': 'USER_INPUT', 'content': 'go', 'created_at': '2026-11-14T00:00:00Z'},
+            {'step_index': 1, 'type': 'PLANNER_RESPONSE', 'status': 'FAILED', 'error': {'message': 'quota hit'},
+             'tool_calls': [{'id': 'c1', 'name': 'run_command', 'args': {'CommandLine': 'shot'}}],
+             'created_at': '2026-11-14T00:00:01Z'},
+            {'step_index': 2, 'type': 'TOOL_RESPONSE', 'status': 'DONE', 'content': 'old short',
+             'truncated_fields': ['content'], 'media': [{'mime_type': 'image/png', 'uri': str(old_img)}],
+             'created_at': '2026-11-14T00:00:02Z'},
+            # Rewind back to step 2
+            {'step_index': 2, 'type': 'TOOL_RESPONSE', 'status': 'DONE', 'content': 'new short',
+             'truncated_fields': ['content'], 'media': [{'mime_type': 'image/png', 'uri': str(new_img)}],
+             'created_at': '2026-11-14T00:00:03Z'},
+            {'step_index': 3, 'type': 'TOOL_RESPONSE', 'status': 'FAILED', 'error_message': 'tool err',
+             'truncated_fields': ['media'], 'created_at': '2026-11-14T00:00:04Z'},
+            {'step_index': 4, 'type': 'ERROR_MESSAGE', 'error': 'fatal step', 'created_at': '2026-11-14T00:00:05Z'},
+            {'step_index': 5, 'type': 'CHECKPOINT', 'content': 'saved snapshot', 'created_at': '2026-11-14T00:00:06Z'},
+            {'step_index': 6, 'type': 'USER_INPUT', 'content': 'symlink checks', 'created_at': '2026-11-14T00:00:07Z',
+             'media': [
+                 {'mime_type': 'image/png', 'uri': str(sym_leaf)},
+                 {'mime_type': 'image/png', 'uri': str(sym_dir / 'target.png')},
+                 {'mime_type': 'image/png', 'uri': str(session_dir / 'real_sub' / '..' / 'new.png')},
+             ]},
+        ]
+        full = [
+            compact[0],
+            compact[1],
+            {**compact[2], 'content': 'Old hydrated content'},
+            {**compact[3], 'content': 'New hydrated content'},
+            {**compact[4], 'media': [{'mime_type': 'image/png', 'uri': str(full_img)}]},
+            compact[5],
+            compact[6],
+            compact[7],
+        ]
+        _write_transcript(self.root, CID, compact, full)
+        page = adapter.store.read_transcript_page(self.root, CID, limit=40)
+        texts = [m['text'] for m in page['messages']]
+        self.assertIn('quota hit', texts)
+        self.assertTrue(any('New hydrated content' in t for t in texts))
+        self.assertFalse(any('Old hydrated content' in t for t in texts))
+        self.assertIn('fatal step', texts)
+        self.assertIn('saved snapshot', texts)
+        self.assertTrue(any(m.get('attachments') and m['attachments'][0].get('type') == 'image' for m in page['messages']))
+        self.assertTrue(any('tool err' in t for t in texts))
+
+        self.assertEqual(base64.b64decode(adapter.store.read_image(self.root, CID, {'stepIndex': 2, 'mediaIndex': 0})['data']), img_bytes + b'new')
+        self.assertEqual(base64.b64decode(adapter.store.read_image(self.root, CID, {'stepIndex': 3, 'mediaIndex': 0})['data']), img_bytes + b'full')
+        for media_idx in (0, 1, 2):
+            with self.assertRaises(ValueError):
+                adapter.store.read_image(self.root, CID, {'stepIndex': 6, 'mediaIndex': media_idx})
+
+    def test_stop_task_and_hook_queue_reliability(self):
+        from relay.protocol import validate as validate_relay
+        validate_relay('POST', f'/api/desktop-sessions/antigravity/stop-task?sessionId={gateway_id("app", CID)}', 10)
+        self.assertTrue(re.fullmatch(PRE_TOOL_MATCHER, 'call_mcp_tool'))
+        self.assertTrue(re.fullmatch(PRE_TOOL_MATCHER, 'send_command_input'))
+        self.assertTrue(re.fullmatch(PRE_TOOL_MATCHER, 'browser_click'))
+        self.assertTrue(re.fullmatch(PRE_TOOL_MATCHER, 'computer_act'))
+        self.assertTrue(re.fullmatch(PRE_TOOL_MATCHER, 'script_run'))
+
+        child_run = '22222222-3333-4444-8555-666666666666'
+        child_done = '33333333-4444-4555-8666-777777777777'
+        unrelated = '44444444-5555-4666-8777-888888888888'
+        self.root.mkdir(parents=True, exist_ok=True)
+        (self.root / 'conversation_summaries.db').unlink(missing_ok=True)
+        _create_surface_db(self.root, [
+            self.row,
+            (child_run, 'Child Running', '', 1, '2026-11-14T00:00:01Z', '[]', 'CASCADE_RUN_STATUS_RUNNING',
+             'CORTEX_TRAJECTORY_SOURCE_CONVERSATION', '', CID, 1, 1, 0, 'Worker'),
+            (child_done, 'Child Done', '', 1, '2026-11-14T00:00:00Z', '[]', 'CASCADE_RUN_STATUS_IDLE',
+             'CORTEX_TRAJECTORY_SOURCE_CONVERSATION', '', CID, 1, 0, 0, 'Worker'),
+            (unrelated, 'Unrelated', '', 1, '2026-11-14T00:00:01Z', '[]', 'CASCADE_RUN_STATUS_RUNNING',
+             'CORTEX_TRAJECTORY_SOURCE_CONVERSATION', '', '', 0, 1, 0, 'Other'),
+        ])
+        adapter = Antigravity(self.directory, home=self.home)
+        self.addCleanup(adapter.close)
+        tasks = adapter.store.list_tasks(self.root, CID)
+        self.assertEqual([(t['id'], t['cancellable']) for t in tasks], [(child_run, True), (child_done, False)])
+        sid = gateway_id('app', CID)
+        with mock.patch.object(adapter.cli, 'available', return_value=True), \
+                mock.patch.object(adapter.cli, 'stop') as stop_mock:
+            with self.assertRaises(ValueError):
+                adapter.call('stop-task', sid, {'taskId': unrelated})
+            with self.assertRaises(ValueError):
+                adapter.call('stop-task', sid, {'taskId': child_done})
+            adapter.hooks = mock.MagicMock()
+            adapter.hooks.permission_mode.return_value = 'desktop'
+            res = adapter.call('stop-task', sid, {'taskId': child_run})
+            self.assertEqual(res, {'status': 'accepted', 'taskId': child_run})
+            stop_mock.assert_called_once_with(child_run, surface='app')
+            adapter.hooks.request_stop.assert_called_once_with(gateway_id('app', child_run))
+
+        resolved_count = 0
+        def resolve_once(payload):
+            nonlocal resolved_count
+            resolved_count += 1
+            return 'scoped-cid' if payload.get('verified') else None
+
+        server = HookIPCServer(self.directory, session_resolver=resolve_once)
+        self.addCleanup(server.close)
+        q_steer = server.enqueue_follow_up('scoped-cid', 'steer 1', mode='steer')
+        q_queue = server.enqueue_follow_up('scoped-cid', 'queue 2', mode='queue')
+        client_sock, server_sock = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.addCleanup(client_sock.close)
+        _write_frame(client_sock, {'token': server.token, 'event': 'post_invocation', 'payload': {'verified': True}})
+        client_sock.shutdown(socket.SHUT_WR)
+        with mock.patch('bridge.clients.antigravity.hook_ipc._write_frame', side_effect=OSError('broken pipe')):
+            server._handle_client(server_sock)
+        self.assertEqual(resolved_count, 1)
+        restored = server.get_queued_items('scoped-cid')
+        self.assertEqual([item['id'] for item in restored], [q_steer['id'], q_queue['id']])
+        reloaded = json.loads(server.queues_file.read_text(encoding='utf-8'))
+        self.assertEqual([item['id'] for item in reloaded['scoped-cid']], [q_steer['id'], q_queue['id']])
+
 

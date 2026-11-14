@@ -138,7 +138,7 @@ def format_tool_call(tool_call):
         return '\n\n'.join(part for part in parts if part).strip()
     if name in ('write_file', 'write_to_file'):
         path = args.get('Path') or args.get('TargetFile') or ''
-        content = str(args.get('Content') or '')
+        content = str(args.get('Content') or args.get('CodeContent') or '')
         preview = '\n'.join(content.splitlines()[:40])
         if len(content.splitlines()) > 40:
             preview += '\n…'
@@ -147,6 +147,21 @@ def format_tool_call(tool_call):
         return json.dumps(args, ensure_ascii=False, indent=2)
     except (TypeError, ValueError):
         return str(args)
+
+
+def _step_error_text(step, default_text):
+    err = step.get('error')
+    if isinstance(err, dict):
+        text = str(err.get('message') or err.get('detail') or err.get('reason') or '').strip()
+    elif isinstance(err, str):
+        text = err.strip()
+    else:
+        text = ''
+    if not text:
+        text = str(step.get('error_message') or step.get('message') or step.get('content') or '').strip()
+    if len(text) > 4000:
+        text = text[:4000] + '\n…（已截断）'
+    return text or default_text
 
 
 def _media_attachments(step_index, media):
@@ -162,6 +177,7 @@ def _media_attachments(step_index, media):
             continue
         name = Path(uri.replace('file://', '')).name or f'image-{idx + 1}.png'
         attachments.append({
+            'type': 'image',
             'kind': 'image',
             'name': name,
             '_nativeImage': {'stepIndex': int(step_index), 'mediaIndex': idx},
@@ -289,24 +305,31 @@ def normalize_steps(steps, *, session_active=False):
                     msg['attachments'] = attachments
                 messages.append(msg)
                 turn['messages'].append(msg)
-            elif step_status == 'ERROR':
+            elif step_status in ('ERROR', 'FAILED'):
                 msg = {
                     'id': f'step-{step_index}-error',
                     'role': 'error',
-                    'text': '模型步骤执行异常',
+                    'timestamp': step_ts,
+                    'text': _step_error_text(step, '模型步骤执行异常'),
                 }
                 messages.append(msg)
                 turn['messages'].append(msg)
 
         elif step_type in ('GENERIC', 'TOOL_RESPONSE'):
             content = step.get('content')
-            if isinstance(content, str) and content.strip():
-                preview = content.strip()
-                if len(preview) > 4000:
-                    preview = preview[:4000] + '\n…（已截断）'
+            preview = content.strip() if isinstance(content, str) and content.strip() else ''
+            if not preview and step_status in ('ERROR', 'FAILED'):
+                preview = _step_error_text(step, '')
+            if len(preview) > 4000:
+                preview = preview[:4000] + '\n…（已截断）'
+            attachments = _media_attachments(step_index, step.get('media'))
+            if preview or attachments:
                 if pending_tool_msgs:
                     target_msg = pending_tool_msgs.pop(0)
-                    target_msg['text'] = f"{target_msg['text']}\n\n--- Output ---\n{preview}".strip()
+                    if preview:
+                        target_msg['text'] = f"{target_msg['text']}\n\n--- Output ---\n{preview}".strip()
+                    if attachments:
+                        target_msg.setdefault('attachments', []).extend(attachments)
                 else:
                     msg = {
                         'id': f'step-{step_index}-output',
@@ -314,8 +337,32 @@ def normalize_steps(steps, *, session_active=False):
                         'title': '工具输出',
                         'text': preview,
                     }
+                    if attachments:
+                        msg['attachments'] = attachments
                     messages.append(msg)
                     turn['messages'].append(msg)
+
+        elif step_type == 'ERROR_MESSAGE':
+            msg = {
+                'id': f'step-{step_index}-error',
+                'role': 'error',
+                'timestamp': step_ts,
+                'text': _step_error_text(step, '执行出错'),
+            }
+            messages.append(msg)
+            turn['messages'].append(msg)
+
+        elif step_type == 'CHECKPOINT':
+            content = step.get('content')
+            if isinstance(content, str) and content.strip():
+                msg = {
+                    'id': f'step-{step_index}-checkpoint',
+                    'role': 'activity', 'timestamp': step_ts,
+                    'title': '检查点',
+                    'text': content.strip(),
+                }
+                messages.append(msg)
+                turn['messages'].append(msg)
 
         if step_ts is not None:
             prev_ts = step_ts

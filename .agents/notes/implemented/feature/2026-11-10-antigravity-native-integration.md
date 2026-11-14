@@ -26,6 +26,7 @@ Antigravity App、IDE、CLI 将历史保存在不同目录。把端口日志、�
 - Hook 只在用户启用接入后启动，使用用户资料级单 owner 锁。来源通过会话目录中的 transcript 路径核验。steer 仅在 `PostInvocation` 消费；queue 仅在已确认 `fullyIdle=true` 的正常 `model_stop` 消费。已消费但回执不明的注入不重放；未知/异常停止保留队列。
 - 上传的图片及文件保留网关验证后的本机路径，通过共享 `file_mentions` 交给原服务。历史图片继续使用经过会话/项目边界检查的共享预览。这里不宣称原生视觉输入已经实机验证。
 - 沿用共享聊天、时间戳、资源、通知、下载和手机跳转；不引入原 PR 的 Light 主题、排队控制条或独立聊天布局。官方图标直接取自 [Antigravity press](https://antigravity.google/press) 的品牌 PNG，文件哈希为 `e0cd08ccd10cd8d08ccf0ba449823ee88495825c0841619618100d3ab089f51e`。
+- 在不改变只读与来源隔离契约的前提下补齐原生运行态增强：通过只读 `GetAllCascadeTrajectories` 与按来源隔离的 `agy-wait:{surface}:{cid}:{tid}:{step_index}` / `HandleCascadeUserInteraction` 原生回应 `askQuestion`、`runCommand`、`filePermission`、`elicitation`、`deploy` 等等待交互及子智能体交互，并在 `send` 前拦截未处理等待步骤；模型目录过滤 `disabled`/`Unavailable`/`-disabled` 条目，仅在真实 `quotaInfo` / `planStatus` 存在时透出配额标签、`usageSummary` 与详细步骤 `contextUsage`（`cacheWriteTokens` / `outputTokens`），缺省时保留原纯文本提示；`transcript_full.jsonl` 水合与 `read_image` 执行分支对齐、全文件扫掠、`transcript_full.jsonl` 回退与允许根目录内的符号链接拦截；`list_tasks` / `stop-task` 核验当前运行中子智能体后停止；`HookIPCServer` 在 socket 写入失败时按顺序无重复回补未送达队列。
 
 ## 备选方案
 
@@ -53,3 +54,5 @@ Antigravity App、IDE、CLI 将历史保存在不同目录。把端口日志、�
 默认账号快照补验：14 项目标 Python 回归覆盖无凭据轮询、原始字段/缺失文件、活动或自定义入口拒绝、不一致身份、条件回滚、外部变化及未确认回滚保留副本、无关秘密不变、符号链接/路径穿越、认证类型和 Go 编码。共享账号 UI 共 45 项已覆盖；新增名称编辑用例在修前失败，修后及相关子集通过。不支持添加 API 不再隐藏官方账号名称编辑，关闭后也不暴露 API 表单。生产桌面页面、实际 manager 和快照存储配合合成凭据，在浏览器完成保存、应用、改名和删除，页面不出现令牌。
 
 Mac 原生 Keychain、Ubuntu Secret Service、Windows Credential Manager 的随机测试项均完成新增、读回、更新和删除，没有读取真实账号。Windows SSH 会话返回错误 1312；同用户 Interactive/Limited 的一次性后台任务验证成功后移除，不能把 SSH 的不可用当作桌面凭据格式错误。Ubuntu 原生 sleep 副本在运行中 unlink 后仍被停止核验识别，随后正常退出。AGY 实际账号无法登录，未做真实账号切换或模型请求；这些结果证明存储及流程兼容，不能替代登录有效性和新版冻结包验证。
+
+2026-11-14 基于 `v2.2.1-preview.1` 的运行态增强验证：覆盖原生等待交互与子智能体交互传播/跨来源隔离、disabled/Unavailable 模型过滤与真实 `quotaInfo`/`planStatus`/`contextUsage`、`CodeContent`/`ERROR_MESSAGE`/`CHECKPOINT`/工具图片、回滚 `transcript_full.jsonl` 水合与 `read_image` 符号链接拦截、`stop-task` 子任务归属核验及 `HookIPCServer` socket 写失败回补。以上基于隔离夹具与合成 RPC/socketpair；模块边界与桌面 UI 相关 Node 用例通过，真实 Antigravity 桌面客户端实机联调、真机手机 WebView 与 Playwright 浏览器套件仍待端到端验证。

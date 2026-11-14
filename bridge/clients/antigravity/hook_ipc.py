@@ -188,23 +188,52 @@ class HookIPCServer:
             payload = req.get('payload')
             if not isinstance(payload, dict):
                 payload = {}
-            resp = self.dispatch_hook_event(event, payload)
+            cid = self._resolve_cid(payload)
+            pre_queue = None
+            if cid and event in ('post_invocation', 'stop'):
+                with self._lock:
+                    pre_queue = list(self._queues.get(cid) or [])
+            resp = self._dispatch_resolved(cid, event, payload)
             try:
                 _write_frame(conn, resp)
             except OSError:
-                pass
+                if cid and pre_queue:
+                    with self._lock:
+                        cur = list(self._queues.get(cid) or [])
+                        existing_ids = {
+                            item.get('id')
+                            for item in cur
+                            if isinstance(item, dict) and item.get('id')
+                        }
+                        unacked = [
+                            item
+                            for item in pre_queue
+                            if not (isinstance(item, dict) and item.get('id') in existing_ids)
+                        ]
+                        if unacked:
+                            self._queues[cid] = unacked + cur
+                            self._save_json(self.queues_file, self._queues)
+
+    def _resolve_cid(self, payload):
+        return (
+            self.session_resolver(payload)
+            if self.session_resolver
+            else str(payload.get('conversationId') or '').strip()
+        )
 
     def dispatch_hook_event(self, event, payload):
         """Process a hook event payload and return the Antigravity stdout JSON dict."""
-        cid = (self.session_resolver(payload) if self.session_resolver else str(payload.get('conversationId') or '').strip())
+        cid = self._resolve_cid(payload)
+        return self._dispatch_resolved(cid, event, payload)
+
+    def _dispatch_resolved(self, cid, event, payload):
         if not cid:
             return {'decision': 'ask'} if event == 'pre_tool_use' else {}
         transcript_path = str(payload.get('transcriptPath') or '')
-        if cid:
-            with self._lock:
-                self._heartbeats[cid] = time.monotonic()
-                if transcript_path:
-                    self._surface_hints[cid] = transcript_path
+        with self._lock:
+            self._heartbeats[cid] = time.monotonic()
+            if transcript_path:
+                self._surface_hints[cid] = transcript_path
 
         if event == 'pre_tool_use':
             return self._handle_pre_tool_use(cid, payload)

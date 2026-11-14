@@ -821,12 +821,12 @@ function composerImageSource(value,target,capture=false){
   if(url.origin!==location.origin||url.username||url.password||url.hash)return null;
   const path=window.BridgeRelayPath?.(url.pathname)??url.pathname;
   const codex=/^\/api\/sessions\/([0-9a-f-]{36})\/(uploads\/[0-9a-f-]{36}\/preview|desktop-images\/[a-f0-9]{64}|files\/[a-f0-9]{64})$/.exec(path);
-  const desktop=/^\/api\/desktop-sessions\/(claude|deepseek|zcode|antigravity)\/uploads\/[0-9a-f-]{36}\/preview$/.exec(path);
+  const desktop=/^\/api\/desktop-sessions\/(claude|deepseek|zcode|antigravity)\/(uploads\/[0-9a-f-]{36}\/preview|images\/[a-f0-9]{64})$/.exec(path);
   const identityKey=codex?'host':'sessionId',identity=codex?target.host:target.id;
   if(codex?target.provider!=='codex'||codex[1]!==target.id:!desktop||desktop[1]!==target.provider)return null;
   if(url.searchParams.getAll(identityKey).length!==1||url.searchParams.get(identityKey)!==identity)return null;
   const variants=url.searchParams.getAll('variant');
-  if(variants.length>1||variants.some(value=>!['thumb','original'].includes(value))||codex&&!codex[2].startsWith('uploads/')&&variants.length)return null;
+  if(variants.length>1||variants.some(value=>!['thumb','original'].includes(value))||!(codex?codex[2]:desktop[2]).startsWith('uploads/')&&variants.length)return null;
   if([...url.searchParams.keys()].some(key=>key!==identityKey&&key!=='variant'))return null;
   return url.href;
 }
