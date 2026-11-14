@@ -121,13 +121,26 @@ class Antigravity:
         return [{'surface': row['key'], 'host': 'local', 'hostLabel': '此电脑', 'name': row['name'],
                  'scope': str(row['root']), 'createRequiresMessage': True, 'createTitle': False} for row in self.store.surfaces()]
 
-    def _session(self, row, *, live=None):
+    def _waiting_state(self, surface, *, live=True):
+        if not live:
+            return {}, set()
+        try:
+            return self.cli.waiting_state_by_cid(surface=surface)
+        except (OSError, ValueError, BridgeUnavailable):
+            return {}, set()
+
+    def _session(self, row, *, live=None, waiting_state=None):
         key = row['id']
-        requests = self.hooks.pending_approvals_for(key) if self.hooks else []
-        hooked = bool(self.hooks and self.hooks.has_recent_heartbeat(key))
+        cid = row['nativeId']
+        surface = row['surfaceDirKey']
         if live is None:
-            live = self.cli.available(row['surfaceDirKey'])
-        active = row.get('status') == 'active' or hooked or bool(requests)
+            live = self.cli.available(surface)
+        waiting_by_cid, active_cids = waiting_state if waiting_state is not None else self._waiting_state(surface, live=live)
+        hook_requests = self.hooks.pending_approvals_for(key) if self.hooks else []
+        native_requests = list(waiting_by_cid.get(cid) or [])
+        requests = hook_requests + native_requests
+        hooked = bool(self.hooks and self.hooks.has_recent_heartbeat(key))
+        active = row.get('status') == 'active' or hooked or (cid in active_cids) or bool(requests)
         permission = self.hooks.permission_mode(key) if self.hooks else 'desktop'
         return {**row, 'status': 'active' if active else 'idle', 'requests': requests,
                 'model': self._settings.get(key, {}).get('model') or '', 'effort': '',
@@ -144,7 +157,9 @@ class Antigravity:
         """Inspect each native source and existing per-session settings without starting it."""
         found = {row['key']: row for row in self.store.surfaces()}
         live = {surface: self.cli.available(surface) for surface in SURFACE_LABELS}
-        sessions = [self._session(row, live=live[row['surfaceDirKey']]) for row in self.store.list_sessions()]
+        waiting = {surface: self._waiting_state(surface, live=live[surface]) for surface in SURFACE_LABELS}
+        sessions = [self._session(row, live=live[row['surfaceDirKey']], waiting_state=waiting[row['surfaceDirKey']])
+                    for row in self.store.list_sessions()]
         return {'surfaces': [
             {'id': surface, 'name': name, 'historyAvailable': surface in found,
              'connected': live[surface],
@@ -191,8 +206,9 @@ class Antigravity:
         if action in ('list', 'lifecycle'):
             rows = self.store.list_sessions()
             live = {surface: self.cli.available(surface) for surface in {row['surfaceDirKey'] for row in rows}}
+            waiting = {surface: self._waiting_state(surface, live=live[surface]) for surface in live}
             return {'connected': True, 'complete': True,
-                    'sessions': [self._session(row, live=live[row['surfaceDirKey']]) for row in rows]}
+                    'sessions': [self._session(row, live=live[row['surfaceDirKey']], waiting_state=waiting[row['surfaceDirKey']]) for row in rows]}
         if action == 'projects':
             return {'projects': self.store.discover_projects(), 'createRequiresMessage': True, 'createModels': True}
         if action == 'account':
@@ -232,7 +248,7 @@ class Antigravity:
         if row is None:
             raise ValueError('找不到此 Antigravity 会话')
         key, cid, surface = row['id'], row['nativeId'], row['surfaceDirKey']
-        session = self._session(row)
+        session = self._session(row, waiting_state=None if action == 'detail' else ({}, set()))
         if action == 'detail':
             page = self.store.read_transcript_page(row['surfaceRoot'], cid, limit=body.get('historyLimit') or 40,
                                                    before=body.get('historyBefore'), session_active=session['status'] == 'active')
@@ -258,9 +274,15 @@ class Antigravity:
             mode = self.hooks.set_permission_mode(key, body['mode']) if 'mode' in body else session['permissionMode']
             return {'status': 'accepted', 'mode': mode, 'options': PERMISSION_OPTIONS}
         if action == 'respond':
+            request_id = body.get('requestId')
+            if not isinstance(request_id, str) or not request_id.strip():
+                raise ValueError('缺少请求 ID')
+            if request_id.startswith('agy-wait:'):
+                self.cli.respond_interaction(cid, request_id, body.get('decision'), answers=body.get('answers'), surface=surface)
+                return {'status': 'accepted'}
             if not self.hooks:
                 raise ValueError('审批连接不可用')
-            self.hooks.resolve_approval(key, body.get('requestId'), body.get('decision'))
+            self.hooks.resolve_approval(key, request_id, body.get('decision'))
             return {'status': 'accepted'}
         if action == 'settings':
             if body.get('effort'):
@@ -299,7 +321,10 @@ class Antigravity:
             prompt, mode = self._prompt(body), body.get('mode') or 'send'
             if not prompt or mode not in ('send', 'queue', 'steer'):
                 raise ValueError('Antigravity 消息或发送方式无效')
-            if native_busy:
+            waiting_by_cid, active_cids = self._waiting_state(surface, live=True)
+            if (waiting_by_cid.get(cid) or (self.hooks and self.hooks.has_pending_approvals(key))) and mode == 'send':
+                raise BridgeUnavailable('原会话正在等待交互确认，请先回应后再发送')
+            if native_busy or cid in active_cids:
                 if mode not in ('queue', 'steer') or not self.hooks or not self.hooks.has_recent_heartbeat(key):
                     raise BridgeUnavailable('原会话正在运行；请等待结束，或在原会话重新载入网关 Hook 后排队')
                 item = self.hooks.enqueue_follow_up(key, prompt, mode=mode)

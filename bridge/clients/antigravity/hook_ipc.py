@@ -234,10 +234,20 @@ class HookIPCServer:
         prompt = {
             'id': request_id,
             'kind': kind,
+            'tool': tool_name,
             'title': title,
             'text': text,
+            'needsInput': False,
+            'input': {
+                'summary': text,
+                **({'args': tool_args} if tool_args else {}),
+            },
             'questions': [],
             'permissions': {},
+            'decisions': [
+                {'id': 'accept', 'label': '允许本次'},
+                {'id': 'decline', 'label': '拒绝'},
+            ],
             'options': [
                 {'id': 'accept', 'label': '允许 (Allow)'},
                 {'id': 'decline', 'label': '拒绝 (Deny)'},

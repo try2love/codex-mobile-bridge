@@ -1663,3 +1663,28 @@ test('Antigravity creation keeps native directory source separate from CLI displ
  environment.value='ide';environment.onchange();await new Promise(setImmediate);const model=dialog.querySelector('[aria-label="模型"]');model.value='ide-model';model.onchange();dialog.querySelector('textarea').value='FIRST';await dialog.querySelector('form').onsubmit({preventDefault(){}});
  const write=ui.calls.find(row=>row.url.endsWith('/create')).body;assert.equal(write.environment,'ide');assert.equal(write.projectKey,'ide-project');assert.equal(write.model,'ide-model');assert.equal(write.effort,undefined);assert.equal(write.firstMessage,'FIRST');assert.equal(write.title,undefined);
 });
+
+test('interactive questions support canSkip, exclusiveWriteIn and explicit canCancel',async()=>{
+ const ui=await opened();ui.view.state={...ui.view.state,status:'active',capabilities:{...ui.view.state.capabilities,send:true}};
+ const req={id:'agy-wait:app:c:t:1',tool:'提问',needsInput:true,canCancel:true,cancelLabel:'取消',exclusiveWriteIn:true,input:{questions:[
+  {id:'0',question:'Single choice',multiSelect:false,canSkip:true,options:[{id:'1',label:'Option A'},{id:'2',label:'Option B'}]},
+  {id:'1',question:'Optional note',multiSelect:true,canSkip:true,options:[{id:'x',label:'Check X'}]}
+ ]}};
+ ui.view.renderRequests([req]);
+ const form=ui.view.requests.querySelector('form'),allInputs=form.querySelectorAll('input');
+ const radios=allInputs.filter(n=>n.type==='radio'),checkboxes=allInputs.filter(n=>n.type==='checkbox'),texts=allInputs.filter(n=>n.type!=='radio'&&n.type!=='checkbox');
+ // exclusiveWriteIn clears radio when typing and clears write-in when selecting radio
+ radios[0].checked=true;radios[0].onchange();texts[0].value='Custom';texts[0].oninput();assert.equal(radios[0].checked,false);
+ radios[1].checked=true;radios[1].onchange();assert.equal(texts[0].value,'');
+ // second question skip checkbox clears inputs and submits skipped:true
+ checkboxes[1].checked=true;checkboxes[2].checked=true;checkboxes[2].onchange();assert.equal(checkboxes[1].checked,false);
+ await form.onsubmit({preventDefault(){}});
+ await new Promise(setImmediate);
+ const acceptWrite=ui.calls.filter(c=>c.body).at(-1).body;
+ assert.equal(acceptWrite.decision,'accept');
+ assert.deepEqual(JSON.parse(JSON.stringify(acceptWrite.answers)),{'0':{answers:['Option B']},'1':{answers:[],skipped:true}});
+ const buttons=form.querySelectorAll('button');assert.equal(buttons.length,2);assert.equal(buttons[1].textContent,'取消');
+ await buttons[1].click();
+ await new Promise(setImmediate);
+ assert.equal(ui.calls.filter(c=>c.body).at(-1).body.decision,'decline');
+});

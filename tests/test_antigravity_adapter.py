@@ -691,3 +691,243 @@ class AntigravitySafetyTests(unittest.TestCase):
         tcp = mock.Mock(family=socket.AF_INET)
         self.assertTrue(_verify_peer_uid(tcp))
         tcp.getsockopt.assert_not_called()
+
+    def test_ask_question_options_custom_skip_cancel_send_guard_and_fallback(self):
+        cid = 'aaaa1111-2222-4333-8444-555555555555'
+        other_cid = 'bbbb1111-2222-4333-8444-666666666666'
+        traj_id = 'traj-ask-01'
+        _create_surface_db(self.root, [
+            (cid, 'Ask Session', '', 1, '2026-11-08T02:00:00Z', '[]', 'CASCADE_RUN_STATUS_IDLE', 'CORTEX_TRAJECTORY_SOURCE_CONVERSATION', '', '', 0, 0, 0, ''),
+            (other_cid, 'Other Session', '', 1, '2026-11-08T02:00:00Z', '[]', 'CASCADE_RUN_STATUS_IDLE', 'CORTEX_TRAJECTORY_SOURCE_CONVERSATION', '', '', 0, 0, 0, ''),
+        ])
+        _create_surface_db(self.home / '.gemini/antigravity-ide', [
+            (cid, 'IDE Session', '', 1, '2026-11-08T02:00:00Z', '[]', 'CASCADE_RUN_STATUS_IDLE', 'CORTEX_TRAJECTORY_SOURCE_CONVERSATION', '', '', 0, 0, 0, ''),
+        ])
+        adapter = Antigravity(self.directory, home=self.home)
+        self.addCleanup(adapter.close)
+
+        ask_step = {
+            'type': 'CORTEX_STEP_TYPE_ASK_USER_QUESTION',
+            'status': 'CORTEX_STEP_STATUS_WAITING',
+            'askQuestion': {
+                'questions': [
+                    {
+                        'question': 'Deploy target?',
+                        'isMultiSelect': False,
+                        'options': [{'id': '1', 'text': 'Staging'}, {'id': '2', 'text': 'Production'}],
+                    },
+                    {
+                        'question': 'Select checks',
+                        'isMultiSelect': True,
+                        'options': [{'id': 'opt-unit', 'text': 'Unit tests'}, {'id': 'opt-e2e', 'text': 'E2E tests'}],
+                    },
+                ],
+            },
+        }
+        rpc_calls = []
+        state = {
+            'trajectories': {
+                cid: {
+                    'trajectoryId': traj_id,
+                    'status': 'CASCADE_RUN_STATUS_WAITING_FOR_USER',
+                    'waitingSteps': [{'stepIndex': 3, 'step': {**ask_step, 'requestedInteraction': {'askQuestion': ask_step['askQuestion']}}}],
+                }
+            },
+            'traj_steps': {cid: [{}, {}, {}, ask_step]},
+        }
+
+        def fake_rpc(method, body=None, *, surface='app'):
+            rpc_calls.append((surface, method, body))
+            if method == 'GetUserStatus':
+                return {'userStatus': {'email': 'dev@example.com'}} if surface == 'app' else {}
+            if method == 'GetAllCascadeTrajectories':
+                return {'trajectorySummaries': state['trajectories'] if surface == 'app' else {}}
+            if method == 'GetCascadeTrajectory':
+                return {'trajectory': {'steps': state['traj_steps'].get((body or {}).get('cascadeId'), [])}}
+            if method == 'HandleCascadeUserInteraction':
+                return {}
+            raise AssertionError(f'Unexpected RPC: {method}')
+
+        sid = gateway_id('app', cid)
+        other_sid = gateway_id('app', other_cid)
+        ide_sid = gateway_id('ide', cid)
+        req_id = f'agy-wait:app:{cid}:{traj_id}:3'
+
+        with mock.patch.object(adapter.cli, 'available', return_value=True), \
+                mock.patch.object(adapter.cli, 'call_ls_rpc', side_effect=fake_rpc):
+            listing = adapter.call('list')
+            sess = next(s for s in listing['sessions'] if s['id'] == sid)
+            self.assertEqual(sess['status'], 'active')
+            self.assertEqual(len(sess['requests']), 1)
+
+            detail = adapter.call('detail', sid)
+            req = detail['requests'][0]
+            self.assertEqual(req['id'], req_id)
+            self.assertTrue(req['needsInput'])
+            self.assertTrue(req['canCancel'])
+            self.assertEqual(req['cancelLabel'], '取消')
+            self.assertTrue(req['exclusiveWriteIn'])
+            self.assertTrue(all(q['canSkip'] for q in req['input']['questions']))
+
+            with self.assertRaises(BridgeUnavailable):
+                adapter.call('send', sid, {'text': 'cannot bypass waiting question'})
+
+            with self.assertRaises(ValueError):
+                adapter.call('respond', other_sid, {'requestId': req_id, 'decision': 'decline'})
+            with self.assertRaises(ValueError):
+                adapter.call('respond', ide_sid, {'requestId': req_id, 'decision': 'decline'})
+
+            adapter.call('respond', sid, {
+                'requestId': req_id,
+                'decision': 'accept',
+                'answers': {
+                    '0': {'answers': ['Staging', 'Canary cluster']},
+                    '1': {'answers': ['Unit tests', 'extra lint']},
+                },
+            })
+            _, last_method, last_body = rpc_calls[-1]
+            self.assertEqual(last_method, 'HandleCascadeUserInteraction')
+            ask_resp = last_body['interaction']['askQuestion']
+            self.assertFalse(ask_resp['cancelled'])
+            self.assertEqual(ask_resp['responses'][0]['writeInResponse'], 'Canary cluster')
+            self.assertNotIn('selectedOptionIds', ask_resp['responses'][0])
+            self.assertEqual(ask_resp['responses'][1]['selectedOptionIds'], ['opt-unit'])
+            self.assertEqual(ask_resp['responses'][1]['writeInResponse'], 'extra lint')
+
+            adapter.call('respond', sid, {
+                'requestId': req_id,
+                'decision': 'accept',
+                'answers': {'0': {'answers': ['Production']}, '1': {'answers': [], 'skipped': True}},
+            })
+            resps = rpc_calls[-1][2]['interaction']['askQuestion']['responses']
+            self.assertEqual(resps[0]['selectedOptionIds'], ['2'])
+            self.assertTrue(resps[1]['skipped'])
+
+            adapter.call('respond', sid, {'requestId': req_id, 'decision': 'decline'})
+            self.assertEqual(rpc_calls[-1][2]['interaction']['askQuestion'], {'cancelled': True})
+
+            with adapter.cli._lock:
+                adapter.cli._waiting_cache.clear()
+                adapter.cli._trajectories_cache.clear()
+            state['trajectories'] = {}
+            adapter.call('respond', sid, {
+                'requestId': req_id,
+                'decision': 'accept',
+                'answers': {'0': {'answers': ['Staging']}, '1': {'answers': ['Unit tests']}},
+            })
+            self.assertTrue(any(m == 'GetCascadeTrajectory' for _, m, _ in rpc_calls))
+
+        with mock.patch.object(adapter.cli, 'available', return_value=True), \
+                mock.patch.object(adapter.cli, 'call_ls_rpc', side_effect=BridgeUnavailable('transient')):
+            degraded = adapter.call('detail', sid)
+            self.assertEqual(degraded['requests'], [])
+
+    def test_subagent_and_sibling_waiting_interactions(self):
+        parent_cid = 'cccc1111-2222-4333-8444-555555555555'
+        sub_cid = 'dddd1111-2222-4333-8444-666666666666'
+        _create_surface_db(self.root, [
+            (parent_cid, 'Parent Conversation', '', 1, '2026-11-08T02:00:00Z', '[]', 'CASCADE_RUN_STATUS_IDLE', 'CORTEX_TRAJECTORY_SOURCE_CONVERSATION', '', '', 0, 0, 0, ''),
+        ])
+        adapter = Antigravity(self.directory, home=self.home)
+        self.addCleanup(adapter.close)
+
+        rpc_calls = []
+        waiting_steps = [
+            {
+                'stepIndex': 1,
+                'step': {
+                    'type': 'CORTEX_STEP_TYPE_RUN_COMMAND',
+                    'status': 'CORTEX_STEP_STATUS_WAITING',
+                    'requestedInteraction': {'runCommand': {}},
+                    'runCommand': {'proposedCommandLine': 'pytest -q', 'cwd': '/tmp'},
+                },
+            },
+            {
+                'stepIndex': 2,
+                'step': {
+                    'type': 'CORTEX_STEP_TYPE_CODE_ACTION',
+                    'status': 'CORTEX_STEP_STATUS_WAITING',
+                    'requestedInteraction': {'filePermission': {'absolutePathUri': 'file:///tmp/secret.txt', 'blockReason': 'Outside workspace'}},
+                },
+            },
+            {
+                'stepIndex': 3,
+                'step': {
+                    'type': 'CORTEX_STEP_TYPE_MCP_TOOL',
+                    'status': 'CORTEX_STEP_STATUS_WAITING',
+                    'requestedInteraction': {
+                        'elicitation': {
+                            'serverName': 'linear',
+                            'message': 'Provide filters',
+                            'requestedSchemaJson': json.dumps({
+                                'type': 'object',
+                                'required': ['count'],
+                                'properties': {
+                                    'count': {'type': 'integer', 'title': 'Count'},
+                                    'enabled': {'type': 'boolean', 'title': 'Enabled'},
+                                },
+                            }),
+                        }
+                    },
+                },
+            },
+        ]
+
+        def fake_rpc(method, body=None, *, surface='app'):
+            rpc_calls.append((surface, method, body))
+            if method == 'GetUserStatus':
+                return {'userStatus': {'email': 'dev@example.com'}} if surface == 'app' else {}
+            if method == 'GetAllCascadeTrajectories':
+                return {
+                    'trajectorySummaries': {
+                        parent_cid: {'trajectoryId': 'traj-parent', 'waitingSteps': waiting_steps},
+                        sub_cid: {
+                            'trajectoryId': 'traj-sub',
+                            'status': 'CASCADE_RUN_STATUS_WAITING_FOR_USER',
+                            'trajectoryMetadata': {'rootConversationId': parent_cid, 'parentConversationId': parent_cid},
+                            'waitingSteps': [{'stepIndex': 5, 'step': {
+                                'type': 'CORTEX_STEP_TYPE_ASK_USER_QUESTION',
+                                'status': 'CORTEX_STEP_STATUS_WAITING',
+                                'requestedInteraction': {'askQuestion': {'questions': [{'question': 'Proceed?', 'options': [{'id': 'y', 'text': 'Yes'}]}]}},
+                            }}],
+                        },
+                    }
+                }
+            if method == 'HandleCascadeUserInteraction':
+                return {}
+            raise AssertionError(f'Unexpected RPC: {method}')
+
+        parent_sid = gateway_id('app', parent_cid)
+        with mock.patch.object(adapter.cli, 'available', return_value=True), \
+                mock.patch.object(adapter.cli, 'call_ls_rpc', side_effect=fake_rpc):
+            detail = adapter.call('detail', parent_sid)
+            reqs = {r['id']: r for r in detail['requests']}
+            sub_req = reqs[f'agy-wait:app:{sub_cid}:traj-sub:5']
+            self.assertTrue(sub_req['tool'].startswith('子智能体 · '))
+
+            adapter.call('respond', parent_sid, {'requestId': sub_req['id'], 'decision': 'accept', 'answers': {'0': {'answers': ['Yes']}}})
+            self.assertEqual(rpc_calls[-1][2]['cascadeId'], sub_cid)
+
+            adapter.call('respond', parent_sid, {'requestId': f'agy-wait:app:{parent_cid}:traj-parent:1', 'decision': 'accept'})
+            self.assertEqual(rpc_calls[-1][2]['interaction']['runCommand'], {'confirm': True, 'proposedCommandLine': 'pytest -q', 'submittedCommandLine': 'pytest -q'})
+
+            adapter.call('respond', parent_sid, {'requestId': f'agy-wait:app:{parent_cid}:traj-parent:2', 'decision': 'accept_conversation'})
+            self.assertEqual(rpc_calls[-1][2]['interaction']['filePermission']['scope'], 'PERMISSION_SCOPE_CONVERSATION')
+
+            adapter.call('respond', parent_sid, {'requestId': f'agy-wait:app:{parent_cid}:traj-parent:3', 'decision': 'accept', 'answers': {'count': {'answers': ['5']}, 'enabled': {'answers': ['true']}}})
+            self.assertEqual(json.loads(rpc_calls[-1][2]['interaction']['elicitation']['contentJson']), {'count': 5, 'enabled': True})
+
+        server = HookIPCServer(self.directory, session_resolver=lambda _: parent_sid)
+        self.addCleanup(server.close)
+        server.set_permission_mode(parent_sid, 'mobile-ask')
+        t = threading.Thread(target=lambda: server.dispatch_hook_event('pre_tool_use', {'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'echo hi'}}}), daemon=True)
+        t.start()
+        deadline = time.monotonic() + 2.0
+        while not server.pending_approvals_for(parent_sid) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        pending = server.pending_approvals_for(parent_sid)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]['tool'], 'run_command')
+        self.assertEqual(pending[0]['decisions'][0]['id'], 'accept')
+        server.resolve_approval(parent_sid, pending[0]['id'], 'decline')
+        t.join(timeout=2.0)
