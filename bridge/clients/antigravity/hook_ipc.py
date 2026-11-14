@@ -333,6 +333,11 @@ class HookIPCServer:
                 return True
             return any(p.conversation_id == conversation_id for p in self._pending.values())
 
+    def assert_account_idle(self):
+        with self._lock:
+            if self._pending or any(self._queues.values()):
+                raise ValueError('Antigravity 有待确认或排队消息，请先处理后再切换账号')
+
     def pending_approvals_for(self, conversation_id):
         with self._lock:
             return [

@@ -28,13 +28,15 @@ class AntigravityCli:
         except (OSError, ValueError, subprocess.SubprocessError):
             return False
 
-    def call_ls_rpc(self, method, payload=None, *, surface='app'):
-        if method not in ('GetUserStatus', 'StartCascade', 'SendUserCascadeMessage', 'CancelCascadeInvocation'):
+    def call_ls_rpc(self, method, payload=None, *, surface='app', expected_identity=None):
+        if method not in ('GetUserStatus', 'GetAllCascadeTrajectories', 'StartCascade', 'SendUserCascadeMessage', 'CancelCascadeInvocation'):
             raise ValueError('不支持的 Antigravity 原生操作')
         # This serializes bridge writes; ownership remains with the native LS.
         with self._lock:
             try:
                 target = endpoint(surface, self.home)
+                if expected_identity is not None and target['identity'] != expected_identity:
+                    raise ValueError('原生服务进程已变化')
                 verify_endpoint(target)
                 request = urllib.request.Request(
                     target['address'] + '/exa.language_server_pb.LanguageServerService/' + method,
@@ -44,6 +46,8 @@ class AntigravityCli:
                     raw = response.read(8 * 1024 * 1024 + 1)
                 if len(raw) > 8 * 1024 * 1024:
                     raise ValueError('Antigravity 原生回复过大')
+                if method == 'GetAllCascadeTrajectories' and not raw:
+                    raise ValueError('Antigravity 任务状态回复为空')
                 result = json.loads(raw) if raw else {}
                 if not isinstance(result, dict):
                     raise ValueError('Antigravity 原生回复无效')
@@ -55,6 +59,26 @@ class AntigravityCli:
 
     def user_status(self, surface='app'):
         return self.call_ls_rpc('GetUserStatus', surface=surface).get('userStatus') or {}
+
+    def assert_idle(self, surface, expected_identity):
+        # Request every trajectory, including children. Saved history is neither
+        # complete nor synchronous enough to authorize an account restart.
+        result = self.call_ls_rpc('GetAllCascadeTrajectories', {'exclude_subtrajectories': False},
+                                  surface=surface, expected_identity=expected_identity)
+        # The installed protobuf service omits an empty map: a successful,
+        # identity-verified response {} is its real zero-trajectory response.
+        # Do not extend this to malformed fields, error objects or DB fallbacks.
+        rows = {} if result == {} else result.get('trajectorySummaries')
+        if set(result) - {'trajectorySummaries'}:
+            raise ValueError('无法完整核验 Antigravity 任务，请在原客户端正常退出后切换账号')
+        if not isinstance(rows, dict):
+            raise ValueError('无法完整核验 Antigravity 任务，请在原客户端正常退出后切换账号')
+        for row in rows.values():
+            if not isinstance(row, dict) or row.get('status') != 'CASCADE_RUN_STATUS_IDLE':
+                raise ValueError('Antigravity 有未结束或状态未知的任务，请处理后重试')
+            if any(row.get(key) for key in ('waitingSteps', 'notFullyIdle', 'hasActiveChildren',
+                                           'hasRunningSubagents', 'backgroundTaskCount')):
+                raise ValueError('Antigravity 有运行任务、后台任务或待确认操作，请处理后重试')
 
     def catalog_models(self, *, refresh=False, surface='app'):
         status = self.user_status(surface)
