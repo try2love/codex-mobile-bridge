@@ -26,6 +26,7 @@ Antigravity App、IDE、CLI 将历史保存在不同目录。把端口日志、�
 - Hook 只在用户启用接入后启动，使用用户资料级单 owner 锁。来源通过会话目录中的 transcript 路径核验。steer 仅在 `PostInvocation` 消费；queue 仅在已确认 `fullyIdle=true` 的正常 `model_stop` 消费。已消费但回执不明的注入不重放；未知/异常停止保留队列。
 - 上传的图片及文件保留网关验证后的本机路径，通过共享 `file_mentions` 交给原服务。历史图片继续使用经过会话/项目边界检查的共享预览。这里不宣称原生视觉输入已经实机验证。
 - 沿用共享聊天、时间戳、资源、通知、下载和手机跳转；不引入原 PR 的 Light 主题、排队控制条或独立聊天布局。官方图标直接取自 [Antigravity press](https://antigravity.google/press) 的品牌 PNG，文件哈希为 `e0cd08ccd10cd8d08ccf0ba449823ee88495825c0841619618100d3ab089f51e`。
+- 在不改变只读与来源隔离契约的前提下补齐原生运行态增强：通过只读 `GetAllCascadeTrajectories` 与按来源隔离的 `agy-wait:{surface}:{cid}:{tid}:{step_index}` / `HandleCascadeUserInteraction` 原生回应 `askQuestion`、`runCommand`、`filePermission`、`elicitation`、`deploy` 等等待交互及子智能体交互，并在 `send` 前拦截未处理等待步骤；模型目录过滤 `disabled`/`Unavailable`/`-disabled` 条目，仅在真实 `quotaInfo` / `planStatus` 存在时透出配额标签、`usageSummary` 与详细步骤 `contextUsage`（`cacheWriteTokens` / `outputTokens`），缺省时保留原纯文本提示；`transcript_full.jsonl` 水合与 `read_image` 执行分支对齐、全文件扫掠、`transcript_full.jsonl` 回退与允许根目录内的符号链接拦截；子任务仍只读展示，不采纳尚未完整核验实时任务关系和后台范围的 `stop-task` 扩展；`HookIPCServer` 写回失败不恢复队列快照。
 
 ## 备选方案
 
@@ -53,3 +54,19 @@ Antigravity App、IDE、CLI 将历史保存在不同目录。把端口日志、�
 默认账号快照补验：14 项目标 Python 回归覆盖无凭据轮询、原始字段/缺失文件、活动或自定义入口拒绝、不一致身份、条件回滚、外部变化及未确认回滚保留副本、无关秘密不变、符号链接/路径穿越、认证类型和 Go 编码。共享账号 UI 共 45 项已覆盖；新增名称编辑用例在修前失败，修后及相关子集通过。不支持添加 API 不再隐藏官方账号名称编辑，关闭后也不暴露 API 表单。生产桌面页面、实际 manager 和快照存储配合合成凭据，在浏览器完成保存、应用、改名和删除，页面不出现令牌。
 
 Mac 原生 Keychain、Ubuntu Secret Service、Windows Credential Manager 的随机测试项均完成新增、读回、更新和删除，没有读取真实账号。Windows SSH 会话返回错误 1312；同用户 Interactive/Limited 的一次性后台任务验证成功后移除，不能把 SSH 的不可用当作桌面凭据格式错误。Ubuntu 原生 sleep 副本在运行中 unlink 后仍被停止核验识别，随后正常退出。AGY 实际账号无法登录，未做真实账号切换或模型请求；这些结果证明存储及流程兼容，不能替代登录有效性和新版冻结包验证。
+
+2026-11-14 基于 `v2.2.1-preview.1` 的运行态增强验证：覆盖原生等待交互与子智能体交互传播/跨来源隔离、disabled/Unavailable 模型过滤与真实 `quotaInfo`/`planStatus`/`contextUsage`、`CodeContent`/`ERROR_MESSAGE`/`CHECKPOINT`/工具图片、回滚 `transcript_full.jsonl` 水合与 `read_image` 符号链接拦截、子任务保持只读及 `HookIPCServer` socket 写失败不重放。以上基于隔离夹具与合成 RPC/socketpair；模块边界与桌面 UI 相关 Node 用例通过，真实 Antigravity 桌面客户端实机联调、真机手机 WebView 与 Playwright 浏览器套件仍待端到端验证。
+
+## Hook 写回未知结果
+
+队列由原生Hook事件在原有锁内一次性消费。socket写回失败可能发生在部分内容已送出后，也可能与其他Hook消费、用户撤回/编辑交错，因此不恢复派发前的队列快照。保留未选中的排队项，不推断已消费消息送达成功，也不自动重发；用户应核对原客户端结果后决定是否重新发送。恢复“看似未送达”队列能减少掉线时的丢消息，却无法证明未送达，故不采用。定向socketpair测试覆盖成功消费交错、撤回/编辑、半包错误、未选中项持久化及下一Hook不重放。
+
+## 等待交互的即时核验
+
+列表和详情沿用短时展示缓存，读取失败保留历史；发送及回答前重新读取原生等待摘要，失败不能按空闲处理。回答只使用本次摘要仍列出的请求及父会话关系，不能从用户传入的旧请求 ID 重建授权。当前摘要仅缺少步骤详情时仍可读取完整步骤。刷新只替换同来源的等待记录，APP、CLI、IDE 互不清除；子任务及后台活动同步影响原生父会话的忙碌状态。沿用展示缓存可少一次 RPC，但可能回答桌面已处理的问题，故仅展示使用。九项定向回归覆盖新等待、已处理、读取失败、父关系变化、来源隔离与步骤详情补读；原有提问和子智能体交互用例亦通过。
+
+## 信息补充回答的类型
+
+MCP 表单复用共享问题控件，保留字符串、有限数值、严格布尔值和枚举数组的类型，并校验必填、枚举、长度及数值边界。固定选项通过问题能力 `allowCustom=false` 隐藏补充文本，其他客户端问题的手填行为不变。无答案、跳过、false 和零分别处理；不把任意文本转换为 false，也不截取多个答案伪装成单选。嵌套对象、未支持的约束或损坏的 schema 只提示回到原客户端并保留拒绝入口，后端亦拒绝空内容的“允许”。完整引入 JSON Schema 引擎可支持更多格式，但当前共享控件不能表达全部格式，因此保留明确子集，不新增依赖。
+
+六项 Python 回归覆盖类型与约束反例，两项共享 UI 回归覆盖固定选项、跳过、取消及刷新保留草稿。依据为已安装官方原生 descriptor 和 [MCP 的表单验证约定](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/2025-11-25/docs/docs/learn/client-concepts.mdx)，尚不代表真实上游表单往返。

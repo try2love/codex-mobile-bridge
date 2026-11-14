@@ -188,23 +188,35 @@ class HookIPCServer:
             payload = req.get('payload')
             if not isinstance(payload, dict):
                 payload = {}
-            resp = self.dispatch_hook_event(event, payload)
+            cid = self._resolve_cid(payload)
+            resp = self._dispatch_resolved(cid, event, payload)
             try:
                 _write_frame(conn, resp)
             except OSError:
-                pass
+                # A partial reply may already have reached the Hook. Other Hooks
+                # or user edits can also consume the queue; never restore a snapshot.
+                return
+
+    def _resolve_cid(self, payload):
+        return (
+            self.session_resolver(payload)
+            if self.session_resolver
+            else str(payload.get('conversationId') or '').strip()
+        )
 
     def dispatch_hook_event(self, event, payload):
         """Process a hook event payload and return the Antigravity stdout JSON dict."""
-        cid = (self.session_resolver(payload) if self.session_resolver else str(payload.get('conversationId') or '').strip())
+        cid = self._resolve_cid(payload)
+        return self._dispatch_resolved(cid, event, payload)
+
+    def _dispatch_resolved(self, cid, event, payload):
         if not cid:
             return {'decision': 'ask'} if event == 'pre_tool_use' else {}
         transcript_path = str(payload.get('transcriptPath') or '')
-        if cid:
-            with self._lock:
-                self._heartbeats[cid] = time.monotonic()
-                if transcript_path:
-                    self._surface_hints[cid] = transcript_path
+        with self._lock:
+            self._heartbeats[cid] = time.monotonic()
+            if transcript_path:
+                self._surface_hints[cid] = transcript_path
 
         if event == 'pre_tool_use':
             return self._handle_pre_tool_use(cid, payload)
@@ -234,10 +246,20 @@ class HookIPCServer:
         prompt = {
             'id': request_id,
             'kind': kind,
+            'tool': tool_name,
             'title': title,
             'text': text,
+            'needsInput': False,
+            'input': {
+                'summary': text,
+                **({'args': tool_args} if tool_args else {}),
+            },
             'questions': [],
             'permissions': {},
+            'decisions': [
+                {'id': 'accept', 'label': '允许本次'},
+                {'id': 'decline', 'label': '拒绝'},
+            ],
             'options': [
                 {'id': 'accept', 'label': '允许 (Allow)'},
                 {'id': 'decline', 'label': '拒绝 (Deny)'},

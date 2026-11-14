@@ -10,8 +10,8 @@ import sys
 PLUGIN_DIR_NAME = 'codex-mobile-bridge'
 HOOK_NAME = 'codex-mobile-bridge'
 PRE_TOOL_MATCHER = (
-    'run_command|edit_file|write_file|replace_file_content|'
-    'multi_replace_file_content|write_to_file'
+    'run_command|send_command_input|edit_file|write_file|replace_file_content|'
+    'multi_replace_file_content|write_to_file|call_mcp_tool|browser_.*|computer_act|script_run'
 )
 
 

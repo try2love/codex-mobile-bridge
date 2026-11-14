@@ -1677,3 +1677,77 @@ test('creation catalog outage keeps manual drafts editable without inventing an 
  assert.equal(picker.manualModel.value,'exact/model');assert.equal(picker.selection().model,'exact/model');
  assert.equal(picker.selection().modelCatalogIdentity,'verified');picker.dispose();
 });
+
+test('interactive questions support canSkip, exclusiveWriteIn and explicit canCancel',async()=>{
+ const ui=await opened();ui.view.state={...ui.view.state,status:'active',capabilities:{...ui.view.state.capabilities,send:true}};
+ const req={id:'agy-wait:app:c:t:1',tool:'提问',needsInput:true,canCancel:true,cancelLabel:'取消',exclusiveWriteIn:true,input:{questions:[
+  {id:'0',question:'Single choice',multiSelect:false,canSkip:true,options:[{id:'1',label:'Option A'},{id:'2',label:'Option B'}]},
+  {id:'1',question:'Optional note',multiSelect:true,canSkip:true,options:[{id:'x',label:'Check X'}]}
+ ]}};
+ ui.view.renderRequests([req]);
+ const form=ui.view.requests.querySelector('form'),allInputs=form.querySelectorAll('input');
+ const radios=allInputs.filter(n=>n.type==='radio'),checkboxes=allInputs.filter(n=>n.type==='checkbox'),texts=allInputs.filter(n=>n.type!=='radio'&&n.type!=='checkbox');
+ // exclusiveWriteIn clears radio when typing and clears write-in when selecting radio
+ radios[0].checked=true;radios[0].onchange();texts[0].value='Custom';texts[0].oninput();assert.equal(radios[0].checked,false);
+ radios[1].checked=true;radios[1].onchange();assert.equal(texts[0].value,'');
+ // second question skip checkbox clears inputs and submits skipped:true
+ checkboxes[1].checked=true;checkboxes[2].checked=true;checkboxes[2].onchange();assert.equal(checkboxes[1].checked,false);
+ await form.onsubmit({preventDefault(){}});
+ await new Promise(setImmediate);
+ const acceptWrite=ui.calls.filter(c=>c.body).at(-1).body;
+ assert.equal(acceptWrite.decision,'accept');
+ assert.deepEqual(JSON.parse(JSON.stringify(acceptWrite.answers)),{'0':{answers:['Option B']},'1':{answers:[],skipped:true}});
+ const buttons=form.querySelectorAll('button');assert.equal(buttons.length,2);assert.equal(buttons[1].textContent,'取消');
+ await buttons[1].click();
+ await new Promise(setImmediate);
+ assert.equal(ui.calls.filter(c=>c.body).at(-1).body.decision,'decline');
+});
+
+test('schema questions restrict fixed choices without changing other question write-ins',async()=>{
+ const ui=await opened();
+ const req={id:'form',needsInput:true,canCancel:true,input:{questions:[
+  {id:'choices',question:'Choose',multiSelect:true,allowCustom:false,options:[{label:'1'},{label:'2'}]},
+  {id:'note',question:'Note',options:[]}
+ ]}};
+ ui.view.renderRequests([req]);
+ let form=ui.view.requests.querySelector('form');
+ assert.equal(form.querySelectorAll('input').length,3);
+ form.answerInputs[0].area.querySelectorAll('input')[0].checked=true;
+ form.answerInputs[1].custom.value='preserved draft';
+ ui.view.renderRequests([req]);form=ui.view.requests.querySelector('form');
+ assert.equal(form.answerInputs[1].custom.value,'preserved draft');
+ await form.onsubmit({preventDefault(){}});await new Promise(setImmediate);
+ assert.deepEqual(JSON.parse(JSON.stringify(ui.calls.filter(c=>c.body).at(-1).body.answers)),{choices:{answers:['1']},note:{answers:['preserved draft']}});
+});
+
+test('model picker renders quota badges and structured usageSummary without altering plain notices',async()=>{
+ const ui=await opened();
+ ui.setHandler(async()=>({
+  models:[
+   {id:'m-low',name:'Low Model',efforts:[],quotaTag:'剩余 15.0%',quotaStatus:'warning'},
+   {id:'m-empty',name:'Empty Model',efforts:[],quotaTag:'已用尽',quotaStatus:'exhausted'}
+  ],
+  currentModel:'m-low',
+  capabilities:{models:true,effort:false},
+  usageSummary:{tier:'Google AI Pro',items:[{name:'Low Model',val:'剩余 15.0%',note:'将于 11/14 12:30 重置',status:'warning'}],credits:'可用 Prompt 点数: 120 · Flow 点数: 45'}
+ }));
+ await ui.view.models();
+ const dialog=ui.document.querySelector('dialog');
+ const badges=dialog.querySelectorAll('.model-choice-badge');
+ assert.equal(badges.length,2);
+ assert.equal(badges[0].classList.contains('badge-warning'),true);
+ assert.equal(badges[1].classList.contains('badge-exhausted'),true);
+ const card=dialog.querySelector('.ds-usage-card');
+ assert.ok(card);
+ assert.equal(card.querySelector('.ds-usage-title').textContent,'Google AI Pro');
+ assert.equal(card.querySelector('.ds-usage-row').querySelector('.ds-usage-name').textContent,'Low Model');
+ assert.equal(card.querySelector('.ds-usage-credits').textContent,'可用 Prompt 点数: 120 · Flow 点数: 45');
+ dialog.close();
+
+ ui.setHandler(async()=>({models:[{id:'m-plain',name:'Plain',efforts:[]}],currentModel:'m-plain',notice:'plain notice',capabilities:{models:true,effort:false}}));
+ await ui.view.models();
+ const plainDialog=ui.view.modelDialog;
+ assert.equal(plainDialog.querySelector('.ds-usage-card'),null);
+ assert.equal(plainDialog.querySelector('.muted').textContent,'plain notice');
+ plainDialog.close();
+});

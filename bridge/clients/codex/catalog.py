@@ -55,7 +55,7 @@ class ModelStore:
     def directory(value):
         """Share discovery metadata, never a conversation's current state."""
         result = {key: copy.deepcopy(value[key]) for key in
-                  ('models', 'groups', 'modelSource', 'source', 'modelSourcesVersion', 'fastMode') if key in value}
+                  ('models', 'groups', 'modelSource', 'source', 'modelSourcesVersion', 'fastMode', 'usageSummary') if key in value}
         if isinstance(result.get('groups'), list):
             result['groups'] = [{key: item for key, item in group.items()
                 if key in ('id', 'name', 'label', 'surface', 'source', 'models', 'modelSourcesVersion')}
