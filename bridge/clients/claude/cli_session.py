@@ -14,7 +14,7 @@ from collections import deque
 from pathlib import Path
 
 from bridge.clients.claude import model, file_archive
-from bridge.clients.claude.history import file_stamp, page as history_page, image_event, session_custom_title, local_command_text
+from bridge.clients.claude.history import file_stamp, page as history_page, image_event, session_custom_title, local_command_text, merge_live_page
 from bridge.clients.claude.context import context_fields
 from bridge.clients.claude.session_registry import assert_session_closed
 from bridge.clients.claude.creation import creation_launch_options
@@ -971,7 +971,7 @@ class ClaudeCli:
                         live_events = list(owned.events)
                 else:
                     live_events = []
-                events = history_events + (live_events if before is None else [])
+                events = merge_live_page(history_events, live_events) if before is None else history_events
                 public.update(context_fields(row['contextEvents'] + live_events))
                 messages = model.transcript(events)
                 unique = {item['id']: item for item in messages}

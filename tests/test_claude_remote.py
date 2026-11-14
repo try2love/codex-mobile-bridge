@@ -540,6 +540,34 @@ class RemoteAdapterContract(unittest.TestCase):
         self.assertEqual(calls[0]['operation'], 'history')
         self.assertEqual((calls[0]['historyBefore'], calls[0]['historyLimit']), ('cursor', 10))
 
+    def test_live_detail_uses_recent_page_and_only_the_unpersisted_stream_tail(self):
+        row = self.cli._row('ssh:test', self.hosts.hosts()['ssh:test'],
+                            {**self.row, 'stamp': [1, 2, 3, 4]})
+        sid = row['id']
+        self.cli.index[sid] = row
+        events = [{'type': 'assistant', 'uuid': f'a{index}',
+                   'message': {'role': 'assistant', 'content': str(index)}} for index in range(1000)]
+        live = events + [{'type': 'assistant', 'uuid': 'new',
+                         'message': {'role': 'assistant', 'content': 'not saved'}}]
+        owned = SimpleNamespace(origin=row['origin'], process=Mock(), error=None,
+            condition=threading.Condition(), events=live, pending={}, active=False,
+            catalog={}, model=None, permission=None)
+        owned.process.poll.return_value = None
+        self.cli.owned[sid] = owned
+        self.addCleanup(self.cli.owned.clear)
+        def response(_alias, request, **_kwargs):
+            self.assertEqual(request['operation'], 'history')
+            page = events[-80:-40] if request['historyBefore'] else events[-40:]
+            return {'events': page, 'history': {'before': 'older', 'hasMore': True}, 'stamp': row['stamp']}
+        with patch.object(self.cli, '_remote', side_effect=response):
+            recent = self.cli.call('detail', sid, {'historyLimit': 40})
+            older = self.cli.call('detail', sid, {'historyBefore': 'older', 'historyLimit': 40})
+        self.assertEqual([message['eventId'] for message in recent['messages']],
+                         [f'a{index}' for index in range(960, 1000)] + ['new'])
+        self.assertEqual([message['eventId'] for message in older['messages']],
+                         [f'a{index}' for index in range(920, 960)])
+        self.assertIs(owned.events, live)
+
     def test_detail_exposes_remote_directory_preflight_before_resume(self):
         row = self.cli._row('ssh:test', self.hosts.hosts()['ssh:test'], {**self.row, 'stamp': [1, 2, 3, 4]})
         self.cli.index[row['id']] = row
