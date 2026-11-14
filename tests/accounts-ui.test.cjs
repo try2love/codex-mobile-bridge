@@ -83,13 +83,33 @@ for(const desktop of [false,true])test(`${desktop?'desktop':'web'} explicitly in
  ui.panel.accept({...ui.value(),desktopRuntime:{supported:true,configured:true},switch:{phase:'verifying',operation:'desktopRuntime'}});
  assert.equal(ui.panel.initializeRuntime.disabled,true);assert.match(ui.panel.status.textContent,/核验原生连接/);
  ui.panel.accept({...ui.value(),desktopRuntime:{supported:true,configured:true},switch:{phase:'failed',operation:'desktopRuntime',error:'test failure'}});
- assert.equal(ui.panel.initializeRuntime.disabled,false);assert.equal(ui.panel.initializeRuntime.textContent,'重新初始化连接');assert.match(ui.panel.status.textContent,/原生连接初始化未完成/);
+ assert.equal(ui.panel.initializeRuntime.disabled,false);assert.equal(ui.panel.initializeRuntime.textContent,'重新准备连接');assert.match(ui.panel.status.textContent,/原生连接初始化未完成/);
  ui.panel.accept({...ui.value(),scope:'profile'});assert.equal(ui.panel.desktopRuntime.hidden,true);
  ui.panel.clear();assert.equal(ui.panel.desktopRuntime.hidden,true);
 });
 test('native initialization remains unavailable for passwordless remote access',async()=>{
  const ui=fixture();ui.panel.accept({...ui.value(),canSwitch:false,desktopRuntime:{supported:true,configured:false}});assert.equal(ui.panel.initializeRuntime.disabled,true);
  ui.panel.accept({...ui.value(),desktopRuntime:{supported:false}});assert.equal(ui.panel.desktopRuntime.hidden,true);
+});
+test('automatic native preparation stays passive and offers unknown-task recovery',()=>{
+ const ui=fixture();ui.panel.accept({...ui.value(),desktopRuntime:{supported:true,preparation:{state:'checking'}}});
+ assert.match(ui.panel.runtimeStatus.textContent,/自动检查/);assert.equal(ui.requests.length,0);
+ ui.panel.accept({...ui.value(),desktopRuntime:{supported:true,preparation:{state:'waiting',taskStateUnavailable:true}}});
+ assert.match(ui.panel.runtimeStatus.textContent,/空闲后自动准备/);assert.equal(ui.panel.forceInitializeRuntime.hidden,false);
+ ui.panel.accept({...ui.value(),desktopRuntime:{supported:true,configured:true,preparation:{state:'ready'}}});
+ assert.match(ui.panel.runtimeStatus.textContent,/准备好/);assert.equal(ui.panel.forceInitializeRuntime.hidden,true);
+ assert.equal(ui.requests.length,0);
+});
+
+for(const desktop of [false,true])test(`${desktop?'desktop':'web'} offers a confirmed retry only for unavailable native task state`,async()=>{
+ const ui=fixture(desktop),state={...ui.value(),desktopRuntime:{supported:true},switch:{phase:'failed',operation:'desktopRuntime',taskStateUnavailable:true}};
+ ui.panel.accept(state);assert.equal(ui.panel.forceInitializeRuntime.hidden,false);assert.equal(ui.panel.forceInitializeRuntime.disabled,false);
+ ui.confirm(false);await ui.panel.forceInitializeRuntime.onclick();assert.equal(ui.requests.length,0);
+ ui.confirm(true);await ui.panel.forceInitializeRuntime.onclick();assert.equal(ui.requests[0].acknowledgeUnavailable,true);assert.match(ui.prompts[0],/正常重启.*可能中断/);
+ ui.panel.accept({...state,switch:{phase:'failed',operation:'desktopRuntime',error:'known busy'}});assert.equal(ui.panel.forceInitializeRuntime.hidden,true);
+ ui.panel.accept({...state,switch:{...state.switch,phase:'verifying'}});assert.equal(ui.panel.forceInitializeRuntime.hidden,true);
+ if(!desktop){ui.panel.accept({...state,canSwitch:false});assert.equal(ui.panel.forceInitializeRuntime.disabled,true);}
+ ui.panel.accept({...state,management:{external:true}});assert.equal(ui.panel.forceInitializeRuntime.disabled,true);
 });
 
 test('external Magpie management disables configuration replacement on both surfaces',async()=>{
@@ -516,4 +536,27 @@ test('account actions and model control share one footer on both hosts',async()=
   const choose=ui.all().find(n=>n.textContent==='切换到此接入'),models=ui.all().find(n=>n.textContent==='查看可用模型');
   assert.equal(choose.parent,models.parent);assert.equal(models.parent.className,'accounts-card-footer');
  }
+});
+
+
+test('unknown API auth exposes only a same-request read-only verification on web and desktop',async()=>{
+ for(const desktop of [false,true]){
+  const ui=fixture(desktop),requestId='22222222-2222-4222-8222-222222222222';
+  ui.setValue({...ui.value(),accounts:[...ui.value().accounts,{id:'other',kind:'api',name:'Other'}],
+    switch:{phase:'authUnknown',operation:'cliAuth',targetId:'a',requestId,error:'账号同步结果待核验'}});
+  await ui.panel.refresh();
+  const verify=ui.all().find(n=>n.tag==='button'&&n.textContent==='核验账号同步');
+  assert.ok(verify);assert.equal(verify.disabled,false);
+  assert.equal(ui.all().find(n=>n.tag==='button'&&n.textContent==='切换到此接入').disabled,true);
+  ui.confirm(false);await verify.onclick();
+  assert.equal(ui.prompts.length,0);
+  assert.deepEqual(JSON.parse(JSON.stringify(ui.requests[0])),{action:'switch',id:'a',requestId,confirmed:true,tasksConfirmed:true});
+ }
+});
+
+
+test('shared account confirmation keeps other clients quiet until synchronization completes',async()=>{
+ const ui=fixture();await ui.panel.refresh();await ui.panel.choose(ui.value().accounts[0]);
+ assert.match(ui.prompts[0],/切换完成前请勿从其他客户端发起任务/);
+ assert.match(ui.prompts[0],/仅在需要时/);
 });

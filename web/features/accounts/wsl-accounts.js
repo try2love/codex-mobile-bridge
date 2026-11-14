@@ -13,7 +13,7 @@ class WslAccountsPanel {
   select(entry){this.clear();this.entry=entry||'';this.root.hidden=!this.entry;if(this.entry)return this.refresh();}
   async refresh(){if(!this.entry||this.busy)return;const generation=++this.generation,entry=this.entry;this.busy=true;this.error='';this.render();try{const value=await this.read(entry);if(generation!==this.generation)return;if(value.entry!==entry||value.provider!==this.provider)throw Error('WSL 账号结果与所选环境不一致');if(value.restartPending)this.error=value.restartError||'账号配置已应用，共享服务尚未恢复；请检查并恢复，不要重复切换账号';else if(value.continuationPending)this.error=value.continuationError||'账号配置已切换，原会话续接尚未核验；请刷新检查，不要重复提交切换';else if(Array.isArray(value.draftContinuations))this.onSwitched?.(value);this.value=value;}catch(error){if(generation===this.generation)this.error=error.message;}finally{if(generation===this.generation){this.busy=false;this.render();}}}
   async perform(action,fields={}){
-    if(this.busy||!this.entry||!this.value?.available)return;
+    if(this.busy||!this.entry||(!this.value?.available&&!(action==='connect'&&this.value?.capabilities?.connect)))return;
     const generation=++this.generation,entry=this.entry,payload={provider:this.provider,entry,action,...(['switch','recover-restart'].includes(action)?{expectedIdentity:this.value.identity}:{}),...fields};this.busy=true;this.error='';if(this.key)this.key.value='';this.render();
     try{const result=await this.request(payload);if(generation!==this.generation)return;
       if(result.entry&&result.entry!==entry||result.provider&&result.provider!==this.provider)throw Error('WSL 账号结果与所选环境不一致');
@@ -35,6 +35,7 @@ class WslAccountsPanel {
     root.append(this.node('small',[identity.distribution,identity.user,identity.configDir].filter(Boolean).join(' · ')||this.entry,'wsl-account-target account-muted'));
     const statusKey=!data.available?'WSL 环境不可用；请启动发行版后刷新。':data.activeVerified===false?'尚未验证登录有效性':'WSL 配置已读取；登录有效性以核验结果为准。';
     const status=this.node('p',this.t(statusKey),'account-muted wsl-account-status');status.setAttribute('role','status');root.append(status);
+    if(!data.available&&data.capabilities?.connect)root.append(this.button('启动并连接 WSL',()=>this.perform('connect')));
     if(this.provider==='codex'&&data.restartPending){const recovery=this.node('div','','wsl-account-confirm');recovery.append(this.node('p',this.t('账号配置已应用。此操作仅恢复共享服务和原会话，不会再次切换账号。')));if(data.capabilities?.recoverRestart){const button=this.button('检查并恢复共享服务',()=>this.confirmRestart());button.disabled=this.busy||!data.available;recovery.append(button);}root.append(recovery);}
     const notes=[];
     if(data.verification)notes.push(this.t('核验状态')+': '+this.t(data.verification.status||data.verification));

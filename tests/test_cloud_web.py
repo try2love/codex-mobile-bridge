@@ -162,7 +162,7 @@ class CloudWebTests(unittest.IsolatedAsyncioTestCase):
                 manager.call.assert_called_with(provider, 'create', None, body)
 
     async def test_web_and_phone_share_framing_without_business_route_lists(self):
-        from relay.protocol import validate
+        from relay.http_framing import validate_http_request
         allowed = [('GET', '/api/projects/models'), ('POST', '/api/projects'),
                    ('POST', '/api/projects/browse'), ('POST', '/api/projects/trust')]
         for provider in ('claude', 'deepseek', 'zcode'):
@@ -172,7 +172,7 @@ class CloudWebTests(unittest.IsolatedAsyncioTestCase):
         for method, path in allowed:
             with self.subTest(method=method, path=path):
                 self.web.validate_request({**self.request(path), 'method': method})
-                validate(method, path)
+                validate_http_request(method, path)
         forwarded = [('POST', '/api/projects/models'), ('GET', '/api/projects/browse'),
                   ('GET', '/api/projects/trust'), ('GET', '/api/projects/models/extra'),
                   ('PUT', '/api/a-future-resource'), ('PATCH', '/api/accounts')]

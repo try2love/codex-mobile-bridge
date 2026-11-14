@@ -1,0 +1,7 @@
+.composer-commands{max-height:min(32vh,240px);overflow:auto;border:1px solid var(--line);border-radius:14px;background:var(--surface,#fff);padding:4px;margin:0 0 8px;overscroll-behavior:contain}
+.composer-commands[hidden]{display:none}
+.composer-commands button{display:flex;align-items:center;gap:12px;width:100%;min-height:40px;border:0;border-radius:10px;background:transparent;text-align:left;color:inherit;padding:8px 12px;font:inherit}
+.composer-commands button span:first-child{font-variant-numeric:tabular-nums;flex:0 0 105px}
+.composer-commands button span:last-child{min-width:0;overflow-wrap:anywhere;color:var(--muted)}
+.composer-commands button[aria-selected=true]{background:var(--soft)}
+.composer-commands button[aria-disabled=true]{opacity:.5;cursor:default}

@@ -123,7 +123,8 @@ async function installUpdate(candidate){
 function setupUpdater(){
   updater=new Updater({current:app.getVersion(),key:fs.readFileSync(path.join(__dirname,'features/updates/update-public-key.pem')),
     fetch:cloudflared.electronFetch(net,allowedMirrorUrl),directory:path.join(app.getPath('userData'),'updates'),
-    skipFile:path.join(app.getPath('userData'),'skipped-update.json'),supported:app.isPackaged&&require(path.join(root,'package.json')).name==='codex-mobile-bridge-desktop'&&['darwin','win32'].includes(process.platform),install:installUpdate});
+    skipFile:path.join(app.getPath('userData'),'skipped-update.json'),supported:app.isPackaged&&require(path.join(root,'package.json')).name==='codex-mobile-bridge-desktop'&&['darwin','win32'].includes(process.platform),
+    preflight:process.platform==='win32'?()=>worker('update-preflight',{target:updateTarget()}):undefined,install:installUpdate});
   setTimeout(()=>updater.check(),5000).unref();
   setInterval(()=>updater.check(),6*60*60*1000).unref();
 }
@@ -378,7 +379,8 @@ else{
     register();
     if(process.platform==='win32')app.setAppUserModelId('io.github.try2love.codexmobilebridge');
     if(['win32','darwin'].includes(process.platform)){
-      const icon=process.platform==='darwin'?nativeImage.createFromPath(path.join(__dirname,'assets/icon.png')).resize({width:18,height:18}):path.join(__dirname,'assets/icon.ico');
+      const icon=process.platform==='darwin'?nativeImage.createFromPath(path.join(__dirname,'assets/trayTemplate.png')):path.join(__dirname,'assets/icon.ico');
+      if(process.platform==='darwin')icon.setTemplateImage(true);
       tray=createTray({Tray,Menu,icon,show:showWindow,worker,t,
         open:url=>shell.openExternal(url),copy:url=>clipboard.writeText(url),quit:()=>app.quit(),
         onError:error=>{showWindow();dialog.showErrorBox(t('网关操作未完成'),t(error.message));}});

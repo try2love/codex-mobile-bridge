@@ -4,6 +4,7 @@ import logging
 import socket
 import struct
 import threading
+import time
 import uuid
 from concurrent.futures import Future, TimeoutError
 
@@ -50,6 +51,7 @@ class DesktopIPC:
         self.write_lock = threading.Lock()
         self.connect_lock = threading.Lock()
         self.event_lock = threading.RLock()
+        self.generation = 0
 
     def reconnect(self):
         """Replace only this follower's transport; never stop the native owner."""
@@ -64,21 +66,37 @@ class DesktopIPC:
             return bool(self.socket and self.endpoint_identity is not None and
                         current is not None and current != self.endpoint_identity)
 
-    def connect(self):
+    def connect(self, *, deadline=None):
         with self.connect_lock:
             if self.client_id and self.socket:
                 return
+            with self.lock:
+                generation = self.generation
             try:
                 identity = endpoint_identity(self.path)
-                sock = connect_stream(self.path)
+                if deadline is None:
+                    sock = connect_stream(self.path)
+                else:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise IPCError("桌面读取超时；尚未取得实时会话状态。")
+                    sock = connect_stream(self.path, timeout=min(5, remaining))
             except OSError as exc:
                 raise IPCError("桌面 App 未连接，请打开 Codex App。") from exc
-            self.socket = sock
-            self.endpoint_identity = identity
+            with self.lock:
+                if generation != self.generation or deadline is not None and time.monotonic() >= deadline:
+                    sock.close()
+                    raise IPCError("桌面读取超时；尚未取得实时会话状态。")
+                self.socket = sock
+                self.endpoint_identity = identity
             threading.Thread(target=self._read_loop, args=(sock,), daemon=True).start()
             try:
-                result = self.request("initialize", {"clientType": "codex-mobile-bridge"}, timeout=5)
-                self.client_id = result["result"]["clientId"]
+                result = self.request("initialize", {"clientType": "codex-mobile-bridge"}, timeout=5, deadline=deadline)
+                with self.lock:
+                    if (generation != self.generation or self.socket is not sock or
+                            deadline is not None and time.monotonic() >= deadline):
+                        raise IPCError("桌面读取超时；尚未取得实时会话状态。")
+                    self.client_id = result["result"]["clientId"]
             except Exception:
                 self.close()
                 raise
@@ -96,9 +114,13 @@ class DesktopIPC:
             except OSError as exc:
                 raise IPCError("桌面连接已断开；请检查会话后再决定是否重发。") from exc
 
-    def request(self, method, params, target=None, host="local", timeout=15):
+    def request(self, method, params, target=None, host="local", timeout=15, *, deadline=None):
         if method not in self.VERSIONS:
             raise IPCError("不支持的桌面操作")
+        if deadline is not None:
+            timeout = min(timeout, max(0, deadline - time.monotonic()))
+            if timeout <= 0:
+                raise IPCError("桌面读取超时；尚未取得实时会话状态。")
         request_id = str(uuid.uuid4())
         future = Future()
         with self.lock:
@@ -115,7 +137,10 @@ class DesktopIPC:
                 message["version"] += 1
         try:
             self._send(message)
-            response = future.result(timeout=timeout + 1)
+            # Lifecycle audits share an absolute deadline. The ordinary mutation
+            # path retains its acknowledgement grace and unknown-result handling.
+            wait = timeout + 1 if deadline is None else min(timeout, max(0, deadline - time.monotonic()))
+            response = future.result(timeout=wait)
             if response.get("resultType") != "success":
                 raise IPCError(response.get("error", "桌面请求未完成"))
             return response
@@ -191,7 +216,10 @@ class DesktopIPC:
             self._disconnect(sock)
 
     def close(self):
-        self._disconnect(self.socket)
+        with self.lock:
+            self.generation += 1
+            sock = self.socket
+        self._disconnect(sock)
 
     def _disconnect(self, sock):
         if sock is None:

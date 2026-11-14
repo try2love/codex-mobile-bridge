@@ -53,6 +53,8 @@ def project_snapshot(snapshot, workspace, reply_models=None):
         message = {'id': 'zcode:%s:%s' % (snapshot['sessionId'], row['rowId']),
                    'role': {'userInput': 'user', 'assistantText': 'assistant', 'reasoning': 'reasoning',
                             'toolCall': 'activity'}[row['kind']], 'text': row.get('text', '')}
+        if row['kind'] in ('userInput', 'assistantText') and row.get('createdAt') is not None:
+            message['timestamp'] = row['createdAt']
         if row['kind'] == 'assistantText':
             if isinstance(row.get('model'), str) and row['model']:
                 message['model'] = row['model']
@@ -169,6 +171,11 @@ class ZCodeDesktop:
 
     def release_window(self):
         self.window_binding = None
+
+    def record_path(self, sid):
+        from bridge.clients.zcode.history import saved_target
+        row = saved_target(self.home, sid)
+        return str(self.home/'tasks-index.sqlite' if row.get('indexOnly') else self.home.parent/'cli/db/db.sqlite')
 
     def call(self, action, sid=None, body=None):
         from bridge.clients.zcode.history import saved_sessions, saved_detail

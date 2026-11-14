@@ -84,6 +84,18 @@ class ZCodeSavedHistoryTests(unittest.TestCase):
             with self.subTest(sid=sid), self.assertRaises(ValueError):
                 saved_detail(self.home, sid)
 
+    def test_record_location_follows_verified_native_storage_and_rejects_foreign_sessions(self):
+        from types import SimpleNamespace
+        from bridge.clients.zcode.adapter import ZCodeDesktop
+        adapter = SimpleNamespace(home=self.home)
+        self.assertEqual(ZCodeDesktop.record_path(adapter, 'sess_ok'), str(self.transcript))
+        with closing(sqlite3.connect(self.transcript)) as db:
+            db.execute("DELETE FROM session WHERE id='sess_ok'"); db.commit()
+        self.assertEqual(ZCodeDesktop.record_path(adapter, 'sess_ok'), str(self.index))
+        for sid in ('sess_remote', 'sess_deleted', 'sess_mismatch', 'sess_missing'):
+            with self.subTest(sid=sid), self.assertRaises(ValueError):
+                ZCodeDesktop.record_path(adapter, sid)
+
     def test_historical_reply_uses_its_own_completed_model_call(self):
         from bridge.clients.zcode.reply_metadata import native_reply_models
         with closing(sqlite3.connect(self.transcript)) as db:
@@ -293,9 +305,9 @@ class ZCodeSavedHistoryTests(unittest.TestCase):
         first = saved_detail(self.home, 'sess_ok', {'historyLimit': 1})
         self.assertFalse(first['session']['runtimeKnown'])
         self.assertFalse(first['capabilities']['send'])
-        self.assertEqual(first['messages'], [{'id': '2', 'role': 'assistant', 'text': 'assistant2'}])
+        self.assertEqual(first['messages'], [{'id': '2', 'role': 'assistant', 'text': 'assistant2', 'timestamp': 2}])
         older = saved_detail(self.home, 'sess_ok', {'historyBefore': first['history']['before']})
-        self.assertEqual(older['messages'], [{'id': '0', 'role': 'user', 'text': 'user0'}])
+        self.assertEqual(older['messages'], [{'id': '0', 'role': 'user', 'text': 'user0', 'timestamp': 0}])
         self.assertFalse(older['history']['hasMore'])
         for sid in ('sess_mismatch', 'sess_deleted', 'sess_remote'):
             with self.subTest(sid=sid), self.assertRaises(ValueError):

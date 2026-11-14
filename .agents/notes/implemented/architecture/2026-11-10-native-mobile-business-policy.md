@@ -2,7 +2,7 @@
 
 Status: implemented
 
-本篇接口清单决定已被[所有链路取消接口策略](2026-11-10-http-forwarding-without-route-policy.md)取代；以下保留当时的取舍。账号 ID 与管理版本的决定继续有效，当前源码不再包含 `mobile_policy.py`。
+本篇手机接口清单决定已被[云链路通用 HTTP 转发](2026-11-10-http-forwarding-without-route-policy.md)取代；以下保留当时的取舍。账号 ID 与管理版本的决定继续有效，当前源码不再包含 `mobile_policy.py`。共享中继与云请求的校验职责见[分别校验说明](2026-11-14-shared-relay-cloud-framing.md)。
 
 ## Problem
 

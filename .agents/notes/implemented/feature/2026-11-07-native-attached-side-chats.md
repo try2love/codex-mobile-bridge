@@ -40,3 +40,9 @@ Bridge 的临时侧边聊天由独立运行时持有，无法作为原生侧边�
 ## 共享运行时隔离验证
 
 [Codex 共享运行时提案](../../proposed/architecture/2026-11-08-codex-shared-desktop-runtime.md)记录原 App 持有时创建、删除的隔离证据及尚未通过的侧边标签同步。默认 macOS Desktop 的创建与删除现接入[共享运行时](../architecture/2026-11-08-codex-shared-runtime-data-deletion.md)，以原生数据删除为准；本篇其余配置隔离、账本及协议边界保留，未声称原 App 标签关闭同步已通过。
+
+## 父工作台导航
+
+[临时侧聊并行入口](2026-11-12-temporary-side-chat-shared-ui.md)部分取代本篇关闭临时创建入口的决定。原生创建仍保持持久语义，不隐式降级；显式临时创建复用标准聊天界面并保留独立生命周期。
+
+网页子聊天的工作台归属由[父工作台修复](../bug-fix/2026-11-10-attached-chat-parent-workbench.md)部分替代：子聊天仍用标准控制器和原生 ID，但作为根父工作台内可关闭标签，不再另建工作台或显示“返回主聊天”按钮。原生持久关系和关闭不删除约束不变。

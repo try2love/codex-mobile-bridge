@@ -175,7 +175,7 @@ def saved_detail(home, sid, body=None):
             page = ' AND (m.sequence, m.time_created, m.id) < (?, ?, ?)'
             args.extend(pos)
         rows = db.execute("""
-            SELECT m.id, json_extract(m.data, '$.role') AS role,
+            SELECT m.id, m.time_created, json_extract(m.data, '$.role') AS role,
                    CASE WHEN json_type(m.data, '$.metadata.conversationInputIntent.attachments')='array'
                         THEN json_extract(m.data, '$.metadata.conversationInputIntent.attachments')
                         WHEN json_type(m.data, '$.metadata.inputIntent.attachmentRefs')='array'
@@ -193,7 +193,7 @@ def saved_detail(home, sid, body=None):
             (*args, limit + 1)).fetchall()
         messages = []
         for row in reversed(rows[:limit]):
-            message = {'id': row['id'], 'role': row['role'], 'text': ''}
+            message = {'id': row['id'], 'role': row['role'], 'text': '', 'timestamp': row['time_created']}
             if row['role'] == 'user' and row['files']:
                 message['attachments'] = attachments(sid, json.loads(row['files']), row['command'])
             messages.append(message)

@@ -42,9 +42,12 @@ class SshIsolationTests(unittest.TestCase):
         local, remote = Bridge.__new__(Bridge), Bridge.__new__(Bridge)
         local.host, remote.host = 'local', 'remote:fixture'
         local.accounts = remote.accounts = accounts
+        local._cli_recovery_record = remote._cli_recovery_record = lambda: {}
         local.released_cli = Mock(); local.ipc = Mock(); local.ipc.endpoint_changed.return_value = False
-        local.session = lambda *args, **kwargs: SimpleNamespace(
-            activation_lock=threading.Lock(), connected=True, runtime='desktop')
+        session = LiveSession('local-thread')
+        session.connected = True
+        session.runtime = 'desktop'
+        local.session = lambda *args, **kwargs: session
 
         def offline(*args, **kwargs):
             entered.set()
@@ -195,6 +198,8 @@ class SshIsolationTests(unittest.TestCase):
     def test_disconnected_local_desktop_keeps_reading_latest_saved_history(self):
         bridge = Bridge.__new__(Bridge)
         bridge.store = SimpleNamespace()
+        bridge.submit_lock = threading.RLock()
+        bridge.submissions = {}
         bridge.closed = threading.Event()
         session = LiveSession('saved-thread')
         with session.condition:

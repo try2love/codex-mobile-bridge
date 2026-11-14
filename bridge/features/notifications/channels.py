@@ -718,7 +718,7 @@ class Notifications:
 
     def policies(self):
         return read_json(self.data_dir/'notification-policies.json',
-                         {'requests': True, 'completion': False, 'chats': {}})
+                         {'requests': True, 'completion': True, 'chats': {}})
 
     def defaults(self, value=None):
         with self.lock:
@@ -996,8 +996,14 @@ class Notifications:
 
     def _dispatch(self, config, row, title, channel, target, keys, completed):
         detected = time.monotonic()
+        observed = self.attached.get((row['host'], row['id']))
+        observation = None
+        if not completed and getattr(observed, 'runtime', None) == 'cli-observer':
+            with observed.condition:
+                observation = (observed, observed.connection_epoch)
         if channel == 'mobile':
-            return self._send_keys(config, row, title, channel, target, keys, completed, detected=detected)
+            return self._send_keys(config, row, title, channel, target, keys, completed,
+                                   detected=detected, observation=observation)
         with self.lock:
             identity = (row['host'], row['id'], channel, completed)
             pending = [key for key in keys if not self.ledger.get(key, {}).get('delivered')
@@ -1008,7 +1014,7 @@ class Notifications:
             prior = self.delivery_queue.get(identity)
             if prior and prior[4] == target:
                 detected = prior[-1]
-            self.delivery_queue[identity] = (config, dict(row), title, channel, target, pending, completed, detected)
+            self.delivery_queue[identity] = (config, dict(row), title, channel, target, pending, completed, observation, detected)
             self.delivery_wakeup.set()
         return False
 
@@ -1020,10 +1026,10 @@ class Notifications:
                     if not self.delivery_queue:
                         break
                     identity = next(iter(self.delivery_queue))
-                    *args, detected = self.delivery_queue.pop(identity)
-                self._send_keys(*args, detected=detected)
+                    *args, observation, detected = self.delivery_queue.pop(identity)
+                self._send_keys(*args, detected=detected, observation=observation)
 
-    def _send_keys(self, config, row, title, channel, target, keys, completed, *, detected=None):
+    def _send_keys(self, config, row, title, channel, target, keys, completed, *, detected=None, observation=None):
         started = time.monotonic()
         now = time.time()
         with self.lock:
@@ -1039,11 +1045,24 @@ class Notifications:
             current = self._effective(row)
             if not current['notifyOnCompletion' if completed is True else 'notifyOnRequest']:
                 return False
+            if observation is not None:
+                observed, epoch = observation
+                if self.attached.get((row['host'], row['id'])) is not observed:
+                    return False
+                with observed.condition:
+                    if (observed.connection_epoch != epoch or not observed.connected
+                            or observed.notification_connecting):
+                        return False
+                    active = {self._delivery_key(row, request['id'], target=target)
+                              for request in observed.pending_requests()}
+                pending = [key for key in pending if key in active]
+                if not pending:
+                    return False
             if completed == 'attention':
                 record = self.attention.get(self._completion_key(row['host'], row['id'], target), {})
                 if not record.get('pending') or self._delivery_key(row, record['pending'], completion='attention', target=target) not in pending:
                     return False
-            client = {'claude': 'Claude', 'deepseek': 'DSH', 'zcode': 'ZCode'}.get(provider, 'Codex')
+            client = {'claude': 'Claude', 'deepseek': 'DSH', 'zcode': 'ZCode', 'antigravity': 'Antigravity'}.get(provider, 'Codex')
             kind = 'attention' if completed == 'attention' else 'completion' if completed else 'request'
             heading = client + (' 需要你处理' if kind == 'attention' else ' 运行已完成' if completed else ' 需要你的确认')
             body = ('本轮运行遇到问题，请打开聊天查看并手动继续或调整模型。' if kind == 'attention' else

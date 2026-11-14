@@ -5,11 +5,12 @@ from contextlib import contextmanager
 import json
 import os
 import re
+import shlex
 import subprocess
 import tempfile
 import threading
 import time
-from pathlib import Path
+from pathlib import Path, PurePath
 
 from bridge.clients.codex.catalog import CatalogError
 from bridge.features.network.retry import (
@@ -107,6 +108,23 @@ def payload(value):
     return 'json.loads(__import__("base64").b64decode(' + repr(data) + '))'
 
 
+@contextmanager
+def ssh_cli_probe(alias, value):
+    """Read the inspected native endpoint, never start the target daemon."""
+    from bridge.clients.codex.app_server import CodexAppServer
+    generation = value['generation']
+    inner = ('export CODEX_HOME=' + shlex.quote(generation['home']) + '; exec ' +
+             shlex.quote(generation['executable']) + ' app-server proxy --sock ' + shlex.quote(generation['socket']))
+    command = ssh_command(alias)
+    command[-1] = 'exec "$SHELL" -lc ' + shlex.quote(inner)
+    client = CodexAppServer(generation['socket'], command=command, check_socket=False,
+                            client_name='codex-mobile-bridge-target-check')
+    try:
+        yield client
+    finally:
+        client.close()
+
+
 class RemoteStore:
     def __init__(self, alias):
         self.alias = alias
@@ -146,10 +164,11 @@ class RemoteStore:
                 return copy.deepcopy(previous[2])
         raise RemoteUnavailable('正在后台读取 SSH 主机；本机会话可正常使用。')
 
-    def call(self, method, args):
+    def call(self, method, args, *, home=None):
         source = source_text('features/sessions/store.py')
         suffix = ('\nimport os\nhome_source = "environment" if os.environ.get("CODEX_HOME") else "default"\n'
-                  's = SessionStore(Path(os.environ.get("CODEX_HOME", str(Path.home()/".codex"))))\n'
+                  's = SessionStore(' + ('Path(' + repr(str(home)) + ')' if home is not None else
+                    'Path(os.environ.get("CODEX_HOME", str(Path.home()/".codex")))') + ')\n'
                   'result = s.' + method + '(**' + payload(args) + ')\n')
         if method == 'discovery_diagnostics':
             suffix += 'result["homeSource"] = home_source\n'
@@ -390,8 +409,8 @@ class RemoteCliModels:
         return source
 
     def _call(self, operation, home, cwd, provider, config, account=None, native_models=None):
-        home = str(home) if isinstance(home, Path) else home
-        cwd = str(cwd) if isinstance(cwd, Path) else cwd
+        home = str(home) if isinstance(home, PurePath) else home
+        cwd = str(cwd) if isinstance(cwd, PurePath) else cwd
         value = {'operation': operation, 'home': home, 'cwd': cwd, 'provider': provider,
                  'config': config, 'account': account or {}, 'nativeModels': native_models or []}
         source = self._source() + '\nprint(json.dumps(remote_model_worker(' + payload(value) + '), ensure_ascii=False))\n'

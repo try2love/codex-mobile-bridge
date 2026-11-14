@@ -76,6 +76,8 @@ class ZCodeStarterBundle(unittest.TestCase):
             binary = helper/'Contents/MacOS'/bundle.NAME
             self.sign(helper, bundle.IDENTIFIER)
             bundle.verify(app)
+            (app/'Contents/Resources/update-version.json').write_text('{"version":"fixture"}')
+            self.assertEqual(bundle.identity(app)['product'], product)
             env = {key: value for key, value in os.environ.items() if key != 'CMB_ZCODE_LAUNCH_REQUEST'}
             self.assertEqual(subprocess.run([binary], env=env, timeout=5).returncode, 31)
 

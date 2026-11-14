@@ -79,7 +79,7 @@ class SessionManagement(unittest.TestCase):
                 self.assertTrue(manager.list_with_activity('deepseek')['sessions'][0]['bridgePinned'])
                 self.assertFalse(manager.list_with_activity('claude')['sessions'][0]['bridgePinned'])
             validate_relay('POST', '/api/desktop-sessions/deepseek/pin')
-            validate_relay('GET', '/api/desktop-sessions/deepseek/pin')
+            with self.assertRaises(PermissionError): validate_relay('GET', '/api/desktop-sessions/deepseek/pin')
 
     def test_old_pin_is_sorted_before_sql_pagination_but_default_order_stays_recent(self):
         with closing(sqlite3.connect(self.home / 'state_5.sqlite')) as database, database:
@@ -313,7 +313,7 @@ class SessionManagementHttp(unittest.TestCase):
             self.assertEqual(self.request('POST', path, body)[0], 401)
             self.assertEqual(self.request('POST', path, body, {'Cookie': headers['Cookie']})[0], 403)
             validate_relay('POST', path)
-            validate_relay('GET', path)
+            with self.assertRaises(PermissionError): validate_relay('GET', path)
         path = '/api/sessions/' + self.sid + '/pin'
         self.assertEqual(self.request('POST', path, {'pinned': True}, headers)[0], 200)
         self.assertEqual(self.request('POST', path, {'pinned': 'true'}, headers)[0], 400)

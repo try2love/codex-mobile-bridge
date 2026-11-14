@@ -85,6 +85,64 @@ class RemoteWorkerContract(unittest.TestCase):
         self.assertEqual(len(project_probe['sessions']), 1)
         self.assertFalse((self.config/'mobile-bridge').exists())
 
+    def test_resume_preflight_reports_missing_original_directory_without_creating_it(self):
+        profile = self.run_worker({'operation': 'list'})['value']['profile']
+        request = {'operation': 'resume-preflight', 'origin': profile['origin'], 'native': self.native,
+                   'cwd': str(self.cwd), 'model': 'fixture-model', 'permissionMode': 'plan'}
+        self.assertTrue(self.run_worker(request)['value']['ready'])
+        self.cwd.rmdir()
+        blocked = self.run_worker(request)['value']
+        self.assertFalse(blocked['ready'])
+        self.assertIn('原项目目录不存在', blocked['notice'])
+        self.assertIn(str(self.cwd), blocked['notice'])
+        self.assertFalse(self.cwd.exists())
+        self.assertFalse((self.config/'mobile-bridge').exists())
+
+    def test_resume_preflight_preserves_unknown_permission_and_rejects_changed_settings(self):
+        profile = self.run_worker({'operation': 'list'})['value']['profile']
+        request = {'operation': 'resume-preflight', 'origin': profile['origin'], 'native': self.native,
+                   'cwd': str(self.cwd), 'model': 'fixture-model', 'permissionMode': 'plan'}
+        self.assertFalse(self.run_worker({**request, 'cwd': str(self.root)})['ok'])
+        events = [json.loads(line) for line in self.path.read_text().splitlines()]
+        events[0].pop('permissionMode')
+        self.path.write_text('\n'.join(json.dumps(event) for event in events)+'\n')
+        blocked = self.run_worker({**request, 'permissionMode': 'default'})['value']
+        self.assertFalse(blocked['ready'])
+        self.assertIn('权限模式', blocked['notice'])
+
+    def test_resume_preflight_worker_only_runs_readonly_auth_or_version_diagnostics(self):
+        calls = []
+        def diagnostic(arguments, **kwargs):
+            self.assertEqual(arguments[0], str(self.binary.resolve()))
+            self.assertIn(arguments[1:], (['auth', 'status', '--json'], ['--version']))
+            self.assertEqual(kwargs['env']['CLAUDE_CONFIG_DIR'], str(self.config))
+            calls.append(arguments)
+            return SimpleNamespace(returncode=0, stdout='2.1.292\n' if arguments[1:] == ['--version']
+                                   else '{"loggedIn":true}')
+        with patch.dict(os.environ, self.env, clear=True), \
+             patch.object(remote_worker.subprocess, 'run', side_effect=diagnostic), \
+             patch.object(remote_worker.subprocess, 'Popen', side_effect=AssertionError('worker started a chat')) as popen, \
+             patch.object(remote_worker.os, 'execvpe', side_effect=AssertionError('worker resumed a chat')) as execute:
+            profile = remote_worker.profile()
+            request = {'operation': 'resume-preflight', 'origin': profile['origin'], 'native': self.native,
+                       'cwd': str(self.cwd), 'model': 'fixture-model', 'permissionMode': 'plan'}
+            self.assertTrue(remote_worker.command(request)['ready'])
+            self.cwd.rmdir()
+            blocked = remote_worker.command(request)
+            self.assertFalse(blocked['ready'])
+            self.assertIn('原项目目录不存在', blocked['notice'])
+            self.assertFalse(self.cwd.exists())
+            events = [json.loads(line) for line in self.path.read_text().splitlines()]
+            events[0].pop('permissionMode')
+            self.path.write_text('\n'.join(json.dumps(event) for event in events)+'\n')
+            unknown = remote_worker.command({**request, 'permissionMode': 'default'})
+            self.assertFalse(unknown['ready'])
+            self.assertIn('权限模式', unknown['notice'])
+            popen.assert_not_called()
+            execute.assert_not_called()
+        self.assertTrue(calls)
+        self.assertFalse((self.config/'mobile-bridge').exists())
+
     def test_worker_reads_utf8_chinese_history_independent_of_host_locale(self):
         path = self.root/'中文记录.jsonl'
         event = {'type': 'user', 'cwd': '/项目/中文目录',
@@ -434,7 +492,7 @@ class RemoteAdapterContract(unittest.TestCase):
                    'usage': {'input_tokens': 4, 'cache_creation_input_tokens': 5,
                              'cache_read_input_tokens': 6}}}]
         def response(_alias, request, **_kwargs):
-            if request['operation'] == 'auth':
+            if request['operation'] == 'resume-preflight':
                 return {'ready': True}
             if request['operation'] == 'history':
                 return {'events': events, 'history': {'before': None, 'hasMore': False}, 'stamp': [1, 2, 3, 4]}
@@ -451,7 +509,7 @@ class RemoteAdapterContract(unittest.TestCase):
         calls = []
         def response(_alias, request, **_kwargs):
             calls.append(request)
-            if request['operation'] == 'auth':
+            if request['operation'] == 'resume-preflight':
                 return {'ready': False}
             if request['operation'] == 'detail':
                 self.fail('Unchanged metadata should not be rescanned')
@@ -463,6 +521,24 @@ class RemoteAdapterContract(unittest.TestCase):
         self.assertEqual(result['history'], {'before': 'older', 'hasMore': True})
         self.assertEqual(calls[0]['operation'], 'history')
         self.assertEqual((calls[0]['historyBefore'], calls[0]['historyLimit']), ('cursor', 10))
+
+    def test_detail_exposes_remote_directory_preflight_before_resume(self):
+        row = self.cli._row('ssh:test', self.hosts.hosts()['ssh:test'], {**self.row, 'stamp': [1, 2, 3, 4]})
+        self.cli.index[row['id']] = row
+        notice = '原项目目录不存在：/remote/project，请在远端恢复该目录后重试'
+        def response(_alias, request, **_kwargs):
+            if request['operation'] == 'resume-preflight':
+                self.assertEqual((request['native'], request['cwd'], request['permissionMode']),
+                                 (self.native, '/remote/project', 'plan'))
+                return {'ready': False, 'notice': notice}
+            if request['operation'] == 'history':
+                return {'events': [], 'history': {'before': None, 'hasMore': False}, 'stamp': row['stamp']}
+            return {**self.row, 'stamp': row['stamp']}
+        with patch.object(remote, '_remote', side_effect=response), patch.object(remote.subprocess, 'Popen') as popen:
+            result = self.cli.call('detail', row['id'], {})
+        self.assertEqual(result['notice'], notice)
+        self.assertFalse(result['capabilities']['resume'])
+        popen.assert_not_called()
 
     def test_live_ssh_catalog_and_settings_use_same_native_controls(self):
         row = self.cli._row('ssh:test', self.hosts.hosts()['ssh:test'], self.row)

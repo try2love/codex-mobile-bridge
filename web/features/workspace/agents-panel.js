@@ -61,6 +61,9 @@ class AgentsPanel {
         const body=this.node('div','wb-agent-message');
         if(message.role==='assistant'||message.role==='user'){
           body.append(this.node('small','',message.role==='user'?BridgeI18n.t('任务输入'):BridgeI18n.t('回复')));const text=this.node('div','message-body');renderMarkdown(text,message.text||'',[],()=> '');body.append(text);
+          const actions=this.node('div','message-actions'),copy=this.button(BridgeI18n.t('复制'),()=>window.BridgeClipboard?.copy(()=>message.text||'',copy));copy.className='plain message-copy';
+          const quote=this.button(BridgeI18n.t('引用'),()=>{if(this.selected===agent&&this.workbench.current===this.session)this.workbench.quoteMessage?.(message.text||'','agent:'+agent.id+':'+turn.id+':'+message.id,{id:this.session.id,host:this.session.host,provider:this.session.provider||'codex'});});quote.className='plain message-quote';quote.disabled=!this.workbench.quoteMessage;
+          actions.append(copy,quote);renderChatMessageTime(actions,message.timestamp);body.append(actions);
         }else{
           const details=this.node('details');details.append(this.node('summary','',message.name||message.kind||BridgeI18n.t('工具记录')),this.node('pre','',message.output||message.text||''));body.append(details);
         }

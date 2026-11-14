@@ -9,8 +9,48 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
+import threading
 
 from bridge.features.accounts import wsl_account_worker as worker
+
+
+class WslExplicitStartTests(unittest.TestCase):
+    def test_only_explicit_connect_starts_the_registered_distribution_and_user(self):
+        from bridge.features.accounts.wsl_accounts import WslAccounts
+        from bridge.features.endpoints.registry import entry_id as codex_id
+        from bridge.clients.claude.wsl import entry_id as claude_id
+        with tempfile.TemporaryDirectory() as folder:
+            for provider, make_id, key in (('codex', codex_id, 'home'), ('claude', claude_id, 'configDir')):
+                row = {'distribution': 'Fixture', 'user': 'native-user', key: '/home/native-user/.'+provider}
+                row['id'] = make_id(row['distribution'], row['user'], row[key])
+                registry = SimpleNamespace(entries=[row], lock=threading.RLock())
+                bridge = SimpleNamespace(data_dir=Path(folder), entries=registry,
+                                         desktop_sessions=SimpleNamespace(claude_wsl=registry))
+                accounts = WslAccounts(bridge)
+                self.addCleanup(accounts.close)
+                with patch('bridge.features.accounts.wsl_accounts.wsl.running_distributions', return_value=[]), \
+                     patch('bridge.features.accounts.wsl_accounts.wsl.read') as read:
+                    stopped = accounts.read(provider, row['id'])
+                    self.assertFalse(stopped['available'])
+                    self.assertTrue(stopped['capabilities']['connect'])
+                    read.assert_not_called()
+                    value = {'provider': provider, 'entry': row['id'], 'action': 'connect'}
+                    with patch.object(accounts, 'read', return_value={'available': True}) as refresh:
+                        self.assertTrue(accounts.change(value)['available'])
+                        refresh.assert_called_once_with(provider, row['id'])
+                    self.assertEqual(read.call_args.args[0], 'Fixture')
+                    self.assertEqual(read.call_args.args[2], 'native-user')
+                    self.assertTrue(read.call_args.kwargs['allow_start'])
+                    read.reset_mock()
+                    for invalid in ({**value, 'apiKey': 'never-forward'}, {**value, 'entry': row['id']+'changed'}):
+                        with self.assertRaises(ValueError):
+                            accounts.change(invalid)
+                    row['enabled'] = False
+                    self.assertFalse(accounts.read(provider, row['id'])['capabilities']['connect'])
+                    with self.assertRaises(ValueError):
+                        accounts.change(value)
+                    read.assert_not_called()
 
 
 def install_target_toml(testcase):

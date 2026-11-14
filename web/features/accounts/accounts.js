@@ -7,8 +7,8 @@ function resetCardState(value, now){
     showForecast:!stale&&value.state==='ready'&&!resetToday&&!value.officialSignal};
 }
 class AccountsPanel {
-  constructor({root,read,request,desktop=false,toolbar=null,onChanged=()=>{},onUpdate=()=>{}}){
-    Object.assign(this,{root,read,request,desktop,toolbar,onChanged,onUpdate});this.value=null;this.busy=false;this.timer=null;this.generation=0;this.visit=0;this.readFailed=false;this.resumePending=false;this.operationError=false;this.expandedModels=new Set();this.modelBoxes=new Map();this.expandedSubscriptions=new Set();
+  constructor({root,read,request,desktop=false,configurationPlaceholder='',toolbar=null,onChanged=()=>{},onUpdate=()=>{}}){
+    Object.assign(this,{root,read,request,desktop,configurationPlaceholder,toolbar,onChanged,onUpdate});this.value=null;this.busy=false;this.timer=null;this.generation=0;this.visit=0;this.readFailed=false;this.resumePending=false;this.operationError=false;this.expandedModels=new Set();this.modelBoxes=new Map();this.expandedSubscriptions=new Set();
     this.build();
     this.lastVisible=this.visible();
     document.addEventListener('visibilitychange',()=>this.resume());
@@ -47,10 +47,11 @@ class AccountsPanel {
     this.desktopRuntime=this.node('section');this.desktopRuntime.hidden=true;
     this.runtimeStatus=this.node('p',undefined,'account-muted');
     this.initializeRuntime=this.button('初始化连接',()=>{if(window.confirm(this.text('确认所有 Codex 桌面任务已结束，并初始化原生连接？正在运行的 App 会正常退出并重新启动；账号和聊天记录保持不变。')))return this.perform({action:'initializeDesktopRuntime',requestId:this.requestId(),confirmed:true,tasksConfirmed:true});});
-    this.desktopRuntime.append(this.node('h3','Codex 原生会话连接'),this.runtimeStatus,this.initializeRuntime);this.tools.append(this.desktopRuntime);
+    this.forceInitializeRuntime=this.button('强制继续初始化',()=>{if(window.confirm(this.text('部分任务状态无法核验。继续会正常重启 Codex App，可能中断这些任务或待确认操作；聊天记录保留，可稍后继续。是否继续？')))return this.perform({action:'initializeDesktopRuntime',requestId:this.requestId(),confirmed:true,tasksConfirmed:true,acknowledgeUnavailable:true});});this.forceInitializeRuntime.hidden=true;
+    this.desktopRuntime.append(this.node('h3','Codex 原生会话连接'),this.runtimeStatus,this.initializeRuntime,this.forceInitializeRuntime);this.tools.append(this.desktopRuntime);
     if(!this.desktop){this.root.append(this.node('p','官方账号登录请在电脑端完成。','account-muted'));return;}
     const scanDetails=this.node('details');scanDetails.append(this.node('summary','扫描本机配置'));
-    this.scanSource=this.field('Codex 配置目录（.codex 文件夹）');this.scanSource.input.placeholder=this.text('留空使用当前 Codex 数据目录');
+    this.scanSource=this.field('Codex 配置目录');this.scanSource.input.placeholder=this.configurationPlaceholder||this.text('留空使用当前 Codex 数据目录');
     this.scanSource.input.oninput=()=>{this.scannedSource=null;this.scanSelection='';this.render();};
     this.scanChoice=document.createElement('select');this.scanChoice.setAttribute('aria-label',this.text('选择要保存的配置'));this.scanChoice.hidden=true;
     this.scanChoice.onchange=()=>{this.scanSelection=this.scanChoice.value;this.render();};
@@ -256,7 +257,11 @@ class AccountsPanel {
     const h=[...bytes].map(x=>x.toString(16).padStart(2,'0')).join('');return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);
   }
   async choose(row){
-    if(!window.confirm(this.text(this.value?.scope==='profile'?'确认此配置中的所有任务已结束，并切换其 Codex 账号？此配置的空闲运行服务会正常退出。':'确认所有任务（包括未在网页显示的任务）已结束，并切换此电脑的 Codex 接入？桌面运行时会重启。')+'\n'+row.name))return;
+    const receipt=this.value?.switch;
+    if(receipt?.operation==='cliAuth'&&receipt.phase==='authUnknown'&&receipt.targetId===row.id){
+      await this.perform({action:'switch',id:row.id,requestId:receipt.requestId,confirmed:true,tasksConfirmed:true});this.refresh();return;
+    }
+    if(!window.confirm(this.text(this.value?.scope==='profile'?'确认此配置中的所有任务（包括其他客户端的任务）已结束，并同步共享的 Codex 账号？切换完成前请勿从其他客户端发起任务；仅在需要时正常退出空闲服务。':'确认所有任务（包括未在网页显示的任务）已结束，并切换此电脑共享的 Codex 接入？切换完成前请勿从其他客户端发起任务；仅在需要时正常退出并重启桌面运行时。')+'\n'+row.name))return;
     try{await this.perform({action:'switch',id:row.id,requestId:this.requestId(),confirmed:true,tasksConfirmed:true,
       syncLocalCli:true});this.refresh();}
     catch(error){this.operationError=true;this.error.textContent=this.text('无法创建切换请求，请刷新页面后重试');}
@@ -441,12 +446,15 @@ class AccountsPanel {
     this.tools.hidden=value.scope==='wsl';
     this.managementNotice.textContent=[value.scopeLabel,value.scope==='profile'?value.codexHome:'',this.text(value.management?.reason||'')].filter(Boolean).join(' · ');this.managementNotice.hidden=!external&&value.scope!=='profile';
     if(this.managementMode){this.managementMode.value=value.management?.mode||'auto';this.managementMode.disabled=this.busy;}
-    const phase=value.switch?.phase||'idle',labels={idle:'请选择已保存的接入',preparing:'正在准备账号',stopping:'正在退出 Codex 桌面应用',applying:'正在应用接入配置',starting:'正在启动 Codex 桌面应用',verifying:'正在核验账号与桌面连接',complete:'切换完成',restoring:'正在恢复原接入',restored:'已恢复原接入',failed:'切换未完成',interrupted:'需要在桌面端恢复原接入'};
+    const phase=value.switch?.phase||'idle',labels={idle:'请选择已保存的接入',preparing:'正在准备账号',stopping:'正在退出 Codex 桌面应用',applying:'正在应用接入配置',starting:'正在启动 Codex 桌面应用',verifying:'正在核验账号与桌面连接',authUnknown:'账号同步结果待核验',complete:'切换完成',restoring:'正在恢复原接入',restored:'已恢复原接入',failed:'切换未完成',interrupted:'需要在桌面端恢复原接入'};
     const switching=!['idle','complete','restored','failed'].includes(phase);
     const runtime=value.desktopRuntime||{};this.desktopRuntime.hidden=runtime.supported!==true||value.scope==='profile';
-    this.runtimeStatus.textContent=this.text(runtime.error||(runtime.configured?'已保存原生连接设置；由网关启动 App 时生效。':'初始化后，手机与 Codex App 共用原生侧边聊天和删除功能。'));
-    this.initializeRuntime.textContent=this.text(runtime.configured?'重新初始化连接':'初始化连接');
+    const preparation=runtime.preparation||{};
+    this.runtimeStatus.textContent=this.text(runtime.error||({ready:'原生侧聊连接已准备好',checking:'正在自动检查原生侧聊连接',preparing:'正在自动准备原生侧聊连接',waiting:'等待桌面空闲后自动准备；现有聊天可继续使用',failed:'自动准备未完成，请重新准备连接'}[preparation.state])||(runtime.configured?'已保存原生连接设置；由网关启动 App 时生效。':'网关启动时会自动准备原生侧聊连接。'))+(preparation.reason?' · '+this.text(preparation.reason):'');
+    this.initializeRuntime.textContent=this.text('重新准备连接');
     this.initializeRuntime.disabled=this.busy||switching||external||(!this.desktop&&value.canSwitch===false);
+    this.forceInitializeRuntime.hidden=!(value.switch?.operation==='desktopRuntime'&&phase==='failed'&&value.switch?.taskStateUnavailable===true||preparation.state==='waiting'&&preparation.taskStateUnavailable===true);
+    this.forceInitializeRuntime.disabled=this.initializeRuntime.disabled;
     const resetAccount=this.accountRows().find(row=>row.id===this.resetAccountId);
     if(this.resetDialog?.open&&(switching||!resetAccount||this.resetAccountKey&&this.resetAccountKey!==resetAccount.accountKey))this.resetDialog.close();
     this.status.textContent=this.text(labels[phase]||phase)+(value.switch?.error?' · '+this.text(value.switch.error):'');
@@ -481,7 +489,7 @@ class AccountsPanel {
       if(row.kind==='chatgpt')this.accountSubscription(name,row);
       identity.append(name);this.accountUsage(identity,row);card.append(identity);
       if(row.kind==='chatgpt')this.accountReset(card,row,switching);
-      if(!row.transient){const choose=this.button(active?'当前接入':'切换到此接入',()=>this.choose(row));choose.disabled=this.busy||switching||active||external||(!this.desktop&&value.canSwitch===false);actions.append(choose);}
+      if(!row.transient){const verifyAuth=value.switch?.operation==='cliAuth'&&phase==='authUnknown'&&value.switch.targetId===row.id;const choose=this.button(verifyAuth?'核验账号同步':active?'当前接入':'切换到此接入',()=>this.choose(row));choose.disabled=this.busy||switching&&!verifyAuth||active||external||(!this.desktop&&value.canSwitch===false);actions.append(choose);}
 
       if(this.cliAccess&&row.kind==='api'&&!row.transient){
         if(!active){const edit=this.button('修改',()=>{this.apiDetails.open=true;this.cliAccess.edit('codex',row);});edit.disabled=this.busy||switching||this.cliAccess.busy;actions.append(edit);}
@@ -504,7 +512,7 @@ class AccountsPanel {
       const choose=this.node('option','选择要保存的配置');choose.value='';this.scanChoice.append(choose);
       for(const row of candidates){const option=this.node('option');option.value=row.id;option.textContent=row.name;this.scanChoice.append(option);}this.scanChoice.value=this.scanSelection||'';
       this.saveScanButton.disabled=this.busy||switching||!candidates.some(row=>row.id===this.scanSelection);
-      this.scanSource.input.placeholder=value.codexHome||this.text('留空使用当前 Codex 数据目录');this.scanRows.replaceChildren();
+      this.scanSource.input.placeholder=value.codexHome||this.configurationPlaceholder||this.text('留空使用当前 Codex 数据目录');this.scanRows.replaceChildren();
       if(value.discovery){const scan=value.discovery;const source=this.node('p',undefined,'account-muted');source.textContent=scan.source||'';this.scanRows.append(source);
         if(scan.notice)this.scanRows.append(this.node('p',scan.notice,'account-muted'));
         if(!scan.candidates.length)this.scanRows.append(this.node('p','没有发现可导入的账号或 API 配置。'));

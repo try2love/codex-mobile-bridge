@@ -6,6 +6,7 @@
   "/icon-favicon.png": "icon-favicon.png",
   "/icon-touch.png": "icon-touch.png",
   "/icon-192.png": "icon-192.png",
+  "/client-icons/antigravity.png": "client-icons/antigravity.png",
   "/manifest.webmanifest": "manifest.webmanifest",
   "/app.js": [
     "shared/dialog-dismiss.js",
@@ -23,6 +24,7 @@
     "shared/code-syntax.css",
     "shared/output-directives.css",
     "features/chat/composer-quotes.css",
+    "features/chat/composer-commands.css",
     "features/chat/message-management.css",
     "features/chat/session-menu.css"
   ],
@@ -30,6 +32,7 @@
   "/attachments.js": [
     "features/chat/composer-drafts.js",
     "features/chat/composer-quotes.js",
+    "features/chat/composer-commands.js",
     "features/chat/attachments.js",
     "features/chat/message-management.js",
     "features/chat/message-management-binding.js"
@@ -92,6 +95,7 @@
     "shared/mermaid-viewer.js",
     "shared/mermaid-cards.js",
     "shared/output-directives.js",
+    "shared/chat-media.js",
     "shared/markdown.js"
   ],
   "/image-viewer.js": "shared/image-viewer.js",

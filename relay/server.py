@@ -301,7 +301,11 @@ class Relay:
         phone = self.phone_auth(request)
         length = request.content_length or 0
         path = self.api_path(request)
-        validate(request.method, path, length)
+        try:
+            validate(request.method, path, length)
+        except PermissionError as exc:
+            # A valid login does not expire when a capability is unavailable.
+            raise web.HTTPForbidden(reason=str(exc)) from None
         if request.headers.get('Transfer-Encoding') or (request.method not in ('GET', 'HEAD') and request.content_length is None):
             raise ValueError('A bounded Content-Length is required')
         ws = self.devices.get(phone['device'])

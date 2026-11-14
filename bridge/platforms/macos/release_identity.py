@@ -1,4 +1,4 @@
-"""Publisher proof for production Mac pipe binaries without an Apple certificate."""
+"""Publisher proof for separately identified Mac pipe products without Apple certificates."""
 import base64
 import hashlib
 import json
@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 PRODUCT = 'io.github.try2love.codexmobilebridge'
+PRODUCTS = (PRODUCT, PRODUCT + '.test')
 BROKER = Path('Contents/Resources/gateway/codex-mobile-gateway')
 STARTER = Path('Contents/Helpers/CMBZCodePipeStarter.app/Contents/MacOS/CMBZCodePipeStarter')
 MANIFEST = Path('Contents/Resources/zcode-pipe-identity.json')
@@ -19,7 +20,7 @@ def public_key_bytes():
     return PUBLIC_KEY
 
 
-def read(image, running_hash=None):
+def read(image, running_hash=None, *, expected_product=None):
     """Verify a complete installed pair, then bind it to the kernel's live CDHash."""
     from cryptography.exceptions import InvalidSignature
     from cryptography.hazmat.primitives import serialization
@@ -46,7 +47,8 @@ def read(image, running_hash=None):
         info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
         version = json.loads((app / 'Contents/Resources/update-version.json').read_bytes())
         if (not isinstance(record, dict) or record.get('schema') != 1 or record.get('purpose') != 'cmb-zcode-local-components'
-                or record.get('product') != PRODUCT or info.get('CFBundleIdentifier') != PRODUCT
+                or record.get('product') not in PRODUCTS or record['product'] != info.get('CFBundleIdentifier')
+                or expected_product is not None and record['product'] != expected_product
                 or not record.get('version') or record['version'] != version.get('version')):
             raise ValueError('Publisher proof belongs to another product or version')
         for name, relative in (('broker', BROKER), ('starter', STARTER)):

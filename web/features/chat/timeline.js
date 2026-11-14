@@ -25,7 +25,7 @@ function timelineFilePath(path,cwd){
 
 // History and live changes share stable keys, but never share a request queue.
 class ChatTimeline {
-  static clearCache(){recentTimelinePages.clear();}
+  static clearCache(key){if(key)recentTimelinePages.delete(key);else recentTimelinePages.clear();}
   constructor({url, request, renderMeta, renderText, status, onAction, onFile, onReady, canEdit = () => true, elements = {}, active = () => true, cacheKey = ''}) {
     Object.assign(this,{url,request,renderMeta,renderText,status,onAction,onFile,onReady,active,cacheKey});
     this.canEdit=()=>!this.cached&&canEdit();
@@ -160,6 +160,15 @@ class ChatTimeline {
       this.rows.set(row.key,{row,sequence:page.sequence});
       const stamp=JSON.stringify(row),old=this.nodes.get(row.key);
       if(old?.stamp===stamp)continue;
+      if(old&&previous&&previous.row.timestamp!==row.timestamp){
+        const {timestamp:priorTime,...before}=previous.row,{timestamp,...after}=row;
+        const actions=old.node.querySelector('.message-actions');
+        if(actions&&JSON.stringify(before)===JSON.stringify(after)){
+          // Late native clocks must not replace text selection or a player.
+          actions.querySelector('.message-time')?.remove();renderChatMessageTime(actions,timestamp);
+          old.stamp=stamp;continue;
+        }
+      }
       const node=this.renderRow(row);node.dataset.key=row.key;
       node.hidden=!this.rowVisible(row);changed=changed||!node.hidden;
       this.nodes.set(row.key,{node,stamp});
@@ -244,10 +253,11 @@ class ChatTimeline {
       const actions=document.createElement('div');actions.className='message-actions';
       const copy=document.createElement('button');copy.type='button';copy.className='plain message-copy';copy.textContent=timelineText('复制');copy.onclick=()=>window.BridgeClipboard?.copy(()=>this.fullText(row),copy);actions.append(copy);node.append(actions);
       const quote=document.createElement('button');quote.type='button';quote.className='plain message-quote';quote.textContent=timelineText('引用');quote.onclick=()=>node.dispatchEvent(new CustomEvent('bridge-compose-quote',{bubbles:true,detail:{getText:()=>this.fullText(row),source:row.key}}));actions.append(quote);
+      renderChatMessageTime(actions,row.timestamp);
     }
     renderChatAttachments(node,row.attachments,{showToolImages:this.showToolImages,fileUrl:item=>{
       const file=[...this.files.values()].find(file=>file.reference===item.path||file.references?.includes(item.path));
-      return file?this.url('files/'+file.id):null;
+      return file?this.fileUrl(file):null;
     },url:item=>{
       if(!item.uploadId&&!item.desktopId)return null;
       const source=item.uploadId?this.url('uploads/'+encodeURIComponent(item.uploadId)+'/preview'):this.url('desktop-images/'+encodeURIComponent(item.desktopId));
@@ -255,6 +265,9 @@ class ChatTimeline {
     }});
     if(activity){content.open=!!open;content.ontoggle=()=>{if(content.open&&!this.details.has(row.key))load();};}
     return node;
+  }
+  fileUrl(file){
+    return file.scope==='host'?this.url('workspace/download')+'&scope=host&path='+encodeURIComponent(file.path):this.url('files/'+file.id);
   }
   fullText(row){
     const valid=()=>!this.abort.signal.aborted&&this.rows.get(row.key)?.row.version===row.version;
@@ -276,7 +289,7 @@ class ChatTimeline {
     for(const [key,{node}] of this.nodes){
       const row=this.rows.get(key)?.row,bar=node.querySelector('.message-actions');if(!bar||!row)continue;
       if(!this.onAction)continue;
-      const add=(action,label,disabled)=>{const cls=action==='fork'?'message-fork':'message-edit';let b=bar.querySelector('.'+cls);if(!b){b=document.createElement('button');b.type='button';b.className='plain '+cls;bar.append(b);}b.textContent=timelineText(label);b.disabled=disabled;b.onclick=()=>this.onAction(action,row,this);};
+      const add=(action,label,disabled)=>{const cls=action==='fork'?'message-fork':'message-edit';let b=bar.querySelector('.'+cls);if(!b){b=document.createElement('button');b.type='button';b.className='plain '+cls;bar.insertBefore(b,bar.querySelector('.message-time'));}b.textContent=timelineText(label);b.disabled=disabled;b.onclick=()=>this.onAction(action,row,this);};
       for(const action of bar.querySelectorAll('.message-edit,.message-fork'))action.hidden=!this.canEdit();
       if(row.editable&&this.canEdit()){const latest=this.meta?.latestUserTurnId===row.turnId;add(latest?'edit':'edit-fork',latest?'编辑并重新发送':'编辑并新建分支',row.turnStatus==='inProgress'||latest&&this.meta?.status==='active');}
       if(row.forkable&&this.canEdit())add('fork','从这里分支',false);

@@ -841,20 +841,48 @@ class IntegrationTests(unittest.TestCase):
         self.assertFalse(self.bridge.live[THREAD].connected)
         self.assertEqual(self.fixture.requests, [])
 
+    def test_cold_model_catalog_survives_missing_rollout_without_attaching(self):
+        from unittest.mock import Mock
+        (self.root / 'sessions/fixture.jsonl').unlink()
+        with sqlite3.connect(self.root / 'state_5.sqlite') as db:
+            db.execute('ALTER TABLE threads ADD COLUMN model_provider TEXT')
+            db.execute('UPDATE threads SET model_provider = ?', ('saved-api',))
+        db.close()
+        models = {'models': [{'id': 'available-model', 'efforts': []}]}
+        self.bridge.catalog_reader.get_kind = Mock(return_value=models)
+        with patch.object(self.bridge, '_attach', side_effect=AssertionError('catalog attached desktop')):
+            result = self.bridge.catalog(THREAD, kind='models')
+        self.bridge.catalog_reader.get_kind.assert_called_once_with(
+            'models', '/workspace', refresh=False, provider='saved-api')
+        self.assertEqual(result['models'], models['models'])
+        self.assertIsNone(self.bridge.live[THREAD].history_state)
+        self.assertFalse(self.bridge.live[THREAD].connected)
+        self.assertEqual(self.fixture.requests, [])
+
+    def test_cold_catalog_does_not_ignore_history_access_errors(self):
+        from unittest.mock import Mock
+        self.bridge.catalog_reader.get_kind = Mock()
+        with patch.object(self.bridge.store, 'history', side_effect=PermissionError('history denied')):
+            with self.assertRaises(PermissionError):
+                self.bridge.catalog(THREAD, kind='models')
+        self.bridge.catalog_reader.get_kind.assert_not_called()
+
     def test_upstream_model_without_effort_metadata_uses_original_provider_and_owner(self):
+        self.fixture.state['cwd'] = '/workspace'
         reads = []
         def catalog(kind, cwd, **kwargs):
             reads.append((cwd, kwargs))
             return {'models': [{'id': 'gemini-fixture', 'efforts': []}], 'skills': [], 'modelSource': 'api'}
         self.bridge.catalog_reader.get_kind = catalog
-        before = self.bridge.view(THREAD)
+        session = self.bridge.activate(THREAD)
+        before = session.view()
         result = self.bridge.settings(THREAD, 'gemini-fixture', 'high')
         self.assertTrue(result['confirmed'])
         self.assertEqual(reads, [(before['cwd'], {'refresh': False, 'provider': 'custom-api'})])
         call = self.fixture.requests[-1]
         self.assertEqual(call['method'], 'thread-follower-update-thread-settings')
         self.assertEqual(call['params']['threadSettings'], {'model': 'gemini-fixture', 'effort': 'high'})
-        after = self.bridge.view(THREAD)
+        after = session.view()
         for key in ('provider', 'cwd', 'owner'):
             self.assertEqual(after.get(key), before.get(key))
         self.assertFalse(any(r['method'] == 'thread-follower-start-turn' for r in self.fixture.requests))
@@ -1204,6 +1232,7 @@ class HttpTests(unittest.TestCase):
         identifier = 'wsl:' + 'a' * 32
         target = Mock()
         target.host = identifier
+        target.side_chats.find.return_value = None
         target.timeline_read.return_value = {'rows': [], 'meta': {}}
         manager = self.server.desktop_sessions = Mock()
         def require(provider):
@@ -1397,6 +1426,7 @@ class HttpTests(unittest.TestCase):
         identifier = 'wsl:' + 'a' * 32
         enabled = {identifier: True}
         target = Mock(host=identifier)
+        target.side_chats.find.return_value = None
         target.list.return_value = ([{'id': THREAD, 'host': identifier,
                                      'access': {'source': 'cli', 'runtime': 'wsl'}}], ['wsl'])
         target.timeline_read.return_value = {'rows': [], 'meta': {}}
@@ -1728,6 +1758,7 @@ class HttpTests(unittest.TestCase):
         from unittest.mock import Mock
         headers = self.login()
         remote = Mock()
+        remote.side_chats.find.return_value = None
         remote.rename.return_value = {'id': THREAD, 'host':'remote', 'title':'New'}
         self.server.bridge.for_host = Mock(return_value=remote)
         path = '/api/sessions/'+THREAD+'/rename?host=remote'

@@ -11,7 +11,8 @@ import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from relay.protocol import MAX_BODY, content_type, download_headers, validate, request_headers
+from relay.protocol import MAX_BODY, content_type, download_headers, request_headers
+from relay.http_framing import validate_http_request
 from bridge.features.auth.tls import client_context
 from bridge.features.auth.auth import session_file_lock
 from bridge.features.network.cloud_account import Controller, CloudError, scope
@@ -33,7 +34,7 @@ def validate_request(value):
     if (not isinstance(value['path'], str) or not isinstance(value['method'], str)
             or type(value['length']) is not int or not 0 <= value['length'] <= MAX_BODY):
         raise ValueError('invalid request fields')
-    validate(value['method'], value['path'], value['length'])
+    validate_http_request(value['method'], value['path'], value['length'])
     content_type(value['content_type'])
     request_headers(value['method'], value['headers'])
 

@@ -137,7 +137,7 @@
     // Only renderer-identified images from the current gateway; no arbitrary URLs.
     const pathname = window.BridgeRelayPath?.(url.pathname) ?? url.pathname;
     const codex = /^\/api\/sessions\/[0-9a-f-]{36}\/(?:uploads\/[0-9a-f-]{36}\/preview|desktop-images\/[a-f0-9]{64}|files\/[a-f0-9]{64})$/.test(pathname);
-    const desktop = /^\/api\/desktop-sessions\/(?:claude|deepseek|zcode)\/(?:uploads\/[0-9a-f-]{36}\/preview|images\/[0-9a-f]{64})$/.test(pathname) && !!url.searchParams.get('sessionId');
+    const desktop = /^\/api\/desktop-sessions\/(?:claude|deepseek|zcode|antigravity)\/(?:uploads\/[0-9a-f-]{36}\/preview|images\/[0-9a-f]{64})$/.test(pathname) && !!url.searchParams.get('sessionId');
     return url.origin === location.origin && (codex || desktop) ? {url:url.href,name:target.dataset.imageName} : null;
   }
   function canReuse(value, scope) {

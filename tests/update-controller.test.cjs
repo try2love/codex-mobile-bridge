@@ -8,7 +8,7 @@ const requireMain=require('node:module').createRequire(main);
 // gateway, or actual update process is started by these failure-path tests.
 function controller({ready='valid',readyAt=0,pending=false,spawnError=false,exited=false,platform='win32',packaged=true,environment={},execPath='/fixture/app/Bridge.exe',userData='/fixture/user',fixtureFiles=false}={}){
   let now=0;
-  const calls={exit:[],quit:0,closed:0,managementClosed:0},timers=[],intervals=[];
+  const calls={exit:[],quit:0,closed:0,managementClosed:0,workers:[]},timers=[],intervals=[];
   const app={isPackaged:packaged,setPath(){},requestSingleInstanceLock:()=>true,whenReady:()=>({then(){}}),on(){},
     getVersion:()=> '2.0.0-preview.3',getPath:()=>userData,exit:code=>calls.exit.push(code),quit:()=>calls.quit++};
   const context=vm.createContext({__dirname:path.dirname(main),
@@ -33,7 +33,7 @@ function controller({ready='valid',readyAt=0,pending=false,spawnError=false,exit
       if(name==='node:child_process')return {spawn:()=>({pid:456,exitCode:exited?1:null,unref(){},
         on(event,fn){if(spawnError&&event==='error')fn(Error('helper spawn failed'));}})};
       if(name==='./shared/controller.cjs')return {createSnapshotWorker:()=>({close(){calls.closed++;}}),createManagementWorker:()=>({close(){calls.managementClosed++;}}),workerFor:()=>({}),
-        runWorker:async()=>({helper:'/fixture/helper',plan:'/fixture/transaction/plan.json'})};
+        runWorker:async(options,action,payload)=>{calls.workers.push({action,payload});return {helper:'/fixture/helper',plan:'/fixture/transaction/plan.json'};}};
       return requireMain(name);
     }});
   vm.runInContext(fs.readFileSync(main,'utf8'),context);
@@ -53,10 +53,19 @@ for(const platform of ['darwin','win32','linux'])for(const packaged of [true,fal
     assert.equal(updater.directory,path.join('/fixture/user','updates'));
     assert.deepEqual(updater.key,fs.readFileSync(path.join(path.dirname(main),'features/updates/update-public-key.pem')));
     assert.equal(updater.apply,f.context.installUpdate);
+    assert.equal(typeof updater.preflight,platform==='win32'?'function':'undefined');
     assert.equal(typeof updater.fetch,'function');
     assert.deepEqual(f.timers,[5000]);assert.deepEqual(f.intervals,[6*60*60*1000]);
   });
 }
+
+test('Windows download preflight uses the current installation through the private worker',async()=>{
+  const f=controller();f.context.setupUpdater();
+  await vm.runInContext('updater.preflight()',f.context);
+  assert.equal(f.calls.workers[0].action,'update-preflight');
+  assert.equal(f.calls.workers[0].payload.target,path.dirname('/fixture/app/Bridge.exe'));
+  assert.deepEqual(f.calls.exit,[]);
+});
 
 test('verified helper exits immediately even with a stalled snapshot and cancellable quit',async()=>{
   const f=controller({pending:true});

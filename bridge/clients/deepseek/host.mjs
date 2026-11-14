@@ -4,6 +4,13 @@ import {createServer} from 'node:http';
 import {readFile,writeFile,rename,unlink,realpath,stat} from 'node:fs/promises';
 import {timingSafeEqual,randomUUID} from 'node:crypto';
 export const inject=['sessionController','sessionSkillCatalog','permissionPresets','agents','workspaceRegistry'];
+export async function recordLocation(ctx,sid){
+  const store=ctx.get?.('sessionPersistence');
+  if(typeof store?.stat!=='function')return {path:null};
+  const saved=await store.stat(sid);
+  if(saved?.header?.id!==sid||saved.location?.kind!=='jsonl'||typeof saved.location.path!=='string')return {path:null};
+  return {path:saved.location.path};
+}
 export async function readHistoryPage(controller,row,body={},signal=new AbortController().signal){
   const limit=body.historyLimit??40;
   if(!Number.isInteger(limit)||limit<1||limit>100)throw Error('历史页大小无效');
@@ -226,7 +233,7 @@ export async function apply(ctx,config){
       quitting=true;
       return {status:'accepted',pid:process.pid,generation};
     }
-    if(action==='status')return {connected:true,bridgeRevision:11,...config.plugin?{plugin:config.plugin}:{},projectDirectories:true,createModels:true,nativeQuit:typeof ctx.get?.('appExit')==='function',configured:(await account()).status==='configured'};
+    if(action==='status')return {connected:true,bridgeRevision:11,...config.plugin?{plugin:config.plugin}:{},projectDirectories:true,createModels:true,recordLocation:typeof ctx.get?.('sessionPersistence')?.stat==='function',nativeQuit:typeof ctx.get?.('appExit')==='function',configured:(await account()).status==='configured'};
     if(action==='account')return account(sid);
     if(action==='list')return {connected:true,sessions:(await list()).filter(r=>r.origin!=='subagent').map(r=>({...normalize(r),archived:(ctx.workspaceRegistry.archivedSessionIds||[]).includes(r.sessionId)})).sort((a,b)=>Number(a.archived)-Number(b.archived))};
     if(action==='projects'){const seen=new Map();for(const row of await list())if(row.cwd)seen.set(row.cwd,{key:row.cwd,cwd:row.cwd,name:row.cwd.replaceAll('\\','/').split('/').pop()});for(const w of ctx.workspaceRegistry.list())seen.set(w.path,{key:w.path,cwd:w.path,name:w.title||w.name||w.path,workspaceId:w.id});return {projects:[...seen.values()]};}
@@ -251,6 +258,7 @@ export async function apply(ctx,config){
       return {status:'ready',result:{id:result.sessionId,title:body.title||'新会话'}};
     }
     const row=await find(sid);
+    if(action==='record-location')return recordLocation(ctx,sid);
     if(action==='fork'){
       if(!capabilities().fork)throw Error('当前 Harness 未提供原生分支接口');
       const atSeq=Number(body.messageId);

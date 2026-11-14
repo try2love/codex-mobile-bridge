@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 
 from bridge.clients.claude.file_archive import archive_paths, state as archive_file_state, change as archive_file_change, supported as archive_supported, assert_no_cli as archive_assert_no_cli
-from bridge.clients.claude.history import image_event, session_custom_title
+from bridge.clients.claude.history import image_event, session_custom_title, local_command_text
 from bridge.clients.claude.creation import creation_launch_options
 
 MODES = {'default', 'acceptEdits', 'plan', 'dontAsk', 'auto', 'bypassPermissions'}
@@ -278,6 +278,8 @@ def history_page(path, identity, before=None, limit=40):
 
 
 def saved(path, found, *, include_events=False):
+    command_chain = {}
+    command_title = None
     try:
         native = str(uuid.UUID(path.stem))
         if path.is_symlink() or not path.is_file():
@@ -300,11 +302,14 @@ def saved(path, found, *, include_events=False):
                 if include_events:
                     history.append(event)
                 kind = event.get('type')
+                command = local_command_text(event, command_chain)
+                if command_title is None and command_chain.get('phase') == 'command':
+                    command_title = command[:120]
                 custom_title = session_custom_title(event, native)
                 if custom_title is not None:
                     title = custom_title
                 if kind == 'user' and not event.get('isSidechain'):
-                    if title is None:
+                    if title is None and command is None and not event.get('isMeta') and not event.get('isSynthetic'):
                         message = event.get('message') if isinstance(event.get('message'), dict) else {}
                         content = message.get('content', '')
                         if isinstance(content, list):
@@ -355,6 +360,8 @@ def saved(path, found, *, include_events=False):
             return None
     except OSError:
         return None
+    if title is None:
+        title = command_title
     if title is None:
         return None
     if not cwd:
@@ -546,6 +553,22 @@ def continuation_identity(directory):
     return hashlib.sha256(json.dumps(files, ensure_ascii=False, indent=2, sort_keys=True).encode()).hexdigest()
 
 
+def resume_directory(cwd):
+    try:
+        directory = Path(cwd).resolve(strict=True)
+    except FileNotFoundError:
+        raise ValueError('原项目目录不存在：'+cwd+'，请在远端恢复该目录后重试') from None
+    except PermissionError:
+        raise ValueError('原项目目录无访问权限：'+cwd) from None
+    except OSError:
+        raise ValueError('原项目目录不可用：'+cwd) from None
+    if not directory.is_dir():
+        raise ValueError('原项目路径不是目录：'+cwd)
+    if not os.access(directory, os.R_OK | os.X_OK):
+        raise ValueError('原项目目录无访问权限：'+cwd)
+    return directory
+
+
 def command(request):
     found = profile()
     operation = request.get('operation')
@@ -566,6 +589,18 @@ def command(request):
                 'authReady': auth_ready(found) if found else False}
     if not found or found['origin'] != request.get('origin'):
         raise ValueError('原 Claude Code 配置已变化或不可用')
+    if operation == 'resume-preflight':
+        row = session(found, request['native'])
+        if any(row[key] != request.get(key) for key in ('cwd', 'model', 'permissionMode')):
+            raise ValueError('原 Claude Code 会话设置已变化，请刷新后重试')
+        if not row['permissionKnown']:
+            return {'ready': False, 'notice': '无法确认原会话权限模式，请在远端终端继续'}
+        try:
+            resume_directory(row['cwd'])
+        except ValueError as exc:
+            return {'ready': False, 'notice': str(exc)}
+        ready = not row.get('archived') and auth_ready(found)
+        return {'ready': ready, 'notice': '' if ready else '原 Claude Code 账号不可用，请在远端终端核对登录状态'}
     if operation in ('archive-state', 'archive'):
         native = str(uuid.UUID(request['native']))
         row = session(found, native)
@@ -619,9 +654,7 @@ def resume(request):
         raise ValueError('原 Claude Code 会话设置已变化')
     if not row['permissionKnown'] or not auth_ready(found):
         raise ValueError('原 Claude Code 账号或权限模式不可用')
-    cwd = Path(row['cwd']).resolve(strict=True)
-    if not cwd.is_dir():
-        raise ValueError('原项目目录不可用')
+    cwd = resume_directory(row['cwd'])
     assert_session_closed(found, row['nativeId'])
     directory = upload_root(found, request['scope'])
     if profile() != found:

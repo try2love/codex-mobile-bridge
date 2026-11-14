@@ -8,13 +8,13 @@ import java.util.regex.*;
 public final class ArtifactDownload {
  public static final long CHUNK=1024L*1024;
  public static boolean accepts(String url,String origin){
-  try{return GatewayURL.sameOrigin(url,origin)&&(GatewayURL.apiPath(url,origin).matches("(?:/api/sessions/[0-9a-f-]{36}/(?:files/[a-f0-9]{64}|workspace/download)|/api/desktop-sessions/(?:claude|deepseek|zcode)/workspace/download)")||imageDownload(url,origin)||diagnostics(url,origin));}catch(Exception e){return false;}
+  try{return GatewayURL.sameOrigin(url,origin)&&(GatewayURL.apiPath(url,origin).matches("(?:/api/sessions/[0-9a-f-]{36}/(?:files/[a-f0-9]{64}|workspace/download)|/api/desktop-sessions/(?:claude|deepseek|zcode|antigravity)/workspace/download)")||imageDownload(url,origin)||diagnostics(url,origin));}catch(Exception e){return false;}
  }
  static boolean imageDownload(String url,String origin){
   try{
    URI value=new URI(url);if(value.getRawFragment()!=null||value.getRawQuery()==null)return false;
    int flags=0;for(String part:value.getRawQuery().split("&")){if(part.startsWith("download=")){if(!part.equals("download=1"))return false;flags++;}}
-   return flags==1&&GatewayURL.apiPath(url,origin).matches("(?:/api/sessions/[0-9a-f-]{36}/(?:uploads/[0-9a-f-]{36}/preview|desktop-images/[a-f0-9]{64})|/api/desktop-sessions/(?:claude|deepseek|zcode)/(?:uploads/[0-9a-f-]{36}/preview|images/[a-f0-9]{64}))");
+   return flags==1&&GatewayURL.apiPath(url,origin).matches("(?:/api/sessions/[0-9a-f-]{36}/(?:uploads/[0-9a-f-]{36}/preview|desktop-images/[a-f0-9]{64})|/api/desktop-sessions/(?:claude|deepseek|zcode|antigravity)/(?:uploads/[0-9a-f-]{36}/preview|images/[a-f0-9]{64}))");
   }catch(Exception e){return false;}
  }
  static boolean diagnostics(String url,String origin){

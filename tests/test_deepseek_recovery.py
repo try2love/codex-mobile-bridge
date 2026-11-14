@@ -2,10 +2,13 @@
 import copy
 import hashlib
 import signal
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from bridge.clients.deepseek.adapter import DeepSeek
+from bridge.clients.deepseek.setup import MARKER
 from bridge.clients.deepseek.recovery import DeepSeekRecovery, _evidence, _quit, _quitting_snapshot, _snapshot
 
 
@@ -25,6 +28,7 @@ class RecoveryConfirmationTests(unittest.TestCase):
     def setUp(self):
         self.recovery = DeepSeekRecovery()
         self.adapter = Mock()
+        self.adapter.discover_existing.return_value = {'installed': True}
         self.state = snapshot(hosts=(12, 13))
         self.evidence = {'busy': False, 'unknown': True, 'verifiedIdle': []}
         self.native = patch('bridge.clients.deepseek.recovery._snapshot', side_effect=lambda _: copy.deepcopy(self.state)).start()
@@ -94,11 +98,88 @@ class RecoveryConfirmationTests(unittest.TestCase):
             self.confirm(preview, acknowledgeUnknown=True)
         self.quit.assert_not_called()
 
-    def test_unverified_connector_cannot_issue_recovery_token(self):
+    def test_broken_connector_does_not_block_identity_preview_or_probe_untrusted_rpc(self):
         self.adapter.discover_existing.side_effect = ValueError('已有 Harness 接入无法验证')
-        with self.assertRaises(ValueError): self.preview()
-        self.assertIsNone(self.recovery.pending)
-        self.native.assert_not_called()
+        preview = self.preview(False)
+        self.assertTrue(preview['unknown'])
+        self.assertFalse(preview['canRecover'])
+        self.assertEqual(preview['backgroundCount'], 2)
+        self.assertIn('尚未提交退出', preview['message'])
+        self.native.assert_called_once()
+        self.probe.assert_not_called()
+        with self.assertRaisesRegex(ValueError, '接入配置无法验证'):
+            self.confirm(preview, acknowledgeUnknown=True)
+        self.quit.assert_not_called()
+
+    def test_unavailable_lazy_adapter_keeps_identity_preview(self):
+        preview = self.recovery.preview({}, None, False)
+        self.assertTrue(preview['unknown'])
+        self.assertFalse(preview['canRecover'])
+        self.native.assert_called_once()
+        self.probe.assert_not_called()
+        self.quit.assert_not_called()
+
+    def test_identity_failure_is_not_hidden_by_broken_connector(self):
+        self.native.side_effect = ValueError('Harness 进程已变化')
+        self.adapter.discover_existing.side_effect = ValueError('broken connector')
+        with self.assertRaisesRegex(ValueError, '进程已变化'):
+            self.preview()
+        self.adapter.discover_existing.assert_not_called()
+        self.probe.assert_not_called()
+
+    def test_missing_connector_is_unknown_not_idle_or_a_trusted_query(self):
+        self.adapter.discover_existing.return_value = {'installed': False}
+        preview = self.preview(False)
+        self.assertTrue(preview['unknown'])
+        self.assertFalse(preview['canRecover'])
+        self.probe.assert_not_called()
+
+    def test_repaired_connector_requires_new_preview(self):
+        self.adapter.discover_existing.side_effect = ValueError('broken connector')
+        preview = self.preview(False)
+        self.adapter.discover_existing.side_effect = None
+        self.adapter.discover_existing.return_value = {'installed': True}
+        with self.assertRaisesRegex(ValueError, '接入配置无法验证'):
+            self.confirm(preview, acknowledgeUnknown=True)
+        self.quit.assert_not_called()
+        preview = self.preview(False)
+        self.assertFalse(self.confirm(preview, acknowledgeUnknown=True))
+        self.quit.assert_called_once()
+
+    def test_connector_failure_after_preview_never_dispatches(self):
+        preview = self.preview(False)
+        self.adapter.discover_existing.side_effect = ValueError('broken connector')
+        with self.assertRaisesRegex(ValueError, '接入配置无法验证'):
+            self.confirm(preview, acknowledgeUnknown=True)
+        self.quit.assert_not_called()
+
+    def test_unknown_native_result_cannot_reuse_confirmation(self):
+        preview = self.preview(False)
+        self.quit.side_effect = ValueError('native reply unknown')
+        with self.assertRaisesRegex(ValueError, 'native reply unknown'):
+            self.confirm(preview, acknowledgeUnknown=True)
+        with self.assertRaisesRegex(ValueError, '已过期'):
+            self.confirm(preview, acknowledgeUnknown=True)
+        self.quit.assert_called_once()
+
+
+class BrokenConnectorFileTests(unittest.TestCase):
+    def test_real_orphan_insert_keeps_identity_visible_and_configuration_unchanged(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]/'.tmp') as temp:
+            root=Path(temp);home=root/'home';profile=home/'profiles/desktop';profile.mkdir(parents=True)
+            source=root/'removed-build/desktop-sessions/deepseek'
+            adapter=DeepSeek(source,home)
+            file=profile/'cordis.patch.yml';file.write_text(MARKER+'\n'+adapter._line()+'\n')
+            before=file.read_bytes()
+            with patch('bridge.clients.deepseek.recovery._snapshot', return_value=snapshot()) as identities, \
+                 patch('bridge.clients.deepseek.recovery._query', side_effect=AssertionError('untrusted RPC')) as query:
+                preview=DeepSeekRecovery().preview({},adapter,False)
+            self.assertTrue(preview['unknown'])
+            self.assertFalse(preview['canRecover'])
+            identities.assert_called_once()
+            query.assert_not_called()
+            self.assertEqual(file.read_bytes(),before)
+            self.assertFalse(source.exists())
 
 
 class RecoveryEvidenceTests(unittest.TestCase):
@@ -223,6 +304,30 @@ class RecoveryQuitTests(unittest.TestCase):
         self.before = snapshot(hosts=(12, 13))
         self.orphans = snapshot(gui=False, hosts=(12, 13))
         self.app = Mock(executable=Path(self.before['executable']))
+
+    @patch('bridge.clients.deepseek.recovery.sys.platform', 'win32')
+    def test_windows_recovery_uses_verified_native_quit_without_window_or_taskkill_fallback(self):
+        adapter=Mock()
+        with patch('bridge.clients.deepseek.recovery._same_processes', return_value=self.before), \
+             patch('bridge.clients.lifecycle.stop_deepseek') as native, \
+             patch('bridge.clients.deepseek.recovery.subprocess.run') as process, \
+             patch('bridge.clients.deepseek.recovery.os.kill') as signal_process:
+            _quit({}, self.before, adapter=adapter)
+        native.assert_called_once_with({}, adapter, state=self.before['state'])
+        process.assert_not_called()
+        signal_process.assert_not_called()
+
+    @patch('bridge.clients.deepseek.recovery.sys.platform', 'win32')
+    def test_windows_missing_native_protocol_never_falls_back_or_forces(self):
+        with patch('bridge.clients.deepseek.recovery._same_processes', return_value=self.before), \
+             patch('bridge.clients.lifecycle.stop_deepseek', side_effect=ValueError('no verified native quit')) as native, \
+             patch('bridge.clients.deepseek.recovery.subprocess.run') as process, \
+             patch('bridge.clients.deepseek.recovery.os.kill') as signal_process:
+            with self.assertRaisesRegex(ValueError, 'no verified native quit'):
+                _quit({}, self.before, adapter=Mock())
+        native.assert_called_once()
+        process.assert_not_called()
+        signal_process.assert_not_called()
 
     def test_normal_exit_during_snapshot_can_shrink_approved_process_set(self):
         expected = copy.deepcopy(self.before)

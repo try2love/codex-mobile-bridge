@@ -8,6 +8,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from bridge.clients.claude.adapter import Claude
@@ -796,7 +797,7 @@ class ClaudeNativeConnection(unittest.TestCase):
                 def native(name, **kwargs):
                     actions.append(name)
                     return {'setupState': 'ready' if name == 'check' else 'needs-retry'}
-                with patch('bridge.clients.claude.adapter.sys.platform', 'win32'), \
+                with patch('bridge.clients.claude.adapter.sys', SimpleNamespace(platform='win32')), \
                      patch('bridge.clients.claude.adapter.native_action', side_effect=native), \
                      patch('bridge.clients.claude.adapter.running_app', return_value=42), \
                      patch('bridge.clients.claude.adapter.developer_mode_enabled', return_value=True), \
@@ -943,6 +944,19 @@ class NativeHelperProcess(unittest.TestCase):
                 process.communicate.return_value = (json.dumps(expected), '')
                 self.assertEqual(native_action('quit', pid=42, executable='C:/Claude.exe'), expected)
             self.assertEqual(spawn.call_args.args[0], [__file__, '42', '--quit', 'C:/Claude.exe'])
+
+    @patch('bridge.clients.claude.setup.sys.platform', 'win32')
+    def test_native_quit_unavailable_is_unsubmitted_without_retry_or_force(self):
+        expected = {'quitState': 'failed', 'pid': 42,
+                    'reason': 'Claude 当前没有可验证的后台退出入口，尚未提交退出；请在电脑端正常退出，或另行确认强制退出'}
+        process = Mock(returncode=1)
+        process.communicate.return_value = (json.dumps(expected), '')
+        with patch('bridge.clients.claude.setup.helper_path', return_value=Path(__file__)), \
+             patch('bridge.clients.claude.setup.subprocess.Popen', return_value=process) as spawn:
+            self.assertEqual(native_action('quit', pid=42, executable='C:/Claude.exe'), expected)
+        spawn.assert_called_once()
+        process.terminate.assert_not_called()
+        process.kill.assert_not_called()
 
     @patch('bridge.clients.claude.setup.sys.platform', 'win32')
     def test_native_quit_rejects_unverified_helper_results(self):

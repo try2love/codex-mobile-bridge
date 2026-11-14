@@ -81,6 +81,14 @@ class NotificationTests(unittest.TestCase):
         self.assertEqual(self.manager.policy(other,'local')['requests'], 'off')
         self.assertTrue(self.manager.policy(other,'local')['notifyOnCompletion'])
 
+    def test_new_defaults_enable_both_but_saved_choices_are_preserved(self):
+        self.assertEqual(self.manager.defaults(), {'requests': True, 'completion': True})
+        self.manager.defaults({'requests': False, 'completion': False})
+        other = Notifications(self.source, self.directory)
+        self.addCleanup(other.close)
+        self.assertEqual(other.defaults(), {'requests': False, 'completion': False})
+        self.assertFalse(other.policy(self.thread, 'remote')['notifyOnCompletion'])
+
     def test_global_policy_inheritance_and_explicit_overrides_survive_restart(self):
         other = str(uuid.uuid4())
         self.source.store = type('Store', (), {'get': lambda _, identifier: {}})()

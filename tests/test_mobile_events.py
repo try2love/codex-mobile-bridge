@@ -100,6 +100,7 @@ class MobileEventTests(unittest.TestCase):
 
     def test_inbox_delivery_preserves_global_policy_and_hides_private_title(self):
         manager = Notifications(None, self.path, lambda: ['https://gateway.example'])
+        manager.defaults({'requests': True, 'completion': False})
         config = save_settings(self.path, {'mobileEnabled': True, 'includeTitle': False})
         row = {'id': THREAD, 'host': 'local'}
         self.assertTrue(manager.policy(THREAD, 'local')['available'])
@@ -293,7 +294,7 @@ class ServerUnreadTests(unittest.TestCase):
         viewed = feed.read()
         feed.append(['late'], {'id': THREAD, 'host': 'desktop:claude'}, 'Title', 'Body', False)
         feed.acknowledge('claude', viewed['streamId'], viewed['cursor'])
-        self.assertEqual(feed.read()['unread'], {'codex': 1, 'claude': 1, 'deepseek': 1, 'zcode': 0})
+        self.assertEqual(feed.read()['unread'], {'codex': 1, 'claude': 1, 'deepseek': 1, 'zcode': 0, 'antigravity': 0})
         self.assertEqual(len(feed.read()['events']), 4)  # Reading preserves inbox history.
         self.assertFalse(feed.read()['events'][1]['unread'])
         self.assertEqual(MobileEvents(self.path).read()['unread'], feed.read()['unread'])
@@ -310,9 +311,9 @@ class ServerUnreadTests(unittest.TestCase):
         manager.defaults({'requests': True, 'completion': True})
         for host in ('local', 'desktop:claude', 'desktop:deepseek'):
             for kind in (False, True): manager.mobile.append([host+str(kind)], {'id': THREAD, 'host': host}, 'Title', 'Body', kind)
-        self.assertEqual(manager.mobile_snapshot()['unread'], {'codex': 2, 'claude': 2, 'deepseek': 0, 'zcode': 0})
+        self.assertEqual(manager.mobile_snapshot()['unread'], {'codex': 2, 'claude': 2, 'deepseek': 0, 'zcode': 0, 'antigravity': 0})
         manager.defaults({'requests': True, 'completion': False})
-        self.assertEqual(manager.mobile_snapshot(999)['unread'], {'codex': 1, 'claude': 1, 'deepseek': 0, 'zcode': 0})
+        self.assertEqual(manager.mobile_snapshot(999)['unread'], {'codex': 1, 'claude': 1, 'deepseek': 0, 'zcode': 0, 'antigravity': 0})
         manager.policy(THREAD, 'local', {'requests': 'off', 'completion': 'off'})
         self.assertEqual(manager.mobile_snapshot()['unread']['codex'], 0)
         desktop.call.assert_not_called(); desktop.status.assert_not_called()

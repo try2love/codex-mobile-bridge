@@ -172,7 +172,7 @@ def serve(profile, application):
             if sys.platform != 'linux' and os.path.normcase(owner['image']) != os.path.normcase(str(application)):
                 raise ValueError('原 ZCode 进程身份不匹配')
             if not state:
-                transport = (PipeTransport(None, None, owner['image'], stream=launched[1]) if sys.platform == 'win32'
+                transport = (PipeTransport(None, None, application, stream=launched[1]) if sys.platform == 'win32'
                              else PipeTransport(launched[1], launched[2], owner['image']))
                 state.update(owner=owner, transport=transport)
             if state['owner'] != owner:

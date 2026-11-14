@@ -158,14 +158,14 @@ class CliStoreTests(unittest.TestCase):
             desktop = SessionStore(home, source='desktop')
             all_sessions = SessionStore(home)
             self.assertEqual({r['id'] for r in cli.list()},
-                             {'cli', 'shared', 'old', 'mobile', 'legacy-mobile'})
+                             {'cli', 'shared', 'old', 'mobile', 'legacy-mobile', 'exec'})
             self.assertEqual({r['id'] for r in desktop.list()},
                              {'desktop', 'vscode', 'legacy-mobile'})
             self.assertEqual({r['id'] for r in all_sessions.list()},
-                             {'cli', 'shared', 'old', 'mobile', 'legacy-mobile', 'desktop', 'vscode'})
+                             {'cli', 'shared', 'old', 'mobile', 'legacy-mobile', 'desktop', 'vscode', 'exec'})
             self.assertEqual(cli.get('legacy-mobile')['title'], 'Legacy mobile')
             self.assertEqual([r['id'] for r in cli.list(query='Legacy')], ['legacy-mobile'])
-            for identifier in ('desktop', 'vscode', 'child', 'legacy-child', 'exec'):
+            for identifier in ('desktop', 'vscode', 'child', 'legacy-child'):
                 with self.assertRaises(KeyError):
                     cli.get(identifier)
             self.assertEqual(cli.get('shared')['originator'], 'codex-tui')
@@ -276,6 +276,53 @@ class Runtime:
 
 
 class WslSessionTests(unittest.TestCase):
+    def test_cli_scope_listing_is_cached_and_failed_control_keeps_old_release(self):
+        session = self.entry.session(self.identifier, attach=False)
+        self.entry.subscriptions[self.identifier] = self.entry.generation
+        self.entry.subscription_tokens[self.identifier] = 'original-token'
+        self.entry.cli_origins[self.identifier] = 'cli'
+        with patch.object(self.entry.lifecycle, 'inspect', side_effect=ValueError('identity unavailable')) as inspect, \
+                patch.object(self.entry, 'read') as read:
+            row = self.entry.cli_connections()[0]
+            inspect.assert_not_called()
+            read.assert_not_called()
+            self.assertFalse(row['_scope_preview']()['canForce'])
+            with patch('bridge.clients.codex.release.release_thread', return_value={'status':'detached'}) as release:
+                self.assertEqual(row['_release'](False)['status'],'detached')
+            release.assert_called_once()
+        self.assertFalse(session.connected)
+
+    def test_target_scope_preserves_new_connection_and_unknown_write(self):
+        session = self.entry.session(self.identifier, attach=False)
+        session.connected = True
+        self.entry.subscriptions[self.identifier] = self.entry.generation
+        self.entry.subscription_tokens[self.identifier] = 'new-token'
+        old = {'status':'released','notice':'original writer exited',
+               'impact':[{'sessionId':self.identifier,'connectionKey':'old-token'}]}
+        self.entry._target_cli_released(old)
+        self.assertFalse(self.entry.server.closed)
+        self.assertTrue(session.connected)
+        queued, unknown = str(uuid.uuid4()), str(uuid.uuid4())
+        self.entry.receipts[self.identifier+':send:'+queued] = {'value':{'text':'preserve'},'result':{'status':'queued'}}
+        self.entry.receipts[self.identifier+':send:'+unknown] = {'value':{'text':'unknown'},'result':{'status':'unknown'}}
+        self.assertEqual(self.entry._target_cli_cancel_queued(),1)
+        self.assertEqual(self.entry.receipts[self.identifier+':send:'+queued]['value']['text'],'preserve')
+        self.assertEqual(self.entry.receipts[self.identifier+':send:'+queued]['result']['status'],'cancelled')
+        self.assertEqual(self.entry.receipts[self.identifier+':send:'+unknown]['result']['status'],'unknown')
+
+    def test_scope_wait_blocks_new_queue_but_existing_task_stop_remains_available(self):
+        from bridge.app.lifecycle import private_json
+        private_json(self.entry.data_dir/'cli-daemon-recovery.json',
+                     {'phase':'waiting','targetGeneration':{'pid':19}})
+        request_id = str(uuid.uuid4())
+        with self.assertRaisesRegex(IPCError,'新操作未发送'):
+            self.entry.send(self.identifier,'New draft',request_id,mode='queue')
+        self.assertNotIn(self.identifier+':send:'+request_id,self.entry.receipts)
+        turn = str(uuid.uuid4())
+        self.entry.server.turns = [{'id':turn,'status':'inProgress'}]
+        self.entry.interrupt(self.identifier)
+        self.assertIn(('turn/interrupt',{'threadId':self.identifier,'turnId':turn}),self.entry.server.calls)
+
     def test_disable_after_http_upload_headers_rejects_delayed_body(self):
         from bridge.api.httpd import Handler
         root = Path(self.temp.name)/'project'
@@ -650,6 +697,26 @@ class WslSessionTests(unittest.TestCase):
         with self.assertRaisesRegex(IPCError, '不会重复创建'): self.entry.create_chat(project, 'Unknown', uncertain)
         self.entry.server.request = Mock(side_effect=AssertionError('Must not replay native creation'))
         with self.assertRaisesRegex(IPCError, '不会重复创建'): self.entry.create_chat(project, 'Unknown', uncertain)
+
+    def test_blank_wsl_chat_is_materialized_without_a_name_or_model_turn(self):
+        self.entry.store.list=lambda **kwargs:[{'cwd':'/home/fixture/project'}]
+        self.entry.read=lambda *args,**kwargs:{'cwd':'/home/fixture/project'}
+        created=str(uuid.uuid4());original=self.entry.server.request
+        def request(method,params):
+            if method=='thread/start':
+                self.entry.server.calls.append((method,copy.deepcopy(params)))
+                self.entry.server.thread.update(id=created,name=None,sectionId=None)
+                return {'thread':copy.deepcopy(self.entry.server.thread)}
+            if method=='thread/section/move':
+                self.entry.server.calls.append((method,copy.deepcopy(params)));return {}
+            return original(method,params)
+        self.entry.server.request=request
+        project=self.entry.host+'|/home/fixture/project';attempt=str(uuid.uuid4())
+        self.assertEqual(self.entry.create_chat(project,'  ',attempt)['id'],created)
+        self.assertEqual(self.entry.create_chat(project,'',attempt)['id'],created)
+        self.assertEqual(sum(m=='thread/start' for m,_ in self.entry.server.calls),1)
+        self.assertIn(('thread/section/move',{'threadId':created,'sectionId':None}),self.entry.server.calls)
+        self.assertFalse(any(m in ('turn/start','thread/name/set') for m,_ in self.entry.server.calls))
 
     def test_wsl_creation_includes_and_verifies_model_before_exposing_the_empty_chat(self):
         self.entry.store.list=lambda **kwargs:[{'cwd':'/home/fixture/project'}]

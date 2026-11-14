@@ -70,7 +70,7 @@ npm run test:browser
 
 `scripts/gateway-resources.json` 与源路径测试保证清单一致，但冻结导入、签名、安装和更新必须在获准打包后、目标系统上另外验证。不要根据 macOS 单机测试宣称 Windows/Linux 已实机通过。
 
-常规 CI 的 `mobile-scope` 检查源码、共享资源、构建脚本和相关工作流变化；匹配时执行 Android APK 编译及既有 iOS 无签名构建。已有必需检查 `desktop-tests` 显式汇总这些结果，再执行 Node 与浏览器回归。Android 可选 FCM 配置及通知真机行为仍单独验收。
+PR 的 `change-scope` 使用 `scripts/ci-test-scope.py` 分别选择后端、UI 资源、Node、浏览器、Android、iOS 和移动更新检查；纯 CSS 不运行后端、桌面逻辑或原生编译。未知路径、依赖、工作流与公共清单保守全量。`desktop-tests` 只负责显式汇总所选结果，不将失败、取消或意外跳过当作通过。主分支推送、版本标签与手动触发保持完整检查；普通分支推送由 PR 事件覆盖，避免重复全量。Android 可选 FCM 配置及通知真机行为仍单独验收。
 
 Android 后台通知定向验证：`python scripts/test-mobile-events.py` 通过真实 JSON 和回环 HTTP 覆盖增量读取、服务重建续收、事件去重、流重置、登录/删除竞态、多电脑隔离与暂停，以及四地址来源选择、禁用时在途响应、重新开启的历史基线；首次运行下载并校验固定版本的 JVM JSON 测试依赖。`python scripts/test-mobile-notification-permissions.py --android-only` 验证 Android 通知权限、手动后台开关与启动失败回退。两者读取 `JAVA_HOME`。系统服务、锁屏通知、点击跳转与电池行为在 Android 设备或模拟器上另行验收。
 
@@ -82,6 +82,6 @@ iOS 通知回归在 macOS 上运行 `scripts/test-ios-events.py`、`scripts/test
 
 Android 设置页资源合约：`node --test mobile/tests/settings.test.cjs mobile/tests/resources.test.cjs` 检查浅深色资源对齐、文字对比度及两种宿主的配置声明。原生交互另外验收整行与开关点击、后台服务启停、权限返回刷新、设置页主题作用域、主题持久化与跟随系统、提示吐司、翻译、返回原聊天，以及窄屏和大字体布局。
 
-Android 原生电脑选项菜单：`python3 scripts/test-android-gateway-menu.py --adb <已有adb路径> --serial emulator-5556 --apk <本轮Test包>`。仅对明确可丢弃的模拟器运行，会清空该模拟器中 Test 的偏好、保存合成连接并授予通知权限；拒绝真机序列号。使用生产 Activity/WebView 检查页面颜色、原生主题回退、系统和逐级返回、晚回调取消、导航与生命周期清理、草稿保留以及通知来源偏好。结果位于 `.tmp/android-gateway-menu-tests/`，不等于真机或真实客户端会话验收。
+Android 原生电脑选项菜单：`python3 scripts/test-android-gateway-menu.py --adb <已有adb路径> --serial emulator-5556 --apk <本轮Test包> --keystore <同签名密钥> --application-id <Test应用标识>`。签名密码由 `CMB_ANDROID_STORE_PASSWORD` 传入。仅对明确可丢弃的模拟器运行，会清空该模拟器中 Test 的偏好、保存合成连接并授予通知权限；拒绝真机序列号。使用生产 Activity/WebView 检查页面颜色、原生主题回退、系统和逐级返回、晚回调取消、导航与生命周期清理、草稿保留以及通知来源偏好。结果位于 `.tmp/android-gateway-menu-tests/`，不等于真机或真实客户端会话验收。
 
 设置页动效另外检查进入和返回、开关与权限布局、主题弹层及浅深色交叉淡化的中间帧；同时覆盖快速反向操作、系统动画时长为零时的直接呈现，以及关闭窗口后的动画和临时画面清理。

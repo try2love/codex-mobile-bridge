@@ -21,6 +21,8 @@
 
 # Codex Mobile Bridge · A remote workbench for desktop agents
 
+> **v2.2.1-preview.1 (preview):** [Preview release](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1-preview.1) · [Release notes](RELEASE_NOTES.md). Antigravity, CLI connection management and chat improvements. v2.2.0 remains the latest stable release. Android Preview installs separately as Bridge Preview; keep the original app and add your computer connections again.
+
 > **v2.2.0 (stable):** [Release page](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.0) · [Full release notes](RELEASE_NOTES.md) · [Mobile installation](mobile/README.md). ZCode, multiple routes per computer, native side chats and lower idle resource usage.
 
 [简体中文](README.md) · [English](README_EN.md)
@@ -649,6 +651,8 @@ Thanks to the [LINUX DO](https://linux.do/) community and its members for their 
 
 Thanks to [@qybgh (Luoran Yau)](https://github.com/qybgh) for contributing mobile Plan and Goal support, attachment previews and UI improvements in [PR #8](https://github.com/try2love/codex-mobile-bridge/pull/8). Version 1.3.1 builds on that contribution with Goal controls, notification preferences and interaction refinements.
 
+Thanks to [@windowmmk](https://github.com/windowmmk) for the accepted Antigravity foundation in [PR #150](https://github.com/try2love/codex-mobile-bridge/pull/150), and [@heiqiu47](https://github.com/heiqiu47) for custom HTTPS ports in [PR #146](https://github.com/try2love/codex-mobile-bridge/pull/146) and the macOS menu-bar icon in [PR #157](https://github.com/try2love/codex-mobile-bridge/pull/157). Original commits for the accepted contributions are preserved; subsequent integration changes are separate.
+
 Thanks to [@heiqiu47](https://github.com/heiqiu47) for PRs [#85](https://github.com/try2love/codex-mobile-bridge/pull/85), [#86](https://github.com/try2love/codex-mobile-bridge/pull/86), [#92](https://github.com/try2love/codex-mobile-bridge/pull/92), [#95](https://github.com/try2love/codex-mobile-bridge/pull/95); [@mc373906408 (waken)](https://github.com/mc373906408) for [#88](https://github.com/try2love/codex-mobile-bridge/pull/88); and [@littltstream](https://github.com/littltstream) for [#96](https://github.com/try2love/codex-mobile-bridge/pull/96). Their original commits are retained; [v2.1.7 notes](RELEASE_NOTES.md#v217) describe each contribution.
 
 Thanks to [@heiqiu47](https://github.com/heiqiu47) for file compatibility, mobile file opening, system-bar and login-startup improvements in [PR #24](https://github.com/try2love/codex-mobile-bridge/pull/24), released in v2.0.2.
@@ -671,7 +675,7 @@ Thanks to [@we-worker](https://github.com/we-worker) for Windows WSL Codex suppo
 
 ## License and references
 
-[MIT License](LICENSE).
+The project as a whole is licensed under [GNU AGPLv3, version 3 only (`AGPL-3.0-only`)](LICENSE). Historical MIT notices are retained in [NOTICE](NOTICE); third-party components retain their own licenses. Versions previously released under MIT are unaffected. Modified versions used over a network must offer their Corresponding Source to those users as required by section 13 of the AGPL.
 
 - [OpenAI Codex](https://github.com/openai/codex)
 - [Cloudflare Tunnel documentation](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)

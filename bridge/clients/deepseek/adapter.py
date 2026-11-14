@@ -41,6 +41,15 @@ class DeepSeek:
     def install(self):
         return self.ensure_installed()
 
+    def connection_error(self):
+        if not (self.home/'profiles/desktop/cordis.patch.yml').is_file():
+            return '未找到 Harness 桌面档案。使用 Web 或第三方客户端时，请在“第三方客户端：手动安装与绑定”中扫描并绑定其接入插件；官方桌面版请先启动一次并确认数据目录。'
+        return 'DeepSeek 桌面未连接，请安装接入插件并重新打开 Harness'
+
+    def repair_missing_connector(self, expected, check_stopped):
+        from bridge.clients.deepseek.orphan import repair
+        return repair(self, expected, check_stopped, private_json)
+
     def _line(self):
         entry = {'insert': [{'id': 'codex-mobile-desktop', 'name': (self.directory/'mobile-host.mjs').as_uri(),
                              'config': {'configPath': str(self.directory/'connection.json')}}]}
@@ -181,6 +190,13 @@ class DeepSeek:
         record.unlink()
         return {'installed': False, 'restartRequired': True}
 
+    def record_path(self, sid):
+        if self.call('status').get('recordLocation') is not True:
+            return None
+        value = self.call('record-location', sid)
+        path = value.get('path')
+        return path if isinstance(path, str) and Path(path).is_absolute() else None
+
     def call(self, action, sid=None, body=None):
         if action == 'create' and body and 'model' in body and self.call('status').get('createModels') is not True:
             raise ResumePreflightBlocked('Harness 接入需要更新后才能预设新会话模型；尚未创建会话')
@@ -210,7 +226,7 @@ class DeepSeek:
                 message = 'Harness 拒绝了操作'
             raise BridgeUnavailable(message) from exc
         except (OSError, KeyError) as exc:
-            raise BridgeUnavailable('DeepSeek 桌面未连接，请安装接入插件并重新打开 Harness') from exc
+            raise BridgeUnavailable(self.connection_error()) from exc
         if action == 'archive' and value.get('archiveNotSent') is True:
             raise ArchiveNotSent(value.get('message') or '原生客户端拒绝归档，操作未发送')
         if action == 'detail':
@@ -295,6 +311,8 @@ def messages(records):
         if kind in ('user/message', 'assistant/message'):
             message = data.get('message', data)
             metadata = {}
+            if event.get('time') is not None:
+                metadata['timestamp'] = event['time']
             source_kind = (message.get('source') or {}).get('kind')
             if kind == 'user/message' and isinstance(source_kind, str) and source_kind and source_kind != 'user':
                 metadata.update(role='activity', kind='context', title='上下文')
@@ -310,6 +328,7 @@ def messages(records):
             content = message.get('content', [])
             if isinstance(content, str):
                 content = [{'type': 'text', 'text': content}]
+            first_part = len(result)
             for i, block in enumerate(content):
                 if block.get('type') == 'image':
                     result.append({'id': str(event.get('seq'))+':'+str(i), 'role': kind.split('/')[0], 'text':'',
@@ -321,6 +340,12 @@ def messages(records):
                     result.append({'id': str(event.get('seq'))+':'+str(i), 'role': 'reasoning' if block.get('type') in ('thinking', 'reasoning') else kind.split('/')[0], 'text': text, **metadata})
                     if kind == 'assistant/message' and result[-1]['role'] == 'assistant':
                         final_assistant = result[-1]
+            visible = False
+            for row in result[first_part:]:
+                if row['role'] not in ('user', 'assistant') or visible:
+                    row.pop('timestamp', None)
+                else:
+                    visible = True
         elif kind in ('tool/call', 'tool/result', 'todo/write'):
             result.append({'id': str(event.get('seq')), 'role': 'activity', 'title': data.get('name') or data.get('toolName') or kind, 'text': json.dumps(data, ensure_ascii=False, indent=2)})
     for message in result:

@@ -10,13 +10,14 @@ import subprocess
 import threading
 import time
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from bridge.features.sessions.identity import same_cwd
 from bridge.clients.codex.app_server import (
-    AppServerError, AppServerUnavailable, AppServerUnknownResult, AppServerUnsupported, CodexAppServer)
+    AppServerError, AppServerUnavailable, AppServerReadTimeout, AppServerUnknownResult, AppServerUnsupported, CodexAppServer)
 from bridge.clients.codex.catalog import Catalog, CatalogError, ModelStore, normalize_native_skills
-from bridge.clients.codex.remote import RemoteStore, RemoteUnavailable, remote_model_catalog, remote_model_identity
+from bridge.clients.codex.remote import RemoteStore, RemoteUnavailable, remote_model_catalog, remote_model_identity, ssh_read
+from bridge.clients.codex.linux_control import LinuxCliControl
 from bridge.platforms.codex_daemon_env import read_daemon_environment, DaemonEnvironmentUnavailable
 from bridge.features.sessions.goal import GoalError, GoalUnavailable, GoalUnsupported, normalize_goal_result
 from bridge.features.sessions import linux_permissions
@@ -65,7 +66,7 @@ def _ssh_managed_exec(*args):
              'exec "$root/current/codex" app-server ' + arguments + '; else exit 73; fi')
 
 
-def _ssh_proxy_command(alias):
+def _ssh_proxy_command(alias, home=None):
     if not alias or alias.startswith('-') or any(c.isspace() for c in alias):
         raise ValueError('Invalid SSH host alias')
     # Match RemoteStore's explicit user login shell and CODEX_HOME selection.
@@ -74,15 +75,21 @@ def _ssh_proxy_command(alias):
              'elif test -x "$HOME/.local/bin/codex"; then '
              'exec "$HOME/.local/bin/codex" app-server proxy; else '
              + _ssh_managed_exec('proxy') + '; fi')
+    if home is not None:
+        if not PurePosixPath(str(home)).is_absolute():
+            raise ValueError('An absolute target CLI home is required')
+        inner = 'export CODEX_HOME=' + shlex.quote(str(home)) + '; ' + inner
     remote = 'exec "$SHELL" -lc ' + shlex.quote(inner)
     return ['ssh', '-T', '-o', 'BatchMode=yes', '-o', 'ClearAllForwardings=yes',
             '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes',
             '-o', 'UpdateHostKeys=no', alias, remote]
 
 
-def _ssh_daemon_start_command(alias):
+def _ssh_daemon_start_command(alias, home=None):
     command = _ssh_proxy_command(alias)
     inner = _ssh_managed_exec('daemon', 'start')
+    if home is not None:
+        inner = 'export CODEX_HOME=' + shlex.quote(str(home)) + '; ' + inner
     command[-1] = 'exec "$SHELL" -lc ' + shlex.quote(inner)
     return command
 
@@ -106,9 +113,14 @@ def _local_cli(home, configured):
 
 class CliSessions:
     def __init__(self, home, on_state, on_disconnect, cli='codex', alias=None,
-                 process_factory=None, allow_installed_runtime=False):
+                 process_factory=None, allow_installed_runtime=False, clear_sqlite_home=False):
         self.home = Path(home)
+        self.configuration_stamp = None  # Unknown until bound to the verified daemon generation.
+        self.configuration_generation = None
+        self.recovery_environment = None
+        self.drained_connections = set()
         self.allow_installed_runtime = allow_installed_runtime
+        self.clear_sqlite_home = clear_sqlite_home
         self.alias = alias
         self.remote_home = None
         command = _ssh_proxy_command(alias) if alias else None
@@ -121,6 +133,7 @@ class CliSessions:
         self.joined = {}
         self.attaching = set()
         self.metadata = {}
+        self.release_receipts = {}
         self.states = {}
         self.requests = {}
         self.consumed_requests = {}
@@ -134,18 +147,38 @@ class CliSessions:
             command=command, check_socket=alias is None, client_name='codex-mobile-bridge-cli')
         self.configured_cli = cli
         self.store = RemoteStore(alias) if alias else SessionStore(self.home)
+        self.lifecycle = (LinuxCliControl(lambda: str(self.remote_home) if self.remote_home else None,
+                          lambda source, timeout: ssh_read(alias, source, timeout)) if alias else None)
+
+    def _runtime_home(self, info):
+        """SSH paths belong to the POSIX target, including on a Windows gateway."""
+        value = info.get('codexHome')
+        if not isinstance(value, str) or not value or '\0' in value:
+            raise AppServerUnavailable('Codex CLI runtime home is unavailable')
+        actual = PurePosixPath(value) if self.alias is not None else Path(value)
+        expected = self.remote_home if self.alias is not None else self.home
+        if not actual.is_absolute() or expected is not None and actual != expected:
+            raise AppServerUnavailable('Codex CLI runtime belongs to another home')
+        if self.alias is not None:
+            self.remote_home = actual
+            self.client.command = _ssh_proxy_command(self.alias, actual)
+        return actual
 
     def cli_connections(self):
         with self.lock:
             return [{'key': self.metadata[sid]['connectionToken'], 'sessionId': sid, 'provider': 'codex',
                      'title': self.states.get(sid, {}).get('title') or sid, 'host': self.alias or 'local',
                      'location': self.alias or '本机 CLI',
-                     '_release': lambda stop, sid=sid, token=self.metadata[sid]['connectionToken']: self.release_connection(sid, token, stop)}
+                     '_release': lambda stop, sid=sid, token=self.metadata[sid]['connectionToken']: self.release_connection(sid, token, stop),
+                     '_check': lambda sid=sid, token=self.metadata[sid]['connectionToken'], process=process: self.check_release_connection(sid, token, process)}
                     for sid, process in self.joined.items() if process is self.client.process
                     and sid in self.metadata and self.metadata[sid].get('connectionToken')]
 
     def release_connection(self, identifier, token, stop=False):
-        from bridge.clients.codex.release import release_thread
+        from bridge.clients.codex.release import release_thread, unsubscribe_thread
+        from bridge.clients.codex.daemon_network import graceful_restart_supported
+        if token in self.drained_connections:
+            return {'status': 'released', 'notice': '原生空闲服务已正常退出，原连接已释放'}
         with self.lock:
             guard = self.attach_locks.setdefault(identifier, threading.Lock())
         with guard:
@@ -155,11 +188,36 @@ class CliSessions:
                     if (process is None or self.client.process is not process or self.joined.get(identifier) is not process
                             or self.metadata.get(identifier, {}).get('connectionToken') != token):
                         raise AppServerUnavailable('原 CLI 连接已变化；未操作新的连接')
-                return self.client.request(method, params)
-            result = release_thread(request, identifier, stop)
+                return self.client.request(method, params, replay_safe=method in (
+                    'thread/read', 'thread/backgroundTerminals/list', 'thread/goal/get', 'thread/turns/list'))
+            cleanup_only = self.metadata.get(identifier, {}).get('cleanupOnly')
+            result = unsubscribe_thread(request, identifier) if cleanup_only else release_thread(
+                request, identifier, stop, allow_terminal_error=graceful_restart_supported(self.client.server_info or {}))
+            if cleanup_only:
+                result['notice'] = '已撤销待核对接入的订阅；未停止其他执行器的任务。' + result.get('notice', '')
             if result['status'] in ('released', 'detached'):
+                self.release_receipts[token] = process
                 self._invalidate(identifier, process)
             return result
+
+    def check_release_connection(self, identifier, token, process):
+        from bridge.clients.codex.release import check_release
+        if token in self.drained_connections:
+            return {'status': 'released', 'notice': '原生空闲服务已正常退出，原连接已释放'}
+        def guard():
+            with self.lock:
+                current = self.metadata.get(identifier, {}).get('connectionToken')
+                if process is None or self.client.process is not process or current not in (None, token):
+                    raise AppServerUnavailable('原 CLI 连接已变化，无法核对此前释放结果；未操作新的连接')
+        def request(method, params):
+            guard()
+            result = self.client.request(method, params, replay_safe=True)
+            guard()
+            return result
+        result = check_release(request, identifier, token in self.release_receipts)
+        if result['status'] == 'released':
+            self._invalidate(identifier, process)
+        return result
 
     def available(self):
         if self.alias is not None or Path(self.client.socket_path).exists() or _managed_cli(self.home) is not None:
@@ -184,7 +242,7 @@ class CliSessions:
             executable = _local_cli(self.home, self.configured_cli)
             environment = os.environ.copy()
             environment['CODEX_HOME'] = str(self.home)
-            if self.allow_installed_runtime:
+            if self.clear_sqlite_home:
                 environment.pop('CODEX_SQLITE_HOME', None)
             options = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
             result = subprocess.run([executable, 'app-server', 'daemon', 'version'],
@@ -210,16 +268,10 @@ class CliSessions:
         """An explicit new CLI chat; no turn is started."""
         if not isinstance(cwd, str) or not cwd or (self.alias is None and not Path(cwd).is_dir()):
             raise AppServerUnavailable('CLI 项目目录不存在')
-        from bridge.features.sessions.create import model_overrides
+        from bridge.features.sessions.create import model_overrides, save_new_thread
         overrides = model_overrides(model, effort)
         info = self._connect_explicit()
-        if self.alias is None and Path(info['codexHome']) != self.home:
-            raise AppServerUnavailable('Codex CLI runtime belongs to another home')
-        if self.alias is not None:
-            remote_home = Path(info['codexHome'])
-            if not remote_home.is_absolute() or (self.remote_home is not None and remote_home != self.remote_home):
-                raise AppServerUnavailable('Remote Codex CLI runtime identity changed')
-            self.remote_home = remote_home
+        self._runtime_home(info)
         if on_start is not None:
             on_start()
         params = {'cwd': cwd, 'ephemeral': False, 'threadSource': 'cli', **overrides}
@@ -242,16 +294,13 @@ class CliSessions:
                                         'permissions': {key: copy.deepcopy(result[key]) for key in
                                                         ('approvalPolicy', 'approvalsReviewer', 'sandbox', 'activePermissionProfile')
                                                         if key in result}, 'goal': None}
-        self.client.request('thread/name/set', {'threadId': thread_id, 'name': title})
+        save_new_thread(self.client.request, thread, title)
         return self.refresh(thread_id)
 
     def archive_call(self, thread_id, archived, identifiers, disconnect=False, check_scope=None):
         # Explicit archive may start the installed original daemon, never a thread.
         info = self._connect_explicit()
-        home = Path(info.get('codexHome', ''))
-        expected = self.remote_home if self.alias else self.home
-        if not home.is_absolute() or (expected is not None and home != expected):
-            raise AppServerUnavailable('Codex CLI runtime belongs to another home')
+        self._runtime_home(info)
         from bridge.features.sessions.create import check_archive_runtime, stop_archive_runtime
         if not disconnect:
             check_archive_runtime(lambda method, params: self.client.request(method, params, replay_safe=True), identifiers)
@@ -297,7 +346,7 @@ class CliSessions:
             return delete_native(request, snapshot, recheck)
         return call
 
-    def attach(self, thread_id, explicit=False):
+    def attach(self, thread_id, explicit=False, *, target_provider=None, expected_identity=None, before_resume=None):
         """Passive inspection never starts or resumes a runtime."""
         if not explicit:
             return None
@@ -306,9 +355,57 @@ class CliSessions:
         with self.lock:
             attach_lock = self.attach_locks.setdefault(thread_id, threading.Lock())
         with attach_lock:
-            return self._attach_explicit(thread_id)
+            result = self._attach_explicit(thread_id, target_provider=target_provider,
+                                           expected_identity=expected_identity, before_resume=before_resume)
+        if self.lifecycle is not None:
+            self.lifecycle.refresh()
+        return result
 
-    def _connect_explicit(self):
+    def observe(self, thread_id):
+        """Read an already loaded native thread without subscribing or resuming it."""
+        if self.alias is None and isinstance(self.client, CodexAppServer):
+            self.client.command[0] = _local_cli(self.home, self.configured_cli)
+        info = self.client.connect()
+        self._runtime_home(info)
+        process = self.client.process
+        if not self.client.is_loaded(thread_id):
+            return None
+        thread = self.client.request('thread/read', {'threadId': thread_id, 'includeTurns': True}, replay_safe=True)['thread']
+        if process is not self.client.process or thread.get('id') != thread_id:
+            raise AppServerUnavailable('CLI observation generation changed')
+        if (thread.get('status') or {}).get('type') == 'notLoaded':
+            return None
+        identity = self.persisted_identity(thread)
+        with self.lock:
+            metadata = dict(self.metadata.get(thread_id) or identity, model=thread.get('model'))
+            if process is not self.client.process:
+                raise AppServerUnavailable('CLI observation generation changed during metadata read')
+        state = self._state(thread, [], metadata)
+        # The read API exposes waiting flags, not another client's request IDs.
+        # The notification layer tracks observed waiting episodes separately.
+        flags = (thread.get('status') or {}).get('activeFlags') or []
+        turn = (thread.get('turns') or [{}])[-1]
+        state['notificationWait'] = {'turnId': turn.get('id'),
+            'flags': [flag for flag in flags if flag in ('waitingOnApproval', 'waitingOnUserInput')]}
+        return state
+
+    def persisted_identity(self, thread):
+        """Read the retained native provider; thread summaries can describe old history."""
+        try:
+            saved = self.store.get(thread['id'])
+        except (KeyError, StoreUnavailable, RemoteUnavailable) as error:
+            raise AppServerUnavailable('Saved CLI thread metadata is unavailable') from error
+        if (saved.get('origin') not in ('cli', 'ide') or not saved.get('model_provider')
+                or not saved.get('cwd') or not same_cwd(saved['cwd'], thread.get('cwd'), self.alias is None and os.name == 'nt')):
+            raise AppServerUnsupported('Saved CLI thread identity does not match this runtime')
+        return {'id': thread['id'], 'cwd': thread['cwd'], 'modelProvider': saved['model_provider']}
+
+    @staticmethod
+    def _provider_matches(thread, metadata):
+        return thread.get('modelProvider') == metadata['modelProvider'] or (
+            metadata.get('historicalProvider') is not None and thread.get('modelProvider') == metadata['historicalProvider'])
+
+    def _connect_explicit(self, *, allow_start=True):
         if self.alias is None and isinstance(self.client, CodexAppServer):
             executable = _local_cli(self.home, self.configured_cli)
             self.client.command[0] = executable
@@ -316,6 +413,8 @@ class CliSessions:
         try:
             return self.client.connect()
         except AppServerUnavailable:
+            if not allow_start:
+                raise
             with self.start_lock:
                 if self.daemon_start_generation != generation:
                     return self.client.connect()
@@ -338,7 +437,7 @@ class CliSessions:
                     environment.pop(name, None)
                 environment.update(proxy_updates)
             command = [str(managed), 'app-server', 'daemon', 'start']
-            if self.allow_installed_runtime:
+            if self.clear_sqlite_home:
                 environment.pop('CODEX_SQLITE_HOME', None)
             for name, value in (preserved or {}).items():
                 if value is None:
@@ -346,7 +445,7 @@ class CliSessions:
                 else:
                     environment[name] = value
         else:
-            command = _ssh_daemon_start_command(self.alias)
+            command = _ssh_daemon_start_command(self.alias, self.remote_home)
             environment = None
         try:
             options = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
@@ -368,51 +467,79 @@ class CliSessions:
         if self.alias is None and Path(report.get('socketPath', '')) != Path(self.client.socket_path):
             raise AppServerUnavailable('Codex daemon started in another home')
 
-    def _attach_explicit(self, thread_id):
-        info = self._connect_explicit()
-        if self.alias is None and Path(info['codexHome']) != self.home:
-            raise AppServerUnavailable('Codex CLI runtime belongs to another home')
-        if self.alias is not None:
-            remote_home = Path(info['codexHome'])
-            if not remote_home.is_absolute() or (self.remote_home is not None and
-                    remote_home != self.remote_home):
-                raise AppServerUnavailable('Remote Codex CLI runtime identity changed')
-            self.remote_home = remote_home
+    def _attach_explicit(self, thread_id, *, target_provider=None, expected_identity=None, before_resume=None):
+        info = self._connect_explicit(allow_start=before_resume is None)
+        self._runtime_home(info)
         with self.lock:
             if thread_id in self.joined:
+                self._require_joined(thread_id)
+                if target_provider is not None and self.metadata[thread_id]['modelProvider'] != target_provider:
+                    raise AppServerUnsupported('目标会话仍被原生加载，请先明确确认 CLI 服务维护；未迁移提供商。')
                 return copy.deepcopy(self.states[thread_id])
-        loaded = self.client.is_loaded(thread_id)
+        process = self.client.process
+        try:
+            loaded = self.client.is_loaded(thread_id)
+        except AppServerReadTimeout:
+            # Nothing has been resumed yet. Retire only the stalled proxy;
+            # serialize old subscription cleanup before any new connection.
+            with self.client.connect_lock:
+                if self.client.close(expected_process=process):
+                    self._disconnect()
+            self._runtime_home(self.client.connect())
+            loaded = self.client.is_loaded(thread_id)
         before = self.client.request('thread/read', {'threadId': thread_id, 'includeTurns': False},
                                      replay_safe=True)['thread']
         if before.get('id') != thread_id:
             raise AppServerUnavailable('CLI thread is unavailable in this runtime')
-        if not loaded or before.get('status', {}).get('type') == 'notLoaded':
-            try:
-                saved = self.store.get(thread_id)
-            except (KeyError, StoreUnavailable, RemoteUnavailable) as exc:
-                raise AppServerUnavailable('Saved CLI thread metadata is unavailable') from exc
-            if (saved.get('origin') not in ('cli', 'ide') or not saved.get('cwd') or
-                    not same_cwd(saved.get('cwd'), before.get('cwd'),
-                                  self.alias is None and os.name == 'nt') or
-                    saved.get('model_provider') != before.get('modelProvider')):
-                raise AppServerUnsupported('Saved CLI thread identity does not match this runtime')
-        # Resume is explicit and sends no model, cwd, provider or permission overrides.
+        retained = None
+        if not loaded or before.get('status', {}).get('type') == 'notLoaded' or expected_identity is not None:
+            retained = self.persisted_identity(before)['modelProvider']
+        if expected_identity is not None or target_provider is not None:
+            if (self.alias is not None or not isinstance(expected_identity, dict) or expected_identity.get('id') != thread_id
+                    or expected_identity.get('modelProvider') != retained
+                    or not same_cwd(expected_identity.get('cwd'), before.get('cwd'), os.name == 'nt')):
+                raise AppServerUnsupported('原会话身份或已确认的目标接入已变化；未迁移提供商。')
+        if target_provider is not None:
+            if not isinstance(target_provider, str) or not target_provider:
+                raise AppServerUnsupported('已确认的目标提供商不可用；未迁移提供商。')
+        if target_provider is not None or before_resume is not None:
+            if loaded or before.get('status', {}).get('type') != 'notLoaded':
+                raise AppServerUnsupported('目标会话仍被原生加载，请先明确确认 CLI 服务维护；未迁移提供商。')
+        # Ordinary resume retains all native settings. A separately confirmed
+        # cold migration changes only the provider, after checking the source.
         with self.lock:
             self.attaching.add(thread_id)
         params = {'threadId': thread_id, 'excludeTurns': True}
+        if target_provider is not None:
+            params['modelProvider'] = target_provider
+        process = self.client.process
         try:
+            if before_resume:
+                before_resume()
             resumed = self.client.request('thread/resume', params)
-        except Exception:
+        except Exception as error:
             with self.lock:
                 self.attaching.discard(thread_id)
                 self.requests.pop(thread_id, None)
+                if isinstance(error, AppServerUnknownResult) and process is self.client.process:
+                    self.joined[thread_id] = self.client.process
+                    self.metadata[thread_id] = {'connectionToken': str(uuid.uuid4()), 'cleanupOnly': True,
+                                               'cwd': before.get('cwd'),
+                                               'modelProvider': target_provider or before.get('modelProvider')}
+            reason = (getattr(error, 'rpc_error', {}).get('data') or {}).get('type')
+            if reason in ('modelProviderMismatch', 'modelProviderNotConfigured', 'modelProviderPolicyConflict'):
+                raise AppServerUnsupported('原会话的提供商与当前可用接入不一致或受到策略限制；请恢复原提供商配置，或在电脑端使用当前接入新建聊天。未迁移原会话。') from error
             raise
         after = resumed.get('thread') or {}
+        expected_provider = target_provider or retained or before.get('modelProvider')
+        if (target_provider is None and self.alias is None and resumed.get('modelProvider') != expected_provider):
+            try:
+                expected_provider = self.persisted_identity(before)['modelProvider']
+            except AppServerError:
+                pass
         if (after.get('id') != thread_id or not same_cwd(before.get('cwd'), after.get('cwd'), self.alias is None and os.name == 'nt') or
-                resumed.get('modelProvider') != before.get('modelProvider')):
-            with self.lock:
-                self.attaching.discard(thread_id)
-                self.requests.pop(thread_id, None)
+                resumed.get('modelProvider') != expected_provider):
+            self._cleanup_failed_join(thread_id, before, process)
             raise AppServerUnsupported('CLI thread identity changed during join')
         try:
             goal = normalize_goal_result(self.client.request(
@@ -420,9 +547,7 @@ class CliSessions:
         except AppServerUnsupported:
             goal = None
         except (AppServerUnavailable, AppServerUnknownResult):
-            with self.lock:
-                self.attaching.discard(thread_id)
-                self.requests.pop(thread_id, None)
+            self._cleanup_failed_join(thread_id, before, process)
             raise
         except AppServerError:
             # Goal is optional; a deterministic policy error must not prevent
@@ -441,14 +566,31 @@ class CliSessions:
                                                         ('approvalPolicy', 'approvalsReviewer', 'sandbox', 'activePermissionProfile')
                                                         if key in resumed},
                                         'goal': goal}
+            if before.get('modelProvider') != resumed.get('modelProvider'):
+                self.metadata[thread_id]['historicalProvider'] = before.get('modelProvider')
         try:
             return self.refresh(thread_id)
         except Exception:
-            with self.lock:
-                joined = thread_id in self.joined
-            if joined:
-                self._invalidate(thread_id)
+            self._cleanup_failed_join(thread_id, before, process)
             raise
+
+    def _cleanup_failed_join(self, thread_id, before, process):
+        # Resume succeeded. Keep its subscription visible until the same
+        # connection confirms unsubscribe; never interrupt an existing turn.
+        with self.lock:
+            self.attaching.discard(thread_id)
+            self.requests.pop(thread_id, None)
+            if process is None or process is not self.client.process:
+                return
+            self.joined[thread_id] = process
+            self.metadata[thread_id] = {'connectionToken': str(uuid.uuid4()), 'cleanupOnly': True,
+                                       'cwd': before.get('cwd'), 'modelProvider': before.get('modelProvider')}
+        try:
+            result = self.client.request('thread/unsubscribe', {'threadId': thread_id})
+            if result.get('status') in ('unsubscribed', 'notSubscribed', 'notLoaded'):
+                self._invalidate(thread_id, process)
+        except AppServerError:
+            pass
 
     def refresh(self, thread_id):
         with self.lock:
@@ -476,7 +618,7 @@ class CliSessions:
                 if metadata is None:
                     raise AppServerUnavailable('CLI thread is no longer joined')
                 if (not same_cwd(metadata['cwd'], thread.get('cwd'), self.alias is None and os.name == 'nt') or
-                        thread.get('modelProvider') != metadata['modelProvider']):
+                        not self._provider_matches(thread, metadata)):
                     invalid_reason = 'CLI thread provider or working directory changed'
             if invalid_reason is None:
                 pending = list(self.requests.get(thread_id, {}).values())
@@ -735,12 +877,7 @@ class CliSessions:
 
     def creation_context(self, cwd):
         info = self._connect_explicit()
-        expected = self.remote_home if self.alias is not None else self.home
-        actual = Path(info['codexHome'])
-        if not actual.is_absolute() or expected is not None and actual != expected:
-            raise AppServerUnavailable('Codex CLI runtime belongs to another home')
-        if self.alias is not None:
-            self.remote_home = actual
+        self._runtime_home(info)
         config = self.client.request('config/read', {'cwd': cwd, 'includeLayers': False}, replay_safe=True).get('config') or {}
         profile = (config.get('profiles') or {}).get(config.get('profile')) or {}
         return {**config, **profile}
@@ -939,7 +1076,8 @@ class CliSessions:
             turns.append(row)
         state = {'id': thread['id'], 'title': thread.get('name') or thread.get('preview') or '未命名聊天',
                 'cwd': thread.get('cwd') or metadata['cwd'],
-                'modelProvider': thread.get('modelProvider') or metadata['modelProvider'],
+                'modelProvider': metadata['modelProvider'] if metadata.get('historicalProvider') is not None else
+                                 thread.get('modelProvider') or metadata['modelProvider'],
                 'latestModel': thread.get('model') or metadata['model'],
                 'latestReasoningEffort': (thread['reasoningEffort'] if 'reasoningEffort' in thread
                                           else metadata.get('reasoningEffort')),
@@ -961,6 +1099,8 @@ class CliSessions:
         with self.lock:
             if self.joined.get(thread_id) is not self.client.process or self.client.process is None:
                 raise AppServerUnavailable('CLI thread is not joined on this connection')
+            if self.metadata.get(thread_id, {}).get('cleanupOnly'):
+                raise AppServerUnavailable('此前 CLI 接入结果待核对，请先释放该连接；未重复恢复或发送任务')
 
     def _check_identity(self, thread_id):
         result = self.client.request('thread/read', {'threadId': thread_id,
@@ -972,7 +1112,7 @@ class CliSessions:
             raise AppServerUnavailable('CLI thread is no longer joined')
         if (thread.get('id') != thread_id or thread.get('status', {}).get('type') == 'notLoaded' or
                 not same_cwd(metadata['cwd'], thread.get('cwd'), self.alias is None and os.name == 'nt') or
-                thread.get('modelProvider') != metadata['modelProvider']):
+                not self._provider_matches(thread, metadata)):
             self._invalidate(thread_id)
             raise AppServerUnavailable('CLI thread identity changed before the operation')
 
@@ -1042,10 +1182,14 @@ class CliSessions:
                 elif turn.get('model'):
                     row['params'] = {'model': turn['model'], 'effort': turn.get('reasoningEffort')}
                 row.update(status=turn.get('status'), error=turn.get('error'))
+                if turn.get('startedAt') is not None:
+                    row['turnStartedAtMs'] = turn['startedAt'] * 1000
                 row.pop('willRetry', None)
                 state['threadRuntimeStatus'] = {'type': 'active' if method == 'turn/started' else 'idle'}
                 if turn.get('items'):
                     items = turn['items']
+                    previous_times = {item.get('id'): item['timestamp'] for item in row['items'] if item.get('timestamp') is not None}
+                    items = [{**item, 'timestamp': previous_times[item.get('id')]} if item.get('timestamp') is None and item.get('id') in previous_times else item for item in items]
                     if method == 'turn/completed':
                         incoming_ids = {item.get('id') for item in items}
                         # Completed event items can omit user messages still present in thread/read.
@@ -1065,6 +1209,8 @@ class CliSessions:
                     items = turn['items']
                     for index, existing in enumerate(items):
                         if existing.get('id') == item.get('id'):
+                            if item.get('timestamp') is None and existing.get('timestamp') is not None:
+                                item = {**item, 'timestamp': existing['timestamp']}
                             if method == 'item/started' and item.get('type') == existing.get('type') == 'reasoning':
                                 # A late start must not erase deltas already received.
                                 item = {**item, **{field: existing[field] for field in ('summary', 'content')

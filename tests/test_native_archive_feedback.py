@@ -164,7 +164,7 @@ class ProviderArchive(unittest.TestCase):
                 _, native, calls = self.adapter(provider)
                 route = '/api/desktop-sessions/' + provider + '/archive'
                 validate_relay('POST', route)
-                validate_relay('GET', route)
+                with self.assertRaises(PermissionError): validate_relay('GET', route)
                 body = {'sessionId': native['id'], 'archived': True, 'id': str(uuid.uuid4())}
                 self.assertEqual(request(route, body, {}), 401)
                 self.assertEqual(request(route, body, {'Cookie': auth['Cookie']}), 403)

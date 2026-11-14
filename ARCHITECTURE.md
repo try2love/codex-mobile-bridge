@@ -4,7 +4,7 @@
 
 ## 目标与执行边界
 
-手机网页控制 Codex App 聊天，并可在已保存项目中新建空聊天。Codex 页面内的 WSL 接入支持直接创建及恢复原生线程；明确创建或继续时可用已安装 Codex 的原生 daemon start 启动共享服务。网关不替换已有执行器或聊天。已有聊天的执行与审批操作绑定 `hostId + conversationId + ownerClientId`，由 App 中相应 owner 执行。重命名是独立的元数据操作，使用所选主机的短期官方运行时调用 `thread/name/set`，不加载执行任务、不调用 `turn/start`，也不改变 provider、认证或审批策略。
+手机网页控制 Codex App 聊天，并可在已保存项目中新建空聊天。Codex 页面内的 WSL 接入支持直接创建及恢复原生线程；明确创建或继续时可用已安装 Codex 的原生 daemon start 启动共享服务。网关不替换已有执行器或聊天。APP 来源聊天的执行与审批操作绑定 `hostId + conversationId + ownerClientId`，由 App 中相应 owner 执行；CLI 来源直接使用所选主机和配置的原生 CLI。重命名是独立的元数据操作，使用所选主机的短期官方运行时调用 `thread/name/set`，不加载执行任务、不调用 `turn/start`，也不改变 provider、认证或审批策略。
 
 默认继承已有会话的设置。显式选择模型时更新 `model`、`effort` 或速度档位。账号切换是独立的全局操作：仅桌面端添加凭据，双端选择已保存接入，退出官方桌面后替换本机认证及默认 provider，再启动核验。已有聊天的 provider 和审批策略不直接迁移；详情见 [账号与接入](docs/account-switching.md)。
 
@@ -26,11 +26,15 @@ Windows 可在应用管理的 Codex 组内显式扫描并启用 WSL 接入，详
 
 HTTP 阅读请求先返回，保存历史和实时连接在后台加载，通过原有 SSE/长轮询更新页面。每条会话只发起一个后台连接任务，失败后间隔重试，手动重新连接可跳过重试间隔。SSH/SQLite 元数据读取不占用会话总锁；写操作仍须确认原生 owner 已连接。只读超时与写入结果未知使用不同提示。
 
-网页点击或打开会话时，并行读取渐进历史并通过带 CSRF 的重连接口自动连接原生 owner。首屏不等待激活完成，切换会话取消旧页面请求，首次历史读取失败会自动重试。后台阅读、轮询和通知监听本身只订阅状态。打开会话、发送、处理授权或点击“重新连接”时，优先等待后台订阅；仍无 owner 才通过已有 `codex://threads/…` 链接让原 App 加载聊天，最多等待约 20 秒。该兜底可能切换桌面当前聊天，不调用第二个 app-server，不改 provider。连接失败时操作尚未发送，草稿保留。原 App 因 provider 缺失等配置问题无法恢复的聊天，网关也不会擅自迁移。
+网页点击或打开 APP 来源会话时，并行读取渐进历史并通过带 CSRF 的重连接口自动连接原生 owner。首屏不等待激活完成，切换会话取消旧页面请求，首次历史读取失败会自动重试。后台阅读、轮询和通知监听本身只订阅状态。打开会话、发送、处理授权或点击“重新连接”时，优先等待后台订阅；仍无 owner 才通过已有 `codex://threads/…` 链接让原 App 加载聊天，最多等待约 20 秒。该兜底可能切换桌面当前聊天，不调用第二个 app-server，不改 provider。连接失败时操作尚未发送，草稿保留。原 App 因 provider 缺失等配置问题无法恢复的聊天，网关也不会擅自迁移。
 
-CLI 来源表示创建方式，不固定当前执行进程。对 CLI 聊天，被动查询已有 Desktop owner 并定向订阅，核对 host/id/cwd/provider 后复用其执行连接；未发现 owner 时，仅显式继续才连接原生 daemon 或冷恢复。已发现 owner 但快照未到达或身份不符时不另行恢复。原生 writer 锁仍由官方运行时维护，网关不清锁、不终止持有者。详情见 [CLI 接入说明](docs/codex-cli.md)。
+APP 来源使用原 App owner，CLI 来源直接使用所选主机及 CODEX_HOME 的原生 CLI daemon；CLI 不探测或复用 App owner，只在显式继续或确认恢复后连接或冷恢复。CLI 原生接入失败时保持失败，不切换到 App。IDE 保留先核验原 VS Code owner、确认缺席后才允许显式原生接续的边界。原生 writer 锁仍由官方运行时维护，网关不清锁、不终止持有者，也不保证 App 与 CLI 可同时写同一聊天。详情见 [CLI 接入说明](docs/codex-cli.md)及[来源路由决定](.agents/notes/implemented/bug-fix/2026-11-11-codex-source-execution-routing.md)。
 
-模型、权限、Skill 与工作模式使用独立能力字段，不借用会同时开放重命名等操作的 `canConfigure`。App 接续的 CLI 聊天使用既有 owner 通路；已连接原生 CLI 的目录、设置、Skill、计划请求和本机/SSH Goal 使用同一 daemon。读取目录不激活会话，显式设置只更新所选模型/推理强度或经策略检查的权限字段，不替换 provider、认证或 cwd。原生 CLI 权限以 resume 的实际配置与 thread/settings/updated 事件为准，不把请求值投影为已生效；权限策略读取来自执行端，不依赖网关电脑的桌面开关。
+在支持的本机 Codex CLI 版本中，用户确认的恢复可在现有维护事务中等待同一 home 的所有任务结束。查看状态不会启动等待，取消在首次原生写入或退出派发前有效。恢复绑定原主机、home、配置及已核验的进程代次；完成后仅继续发起恢复的会话，未知操作不重放。默认仅正常排空，不调用原生 restart 或强制终止。参见[等待恢复决定](.agents/notes/implemented/feature/2026-11-11-cli-recovery-waits-for-idle.md)。
+
+macOS/Linux 本机 CLI 显式继续时核验同一 home 的原生认证和接入；缓存已经更新就直接使用，仍需重建时沿用上述待闲事务。既有任务控制保留，未发送消息不重放。独立配置只使用自己的认证，SSH/WSL 不从本机取账号。0.167 的不同 provider ID 保持原生只读原因；同 ID 的账号或端点变化可接续。参见[原生账号跟随决定](.agents/notes/implemented/feature/2026-11-11-cli-follows-native-account.md)。
+
+模型、权限、Skill 与工作模式使用独立能力字段，不借用会同时开放重命名等操作的 `canConfigure`。APP 与已连接原 VS Code owner 的聊天使用各自既有通路；CLI 的目录、设置、Skill、计划请求和本机/SSH Goal 使用同一原生 daemon。读取目录不激活会话，显式设置只更新所选模型/推理强度或经策略检查的权限字段，不替换 provider、认证或 cwd。原生 CLI 权限以 resume 的实际配置与 thread/settings/updated 事件为准，不把请求值投影为已生效；权限策略读取来自执行端，不依赖网关电脑的桌面开关。
 
 项目与 SSH 主机映射来自 App 的 `.codex-global-state.json`。远端只读取 App 已保存且有关联项目/会话的 SSH 别名；只读辅助脚本使用 `ssh` 和远端 Python，不向远端安装文件。
 
@@ -192,6 +196,6 @@ Codex 时间线首屏返回最近 20 条，展示投影初始只整理最近 40 
 
 网页在内存中最多保留 8 份最近 20 条的展示缓存，按已认证网关身份、主机与会话隔离；退出登录、网关身份变化或已确认的账号切换清理缓存。缓存先画正文，实时读取随后替换；审批、权限、草稿与发送状态不从缓存恢复。完整历史仍只在请求旧页或展开正文时传输。
 
-全会话通知策略保存在 `notification-policies.json`，请求处理默认开启、运行完毕默认关闭，通道本身仍默认关闭。已有显式 watches 保留其选择，每个聊天可对两种事件独立继承或覆盖。通知通过只读列表发现聊天，并仅 follow 原 owner 状态；不读取 rollout、不激活聊天。首次实时状态作为完成通知边界，不补发旧完成事件。网页关闭后网关继续监听；依赖桌面 owner 与相关 SSH 主机可用。
+全会话通知策略保存在 `notification-policies.json`，请求处理默认开启、运行完毕默认关闭，通道本身仍默认关闭。已有显式 watches 保留其选择，每个聊天可对两种事件独立继承或覆盖。通知通过只读列表发现聊天：APP/IDE 沿用原 owner 跟随，CLI 仅从已运行服务读取已加载线程状态，不依赖 App IPC 在线。网关不直接读取 rollout、不启动或激活聊天，观察状态不授予写权限；取消、释放或停用后丢弃迟到回包。首次实时状态作为完成通知边界，不补发旧完成事件。网页关闭后网关继续监听；依赖对应原生服务及 SSH 主机可用。CLI 状态提醒和验证边界见[只读通知记录](.agents/notes/implemented/feature/2026-11-11-codex-cli-passive-notifications.md)。
 
 主页快捷入口属于浏览器显示偏好。最近排序在发送或回复被接受后立即更新，并通过活动查询中的数据库时间校准；仅阅读不更新交互时间。计划意见非空时只允许继续规划，避免执行按钮忽略意见。

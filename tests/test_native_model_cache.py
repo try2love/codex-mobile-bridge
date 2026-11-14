@@ -7,6 +7,8 @@ from unittest.mock import Mock
 
 from bridge.app.service import Bridge
 from bridge.clients.codex.catalog import ModelStore
+from bridge.clients.codex.app_server import AppServerUnavailable
+from bridge.platforms.codex_daemon_env import DaemonEnvironmentUnavailable
 
 
 class NativeModelCacheTests(unittest.TestCase):
@@ -50,7 +52,7 @@ class NativeModelCacheTests(unittest.TestCase):
             thread: SimpleNamespace(origin='cli', runtime='cli', connected=True,
                 condition=threading.Condition(), state={
                     'cwd': self.temp.name, 'latestModel': thread + '-model',
-                    'latestReasoningEffort': effort}, saved_cwd=None,
+                    'latestReasoningEffort': effort}, saved_cwd=None, saved_provider='openai',
                 view=lambda: {'provider': 'openai'})
             for thread, effort in (('thread-a', 'high'), ('thread-b', 'low'))}
         self.bridge.session = Mock(side_effect=lambda thread, **kwargs: sessions[thread])
@@ -79,7 +81,7 @@ class NativeModelCacheTests(unittest.TestCase):
         failed = self.bridge._native_models('thread', self.temp.name, 'custom')
         self.assertEqual(failed['models'], [])
         self.assertEqual(failed['modelError'], '无法核验 API 凭据')
-        self.assertNotIn('cache', failed)
+        self.assertEqual(failed['cache'], {'state': 'unavailable', 'identity': 'identity-a'})
         self.assertIsNone(self.bridge.native_model_store.read('identity-a'))
 
         self.bridge.native_model_store.write('identity-a', {
@@ -102,6 +104,18 @@ class NativeModelCacheTests(unittest.TestCase):
             {'config': {'model_provider': 'openai'}} if method == 'config/read' else
             {'account': {'type': 'chatgpt', 'email': 'two@example.test'}})
         self.assertNotEqual(first, Bridge._native_model_identity(bridge, self.temp.name, 'openai'))
+
+    def test_unknown_cli_environment_cannot_grant_a_manual_catalog_identity(self):
+        bridge = self.bridge
+        bridge._native_model_identity = Bridge._native_model_identity.__get__(bridge)
+        bridge.cli_sessions.client = SimpleNamespace(request=Mock(side_effect=lambda method, params, **kwargs:
+            {'config': {'model_provider': 'custom'}} if method == 'config/read' else {'account': {}}))
+        bridge.cli_sessions.model_environment_identity = Mock(side_effect=DaemonEnvironmentUnavailable('not verified'))
+        bridge.cli_sessions.model_catalog = Mock(return_value={
+            'models': [], 'modelSource': 'api', 'modelError': 'Unknown runtime environment'})
+        with self.assertRaisesRegex(AppServerUnavailable, '无法核验'):
+            bridge._native_models(None, self.temp.name, 'custom')
+        bridge.cli_sessions.model_catalog.assert_not_called()
 
     def test_ssh_identity_tracks_target_credentials_and_host_without_local_auth(self):
         bridge = self.bridge

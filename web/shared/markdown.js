@@ -47,6 +47,7 @@
     }
     function appendTokens(tokens, root) {
       const parents = [root];
+      const media = new Map();
       for (const token of tokens) {
         if (token.hidden) continue;
         const parent = parents[parents.length - 1];
@@ -147,15 +148,20 @@
             const anchor = link(destination.url, token.attrGet('title'));
             anchor.textContent = label;
             parent.append(anchor);
+            const player=destination.file && window.BridgeChatMedia?.create(destination.file.name,destination.url);
+            if(player)parent.append(player);
           } else parent.append(document.createTextNode(label));
         } else if (token.nesting === -1) {
-          parents.pop();
+          const closed=parents.pop(),player=media.get(closed);
+          if(player)parents[parents.length-1].append(player);
         } else {
           let element;
           if (token.type === 'link_open') {
             const destination = target(token.attrGet('href') || '');
             element = destination ? link(destination.url, token.attrGet('title')) : document.createElement('span');
             if (destination?.file?.image) { element.dataset.imagePreview = destination.url; element.dataset.imageName = destination.file.name; }
+            const player=destination?.file && window.BridgeChatMedia?.create(destination.file.name,destination.url);
+            if(player)media.set(element,player);
           } else if (tags.has(token.tag)) {
             element = document.createElement(token.tag);
             if (token.tag === 'ol' && token.attrGet('start')) element.start = Number(token.attrGet('start'));

@@ -38,5 +38,5 @@ test('pending mutation ignores repeated clicks and protects edits',async()=>{
  finish({...f.value,state:'running',running:true});await pending;assert.ok(f.panel.value.running);
 });
 test('status from an old data directory cannot populate the new form',async()=>{
- const f=fixture();let finish;f.setHandler(()=>new Promise(resolve=>finish=resolve));const pending=f.panel.refresh();f.panel.clear();finish({...f.value,state:'running',running:true});await pending;assert.equal(f.panel.value,null);assert.ok(f.inputs.every(input=>input.value===''));
+ const f=fixture();let finish;f.setHandler(()=>new Promise(resolve=>finish=resolve));const pending=f.panel.refresh();f.panel.clear();finish({...f.value,state:'running',running:true});await pending;assert.equal(f.panel.value,null);assert.ok(f.inputs.every(input=>input.value===''));assert.equal(f.inputs.find(input=>input.name==='home').placeholder,'');
 });

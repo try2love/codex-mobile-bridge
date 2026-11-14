@@ -8,7 +8,8 @@ import uuid
 from contextlib import suppress
 from urllib.parse import urlsplit
 
-from relay.protocol import MAX_BODY, content_type, download_headers, validate
+from relay.protocol import MAX_BODY, content_type, download_headers
+from relay.http_framing import validate_http_request
 
 PROTOCOL = 'bridge-web-proxy-v1'
 CHUNK = 32768
@@ -80,7 +81,7 @@ class CloudWeb:
         if type(request['expires']) is not int or not time.time() < request['expires'] <= time.time() + 13 * 3600:
             raise ValueError('invalid Web session expiry')
         path, method, length = request['path'], request['method'], request['length']
-        validate(method, path, length)
+        validate_http_request(method, path, length)
         if request.get('content_type'):
             content_type(request['content_type'])
         headers = dict(request.get('headers') or {})

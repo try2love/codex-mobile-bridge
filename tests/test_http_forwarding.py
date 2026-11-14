@@ -1,6 +1,7 @@
 import unittest
 
 from bridge.features.network.cloud_connector import validate_request
+from relay.http_framing import validate_http_request
 from relay.protocol import validate, request_headers
 
 SID = '12345678-1234-1234-1234-123456789abc'
@@ -37,7 +38,7 @@ class HttpForwardingTests(unittest.TestCase):
             ('GET', f'/api/sessions/{SID}/workspace/download?path=a&explicit=1'),
         ]:
             with self.subTest(method=method, route=route):
-                validate(method, route)
+                validate_http_request(method, route)
 
     def test_all_forwarders_accept_unlisted_routes_and_methods(self):
         for method, path, size in [
@@ -49,10 +50,28 @@ class HttpForwardingTests(unittest.TestCase):
             ('GET', f'/api/sessions/{SID}/events?after=1', 0),
         ]:
             with self.subTest(method=method, path=path):
-                validate(method, path, size)
+                validate_http_request(method, path, size)
                 validate_request({'kind': 'request', 'id': SID, 'method': method,
                                   'path': path, 'length': size, 'headers': {},
                                   'content_type': 'application/json'})
+
+    def test_upstream_shared_relay_policy_does_not_restrict_cloud_http(self):
+        for method, path in [
+            ('GET', '/api/desktop-sessions/antigravity/create-models'),
+            ('POST', '/api/desktop-sessions/antigravity/queue-action'),
+        ]:
+            with self.subTest(method=method, path=path):
+                validate(method, path)
+                validate_http_request(method, path)
+        for method, path, error in [
+            ('GET', '/api/future-resource', PermissionError),
+            ('POST', '/api/accounts', PermissionError),
+            ('PATCH', '/api/future-resource', ValueError),
+        ]:
+            with self.subTest(method=method, path=path):
+                validate_http_request(method, path)
+                with self.assertRaises(error):
+                    validate(method, path)
 
     def test_rejects_unrelated_destinations_and_malformed_framing(self):
         for method, path, length in [
@@ -71,7 +90,7 @@ class HttpForwardingTests(unittest.TestCase):
             ('POST', '/api/clients', 20971521),
         ]:
             with self.subTest(path=path), self.assertRaises((PermissionError, ValueError)):
-                validate(method, path, length)
+                validate_http_request(method, path, length)
 
 
 if __name__ == '__main__':

@@ -77,6 +77,26 @@ class AccountsHttpTests(unittest.TestCase):
         self.assertEqual(self.request('POST', path, value, headers)[0], 403)
         manager.control.assert_not_called()
 
+    def test_runtime_initialization_forwards_explicit_unavailable_acknowledgement(self):
+        manager = self.manager(); manager.control = Mock(return_value={'switch': {'phase': 'preparing'}})
+        path = '/api/accounts/desktop-runtime'
+        value = {'requestId': 'fixture', 'confirmed': True, 'tasksConfirmed': True,
+                 'acknowledgeUnavailable': True}
+        self.assertEqual(self.request('POST', path, value)[0], 401)
+        headers = self.login()
+        self.assertEqual(self.request('POST', path, value, {'Cookie': headers['Cookie']})[0], 403)
+        self.assertEqual(self.request('POST', path, value, headers)[0], 202)
+        manager.control.assert_called_once_with({'action': 'initializeDesktopRuntime', **value})
+        manager.control.reset_mock()
+        for invalid in (False, 'true', 1, None):
+            self.assertEqual(self.request('POST', path, {**value, 'acknowledgeUnavailable': invalid}, headers)[0], 400)
+        self.assertEqual(self.request('POST', path, {**value, 'home': '/different'}, headers)[0], 400)
+        self.server.bridge.account_target = Mock(return_value=SimpleNamespace(accounts=manager))
+        self.assertEqual(self.request('POST', path + '?entry=codex:fixture', value, headers)[0], 400)
+        self.server.auth.config['mode'] = 'none'
+        self.assertEqual(self.request('POST', path, value, headers)[0], 403)
+        manager.control.assert_not_called()
+
     def test_enrollment_and_mutation_routes_do_not_exist_on_web(self):
         manager = self.manager(); headers = self.login()
         for path in ['/api/accounts/add','/api/accounts/login','/api/accounts/delete','/api/accounts/configure','/api/accounts/recover','/api/accounts/scan','/api/accounts/import','/api/accounts/models']:

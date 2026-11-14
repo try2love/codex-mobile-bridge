@@ -98,5 +98,58 @@ class DaemonAbsenceTests(unittest.TestCase):
                 self.assertFalse(daemon_process_absent(home))
 
 
+class DaemonRecoveryBoundaryTests(unittest.TestCase):
+    @unittest.skipUnless(os.name != 'nt', 'POSIX launch home')
+    def test_force_home_fallback_uses_the_verified_process_not_gateway(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / '.tmp') as directory:
+            owner = Path(directory)
+            home = owner/'.codex'
+            state = home/'app-server-daemon'
+            state.mkdir(parents=True)
+            (state/'daemon.pid').write_text('{"pid":4321}')
+            with patch('bridge.platforms.codex_daemon_env.sys.platform', 'darwin'), \
+                    patch('bridge.platforms.macos.codex_daemon_env.read_process_environment') as observed:
+                observed.return_value = ({'HOME': str(owner)}, (4321, 'fixture'))
+                values, identity = read_daemon_environment(home, sys.executable, (), require_home=True)
+                self.assertEqual(values, {})
+                self.assertEqual(identity, (4321, 'fixture'))
+                observed.return_value = ({'HOME': str(owner/'other')}, (4321, 'fixture'))
+                with self.assertRaisesRegex(DaemonEnvironmentUnavailable, 'another home'):
+                    read_daemon_environment(home, sys.executable, (), require_home=True)
+                observed.return_value = ({}, (4321, 'fixture'))
+                with self.assertRaisesRegex(DaemonEnvironmentUnavailable, 'could not be verified'):
+                    read_daemon_environment(home, sys.executable, (), require_home=True)
+
+    def test_configuration_age_uses_verified_process_birth(self):
+        from bridge.platforms.codex_daemon_env import configuration_after_start
+        with tempfile.TemporaryDirectory(dir=ROOT / '.tmp') as directory:
+            home = Path(directory)
+            (home / 'auth.json').write_text('{"fixture":true}')
+            now = int(time.time())
+            with patch('bridge.platforms.codex_daemon_env.sys.platform', 'darwin'):
+                self.assertTrue(configuration_after_start(home, (1, (1,), (now - 10, 0), 'fixture')))
+                self.assertFalse(configuration_after_start(home, (1, (1,), (now + 10, 0), 'fixture')))
+
+    def test_windows_configuration_age_converts_filetime_to_stat_epoch(self):
+        from bridge.platforms.codex_daemon_env import configuration_after_start
+        from bridge.platforms.windows.codex_daemon_env import FILETIME_UNIX_EPOCH
+        with tempfile.TemporaryDirectory(dir=ROOT / '.tmp') as directory:
+            home = Path(directory)
+            auth = home / 'auth.json'
+            auth.write_text('{"fixture":true}')
+            changed = max(auth.stat().st_mtime_ns, auth.stat().st_ctime_ns)
+            with patch('bridge.platforms.codex_daemon_env.sys.platform', 'win32'):
+                self.assertTrue(configuration_after_start(home, (1, FILETIME_UNIX_EPOCH + changed // 100 - 1, 'fixture')))
+                self.assertFalse(configuration_after_start(home, (1, FILETIME_UNIX_EPOCH + changed // 100 + 1, 'fixture')))
+
+    def test_posix_signal_entry_point_is_unsupported_on_windows(self):
+        from bridge.platforms.codex_daemon_env import stop_daemon_gracefully
+        generation = (1, 'fixture')
+        with patch('bridge.platforms.codex_daemon_env.sys.platform', 'win32'), \
+                patch('bridge.platforms.codex_daemon_env.read_daemon_environment', return_value=({}, generation)):
+            with self.assertRaisesRegex(DaemonEnvironmentUnavailable, 'unsupported'):
+                stop_daemon_gracefully(ROOT / '.tmp', sys.executable, generation, graceful_only=True)
+
+
 if __name__ == '__main__':
     unittest.main()

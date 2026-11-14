@@ -30,7 +30,7 @@ window.BridgeFileActions = (() => {
     const controls=()=>{up.disabled=busy||!path;folder.disabled=busy||!path;more.disabled=busy;submit.disabled=busy;};
     async function select(entry){
       if(busy||!current())return;busy=true;controls();
-      try{const info=await workbench.request(workbench.url(session,'info',entry.path));
+      try{const info=await workbench.request(workbench.url(session,'info',entry.path,'project'));
         if(current()&&workbench.referenceFile(session,info)){box.close();workbench.notify(t('已加入草稿，尚未发送'));}
       }catch(error){if(current())status.textContent=t(error.message);}
       finally{busy=false;controls();}
@@ -39,7 +39,7 @@ window.BridgeFileActions = (() => {
       if(busy||!current())return;
       const generation=++ticket;busy=true;path=target;controls();status.textContent=t('正在读取目录…');if(!append){list.replaceChildren(more);list.scrollTop=0;}
       try{
-        const result=await workbench.request(workbench.url(session,'',path)+'&hidden=false&search='+encodeURIComponent(search.value||'')+'&offset='+(append?next:0));
+        const result=await workbench.request(workbench.url(session,'',path,'project')+'&hidden=false&search='+encodeURIComponent(search.value||'')+'&offset='+(append?next:0));
         if(!current()||generation!==ticket)return;
         location.textContent=result.project+(path?' / '+path:'');status.textContent=result.entries.length?'':t('当前目录没有匹配的文件');
         for(const entry of result.entries){
@@ -65,7 +65,7 @@ window.BridgeFileActions = (() => {
       if(typeof info.absolutePath!=='string')throw Error(t('复制失败，请重试'));
       return info.absolutePath;
     },copy,workbench.notify);box.append(copy);
-    if(workbench.composer){
+    if(workbench.composer&&entry.projectPath!==null){
       const quote=node('button',t('引用到消息'),'plain');quote.type='button';quote.disabled=workbench.composer.disabled||workbench.composer.readOnly;
       quote.onclick=async()=>{
         quote.disabled=true;

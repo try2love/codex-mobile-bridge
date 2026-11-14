@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 
 from bridge.clients.codex.app_server import (
-    AppServerUnknownResult, AppServerUnsupported, CodexAppServer)
+    AppServerReadTimeout, AppServerUnknownResult, AppServerUnsupported, CodexAppServer)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -29,6 +29,7 @@ class FixtureProcess:
         self.ended = False
         self.drop = set()
         self.errors = {}
+        self.results = {}
         self.worker = threading.Thread(target=self.serve, daemon=True)
         self.worker.start()
 
@@ -85,7 +86,8 @@ class FixtureProcess:
                           'nextCursor': 'page-2' if cursor is None else None}
             else:
                 result = {'ok': True}
-            self.send({'id': message['id'], 'result': result})
+            result = self.results.get(method, result)
+            self.send({'id': message['id'], 'result': result(message['params']) if callable(result) else result})
         self.ended = True
         self.responses.close()
 
@@ -157,6 +159,15 @@ class AppServerTests(unittest.TestCase):
         with self.assertRaises(AppServerUnknownResult):
             self.client.request('turn/start', {'threadId': 'thread-a'}, timeout=.02)
         self.assertEqual(len([m for m in process.seen if m.get('method') == 'turn/start']), 1)
+
+    def test_read_timeout_does_not_replace_connection_or_replay(self):
+        self.client.connect()
+        process = self.processes[0]
+        process.drop.add('thread/read')
+        with self.assertRaises(AppServerReadTimeout):
+            self.client.request('thread/read', {'threadId': 'thread-a'}, timeout=.02, replay_safe=True)
+        self.assertIs(self.client.process, process)
+        self.assertEqual([m['method'] for m in process.seen].count('thread/read'), 1)
 
     def test_delete_maps_only_known_native_rejection_without_replay(self):
         from bridge.features.sessions.create import CreationError, DeleteRejected

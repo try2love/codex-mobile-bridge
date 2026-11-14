@@ -79,6 +79,30 @@ class StoreTests(unittest.TestCase):
         self.assertEqual({r['id'] for r in self.store.list(exclude_sources=('ide',))}, {'test', 'legacy', 'created'})
         self.assertEqual(self.store.available_sources(), ['cli', 'desktop', 'ide'])
 
+    def test_native_exec_originator_is_visible_in_all_cli_and_get_without_accepting_other_exec_sources(self):
+        # Captured native 0.167.0 exec metadata; only fixture id/cwd/title differ.
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute('ALTER TABLE threads ADD COLUMN thread_source TEXT')
+            db.executemany('INSERT INTO threads VALUES (?,?,?,?,?,?,?,?)', [
+                ('exec', 'Native exec', '/project', 8, 0, 'codex_exec', 'exec', 'user'),
+                ('unknown', 'Unknown exec', '/project', 9, 0, 'codex_exec_other', 'exec', 'user'),
+                ('untagged', 'Untagged exec', '/project', 10, 0, None, 'exec', 'user'),
+                ('worker', 'Native worker', '/project', 11, 0, 'codex_exec', 'exec', 'subagent'),
+                ('old-worker', 'Old worker', '/project', 12, 0, 'codex_exec', '{"subagent":{}}', 'user'),
+            ])
+        self.assertEqual([row['id'] for row in self.store.list()], ['exec', 'test'])
+        self.assertEqual([row['id'] for row in self.store.list(source='cli')], ['exec'])
+        self.assertEqual([row['id'] for row in SessionStore(self.root, source='cli').list()], ['exec'])
+        self.assertEqual([row['id'] for row in self.store.list(source='desktop')], ['test'])
+        self.assertEqual(self.store.get('exec')['origin'], 'cli')
+        self.assertEqual(SessionStore(self.root, source='cli').get('exec')['origin'], 'cli')
+        self.assertEqual(self.store.available_sources(), ['cli', 'desktop'])
+        with self.assertRaises(KeyError):
+            SessionStore(self.root, source='desktop').get('exec')
+        for identifier in ('unknown', 'untagged', 'worker', 'old-worker'):
+            with self.subTest(identifier=identifier), self.assertRaises(KeyError):
+                self.store.get(identifier)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=ROOT / '.tmp')
         self.root = Path(self.temp.name)
@@ -271,6 +295,17 @@ class RecentHistoryTests(unittest.TestCase):
 
     def tearDown(self):
         self.get.stop(); self.temp.cleanup()
+
+    def test_native_rollout_clock_is_kept_in_full_and_tail_history(self):
+        import json
+        for record in self.records:
+            record['timestamp'] = '2026-11-09T09:24:00Z'
+        self.path.write_text(''.join(json.dumps(r)+'\n' for r in self.records), encoding='utf-8')
+        for limit in (None, 1):
+            view = self.store.history('fixture', limit) if limit else self.store.history('fixture')
+            self.assertEqual(view['turns'][-1]['startedAt'], '2026-11-09T09:24:00Z')
+            self.assertEqual([row['timestamp'] for row in view['turns'][-1]['items']],
+                             ['2026-11-09T09:24:00Z'] * 2)
 
     def test_tail_matches_full_turns_across_unicode_and_chunk_boundaries(self):
         full = self.store.history('fixture')

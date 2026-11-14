@@ -37,6 +37,7 @@ class SharedServer:
         self.counter = 0
         self.closed = False
         self.reader = None
+        self.server_info = None
 
     def start(self):
         try:
@@ -58,7 +59,7 @@ class SharedServer:
                 raise IPCError('WSL 控制通道身份握手失败')
             self.reader = threading.Thread(target=self._read, daemon=True)
             self.reader.start()
-            self._request('initialize', {'clientInfo': {'name': 'codex_mobile_bridge_wsl', 'version': '0.2'},
+            self.server_info = self._request('initialize', {'clientInfo': {'name': 'codex_mobile_bridge_wsl', 'version': '0.2'},
                                         'capabilities': {'experimentalApi': True}}, 10)
             self.write({'method': 'initialized'})
             if hasattr(self.stream, 'settimeout'):

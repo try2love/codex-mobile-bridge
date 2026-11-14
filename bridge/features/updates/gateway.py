@@ -64,11 +64,20 @@ def process_exists(pid):
     if os.name != 'nt':
         try:
             os.kill(pid, 0)
-            return True
         except ProcessLookupError:
             return False
         except PermissionError:
             return True
+        # kill(pid, 0) also succeeds for an exited process awaiting reaping.
+        # Such a zombie holds no application files and must not block handoff.
+        try:
+            state = subprocess.run(['ps', '-o', 'stat=', '-p', str(pid)],
+                                   capture_output=True, text=True, timeout=2)
+            if state.returncode == 0 and state.stdout.strip().startswith('Z'):
+                return False
+        except (OSError, subprocess.TimeoutExpired):
+            pass  # Failure to inspect state is not proof that the process exited.
+        return True
     import ctypes
     from ctypes import wintypes
     kernel = ctypes.WinDLL('kernel32', use_last_error=True)
@@ -206,6 +215,13 @@ def locations(target):
     return target / (APP + '.exe'), target / 'resources/gateway/codex-mobile-gateway.exe', target / 'resources'
 
 
+def preflight(target):
+    if sys.platform == 'win32':
+        from bridge.platforms.windows.updates import require_update_ready
+        require_update_ready(locations(Path(target))[1])
+    return {'ready': True}
+
+
 def prepare(data_dir, payload):
     from bridge.app.desktop import Desktop
     target = Path(payload['target']).absolute()
@@ -219,6 +235,7 @@ def prepare(data_dir, payload):
     old_app, old_worker, _ = locations(target)
     if not old_app.is_file() or not old_worker.is_file():
         raise ValueError('未找到完整的应用安装目录。')
+    preflight(target)
     digest = hashlib.sha256()
     with open(payload['archive'], 'rb') as stream:
         for chunk in iter(lambda: stream.read(1024*1024), b''):
@@ -291,9 +308,7 @@ def wait_parent(pid, timeout=45):
     else:
         end = time.monotonic() + timeout
         while time.monotonic() < end:
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
+            if not process_exists(pid):
                 return
             time.sleep(.2)
         raise TimeoutError('应用尚未退出，更新已取消。')
@@ -403,6 +418,7 @@ def apply(plan_file, *, desktop=None, wait=wait_parent, launch=launch_app, healt
     write_json(transaction / 'ready.json', {'token': plan['token']})
     try:
         wait(plan['parentPid'])
+        preflight(target)
         # A one-second local health probe can miss just after wake or during a
         # brief event-loop stall. Retry only ambiguous shutdown states; foreign
         # gateway instances still fail immediately.
@@ -455,6 +471,7 @@ def apply(plan_file, *, desktop=None, wait=wait_parent, launch=launch_app, healt
             stopped = True
             if os.name == 'nt' and verified_pid:
                 wait_parent(verified_pid, timeout=20)
+        preflight(target)
         move_app(target, backup)
         try:
             move_app(staged, target)

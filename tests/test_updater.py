@@ -1,11 +1,46 @@
 import json
+import os
 from pathlib import Path
 import stat
+import subprocess
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 import zipfile
 import bridge.features.updates.gateway as updater
+
+
+@unittest.skipIf(os.name == 'nt', 'POSIX process state')
+class ParentWaitTests(unittest.TestCase):
+    def test_wait_accepts_exited_process_before_its_owner_reaps_it(self):
+        child = subprocess.Popen([updater.sys.executable, '-c', 'pass'])
+        self.addCleanup(child.wait)
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                state = subprocess.run(['ps', '-o', 'stat=', '-p', str(child.pid)],
+                                       capture_output=True, text=True, timeout=2)
+            except PermissionError:
+                self.skipTest('sandbox blocks process inspection; run outside sandbox')
+            if state.stdout.strip().startswith('Z'):
+                break
+            if time.monotonic() >= deadline:
+                self.fail('fixture did not reach unreaped exit state')
+            time.sleep(.02)
+        # Do not poll/wait the child before checking: that would reap the zombie.
+        os.kill(child.pid, 0)
+        updater.wait_parent(child.pid, timeout=.5)
+        self.assertFalse(updater.process_exists(child.pid))
+
+    def test_live_parent_still_times_out(self):
+        with self.assertRaisesRegex(TimeoutError, '应用尚未退出'):
+            updater.wait_parent(os.getpid(), timeout=.01)
+
+    def test_unavailable_state_probe_does_not_treat_live_process_as_exited(self):
+        for error in (PermissionError('blocked'), subprocess.TimeoutExpired('ps', 2)):
+            with self.subTest(error=type(error).__name__), patch.object(updater.subprocess, 'run', side_effect=error):
+                self.assertTrue(updater.process_exists(os.getpid()))
 
 
 class ArchiveTests(unittest.TestCase):
@@ -62,6 +97,27 @@ class ArchiveTests(unittest.TestCase):
         self.assertTrue((dest / 'Executable').stat().st_mode & stat.S_IXUSR)
 
 
+class PreparePreflightTests(unittest.TestCase):
+    def test_active_holder_blocks_before_archive_read_or_transaction_creation(self):
+        root = Path(__file__).resolve().parents[1]/'.tmp'
+        root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=root) as directory:
+            base = Path(directory).resolve()
+            target, data = base/'app', base/'data'
+            target.mkdir(); data.mkdir()
+            with patch.object(updater.sys, 'platform', 'win32'):
+                app, worker, _ = updater.locations(target)
+                worker.parent.mkdir(parents=True)
+                app.touch(); worker.touch()
+                with patch.object(updater, 'preflight', side_effect=ValueError('正常退出 ZCode')) as check, \
+                        patch.object(updater.hashlib, 'sha256') as digest:
+                    with self.assertRaisesRegex(ValueError, '正常退出 ZCode'):
+                        updater.prepare(data, {'target': str(target), 'archive': 'unused'})
+                    check.assert_called_once_with(target)
+                    digest.assert_not_called()
+            self.assertEqual(list(base.glob('.cmb-update-*')), [])
+
+
 class TransactionTests(unittest.TestCase):
     def setUp(self):
         root = Path(__file__).resolve().parents[1] / '.tmp'
@@ -98,6 +154,22 @@ class TransactionTests(unittest.TestCase):
         for name in self.configs:
             self.assertEqual((self.data / name).read_text(), 'preserve exactly: ' + name)
 
+    def test_holder_appearing_before_apply_preserves_original_app_and_gateway(self):
+        with patch.object(updater, 'preflight', side_effect=ValueError('正常退出 ZCode')):
+            result = self.run_update()
+        self.assertEqual(result['state'], 'failed')
+        self.assertIn('正常退出 ZCode', result['message'])
+        self.assertNotIn('stop', self.calls)
+        self.assertEqual((self.target/'version').read_text(), 'old')
+
+    def test_holder_appearing_after_gateway_stop_is_rechecked_before_swap(self):
+        with patch.object(updater, 'preflight', side_effect=[{'ready': True}, ValueError('正常退出 ZCode')]):
+            result = self.run_update()
+        self.assertEqual(result['state'], 'failed')
+        self.assertIn('stop', self.calls)
+        self.assertEqual((self.target/'version').read_text(), 'old')
+        self.assertFalse(self.backup.exists())
+
     def start(self, target, data_dir, desktop):
         self.calls.append('start-' + (target / 'version').read_text())
         self.state.update(running=True, instanceId='new')
@@ -111,7 +183,8 @@ class TransactionTests(unittest.TestCase):
         return Child()
 
     def run_update(self, health=lambda *args: None, wait=lambda pid: None, desktop=None):
-        with patch.object(updater, 'registry_version'):
+        with patch.object(updater, 'registry_version'), \
+             patch('bridge.platforms.windows.updates.require_update_ready', return_value={'ready': True}):
             return updater.apply(self.plan_file, desktop=desktop or self.desktop, wait=wait,
                                  launch=self.launch, health=health, start=self.start)
 

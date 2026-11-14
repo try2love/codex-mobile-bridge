@@ -8,7 +8,7 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 test('image saving requires an explicit same-gateway download and preserves relay isolation',()=>{
   const id='aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',hash='a'.repeat(64),base='https://gateway.example';
   for(const route of [`/api/sessions/${id}/uploads/${id}/preview`,`/api/sessions/${id}/desktop-images/${hash}`,
-    ...['claude','deepseek','zcode'].flatMap(provider=>[`/api/desktop-sessions/${provider}/uploads/${id}/preview`,`/api/desktop-sessions/${provider}/images/${hash}`])]){
+    ...['claude','deepseek','zcode','antigravity'].flatMap(provider=>[`/api/desktop-sessions/${provider}/uploads/${id}/preview`,`/api/desktop-sessions/${provider}/images/${hash}`])]){
     assert.equal(eligible(base+route+'?download=1&variant=original&sessionId=fixture',base),true);
     for(const suffix of ['','?download=0','?download=1&download=0','?download=1#fragment'])assert.equal(eligible(base+route+suffix,base),false);
     assert.equal(eligible('https://other.example'+route+'?download=1',base),false);

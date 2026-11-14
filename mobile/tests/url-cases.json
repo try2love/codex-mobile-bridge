@@ -42,6 +42,7 @@
     ]
   ],
   "desktopAccepted": [
+    ["scoped-session", "desktop:antigravity", "#scoped-session~desktop%3Aantigravity"],
     [
       "claude-chat",
       "desktop:claude",
