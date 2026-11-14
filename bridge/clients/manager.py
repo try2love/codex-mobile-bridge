@@ -1474,7 +1474,13 @@ class DesktopSessions:
                     return result
                 try:
                     result['modelCatalogIdentity'] = self._model_identity(provider, sid)
-                except ClaudeLoginDatabaseUnavailable:
+                except (ClaudeLoginDatabaseUnavailable, BridgeUnavailable) as error:
+                    if provider != 'antigravity' and not isinstance(error, ClaudeLoginDatabaseUnavailable):
+                        raise
+                    if provider == 'antigravity':
+                        result['modelCatalogIdentity'] = result['draftAccountIdentity'] = ''
+                        result['notice'] = 'Antigravity 账号暂不可读，已保留历史和草稿；请稍后重试模型设置'
+                        return result
                     # History was read from its native owner. Only account-bound
                     # capabilities require the unreadable Desktop fingerprint.
                     result['modelCatalogIdentity'] = result['draftAccountIdentity'] = ''
@@ -1540,7 +1546,7 @@ class DesktopSessions:
                 raise ValueError('此应用已关闭，请在应用管理中开启')
             native_claude_model_write = (provider == 'claude' and action == 'settings' and
                                          ('model' in body or 'effort' in body) and sid in adapter.index)
-            if action == 'settings' and ('modelCatalogIdentity' in body or native_claude_model_write):
+            if action == 'settings' and ('modelCatalogIdentity' in body or native_claude_model_write or provider == 'antigravity'):
                 current_identity = self._model_identity(provider, sid)
                 if 'modelCatalogIdentity' in body and (not body['modelCatalogIdentity'] or
                                                        current_identity != body['modelCatalogIdentity']):

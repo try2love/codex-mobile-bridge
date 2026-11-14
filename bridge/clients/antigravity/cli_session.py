@@ -98,7 +98,7 @@ class AntigravityCli:
                 'notice': '' if models else '原客户端暂未提供可用模型列表'}
 
     def _model(self, model, surface):
-        if not model or model == 'auto':
+        if model is None:
             return None  # Preserve the original server's selected default.
         if isinstance(model, str) and re.fullmatch(r'MODEL_[A-Z0-9_]+', model):
             return model  # Explicit native enum, validated by the original service.

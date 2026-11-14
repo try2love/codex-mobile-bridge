@@ -701,6 +701,29 @@ class AntigravitySafetyTests(unittest.TestCase):
             self.assertEqual(changed['cache']['state'], 'unavailable')
             self.assertTrue(changed['capabilities']['manualModels'])
 
+    def test_unknown_account_preserves_history_but_cannot_save_manual_models(self):
+        _create_surface_db(self.root, [self.row])
+        settings = self.directory/'desktop-sessions/settings.json'
+        settings.parent.mkdir(parents=True)
+        settings.write_text(json.dumps({'antigravityHome': str(self.home), 'enabled': {'antigravity': True}}))
+        manager = DesktopSessions(self.directory)
+        self.addCleanup(manager.close)
+        adapter = manager.adapters['antigravity']
+        sid = gateway_id('app', CID)
+        with mock.patch.object(adapter.cli, 'available', return_value=True), \
+                mock.patch.object(adapter.cli, 'user_status', side_effect=BridgeUnavailable('account offline')):
+            detail = manager.call('antigravity', 'detail', sid, {})
+            self.assertEqual(detail['session']['id'], sid)
+            self.assertEqual(detail['modelCatalogIdentity'], '')
+            with self.assertRaises(BridgeUnavailable):
+                manager.call('antigravity', 'settings', sid, {'id': str(uuid.uuid4()), 'model': 'MODEL_EXPLICIT'})
+            self.assertEqual(adapter._settings, {})
+        with mock.patch.object(adapter.cli, 'catalog_models', return_value={'models': []}):
+            adapter.cli.model_catalog = None
+            for value in ('auto', '', 'unknown'):
+                with self.assertRaises(ValueError):
+                    adapter.cli._model(value, 'app')
+
     def test_manual_native_model_is_exact_for_start_and_send(self):
         self.home.mkdir(parents=True, exist_ok=True)
         cli = AntigravityCli(self.home, model_catalog=mock.Mock(side_effect=AssertionError('no guessed catalog')))
