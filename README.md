@@ -23,6 +23,8 @@
 
 > **v2.2.1：** [正式版下载](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1) · [更新说明](RELEASE_NOTES.md)。建议更新以适配最新版 Codex APP 原生连接；新增 Antigravity、聊天内交互图表并改善长会话与模型缓存。
 
+**Android 安装说明：** 新版 **Bridge** 与旧版 v2.2.0 App 独立安装，不能直接覆盖旧版。请先安装新版、重新添加电脑并确认连接正常，保留好旧版中需要的草稿后，再卸载旧版。旧版绑定和草稿不会自动迁移。已安装 v2.2.1-preview.1 独立 **Bridge Preview** 的用户可直接覆盖升级，保留该预览 App 的连接和草稿。
+
 > **v2.2.0 正式版**：[发布页](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.0) · [完整更新说明](RELEASE_NOTES.md) · [手机安装说明](mobile/README.md)。新增 ZCode、多信道连接与原生侧边聊天，优化空闲资源占用。
 
 [简体中文](README.md) · [English](README_EN.md)

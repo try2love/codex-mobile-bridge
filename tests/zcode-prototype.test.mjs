@@ -163,7 +163,7 @@ test('partial optional services keep text working and never begin an unsupported
   const f=fixture();delete f.services.modelSelectionService;delete f.services.oauthService;delete f.agent.attachmentChunkV4;
   await f.request('attach');
   const detail=await f.request('detail');
-  assert.deepEqual(detail.capabilities,{rename:false,models:false,effort:false,create:false,skills:false,attachments:false,uploadFiles:false,projectReferences:false});
+  assert.deepEqual(detail.capabilities,{rename:false,models:true,effort:true,manualModels:true,manualEffort:true,create:false,skills:false,attachments:false,uploadFiles:false,projectReferences:false});
   assert.equal(detail.account,undefined);
   await assert.rejects(f.request('send',{id:'file',text:'one',files:[{name:'a.txt',data:'MQ==',mime:'text/plain'}]}),/附件/);
   assert.deepEqual(f.calls,['acquire']);

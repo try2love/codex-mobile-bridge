@@ -23,6 +23,8 @@
 
 > **v2.2.1:** [Stable release](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1) · [Release notes](RELEASE_NOTES.md). Updating is recommended for native connections to the latest Codex App. Adds Antigravity and interactive charts, with improvements to long chats and model caching.
 
+**Android installation:** The new **Bridge** app installs alongside the old v2.2.0 app and cannot replace it in place. Install Bridge, add your computers and verify the connections first. Preserve any drafts you need from the old app before uninstalling it; old bindings and drafts do not migrate automatically. Users of the separate v2.2.1-preview.1 **Bridge Preview** app can upgrade in place and retain that preview app’s connections and drafts.
+
 > **v2.2.0 (stable):** [Release page](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.0) · [Full release notes](RELEASE_NOTES.md) · [Mobile installation](mobile/README.md). ZCode, multiple routes per computer, native side chats and lower idle resource usage.
 
 [简体中文](README.md) · [English](README_EN.md)

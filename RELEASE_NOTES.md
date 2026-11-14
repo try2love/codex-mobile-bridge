@@ -27,6 +27,8 @@ v2.2.1 新增 Antigravity 接入与聊天内交互图表，完善 CLI 连接管�
 
 ### 使用说明
 
+**Android 安装说明：** 新版 **Bridge** 与旧版 v2.2.0 App 独立安装，不能直接覆盖旧版。请先安装新版、重新添加电脑并确认连接正常，保留好旧版中需要的草稿后，再卸载旧版。旧版绑定和草稿不会自动迁移。已安装 v2.2.1-preview.1 独立 **Bridge Preview** 的用户可直接覆盖升级，保留该预览 App 的连接和草稿。
+
 手机原生导航、交互图表与连接恢复改进需要同步更新对应手机 App。iOS 源码和未签名 IPA 仍需自行签名安装。
 
 Antigravity 账号切换、独立客户端及 WSL 相关能力以当前平台和接入支持为准。临时侧聊仅适用于受支持的本机桌面入口，不写入原生历史，网关重启后不会恢复。项目外文件浏览为只读；发送、审批及切换结果不明时，不自动重放操作。
@@ -65,6 +67,8 @@ v2.2.1 adds Antigravity integration and interactive charts in chats, improves CL
 - Relaunch macOS updates through the system launcher to improve accessibility identity continuity. Check Windows update blockers before downloading, and refresh dynamic login messages when changing languages.
 
 ### Notes
+
+**Android installation:** The new **Bridge** app installs alongside the old v2.2.0 app and cannot replace it in place. Install Bridge, add your computers and verify the connections first. Preserve any drafts you need from the old app before uninstalling it; old bindings and drafts do not migrate automatically. Users of the separate v2.2.1-preview.1 **Bridge Preview** app can upgrade in place and retain that preview app’s connections and drafts.
 
 Update the mobile app for native chart navigation and connection recovery improvements. iOS source and unsigned IPA packages require your own signing.
 

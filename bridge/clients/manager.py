@@ -987,6 +987,8 @@ class DesktopSessions:
         return value
 
     def _account_models(self, provider, refresh=False, surface=None):
+        with self.read_lock:
+            binding = self.binding_epochs[provider]
         identity = self._account_model_identity(provider, surface)
         try:
             persisted = self.model_store.read(identity)
@@ -1031,6 +1033,11 @@ class DesktopSessions:
                     value = (self._read(provider, 'account', None, {'surface': surface, 'refresh': refresh})
                              if surface is not None else self._read(provider, 'account'))
             except (OSError, ValueError, BridgeUnavailable):
+                # A rebind rejection is not a catalog outage, even when the
+                # restored credentials resolve to the same model identity.
+                with self.read_lock:
+                    if self.closed.is_set() or self.binding_epochs[provider] != binding:
+                        raise BridgeUnavailable('客户端账号或配置已变化，请重试')
                 if self._account_model_identity(provider, surface) != identity:
                     raise BridgeUnavailable('客户端账号或配置已变化，请重试')
                 if persisted:

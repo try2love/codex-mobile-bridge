@@ -38,7 +38,7 @@ def configuration_stamp(home):
 
 
 def daemon_version(info):
-    version = re.match(r'^(?:Codex Desktop|codex_cli_rs|codex|codex-tui|codex_mobile_bridge_wsl|codex-mobile-bridge(?:-(?:cli|target-check|network-check|network-setting|auth-check|final-idle-check|network-verify))?)/(\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?)(?:\s|$)', info.get('userAgent', ''))
+    version = re.match(r'^(?:Codex Desktop|codex_cli_rs|codex|codex-tui|codex_mobile_bridge_wsl|codex-mobile-bridge(?:-(?:cli|target-check|network-check|network-setting|auth-check|final-idle-check|network-verify))?)/((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[a-zA-Z0-9.-]+)?)(?:\s|$)', info.get('userAgent', ''))
     return version.group(1) if version else None
 
 
