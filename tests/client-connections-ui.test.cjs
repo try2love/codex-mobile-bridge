@@ -454,6 +454,24 @@ test('desktop WSL Manage buttons mount the real account panel for the exact prov
   await button.onclick();assert.equal(ui.pages.size,1,'reuse the management page');
  }
 });
+
+test('desktop list starts only the selected enabled WSL through the existing account action',async(t)=>{
+ for(const [provider,kind,prefix] of [['codex','wsl-cli','wsl:'],['claude','wsl-claude-cli','wsl-claude:']]){
+  const ui=fixture(),client={id:prefix+'b'.repeat(32),kind,name:'WSL fixture',enabled:true,configured:true,installed:true,distributionRunning:false,connected:false};
+  ui.panel.clients=[client];ui.panel.gatewayRunning=true;let finish,refreshes=0;t.after(()=>finish?.({}));
+  ui.setHandler(()=>new Promise(resolve=>finish=resolve));ui.panel.refreshClients=async()=>{refreshes++;};ui.panel.renderClients();
+  const button=ui.all().find(n=>n.tag==='button'&&n.textContent==='启动并连接 WSL');assert.ok(button);
+  const pending=button.onclick();await ui.panel.connectWsl(client.id);
+  assert.equal(ui.calls.length,1);assert.deepEqual(JSON.parse(JSON.stringify(ui.calls[0])),{action:'wslAccounts',provider,entry:client.id,operation:'connect'});
+  assert.equal(ui.all().find(n=>n.tag==='button'&&n.textContent==='正在连接，请稍候…').disabled,true);
+  finish({provider,entry:client.id,available:true});await pending;
+  assert.equal(refreshes,1);assert.equal(client.connected,false,'starting WSL does not prove a CLI connection');assert.equal(client.enabled,true);
+  for(const change of [{enabled:false},{distributionRunning:true},{connected:true}]){
+   ui.panel.clients=[{...client,...change}];ui.panel.renderClients();assert.equal(ui.all().some(n=>n.tag==='button'&&n.textContent==='启动并连接 WSL'),false);
+  }
+  ui.panel.clients=[client];ui.panel.gatewayRunning=false;await ui.panel.connectWsl(client.id);assert.equal(ui.calls.length,1);
+ }
+});
 test('desktop WSL resource is optional and remains in the package',()=>{
  const html=fs.readFileSync(path.join(__dirname,'../desktop/index.html'),'utf8');assert.ok(html.includes('../web/features/accounts/account.css'));assert.equal(html.includes('src="../web/features/accounts/wsl-accounts.js"'),false);assert.ok(fs.existsSync(path.join(__dirname,'../web/features/accounts/wsl-accounts.js')));
 });

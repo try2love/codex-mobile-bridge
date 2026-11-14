@@ -89,6 +89,7 @@ class DesktopConnectionsPanel {
   hasUncertain(){return [...(this.operationFailures?.values()||[])].some(value=>value.uncertain);}
   retryOperation(id){
     const failure=this.operationFailures?.get(id);if(!failure||this.hasUncertain())return;
+    if(failure.action==='connect-wsl')return this.connectWsl(id);
     if(typeof failure.recoveryRestart==='boolean')return this.recoverDeepseek(failure.recoveryRestart);
     if(failure.desktopAction)return this.action(failure.desktopAction);
     if(failure.action==='initialize')return id==='claude'?this.action('connect-claude'):this.toggleClient(id,true,{initializeDesktop:true});
@@ -186,6 +187,15 @@ class DesktopConnectionsPanel {
     catch(error){this.operationFailures.set(id,{...ClientLifecycle.failure(initializeDesktop?'initialize':enabled?'enable':forceDesktop?'force':quitDesktop?'quit':'disable',error,'desktop'),connectionMode:intent.connectionMode});this.clients=before;this.feedback(error.message,true);}
     finally{this.busy=false;this.pendingClient=null;this.renderClients();this.renderScan();await this.refreshClients(true);}
   }
+  async connectWsl(id){
+    const client=this.managementClients().find(row=>row.id===id);
+    if(!client||this.busy||this.scanning||this.choosingClient||this.hasUncertain()||this.gatewayRunning===false||!this.connection(client).canConnectWsl)return;
+    this.operationFailures??=new Map();this.operationFailures.delete(id);
+    this.busy=true;this.connectingWsl=id;this.clientsRevision++;this.statusRevision++;this.renderClients();this.renderScan();
+    try{await ClientLifecycle.connectWsl(client,({action,...fields})=>this.api.cliAccess({action:'wslAccounts',...fields,operation:action}),{timeout:this.lifecycleTimeout??45000});}
+    catch(error){this.operationFailures.set(id,ClientLifecycle.failure('connect-wsl',error,'desktop'));this.feedback(error.message,true);}
+    finally{this.busy=false;this.connectingWsl=null;this.renderClients();this.renderScan();await this.refreshClients(true);}
+  }
   async selectConnectionMode(id,mode){
     const client=this.managementClients().find(row=>row.id===id);
     if(!client||this.busy||this.scanning||this.choosingClient||this.hasUncertain())return;
@@ -257,6 +267,7 @@ class DesktopConnectionsPanel {
       const account=node('td');account.dataset.clientAccount=client.id;
       if(client.id!=='codex')account.append(node('span',client.configured?'已配置':'待配置'),node('small',client.accountNotice|| (client.kind==='codex-local'?'独立管理账号与 API':['wsl-cli','wsl-claude-cli'].includes(client.kind)?'在网关中管理 WSL 账号与 API':'在网关管理账号与API')));
       const actions=node('td'),buttons=node('div',undefined,'connection-actions'),manage=node('button',client.setupStatus==='unsupported'?'查看详情':client.configured?'管理':'配置');
+      if(!failure&&(state.canConnectWsl||this.connectingWsl===client.id)&&this.gatewayRunning!==false){const connect=node('button',this.connectingWsl===client.id?'正在连接，请稍候…':'启动并连接 WSL','primary');connect.type='button';connect.disabled=this.busy||this.scanning||!!this.choosingClient||this.hasUncertain();connect.onclick=()=>this.connectWsl(client.id);buttons.append(connect);}
       if(failure){const retry=node('button',failure.uncertain?'刷新状态':ClientLifecycle.retryLabel(failure.action),'primary');retry.type='button';retry.disabled=this.busy||this.scanning||!!this.choosingClient||!!this.clientsLoading||(!failure.uncertain&&this.hasUncertain());retry.onclick=()=>failure.uncertain?this.refreshClients(true):this.retryOperation(client.id);buttons.append(retry);}
       if(!failure&&state.retryable&&this.gatewayRunning!==false){const retry=node('button','重试连接','primary');retry.type='button';retry.disabled=this.busy||this.scanning||!!this.choosingClient||this.hasUncertain();retry.onclick=()=>this.toggleClient(client.id,true);buttons.append(retry);}
       if(!failure?.uncertain&&client.id==='zcode'&&state.canInitialize&&this.gatewayRunning!==false){

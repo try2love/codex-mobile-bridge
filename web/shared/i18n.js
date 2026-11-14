@@ -1452,6 +1452,7 @@ const en={
 "应用运行中，尚未连接":"App running; not connected",
 "应用未运行":"App not running",
 "WSL 未启动":"WSL is stopped",
+"正在启动 WSL 并读取接入状态。":"Starting WSL and reading its connection settings.",
 "WSL 已启动，待连接":"WSL is running; awaiting connection",
 "WSL 状态暂未确认":"WSL status is not confirmed",
 "WSL 状态暂未确认，请刷新后重试":"WSL status could not be confirmed. Refresh and try again.",

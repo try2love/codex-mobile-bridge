@@ -336,6 +336,38 @@ function managerFixture(){
  ui.document.createElement=node;ui.nav.icon=()=>node('img');ui.nav.manager={dialog:{open:true},list:node('div'),note:node('p')};
  const all=root=>[root,...root.children.flatMap(all)];ui.controls=()=>all(ui.nav.manager.list);return ui;
 }
+test('remote main list shares WSL connect routing and blocks concurrent starts for both clients',async(t)=>{
+ for(const [provider,kind,prefix] of [['codex','wsl-cli','wsl:'],['claude','wsl-claude-cli','wsl-claude:']]){
+  const ui=managerFixture(),nav=ui.nav,client={id:prefix+'b'.repeat(32),kind,name:'WSL fixture',enabled:true,configured:true,distributionRunning:false,connected:false};
+  nav.clients=[client];nav.gatewayRunning=true;const calls=[];let finish,refreshes=0;t.after(()=>finish?.({}));
+  nav.request=(url,body)=>{calls.push({url,body:JSON.parse(JSON.stringify(body))});return new Promise(resolve=>finish=resolve);};
+  nav.refresh=async()=>{refreshes++;};nav.renderManager();
+  const button=ui.controls().find(n=>n.tag==='button'&&n.textContent==='启动并连接 WSL');assert.ok(button);
+  const pending=button.onclick();await nav.connectWsl(client.id);nav.renderManager();
+  assert.equal(ui.controls().find(n=>n.tag==='button'&&n.textContent==='正在连接，请稍候…').disabled,true);
+  assert.deepEqual(calls,[{url:'/api/wsl-accounts',body:{provider,entry:client.id,action:'connect'}}]);
+  finish({provider,entry:client.id,available:true});await pending;assert.equal(refreshes,1);assert.equal(client.connected,false);assert.equal(client.enabled,true);
+  for(const change of [{enabled:false},{distributionRunning:true},{connected:true}]){
+   nav.clients=[{...client,...change}];nav.renderManager();assert.equal(ui.controls().some(n=>n.tag==='button'&&n.textContent==='启动并连接 WSL'),false);
+  }
+  nav.clients=[client];nav.gatewayRunning=false;await nav.connectWsl(client.id);assert.equal(calls.length,1);
+  nav.gatewayRunning=true;ui.window.BridgeSharedRelay={};nav.renderManager();
+  assert.equal(ui.controls().some(n=>n.tag==='button'&&n.textContent==='启动并连接 WSL'),false);
+  await nav.connectWsl(client.id);assert.equal(calls.length,1,'shared relay does not expose account mutation routes');
+ }
+});
+test('an uncertain WSL start refreshes without replay and waits for known distribution status',async()=>{
+ const {nav}=fixture(),client={id:'wsl:'+'c'.repeat(32),kind:'wsl-cli',enabled:true,distributionRunning:null};
+ nav.clients=[client];nav.gatewayRunning=true;let writes=0,reads=0;
+ nav.request=async()=>{writes++;throw Object.assign(Error('connection lost'),{uncertain:true});};nav.refresh=async()=>{reads++;};
+ await assert.rejects(nav.connectWsl(client.id),/connection lost/);assert.equal(writes,1);assert.equal(reads,1);
+ await nav.connectWsl(client.id);assert.equal(writes,1);
+ const lifecycle=require('../web/features/clients/client-lifecycle.js');
+ lifecycle.reconcile(nav.operationFailures,[client]);assert.equal(nav.operationFailures.get(client.id).uncertain,true);
+ lifecycle.reconcile(nav.operationFailures,[{...client,distributionRunning:false}]);assert.equal(nav.operationFailures.get(client.id).uncertain,false);
+ nav.operationFailures.get(client.id).uncertain=true;
+ lifecycle.reconcile(nav.operationFailures,[{...client,distributionRunning:true}]);assert.equal(nav.operationFailures.has(client.id),false);
+});
 test('app management offers force only through close choices and retains a disabled running app exit',async()=>{
  for(const id of ['codex','claude','deepseek']){
   const ui=managerFixture(),nav=ui.nav,client={id,name:id,enabled:true,configured:true,running:true,connected:true,canForceQuit:true};nav.clients=[client];nav.gatewayRunning=true;nav.renderManager();
