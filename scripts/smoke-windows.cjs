@@ -90,7 +90,8 @@ async function main(){
   }
   let stderr='',client,started=false,child,exited;
   function launch(extra=[]){
-    child=spawn(executable,['--remote-debugging-address=127.0.0.1','--remote-debugging-port='+debugPort,...extra],{env,stdio:['ignore','ignore','pipe']});
+    // Keep covered test windows active; explicit tray hiding is still tested below.
+    child=spawn(executable,['--disable-features=CalculateNativeWinOcclusion','--remote-debugging-address=127.0.0.1','--remote-debugging-port='+debugPort,...extra],{env,stdio:['ignore','ignore','pipe']});
     child.stderr.on('data',value=>stderr+=value);
     exited=new Promise(resolve=>{child.on('exit',resolve);child.on('error',resolve);});
   }
@@ -148,6 +149,13 @@ async function main(){
       await client.evaluate(`tab('${panel}')`);
       assert.equal(await client.evaluate('document.documentElement.scrollWidth>innerWidth'),false,panel);
       screenshots.push(await screenshot('english-'+panel));
+      if(panel==='network'){
+        // Purchase content is supplied by the server; ordinary packaging smoke stays offline.
+        assert.equal(await client.evaluate("document.querySelector('[data-cloud-open-sponsor]').getAttribute('aria-controls')"),'cloud-sponsor-dialog');
+        assert.equal(await client.evaluate("document.querySelector('#cloud-sponsor-dialog').open"),false);
+        assert.equal(await client.evaluate("document.querySelector('[data-cloud-show-sponsor-qr]')===null"),true);
+        assert.equal(await client.evaluate("getComputedStyle(document.querySelector('.cloud-web-access')).borderTopWidth"),'0px');
+      }
     }
     await client.evaluate("document.getElementById('language').value='zh';document.getElementById('language').dispatchEvent(new Event('change'))");
     await until(()=>client.evaluate("document.documentElement.lang==='zh-CN'&&!document.getElementById('language').disabled"),'Chinese switch');

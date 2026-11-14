@@ -198,7 +198,7 @@ class ClientNavigation {
     for(const client of this.clients){const row=document.createElement('label'),box=document.createElement('input'),caption=document.createElement('span');row.className='display-option';row.dataset.clientSwitch=client.id;box.type='checkbox';box.id='appearance-switch-'+client.id;box.checked=this.preference('switch:'+client.id);box.onchange=()=>{this.preference('switch:'+client.id,box.checked);this.paint();};caption.textContent=client.name;row.append(caption,box);this.switchPreferences.insertBefore(row,anchor);}
   }
   visibleClients(){return this.clients.filter(client=>client.enabled&&this.preference('switch:'+client.id));}
-  icon(id){const n=document.createElement('span');n.className='client-icon client-'+id;n.setAttribute('aria-hidden','true');const img=document.createElement('img');img.src='/client-icons/'+ClientIdentity.family(id)+'.png';img.alt='';n.append(img);return n;}
+  icon(id){const n=document.createElement('span');n.className='client-icon client-'+id;n.setAttribute('aria-hidden','true');const img=document.createElement('img');img.src=(globalThis.BridgeRelayBase||'')+'/client-icons/'+ClientIdentity.family(id)+'.png';img.alt='';n.append(img);return n;}
   applyClients(data){
     if(data.instanceError&&data.instanceError!==this.instanceError)this.notify(data.instanceError);this.instanceError=data.instanceError||'';
     this.clientsKnown=true;
@@ -456,6 +456,7 @@ class ClientNavigation {
   }
 
   homeDialog(){
+    if(window.BridgeCloudWeb){location.assign('/');return;}
     if(BridgeHost.hasNativeLayout()){location.href='codexbridge://home';return;}
     // Web gateways do not share cookies; remember only explicit gateway URLs.
     const dialog=this.view.dialog('电脑列表'),current=document.createElement('p');current.textContent=this.computerName.textContent||location.host;dialog.append(current);

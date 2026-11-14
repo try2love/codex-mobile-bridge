@@ -1,0 +1,41 @@
+{
+  "credentials": {
+    "binding_id": "00000000-0000-4000-8000-000000000002",
+    "desktop_public_key": "iDGGuAC0HVzwQpaV2ps8xPMo680YSm5IL6V4wQPwbHc=",
+    "gateway_id": "00000000-0000-4000-8000-000000000001",
+    "origin": "https://relay.example.test",
+    "private_key": "oaKjpKWmp6ipqqusra6vsLGys7S1tre4ubq7vL2+v8A="
+  },
+  "desktop_private": "gYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6A=",
+  "envelope": {
+    "binding_id": "00000000-0000-4000-8000-000000000002",
+    "ciphertext": "OlU9dHktcn76m5pM3j2hrZPxotDAnLY5saPA/aFMviT5sE10Dn1Bc8PNJS0D4nmDX2QPSCZECfnu0b/STsm9LAcuKO8aIDLcqErE2fsQhbRv7twi5lxVOMjHjxWF0G7jWofyi/IOUwueSB/fPTo46RtcaSeb6mFLKVhL0IrqZQLGLK0/1jCbFYLh+lBjoAwFpn5jXQiE4RzEWdFdtt1UfOKZwVgV1KNJkcUEubgypZzgRcl68xuq16WkoVAScWfP7wHZ81MawSaYl+xMdeyLPPxbq4jgl3v2CjQWQAvGRbzAo/9pi7MCDK/7FuEY/s4fKZgbLnNVTbXeLI7olkyY2yKGeWh7S126pLp0/vjI8+6JFiQI7XAxioCaKE7tQebzBxSjZgInF0gbbZh8kRhlEzSZn5tYYFJnIQFuW6xSER4sPjmLJ5AxTZnuOJW0H/TE2JL7CPBYCfpEQ+J6FfkKL2sIyxj3yLfYFzMQ+j7ZptJKjmq4WOWA56H+c+OPXjiBlOadn69UMurfmNi/PBOI",
+    "expires_at": 2000000600,
+    "notification_id": "00000000-0000-4000-8000-000000000004",
+    "v": 1
+  },
+  "ephemeral_private": "wcLDxMXGx8jJysvMzc7P0NHS09TV1tfY2drb3N3e3+A=",
+  "expected": {
+    "binding_id": "00000000-0000-4000-8000-000000000002",
+    "body": "Private fixture preview",
+    "event_id": "cloud:00000000-0000-4000-8000-000000000004",
+    "expires_at": 2000000600,
+    "gateway_id": "00000000-0000-4000-8000-000000000001",
+    "notification_id": "00000000-0000-4000-8000-000000000004",
+    "origin": "https://relay.example.test",
+    "scope": "ab8709bf7ca6fa22e743ccbc1a659817b29214becb99131699883944d449d9cf",
+    "title": "Bridge fixture"
+  },
+  "format": 1,
+  "now": 2000000000,
+  "plaintext": {
+    "binding_id": "00000000-0000-4000-8000-000000000002",
+    "body": "Private fixture preview",
+    "event_id": "cloud:00000000-0000-4000-8000-000000000004",
+    "gateway_id": "00000000-0000-4000-8000-000000000001",
+    "notification_id": "00000000-0000-4000-8000-000000000004",
+    "scope": "ab8709bf7ca6fa22e743ccbc1a659817b29214becb99131699883944d449d9cf",
+    "title": "Bridge fixture"
+  },
+  "plaintext_base64": "eyJ0aXRsZSI6IkJyaWRnZSBmaXh0dXJlIiwiYm9keSI6IlByaXZhdGUgZml4dHVyZSBwcmV2aWV3IiwiZ2F0ZXdheV9pZCI6IjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSIsImJpbmRpbmdfaWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDIiLCJub3RpZmljYXRpb25faWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDQiLCJzY29wZSI6ImFiODcwOWJmN2NhNmZhMjJlNzQzY2NiYzFhNjU5ODE3YjI5MjE0YmVjYjk5MTMxNjk5ODgzOTQ0ZDQ0OWQ5Y2YiLCJldmVudF9pZCI6ImNsb3VkOjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwNCJ9"
+}

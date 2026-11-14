@@ -1,8 +1,9 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
-function fixture(){
+function fixture(relayBase=''){
   let mobile=false,choice=true,finishChoice;const choices=[],preferences=new Map();const context=vm.createContext({ClientLifecycle:{...require('../web/features/clients/client-lifecycle.js'),chooseDisable(client){choices.push(client.id);return choice==='pending'?new Promise(resolve=>finishChoice=resolve):choice;}},document:{documentElement:{classList:{contains:()=>mobile}},getElementById:()=>({hidden:false})},setTimeout,clearTimeout,AbortController,localStorage:{setItem:(key,value)=>preferences.set(key,value),getItem:key=>preferences.get(key)},Event:class{},window:{}});
   context.BridgeI18n={t:value=>value};
+  context.BridgeRelayBase=relayBase;
   vm.runInContext(fs.readFileSync('web/hosts/environment.js','utf8'),context);
   context.ClientIdentity=require('../web/features/clients/client-lifecycle.js').ClientIdentity;
   vm.runInContext(fs.readFileSync('web/features/clients/client-navigation.js','utf8'),context);
@@ -477,6 +478,15 @@ test('Claude WSL entries stay under Claude and can be enabled independently of n
 
 test('Claude WSL management uses the packaged Claude icon',()=>{
  const {nav,document}=fixture();document.createElement=tag=>({tag,setAttribute(){},append(child){this.child=child;}});const icon=nav.icon('wsl-claude:'+'a'.repeat(32));assert.equal(icon.child.src,'/client-icons/claude.png');
+});
+test('cloud icons keep the computer prefix and upstream client family mapping',()=>{
+ for(const base of ['', '/d/computer-a', '/relay/computer-b']){
+  const {nav,document}=fixture(base);
+  document.createElement=tag=>({tag,setAttribute(){},append(child){this.child=child;}});
+  for(const [id,family] of [['zcode','zcode'],['claude:'+'a'.repeat(32),'claude'],['deepseek:'+'b'.repeat(32),'deepseek'],['wsl:'+'c'.repeat(32),'codex']]){
+   assert.equal(nav.icon(id).child.src,base+'/client-icons/'+family+'.png');
+  }
+ }
 });
 test('authenticated startup opens only the configured native or WSL entry before status arrives',async()=>{
  const {nav}=fixture(),opened=[],notices=[];

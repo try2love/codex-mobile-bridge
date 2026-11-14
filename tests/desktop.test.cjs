@@ -551,7 +551,7 @@ test('Bark drafts survive polling and language changes and remain after saving',
 
 test('preload forwards the selected notification channel over private IPC',()=>{
   const fs=require('node:fs'),vm=require('node:vm'),calls=[];let api;
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../desktop/preload.cjs'),'utf8'),{process:{platform:'darwin'},require:()=>({
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../desktop/preload.cjs'),'utf8'),{process:{platform:'darwin',argv:[]},require:()=>({
     contextBridge:{exposeInMainWorld:(name,value)=>{api=value;}},ipcRenderer:{invoke:(...args)=>{calls.push(args);}}
   })});
   assert.equal('documentsAccess' in api,false);
@@ -974,7 +974,7 @@ test('network recovery IPC is narrowly allowlisted and forwarded by preload',asy
   const script="let value='';process.stdin.on('data',data=>value+=data);process.stdin.on('end',()=>console.log(JSON.stringify({ok:true,result:{action:process.argv[1],payload:JSON.parse(value)}})));";
   const payload={action:'set',enabled:true};const result=await runWorker({executable:process.execPath,prefix:['-e',script],dataDir:'/fixture'},'network-adaptation',payload);
   assert.deepEqual(result,{action:'network-adaptation',payload});
-  let api;const calls=[];vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../desktop/preload.cjs'),'utf8'),{process:{platform:'darwin'},require:()=>({contextBridge:{exposeInMainWorld(_name,value){api=value;}},ipcRenderer:{invoke(...args){calls.push(args);}}})});
+  let api;const calls=[];vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../desktop/preload.cjs'),'utf8'),{process:{platform:'darwin',argv:[]},require:()=>({contextBridge:{exposeInMainWorld(_name,value){api=value;}},ipcRenderer:{invoke(...args){calls.push(args);}}})});
   api.networkAdaptation(payload);assert.deepEqual(calls,[['bridge:network-adaptation',payload]]);
 });
 
@@ -1037,7 +1037,7 @@ test('native window title and local target copy respect their fixed origins',asy
     constructor(options){instance=this;this.title=options.title;this.webContents={mainFrame:{url:require('node:url').pathToFileURL(path.resolve(__dirname,'../desktop/index.html')).href},setWindowOpenHandler(){},on(){},once(){}};}
     on(name,handler){events[name]=handler;}loadFile(){}getTitle(){return this.title;}setTitle(value){changes++;this.title=value;}
   }
-  const context=vm.createContext({__dirname:path.resolve(__dirname,'../desktop'),process:{env:{},platform:'darwin'},require(name){
+  const context=vm.createContext({__dirname:path.resolve(__dirname,'../desktop'),process:{env:{},platform:'darwin',argv:[]},require(name){
     if(name==='electron')return {app:{requestSingleInstanceLock:()=>true,whenReady:()=>({then(){}}),on(){},getPath:()=>'.tmp'},BrowserWindow:Window,ipcMain:{handle:(name,handler)=>handlers[name]=handler},clipboard:{writeText:value=>copied.push(value)},shell:{openExternal:url=>opened.push(url)}};
     if(name==='node:fs')return {...fs,mkdirSync(){},writeFileSync(){}};
     if(name==='./features/connections/qr.cjs')return {};
@@ -1068,6 +1068,12 @@ test('native window title and local target copy respect their fixed origins',asy
   await assert.rejects(handlers['bridge:copy'](event,'http://192.168.1.2:8787'),/地址不可用/);
   await handlers['bridge:open'](event,'setup-external');
   assert.match(opened[0],/#external$/);
+  assert.equal(handlers['bridge:sponsor-qr'],undefined);
+  await assert.rejects(handlers['bridge:open']({...event,senderFrame:{}},'official-cloud-sponsor'),/不允许的界面来源/);
+  assert.equal(opened.length,1);
+  await assert.rejects(handlers['bridge:open'](event,'official-cloud-sponsor'),/地址不可用/);
+  await assert.rejects(handlers['bridge:open'](event,'https://m.tb.cn/h.jjD7PcA?tk=gr8Q6d3Taty'),/地址不可用/);
+  assert.equal(opened.length,1);
 });
 
 

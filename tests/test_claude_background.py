@@ -3,6 +3,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from bridge.clients.claude.adapter import Claude
@@ -11,7 +12,7 @@ from bridge.clients.claude.mailbox import CONNECTOR_REVISION
 
 class ClaudeBackgroundReconnectTests(unittest.TestCase):
     def setUp(self):
-        platform = patch('bridge.clients.claude.adapter.sys.platform', 'win32')
+        platform = patch('bridge.clients.claude.adapter.sys', SimpleNamespace(platform='win32'))
         platform.start(); self.addCleanup(platform.stop)
         cli_profile = patch('bridge.clients.claude.cli_session._profile', return_value=None)
         cli_profile.start(); self.addCleanup(cli_profile.stop)

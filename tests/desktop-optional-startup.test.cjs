@@ -9,7 +9,7 @@ for(const paired of [false,true])test('optional official service starts after th
     start(){calls.push('official');return new Promise((_resolve,reject)=>{rejectStart=reject;});}
   }
   const app={requestSingleInstanceLock:()=>true,whenReady:()=>({then(fn){ready=fn;}}),on(){},getLocale:()=> 'zh-CN',getPath:()=>'/fixture',isPackaged:false};
-  const context=vm.createContext({__dirname:path.dirname(main),process:{env:{},platform:'linux'},calls,
+  const context=vm.createContext({__dirname:path.dirname(main),process:{env:{},platform:'linux',argv:[]},calls,
     require(name){
       if(name==='electron')return {app};
       if(name==='./features/zcode-official/controller.cjs'){calls.push('load-official');return {OfficialRemote};}

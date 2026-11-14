@@ -9,6 +9,7 @@
   "main": "desktop/main.cjs",
   "scripts": {
     "desktop": "electron .",
+    "desktop:dev": "electron . --dev-ui",
     "test:desktop": "node scripts/test-frontend.cjs",
     "test:windows-app": "node scripts/smoke-windows.cjs",
     "icons:desktop": "electron scripts/build-icons.cjs",

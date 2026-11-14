@@ -112,7 +112,7 @@ class CreationModelPicker {
       const preserve=!identityChanged&&(!changed||selectionRevision!==this.selectionRevision);
       this.show(value,preserve,!identityChanged);
       this.feedback.textContent=BridgeI18n.t(identityChanged?'账号或配置已变化，请重新选择模型与思考强度':value.notice||value.modelError||(!value.currentModel&&!this.model.value?'请选择模型；不会自动选用目录中的第一个模型。':''));
-    }catch(error){if(revision===this.revision&&this.isCurrent())this.error.textContent=BridgeI18n.t(error.message);}
+    }catch(error){if(revision===this.revision&&this.isCurrent()){this.feedback.textContent='';this.error.textContent=BridgeI18n.t(error.message);}}
     finally{if(revision===this.revision&&this.isCurrent()){this.loading=false;this.changed();}}
   }
   clear(){this.revision++;this.scope='';this.read=null;this.loading=false;this.feedback.textContent='';this.error.textContent='';this.show(null);}

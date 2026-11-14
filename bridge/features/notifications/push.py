@@ -13,6 +13,7 @@ from bridge.features.notifications.channels import read_json, write_json
 
 _APNS_AUTH = {}
 _FCM_CREDENTIALS = {}
+PUSH_KINDS = ('apns', 'fcm', 'activity')
 
 
 class InvalidPushToken(Exception):
@@ -39,9 +40,14 @@ class MobilePush:
                 'configured': bool(config.get('apns') or config.get('fcm'))}
 
     def register(self, body, owner, origin):
-        identifier = str(uuid.UUID(body.get('deviceId', '')))
+        if not isinstance(body, dict):
+            raise ValueError('推送注册参数无效')
+        identifier = body.get('deviceId', '')
+        if not isinstance(identifier, str):
+            raise ValueError('推送设备标识格式不正确')
+        identifier = str(uuid.UUID(identifier))
         kind = body.get('kind')
-        if kind not in ('apns', 'fcm', 'activity'):
+        if kind not in PUSH_KINDS:
             raise ValueError('不支持的推送类型')
         key = hashlib.sha256((owner + identifier + kind).encode()).hexdigest()
         with self.lock:
@@ -92,7 +98,7 @@ class MobilePush:
         with self.lock:
             snapshot = {k: dict(v) for k, v in self.devices.items()}
         for key, device in snapshot.items():
-            remove = not self.session_valid(device['owner'])
+            remove = device['kind'] not in PUSH_KINDS or not self.session_valid(device['owner'])
             changed = remove
             if not remove and time.time() >= device.get('next', 0):
                 feed = self.feed.read(device['cursor'])
@@ -168,6 +174,8 @@ def payload(device, event):
 
 def send_provider(config, device, event):
     """Optional provider SDKs are loaded only on an explicitly configured source deployment."""
+    if device['kind'] not in PUSH_KINDS:
+        raise ValueError('不支持的推送类型')
     import httpx
     body = payload(device, event)
     if device['kind'] == 'fcm':

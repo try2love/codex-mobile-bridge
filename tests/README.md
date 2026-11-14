@@ -15,16 +15,17 @@ python -B scripts/test-backend.py --source-only -p 'test_resource_layout.py'
 
 `--source-only` 明确跳过六个原生夹具类：Claude 的 Swift Console 选择器、macOS 桌面会话检查、Windows 窗口选择器，以及 Windows Codex 退出、强制退出和 Explorer 启动器验证。这些夹具可能编译或执行原生程序；纯 Python 的平台模拟与安全检查仍运行。省略该选项与完整 unittest discovery 等价，会按当前系统和环境运行原生测试。平台、可选依赖和原生 SDK 的跳过项会在结果中列出。现有 CI 保留各平台完整 discovery。
 
-HTTP、中继、IPC、mailbox 等测试使用本机隔离监听和合成数据，需要允许测试进程绑定 loopback/Unix socket。受限执行环境的 EPERM 不是功能通过，也不能隐藏为产品跳过。共享中继测试需要现有 `requirements-relay.txt` 环境；测试脚本自身不安装依赖。
+HTTP、中继、IPC、mailbox 等测试使用本机隔离监听和合成数据，需要允许测试进程绑定 loopback/Unix socket。受限执行环境的 EPERM 不是功能通过，也不能隐藏为产品跳过。共享/云中继与预览加密测试需要现有 `requirements-relay.txt` 环境（含 `noiseprotocol`）；SSH 和原生密钥库夹具还依赖 `requirements-desktop.txt` 的对应依赖。测试脚本自身不安装依赖；确认所用 Python 属于已准备的隔离环境，不把缺依赖或跳过算作全功能通过。
 
 | 修改范围 | 主要测试文件前缀 |
 | --- | --- |
 | 账号、额度、模型 | `test_account*`、`test_api_catalog*`、`test_saved_account*`、`test_remote_catalog.py` |
 | 客户端发现/启停 | `test_client_*`、`test_desktop_discovery*`、`test_desktop_idle*` |
 | Claude/DSH | `test_claude_*`、`test_deepseek_*`、`test_desktop_sessions*` |
-| 认证/配对/网络 | `test_auth*`、`test_pairing*`、`test_login_security*`、`test_shared_relay*`、`test_network*`、`test_http_proxy.py` |
+| 认证/配对/网络 | `test_auth*`、`test_pairing*`、`test_login_security*`、`test_shared_relay*`、`test_cloud_*.py`、`test_network*`、`test_connection_setup.py`、`test_http_proxy.py` |
 | 会话与发送/授权 | `test_bridge*`、`test_cli_bridge_integration.py`、`test_codex_app_server.py`、`test_codex_cli_session.py`、`test_desktop_*`、`test_goal_*`、`test_permissions*`、`test_timeline*` |
 | 文件/终端 | `test_workspace*`、`test_download_ranges*`、`test_*terminal*` |
+| 通知、手机事件与推送 | `test_notifications*.py`、`test_mobile_events.py`、`test_mobile_push.py`、`test_cloud_notifications.py` |
 | 目录与资源边界 | `test_platform_architecture.py`、`test_resource_layout.py`、`test_web_assets.py` |
 
 测试名仍保持在 `tests/` 顶层，方便按前缀发现并复用既有夹具。平台测试的模拟结果不能替代对应操作系统的实机结果。
@@ -41,6 +42,9 @@ npm run test:browser
 ```
 
 `test:desktop` 通过 `scripts/test-frontend.cjs` 自动递归发现 `tests/` 和 `mobile/tests/` 中 `*.test.js`、`*.test.cjs`、`*.test.mjs`。新增 Node 用例不需编辑长命令清单；资源路径检查包含在该入口。
+
+云服务面板可单独运行 `node --test tests/cloud-desktop.test.cjs tests/cloud-i18n.test.cjs tests/cloud-panel-ui.test.cjs`。
+后者在隔离的 Node 模拟 DOM 中执行生产脚本和翻译字典，覆盖登录按钮隐藏、自动服务状态刷新、兑换回执与失败提示、失效凭据下的本机退出、退出回执与旧运行时状态核验、语言切换和账号隔离；不会启动 Electron、浏览器或操作真实云账号。
 
 宿主与宽窄布局变更可先运行 `node --test tests/host-environment.test.cjs tests/layouts.test.cjs tests/frontend-assets.test.cjs mobile/tests/resources.test.cjs`。这些检查覆盖宿主识别与晚注入、容器分屏边界、样式顺序和原生资源清单，不启动或编译手机 App。布局的真实渲染和窗口变化后状态保留仍需浏览器夹具验证。
 

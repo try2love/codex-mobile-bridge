@@ -213,6 +213,18 @@ class AccountsTests(unittest.TestCase):
             self.assertEqual((self.manager.directory(row['id'])/'api.json').stat().st_mode&0o777,0o600)
         self.assertEqual(self.manager.snapshot_files(),self.original)
 
+    def test_management_revision_tracks_existing_account_source_without_exposing_it(self):
+        before = self.manager.public()['managementRevision']
+        self.assertRegex(before, r'^[0-9a-f]{64}$')
+        self.assertEqual(before, self.manager.public()['managementRevision'])
+        (self.home/'config.toml').write_text('# changed account settings\nmodel="another-model"\n')
+        after = self.manager.public()['managementRevision']
+        self.assertNotEqual(before, after)
+        self.assertNotIn(str(self.home), after)
+        with patch.object(self.manager.info, 'source_stamp', side_effect=OSError('unavailable')):
+            # An unreadable source cannot authorize a management operation.
+            self.assertEqual(self.manager.public()['managementRevision'], '')
+
     def test_api_accepts_unicode_provider_model_id(self):
         model = 'xmy:日卡/deepseek-v4.1-flash'
         self.assertEqual(self.api(model=model)['model'], model)

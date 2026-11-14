@@ -44,10 +44,10 @@ class GatewayControl:
         self.closed = threading.Event()
         self.worker = None
 
-    def start(self, shutdown, pairing=None, instance_id=None, auth=None, account=None, notifications=None, accounts=None, harness=None, desktop_sessions=None, cli_access=None, network_adaptation=None):
+    def start(self, shutdown, pairing=None, instance_id=None, auth=None, account=None, notifications=None, accounts=None, harness=None, desktop_sessions=None, cli_access=None, network_adaptation=None, cloud=None):
         self.pairing_dir = Path(tempfile.mkdtemp(prefix=".pairing-", dir=self.path.parent))
         self.record.update(pairingDir=self.pairing_dir.name, instanceId=instance_id, deviceManagement=auth is not None,
-                           desktopSessionsManagement=desktop_sessions is not None, harnessManagement=harness is not None, accountsManagement=accounts is not None, accountManagement=account is not None, cliAccessManagement=cli_access is not None, notificationManagement=notifications is not None, networkAdaptationManagement=network_adaptation is not None)
+                           desktopSessionsManagement=desktop_sessions is not None, harnessManagement=harness is not None, accountsManagement=accounts is not None, accountManagement=account is not None, cliAccessManagement=cli_access is not None, notificationManagement=notifications is not None, networkAdaptationManagement=network_adaptation is not None, cloudManagement=cloud is not None)
         self.request_path.unlink(missing_ok=True)
         self.path.write_text(json.dumps(self.record), encoding='utf-8')
         self.path.chmod(0o600)
@@ -56,16 +56,21 @@ class GatewayControl:
                 if read_record(self.request_path) == self.record:
                     shutdown()
                     return
-                if pairing:
+                if pairing or cloud:
                     for request in self.pairing_dir.glob('*.request'):
                         value = read_record(request)
                         request.unlink(missing_ok=True)
                         if not isinstance(value, dict) or value.get('control') != self.record:
                             continue
-                        if value.get('payload', {}).get('action') in ('account', 'accounts', 'harness', 'desktop-sessions', 'cli-access') and (account or harness or desktop_sessions or cli_access):
+                        payload = value.get('payload', {})
+                        if not isinstance(payload, dict):
+                            continue
+                        handlers = {'accounts': accounts, 'account': account, 'harness': harness,
+                                    'desktop-sessions': desktop_sessions, 'cli-access': cli_access, 'cloud': cloud}
+                        if payload.get('action') in handlers:
                             def account_request(request=request, value=value):
                                 try:
-                                    handler = {'accounts': accounts, 'account': account, 'harness': harness, 'desktop-sessions': desktop_sessions, 'cli-access': cli_access}[value['payload']['action']]
+                                    handler = handlers[value['payload']['action']]
                                     if handler is None:
                                         raise ValueError('请更新网关')
                                     result = {'ok': True, 'result': handler(value['payload'].get('value', {}))}

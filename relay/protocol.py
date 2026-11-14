@@ -115,3 +115,21 @@ def download_headers(value, response=False):
         if key == 'ETag' and not re.fullmatch(r'(?:W/)?"[^"\\]*"', item):
             raise ValueError('Invalid entity tag')
     return dict(value)
+
+
+def request_headers(method, value):
+    """Bound range requests without accepting caller credentials or HTTP framing."""
+    headers = download_headers(value)
+    if not headers:
+        return headers
+    if method != 'GET' or 'Range' not in headers:
+        raise ValueError('Range negotiation requires a GET range')
+    match = re.fullmatch(r'bytes=(\d{1,18})-(\d{1,18})', headers['Range'])
+    if not match:
+        raise ValueError('Only one bounded byte range is supported')
+    start, end = map(int, match.groups())
+    if end < start or end - start + 1 > MAX_BODY:
+        raise ValueError('Download range exceeds channel limit')
+    if 'If-Range' in headers and not re.fullmatch(r'"[^"\\]*"', headers['If-Range']):
+        raise ValueError('A strong entity tag is required for resuming')
+    return headers

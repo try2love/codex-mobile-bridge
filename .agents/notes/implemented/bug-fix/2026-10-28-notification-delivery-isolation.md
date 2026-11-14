@@ -55,6 +55,8 @@ UI、第三方接收地址、认证和用户原会话 owner/provider/auth/cwd �
 
 [原生运行失败与阻塞通知](2026-10-28-terminal-attention-notifications.md)复用本篇发送隔离与目的地账本，增加 `attention` 事件及恢复后撤销；失败仍不会被当作成功完成。
 
+[上游 v2.2.0 集成](../process/2026-11-08-upstream-v2.2.0-integration.md)删除云服务单独的收件箱初始化，默认值与已保存选择统一由通知模块处理；本篇的投递隔离、逐聊天策略和第三方通道边界继续适用。
+
 ## 关联接入
 
 [SSH 离线隔离与退避](2026-10-30-ssh-offline-isolation-and-backoff.md)进一步将远端元数据发现移到有限后台读取，避免 SSH 离线超时阻塞本机通知扫描；本篇投递及去重契约保留。

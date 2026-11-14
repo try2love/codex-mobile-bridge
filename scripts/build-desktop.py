@@ -5,18 +5,29 @@ import json
 import platform
 import subprocess
 import sys
+from importlib import import_module
 from importlib.metadata import distribution
 from pathlib import Path
 import certifi
 root = Path(__file__).resolve().parents[1]
+runtime_packages = {'paramiko': 'paramiko', 'keyring': 'keyring', 'aiohttp': 'aiohttp', 'noise': 'noise.connection'}
+for module in runtime_packages.values():
+    try:
+        import_module(module)
+    except ImportError:
+        raise SystemExit('Missing desktop runtime dependency: '+module+'. Install requirements-desktop.txt with this Python before building.') from None
 subprocess.run([sys.executable, str(root/'scripts/build-client-helpers.py')], check=True)
+subprocess.run([sys.executable, str(root/'scripts/build-p2p.py')], check=True)
 subprocess.run([sys.executable, str(root/'scripts/bundle-cloudflared.py')], check=True)
 if sys.platform == 'win32':
     subprocess.run([sys.executable, str(root/'scripts/bundle-conpty.py')], check=True)
 command = [sys.executable, '-m', 'PyInstaller', '--noconfirm', '--clean', '--onedir', '--name', 'codex-mobile-gateway',
            '--distpath', str(root/'dist'), '--workpath', str(root/'.tmp/pyinstaller'), '--specpath', str(root/'.tmp'),
            '--add-data', str(root/'web')+':web']
-command.extend(['--add-data', str(root/'dist/cloudflared')+':cloudflared', '--collect-all', 'paramiko', '--collect-all', 'keyring', '--collect-all', 'aiohttp'])
+command.extend(['--add-data', str(root/'dist/cloudflared')+':cloudflared'])
+command.extend(['--add-data', str(root/'dist/p2p')+':p2p'])
+for package in runtime_packages:
+    command.extend(['--collect-all', package])
 if sys.platform == 'darwin':
     command.extend(['--target-arch', platform.machine()])
 if sys.platform == 'win32':
@@ -25,7 +36,7 @@ if sys.platform == 'win32':
         command.extend(['--add-binary', str(source)+':'+str(Path('conpty')/Path(relative).parent)])
     for name in ('LICENSE', 'version.json'):
         command.extend(['--add-data', str(root/'dist/conpty'/name)+':conpty'])
-# Ship roots and their license explicitly; source users still need only stdlib.
+# Ship certificate roots and their license explicitly.
 command.extend(['--add-data', certifi.where()+':bridge/features/auth'])
 command.extend([
     '--hidden-import', 'bridge.platforms.linux.interfaces',

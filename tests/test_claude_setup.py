@@ -8,6 +8,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from bridge.clients.claude.adapter import Claude
@@ -796,7 +797,7 @@ class ClaudeNativeConnection(unittest.TestCase):
                 def native(name, **kwargs):
                     actions.append(name)
                     return {'setupState': 'ready' if name == 'check' else 'needs-retry'}
-                with patch('bridge.clients.claude.adapter.sys.platform', 'win32'), \
+                with patch('bridge.clients.claude.adapter.sys', SimpleNamespace(platform='win32')), \
                      patch('bridge.clients.claude.adapter.native_action', side_effect=native), \
                      patch('bridge.clients.claude.adapter.running_app', return_value=42), \
                      patch('bridge.clients.claude.adapter.developer_mode_enabled', return_value=True), \

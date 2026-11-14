@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock
 from bridge.features.notifications.events import MobileEvents
-from bridge.features.notifications.push import MobilePush, InvalidPushToken, payload
+from bridge.features.notifications.push import MobilePush, InvalidPushToken, payload, send_provider
 from bridge.features.notifications.channels import write_json
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -56,6 +56,32 @@ class NativePushTests(unittest.TestCase):
     def test_validation_and_unregister(self):
         with self.assertRaises(ValueError):self.push.register({**self.body,'token':'bad'},'owner','https://codex.try2love.com')
         self.register();self.push.register({**self.body,'enabled':False},'owner','https://codex.try2love.com');self.assertEqual(self.push.devices,{})
+
+    def test_unshipped_direct_umeng_protocol_is_not_advertised_or_accepted(self):
+        write_json(self.path/'mobile-push.json', {'umeng': {'appKey': 'synthetic-only'}})
+        self.assertEqual(self.push.status(), {'apns': False, 'fcm': False, 'configured': False})
+        for action in ('register', 'ack'):
+            with self.subTest(action=action), self.assertRaisesRegex(ValueError, '不支持的推送类型'):
+                self.push.register({**self.body, 'kind': 'umeng', 'action': action},
+                                   'owner', 'https://gateway.example.test')
+        self.assertEqual(self.push.devices, {})
+        self.sender.assert_not_called()
+
+    def test_unsupported_stored_provider_is_dropped_without_apns_fallback(self):
+        self.register()
+        self.event()
+        for kind in ('umeng', 'unsupported'):
+            with self.subTest(kind=kind):
+                device = {**next(iter(self.push.devices.values())), 'kind': kind}
+                write_json(self.push.path, {'unsupported': device})
+                restored = MobilePush(self.path, self.feed, self.sender)
+                restored.session_valid = lambda _: True
+                restored.drain(True)
+                self.assertEqual(restored.devices, {})
+                self.sender.assert_not_called()
+                with self.assertRaisesRegex(ValueError, '不支持的推送类型'):
+                    send_provider({'apns': {'bundleId': 'synthetic'}}, device, {})
+
     def test_activity_only_matches_selected_chat(self):
         self.push.register({**self.body,'kind':'activity','thread':THREAD,'host':'remote'},'owner','https://codex.try2love.com')
         self.event();self.push.drain(True);self.sender.assert_not_called()

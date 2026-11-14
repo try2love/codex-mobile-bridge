@@ -58,5 +58,7 @@ Java 接收器真实回环 HTTP/JSON 检查通过，覆盖流重置、游标、�
 
 后续由[手机按连接地址选择通知来源](2026-10-28-mobile-notification-sources.md)补充本机逐地址开关；本篇原有权限、接收及平台边界继续适用。
 
+[上游 v2.2.0 集成](../process/2026-11-08-upstream-v2.2.0-integration.md)删除云服务单独的收件箱初始化，使用通知模块的统一默认值；默认开启收件箱不代用户开启本篇的手机后台服务或系统通知权限。
+
 
 后续 [DSH 双路线接入](2026-10-29-dsh-mobile-and-plugin-compatibility.md) 增加独立 Mobile 浏览容器与插件协议校验；本篇 Bridge 路径的既有约束保持。

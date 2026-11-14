@@ -12,7 +12,7 @@ function controller({ready='valid',readyAt=0,pending=false,spawnError=false,exit
   const app={isPackaged:packaged,setPath(){},requestSingleInstanceLock:()=>true,whenReady:()=>({then(){}}),on(){},
     getVersion:()=> '2.0.0-preview.3',getPath:()=>userData,exit:code=>calls.exit.push(code),quit:()=>calls.quit++};
   const context=vm.createContext({__dirname:path.dirname(main),
-    process:{env:environment,platform,arch:'x64',pid:123,execPath,resourcesPath:path.join(userData,'resources')},
+    process:{env:environment,argv:[],platform,arch:'x64',pid:123,execPath,resourcesPath:path.join(userData,'resources')},
     Date:{now:()=>now},
     setTimeout(fn,ms){
       timers.push(ms);

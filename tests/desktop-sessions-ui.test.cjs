@@ -1318,6 +1318,19 @@ test('creation picker never chooses the first model and shares cache refresh wit
  picker.dispose();
 });
 
+test('creation catalog failures clear loading feedback and allow explicit retry without losing choices',async()=>{
+ const ui=fixture(),Picker=ui.run('window.BridgeCreationModelPicker'),picker=new Picker({root:ui.document.createElement('section')});
+ const catalog={models:[{id:'chosen',efforts:['high'],isDefault:true}],currentModel:'chosen',currentEffort:'high',cache:{identity:'account'}};
+ let fail=true;const read=async()=>{if(fail)throw Error('gateway_request_failed');return catalog;};
+ await picker.load('scope',read);
+ assert.equal(picker.feedback.textContent,'');assert.equal(picker.error.textContent,'gateway_request_failed');assert.equal(picker.loading,false);assert.equal(picker.refresh.disabled,false);assert.equal(picker.valid(),false);
+ fail=false;await picker.refresh.onclick();assert.equal(picker.error.textContent,'');picker.model.value='chosen';picker.model.onchange();picker.effort.value='high';picker.effort.onchange();assert.equal(picker.valid(),true);
+ fail=true;await picker.refresh.onclick();assert.equal(picker.feedback.textContent,'');assert.equal(picker.model.value,'chosen');assert.equal(picker.effort.value,'high');assert.equal(picker.valid(),true);
+ let rejectOld;const pending=picker.load('old',()=>new Promise((resolve,reject)=>rejectOld=reject));
+ await picker.load('new',async()=>({...catalog,notice:'Current catalog',cache:{identity:'new-account'}}));
+ rejectOld(Error('old failure'));await pending;assert.equal(picker.feedback.textContent,'Current catalog');assert.equal(picker.error.textContent,'');picker.dispose();
+});
+
 test('cached creation choices survive the initial background catalog read for every desktop provider',async()=>{
  for(const provider of ['claude','deepseek','zcode']){
   const ui=fixture();ui.view.provider=provider;ui.view.generation=1;ui.view.open=async()=>{};

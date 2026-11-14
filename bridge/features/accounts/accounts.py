@@ -285,7 +285,14 @@ class Accounts:
                 current = {'status': 'error', 'kind': 'api', 'id': None,
                            'name': '原生账号同步结果待核验'}
             verified = bool(current.get('id'))
-            return {'accounts': [{**{k: row[k] for k in ('id', 'name', 'kind', 'email', 'planType', 'baseUrl', 'model') if k in row},
+            # Reuse AccountInfo's existing source version; do not introduce a
+            # second credential scanner or an old-cloud compatibility identity.
+            try:
+                revision = hashlib.sha256(json.dumps(self.info.source_stamp()).encode('utf-8')).hexdigest()
+            except OSError:
+                revision = ''
+            return {'managementRevision': revision,
+                    'accounts': [{**{k: row[k] for k in ('id', 'name', 'kind', 'email', 'planType', 'baseUrl', 'model') if k in row},
                                   'details': copy.deepcopy(self.info.public_details(row['id']))}
                                  for row in self.index['accounts']],
                     'activeId': current.get('id'), 'activeVerified': verified, 'current': current, 'blockers': self.blockers(),

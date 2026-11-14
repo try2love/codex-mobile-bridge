@@ -74,6 +74,14 @@ GOAL_STATUS_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})/goal/status$")
 
 
 class GatewayServer(ThreadingHTTPServer):
+    def cloud_web_resource(self, path):
+        from bridge.api.cloud_web import is_resource
+        return is_resource(path)
+
+    def cloud_web_response(self, path, body, headers, request):
+        from bridge.api.cloud_web import adapt_response
+        return adapt_response(self, path, body, headers, request)
+
     daemon_threads = True
     allow_reuse_address = True
     # HTTP/2 proxies fan a cold page out into many simultaneous HTTP/1.1 connects.
@@ -222,6 +230,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 
     def output(self, status, data, content_type="application/json; charset=utf-8", cookie=None, content_disposition=None, preview_shell=False, style_nonce=None, mermaid_shell=False):
+        # Rejected writes can return before consuming their body. Do not let
+        # those bytes become a request line on a pooled forwarding connection.
+        if status >= 400 and self.command not in ('GET', 'HEAD'):
+            self.close_connection = True
         # Keep the browser cookie in step with the renewed server-side deadline,
         # including long-lived pages that do not revisit /api/auth.
         if cookie is None and 200 <= status < 300 and urlsplit(self.path).path.startswith('/api/'):
