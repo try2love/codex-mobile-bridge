@@ -147,7 +147,7 @@ class ResourceLayoutTests(unittest.TestCase):
         self.assertEqual(len(manifest), len(set(manifest)))
         self.assertEqual({name for name in manifest if name.endswith('.py')},
                          set(SSH_SOURCES) | PLATFORM_SOURCES | WSL_ACCOUNT_SOURCES |
-                         {'bridge/clients/websocket.py'})
+                         {'bridge/clients/websocket.py', 'bridge/features/workspace/visualize.py'})
         self.assertTrue(CONNECTORS <= set(manifest))
         self.assertIn('bridge/clients/LICENSE.coding-mobile', manifest)
         self.assertIn('bridge/vendor/wsl_tomli/LICENSE', manifest)

@@ -34,7 +34,9 @@ from bridge.clients.desktop_app import DesktopApp
 from bridge.clients.codex.transport import ipc_endpoint
 from bridge.features.sessions.model import apply_patches, attachment_prompt, computer_use_approval, items_array, normalize_state, normalize_request, ordered_turns, pending_requests, async_requests, request_id, user_display_text, merge_saved_message_times
 from bridge.features.sessions.store import SessionStore, StoreUnavailable, persisted_submission_ids
-from bridge.features.workspace.files import artifact_paths, referenced_model_images, host_file_links
+from bridge.features.workspace.files import artifact_paths, referenced_model_images, host_file_links, visualization_files, visualization_paths
+from bridge.features.workspace.visualize import identifier as visualization_id, read_source as read_visualization
+from bridge.features.workspace.visualize_payload import read_request as visualization_read_request
 from bridge.features.workspace.workspace import operate as workspace_operation
 from bridge.clients.codex.catalog import Catalog, CatalogError, ModelStore, MODEL_REFRESH_SECONDS
 from bridge.platforms.codex_daemon_env import DaemonEnvironmentUnavailable
@@ -4336,7 +4338,7 @@ class Bridge:
             source = session.state if session.connected else session.history_state or session.state
             artifacts = artifact_paths(source or {}, self.store.home) if self.local else {}
         view["files"] = [{"id": k, "name": v["name"], "reference": v["reference"], "references": v["references"], "image": v["image"]} for k, v in artifacts.items()]
-        view['files'] = host_file_links(source or {}, view['files'])
+        view['files'] = visualization_files(source or {}, host_file_links(source or {}, view['files']))
         self._overlay_native_goal(session, thread_id, view)
         self._submission_meta(session, view)
         view["forkedFrom"] = self._fork_origin(thread_id)
@@ -4550,6 +4552,28 @@ class Bridge:
             raise KeyError("文件不属于此聊天的工作目录")
         return files[artifact_id]
 
+    @operation(entry_only=True)
+    def visualization(self, thread_id, identifier):
+        session = self.session(thread_id, attach=False)
+        with session.condition:
+            view = session.view()
+            paths = visualization_paths(
+                message.get('text', '')
+                for turn in view['turns'] for message in turn['messages'] if message['role'] == 'assistant'
+            )
+            cwd = view.get('cwd')
+        path = next((path for path in paths if visualization_id(path) == identifier), None)
+        if path is None:
+            raise PermissionError('可视化文件未被此聊天引用')
+        if self.local:
+            return read_visualization(path, cwd, self.store.home)
+        if not isinstance(self.store, RemoteStore):
+            raise RemoteUnavailable('此主机暂时无法读取可视化文件')
+        result = ssh_read(self.store.alias, visualization_read_request(path, cwd), timeout=60)
+        if 'error' in result:
+            raise ValueError(result['error'])
+        return result['value']
+
     def _annotate_upload_attachments(self, session, rows):
         """Add preview ids only for images recorded in this chat's upload ledger."""
         paths = {a['path'] for row in rows for a in row.get('attachments', [])
@@ -4720,7 +4744,7 @@ class Bridge:
         ]}
         artifacts = artifact_paths(file_state, self.store.home) if self.local else {}
         result['files'] = [{'id': k, 'name': v['name'], 'reference': v['reference'], 'references': v['references'], 'image': v['image']} for k, v in artifacts.items()]
-        result['files'] = host_file_links(file_state, result['files'])
+        result['files'] = visualization_files(file_state, host_file_links(file_state, result['files']))
         if mode != 'detail':
             self._submission_meta(session, result['meta'])
             result['meta']['forkedFrom'] = self._fork_origin(thread_id)

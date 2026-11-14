@@ -43,7 +43,7 @@ class GatewayMermaidTests(unittest.TestCase):
             self.assertEqual(self.raw(asset, login)[0], 200, asset)
         status, headers, _ = self.raw('/', login)
         self.assertEqual(status, 200)
-        self.assertIn(self.origin + '/mermaid-render-shell;', headers['Content-Security-Policy'])
+        self.assertIn(self.origin + '/mermaid-render-shell ', headers['Content-Security-Policy'])
         self.assertNotIn("script-src 'unsafe-inline'", headers['Content-Security-Policy'])
 
     def test_opaque_frame_can_fetch_only_fixed_public_scripts(self):
@@ -94,7 +94,7 @@ class RelayMermaidTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.headers['Content-Security-Policy'], shell_csp(self.origin))
             self.assertEqual((await self.client.get(prefix + '/mermaid-render-shell?source=x')).status, 404)
             page = await self.client.get(prefix + '/')
-            self.assertIn(self.origin + prefix + '/mermaid-render-shell;', page.headers['Content-Security-Policy'])
+            self.assertIn(self.origin + prefix + '/mermaid-render-shell ', page.headers['Content-Security-Policy'])
 
     async def test_opaque_frame_script_exception_is_scoped_and_read_only(self):
         headers = {'Sec-Fetch-Site':'cross-site', 'Sec-Fetch-Dest':'script',

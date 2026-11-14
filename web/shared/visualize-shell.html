@@ -1,0 +1,23 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Visualization</title></head><body>
+<script>
+(() => {
+  'use strict';
+  const sourceOrigin = new URL(location.href).origin;
+  const instance = Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, '0')).join('');
+  const styles = __STYLE__, runtime = __RUNTIME__;
+  const receive = event => {
+    const value = event.data;
+    if (event.source !== parent || event.origin !== sourceOrigin || value?.type !== 'bridge-visualize-content' || value.instance !== instance ||
+        typeof value.text !== 'string' || new TextEncoder().encode(value.text).length > 1024 * 1024) return;
+    window.removeEventListener('message', receive);
+    const config = JSON.stringify({instance, sourceOrigin, theme:value.theme === 'dark' ? 'dark' : 'light', state:value.state ?? null}).replace(/</g, '\\u003c');
+    document.open();
+    document.write('<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>' + styles + '</style></head><body>' +
+      '<script>window.__bridgeVisualization=JSON.parse(' + JSON.stringify(config) + ');' + runtime + '<' + '/script><main id="bridge-visualize-root">' + value.text + '</main></body></html>');
+    document.close();
+  };
+  window.addEventListener('message', receive);
+  parent.postMessage({type:'bridge-visualize-ready', instance}, '*');
+})();
+</script></body></html>

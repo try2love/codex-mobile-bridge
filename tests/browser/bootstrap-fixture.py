@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, urlsplit
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from bridge.api.assets import STATIC, served_asset_bytes  # noqa: E402
+from bridge.api.visualize import shell_bytes as visualize_shell, SHELL_CSP as VISUALIZE_CSP  # noqa: E402
 
 WEB = ROOT / 'web'
 PAYLOADS = {path: served_asset_bytes(WEB, path) for path in STATIC}
@@ -39,7 +40,7 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_args):
         pass
 
-    def output(self, body, mime='text/javascript; charset=utf-8', status=200, cache_control='no-store'):
+    def output(self, body, mime='text/javascript; charset=utf-8', status=200, cache_control='no-store', policy=None):
         if isinstance(body, str):
             body = body.encode()
         self.send_response(status)
@@ -47,7 +48,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Cache-Control', cache_control)
         self.send_header('Content-Length', str(len(body)))
-        self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:")
+        self.send_header('Content-Security-Policy', policy or "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:")
         self.end_headers()
         try:
             self.wfile.write(body)
@@ -56,6 +57,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlsplit(self.path).path
+        if path == '/visualize-shell':
+            self.output(visualize_shell(WEB), 'text/html; charset=utf-8', policy=VISUALIZE_CSP)
+            return
         if path == '/__fixture_health':
             self.output('{"fixture":"cmb-browser-regression"}', 'application/json')
             return

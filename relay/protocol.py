@@ -78,7 +78,7 @@ def validate(method, path, size=0):
         action = match[1] or ''
         if action in (READ if method == 'GET' else WRITE):
             return
-        if method == 'GET' and re.fullmatch(r'(files|desktop-images)/[a-f0-9]{64}', action):
+        if method == 'GET' and re.fullmatch(r'(files|desktop-images|visualizations)/[a-f0-9]{64}', action):
             return
         if re.fullmatch('uploads/' + UUID + ('/preview' if method == 'GET' else '/thumb'), action):
             return
