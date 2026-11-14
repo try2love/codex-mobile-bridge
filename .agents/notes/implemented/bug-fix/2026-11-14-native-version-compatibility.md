@@ -14,6 +14,8 @@ Linux 平台 worker 只核验系统身份、内核能力及原生版本元数据
 
 退出继续走单次 SIGHUP 或已验证 Windows 私有关闭通道，不改成原生 daemon stop/restart。当前官方 app-server 源码与 daemon README 确认 SIGHUP 是 graceful-only；stop/restart 在等待窗口后可能强制结束，不能替换本项目的默认正常退出流程。
 
+Claude CLI 的 `--permission-prompts` 自 2.1.259 才提供，而官方当前默认就是 `host`。本机和远端共用原生默认，删除仅特判 2.1.168 的版本探测和冗余参数，保留 `--permission-prompt-tool stdio`、原权限模式与审批控制请求。无需为每次创建/恢复额外启动版本查询。官方依据：[CLI reference](https://code.claude.com/docs/en/cli-reference)。
+
 ## 备选方案
 
 继续补精确发行号最省改动，但每次原生升级都需要网关发版。完全删除所有版本和身份检查会对早期尚未提供契约的运行时发送不适用操作。只依靠只读握手也不能证明退出是否会升级强制，因此保留已有最低契约及实际控制通道核验，不新增后台启动探测实例或持续扫描。
@@ -21,6 +23,8 @@ Linux 平台 worker 只核验系统身份、内核能力及原生版本元数据
 ## 验证
 
 同一握手版本替换复现旧门禁拒绝 0.165/0.168；新版接受兼容后续版本并保留过旧、未知来源拒绝。定向测试覆盖网络恢复、账号同步、失败终态释放、进程代次、重复退出与未知回执；Linux 在 Mac 使用合成 /proc/socket/pidfd 夹具，不代表 Linux 实机通过。Windows/Linux 本轮按用户要求不操作。
+
+Claude 本机/SSH/WSL 命令回归先复现多带新参数后，84 项定向测试通过；Mac 已安装 Claude 2.1.292 在隔离空配置中，使用 stdio 审批参数完成真实 initialize、模型目录和设置读取，关闭 stdin 后退出码 0；未发送模型请求、未读取正式账号。
 
 ## 影响
 

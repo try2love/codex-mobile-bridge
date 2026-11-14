@@ -62,18 +62,6 @@ def project_account_identity(profile):
     return auth_fingerprint(profile['binary'], profile['directory'], environment)
 
 
-def _permission_prompt_args(binary, env):
-    """Claude 2.1.168 routes stdio prompts before --permission-prompts existed."""
-    try:
-        version = subprocess.run([binary, '--version'], env=env, capture_output=True,
-                                 text=True, encoding='utf-8', errors='replace', timeout=5)
-        if version.returncode == 0 and re.match(r'\A2\.1\.168(?:\s|\Z)', version.stdout):
-            return []
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return ['--permission-prompts', 'host']
-
-
 def _supports_compact(catalog, *, desktop_projection=False):
     for row in catalog.get('commands') or []:
         if not isinstance(row, dict) or row.get('name') != 'compact':
@@ -861,7 +849,7 @@ class ClaudeCli:
         command = [profile['binary'], '-p', '--session-id', native, '--input-format', 'stream-json',
                    '--output-format', 'stream-json', '--verbose', '--replay-user-messages',
                    '--setting-sources', 'user,project,local', '--permission-prompt-tool', 'stdio',
-                   *_permission_prompt_args(profile['binary'], env), '--allow-dangerously-skip-permissions']
+                   '--allow-dangerously-skip-permissions']
         arguments, environment = creation_launch_options(selection)
         command.extend(arguments)
         for name, value in environment.items():
@@ -1037,7 +1025,6 @@ class ClaudeCli:
                     command.extend(('--add-dir', str(upload_dir.resolve())))
                 if row['model']:
                     command.extend(('--model', row['model']))
-                command.extend(_permission_prompt_args(profile['binary'], env))
                 try:
                     assert_session_closed(profile['directory'], native)
                 except BridgeUnavailable as exc:

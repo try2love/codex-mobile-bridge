@@ -98,6 +98,24 @@ class RemoteWorkerContract(unittest.TestCase):
         self.assertFalse(self.cwd.exists())
         self.assertFalse((self.config/'mobile-bridge').exists())
 
+    def test_create_and_resume_keep_stdio_permissions_without_new_optional_flag(self):
+        with patch.dict(os.environ, self.env, clear=True), \
+             patch.object(remote_worker.os, 'chdir'), \
+             patch('builtins.print'), \
+             patch.object(remote_worker.os, 'execvpe') as execute:
+            profile = remote_worker.profile()
+            request = {'origin': profile['origin'], 'native': self.native,
+                       'cwd': str(self.cwd), 'model': 'fixture-model',
+                       'permissionMode': 'plan', 'scope': str(uuid.uuid4())}
+            for operation in (remote_worker.create, remote_worker.resume):
+                with self.subTest(operation=operation.__name__):
+                    operation(request)
+                    binary, arguments, env = execute.call_args.args
+                    self.assertEqual(binary, profile['binary'])
+                    self.assertNotIn('--permission-prompts', arguments)
+                    self.assertEqual(arguments[arguments.index('--permission-prompt-tool') + 1], 'stdio')
+                    self.assertEqual(env['CLAUDE_CONFIG_DIR'], str(self.config))
+
     def test_resume_preflight_preserves_unknown_permission_and_rejects_changed_settings(self):
         profile = self.run_worker({'operation': 'list'})['value']['profile']
         request = {'operation': 'resume-preflight', 'origin': profile['origin'], 'native': self.native,
