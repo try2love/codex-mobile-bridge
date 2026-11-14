@@ -40,6 +40,21 @@ class StreamCompatibilityTests(unittest.TestCase):
         with self.assertRaises(StreamCompatibilityError):
             validate_stream_state(99, value)
 
+    def test_empty_canonical_items_are_valid_before_first_output(self):
+        value = self.state()
+        value['turns'] = [{'status': 'inProgress', 'items': {
+            'entitiesByKey': {}, 'islands': [], 'isComplete': True}}]
+        for version in (13, 99):
+            with self.subTest(version=version):
+                validate_stream_state(version, value)
+
+    def test_explicit_null_history_is_not_a_legacy_turn_list(self):
+        value = self.state()
+        value['turnHistory'] = None
+        for version in (13, 99):
+            with self.subTest(version=version), self.assertRaises(StreamCompatibilityError):
+                validate_stream_state(version, value)
+
     def test_future_versions_reject_unknown_control_shapes(self):
         changes = [('modelProvider', None), ('cwd', None), ('requests', None), ('requests', [{}]), ('turns', {}),
                    ('turns', [{'status': 'future-status', 'items': []}]),

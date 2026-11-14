@@ -62,7 +62,7 @@ def validate_stream_state(version, state):
         require(type(request.get('id')) in (int, str) and isinstance(request.get('method'), str))
         require(isinstance(request.get('params', {}), dict))
     history = state.get('turnHistory')
-    if history is not None:
+    if 'turnHistory' in state:
         require(isinstance(history, dict) and history.get('kind') == 'canonical')
         turns = entities(history.get('history'))
     else:
@@ -72,7 +72,7 @@ def validate_stream_state(version, state):
         require(isinstance(turn, dict) and turn.get('status') in ('inProgress', 'completed', 'failed', 'interrupted'))
         items = turn.get('items', [])
         if isinstance(items, dict):
-            items = entities(items) if items.get('entitiesByKey') else items.get('items')
+            items = entities(items) if 'entitiesByKey' in items else items.get('items')
         require(isinstance(items, list))
         for item in items:
             require(isinstance(item, dict) and isinstance(item.get('type'), str))
