@@ -1,12 +1,14 @@
 """Default local OAuth snapshots; shared UI, no Electron/profile directory copies."""
 import hashlib
 import json
+import logging
 from pathlib import Path
 import re
 import threading
 import uuid
 
 from bridge.features.accounts.accounts import private_bytes, private_json
+from bridge.clients.errors import BridgeUnavailable
 from bridge.platforms.antigravity import login_processes, profile_lease
 from .credentials import NativeCredentials
 
@@ -88,10 +90,10 @@ class AntigravityAccounts:
             raise ValueError('保存的 Antigravity 账号不存在')
         return row
 
-    def public(self):
+    def public(self, *, native=None):
         # Polling reads native identity and private metadata only, never the vault.
         with self.lock:
-            native = self.metadata()
+            native = self.metadata() if native is None else native
             rows, active, matched = [], [], set()
             for saved in self._index():
                 row = {key: saved[key] for key in ('id', 'name', 'email')}
@@ -184,6 +186,9 @@ class AntigravityAccounts:
             self._validate(selected)
             if fingerprint(selected) != row['fingerprint']:
                 raise ValueError('保存的 Antigravity 登录快照已变化')
+            # Retain the saved list if post-commit discovery fails, but never
+            # carry the previous native login identity across a switch.
+            result = self.public(native={'accounts': []})
             with profile_lease(self.home/'.gemini/.bridge-account.lock'):
                 vault = NativeCredentials()
                 before = self._snapshot(vault)
@@ -228,8 +233,17 @@ class AntigravityAccounts:
                     if complete:
                         backup.unlink(missing_ok=True)
                     raise ValueError('账号应用未完成；'+('已恢复原配置' if complete else '未覆盖外部变化，恢复备份已保留，请在电脑端检查')) from None
-                backup.unlink(missing_ok=True)
-                return {**self.public(), 'message': '登录配置已应用，尚未验证登录；请重新打开原客户端后刷新。'}
+                try:
+                    backup.unlink(missing_ok=True)
+                except OSError:
+                    logging.getLogger(__name__).warning('Antigravity login applied; rollback backup retained')
+                # Credential read-back above is the commit point. Cleanup or
+                # presentation failures must not prevent the one safe restart.
+                try:
+                    result = self.public()
+                except (OSError, ValueError, BridgeUnavailable):
+                    pass
+                return {**result, 'message': '登录配置已应用，尚未验证登录；请重新打开原客户端后刷新。'}
 
     def edit(self, identifier):
         row = self._row(identifier)

@@ -119,6 +119,36 @@ class AntigravityAccountTests(unittest.TestCase):
         self.assertEqual(result['activeIds'], [])
         self.assertIn('尚未验证登录', result['message'])
 
+    def test_committed_switch_restarts_even_if_cleanup_or_metadata_fails(self):
+        identifier = self.store.import_current('first')['accounts'][0]['id']
+        selected = self.secret
+        original_unlink = Path.unlink
+        adapter = SimpleNamespace(home=self.home, hooks=None,
+                                  cli=mock.Mock(_lock=threading.RLock(), assert_idle=mock.Mock()))
+        for failure in ('cleanup', 'metadata'):
+            with self.subTest(failure=failure):
+                self.secret = token('second@example.invalid', 'second')
+
+                def unlink(path, *args, **kwargs):
+                    if failure == 'cleanup' and path.name.startswith('rollback-'):
+                        raise OSError('backup cleanup refused')
+                    return original_unlink(path, *args, **kwargs)
+
+                self.store.metadata = mock.Mock(return_value=self.native,
+                    side_effect=OSError('metadata unavailable') if failure == 'metadata' else None)
+                with mock.patch.object(Path, 'unlink', unlink), \
+                        mock.patch('bridge.clients.antigravity.account_switch.native') as lifecycle, \
+                        mock.patch('bridge.clients.antigravity.account_switch.endpoint',
+                                   return_value={'identity': {'pid': 42}}), \
+                        mock.patch('bridge.clients.antigravity.account_switch.verify_endpoint'):
+                    lifecycle.prepare.return_value = {'installation': {'surface': 'app'}}
+                    result = switch_account(self.store, adapter, {}, identifier)
+                lifecycle.restart.assert_called_once()
+                self.assertEqual(self.secret, selected)
+                self.assertEqual(result['accounts'][0]['id'], identifier)
+                self.assertEqual(result['activeIds'], [])
+                self.assertIn('已请求重新打开', result['message'])
+
     def test_switch_preserves_profile_drafts_bindings_and_gateway_config(self):
         paths = ('antigravity/browser/Local Storage/draft.json', 'antigravity/SingletonLock',
                  'antigravity/settings.json', 'gateway/mobile-bindings.json', 'gateway/config.json')
