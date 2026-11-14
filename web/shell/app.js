@@ -1446,7 +1446,7 @@ async function openModelDialog(forceRefresh=false){
   if(modelSaving)return;
   $('model-refresh').disabled=true;
   const draft=()=>({model:$('model-select').value==='__custom__'?$('custom-model').value:$('model-select').value,effort:$('effort-select').value}),previous=forceRefresh?draft():null,selectionRevision=modelSelectionRevision;
-  const request=++modelRequest,target=chatKey();modelTarget=target;modelScope=modelScopeKey();modelIdentityInvalid=false;fastModeControl.reset();
+  const request=++modelRequest,target=chatKey();modelTarget=target;modelIdentityInvalid=modelIdentityInvalid&&modelScope===modelScopeKey();modelScope=modelScopeKey();fastModeControl.reset();
   $('model-form').querySelectorAll('input,select,button').forEach(n=>n.disabled=false);
   const identity=state?.modelCatalogIdentity||'',scope=JSON.stringify([listIdentity,currentId,currentHost,state?.provider,identity]),cached=window.BridgeModelCatalogCache.read(modelCatalogs,[listIdentity,currentHost,'codex'],identity)||(catalogResults.models?._scope===scope?catalogResults.models:null);
   const active=()=>request===modelRequest&&target===chatKey()&&scope===JSON.stringify([listIdentity,currentId,currentHost,state?.provider,state?.modelCatalogIdentity||'']);
@@ -1463,9 +1463,9 @@ async function openModelDialog(forceRefresh=false){
   try{
     const catalog=await loadCatalogKind('models',forceRefresh);
     if(!active()){if(request===modelRequest)$('model-dialog').close();return;}
-    showCatalog(catalog);
+    modelIdentityInvalid=false;showCatalog(catalog);
   }catch(e){if(active()){
-    if(e.code==='model_identity_changed'){modelIdentityInvalid=true;$('model-error').textContent=t(e.message);$('model-updated').textContent='';$('model-save').disabled=true;return;}
+    if(e.code==='model_identity_changed'||modelIdentityInvalid){modelIdentityInvalid=true;$('model-error').textContent=t(e.message);$('model-updated').textContent='';$('model-save').disabled=true;return;}
     if(!cached?.models?.length)showCatalog({models:[],fastMode:{allowed:false}});
     $('model-updated').textContent=t(e.message)+' · '+t('可手动填写模型');
   }}

@@ -524,3 +524,11 @@ test('model catalog refresh preserves the exact manual draft instead of restorin
  await ui.nodes.get('model-refresh').onclick();assert.equal(ui.nodes.get('custom-model').value,'exact/manual-draft');assert.equal(ui.nodes.get('model-select').value,'__custom__');assert.equal(ui.nodes.get('effort-select').value,'high');
  await ui.nodes.get('model-form').onsubmit({preventDefault(){}});assert.equal(ui.responses.at(-1).model,'exact/manual-draft');assert.equal(ui.responses.at(-1).effort,'high');
 });
+
+test('refresh cannot unlock a catalog whose account was already invalidated',async()=>{
+ const catalog={models:[{id:'old-model',efforts:[]}],cache:{identity:'account-a'}};
+ const ui=await fixture(r=>r(official),'chatgpt',catalog);ui.run("currentId='thread';state={connected:true,model:'old-model',modelCatalogIdentity:'account-a'}");await ui.nodes.get('model-button').onclick();
+ catalog.cache.identity='account-b';await ui.nodes.get('model-refresh').onclick();assert.equal(ui.nodes.get('model-save').disabled,true);
+ ui.run("const readModels=api;api=(url,body)=>url.includes('/catalog?kind=models')?new Promise(resolve=>window.finishModelRead=()=>resolve({models:[],cache:{identity:'account-b'}})):readModels(url,body)");
+ const refresh=ui.nodes.get('model-refresh').onclick();assert.equal(ui.nodes.get('model-save').disabled,true);await ui.nodes.get('model-form').onsubmit({preventDefault(){}});assert.equal(ui.responses.length,0);ui.run('window.finishModelRead()');await refresh;assert.equal(ui.nodes.get('model-save').disabled,true);
+});
