@@ -91,8 +91,8 @@ class WslClaudeEntries:
         return [{**row, 'kind': 'wsl-claude-cli', 'name': 'WSL Claude Code · '+row['distribution'],
                  'icon': 'claude', 'installed': True, 'configured': True,
                  'enabled': row.get('enabled', True), 'selectable': True,
-                 'running': row['distribution'] in running, 'connected': False,
-                 'distributionRunning': row['distribution'] in running,
+                 'running': None if running is None else row['distribution'] in running, 'connected': False,
+                 'distributionRunning': None if running is None else row['distribution'] in running,
                  'setupStatus': 'ready', 'accessManagement': 'external',
                  'canQuitDesktop': False, 'canForceQuit': False,
                  'reason': '可在本网关管理此 WSL API 接入；官方登录仍在原 Claude Code CLI 完成。'}

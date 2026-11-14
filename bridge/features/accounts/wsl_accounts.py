@@ -62,7 +62,7 @@ class WslAccounts:
             entries = [dict(row) for row in registry.entries if row.get('distribution')]
         running = wsl.displayed_distributions(entries)
         rows = [{**self._target(row), 'id': row['id'], 'label': row['label'],
-                 'enabled': row.get('enabled', True), 'running': row['distribution'] in running}
+                 'enabled': row.get('enabled', True), 'running': None if running is None else row['distribution'] in running}
                 for row in entries]
         return {'provider': provider, 'environments': rows}
 

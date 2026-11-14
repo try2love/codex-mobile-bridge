@@ -32,7 +32,10 @@ const ClientLifecycle=(()=>{
       label=({'needs-unlock':'电脑已锁定','needs-desktop':'电脑桌面暂不可用'})[setup]||({'error':'连接失败','timeout':'连接超时','needs-initialization':'需要初始化连接'})[stage]
         ||({'history-only':'本机历史（只读）','unsupported':'暂不支持自动接入','needs-initialization':'需要初始化连接','needs-first-launch':'需要完成首次设置','restart-required':'等待重启','needs-permission':'等待授权','needs-developer-mode':'等待开发者模式确认','needs-trust':'等待目录授权','owner-conflict':'连接被其他网关占用','cancelled':'已取消连接','failed':'连接失败','needs-retry':'连接失败'})[setup];
       action=!!label;
-      label=label||(client.installed===false?(client.cliAvailable?'CLI 可用':'未安装'):client.running===true?'应用运行中，尚未连接':client.running===false?'应用未运行':'尚未连接');
+      if(['wsl-cli','wsl-claude-cli'].includes(client.kind)){
+        label=label||(client.distributionRunning===false?'WSL 未启动':client.distributionRunning===true?'WSL 已启动，待连接':'WSL 状态暂未确认');
+        if(client.distributionRunning==null)reason='WSL 状态暂未确认，请刷新后重试';
+      }else label=label||(client.installed===false?(client.cliAvailable?'CLI 可用':'未安装'):client.running===true?'应用运行中，尚未连接':client.running===false?'应用未运行':'尚未连接');
     }
     const canStartDesktop=client.id==='claude'&&client.canStartDesktop===true&&!client.connected&&!pending;
     const canReconnect=client.id==='claude'&&client.canReconnect===true&&client.reconnectSupported===true&&!client.connected&&!pending&&!['recovery-required','restart-required'].includes(setup);
