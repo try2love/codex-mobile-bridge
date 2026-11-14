@@ -29,7 +29,7 @@ function bumpRecency(id,host,at=Date.now()){
 }
 let activityBusy=false;
 const fastModeControl=new FastModeControl({root:$('fast-mode-control'),input:$('fast-mode-enabled')});
-let modelRequest=0,modelTarget=null,modelSaving=false,modelScope='',modelIdentityInvalid=false;
+let modelRequest=0,modelTarget=null,modelSaving=false,modelScope='',modelIdentityInvalid=false,modelSelectionRevision=0;
 function modelScopeKey(){return JSON.stringify([listIdentity,currentId,currentHost,state?.provider,state?.modelCatalogIdentity||'']);}
 async function goalAction(action,payload) {
   const id=currentId,host=currentHost;
@@ -1409,7 +1409,7 @@ function renderModelChoices(){
     name.textContent=option.textContent.includes('\ufffd')?(base?.name?.includes('\ufffd')?baseId:base?.name||baseId):option.textContent;
     row.title=option.value==='__custom__'?name.textContent:option.value;
     check.setAttribute('aria-hidden','true');
-    input.onchange=()=>{if(!input.checked)return;$('model-select').value=input.value;renderEfforts();};
+    input.onchange=()=>{if(!input.checked)return;$('model-select').value=input.value;modelSelectionRevision++;renderEfforts();};
     row.append(input,name);
     if(routed)row.append(el('small','model-choice-badge',t('聚合')));
     row.append(check);list.append(row);
@@ -1426,7 +1426,7 @@ function renderEffortChoices(){
   for(const option of $('effort-select').children){
     const row=el('label','effort-choice'),input=el('input'),name=el('span','',t(names[option.value]||option.value));
     input.type='radio';input.name='effort-choice';input.value=option.value;input.checked=option.value===$('effort-select').value;input.disabled=modelSaving||$('effort-select').disabled;
-    input.onchange=()=>{if(input.checked)$('effort-select').value=input.value;};
+    input.onchange=()=>{if(input.checked){$('effort-select').value=input.value;modelSelectionRevision++;}};
     row.append(input,name);list.append(row);
   }
 }
@@ -1445,17 +1445,19 @@ function renderEfforts({effort=state?.effort,keepFast=false}={}){
 async function openModelDialog(forceRefresh=false){
   if(modelSaving)return;
   $('model-refresh').disabled=true;
+  const draft=()=>({model:$('model-select').value==='__custom__'?$('custom-model').value:$('model-select').value,effort:$('effort-select').value}),previous=forceRefresh?draft():null,selectionRevision=modelSelectionRevision;
   const request=++modelRequest,target=chatKey();modelTarget=target;modelScope=modelScopeKey();modelIdentityInvalid=false;fastModeControl.reset();
   $('model-form').querySelectorAll('input,select,button').forEach(n=>n.disabled=false);
   const identity=state?.modelCatalogIdentity||'',scope=JSON.stringify([listIdentity,currentId,currentHost,state?.provider,identity]),cached=window.BridgeModelCatalogCache.read(modelCatalogs,[listIdentity,currentHost,'codex'],identity)||(catalogResults.models?._scope===scope?catalogResults.models:null);
   const active=()=>request===modelRequest&&target===chatKey()&&scope===JSON.stringify([listIdentity,currentId,currentHost,state?.provider,state?.modelCatalogIdentity||'']);
   const showCatalog=catalog=>{
+    const retained=modelSelectionRevision!==selectionRevision?draft():previous;
     catalogData.models=catalog.models;catalogResults.models=catalog;
     $('model-select').replaceChildren(...(catalog.modelSource==='api'?[new Option(t('请选择上游模型'),'')]:[]),...(Array.isArray(catalog.models)?catalog.models:[]).map(m=>new Option(m.name,m.id)),new Option(t('自定义模型…'),'__custom__'));
-    const current=state?.model||catalog.currentModel,models=Array.isArray(catalog.models)?catalog.models:[],known=models.some(m=>m.id===current);$('model-select').value=known?current:catalog.modelSource==='api'&&models.length?'':'__custom__';$('custom-model').value=current||'';
+    const current=retained?retained.model:state?.model||catalog.currentModel,models=Array.isArray(catalog.models)?catalog.models:[],known=models.some(m=>m.id===current);$('model-select').value=known?current:!retained&&catalog.modelSource==='api'&&models.length?'':'__custom__';$('custom-model').value=current||'';
     $('model-error').textContent=catalog.modelSource==='api'&&!known&&models.length?t('当前聊天模型不在上游列表中，请选择可用模型后应用。'):'';
     const updated=catalog.cache?.updatedAt;$('model-updated').textContent=[catalog.modelError?t(catalog.modelError):'',Number.isFinite(updated)&&updated>0?t('更新于：')+new Date(updated*1000).toLocaleString(BridgeI18n.locale()):''].filter(Boolean).join(' · ');
-    renderModelChoices();fastModeControl.open(catalog,state,$('model-select').value);renderEfforts();
+    renderModelChoices();fastModeControl.open(catalog,state,$('model-select').value);renderEfforts({effort:retained?retained.effort:state?.effort});
   };
   $('model-error').textContent='';if(cached?.models?.length)showCatalog(cached);else{$('model-updated').textContent='';$('model-select').replaceChildren(new Option(t('读取模型列表…'),''));$('model-options').textContent=t('读取模型列表…');$('effort-options').replaceChildren();$('model-save').disabled=true;}if(!$('model-dialog').open)$('model-dialog').showModal();
   try{
@@ -1471,8 +1473,9 @@ async function openModelDialog(forceRefresh=false){
 }
 $('model-button').onclick=()=>openModelDialog();
 $('model-refresh').onclick=()=>openModelDialog(true);
-$('model-select').onchange=renderEfforts;
-$('custom-model').oninput=renderEfforts;
+$('model-select').onchange=()=>{modelSelectionRevision++;renderEfforts();};
+$('custom-model').oninput=()=>{modelSelectionRevision++;renderEfforts();};
+$('effort-select').onchange=()=>{modelSelectionRevision++;};
 $('model-form').onsubmit=async event=>{
   event.preventDefault();if(modelSaving||modelIdentityInvalid||modelScope!==modelScopeKey()||modelTarget!==chatKey()||$('model-save').disabled)return;
   const request=modelRequest,target=currentId,host=currentHost;

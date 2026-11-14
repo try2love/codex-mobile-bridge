@@ -360,7 +360,7 @@ class DesktopConnectionsPanel {
     const currentSource=()=>value?.surfaces?.find(row=>row.id===source.value),currentSession=()=>currentSource()?.sessions?.find(row=>row.id===session.value);
     const option=(label,id)=>{const n=node('option',label);n.value=id;return n;};
     const updateModel=()=>{saveModel.disabled=busy||stale||!value?.enabled||!currentSource()?.connected||!currentSession()||!picker?.valid()||picker.selection().model===currentSession()?.model;};
-    picker=new window.BridgeCreationModelPicker({root:modelRoot,cache:new Map(),namespace:()=>[client.id,source.value],onChange:updateModel});
+    picker=new window.BridgeCreationModelPicker({root:modelRoot,cache:new Map(),namespace:()=>[client.id,source.value],onChange:updateModel,fallbackCapabilities:{manualModels:true,manualEffort:false,effort:false}});
     picker.manualModel.placeholder=BridgeI18n.t('完整原生模型标识，例如 MODEL_PLACEHOLDER_M525');
     const render=()=>{
       const origin=currentSource(),row=currentSession(),enabled=value?.enabled===true;
@@ -372,8 +372,8 @@ class DesktopConnectionsPanel {
       savePermission.disabled=permission.disabled||permission.value===row?.permissionMode;
       updateModel();
     };
-    const selectSession=async()=>{const row=currentSession(),surface=source.value,sid=session.value;permission.replaceChildren(...(value?.permissionOptions||[]).map(o=>option(o.label,o.value)));permission.value=row?.permissionMode||'desktop';picker.clear();render();if(!row||!value?.enabled||!currentSource()?.connected)return;
-      await picker.load(JSON.stringify([surface,sid]),async refresh=>({...await this.api.desktopSessions({action:'antigravity-management',operation:'catalog',surface,sessionId:sid,refresh}),currentModel:row.model||''}));};
+    const selectSession=async()=>{const row=currentSession(),surface=source.value,sid=session.value;permission.replaceChildren(...(value?.permissionOptions||[]).map(o=>option(o.label,o.value)));permission.value=row?.permissionMode||'desktop';const same=picker.scope===JSON.stringify([surface,sid]);if(!same)picker.clear();render();if(!row||!value?.enabled||!currentSource()?.connected)return;
+      await picker.load(JSON.stringify([surface,sid]),async refresh=>({...await this.api.desktopSessions({action:'antigravity-management',operation:'catalog',surface,sessionId:sid,refresh}),currentModel:row.model||''}),same);};
     const selectSource=async()=>{const rows=currentSource()?.sessions||[],previous=session.value;session.replaceChildren(...rows.map(row=>option(row.title||'新会话',row.id)));session.value=rows.some(row=>row.id===previous)?previous:rows[0]?.id||'';await selectSession();};
     const read=async()=>{value=await this.api.desktopSessions({action:'antigravity-management',operation:'list'});stale=false;const previous=source.value;source.replaceChildren(...(value.surfaces||[]).map(row=>option(row.name,row.id)));source.value=value.surfaces?.some(row=>row.id===previous)?previous:value.surfaces?.find(row=>row.historyAvailable)?.id||value.surfaces?.[0]?.id||'';};
     const run=async task=>{if(busy)return;busy=true;error.textContent='';render();let ok=false;try{await task();ok=true;}catch(e){stale=true;error.textContent=BridgeI18n.t(e.message);}finally{busy=false;render();}return ok;};

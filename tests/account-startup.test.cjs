@@ -516,3 +516,11 @@ test('model submission rejects a changed account even before its detail repaint'
  ui.run("currentId='thread';state={connected:true,model:'old-model',modelCatalogIdentity:'account-a'}");await ui.nodes.get('model-button').onclick();
  ui.run("state.modelCatalogIdentity='account-b'");await ui.nodes.get('model-form').onsubmit({preventDefault(){}});assert.equal(ui.responses.length,0);
 });
+
+test('model catalog refresh preserves the exact manual draft instead of restoring the running model',async()=>{
+ const catalog={models:[{id:'running-model',efforts:['low']}],cache:{identity:'account'}};const ui=await fixture(r=>r(official),'chatgpt',catalog);
+ ui.run("currentId='thread';state={connected:true,model:'running-model',effort:'low',modelCatalogIdentity:'account'}");await ui.nodes.get('model-button').onclick();
+ ui.nodes.get('model-select').value='__custom__';ui.nodes.get('custom-model').value='exact/manual-draft';ui.nodes.get('custom-model').oninput();ui.nodes.get('effort-select').value='high';ui.nodes.get('effort-select').onchange();
+ await ui.nodes.get('model-refresh').onclick();assert.equal(ui.nodes.get('custom-model').value,'exact/manual-draft');assert.equal(ui.nodes.get('model-select').value,'__custom__');assert.equal(ui.nodes.get('effort-select').value,'high');
+ await ui.nodes.get('model-form').onsubmit({preventDefault(){}});assert.equal(ui.responses.at(-1).model,'exact/manual-draft');assert.equal(ui.responses.at(-1).effort,'high');
+});

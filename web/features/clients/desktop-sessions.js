@@ -728,7 +728,7 @@ class DesktopSessionsView {
       };
       const refreshModels=()=>{
         if(value.createModels!==true)return;
-        if(!modelPicker){const root=this.node('section');form.insertBefore(root,titleField);modelPicker=new window.BridgeCreationModelPicker({root,cache:this.modelCatalogs,namespace:()=>[this.listCacheIdentity,this.listCacheHost||'local',provider],isCurrent:current,onChange:update});dialog.addEventListener('close',()=>modelPicker.dispose(),{once:true});}
+        if(!modelPicker){const root=this.node('section');form.insertBefore(root,titleField);modelPicker=new window.BridgeCreationModelPicker({root,cache:this.modelCatalogs,namespace:()=>[this.listCacheIdentity,this.listCacheHost||'local',provider],isCurrent:current,onChange:update,...(ClientIdentity.family(provider)==='antigravity'?{fallbackCapabilities:{manualModels:true,manualEffort:false,effort:false}}:{})});dialog.addEventListener('close',()=>modelPicker.dispose(),{once:true});}
         const env=environment();if(!env||!project.value||project.value==='__directory__'&&!directory){modelPicker.clear();return;}
         const query=new URLSearchParams({environment:env.key,...(project.value==='__directory__'?{path:directory.path}:{projectKey:project.value})});
         const scope=JSON.stringify([this.listCacheIdentity,this.listCacheHost,provider,query.toString()]);
