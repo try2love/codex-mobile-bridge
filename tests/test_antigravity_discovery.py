@@ -1,5 +1,6 @@
 """Official App/agy launch shapes and inventory reuse, without native clients."""
 import hashlib
+import io
 import json
 from pathlib import Path
 import plistlib
@@ -119,6 +120,20 @@ class AntigravityDiscoveryTests(unittest.TestCase):
         self.assertGreater(log.stat().st_size, 320 * 1024)
         value, port = self.target(image, args)
         self.assertEqual(port, 33333)
+
+    def test_log_growth_after_size_check_stays_within_snapshot(self):
+        initial = b'Language server listening on random port at 12345 for HTTP\n'
+        appended = b'x' * (2 * 1024 * 1024) + b'\nLanguage server listening on random port at 22222 for HTTP\n'
+
+        class GrowingLog(io.BytesIO):
+            def seek(self, offset, whence=0):
+                if whence == 0 and offset == 0 and self.tell() == len(initial):
+                    self.write(appended)
+                return super().seek(offset, whence)
+
+        log = mock.Mock()
+        log.open.return_value = GrowingLog(initial)
+        self.assertEqual(native._log_ports(log), {12345})
 
     def test_cli_installation_metadata_and_native_rpc_are_independently_verified(self):
         image = self.cli()

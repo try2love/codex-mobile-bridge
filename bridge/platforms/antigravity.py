@@ -260,7 +260,7 @@ def _log_ports(log):
         size = stream.tell()
         stream.seek(0)
         if size <= _LOG_HEAD_BYTES + _LOG_TAIL_BYTES:
-            chunks = [stream.read()]
+            chunks = [stream.read(size)]
         else:
             chunks = [stream.read(_LOG_HEAD_BYTES) + stream.readline(4096)]
             stream.seek(max(0, size - _LOG_TAIL_BYTES))
