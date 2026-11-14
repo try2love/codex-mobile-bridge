@@ -448,7 +448,7 @@ class AntigravitySafetyTests(unittest.TestCase):
         with mock.patch.object(adapter.cli, 'available', side_effect=lambda surface: surface == 'cli'), \
                 mock.patch.object(adapter, 'account_scope', return_value='native-account'), \
                 mock.patch.object(adapter.cli, 'catalog_models', side_effect=lambda **kw: {
-                    'models': [{'id': kw['surface'], 'name': kw['surface']}], 'userStatus': {}, 'notice': ''}):
+                    'models': [{'id': kw['surface'], 'name': kw['surface'], 'nativeModel': 'MODEL_NATIVE_'+kw['surface'].upper()}], 'userStatus': {}, 'notice': ''}):
             state = manager.control({'action': 'antigravity-management', 'operation': 'list'})
             sources = {row['id']: row for row in state['surfaces']}
             self.assertFalse(sources['app']['connected'])
@@ -654,7 +654,7 @@ class AntigravitySafetyTests(unittest.TestCase):
         with mock.patch.object(adapter, 'account_scope', return_value='native-account'), \
                 mock.patch.object(adapter.cli, 'available', return_value=True), \
                 mock.patch.object(adapter.cli, 'catalog_models', side_effect=lambda **kw: {
-                    'models': [{'id': kw['surface'], 'name': kw['surface']}], 'userStatus': {}, 'notice': ''}):
+                    'models': [{'id': kw['surface'], 'name': kw['surface'], 'nativeModel': 'MODEL_NATIVE_'+kw['surface'].upper()}], 'userStatus': {}, 'notice': ''}):
             app_models = manager._catalog_models('antigravity', app, {})
             ide_models = manager._catalog_models('antigravity', ide, {})
             self.assertNotEqual(app_models['cache']['identity'], ide_models['cache']['identity'])
@@ -670,6 +670,56 @@ class AntigravitySafetyTests(unittest.TestCase):
             result = manager.call('antigravity', 'settings', ide, {'id': str(uuid.uuid4()),
                 'model': 'ide', 'modelCatalogIdentity': ide_models['cache']['identity']})
             self.assertEqual(result['status'], 'accepted')
+
+    def test_source_directory_reuses_native_mapping_and_retains_it_on_failure(self):
+        settings = self.directory/'desktop-sessions/settings.json'
+        settings.parent.mkdir(parents=True)
+        settings.write_text(json.dumps({'antigravityHome': str(self.home), 'enabled': {'antigravity': True}}))
+        manager = DesktopSessions(self.directory)
+        self.addCleanup(manager.close)
+        adapter = manager.adapters['antigravity']
+        with mock.patch.object(adapter, 'account_scope', return_value='account-a') as identity, \
+                mock.patch.object(adapter.cli, 'available', return_value=True), \
+                mock.patch.object(adapter.cli, 'catalog_models', return_value={
+                    'models': [{'id': 'full-high-id', 'nativeModel': 'MODEL_NATIVE'}],
+                    'userStatus': {}, 'notice': ''}) as read:
+            first = manager._desktop_model_directory('antigravity', 'app')
+            self.assertEqual(adapter.cli._model('full-high-id', 'app'), 'MODEL_NATIVE')
+            self.assertEqual(read.call_count, 1)
+            read.side_effect = BridgeUnavailable('temporary catalog failure')
+            failed = manager._desktop_model_directory('antigravity', 'app', refresh=True)
+            self.assertEqual(failed['models'], first['models'])
+            self.assertEqual(failed['cache']['updatedAt'], first['cache']['updatedAt'])
+            self.assertEqual(failed['cache']['state'], 'stale')
+            self.assertTrue(failed['capabilities']['manualModels'])
+            with self.assertRaisesRegex(ValueError, 'MODEL_'):
+                adapter.cli._model('unknown-display-model', 'app')
+            identity.return_value = 'account-b'
+            changed = manager._desktop_model_directory('antigravity', 'app')
+            self.assertNotEqual(changed['cache']['identity'], first['cache']['identity'])
+            self.assertEqual(changed['models'], [])
+            self.assertEqual(changed['cache']['state'], 'unavailable')
+            self.assertTrue(changed['capabilities']['manualModels'])
+
+    def test_manual_native_model_is_exact_for_start_and_send(self):
+        self.home.mkdir(parents=True, exist_ok=True)
+        cli = AntigravityCli(self.home, model_catalog=mock.Mock(side_effect=AssertionError('no guessed catalog')))
+        with mock.patch.object(cli, 'call_ls_rpc', return_value={'cascadeId': CID,
+                'projectEnvInfo': {'workspaceUris': [self.home.as_uri()]}}) as call:
+            cli.start_cascade(surface='ide', model='MODEL_EXPLICIT_525', cwd=str(self.home))
+            self.assertEqual(call.call_args.args[1]['requested_model'], 'MODEL_EXPLICIT_525')
+            cli.send_user_message(CID, 'fixture', model='MODEL_EXPLICIT_525', surface='ide')
+            self.assertEqual(call.call_args.args[1]['cascade_config']['planner_config']['requested_model'],
+                             {'model': 'MODEL_EXPLICIT_525'})
+            self.assertEqual(call.call_count, 2)
+
+    def test_model_scope_requires_current_selected_source_account(self):
+        adapter = self.adapter()
+        with mock.patch.object(adapter.cli, 'user_status', side_effect=lambda surface: {'email': 'account-a'} if surface == 'app' else {}) as read:
+            self.assertTrue(adapter.account_scope('app'))
+            read.assert_called_once_with('app')
+            with self.assertRaisesRegex(BridgeUnavailable, '登录'):
+                adapter.account_scope('ide')
 
     def test_long_multibyte_hook_path_uses_token_authenticated_tcp(self):
         from bridge.clients.antigravity.hook_client import _send_and_recv

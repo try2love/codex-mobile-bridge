@@ -1,5 +1,6 @@
 """Use the verified original Antigravity server; never spawn a competing CLI."""
 import json
+import re
 from pathlib import Path
 import threading
 import subprocess
@@ -16,8 +17,9 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class AntigravityCli:
-    def __init__(self, home=None):
+    def __init__(self, home=None, model_catalog=None):
         self.home = Path(home or Path.home()).resolve()
+        self.model_catalog = model_catalog
         self._lock = threading.RLock()
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
 
@@ -85,24 +87,26 @@ class AntigravityCli:
         configs = status.get('cascadeModelConfigData', {}).get('clientModelConfigs', [])
         models = []
         for row in configs:
-            if not isinstance(row, dict) or not isinstance(row.get('modelId'), str):
+            if not isinstance(row, dict) or row.get('disabled') is True or not isinstance(row.get('modelId'), str):
                 continue
             alias = row.get('modelOrAlias')
             if not isinstance(alias, dict) or not alias.get('model'):
                 continue
             models.append({'id': row['modelId'], 'name': row.get('label') or row['modelId'],
-                           'efforts': [], 'supportsEffort': False})
+                           'efforts': [], 'supportsEffort': False, 'nativeModel': alias['model']})
         return {'models': models, 'userStatus': status,
                 'notice': '' if models else '原客户端暂未提供可用模型列表'}
 
     def _model(self, model, surface):
         if not model or model == 'auto':
             return None  # Preserve the original server's selected default.
-        configs = self.user_status(surface).get('cascadeModelConfigData', {}).get('clientModelConfigs', [])
-        found = [row.get('modelOrAlias', {}).get('model') for row in configs
-                 if isinstance(row, dict) and row.get('modelId') == model]
+        if isinstance(model, str) and re.fullmatch(r'MODEL_[A-Z0-9_]+', model):
+            return model  # Explicit native enum, validated by the original service.
+        catalog = self.model_catalog(surface) if self.model_catalog else self.catalog_models(surface=surface)
+        found = [row.get('nativeModel') for row in catalog.get('models', [])
+                 if isinstance(row, dict) and row.get('id') == model]
         if len(found) != 1 or not found[0]:
-            raise ValueError('所选模型不在当前原客户端的可用目录中')
+            raise ValueError('未找到此模型的原生标识，请刷新目录或手动填写完整 MODEL_ 标识')
         return found[0]
 
     def send_user_message(self, conversation_id, prompt, model=None, effort=None, *, surface='app'):

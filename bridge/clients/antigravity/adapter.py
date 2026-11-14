@@ -15,11 +15,11 @@ from .store import AntigravityStore
 
 
 class Antigravity:
-    def __init__(self, directory, home=None):
+    def __init__(self, directory, home=None, model_catalog=None):
         self.directory = Path(directory).resolve()
         self.home = Path(home or Path.home()).expanduser().resolve()
         self.store = AntigravityStore(self.directory/'scratch', home=self.home)
-        self.cli = AntigravityCli(self.home)
+        self.cli = AntigravityCli(self.home, model_catalog=model_catalog)
         self.hooks = None
         self._lease = None
         self._lock = threading.RLock()
@@ -76,7 +76,15 @@ class Antigravity:
                 'reason': '原生服务已连接' if live else ('可读取本机历史；实时操作需要电脑上相应的 Antigravity 原生服务' if surfaces else '原生服务尚未连接；请在电脑打开原客户端'),
                 'pluginEnabled': bool(self.hooks)}
 
-    def account_scope(self):
+    def account_scope(self, surface=None):
+        if surface is not None:
+            if surface not in SURFACE_LABELS:
+                raise ValueError('Antigravity 来源无效')
+            status = self.cli.user_status(surface)
+            identity = status.get('email') or status.get('userId')
+            if not isinstance(identity, str) or not identity:
+                raise BridgeUnavailable('请先在对应 Antigravity 原客户端登录')
+            return hashlib.sha256(identity.encode()).hexdigest()
         accounts = []
         for surface in SURFACE_LABELS:
             try:
@@ -135,7 +143,7 @@ class Antigravity:
                 'permissionLabel': next(option['label'] for option in PERMISSION_OPTIONS if option['value'] == permission),
                 'composerCapabilities': dict(COMPOSER_PRESENTATION),
                 'connectionState': 'ready' if live else 'detached', 'readOnly': not live,
-                'capabilities': {'send': live, 'stop': live and active, 'models': live, 'effort': False,
+                'capabilities': {'send': live, 'stop': live and active, 'models': live, 'effort': False, 'manualModels': live, 'manualEffort': False,
                                  'permissions': bool(self.hooks), 'attachments': live, 'uploadFiles': live,
                                  'queue': hooked, 'steer': hooked, 'skills': False, 'rename': False,
                                  'plan': False, 'goal': False, 'archive': False, 'unarchive': False}}
@@ -182,7 +190,7 @@ class Antigravity:
         return {'account': {'provider': 'antigravity', 'name': user.get('name') or 'Antigravity',
                             'email': user.get('email') or '', 'tier': (user.get('userTier') or {}).get('name') or ''},
                 'models': payload['models'], 'notice': payload['notice'],
-                'capabilities': {'models': True, 'effort': False, 'manualModels': False, 'manualEffort': False}}
+                'capabilities': {'models': True, 'effort': False, 'manualModels': True, 'manualEffort': False}}
 
     def call(self, action, sid=None, body=None):
         body = body or {}
@@ -266,8 +274,7 @@ class Antigravity:
             if body.get('effort'):
                 raise ValueError('请使用原客户端提供的完整模型条目选择思考强度')
             model = body.get('model')
-            if model not in {r['id'] for r in self.cli.catalog_models(surface=surface)['models']}:
-                raise ValueError('所选模型不在当前原客户端的可用目录中')
+            self.cli._model(model, surface)
             with self._lock:
                 self._settings[key] = {'model': model}
                 self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
