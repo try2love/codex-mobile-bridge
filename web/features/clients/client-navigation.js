@@ -241,6 +241,7 @@ class ClientNavigation {
   syncViewClients(){this.view.setClientStates?.(this.clients.map(client=>({...client,operationFailure:this.operationFailures?.get(client.id),operationUncertain:this.hasUncertain(),pendingEnable:this.gatewayRunning!==false&&this.pending.has(client.id)&&client.enabled})),id=>this.toggle(id,true),id=>this.initialize(id),()=>this.refresh(),id=>this.reconnect(id));}
   retryOperation(id){const failure=this.operationFailures?.get(id);if(!failure||this.hasUncertain())return;return failure.action==='connect-wsl'?this.connectWsl(id):failure.action==='initialize'?this.initialize(id):this.toggle(id,failure.action==='enable',{connectionMode:failure.connectionMode});}
   async choose(id,{activate=true,fromStatus=false,loadList=true}={}){
+    if(/^wsl-claude:[0-9a-f]{32}$/.test(id))id='claude';
     if(!fromStatus)this.pendingChatLink=null;
     this.cancelListSwipe();
     const previousClient=this.activeClient(),host=isCodexEntry(id)?id:undefined;if(host)id='codex';

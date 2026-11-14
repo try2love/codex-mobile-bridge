@@ -507,6 +507,17 @@ test('Claude WSL entries stay under Claude and can be enabled independently of n
 });
 
 
+test('opening a WSL Claude entry reuses the shared Claude list and its cached selection',async()=>{
+ const {nav}=fixture(),entry='wsl-claude:'+'a'.repeat(32),opened=[];
+ nav.provider=nav.view.provider='codex';
+ nav.view.choose=async function(id){this.provider=id;opened.push(id);};
+ await nav.choose(entry);
+ assert.equal(nav.provider,'claude');assert.equal(nav.view.provider,'claude');assert.deepEqual(opened,['claude']);
+ await nav.choose(entry);assert.deepEqual(opened,['claude'],'same family must retain its list and cache');
+ const independent='claude:'+'b'.repeat(32);await nav.choose(independent);
+ assert.equal(nav.provider,independent,'independent desktop profiles keep their own identity');
+});
+
 test('Claude WSL management uses the packaged Claude icon',()=>{
  const {nav,document}=fixture();document.createElement=tag=>({tag,setAttribute(){},append(child){this.child=child;}});const icon=nav.icon('wsl-claude:'+'a'.repeat(32));assert.equal(icon.child.src,'/client-icons/claude.png');
 });

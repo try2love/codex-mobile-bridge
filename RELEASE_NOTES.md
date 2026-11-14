@@ -13,7 +13,7 @@ v2.2.1 新增 Antigravity 接入与聊天内交互图表，完善 CLI 连接管�
 - **文件浏览与聊天操作。** 支持经授权的宿主机目录、完整路径导航和返回项目文件夹，聊天文件链接可定位到目标。增加 `/` 命令入口、可选的新建聊天名称、原生交互时间及授权音视频附件播放，精简提醒入口。[#160](https://github.com/try2love/codex-mobile-bridge/issues/160) · [#154](https://github.com/try2love/codex-mobile-bridge/issues/154) · [#161](https://github.com/try2love/codex-mobile-bridge/issues/161) · [#148](https://github.com/try2love/codex-mobile-bridge/issues/148) · [#158](https://github.com/try2love/codex-mobile-bridge/issues/158) · [#141](https://github.com/try2love/codex-mobile-bridge/issues/141)
 - **网络与桌面体验。** 自有服务器＋SSH 入口支持自定义 HTTPS 端口；macOS 菜单栏使用单色图标。[#145](https://github.com/try2love/codex-mobile-bridge/issues/145) · [PR #146](https://github.com/try2love/codex-mobile-bridge/pull/146) · [#156](https://github.com/try2love/codex-mobile-bridge/issues/156) · [PR #157](https://github.com/try2love/codex-mobile-bridge/pull/157)
 
-- **WSL 状态与启动入口。** 区分发行版停止与状态暂未确认，避免查询失败时误报停止；Codex 和 Claude 的网关及直连应用管理列表提供“启动并连接 WSL”。
+- **WSL 状态与启动入口。** 区分发行版停止与状态暂未确认，避免查询失败时误报停止；Codex 和 Claude 的网关及直连应用管理列表提供“启动并连接 WSL”，并修复 WSL Claude 的“查看聊天”跳转失败。
 
 ### 修复与优化
 
@@ -54,7 +54,7 @@ v2.2.1 adds Antigravity integration and interactive charts in chats, improves CL
 - **Files and chat controls:** browse authorized host directories, navigate by full path, return to the project, and locate linked files. Add a `/` command menu, optional new-chat names, native interaction timestamps, authorized media playback and simpler reminders. [#160](https://github.com/try2love/codex-mobile-bridge/issues/160) · [#154](https://github.com/try2love/codex-mobile-bridge/issues/154) · [#161](https://github.com/try2love/codex-mobile-bridge/issues/161) · [#148](https://github.com/try2love/codex-mobile-bridge/issues/148) · [#158](https://github.com/try2love/codex-mobile-bridge/issues/158) · [#141](https://github.com/try2love/codex-mobile-bridge/issues/141)
 - **Desktop and network:** custom HTTPS ports for SSH server entries and a monochrome macOS menu-bar icon. [#145](https://github.com/try2love/codex-mobile-bridge/issues/145) · [PR #146](https://github.com/try2love/codex-mobile-bridge/pull/146) · [#156](https://github.com/try2love/codex-mobile-bridge/issues/156) · [PR #157](https://github.com/try2love/codex-mobile-bridge/pull/157)
 
-- **WSL status and startup:** distinguish stopped distributions from unavailable status queries, and expose Start and connect WSL in gateway and direct-connection management lists for Codex and Claude.
+- **WSL status and startup:** distinguish stopped distributions from unavailable status queries, and expose Start and connect WSL in gateway and direct-connection management lists for Codex and Claude, and fix navigation from WSL Claude entries to their chat list.
 
 ### Fixes
 
