@@ -83,6 +83,43 @@ class AntigravityDiscoveryTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.target(image, args, **options)
 
+    def test_large_language_server_log_preserves_head_and_tail_ports(self):
+        _, image = self.bundle()
+        log = self.home/'Library/Logs/Antigravity/language_server.log'
+        log.parent.mkdir(parents=True)
+        args = ['--standalone', '--app_data_dir', 'antigravity', '--csrf_token', 'a'*32]
+        # Desktop App overwrites log on startup with the port at line 6, then grows > 320 KB.
+        padding = ('I1114 03:00:00.000000 1 runner.go:1] routine log line padding\n' * 6500)
+        log.write_text(
+            'Starting language server process with pid 123\n'
+            'Language server listening on random port at 12345 for HTTP\n' + padding
+        )
+        self.assertGreater(log.stat().st_size, 320 * 1024)
+        value, port = self.target(image, args)
+        self.assertEqual(port, 12345)
+        self.assertEqual(value['address'], 'http://127.0.0.1:12345')
+
+        # Appending log > 320 KB with a stale port at the head and active port at the tail.
+        log.write_text(
+            'Language server listening on random port at 11111 for HTTP\n' + padding
+            + 'Language server listening on random port at 22222 for HTTP\n'
+        )
+        identity = {'pid': 123, 'uid': 1, 'image': str(image), 'birth': [1, 2]}
+        with mock.patch.object(native.sys, 'platform', 'darwin'), \
+                mock.patch.object(Path, 'home', return_value=self.home), \
+                mock.patch.object(native, '_candidates', return_value=[(123, args)]), \
+                mock.patch.object(native, '_identity', return_value=identity), \
+                mock.patch.object(native, '_listener', side_effect=lambda _pid, p, _img: p == 22222):
+            value = native.endpoint('app', self.home)
+        self.assertEqual(value['address'], 'http://127.0.0.1:22222')
+
+        # Port line straddling the 64 KB head chunk boundary still resolves.
+        prefix = ('X' * 63 + '\n') * 1023 + 'X' * 40
+        log.write_text(prefix + 'Language server listening on random port at 33333 for HTTP\n' + padding)
+        self.assertGreater(log.stat().st_size, 320 * 1024)
+        value, port = self.target(image, args)
+        self.assertEqual(port, 33333)
+
     def test_cli_installation_metadata_and_native_rpc_are_independently_verified(self):
         image = self.cli()
         self.assertEqual(native.installation(image)['surface'], 'cli')
