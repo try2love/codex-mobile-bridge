@@ -653,9 +653,13 @@ class AntigravityCli:
                             )
                     if public is None or item_meta is None:
                         continue
+                    item_meta['ownerCids'] = sorted(set(target_cids + [cascade_id])
+                        | set(fresh_cache.get(req_id, {}).get('ownerCids', [])))
                     fresh_cache[req_id] = item_meta
                     for owner in target_cids:
-                        waiting_by_cid.setdefault(owner, []).append(dict(public))
+                        requests = waiting_by_cid.setdefault(owner, [])
+                        if not any(item['id'] == req_id for item in requests):
+                            requests.append(dict(public))
 
             with self._lock:
                 self._trajectories_cache[surface] = (time.monotonic(), {k: [dict(r) for r in v] for k, v in waiting_by_cid.items()}, set(active_cids))
@@ -687,7 +691,7 @@ class AntigravityCli:
             raise ValueError('该互动请求已过期或已在桌面端处理')
         if meta.get('surface') != surface:
             raise ValueError('该互动请求来源不匹配')
-        owners = {meta.get('cascadeId'), meta.get('rootCid'), meta.get('parentCid')} - {None, ''}
+        owners = set(meta.get('ownerCids', []))
         if expected_cid and expected_cid not in owners:
             raise ValueError('该请求不属于当前会话')
         return meta

@@ -105,6 +105,21 @@ class WaitingTests(unittest.TestCase):
         self.assertEqual(len(self.writes), 1)
         self.assertEqual(self.writes[0]['cascadeId'], CID)
 
+    def test_nested_waiting_card_is_answerable_from_each_current_parent(self):
+        rid = self.wait()
+        entry = self.summary['waitingSteps'][0]
+        self.summary['trajectoryMetadata'] = {'rootConversationId': 'root', 'parentConversationId': 'child'}
+        child = {'trajectoryId': 'child-trajectory', 'trajectoryMetadata': {'parentConversationId': 'root'},
+                 'subagentWaitingSteps': [{'subagentCascadeId': CID, 'subagentTrajectoryId': 'trajectory', **entry}]}
+        for rows in ({CID: self.summary, 'child': child}, {'child': child, CID: self.summary}):
+            with self.subTest(order=list(rows)):
+                self.summaries = rows
+                waiting, _ = self.adapter.cli.waiting_state_by_cid(max_age=0)
+                self.assertEqual([r['id'] for r in waiting['child']], [rid])
+                self.adapter.cli.respond_interaction('child', rid, 'accept')
+        self.assertEqual(len(self.writes), 2)
+        self.assertTrue(all(w['cascadeId'] == CID for w in self.writes))
+
     def test_refresh_removes_expired_requests_only_for_its_surface(self):
         rid = self.wait()
         self.adapter.cli.waiting_state_by_cid(surface='ide')
