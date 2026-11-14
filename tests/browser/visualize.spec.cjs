@@ -45,6 +45,17 @@ async function setup(page, context, baseURL, {source=fragment, text=marker, fail
 }
 
 const frame = page => page.frameLocator('.visualize-stage iframe');
+test('visualize restores saved parameters after reopening the page', async ({page,context,baseURL}) => {
+  await setup(page,context,baseURL);
+  await frame(page).locator('#amount').fill('7');
+  await frame(page).locator('#amount').dispatchEvent('input');
+  await expect(frame(page).locator('#result')).toHaveAttribute('data-saved','yes');
+  await page.close();
+  const reopened = await context.newPage();
+  await setup(reopened,context,baseURL);
+  await expect(frame(reopened).locator('#result')).toHaveText('14');
+});
+
 test('visualize is interactive, themed, persistent, fullscreen and isolated', async ({page,context,baseURL}) => {
   const requests=await setup(page,context,baseURL,{text:'说明\n'+marker});
   await expect(frame(page).locator('#result')).toHaveText('4');

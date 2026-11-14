@@ -19,16 +19,16 @@
     } catch { return null; }
   }
   function saved(key) {
-    try { const value = sessionStorage.getItem(key); if (value && value.length <= 16384) return JSON.parse(value); } catch {}
+    try { const value = localStorage.getItem(key) ?? sessionStorage.getItem(key); if (value && value.length <= 16384) return JSON.parse(value); } catch {}
     return null;
   }
   function persist(key, state) {
     const serialized = JSON.stringify(state);
     if (!state || typeof state !== 'object' || Array.isArray(state) || new TextEncoder().encode(serialized).length > 16384) return false;
     try {
-      const keys = Object.keys(sessionStorage).filter(item => item.startsWith('bridge-visualize:') && item !== key);
-      while (keys.length >= 99) sessionStorage.removeItem(keys.shift());
-      sessionStorage.setItem(key, serialized);
+      const keys = Object.keys(localStorage).filter(item => item.startsWith('bridge-visualize:') && item !== key);
+      while (keys.length >= 99) localStorage.removeItem(keys.shift());
+      localStorage.setItem(key, serialized);
     }
     catch { return false; }
     return true;

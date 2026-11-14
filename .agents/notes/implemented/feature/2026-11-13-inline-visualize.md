@@ -21,12 +21,14 @@ Codex 聊天正文中的完整 `visualize` 内容引用在原位置显示交互�
 
 - 运行时提供主题变量、基础控件样式、标签切换、提示与图标加载，兼容 `window.openai.widgetState`、`setWidgetState`、`theme`、`notifyIntrinsicHeight` 和 `sendFollowUpMessage`。
 - 图表按可见区域加载并报告高度。全屏在原 dialog 容器进入 top layer，iframe 始终保留原父节点。内联 dialog 保持 closed 状态，由样式显示，手机返回处理只看到真正进入全屏的 open dialog。
-- `setWidgetState` 在宿主保存成功后确认，单项上限 16 KiB，最多保留 100 项；sessionStorage 按网关、聊天、消息、文件 ID 与内容摘要隔离。消息重绘与页面刷新可恢复已保存状态。任意脚本内存与普通控件状态随全屏保留；跨消息重绘的恢复通过 widgetState 接口完成。
+- `setWidgetState` 在宿主保存成功后确认，单项上限 16 KiB，最多保留 100 项；localStorage 沿用网关及登录身份、聊天、消息、文件 ID 与内容摘要隔离键。读取兼容当前页面已有 sessionStorage 状态。消息重绘、刷新及关闭页面后重新打开可恢复已保存状态。任意脚本内存与普通控件状态随全屏保留；跨消息重绘的恢复通过 widgetState 接口完成。
 - `sendFollowUpMessage` 只展示提问内容及“放入输入框”按钮，宿主按钮复用 `bridge-compose-prompt` 和现有草稿/发送流程。切换聊天、销毁节点时取消请求、移除 iframe 与监听器。
 
 ## 备选方案
 
 直接把 HTML 插入聊天 DOM 无法保留现有脚本隔离；独立打开网页会丢失上下文，因此采用受限预览壳及共享消息渲染。文件读取复用 Workspace，不建立第二套路径权限实现。
+
+仅使用 sessionStorage 在 Android/iOS 释放 WebView 后会丢失参数，不能满足重新打开聊天恢复状态；改用现有浏览器持久存储，不增加后端状态表或周期性写请求。不同访问 origin 的状态仍按浏览器存储隔离，不自动搬运图表数据。
 
 ## 验证
 
