@@ -211,6 +211,7 @@ public final class MainActivity extends Activity implements SharedPreferences.On
   if(addresses(address).isEmpty()){manageComputer(address);return;}
   JSONObject d=GatewayChannels.record(prefs,address);if(d==null){connect(address+suffix);return;}
   clear();header(true);origin=address;status.setVisibility(View.VISIBLE);final int screen=generation;
+  bar.removeAllViews();bar.setVisibility(View.VISIBLE);bar.addView(icon("ic_menu_monitor",L("返回电脑列表"),this::home),new LinearLayout.LayoutParams(dp(48),dp(48)));bar.addView(text(L("连接电脑"),18),new LinearLayout.LayoutParams(0,-2,1));ImageButton menu=icon("ic_more",L("电脑与聊天选项"),()->{});menu.setOnClickListener(v->gatewayMenu(v));bar.addView(menu,new LinearLayout.LayoutParams(dp(48),dp(48)));
   List<String> targets=addresses(address);Map<String,Long> progress=new HashMap<>();
   status.setVisibility(View.GONE);LinearLayout panel=ui.column();panel.setGravity(Gravity.CENTER_VERTICAL);panel.setPadding(dp(24),0,dp(24),0);
   entryProgress=panel;root.addView(panel,new LinearLayout.LayoutParams(-1,0,1));TextView title=text(L("正在连接 · ")+computerName(address),20);panel.addView(title);
@@ -507,12 +508,13 @@ public final class MainActivity extends Activity implements SharedPreferences.On
  void webAccounts(){if(web!=null&&GatewayURL.sameOrigin(web.getUrl(),pageOrigin))web.evaluateJavascript("(()=>{if(typeof window.BridgeNavigation?.accounts==='function')return window.BridgeNavigation.accounts();document.getElementById('accounts-button')?.click();return true;})()",null);}
  void dismissGatewayMenu(){GatewayMenu popup=gatewayPopup;gatewayPopup=null;if(popup!=null)popup.dismiss();}
  void gatewayMenu(View anchor){
-  if(web==null||!anchor.isShown()||!anchor.isEnabled())return;
+  if((web==null&&entryProgress==null)||!anchor.isShown()||!anchor.isEnabled())return;
   dismissGatewayMenu();
   final WebView current=web;final String address=origin;final int ticket=generation;
   GatewayMenu menu=new GatewayMenu(ui.context);gatewayPopup=menu;
   menu.setOnDismissListener(()->{if(gatewayPopup==menu)gatewayPopup=null;});
   menu.add(L("返回电脑列表"),"ic_menu_monitor",this::home);
+  if(current==null){menu.add(L("通知收件箱"),"ic_menu_bell",this::inbox);menu.add(L("手机设置"),"ic_menu_settings",this::settings);menu.show(anchor);return;}
   menu.separator();
   menu.add(L("账号与接入"),"ic_menu_user_round",this::webAccounts);
   menu.add(L("通知收件箱"),"ic_menu_bell",this::inbox);
@@ -1025,6 +1027,6 @@ public final class MainActivity extends Activity implements SharedPreferences.On
  @Override protected void onPause(){stopWatchingChannels();dismissGatewayMenu();if(routeDiscovery!=null){routeDiscovery.cancel();routeDiscovery=null;}routeAttempted=false;ComputerNotifications.onChange=null;resumed=false;stopComputerChecks();resetExitGesture();MonitorService.setVisible(false);if(web!=null)web.onPause();CookieManager.getInstance().flush();super.onPause();}
  void resetExitGesture(){homeBackAt=0;if(exitToast!=null){exitToast.cancel();exitToast=null;}}
  @Override public void onBackPressed(){handleBack();}
- void handleBack(){if(gatewayPopup!=null){dismissGatewayMenu();return;}if(web==null){long now=SystemClock.elapsedRealtime();if(homeBackAt!=0&&now-homeBackAt<=2000){resetExitGesture();finishAndRemoveTask();}else{homeBackAt=now;if(exitToast!=null)exitToast.cancel();exitToast=Toast.makeText(this,L("再按一次返回退出 App"),Toast.LENGTH_SHORT);exitToast.show();}return;}resetExitGesture();if(!GatewayURL.sameOrigin(web.getUrl(),pageOrigin)){home();return;}final int ticket=generation;web.evaluateJavascript("(()=>{const dialog=document.querySelector('dialog[open]');if(dialog){if(dialog.dispatchEvent(new Event('cancel',{cancelable:true})))dialog.close();return true;}if(typeof window.BridgeNavigation?.back==='function')return window.BridgeNavigation.back();if(window.BridgeWorkbench?.back())return true;if(document.getElementById('app')?.classList.contains('chat-open')){document.getElementById('back')?.click();return true;}return false;})()",result->{if(ticket==generation&&!"true".equals(result))home();});}
+ void handleBack(){if(gatewayPopup!=null){dismissGatewayMenu();return;}if(entryProgress!=null&&web==null){home();return;}if(web==null){long now=SystemClock.elapsedRealtime();if(homeBackAt!=0&&now-homeBackAt<=2000){resetExitGesture();finishAndRemoveTask();}else{homeBackAt=now;if(exitToast!=null)exitToast.cancel();exitToast=Toast.makeText(this,L("再按一次返回退出 App"),Toast.LENGTH_SHORT);exitToast.show();}return;}resetExitGesture();if(!GatewayURL.sameOrigin(web.getUrl(),pageOrigin)){home();return;}final int ticket=generation;web.evaluateJavascript("(()=>{const dialog=document.querySelector('dialog[open]');if(dialog){if(dialog.dispatchEvent(new Event('cancel',{cancelable:true})))dialog.close();return true;}if(typeof window.BridgeNavigation?.back==='function')return window.BridgeNavigation.back();if(window.BridgeWorkbench?.back())return true;if(document.getElementById('app')?.classList.contains('chat-open')){document.getElementById('back')?.click();return true;}return false;})()",result->{if(ticket==generation&&!"true".equals(result))home();});}
  @Override public void onDestroy(){prefs.unregisterOnSharedPreferenceChangeListener(this);if(settingsPage!=null)settingsPage.dismiss();if(downloadTask!=null&&(updateSession==null||downloadTask.state!=ArtifactDownload.State.COMPLETE))downloadTask.cancel();downloads.shutdownNow();clear();probes.shutdownNow();worker.shutdownNow();if(monitor!=null)getApplicationContext().unbindService(monitor);super.onDestroy();}
 }
