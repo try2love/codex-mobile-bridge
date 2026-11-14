@@ -65,6 +65,17 @@ class DesktopIdle(unittest.TestCase):
         self.factory = patch('bridge.app.service.DesktopIPC', Follower)
         self.factory.start(); self.addCleanup(self.factory.stop)
 
+    def test_v13_canonical_busy_thread_prevents_shutdown(self):
+        self.transform_event = lambda message: {**message, 'version': 13}
+        self.states[('local', 'desktop-only')] = {'id': 'desktop-only', 'threadRuntimeStatus': {'type': 'idle'},
+            'turns': [], 'requests': [], 'turnHistory': {'kind': 'canonical', 'history': {
+                'entitiesByKey': {'turn': {'turnId': 'turn', 'status': 'inProgress'}},
+                'islands': [{'entries': [{'value': 'turn'}]}]}}}
+        with self.assertRaisesRegex(ValueError, '任务运行'):
+            self.bridge.assert_desktop_idle()
+        self.bridge.activate.assert_not_called()
+        self.assertEqual(self.bridge.live, {})
+
     def test_unfollowed_desktop_busy_thread_prevents_shutdown(self):
         self.states[('local', 'desktop-only')] = {'id': 'desktop-only', 'threadRuntimeStatus': {'type': 'active'}, 'turns': [], 'requests': []}
         with self.assertRaisesRegex(ValueError, '任务运行'): self.bridge.assert_desktop_idle()
@@ -72,6 +83,21 @@ class DesktopIdle(unittest.TestCase):
         self.assertEqual(self.bridge.live, {})
         self.bridge.activate.assert_not_called(); self.bridge.store.history.assert_not_called()
         self.assertTrue(all(instance.closed for instance in self.instances))
+
+    def test_future_stream_preserves_idle_and_busy_audits(self):
+        def future(message):
+            message['version'] = 99
+            message['params']['change']['conversationState'].update(modelProvider='original-provider', cwd='/original/project')
+            return message
+        self.transform_event = future
+        self.bridge.assert_desktop_idle()
+        self.states[('local', 'desktop-only')] = {'id': 'desktop-only',
+            'threadRuntimeStatus': {'type': 'active'}, 'turns': [], 'requests': []}
+        with self.assertRaisesRegex(ValueError, '任务运行'):
+            self.bridge.assert_desktop_idle()
+        del self.states[('local', 'desktop-only')]['requests']
+        with self.assertRaisesRegex(ValueError, '无法确认'):
+            self.bridge.assert_desktop_idle()
 
     def test_missing_ipc_does_not_prove_the_selected_desktop_is_stopped(self):
         self.bridge.accounts.index = {}

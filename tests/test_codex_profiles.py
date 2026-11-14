@@ -159,7 +159,7 @@ class IdeProfileTests(CliBridgeFixture):
             same.assert_called_once_with(session.saved_cwd, state['cwd'])
             emit({'type': 'snapshot', 'conversationState': state, 'revision': 3}, version=7)
         self.assertFalse(session.connected)
-        self.assertIn('不兼容', session.error)
+        self.assertIn('更新 Bridge', session.error)
         self.assertFalse(session.access['canEditMessages'])
         self.cli.attach.assert_not_called()
 
