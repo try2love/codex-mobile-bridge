@@ -17,7 +17,6 @@ from bridge.platforms.linux.codex_daemon_env import _identity, read_process_envi
 
 
 PROC = Path('/proc')
-GRACEFUL_VERSIONS = ('0.164.0', '0.167.0')
 GENERATION_FIELDS = frozenset(('uid', 'user', 'home', 'homeDevice', 'homeInode', 'pid',
     'bootId', 'startTicks', 'executable', 'executableDevice', 'executableInode',
     'socket', 'socketDevice', 'socketInode', 'nativeVersion'))
@@ -210,7 +209,9 @@ def inspect(home, executable, socket_path, native_version):
         'executableDevice': binary.st_dev, 'executableInode': binary.st_ino,
         'socket': str(path), 'socketDevice': before.st_dev, 'socketInode': before.st_ino,
         'nativeVersion': native_version}
-    return {'generation': generation, 'canRelease': _capable() and native_version in GRACEFUL_VERSIONS,
+    # Protocol eligibility belongs to the client adapter. This worker proves
+    # the target generation and the kernel's ability to address it safely.
+    return {'generation': generation, 'canRelease': _capable() and bool(native_version),
             'canForce': _capable()}
 
 

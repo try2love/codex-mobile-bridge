@@ -189,7 +189,7 @@ class CliSessionTests(unittest.TestCase):
         self.sessions.attach('thread-a', explicit=True)
         token = self.sessions.metadata['thread-a']['connectionToken']
         self.fake.thread['status'] = {'type': 'systemError'}
-        self.fake.server_info['userAgent'] = 'codex-mobile-bridge-cli/0.165.0 (fixture)'
+        self.fake.server_info['userAgent'] = 'codex-mobile-bridge-cli/0.163.0 (fixture)'
         with self.assertRaisesRegex(ValueError, '版本'):
             self.sessions.release_connection('thread-a', token)
         self.assertFalse(any(method == 'thread/unsubscribe' for method, _ in self.fake.sent))
@@ -199,7 +199,7 @@ class CliSessionTests(unittest.TestCase):
                 return {'data': [{'id': 'failed', 'status': 'failed', 'completedAt': 1794332820}]}
             return request(method, params, **kwargs)
         self.fake.request = completed
-        self.fake.server_info['userAgent'] = 'codex-mobile-bridge-cli/' + ('0.167.0-alpha.3.2' if sys.platform == 'win32' else '0.164.0') + ' (fixture)'
+        self.fake.server_info['userAgent'] = 'codex-mobile-bridge-cli/0.168.0 (fixture)'
         self.assertEqual(self.sessions.release_connection('thread-a', token)['status'], 'detached')
         self.assertNotIn('thread-a', self.sessions.joined)
 
