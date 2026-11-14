@@ -2,6 +2,8 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"展开聊天列表":"Expand chat list",
+"收起聊天列表":"Collapse chat list",
 "Codex 会话同步格式已变化，请更新 Bridge；历史和草稿仍可查看。":"The Codex session format has changed. Update Bridge; history and drafts remain available.",
 "结束临时侧聊并清除内容？主聊天不受影响。":"End this temporary side chat and clear its contents? The main chat will not be affected.",
 "无法播放此文件，请通过文件菜单下载后打开。":"This file cannot be played. Download it from the file menu to open it.",

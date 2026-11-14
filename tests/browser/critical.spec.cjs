@@ -967,3 +967,23 @@ test('shared session menu retains working chat notification settings without a c
  if(page.viewportSize().width<=640){await row.dispatchEvent('pointerdown',{pointerType:'touch',button:0,clientX:80,clientY:150});await expect(page.locator('dialog.session-menu')).toBeVisible();await row.dispatchEvent('pointerup',{pointerType:'touch',button:0});}else await row.click({button:'right'});
  await page.locator('dialog.session-menu').getByRole('button',{name:'聊天通知设置',exact:true}).click();const dialog=page.locator('dialog[open]').filter({hasText:'聊天通知设置'});await expect(dialog).toBeVisible();await dialog.getByLabel('请求处理通知',{exact:true}).selectOption('on');await dialog.getByLabel('运行完毕通知',{exact:true}).selectOption('inherit');await dialog.getByRole('button',{name:'保存配置',exact:true}).click();await expect(dialog).toHaveCount(0);expect(writes).toEqual([{requests:'on',completion:'inherit'}]);expect(await page.locator('.ds-composer .composer-tools').getByRole('button',{name:/提醒/}).count()).toBe(0);
 });
+
+
+test('wide chat list collapse preserves conversation and drafts across clients and widths',async({page},info)=>{
+ await page.setViewportSize({width:1440,height:900});await ready(page,'session-menu');await page.evaluate(()=>BridgeFeatures.load('chat'));
+ const toggle=page.locator('.chat-list-toggle');await expect(toggle).toBeVisible();await expect(page.locator('#sidebar')).toBeVisible();
+ await page.evaluate(()=>{window.collapseDraft={chat:currentId,host:currentHost,workbench:workbench.current};document.getElementById('message').value='unsent wide draft';});
+ await toggle.click();await expect(page.locator('#sidebar')).toBeHidden();await expect(toggle).toHaveAttribute('aria-expanded','false');
+ expect(await page.evaluate(()=>document.getElementById('message').value)).toBe('unsent wide draft');
+ expect(await page.evaluate(()=>currentId===collapseDraft.chat&&currentHost===collapseDraft.host&&workbench.current===collapseDraft.workbench)).toBe(true);
+ await page.setViewportSize({width:844,height:900});await expect(toggle).toBeHidden();await expect(page.locator('#sidebar')).toBeVisible();
+ await page.setViewportSize({width:1440,height:900});await expect(page.locator('#sidebar')).toBeHidden();await toggle.click();await expect(page.locator('#sidebar')).toBeVisible();
+ for(const provider of ['claude','deepseek']){
+  await page.evaluate(async provider=>{await clientNavigation.choose(provider);desktopSessions.input.value='preserved '+provider;window.collapseSession=desktopSessions.sid;window.collapseState=desktopSessions.state;},provider);
+  await expect(page.locator('.ds-list')).toBeVisible();await toggle.click();await expect(page.locator('.ds-list')).toBeHidden();
+  expect(await page.evaluate(()=>desktopSessions.sid===collapseSession&&desktopSessions.state===collapseState)).toBe(true);expect(await page.evaluate(()=>desktopSessions.input.value)).toBe('preserved '+provider);
+  await toggle.click();await expect(page.locator('.ds-list')).toBeVisible();
+ }
+ await page.evaluate(()=>BridgeI18n.setLanguage('en'));await expect(toggle).toHaveAttribute('aria-label','Collapse chat list');await toggle.click();await info.attach('collapsed-wide',{body:await page.screenshot(),contentType:'image/png'});
+ await page.setViewportSize({width:390,height:844});await expect(toggle).toBeHidden();
+});

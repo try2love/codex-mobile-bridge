@@ -28,6 +28,7 @@ class ClientNavigation {
   constructor({view,request,notify}) {
     Object.assign(this,{view,request,notify});this.clients=[];this.revision=0;this.pending=new Set();this.restoreClientSelection();
     this.heading=document.querySelector('#sidebar .list-heading');this.sidebar=document.getElementById('sidebar');
+    this.listToggle=document.createElement('button');this.listToggle.type='button';this.listToggle.className='chat-list-toggle';this.view.list.id='desktop-chat-list';this.listToggle.setAttribute('aria-controls','sidebar desktop-chat-list');this.listToggle.onclick=()=>{this.preference('chat-list-collapsed',!this.preference('chat-list-collapsed',undefined,false));this.paintChatList();};document.getElementById('app').append(this.listToggle);
     this.footer=document.querySelector('.sidebar-foot');this.footer.classList.add('client-functions');
     this.navigation=document.createElement('div');this.navigation.className='client-navigation';this.sidebar.append(this.navigation);this.navigation.append(this.footer);
     document.addEventListener('bridge-channels-ready',()=>{if(this.clientPicker)this.clientPicker.disabled=false;});
@@ -335,7 +336,14 @@ class ClientNavigation {
     try{const data=await this.request('/api/clients/claude/reconnect'+(ClientIdentity.entry(id)?'?entry='+encodeURIComponent(id):''),{});this.applyClients(data);const connected=data.clients.find(row=>row.id===id)?.connected;this.notify(connected?'Claude 已连接':'已发起重新连接');if(connected&&this.provider===id)await this.view.refresh();}
     finally{this.pending.delete(id);this.reconnecting=null;++this.revision;this.paint();}
   }
+  paintChatList(){
+    const collapsed=this.preference('chat-list-collapsed',undefined,false),label=BridgeI18n.t(collapsed?'展开聊天列表':'收起聊天列表');
+    if(collapsed&&(this.sidebar.contains(document.activeElement)||this.view.list.contains(document.activeElement)))this.listToggle.focus();
+    document.getElementById('app').classList.toggle('chat-list-collapsed',collapsed);
+    this.listToggle.textContent=collapsed?'›':'‹';this.listToggle.title=label;this.listToggle.setAttribute('aria-label',label);this.listToggle.setAttribute('aria-expanded',String(!collapsed));
+  }
   paint(){
+    this.paintChatList();
     for(const render of this.accountManagementRenderers||[])render();
     if((this.listGesture||this.swipePreview)&&(!this.clients.some(c=>c.id===this.activeClient()&&c.enabled)||this.swipePreview&&this.swipePreview.provider!==this.activeClient()))this.cancelListSwipe();
     this.syncViewClients();
