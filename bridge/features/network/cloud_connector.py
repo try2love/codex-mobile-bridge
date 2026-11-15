@@ -668,10 +668,20 @@ class Connector:
 
     def close(self):
         self.closed.set()
-        if self.loop and self.thread and self.thread.is_alive():
-            if self.wake:
-                self.loop.call_soon_threadsafe(self.wake.set)
-            asyncio.run_coroutine_threadsafe(self.disconnect(), self.loop)
+        if self.thread and self.thread.is_alive():
+            loop = self.loop
+            if loop is not None:
+                def request_stop():
+                    if self.wake:
+                        self.wake.set()
+                    asyncio.create_task(self.disconnect())
+                try:
+                    # Construct the coroutine only on the owning loop. The
+                    # worker can close it between is_alive() and scheduling.
+                    loop.call_soon_threadsafe(request_stop)
+                except RuntimeError:
+                    if not loop.is_closed():
+                        raise
             self.thread.join(timeout=10)
         if self.http_thread:
             self.server.shutdown()

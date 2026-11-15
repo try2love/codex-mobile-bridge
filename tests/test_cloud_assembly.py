@@ -9,7 +9,7 @@ import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import bridge.app.cloud as assembly
 from bridge.features.auth.auth import Auth
@@ -173,6 +173,50 @@ class CloudAssemblyTests(unittest.TestCase):
         self.assertIsInstance(calls[0].args[0], ast.Lambda)
         self.assertEqual(ast.unparse(calls[0].args[0].body), 'create_cloud_server(server)')
 
+    def test_close_finishes_listener_cleanup_when_worker_loop_has_closed(self):
+        for already_closed in (True, False):
+            with self.subTest(already_closed=already_closed):
+                connector = self.connector()
+                connector.loop = loop = asyncio.new_event_loop()
+                self.addCleanup(loop.close)
+                connector.thread = Mock()
+                connector.thread.is_alive.return_value = True
+                connector.server = listener = self.fake_listener()
+                connector.http_thread = Mock()
+                connector.wake = None
+                coroutines = []
+                def disconnect():
+                    value = asyncio.sleep(0)
+                    coroutines.append(value)
+                    return value
+                connector.disconnect = disconnect
+                def closing_loop(*args, **kwargs):
+                    loop.close()
+                    raise RuntimeError('Event loop is closed')
+                if already_closed:
+                    loop.close()
+                try:
+                    with patch.object(loop, 'call_soon_threadsafe', side_effect=closing_loop):
+                        connector.close()
+                    self.assertTrue(connector.closed.is_set())
+                    connector.thread.join.assert_called_once_with(timeout=10)
+                    listener.shutdown.assert_called_once_with()
+                    connector.http_thread.join.assert_called_once_with(timeout=5)
+                    listener.server_close.assert_called_once_with()
+                    self.assertEqual(coroutines, [], 'closed loops must not receive unawaited coroutines')
+                finally:
+                    for value in coroutines:
+                        value.close()
+
+    def test_close_joins_a_started_worker_even_before_it_creates_its_loop(self):
+        connector = self.connector()
+        connector.thread = Mock()
+        connector.thread.is_alive.return_value = True
+        self.assertIsNone(connector.loop)
+        connector.close()
+        self.assertTrue(connector.closed.is_set())
+        connector.thread.join.assert_called_once_with(timeout=10)
+
     def test_loopback_http_preserves_auth_origin_csrf_and_listener_shutdown(self):
         connector = self.connector()
         started = threading.Event()
@@ -183,6 +227,7 @@ class CloudAssemblyTests(unittest.TestCase):
                 await asyncio.sleep(.01)
             await asyncio.sleep(.05)
         connector.run = idle
+        connector.disconnect = AsyncMock()
         connector.accounts.request = Mock(side_effect=AssertionError('no real cloud requests'))
         factory = Mock(side_effect=lambda: assembly.create_cloud_server(self.gateway))
         try:
@@ -222,6 +267,7 @@ class CloudAssemblyTests(unittest.TestCase):
         self.assertFalse(connector.http_thread.is_alive())
         self.assertFalse(connector.thread.is_alive())
         self.assertTrue(connector.loop.is_closed())
+        connector.disconnect.assert_awaited_once_with()
         self.assertEqual(connector.server.socket.fileno(), -1)
         self.gateway.mobile_updates.close.assert_not_called()
         self.gateway.harness.close.assert_not_called()
