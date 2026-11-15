@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import math
+import socket
 import time
 import urllib.error
 import urllib.request
@@ -35,6 +36,15 @@ def scope(origin, account_id):
     exact_origin(origin)
     uuid.UUID(account_id)
     return hashlib.sha256((origin + "\0" + account_id).encode("ascii")).hexdigest()
+
+
+def gateway_name(gateway_id):
+    try:
+        name = socket.gethostname().strip()
+    except OSError:
+        name = ''
+    name = ''.join(char for char in name if char.isprintable()).encode('utf-8')[:100].decode('utf-8', 'ignore')
+    return name.strip() or 'Computer-' + gateway_id[:8]
 
 
 def cloud_time(value):
@@ -286,7 +296,7 @@ class Controller:
         config['gateway_id'] = old['gateway_id']
         key = public_key(base64.b64decode(old['control_private'], validate=True))
         device = self.request(origin, '/v1/gateways/enroll', 'POST',
-                              {'id': old['gateway_id'], 'name': value.get('name') or 'Desktop',
+                              {'id': old['gateway_id'], 'name': value.get('name') or gateway_name(old['gateway_id']),
                                'control_public_key': base64.b64encode(key).decode('ascii')}, result['access_token'])
         if device['account_id'] != account['id'] or device['control_public_key'] != base64.b64encode(key).decode('ascii'):
             raise CloudError('device_identity_mismatch')

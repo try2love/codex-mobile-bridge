@@ -11,7 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from bridge.features.network.cloud_account import CloudError, Controller, scope, verified_entitlement
+from bridge.features.network.cloud_account import CloudError, Controller, gateway_name, scope, verified_entitlement
 from bridge.features.network.cloud_connector import Connector, validate_request
 from bridge.features.network.cloud_crypto import exact_origin, new_key, public_key
 from bridge.features.notifications.channels import read_json, save_settings, settings, write_json
@@ -466,6 +466,36 @@ class CloudAccountsTests(unittest.TestCase):
                 self.assertEqual(self.controller.request.call_args_list[-1].args[1], '/v1/account/entitlement')
                 self.assertEqual(self.controller.secret()['control_private'], self.secret['control_private'])
                 self.assertFalse((self.directory / 'cloud-bindings.json').exists())
+
+    def test_gateway_default_name_is_the_local_hostname_with_bounded_utf8(self):
+        for hostname in ['OFFICE-PC', 'Studio-Mac.local', 'build-host', '\u5de5\u4f5c\u7535\u8111' * 20, '  office\n\x00 ']:
+            with self.subTest(hostname=hostname), patch('bridge.features.network.cloud_account.socket.gethostname', return_value=hostname):
+                result = gateway_name(self.config['gateway_id'])
+                self.assertTrue(result)
+                self.assertLessEqual(len(result.encode('utf-8')), 100)
+                self.assertTrue(result.isprintable())
+                self.assertTrue(hostname.strip().replace('\n', '').replace('\x00', '').startswith(result))
+        with patch('bridge.features.network.cloud_account.socket.gethostname', side_effect=OSError('unavailable')):
+            self.assertEqual(gateway_name(self.config['gateway_id']), 'Computer-' + self.config['gateway_id'][:8])
+
+    def test_login_registers_system_name_unless_explicit_name_is_supplied(self):
+        for explicit in [None, 'My desk']:
+            with self.subTest(explicit=explicit), patch('bridge.features.network.cloud_account.socket.gethostname', return_value='OFFICE-PC'):
+                control_key = base64.b64encode(public_key(base64.b64decode(self.secret['control_private']))).decode()
+                self.controller.request = Mock(side_effect=[{},
+                    {'account': {'id': self.config['account_id'], 'login': self.config['login']},
+                     'access_token': 'test-access', 'refresh_token': 'test-refresh', 'expires_in': 600},
+                    {'account_id': self.config['account_id'], 'control_public_key': control_key, 'device_token': 'test-device'},
+                    self.entitlement()])
+                value = {'origin': self.config['origin'], 'login': self.config['login'], 'password': 'synthetic-password'}
+                if explicit:
+                    value['name'] = explicit
+                self.controller.login(value)
+                enroll = self.controller.request.call_args_list[2]
+                self.assertEqual(enroll.args[1], '/v1/gateways/enroll')
+                self.assertEqual(enroll.args[3], {'id': self.config['gateway_id'], 'name': explicit or 'OFFICE-PC',
+                                                'control_public_key': control_key})
+                self.assertEqual(self.controller.config()['gateway_id'], self.config['gateway_id'])
 
     def test_status_never_returns_credentials(self):
         encoded = json.dumps(self.controller.status())
