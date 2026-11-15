@@ -1,8 +1,10 @@
 """Synthetic desktops for the Go account-Web fixture; never touches real clients."""
 import asyncio
+import argparse
 import json
 import sys
 import threading
+import time
 import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,7 +20,11 @@ from bridge.features.network.cloud_web import CloudWeb
 
 
 class FixtureHandler(Handler):
+    delay = 0
+
     def _handle_method(self, write):
+        if self.delay:
+            time.sleep(self.delay)
         path = urlsplit(self.path).path
         if path in ('/api/clients', '/api/sessions', '/api/projects', '/api/activity', '/api/file-transfer'):
             self.check_request(write=write)
@@ -39,7 +45,14 @@ class FixtureHandler(Handler):
 
 
 async def main():
-    settings = json.loads(Path(sys.argv[1]).read_text())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('settings', type=Path)
+    parser.add_argument('--request-delay-ms', type=int, default=0)
+    args = parser.parse_args()
+    if not 0 <= args.request_delay_ms <= 2000:
+        parser.error('request delay must be between 0 and 2000 ms')
+    FixtureHandler.delay = args.request_delay_ms / 1000
+    settings = json.loads(args.settings.read_text())
     servers, tasks = [], []
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None), cookie_jar=aiohttp.DummyCookieJar()) as local, aiohttp.ClientSession() as remote:
         for device in settings['devices']:

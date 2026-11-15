@@ -12,6 +12,8 @@
 
 `bridge/api/cloud_web.py` 适配现有固定资源、CSP、manifest 和认证响应，将路径放入 `/d/{gateway_id}/`。`web/hosts/cloud-web.js` 在原网页启动前提供现有 URL 钩子，将草稿与偏好按账号和电脑隔离，并把返回电脑入口接到云目录。同一电脑的多标签页仍能同步偏好，其他电脑的存储事件被过滤。原网站的会话和客户端控制逻辑继续使用。
 
+账号 Web 的启动器先完成样式，再维持最多四个脚本预加载请求；脚本仍按依赖顺序执行。HTTPS/HTTP2 可以同时发起大量请求，全部脚本一起预加载会超过每会话八路限制并触发 429，不能依赖 HTTP/1.1 的浏览器连接上限来控制流量。普通网页与原生宿主保留原有调度。
+
 HTML 与 Mermaid 沙箱仍保持隔离。Mermaid 壳通过随机 CSP nonce 内嵌桌面的两个固定脚本，避免跨沙箱子资源 Cookie 缺失；用户提供的预览内容不参与脚本适配。终端采用已有的 HTTP 轮询，聊天支持 SSE。
 
 `bridge/features/network/cloud_web.py` 使用注入的私有回环监听器与 API 回调，禁止导入 API 层或接受任意本地地址。按 Web 会话创建临时内部授权；退出、换账号、撤销、到期和断线都会清理。会话内请求不改变原来的 provider、host、owner、账号或工作目录；读取不启动编码会话；未知结果的写入不重放。
@@ -21,6 +23,8 @@ HTML 与 Mermaid 沙箱仍保持隔离。Mermaid 壳通过随机 CSP nonce 内�
 Python `test_cloud_web.py` 覆盖实际私有 HTTP、通用方法与正文透传、业务鉴权、实时资源版本和会话清理。接口是否存在和是否允许执行统一由网关 HTTP 处理器判断，各通道不维护接口白名单或黑名单。`tests/browser/cloud-web.spec.cjs` 使用真实 Go/Python 代理及生产网页，在 Chromium/WebKit 的宽、窄视口验证登录、资源、图表、HTML 预览、PDF 模块、跨电脑和多标签存储、退出。
 
 先启动服务端仓库的 `internal/webproxy/testdata/fixture.go`（需隔离 PostgreSQL），再运行 `python -B tests/browser/cloud-web-fixture.py <fixture.json>` 和 `playwright test -c tests/browser/cloud-web.config.cjs`。这些测试使用合成账号和客户端列表，不代表生产或真实编码客户端已验收。
+
+测试 HTTP2 和慢转发时，为 Go 夹具设置 `BRIDGE_WEB_FIXTURE_CERT`、`BRIDGE_WEB_FIXTURE_KEY`（仅本机测试证书，绑定仍为 127.0.0.1），Python 夹具追加 `--request-delay-ms 500`，Playwright 设置 `CMB_CLOUD_WEB_TLS=1`。浏览器必须报告 h2 并保持所有资源成功；此设置只对固定回环测试地址忽略测试证书错误，不用于生产 HTTPS。
 
 服务端仓库 `docs/web-client.md` 包含 18787 Compose/Caddy 配置、已有 8787 证书的保留方式与回退步骤。必须同时升级桌面和服务端；仅发布云端不能使旧桌面具备 Web 透传能力。
 

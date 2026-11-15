@@ -4,11 +4,13 @@ const {test,expect}=require('@playwright/test');
 test('account login, live desktop assets, previews, computer storage and logout',async({page,context,baseURL},testInfo)=>{
  await context.route('**/*',route=>new URL(route.request().url()).origin===baseURL?route.continue():route.abort());
  const errors=[],bad=[];page.on('pageerror',error=>errors.push(error.message));page.on('response',r=>{if(r.status()>=400&&!r.url().endsWith('/favicon.ico'))bad.push([r.status(),r.url()]);});
+ const pending=new Set();page.on('request',request=>pending.add(request));for(const event of ['requestfinished','requestfailed'])page.on(event,request=>pending.delete(request));
  await page.goto('/');await expect(page.locator('#login')).toBeVisible();
  await page.locator('#account').fill('web-fixture');await page.locator('#password').fill('test-only-password-123');await page.getByRole('button',{name:'登录',exact:true}).click();
  await expect(page.locator('#gateways a[href]')).toHaveCount(2);
  const links=await page.locator('#gateways a').evaluateAll(nodes=>nodes.map(n=>n.getAttribute('href')));
  await page.goto(links[0]);await expect(page.locator('#app')).toBeVisible({timeout:40000});await expect(page.locator('#bootstrap-status')).toBeHidden();
+ if(process.env.CMB_CLOUD_WEB_TLS==='1')expect(await page.evaluate(()=>performance.getEntriesByType('navigation')[0].nextHopProtocol)).toBe('h2');
  expect(await page.evaluate(()=>window.BridgeCloudWeb)).toBe(true);
  const scope=await page.evaluate(()=>{localStorage.setItem('fixture-draft','first computer');return {base:BridgeRelayBase,keys:Array.from({length:localStorage.length},(_,i)=>localStorage.key(i))};});
  expect(scope.base+'/').toBe(links[0]);expect(scope.keys).toContain('fixture-draft');
@@ -32,6 +34,9 @@ test('account login, live desktop assets, previews, computer storage and logout'
 	 await expect.poll(()=>same.evaluate(()=>fixtureEvents.includes('fixture-barrier'))).toBe(true);
 	 expect(await same.evaluate(()=>fixtureEvents.includes('fixture-cross'))).toBe(false);await same.close();
  await testInfo.attach('cloud-web',{body:await page.screenshot(),contentType:'image/png'});
+ // Revocation cancels reads in flight. Finish the final list refresh before
+ // checking the independent successful-logout path under injected latency.
+ await expect.poll(()=>pending.size).toBe(0);
  await page.evaluate(async()=>{await api('/api/logout',{});showLogin();});await expect(page).toHaveURL(baseURL+'/');await expect(page.locator('#login')).toBeVisible();
  expect(errors).toEqual([]);expect(bad).toEqual([]);
 });
