@@ -219,7 +219,7 @@ class Accounts:
             home = self.directory(identifier)
             catalog = self.saved_model_catalogs.get(identifier)
             if catalog is None:
-                catalog = Catalog(home, self.runtime,
+                catalog = Catalog(home, executable_getter=lambda: self.runtime,
                     observation_enabled=lambda: getattr(self.bridge, 'observation_enabled', lambda: True)())
                 self.saved_model_catalogs[identifier] = catalog
             return catalog

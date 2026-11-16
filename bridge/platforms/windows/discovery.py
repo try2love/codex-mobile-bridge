@@ -1,4 +1,5 @@
 """Windows user, Squirrel and Store installation paths."""
+import os
 import re
 from pathlib import Path
 from .discovery_ext import (registered_candidates, windows_installations, launch_windows_desktop,
@@ -51,6 +52,34 @@ def runtime_candidates(executable):
     for folder in (executable.parent/'resources', executable.parent):
         for name in ('codex.exe', 'codex-cli/bin/codex.exe'):
             yield folder/name
+
+
+def codex_runtime_stamp(executable, previous=None, env=None):
+    """Watch cached CLI versions, keeping the previous stamp on query failure."""
+    if not executable:
+        return None
+    executable = Path(executable)
+    env = os.environ if env is None else env
+    local = Path(env.get('LOCALAPPDATA', str(Path.home()/'AppData/Local')))
+    root = local/'OpenAI/Codex/bin'
+    if executable.parent.parent != root or executable.name.casefold() != 'codex.exe':
+        return None
+    try:
+        value = root.stat()
+        directory = value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns
+        versions = []
+        for folder in sorted(root.iterdir()):
+            if not folder.is_dir():
+                continue
+            try:
+                value = (folder/'codex.exe').stat()
+                identity = value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns
+            except FileNotFoundError:
+                identity = None
+            versions.append((folder.name, identity))
+        return directory, tuple(versions)
+    except OSError:
+        return previous
 
 
 def claude_home(home, env):

@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from bridge.clients import lifecycle
+from bridge.clients.codex.catalog import Catalog
 from bridge.clients.discovery import (DISCOVERY_REVISION, discover_clients, inventory_current,
                                       inventory_fingerprint, inventory_preferences, inventory_registration)
 from bridge.clients.manager import DesktopSessions
@@ -205,6 +206,52 @@ class InstallationHandoffTests(InstallationFixtures):
         self.discovery.assert_not_called(); self.processes.assert_not_called()
         self.manager._prepare_discovered.assert_not_called()
         self.accounts.save.assert_not_called(); self.launch.assert_not_called(); self.stop.assert_not_called()
+
+    def test_scan_catalog_follows_only_the_final_runtime_after_pending_owner_exit_without_losing_models(self):
+        old_runtime = self.file('codex/old/resources/codex')
+        new_runtime = self.file('codex/new/resources/codex')
+        self.previous['codex']['runtime'] = str(old_runtime)
+        self.manager.config.update(self.cached(self.previous))
+        replacement = self.replacement(); replacement['codex']['runtime'] = str(new_runtime)
+        self.discovery.return_value = replacement
+        with patch.object(Catalog, 'find_runtime', return_value=old_runtime) as find:
+            reader = Catalog(self.root/'catalog-home', allow_background_refresh=False)
+            self.manager.bridge.catalog_reader = reader
+            models = {'models': [{'id': 'fixture-model'}]}; cached = (123.0, models)
+            reader.cache['project'] = cached; reader.kind_caches['models']['identity'] = cached
+            reader.model_store.write('identity', models); persisted = reader.model_store.read('identity')
+            self.live.add(self.previous['codex']['executable'])
+            self.manager.scan()
+            self.assertIn('pendingInstallation', self.manager.config['discovered']['codex'])
+            self.assertEqual(reader.executable, old_runtime)
+            self.live.clear(); self.manager.scan(inventory_only=True)
+            self.assertTrue(old_runtime.is_file(), 'following the new bundle must not depend on deleting the old runtime')
+            self.assertEqual(reader.executable, new_runtime)
+            self.assertIs(reader.cache['project'], cached)
+            self.assertIs(reader.kind_caches['models']['identity'], cached)
+            self.assertEqual(reader.model_store.read('identity'), persisted)
+            find.assert_called_once_with()
+        self.launch.assert_not_called(); self.stop.assert_not_called()
+
+    def test_scan_cannot_replace_explicit_or_unrelated_automatic_catalog_runtimes(self):
+        old_runtime = self.file('codex/old/resources/codex')
+        new_runtime = self.file('codex/new/resources/codex')
+        independent = self.file('independent-cli/codex')
+        for explicit in (True, False):
+            with self.subTest(explicit=explicit), patch.object(Catalog, 'find_runtime', return_value=independent) as find:
+                self.previous['codex']['runtime'] = str(old_runtime)
+                self.manager.config.update(self.cached(self.previous))
+                replacement = self.replacement(); replacement['codex']['runtime'] = str(new_runtime)
+                self.discovery.return_value = replacement
+                reader = Catalog(self.root/'catalog-home', executable=old_runtime if explicit else None,
+                                 allow_background_refresh=False)
+                self.manager.bridge.catalog_reader = reader
+                self.manager.scan()
+                self.assertEqual(self.manager.config['discovered']['codex']['runtime'], str(new_runtime))
+                self.assertEqual(reader.executable, old_runtime if explicit else independent)
+                if explicit: find.assert_not_called()
+                else: find.assert_called_once_with()
+        self.launch.assert_not_called(); self.stop.assert_not_called()
 
     def test_each_agent_keeps_its_running_installation_then_adopts_pending_without_full_rescan(self):
         replacement = self.replacement(); self.discovery.return_value = replacement

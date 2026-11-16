@@ -1923,6 +1923,10 @@ class DesktopSessions:
             self.config['discoveryPreferences'] = inventory_preferences(preferences)
             self.config['discoveryFingerprint'] = fingerprint
             self.config['discoveryPackages'] = registration
+            reader = getattr(self.bridge, 'catalog_reader', None)
+            if reader is not None:
+                reader.follow_runtime(previous_discovered.get('codex', {}).get('runtime'),
+                                      discovered.get('codex', {}).get('runtime'))
             with self.read_lock:
                 self._configure_zcode()
                 self._configure_antigravity()

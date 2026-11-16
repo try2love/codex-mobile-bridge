@@ -124,6 +124,16 @@ class AccountsTests(unittest.TestCase):
         self.assertFalse(self.manager.monitor.preferences['globalResetSignal'])
         self.assertFalse((self.manager.root/'reset-dynamic.json').exists())
 
+    def test_saved_account_catalog_follows_parent_runtime_without_recreating_its_cache(self):
+        reader = self.manager.saved_model_catalog('a'*32)
+        cached = {'models': ['fixture']}
+        reader.kind_caches['models']['cached'] = cached
+        updated = self.root/'updated/codex.exe'
+        self.bridge.catalog_reader.executable = updated
+        self.assertEqual(reader.executable, updated)
+        self.assertIs(self.manager.saved_model_catalog('a'*32), reader)
+        self.assertIs(reader.kind_caches['models']['cached'], cached)
+
     def api(self, **changes):
         return self.manager.add_api({'name':'Test API','baseUrl':'https://fixture.invalid/v1',
                                     'apiKey':'secret-fixture','model':'test-model', **changes})['accounts'][-1]

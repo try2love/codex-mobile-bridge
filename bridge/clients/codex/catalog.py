@@ -337,10 +337,15 @@ class Catalog:
 
     METHODS = {"initialize", "model/list", "skills/list", "config/read", "account/read", "getAuthStatus", "configRequirements/read"}
 
-    def __init__(self, codex_home, executable=None, allow_background_refresh=True, auth_status_only=False, observation_enabled=None):
+    def __init__(self, codex_home, executable=None, allow_background_refresh=True, auth_status_only=False,
+                 observation_enabled=None, executable_getter=None):
         self.home = Path(codex_home)
-        self._automatic_runtime = not executable
-        self._executable = Path(executable) if executable else self.find_runtime()
+        self.executable_getter = executable_getter
+        self._automatic_runtime = not executable and executable_getter is None
+        self._executable = Path(executable) if executable else None
+        if self._automatic_runtime:
+            self._executable = self.find_runtime()
+        self._runtime_directory_stamp = self._windows_runtime_stamp()
         self.cache = {}
         self.lock = threading.Lock()
         self.kind_locks = {'models': threading.Lock(), 'skills': threading.Lock()}
@@ -359,16 +364,51 @@ class Catalog:
 
     @property
     def executable(self):
-        # Desktop updates remove versioned Windows runtimes while the gateway
-        # stays running. Refresh automatic selection before the next operation.
-        if self._automatic_runtime and (not self._executable or not self._executable.is_file()):
-            self._executable = self.find_runtime()
+        if self.executable_getter is not None:
+            value = self.executable_getter()
+            return Path(value) if value else None
+        # A Windows updater can retain the old version while adding a new one.
+        if self._automatic_runtime:
+            stamp = self._windows_runtime_stamp()
+            try:
+                available = self._executable and self._executable.is_file()
+            except OSError:
+                return self._executable
+            if not available or stamp != self._runtime_directory_stamp:
+                discovered = self.find_runtime()
+                if discovered or not available:
+                    self._executable = discovered
+                self._runtime_directory_stamp = self._windows_runtime_stamp()
         return self._executable
 
     @executable.setter
     def executable(self, value):
+        self.executable_getter = None
         self._automatic_runtime = not value
         self._executable = Path(value) if value else None
+        self._runtime_directory_stamp = self._windows_runtime_stamp()
+
+    def follow_runtime(self, previous, current):
+        """Adopt a known installation update without replacing an explicit path."""
+        previous = Path(previous) if previous else None
+        if not self._automatic_runtime or self._executable != previous or not current:
+            return False
+        current = Path(current)
+        try:
+            available = current.is_file()
+        except OSError:
+            return False
+        if not available or current == self._executable:
+            return False
+        self._executable = current
+        self._runtime_directory_stamp = self._windows_runtime_stamp()
+        return True
+
+    def _windows_runtime_stamp(self):
+        if os.name != 'nt' or not self._automatic_runtime or not self._executable:
+            return None
+        from bridge.platforms.windows.discovery import codex_runtime_stamp
+        return codex_runtime_stamp(self._executable, getattr(self, '_runtime_directory_stamp', None), env=os.environ)
 
     def invalidate_models(self):
         with self.lock:
